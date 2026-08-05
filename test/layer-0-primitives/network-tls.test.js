@@ -2284,6 +2284,668 @@ async function testPinsetDriftMonitorNoBaseline() {
 }
 
 // =====================================================================
+// Branch-coverage extension — crafted-input paths for the OCSP DER
+// parser, the CT SCT-list / cert-extension extractors, the ECHConfig
+// framing reader, connectWithEch config guards, and the RFC 9525
+// hostname/IP helper edges. Every case drives the exported consumer
+// surface (nt.ocsp.* / nt.ct.* / nt.parseEchConfigList / nt.connectWith
+// Ech / nt.checkServerIdentity9525) with a hand-built malformed or edge
+// input and asserts the documented refusal `.code` or the preserved
+// parse result — never a validation bypass.
+// =====================================================================
+
+var _OID_BASIC_OCSP = "1.3.6.1.5.5.7.48.1.1";
+
+function _u64be(n) { var b = Buffer.alloc(8); b.writeBigUInt64BE(BigInt(n)); return b; }
+
+// parseOcspResponse shape guards — a malformed OCSPResponse DER must
+// refuse with the exact tls/ocsp-bad-* code, never silently parse.
+function testOcspParseShapeGuardsMore() {
+  // non-Buffer + empty Buffer -> ocsp-bad-input.
+  var e0a = null;
+  try { nt.ocsp.parseResponse(42); } catch (e) { e0a = e; }
+  check("parseResponse(non-Buffer) throws ocsp-bad-input", e0a && e0a.code === "tls/ocsp-bad-input");
+  var e0b = null;
+  try { nt.ocsp.parseResponse(Buffer.alloc(0)); } catch (e) { e0b = e; }
+  check("parseResponse(empty Buffer) throws ocsp-bad-input", e0b && e0b.code === "tls/ocsp-bad-input");
+
+  // top node not a SEQUENCE (an OCTET STRING) -> ocsp-bad-shape.
+  var e1 = null;
+  try { nt.ocsp.parseResponse(Buffer.from([0x04, 0x01, 0x00])); } catch (e) { e1 = e; }
+  check("parseResponse(non-SEQUENCE top) throws ocsp-bad-shape", e1 && e1.code === "tls/ocsp-bad-shape");
+
+  // successful + responseBytes [0] wrapping a non-SEQUENCE -> ocsp-bad-shape.
+  var derRbNotSeq = asn1.writeSequence([
+    asn1.writeNode(0x0a, Buffer.from([0])),
+    asn1.writeContextExplicit(0, asn1.writeNode(0x04, Buffer.from([1, 2]))),
+  ]);
+  var e2 = null;
+  try { nt.ocsp.parseResponse(derRbNotSeq); } catch (e) { e2 = e; }
+  check("parseResponse(responseBytes not SEQUENCE) throws ocsp-bad-shape", e2 && e2.code === "tls/ocsp-bad-shape");
+
+  // responseBytes SEQUENCE with < 2 children -> ocsp-bad-shape.
+  var derRbShort = asn1.writeSequence([
+    asn1.writeNode(0x0a, Buffer.from([0])),
+    asn1.writeContextExplicit(0, asn1.writeSequence([asn1.writeOid("1.2.3")])),
+  ]);
+  var e3 = null;
+  try { nt.ocsp.parseResponse(derRbShort); } catch (e) { e3 = e; }
+  check("parseResponse(responseBytes < 2 children) throws ocsp-bad-shape", e3 && e3.code === "tls/ocsp-bad-shape");
+
+  // BasicOCSPResponse OCTET STRING wrapping a non-SEQUENCE -> ocsp-bad-shape.
+  var derBasicNotSeq = asn1.writeSequence([
+    asn1.writeNode(0x0a, Buffer.from([0])),
+    asn1.writeContextExplicit(0, asn1.writeSequence([
+      asn1.writeOid(_OID_BASIC_OCSP),
+      asn1.writeOctetString(asn1.writeInteger(Buffer.from([1]))),
+    ])),
+  ]);
+  var e4 = null;
+  try { nt.ocsp.parseResponse(derBasicNotSeq); } catch (e) { e4 = e; }
+  check("parseResponse(BasicOCSPResponse not SEQUENCE) throws ocsp-bad-shape", e4 && e4.code === "tls/ocsp-bad-shape");
+
+  // BasicOCSPResponse SEQUENCE with < 3 children -> ocsp-bad-shape.
+  var derBasicShort = asn1.writeSequence([
+    asn1.writeNode(0x0a, Buffer.from([0])),
+    asn1.writeContextExplicit(0, asn1.writeSequence([
+      asn1.writeOid(_OID_BASIC_OCSP),
+      asn1.writeOctetString(asn1.writeSequence([
+        asn1.writeInteger(Buffer.from([1])),
+        asn1.writeInteger(Buffer.from([2])),
+      ])),
+    ])),
+  ]);
+  var e5 = null;
+  try { nt.ocsp.parseResponse(derBasicShort); } catch (e) { e5 = e; }
+  check("parseResponse(BasicOCSPResponse < 3 children) throws ocsp-bad-shape", e5 && e5.code === "tls/ocsp-bad-shape");
+}
+
+// buildRequest issuer-cert DER-walk shape guards.
+function testOcspBuildRequestIssuerShapes() {
+  var leaf = _synthCert({ serial: _SERIAL, cn: "Leaf",
+    keyBytes: Buffer.from("leaf-key-bytes-aaaaaaaaaaaaaaaa") });
+
+  // issuer cert SEQUENCE with zero children -> ocsp-bad-issuer-cert.
+  var e1 = null;
+  try { nt.ocsp.buildRequest({ leafCertDer: leaf, issuerCertDer: asn1.writeSequence([]) }); }
+  catch (e) { e1 = e; }
+  check("buildRequest(issuer SEQUENCE, no children) throws ocsp-bad-issuer-cert",
+        e1 && e1.code === "tls/ocsp-bad-issuer-cert");
+
+  // issuer tbsCertificate not a SEQUENCE -> ocsp-bad-issuer-cert.
+  var e2 = null;
+  try { nt.ocsp.buildRequest({ leafCertDer: leaf,
+    issuerCertDer: asn1.writeSequence([asn1.writeInteger(Buffer.from([1]))]) }); }
+  catch (e) { e2 = e; }
+  check("buildRequest(issuer tbs not SEQUENCE) throws ocsp-bad-issuer-cert",
+        e2 && e2.code === "tls/ocsp-bad-issuer-cert");
+
+  // Full-shaped tbs whose SPKI field is a SEQUENCE with < 2 children
+  // (no subjectPublicKey BIT STRING) -> ocsp-bad-issuer-cert.
+  var algId = asn1.writeSequence([asn1.writeOid("1.2.840.113549.1.1.1"), asn1.writeNull()]);
+  var cnrdn = asn1.writeSequence([asn1.writeOid("2.5.4.3"), asn1.writeNode(0x0c, Buffer.from("SPKI CA", "ascii"))]);
+  var name  = asn1.writeSequence([asn1.writeNode(0x31, cnrdn)]);
+  var validity = asn1.writeSequence([
+    asn1.writeNode(0x17, Buffer.from("260101000000Z", "ascii")),
+    asn1.writeNode(0x17, Buffer.from("270101000000Z", "ascii")),
+  ]);
+  var version = asn1.writeContextExplicit(0, asn1.writeInteger(Buffer.from([2])));
+  var badSpki = asn1.writeSequence([algId]);   // 1 child — missing BIT STRING
+  var tbsBadSpki = asn1.writeSequence([version, asn1.writeInteger(Buffer.from([1])),
+    algId, name, validity, name, badSpki]);
+  var certBadSpki = asn1.writeSequence([tbsBadSpki, algId, asn1.writeNode(0x03, Buffer.from([0, 0, 0, 0]))]);
+  var e3 = null;
+  try { nt.ocsp.buildRequest({ leafCertDer: leaf, issuerCertDer: certBadSpki }); }
+  catch (e) { e3 = e; }
+  check("buildRequest(issuer SPKI < 2 children) throws ocsp-bad-issuer-cert",
+        e3 && e3.code === "tls/ocsp-bad-issuer-cert");
+}
+
+// ocsp.fetch / requireGood no-argument config guards (opts || {} default).
+async function testOcspNoArgGuards() {
+  var e1 = null;
+  try { await nt.ocsp.fetch(); } catch (e) { e1 = e; }
+  check("ocsp.fetch() no-arg throws ocsp-bad-input", e1 && e1.code === "tls/ocsp-bad-input");
+
+  var e2 = null;
+  try { await nt.ocsp.requireGood(); } catch (e) { e2 = e; }
+  check("ocsp.requireGood() no-arg throws ocsp-missing-issuer", e2 && e2.code === "tls/ocsp-missing-issuer");
+}
+
+// removeCa with an explicit { audit: false } drives the opts.audit !== false
+// arm of the emit gate (the default-audit arm is covered elsewhere).
+function testRemoveCaAuditArm() {
+  nt._resetForTest();
+  var added = nt.addCa(_toPem(_synthCert({ cn: "RmA CA" })), { label: "rma" });
+  check("removeCa({audit:false}) still removes", nt.removeCa(added[0].fingerprint256, { audit: false }) === 1);
+  nt._resetForTest();
+}
+
+// CT SCT-extension extractor edge branches: non-SCT / empty / non-SEQUENCE
+// extensions are skipped, and a genuine SCT is still located; a malformed
+// SCT-extension inner (not a second OCTET STRING) refuses with ct-bad-extension.
+function testCtSctExtractorEdges() {
+  var goodSct = _sctExt(_sctListRaw([_buildSctBytes({})]));
+
+  // A non-SCT extension (must-staple) preceding the SCT ext -> OID mismatch
+  // continue, then the SCT is found.
+  var mixed = _synthCert({ cn: "MixSct", exts: [_mustStapleExt(), goodSct] });
+  check("parseScts skips a non-SCT extension then finds the SCT",
+        nt.ct.parseScts(mixed).length === 1);
+
+  // A non-SEQUENCE extension entry is skipped.
+  var withInt = _synthCert({ cn: "IntExt",
+    exts: [asn1.writeNode(0x02, Buffer.from([1])), goodSct] });
+  check("parseScts skips a non-SEQUENCE extension entry then finds the SCT",
+        nt.ct.parseScts(withInt).length === 1);
+
+  // An empty-SEQUENCE extension entry is skipped.
+  var withEmpty = _synthCert({ cn: "EmptyExt", exts: [asn1.writeSequence([]), goodSct] });
+  check("parseScts skips an empty-SEQUENCE extension entry then finds the SCT",
+        nt.ct.parseScts(withEmpty).length === 1);
+
+  // SCT extension whose extnValue does NOT wrap a second OCTET STRING
+  // (wraps a SEQUENCE instead) -> ct-bad-extension.
+  var badInner = asn1.writeSequence([
+    asn1.writeOid(OID_CT_SCT_LIST),
+    asn1.writeOctetString(asn1.writeSequence([asn1.writeInteger(Buffer.from([1]))])),
+  ]);
+  var badInnerCert = _synthCert({ cn: "BadInner", exts: [badInner] });
+  var e1 = null;
+  try { nt.ct.parseScts(badInnerCert); } catch (e) { e1 = e; }
+  check("parseScts(SCT extnValue not wrapping OCTET STRING) throws ct-bad-extension",
+        e1 && e1.code === "tls/ct-bad-extension");
+}
+
+// TLS-Feature (must-staple) extractor edge branches through inspectMustStaple.
+function testTlsFeatureExtractorEdges() {
+  var feat = _mustStapleExt();
+
+  // Non-SEQUENCE + empty-SEQUENCE + OID-unreadable + OID-mismatch extensions
+  // are all skipped before the real TLS-Feature ext is located.
+  var noisy = _synthCert({ cn: "NoisyFeat", exts: [
+    asn1.writeNode(0x02, Buffer.from([1])),                // non-SEQUENCE -> skip
+    asn1.writeSequence([]),                                // empty -> skip
+    asn1.writeSequence([asn1.writeNode(0x02, Buffer.from([1])), asn1.writeNull()]), // first child not OID -> skip
+    _sctExt(_sctListRaw([_buildSctBytes({})])),            // OID mismatch -> skip
+    feat,
+  ] });
+  var msNoisy = nt.ocsp.inspectMustStaple(noisy);
+  check("inspectMustStaple skips noisy extensions and still detects must-staple",
+        msNoisy.mustStaple === true && msNoisy.features.indexOf(5) !== -1);
+
+  // TLS-Feature extnValue wrapping a non-SEQUENCE -> treated as no feature.
+  var featNotSeq = asn1.writeSequence([
+    asn1.writeOid(OID_TLS_FEATURE),
+    asn1.writeOctetString(asn1.writeNode(0x02, Buffer.from([1]))),
+  ]);
+  var certNotSeq = _synthCert({ cn: "FeatNotSeq", exts: [featNotSeq] });
+  check("inspectMustStaple(TLS-Feature not SEQUENCE) -> mustStaple false",
+        nt.ocsp.inspectMustStaple(certNotSeq).mustStaple === false);
+
+  // TLS-Feature SEQUENCE-OF with a NON-integer entry: the non-integer is
+  // ignored, the integer 5 still flags must-staple.
+  var featMixed = asn1.writeSequence([
+    asn1.writeOid(OID_TLS_FEATURE),
+    asn1.writeOctetString(asn1.writeSequence([
+      asn1.writeNull(),                          // non-integer -> ignored
+      asn1.writeInteger(Buffer.from([5])),       // status_request -> must-staple
+    ])),
+  ]);
+  var certMixed = _synthCert({ cn: "FeatMixed", exts: [featMixed] });
+  var msMixed = nt.ocsp.inspectMustStaple(certMixed);
+  check("inspectMustStaple ignores non-integer TLS-Feature entries but keeps the 5",
+        msMixed.mustStaple === true && msMixed.features.length === 1 && msMixed.features[0] === 5);
+}
+
+// SCT-list / single-SCT low-level parse rejections through ct.parseScts.
+function testCtSctBytesParseErrors() {
+  // Outer SCT list shorter than its 2-byte length prefix.
+  var listShort = asn1.writeSequence([
+    asn1.writeOid(OID_CT_SCT_LIST),
+    asn1.writeOctetString(asn1.writeOctetString(Buffer.from([0x00]))),
+  ]);
+  var e1 = null;
+  try { nt.ct.parseScts(_synthCert({ cn: "ListShort", exts: [listShort] })); } catch (e) { e1 = e; }
+  check("parseScts(SCT list < outer prefix) throws ct-bad-list", e1 && e1.code === "tls/ct-bad-list");
+
+  // A single SCT whose declared length runs past the list buffer.
+  var overrunBody = Buffer.concat([Buffer.from([0x00, 0x40]), Buffer.alloc(5, 0x00)]);
+  var overrunList = Buffer.concat([Buffer.from([0x00, overrunBody.length]), overrunBody]);
+  var overrunExt = asn1.writeSequence([
+    asn1.writeOid(OID_CT_SCT_LIST),
+    asn1.writeOctetString(asn1.writeOctetString(overrunList)),
+  ]);
+  var e2 = null;
+  try { nt.ct.parseScts(_synthCert({ cn: "Overrun", exts: [overrunExt] })); } catch (e) { e2 = e; }
+  check("parseScts(SCT declared length past buffer) throws ct-bad-list", e2 && e2.code === "tls/ct-bad-list");
+
+  // A 47-byte SCT whose ct_extensions length consumes the DigitallySigned
+  // header -> truncated before DigitallySigned.
+  var sctTruncExt = Buffer.concat([
+    Buffer.from([0]), Buffer.alloc(32, 0xaa), _u64be(1),
+    Buffer.from([0x00, 0x04]), Buffer.alloc(4, 0x00),
+  ]);
+  var e3 = null;
+  try { nt.ct.parseScts(_synthCert({ cn: "SctTruncExt",
+    exts: [_sctExt(_sctListRaw([sctTruncExt]))] })); } catch (e) { e3 = e; }
+  check("parseScts(SCT ext len eats DigitallySigned) throws ct-sct-truncated",
+        e3 && e3.code === "tls/ct-sct-truncated");
+
+  // An SCT whose declared signature length does not match the remaining bytes.
+  var sctBadSigLen = Buffer.concat([
+    Buffer.from([0]), Buffer.alloc(32, 0xaa), _u64be(1),
+    Buffer.from([0x00, 0x00]),   // ct_extensions len 0
+    Buffer.from([0x04, 0x03]),   // hash+sig algo
+    Buffer.from([0x00, 0x05]),   // sig length 5 ...
+    Buffer.from([0x01, 0x02, 0x03]),  // ... but only 3 bytes follow
+  ]);
+  var e4 = null;
+  try { nt.ct.parseScts(_synthCert({ cn: "SctBadSigLen",
+    exts: [_sctExt(_sctListRaw([sctBadSigLen]))] })); } catch (e) { e4 = e; }
+  check("parseScts(SCT sig length mismatch) throws ct-sct-truncated",
+        e4 && e4.code === "tls/ct-sct-truncated");
+}
+
+// ECHConfig internal reader overflow / truncation branches. Every framing
+// violation must refuse with tls/ech-config-malformed.
+function testEchInternalReaderFraming() {
+  function _throws(raw, label) {
+    var e = null;
+    try { nt.parseEchConfigList(raw); } catch (err) { e = err; }
+    check("parseEchConfigList " + label + " -> ech-config-malformed",
+          e && e.code === "tls/ech-config-malformed");
+  }
+
+  // draft-22 config, declared body length 0 -> _echReadU8(config_id) overflows.
+  _throws(Buffer.from([0x00, 0x04, 0xfe, 0x0d, 0x00, 0x00]), "u8 read past body");
+
+  // draft-22 config, body 1 byte -> _echReadU16(kem_id) overflows.
+  _throws(Buffer.from([0x00, 0x05, 0xfe, 0x0d, 0x00, 0x01, 0x07]), "u16 read past body");
+
+  // draft-22 config whose public_key opaque<u16> length overflows the buffer.
+  _throws(Buffer.from([0x00, 0x09, 0xfe, 0x0d, 0x00, 0x05, 0x07, 0x00, 0x20, 0xff, 0xff]),
+          "opaque<u16> public_key overflow");
+
+  // Stomp the cipher_suites length prefix of a VALID config to a large
+  // multiple of 4 so it overflows the config body.
+  var valid1 = _buildEchConfigDraft22({});
+  valid1[43] = 0xff; valid1[44] = 0xfc;   // suites-len prefix at offset 43
+  _throws(valid1, "cipher_suites vector overflows body");
+
+  // Stomp the public_name u8 length prefix so it overflows.
+  var valid2 = _buildEchConfigDraft22({});
+  valid2[54] = 0xff;   // public_name length byte at offset 54
+  _throws(valid2, "u8-prefixed public_name overflow");
+
+  // Stomp the extensions u16 length prefix so it no longer consumes the body.
+  var valid3 = _buildEchConfigDraft22({});
+  valid3[73] = 0x00; valid3[74] = 0x02;   // ext-len prefix at offset 73
+  _throws(valid3, "extensions vector does not consume body");
+}
+
+// ECHConfig with a real extension exercises the extensions parse loop and
+// preserves the extension type + data verbatim.
+function testEchExtensionsLoop() {
+  var raw = _buildEchConfigDraft22({
+    extensions: [{ type: 0x1234, data: Buffer.from([0xaa, 0xbb, 0xcc]) }],
+  });
+  var parsed = nt.parseEchConfigList(raw);
+  var exts = parsed.configs[0].extensions;
+  check("parseEchConfigList reads a present extension",
+        Array.isArray(exts) && exts.length === 1 && exts[0].type === 0x1234);
+  check("parseEchConfigList preserves the extension data bytes verbatim",
+        Buffer.isBuffer(exts[0].data) && exts[0].data.equals(Buffer.from([0xaa, 0xbb, 0xcc])));
+}
+
+// connectWithEch config-time guards + the echOverride base64-string branch
+// over a real localhost handshake (drives the string arm + ipFamily/ca/
+// checkServerIdentity connectOpts assignments + servername-defaults-to-host).
+async function testConnectWithEchConfigAndStringOverride() {
+  // opts as an array refuses at the plain-object guard.
+  var eArr = null;
+  try { nt.connectWithEch([1, 2]); } catch (e) { eArr = e; }
+  check("connectWithEch(array) refuses ech-bad-opts",
+        eArr instanceof nt.NetworkTlsError && eArr.code === "tls/ech-bad-opts");
+
+  var validEch = _buildEchConfigDraft22({});
+  var s1 = await _startTlsServer(undefined);
+  try {
+    // ipFamily + ca + checkServerIdentity connectOpts assignments all set,
+    // echOverride passed as a BASE64 STRING (drives the string-decode arm).
+    var sock = await nt.connectWithEch({
+      host: "127.0.0.1", port: s1.port, servername: "localhost", ipFamily: 4,
+      ca: _toPem(_synthCert({ cn: "Unused CA" })),
+      checkServerIdentity: function () { return undefined; },
+      echOverride: validEch.toString("base64"),
+      rejectUnauthorized: false,
+    });
+    check("connectWithEch with a base64 echOverride + ipFamily/ca/checkServerIdentity secures",
+          sock && sock.encrypted === true);
+    try { sock.destroy(); } catch (_e) { /* best-effort */ }
+  } finally { s1.close(); }
+}
+
+// RFC 9525 helper edges: empty DNS-SAN value, trailing-dot host, malformed
+// quoted SAN (fail closed), bracketed IPv6 SAN, and the ::-prefix / ::-suffix
+// IPv6 forms.
+function testPkixHelperEdges() {
+  // Empty dNSName value cannot match; refuses.
+  var e1 = nt.checkServerIdentity9525("foo.example.com", _cert("DNS:"));
+  check("empty dNSName SAN value refuses", e1 && e1.code === "tls/pkix-hostname-mismatch");
+
+  // Trailing-dot (absolute FQDN) host normalizes and matches.
+  check("trailing-dot host normalizes to match the SAN",
+        nt.checkServerIdentity9525("foo.example.com.", _cert("DNS:foo.example.com")) === undefined);
+
+  // Malformed quoted SAN -> parser fails closed -> refuses (never smuggles a name).
+  var e2 = nt.checkServerIdentity9525("victim.com", _cert('DNS:"unterminated'));
+  check("malformed quoted SAN fails closed (refuses)", e2 && e2.code === "tls/pkix-hostname-mismatch");
+
+  // Bracketed IPv6 SAN value canonicalizes and matches the bare IPv6 host.
+  check("bracketed IPv6 SAN matches the bare IPv6 host",
+        nt.checkServerIdentity9525("2001:db8::1", _cert("IP Address:[2001:db8::1]")) === undefined);
+
+  // ::-prefix (empty left) and ::-suffix (empty right) IPv6 forms both match.
+  check("IPv6 ::-prefix host matches its SAN",
+        nt.checkServerIdentity9525("::1", _cert("IP Address:::1")) === undefined);
+  check("IPv6 ::-suffix host matches its SAN",
+        nt.checkServerIdentity9525("2001:db8::", _cert("IP Address:2001:db8::")) === undefined);
+}
+
+// CT Merkle verifier optional-shape branches: bigint SCT timestamp, the
+// sha256RootHash STH alias, hex-string roots (inclusion consistency +
+// standalone verifyConsistency), and omitted (undefined) proofs.
+function testCtVerifierOptionalShapes() {
+  var signedEntry = Buffer.from("optional-shape-entry");
+  var ts = 1700000000000;
+  var leafHash = _ctLeafHash(signedEntry, ts);
+
+  // bigint timestamp + sha256RootHash alias (no rootHash) -> valid.
+  var okBig = nt.ct.verifyInclusion({
+    sct: { logIdHex: "aa", timestamp: BigInt(ts), signedEntryDer: signedEntry },
+    leafCertificate: Buffer.from("x"), leafIndex: 0, auditPath: [],
+    sthFromLog: { treeSize: 1, sha256RootHash: leafHash },
+  });
+  check("verifyInclusion bigint timestamp + sha256RootHash alias valid", okBig.valid === true);
+
+  // Optional consistency proof with a hex-string firstRoot + omitted proof
+  // (proof || []): the first tree is a complete subtree, so an empty proof
+  // reconciles for firstSize 1.
+  var incl = nt.ct.verifyInclusion({
+    sct: { logIdHex: "aa", timestamp: ts, signedEntryDer: signedEntry },
+    leafCertificate: Buffer.from("x"), leafIndex: 0, auditPath: [],
+    sthFromLog: { treeSize: 1, rootHash: leafHash },
+    consistency: { firstSize: 1, firstRoot: leafHash.toString("hex") },  // proof omitted
+  });
+  check("verifyInclusion hex-string consistency firstRoot + omitted proof reconciles",
+        incl.valid === true && incl.consistency && incl.consistency.ok === true);
+
+  // Standalone verifyConsistency with hex-string roots + omitted proof.
+  var X = Buffer.alloc(32, 0x22);
+  var sameHex = nt.ct.verifyConsistency({
+    firstSize: 1, secondSize: 1,
+    firstRoot: X.toString("hex"), secondRoot: X.toString("hex"),  // proof omitted
+  });
+  check("verifyConsistency hex-string roots + omitted proof valid", sameHex.valid === true);
+
+  // requireScts() with no argument defaults its opts.
+  check("ct.requireScts() no-arg returns a predicate function",
+        typeof nt.ct.requireScts() === "function");
+}
+
+var _OID_RSA_SHA256   = "1.2.840.113549.1.1.11";
+var _OID_RSA_SHA384   = "1.2.840.113549.1.1.12";
+var _OID_RSA_SHA512   = "1.2.840.113549.1.1.13";
+var _OID_ECDSA_SHA384 = "1.2.840.10045.4.3.3";
+var _OID_ECDSA_SHA512 = "1.2.840.10045.4.3.4";
+
+// evaluate: the signatureAlgorithm-OID → node-hash mapping arms + the
+// no-opts guard + the finite-clockSkew arm.
+function testOcspEvaluateMoreBranches() {
+  var issuer = _synthCert({ serial: Buffer.from([0x01]), cn: "EvalMore CA",
+    keyBytes: Buffer.from("real-ca-key-bytes-aaaaaaaaaaaaaa") });
+  var serialHex = _SERIAL.toString("hex");
+
+  // Each recognized signatureAlgorithm OID maps to a node hash and the
+  // response still parses as "successful" (the signature verifies or fails
+  // to verify against the EC issuer key, but the OID-mapping arm executes).
+  [_OID_RSA_SHA256, _OID_RSA_SHA384, _OID_RSA_SHA512,
+   _OID_ECDSA_SHA384, _OID_ECDSA_SHA512].forEach(function (oid) {
+    var fx = _buildOcsp({ issuerDer: issuer, status: "good", serial: _SERIAL, sigAlgOid: oid });
+    var rv = nt.ocsp.evaluate(fx.der, { issuerPem: fx.issuerPem, serialHex: serialHex, now: _NOW });
+    check("evaluate maps signatureAlgorithm OID " + oid + " to a hash (status successful)",
+          rv && rv.status === "successful" && typeof rv.signatureValid === "boolean");
+  });
+
+  // evaluate with NO opts defaults opts and refuses on the missing issuer.
+  var eNoOpts = null;
+  try { nt.ocsp.evaluate(Buffer.from([0x30, 0x00])); } catch (e) { eNoOpts = e; }
+  check("evaluate() no-opts throws ocsp-missing-issuer", eNoOpts && eNoOpts.code === "tls/ocsp-missing-issuer");
+
+  // A finite clockSkewMs is honored (the freshness window still passes for a
+  // fresh good response).
+  var good = _buildOcsp({ issuerDer: issuer, status: "good", serial: _SERIAL });
+  var rvSkew = nt.ocsp.evaluate(good.der, { issuerPem: good.issuerPem, serialHex: serialHex,
+    now: _NOW, clockSkewMs: C.TIME.minutes(1) });
+  check("evaluate honors a finite clockSkewMs", rvSkew.ok === true && rvSkew.certStatus === "good");
+}
+
+// buildRequest with no argument defaults opts and refuses on the missing
+// leaf cert.
+function testOcspBuildRequestNoArg() {
+  var e1 = null;
+  try { nt.ocsp.buildRequest(); } catch (e) { e1 = e; }
+  check("ocsp.buildRequest() no-arg throws ocsp-bad-input", e1 && e1.code === "tls/ocsp-bad-input");
+}
+
+// CT extractor "extensions present but the target extension is absent"
+// tail branches: parseScts returns [] and inspectMustStaple returns false
+// after walking a cert whose only extension is the OTHER kind.
+function testCtExtractorNoMatchTails() {
+  var onlyMustStaple = _synthCert({ cn: "OnlyMS", exts: [_mustStapleExt()] });
+  check("parseScts on a cert whose only ext is must-staple returns []",
+        nt.ct.parseScts(onlyMustStaple).length === 0);
+
+  var onlySct = _synthCert({ cn: "OnlySCT", exts: [_sctExt(_sctListRaw([_buildSctBytes({})]))] });
+  check("inspectMustStaple on a cert whose only ext is an SCT list -> mustStaple false",
+        nt.ocsp.inspectMustStaple(onlySct).mustStaple === false);
+}
+
+// verifyInclusion strip-the-SCT-extension failure branches: a leaf cert that
+// is not a SEQUENCE / whose tbs is not a SEQUENCE refuses with strip-failed
+// (never silently proceeds).
+function testCtVerifyInclusionStripFailures() {
+  var sct = { logIdHex: "aa", timestamp: 1700000000000 };  // no signedEntryDer -> strip
+  var notSeq = nt.ct.verifyInclusion({
+    sct: sct, leafCertificate: Buffer.from([0x04, 0x01, 0x00]), leafIndex: 0, auditPath: [],
+    sthFromLog: { treeSize: 1, rootHash: Buffer.alloc(32, 0x00) },
+  });
+  check("verifyInclusion leaf not a SEQUENCE -> strip-failed", notSeq.reason === "strip-failed");
+
+  var badTbs = nt.ct.verifyInclusion({
+    sct: sct, leafCertificate: asn1.writeSequence([asn1.writeInteger(Buffer.from([1]))]),
+    leafIndex: 0, auditPath: [], sthFromLog: { treeSize: 1, rootHash: Buffer.alloc(32, 0x00) },
+  });
+  check("verifyInclusion leaf tbs not a SEQUENCE -> strip-failed", badTbs.reason === "strip-failed");
+}
+
+// verifyScts strip walk over a cert carrying BOTH an SCT ext and a non-SCT
+// ext (must-staple): the strip keeps the non-SCT ext + drops the SCT ext,
+// and the SCT hash-algo → node-hash mapping runs for sha384 / sha512 SCTs.
+function testCtVerifyStripAndHashAlgos() {
+  var ecPub = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" })
+    .publicKey.export({ type: "spki", format: "pem" });
+  var logHex = "aa".repeat(32);
+  function _logKeys() { var m = {}; m[logHex] = ecPub; return m; }
+
+  // Mixed extensions drive the strip loop's keep-non-SCT / drop-SCT branches.
+  var mixed = _synthCert({ cn: "StripMix",
+    exts: [_mustStapleExt(), _sctExt(_sctListRaw([_buildSctBytes({})]))] });
+  var rvMixed = nt.ct.verifyScts(mixed, { logKeys: _logKeys(), minScts: 1 });
+  check("verifyScts strips the SCT ext while keeping a must-staple ext (walk runs)",
+        rvMixed.totalScts === 1 && Array.isArray(rvMixed.scts) && rvMixed.scts.length === 1);
+
+  // SCTs declaring sha384 / sha512 exercise the hash-algo → node-hash arms.
+  var sct384 = _synthCert({ cn: "Sct384",
+    exts: [_sctExt(_sctListRaw([_buildSctBytes({ hashAlgo: 5 })]))] });
+  check("verifyScts maps SCT hashAlgo 5 (sha384) — per-sct result present",
+        nt.ct.verifyScts(sct384, { logKeys: _logKeys(), minScts: 1 }).scts.length === 1);
+  var sct512 = _synthCert({ cn: "Sct512",
+    exts: [_sctExt(_sctListRaw([_buildSctBytes({ hashAlgo: 6 })]))] });
+  check("verifyScts maps SCT hashAlgo 6 (sha512) — per-sct result present",
+        nt.ct.verifyScts(sct512, { logKeys: _logKeys(), minScts: 1 }).scts.length === 1);
+}
+
+// CT Merkle proof guards reachable only through the public verifiers with
+// out-of-range sizes / short or malformed proofs.
+function testCtMerkleGuardsMore() {
+  var X = Buffer.alloc(32, 0x22);
+
+  // Non-integer treeSize surfaces as inclusion-walk-failed (the path's
+  // tree-size guard throws and is caught).
+  var badTree = nt.ct.verifyInclusion({
+    sct: { logIdHex: "aa", timestamp: 1700000000000, signedEntryDer: Buffer.from("x") },
+    leafCertificate: Buffer.from("x"), leafIndex: 0, auditPath: [],
+    sthFromLog: { treeSize: 1.5, rootHash: Buffer.alloc(32, 0x00) },
+  });
+  check("verifyInclusion non-integer treeSize -> inclusion-walk-failed",
+        badTree.reason === "inclusion-walk-failed");
+
+  // verifyConsistency with n < m -> walk-failed (bad-second-size throw caught).
+  check("verifyConsistency secondSize < firstSize -> consistency-walk-failed",
+        nt.ct.verifyConsistency({ firstSize: 2, secondSize: 1, proof: [],
+          firstRoot: X, secondRoot: X }).reason === "consistency-walk-failed");
+
+  // verifyConsistency with a non-32-byte proof entry -> walk-failed
+  // (bad-consistency-entry throw caught).
+  check("verifyConsistency non-32-byte proof entry -> consistency-walk-failed",
+        nt.ct.verifyConsistency({ firstSize: 2, secondSize: 4, proof: [Buffer.alloc(4, 1)],
+          firstRoot: X, secondRoot: X }).reason === "consistency-walk-failed");
+
+  // verifyConsistency with a proof too short to reach the second root ->
+  // walk-failed (consistency-short throw caught).
+  check("verifyConsistency proof exhausted before second root -> consistency-walk-failed",
+        nt.ct.verifyConsistency({ firstSize: 3, secondSize: 16, proof: [Buffer.alloc(32, 1)],
+          firstRoot: X, secondRoot: X }).reason === "consistency-walk-failed");
+
+  // verifyInclusion whose optional consistency proof has a bad firstSize
+  // -> the consistency path throws and is caught as consistency-walk-failed.
+  var signedEntry = Buffer.from("guard-entry");
+  var ts = 1700000000000;
+  var leafHash = _ctLeafHash(signedEntry, ts);
+  var inclBadConsist = nt.ct.verifyInclusion({
+    sct: { logIdHex: "aa", timestamp: ts, signedEntryDer: signedEntry },
+    leafCertificate: Buffer.from("x"), leafIndex: 0, auditPath: [],
+    sthFromLog: { treeSize: 1, rootHash: leafHash },
+    consistency: { firstSize: 0, firstRoot: X, proof: [] },
+  });
+  check("verifyInclusion optional consistency bad firstSize -> consistency-walk-failed",
+        inclBadConsist.reason === "consistency-walk-failed");
+}
+
+// requireGood over a real localhost handshake, binding the response CertID to
+// the issuer cert DER (RFC 6960 §4.1.1) so the issuerCertDer-present arm runs
+// and the good evaluation is preserved (asserts ACCEPT of a correctly-bound
+// good staple — not a bypass).
+async function testOcspRequireGoodWithIssuerBinding() {
+  var issuer = _synthCert({ serial: Buffer.from([0x01]), cn: "RGBind CA",
+    keyBytes: Buffer.from("real-ca-key-bytes-aaaaaaaaaaaaaa") });
+  var goodFx = _buildOcsp({ issuerDer: issuer, status: "good", serial: _SERIAL });
+  var s = await _startTlsServer(goodFx.der);
+  try {
+    var r = await nt.ocsp.requireGood({ host: "127.0.0.1", port: s.port,
+      rejectUnauthorized: false, servername: "localhost",
+      issuerPem: goodFx.issuerPem, issuerCertDer: issuer });
+    check("requireGood with a matching issuerCertDer binds and stays good",
+          r && r.ocspEvaluation && r.ocspEvaluation.ok === true &&
+          r.ocspEvaluation.certStatus === "good");
+  } finally { s.close(); }
+}
+
+// evaluate parse-error + non-successful-status early returns, plus the
+// all-zero serial normalization fallback.
+function testOcspEvaluateParseAndStatusBranches() {
+  var issuer = _synthCert({ serial: Buffer.from([0x01]), cn: "PS CA",
+    keyBytes: Buffer.from("real-ca-key-bytes-aaaaaaaaaaaaaa") });
+
+  // Unparseable OCSP DER with an issuerPem present -> parse-error (caught).
+  var pe = nt.ocsp.evaluate(Buffer.from([0x04, 0x01, 0x00]), { issuerPem: issuer && "x", serialHex: "01" });
+  check("evaluate(unparseable DER) -> status parse-error", pe.ok === false && pe.status === "parse-error");
+
+  // responseStatus != successful (tryLater) -> early non-successful return.
+  var tryLater = asn1.writeSequence([asn1.writeNode(0x0a, Buffer.from([3]))]);
+  var ts = nt.ocsp.evaluate(tryLater, { issuerPem: "x", serialHex: "01" });
+  check("evaluate(responseStatus tryLater) -> ok false status tryLater",
+        ts.ok === false && ts.status === "tryLater");
+
+  // All-zero serial normalizes to "0" on both sides and still binds.
+  var zeroFx = _buildOcsp({ issuerDer: issuer, status: "good", serial: Buffer.from([0x00]) });
+  var zeroRv = nt.ocsp.evaluate(zeroFx.der, { issuerPem: zeroFx.issuerPem, serialHex: "00", now: _NOW });
+  check("evaluate all-zero serial normalizes and binds good",
+        zeroRv.ok === true && zeroRv.certStatus === "good");
+}
+
+// strip-failed when the leaf cert carries NO extensions at all (the strip
+// walk finds no [3] extensions wrapper), plus the DER long-form length
+// encoder for a kept extension larger than 127 bytes.
+function testCtStripNoExtAndLongLength() {
+  // No extensions -> strip refuses -> verifyInclusion reports strip-failed.
+  var noExtCert = _synthCert({ cn: "NoExtStrip" });
+  var rv = nt.ct.verifyInclusion({
+    sct: { logIdHex: "aa", timestamp: 1700000000000 },  // no signedEntryDer -> strip
+    leafCertificate: noExtCert, leafIndex: 0, auditPath: [],
+    sthFromLog: { treeSize: 1, rootHash: Buffer.alloc(32, 0x00) },
+  });
+  check("verifyInclusion leaf with no extensions -> strip-failed", rv.reason === "strip-failed");
+
+  // A kept (non-SCT) extension larger than 127 bytes exercises the DER
+  // long-form length encoder during the strip re-encode.
+  var ecPub = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" })
+    .publicKey.export({ type: "spki", format: "pem" });
+  var logHex = "aa".repeat(32); var keys = {}; keys[logHex] = ecPub;
+  var bigExt = asn1.writeSequence([
+    asn1.writeOid("1.2.3.4"),
+    asn1.writeOctetString(Buffer.alloc(200, 0x5a)),
+  ]);
+  var bigCert = _synthCert({ cn: "BigExtStrip",
+    exts: [bigExt, _sctExt(_sctListRaw([_buildSctBytes({})]))] });
+  var rvBig = nt.ct.verifyScts(bigCert, { logKeys: keys, minScts: 1 });
+  check("verifyScts strip re-encodes a >127-byte kept extension (long-form length)",
+        rvBig.totalScts === 1);
+}
+
+// =====================================================================
+
+// Regression: verifyScts's RFC 6962 log-key algorithm cross-check must read the
+// SCT's `sigAlgo` field (the name _parseSct emits). Reading a wrong field name
+// made the value always undefined → every SCT failed the algo gate with
+// "log-key-algo-mismatch" and nodeCrypto.verify was never reached, so CT SCT
+// signature verification could never succeed (fail-closed but non-functional).
+function testCtVerifySctAlgoGateReadsSigAlgoField() {
+  var ecPem  = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" })
+                 .publicKey.export({ type: "spki", format: "pem" });
+  var rsaPem = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 })
+                 .publicKey.export({ type: "spki", format: "pem" });
+  function reasonFor(sigAlgo, pem) {
+    var logId = Buffer.alloc(32, 0xbc);
+    var sct   = _buildSctBytes({ logId: logId, sigAlgo: sigAlgo, hashAlgo: 4 });
+    var cert  = _synthCert({ cn: "SCT Algo", exts: [_sctExt(_sctListRaw([sct]))] });
+    var logKeys = {}; logKeys[logId.toString("hex")] = pem;
+    var rv = nt.ct.verifyScts(cert, { logKeys: logKeys, minScts: 1 });
+    return rv.scts[0] ? rv.scts[0].reason : "no-sct";
+  }
+  // Matching algo pairs must PASS the gate (reach signature verification, whose
+  // reason is anything but the algo mismatch) — RED on the wrong-field bug.
+  check("verifyScts: an ecdsa SCT + EC log key passes the algo gate (reaches verify)",
+        reasonFor(3, ecPem) !== "log-key-algo-mismatch");
+  check("verifyScts: an rsa SCT + RSA log key passes the algo gate (reaches verify)",
+        reasonFor(1, rsaPem) !== "log-key-algo-mismatch");
+  // A GENUINE mismatch (ecdsa SCT against an RSA log key) must still be refused
+  // at the gate — proves the fix reads the field, not that it disabled the gate.
+  check("verifyScts: an ecdsa SCT against an RSA log key is still refused (log-key-algo-mismatch)",
+        reasonFor(3, rsaPem) === "log-key-algo-mismatch");
+}
 
 async function run() {
   testNetworkTlsErrorPermanentClassification();
@@ -2365,6 +3027,7 @@ async function run() {
     // CT
     testCtInspectAndParse();
     testCtVerifyScts();
+    testCtVerifySctAlgoGateReadsSigAlgoField();
     testCtVerifyMoreScts();
     testCtParseSctErrors();
     testSctAndTlsFeatureTolerance();
@@ -2379,6 +3042,28 @@ async function run() {
     testPkixMoreBranches();
     // SNI
     testWrapSniCallback();
+    // Branch-coverage extension — crafted OCSP/CT/ECH/PKIX edge inputs
+    testOcspParseShapeGuardsMore();
+    testOcspBuildRequestIssuerShapes();
+    await testOcspNoArgGuards();
+    testRemoveCaAuditArm();
+    testCtSctExtractorEdges();
+    testTlsFeatureExtractorEdges();
+    testCtSctBytesParseErrors();
+    testEchInternalReaderFraming();
+    testEchExtensionsLoop();
+    await testConnectWithEchConfigAndStringOverride();
+    testPkixHelperEdges();
+    testCtVerifierOptionalShapes();
+    testOcspEvaluateMoreBranches();
+    testOcspBuildRequestNoArg();
+    testCtExtractorNoMatchTails();
+    testCtVerifyInclusionStripFailures();
+    testCtVerifyStripAndHashAlgos();
+    testCtMerkleGuardsMore();
+    await testOcspRequireGoodWithIssuerBinding();
+    testOcspEvaluateParseAndStatusBranches();
+    testCtStripNoExtAndLongLength();
   } finally {
     nt._resetForTest();
   }

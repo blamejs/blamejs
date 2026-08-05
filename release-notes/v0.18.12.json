@@ -1,0 +1,27 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.18.12",
+  "date": "2026-08-03",
+  "headline": "Certificate Transparency SCT signature verification now functions (it previously rejected every SCT); broader Redis-client and TLS-verification test coverage",
+  "summary": "The Certificate Transparency SCT verifier read the wrong field for its log-key algorithm cross-check, so every SCT failed that gate before the signature was ever checked — verifyScts could never return a verified result and requireScts rejected every certificate. It now reads the correct field and functions. Alongside the fix, error and edge branches of b.redisClient and b.network.tls come under explicit test.",
+  "sections": [
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "Certificate Transparency SCT signature verification now works instead of rejecting every SCT",
+          "body": "b.network.tls.ct.verifyScts cross-checks each SCT's signature algorithm against the registered log key's type (RFC 6962 §2.1.4) before verifying the signature. That check read the SCT's algorithm from a field name the parser does not emit, so the value was always undefined, the algorithm gate always failed with log-key-algo-mismatch, and the actual signature verification was never reached — verifyScts could never report a verified SCT, and b.network.tls.ct.requireScts consequently rejected every certificate. The gate now reads the parsed sigAlgo field, so a matching log key reaches signature verification and a genuine algorithm mismatch is still refused. The prior behaviour failed closed (it rejected rather than accepted), so no invalid certificate was ever trusted; operators who had enabled SCT enforcement will now see valid SCTs verify."
+        }
+      ]
+    },
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "Error- and edge-path tests for the Redis client and TLS-verification primitives",
+          "body": "b.redisClient (RESP framing and protocol-error edges, split replies, AUTH / SELECT on connect, push-message demux, connect/command timeouts, socket-error and close teardown) and b.network.tls (OCSP and Certificate-Transparency parse and verification branches, ECH config framing, and PKIX host/SAN matching) now have explicit tests for their boundary branches, driven through local fake servers and crafted certificates."
+        }
+      ]
+    }
+  ]
+}
