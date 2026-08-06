@@ -35,8 +35,8 @@
           "body": "Because an embedded SCT binds the issuing CA's key, verifying one needs that key. Pass the issuer to verifyScts as issuerCertDer (the issuer certificate DER), issuerSpkiDer (its SubjectPublicKeyInfo DER), or issuerKeyHash (the precomputed 32-byte SHA-256). Without it, verifyScts returns { ok: false, reason: \"issuer-key-required\" } and does not verify. requireScts derives the issuer from the peer's certificate chain automatically and accepts the same options; supply one explicitly only when the issuer is not present in the chain. verifyInclusion takes the same issuer options for embedded (precert_entry) leaves."
         },
         {
-          "title": "Vendored @blamejs/pki refreshed to 0.3.31",
-          "body": "The vendored @blamejs/pki bundle behind the mutual-TLS CA engine is refreshed to 0.3.31, which adds C509 (CBOR-encoded certificate) extended-key-usage and extension registries (RFC 7633 TLS Feature, RFC 4556 PKINIT, and SSH/CMC/Bundle-Security purposes). No blamejs public API changes."
+          "title": "Vendored @blamejs/pki refreshed to 0.3.32",
+          "body": "The vendored @blamejs/pki bundle behind the mutual-TLS CA engine is refreshed to 0.3.32, which adds C509 (CBOR-encoded certificate) extended-key-usage and extension registries (RFC 7633 TLS Feature, RFC 4556 PKINIT, and SSH/CMC/Bundle-Security purposes). No blamejs public API changes."
         },
         {
           "title": "Error- and edge-path tests for the Redis client and TLS-verification primitives",
