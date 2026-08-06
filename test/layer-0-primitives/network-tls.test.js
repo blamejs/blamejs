@@ -276,6 +276,63 @@ function testEchConnectWithBadOverrideEchConfig() {
   });
 }
 
+// connectWithEch driven against LOCAL servers so the _doConnect success /
+// timeout / error handlers (and the echOverride branch) run offline — the
+// SVCB/DNS default path is exercised separately; these cover the connect tail.
+async function testConnectWithEchAgainstLocalServer() {
+  var echCfg = _buildEchConfigDraft22({});
+
+  // Success: echOverride validates, _doConnect connects to a real local
+  // TLS 1.3 server, secureConnect fires, the promise resolves the socket.
+  // servername must be a hostname (Node forbids an IP ServerName); ECH
+  // gracefully degrades on a non-ECH server, so the handshake still
+  // completes whether or not this Node build attaches the `ech` option.
+  var server = await _startTlsServer();
+  try {
+    var sock = await nt.connectWithEch({
+      host: "127.0.0.1", port: server.port, servername: "localhost",
+      echOverride: echCfg, rejectUnauthorized: false, timeoutMs: 5000,
+    });
+    check("connectWithEch resolves a secured socket via echOverride + local server",
+          !!(sock && sock.encrypted === true));
+    try { sock.destroy(); } catch (_e) { /* best-effort */ }
+  } finally {
+    server.close();
+  }
+
+  // Error: connect to a port with no listener -> socket 'error' -> reject.
+  var closed = await _startTlsServer();
+  var deadPort = closed.port;
+  closed.close();
+  var connErr = null;
+  try {
+    await nt.connectWithEch({
+      host: "127.0.0.1", port: deadPort, servername: "localhost",
+      echOverride: echCfg, rejectUnauthorized: false, timeoutMs: 5000,
+    });
+  } catch (e) { connErr = e; }
+  check("connectWithEch rejects when the peer is unreachable (error handler)",
+        connErr !== null);
+
+  // Timeout: a plain TCP server that accepts but never speaks TLS, with a
+  // tiny timeoutMs -> the handshake stalls -> reject tls/ech-timeout.
+  var tcpSrv = nodeNet.createServer(function (s) { s.on("error", function () { /* peer reset */ }); });
+  tcpSrv.on("error", function () { /* accept best-effort */ });
+  tcpSrv.unref();
+  await new Promise(function (res) { tcpSrv.listen(0, "127.0.0.1", res); });
+  var stallPort = tcpSrv.address().port;
+  var toErr = null;
+  try {
+    await nt.connectWithEch({
+      host: "127.0.0.1", port: stallPort, servername: "localhost",
+      echOverride: echCfg, rejectUnauthorized: false, timeoutMs: 40,
+    });
+  } catch (e) { toErr = e; }
+  check("connectWithEch times out when the handshake stalls (tls/ech-timeout)",
+        !!(toErr && toErr.code === "tls/ech-timeout"));
+  try { tcpSrv.close(); } catch (_e) { /* best-effort */ }
+}
+
 // ---- RFC 9525 PKIX strict identity verification ------------------
 
 function _cert(subjectAltname, subjectCN) {
@@ -3222,6 +3279,7 @@ async function run() {
   testEchUnknownVersion();
   testEchConnectWithEchOptShape();
   await testEchConnectWithBadOverrideEchConfig();
+  await testConnectWithEchAgainstLocalServer();
   testPkixSurface();
   testPkixSanRequiredWhenAbsent();
   testPkixCnFallbackRefused();
