@@ -1,0 +1,26 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.18.15",
+  "date": "2026-08-06",
+  "headline": "Broader offline test coverage across the backup manifest, bundle writer, and backup crypto — and a backup restore-drill test the suite was not actually running",
+  "summary": "The backup manifest's detached-signature verification is now under explicit test end to end: every rejection reason, both verifier-dispatch paths, and the expectedFingerprint pin that binds a signature to the key it actually verified under rather than to the fingerprint the signature block claims. The bundle writer's include-list refusals and the backup crypto guards are covered alongside. No behaviour changes to any of them — exercising every path confirmed each already behaves per its documented contract. Separately, the restore-drill test for b.backup.scheduleTest was written in a shape the test runner does not await, so its 24 assertions were never executed by the suite; it now runs, and the runner convention that allows it is enforced by a detector.",
+  "sections": [
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "Verification- and refusal-path tests for the backup manifest, bundle writer, and backup crypto",
+          "body": "b.backupManifest now has explicit tests for the schema guards that had no failing case (an absent encryptedPath, an odd-length hex salt, a signature block missing its algorithm), for the signer-unavailable and signer-threw refusals, and for every reason verifySignature/verifyBytes can return — including both verifier-dispatch paths, so a downstream process that never initialised the signing keypair is covered as well as one that did. The expectedFingerprint pin is driven from both sides: a block that misstates its own fingerprint still verifies when pinned to the real key, and a block signed by a different keypair is refused even when it claims the trusted fingerprint, which is the substitution the pin exists to stop. b.backupBundle.create covers the include-list refusals (an entry with no relativePath, a traversal or drive-letter or data-stream path, a directory named where a file was expected, an unknown blob kind, an absent required file, and a bundle whose every entry was skipped), the isolation of a throwing progress callback, and the three signing postures — unsigned when no signer has been initialised, fatal on any other signer failure, and tolerated only when the caller opts in. b.backupCrypto covers the passphrase, salt, plaintext and associated-data guards, the derived-key length check, and the associated-data binding that refuses a blob presented under a path other than the one it was sealed with."
+        },
+        {
+          "title": "The backup restore-drill test now runs as part of the suite",
+          "body": "The restore-drill test for b.backup.scheduleTest invoked its own entry function at the top of the module instead of exporting it. The runner requires each test module and awaits only its exported entry point, so the drill's body ran detached at require time and the runner recorded the file as finished before any of its 24 assertions had executed — a failing assertion would not have failed the suite. The test now exports its entry point and is awaited like every other. b.backup.scheduleTest itself is unchanged; only the test's execution was affected. The runner-contract check that permits this shape has been widened accordingly: it previously matched only an entry function named run, so the same mistake under any other name went undetected."
+        },
+        {
+          "title": "Every test file can be run on its own",
+          "body": "Forty-two test files exported their entry point for the runner but never invoked it when executed directly, so running one of them on its own loaded the module and exited without evaluating a single assertion — reporting success while testing nothing. They now invoke their entry point when run directly, and report the number of assertions evaluated."
+        }
+      ]
+    }
+  ]
+}
