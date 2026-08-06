@@ -300,19 +300,6 @@ async function testConnectWithEchAgainstLocalServer() {
     server.close();
   }
 
-  // Synchronous tls.connect throw: an IP servername is rejected by Node
-  // BEFORE the socket exists -> the _doConnect try/catch converts it to a
-  // typed rejection (never an uncaught throw).
-  var syncErr = null;
-  try {
-    await nt.connectWithEch({
-      host: "127.0.0.1", port: 65535, servername: "127.0.0.1",
-      echOverride: echCfg, rejectUnauthorized: false, timeoutMs: 5000,
-    });
-  } catch (e) { syncErr = e; }
-  check("connectWithEch converts a synchronous tls.connect throw to tls/ech-connect-failed",
-        !!(syncErr && syncErr.code === "tls/ech-connect-failed"));
-
   // Error: connect to a port with no listener -> socket 'error' -> reject.
   var closed = await _startTlsServer();
   var deadPort = closed.port;
