@@ -3,7 +3,7 @@
   "version": "0.18.15",
   "date": "2026-08-06",
   "headline": "Broader offline test coverage across the backup manifest, bundle writer, and backup crypto — and a backup restore-drill test the suite was not actually running",
-  "summary": "The backup manifest's detached-signature verification is now under explicit test end to end: every rejection reason, both verifier-dispatch paths, and the expectedFingerprint pin that binds a signature to the key it actually verified under rather than to the fingerprint the signature block claims. The bundle writer's include-list refusals and the backup crypto guards are covered alongside. No behaviour changes to any of them — exercising every path confirmed each already behaves per its documented contract. Separately, the restore-drill test for b.backup.scheduleTest was written in a shape the test runner does not await, so its 24 assertions were never executed by the suite; it now runs, and the runner convention that allows it is enforced by a detector.",
+  "summary": "The backup manifest's detached-signature verification is now under explicit test end to end: every rejection reason, both verifier-dispatch paths, and the expectedFingerprint pin that binds a signature to the key it actually verified under rather than to the fingerprint the signature block claims. The bundle writer's include-list refusals and the backup crypto guards are covered alongside. No behaviour changes to any of them — exercising every path confirmed each already behaves per its documented contract. Separately, the restore-drill test for b.backup.scheduleTest was written in a shape the test runner does not await, so its 24 assertions were never executed by the suite; it now runs, and the runner convention that allows it is enforced by a detector. Running it revealed one real defect: the best-effort final audit checkpoint that db.close() anchors could resume against the database it had just closed and report a failure for work that was never possible.",
   "sections": [
     {
       "heading": "Changed",
@@ -19,6 +19,15 @@
         {
           "title": "Every test file can be run on its own",
           "body": "Forty-two test files exported their entry point for the runner but never invoked it when executed directly, so running one of them on its own loaded the module and exited without evaluating a single assertion — reporting success while testing nothing. They now invoke their entry point when run directly, and report the number of assertions evaluated."
+        }
+      ]
+    },
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "The final audit checkpoint no longer reports a failure when its database closes underneath it",
+          "body": "b.db.close() anchors a best-effort final checkpoint of the audit chain without awaiting it — close() is synchronous so callers need not await it across shutdown — and then closes the database handle. Anchoring spans several await points (read the chain tip, read the last checkpoint, sign, insert), so that checkpoint could resume at any of them against the database close() had just torn down, reject, and be logged as \"close: final checkpoint failed\". Nothing was mis-anchored — the write was already guarded against landing a tip from a database that no longer exists — but the error was reported for work that could never have completed, and because close() only logs it, it surfaced as a stray error attributable to no caller. The attempt is now bound to the database it started on and resolves without an anchor once that database is gone; a failure against a database that is still open is unchanged and still raised. Operators who need a guaranteed-flushed checkpoint should still call b.audit.checkpoint() explicitly before b.db.close(), as before."
         }
       ]
     }
