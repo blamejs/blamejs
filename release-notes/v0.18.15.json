@@ -17,6 +17,10 @@
           "body": "The restore-drill test for b.backup.scheduleTest invoked its own entry function at the top of the module instead of exporting it. The runner requires each test module and awaits only its exported entry point, so the drill's body ran detached at require time and the runner recorded the file as finished before any of its 24 assertions had executed — a failing assertion would not have failed the suite. The test now exports its entry point and is awaited like every other. b.backup.scheduleTest itself is unchanged; only the test's execution was affected. The runner-contract check that permits this shape has been widened accordingly: it previously matched only an entry function named run, so the same mistake under any other name went undetected."
         },
         {
+          "title": "Vendored @blamejs/pki refreshed to 0.4.0",
+          "body": "The vendored @blamejs/pki bundle behind the mutual-TLS CA engine is refreshed from 0.3.33 to 0.4.0. The minor is a stability graduation: that toolkit's CRL issuance and verification, PKCS#12 build/open/verify-MAC, attribute-certificate issuance, and key-material lifecycle move from experimental to stable, which changes their support contract rather than their behaviour — the modules the CA engine calls differ only in that declared status. The release's one behavioural change is to the C509 (CBOR-encoded certificate) schema, which adds the compact policy-mappings and policy-constraints value forms and bounds their skip counts; the CA engine does not use C509. No behaviour change to the certificate-authority surface — this is a supply-chain currency refresh."
+        },
+        {
           "title": "Every test file can be run on its own",
           "body": "Forty-two test files exported their entry point for the runner but never invoked it when executed directly, so running one of them on its own loaded the module and exited without evaluating a single assertion — reporting success while testing nothing. They now invoke their entry point when run directly, and report the number of assertions evaluated."
         }
