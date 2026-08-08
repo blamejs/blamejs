@@ -176,6 +176,62 @@ async function run() {
     threwNoTls && /b\.mail\.server\.tls\.context/.test(threwNoTls.message));
   check("MX no-tls-context error: points at b.acme for provisioning",
     threwNoTls && /b\.acme/.test(threwNoTls.message));
+  await testStarttlsUpgradeAdvertisesCertificateCompression();
+}
+
+// The release advertises RFC 8879 certificate compression on every TLS
+// connection the framework makes or accepts. A mail listener upgrades a plain
+// socket rather than handing it to tls.createServer, so it takes a separate
+// construction path from b.router and does not inherit the setting — SMTP,
+// submission, IMAP, POP3 and ManageSieve would otherwise keep sending the
+// uncompressed ML-DSA-87 chain while the claim said otherwise. Observe the
+// options the upgrade hands to node:tls.
+async function testStarttlsUpgradeAdvertisesCertificateCompression() {
+  var nodeTls = require("node:tls");
+  var net = require("node:net");
+  var OrigTLSSocket = nodeTls.TLSSocket;
+  var captured = null;
+  nodeTls.TLSSocket = function (socket, opts) {
+    if (captured === null) captured = opts || {};
+    return new OrigTLSSocket(socket, opts);
+  };
+  nodeTls.TLSSocket.prototype = OrigTLSSocket.prototype;
+  var pair = helpers.selfSignedPair({ commonName: "localhost" });
+  var ctx = nodeTls.createSecureContext({ cert: pair.cert, key: pair.key });
+  var srv = net.createServer(function (sock) {
+    try {
+      b.mail.server.tls.upgradeSocket({
+        plainSocket:   sock,
+        secureContext: ctx,
+        onSecure:      function () {},
+        onData:        function () {},
+        onError:       function () {},
+        onClose:       function () {},
+      });
+    } catch (_e) { /* the peer never handshakes — the options are what we want */ }
+  });
+  await new Promise(function (r) { srv.listen(0, "127.0.0.1", r); });
+  var client = net.connect({ host: "127.0.0.1", port: srv.address().port });
+  client.on("error", function () { /* torn down below */ });
+  try {
+    await helpers.waitUntil(function () { return captured !== null; },
+      { timeoutMs: 5000, label: "mail-server-tls: STARTTLS upgrade built its TLS options" });
+    var expected = b.constants.TLS_CERT_COMPRESSION();
+    if (expected.length > 0) {
+      check("STARTTLS upgrade advertises the runtime's certificate-compression algorithms",
+        Array.isArray(captured.certificateCompression) &&
+        captured.certificateCompression.join(",") === expected.join(","));
+    } else {
+      check("STARTTLS upgrade omits certificateCompression on a runtime without it",
+        captured.certificateCompression === undefined);
+    }
+    check("STARTTLS upgrade still wraps as a server with the operator's context",
+      captured.isServer === true && captured.secureContext === ctx);
+  } finally {
+    nodeTls.TLSSocket = OrigTLSSocket;
+    try { client.destroy(); } catch (_e) { /* teardown */ }
+    srv.close();
+  }
 }
 
 module.exports = { run: run };

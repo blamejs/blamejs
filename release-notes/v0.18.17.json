@@ -39,6 +39,14 @@
         {
           "title": "A narrowed group list now reaches the HTTP/1.1 agent, not only the HTTP/2 session",
           "body": "b.pqcAgent.create() fell back to the compiled-in group order when the caller named none, while the HTTP/2 transport built its options from the live preference. Which groups an origin actually saw therefore depended on whether it spoke HTTP/2: an operator who narrowed preferredGroups had the policy applied on h2 origins and silently re-offered the removed groups on h1 ones. The agent now takes the same live list as every other outbound path."
+        },
+        {
+          "title": "A resumed TLS session is no longer audited as having no ephemeral key exchange",
+          "body": "A session resumed from an earlier handshake performs no new key exchange, so the key-exchange reading is empty — the same reading that now means \"not ephemeral\". Its forward secrecy is inherited from the original handshake, and connection-pool churn makes resumption routine, so recording those would have buried the findings that matter. Node's TLS 1.3 resumption uses PSK with (EC)DHE and does still report a group, so this was not observed in practice; psk_ke resumption carries no key exchange at all, and the observer now checks for a reused session before recording anything."
+        },
+        {
+          "title": "Mail TLS carries the same posture as the rest of the framework",
+          "body": "A mail listener upgrades a plain socket rather than handing it to the HTTP server's constructor, so it took a separate path and inherited neither the certificate compression this release adds nor, on the outbound side, the shared group preference. SMTP, submission, IMAP, POP3 and ManageSieve now advertise compression on their certificate chains, and outbound SMTP merges the same posture as every other outbound client. The TLS floor stays operator-settable for SMTP alone, since an MX that speaks only TLS 1.2 is common and refusing it would mean not delivering mail."
         }
       ]
     },
@@ -47,7 +55,7 @@
       "items": [
         {
           "title": "Certificate compression (RFC 8879) on every TLS connection the framework makes or accepts",
-          "body": "Inbound and outbound connections now advertise the compression algorithms the runtime supports, so a peer may send its Certificate message compressed and the framework compresses its own for a peer that asked. This pays more on a post-quantum deployment than a classical one: an ML-DSA-87 signature alone is about 4.6 KB before any public key or chain, so the Certificate message dominates the handshake. It is not the record-layer compression CRIME attacked — only the Certificate message is compressed, and that message is public, fixed, and not attacker-influenced, so its compressed length reveals nothing about a secret and no attacker-chosen plaintext shares a compression context with one. b.network.tls.certificateCompressionAlgorithms() reports what the runtime supports; b.network.tls.buildOptions accepts a certificateCompression array to narrow the list, or [] to advertise none, and refuses an algorithm the runtime cannot decompress at configuration time rather than at connect time."
+          "body": "Inbound and outbound connections — the HTTP listener, the HTTP client, and the mail listeners and outbound SMTP alike — now advertise the compression algorithms the runtime supports, so a peer may send its Certificate message compressed and the framework compresses its own for a peer that asked. This pays more on a post-quantum deployment than a classical one: an ML-DSA-87 signature alone is about 4.6 KB before any public key or chain, so the Certificate message dominates the handshake. It is not the record-layer compression CRIME attacked — only the Certificate message is compressed, and that message is public, fixed, and not attacker-influenced, so its compressed length reveals nothing about a secret and no attacker-chosen plaintext shares a compression context with one. b.network.tls.certificateCompressionAlgorithms() reports what the runtime supports; b.network.tls.buildOptions accepts a certificateCompression array to narrow the list, or [] to advertise none, and refuses an algorithm the runtime cannot decompress at configuration time rather than at connect time."
         },
         {
           "title": "b.network.tls.outboundPosture() — the outbound TLS posture as one object",

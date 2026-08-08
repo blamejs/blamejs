@@ -164,6 +164,13 @@ async function testKeyExchangeObservation() {
     b.pqcAgent._auditClassicalDowngrade(
       fakeSocket({ name: "X25519", type: "ECDH", size: 253 }), meta);
     b.pqcAgent._auditClassicalDowngrade(fakeSocket({}), meta);
+    // A RESUMED session carries no new key exchange, so an empty reading says
+    // nothing about its forward secrecy — it inherits the original
+    // handshake's. Connection-pool churn makes resumption routine, so
+    // recording those would bury the findings that matter.
+    var resumed = fakeSocket({});
+    resumed.isSessionReused = function () { return true; };
+    b.pqcAgent._auditClassicalDowngrade(resumed, meta);
 
     await b.audit.flush();
     var downgrades = await b.audit.query({
@@ -183,6 +190,8 @@ async function testKeyExchangeObservation() {
           }).length >= 1);
     check("a non-ephemeral key exchange gets its own audit action, not silence",
           nonEphemeral.length >= 1);
+    check("a resumed session is not recorded as having no ephemeral key exchange",
+          nonEphemeral.length === 1);
     check("the non-ephemeral audit is not conflated with a classical group",
           downgrades.filter(function (r) {
             var m = typeof r.metadata === "string" ? JSON.parse(r.metadata) : r.metadata;
