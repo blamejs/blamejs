@@ -6607,6 +6607,15 @@ var KNOWN_ANTIPATTERNS = [
     reason: "v0.15.0 #103 — the guard sanitize/parse refuse-on-critical|high throw (err(issue.ruleId || '<x>.refused', 'guard<Name>.<op>: ' + issue.snippet)) is owned by gateContract.throwOnRefusalSeverity; 18 guards reuse it (this was the failing STRONG-DUP fp:f349a8d1f51b before extraction). A hand-rolled `issues[i].ruleId || '<x>.refused'` throw re-implements it. lib/guard-auth.js is the one genuine holdout (its message embeds issues[i].source: 'guardAuth.sanitize [<source>]:') pending task #104; the primitive itself uses a `fallback` variable (no .refused literal) so it does not match. Any other lib file with this shape must call gateContract.throwOnRefusalSeverity (the severities / op options cover the critical-only + parse variants).",
   },
   {
+    id: "client-address-must-compose-trustedClientIp",
+    primitive: "b.requestHelpers.trustedClientIp",
+    scanScope: "lib",
+    skipCommentLines: true,
+    regex: /headers\s*\[\s*["']x-forwarded-for["']\s*\]/,
+    allowlist: [],
+    reason: "Reading X-Forwarded-For straight off the request headers has no peer gate, and the header is set by anyone who can reach the listener. Whatever the value keys — a rate-limit bucket, an IP-bound grant, an anonymous rollout bucket — the caller then chooses it for themselves by resending with a different value. b.requestHelpers.trustedClientIp owns this: it honours the header only when the immediate TCP peer is one of the operator's declared trustedProxies, folds an IPv4-mapped IPv6 peer so a dual-stack listener still matches, walks a multi-hop chain right-to-left to the first untrusted address, and reports peerGated so a gate can refuse to run ungated. Its forwardedHeaders opt covers deployments where the address arrives as CF-Connecting-IP or X-Real-IP instead, so needing a different header is not a reason to hand-roll the read. This shipped once in flag-evaluation-context's anonymous targeting key, where a client could pick their own flag variant. Empty allowlist: request-helpers.js reads the family through a variable, so the primitive's own home does not match this shape either.",
+  },
+  {
     id: "byte-cap-must-vet-type-before-measuring",
     primitive: "b.safeBuffer.byteLengthOfIfMeasurable",
     scanScope: "lib",

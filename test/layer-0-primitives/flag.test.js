@@ -156,6 +156,47 @@ function run() {
   var ctxAnon = b.flag.context.fromRequest({ headers: { "x-forwarded-for": "1.2.3.4", "user-agent": "ua" } });
   check("fromRequest: anon targetingKey",        ctxAnon.targetingKey.indexOf("anon:") === 0);
 
+  // The anonymous targeting key decides which bucket an unauthenticated caller
+  // lands in, so whoever controls it controls their own rollout assignment. It
+  // was derived from a raw X-Forwarded-For read with no peer check, which any
+  // client can set: resending with a different value moved them to a different
+  // bucket until one served the variant they wanted. Forwarded headers are
+  // ignored unless the operator declares the proxies they arrive through.
+  var sameSocket = function (xff) {
+    return { socket: { remoteAddress: "198.51.100.7" },
+             headers: { "x-forwarded-for": xff, "user-agent": "ua" } };
+  };
+  var spoofA = b.flag.context.fromRequest(sameSocket("1.2.3.4"));
+  var spoofB = b.flag.context.fromRequest(sameSocket("9.9.9.9"));
+  check("fromRequest: a forged X-Forwarded-For cannot move the anon bucket",
+        spoofA.targetingKey === spoofB.targetingKey);
+  check("fromRequest: the anon key is still derived (not a constant)",
+        spoofA.targetingKey !== b.flag.context.fromRequest({
+          socket: { remoteAddress: "203.0.113.1" }, headers: { "user-agent": "ua" } }).targetingKey);
+
+  // An operator genuinely behind a proxy declares it, and the forwarded address
+  // is honoured through the same peer gate every other helper uses.
+  var behindProxy = { socket: { remoteAddress: "10.0.0.9" },
+    headers: { "x-forwarded-for": "1.2.3.4", "user-agent": "ua" } };
+  var gated = b.flag.context.fromRequest(behindProxy, { trustedProxies: ["10.0.0.0/8"] });
+  var gatedOther = b.flag.context.fromRequest(
+    { socket: { remoteAddress: "10.0.0.9" },
+      headers: { "x-forwarded-for": "5.6.7.8", "user-agent": "ua" } },
+    { trustedProxies: ["10.0.0.0/8"] });
+  check("fromRequest: trustedProxies makes the forwarded address the anon key",
+        gated.targetingKey !== gatedOther.targetingKey);
+  check("fromRequest: an untrusted peer is still ignored with trustedProxies set",
+        b.flag.context.fromRequest(sameSocket("1.2.3.4"), { trustedProxies: ["10.0.0.0/8"] }).targetingKey ===
+        b.flag.context.fromRequest(sameSocket("9.9.9.9"), { trustedProxies: ["10.0.0.0/8"] }).targetingKey);
+
+  // The named-header family reaches this helper too, so a Cloudflare or nginx
+  // deployment is not pushed back onto a hand-rolled read.
+  check("fromRequest: forwardedHeaders selects the family",
+        b.flag.context.fromRequest(
+          { socket: { remoteAddress: "10.0.0.9" }, headers: { "cf-connecting-ip": "1.2.3.4", "user-agent": "ua" } },
+          { trustedProxies: ["10.0.0.0/8"], forwardedHeaders: ["cf-connecting-ip"] }).targetingKey ===
+        gated.targetingKey);
+
   // explicit tenantKey supplies the tenant id (gateway-resolved tenancy)
   var ctxTenant = b.flag.context.fromRequest(
     { user: { id: "u-1" }, headers: {} },

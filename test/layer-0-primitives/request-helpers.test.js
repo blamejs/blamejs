@@ -410,6 +410,123 @@ function testTrustedClientIpResolves() {
     owned.resolve({ headers: { "true-client-ip": "9.9.9.9" } }) === "9.9.9.9");
 }
 
+// The peer gate is the same; only WHICH forwarded header carries the address
+// changes. Cloudflare publishes CF-Connecting-IP and the common nginx recipe
+// publishes X-Real-IP, so a deployment behind either had no way to use this
+// resolver: reading the header directly loses the gate, and clientIpResolver
+// hands back the whole trust decision (CIDR matching, mapped-IPv6 folding)
+// while still reporting peerGated.
+function testTrustedClientIpForwardedHeaderFamily() {
+  var viaCf = {
+    socket:  { remoteAddress: "10.0.0.9" },
+    headers: { "cf-connecting-ip": "203.0.113.9" },
+  };
+  var cf = b.requestHelpers.trustedClientIp({
+    trustedProxies:   ["10.0.0.0/8"],
+    forwardedHeaders: ["cf-connecting-ip"],
+  });
+  check("trustedClientIp honors a named forwarded header behind a trusted peer",
+        cf.resolve(viaCf) === "203.0.113.9");
+
+  // The gate is unchanged: the same header from a peer that is not a declared
+  // proxy is ignored, exactly as X-Forwarded-For is.
+  var forged = {
+    socket:  { remoteAddress: "198.51.100.66" },
+    headers: { "cf-connecting-ip": "203.0.113.9" },
+  };
+  check("trustedClientIp ignores a named forwarded header from an untrusted peer",
+        cf.resolve(forged) === "198.51.100.66");
+
+  // With no trustedProxies at all the family is ignored outright — naming a
+  // header must not become a second, ungated trust path.
+  var ungated = b.requestHelpers.trustedClientIp({ forwardedHeaders: ["cf-connecting-ip"] });
+  check("trustedClientIp with no trustedProxies ignores the named family",
+        ungated.resolve(viaCf) === "10.0.0.9");
+  check("trustedClientIp with only forwardedHeaders is not peerGated",
+        ungated.peerGated === false);
+
+  // Order is the operator's: the first header PRESENT on the request wins,
+  // whether or not later ones are also present.
+  var both = {
+    socket:  { remoteAddress: "10.0.0.9" },
+    headers: { "x-real-ip": "203.0.113.20", "x-forwarded-for": "203.0.113.30" },
+  };
+  var ordered = b.requestHelpers.trustedClientIp({
+    trustedProxies:   ["10.0.0.0/8"],
+    forwardedHeaders: ["x-real-ip", "x-forwarded-for"],
+  });
+  check("trustedClientIp takes the first PRESENT header in the declared order",
+        ordered.resolve(both) === "203.0.113.20");
+  var reversed = b.requestHelpers.trustedClientIp({
+    trustedProxies:   ["10.0.0.0/8"],
+    forwardedHeaders: ["x-forwarded-for", "x-real-ip"],
+  });
+  check("trustedClientIp order is the operator's, not a fixed precedence",
+        reversed.resolve(both) === "203.0.113.30");
+
+  // A header earlier in the list but absent from the request is skipped.
+  var onlyXff = {
+    socket:  { remoteAddress: "10.0.0.9" },
+    headers: { "x-forwarded-for": "203.0.113.30" },
+  };
+  check("trustedClientIp falls through an absent header to the next named one",
+        ordered.resolve(onlyXff) === "203.0.113.30");
+
+  // Node lowercases incoming header names; an operator writing the vendor's
+  // documented casing must not silently match nothing.
+  var cased = b.requestHelpers.trustedClientIp({
+    trustedProxies:   ["10.0.0.0/8"],
+    forwardedHeaders: ["CF-Connecting-IP"],
+  });
+  check("trustedClientIp matches a header named in the vendor's casing",
+        cased.resolve(viaCf) === "203.0.113.9");
+
+  // A multi-value chain in a named header walks right-to-left exactly as
+  // X-Forwarded-For does — a single address is simply a one-hop chain.
+  var chained = {
+    socket:  { remoteAddress: "10.0.0.9" },
+    headers: { "x-real-ip": "203.0.113.40, 10.0.0.5" },
+  };
+  check("trustedClientIp walks a chained named header right-to-left",
+        b.requestHelpers.trustedClientIp({
+          trustedProxies:   ["10.0.0.0/8"],
+          forwardedHeaders: ["x-real-ip"],
+        }).resolve(chained) === "203.0.113.40");
+
+  // Default is unchanged for every existing caller.
+  var dflt = b.requestHelpers.trustedClientIp({ trustedProxies: ["10.0.0.0/8"] });
+  check("trustedClientIp default family is still X-Forwarded-For only",
+        dflt.resolve(onlyXff) === "203.0.113.30" && dflt.resolve(viaCf) === "10.0.0.9");
+
+  // The low-level reader carries the same opt so a caller that already drives
+  // clientIp directly is not forced up to the resolver to get the family.
+  var trust = function (a) { return a.indexOf("10.") === 0; };
+  check("clientIp accepts forwardedHeaders alongside a trustProxy predicate",
+        b.requestHelpers.clientIp(viaCf, { trustProxy: trust, forwardedHeaders: ["cf-connecting-ip"] })
+          === "203.0.113.9");
+  check("clientIp without forwardedHeaders still reads X-Forwarded-For only",
+        b.requestHelpers.clientIp(viaCf, { trustProxy: trust }) === "10.0.0.9");
+}
+
+function testTrustedClientIpForwardedHeadersValidated() {
+  var bad = [
+    ["a string",            "cf-connecting-ip"],
+    ["a number",            7],
+    ["an empty array",      []],
+    ["a non-string member", ["x-forwarded-for", 7]],
+    ["an empty member",     ["x-forwarded-for", ""]],
+    ["a member with a space", ["x forwarded for"]],
+    ["a member with a colon", ["x-real-ip:"]],
+  ];
+  bad.forEach(function (pair) {
+    var err = null;
+    try {
+      b.requestHelpers.trustedClientIp({ trustedProxies: ["10.0.0.0/8"], forwardedHeaders: pair[1] });
+    } catch (e) { err = e; }
+    check("trustedClientIp refuses forwardedHeaders as " + pair[0], err !== null);
+  });
+}
+
 function testTrustedProxyMappedPeerNormalized() {
   // A dual-stack listener reports an IPv4 proxy peer as an IPv4-mapped IPv6
   // address (::ffff:10.0.0.9). It must still match an IPv4 trustedProxies CIDR
@@ -608,6 +725,8 @@ async function run() {
   testClientIpLegacyFormsStillWork();
   testTrustedClientIpPeerGatedFlag();
   testTrustedClientIpResolves();
+  testTrustedClientIpForwardedHeaderFamily();
+  testTrustedClientIpForwardedHeadersValidated();
   testTrustedIdentityHeaders();
   testTrustedProxyMappedPeerNormalized();
   testTrustedProtocol();

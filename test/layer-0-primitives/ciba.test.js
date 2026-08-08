@@ -855,7 +855,92 @@ async function _runOptionDefaults() {
   });
 }
 
+// A CIBA flow dials two ways: this module's own backchannel/token POSTs, and
+// the inner OAuth client's discovery / JWKS. Both have to land on the same
+// client and the same host pin, or half an operator's flow sits outside the
+// breaker and the pin they configured.
+async function _runInjectedHttpClient() {
+  await _withIdp(async function (issuer, holder) {
+    var realHttp = require("../../lib/http-client");
+    var seen = [];
+    var rec  = { request: function (req) { seen.push(req.url); return realHttp.request(req); } };
+
+    holder.onToken = function (body, res) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ access_token: "at-ciba-injected", token_type: "Bearer", expires_in: 300 }));
+    };
+
+    var c = b.auth.ciba.client.create({
+      issuer:       issuer,
+      clientId:     CLIENT_ID,
+      clientSecret: CLIENT_SECRET,
+      deliveryMode: "poll",
+      allowHttp:    true,
+      allowInternal: true,
+      http:         { client: rec },
+    });
+    var ticket = await c.startAuthentication({ loginHint: "alice@example.com" });
+    check("ciba create({http:{client}}): the backchannel POST dials through the supplied client",
+          seen.some(function (u) { return u.indexOf("/bc-auth") !== -1; }));
+    check("ciba create({http:{client}}): discovery dials through the supplied client",
+          seen.some(function (u) { return u.indexOf("openid-configuration") !== -1; }));
+    check("ciba startAuthentication still returns its ticket through the supplied client",
+          !!ticket.authReqId);
+
+    // The host pin covers this module's own POSTs too.
+    var pinned = b.auth.ciba.client.create({
+      issuer:       issuer,
+      clientId:     CLIENT_ID,
+      clientSecret: CLIENT_SECRET,
+      deliveryMode: "poll",
+      allowHttp:    true,
+      allowInternal: true,
+      http:         { allowedHosts: ["api.example.invalid"] },
+    });
+    var err = null;
+    try { await pinned.startAuthentication({ loginHint: "alice@example.com" }); } catch (e) { err = e; }
+    check("ciba create({http:{allowedHosts}}): a backchannel dial outside the pin is refused",
+          err !== null && /allowedHosts/.test(err.message));
+  });
+}
+
+// httpClientOpts was handed to the inner OAuth client under a key that client
+// does not read, so an operator configuring it saw it honoured on the
+// backchannel and token POSTs and silently ignored on discovery and JWKS —
+// exactly the split the allowInternal note one line below it warns about.
+async function _runHttpClientOptsReachInnerClient() {
+  await _withIdp(async function (issuer, holder) {
+    var seenHeader = [];
+    var c = b.auth.ciba.client.create({
+      issuer:         issuer,
+      clientId:       CLIENT_ID,
+      clientSecret:   CLIENT_SECRET,
+      deliveryMode:   "poll",
+      allowHttp:      true,
+      allowInternal:  true,
+      httpClientOpts: { headers: { "x-operator-tag": "ciba-opts" } },
+      http:           { client: { request: function (req) {
+        seenHeader.push({ url: req.url, tag: req.headers && req.headers["x-operator-tag"] });
+        return require("../../lib/http-client").request(req);
+      } } },
+    });
+    holder.onToken = function (body, res) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ access_token: "at", token_type: "Bearer", expires_in: 300 }));
+    };
+    await c.startAuthentication({ loginHint: "alice@example.com" });
+    var discovery = seenHeader.filter(function (r) { return r.url.indexOf("openid-configuration") !== -1; });
+    check("ciba httpClientOpts reaches the inner client's discovery fetch",
+          discovery.length > 0 && discovery.every(function (r) { return r.tag === "ciba-opts"; }));
+    var own = seenHeader.filter(function (r) { return r.url.indexOf("/bc-auth") !== -1; });
+    check("ciba httpClientOpts still applies to this module's own POSTs",
+          own.length > 0 && own.every(function (r) { return r.tag === "ciba-opts"; }));
+  });
+}
+
 async function _runTests() {
+  await _runInjectedHttpClient();
+  await _runHttpClientOptsReachInnerClient();
   await _runStartAuthenticationHappy();
   await _runCibaBasicAuthEncoding();
   await _runPollTokenHappy();

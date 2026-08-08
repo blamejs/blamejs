@@ -1011,12 +1011,64 @@ function testSystemTrustAndApplyToContext() {
   check("applyToContext keeps an operator override given as ecdhCurve",
         ctx2b.ecdhCurve === "X25519");
 
+  // An array override joins into the colon-separated form node:tls reads.
+  var ctx2c = nt.applyToContext({ base: { ecdhCurve: ["X25519MLKEM768", "X25519"] } });
+  check("applyToContext joins an array override",
+        ctx2c.ecdhCurve === "X25519MLKEM768:X25519");
+
   nt.useSystemTrust(false);
   check("useSystemTrust(false) disables", nt.isSystemTrustEnabled() === false);
 
   var eBad = null;
   try { nt.applyToContext({ nope: 1 }); } catch (e) { eBad = e; }
   check("applyToContext unknown opt throws via validateOpts", eBad && /unknown option/.test(eBad.message));
+  nt._resetForTest();
+}
+
+// A group preference the operator SUPPLIED but that is not a usable list must
+// be refused, not quietly swapped for the framework's own. node:tls rejects a
+// non-string ecdhCurve, so before the preference was translated to that key a
+// malformed override stopped the server at createSecureContext. Substituting a
+// default there would start a listener on groups the operator did not choose,
+// with nothing said — the failure an operator would only find by inspecting a
+// live handshake. Only a genuinely ABSENT override takes the default.
+function testApplyToContextRefusesMalformedOverride() {
+  nt._resetForTest();
+  var malformed = [
+    ["null",             null],
+    ["false",            false],
+    ["a number",         443],
+    ["an empty string",  ""],
+    ["an empty array",   []],
+    ["an object",        {}],
+    ["a non-string element", ["X25519", 7]],
+    ["an empty element", ["X25519", ""]],
+  ];
+  ["ecdhCurve", "groups"].forEach(function (key) {
+    malformed.forEach(function (pair) {
+      var base = {};
+      base[key] = pair[1];
+      var err = null;
+      try { nt.applyToContext({ base: base }); } catch (e) { err = e; }
+      check("applyToContext refuses base." + key + " = " + pair[0],
+            err !== null && /group preference/.test(err.message));
+      check("applyToContext refusal for base." + key + " = " + pair[0] + " names the key",
+            err !== null && err.message.indexOf(key) !== -1);
+    });
+  });
+
+  // The refusal must not swallow the value it rejected: an operator reading the
+  // message needs to see what they wrote.
+  var e2 = null;
+  try { nt.applyToContext({ base: { ecdhCurve: 443 } }); } catch (e) { e2 = e; }
+  check("applyToContext refusal reports the offending type", e2 !== null && /number/.test(e2.message));
+
+  // An absent override still takes the framework preference — the whole point
+  // of the function. `undefined` is indistinguishable from absent and stays so.
+  check("applyToContext with no override still applies the preference",
+        typeof nt.applyToContext({ base: {} }).ecdhCurve === "string");
+  check("applyToContext treats an explicit undefined as absent",
+        typeof nt.applyToContext({ base: { ecdhCurve: undefined } }).ecdhCurve === "string");
   nt._resetForTest();
 }
 function nodeTlsHasNoRoots() {
@@ -3278,6 +3330,7 @@ function testCtVerifyHardening() {
 }
 
 async function run() {
+  testApplyToContextRefusesMalformedOverride();
   testNetworkTlsErrorPermanentClassification();
   testInsecureTlsAudit();
   testEchSurface();

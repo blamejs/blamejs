@@ -645,6 +645,40 @@ async function testFetchMdqInputValidation() {
   check("fetchMdq: non-object opts refused", (await mdqCode(null)) === "BAD_OPT");
   check("fetchMdq: missing baseUrl → no-mdq-base", (await mdqCode({ entityId: IDP_ENTITY_ID })) === "auth-saml/no-mdq-base");
   check("fetchMdq: missing entityId → no-mdq-entity", (await mdqCode({ baseUrl: "https://mdq.example" })) === "auth-saml/no-mdq-entity");
+
+  // The metadata fetch dials a federation operator's server. A consumer that
+  // routes its outbound calls through one instrumented client needs this dial
+  // inside it, and needs the host pinned so a mangled baseUrl cannot become an
+  // egress. Driven through an injected client, so no network is touched.
+  var seen = [];
+  var xml = "<EntityDescriptor xmlns=\"urn:oasis:names:tc:SAML:2.0:metadata\" entityID=\"" +
+            IDP_ENTITY_ID + "\"></EntityDescriptor>";
+  var fake = { request: function (req) {
+    seen.push(req);
+    return Promise.resolve({ statusCode: 200, headers: {}, body: Buffer.from(xml, "utf8") });
+  } };
+  var got = await b.auth.saml.fetchMdq({
+    baseUrl:  "https://mdq.federation.example",
+    entityId: IDP_ENTITY_ID,
+    http:     { client: fake, allowedHosts: ["mdq.federation.example"] },
+  });
+  check("fetchMdq: dials through the supplied client", seen.length === 1);
+  check("fetchMdq: returns what that client answered", got === xml);
+  check("fetchMdq: carries the host pin onto the request",
+        seen[0].allowedHosts && seen[0].allowedHosts.length === 1 &&
+        seen[0].allowedHosts[0] === "mdq.federation.example");
+  check("fetchMdq: still addresses the MDQ path the spec defines",
+        seen[0].url.indexOf("/entities/%7Bsha1%7D") !== -1);
+
+  check("fetchMdq: http.client without a request method refused",
+        (await mdqCode({ baseUrl: "https://m.example", entityId: "e", http: { client: {} } }))
+          === "auth-saml/bad-http-client");
+  check("fetchMdq: http.allowedHosts as a bare string refused",
+        (await mdqCode({ baseUrl: "https://m.example", entityId: "e", http: { allowedHosts: "h" } }))
+          === "auth-saml/bad-http-allowed-hosts");
+  check("fetchMdq: unknown key under http refused",
+        (await mdqCode({ baseUrl: "https://m.example", entityId: "e", http: { nope: 1 } }))
+          === "auth-saml/bad-http");
 }
 
 // ---------------------------------------------------------------------------
