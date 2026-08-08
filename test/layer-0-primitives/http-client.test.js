@@ -2943,10 +2943,70 @@ async function testPostureChangeDoesNotAbortInFlightRequests() {
   });
 }
 
+// The drain's fallback exists so a session whose streams never finish cannot
+// hold a socket open forever (v0.6.58 hung a publish workflow that way). It
+// must not become a deadline on legitimate work: downloadStream has no
+// wall-clock limit, so a fixed timer would cut a multi-minute download short
+// because something unrelated changed the TLS posture. Drive both shapes
+// against a real h2 session with a deliberately tiny grace window.
+async function testH2DrainWaitsOnProgressButNotOnAStall() {
+  var teardown = require("../../lib/http2-teardown");
+  var http2mod = require("http2");
+  var GRACE = 120;
+
+  // (1) A session still moving bytes survives well past the grace window.
+  var srvA = http2mod.createServer();
+  var tick = null;
+  srvA.on("stream", function (stream) {
+    stream.respond({ ":status": 200 });
+    stream.write("start");
+    tick = setInterval(function () { try { stream.write("."); } catch (_e) { /* closed */ } }, 40);
+  });
+  var portA = await b.testing.listenOnRandomPort(srvA, "127.0.0.1");
+  var sessA = http2mod.connect("http://127.0.0.1:" + portA);
+  await new Promise(function (r) { sessA.once("connect", r); });
+  var reqA = sessA.request({ ":path": "/stream" });
+  reqA.on("data", function () { /* keep the flow moving */ });
+  reqA.on("error", function () { /* torn down below */ });
+  await helpers.waitUntil(function () { return tick !== null; },
+    { timeoutMs: 5000, label: "http-client: h2 stream started" });
+  teardown.drainH2Session(sessA, GRACE);
+  await helpers.passiveObserve(GRACE * 5,
+    "http-client: a progressing h2 session is not force-destroyed");
+  check("the drain does not destroy an h2 session that is still moving bytes",
+    sessA.destroyed === false);
+  if (tick) clearInterval(tick);
+  try { sessA.destroy(); } catch (_e) { /* teardown */ }
+  srvA.close();
+
+  // (2) A session that has gone quiet is force-destroyed, so the socket is
+  // never held open indefinitely.
+  var srvB = http2mod.createServer();
+  srvB.on("stream", function (stream) {
+    stream.respond({ ":status": 200 });
+    stream.write("start");                                    // then nothing, ever
+  });
+  var portB = await b.testing.listenOnRandomPort(srvB, "127.0.0.1");
+  var sessB = http2mod.connect("http://127.0.0.1:" + portB);
+  await new Promise(function (r) { sessB.once("connect", r); });
+  var reqB = sessB.request({ ":path": "/stall" });
+  reqB.on("data", function () {});
+  reqB.on("error", function () { /* expected when the drain gives up */ });
+  await helpers.waitUntil(function () { return sessB.socket && sessB.socket.bytesRead > 0; },
+    { timeoutMs: 5000, label: "http-client: stalled h2 stream opened" });
+  teardown.drainH2Session(sessB, GRACE);
+  await helpers.waitUntil(function () { return sessB.destroyed === true; },
+    { timeoutMs: 5000, label: "http-client: stalled h2 session force-destroyed" });
+  check("the drain force-destroys an h2 session that has stopped making progress",
+    sessB.destroyed === true);
+  srvB.close();
+}
+
 async function run() {
   try {
     testSurface();
     await testPostureChangeDoesNotAbortInFlightRequests();
+    await testH2DrainWaitsOnProgressButNotOnAStall();
     await testConfigurePool();
     await testArgValidation();
     await testBeforeAfterInterceptors();
