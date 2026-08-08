@@ -513,13 +513,38 @@ function testExplainOutboundFailure() {
   check("the original alert text survives in the explanation",
         version.indexOf("tlsv1 alert protocol version") !== -1);
 
-  // The shipped preference ends in classical X25519, so a peer always has
-  // something to pick and a group-mismatch reading would be wrong.
+  // A classical group in the list is NOT proof the peer can pick one: a TLS
+  // 1.3 peer restricted to secp256r1 shares nothing with the hybrids plus
+  // X25519. So the fallback changes the wording rather than silencing the
+  // explanation, and the definitive no-shared-group code is never silenced.
   var withFallback = b.network.tls.explainOutboundFailure(
     _alert("ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE", "ssl/tls alert handshake failure"),
     { host: "peer.example" });
-  check("a handshake-failure alert is NOT blamed on groups while a classical fallback is offered",
-        withFallback === null);
+  check("a handshake failure under the default list is still explained",
+        typeof withFallback === "string");
+  check("with a classical fallback the wording points outside the list, not at a missing hybrid",
+        /restricted to a group the list does not name/.test(withFallback));
+
+  var definitive = b.network.tls.explainOutboundFailure(
+    _alert("ERR_SSL_NO_SHARED_GROUP", "no shared group"), { host: "peer.example" });
+  check("the definitive no-shared-group code is explained even under the default list",
+        typeof definitive === "string" && definitive.indexOf("key-exchange groups") !== -1);
+
+  // A caller naming what THIS dial used is authoritative for it. A request on
+  // a caller-supplied agent that pins neither setting must not be diagnosed
+  // against the shared posture -- an agent capped at TLS 1.2 talking to a
+  // 1.3-only peer would otherwise be reported as the peer lacking 1.3.
+  var unpinned = b.network.tls.explainOutboundFailure(
+    _alert("ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION", "tlsv1 alert protocol version"),
+    { host: "peer.example", minVersion: undefined, ecdhCurve: undefined });
+  check("a dial that pinned no floor is not blamed on the shared floor",
+        unpinned === null);
+
+  var unpinnedGroups = b.network.tls.explainOutboundFailure(
+    _alert("ERR_SSL_NO_SHARED_GROUP", "no shared group"),
+    { host: "peer.example", minVersion: undefined, ecdhCurve: undefined });
+  check("a dial that pinned no group list is not blamed on the shared list",
+        unpinnedGroups === null);
 
   var narrowed = b.network.tls.explainOutboundFailure(
     _alert("ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE", "ssl/tls alert handshake failure"),

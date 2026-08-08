@@ -46,6 +46,10 @@
         {
           "title": "The fuzzing base image moves to the current oss-fuzz base-builder",
           "body": "gcr.io/oss-fuzz-base/base-builder-javascript advances to sha256:2e218ded. The change upstream is confined to one file in the build indexer: four type-checker suppressions removed, and archive creation now follows symlinks. No layer, entrypoint, environment or file was added."
+        },
+        {
+          "title": "The vendored PKI toolkit refreshes to 0.4.4",
+          "body": "@blamejs/pki, which backs the mTLS CA and the PKCS#12 engine, moves to 0.4.4. The release adds RFC 3779 IP-address and AS-number delegation extensions — and their RFC 8360 v2 twins — to the OID registry and the C509 codec. Additive: no dependencies, no install scripts, and no change to the existing certificate paths."
         }
       ]
     }

@@ -3317,6 +3317,11 @@ async function testTls12PeerFailureNamesTheFloor() {
     check("the original alert text is carried through, not replaced",
           /alert protocol version|EPROTO|wrong version/i.test(msg));
   } finally {
+    // Tear the origin's transport down here rather than leaving it for the
+    // end-of-file drain: a failed handshake still parks a socket in the pool,
+    // and every one of those left standing narrows the drain's window under a
+    // parallel run.
+    b.httpClient._resetForTest();
     await new Promise(function (r) { server.close(r); });
   }
 }
