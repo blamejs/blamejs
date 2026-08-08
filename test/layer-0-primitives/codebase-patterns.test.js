@@ -321,6 +321,7 @@ var VALID_ALLOW_CLASSES = {
   "archive-wrap-partial-recipient": 1,
   "backup-adapter-storage-without-posture-check": 1,
   "bare-canonicalize-walk": 1,
+  "outbound-tls-posture": 1,
   "bare-error-throw": 1,
   "bare-split-on-quoted-header-token-grammar": 1,
   "console-direct": 1,
@@ -6231,6 +6232,62 @@ function testVendorComponentsAttributedInNotice() {
     });
   });
   _report("NOTICE attributes every vendored MANIFEST component", bad);
+}
+
+// ---- Pattern 48b: outbound TLS constructions merge the shared posture ----
+
+function testOutboundTlsMergesSharedPosture() {
+  // class: outbound-tls-posture
+  //
+  // The framework's outbound TLS posture — TLS-1.3 floor, hybrid group order,
+  // certificate compression — lives in b.network.tls.outboundPosture(), and
+  // the whole point of having one object is that raising the posture is one
+  // edit rather than N. That only holds if every client actually merges it,
+  // and repeatedly it did not: the Redis client and the syslog sink shipped
+  // with no group preference at all, the WebSocket client set an option
+  // node:tls ignores, the ECH and OCSP paths pinned no groups, the mail
+  // listeners and outbound SMTP were missed entirely, and the OTLP/gRPC sink
+  // negotiated on Node's defaults. Each was found one at a time by review.
+  //
+  // So: a construction that opens an outbound TLS connection must name the
+  // posture inside its own call, or carry an allow marker saying why it is
+  // exempt. Anchored on the call expression rather than the file, because a
+  // file can hold both a posture-carrying dial and a bare one.
+  var files = _libFiles();
+  var CONSTRUCTORS = /(?:\bnodeTls\.connect|\btls\.connect|new\s+https\.Agent|\bhttps\.request|\bhttp2\.connect)\s*\(/g;
+  var bad = [];
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    CONSTRUCTORS.lastIndex = 0;
+    var m;
+    while ((m = CONSTRUCTORS.exec(content)) !== null) {
+      // The call expression: from the constructor to the end of its argument
+      // list, bounded so an unterminated call cannot run away to EOF.
+      var region = content.slice(m.index, m.index + 1200);
+      var lineNum = content.slice(0, m.index).split("\n").length;
+      // Skip prose. The header comments describe these constructors by name
+      // ("suitable for tls.connect / new https.Agent(...)"), and flagging a
+      // sentence teaches people to distrust the gate.
+      var lineStart = content.lastIndexOf("\n", m.index) + 1;
+      var beforeOnLine = content.slice(lineStart, m.index);
+      if (/\/\//.test(beforeOnLine) || /^\s*\*/.test(beforeOnLine)) continue;
+      if (/outboundPosture\s*\(/.test(region)) continue;
+      // A session/socket options object built earlier and passed by name is
+      // still fine as long as the posture reached it in the same function.
+      var fnStart = content.lastIndexOf("\nfunction ", m.index);
+      var enclosing = content.slice(fnStart === -1 ? 0 : fnStart, m.index);
+      if (/outboundPosture\s*\(/.test(enclosing)) continue;
+      bad.push({ file: rel, line: lineNum,
+        content: "outbound TLS construction does not merge " +
+                 "networkTls().outboundPosture() — it will negotiate on Node's " +
+                 "defaults and ignore b.network.tls.preferredGroups.set(...)" });
+    }
+  }
+  bad = _filterMarkers(bad, "outbound-tls-posture");
+  _report("outbound TLS constructions merge b.network.tls.outboundPosture()", bad);
 }
 
 // ---- Pattern 48a: README's vendored table states the shipped versions ----
@@ -16580,6 +16637,7 @@ async function run() {
   testScannerPolicyCoversVendorDataCarriers();
   testVendorComponentsAttributedInNotice();
   testReadmeVendorTableMatchesManifest();
+  testOutboundTlsMergesSharedPosture();
   testDocumentedScriptFlagsExist();
   // v0.8.91 bug-class detectors — derived from the
   // mail-require-tls / fal.meets / cdn-cache-control / SRS fix-ups.
