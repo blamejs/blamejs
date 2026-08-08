@@ -3237,10 +3237,28 @@ async function testPinnedClient() {
   check("pinnedClient: does not mutate the caller's own request object",
         original.maxRedirects === 5 && original.followRedirects === true);
 
-  // No pin means no wrapper — the client is handed back as-is.
-  check("pinnedClient: an empty pin returns the client unchanged",
-        b.httpClient.pinnedClient(oblivious, []) === oblivious &&
-        b.httpClient.pinnedClient(oblivious, undefined) === oblivious);
+  // No pin still means a wrapper. The caller validated one url before handing
+  // the client over; a redirect it follows internally is a hop that validation
+  // never reached, so redirect control does not depend on a pin being named.
+  var noPinCases = [["an empty pin", []], ["an absent pin", undefined]];
+  for (var npi = 0; npi < noPinCases.length; npi += 1) {
+    var label = noPinCases[npi][0];
+    var unpinnedOpts = null;
+    var unpinnedRec = { request: function (o) { unpinnedOpts = o; return Promise.resolve({ statusCode: 200 }); } };
+    var wrapped = b.httpClient.pinnedClient(unpinnedRec, noPinCases[npi][1]);
+    check("pinnedClient: " + label + " still returns a wrapper", wrapped !== unpinnedRec);
+    await wrapped.request({ url: "https://anywhere.example/x", followRedirects: true });
+    check("pinnedClient: " + label + " still disables redirect following",
+          unpinnedOpts.maxRedirects === 0 && unpinnedOpts.followRedirects === false &&
+          unpinnedOpts.redirect === "manual");
+  }
+  // With no pin every host is reachable — the wrapper adds redirect control,
+  // not an allowlist that was never configured.
+  var anyHostOpts = null;
+  var anyHostRec = { request: function (o) { anyHostOpts = o; return Promise.resolve({ statusCode: 200 }); } };
+  await b.httpClient.pinnedClient(anyHostRec, undefined).request({ url: "https://anywhere.example/x" });
+  check("pinnedClient: with no pin a dial to any host still reaches the client",
+        anyHostOpts !== null && anyHostOpts.url === "https://anywhere.example/x");
 }
 
 async function run() {
