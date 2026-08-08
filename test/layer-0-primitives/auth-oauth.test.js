@@ -1914,6 +1914,46 @@ function testHttpOptValidation() {
         !!X.create(mkOpts({})));
 }
 
+// The TLS requirement on these endpoints is this module's, not a side effect
+// of dialing through b.httpClient. These are the requests carrying the client
+// secret, the authorization code and the access token, so a supplied client —
+// which promises nothing about schemes — must not be able to take them over
+// cleartext when allowHttp was never set.
+async function testInjectedClientStillHeldToSchemePolicy() {
+  var reached = [];
+  var anyScheme = { request: function (req) {
+    reached.push(req.url);
+    return Promise.resolve({ statusCode: 200, headers: {},
+      body: Buffer.from(JSON.stringify({ access_token: "leaked", token_type: "Bearer" }), "utf8") });
+  } };
+  var cleartext = X.create({
+    clientId:      "scheme-check",
+    clientSecret:  "sec",
+    redirectUri:   "https://rp.example/cb",
+    tokenEndpoint: "http://idp.insecure.example/token",
+    http:          { client: anyScheme },
+  });
+  var err = null;
+  try { await cleartext.clientCredentials({ scope: "read" }); } catch (e) { err = e; }
+  check("an http:// token endpoint is refused with a supplied client and allowHttp unset",
+        err !== null);
+  check("the refused cleartext dial never reached the supplied client", reached.length === 0);
+
+  // The same endpoint with allowHttp set is the operator's explicit decision.
+  var permitted = X.create({
+    clientId:      "scheme-check-dev",
+    clientSecret:  "sec",
+    redirectUri:   "https://rp.example/cb",
+    tokenEndpoint: "http://localhost/token",
+    allowHttp:     true,
+    allowInternal: true,
+    http:          { client: anyScheme },
+  });
+  var tok = await permitted.clientCredentials({ scope: "read" });
+  check("allowHttp still permits the dev loopback endpoint through a supplied client",
+        tok.accessToken === "leaked" && reached.length === 1);
+}
+
 async function run() {
   // ---- module surface ----
   check("oauth.create is fn",                    typeof X.create === "function");
@@ -2381,6 +2421,7 @@ async function run() {
   await scenarioOfflineExtras();
   await scenarioBranchFillOffline();
   testHttpOptValidation();
+  await testInjectedClientStillHeldToSchemePolicy();
 
   console.log("auth-oauth offline checks passed");
 

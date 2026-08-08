@@ -3224,6 +3224,19 @@ async function testPinnedClient() {
   check("pinnedClient: an unparseable url is refused, not passed through",
         bad !== null && seen.length === 2);
 
+  // A redirect the wrapper never sees is a hop the pin never checked, so
+  // redirect following is turned off on every forwarded request.
+  var forwardedOpts = null;
+  var recorder = { request: function (o) { forwardedOpts = o; return Promise.resolve({ statusCode: 302 }); } };
+  var noFollow = b.httpClient.pinnedClient(recorder, ["api.partner.com"]);
+  var original = { url: "https://api.partner.com/v1", maxRedirects: 5, followRedirects: true };
+  await noFollow.request(original);
+  check("pinnedClient: forwards with redirect following disabled",
+        forwardedOpts.maxRedirects === 0 && forwardedOpts.followRedirects === false &&
+        forwardedOpts.redirect === "manual");
+  check("pinnedClient: does not mutate the caller's own request object",
+        original.maxRedirects === 5 && original.followRedirects === true);
+
   // No pin means no wrapper — the client is handed back as-is.
   check("pinnedClient: an empty pin returns the client unchanged",
         b.httpClient.pinnedClient(oblivious, []) === oblivious &&
