@@ -513,22 +513,34 @@ function testExplainOutboundFailure() {
   check("the original alert text survives in the explanation",
         version.indexOf("tlsv1 alert protocol version") !== -1);
 
-  // A classical group in the list is NOT proof the peer can pick one: a TLS
-  // 1.3 peer restricted to secp256r1 shares nothing with the hybrids plus
-  // X25519. So the fallback changes the wording rather than silencing the
-  // explanation, and the definitive no-shared-group code is never silenced.
-  var withFallback = b.network.tls.explainOutboundFailure(
+  // Alert 40 is generic: a disjoint TLS 1.3 cipher list produces this exact
+  // code with a group both sides support, so it must not be reported as a
+  // group mismatch. It still names the peer and what was pinned.
+  var generic = b.network.tls.explainOutboundFailure(
     _alert("ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE", "ssl/tls alert handshake failure"),
     { host: "peer.example" });
-  check("a handshake failure under the default list is still explained",
-        typeof withFallback === "string");
-  check("with a classical fallback the wording points outside the list, not at a missing hybrid",
-        /restricted to a group the list does not name/.test(withFallback));
+  check("a generic failure alert is still explained", typeof generic === "string");
+  check("a generic failure alert is described as ambiguous",
+        /does not say what it objected to/.test(generic));
+  check("a generic failure alert does not assert the group list as the cause",
+        !/supports none of the key-exchange groups/.test(generic));
+  check("a generic failure alert still lists the cipher suite as a candidate",
+        /cipher suite/.test(generic));
 
+  // The codes that DO mean the group specifically are reported as such, and a
+  // classical group in the list is not proof the peer can pick one -- a TLS
+  // 1.3 peer restricted to secp256r1 shares nothing with the hybrids plus
+  // X25519 -- so a fallback does not suppress them.
   var definitive = b.network.tls.explainOutboundFailure(
     _alert("ERR_SSL_NO_SHARED_GROUP", "no shared group"), { host: "peer.example" });
-  check("the definitive no-shared-group code is explained even under the default list",
-        typeof definitive === "string" && definitive.indexOf("key-exchange groups") !== -1);
+  check("the definitive no-shared-group code names the group list",
+        typeof definitive === "string" &&
+        /supports none of the key-exchange groups/.test(definitive));
+  var wrongCurve = b.network.tls.explainOutboundFailure(
+    _alert("ERR_SSL_WRONG_CURVE", "wrong curve"), { host: "peer.example" });
+  check("the wrong-curve code names the group list",
+        typeof wrongCurve === "string" &&
+        /supports none of the key-exchange groups/.test(wrongCurve));
 
   // A caller naming what THIS dial used is authoritative for it. A request on
   // a caller-supplied agent that pins neither setting must not be diagnosed
@@ -549,9 +561,11 @@ function testExplainOutboundFailure() {
   var narrowed = b.network.tls.explainOutboundFailure(
     _alert("ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE", "ssl/tls alert handshake failure"),
     { host: "peer.example", ecdhCurve: "X25519MLKEM768:SecP256r1MLKEM768" });
-  check("a narrowed hybrid-only list IS reported as the likely cause",
+  check("the offered list is quoted so an operator can see what was pinned",
         typeof narrowed === "string" &&
         narrowed.indexOf("X25519MLKEM768:SecP256r1MLKEM768") !== -1);
+  check("a hybrid-only list is called out wherever the groups are in frame",
+        /names only post-quantum hybrids/.test(narrowed));
 
   check("an unrelated error gets no invented explanation",
         b.network.tls.explainOutboundFailure(_alert("ECONNREFUSED", "connect ECONNREFUSED")) === null);
