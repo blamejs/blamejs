@@ -3188,9 +3188,52 @@ async function testRetiredH2SessionDoesNotForceDestroyAnOpenStream() {
   });
 }
 
+// b.httpClient.pinnedClient — an allowedHosts pin that is ENFORCED rather than
+// advertised. A caller-supplied client's contract is a `request` method, so it
+// need not know what the framework's allowedHosts property means; the pin has
+// to be checked here or a client that ignores the field dials anywhere while
+// the operator believes it is in force.
+async function testPinnedClient() {
+  var seen = [];
+  var oblivious = { request: function (opts) {
+    seen.push(opts.url);
+    return Promise.resolve({ statusCode: 200, headers: {}, body: Buffer.from("ok") });
+  } };
+  var pinned = b.httpClient.pinnedClient(oblivious, ["api.partner.com", ".internal.example.com"]);
+
+  var res = await pinned.request({ url: "https://api.partner.com/v1" });
+  check("pinnedClient: an exact-match host reaches the client",
+        res.statusCode === 200 && seen.length === 1);
+  await pinned.request({ url: "https://a.internal.example.com/x" });
+  check("pinnedClient: a suffix-entry host reaches the client", seen.length === 2);
+
+  var denied = null;
+  try { await pinned.request({ url: "https://elsewhere.example/x" }); } catch (e) { denied = e; }
+  check("pinnedClient: a host outside the pin is refused", denied !== null);
+  check("pinnedClient: the refusal names allowedHosts", /allowedHosts/.test(denied.message));
+  check("pinnedClient: the refused dial never reached the client", seen.length === 2);
+
+  // A near-miss must not satisfy a suffix entry.
+  var nearMiss = null;
+  try { await pinned.request({ url: "https://evilinternal.example.com/x" }); } catch (e) { nearMiss = e; }
+  check("pinnedClient: a suffix entry does not match a longer label", nearMiss !== null);
+
+  // An unparseable destination cannot be shown to satisfy the pin.
+  var bad = null;
+  try { await pinned.request({ url: "not a url" }); } catch (e) { bad = e; }
+  check("pinnedClient: an unparseable url is refused, not passed through",
+        bad !== null && seen.length === 2);
+
+  // No pin means no wrapper — the client is handed back as-is.
+  check("pinnedClient: an empty pin returns the client unchanged",
+        b.httpClient.pinnedClient(oblivious, []) === oblivious &&
+        b.httpClient.pinnedClient(oblivious, undefined) === oblivious);
+}
+
 async function run() {
   try {
     testSurface();
+    await testPinnedClient();
     await testPostureChangeDoesNotAbortInFlightRequests();
     await testH2DrainWaitsOnProgressButNotOnAStall();
     await testRequestSurvivesLosingTheTransportCacheRace();

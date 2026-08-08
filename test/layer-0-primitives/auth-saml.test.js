@@ -670,6 +670,36 @@ async function testFetchMdqInputValidation() {
   check("fetchMdq: still addresses the MDQ path the spec defines",
         seen[0].url.indexOf("/entities/%7Bsha1%7D") !== -1);
 
+  // The pin has to be ENFORCED, not handed to the client as a request field.
+  // An injected client's contract is a `request` method and nothing more, so
+  // it need not know what allowedHosts means — this one ignores it completely,
+  // as any consumer's own client legitimately might. The dial must still be
+  // refused, or the operator believes a pin is in force that is not.
+  var wentAnywhere = [];
+  var obliviousClient = { request: function (req) {
+    wentAnywhere.push(req.url);
+    return Promise.resolve({ statusCode: 200, headers: {}, body: Buffer.from(xml, "utf8") });
+  } };
+  var pinErr = null;
+  try {
+    await b.auth.saml.fetchMdq({
+      baseUrl:  "https://mdq.evil.example",
+      entityId: IDP_ENTITY_ID,
+      http:     { client: obliviousClient, allowedHosts: ["mdq.federation.example"] },
+    });
+  } catch (e) { pinErr = e; }
+  check("fetchMdq: a client that ignores allowedHosts is still held to the pin",
+        pinErr !== null && /allowedHosts/.test(pinErr.message));
+  check("fetchMdq: the refused dial never reached the client at all",
+        wentAnywhere.length === 0);
+  // And the same client inside the pin still gets through.
+  await b.auth.saml.fetchMdq({
+    baseUrl:  "https://mdq.federation.example",
+    entityId: IDP_ENTITY_ID,
+    http:     { client: obliviousClient, allowedHosts: ["mdq.federation.example"] },
+  });
+  check("fetchMdq: a dial inside the pin reaches the client", wentAnywhere.length === 1);
+
   check("fetchMdq: http.client without a request method refused",
         (await mdqCode({ baseUrl: "https://m.example", entityId: "e", http: { client: {} } }))
           === "auth-saml/bad-http-client");

@@ -508,6 +508,38 @@ function testTrustedClientIpForwardedHeaderFamily() {
         b.requestHelpers.clientIp(viaCf, { trustProxy: trust }) === "10.0.0.9");
 }
 
+// clientIp is a request-shape reader on the hot path, documented never to
+// throw. Strict validation belongs at construction, where a typo is a config
+// mistake caught at boot — not on a live request, where the same typo would
+// escape as an exception from whatever gate happened to call it.
+function testClientIpToleratesMalformedForwardedHeaders() {
+  var trust = function (a) { return a.indexOf("10.") === 0; };
+  var viaProxy = {
+    socket:  { remoteAddress: "10.0.0.9" },
+    headers: { "x-forwarded-for": "203.0.113.7", "cf-connecting-ip": "203.0.113.8" },
+  };
+  [["a bare string", "cf-connecting-ip"], ["a number", 7], ["an empty array", []],
+   ["a non-string member", ["x-forwarded-for", 7]], ["a member with a space", ["x forwarded for"]],
+   ["an object", {}]].forEach(function (pair) {
+    var out, threw = false;
+    try { out = b.requestHelpers.clientIp(viaProxy, { trustProxy: trust, forwardedHeaders: pair[1] }); }
+    catch (_e) { threw = true; }
+    check("clientIp does not throw on forwardedHeaders as " + pair[0], threw === false);
+    // Falling back to the socket address, not to X-Forwarded-For: reading a
+    // header the operator did not ask for is the wrong way to fail.
+    check("clientIp falls back to the socket address on " + pair[0], out === "10.0.0.9");
+  });
+  // A well-formed family still works, so the tolerance is not blanket.
+  check("clientIp still honours a well-formed family",
+        b.requestHelpers.clientIp(viaProxy, { trustProxy: trust, forwardedHeaders: ["cf-connecting-ip"] })
+          === "203.0.113.8");
+  // The construction-time path stays strict.
+  var threwAtBuild = false;
+  try { b.requestHelpers.trustedClientIp({ trustedProxies: ["10.0.0.0/8"], forwardedHeaders: "nope" }); }
+  catch (_e) { threwAtBuild = true; }
+  check("trustedClientIp still refuses the same value at construction", threwAtBuild);
+}
+
 function testTrustedClientIpForwardedHeadersValidated() {
   var bad = [
     ["a string",            "cf-connecting-ip"],
@@ -727,6 +759,7 @@ async function run() {
   testTrustedClientIpResolves();
   testTrustedClientIpForwardedHeaderFamily();
   testTrustedClientIpForwardedHeadersValidated();
+  testClientIpToleratesMalformedForwardedHeaders();
   testTrustedIdentityHeaders();
   testTrustedProxyMappedPeerNormalized();
   testTrustedProtocol();

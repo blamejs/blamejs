@@ -193,6 +193,42 @@ function testAnalysisWorkIsBounded() {
   check("an everyday delimited group is still proven", assertSafeAccepts("(?:[a-z]+/)*"));
 }
 
+// A RegExp's flags decide what its source means. Screening `.source` alone
+// reads `(a|A)+` as two disjoint branches, when under `i` the engine sees one
+// branch twice and backtracks exactly as it does on `(a|a)+`.
+function testRegExpFlagsReachTheAnalysis() {
+  check("case-insensitive overlapping branches refused via the RegExp's own flags",
+        assertSafeAccepts2(/^(a|A)+$/i) === false);
+  check("the same source WITHOUT the flag is still accepted",
+        assertSafeAccepts2(/^(a|A)+$/));
+  check("case-insensitive DISJOINT branches are still accepted",
+        assertSafeAccepts2(/^(?:b|c)+$/i));
+  check("case-insensitive class overlap refused",
+        assertSafeAccepts2(/^(?:[a-z]|[A-Z])+$/i) === false);
+  // A delimiter whose OTHER CASE is inside a preceding atom is not a
+  // delimiter: under `i` the quantifier can consume it, so the boundary it
+  // was supposed to pin is not pinned. `[A-Z]` folds to cover `z`.
+  check("case-insensitive delimiter reachable by the preceding class refused",
+        assertSafeAccepts2(/^(?:[A-Z]+z)*$/i) === false);
+  check("the same source WITHOUT the flag is accepted (Z-range excludes z)",
+        assertSafeAccepts2(/^(?:[A-Z]+z)*$/));
+  check("case-insensitive delimiter genuinely outside the class accepted",
+        assertSafeAccepts2(/^(?:[a-z]+-)*$/i));
+  // A caller screening a raw STRING declares the flags it will compile with.
+  var strictOpts = function (f) {
+    return { profile: "strict", boundedRepeatPolicy: "allow", regexFlags: f };
+  };
+  var accWith = function (src, f) {
+    try { b.guardRegex.assertSafe(src, "x", null, null, strictOpts(f)); return true; }
+    catch (_e) { return false; }
+  };
+  check("a declared i flag refuses the overlap on a raw string", accWith("^(a|A)+$", "i") === false);
+  check("the v flag declines the suppression outright", accWith("^(?:b|c)+$", "v") === false);
+}
+function assertSafeAccepts2(re) {
+  try { b.guardRegex.assertSafe(re, "x"); return true; } catch (_e) { return false; }
+}
+
 // ---- other ReDoS classes the guard covers stay covered ----
 function testOtherClasses() {
   // `(a|b|c)+` is the character class `[abc]+` written out long: no two
@@ -242,6 +278,7 @@ async function run() {
   testProvablyUnambiguousShapesAccepted();
   testAmbiguousShapesStillRefused();
   testAnalysisWorkIsBounded();
+  testRegExpFlagsReachTheAnalysis();
   testCatastrophicShapesRefused();
   testOtherClasses();
   await testGate();

@@ -867,6 +867,35 @@ function run() {
   ctxMw(ctxReq1, {}, function () { ctxNext += 1; });
   check("flagContext mw: calls next",            ctxNext === 1);
   check("flagContext mw: req.flagCtx attached", typeof ctxReq1.flagCtx === "object");
+
+  // This middleware keys an anonymous request by its client address just as
+  // flag.middleware does, so it needs the same way to say which proxies and
+  // which header that address arrives through. Without it every anonymous
+  // caller behind a proxy arrives as the proxy and shares one bucket, with
+  // nothing an operator can do about it.
+  var anonVia = function (mw, xff) {
+    var rq = { socket: { remoteAddress: "10.0.0.9" },
+               headers: { "x-forwarded-for": xff, "user-agent": "ua" } };
+    mw(rq, {}, function () {});
+    return rq.flagCtx.targetingKey;
+  };
+  var ungatedMw = b.middleware.flagContext({});
+  check("flagContext mw: ungated ignores a forged forwarded address",
+        anonVia(ungatedMw, "1.2.3.4") === anonVia(ungatedMw, "9.9.9.9"));
+  var gatedMw = b.middleware.flagContext({ trustedProxies: ["10.0.0.0/8"] });
+  check("flagContext mw: trustedProxies restores per-caller bucketing",
+        anonVia(gatedMw, "1.2.3.4") !== anonVia(gatedMw, "9.9.9.9"));
+  var familyMw = b.middleware.flagContext({
+    trustedProxies: ["10.0.0.0/8"], forwardedHeaders: ["cf-connecting-ip"],
+  });
+  var cfReq = { socket: { remoteAddress: "10.0.0.9" },
+                headers: { "cf-connecting-ip": "1.2.3.4", "user-agent": "ua" } };
+  familyMw(cfReq, {}, function () {});
+  check("flagContext mw: forwardedHeaders selects the family",
+        cfReq.flagCtx.targetingKey === anonVia(gatedMw, "1.2.3.4"));
+  var mwCidrThrew = false;
+  try { b.middleware.flagContext({ trustedProxies: ["not-a-cidr"] }); } catch (_e) { mwCidrThrew = true; }
+  check("flagContext mw: a malformed CIDR fails at construction, not per request", mwCidrThrew);
   check("flagContext mw: targetingKey from header", ctxReq1.flagCtx.targetingKey === "u-101");
   check("flagContext mw: tenantId augmented",   ctxReq1.flagCtx.tenantId === "tenant-A");
   check("flagContext mw: environment augmented", ctxReq1.flagCtx.environment === "test");
