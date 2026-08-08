@@ -153,6 +153,10 @@ async function testNarrowedGroupsReachEveryOutboundClient() {
   var NARROWED = ["SecP256r1MLKEM768", "SecP384r1MLKEM1024"];
   var expected = NARROWED.join(":");
   var generationBefore = b.network.tls.postureGeneration();
+  // Force the process-wide default agent to exist BEFORE the narrowing, so the
+  // assertion below has a stale cache to catch. Without this the first access
+  // happens after the change and would build correctly either way.
+  var staleDefault = b.pqcAgent.agent;
   b.network.tls.preferredGroups.set(NARROWED);
   try {
     check("outboundPosture reports the operator's narrowed list",
@@ -227,6 +231,16 @@ async function testNarrowedGroupsReachEveryOutboundClient() {
       check("the agent's groups value does not contradict its ecdhCurve",
             agent.options.groups === agent.options.ecdhCurve);
     } finally { agent.destroy(); }
+
+    // The process-wide default agent is cached, so it has the same staleness
+    // problem as the transport pool: an Agent copies its TLS options at
+    // construction and would keep offering the removed groups for the life of
+    // the process. Reading it after the change must give an agent built under
+    // the new preference — without the operator having to call reload().
+    var afterDefault = b.pqcAgent.agent;
+    check("the cached default agent is rebuilt for the narrowed preference",
+          afterDefault !== staleDefault &&
+          afterDefault.options.ecdhCurve === expected);
 
     // "The change applies on the next dial" has to hold for POOLED
     // connections too, or it is true only for callers that never pool. An

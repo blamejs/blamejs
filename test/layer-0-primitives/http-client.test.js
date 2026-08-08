@@ -3001,27 +3001,46 @@ async function testH2DrainWaitsOnProgressButNotOnAStall() {
     sessB.destroyed === true);
   srvB.close();
 
-  // (3) A stalled stream on a CHATTY connection. The byte counters belong to
-  // the SOCKET, so a peer sending PING frames keeps them moving while the
-  // response goes nowhere (measured: they climb steadily under server pings),
-  // and progress alone would let the session linger forever. Driven against a
-  // stub rather than a live server: a real peer closes its own side once it
-  // sees the GOAWAY, which destroys the session no matter what the watchdog
-  // does — so a network test here passes whether or not the ceiling exists.
+  // (3) A stalled stream on a CHATTY connection. Socket byte counters move for
+  // PING / WINDOW_UPDATE / SETTINGS traffic a peer generates on its own, so a
+  // socket-level progress signal would call a stalled session busy forever.
+  // Progress is read from session.state instead, which counts application
+  // data. Driven against a stub: a real peer closes its own side on GOAWAY and
+  // destroys the session regardless, so a network test here passes whether or
+  // not the signal is right.
   var fakeDestroyed = false;
-  var movingBytes = 0;
+  var chattyBytes = 0;
   var fakeSession = {
     destroyed: false,
-    socket: { get bytesRead() { movingBytes += 17; return movingBytes; }, bytesWritten: 0 },
+    // Application data frozen; socket counters climbing, as under PING traffic.
+    state: { effectiveRecvDataLength: 4096, remoteWindowSize: 65535 },
+    socket: { get bytesRead() { chattyBytes += 17; return chattyBytes; }, bytesWritten: 0 },
     close: function () { /* graceful close is a no-op for the stub */ },
     destroy: function () { fakeDestroyed = true; this.destroyed = true; },
   };
-  teardown.drainH2Session(fakeSession, GRACE, GRACE * 3);
+  teardown.drainH2Session(fakeSession, GRACE);
   await helpers.waitUntil(function () { return fakeDestroyed; },
-    { timeoutMs: 8000, label: "http-client: chatty-but-stalled session hits the ceiling" });
-  check("a session whose byte counters keep moving on control traffic alone " +
-        "still hits the absolute ceiling",
+    { timeoutMs: 8000, label: "http-client: stalled-but-chatty session destroyed" });
+  check("control-frame traffic does not count as progress — a session whose " +
+        "application data has stopped is still destroyed",
     fakeDestroyed === true);
+
+  // (4) The mirror: a session still moving application data is NOT destroyed,
+  // however long it takes. There is no wall-clock ceiling to cut it.
+  var flowingDestroyed = false;
+  var recv = 0;
+  var flowingSession = {
+    destroyed: false,
+    state: { get effectiveRecvDataLength() { recv += 512; return recv; }, remoteWindowSize: 65535 },
+    socket: { bytesRead: 0, bytesWritten: 0 },
+    close: function () {},
+    destroy: function () { flowingDestroyed = true; this.destroyed = true; },
+  };
+  teardown.drainH2Session(flowingSession, GRACE);
+  await helpers.passiveObserve(GRACE * 6,
+    "http-client: a session still moving application data is left alone");
+  check("a session still moving application data is never force-destroyed",
+    flowingDestroyed === false);
 }
 
 // A posture change lands while a transport negotiation is still running. The
