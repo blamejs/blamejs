@@ -887,20 +887,25 @@ async function _runInjectedHttpClient() {
     check("ciba startAuthentication still returns its ticket through the supplied client",
           !!ticket.authReqId);
 
-    // The host pin covers this module's own POSTs too.
-    var pinned = b.auth.ciba.client.create({
-      issuer:       issuer,
-      clientId:     CLIENT_ID,
-      clientSecret: CLIENT_SECRET,
-      deliveryMode: "poll",
-      allowHttp:    true,
-      allowInternal: true,
-      http:         { allowedHosts: ["api.example.invalid"] },
-    });
+    // The host pin covers this module's OWN POSTs, which has to be proven on a
+    // client with explicit endpoints: with discovery in play the inner OAuth
+    // client's pin refuses first, and the assertion passes whether or not this
+    // module ever applies one. Endpoints supplied means the backchannel POST is
+    // the first and only dial.
+    var pinned = _pollClient(issuer, { http: { allowedHosts: ["api.example.invalid"] } });
     var err = null;
     try { await pinned.startAuthentication({ loginHint: "alice@example.com" }); } catch (e) { err = e; }
-    check("ciba create({http:{allowedHosts}}): a backchannel dial outside the pin is refused",
+    check("ciba create({http:{allowedHosts}}): the backchannel POST itself is pinned",
           err !== null && /allowedHosts/.test(err.message));
+    check("ciba pin refusal names the host that was refused",
+          err !== null && err.message.indexOf("127.0.0.1") !== -1);
+
+    // And the same client with the real host in the pin completes, so the
+    // refusal above is the pin working rather than the option breaking a dial.
+    var allowed = _pollClient(issuer, { http: { allowedHosts: ["127.0.0.1"] } });
+    var ticket2 = await allowed.startAuthentication({ loginHint: "alice@example.com" });
+    check("ciba create({http:{allowedHosts}}): a backchannel POST inside the pin completes",
+          !!ticket2.authReqId);
   });
 }
 

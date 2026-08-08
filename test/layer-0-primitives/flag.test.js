@@ -170,6 +170,28 @@ function run() {
   var spoofB = b.flag.context.fromRequest(sameSocket("9.9.9.9"));
   check("fromRequest: a forged X-Forwarded-For cannot move the anon bucket",
         spoofA.targetingKey === spoofB.targetingKey);
+
+  // The address is not the only thing a caller controls. The key was also
+  // built from the User-Agent, which the client sets outright, so varying it
+  // re-rolled the bucket just as effectively as varying the address — closing
+  // one and leaving the other open closes nothing.
+  var uaKey = function (ua) {
+    return b.flag.context.fromRequest({
+      socket: { remoteAddress: "198.51.100.7" }, headers: { "user-agent": ua },
+    }).targetingKey;
+  };
+  check("fromRequest: a chosen User-Agent cannot move the anon bucket either",
+        uaKey("agent-one") === uaKey("agent-two") && uaKey("agent-one") === uaKey(""));
+  // Walking many values must not find a different bucket at all.
+  var anonKeys = {};
+  for (var uaI = 0; uaI < 25; uaI += 1) anonKeys[uaKey("ua-" + uaI)] = true;
+  check("fromRequest: 25 chosen User-Agents all land on one key",
+        Object.keys(anonKeys).length === 1);
+  // Still derived from the address, so distinct callers still distribute.
+  check("fromRequest: distinct addresses still get distinct keys",
+        uaKey("x") !== b.flag.context.fromRequest({
+          socket: { remoteAddress: "203.0.113.99" }, headers: { "user-agent": "x" },
+        }).targetingKey);
   check("fromRequest: the anon key is still derived (not a constant)",
         spoofA.targetingKey !== b.flag.context.fromRequest({
           socket: { remoteAddress: "203.0.113.1" }, headers: { "user-agent": "ua" } }).targetingKey);

@@ -111,6 +111,27 @@ function testAmbiguousShapesStillRefused() {
     "(?:.+/)*",                    // `.` matches the delimiter
     "(?:[^/]+x)*",                 // `x` is matchable by the negated class
     "(?:[a-z]+-+)*",               // the delimiter is itself quantified
+    // A forced delimiter pins where each repetition ENDS, but the number of
+    // paths through the whole match is the PRODUCT of the paths through each
+    // repetition. Two variable-length atoms in the body give at least two
+    // parses per repetition, so m repetitions give 2^m — the delimiter buys
+    // nothing. Every one of these is exponential.
+    "(?:a*a*-)*",
+    "(?:a*a?-)*",
+    "(?:\\w+\\d*;)*",              // a shape an operator would plausibly write
+    "(?:[a-z]+[a-z0-9]*_)*",
+    "(?:\\w+\\w*-)*",
+    "(?:[^-]*[^-]*-)*",
+    "(?:[^/]+[^/]*/)*",
+    "(?:\\s*\\s*,)*",
+    "(?:a{1,}a{1,}-)*",
+    "(?:a*?a*?-)*",                // lazy inner quantifiers backtrack the same
+    // The branch CHOICE being decided by one character does not decide the
+    // branch LENGTH. An optional tail whose character can start another branch
+    // gives two parses per unit, which is the same exponential.
+    "(?:ab?|b)+",
+    "(?:ab{0,1}|b)+",
+    "(?:ab{1,2}|b)+",
     "(?:(?:[a-z]+)+-)*",           // the body carries its own nested quantifier
     "(?:[a-z]+)*-",                // the delimiter is OUTSIDE the group
     // the classic catastrophic set, unchanged

@@ -582,8 +582,19 @@ function testAnnotateOutboundFailure() {
   check("annotate leaves the code alone for callers branching on it",
         err.code === "ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION");
   check("annotate rewrites the message", err.message.indexOf("TLS 1.3") !== -1);
+  // The stack has to be read BEFORE annotating for this to test anything. V8
+  // formats Error.stack on first access, so an untouched error renders its
+  // stack from whatever the message is by then — the rewrite could be absent
+  // entirely and the stack would still show the new text. An error that a
+  // logger or an outer handler has already stringified is the case where the
+  // stack holds the OLD message and the rewrite is what refreshes it.
+  var eager = _alert("ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION", "tlsv1 alert protocol version");
+  var stackBefore = eager.stack;
+  check("the stack was materialised before annotating (else the next check is vacuous)",
+        typeof stackBefore === "string" && stackBefore.indexOf("TLS 1.3") === -1);
+  b.network.tls.annotateOutboundFailure(eager, { host: "peer.example", port: 443 });
   check("annotate refreshes the stack's copy of the message",
-        typeof err.stack !== "string" || err.stack.indexOf("TLS 1.3") !== -1);
+        eager.stack.indexOf("TLS 1.3") !== -1);
 
   // An error can reach more than one handler on its way out; a second pass
   // must not nest one explanation inside the next one's "Underlying error:".
