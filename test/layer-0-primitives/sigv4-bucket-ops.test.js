@@ -1605,39 +1605,60 @@ async function testSetObjectRetentionPreCheckFallsThrough() {
 // ---- Virtual-hosted-style URL construction (pathStyle:false) ----
 
 async function testVirtualHostStyleUrlConstruction() {
-  // With pathStyle:false the bucket name is prepended as a subdomain of the
-  // endpoint host (`<bucket>.<host>`) for both bucket-level and object-level
-  // URLs — the else arm of _bucketUrl / _objectUrl. Against an IPv4 endpoint
-  // the WHATWG URL host-setter refuses the subdomain prefix (you cannot make
-  // an IP literal into a domain), so the constructed URL keeps the IP host and
-  // the request still lands on the fake server. The subresource query + path
-  // are what we assert; the branch under test is exercised either way.
+  // With pathStyle:false the bucket rides in the host (`<bucket>.<host>`)
+  // rather than the path — the else arm of _bucketUrl / _objectUrl.
+  //
+  // An IP-literal endpoint cannot carry a bucket subdomain: "vh-bucket.127.0.0.1"
+  // is not a parseable host, and the WHATWG hostname setter IGNORES it silently.
+  // Left unchecked that dropped the bucket out of the request entirely and sent
+  // the key to the server root — which a request against a permissive fake
+  // server still "succeeds" at, so it must be asserted as a refusal, not as a
+  // completed round-trip.
   var fake = _fakeS3();
   var port = await listenOnRandomPort(fake.server);
   try {
     var ops = bucketOps.create(_baseConfig(port, { pathStyle: false }));
 
-    // Bucket-level: virtual-host addressing sets pathname "/" (no /<bucket>/
-    // prefix). Against the IP endpoint the create still completes.
-    var created = await ops.create("vh-bucket");
-    check("vhost: bucket-level create completes via the else-arm URL builder",
-          created.created === true);
-    var createReq = fake.requests[fake.requests.length - 1];
-    check("vhost: bucket-level URL uses root path (no path-style /<bucket>/ prefix)",
-          createReq.url === "/" && createReq.method === "PUT");
+    var createErr = null;
+    try { await ops.create("vh-bucket"); } catch (e) { createErr = e; }
+    check("vhost: bucket-level op on an IP endpoint is REFUSED, not sent bucket-less",
+          !!createErr && createErr.code === "INVALID_ENDPOINT");
+    check("vhost: the refusal names path-style as the remedy",
+          !!createErr && /pathStyle/.test(createErr.message));
+    check("vhost: nothing was put on the wire for the refused bucket-level op",
+          fake.requests.length === 0);
 
-    // Object-level: pathname is "/<key>" (no /<bucket>/ prefix). The
-    // legal-hold subresource query survives the virtual-host code path.
     fake.requests.length = 0;
-    var held = await ops.setObjectLegalHold("vh-bucket", "some-key", "ON");
-    check("vhost: object-level legal-hold completes via the else-arm URL builder",
-          held.applied === true && held.status === "ON");
-    var objReq = fake.requests[fake.requests.length - 1];
-    check("vhost: object-level URL is /<key> (no /<bucket>/ prefix) + carries ?legal-hold",
-          objReq.url.indexOf("/some-key") === 0 && objReq.url.indexOf("legal-hold") !== -1);
+    var holdErr = null;
+    try { await ops.setObjectLegalHold("vh-bucket", "some-key", "ON"); }
+    catch (e) { holdErr = e; }
+    check("vhost: object-level op on an IP endpoint is REFUSED too",
+          !!holdErr && holdErr.code === "INVALID_ENDPOINT");
+    check("vhost: nothing was put on the wire for the refused object-level op",
+          fake.requests.length === 0);
   } finally {
     await new Promise(function (r) { fake.server.close(function () { r(); }); });
   }
+
+  // The positive side of the same branch: against a DNS-name endpoint the
+  // bucket DOES ride in the host and the path carries only the key. Asserted
+  // through the presigner, which builds the URL without opening a socket, so
+  // the host does not have to resolve.
+  var signer = sigv4.create({
+    region:           "us-east-1",
+    bucket:           "vh-bucket",
+    accessKeyId:      "AKIAIOSFODNN7EXAMPLE",
+    secretAccessKey:  "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    endpoint:         "https://s3.example.com",
+    pathStyle:        false,
+  });
+  var vh = new URL(signer.presignedDownloadUrl({ key: "dir/some-key", expiresIn: 60 }).url);
+  check("vhost: a DNS-name endpoint carries the bucket in the HOST",
+        vh.hostname === "vh-bucket.s3.example.com");
+  check("vhost: the path then carries only the key, with no /<bucket>/ prefix",
+        vh.pathname === "/dir/some-key");
+  check("vhost: the signature covers the virtual-hosted host (Host is signed)",
+        /SignedHeaders=[^&]*host/.test(vh.search));
 }
 
 // ---- sigv4 signer: pure / offline branches (config, presign, POST policy) ----
@@ -1709,6 +1730,157 @@ function testSigv4CanonicalHelperEdgeBranches() {
         ch.signed === "content-type");
   check("canonicalHeaders lowercases the name + collapses internal whitespace",
         ch.canonical === "content-type:a b\n");
+
+  // AWS requires the canonical query to be sorted by name then by value, and
+  // the result must not depend on the order the caller happened to set the
+  // params in. Sweep every permutation of three same-key values (plus a
+  // distinct key) so the comparator is driven through its greater-than,
+  // less-than and equal arms whichever way the engine's sort walks the array,
+  // and assert the ONE canonical output each permutation must produce.
+  var permutations = [
+    ["1", "2", "3"], ["1", "3", "2"], ["2", "1", "3"],
+    ["2", "3", "1"], ["3", "1", "2"], ["3", "2", "1"],
+  ];
+  var allSorted = permutations.every(function (p) {
+    var qs = "z=0&a=" + p[0] + "&a=" + p[1] + "&a=" + p[2];
+    return sigv4.canonicalQueryString(new URLSearchParams(qs)) === "a=1&a=2&a=3&z=0";
+  });
+  check("canonicalQueryString sorts duplicate-key values identically for every input order",
+        allSorted);
+  // Fully-equal duplicate pairs (same key AND same value) exercise the
+  // comparator's terminal equal arm. Both must survive — dropping one would
+  // sign a query the wire never carries.
+  check("canonicalQueryString keeps fully-duplicated key=value pairs (both retained)",
+        sigv4.canonicalQueryString(new URLSearchParams("a=1&a=1")) === "a=1&a=1");
+  check("canonicalQueryString: equal pairs do not displace a later distinct key",
+        sigv4.canonicalQueryString(new URLSearchParams("b=2&a=1&a=1")) === "a=1&a=1&b=2");
+
+  // Two header names differing only in case are the SAME header. SigV4 merges
+  // them into one canonical entry with the values comma-joined, and names the
+  // header ONCE in SignedHeaders. Emitting it twice would sign bytes the peer
+  // never reconstructs — a receiver recombines repeated field lines into one
+  // comma-separated value — so the request would fail as a signature mismatch.
+  var dupCase = sigv4.canonicalHeaders({ "X-Amz-Meta-Tag": "one", "x-amz-meta-tag": "two" });
+  check("canonicalHeaders: case-variant duplicates merge into one comma-joined entry",
+        dupCase.canonical === "x-amz-meta-tag:one,two\n");
+  check("canonicalHeaders: SignedHeaders names a duplicated header exactly once",
+        dupCase.signed === "x-amz-meta-tag");
+  check("canonicalHeaders: no value is dropped in the merge",
+        dupCase.canonical.indexOf("one") !== -1 && dupCase.canonical.indexOf("two") !== -1);
+
+  // The merge must not disturb distinct headers: they stay separate, sorted,
+  // and each named once.
+  var mixed = sigv4.canonicalHeaders({
+    "Host": "s3.example.com", "x-amz-date": "20260101T000000Z", "X-Amz-Date": "dup",
+  });
+  check("canonicalHeaders: distinct headers stay separate and sorted",
+        mixed.signed === "host;x-amz-date");
+  check("canonicalHeaders: the merge applies per-name, not across names",
+        mixed.canonical === "host:s3.example.com\nx-amz-date:20260101T000000Z,dup\n");
+}
+
+// signRequest's own defaulting arms: a bare https:// string URL with no
+// allowedProtocols (the production default), an omitted headers object, and
+// an STS sessionToken. Each is a distinct entry-point shape used by the
+// in-repo callers (queue-sqs, log-stream-cloudwatch, bucket-ops), and each
+// changes what ends up in SignedHeaders — so a regression here is a 403 on
+// every request from that caller, not a cosmetic difference.
+function testSigv4SignRequestDefaultsAndSessionToken() {
+  var fixedDate = new Date(Date.UTC(2026, 0, 2, 3, 4, 5));
+
+  // (a) string URL + no allowedProtocols + no headers. The default protocol
+  // allowlist is TLS-only, so an https URL must sign and an http one must be
+  // refused by the same call shape.
+  var signed = sigv4.signRequest({
+    method:          "GET",
+    url:             "https://bucket.s3.us-east-1.amazonaws.com/k.txt",
+    payloadHash:     sigv4.sha256Hex(""),
+    region:          "us-east-1",
+    accessKeyId:     "AKIAIOSFODNN7EXAMPLE",
+    secretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    date:            fixedDate,
+  });
+  check("signRequest defaults: https string URL signs with no allowedProtocols passed",
+        /^AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE\//.test(signed.headers.Authorization));
+  check("signRequest defaults: omitted headers still yields host + x-amz-date",
+        signed.headers.host === "bucket.s3.us-east-1.amazonaws.com" &&
+        signed.headers["x-amz-date"] === "20260102T030405Z");
+  check("signRequest defaults: omitted headers does not mutate a shared object",
+        signed.headers["x-amz-content-sha256"] === sigv4.sha256Hex(""));
+  check("signRequest defaults: no security token when sessionToken is unset",
+        signed.headers["x-amz-security-token"] === undefined);
+  check("signRequest defaults: SignedHeaders is exactly the three implicit headers",
+        /SignedHeaders=host;x-amz-content-sha256;x-amz-date,/.test(signed.headers.Authorization));
+
+  var threwHttp = null;
+  try {
+    sigv4.signRequest({
+      method:          "GET",
+      url:             "http://bucket.s3.us-east-1.amazonaws.com/k.txt",
+      payloadHash:     sigv4.sha256Hex(""),
+      region:          "us-east-1",
+      accessKeyId:     "AK",
+      secretAccessKey: "sk",
+      date:            fixedDate,
+    });
+  } catch (e) { threwHttp = e; }
+  check("signRequest defaults: cleartext http refused when allowedProtocols is omitted",
+        threwHttp !== null);
+
+  // (b) STS session token — must be signed, not merely transmitted. If it
+  // were added after canonicalization the request would 403 on AWS.
+  var sts = sigv4.signRequest({
+    method:          "GET",
+    url:             "https://bucket.s3.us-east-1.amazonaws.com/k.txt",
+    headers:         {},
+    payloadHash:     sigv4.sha256Hex(""),
+    region:          "us-east-1",
+    accessKeyId:     "ASIAIOSFODNN7EXAMPLE",
+    secretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    sessionToken:    "FQoGZXIvYXdzEXAMPLESESSIONTOKEN",
+    date:            fixedDate,
+  });
+  check("signRequest sessionToken: transmitted as x-amz-security-token",
+        sts.headers["x-amz-security-token"] === "FQoGZXIvYXdzEXAMPLESESSIONTOKEN");
+  check("signRequest sessionToken: included in SignedHeaders",
+        /SignedHeaders=host;x-amz-content-sha256;x-amz-date;x-amz-security-token,/
+          .test(sts.headers.Authorization));
+  check("signRequest sessionToken: present in the canonical request body",
+        sts.canonicalRequest.indexOf(
+          "x-amz-security-token:FQoGZXIvYXdzEXAMPLESESSIONTOKEN") !== -1);
+  // Same date, same key, same URL — only the token differs, so the signature
+  // MUST differ. Equal signatures would mean the token was never signed.
+  var noSts = sigv4.signRequest({
+    method:          "GET",
+    url:             "https://bucket.s3.us-east-1.amazonaws.com/k.txt",
+    headers:         {},
+    payloadHash:     sigv4.sha256Hex(""),
+    region:          "us-east-1",
+    accessKeyId:     "ASIAIOSFODNN7EXAMPLE",
+    secretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    date:            fixedDate,
+  });
+  check("signRequest sessionToken: changes the signature (it is genuinely signed)",
+        sts.signature !== noSts.signature);
+}
+
+// The presign entry points accept a bare call with no opts at all; the key
+// guard must be what refuses it, not a TypeError from reading a property of
+// undefined (the difference between an actionable INVALID_KEY at boot and a
+// stack trace).
+function testSigv4PresignNoOptsRejectsWithKeyGuard() {
+  var store = sigv4.create(_sigv4Config());
+  function shouldRejectWithCode(label, fn) {
+    var threw = null;
+    try { fn(); } catch (e) { threw = e; }
+    check("presign no-opts: " + label + " rejects with INVALID_KEY",
+          threw && threw.code === "INVALID_KEY");
+    check("presign no-opts: " + label + " is not a raw TypeError",
+          threw && !(threw instanceof TypeError));
+  }
+  shouldRejectWithCode("presignedDownloadUrl()", function () { return store.presignedDownloadUrl(); });
+  shouldRejectWithCode("presignedUploadUrl()",   function () { return store.presignedUploadUrl(); });
+  shouldRejectWithCode("presignedUploadPolicy()", function () { return store.presignedUploadPolicy(); });
 }
 
 // Presigned GET URL — the SigV4 query params the client transmits.
@@ -1959,6 +2131,8 @@ async function run() {
     // sigv4 signer — pure / offline branches (no S3 round-trip).
     testSigv4FactoryRequiredFieldsAndDefaults();
     testSigv4CanonicalHelperEdgeBranches();
+    testSigv4SignRequestDefaultsAndSessionToken();
+    testSigv4PresignNoOptsRejectsWithKeyGuard();
     testSigv4PresignDownloadUrl();
     testSigv4PresignUploadUrlAndSessionToken();
     testSigv4PresignResponseHeadersValidation();
