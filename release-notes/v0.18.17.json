@@ -21,6 +21,10 @@
           "body": "b.wsClient passed its group list as a `curves` option. node:tls has no such option — it accepts the key and ignores it, whereas a malformed `ecdhCurve` throws — so the preference never reached the handshake and every wss:// connection negotiated on Node's defaults instead, including for operators who had narrowed the list with b.network.tls.pqc.setKeyShares. The list is now passed as `ecdhCurve`. An operator value supplied in the dial's TLS options still wins."
         },
         {
+          "title": "A hostname in absolute form resolves again, including on musl",
+          "body": "RFC 1034 sec. 3.1 makes `example.com.` the absolute form of `example.com` — the same name. The framework classified the absolute form correctly but then handed the resolver the dotted string verbatim, and the transports disagreed about it. glibc's getaddrinfo tolerates the trailing dot; musl's does not, so an FQDN written in absolute form answered ENOTFOUND on Alpine — the base image the framework's own container is built on. The encrypted transports refused it earlier still: splitting the name on \".\" leaves a trailing empty label, which the RFC 1035 LDH check rejects as a malformed host. Every host entering b.network.dns is now normalized once at the entry point, so lookup, resolve4 / resolve6, resolveSecure, querySvcb and queryHttps all agree, and one cache entry serves both spellings. Only the root dot is stripped: an interior empty label and every other malformed shape is still refused."
+        },
+        {
           "title": "Redis over TLS and the syslog sink now carry the framework TLS posture",
           "body": "The rediss:// connect path assembled its TLS options from host and port alone: no TLS 1.3 floor, no post-quantum groups. A connection to a TLS Redis could negotiate TLS 1.2 with classical-only key exchange. The syslog sink over tls:// pinned the floor but likewise offered no post-quantum groups. Both now merge the same posture as every other outbound path. Operators pointing at a TLS endpoint that cannot negotiate TLS 1.3 will see the connection refused rather than silently downgraded; that is the framework's posture everywhere else and was the outlier here."
         },
@@ -57,6 +61,14 @@
         {
           "title": "Vendored bundles declare the components they carry",
           "body": "noble-curves and noble-post-quantum each embed @noble/hashes, and noble-post-quantum also embeds @noble/curves and @noble/ciphers. Those were invisible to the generated software bill of materials, which listed 8 vendored components where the tarball actually ships 12. The manifest now declares them with their versions, the SBOM reports all 12, and NOTICE attributes @noble/hashes, including the fact that two versions ship because each bundle carries the one it was built against."
+        },
+        {
+          "title": "Vendored crypto bundles refreshed",
+          "body": "@noble/ciphers moves to 2.3.0 and @blamejs/pki to 0.4.2. The ciphers release is a packaging and diagnostics refresh — unused reference implementations moved into its test tree, clearer validation messages; the XChaCha20-Poly1305 behaviour behind b.crypto is unchanged. The pki release fixes distinguished-name comparison: a NumericString attribute value no longer compares equal to a PrintableString or UTF8String value with the same characters, which is the comparison that decides certificate chaining, revocation-issuer matching and name-constraint evaluation for b.mtlsCa. It also refuses an empty issuer name and escapes rendered distinguished-name values per RFC 4514."
+        },
+        {
+          "title": "The README table of vendored packages is checked against what ships",
+          "body": "That table is where an operator looks to decide whether a published advisory applies to them, and nothing kept it in step with lib/vendor/MANIFEST.json: it advertised @blamejs/pki 0.3.25 and @simplewebauthn/server 13.3.0 while later versions shipped, and omitted @noble/curves entirely. All three are corrected, and a release gate now fails on a row whose version disagrees with the manifest or a vendored package with no row at all."
         }
       ]
     }

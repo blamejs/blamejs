@@ -17,7 +17,7 @@ lib/vendor/MANIFEST.json.
 
 --------------------------------------------------------------------------------
 Component:   @noble/ciphers
-Version:     2.2.0
+Version:     2.3.0
 Source:      https://github.com/paulmillr/noble-ciphers
 License:     MIT
 Copyright:   Copyright (c) 2023 Paul Miller (https://paulmillr.com)
@@ -72,7 +72,7 @@ Used for:    WebAuthn / passkey registration + authentication response
              server.cjs).
 --------------------------------------------------------------------------------
 Component:   @blamejs/pki
-Version:     0.4.1
+Version:     0.4.2
 Source:      https://github.com/blamejs/pki
 License:     Apache-2.0
 Copyright:   Copyright (c) blamejs contributors

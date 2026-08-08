@@ -6213,6 +6213,67 @@ function testVendorComponentsAttributedInNotice() {
   _report("NOTICE attributes every vendored MANIFEST component", bad);
 }
 
+// ---- Pattern 48a: README's vendored table states the shipped versions ----
+
+function testReadmeVendorTableMatchesManifest() {
+  // README carries a per-package table of what blamejs vendors, and operators
+  // read it to decide whether a published advisory applies to them. Nothing
+  // derives it from lib/vendor/MANIFEST.json, so a `vendor-update.sh` run
+  // moves the shipped bundle while the table keeps naming the old version —
+  // exactly how the table came to advertise @blamejs/pki 0.3.25 while 0.4.1
+  // shipped, and @simplewebauthn/server 13.3.0 while 13.3.2 shipped. A row
+  // that is simply MISSING is the same failure one step earlier: @noble/curves
+  // shipped for releases without appearing in the table at all.
+  //
+  // Data entries (the password list, the Public Suffix List, the BIMI
+  // anchors) carry a snapshot date rather than a semver, and the table says
+  // so in its own words; they are matched by presence, not by version string.
+  var root = path.resolve(__dirname, "..", "..");
+  var manifest, readme;
+  try { manifest = JSON.parse(fs.readFileSync(path.join(root, "lib", "vendor", "MANIFEST.json"), "utf8")); }
+  catch (_e) { _report("README vendored table states the shipped versions",
+    [{ file: "lib/vendor/MANIFEST.json", line: 1, content: "unreadable / not JSON" }]); return; }
+  try { readme = fs.readFileSync(path.join(root, "README.md"), "utf8"); }
+  catch (_e) { _report("README vendored table states the shipped versions",
+    [{ file: "README.md", line: 1, content: "README.md missing" }]); return; }
+
+  // Entries whose manifest "version" is a snapshot marker, not a semver the
+  // table can quote verbatim. Each states why in its own words.
+  var SNAPSHOT_ENTRIES = {
+    "SecLists-common-passwords-top-10000":
+      "bundled as a dated master snapshot; the table quotes 'master snapshot' because upstream publishes no versioned release",
+    "publicsuffix-list":
+      "bundled as a dated master snapshot; upstream is a continuously-updated .dat with a timestamp header, not a semver",
+    "bimi-trust-anchors":
+      "operator-managed trust anchors; the shipped default carries no third-party content and no upstream version",
+  };
+
+  var lines = readme.split("\n");
+  var bad = [];
+  Object.keys(manifest.packages || {}).forEach(function (key) {
+    if (SNAPSHOT_ENTRIES[key]) return;
+    var declared = manifest.packages[key].version;
+    var rowIdx = -1;
+    for (var i = 0; i < lines.length; i += 1) {
+      if (lines[i].indexOf("| [`" + key + "`]") === 0) { rowIdx = i; break; }
+    }
+    if (rowIdx === -1) {
+      bad.push({ file: "README.md", line: 1,
+        content: "vendored package '" + key + "' (v" + declared +
+                 ") has no row in the README vendored-dependency table" });
+      return;
+    }
+    // `| [`pkg`](url) | VERSION | author | purpose |` — cell 2 is the version.
+    var shown = lines[rowIdx].split("|").map(function (c) { return c.trim(); })[2];
+    if (shown !== declared) {
+      bad.push({ file: "README.md", line: rowIdx + 1,
+        content: "README says " + key + " is at '" + shown +
+                 "' but lib/vendor/MANIFEST.json ships " + declared });
+    }
+  });
+  _report("README vendored table states the shipped versions", bad);
+}
+
 // ---- Pattern 47: documented script flags must exist in the script ----
 
 function testDocumentedScriptFlagsExist() {
@@ -16470,6 +16531,7 @@ async function run() {
   testVendorBundlesReviewable();
   testScannerPolicyCoversVendorDataCarriers();
   testVendorComponentsAttributedInNotice();
+  testReadmeVendorTableMatchesManifest();
   testDocumentedScriptFlagsExist();
   // v0.8.91 bug-class detectors — derived from the
   // mail-require-tls / fal.meets / cdn-cache-control / SRS fix-ups.
