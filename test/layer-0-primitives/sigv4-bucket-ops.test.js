@@ -1831,10 +1831,51 @@ function testSigv4CanonicalHelperEdgeBranches() {
   });
   check("signRequest: a whitespace-significant header reaches the wire unaltered",
         signedWs.headers["content-type"] === spacey);
-  check("signRequest: leading/trailing padding is likewise preserved on the wire",
-        sigv4.canonicalHeaders({ "X-Amz-Meta-Pad": "  padded  " }).merged["x-amz-meta-pad"] === "  padded  ");
-  check("signRequest: but the signature still commits to the trimmed form",
-        sigv4.canonicalHeaders({ "X-Amz-Meta-Pad": "  padded  " }).canonical === "x-amz-meta-pad:padded\n");
+  // Outer padding is dropped from the wire too. It is not significant in a
+  // field value, and keeping it would break the duplicate join below.
+  var padded = sigv4.canonicalHeaders({ "X-Amz-Meta-Pad": "  padded  " });
+  check("canonicalHeaders: outer padding is trimmed from the wire value",
+        padded.merged["x-amz-meta-pad"] === "padded");
+  check("canonicalHeaders: and the signature commits to the same trimmed form",
+        padded.canonical === "x-amz-meta-pad:padded\n");
+
+  // The two rules interact: joining duplicates whose values carry outer padding
+  // would turn that padding into INTERNAL whitespace, which a receiver
+  // preserves instead of trimming — so it would canonicalize "one , two"
+  // against a signature over "one,two" and reject the request.
+  var paddedDup = sigv4.canonicalHeaders({ "X-Tag": "one ", "x-tag": " two" });
+  check("canonicalHeaders: padded duplicates join without introducing inner spaces",
+        paddedDup.merged["x-tag"] === "one,two");
+  check("canonicalHeaders: the padded-duplicate signature covers the same bytes",
+        paddedDup.canonical === "x-tag:one,two\n");
+
+  // What the peer reconstructs from the wire value must equal what was signed.
+  // Re-canonicalizing the transmitted header is exactly what the service does,
+  // so this is the invariant that actually decides accept-vs-403.
+  [
+    { "X-Tag": "one ", "x-tag": " two" },
+    { "X-Amz-Meta-Pad": "  padded  " },
+    { "Content-Type": 'multipart/form-data; boundary="a  b"' },
+    { "Host": "s3.example.com", "x-amz-date": "20260101T000000Z" },
+    // Padding on BOTH sides of BOTH duplicates, and a third occurrence.
+    { "X-T": " a ", "x-t": "  b  ", "X-t": "c" },
+    // Tabs are whitespace too — canonicalization collapses them, so a wire
+    // value that kept one would reconstruct differently.
+    { "X-Tab": "a\tb", "x-tab": "\tc\t" },
+    // Runs of internal whitespace inside a single value.
+    { "X-Run": "a     b" },
+    // Degenerate values: empty, whitespace-only, and an empty duplicate half.
+    { "X-Empty": "" },
+    { "X-Ws": "   " },
+    { "X-Half": "v", "x-half": "   " },
+    // Numeric and non-string values go through String() first.
+    { "Content-Length": 1234 },
+  ].forEach(function (hdrs, i) {
+    var r = sigv4.canonicalHeaders(hdrs);
+    var reconstructed = sigv4.canonicalHeaders(r.merged);
+    check("canonicalHeaders: case " + i + " — re-canonicalizing the WIRE headers reproduces the SIGNED bytes",
+          reconstructed.canonical === r.canonical && reconstructed.signed === r.signed);
+  });
 }
 
 // signRequest's own defaulting arms: a bare https:// string URL with no
