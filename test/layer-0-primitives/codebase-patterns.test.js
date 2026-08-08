@@ -12043,6 +12043,29 @@ var KNOWN_ANTIPATTERNS = [
     reason: "A db-handle primitive that hand-rolls DML by concatenating a SQL string literal into db.prepare/runSql re-implements b.sql's identifier quoting + sealed-field rewrite and drifts from db.from() — the tenant-quota storage query accrued reserved-word, schema-qualified and sealed-column parity defects across six review rounds doing exactly this. Compose `sql.select/insert/update/delete(table, { dialect: 'sqlite', quoteName: true }).….toSql()` and `db.prepare(built.sql)` instead (skip the unseal loop when you need raw on-disk bytes). Matches an inline SELECT/INSERT/UPDATE/DELETE literal passed to db.prepare/runSql (optionally wrapped in one helper call such as safeSql.assertSingleStatement); a db.prepare(<variable>) built by b.sql does not match, and DDL/PRAGMA is out of scope. See lib/tenant-quota.js and lib/dsr.js for the composed shape.",
   },
 
+
+  {
+    id: "tls-group-preference-under-an-inert-key",
+    primitive: "b.network.tls",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // node:tls reads the TLS 1.3 named-group preference as `ecdhCurve` and
+    // nothing else. A key it does not implement is accepted and silently
+    // ignored -- tls.createSecureContext({ groups }) and { curves } both
+    // return a context that negotiates on the runtime defaults, while a
+    // malformed ecdhCurve throws. Routing the group list through one of those
+    // names therefore produces code that reads as though it pins the
+    // preference and pins nothing: the WebSocket client shipped `curves` that
+    // way, and the shared context filler emitted `groups`, so an operator
+    // narrowing the list had it apply to neither. Matches only an assignment
+    // whose value is visibly the group preference (an ecdhCurve, a key-share
+    // list, an ML-KEM group name, the shared constant), which is what makes
+    // this a preference routed through a dead name rather than an unrelated
+    // property that happens to be spelled `groups`.
+    regex: /\b(?:groups|curves|namedCurves)\s*[:=]\s*[^;\r\n]*(?:ecdhCurve|[Kk]eyShares|MLKEM|TLS_GROUP)/,
+    allowlist: [],
+    reason: "The TLS named-group preference must be assigned to `ecdhCurve` -- the only spelling node:tls reads. `groups` / `curves` / `namedCurves` are accepted and ignored by tls.connect and tls.createSecureContext, so a preference assigned to one of them never reaches the handshake while looking like it does: b.wsClient shipped a `curves` list that was inert for several releases, and network-tls.applyToContext filled `groups`, leaving every operator https.Server built through it negotiating on Node's defaults instead of the configured key shares. Assign the resolved list to `ecdhCurve` and emit nothing under a second name -- a duplicate key reads as a second handle on the preference that an operator can narrow to no effect. Matches only where the assigned value is visibly the group preference.",
+  },
 ];
 
 // @example placeholder detection lives in

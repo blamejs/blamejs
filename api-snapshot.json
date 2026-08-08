@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.18.17",
-  "createdAt": "2026-08-08T16:22:21.969Z",
+  "frameworkVersion": "0.18.18",
+  "createdAt": "2026-08-08T18:07:06.637Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -46107,6 +46107,10 @@
               "type": "function",
               "arity": 2
             },
+            "annotateOutboundFailure": {
+              "type": "function",
+              "arity": 2
+            },
             "applyToContext": {
               "type": "function",
               "arity": 1
@@ -46179,6 +46183,10 @@
             "expiryMonitor": {
               "type": "function",
               "arity": 1
+            },
+            "explainOutboundFailure": {
+              "type": "function",
+              "arity": 2
             },
             "getCaPems": {
               "type": "function",

@@ -20,6 +20,7 @@
 
 var http       = require("http");
 var https      = require("https");
+var tls        = require("node:tls");
 var http2      = require("http2");
 var nodeStream = require("stream");
 var nodeCrypto = require("crypto");
@@ -3260,8 +3261,63 @@ async function run() {
     await testDownloadStreamAuditThrows();
     await testBeforeHookFalsyThrow();
     await testCacheMoreBranches();
+    await testTls12PeerFailureNamesTheFloor();
   } finally {
     await _drainTcpHandles();
+  }
+}
+
+
+// ---- A refused handshake names the posture that refused it ----
+//
+// The outbound posture pins a TLS 1.3 floor, so a peer that offers only TLS
+// 1.2 is turned away with a bare `tlsv1 alert protocol version`. That alert
+// names neither the peer nor the floor, and reads as a version problem with
+// the request rather than a policy the client applied -- in practice it gets
+// attributed to the post-quantum group preference, which is not involved.
+// Driven through b.httpClient.request against a loopback server capped at TLS
+// 1.2, which is the operator's path, not the primitive's.
+async function testTls12PeerFailureNamesTheFloor() {
+  var pair = helpers.selfSignedPair();
+  var server = tls.createServer({
+    key:        pair.key,
+    cert:       pair.cert,
+    maxVersion: "TLSv1.2",
+    minVersion: "TLSv1.2",
+  }, function (sock) { sock.end(); });
+  await new Promise(function (resolve, reject) {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  var port = server.address().port;
+  try {
+    var caught = null;
+    try {
+      await b.httpClient.request({
+        method:    "GET",
+        url:       "https://127.0.0.1:" + port + "/",
+        tlsOpts:   { ca: [pair.cert], servername: pair.commonName },
+        allowedHosts:  ["127.0.0.1"],
+        allowInternal: true,
+      });
+    } catch (e) { caught = e; }
+
+    // Pin WHICH failure: without this the egress gate refusing loopback
+    // satisfies "the request failed" and the assertions below never see a
+    // handshake at all.
+    check("the request fails on the handshake, not an earlier gate",
+          caught !== null && caught.code === "ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION");
+    var msg = (caught && caught.message) || "";
+    check("the failure names the TLS 1.3 floor as the cause",
+          msg.indexOf("TLS 1.3") !== -1);
+    check("the failure names the peer",
+          msg.indexOf("127.0.0.1:" + port) !== -1);
+    check("the failure says the group preference is not the cause",
+          /unrelated to the post-quantum group preference/.test(msg));
+    check("the original alert text is carried through, not replaced",
+          /alert protocol version|EPROTO|wrong version/i.test(msg));
+  } finally {
+    await new Promise(function (r) { server.close(r); });
   }
 }
 

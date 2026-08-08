@@ -61,23 +61,27 @@ function testNarrowToFrameworkSubset() {
   two.destroy();
 }
 
-function testGroupsMirrorEcdhCurve() {
-  // The negotiated TLS `groups` list must track the resolved `ecdhCurve`
-  // string, not be independently re-derived from network-tls's
-  // tlsKeyShares ordering. A caller who narrows/reorders ecdhCurve and
-  // gets a groups list that ignores it would negotiate a different key
-  // share than requested.
+function testNarrowedSelectionSurvivesTheContextFill() {
+  // The agent's options pass through network-tls's context filler, which
+  // supplies the configured key shares when the base names no preference. A
+  // caller who narrowed or reordered the list must not have it re-derived
+  // from that ordering underneath them, or the handshake would offer key
+  // shares they had deliberately dropped.
   var agent = b.pqcAgent.create();
-  check("default: groups mirrors ecdhCurve exactly",
-        agent.options.groups === agent.options.ecdhCurve);
+  check("default: the group preference is a non-empty string",
+        typeof agent.options.ecdhCurve === "string" &&
+        agent.options.ecdhCurve.length > 0);
   agent.destroy();
 
-  // Narrowing to a single hybrid — groups tracks the narrowed value.
   var narrowed = b.pqcAgent.create({ ecdhCurve: "SecP256r1MLKEM768" });
-  check("narrowed: groups mirrors the narrowed ecdhCurve",
-        narrowed.options.groups === "SecP256r1MLKEM768" &&
+  check("narrowed: the context filler leaves the narrowed list alone",
         narrowed.options.ecdhCurve === "SecP256r1MLKEM768");
   narrowed.destroy();
+
+  var reordered = b.pqcAgent.create({ ecdhCurve: "X25519:X25519MLKEM768" });
+  check("reordered: the caller's ordering is preserved, not re-derived",
+        reordered.options.ecdhCurve === "X25519:X25519MLKEM768");
+  reordered.destroy();
 }
 
 function testRefuseUnknownGroupByDefault() {
@@ -125,8 +129,8 @@ async function testAllowOperatorGroupsAuditEmit() {
     });
     check("secp256r1 accepted under allowOperatorGroups",
           agent.options.ecdhCurve === "secp256r1");
-    check("operator-group: groups mirrors the operator-supplied ecdhCurve",
-          agent.options.groups === "secp256r1");
+    check("operator-group: nothing re-derives over the operator's choice",
+          agent.options.groups === undefined);
     agent.destroy();
 
     await b.audit.flush();
@@ -235,7 +239,7 @@ function testReloadAfterBuild() {
 async function run() {
   await testDefaultGroupList();
   testNarrowToFrameworkSubset();
-  testGroupsMirrorEcdhCurve();
+  testNarrowedSelectionSurvivesTheContextFill();
   testRefuseUnknownGroupByDefault();
   await testAllowOperatorGroupsAuditEmit();
   await testKeyExchangeObservation();

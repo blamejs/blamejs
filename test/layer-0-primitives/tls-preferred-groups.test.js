@@ -12,6 +12,7 @@
  * the list.
  */
 
+var tls     = require("node:tls");
 var helpers = require("../helpers");
 var b       = helpers.b;
 var check   = helpers.check;
@@ -66,10 +67,57 @@ function testPqcAliasMatchesPreferredGroups() {
 function testApplyToContextEmitsGroups() {
   b.network.tls.preferredGroups.reset();
   var ctx = b.network.tls.applyToContext({ base: {} });
-  check("applyToContext emits groups string",
-        typeof ctx.groups === "string" && ctx.groups.indexOf("X25519MLKEM768") === 0);
-  check("applyToContext groups string contains SecP256r1MLKEM768",
-        ctx.groups.indexOf("SecP256r1MLKEM768") !== -1);
+  check("applyToContext emits the group preference",
+        typeof ctx.ecdhCurve === "string" &&
+        ctx.ecdhCurve.indexOf("X25519MLKEM768") === 0);
+  check("applyToContext group string contains SecP256r1MLKEM768",
+        ctx.ecdhCurve.indexOf("SecP256r1MLKEM768") !== -1);
+}
+
+// applyToContext is the documented way to put the framework's posture onto an
+// operator's own https.Server / https.Agent, so what matters is which group
+// the handshake actually settles on. Reading a key back off the returned
+// object cannot show that: node:tls accepts a key it does not implement and
+// ignores it, which is how the preference came to be emitted under a name the
+// TLS layer never reads. Narrow the preference to the classical group and let
+// a client that PREFERS the hybrid negotiate against it — the server has to
+// be the thing that turns it down.
+async function testApplyToContextRestrictsTheNegotiatedGroup() {
+  var pair = helpers.selfSignedPair();
+  b.network.tls.preferredGroups.set(["X25519"]);
+  var server = null;
+  try {
+    var ctx = b.network.tls.applyToContext({
+      base: { key: pair.key, cert: pair.cert },
+    });
+    server = tls.createServer(ctx, function (sock) { sock.end(); });
+    await new Promise(function (resolve, reject) {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+
+    var negotiated = await new Promise(function (resolve, reject) {
+      var sock = tls.connect({
+        port:       server.address().port,
+        host:       "127.0.0.1",
+        ca:         [pair.cert],
+        servername: pair.commonName,
+        minVersion: "TLSv1.3",
+        ecdhCurve:  "X25519MLKEM768:X25519",
+      }, function () {
+        var info = sock.getEphemeralKeyInfo();
+        resolve((info && info.name) || "");
+        sock.destroy();
+      });
+      sock.on("error", reject);
+    });
+
+    check("a narrowed preference reaches the server's handshake",
+          negotiated === "X25519");
+  } finally {
+    b.network.tls.preferredGroups.reset();
+    if (server) await new Promise(function (r) { server.close(r); });
+  }
 }
 
 // ---- The outbound TLS posture is applied by every client, not per-caller ----
@@ -236,11 +284,11 @@ async function testNarrowedGroupsReachEveryOutboundClient() {
       // So this is the assertion that means anything about the wire.
       check("the HTTP/1.1 agent offers the narrowed groups",
             agent.options.ecdhCurve === expected);
-      // `groups` is carried alongside for callers that read it back; it must
-      // not disagree with ecdhCurve, or the two would tell an operator
-      // different stories about the same agent.
-      check("the agent's groups value does not contradict its ecdhCurve",
-            agent.options.groups === agent.options.ecdhCurve);
+      // Nothing is carried alongside under a name the TLS layer ignores: a
+      // second key holding the same list reads as a second handle on the
+      // preference, and an operator narrowing THAT one would change nothing.
+      check("the agent carries no inert second copy of the group list",
+            agent.options.groups === undefined);
     } finally { agent.destroy(); }
 
     // The process-wide default agent is cached, so it has the same staleness
@@ -421,14 +469,129 @@ async function run() {
   testOperatorOptOut();
   testPqcAliasMatchesPreferredGroups();
   testApplyToContextEmitsGroups();
+  await testApplyToContextRestrictsTheNegotiatedGroup();
   testGroupOrderIsSingleSourced();
   await testFrameworkGroupsDoNotForceHelloRetry();
   testOutboundPostureShape();
+  testEveryPreferredGroupIsKnownToTheRuntime();
+  testExplainOutboundFailure();
+  testAnnotateOutboundFailure();
   await testNarrowedGroupsReachEveryOutboundClient();
   testBuildOptionsCarriesCertCompression();
   await testRedisClientAppliesThePosture();
   await testSyslogSinkAppliesThePosture();
   await testWsClientAppliesThePosture();
+}
+
+
+// ---- A refused handshake is explained, not just reported ----
+//
+// OpenSSL reports a rejected ClientHello as a bare alert. Two of those alerts
+// are routinely the posture doing its job, and they are NOT the same cause:
+// protocol_version means the peer has no TLS 1.3, handshake_failure means it
+// shares none of the offered groups. Conflating them sends an operator after
+// the post-quantum groups for a failure the groups had no part in, which is
+// exactly what happened in the field.
+function _alert(code, text) {
+  var e = new Error(text);
+  e.code = code;
+  return e;
+}
+
+function testExplainOutboundFailure() {
+  b.network.tls.preferredGroups.reset();
+
+  var version = b.network.tls.explainOutboundFailure(
+    _alert("ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION", "ssl3_read_bytes:tlsv1 alert protocol version"),
+    { host: "peer.example", port: 443 });
+  check("a protocol-version alert is attributed to the TLS 1.3 floor",
+        typeof version === "string" && version.indexOf("TLS 1.3") !== -1);
+  check("the explanation names the peer",
+        version.indexOf("peer.example:443") !== -1);
+  check("the explanation clears the group preference of blame",
+        /unrelated to the post-quantum group preference/.test(version));
+  check("the original alert text survives in the explanation",
+        version.indexOf("tlsv1 alert protocol version") !== -1);
+
+  // The shipped preference ends in classical X25519, so a peer always has
+  // something to pick and a group-mismatch reading would be wrong.
+  var withFallback = b.network.tls.explainOutboundFailure(
+    _alert("ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE", "ssl/tls alert handshake failure"),
+    { host: "peer.example" });
+  check("a handshake-failure alert is NOT blamed on groups while a classical fallback is offered",
+        withFallback === null);
+
+  var narrowed = b.network.tls.explainOutboundFailure(
+    _alert("ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE", "ssl/tls alert handshake failure"),
+    { host: "peer.example", ecdhCurve: "X25519MLKEM768:SecP256r1MLKEM768" });
+  check("a narrowed hybrid-only list IS reported as the likely cause",
+        typeof narrowed === "string" &&
+        narrowed.indexOf("X25519MLKEM768:SecP256r1MLKEM768") !== -1);
+
+  check("an unrelated error gets no invented explanation",
+        b.network.tls.explainOutboundFailure(_alert("ECONNREFUSED", "connect ECONNREFUSED")) === null);
+  check("a non-error argument is handled without throwing",
+        b.network.tls.explainOutboundFailure(null) === null);
+}
+
+function testAnnotateOutboundFailure() {
+  b.network.tls.preferredGroups.reset();
+  var err = _alert("ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION", "tlsv1 alert protocol version");
+  var returned = b.network.tls.annotateOutboundFailure(err, { host: "peer.example", port: 443 });
+
+  check("annotate hands back the same error object", returned === err);
+  check("annotate leaves the code alone for callers branching on it",
+        err.code === "ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION");
+  check("annotate rewrites the message", err.message.indexOf("TLS 1.3") !== -1);
+  check("annotate refreshes the stack's copy of the message",
+        typeof err.stack !== "string" || err.stack.indexOf("TLS 1.3") !== -1);
+
+  // An error can reach more than one handler on its way out; a second pass
+  // must not nest one explanation inside the next one's "Underlying error:".
+  var before = err.message;
+  b.network.tls.annotateOutboundFailure(err, { host: "peer.example", port: 443 });
+  check("annotating twice leaves the message unchanged", err.message === before);
+  check("annotating twice does not nest explanations",
+        (err.message.match(/TLS handshake refused/g) || []).length === 1);
+
+  var untouched = _alert("ECONNREFUSED", "connect ECONNREFUSED 10.0.0.1:443");
+  b.network.tls.annotateOutboundFailure(untouched, { host: "peer.example" });
+  check("annotate leaves an error it cannot explain exactly as it was",
+        untouched.message === "connect ECONNREFUSED 10.0.0.1:443");
+}
+
+
+// Every group in the preference has to be a name THIS runtime's OpenSSL
+// knows. The list is now applied as `ecdhCurve`, and an unrecognised name
+// there throws rather than being skipped -- so a group added to the
+// preference that the runtime lacks would not degrade gracefully, it would
+// fail every server and agent built through applyToContext at construction.
+// The bogus control keeps this honest: if createSecureContext ever stopped
+// rejecting unknown names, the assertions above it would pass vacuously.
+function testEveryPreferredGroupIsKnownToTheRuntime() {
+  b.network.tls.preferredGroups.reset();
+  var bogus = false;
+  try { tls.createSecureContext({ ecdhCurve: "definitely-not-a-real-group" }); }
+  catch (_e) { bogus = true; }
+  check("the runtime rejects an unknown group name (control)", bogus);
+
+  var groups = b.network.tls.preferredGroups.get();
+  for (var i = 0; i < groups.length; i += 1) {
+    var ok = true;
+    try { tls.createSecureContext({ ecdhCurve: groups[i] }); }
+    catch (_e2) { ok = false; }
+    check("preferred group '" + groups[i] + "' is known to this runtime", ok);
+  }
+
+  var whole = true;
+  try { tls.createSecureContext({ ecdhCurve: groups.join(":") }); }
+  catch (_e3) { whole = false; }
+  check("the whole preference is accepted as one ecdhCurve string", whole);
+
+  // The hybrid the framework leads with must survive a real handshake, not
+  // merely be a name the context accepts.
+  check("the preference leads with X25519MLKEM768",
+        groups[0] === "X25519MLKEM768");
 }
 
 module.exports = { run: run };

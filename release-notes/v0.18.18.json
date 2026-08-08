@@ -1,0 +1,44 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.18.18",
+  "date": "2026-08-08",
+  "headline": "An operator's own TLS server never applied the group preference the framework told it to apply, and a refused handshake said nothing about why",
+  "summary": "b.network.tls.applyToContext is the documented way to put the framework's TLS posture onto your own https.Server or https.Agent. It emitted the configured key shares under a key node:tls does not implement, which that library accepts and ignores, so every server and agent built through it negotiated on Node's defaults and preferredGroups.set(...) changed nothing for them. Two other places carried the same key alongside the working one, where it read as a second handle on the preference that an operator could narrow to no effect. All three now emit only the name the TLS layer reads. Separately, a handshake the outbound posture refuses arrived as a bare OpenSSL alert naming neither the peer nor the reason, and the reason was routinely misread: the alert for a TLS 1.3 floor and the alert for an unsatisfiable group list are different codes, and only the second has anything to do with post-quantum groups. Both are now explained in place.",
+  "sections": [
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "A server built with b.network.tls.applyToContext now actually offers the configured key shares",
+          "body": "The function supplied the group preference as a `groups` key. node:tls has no such option — it accepts the key and ignores it, whereas a malformed `ecdhCurve` throws — so nothing it returned ever pinned the preference. An operator wiring their own https.Server or https.Agent through it, which is what its documentation directs, negotiated on Node's default group order instead, and b.network.tls.preferredGroups.set(...) had no effect on those connections however it was called. The framework's own clients were unaffected: each sets `ecdhCurve` before reaching this function. The preference is now emitted as `ecdhCurve`. A base config naming its own preference still wins, under either spelling — `groups` is the name this function asked operators for, so it is translated rather than ignored.\n\nThe same key was returned alongside the working one by b.network.tls.buildOptions and set on the agent by b.pqcAgent.create. It was inert in both, and a duplicate that looks like a second handle on the preference is worse than none: narrowing it changes nothing. Neither emits it now. Reading the group list back off either result still works, under `ecdhCurve`.\n\nA test re-establishes on the running Node which option names are ignored — a value no implementation could accept throws on an option that is honoured and is swallowed by one that is not — and fails rather than passing silently if a future Node implements one of them.\n\nThe practical consequence is that such a server now offers what the framework configures rather than what the runtime happens to default to, and negotiates the hybrid first: a client expressing no preference lands on X25519MLKEM768, and the NIST-curve and ML-KEM-1024 hybrids are each reachable by a client that asks for one. It also stops accepting groups outside the configured list, which is the point of configuring one. Every group in the shipped preference is verified against the runtime, since an unrecognised name in this option throws rather than being skipped."
+        },
+        {
+          "title": "A handshake refused by the outbound posture now names the cause",
+          "body": "A peer the posture cannot negotiate with produced only the raw alert, most often `tlsv1 alert protocol version`, which names neither the peer nor the clause that refused it. Two different failures were arriving behind it and were routinely attributed to the same cause: a `protocol_version` alert means the peer offers no TLS 1.3, which the client requires and which has nothing to do with the group preference, while a `handshake_failure` alert against a narrowed group list means the peer shares none of the groups offered. Under the shipped preference the second cannot happen — the list ends in classical X25519, so a peer with no post-quantum hybrid negotiates that — so it points specifically at a list narrowed past what the peer supports.\n\nb.network.tls.explainOutboundFailure(err, ctx?) returns a sentence naming the likely cause, or null when it has nothing to say; b.network.tls.annotateOutboundFailure(err, ctx?) rewrites the message in place and hands the same error back, so err.code, the error class and anything a caller branches on are untouched. The wording is hedged, because neither alert is exclusive to these causes, and the original error text is carried through rather than replaced. b.httpClient, b.wsClient and the rediss:// path report through it. There is no opt-out: the floor stays a floor."
+        }
+      ]
+    },
+    {
+      "heading": "Detectors",
+      "items": [
+        {
+          "title": "A group preference assigned to a name node:tls ignores now fails the build",
+          "body": "The TLS named-group preference is read as `ecdhCurve` and nothing else, but `groups`, `curves` and `namedCurves` are all accepted and silently discarded, so a list assigned to one of them reads as a pinned preference and pins nothing. That shape has now shipped twice — a `curves` list on the WebSocket client, and the context filler above. A detector matches an assignment to one of those names whose value is visibly the group preference."
+        }
+      ]
+    },
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "Test files carrying NUL-byte fixtures have their line endings pinned",
+          "body": "git classifies a file containing a NUL byte as binary and skips line-ending normalization for it, so a text-mode write on Windows commits CRLF verbatim and rewrites the whole file. Three test files were carrying that churn. They are pinned to LF in .gitattributes and renormalized. No shipped file is affected — the published package excludes test/."
+        },
+        {
+          "title": "The fuzzing base image moves to the current oss-fuzz base-builder",
+          "body": "gcr.io/oss-fuzz-base/base-builder-javascript advances to sha256:2e218ded. The change upstream is confined to one file in the build indexer: four type-checker suppressions removed, and archive creation now follows symlinks. No layer, entrypoint, environment or file was added."
+        }
+      ]
+    }
+  ]
+}
