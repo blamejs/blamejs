@@ -72,12 +72,220 @@ function testApplyToContextEmitsGroups() {
         ctx.groups.indexOf("SecP256r1MLKEM768") !== -1);
 }
 
+// ---- The outbound TLS posture is applied by every client, not per-caller ----
+//
+// Each protocol client the framework ships assembles its own tls.connect
+// options. When each one hand-listed the posture keys, they drifted: the
+// Redis client pinned neither the TLS floor nor the hybrid groups, the syslog
+// sink pinned the floor but no groups, and the WebSocket client set `curves`
+// — which node:tls does not recognize (`tls.createSecureContext({ curves })`
+// is accepted and ignored, while a bad `ecdhCurve` throws), so its groups
+// never reached the handshake. One posture object closes the class: these
+// assertions fail for ANY outbound client that stops merging it.
+function _postureKeysPresent(opts) {
+  if (!opts) return false;
+  if (opts.minVersion !== "TLSv1.3") return false;
+  if (typeof opts.ecdhCurve !== "string" || opts.ecdhCurve.indexOf("MLKEM") === -1) return false;
+  var expected = b.constants.TLS_CERT_COMPRESSION();
+  if (expected.length === 0) return true;                   // runtime predates RFC 8879 support
+  return Array.isArray(opts.certificateCompression) &&
+         opts.certificateCompression.join(",") === expected.join(",");
+}
+
+// Capture the options handed to tls.connect by `drive`, without letting a
+// real connection out. Returns the captured options (or null).
+async function _captureTlsConnectOpts(label, drive) {
+  var nodeTls = require("node:tls");
+  var orig = nodeTls.connect;
+  var captured = null;
+  nodeTls.connect = function (opts) {
+    if (captured === null && opts && typeof opts === "object") captured = opts;
+    // Hand back a socket aimed at a closed port so the caller's error path
+    // runs normally instead of reaching the intended host.
+    var s = orig.call(nodeTls, { host: "127.0.0.1", port: 1 });
+    s.on("error", function () { /* expected — nothing listens on port 1 */ });
+    return s;
+  };
+  try {
+    await drive();
+    await helpers.waitUntil(function () { return captured !== null; },
+      { timeoutMs: 5000, label: "tls posture: " + label + " called tls.connect" });
+  } finally {
+    nodeTls.connect = orig;
+  }
+  return captured;
+}
+
+function testOutboundPostureShape() {
+  var posture = b.constants.TLS_OUTBOUND_POSTURE();
+  check("TLS_OUTBOUND_POSTURE pins the TLS 1.3 floor",
+        posture.minVersion === "TLSv1.3");
+  check("TLS_OUTBOUND_POSTURE carries the hybrid group preference",
+        posture.ecdhCurve === b.constants.TLS_GROUP_CURVE_STR);
+  check("TLS_OUTBOUND_POSTURE returns a fresh object each call",
+        b.constants.TLS_OUTBOUND_POSTURE() !== posture);
+  var algs = b.constants.TLS_CERT_COMPRESSION();
+  check("TLS_CERT_COMPRESSION is frozen (callers cannot mutate the shared list)",
+        Object.isFrozen(algs));
+  var reported = b.network.tls.certificateCompressionAlgorithms();
+  check("certificateCompressionAlgorithms reports the same algorithms",
+        reported.join(",") === algs.join(","));
+  check("certificateCompressionAlgorithms hands back a copy the caller owns",
+        reported !== algs && !Object.isFrozen(reported) &&
+        b.network.tls.certificateCompressionAlgorithms() !== reported);
+  if (algs.length > 0) {
+    check("TLS_OUTBOUND_POSTURE advertises certificate compression",
+          posture.certificateCompression.join(",") === algs.join(","));
+  } else {
+    check("TLS_OUTBOUND_POSTURE omits certificateCompression when unsupported",
+          posture.certificateCompression === undefined);
+  }
+}
+
+function testBuildOptionsCarriesCertCompression() {
+  var algs = b.constants.TLS_CERT_COMPRESSION();
+  var out = b.network.tls.buildOptions({});
+  if (algs.length > 0) {
+    check("buildOptions defaults certificateCompression to the runtime list",
+          Array.isArray(out.certificateCompression) &&
+          out.certificateCompression.join(",") === algs.join(","));
+    check("buildOptions lets an operator narrow the algorithm list",
+          b.network.tls.buildOptions({ certificateCompression: ["brotli"] })
+            .certificateCompression.join(",") === "brotli");
+    check("buildOptions lets an operator advertise none via []",
+          b.network.tls.buildOptions({ certificateCompression: [] })
+            .certificateCompression === undefined);
+    var unknownErr = null;
+    try { b.network.tls.buildOptions({ certificateCompression: ["lzma"] }); }
+    catch (e) { unknownErr = e; }
+    check("buildOptions refuses an algorithm this runtime cannot decompress",
+          unknownErr && unknownErr.code === "network-tls/bad-tls-options");
+    var shapeErr = null;
+    try { b.network.tls.buildOptions({ certificateCompression: "brotli" }); }
+    catch (e) { shapeErr = e; }
+    check("buildOptions refuses the string form (node:tls requires an array)",
+          shapeErr && shapeErr.code === "network-tls/bad-tls-options");
+  } else {
+    check("buildOptions omits certificateCompression on a runtime without it",
+          out.certificateCompression === undefined);
+  }
+  var ctx = b.network.tls.applyToContext({ base: {} });
+  check("applyToContext carries the same certificate-compression posture",
+        (algs.length === 0 && ctx.certificateCompression === undefined) ||
+        (algs.length > 0 && ctx.certificateCompression.join(",") === algs.join(",")));
+  check("applyToContext keeps an operator's certificateCompression override",
+        b.network.tls.applyToContext({ base: { certificateCompression: [] } })
+          .certificateCompression.length === 0);
+}
+
+async function testRedisClientAppliesThePosture() {
+  var redis = require("../../lib/redis-client");
+  var opts = await _captureTlsConnectOpts("redis", function () {
+    var c = redis.create({
+      url: "rediss://localhost:1/0", connectTimeoutMs: 200, maxReconnectAttempts: 0,
+    });
+    return c.connect().then(
+      function () { return c.close(); },
+      function () { return c.close(); }
+    );
+  });
+  check("redis rediss:// dial applies the framework outbound TLS posture",
+        _postureKeysPresent(opts));
+}
+
+async function testSyslogSinkAppliesThePosture() {
+  var syslog = require("../../lib/log-stream-syslog");
+  var sink = null;
+  var opts = await _captureTlsConnectOpts("syslog", function () {
+    sink = syslog.create({ url: "tls://localhost:1", onDrop: function () {} });
+    return Promise.resolve();
+  });
+  if (sink) { try { await sink.close(); } catch (_e) { /* teardown */ } }
+  check("syslog tls:// sink applies the framework outbound TLS posture",
+        _postureKeysPresent(opts));
+}
+
+async function testWsClientAppliesThePosture() {
+  var wsClient = require("../../lib/ws-client");
+  var conn = null;
+  var opts = await _captureTlsConnectOpts("ws-client", function () {
+    conn = wsClient.connect("wss://127.0.0.1:1/", {
+      reconnect: false, audit: false, allowInternal: true, handshakeTimeoutMs: 200,
+    });
+    conn.on("error", function () { /* expected — nothing listens on port 1 */ });
+    return Promise.resolve();
+  });
+  if (conn) { try { conn.close(); } catch (_e) { /* teardown */ } }
+  check("wss:// dial applies the framework outbound TLS posture",
+        _postureKeysPresent(opts));
+  check("wss:// dial pins groups via ecdhCurve, not the ignored `curves` alias",
+        opts && typeof opts.ecdhCurve === "string" && opts.curves === undefined);
+}
+
+// ---- The two group lists are one list ----
+//
+// `C.TLS_GROUP_PREFERENCE` feeds every protocol client's ecdhCurve;
+// `b.network.tls.preferredGroups` feeds the HTTP client and the operator
+// surface. They drifted into different orders, and order is not cosmetic:
+// Node sends a key share for the FIRST group only, so leading with a hybrid
+// the peer does not implement forces a HelloRetryRequest on every handshake.
+function testGroupOrderIsSingleSourced() {
+  b.network.tls.preferredGroups.reset();
+  check("constants and preferredGroups agree on the outbound group order",
+        b.constants.TLS_GROUP_PREFERENCE.join(",") ===
+        b.network.tls.preferredGroups.get().join(","));
+  check("the leading group is the widely-implemented hybrid",
+        b.constants.TLS_GROUP_PREFERENCE[0] === "X25519MLKEM768");
+}
+
+// A HelloRetryRequest is invisible to the TLS surface — the connection still
+// succeeds and still reports the negotiated hybrid — but Node hands the
+// client an EMPTY stapled OCSP response across the retried handshake. That
+// makes `ocsp.requireStapled` refuse a peer that DID staple. Drive a real
+// loopback handshake with the framework's own group string and require the
+// staple to arrive: this fails for any group order that provokes a retry.
+async function testFrameworkGroupsDoNotForceHelloRetry() {
+  var nodeTls = require("node:tls");
+  var pair = helpers.selfSignedPair({ commonName: "localhost" });
+  var STAPLE = Buffer.from([0x30, 0x00]);
+  var srv = nodeTls.createServer({ key: pair.key, cert: pair.cert },
+    function (s) { s.on("error", function () { /* peer reset */ }); });
+  srv.on("OCSPRequest", function (_cert, _issuer, cb) { cb(null, STAPLE); });
+  srv.on("error", function () { /* listen/accept best-effort */ });
+  srv.unref();
+  await new Promise(function (r) { srv.listen(0, "127.0.0.1", r); });
+  var staple = await new Promise(function (resolve) {
+    var seen = null;
+    var sock = nodeTls.connect({
+      // Trust the fixture's own certificate rather than switching
+      // verification off — the handshake under test is a real, verified one.
+      ca: [pair.cert], requestOCSP: true,
+      host: "127.0.0.1", port: srv.address().port, servername: "localhost",
+      minVersion: "TLSv1.3", ecdhCurve: b.constants.TLS_GROUP_CURVE_STR,
+    });
+    sock.on("OCSPResponse", function (r) { seen = r; });
+    sock.on("secureConnect", function () { sock.destroy(); resolve(seen); });
+    sock.on("error", function () { resolve(null); });
+  });
+  srv.close();
+  check("the framework group order delivers a peer's stapled OCSP response " +
+        "(no HelloRetryRequest)",
+        Buffer.isBuffer(staple) && staple.length === STAPLE.length);
+}
+
 async function run() {
   testPreferredGroupsSurface();
   testRfc9794DefaultOrdering();
   testOperatorOptOut();
   testPqcAliasMatchesPreferredGroups();
   testApplyToContextEmitsGroups();
+  testGroupOrderIsSingleSourced();
+  await testFrameworkGroupsDoNotForceHelloRetry();
+  testOutboundPostureShape();
+  testBuildOptionsCarriesCertCompression();
+  await testRedisClientAppliesThePosture();
+  await testSyslogSinkAppliesThePosture();
+  await testWsClientAppliesThePosture();
 }
 
 module.exports = { run: run };

@@ -99,10 +99,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Node 24.18.0 LTS
+      - name: Set up Node 24.19.0 LTS
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
-          node-version: '24.18.0'
+          node-version: '24.19.0'
 
       - name: Compute version + is_tag flag
         id: version
@@ -389,10 +389,10 @@ jobs:
     # in under 3 minutes combined. 15-min cap is generous.
     timeout-minutes: 15
     steps:
-      - name: Set up Node 24.18.0 LTS + npm registry auth
+      - name: Set up Node 24.19.0 LTS + npm registry auth
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
-          node-version: '24.18.0'
+          node-version: '24.19.0'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Download publish bundle (tarball + SBOMs + CHANGELOG)

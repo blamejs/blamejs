@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.18.16",
-  "createdAt": "2026-08-08T02:56:38.708Z",
+  "frameworkVersion": "0.18.17",
+  "createdAt": "2026-08-08T05:54:06.093Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -14102,6 +14102,10 @@
         "PQC_GROUPS": {
           "type": "object",
           "members": {
+            "SecP256r1MLKEM768": {
+              "type": "primitive",
+              "valueType": "number"
+            },
             "SecP384r1MLKEM1024": {
               "type": "primitive",
               "valueType": "number"
@@ -14141,6 +14145,10 @@
             }
           }
         },
+        "TLS_CERT_COMPRESSION": {
+          "type": "function",
+          "arity": 0
+        },
         "TLS_GROUP_CURVE_STR": {
           "type": "primitive",
           "valueType": "string"
@@ -14148,6 +14156,10 @@
         "TLS_GROUP_PREFERENCE": {
           "type": "instance",
           "ctorName": "Array"
+        },
+        "TLS_OUTBOUND_POSTURE": {
+          "type": "function",
+          "arity": 0
         },
         "VAULT_PREFIX": {
           "type": "primitive",
@@ -46112,6 +46124,10 @@
               "arity": 1
             },
             "captureBaselineFingerprints": {
+              "type": "function",
+              "arity": 0
+            },
+            "certificateCompressionAlgorithms": {
               "type": "function",
               "arity": 0
             },

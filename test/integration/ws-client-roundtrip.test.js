@@ -26,6 +26,7 @@
  */
 
 var http = require("node:http");
+var https = require("node:https");
 var helpers = require("../helpers");
 var check = helpers.check;
 
@@ -33,10 +34,16 @@ var b = require("../..");
 
 function _buildServer(opts) {
   opts = opts || {};
-  var server = http.createServer(function (req, res) {
-    res.writeHead(404);
-    res.end();
-  });
+  var server;
+  if (opts.tls) {
+    server = https.createServer({ key: opts.tls.key, cert: opts.tls.cert },
+      function (req, res) { res.writeHead(404); res.end(); });
+  } else {
+    server = http.createServer(function (req, res) {
+      res.writeHead(404);
+      res.end();
+    });
+  }
   var ws = b.websocket;
   var negotiatedExt = null;
   if (opts.permessageDeflate) {
@@ -221,6 +228,83 @@ async function run() {
     return client4.readyState === "closed";
   }, { label: "ws-roundtrip: client4 closed before server4.close()" });
   server4.close();
+
+  // --- (7) wss:// over a real TLS handshake ------------------------------
+  // The offline suite can only assert which options the dial builds. Only a
+  // real handshake proves they reached the wire, and that is what was wrong:
+  // the group preference was passed as `curves`, which node:tls accepts and
+  // ignores, so every wss:// connection silently negotiated on Node's
+  // defaults instead of the framework's. Read the negotiated group off the
+  // socket and require a post-quantum hybrid.
+  var pair = helpers.selfSignedPair({ commonName: "localhost" });
+  var server5 = await _buildServer({ tls: { key: pair.key, cert: pair.cert } });
+  var port5 = server5.address().port;
+  var client5 = b.wsClient.connect("wss://localhost:" + port5 + "/echo", {
+    reconnect: false, audit: false, allowInternal: true,
+    // Trust the fixture's certificate — verification stays on.
+    tlsOpts: { ca: [pair.cert] },
+  });
+  var open5 = false, msg5 = null, err5 = null;
+  client5.on("open",    function () { open5 = true; });
+  client5.on("message", function (data) { msg5 = data; });
+  client5.on("error",   function (e) { if (!err5) err5 = e; });
+  await helpers.waitUntil(function () {
+    return open5 === true || err5 !== null;
+  }, { label: "ws-roundtrip: wss handshake completed" });
+  check("ws-roundtrip: wss handshake open (no TLS error)", err5 === null && open5 === true);
+
+  var tlsSock = client5._socket;
+  var keyInfo = tlsSock && typeof tlsSock.getEphemeralKeyInfo === "function"
+    ? (tlsSock.getEphemeralKeyInfo() || {})
+    : {};
+  check("ws-roundtrip: wss negotiated TLS 1.3",
+        tlsSock && typeof tlsSock.getProtocol === "function" &&
+        tlsSock.getProtocol() === "TLSv1.3");
+  check("ws-roundtrip: wss negotiated a post-quantum hybrid group, so the " +
+        "framework preference reached the handshake",
+        typeof keyInfo.name === "string" && /MLKEM/i.test(keyInfo.name));
+
+  // Node's own defaults already offer X25519MLKEM768, so the assertion above
+  // holds whether or not the framework's preference was applied. Prove it IS
+  // applied by narrowing the key shares to the classical group and requiring
+  // the handshake to obey: an ignored preference falls back to Node's default
+  // and negotiates the hybrid instead, which is exactly what the `curves`
+  // spelling did.
+  b.network.tls.pqc.setKeyShares(["X25519"]);
+  try {
+    var client6 = b.wsClient.connect("wss://localhost:" + port5 + "/echo", {
+      reconnect: false, audit: false, allowInternal: true,
+      tlsOpts: { ca: [pair.cert] },
+    });
+    var open6 = false, err6 = null;
+    client6.on("open",  function () { open6 = true; });
+    client6.on("error", function (e) { if (!err6) err6 = e; });
+    await helpers.waitUntil(function () {
+      return open6 === true || err6 !== null;
+    }, { label: "ws-roundtrip: wss handshake with narrowed key shares" });
+    check("ws-roundtrip: wss handshake opens with narrowed key shares", err6 === null);
+    var narrowed = client6._socket && client6._socket.getEphemeralKeyInfo
+      ? (client6._socket.getEphemeralKeyInfo() || {}) : {};
+    check("ws-roundtrip: an operator-narrowed key-share list is honored on the wire",
+          narrowed.name === "X25519");
+    client6.close();
+    await helpers.waitUntil(function () {
+      return client6.readyState === "closed";
+    }, { label: "ws-roundtrip: client6 closed" });
+  } finally {
+    b.network.tls.pqc.resetKeyShares();
+  }
+
+  client5.send("hello over tls");
+  await helpers.waitUntil(function () {
+    return msg5 === "hello over tls";
+  }, { label: "ws-roundtrip: wss text echo received" });
+  check("ws-roundtrip: wss text echo", msg5 === "hello over tls");
+  client5.close();
+  await helpers.waitUntil(function () {
+    return client5.readyState === "closed";
+  }, { label: "ws-roundtrip: client5 closed before server5.close()" });
+  server5.close();
 
   console.log("OK — ws-client-roundtrip integration tests");
 }

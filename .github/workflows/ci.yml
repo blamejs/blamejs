@@ -62,10 +62,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Node 24.18.0 LTS
+      - name: Set up Node 24.19.0 LTS
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
-          node-version: '24.18.0'
+          node-version: '24.19.0'
 
       - name: Show Node + npm version
         run: node --version && npm --version
@@ -143,10 +143,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Node 24.18.0 LTS
+      - name: Set up Node 24.19.0 LTS
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
-          node-version: '24.18.0'
+          node-version: '24.19.0'
 
       - name: Resolve wiki framework dep (file:../..)
         working-directory: examples/wiki
@@ -165,10 +165,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Node 24.18.0 LTS
+      - name: Set up Node 24.19.0 LTS
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
-          node-version: '24.18.0'
+          node-version: '24.19.0'
 
       - name: Compare against committed baseline
         # Fails on breaking changes (removed methods, type changes).
@@ -192,7 +192,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
-          node-version: 24.18.0
+          node-version: 24.19.0
       - name: Run vendor-currency check
         # Hits registry.npmjs.org/<pkg>/latest for each npm-mapped
         # vendored entry. Fails on any "stale" finding. Registry errors
@@ -220,7 +220,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
-          node-version: 24.18.0
+          node-version: 24.19.0
       - name: Run actions-currency check
         # Resolves each pinned `uses: owner/repo@<sha>  # vX.Y.Z` against
         # the GitHub API (releases/latest, falling back to highest
@@ -306,10 +306,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Node 24.18.0 LTS
+      - name: Set up Node 24.19.0 LTS
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
-          node-version: '24.18.0'
+          node-version: '24.19.0'
 
       - name: Build vendored-deps CycloneDX SBOM
         # The framework ships ZERO npm runtime deps — its security-critical
@@ -439,10 +439,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Node 24.18.0 LTS
+      - name: Set up Node 24.19.0 LTS
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
-          node-version: '24.18.0'
+          node-version: '24.19.0'
 
       - name: Install wiki deps (links @blamejs/core for the opts probe)
         # opts-resolver.js requires @blamejs/core at top-of-file; the
@@ -470,10 +470,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Node 24.18.0 LTS
+      - name: Set up Node 24.19.0 LTS
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
-          node-version: '24.18.0'
+          node-version: '24.19.0'
 
       - name: Run ESLint (max-warnings 0)
         # Capture full output so the PR comment / step summary can show

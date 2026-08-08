@@ -1483,6 +1483,62 @@ async function testLocalFormTrailingDot() {
   } finally { _reset(); }
 }
 
+// RFC 1034 paragraph 3.1 — `foo.` is the absolute form of `foo`, the same
+// name. The framework classified the absolute form correctly but then handed
+// the resolver the dotted string verbatim, and the two transports disagreed
+// about it: glibc's getaddrinfo tolerates the trailing dot, musl's does not
+// (so an Alpine deployment — the framework's own container base — answered
+// ENOTFOUND for a legitimate FQDN), while the encrypted transports rejected
+// it outright as an empty label. Assert on the name the resolver RECEIVES, so
+// the check does not depend on which libc is underneath.
+async function testAbsoluteFormIsNormalizedBeforeResolving() {
+  var nodeDns = require("node:dns");
+  var origLookup = nodeDns.promises.lookup;
+  var seen = [];
+  nodeDns.promises.lookup = function (host, opts) {
+    seen.push(host);
+    return origLookup.call(nodeDns.promises, host, opts);
+  };
+  _reset();
+  dnsModule.setLookupTimeoutMs(4000);
+  try {
+    await dnsModule.lookup("localhost.");
+    check("the system resolver receives the name without its root dot",
+      seen.length > 0 && seen.every(function (h) { return !/\.$/.test(h); }));
+  } finally {
+    nodeDns.promises.lookup = origLookup;
+    _reset();
+  }
+
+  // The encrypted transports refused the absolute form before ever reaching
+  // the wire: splitting on "." yields a trailing empty label, which the RFC
+  // 1035 LDH check rejects as length 0. Point the resolver at a closed port so
+  // the call fails on transport, and assert it is no longer refused as a
+  // malformed host.
+  _reset();
+  try {
+    dnsModule.useDnsOverHttps({ url: "https://127.0.0.1:1/dns-query" });
+    dnsModule.setLookupTimeoutMs(2000);
+    var code = null;
+    try { await dnsModule.resolveSecure("example.com.", "A"); }
+    catch (e) { code = e && e.code; }
+    check("the absolute form is not refused as a malformed host by the DoH path",
+      code !== null && code !== "dns/bad-host");
+    // A genuinely malformed label is still refused — the normalization strips
+    // only the root dot, it does not relax LDH validation.
+    var badCode = null;
+    try { await dnsModule.resolveSecure("exa mple.com", "A"); }
+    catch (e) { badCode = e && e.code; }
+    check("a malformed label is still refused after normalization",
+      badCode === "dns/bad-host");
+    var emptyCode = null;
+    try { await dnsModule.resolveSecure("example..com", "A"); }
+    catch (e) { emptyCode = e && e.code; }
+    check("an interior empty label is still refused after normalization",
+      emptyCode === "dns/bad-host");
+  } finally { _reset(); }
+}
+
 async function testEnsureSecureDefaultEnvOverride() {
   var saved = process.env.BLAMEJS_DNS_TRANSPORT;
   try {
@@ -3136,6 +3192,7 @@ async function _runTests() {
 
   // remaining in-process defensive / adversarial / option-default branches
   await testLocalFormTrailingDot();
+  await testAbsoluteFormIsNormalizedBeforeResolving();
   await testEnsureSecureDefaultEnvOverride();
   await testValidateLdhLabelReject();
   testDesignatedResolversNonObjectEntry();

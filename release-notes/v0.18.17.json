@@ -1,0 +1,64 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.18.17",
+  "date": "2026-08-08",
+  "headline": "Post-quantum clients could be refused, every outbound handshake cost an extra round trip, and a connection with no forward secrecy audited as if it had post-quantum protection",
+  "summary": "The framework kept its outbound TLS posture as a list of keys each protocol client re-typed for itself, and the copies had drifted: the Redis client pinned neither the TLS floor nor the post-quantum groups, the syslog sink and the ECH path pinned no groups, and the WebSocket client set an option node:tls does not recognize, so its groups never reached the handshake. There is now one posture object every outbound path merges. Fixing the drift surfaced two problems in what the posture itself said. The group order led with a hybrid deployed peers do not implement, which cost a HelloRetryRequest on every single handshake and made Node hand back an empty stapled OCSP response, so requireStapled refused peers that had stapled correctly. And the inbound gate refused a client whose only post-quantum group was one the framework advertises. Certificate compression is now advertised in both directions, which matters most here because the framework's own ML-DSA-87 certificates dominate a handshake. The supported Node version rises to 24.19.0.",
+  "sections": [
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "The inbound post-quantum gate no longer refuses a client offering SecP256r1MLKEM768",
+          "body": "b.pqcGate builds its accept-set from b.constants.PQC_GROUPS, while the outbound preference list advertises SecP256r1MLKEM768 (IANA codepoint 0x11EB). The group was missing from PQC_GROUPS, so a deployment wiring the two together — the documented pairing — advertised the group, accepted it at the TLS layer, and then answered a ClientHello offering only it with a fatal handshake_failure. From the client's side that is indistinguishable from being refused for offering nothing post-quantum at all. The codepoint is now present, and a test asserts that every hybrid the framework advertises has an entry in the accept-set, so a group added to one table cannot silently miss the other."
+        },
+        {
+          "title": "Outbound handshakes no longer force a HelloRetryRequest, which was emptying stapled OCSP responses",
+          "body": "The outbound group preference led with SecP384r1MLKEM1024, a draft hybrid that widely deployed TLS stacks do not implement. Node sends a key share for the first group only, so nearly every handshake was answered with a HelloRetryRequest and completed on the second attempt — an extra round trip on every outbound connection. The retry is invisible at the TLS surface (the connection succeeds and still reports a post-quantum hybrid), but Node delivers an empty stapled OCSP response across a retried handshake, so b.network.tls.ocsp.requireStapled refused peers that had stapled correctly. The list now leads with X25519MLKEM768, matching the b.network.tls.preferredGroups default the two lists had drifted apart from. SecP384r1MLKEM1024 remains offered, so a peer supporting only that group still negotiates it. No group was removed and none was added."
+        },
+        {
+          "title": "wss:// connections now apply the framework's post-quantum group preference",
+          "body": "b.wsClient passed its group list as a `curves` option. node:tls has no such option — it accepts the key and ignores it, whereas a malformed `ecdhCurve` throws — so the preference never reached the handshake and every wss:// connection negotiated on Node's defaults instead, including for operators who had narrowed the list with b.network.tls.pqc.setKeyShares. The list is now passed as `ecdhCurve`. An operator value supplied in the dial's TLS options still wins."
+        },
+        {
+          "title": "Redis over TLS and the syslog sink now carry the framework TLS posture",
+          "body": "The rediss:// connect path assembled its TLS options from host and port alone: no TLS 1.3 floor, no post-quantum groups. A connection to a TLS Redis could negotiate TLS 1.2 with classical-only key exchange. The syslog sink over tls:// pinned the floor but likewise offered no post-quantum groups. Both now merge the same posture as every other outbound path. Operators pointing at a TLS endpoint that cannot negotiate TLS 1.3 will see the connection refused rather than silently downgraded; that is the framework's posture everywhere else and was the outlier here."
+        },
+        {
+          "title": "A connection with no ephemeral key exchange is no longer audited as post-quantum",
+          "body": "The post-handshake observer read the negotiated key exchange and treated \"nothing reported\" as a post-quantum hybrid, because before Node 24.19.0 a hybrid did report nothing. Node now identifies a hybrid positively, and an empty reading means only that the key exchange was not ephemeral — no forward secrecy at all, which was the one outcome being passed over in silence. Detection is now positive, and a non-ephemeral key exchange emits its own tls.no_ephemeral_key_exchange audit action rather than being folded into the pass or confused with an observed classical group. tls.classical_downgrade is unchanged in meaning. All three consumers — b.pqcAgent, the HTTP/2 transport in b.httpClient, and b.networkProxy — inherit this from the one implementation."
+        },
+        {
+          "title": "The syslog sink no longer logs a spurious warning when a connection closes after shutdown",
+          "body": "The socket 'close' handler read the sink's current socket rather than the one the event belonged to. close() clears that reference first, so a normal shutdown reached the handler with nothing to tear down and emitted a sock-destroy-failed warning; a reconnect could have torn down the wrong socket. The handler now holds the socket it was registered for."
+        }
+      ]
+    },
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "Certificate compression (RFC 8879) on every TLS connection the framework makes or accepts",
+          "body": "Inbound and outbound connections now advertise the compression algorithms the runtime supports, so a peer may send its Certificate message compressed and the framework compresses its own for a peer that asked. This pays more on a post-quantum deployment than a classical one: an ML-DSA-87 signature alone is about 4.6 KB before any public key or chain, so the Certificate message dominates the handshake. It is not the record-layer compression CRIME attacked — only the Certificate message is compressed, and that message is public, fixed, and not attacker-influenced, so its compressed length reveals nothing about a secret and no attacker-chosen plaintext shares a compression context with one. b.network.tls.certificateCompressionAlgorithms() reports what the runtime supports; b.network.tls.buildOptions accepts a certificateCompression array to narrow the list, or [] to advertise none, and refuses an algorithm the runtime cannot decompress at configuration time rather than at connect time."
+        },
+        {
+          "title": "b.constants.TLS_OUTBOUND_POSTURE() — the outbound TLS posture as one object",
+          "body": "Returns { minVersion, ecdhCurve, certificateCompression } ready to merge into any tls.connect, https.request, or https.Agent options. Every protocol client the framework ships — DNS-over-HTTPS and DNS-over-TLS, NTS-KE, Redis, syslog, WebSocket, proxy tunnels, the HTTP client, the ECH and OCSP paths — merges this rather than listing the keys itself, so raising the posture is one edit that cannot reach some outbound paths and miss others. b.constants.TLS_CERT_COMPRESSION() exposes just the algorithm list."
+        }
+      ]
+    },
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "The supported Node version is now 24.19.0",
+          "body": "Node 24.19.0 is what reports the negotiated TLS group positively, which is what makes a non-ephemeral key exchange distinguishable from a post-quantum one, and it is where certificate compression is available. Operators on 24.18.x should upgrade before taking this release."
+        },
+        {
+          "title": "Vendored bundles declare the components they carry",
+          "body": "noble-curves and noble-post-quantum each embed @noble/hashes, and noble-post-quantum also embeds @noble/curves and @noble/ciphers. Those were invisible to the generated software bill of materials, which listed 8 vendored components where the tarball actually ships 12. The manifest now declares them with their versions, the SBOM reports all 12, and NOTICE attributes @noble/hashes, including the fact that two versions ship because each bundle carries the one it was built against."
+        }
+      ]
+    }
+  ]
+}
