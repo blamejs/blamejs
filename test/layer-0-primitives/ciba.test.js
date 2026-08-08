@@ -943,7 +943,61 @@ async function _runHttpClientOptsReachInnerClient() {
   });
 }
 
+// The scheme check has to run on the address actually dialed. The options bag
+// is merged into the request after the endpoint is validated and can carry a
+// `url` of its own, and a host pin does not stand in for the scheme — it
+// admits both. These requests hold the Basic credentials.
+async function _runOptionsBagCannotDowngradeScheme() {
+  var reached = [];
+  var anyScheme = { request: function (req) {
+    reached.push(req.url);
+    return Promise.resolve({ statusCode: 200, headers: {},
+      body: Buffer.from(JSON.stringify({ auth_req_id: "leaked", expires_in: 300, interval: 5 }), "utf8") });
+  } };
+  // allowHttp unset, https endpoints — the refusal happens before any dial, so
+  // no server is needed to prove it.
+  var mk = function (extra) {
+    return b.auth.ciba.client.create(Object.assign({
+      issuer:                            "https://idp.example",
+      clientId:                          CLIENT_ID,
+      clientSecret:                      CLIENT_SECRET,
+      tokenEndpoint:                     "https://idp.example/token",
+      backchannelAuthenticationEndpoint: "https://idp.example/bc-auth",
+      deliveryMode:                      "poll",
+    }, extra || {}));
+  };
+  var downgraded = mk({
+    http:           { client: anyScheme },
+    httpClientOpts: { url: "http://idp.insecure.example/clear" },
+  });
+  var err = null;
+  try { await downgraded.startAuthentication({ loginHint: "alice@example.com" }); } catch (e) { err = e; }
+  check("ciba: an options-bag url cannot downgrade the dial to cleartext", err !== null);
+  check("ciba: the downgraded dial never reached the client", reached.length === 0);
+
+  // A host pin does not stand in for the scheme: the same downgrade to an
+  // ALLOWED host must still be refused.
+  var pinnedDowngrade = mk({
+    http:           { client: anyScheme, allowedHosts: ["idp.example"] },
+    httpClientOpts: { url: "http://idp.example/clear" },
+  });
+  var pinErr = null;
+  try { await pinnedDowngrade.startAuthentication({ loginHint: "alice@example.com" }); } catch (e) { pinErr = e; }
+  check("ciba: a pinned host does not excuse a cleartext scheme", pinErr !== null);
+  check("ciba: that dial never reached the client either", reached.length === 0);
+
+  // The same client with an https options-bag url is dialed normally, so the
+  // refusals above are the scheme check and not the option being rejected.
+  var fine = mk({
+    http:           { client: anyScheme },
+    httpClientOpts: { url: "https://idp.example/bc-auth" },
+  });
+  var ticket = await fine.startAuthentication({ loginHint: "alice@example.com" });
+  check("ciba: an https options-bag url still dials", ticket.authReqId === "leaked" && reached.length === 1);
+}
+
 async function _runTests() {
+  await _runOptionsBagCannotDowngradeScheme();
   await _runInjectedHttpClient();
   await _runHttpClientOptsReachInnerClient();
   await _runStartAuthenticationHappy();
