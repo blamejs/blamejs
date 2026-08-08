@@ -1777,6 +1777,37 @@ function testSigv4CanonicalHelperEdgeBranches() {
         mixed.signed === "host;x-amz-date");
   check("canonicalHeaders: the merge applies per-name, not across names",
         mixed.canonical === "host:s3.example.com\nx-amz-date:20260101T000000Z,dup\n");
+
+  // Merging for the SIGNATURE is only half of it: the headers the caller puts
+  // on the wire must be that same representation. Returning the caller's
+  // original keys would transmit both spellings, and node:http keeps only the
+  // last — so the peer would canonicalize a value the signature never covered
+  // and reject the request even though the signing side was spec-correct.
+  var signedDup = sigv4.signRequest({
+    method:          "PUT",
+    url:             "https://s3.example.com/obj.bin",
+    region:          "us-east-1",
+    accessKeyId:     "AKIAIOSFODNN7EXAMPLE",
+    secretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    payloadHash:     "UNSIGNED-PAYLOAD",
+    headers:         { "X-Amz-Meta-Tag": "one", "x-amz-meta-tag": "two" },
+  });
+  var wireKeys = Object.keys(signedDup.headers).filter(function (k) {
+    return k.toLowerCase() === "x-amz-meta-tag";
+  });
+  check("signRequest: a duplicated header appears exactly once in the returned headers",
+        wireKeys.length === 1);
+  check("signRequest: the transmitted value is the merged one the signature covers",
+        signedDup.headers[wireKeys[0]] === "one,two");
+  check("signRequest: SignedHeaders names it once, matching the wire",
+        / SignedHeaders=[^,]*x-amz-meta-tag[;,]/.test(signedDup.headers.Authorization + ","));
+
+  // Every signed header must actually be present on the wire, or the peer
+  // cannot reconstruct the canonical request at all.
+  var signedList = /SignedHeaders=([^,]+)/.exec(signedDup.headers.Authorization)[1].split(";");
+  var wireLower = Object.keys(signedDup.headers).map(function (k) { return k.toLowerCase(); });
+  check("signRequest: every name in SignedHeaders is present in the returned headers",
+        signedList.every(function (n) { return wireLower.indexOf(n) !== -1; }));
 }
 
 // signRequest's own defaulting arms: a bare https:// string URL with no
