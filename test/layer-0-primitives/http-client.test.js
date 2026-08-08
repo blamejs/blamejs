@@ -3252,8 +3252,34 @@ async function testPinnedClient() {
           unpinnedOpts.maxRedirects === 0 && unpinnedOpts.followRedirects === false &&
           unpinnedOpts.redirect === "manual");
   }
-  // With no pin every host is reachable — the wrapper adds redirect control,
-  // not an allowlist that was never configured.
+  // The SSRF gate came free while b.httpClient was the only dialer. What is
+  // enforceable for a transport this does not own is the textual half, and it
+  // applies with or without a pin.
+  var ssrfSeen = [];
+  var ssrfRec = { request: function (o) { ssrfSeen.push(o.url); return Promise.resolve({ statusCode: 200 }); } };
+  var guarded = b.httpClient.pinnedClient(ssrfRec, null);
+  var metaErr = null;
+  try { await guarded.request({ url: "http://169.254.169.254/latest/meta-data/" }); } catch (e) { metaErr = e; }
+  check("pinnedClient: a cloud-metadata address is refused", metaErr !== null);
+  var loopErr = null;
+  try { await guarded.request({ url: "http://127.0.0.1:9/x" }); } catch (e) { loopErr = e; }
+  check("pinnedClient: a loopback literal is refused without allowInternal", loopErr !== null);
+  var privErr = null;
+  try { await guarded.request({ url: "http://10.1.2.3/x" }); } catch (e) { privErr = e; }
+  check("pinnedClient: a private literal is refused without allowInternal", privErr !== null);
+  check("pinnedClient: none of the refused internal dials reached the client", ssrfSeen.length === 0);
+  // allowInternal is the caller's deliberate waiver, and metadata is not
+  // covered by it.
+  await guarded.request({ url: "http://127.0.0.1:9/x", allowInternal: true });
+  check("pinnedClient: allowInternal permits the loopback dial", ssrfSeen.length === 1);
+  var metaWaived = null;
+  try { await guarded.request({ url: "http://169.254.169.254/x", allowInternal: true }); }
+  catch (e) { metaWaived = e; }
+  check("pinnedClient: allowInternal does NOT unlock cloud metadata",
+        metaWaived !== null && ssrfSeen.length === 1);
+
+  // With no pin every public host is reachable — the wrapper adds redirect and
+  // egress control, not an allowlist that was never configured.
   var anyHostOpts = null;
   var anyHostRec = { request: function (o) { anyHostOpts = o; return Promise.resolve({ statusCode: 200 }); } };
   await b.httpClient.pinnedClient(anyHostRec, undefined).request({ url: "https://anywhere.example/x" });
