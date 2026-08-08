@@ -132,6 +132,13 @@ function testAmbiguousShapesStillRefused() {
     "(?:ab?|b)+",
     "(?:ab{0,1}|b)+",
     "(?:ab{1,2}|b)+",
+    // Each group below is individually unambiguous; the ways to partition one
+    // run of input AMONG them are not, and neither analysis models
+    // concatenation. Six disjoint alternations in a row took ~0.7s on 80
+    // characters before the suppression required a single quantified group.
+    "^(?:a|b)+(?:a|b)+(?:a|b)+(?:a|b)+(?:a|b)+(?:a|b)+!$",
+    "(?:b|c)+(?:d|e)+",
+    "^(?:[a-z]+-)*(?:[a-z]+-)*!$",
     "(?:(?:[a-z]+)+-)*",           // the body carries its own nested quantifier
     "(?:[a-z]+)*-",                // the delimiter is OUTSIDE the group
     // the classic catastrophic set, unchanged
