@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.18.17",
-  "createdAt": "2026-08-08T07:31:04.255Z",
+  "createdAt": "2026-08-08T08:13:36.124Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -14156,10 +14156,6 @@
         "TLS_GROUP_PREFERENCE": {
           "type": "instance",
           "ctorName": "Array"
-        },
-        "TLS_OUTBOUND_POSTURE": {
-          "type": "function",
-          "arity": 0
         },
         "VAULT_PREFIX": {
           "type": "primitive",
@@ -46236,6 +46232,10 @@
                   "arity": 1
                 }
               }
+            },
+            "outboundPosture": {
+              "type": "function",
+              "arity": 0
             },
             "parseEchConfigList": {
               "type": "function",

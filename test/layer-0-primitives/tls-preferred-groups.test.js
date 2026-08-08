@@ -117,13 +117,14 @@ async function _captureTlsConnectOpts(label, drive) {
 }
 
 function testOutboundPostureShape() {
-  var posture = b.constants.TLS_OUTBOUND_POSTURE();
-  check("TLS_OUTBOUND_POSTURE pins the TLS 1.3 floor",
+  b.network.tls.preferredGroups.reset();
+  var posture = b.network.tls.outboundPosture();
+  check("outboundPosture pins the TLS 1.3 floor",
         posture.minVersion === "TLSv1.3");
-  check("TLS_OUTBOUND_POSTURE carries the hybrid group preference",
+  check("outboundPosture carries the hybrid group preference",
         posture.ecdhCurve === b.constants.TLS_GROUP_CURVE_STR);
-  check("TLS_OUTBOUND_POSTURE returns a fresh object each call",
-        b.constants.TLS_OUTBOUND_POSTURE() !== posture);
+  check("outboundPosture returns a fresh object each call",
+        b.network.tls.outboundPosture() !== posture);
   var algs = b.constants.TLS_CERT_COMPRESSION();
   check("TLS_CERT_COMPRESSION is frozen (callers cannot mutate the shared list)",
         Object.isFrozen(algs));
@@ -134,11 +135,76 @@ function testOutboundPostureShape() {
         reported !== algs && !Object.isFrozen(reported) &&
         b.network.tls.certificateCompressionAlgorithms() !== reported);
   if (algs.length > 0) {
-    check("TLS_OUTBOUND_POSTURE advertises certificate compression",
+    check("outboundPosture advertises certificate compression",
           posture.certificateCompression.join(",") === algs.join(","));
   } else {
-    check("TLS_OUTBOUND_POSTURE omits certificateCompression when unsupported",
+    check("outboundPosture omits certificateCompression when unsupported",
           posture.certificateCompression === undefined);
+  }
+}
+
+// The posture exists so one edit reaches every outbound path. That only holds
+// if it reads LIVE state: an operator narrowing the groups for a FIPS policy
+// must not keep offering the ones they removed on Redis / syslog / DNS / NTS /
+// proxy / ECH / OCSP / h2 while a couple of paths honor the narrowing. Reading
+// the compiled-in default instead of the live list is exactly that failure, so
+// assert on the options each client BUILDS, not on the posture alone.
+async function testNarrowedGroupsReachEveryOutboundClient() {
+  var NARROWED = ["SecP256r1MLKEM768", "SecP384r1MLKEM1024"];
+  var expected = NARROWED.join(":");
+  b.network.tls.preferredGroups.set(NARROWED);
+  try {
+    check("outboundPosture reports the operator's narrowed list",
+          b.network.tls.outboundPosture().ecdhCurve === expected);
+    check("the narrowed list drops the classical fallback the operator removed",
+          b.network.tls.outboundPosture().ecdhCurve.indexOf("X25519MLKEM768") === -1);
+
+    var redis = require("../../lib/redis-client");
+    var redisOpts = await _captureTlsConnectOpts("redis", function () {
+      var c = redis.create({
+        url: "rediss://localhost:1/0", connectTimeoutMs: 200, maxReconnectAttempts: 0,
+      });
+      return c.connect().then(function () { return c.close(); },
+                              function () { return c.close(); });
+    });
+    check("redis dials with the narrowed groups",
+          redisOpts && redisOpts.ecdhCurve === expected);
+
+    var syslog = require("../../lib/log-stream-syslog");
+    var sink = null;
+    var syslogOpts = await _captureTlsConnectOpts("syslog", function () {
+      sink = syslog.create({ url: "tls://localhost:1", onDrop: function () {} });
+      return Promise.resolve();
+    });
+    if (sink) { try { await sink.close(); } catch (_e) { /* teardown */ } }
+    check("the syslog sink dials with the narrowed groups",
+          syslogOpts && syslogOpts.ecdhCurve === expected);
+
+    var wsClient = require("../../lib/ws-client");
+    var conn = null;
+    var wsOpts = await _captureTlsConnectOpts("ws-client", function () {
+      conn = wsClient.connect("wss://127.0.0.1:1/", {
+        reconnect: false, audit: false, allowInternal: true, handshakeTimeoutMs: 200,
+      });
+      conn.on("error", function () { /* expected — nothing listens on port 1 */ });
+      return Promise.resolve();
+    });
+    if (conn) { try { conn.close(); } catch (_e) { /* teardown */ } }
+    check("wss:// dials with the narrowed groups",
+          wsOpts && wsOpts.ecdhCurve === expected);
+
+    // DNS-over-TLS builds its own connect options on the same posture.
+    var dnsModule = require("../../lib/network-dns");
+    var dotOpts = await _captureTlsConnectOpts("dns-over-tls", function () {
+      dnsModule.useDnsOverTls({ host: "127.0.0.1", port: 1, servername: "localhost" });
+      return dnsModule.resolve4("example.com").then(
+        function () {}, function () { /* nothing listens on port 1 */ });
+    });
+    dnsModule._resetForTest();
+    check("DNS-over-TLS dials with the narrowed groups",
+          dotOpts && dotOpts.ecdhCurve === expected);
+  } finally {
+    b.network.tls.preferredGroups.reset();
   }
 }
 
@@ -282,6 +348,7 @@ async function run() {
   testGroupOrderIsSingleSourced();
   await testFrameworkGroupsDoNotForceHelloRetry();
   testOutboundPostureShape();
+  await testNarrowedGroupsReachEveryOutboundClient();
   testBuildOptionsCarriesCertCompression();
   await testRedisClientAppliesThePosture();
   await testSyslogSinkAppliesThePosture();
