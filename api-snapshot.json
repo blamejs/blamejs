@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.18.16",
-  "createdAt": "2026-08-08T02:56:38.708Z",
+  "frameworkVersion": "0.18.17",
+  "createdAt": "2026-08-08T16:22:21.969Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -14102,6 +14102,10 @@
         "PQC_GROUPS": {
           "type": "object",
           "members": {
+            "SecP256r1MLKEM768": {
+              "type": "primitive",
+              "valueType": "number"
+            },
             "SecP384r1MLKEM1024": {
               "type": "primitive",
               "valueType": "number"
@@ -14140,6 +14144,10 @@
               "arity": 1
             }
           }
+        },
+        "TLS_CERT_COMPRESSION": {
+          "type": "function",
+          "arity": 0
         },
         "TLS_GROUP_CURVE_STR": {
           "type": "primitive",
@@ -46115,6 +46123,10 @@
               "type": "function",
               "arity": 0
             },
+            "certificateCompressionAlgorithms": {
+              "type": "function",
+              "arity": 0
+            },
             "checkServerIdentity9525": {
               "type": "function",
               "arity": 2
@@ -46221,6 +46233,10 @@
                 }
               }
             },
+            "outboundPosture": {
+              "type": "function",
+              "arity": 0
+            },
             "parseEchConfigList": {
               "type": "function",
               "arity": 1
@@ -46228,6 +46244,10 @@
             "pinsetDriftMonitor": {
               "type": "function",
               "arity": 1
+            },
+            "postureGeneration": {
+              "type": "function",
+              "arity": 0
             },
             "pqc": {
               "type": "object",

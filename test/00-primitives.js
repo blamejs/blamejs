@@ -11194,6 +11194,26 @@ function testClientHelloPqcDetection() {
   check("ClientHello with mixed groups → accepted (PQC present)",
         b.pqcGate.clientHelloHasPQC(heroMix) === true);
 
+  // Every post-quantum hybrid the framework OFFERS on an outbound handshake
+  // must also be ACCEPTED by the inbound gate. Derived from the preference
+  // list rather than naming groups, so a hybrid added there cannot be silently
+  // missing from the gate's accept-set — the gate answers a ClientHello it
+  // refuses with a fatal handshake_failure, so an omission rejects a compliant
+  // post-quantum client outright.
+  var offeredHybrids = b.constants.TLS_GROUP_PREFERENCE.filter(function (g) {
+    return /MLKEM/i.test(g);
+  });
+  check("the framework offers at least one PQC hybrid outbound", offeredHybrids.length > 0);
+  offeredHybrids.forEach(function (name) {
+    var id = b.constants.PQC_GROUPS[name];
+    check("offered hybrid " + name + " has a codepoint in PQC_GROUPS",
+          typeof id === "number");
+    if (typeof id !== "number") return;
+    check("gate accepts a ClientHello whose only offer is " + name,
+          b.pqcGate.clientHelloHasPQC(_makeClientHello([id])) === true);
+    check("gate's accept-set carries " + name, b.pqcGate.PQC_GROUP_IDS.has(id));
+  });
+
   // A ClientHello with ONLY classical groups → rejected
   var heroClassical = _makeClientHello([0x0017, 0x0018, 0x001D /* x25519 */]);
   check("ClientHello with only classical groups → rejected",
@@ -18125,7 +18145,14 @@ function testCryptoAndModuleSurface() {
   check("TIME.hours(2) = 7200000",      b.constants.TIME.hours(2) === 7200000);
   check("BYTES.mib(64) = 67108864",     b.constants.BYTES.mib(64) === 67108864);
   check("BYTES.kib(4) = 4096",          b.constants.BYTES.kib(4) === 4096);
-  check("TLS prefers PQ hybrid first",  b.constants.TLS_GROUP_PREFERENCE[0] === "SecP384r1MLKEM1024");
+  // A post-quantum hybrid leads, and the classical fallback is last. Which
+  // hybrid leads is asserted where the reason lives (a leading group peers do
+  // not implement costs a HelloRetryRequest on every handshake) — pinning the
+  // exact name here too would make the constant its own justification.
+  check("TLS offers a PQ hybrid first",
+        /MLKEM/i.test(b.constants.TLS_GROUP_PREFERENCE[0]));
+  check("TLS keeps the classical fallback last",
+        b.constants.TLS_GROUP_PREFERENCE[b.constants.TLS_GROUP_PREFERENCE.length - 1] === "X25519");
 
   // Input validation: TIME / BYTES throw on bad input. Operators
   // hitting `C.TIME.minutes(opts.x)` with opts.x undefined catch the

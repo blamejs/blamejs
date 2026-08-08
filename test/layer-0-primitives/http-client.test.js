@@ -2856,9 +2856,344 @@ async function _drainTcpHandles() {
   }, { timeoutMs: 5000, label: "http-client: TCP handle drain after _resetForTest" });
 }
 
+// Retiring the pooled transports because the TLS posture changed must not
+// abort work already in flight. The obvious implementation — destroy the
+// agents and clear the cache — resets sockets that are mid-response
+// (measurably: an in-flight download dies with ECONNRESET), so narrowing the
+// group preference on a live process would kill unrelated downloads and API
+// calls across every origin. A policy update is not a reason to drop traffic.
+async function testPostureChangeDoesNotAbortInFlightRequests() {
+  var release = null;
+  var gate = new Promise(function (r) { release = r; });
+  var secondArrived = false;
+  // The contrast case's gate has to exist before the handler closes over it.
+  var gate2Ref = {};
+  gate2Ref.promise = new Promise(function (r) { gate2Ref.release = r; });
+  return _withServer(function (req, res) {
+    if (req.url === "/slow2") {
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.write("held");
+      gate2Ref.promise.then(function () { res.end("-done"); });
+      return;
+    }
+    if (req.url === "/slow") {
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.write("first-half");
+      // Held open until the retirement has definitely run.
+      gate.then(function () { res.end("-second-half"); });
+      return;
+    }
+    // The second request reaching the server proves its _getTransport call —
+    // and therefore the posture-change retirement — has already happened,
+    // while the first response is still open. Without this signal the
+    // retirement can race past the window it is supposed to be tested in, and
+    // the assertion passes whether or not the sockets were spared.
+    secondArrived = true;
+    res.writeHead(204);
+    res.end();
+  }, async function (base) {
+    var ALLOW = ["http:", "https:"];
+    var pending = b.httpClient.request({
+      url: base + "/slow", allowedProtocols: ALLOW, allowInternal: true,
+    });
+    // Move the posture underneath the in-flight response.
+    b.network.tls.preferredGroups.set(["SecP256r1MLKEM768", "SecP384r1MLKEM1024"]);
+    var second = b.httpClient.request({
+      url: base + "/other", allowedProtocols: ALLOW, allowInternal: true,
+    }).catch(function () { return null; });
+    try {
+      await helpers.waitUntil(function () { return secondArrived; },
+        { timeoutMs: 5000, label: "http-client: retirement ran while the first response was open" });
+      release();
+      var res1 = await pending.then(function (r) { return r; },
+                                    function (e) { return { err: (e && e.code) || String(e) }; });
+      await second;
+      // Guard against a vacuous pass: if the retirement never ran, or the
+      // second request never went out, "the first one survived" proves
+      // nothing. That the SAME teardown does abort an in-flight request is
+      // demonstrable through configurePool(), which runs it directly.
+      check("the posture change retired the pool while the first response " +
+            "was still open",
+        secondArrived === true);
+      check("a request in flight when the TLS posture changes still completes, " +
+            "body intact",
+        res1 && res1.statusCode === 200 &&
+        String(res1.body) === "first-half-second-half");
+
+      // The force-destroy teardown, driven directly, DOES reset a live
+      // response — which is why the posture path must not use it.
+      var aborted = null;
+      var slow2 = b.httpClient.request({
+        url: base + "/slow2", allowedProtocols: ALLOW, allowInternal: true,
+      }).then(function () { aborted = false; },
+              function (e) { aborted = (e && e.code) || "error"; });
+      await helpers.waitUntil(function () {
+        return b.httpClient._getCachedTransportCount() > 0;
+      }, { timeoutMs: 5000, label: "http-client: second slow request pooled" });
+      b.httpClient.configurePool({ maxSockets: 17 });
+      gate2Ref.release();
+      await slow2;
+      check("for contrast, the force-destroy teardown does abort a live " +
+            "response — so the posture path must not reach for it",
+        aborted === "ECONNRESET");
+    } finally {
+      release();
+      b.network.tls.preferredGroups.reset();
+    }
+  });
+}
+
+// The drain's fallback exists so a session whose streams never finish cannot
+// hold a socket open forever (v0.6.58 hung a publish workflow that way). It
+// must not become a deadline on legitimate work: downloadStream has no
+// wall-clock limit, so a fixed timer would cut a multi-minute download short
+// because something unrelated changed the TLS posture. Drive both shapes
+// against a real h2 session with a deliberately tiny grace window.
+async function testH2DrainWaitsOnProgressButNotOnAStall() {
+  var teardown = require("../../lib/http2-teardown");
+  var http2mod = require("http2");
+  var GRACE = 120;
+
+  // (1) A session still moving bytes survives well past the grace window.
+  var srvA = http2mod.createServer();
+  var tick = null;
+  srvA.on("stream", function (stream) {
+    stream.respond({ ":status": 200 });
+    stream.write("start");
+    tick = setInterval(function () { try { stream.write("."); } catch (_e) { /* closed */ } }, 40);
+  });
+  var portA = await b.testing.listenOnRandomPort(srvA, "127.0.0.1");
+  var sessA = http2mod.connect("http://127.0.0.1:" + portA);
+  await new Promise(function (r) { sessA.once("connect", r); });
+  var reqA = sessA.request({ ":path": "/stream" });
+  reqA.on("data", function () { /* keep the flow moving */ });
+  reqA.on("error", function () { /* torn down below */ });
+  await helpers.waitUntil(function () { return tick !== null; },
+    { timeoutMs: 5000, label: "http-client: h2 stream started" });
+  teardown.drainH2Session(sessA, GRACE);
+  await helpers.passiveObserve(GRACE * 5,
+    "http-client: a progressing h2 session is not force-destroyed");
+  check("the drain does not destroy an h2 session that is still moving bytes",
+    sessA.destroyed === false);
+  if (tick) clearInterval(tick);
+  try { sessA.destroy(); } catch (_e) { /* teardown */ }
+  srvA.close();
+
+  // (2) A session that has gone quiet is force-destroyed, so the socket is
+  // never held open indefinitely.
+  var srvB = http2mod.createServer();
+  srvB.on("stream", function (stream) {
+    stream.respond({ ":status": 200 });
+    stream.write("start");                                    // then nothing, ever
+  });
+  var portB = await b.testing.listenOnRandomPort(srvB, "127.0.0.1");
+  var sessB = http2mod.connect("http://127.0.0.1:" + portB);
+  await new Promise(function (r) { sessB.once("connect", r); });
+  var reqB = sessB.request({ ":path": "/stall" });
+  reqB.on("data", function () {});
+  reqB.on("error", function () { /* expected when the drain gives up */ });
+  await helpers.waitUntil(function () { return sessB.socket && sessB.socket.bytesRead > 0; },
+    { timeoutMs: 5000, label: "http-client: stalled h2 stream opened" });
+  teardown.drainH2Session(sessB, GRACE);
+  await helpers.waitUntil(function () { return sessB.destroyed === true; },
+    { timeoutMs: 5000, label: "http-client: stalled h2 session force-destroyed" });
+  check("the drain force-destroys an h2 session that has stopped making progress",
+    sessB.destroyed === true);
+  srvB.close();
+
+  // (3) A session still moving bytes is NEVER destroyed, however long it takes
+  // — there is no wall-clock ceiling to cut a long transfer. Driven against a
+  // stub: a real peer closes its own side on GOAWAY and destroys the session
+  // regardless, so a network test here would pass whether or not the watchdog
+  // behaved.
+  var flowingDestroyed = false;
+  var flowing = 0;
+  var flowingSession = {
+    destroyed: false,
+    socket: { get bytesRead() { flowing += 4096; return flowing; }, bytesWritten: 0 },
+    close: function () { /* graceful close is a no-op for the stub */ },
+    destroy: function () { flowingDestroyed = true; this.destroyed = true; },
+  };
+  teardown.drainH2Session(flowingSession, GRACE);
+  await helpers.passiveObserve(GRACE * 6,
+    "http-client: a session still moving bytes is left alone");
+  check("a session still moving bytes is never force-destroyed, however long " +
+        "the transfer runs",
+    flowingDestroyed === false);
+
+  // (4) The documented limitation, asserted so it is a known shape rather than
+  // a surprise. The progress signal is the socket's cumulative byte counters,
+  // which a peer sending PING / WINDOW_UPDATE moves on its own — so a stalled
+  // stream on a chatty peer is NOT reclaimed here; the caller's request
+  // timeout is what bounds it. The signal is deliberately this one: the
+  // session's own counters exclude control frames but are flow-control
+  // occupancy that cycles, and a counter that can wrap must not be what
+  // decides to destroy live work.
+  var chattyDestroyed = false;
+  var chatty = 0;
+  var chattySession = {
+    destroyed: false,
+    socket: { get bytesRead() { chatty += 17; return chatty; }, bytesWritten: 0 },
+    close: function () {},
+    destroy: function () { chattyDestroyed = true; this.destroyed = true; },
+  };
+  teardown.drainH2Session(chattySession, GRACE);
+  await helpers.passiveObserve(GRACE * 4,
+    "http-client: chatty-but-stalled session is left to the request timeout");
+  check("a stalled stream on a peer generating control traffic is left to the " +
+        "caller's request timeout, not reclaimed by this watchdog",
+    chattyDestroyed === false);
+}
+
+// A posture change lands while a transport negotiation is still running. The
+// negotiation then loses the cache race, so its transport is retired — but the
+// requests waiting on that negotiation are still handed it and must complete.
+// Retiring synchronously breaks exactly those requests: the library's own
+// completion handler is attached before any consumer's, so session.close()
+// runs before _requestH2 can open its stream, and close() refuses new streams.
+// Trading a socket leak for failed requests is not a fix, so assert the
+// requests.
+//
+// Driven over cleartext h2c: the race is in the shared transport-cache
+// bookkeeping, not in TLS, and h2c reaches it without needing the framework
+// transport to trust a loopback certificate.
+async function testRequestSurvivesLosingTheTransportCacheRace() {
+  var ALLOW = ["http:", "https:"];
+  return _withH2cServer(function (stream) {
+    stream.respond({ ":status": 200, "content-type": "text/plain" });
+    stream.end("raced-ok");
+  }, async function (base) {
+    try {
+      // The losing-race branch needs the first negotiation to still be PENDING
+      // when the second request arrives — on loopback that window closes in
+      // microseconds, so an unaided test never reaches the branch (measured:
+      // zero hits). Hold the first session's "connect" event until both
+      // requests are in play, so the race is forced rather than hoped for.
+      var http2mod = require("http2");
+      var origConnect = http2mod.connect;
+      var gateFirst = null;
+      var connectCount = 0;
+      http2mod.connect = function (authority, opts) {
+        var session = origConnect.call(http2mod, authority, opts);
+        if (++connectCount === 1) {
+          // Swallow the first 'connect' until released, so the promise stays
+          // pending while the second request clears the cache.
+          var listeners = [];
+          var origOnce = session.once.bind(session);
+          session.once = function (ev, fn) {
+            if (ev === "connect") { listeners.push(fn); return session; }
+            return origOnce(ev, fn);
+          };
+          gateFirst = function () {
+            session.once = origOnce;
+            listeners.forEach(function (fn) { try { fn(); } catch (_e) { /* surfaced by the request */ } });
+          };
+        }
+        return session;
+      };
+
+      var results = [];
+      try {
+        b.httpClient._resetForTest();
+        var first = b.httpClient.request({
+          url: base + "/raced", allowedProtocols: ALLOW, allowInternal: true,
+          preferH2: true,
+        }).then(function (r) { return { ok: true, body: String(r.body) }; },
+                function (e) { return { ok: false, err: (e && e.code) || String(e) }; });
+        await helpers.waitUntil(function () { return gateFirst !== null; },
+          { timeoutMs: 5000, label: "http-client: first negotiation started" });
+        // Posture moves, then a second request arrives and clears the cache —
+        // so the first negotiation, still pending, will lose the race.
+        b.network.tls.preferredGroups.set(["X25519MLKEM768", "X25519"]);
+        var second = b.httpClient.request({
+          url: base + "/raced", allowedProtocols: ALLOW, allowInternal: true,
+          preferH2: true,
+        }).then(function (r) { return { ok: true, body: String(r.body) }; },
+                function (e) { return { ok: false, err: (e && e.code) || String(e) }; });
+        await helpers.waitUntil(function () { return connectCount >= 2; },
+          { timeoutMs: 5000, label: "http-client: second negotiation started" });
+        gateFirst();
+        results.push(await first);
+        results.push(await second);
+      } finally {
+        http2mod.connect = origConnect;
+      }
+      var failed = results.filter(function (r) { return !r.ok; });
+      check("a request whose negotiation loses the transport-cache race still " +
+            "completes (" + (results.length - failed.length) + "/" + results.length +
+            " ok" + (failed.length ? ", first error " + failed[0].err : "") + ")",
+        failed.length === 0 &&
+        results.every(function (r) { return r.body === "raced-ok"; }));
+    } finally {
+      b.network.tls.preferredGroups.reset();
+      b.httpClient._resetForTest();
+    }
+  });
+}
+
+// Retiring an h2 session arms an idle timeout that DRAINS it. The live wiring
+// already armed one that FORCE-DESTROYS it, and session.setTimeout adds a
+// listener rather than replacing one — so without clearing the old listener
+// both fire and the destroy wins, killing the stream the retirement was meant
+// to protect. Drive a request whose stream is still open and quiet when the
+// retirement lands, and require it to finish.
+async function testRetiredH2SessionDoesNotForceDestroyAnOpenStream() {
+  var ALLOW = ["http:", "https:"];
+  var release = null;
+  var gate = new Promise(function (r) { release = r; });
+  return _withH2cServer(function (stream, headers) {
+    if (String(headers[":path"]).indexOf("/slow") === 0) {
+      stream.respond({ ":status": 200, "content-type": "text/plain" });
+      stream.write("first-half");
+      // Held quiet across the retired-session idle window, so the timeout
+      // actually fires while this stream is open.
+      gate.then(function () { stream.end("-second-half"); });
+      return;
+    }
+    stream.respond({ ":status": 204 });
+    stream.end();
+  }, async function (base) {
+    try {
+      b.httpClient._resetForTest();
+      var slow = b.httpClient.request({
+        url: base + "/slow", allowedProtocols: ALLOW, allowInternal: true,
+        preferH2: true, timeoutMs: 30000,
+      }).then(function (r) { return { ok: true, body: String(r.body) }; },
+              function (e) { return { ok: false, err: (e && e.code) || String(e) }; });
+      await helpers.waitUntil(function () {
+        return b.httpClient._getCachedTransportCount() > 0;
+      }, { timeoutMs: 5000, label: "http-client: h2 session pooled" });
+      // Retire the pool while that stream is open: posture moves, then a
+      // second request arrives under the new generation.
+      b.network.tls.preferredGroups.set(["X25519MLKEM768", "X25519"]);
+      await b.httpClient.request({
+        url: base + "/other", allowedProtocols: ALLOW, allowInternal: true,
+        preferH2: true,
+      }).catch(function () { return null; });
+      // Sit past the retired-session idle window with the stream quiet, which
+      // is when the timeout listeners fire.
+      await helpers.passiveObserve(6500,
+        "http-client: retired h2 session idles with an open stream");
+      release();
+      var res = await slow;
+      check("a retired h2 session drains rather than force-destroying an open " +
+            "stream (" + (res.ok ? "completed" : "failed: " + res.err) + ")",
+        res.ok === true && res.body === "first-half-second-half");
+    } finally {
+      release();
+      b.network.tls.preferredGroups.reset();
+      b.httpClient._resetForTest();
+    }
+  });
+}
+
 async function run() {
   try {
     testSurface();
+    await testPostureChangeDoesNotAbortInFlightRequests();
+    await testH2DrainWaitsOnProgressButNotOnAStall();
+    await testRequestSurvivesLosingTheTransportCacheRace();
+    await testRetiredH2SessionDoesNotForceDestroyAnOpenStream();
     await testConfigurePool();
     await testArgValidation();
     await testBeforeAfterInterceptors();

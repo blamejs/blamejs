@@ -32,6 +32,7 @@ var _http     = require("./http");
 var _otel     = require("./otel");
 var _wait     = require("./wait");
 var _fsWatch  = require("./fs-watch");
+var _tls      = require("./tls");
 
 module.exports = {
   // Framework binding + Node stdlib re-exports for ergonomics.
@@ -76,6 +77,9 @@ module.exports = {
 
   // HTTP helpers
   listenOnRandomPort: _http.listenOnRandomPort,
+
+  // Loopback TLS server certificate (verify with `ca: [pair.cert]`)
+  selfSignedPair:     _tls.selfSignedPair,
 
   // OTel fake (for tracing + observability tests)
   makeFakeOtelApi:    _otel.makeFakeOtelApi,

@@ -1473,13 +1473,128 @@ async function testLocalFormTrailingDot() {
   _reset();
   dnsModule.setLookupTimeoutMs(4000);
   try {
-    var ld = await dnsModule.lookup("localhost.");
-    check("lookup: fully-qualified 'localhost.' strips the root dot → system path",
-      typeof ld.address === "string" && (ld.family === 4 || ld.family === 6));
+    // RFC 6761 special-form classification reads the LABEL LIST, so the
+    // absolute spelling of a reserved name classifies the same as the
+    // relative one and takes the system path rather than a public resolver.
+    // Assert the routing, not the resolution: whether `localhost.` itself
+    // resolves is libc-dependent (musl matches /etc/hosts literally and
+    // legitimately misses it, glibc accepts it), and the framework passes the
+    // caller's spelling through either way.
+    var nodeDns = require("node:dns");
+    var origLookup = nodeDns.promises.lookup;
+    var routedToSystem = false;
+    nodeDns.promises.lookup = function (host, opts) {
+      if (host === "localhost.") routedToSystem = true;
+      return origLookup.call(nodeDns.promises, host, opts);
+    };
+    try {
+      try { await dnsModule.lookup("localhost."); } catch (_e) { /* libc-dependent */ }
+    } finally { nodeDns.promises.lookup = origLookup; }
+    check("lookup: the absolute form of a reserved name takes the system path",
+      routedToSystem === true);
     // explicit family over the system resolver → sets nodeOpts.family
     var ld4 = await dnsModule.lookup("localhost", { family: 4 });
     check("lookup(system, family:4): pins the address family on the OS resolver",
       ld4.family === 4);
+  } finally { _reset(); }
+}
+
+// RFC 1034 paragraph 3.1 — `foo.` is the absolute form of `foo`, the same
+// name. The two spellings must reach the same target, but the dot is NOT
+// decoration to be normalized away: a resolver reads it as "already fully
+// qualified, do not apply the search list". Under a search domain with an
+// elevated ndots (the Kubernetes default is 5) stripping it turns an
+// explicitly absolute request into a relative one that can resolve, and
+// cache, `<name>.<search-domain>` instead of the global name. So the name is
+// passed through verbatim, and it is the LABEL LIST that drops the root
+// label — which is also why both spellings encode to identical query bytes.
+async function testAbsoluteFormReachesTheResolverVerbatim() {
+  var nodeDns = require("node:dns");
+  var origLookup = nodeDns.promises.lookup;
+  var seen = [];
+  nodeDns.promises.lookup = function (host, opts) {
+    seen.push(host);
+    return origLookup.call(nodeDns.promises, host, opts);
+  };
+  _reset();
+  dnsModule.useSystemResolver();
+  dnsModule.setLookupTimeoutMs(4000);
+  try {
+    await dnsModule.lookup("localhost");
+    check("the system resolver receives the name the caller gave it",
+      seen.length > 0 && seen[seen.length - 1] === "localhost");
+    var before = seen.length;
+    try { await dnsModule.lookup("example.com."); } catch (_e) { /* offline is fine */ }
+    check("an absolute name keeps its root dot on the way to the system " +
+          "resolver, so the search list is not applied to it",
+      seen.length > before && seen[seen.length - 1] === "example.com.");
+  } finally {
+    nodeDns.promises.lookup = origLookup;
+    _reset();
+  }
+
+  // The encrypted transports encode labels, where a trailing root dot would be
+  // an empty label. Both spellings must therefore produce the same query.
+  _reset();
+  try {
+    dnsModule.useDnsOverHttps({ url: "https://127.0.0.1:1/dns-query" });
+    dnsModule.setLookupTimeoutMs(2000);
+    var absCode = null;
+    try { await dnsModule.resolveSecure("example.com.", "A"); }
+    catch (e) { absCode = e && e.code; }
+    check("the absolute form is not refused as a malformed host by the DoH path",
+      absCode !== null && absCode !== "dns/bad-host");
+    var relCode = null;
+    try { await dnsModule.resolveSecure("example.com", "A"); }
+    catch (e) { relCode = e && e.code; }
+    check("both spellings take the same DoH path", absCode === relCode);
+
+    // Normalization must not become a licence to rewrite a malformed name
+    // into a valid one: an empty label that is NOT the root is refused.
+    var malformed = ["example.com..", "example..com", ".example.com"];
+    for (var mi = 0; mi < malformed.length; mi += 1) {
+      var code = null;
+      try { await dnsModule.resolveSecure(malformed[mi], "A"); }
+      catch (e) { code = e && e.code; }
+      check("the DoH path refuses " + JSON.stringify(malformed[mi]) +
+            " rather than resolving a different name", code === "dns/bad-host");
+    }
+    var badCode = null;
+    try { await dnsModule.resolveSecure("exa mple.com", "A"); }
+    catch (e) { badCode = e && e.code; }
+    check("a malformed label is still refused", badCode === "dns/bad-host");
+
+    // The RFC 1035 253-character ceiling applies to the name, not to the
+    // spelling. A maximum-length name written absolutely is 254 characters and
+    // encodes to exactly the same wire bytes, so measuring the raw string
+    // would accept it relative and refuse it absolute — the boundary case of
+    // the absolute-form support above.
+    var lbl = "a".repeat(63);
+    var head = [lbl, lbl, lbl].join(".");
+    var maxName = head + "." + "b".repeat(253 - head.length - 1);
+    check("the fixture is exactly at the ceiling", maxName.length === 253);
+    var atLimit = {};
+    for (var spelling of [maxName, maxName + "."]) {
+      var limitCode = null;
+      try { await dnsModule.resolveSecure(spelling, "A"); }
+      catch (e) { limitCode = e && e.code; }
+      atLimit[spelling.endsWith(".") ? "absolute" : "relative"] = limitCode;
+    }
+    check("a maximum-length name is accepted in both spellings",
+      atLimit.relative !== "dns/bad-host" && atLimit.absolute !== "dns/bad-host");
+    check("both spellings of the maximum-length name take the same path",
+      atLimit.relative === atLimit.absolute);
+
+    var overName = maxName + "c";
+    var over = {};
+    for (var spelling2 of [overName, overName + "."]) {
+      var code2 = null;
+      try { await dnsModule.resolveSecure(spelling2, "A"); }
+      catch (e) { code2 = e && e.code; }
+      over[spelling2.endsWith(".") ? "absolute" : "relative"] = code2;
+    }
+    check("a name one character over the ceiling is refused in both spellings",
+      over.relative === "dns/bad-host" && over.absolute === "dns/bad-host");
   } finally { _reset(); }
 }
 
@@ -3136,6 +3251,7 @@ async function _runTests() {
 
   // remaining in-process defensive / adversarial / option-default branches
   await testLocalFormTrailingDot();
+  await testAbsoluteFormReachesTheResolverVerbatim();
   await testEnsureSecureDefaultEnvOverride();
   await testValidateLdhLabelReject();
   testDesignatedResolversNonObjectEntry();

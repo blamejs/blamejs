@@ -18,6 +18,7 @@
 var fs = require("fs");
 var crypto = require("crypto");
 var path = require("path");
+var childProcess = require("child_process");
 var check = require("../helpers/check").check;
 
 var MANIFEST_PATH = "lib/vendor/MANIFEST.json";
@@ -99,23 +100,44 @@ function run() {
     // so gate the consistency here: every structured component version MUST
     // appear in the package's version string, making the drift un-shippable.
     if (pkg.components && typeof pkg.version === "string") {
-      // Bind the structured component versions to the version string as a
-      // MULTISET, not a loose substring: the sorted list of component versions
-      // must equal the sorted list of semver tokens in the version string. A
-      // bare "does the component version appear in the string" check would let
-      // a component drift to a value that merely appears elsewhere in the string
-      // — e.g. setting @peculiar/x509 to pkijs's 3.4.0 passes indexOf against
-      // "2.0.0+pkijs-3.4.0" but the SBOM then reports the wrong x509 version.
-      // The multiset {3.4.0,3.4.0} != {2.0.0,3.4.0} catches it.
-      var compVers = Object.keys(pkg.components)
+      var compNames = Object.keys(pkg.components);
+      var compVers = compNames
         .map(function (cn) { return pkg.components[cn] && pkg.components[cn].version; })
         .filter(function (v) { return typeof v === "string"; })
         .sort();
       var strVers = (pkg.version.match(/\d+\.\d+\.\d+/g) || []).slice().sort();
-      check("vendor manifest: " + name + " :: components[] versions [" + compVers.join(",") +
-            "] are exactly the semver tokens in the version string [" + strVers.join(",") + "]",
-            compVers.length === strVers.length &&
-            compVers.every(function (v, i) { return v === strVers[i]; }));
+
+      // Every sub-component states its OWN upstream version, in semver, with
+      // its own source. That is what removes the #366 drift: the version a
+      // scanner reads has exactly one place to live, so it cannot fall behind
+      // a version string that was bumped without it.
+      check("vendor manifest: " + name + " :: every component declares a semver version " +
+            "and a source url",
+            compNames.every(function (cn) {
+              var c = pkg.components[cn];
+              return c && typeof c === "object" &&
+                     typeof c.version === "string" && /^\d+\.\d+\.\d+/.test(c.version) &&
+                     typeof c.url === "string" && c.url.length > 0;
+            }));
+
+      // A COMPOSITE version string ("2.0.0+pkijs-3.4.0") flattens several
+      // packages into one entry, so it names the parent plus one token per
+      // bundled package. There the tokens and the components must agree as a
+      // MULTISET, not by substring: setting one component to another's version
+      // passes an indexOf against the composite while the SBOM then reports
+      // the wrong version for it, and {3.4.0,3.4.0} != {2.0.0,3.4.0} catches
+      // exactly that. A plain version string names only the parent, whose
+      // sub-components carry their own (legitimately different) versions —
+      // two copies of @noble/hashes ship at different versions because each
+      // bundle embeds the one it was built against — so there is nothing to
+      // reconcile.
+      if (strVers.length > 1) {
+        check("vendor manifest: " + name + " :: composite version string tokens [" +
+              strVers.join(",") + "] are exactly the components[] versions [" +
+              compVers.join(",") + "]",
+              compVers.length === strVers.length &&
+              compVers.every(function (v, i) { return v === strVers[i]; }));
+      }
     }
 
     // The cpe (Common Platform Enumeration) string encodes the version in
@@ -153,6 +175,75 @@ function run() {
   }
   check("vendor manifest: scanned at least one hash",
         totalHashes > 0);
+
+  // Declaring an embedded component only buys CVE coverage if the SBOM entry is
+  // one a scanner can RESOLVE. `osv-scanner scan -L sbom.vendored.cdx.json`
+  // matches on the purl's ecosystem, and pkg:generic names none to query — so an
+  // embedded npm package emitted as pkg:generic is listed but silently
+  // unscannable, which is worse than not declaring it at all because the
+  // inventory then reads as covered. Namespacing a sub-component's NAME under
+  // its parent (rather than only its bom-ref) did exactly that to all four
+  // embedded @noble/* copies. Build the document and check what it actually
+  // says, rather than trusting the generator's shape.
+  var sbom = null;
+  try {
+    sbom = JSON.parse(childProcess.execFileSync(process.execPath,
+      [path.join(__dirname, "..", "..", "scripts", "build-vendored-sbom.js")],
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }));
+  } catch (e) {
+    check("vendor sbom: builds and parses as JSON — " + (e && e.message), false);
+  }
+
+  if (sbom) {
+    // Derive what the document MUST contain from the manifest, not from the
+    // shape of what it happens to contain. Filtering the generated components
+    // by name would let the very bug this guards against hide: a component
+    // whose name was namespaced no longer looks like a package name, so a
+    // name-shaped filter quietly drops it from the assertion.
+    //
+    // Data entries (the password list, the Public Suffix List, the BIMI
+    // anchors) are not npm packages and carry snapshot markers rather than
+    // versions, so they legitimately land on pkg:github / pkg:generic.
+    var expectedNpmPurls = [];
+    Object.keys(manifest.packages || {}).forEach(function (pkgName) {
+      var entry = manifest.packages[pkgName];
+      if (!/^@[a-z0-9-_.]+\/[a-z0-9-_.]+$/i.test(pkgName)) return;   // scoped npm names only
+      expectedNpmPurls.push("pkg:npm/" +
+        pkgName.replace(/^@/, "%40").replace("/", "%2F") + "@" + entry.version);
+      var comps = entry.components;
+      if (!comps || typeof comps !== "object") return;
+      Object.keys(comps).forEach(function (subName) {
+        var sub = comps[subName];
+        var subVer = (sub && typeof sub === "object" && sub.version) || entry.version;
+        expectedNpmPurls.push("pkg:npm/" +
+          subName.replace(/^@/, "%40").replace("/", "%2F") + "@" + subVer);
+      });
+    });
+    var actualPurls = (sbom.components || []).map(function (c) { return c.purl; });
+    var missingPurls = expectedNpmPurls.filter(function (want) {
+      return actualPurls.indexOf(want) === -1;
+    });
+    check("vendor sbom: the manifest declares at least one npm package to check " +
+          "for (guards against this gate passing vacuously on an empty list)",
+          expectedNpmPurls.length > 0);
+    check("vendor sbom: every npm package the manifest declares — embedded ones " +
+          "included — appears with a pkg:npm purl a scanner can resolve" +
+          (missingPurls.length ? " (missing: " + missingPurls.join(", ") + ")" : ""),
+          missingPurls.length === 0);
+    // The bom-ref keeps the parent namespace, which is what lets two bundles
+    // embedding the same package at different versions stay distinct entries
+    // instead of collapsing into one.
+    var refs = (sbom.components || []).map(function (c) { return c["bom-ref"]; });
+    check("vendor sbom: every bom-ref is unique",
+          refs.length === new Set(refs).size);
+    var hashesCopies = (sbom.components || []).filter(function (c) {
+      return c.name === "@noble/hashes";
+    });
+    check("vendor sbom: both embedded @noble/hashes copies are reported, each " +
+          "at the version its own bundle was built against",
+          hashesCopies.length === 2 &&
+          hashesCopies[0].version !== hashesCopies[1].version);
+  }
 
   // Operator-facing license-summary consistency. The README dependency-inventory
   // ends in a one-line summary that claims the tabulated set is "All ... MIT

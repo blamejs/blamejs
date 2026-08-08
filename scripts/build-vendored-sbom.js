@@ -144,10 +144,18 @@ function _hashesFor(entry) {
 // monolithic component and its sub-vulnerabilities can't be CVE-mapped).
 var _subDeps = [];   // [{ parentRef, childRef }, ...]
 
-function _buildComponent(key, entry) {
+// key      — the component's REAL package name; it drives `name` and the purl,
+//            so an advisory scanner can match it. Never namespaced.
+// bomRefKey — the identity within THIS document, which for a sub-component is
+//            namespaced under its parent so two bundles embedding the same
+//            package do not collide. Namespacing the package name instead
+//            produced `pkg:generic/<parent>/<child>@x.y.z`, an ecosystem
+//            osv-scanner cannot resolve, so every embedded component was
+//            listed but unscannable — the opposite of why they are declared.
+function _buildComponent(key, entry, bomRefKey) {
   var c = {
     "type":      "library",
-    "bom-ref":   key + "@" + entry.version,
+    "bom-ref":   (bomRefKey || key) + "@" + entry.version,
     "name":      key,
     "version":   entry.version,
     "purl":      _purlFor(entry, key),
@@ -242,8 +250,9 @@ Object.keys(manifest).filter(function (key) {
         source:     subUrl,
         bundledAt:  entry.bundledAt,
       };
-      var subKey = key + "/" + subName;
-      var sub = _buildComponent(subKey, subEntry);
+      // subName is the real package name (drives name + purl); the parent
+      // prefix scopes the bom-ref only.
+      var sub = _buildComponent(subName, subEntry, key + "/" + subName);
       components.push(sub);
       _subDeps.push({ parentRef: parent["bom-ref"], childRef: sub["bom-ref"] });
     }

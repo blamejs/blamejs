@@ -34,9 +34,11 @@ async function testDefaultGroupList() {
         ec.indexOf("X25519MLKEM768") !== -1);
   check("default ecdhCurve includes SecP256r1MLKEM768",
         ec.indexOf("SecP256r1MLKEM768") !== -1);
-  check("default ecdhCurve preserves preference order",
-        ec.indexOf("SecP384r1MLKEM1024") < ec.indexOf("X25519MLKEM768") &&
-        ec.indexOf("X25519MLKEM768") < ec.indexOf("SecP256r1MLKEM768"));
+  // Assert the invariant, not a transcription of the list: the agent offers
+  // exactly the framework's single source of outbound group order. Pinning
+  // the order here as well let the two drift apart silently.
+  check("default ecdhCurve is the framework outbound group order verbatim",
+        ec === b.constants.TLS_GROUP_CURVE_STR);
   // The classical X25519 fallback is the LAST group — hybrids are always
   // preferred; classical is only negotiated when the peer offers no hybrid.
   var groups = ec.split(":");
@@ -139,6 +141,67 @@ async function testAllowOperatorGroupsAuditEmit() {
   }
 }
 
+// ---- What the negotiated key exchange actually was ----
+//
+// The post-handshake observer reads getEphemeralKeyInfo(). Node 24.19.0
+// reports a post-quantum hybrid positively (`{ name, type: "TLSGroup" }`);
+// before that a hybrid reported nothing, so "nothing reported" had to be
+// read as "hybrid". It no longer does: per the tls docs an empty key-info
+// now means the key exchange was NOT ephemeral — no forward secrecy, let
+// alone post-quantum — which is the one outcome that must never be silent.
+async function testKeyExchangeObservation() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-pqckx-"));
+  try {
+    await setupTestDb(tmpDir);
+    var since = Date.now() - 1000;
+    function fakeSocket(info) {
+      return { getEphemeralKeyInfo: function () { return info; } };
+    }
+    var meta = { host: "peer.example", port: 443 };
+
+    b.pqcAgent._auditClassicalDowngrade(
+      fakeSocket({ name: "X25519MLKEM768", type: "TLSGroup" }), meta);
+    b.pqcAgent._auditClassicalDowngrade(
+      fakeSocket({ name: "X25519", type: "ECDH", size: 253 }), meta);
+    b.pqcAgent._auditClassicalDowngrade(fakeSocket({}), meta);
+    // A RESUMED session carries no new key exchange, so an empty reading says
+    // nothing about its forward secrecy — it inherits the original
+    // handshake's. Connection-pool churn makes resumption routine, so
+    // recording those would bury the findings that matter.
+    var resumed = fakeSocket({});
+    resumed.isSessionReused = function () { return true; };
+    b.pqcAgent._auditClassicalDowngrade(resumed, meta);
+
+    await b.audit.flush();
+    var downgrades = await b.audit.query({
+      action: "tls.classical_downgrade", from: since, limit: 100 });
+    var nonEphemeral = await b.audit.query({
+      action: "tls.no_ephemeral_key_exchange", from: since, limit: 100 });
+
+    check("a post-quantum hybrid is not audited as a downgrade",
+          downgrades.filter(function (r) {
+            var m = typeof r.metadata === "string" ? JSON.parse(r.metadata) : r.metadata;
+            return m && /MLKEM/i.test(String(m.group));
+          }).length === 0);
+    check("an observed classical group is audited as a downgrade",
+          downgrades.filter(function (r) {
+            var m = typeof r.metadata === "string" ? JSON.parse(r.metadata) : r.metadata;
+            return m && m.group === "X25519";
+          }).length >= 1);
+    check("a non-ephemeral key exchange gets its own audit action, not silence",
+          nonEphemeral.length >= 1);
+    check("a resumed session is not recorded as having no ephemeral key exchange",
+          nonEphemeral.length === 1);
+    check("the non-ephemeral audit is not conflated with a classical group",
+          downgrades.filter(function (r) {
+            var m = typeof r.metadata === "string" ? JSON.parse(r.metadata) : r.metadata;
+            return !m || m.group === null || m.group === undefined;
+          }).length === 0);
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
 function testKnownTlsGroupsExposed() {
   check("KNOWN_TLS_GROUPS exposed as array",
         Array.isArray(b.pqcAgent.KNOWN_TLS_GROUPS));
@@ -175,6 +238,7 @@ async function run() {
   testGroupsMirrorEcdhCurve();
   testRefuseUnknownGroupByDefault();
   await testAllowOperatorGroupsAuditEmit();
+  await testKeyExchangeObservation();
   testKnownTlsGroupsExposed();
   testReloadSurface();
   testReloadAfterBuild();

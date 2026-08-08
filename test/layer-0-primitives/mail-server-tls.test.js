@@ -176,6 +176,97 @@ async function run() {
     threwNoTls && /b\.mail\.server\.tls\.context/.test(threwNoTls.message));
   check("MX no-tls-context error: points at b.acme for provisioning",
     threwNoTls && /b\.acme/.test(threwNoTls.message));
+  await testStarttlsUpgradeCompressesTheCertificateChain();
+}
+
+// The release advertises RFC 8879 certificate compression on every TLS
+// connection the framework makes or accepts, and a mail listener builds its
+// own secure context rather than handing options to tls.createServer.
+//
+// Assert the EFFECT, not the plumbing. The first version of this test checked
+// that `certificateCompression` appeared in the options handed to TLSSocket —
+// which it did, while doing nothing at all: a TLSSocket given a pre-built
+// secureContext uses that context as-is and ignores context options passed
+// beside it. The test passed and the feature did not work. Bytes on the wire
+// cannot be fooled that way, so count them: a compressed chain is several
+// times smaller than an uncompressed one.
+async function testStarttlsUpgradeCompressesTheCertificateChain() {
+  var nodeTls = require("node:tls");
+  var net = require("node:net");
+  var expected = b.constants.TLS_CERT_COMPRESSION();
+  if (expected.length === 0) {
+    check("runtime without RFC 8879 support — nothing to assert", true);
+    return;
+  }
+  var pair = helpers.selfSignedPair();
+  // Repeat the certificate so the chain is big enough for the difference to
+  // be unambiguous rather than lost in handshake overhead.
+  var fatCert = new Array(24).join(pair.cert) + pair.cert;
+
+  // Measure the server->client handshake bytes through a counting relay, so
+  // the number is read off a socket the test owns.
+  async function handshakeBytes(ctx) {
+    var srv = net.createServer(function (sock) {
+      var t = new nodeTls.TLSSocket(sock, { isServer: true, secureContext: ctx });
+      t.on("error", function () { /* client tears down after the handshake */ });
+    });
+    await new Promise(function (r) { srv.listen(0, "127.0.0.1", r); });
+    var seen = 0;
+    var relay = net.createServer(function (down) {
+      var up = net.connect({ host: "127.0.0.1", port: srv.address().port });
+      up.on("data", function (c) { seen += c.length; down.write(c); });
+      down.on("data", function (c) { up.write(c); });
+      up.on("error", function () {}); down.on("error", function () {});
+    });
+    await new Promise(function (r) { relay.listen(0, "127.0.0.1", r); });
+    // A FAILED handshake also writes bytes, so resolving on 'error' would let
+    // this measure a broken connection and still return a number — the two
+    // measurements would then be compared against each other meaninglessly.
+    // Require the handshake to have completed.
+    var completed = false;
+    var failure = null;
+    await new Promise(function (resolve) {
+      var c = nodeTls.connect({
+        host: "127.0.0.1", port: relay.address().port, servername: "localhost",
+        ca: [pair.cert], certificateCompression: expected,
+      });
+      c.on("secureConnect", function () { completed = true; c.destroy(); resolve(); });
+      c.on("error", function (e) { failure = (e && e.message) || String(e); resolve(); });
+    });
+    await helpers.waitUntil(function () { return seen > 0; },
+      { timeoutMs: 5000, label: "mail-server-tls: handshake bytes observed" });
+    relay.close(); srv.close();
+    if (!completed) {
+      throw new Error("mail-server-tls: handshake did not complete, so its byte " +
+                      "count means nothing" + (failure ? " (" + failure + ")" : ""));
+    }
+    return seen;
+  }
+
+  var plainCtx = nodeTls.createSecureContext({ cert: fatCert, key: pair.key });
+  var uncompressed = await handshakeBytes(plainCtx);
+
+  // The context the framework builds, via the shipped primitive.
+  var fs2 = require("node:fs");
+  var os2 = require("node:os");
+  var path2 = require("node:path");
+  var dir = fs2.mkdtempSync(path2.join(os2.tmpdir(), "mailtls-"));
+  var certFile = path2.join(dir, "cert.pem");
+  var keyFile = path2.join(dir, "key.pem");
+  fs2.writeFileSync(certFile, fatCert);
+  fs2.writeFileSync(keyFile, pair.key);
+  // context() returns a handle that owns the SecureContext plus its reload
+  // machinery; the socket wants the context itself.
+  var handle = b.mail.server.tls.context({ certFile: certFile, keyFile: keyFile });
+  var compressed = await handshakeBytes(handle.secureContext);
+  if (handle && typeof handle.stop === "function") {
+    try { handle.stop(); } catch (_e) { /* best-effort */ }
+  }
+  try { fs2.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+
+  check("the mail secure context compresses the certificate chain on the wire " +
+        "(" + compressed + " bytes vs " + uncompressed + " uncompressed)",
+    compressed > 0 && uncompressed > 0 && compressed < uncompressed * 0.9);
 }
 
 module.exports = { run: run };

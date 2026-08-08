@@ -79,6 +79,19 @@ async function testCheckpointStillAnchorsAgainstALiveDatabase() {
     await b.audit.emit({ event: "checkpoint.generation.live", outcome: "success" });
     await b.audit.flush();
 
+    // checkpoint() anchors the chain TIP, so it returns null when the log it
+    // reads is empty — the same null this file's other case asserts. Wait for
+    // the row to be readable from THIS database before asking, so a failure
+    // here means the anchoring broke and never that the fixture had not
+    // landed yet. Under a loaded parallel run the preceding case's database
+    // teardown and this one's open can still be settling when the emit
+    // returns, and the check read an empty log.
+    await helpers.waitUntil(function () {
+      return b.audit.query({ limit: 1 })
+        .then(function (rows) { return rows.length >= 1; })
+        .catch(function () { return false; });
+    }, { timeoutMs: 5000, label: "audit-checkpoint: fixture row readable before anchoring" });
+
     var ckpt = await b.audit.checkpoint({});
     check("against a live database the checkpoint still anchors", !!ckpt);
 
