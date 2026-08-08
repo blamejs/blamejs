@@ -176,62 +176,87 @@ async function run() {
     threwNoTls && /b\.mail\.server\.tls\.context/.test(threwNoTls.message));
   check("MX no-tls-context error: points at b.acme for provisioning",
     threwNoTls && /b\.acme/.test(threwNoTls.message));
-  await testStarttlsUpgradeAdvertisesCertificateCompression();
+  await testStarttlsUpgradeCompressesTheCertificateChain();
 }
 
 // The release advertises RFC 8879 certificate compression on every TLS
-// connection the framework makes or accepts. A mail listener upgrades a plain
-// socket rather than handing it to tls.createServer, so it takes a separate
-// construction path from b.router and does not inherit the setting — SMTP,
-// submission, IMAP, POP3 and ManageSieve would otherwise keep sending the
-// uncompressed ML-DSA-87 chain while the claim said otherwise. Observe the
-// options the upgrade hands to node:tls.
-async function testStarttlsUpgradeAdvertisesCertificateCompression() {
+// connection the framework makes or accepts, and a mail listener builds its
+// own secure context rather than handing options to tls.createServer.
+//
+// Assert the EFFECT, not the plumbing. The first version of this test checked
+// that `certificateCompression` appeared in the options handed to TLSSocket —
+// which it did, while doing nothing at all: a TLSSocket given a pre-built
+// secureContext uses that context as-is and ignores context options passed
+// beside it. The test passed and the feature did not work. Bytes on the wire
+// cannot be fooled that way, so count them: a compressed chain is several
+// times smaller than an uncompressed one.
+async function testStarttlsUpgradeCompressesTheCertificateChain() {
   var nodeTls = require("node:tls");
   var net = require("node:net");
-  var OrigTLSSocket = nodeTls.TLSSocket;
-  var captured = null;
-  nodeTls.TLSSocket = function (socket, opts) {
-    if (captured === null) captured = opts || {};
-    return new OrigTLSSocket(socket, opts);
-  };
-  nodeTls.TLSSocket.prototype = OrigTLSSocket.prototype;
-  var pair = helpers.selfSignedPair({ commonName: "localhost" });
-  var ctx = nodeTls.createSecureContext({ cert: pair.cert, key: pair.key });
-  var srv = net.createServer(function (sock) {
-    try {
-      b.mail.server.tls.upgradeSocket({
-        plainSocket:   sock,
-        secureContext: ctx,
-        onSecure:      function () {},
-        onData:        function () {},
-        onError:       function () {},
-        onClose:       function () {},
-      });
-    } catch (_e) { /* the peer never handshakes — the options are what we want */ }
-  });
-  await new Promise(function (r) { srv.listen(0, "127.0.0.1", r); });
-  var client = net.connect({ host: "127.0.0.1", port: srv.address().port });
-  client.on("error", function () { /* torn down below */ });
-  try {
-    await helpers.waitUntil(function () { return captured !== null; },
-      { timeoutMs: 5000, label: "mail-server-tls: STARTTLS upgrade built its TLS options" });
-    var expected = b.constants.TLS_CERT_COMPRESSION();
-    if (expected.length > 0) {
-      check("STARTTLS upgrade advertises the runtime's certificate-compression algorithms",
-        Array.isArray(captured.certificateCompression) &&
-        captured.certificateCompression.join(",") === expected.join(","));
-    } else {
-      check("STARTTLS upgrade omits certificateCompression on a runtime without it",
-        captured.certificateCompression === undefined);
-    }
-    check("STARTTLS upgrade still wraps as a server with the operator's context",
-      captured.isServer === true && captured.secureContext === ctx);
-  } finally {
-    nodeTls.TLSSocket = OrigTLSSocket;
-    try { client.destroy(); } catch (_e) { /* teardown */ }
-    srv.close();
+  var expected = b.constants.TLS_CERT_COMPRESSION();
+  if (expected.length === 0) {
+    check("runtime without RFC 8879 support — nothing to assert", true);
+    return;
   }
+  var pair = helpers.selfSignedPair({ commonName: "localhost" });
+  // Repeat the certificate so the chain is big enough for the difference to
+  // be unambiguous rather than lost in handshake overhead.
+  var fatCert = new Array(24).join(pair.cert) + pair.cert;
+
+  // Measure the server->client handshake bytes through a counting relay, so
+  // the number is read off a socket the test owns.
+  async function handshakeBytes(ctx) {
+    var srv = net.createServer(function (sock) {
+      var t = new nodeTls.TLSSocket(sock, { isServer: true, secureContext: ctx });
+      t.on("error", function () { /* client tears down after the handshake */ });
+    });
+    await new Promise(function (r) { srv.listen(0, "127.0.0.1", r); });
+    var seen = 0;
+    var relay = net.createServer(function (down) {
+      var up = net.connect({ host: "127.0.0.1", port: srv.address().port });
+      up.on("data", function (c) { seen += c.length; down.write(c); });
+      down.on("data", function (c) { up.write(c); });
+      up.on("error", function () {}); down.on("error", function () {});
+    });
+    await new Promise(function (r) { relay.listen(0, "127.0.0.1", r); });
+    await new Promise(function (resolve) {
+      var c = nodeTls.connect({
+        host: "127.0.0.1", port: relay.address().port, servername: "localhost",
+        ca: [pair.cert], certificateCompression: expected,
+      });
+      c.on("secureConnect", function () { c.destroy(); resolve(); });
+      c.on("error", function () { resolve(); });
+    });
+    await helpers.waitUntil(function () { return seen > 0; },
+      { timeoutMs: 5000, label: "mail-server-tls: handshake bytes observed" });
+    relay.close(); srv.close();
+    return seen;
+  }
+
+  var plainCtx = nodeTls.createSecureContext({ cert: fatCert, key: pair.key });
+  var uncompressed = await handshakeBytes(plainCtx);
+
+  // The context the framework builds, via the shipped primitive.
+  var fs2 = require("node:fs");
+  var os2 = require("node:os");
+  var path2 = require("node:path");
+  var dir = fs2.mkdtempSync(path2.join(os2.tmpdir(), "mailtls-"));
+  var certFile = path2.join(dir, "cert.pem");
+  var keyFile = path2.join(dir, "key.pem");
+  fs2.writeFileSync(certFile, fatCert);
+  fs2.writeFileSync(keyFile, pair.key);
+  // context() returns a handle that owns the SecureContext plus its reload
+  // machinery; the socket wants the context itself.
+  var handle = b.mail.server.tls.context({ certFile: certFile, keyFile: keyFile });
+  var compressed = await handshakeBytes(handle.secureContext);
+  if (handle && typeof handle.stop === "function") {
+    try { handle.stop(); } catch (_e) { /* best-effort */ }
+  }
+  try { fs2.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+
+  check("the mail secure context compresses the certificate chain on the wire " +
+        "(" + compressed + " bytes vs " + uncompressed + " uncompressed)",
+    compressed > 0 && uncompressed > 0 && compressed < uncompressed * 0.9);
 }
 
 module.exports = { run: run };

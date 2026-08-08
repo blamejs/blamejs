@@ -3000,6 +3000,28 @@ async function testH2DrainWaitsOnProgressButNotOnAStall() {
   check("the drain force-destroys an h2 session that has stopped making progress",
     sessB.destroyed === true);
   srvB.close();
+
+  // (3) A stalled stream on a CHATTY connection. The byte counters belong to
+  // the SOCKET, so a peer sending PING frames keeps them moving while the
+  // response goes nowhere (measured: they climb steadily under server pings),
+  // and progress alone would let the session linger forever. Driven against a
+  // stub rather than a live server: a real peer closes its own side once it
+  // sees the GOAWAY, which destroys the session no matter what the watchdog
+  // does — so a network test here passes whether or not the ceiling exists.
+  var fakeDestroyed = false;
+  var movingBytes = 0;
+  var fakeSession = {
+    destroyed: false,
+    socket: { get bytesRead() { movingBytes += 17; return movingBytes; }, bytesWritten: 0 },
+    close: function () { /* graceful close is a no-op for the stub */ },
+    destroy: function () { fakeDestroyed = true; this.destroyed = true; },
+  };
+  teardown.drainH2Session(fakeSession, GRACE, GRACE * 3);
+  await helpers.waitUntil(function () { return fakeDestroyed; },
+    { timeoutMs: 8000, label: "http-client: chatty-but-stalled session hits the ceiling" });
+  check("a session whose byte counters keep moving on control traffic alone " +
+        "still hits the absolute ceiling",
+    fakeDestroyed === true);
 }
 
 async function run() {
