@@ -18,6 +18,7 @@
 var fs = require("fs");
 var crypto = require("crypto");
 var path = require("path");
+var childProcess = require("child_process");
 var check = require("../helpers/check").check;
 
 var MANIFEST_PATH = "lib/vendor/MANIFEST.json";
@@ -174,6 +175,74 @@ function run() {
   }
   check("vendor manifest: scanned at least one hash",
         totalHashes > 0);
+
+  // Declaring an embedded component only buys CVE coverage if the SBOM entry is
+  // one a scanner can RESOLVE. `osv-scanner scan -L sbom.vendored.cdx.json`
+  // matches on the purl's ecosystem, and pkg:generic names none to query — so an
+  // embedded npm package emitted as pkg:generic is listed but silently
+  // unscannable, which is worse than not declaring it at all because the
+  // inventory then reads as covered. Namespacing a sub-component's NAME under
+  // its parent (rather than only its bom-ref) did exactly that to all four
+  // embedded @noble/* copies. Build the document and check what it actually
+  // says, rather than trusting the generator's shape.
+  var sbom = null;
+  try {
+    sbom = JSON.parse(childProcess.execFileSync(process.execPath,
+      [path.join(__dirname, "..", "..", "scripts", "build-vendored-sbom.js")],
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }));
+  } catch (e) {
+    check("vendor sbom: builds and parses as JSON — " + (e && e.message), false);
+  }
+
+  if (sbom) {
+    // Derive what the document MUST contain from the manifest, not from the
+    // shape of what it happens to contain. Filtering the generated components
+    // by name would let the very bug this guards against hide: a component
+    // whose name was namespaced no longer looks like a package name, so a
+    // name-shaped filter quietly drops it from the assertion.
+    //
+    // Data entries (the password list, the Public Suffix List, the BIMI
+    // anchors) are not npm packages and carry snapshot markers rather than
+    // versions, so they legitimately land on pkg:github / pkg:generic.
+    var expectedNpmPurls = [];
+    Object.keys(manifest.packages || {}).forEach(function (pkgName) {
+      var entry = manifest.packages[pkgName];
+      if (!/^@[a-z0-9-_.]+\/[a-z0-9-_.]+$/i.test(pkgName)) return;   // scoped npm names only
+      expectedNpmPurls.push("pkg:npm/" +
+        pkgName.replace(/^@/, "%40").replace("/", "%2F") + "@" + entry.version);
+      var comps = entry.components;
+      if (!comps || typeof comps !== "object") return;
+      Object.keys(comps).forEach(function (subName) {
+        var sub = comps[subName];
+        var subVer = (sub && typeof sub === "object" && sub.version) || entry.version;
+        expectedNpmPurls.push("pkg:npm/" +
+          subName.replace(/^@/, "%40").replace("/", "%2F") + "@" + subVer);
+      });
+    });
+    var actualPurls = (sbom.components || []).map(function (c) { return c.purl; });
+    var missingPurls = expectedNpmPurls.filter(function (want) {
+      return actualPurls.indexOf(want) === -1;
+    });
+    check("vendor sbom: reports at least one npm-sourced component",
+          expectedNpmPurls.length > 0);
+    check("vendor sbom: every npm package the manifest declares — embedded ones " +
+          "included — appears with a pkg:npm purl a scanner can resolve" +
+          (missingPurls.length ? " (missing: " + missingPurls.join(", ") + ")" : ""),
+          missingPurls.length === 0);
+    // The bom-ref keeps the parent namespace, which is what lets two bundles
+    // embedding the same package at different versions stay distinct entries
+    // instead of collapsing into one.
+    var refs = (sbom.components || []).map(function (c) { return c["bom-ref"]; });
+    check("vendor sbom: every bom-ref is unique",
+          refs.length === new Set(refs).size);
+    var hashesCopies = (sbom.components || []).filter(function (c) {
+      return c.name === "@noble/hashes";
+    });
+    check("vendor sbom: both embedded @noble/hashes copies are reported, each " +
+          "at the version its own bundle was built against",
+          hashesCopies.length === 2 &&
+          hashesCopies[0].version !== hashesCopies[1].version);
+  }
 
   // Operator-facing license-summary consistency. The README dependency-inventory
   // ends in a one-line summary that claims the tabulated set is "All ... MIT

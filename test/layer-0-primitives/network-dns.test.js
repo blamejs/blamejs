@@ -1536,6 +1536,22 @@ async function testAbsoluteFormIsNormalizedBeforeResolving() {
     catch (e) { emptyCode = e && e.code; }
     check("an interior empty label is still refused after normalization",
       emptyCode === "dns/bad-host");
+
+    // A name carries exactly ONE root label, so exactly one trailing dot is
+    // removed. Stripping the whole run would turn "example.com.." — a name
+    // with an empty label, as malformed as "example..com" — into the valid
+    // but DIFFERENT name "example.com", and resolve and cache that instead of
+    // refusing the input.
+    var doubleDot = null;
+    try { await dnsModule.resolveSecure("example.com..", "A"); }
+    catch (e) { doubleDot = e && e.code; }
+    check("a trailing empty label is refused, not normalized into another name",
+      doubleDot === "dns/bad-host");
+    var rootOnly = null;
+    try { await dnsModule.resolveSecure(".", "A"); }
+    catch (e) { rootOnly = e && e.code; }
+    check("the bare root name is refused rather than emptied",
+      rootOnly === "dns/bad-host");
   } finally { _reset(); }
 }
 
