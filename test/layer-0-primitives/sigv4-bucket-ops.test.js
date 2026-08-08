@@ -1808,6 +1808,33 @@ function testSigv4CanonicalHelperEdgeBranches() {
   var wireLower = Object.keys(signedDup.headers).map(function (k) { return k.toLowerCase(); });
   check("signRequest: every name in SignedHeaders is present in the returned headers",
         signedList.every(function (n) { return wireLower.indexOf(n) !== -1; }));
+
+  // Whitespace collapsing belongs to SigV4 canonicalization, NOT to the
+  // request. A value whose internal spacing is significant must reach the wire
+  // byte-for-byte: a collapsed multipart boundary no longer matches the body,
+  // and the store persists the mangled value as the object's Content-Type.
+  var spacey = 'multipart/form-data; boundary="a  b"';
+  var wsHeaders = sigv4.canonicalHeaders({ "Content-Type": spacey });
+  check("canonicalHeaders: the CANONICAL value collapses whitespace (SigV4 requires it)",
+        wsHeaders.canonical === 'content-type:multipart/form-data; boundary="a b"\n');
+  check("canonicalHeaders: the WIRE value keeps the caller's bytes exactly",
+        wsHeaders.merged["content-type"] === spacey);
+
+  var signedWs = sigv4.signRequest({
+    method:          "PUT",
+    url:             "https://s3.example.com/obj.bin",
+    region:          "us-east-1",
+    accessKeyId:     "AKIAIOSFODNN7EXAMPLE",
+    secretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    payloadHash:     "UNSIGNED-PAYLOAD",
+    headers:         { "Content-Type": spacey },
+  });
+  check("signRequest: a whitespace-significant header reaches the wire unaltered",
+        signedWs.headers["content-type"] === spacey);
+  check("signRequest: leading/trailing padding is likewise preserved on the wire",
+        sigv4.canonicalHeaders({ "X-Amz-Meta-Pad": "  padded  " }).merged["x-amz-meta-pad"] === "  padded  ");
+  check("signRequest: but the signature still commits to the trimmed form",
+        sigv4.canonicalHeaders({ "X-Amz-Meta-Pad": "  padded  " }).canonical === "x-amz-meta-pad:padded\n");
 }
 
 // signRequest's own defaulting arms: a bare https:// string URL with no
