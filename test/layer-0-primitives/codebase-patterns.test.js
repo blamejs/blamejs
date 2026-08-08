@@ -6292,6 +6292,49 @@ function testOutboundTlsMergesSharedPosture() {
 
 // ---- Pattern 48a: README's vendored table states the shipped versions ----
 
+function testReadmeNodeRequirementMatchesEngines() {
+  // README's requirements line is where someone decides which Node to install.
+  // Nothing derived it from package.json, so raising engines.node left the
+  // README advertising the previous floor — install guidance that produces an
+  // npm engine mismatch, on a runtime missing the TLS behaviour the release
+  // depends on. Same shape as the vendored-table drift above: a published
+  // claim that must track a manifest value, with no gate holding it there.
+  var root = path.resolve(__dirname, "..", "..");
+  var bad = [];
+  var pkg, readme;
+  try { pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")); }
+  catch (_e) { _report("README states the supported Node version",
+    [{ file: "package.json", line: 1, content: "unreadable / not JSON" }]); return; }
+  try { readme = fs.readFileSync(path.join(root, "README.md"), "utf8"); }
+  catch (_e) { _report("README states the supported Node version",
+    [{ file: "README.md", line: 1, content: "README.md missing" }]); return; }
+
+  var engines = (pkg.engines && pkg.engines.node) || "";
+  var floor = (engines.match(/(\d+\.\d+\.\d+)/) || [])[1];
+  var line = readme.split("\n").findIndex(function (l) {
+    return l.indexOf("**Requirements:**") === 0;
+  });
+  if (!floor) {
+    bad.push({ file: "package.json", line: 1,
+      content: "engines.node '" + engines + "' has no x.y.z floor to compare against" });
+  } else if (line === -1) {
+    bad.push({ file: "README.md", line: 1,
+      content: "no '**Requirements:**' line naming the supported Node version" });
+  } else {
+    // The line reads "Node.js 24.19+ (...)". Compare on major.minor: the
+    // README states the supported line, not every patch of it.
+    var stated = (readme.split("\n")[line].match(/Node\.js\s+(\d+\.\d+)/) || [])[1];
+    var wanted = floor.split(".").slice(0, 2).join(".");
+    if (stated !== wanted) {
+      bad.push({ file: "README.md", line: line + 1,
+        content: "README advertises Node.js " + stated + "+ but package.json " +
+                 "engines.node requires " + engines + " — anyone following the " +
+                 "README installs a runtime npm will reject" });
+    }
+  }
+  _report("README states the supported Node version", bad);
+}
+
 function testReadmeVendorTableMatchesManifest() {
   // README carries a per-package table of what blamejs vendors, and operators
   // read it to decide whether a published advisory applies to them. Nothing
@@ -16637,6 +16680,7 @@ async function run() {
   testScannerPolicyCoversVendorDataCarriers();
   testVendorComponentsAttributedInNotice();
   testReadmeVendorTableMatchesManifest();
+  testReadmeNodeRequirementMatchesEngines();
   testOutboundTlsMergesSharedPosture();
   testDocumentedScriptFlagsExist();
   // v0.8.91 bug-class detectors — derived from the

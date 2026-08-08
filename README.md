@@ -53,7 +53,7 @@ var b = require("@blamejs/core");
 })();
 ```
 
-**Requirements:** Node.js 24.18+ (current active LTS line; 24.14.1 fixed CVE-2026-21713 non-constant-time HMAC compare, 24.18 is the current patch level). Node 26 satisfies the floor and the framework test suite runs cleanly on it today; the floor itself will bump to `>=26.x` when Node 26 promotes to Active LTS. Two Node 26 platform changes operators integrating with blamejs should know about: the new `localStorage` global (the framework's storage backend is `b.backup.diskStorage`; the legacy `b.backup.localStorage` alias was removed in v0.11.20 — update call sites accordingly), and the seed-only ML-KEM / ML-DSA PKCS8 export shape (sealed material from Node 24 re-imports cleanly on Node 26; new material from Node 26 in the seed-only shape). See [SECURITY.md](SECURITY.md#node-26-compatibility) for the details.
+**Requirements:** Node.js 24.19+ (current active LTS line; 24.14.1 fixed CVE-2026-21713 non-constant-time HMAC compare, 24.19 is the current patch level and the release this framework's TLS behaviour depends on). Node 26 satisfies the floor and the framework test suite runs cleanly on it today; the floor itself will bump to `>=26.x` when Node 26 promotes to Active LTS. Two Node 26 platform changes operators integrating with blamejs should know about: the new `localStorage` global (the framework's storage backend is `b.backup.diskStorage`; the legacy `b.backup.localStorage` alias was removed in v0.11.20 — update call sites accordingly), and the seed-only ML-KEM / ML-DSA PKCS8 export shape (sealed material from Node 24 re-imports cleanly on Node 26; new material from Node 26 in the seed-only shape). See [SECURITY.md](SECURITY.md#node-26-compatibility) for the details.
 
 ## What ships in the box
 

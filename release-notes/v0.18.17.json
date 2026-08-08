@@ -76,7 +76,7 @@
       "items": [
         {
           "title": "The supported Node version is now 24.19.0",
-          "body": "Node 24.19.0 is what reports the negotiated TLS group positively, which is what makes a non-ephemeral key exchange distinguishable from a post-quantum one, and it is where certificate compression is available. Operators on 24.18.x should upgrade before taking this release."
+          "body": "Node 24.19.0 is what reports the negotiated TLS group positively, which is what makes a non-ephemeral key exchange distinguishable from a post-quantum one, and it is where certificate compression is available. Operators on 24.18.x should upgrade before taking this release. The README's requirements line is updated with it, and a release gate now holds the two together — it previously kept advertising the old floor, which is installation guidance that produces an npm engine mismatch."
         },
         {
           "title": "Vendored bundles declare the components they carry",
