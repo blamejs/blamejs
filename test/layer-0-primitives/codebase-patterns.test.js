@@ -6252,7 +6252,8 @@ function testReadmeVendorTableMatchesManifest() {
   var bad = [];
   Object.keys(manifest.packages || {}).forEach(function (key) {
     if (SNAPSHOT_ENTRIES[key]) return;
-    var declared = manifest.packages[key].version;
+    var entry = manifest.packages[key];
+    var declared = entry.version;
     var rowIdx = -1;
     for (var i = 0; i < lines.length; i += 1) {
       if (lines[i].indexOf("| [`" + key + "`]") === 0) { rowIdx = i; break; }
@@ -6265,10 +6266,29 @@ function testReadmeVendorTableMatchesManifest() {
     }
     // `| [`pkg`](url) | VERSION | author | purpose |` — cell 2 is the version.
     var shown = lines[rowIdx].split("|").map(function (c) { return c.trim(); })[2];
-    if (shown !== declared) {
+
+    // A bundle that EMBEDS other packages ships more versions than its own,
+    // and an operator reading this table to decide whether an advisory applies
+    // must see all of them. noble-post-quantum embeds @noble/ciphers and
+    // @noble/curves at 2.2.0 while the table's own rows for those packages
+    // show the 2.3.0 standalone copies — so checking a 2.2.0 advisory against
+    // the table alone answers "not shipped", wrongly. Every embedded version
+    // must appear in the parent's version cell.
+    var wanted = [declared];
+    var comps = entry.components;
+    if (comps && typeof comps === "object") {
+      Object.keys(comps).forEach(function (subName) {
+        var sub = comps[subName];
+        var subVer = (sub && typeof sub === "object" && sub.version) || declared;
+        if (wanted.indexOf(subVer) === -1) wanted.push(subVer);
+      });
+    }
+    var absent = wanted.filter(function (v) { return shown.indexOf(v) === -1; });
+    if (absent.length > 0) {
       bad.push({ file: "README.md", line: rowIdx + 1,
-        content: "README says " + key + " is at '" + shown +
-                 "' but lib/vendor/MANIFEST.json ships " + declared });
+        content: "README's version cell for " + key + " reads '" + shown +
+                 "' but lib/vendor/MANIFEST.json ships " + wanted.join(" + ") +
+                 " (missing: " + absent.join(", ") + ")" });
     }
   });
   _report("README vendored table states the shipped versions", bad);
@@ -12183,7 +12203,15 @@ function testHostnameCompareTrailingDotNormalize() {
                    /while[\s\S]{0,80}length\s*>\s*0[\s\S]{0,80}charAt[\s\S]{0,80}===\s*"\."/.test(content) ||
                    // end-anchored regex strip of one-or-more trailing dots:
                    // .replace(/\.$/, ...) / .replace(/\.+$/, ...) / .replace(/\.*$/, ...)
-                   /\.replace\(\s*\/\\\.[+*]?\$\//.test(content);
+                   /\.replace\(\s*\/\\\.[+*]?\$\//.test(content) ||
+                   // Label-list normalize: the name is split into labels, the
+                   // ROOT label dropped, and the rest rejoined — the same
+                   // normalization done positionally rather than lexically, and
+                   // stricter, since it removes exactly the root label and never
+                   // a run of dots that would rewrite a malformed name into a
+                   // valid one. Anchored on the rejoin, so merely calling a
+                   // splitter somewhere in the file is not enough.
+                   /=\s*_labelsOf\([^)]*\)\.join\("\."\)/.test(content);
     if (hasStrip) continue;
     var m = content.match(reservedHostLiteralRe);
     var lineNum = content.slice(0, m.index).split("\n").length;

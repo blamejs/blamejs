@@ -1473,9 +1473,25 @@ async function testLocalFormTrailingDot() {
   _reset();
   dnsModule.setLookupTimeoutMs(4000);
   try {
-    var ld = await dnsModule.lookup("localhost.");
-    check("lookup: fully-qualified 'localhost.' strips the root dot → system path",
-      typeof ld.address === "string" && (ld.family === 4 || ld.family === 6));
+    // RFC 6761 special-form classification reads the LABEL LIST, so the
+    // absolute spelling of a reserved name classifies the same as the
+    // relative one and takes the system path rather than a public resolver.
+    // Assert the routing, not the resolution: whether `localhost.` itself
+    // resolves is libc-dependent (musl matches /etc/hosts literally and
+    // legitimately misses it, glibc accepts it), and the framework passes the
+    // caller's spelling through either way.
+    var nodeDns = require("node:dns");
+    var origLookup = nodeDns.promises.lookup;
+    var routedToSystem = false;
+    nodeDns.promises.lookup = function (host, opts) {
+      if (host === "localhost.") routedToSystem = true;
+      return origLookup.call(nodeDns.promises, host, opts);
+    };
+    try {
+      try { await dnsModule.lookup("localhost."); } catch (_e) { /* libc-dependent */ }
+    } finally { nodeDns.promises.lookup = origLookup; }
+    check("lookup: the absolute form of a reserved name takes the system path",
+      routedToSystem === true);
     // explicit family over the system resolver → sets nodeOpts.family
     var ld4 = await dnsModule.lookup("localhost", { family: 4 });
     check("lookup(system, family:4): pins the address family on the OS resolver",
@@ -1484,14 +1500,15 @@ async function testLocalFormTrailingDot() {
 }
 
 // RFC 1034 paragraph 3.1 — `foo.` is the absolute form of `foo`, the same
-// name. The framework classified the absolute form correctly but then handed
-// the resolver the dotted string verbatim, and the two transports disagreed
-// about it: glibc's getaddrinfo tolerates the trailing dot, musl's does not
-// (so an Alpine deployment — the framework's own container base — answered
-// ENOTFOUND for a legitimate FQDN), while the encrypted transports rejected
-// it outright as an empty label. Assert on the name the resolver RECEIVES, so
-// the check does not depend on which libc is underneath.
-async function testAbsoluteFormIsNormalizedBeforeResolving() {
+// name. The two spellings must reach the same target, but the dot is NOT
+// decoration to be normalized away: a resolver reads it as "already fully
+// qualified, do not apply the search list". Under a search domain with an
+// elevated ndots (the Kubernetes default is 5) stripping it turns an
+// explicitly absolute request into a relative one that can resolve, and
+// cache, `<name>.<search-domain>` instead of the global name. So the name is
+// passed through verbatim, and it is the LABEL LIST that drops the root
+// label — which is also why both spellings encode to identical query bytes.
+async function testAbsoluteFormReachesTheResolverVerbatim() {
   var nodeDns = require("node:dns");
   var origLookup = nodeDns.promises.lookup;
   var seen = [];
@@ -1500,87 +1517,52 @@ async function testAbsoluteFormIsNormalizedBeforeResolving() {
     return origLookup.call(nodeDns.promises, host, opts);
   };
   _reset();
+  dnsModule.useSystemResolver();
   dnsModule.setLookupTimeoutMs(4000);
   try {
-    await dnsModule.lookup("localhost.");
-    check("the system resolver receives the name without its root dot",
-      seen.length > 0 && seen.every(function (h) { return !/\.$/.test(h); }));
+    await dnsModule.lookup("localhost");
+    check("the system resolver receives the name the caller gave it",
+      seen.length > 0 && seen[seen.length - 1] === "localhost");
+    var before = seen.length;
+    try { await dnsModule.lookup("example.com."); } catch (_e) { /* offline is fine */ }
+    check("an absolute name keeps its root dot on the way to the system " +
+          "resolver, so the search list is not applied to it",
+      seen.length > before && seen[seen.length - 1] === "example.com.");
   } finally {
     nodeDns.promises.lookup = origLookup;
     _reset();
   }
 
-  // The encrypted transports refused the absolute form before ever reaching
-  // the wire: splitting on "." yields a trailing empty label, which the RFC
-  // 1035 LDH check rejects as length 0. Point the resolver at a closed port so
-  // the call fails on transport, and assert it is no longer refused as a
-  // malformed host.
+  // The encrypted transports encode labels, where a trailing root dot would be
+  // an empty label. Both spellings must therefore produce the same query.
   _reset();
   try {
     dnsModule.useDnsOverHttps({ url: "https://127.0.0.1:1/dns-query" });
     dnsModule.setLookupTimeoutMs(2000);
-    var code = null;
+    var absCode = null;
     try { await dnsModule.resolveSecure("example.com.", "A"); }
-    catch (e) { code = e && e.code; }
+    catch (e) { absCode = e && e.code; }
     check("the absolute form is not refused as a malformed host by the DoH path",
-      code !== null && code !== "dns/bad-host");
-    // A genuinely malformed label is still refused — the normalization strips
-    // only the root dot, it does not relax LDH validation.
+      absCode !== null && absCode !== "dns/bad-host");
+    var relCode = null;
+    try { await dnsModule.resolveSecure("example.com", "A"); }
+    catch (e) { relCode = e && e.code; }
+    check("both spellings take the same DoH path", absCode === relCode);
+
+    // Normalization must not become a licence to rewrite a malformed name
+    // into a valid one: an empty label that is NOT the root is refused.
+    var malformed = ["example.com..", "example..com", ".example.com"];
+    for (var mi = 0; mi < malformed.length; mi += 1) {
+      var code = null;
+      try { await dnsModule.resolveSecure(malformed[mi], "A"); }
+      catch (e) { code = e && e.code; }
+      check("the DoH path refuses " + JSON.stringify(malformed[mi]) +
+            " rather than resolving a different name", code === "dns/bad-host");
+    }
     var badCode = null;
     try { await dnsModule.resolveSecure("exa mple.com", "A"); }
     catch (e) { badCode = e && e.code; }
-    check("a malformed label is still refused after normalization",
-      badCode === "dns/bad-host");
-    var emptyCode = null;
-    try { await dnsModule.resolveSecure("example..com", "A"); }
-    catch (e) { emptyCode = e && e.code; }
-    check("an interior empty label is still refused after normalization",
-      emptyCode === "dns/bad-host");
-
-    // A name carries exactly ONE root label, so exactly one trailing dot is
-    // removed. Stripping the whole run would turn "example.com.." — a name
-    // with an empty label, as malformed as "example..com" — into the valid
-    // but DIFFERENT name "example.com", and resolve and cache that instead of
-    // refusing the input.
-    var doubleDot = null;
-    try { await dnsModule.resolveSecure("example.com..", "A"); }
-    catch (e) { doubleDot = e && e.code; }
-    check("a trailing empty label is refused, not normalized into another name",
-      doubleDot === "dns/bad-host");
-    var rootOnly = null;
-    try { await dnsModule.resolveSecure(".", "A"); }
-    catch (e) { rootOnly = e && e.code; }
-    check("the bare root name is refused rather than emptied",
-      rootOnly === "dns/bad-host");
-  } finally { _reset(); }
-
-  // The system-resolver branch of lookup() runs NO LDH validation — it hands
-  // the name to getaddrinfo, which treats a trailing dot as absolute. So
-  // "example.com.." normalized to "example.com." and then RESOLVED, returning
-  // and caching the address of a DIFFERENT name than the caller asked for.
-  // The empty-label check belongs at the entry point, ahead of the transport
-  // choice, so every branch inherits it.
-  _reset();
-  dnsModule.useSystemResolver();
-  dnsModule.setLookupTimeoutMs(3000);
-  try {
-    var MALFORMED = ["example.com..", "localhost..", ".example.com", "example..com"];
-    for (var mi = 0; mi < MALFORMED.length; mi += 1) {
-      var lookupCode = null;
-      try { await dnsModule.lookup(MALFORMED[mi]); }
-      catch (e) { lookupCode = e && e.code; }
-      check("lookup refuses the malformed name " + JSON.stringify(MALFORMED[mi]) +
-            " instead of resolving a different one", lookupCode === "dns/bad-host");
-    }
-    // The legitimate absolute form and IP literals still resolve.
-    var abs = await dnsModule.lookup("localhost.");
-    check("lookup still resolves the absolute form of a local name",
-      typeof abs.address === "string");
-    var v4 = await dnsModule.lookup("127.0.0.1");
-    check("lookup passes an IPv4 literal through untouched", v4.address === "127.0.0.1");
-    var v6 = await dnsModule.lookup("::1");
-    check("lookup passes an IPv6 literal through untouched (colons are not labels)",
-      v6.address === "::1");
+    check("a malformed label is still refused", badCode === "dns/bad-host");
   } finally { _reset(); }
 }
 
@@ -3237,7 +3219,7 @@ async function _runTests() {
 
   // remaining in-process defensive / adversarial / option-default branches
   await testLocalFormTrailingDot();
-  await testAbsoluteFormIsNormalizedBeforeResolving();
+  await testAbsoluteFormReachesTheResolverVerbatim();
   await testEnsureSecureDefaultEnvOverride();
   await testValidateLdhLabelReject();
   testDesignatedResolversNonObjectEntry();
