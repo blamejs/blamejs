@@ -593,6 +593,29 @@ function testAnnotateOutboundFailure() {
   check("annotating twice does not nest explanations",
         (err.message.match(/TLS handshake refused/g) || []).length === 1);
 
+  // The leg that owns the peer claims the error, so an outer handler cannot
+  // relabel it with a different peer. A proxy-leg handshake failure travels
+  // out through the agent callback of the request to the DESTINATION; without
+  // the claim, that handler would report the destination as refusing a
+  // handshake that never reached it.
+  var proxyLeg = _alert("ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION", "tlsv1 alert protocol version");
+  b.network.tls.annotateOutboundFailure(proxyLeg, { host: "proxy.internal", port: 8443 });
+  b.network.tls.annotateOutboundFailure(proxyLeg, { host: "destination.example", port: 443 });
+  check("the peer named is the one whose handshake actually failed",
+        proxyLeg.message.indexOf("proxy.internal:8443") !== -1);
+  check("a later leg cannot substitute its own peer",
+        proxyLeg.message.indexOf("destination.example") === -1);
+
+  // Silence from the owning leg does not license an outer guess: an error it
+  // had nothing to say about must not pick up a different peer's name later.
+  var quiet = _alert("ECONNRESET", "socket hang up");
+  b.network.tls.annotateOutboundFailure(quiet, { host: "proxy.internal", port: 8443 });
+  b.network.tls.annotateOutboundFailure(quiet, {
+    host: "destination.example", port: 443, ecdhCurve: "X25519MLKEM768",
+  });
+  check("an error the owning leg could not explain is left alone by later legs",
+        quiet.message === "socket hang up");
+
   var untouched = _alert("ECONNREFUSED", "connect ECONNREFUSED 10.0.0.1:443");
   b.network.tls.annotateOutboundFailure(untouched, { host: "peer.example" });
   check("annotate leaves an error it cannot explain exactly as it was",
