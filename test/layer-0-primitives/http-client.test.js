@@ -2856,9 +2856,97 @@ async function _drainTcpHandles() {
   }, { timeoutMs: 5000, label: "http-client: TCP handle drain after _resetForTest" });
 }
 
+// Retiring the pooled transports because the TLS posture changed must not
+// abort work already in flight. The obvious implementation — destroy the
+// agents and clear the cache — resets sockets that are mid-response
+// (measurably: an in-flight download dies with ECONNRESET), so narrowing the
+// group preference on a live process would kill unrelated downloads and API
+// calls across every origin. A policy update is not a reason to drop traffic.
+async function testPostureChangeDoesNotAbortInFlightRequests() {
+  var release = null;
+  var gate = new Promise(function (r) { release = r; });
+  var secondArrived = false;
+  // The contrast case's gate has to exist before the handler closes over it.
+  var gate2Ref = {};
+  gate2Ref.promise = new Promise(function (r) { gate2Ref.release = r; });
+  return _withServer(function (req, res) {
+    if (req.url === "/slow2") {
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.write("held");
+      gate2Ref.promise.then(function () { res.end("-done"); });
+      return;
+    }
+    if (req.url === "/slow") {
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.write("first-half");
+      // Held open until the retirement has definitely run.
+      gate.then(function () { res.end("-second-half"); });
+      return;
+    }
+    // The second request reaching the server proves its _getTransport call —
+    // and therefore the posture-change retirement — has already happened,
+    // while the first response is still open. Without this signal the
+    // retirement can race past the window it is supposed to be tested in, and
+    // the assertion passes whether or not the sockets were spared.
+    secondArrived = true;
+    res.writeHead(204);
+    res.end();
+  }, async function (base) {
+    var ALLOW = ["http:", "https:"];
+    var pending = b.httpClient.request({
+      url: base + "/slow", allowedProtocols: ALLOW, allowInternal: true,
+    });
+    // Move the posture underneath the in-flight response.
+    b.network.tls.preferredGroups.set(["SecP256r1MLKEM768", "SecP384r1MLKEM1024"]);
+    var second = b.httpClient.request({
+      url: base + "/other", allowedProtocols: ALLOW, allowInternal: true,
+    }).catch(function () { return null; });
+    try {
+      await helpers.waitUntil(function () { return secondArrived; },
+        { timeoutMs: 5000, label: "http-client: retirement ran while the first response was open" });
+      release();
+      var res1 = await pending.then(function (r) { return r; },
+                                    function (e) { return { err: (e && e.code) || String(e) }; });
+      await second;
+      // Guard against a vacuous pass: if the retirement never ran, or the
+      // second request never went out, "the first one survived" proves
+      // nothing. That the SAME teardown does abort an in-flight request is
+      // demonstrable through configurePool(), which runs it directly.
+      check("the posture change retired the pool while the first response " +
+            "was still open",
+        secondArrived === true);
+      check("a request in flight when the TLS posture changes still completes, " +
+            "body intact",
+        res1 && res1.statusCode === 200 &&
+        String(res1.body) === "first-half-second-half");
+
+      // The force-destroy teardown, driven directly, DOES reset a live
+      // response — which is why the posture path must not use it.
+      var aborted = null;
+      var slow2 = b.httpClient.request({
+        url: base + "/slow2", allowedProtocols: ALLOW, allowInternal: true,
+      }).then(function () { aborted = false; },
+              function (e) { aborted = (e && e.code) || "error"; });
+      await helpers.waitUntil(function () {
+        return b.httpClient._getCachedTransportCount() > 0;
+      }, { timeoutMs: 5000, label: "http-client: second slow request pooled" });
+      b.httpClient.configurePool({ maxSockets: 17 });
+      gate2Ref.release();
+      await slow2;
+      check("for contrast, the force-destroy teardown does abort a live " +
+            "response — so the posture path must not reach for it",
+        aborted === "ECONNRESET");
+    } finally {
+      release();
+      b.network.tls.preferredGroups.reset();
+    }
+  });
+}
+
 async function run() {
   try {
     testSurface();
+    await testPostureChangeDoesNotAbortInFlightRequests();
     await testConfigurePool();
     await testArgValidation();
     await testBeforeAfterInterceptors();
