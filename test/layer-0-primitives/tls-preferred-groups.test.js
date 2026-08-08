@@ -152,6 +152,7 @@ function testOutboundPostureShape() {
 async function testNarrowedGroupsReachEveryOutboundClient() {
   var NARROWED = ["SecP256r1MLKEM768", "SecP384r1MLKEM1024"];
   var expected = NARROWED.join(":");
+  var generationBefore = b.network.tls.postureGeneration();
   b.network.tls.preferredGroups.set(NARROWED);
   try {
     check("outboundPosture reports the operator's narrowed list",
@@ -215,6 +216,27 @@ async function testNarrowedGroupsReachEveryOutboundClient() {
       check("the HTTP/1.1 agent's TLS groups list matches its ecdhCurve",
             agent.options.groups === expected);
     } finally { agent.destroy(); }
+
+    // "The change applies on the next dial" has to hold for POOLED
+    // connections too, or it is true only for callers that never pool. An
+    // Agent copies its options at construction and an h2 session negotiates
+    // at connect, so neither notices a later narrowing on its own — the pool
+    // is rebuilt when the preference moves, which the generation counter is
+    // what makes observable.
+    check("changing the preference advances the posture generation, so a " +
+          "pooled transport can tell its options are stale",
+          b.network.tls.postureGeneration() > generationBefore);
+  } finally {
+    b.network.tls.preferredGroups.reset();
+  }
+
+  // Reset counts as a change too — an operator restoring the default must not
+  // be left with a pool still narrowed.
+  var afterReset = b.network.tls.postureGeneration();
+  b.network.tls.preferredGroups.set(NARROWED);
+  try {
+    check("re-narrowing after a reset advances the generation again",
+          b.network.tls.postureGeneration() > afterReset);
   } finally {
     b.network.tls.preferredGroups.reset();
   }

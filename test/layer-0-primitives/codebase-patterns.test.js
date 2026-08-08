@@ -3690,6 +3690,26 @@ async function testNoDuplicateCodeBlocks() {
   // shape.
   var KNOWN_CLUSTERS = [
     {
+      // Single-expression accessors in three unrelated domains. The shingle is
+      // a run of `function name() { return <field>; }` bodies sitting next to
+      // each other, not shared behaviour: step-up-policy's acr / acrAny read a
+      // parsed authentication-context claim, safe-schema's _tupleWithRest /
+      // chain return schema builders, and network-tls's postureGeneration
+      // reads the TLS group-preference counter. Nothing is extractable — the
+      // only thing in common is the shape JavaScript gives every getter, and
+      // collapsing them would couple an OIDC claim reader to a schema builder.
+      // The cluster appeared when postureGeneration was added, which shifted
+      // the token window rather than introducing duplication.
+      mode:  "family-subset",
+      files: [
+        "lib/auth/step-up-policy.js:acr",
+        "lib/auth/step-up-policy.js:acrAny",
+        "lib/network-tls.js:postureGeneration",
+        "lib/safe-schema.js:_tupleWithRest",
+        "lib/safe-schema.js:chain",
+      ],
+    },
+    {
       // Own-property lookup guard — a JS language idiom, not shared behaviour.
       // `if (!Object.prototype.hasOwnProperty.call(TABLE, key)) throw XError(
       // code, msg + key); var v = TABLE[key];` is the framework's canonical way

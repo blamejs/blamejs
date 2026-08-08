@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.18.17",
-  "createdAt": "2026-08-08T09:34:36.664Z",
+  "createdAt": "2026-08-08T10:01:48.104Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -46244,6 +46244,10 @@
             "pinsetDriftMonitor": {
               "type": "function",
               "arity": 1
+            },
+            "postureGeneration": {
+              "type": "function",
+              "arity": 0
             },
             "pqc": {
               "type": "object",

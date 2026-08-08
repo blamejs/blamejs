@@ -47,6 +47,10 @@
         {
           "title": "Mail TLS carries the same posture as the rest of the framework",
           "body": "A mail listener upgrades a plain socket rather than handing it to the HTTP server's constructor, so it took a separate path and inherited neither the certificate compression this release adds nor, on the outbound side, the shared group preference. SMTP, submission, IMAP, POP3 and ManageSieve now advertise compression on their certificate chains, and outbound SMTP merges the same posture as every other outbound client. The TLS floor stays operator-settable for SMTP alone, since an MX that speaks only TLS 1.2 is common and refusing it would mean not delivering mail."
+        },
+        {
+          "title": "A group-preference change now reaches pooled connections, not only fresh ones",
+          "body": "b.network.tls.preferredGroups.set(...) is documented to apply from the next dial. That held only for callers that build their options fresh: an https.Agent copies its TLS options at construction and the HTTP client keeps one per origin, and an SMTP transport stored its options once and cloned them for every connection — so a pool created before the change kept offering the groups the operator removed for as long as it lived. The preference now carries a generation, the HTTP client rebuilds its per-origin transports when it moves, and SMTP reads the posture as each connection is dialled. An explicit SMTP override still wins over the shared posture."
         }
       ]
     },
