@@ -3001,46 +3001,48 @@ async function testH2DrainWaitsOnProgressButNotOnAStall() {
     sessB.destroyed === true);
   srvB.close();
 
-  // (3) A stalled stream on a CHATTY connection. Socket byte counters move for
-  // PING / WINDOW_UPDATE / SETTINGS traffic a peer generates on its own, so a
-  // socket-level progress signal would call a stalled session busy forever.
-  // Progress is read from session.state instead, which counts application
-  // data. Driven against a stub: a real peer closes its own side on GOAWAY and
-  // destroys the session regardless, so a network test here passes whether or
-  // not the signal is right.
-  var fakeDestroyed = false;
-  var chattyBytes = 0;
-  var fakeSession = {
-    destroyed: false,
-    // Application data frozen; socket counters climbing, as under PING traffic.
-    state: { effectiveRecvDataLength: 4096, remoteWindowSize: 65535 },
-    socket: { get bytesRead() { chattyBytes += 17; return chattyBytes; }, bytesWritten: 0 },
-    close: function () { /* graceful close is a no-op for the stub */ },
-    destroy: function () { fakeDestroyed = true; this.destroyed = true; },
-  };
-  teardown.drainH2Session(fakeSession, GRACE);
-  await helpers.waitUntil(function () { return fakeDestroyed; },
-    { timeoutMs: 8000, label: "http-client: stalled-but-chatty session destroyed" });
-  check("control-frame traffic does not count as progress — a session whose " +
-        "application data has stopped is still destroyed",
-    fakeDestroyed === true);
-
-  // (4) The mirror: a session still moving application data is NOT destroyed,
-  // however long it takes. There is no wall-clock ceiling to cut it.
+  // (3) A session still moving bytes is NEVER destroyed, however long it takes
+  // — there is no wall-clock ceiling to cut a long transfer. Driven against a
+  // stub: a real peer closes its own side on GOAWAY and destroys the session
+  // regardless, so a network test here would pass whether or not the watchdog
+  // behaved.
   var flowingDestroyed = false;
-  var recv = 0;
+  var flowing = 0;
   var flowingSession = {
     destroyed: false,
-    state: { get effectiveRecvDataLength() { recv += 512; return recv; }, remoteWindowSize: 65535 },
-    socket: { bytesRead: 0, bytesWritten: 0 },
-    close: function () {},
+    socket: { get bytesRead() { flowing += 4096; return flowing; }, bytesWritten: 0 },
+    close: function () { /* graceful close is a no-op for the stub */ },
     destroy: function () { flowingDestroyed = true; this.destroyed = true; },
   };
   teardown.drainH2Session(flowingSession, GRACE);
   await helpers.passiveObserve(GRACE * 6,
-    "http-client: a session still moving application data is left alone");
-  check("a session still moving application data is never force-destroyed",
+    "http-client: a session still moving bytes is left alone");
+  check("a session still moving bytes is never force-destroyed, however long " +
+        "the transfer runs",
     flowingDestroyed === false);
+
+  // (4) The documented limitation, asserted so it is a known shape rather than
+  // a surprise. The progress signal is the socket's cumulative byte counters,
+  // which a peer sending PING / WINDOW_UPDATE moves on its own — so a stalled
+  // stream on a chatty peer is NOT reclaimed here; the caller's request
+  // timeout is what bounds it. The signal is deliberately this one: the
+  // session's own counters exclude control frames but are flow-control
+  // occupancy that cycles, and a counter that can wrap must not be what
+  // decides to destroy live work.
+  var chattyDestroyed = false;
+  var chatty = 0;
+  var chattySession = {
+    destroyed: false,
+    socket: { get bytesRead() { chatty += 17; return chatty; }, bytesWritten: 0 },
+    close: function () {},
+    destroy: function () { chattyDestroyed = true; this.destroyed = true; },
+  };
+  teardown.drainH2Session(chattySession, GRACE);
+  await helpers.passiveObserve(GRACE * 4,
+    "http-client: chatty-but-stalled session is left to the request timeout");
+  check("a stalled stream on a peer generating control traffic is left to the " +
+        "caller's request timeout, not reclaimed by this watchdog",
+    chattyDestroyed === false);
 }
 
 // A posture change lands while a transport negotiation is still running. The

@@ -157,6 +157,17 @@ async function testNarrowedGroupsReachEveryOutboundClient() {
   // assertion below has a stale cache to catch. Without this the first access
   // happens after the change and would build correctly either way.
   var staleDefault = b.pqcAgent.agent;
+  // Watch for a destructive refresh. Agent.destroy() resets sockets that are
+  // mid-response, so refreshing the shared default because someone changed the
+  // posture must NOT call it — an unrelated download running on that agent
+  // would die. Retirement is non-destructive: stop pooling, close idle sockets,
+  // let in-flight work finish.
+  var staleDestroyed = false;
+  var staleOrigDestroy = staleDefault.destroy;
+  staleDefault.destroy = function () {
+    staleDestroyed = true;
+    return staleOrigDestroy.apply(this, arguments);
+  };
   b.network.tls.preferredGroups.set(NARROWED);
   try {
     check("outboundPosture reports the operator's narrowed list",
@@ -241,6 +252,12 @@ async function testNarrowedGroupsReachEveryOutboundClient() {
     check("the cached default agent is rebuilt for the narrowed preference",
           afterDefault !== staleDefault &&
           afterDefault.options.ecdhCurve === expected);
+    check("the retired default agent is not destroyed, so a request already " +
+          "running on it is not reset",
+          staleDestroyed === false);
+    check("the retired default agent stops pooling, so its sockets are closed " +
+          "as they are released rather than parked unreachable",
+          staleDefault.keepAlive === false);
 
     // "The change applies on the next dial" has to hold for POOLED
     // connections too, or it is true only for callers that never pool. An
