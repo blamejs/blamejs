@@ -6,6 +6,15 @@
   "summary": "b.network.tls.applyToContext is the documented way to put the framework's TLS posture onto your own https.Server or https.Agent. It emitted the configured key shares under a key node:tls does not implement, which that library accepts and ignores, so every server and agent built through it negotiated on Node's defaults and preferredGroups.set(...) changed nothing for them. Two other places carried the same key alongside the working one, where it read as a second handle on the preference that an operator could narrow to no effect. All three now emit only the name the TLS layer reads. Separately, a handshake the outbound posture refuses arrived as a bare OpenSSL alert naming neither the peer nor the reason, and the reason was routinely misread: the alert for a TLS 1.3 floor and the alert for an unsatisfiable group list are different codes, and only the second has anything to do with post-quantum groups. Both are now explained in place.",
   "sections": [
     {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "b.webhookHmac.verify accepts an injectable clock",
+          "body": "The replay window was measured against wall time with no way to supply the time, which shut out any consumer that owns its own clock: a receiver built around an injected time source has its window check and this one disagree the moment that clock is not now, so a delivery signed at the injected time is refused however the tolerance is configured. It also blocks replaying a captured delivery for forensics, and any deterministic simulation. Such consumers were left rebuilding the scheme — header parse, replay window, key-rotation multi-signature, constant-time compare — around b.crypto.hmac by hand, and not inheriting the rotation support.\n\n`verify()` now takes an optional `now` in epoch milliseconds, the same shape b.cwt.verify already accepts, defaulting to Date.now(). The window is still enforced, against the supplied clock rather than skipped — an escape hatch that turned the check off would hand the replay window back to the caller and fail silently when forgotten, where an omitted clock here falls back to wall time and fails closed. A non-integer, non-positive or non-finite value is refused at construction with `webhook-hmac/bad-now`."
+        }
+      ]
+    },
+    {
       "heading": "Fixed",
       "items": [
         {
