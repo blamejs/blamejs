@@ -236,7 +236,7 @@ async function run() {
   // ignores, so every wss:// connection silently negotiated on Node's
   // defaults instead of the framework's. Read the negotiated group off the
   // socket and require a post-quantum hybrid.
-  var pair = helpers.selfSignedPair({ commonName: "localhost" });
+  var pair = helpers.selfSignedPair();
   var server5 = await _buildServer({ tls: { key: pair.key, cert: pair.cert } });
   var port5 = server5.address().port;
   var client5 = b.wsClient.connect("wss://localhost:" + port5 + "/echo", {

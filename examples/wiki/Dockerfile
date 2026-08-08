@@ -64,6 +64,16 @@ FROM ${BASE_RUNTIME} AS runtime
 # checker (DS-0002) flags any image without an explicit USER line
 # regardless of the base image's default. Restate it here.
 USER 65532:65532
+# libatomic — Node links it at runtime, and the distroless runtime image does
+# not ship it (the -dev image used for the build stage does). Without this the
+# container dies at startup with "error while loading shared libraries:
+# libatomic.so.1" before any application code runs.
+#
+# It is COPIED from the build stage rather than installed: the runtime image
+# has no package manager, which is the point of using it. Both names are taken
+# because the soname is what the loader resolves; Docker materialises the
+# symlink as a regular file, so the pair costs about 90 KB.
+COPY --from=deps /usr/lib/libatomic.so.1* /usr/lib/
 # Non-secret defaults baked into the image. Secrets (passphrases,
 # webhook secrets, admin password) are NEVER ENV-baked — they're
 # injected at runtime via env / docker secrets / mounted files.

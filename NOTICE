@@ -41,11 +41,12 @@ Version:     2.3.0 (bundled inside noble-curves.cjs),
 Source:      https://github.com/paulmillr/noble-hashes
 License:     MIT
 Copyright:   Copyright (c) 2022 Paul Miller (https://paulmillr.com)
-Used for:    The hash and extendable-output primitives the two bundles above
-             build on — SHA-3 / SHAKE, HMAC, HKDF. It is not vendored as a
-             file of its own; each bundle carries the version it was built
-             against, which is why two versions ship. Thank you to Paul
-             Miller for the audited noble-hashes suite.
+Used for:    The hash and extendable-output primitives that noble-curves.cjs
+             and noble-post-quantum.cjs build on — SHA-3 / SHAKE, HMAC, HKDF.
+             It is not vendored as a file of its own; each of those bundles
+             carries the version it was built against, which is why two
+             versions ship. Thank you to Paul Miller for the audited
+             noble-hashes suite.
 --------------------------------------------------------------------------------
 Component:   @noble/post-quantum
 Version:     0.6.1

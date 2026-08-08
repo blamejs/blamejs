@@ -198,7 +198,7 @@ async function testStarttlsUpgradeCompressesTheCertificateChain() {
     check("runtime without RFC 8879 support — nothing to assert", true);
     return;
   }
-  var pair = helpers.selfSignedPair({ commonName: "localhost" });
+  var pair = helpers.selfSignedPair();
   // Repeat the certificate so the chain is big enough for the difference to
   // be unambiguous rather than lost in handshake overhead.
   var fatCert = new Array(24).join(pair.cert) + pair.cert;
@@ -219,17 +219,27 @@ async function testStarttlsUpgradeCompressesTheCertificateChain() {
       up.on("error", function () {}); down.on("error", function () {});
     });
     await new Promise(function (r) { relay.listen(0, "127.0.0.1", r); });
+    // A FAILED handshake also writes bytes, so resolving on 'error' would let
+    // this measure a broken connection and still return a number — the two
+    // measurements would then be compared against each other meaninglessly.
+    // Require the handshake to have completed.
+    var completed = false;
+    var failure = null;
     await new Promise(function (resolve) {
       var c = nodeTls.connect({
         host: "127.0.0.1", port: relay.address().port, servername: "localhost",
         ca: [pair.cert], certificateCompression: expected,
       });
-      c.on("secureConnect", function () { c.destroy(); resolve(); });
-      c.on("error", function () { resolve(); });
+      c.on("secureConnect", function () { completed = true; c.destroy(); resolve(); });
+      c.on("error", function (e) { failure = (e && e.message) || String(e); resolve(); });
     });
     await helpers.waitUntil(function () { return seen > 0; },
       { timeoutMs: 5000, label: "mail-server-tls: handshake bytes observed" });
     relay.close(); srv.close();
+    if (!completed) {
+      throw new Error("mail-server-tls: handshake did not complete, so its byte " +
+                      "count means nothing" + (failure ? " (" + failure + ")" : ""));
+    }
     return seen;
   }
 

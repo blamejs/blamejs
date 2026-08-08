@@ -3110,12 +3110,69 @@ async function testRequestSurvivesLosingTheTransportCacheRace() {
   });
 }
 
+// Retiring an h2 session arms an idle timeout that DRAINS it. The live wiring
+// already armed one that FORCE-DESTROYS it, and session.setTimeout adds a
+// listener rather than replacing one — so without clearing the old listener
+// both fire and the destroy wins, killing the stream the retirement was meant
+// to protect. Drive a request whose stream is still open and quiet when the
+// retirement lands, and require it to finish.
+async function testRetiredH2SessionDoesNotForceDestroyAnOpenStream() {
+  var ALLOW = ["http:", "https:"];
+  var release = null;
+  var gate = new Promise(function (r) { release = r; });
+  return _withH2cServer(function (stream, headers) {
+    if (String(headers[":path"]).indexOf("/slow") === 0) {
+      stream.respond({ ":status": 200, "content-type": "text/plain" });
+      stream.write("first-half");
+      // Held quiet across the retired-session idle window, so the timeout
+      // actually fires while this stream is open.
+      gate.then(function () { stream.end("-second-half"); });
+      return;
+    }
+    stream.respond({ ":status": 204 });
+    stream.end();
+  }, async function (base) {
+    try {
+      b.httpClient._resetForTest();
+      var slow = b.httpClient.request({
+        url: base + "/slow", allowedProtocols: ALLOW, allowInternal: true,
+        preferH2: true, timeoutMs: 30000,
+      }).then(function (r) { return { ok: true, body: String(r.body) }; },
+              function (e) { return { ok: false, err: (e && e.code) || String(e) }; });
+      await helpers.waitUntil(function () {
+        return b.httpClient._getCachedTransportCount() > 0;
+      }, { timeoutMs: 5000, label: "http-client: h2 session pooled" });
+      // Retire the pool while that stream is open: posture moves, then a
+      // second request arrives under the new generation.
+      b.network.tls.preferredGroups.set(["X25519MLKEM768", "X25519"]);
+      await b.httpClient.request({
+        url: base + "/other", allowedProtocols: ALLOW, allowInternal: true,
+        preferH2: true,
+      }).catch(function () { return null; });
+      // Sit past the retired-session idle window with the stream quiet, which
+      // is when the timeout listeners fire.
+      await helpers.passiveObserve(6500,
+        "http-client: retired h2 session idles with an open stream");
+      release();
+      var res = await slow;
+      check("a retired h2 session drains rather than force-destroying an open " +
+            "stream (" + (res.ok ? "completed" : "failed: " + res.err) + ")",
+        res.ok === true && res.body === "first-half-second-half");
+    } finally {
+      release();
+      b.network.tls.preferredGroups.reset();
+      b.httpClient._resetForTest();
+    }
+  });
+}
+
 async function run() {
   try {
     testSurface();
     await testPostureChangeDoesNotAbortInFlightRequests();
     await testH2DrainWaitsOnProgressButNotOnAStall();
     await testRequestSurvivesLosingTheTransportCacheRace();
+    await testRetiredH2SessionDoesNotForceDestroyAnOpenStream();
     await testConfigurePool();
     await testArgValidation();
     await testBeforeAfterInterceptors();

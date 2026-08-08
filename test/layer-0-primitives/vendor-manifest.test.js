@@ -223,7 +223,8 @@ function run() {
     var missingPurls = expectedNpmPurls.filter(function (want) {
       return actualPurls.indexOf(want) === -1;
     });
-    check("vendor sbom: reports at least one npm-sourced component",
+    check("vendor sbom: the manifest declares at least one npm package to check " +
+          "for (guards against this gate passing vacuously on an empty list)",
           expectedNpmPurls.length > 0);
     check("vendor sbom: every npm package the manifest declares — embedded ones " +
           "included — appears with a pkg:npm purl a scanner can resolve" +

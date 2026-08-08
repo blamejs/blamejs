@@ -157,8 +157,9 @@ async function testNarrowedGroupsReachEveryOutboundClient() {
   try {
     check("outboundPosture reports the operator's narrowed list",
           b.network.tls.outboundPosture().ecdhCurve === expected);
-    check("the narrowed list drops the classical fallback the operator removed",
-          b.network.tls.outboundPosture().ecdhCurve.indexOf("X25519MLKEM768") === -1);
+    check("the narrowed list drops the groups the operator removed",
+          b.network.tls.outboundPosture().ecdhCurve.indexOf("X25519MLKEM768") === -1 &&
+          b.network.tls.outboundPosture().ecdhCurve.indexOf("X25519") === -1);
 
     var redis = require("../../lib/redis-client");
     var redisOpts = await _captureTlsConnectOpts("redis", function () {
@@ -208,13 +209,23 @@ async function testNarrowedGroupsReachEveryOutboundClient() {
     // The HTTP client picks its transport by ALPN, so the h1 agent and the h2
     // session must agree on the posture — otherwise which groups an origin
     // sees depends on whether it speaks HTTP/2, and the narrowing silently
-    // applies to some peers and not others.
+    // applies to some peers and not others. The h1 agent is checked here; the
+    // h2 side is covered where it is observable, by the h2c dial in
+    // testNarrowedGroupsReachEveryOutboundClient's DNS-over-TLS case and by
+    // http-client.test.js's transport tests.
     var agent = b.pqcAgent.create();
     try {
+      // ecdhCurve is the option node:tls actually honours — a `groups` value it
+      // cannot negotiate is accepted and ignored (verified on this runtime: a
+      // groups-only pin to a group the peer lacks still completes on another).
+      // So this is the assertion that means anything about the wire.
       check("the HTTP/1.1 agent offers the narrowed groups",
             agent.options.ecdhCurve === expected);
-      check("the HTTP/1.1 agent's TLS groups list matches its ecdhCurve",
-            agent.options.groups === expected);
+      // `groups` is carried alongside for callers that read it back; it must
+      // not disagree with ecdhCurve, or the two would tell an operator
+      // different stories about the same agent.
+      check("the agent's groups value does not contradict its ecdhCurve",
+            agent.options.groups === agent.options.ecdhCurve);
     } finally { agent.destroy(); }
 
     // "The change applies on the next dial" has to hold for POOLED
@@ -346,7 +357,7 @@ function testGroupOrderIsSingleSourced() {
 // staple to arrive: this fails for any group order that provokes a retry.
 async function testFrameworkGroupsDoNotForceHelloRetry() {
   var nodeTls = require("node:tls");
-  var pair = helpers.selfSignedPair({ commonName: "localhost" });
+  var pair = helpers.selfSignedPair();
   var STAPLE = Buffer.from([0x30, 0x00]);
   var srv = nodeTls.createServer({ key: pair.key, cert: pair.cert },
     function (s) { s.on("error", function () { /* peer reset */ }); });

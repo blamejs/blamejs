@@ -6254,7 +6254,7 @@ function testOutboundTlsMergesSharedPosture() {
   // exempt. Anchored on the call expression rather than the file, because a
   // file can hold both a posture-carrying dial and a bare one.
   var files = _libFiles();
-  var CONSTRUCTORS = /(?:\bnodeTls\.connect|\btls\.connect|new\s+https\.Agent|\bhttps\.request|\bhttp2\.connect)\s*\(/g;
+  var CONSTRUCTORS = /(?:\bnodeTls(?:\(\))?\.connect|\btls(?:\(\))?\.connect|new\s+https\.Agent|\bhttps(?:\(\))?\.request|\bhttp2(?:\(\))?\.connect)\s*\(/g;
   var bad = [];
   for (var fi = 0; fi < files.length; fi++) {
     var rel = _relPath(files[fi]);
