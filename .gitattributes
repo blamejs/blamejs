@@ -20,6 +20,16 @@ lib/vendor/** -text binary
 CHANGELOG.md text eol=lf
 release-notes/*.json text eol=lf
 
+# Test files carrying a NUL byte in a fixture (null-byte injection cases) look
+# BINARY to git, so it skips the end-of-line normalisation every other source
+# file gets. On a Windows checkout any tool that rewrites one in text mode then
+# commits CRLF verbatim — a whole-file diff with no change in it, which is how
+# cert.test.js flipped during the v0.18.17 branch. Declaring them text pins the
+# stored form to LF regardless of who writes them; the NUL bytes are unaffected,
+# since normalisation only ever touches CR before LF.
+test/**/*.test.js text eol=lf
+test/*.js text eol=lf
+
 # Native modules — always binary.
 *.node binary
 *.so binary
