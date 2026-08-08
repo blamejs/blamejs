@@ -1553,6 +1553,35 @@ async function testAbsoluteFormIsNormalizedBeforeResolving() {
     check("the bare root name is refused rather than emptied",
       rootOnly === "dns/bad-host");
   } finally { _reset(); }
+
+  // The system-resolver branch of lookup() runs NO LDH validation — it hands
+  // the name to getaddrinfo, which treats a trailing dot as absolute. So
+  // "example.com.." normalized to "example.com." and then RESOLVED, returning
+  // and caching the address of a DIFFERENT name than the caller asked for.
+  // The empty-label check belongs at the entry point, ahead of the transport
+  // choice, so every branch inherits it.
+  _reset();
+  dnsModule.useSystemResolver();
+  dnsModule.setLookupTimeoutMs(3000);
+  try {
+    var MALFORMED = ["example.com..", "localhost..", ".example.com", "example..com"];
+    for (var mi = 0; mi < MALFORMED.length; mi += 1) {
+      var lookupCode = null;
+      try { await dnsModule.lookup(MALFORMED[mi]); }
+      catch (e) { lookupCode = e && e.code; }
+      check("lookup refuses the malformed name " + JSON.stringify(MALFORMED[mi]) +
+            " instead of resolving a different one", lookupCode === "dns/bad-host");
+    }
+    // The legitimate absolute form and IP literals still resolve.
+    var abs = await dnsModule.lookup("localhost.");
+    check("lookup still resolves the absolute form of a local name",
+      typeof abs.address === "string");
+    var v4 = await dnsModule.lookup("127.0.0.1");
+    check("lookup passes an IPv4 literal through untouched", v4.address === "127.0.0.1");
+    var v6 = await dnsModule.lookup("::1");
+    check("lookup passes an IPv6 literal through untouched (colons are not labels)",
+      v6.address === "::1");
+  } finally { _reset(); }
 }
 
 async function testEnsureSecureDefaultEnvOverride() {

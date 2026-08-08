@@ -203,6 +203,18 @@ async function testNarrowedGroupsReachEveryOutboundClient() {
     dnsModule._resetForTest();
     check("DNS-over-TLS dials with the narrowed groups",
           dotOpts && dotOpts.ecdhCurve === expected);
+
+    // The HTTP client picks its transport by ALPN, so the h1 agent and the h2
+    // session must agree on the posture — otherwise which groups an origin
+    // sees depends on whether it speaks HTTP/2, and the narrowing silently
+    // applies to some peers and not others.
+    var agent = b.pqcAgent.create();
+    try {
+      check("the HTTP/1.1 agent offers the narrowed groups",
+            agent.options.ecdhCurve === expected);
+      check("the HTTP/1.1 agent's TLS groups list matches its ecdhCurve",
+            agent.options.groups === expected);
+    } finally { agent.destroy(); }
   } finally {
     b.network.tls.preferredGroups.reset();
   }

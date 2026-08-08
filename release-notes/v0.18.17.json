@@ -22,7 +22,7 @@
         },
         {
           "title": "A hostname in absolute form resolves again, including on musl",
-          "body": "RFC 1034 sec. 3.1 makes `example.com.` the absolute form of `example.com` — the same name. The framework classified the absolute form correctly but then handed the resolver the dotted string verbatim, and the transports disagreed about it. glibc's getaddrinfo tolerates the trailing dot; musl's does not, so an FQDN written in absolute form answered ENOTFOUND on Alpine — the base image the framework's own container is built on. The encrypted transports refused it earlier still: splitting the name on \".\" leaves a trailing empty label, which the RFC 1035 LDH check rejects as a malformed host. Every host entering b.network.dns is now normalized once at the entry point, so lookup, resolve4 / resolve6, resolveSecure, querySvcb and queryHttps all agree, and one cache entry serves both spellings. Only the root dot is stripped: an interior empty label and every other malformed shape is still refused."
+          "body": "RFC 1034 sec. 3.1 makes `example.com.` the absolute form of `example.com` — the same name. The framework classified the absolute form correctly but then handed the resolver the dotted string verbatim, and the transports disagreed about it. glibc's getaddrinfo tolerates the trailing dot; musl's does not, so an FQDN written in absolute form answered ENOTFOUND on Alpine — the base image the framework's own container is built on. The encrypted transports refused it earlier still: splitting the name on \".\" leaves a trailing empty label, which the RFC 1035 LDH check rejects as a malformed host. Every host entering b.network.dns is now normalized once at the entry point, so lookup, resolve4 / resolve6, resolveSecure, querySvcb and queryHttps all agree, and one cache entry serves both spellings. Only the root dot is stripped: an interior empty label and every other malformed shape is still refused. A name that still carries an empty label after that one dot is removed — \"example.com..\", \"example..com\", \".example.com\" — is refused at the entry point rather than at the transport, because the system-resolver branch runs no label validation of its own and getaddrinfo reads a trailing dot as absolute: \"example.com..\" would otherwise have resolved, and cached, the address of a different name than the caller asked for. IP literals pass through untouched."
         },
         {
           "title": "Redis over TLS and the syslog sink now carry the framework TLS posture",
@@ -35,6 +35,10 @@
         {
           "title": "The syslog sink no longer logs a spurious warning when a connection closes after shutdown",
           "body": "The socket 'close' handler read the sink's current socket rather than the one the event belonged to. close() clears that reference first, so a normal shutdown reached the handler with nothing to tear down and emitted a sock-destroy-failed warning; a reconnect could have torn down the wrong socket. The handler now holds the socket it was registered for."
+        },
+        {
+          "title": "A narrowed group list now reaches the HTTP/1.1 agent, not only the HTTP/2 session",
+          "body": "b.pqcAgent.create() fell back to the compiled-in group order when the caller named none, while the HTTP/2 transport built its options from the live preference. Which groups an origin actually saw therefore depended on whether it spoke HTTP/2: an operator who narrowed preferredGroups had the policy applied on h2 origins and silently re-offered the removed groups on h1 ones. The agent now takes the same live list as every other outbound path."
         }
       ]
     },
@@ -64,7 +68,7 @@
         },
         {
           "title": "Vendored crypto bundles refreshed",
-          "body": "@noble/ciphers moves to 2.3.0 and @blamejs/pki to 0.4.2. The ciphers release is a packaging and diagnostics refresh — unused reference implementations moved into its test tree, clearer validation messages; the XChaCha20-Poly1305 behaviour behind b.crypto is unchanged. The pki release fixes distinguished-name comparison: a NumericString attribute value no longer compares equal to a PrintableString or UTF8String value with the same characters, which is the comparison that decides certificate chaining, revocation-issuer matching and name-constraint evaluation for b.mtlsCa. It also refuses an empty issuer name and escapes rendered distinguished-name values per RFC 4514."
+          "body": "@noble/ciphers moves to 2.3.0 and @blamejs/pki to 0.4.3. The ciphers release is a packaging and diagnostics refresh — unused reference implementations moved into its test tree, clearer validation messages; the XChaCha20-Poly1305 behaviour behind b.crypto is unchanged. The pki release fixes distinguished-name comparison: a NumericString attribute value no longer compares equal to a PrintableString or UTF8String value with the same characters, which is the comparison that decides certificate chaining, revocation-issuer matching and name-constraint evaluation for b.mtlsCa. It also refuses an empty issuer name and escapes rendered distinguished-name values per RFC 4514. The pki 0.4.3 release adds RFC 8879 compressed-certificate encoding and decoding with the two-sided length bound the specification requires, SHAKE128 / SHAKE256 digests, and the ML-DSA-87 + Ed448 composite signature arm; it also refuses a CMS compressed stream carrying bytes past the end of its frame, which had given one content unboundedly many encodings."
         },
         {
           "title": "The README table of vendored packages is checked against what ships",
