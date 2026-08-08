@@ -700,6 +700,35 @@ async function testFetchMdqInputValidation() {
   });
   check("fetchMdq: a dial inside the pin reaches the client", wentAnywhere.length === 1);
 
+  // The TLS requirement is the fetch's own, not a side effect of which client
+  // dials. b.httpClient refuses a non-TLS destination itself, so an injected
+  // client must not be able to smuggle one past: trustCertPem is optional, and
+  // an http:// metadata fetch with no signature to check lets anyone on the
+  // path substitute the federation's signing keys.
+  var httpReached = [];
+  var anyScheme = { request: function (req) {
+    httpReached.push(req.url);
+    return Promise.resolve({ statusCode: 200, headers: {}, body: Buffer.from(xml, "utf8") });
+  } };
+  var schemeErr = null;
+  try {
+    await b.auth.saml.fetchMdq({
+      baseUrl:  "http://mdq.federation.example",
+      entityId: IDP_ENTITY_ID,
+      http:     { client: anyScheme },
+    });
+  } catch (e) { schemeErr = e; }
+  check("fetchMdq: an http:// baseUrl is refused even with an injected client",
+        schemeErr !== null);
+  check("fetchMdq: the refused http:// dial never reached the client",
+        httpReached.length === 0);
+  check("fetchMdq: https:// through the same client still works",
+        (await b.auth.saml.fetchMdq({
+          baseUrl:  "https://mdq.federation.example",
+          entityId: IDP_ENTITY_ID,
+          http:     { client: anyScheme },
+        })) === xml && httpReached.length === 1);
+
   check("fetchMdq: http.client without a request method refused",
         (await mdqCode({ baseUrl: "https://m.example", entityId: "e", http: { client: {} } }))
           === "auth-saml/bad-http-client");
