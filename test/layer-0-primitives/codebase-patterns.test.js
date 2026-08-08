@@ -322,6 +322,7 @@ var VALID_ALLOW_CLASSES = {
   "backup-adapter-storage-without-posture-check": 1,
   "bare-canonicalize-walk": 1,
   "outbound-tls-posture": 1,
+  "secure-context-cert-compression": 1,
   "bare-error-throw": 1,
   "bare-split-on-quoted-header-token-grammar": 1,
   "console-direct": 1,
@@ -6235,6 +6236,49 @@ function testVendorComponentsAttributedInNotice() {
 }
 
 // ---- Pattern 48b: outbound TLS constructions merge the shared posture ----
+
+function testSecureContextsAdvertiseCertificateCompression() {
+  // class: secure-context-cert-compression
+  //
+  // A SecureContext built by hand REPLACES whatever the server was configured
+  // with for handshakes that use it, so certificate compression set on the
+  // server does not reach it. That is not obvious, and it has already been got
+  // wrong twice on the inbound side: the mail listeners built their context
+  // without it (and a first fix set the option on the wrapping socket, where
+  // it is silently inert), and the SNI callback served framework-managed
+  // certificates uncompressed while the default vhost compressed. Both send
+  // the same ML-DSA-87 chain, which is the largest thing in the handshake.
+  //
+  // So: a createSecureContext call that builds a context for SERVING must name
+  // the algorithms, or carry a marker saying why it does not.
+  var files = _libFiles();
+  var bad = [];
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    var re = /createSecureContext\s*\(/g;
+    var m;
+    while ((m = re.exec(content)) !== null) {
+      var lineStart = content.lastIndexOf("\n", m.index) + 1;
+      var beforeOnLine = content.slice(lineStart, m.index);
+      if (/\/\//.test(beforeOnLine) || /^\s*\*/.test(beforeOnLine)) continue;   // prose
+      var lineNum = content.slice(0, m.index).split("\n").length;
+      // The options object, plus the few lines above it where a prepared
+      // options variable is usually assembled.
+      var from = content.lastIndexOf("\n", content.lastIndexOf("\n", m.index) - 1);
+      var region = content.slice(from === -1 ? 0 : from, m.index + 600);
+      if (/certificateCompression/.test(region)) continue;
+      bad.push({ file: rel, line: lineNum,
+        content: "createSecureContext does not set certificateCompression — a " +
+                 "context built here replaces the server's, so handshakes using " +
+                 "it send the full uncompressed certificate chain" });
+    }
+  }
+  bad = _filterMarkers(bad, "secure-context-cert-compression");
+  _report("secure contexts advertise RFC 8879 certificate compression", bad);
+}
 
 function testOutboundTlsMergesSharedPosture() {
   // class: outbound-tls-posture
@@ -16682,6 +16726,7 @@ async function run() {
   testReadmeVendorTableMatchesManifest();
   testReadmeNodeRequirementMatchesEngines();
   testOutboundTlsMergesSharedPosture();
+  testSecureContextsAdvertiseCertificateCompression();
   testDocumentedScriptFlagsExist();
   // v0.8.91 bug-class detectors — derived from the
   // mail-require-tls / fal.meets / cdn-cache-control / SRS fix-ups.
