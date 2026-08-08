@@ -3024,11 +3024,98 @@ async function testH2DrainWaitsOnProgressButNotOnAStall() {
     fakeDestroyed === true);
 }
 
+// A posture change lands while a transport negotiation is still running. The
+// negotiation then loses the cache race, so its transport is retired — but the
+// requests waiting on that negotiation are still handed it and must complete.
+// Retiring synchronously breaks exactly those requests: the library's own
+// completion handler is attached before any consumer's, so session.close()
+// runs before _requestH2 can open its stream, and close() refuses new streams.
+// Trading a socket leak for failed requests is not a fix, so assert the
+// requests.
+//
+// Driven over cleartext h2c: the race is in the shared transport-cache
+// bookkeeping, not in TLS, and h2c reaches it without needing the framework
+// transport to trust a loopback certificate.
+async function testRequestSurvivesLosingTheTransportCacheRace() {
+  var ALLOW = ["http:", "https:"];
+  return _withH2cServer(function (stream) {
+    stream.respond({ ":status": 200, "content-type": "text/plain" });
+    stream.end("raced-ok");
+  }, async function (base) {
+    try {
+      // The losing-race branch needs the first negotiation to still be PENDING
+      // when the second request arrives — on loopback that window closes in
+      // microseconds, so an unaided test never reaches the branch (measured:
+      // zero hits). Hold the first session's "connect" event until both
+      // requests are in play, so the race is forced rather than hoped for.
+      var http2mod = require("http2");
+      var origConnect = http2mod.connect;
+      var gateFirst = null;
+      var connectCount = 0;
+      http2mod.connect = function (authority, opts) {
+        var session = origConnect.call(http2mod, authority, opts);
+        if (++connectCount === 1) {
+          // Swallow the first 'connect' until released, so the promise stays
+          // pending while the second request clears the cache.
+          var listeners = [];
+          var origOnce = session.once.bind(session);
+          session.once = function (ev, fn) {
+            if (ev === "connect") { listeners.push(fn); return session; }
+            return origOnce(ev, fn);
+          };
+          gateFirst = function () {
+            session.once = origOnce;
+            listeners.forEach(function (fn) { try { fn(); } catch (_e) { /* surfaced by the request */ } });
+          };
+        }
+        return session;
+      };
+
+      var results = [];
+      try {
+        b.httpClient._resetForTest();
+        var first = b.httpClient.request({
+          url: base + "/raced", allowedProtocols: ALLOW, allowInternal: true,
+          preferH2: true,
+        }).then(function (r) { return { ok: true, body: String(r.body) }; },
+                function (e) { return { ok: false, err: (e && e.code) || String(e) }; });
+        await helpers.waitUntil(function () { return gateFirst !== null; },
+          { timeoutMs: 5000, label: "http-client: first negotiation started" });
+        // Posture moves, then a second request arrives and clears the cache —
+        // so the first negotiation, still pending, will lose the race.
+        b.network.tls.preferredGroups.set(["X25519MLKEM768", "X25519"]);
+        var second = b.httpClient.request({
+          url: base + "/raced", allowedProtocols: ALLOW, allowInternal: true,
+          preferH2: true,
+        }).then(function (r) { return { ok: true, body: String(r.body) }; },
+                function (e) { return { ok: false, err: (e && e.code) || String(e) }; });
+        await helpers.waitUntil(function () { return connectCount >= 2; },
+          { timeoutMs: 5000, label: "http-client: second negotiation started" });
+        gateFirst();
+        results.push(await first);
+        results.push(await second);
+      } finally {
+        http2mod.connect = origConnect;
+      }
+      var failed = results.filter(function (r) { return !r.ok; });
+      check("a request whose negotiation loses the transport-cache race still " +
+            "completes (" + (results.length - failed.length) + "/" + results.length +
+            " ok" + (failed.length ? ", first error " + failed[0].err : "") + ")",
+        failed.length === 0 &&
+        results.every(function (r) { return r.body === "raced-ok"; }));
+    } finally {
+      b.network.tls.preferredGroups.reset();
+      b.httpClient._resetForTest();
+    }
+  });
+}
+
 async function run() {
   try {
     testSurface();
     await testPostureChangeDoesNotAbortInFlightRequests();
     await testH2DrainWaitsOnProgressButNotOnAStall();
+    await testRequestSurvivesLosingTheTransportCacheRace();
     await testConfigurePool();
     await testArgValidation();
     await testBeforeAfterInterceptors();
