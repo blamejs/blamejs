@@ -494,21 +494,29 @@ function _runVersionedListingOnEndpoint(label, endpoint, extraConfig) {
 
     // ---- delete of a never-written key ----
     // S3 DELETE Object is idempotent: MinIO answers 204 for a key that never
-    // existed, and on a versioning-enabled bucket it still writes a
-    // delete-marker. So `true` here does NOT mean "the object existed" - the
-    // adapter's 404 -> false arm is unreachable against MinIO/AWS and only
-    // fires on S3-compatible stores that answer 404. Pin the real contract so
-    // no caller starts reading the boolean as an existence probe (head() is
-    // the existence probe; it reports NOT_FOUND).
+    // existed. So `true` here does NOT mean "the object existed" - the
+    // adapter's 404 -> false arm is unreachable against MinIO and only fires
+    // on S3-compatible stores that answer 404. Pin the real contract so no
+    // caller starts reading the boolean as an existence probe (head() is the
+    // existence probe; it reports NOT_FOUND).
     var absentKey = "versioned/never-written-" + Math.floor(Math.random() * 1e9) + ".txt";
     var absent = await backend.delete(absentKey);
     check(P + "delete of a never-written key resolves without throwing",
           typeof absent === "boolean");
     check(P + "MinIO treats DELETE as idempotent (reports success, not 404)",
           absent === true);
+    // What the store does with that idempotent DELETE is NOT uniform across
+    // S3 implementations, so this pins the behaviour of the store under test
+    // rather than a general S3 contract: MinIO records nothing for a key that
+    // never existed (verified against the live server — delete returns true
+    // and listVersions reports zero rows for the key). AWS S3 is documented to
+    // write a delete-marker even for an absent key in a versioning-enabled
+    // bucket, so a run against real S3 would legitimately see one row here.
+    // Kept as a strict equality rather than "0 or 1" because a tolerant
+    // assertion would pass whatever the adapter did and prove nothing.
     var absentRows = (await backend.listVersions(absentKey)).items
       .filter(function (it) { return it.key === absentKey; });
-    check(P + "the no-op delete created no version and no delete-marker",
+    check(P + "MinIO records no version and no delete-marker for the never-written key",
           absentRows.length === 0);
     var headThrew = null;
     try {
