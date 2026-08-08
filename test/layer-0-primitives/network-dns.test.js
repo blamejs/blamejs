@@ -1563,6 +1563,38 @@ async function testAbsoluteFormReachesTheResolverVerbatim() {
     try { await dnsModule.resolveSecure("exa mple.com", "A"); }
     catch (e) { badCode = e && e.code; }
     check("a malformed label is still refused", badCode === "dns/bad-host");
+
+    // The RFC 1035 253-character ceiling applies to the name, not to the
+    // spelling. A maximum-length name written absolutely is 254 characters and
+    // encodes to exactly the same wire bytes, so measuring the raw string
+    // would accept it relative and refuse it absolute — the boundary case of
+    // the absolute-form support above.
+    var lbl = "a".repeat(63);
+    var head = [lbl, lbl, lbl].join(".");
+    var maxName = head + "." + "b".repeat(253 - head.length - 1);
+    check("the fixture is exactly at the ceiling", maxName.length === 253);
+    var atLimit = {};
+    for (var spelling of [maxName, maxName + "."]) {
+      var limitCode = null;
+      try { await dnsModule.resolveSecure(spelling, "A"); }
+      catch (e) { limitCode = e && e.code; }
+      atLimit[spelling.endsWith(".") ? "absolute" : "relative"] = limitCode;
+    }
+    check("a maximum-length name is accepted in both spellings",
+      atLimit.relative !== "dns/bad-host" && atLimit.absolute !== "dns/bad-host");
+    check("both spellings of the maximum-length name take the same path",
+      atLimit.relative === atLimit.absolute);
+
+    var overName = maxName + "c";
+    var over = {};
+    for (var spelling2 of [overName, overName + "."]) {
+      var code2 = null;
+      try { await dnsModule.resolveSecure(spelling2, "A"); }
+      catch (e) { code2 = e && e.code; }
+      over[spelling2.endsWith(".") ? "absolute" : "relative"] = code2;
+    }
+    check("a name one character over the ceiling is refused in both spellings",
+      over.relative === "dns/bad-host" && over.absolute === "dns/bad-host");
   } finally { _reset(); }
 }
 
