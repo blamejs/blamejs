@@ -40,6 +40,10 @@
         {
           "title": "Response-shape and refusal coverage for the S3 backend and the DNS resolver setter",
           "body": "b.objectStore's SigV4 backend gains tests for the listing shapes an S3-compatible store may legitimately return but the live suite cannot produce — a listing whose root element is absent, entries omitting Size, LastModified, ETag or VersionId, and delete-marker tombstones — asserting in each case that the fields which ARE present survive rather than only that the absent one becomes null. Pagination inputs are pinned as reaching the wire and surviving canonicalization, and the live suite gains a versioned-listing walk against a real object store: two versions of one key, reads resolving a superseded version by id, a delete marker leaving both data versions intact, and paged list and listVersions walks that visit every entry exactly once. b.network.dns.setServers gains its own test file covering the port and shape refusals and the atomicity of a rejected list; the zero-port case runs in a child process so a regression reports a failure instead of terminating the run."
+        },
+        {
+          "title": "Vendored @blamejs/pki refreshed to 0.4.1",
+          "body": "The vendored @blamejs/pki bundle behind the mutual-TLS CA engine is refreshed from 0.4.0 to 0.4.1. The release is additive: the ASN.1 codec learns to read NumericString — the X.520 syntax of the x121Address and internationalISDNNumber directory attributes — validating it strictly so a value outside the digits-and-space set the type permits is rejected rather than decoded, and the OID registry gains the subjectDirectoryAttributes extension identifier. Its remaining change is to the C509 (CBOR-encoded certificate) schema, which the certificate-authority surface does not use. No behaviour change to that surface — this is a supply-chain currency refresh."
         }
       ]
     }
