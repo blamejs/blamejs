@@ -1870,7 +1870,13 @@ function testFormatValidatorLengthCap() {
       // anything over the cap just as `.length` does.
       var window = (lines[li-2] || "") + (lines[li-1] || "") +
                    line + (lines[li+1] || "") + (lines[li+2] || "");
-      if (/\.length\s*[><=!]/.test(window) || /byteLength/.test(window)) continue;
+      // A literal `.slice(0, N)` on the tested expression bounds it outright,
+      // which is a stronger guarantee than comparing a length and branching:
+      // there is no path on which the regex sees more than N characters. Only
+      // counted on the test line itself, so a slice of some OTHER value
+      // nearby cannot vouch for this one.
+      if (/\.length\s*[><=!]/.test(window) || /byteLength/.test(window) ||
+          /\.slice\(\s*0\s*,\s*\d+\s*\)/.test(line)) continue;
       bad.push({
         file:    _relPath(files[fi]),
         line:    li + 1,

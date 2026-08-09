@@ -287,8 +287,11 @@ function testRegExpFlagsReachTheAnalysis() {
         assertSafeAccepts2(/^((a)|a)+$/) === false);
   check("nor does wrapping the other branch",
         assertSafeAccepts2(/^(?:a|(a))+$/) === false);
-  check("a bounded repetition of the same alternation is not this rule's shape",
-        assertSafeAccepts2(/^(a|a){1,2}$/));
+  check("a bounded repetition of the same alternation is refused too — a " +
+        "ceiling changes the cost, not the shape",
+        assertSafeAccepts2(/^(a|a){1,2}$/) === false);
+  check("a repetition that can be taken at most once is not this rule's shape",
+        assertSafeAccepts2(/^(a|a){0,1}$/) && assertSafeAccepts2(/^(a|a)?$/));
   check("a disjoint alternation spelled `{1,}` is still proven",
         assertSafeAccepts2(/^(?:b|c){1,}$/));
   // A wrapper that neither repeats nor chooses changes nothing about how the
@@ -316,6 +319,78 @@ function testRegExpFlagsReachTheAnalysis() {
 }
 function assertSafeAccepts2(re) {
   try { b.guardRegex.assertSafe(re, "x"); return true; } catch (_e) { return false; }
+}
+
+// Every spelling of "this repeats and its parts compete" has to reach the
+// analysis. Each of these runs 1.5-17 seconds against a 28-character failing
+// input, and each was accepted because one reader of the pattern disagreed
+// with another about what counts as a repetition.
+function testRepetitionSpellingsAllReachTheAnalysis() {
+  // A ceiling is not a defence. `{2,30}` still admits every composition of the
+  // input among its repetitions, and an exact `{10}` is polynomial of degree
+  // nine. Only a quantifier that permits at most ONE repetition is harmless.
+  check("a bounded outer repeat of a variable body is refused",
+        assertSafeAccepts2(/(a+){2,30}!/) === false);
+  check("including at the profile's own bound",
+        assertSafeAccepts2(/(a+){1,100}!/) === false);
+  check("an exact outer count above one is refused",
+        assertSafeAccepts2(/(a+){10}!/) === false);
+  check("two bounded repeats nested are refused",
+        assertSafeAccepts2(/(?:a{1,10}){1,10}!/) === false);
+  check("a bounded repeat of an overlapping alternation is refused",
+        assertSafeAccepts2(/(a|a){2,60}!/) === false);
+  check("an outer repeat that can be taken at most once is still fine",
+        assertSafeAccepts2(/(a+)?!/) && assertSafeAccepts2(/(a+){0,1}!/) &&
+        assertSafeAccepts2(/(a+){1}!/));
+
+  // Leading zeros keep the value at 2 while pushing the digit count past what
+  // the quantifier readers would match, so the group reported as carrying no
+  // quantifier at all.
+  check("a quantifier written with leading zeros is still read",
+        assertSafeAccepts2(/(a|a){0000000002,}!/) === false);
+  check("and with more digits still",
+        assertSafeAccepts2(/(a|a){00000000002,}!/) === false);
+  check("bounded, with leading zeros, too",
+        assertSafeAccepts2(/(a|a){0000000002,0000000099}!/) === false);
+
+  // A group prefix the parser does not recognise must leave the pattern
+  // unproven, not out of scope. Wrapping the canonical exponential in an
+  // ES2025 modifier group silenced the detector that exists to catch it.
+  check("a modifier group does not hide an overlapping alternation",
+        assertSafeAccepts2(new RegExp("(?i:a|a)+b")) === false);
+  check("nor a negated modifier group",
+        assertSafeAccepts2(new RegExp("(?-i:a|a)+b")) === false);
+  check("nor a named group whose name is longer than the parser expected",
+        assertSafeAccepts2(new RegExp("(?<" + "n".repeat(66) + ">a|a)+b")) === false);
+  check("a modifier group around a disjoint alternation is still accepted",
+        assertSafeAccepts2(new RegExp("^(?i:a|b)+$")));
+
+  // The `?` after an escaped metacharacter is a real quantifier. Deciding by
+  // the preceding SOURCE character reads the metacharacter as the lazy marker
+  // it would be if it had been a quantifier, and drops the repetition.
+  check("an optional after a bare `}` counts as length variation",
+        assertSafeAccepts2(/(?:a}?}?)+!/) === false);
+  check("an optional after an escaped `*` counts too",
+        assertSafeAccepts2(/(?:a\*?\*?)+!/) === false);
+  check("and after an escaped `(`",
+        assertSafeAccepts2(/(?:a\(?\(?)+!/) === false);
+  check("the control shape over an ordinary character was always refused",
+        assertSafeAccepts2(/(?:ab?b?)+!/) === false);
+  check("a lazy quantifier is still not counted twice",
+        assertSafeAccepts2(/^(?:[a-z]+?-)*[a-z]+$/));
+
+  // Adjacent unbounded quantifiers over the same characters are polynomial in
+  // how many of them there are. Nothing outside a group was examined at all.
+  check("adjacent overlapping quantifiers are refused",
+        assertSafeAccepts2(/a*a*a*a*a*a*a*a*a*a*b/) === false);
+  check("including through character classes",
+        assertSafeAccepts2(/\w*\w*\w*\w*\w*\w*\w*\w*!/) === false);
+  check("two adjacent overlapping quantifiers are enough",
+        assertSafeAccepts2(/^\w*\w*!$/) === false);
+  check("adjacent quantifiers over DISJOINT characters are accepted",
+        assertSafeAccepts2(/^a*b*c*d*!$/));
+  check("a single quantifier per position is untouched",
+        assertSafeAccepts2(/^\w+@\w+\.\w+$/) && assertSafeAccepts2(/^[a-z]*-[0-9]*$/));
 }
 
 // ---- other ReDoS classes the guard covers stay covered ----
@@ -368,6 +443,7 @@ async function run() {
   testAmbiguousShapesStillRefused();
   testAnalysisWorkIsBounded();
   testRegExpFlagsReachTheAnalysis();
+  testRepetitionSpellingsAllReachTheAnalysis();
   testCatastrophicShapesRefused();
   testOtherClasses();
   await testGate();
