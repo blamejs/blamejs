@@ -85,16 +85,23 @@ function testProvablyUnambiguousShapesAccepted() {
     // begin at an `a`, and the optional tail cannot be re-attributed to the
     // next one, so the split is decided — measured flat to 200,000 characters.
     // Refusing these would re-open the complaint this release set out to fix.
-    "(?:ab?)+c",
-    "(?:ab?c?)+d",
-    "(?:a[0-9]{0,2})+z",
+    // They are anchored because unanchored they are quadratic for a reason
+    // that has nothing to do with the body: the whole pattern is retried at
+    // every position (see testUnanchoredScanCost).
+    "^(?:ab?)+c$",
+    "^(?:ab?c?)+d$",
+    "^(?:a[0-9]{0,2})+z$",
     // Two repeated groups in a row, where nothing the second can begin with is
     // something the first could have taken instead. The split between them
     // cannot float, so each group is judged on its own and both are decided.
-    "(?:b|c)+(?:d|e)+",
+    "^(?:b|c)+(?:d|e)+$",
     "^[a-z0-9]+(?:-[a-z0-9]+)*$",   // the separator leads each repetition
     "^\\w+(?:\\.\\w+)*$",
     "^[^,]+(?:,[^,]+)*$",
+    // A separator that repeats is still a separator: nothing else in the body
+    // can match a dash, so the whole run of them belongs to it and the split
+    // is pinned. Measured flat to 64,000 characters.
+    "(?:[a-z]+-+)*",
   ];
   linear.forEach(function (src) {
     check("assertSafe accepts provably-unambiguous " + JSON.stringify(src), assertSafeAccepts(src));
@@ -124,7 +131,6 @@ function testAmbiguousShapesStillRefused() {
     "(?:\\w+_)*",                  // `_` is a member of \w
     "(?:.+/)*",                    // `.` matches the delimiter
     "(?:[^/]+x)*",                 // `x` is matchable by the negated class
-    "(?:[a-z]+-+)*",               // the delimiter is itself quantified
     // A forced delimiter pins where each repetition ENDS, but the number of
     // paths through the whole match is the PRODUCT of the paths through each
     // repetition. Two variable-length atoms in the body give at least two
@@ -347,9 +353,12 @@ function testRepetitionSpellingsAllReachTheAnalysis() {
         assertSafeAccepts2(/(?:a{1,10}){1,10}!/) === false);
   check("a bounded repeat of an overlapping alternation is refused",
         assertSafeAccepts2(/(a|a){2,60}!/) === false);
+  // Anchored, because unanchored these are quadratic for a reason that has
+  // nothing to do with the repetition: the pattern is retried at every
+  // position and each attempt walks the input (see testUnanchoredScanCost).
   check("an outer repeat that can be taken at most once is still fine",
-        assertSafeAccepts2(/(a+)?!/) && assertSafeAccepts2(/(a+){0,1}!/) &&
-        assertSafeAccepts2(/(a+){1}!/));
+        assertSafeAccepts2(/^(a+)?!$/) && assertSafeAccepts2(/^(a+){0,1}!$/) &&
+        assertSafeAccepts2(/^(a+){1}!$/));
   // Both bounds finite and their product small: the engine enumerates a fixed
   // number of ways to match whatever the input length, so a dotted quad with a
   // prefix length or a port after it stays an ordinary pattern.
@@ -626,6 +635,94 @@ function testEverySpellingOfAmbiguityIsRefused() {
         "(took " + elapsed + "ms)", elapsed < 500);
 }
 
+// A separator is whatever a repetition must contain and nothing else in it can
+// match. Requiring that to be exactly one atom occurring exactly once left two
+// everyday shapes unproven: a separator that repeats (`\s+`), and one written
+// as more than one character (`::`). And a body may carry more than one part
+// that varies, as long as those parts cannot take each other's characters —
+// counting them, rather than asking whether they overlap, refused a comma-space
+// list alongside the genuinely ambiguous shapes.
+function testSeparatorsAndVaryingPartsAreJudgedOnWhatTheyMatch() {
+  var linear = [
+    "^[a-z]+(?:\\s+[a-z]+)*$",        // a separator that repeats
+    "^\\w+(?:\\s+\\w+)*$",
+    "^[a-z]+(?:::[a-z]+)*$",          // a separator of two characters
+    "^[A-Za-z]+(?: > [A-Za-z]+)*$",
+    "^[a-z]+(?:,\\s*[a-z]+)*$",       // two varying parts, disjoint, separated
+    "^(?:&[a-z]+=[0-9]+)*$",
+    "^([0-9.]+)(?:,\\s*([0-9.]+))*$",
+    "^[a-z-]+(?:=\\d+)?(?:, [a-z-]+(?:=\\d+)?)*$",
+  ];
+  linear.forEach(function (src) {
+    check("accepts " + JSON.stringify(src), assertSafeAccepts(src));
+  });
+
+  // Two published patterns operators copy verbatim. Both were refused at every
+  // profile, so there was no configuration in which they worked.
+  var semver = "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)" +
+    "(?:-((?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*)" +
+    "(?:\\.(?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?" +
+    "(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$";
+  var email = "^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9]" +
+    "(?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?" +
+    "(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$";
+  check("accepts the published semver validation pattern", assertSafeAccepts(semver));
+  check("accepts the WHATWG email-input pattern", assertSafeAccepts(email));
+
+  // The separator has to be something a repetition MUST contain, and the
+  // varying parts still have to be unable to trade characters.
+  var ambiguous = [
+    "^(?:&[a-z]+[a-z0-9]+)*$",        // two varying parts that overlap
+    "(?:a*a*-)*",
+    "(?:[a-z]+a)*",                   // the separator is inside the class
+    "(?:a}?}?)+",                     // the candidate separator is optional
+    "(?:\\w+\\d*;)*",
+  ];
+  ambiguous.forEach(function (src) {
+    check("still refuses " + JSON.stringify(src), assertSafeAccepts(src) === false);
+  });
+}
+
+// A pattern that is not anchored at the start is retried at EVERY position in
+// the subject. When it can consume an unbounded amount before reaching
+// something that must match, each of those attempts costs the length of what
+// remains — so the whole scan is quadratic in the input, with no ambiguity
+// anywhere inside the pattern for the other rules to find.
+function testUnanchoredScanCost() {
+  var quadratic = [
+    "(\\w+)\\s+(\\d+)",               // an ordinary two-field scan
+    "([^;]+);\\s*q=([0-9.]+)",        // an Accept-header q-value
+    "(\\S+)=(\\S+);",
+    "a+b",
+  ];
+  quadratic.forEach(function (src) {
+    check("refuses the unanchored scan " + JSON.stringify(src),
+          assertSafeAccepts(src) === false);
+  });
+
+  var bounded = [
+    "^(\\w+)\\s+(\\d+)$",             // anchored — one attempt
+    "\\.[a-f0-9]{8,}\\.",             // a mandatory fixed head fails an attempt at once
+    "foo",
+    "a+",                             // nothing after it must match, so nothing fails late
+  ];
+  bounded.forEach(function (src) {
+    check("accepts " + JSON.stringify(src), assertSafeAccepts(src));
+  });
+  check("the sticky flag pins the attempt to one position",
+        assertSafeAccepts2(new RegExp("(\\w+)\\s+(\\d+)", "y")));
+
+  // It is its own rule, so an operator who bounds the subject length instead
+  // can turn it off without giving up the backtracking classes.
+  var relaxed = b.guardRegex.validate("(\\w+)\\s+(\\d+)",
+    { profile: "strict", boundedRepeatPolicy: "allow", unanchoredScanPolicy: "allow" });
+  check("the finding has a policy of its own", relaxed.ok === true);
+  var reported = b.guardRegex.validate("(\\w+)\\s+(\\d+)",
+    { profile: "strict", boundedRepeatPolicy: "allow" });
+  check("and its own rule id",
+        (reported.issues || []).some(function (i) { return i.ruleId === "regex.unanchored-scan"; }));
+}
+
 // ---- other ReDoS classes the guard covers stay covered ----
 function testOtherClasses() {
   // `(a|b|c)+` is the character class `[abc]+` written out long: no two
@@ -678,6 +775,8 @@ async function run() {
   testRegExpFlagsReachTheAnalysis();
   testRepetitionSpellingsAllReachTheAnalysis();
   testEverySpellingOfAmbiguityIsRefused();
+  testSeparatorsAndVaryingPartsAreJudgedOnWhatTheyMatch();
+  testUnanchoredScanCost();
   testCatastrophicShapesRefused();
   testOtherClasses();
   await testGate();

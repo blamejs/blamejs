@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.18.18",
-  "createdAt": "2026-08-09T12:30:30.592Z",
+  "frameworkVersion": "0.18.19",
+  "createdAt": "2026-08-09T14:50:16.783Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -32943,6 +32943,10 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
+                "unanchoredScanPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
                 "zeroWidthPolicy": {
                   "type": "primitive",
                   "valueType": "string"
@@ -33013,6 +33017,10 @@
                   "valueType": "string"
                 },
                 "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "unanchoredScanPolicy": {
                   "type": "primitive",
                   "valueType": "string"
                 },
@@ -33089,6 +33097,10 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
+                "unanchoredScanPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
                 "zeroWidthPolicy": {
                   "type": "primitive",
                   "valueType": "string"
@@ -33159,6 +33171,10 @@
                   "valueType": "string"
                 },
                 "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "unanchoredScanPolicy": {
                   "type": "primitive",
                   "valueType": "string"
                 },
@@ -33234,6 +33250,10 @@
               "valueType": "string"
             },
             "nullBytePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "unanchoredScanPolicy": {
               "type": "primitive",
               "valueType": "string"
             },
@@ -33342,6 +33362,10 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
+                "unanchoredScanPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
                 "zeroWidthPolicy": {
                   "type": "primitive",
                   "valueType": "string"
@@ -33404,6 +33428,10 @@
                   "valueType": "string"
                 },
                 "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "unanchoredScanPolicy": {
                   "type": "primitive",
                   "valueType": "string"
                 },
@@ -33473,6 +33501,10 @@
                   "valueType": "string"
                 },
                 "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "unanchoredScanPolicy": {
                   "type": "primitive",
                   "valueType": "string"
                 },
