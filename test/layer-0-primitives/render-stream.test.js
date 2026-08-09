@@ -119,8 +119,10 @@ async function testThrowOnTheFirstRowStillEndsTheTransfer() {
   var res = _res();
   var destroyed = false;
   res.destroy = function () { destroyed = true; res.destroyed = true; };
+  // The query rejects before the first row, which is how a cursor that cannot
+  // open reaches this primitive.
   async function* failsImmediately() {
-    if (res) throw new Error("query rejected");       // always taken; keeps the yield reachable
+    await Promise.reject(new Error("query rejected"));
     yield "never";
   }
   var caught = null;
