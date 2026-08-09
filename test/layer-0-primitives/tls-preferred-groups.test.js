@@ -582,6 +582,21 @@ function testAnnotateOutboundFailure() {
   check("annotate leaves the code alone for callers branching on it",
         err.code === "ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION");
   check("annotate rewrites the message", err.message.indexOf("TLS 1.3") !== -1);
+  // A caller that capped the dial below TLS 1.3 — a WebSocket tlsOpts override,
+  // or their own agent — never attempted 1.3, so naming its cipher list would
+  // send them after a setting that had no part in the failure.
+  var generic = _alert("ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE", "alert handshake failure");
+  var wide = b.network.tls.explainOutboundFailure(generic, { host: "peer.example", port: 443 });
+  check("generic alert names the TLS 1.3 cipher list when 1.3 was reachable",
+        /no shared TLS 1.3 cipher suite/.test(wide));
+  var capped = b.network.tls.explainOutboundFailure(
+    _alert("ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE", "alert handshake failure"),
+    { host: "peer.example", port: 443, maxVersion: "TLSv1.2" });
+  check("a dial capped below TLS 1.3 is not sent after its cipher list",
+        /no shared cipher suite/.test(capped) && /TLS 1\.3 cipher/.test(capped) === false);
+  check("the capped explanation still names the group list and the peer",
+        capped.indexOf("peer.example") !== -1 && /key-exchange group/.test(capped));
+
   // The stack has to be read BEFORE annotating for this to test anything. V8
   // formats Error.stack on first access, so an untouched error renders its
   // stack from whatever the message is by then — the rewrite could be absent
