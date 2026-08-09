@@ -645,6 +645,99 @@ async function testFetchMdqInputValidation() {
   check("fetchMdq: non-object opts refused", (await mdqCode(null)) === "BAD_OPT");
   check("fetchMdq: missing baseUrl → no-mdq-base", (await mdqCode({ entityId: IDP_ENTITY_ID })) === "auth-saml/no-mdq-base");
   check("fetchMdq: missing entityId → no-mdq-entity", (await mdqCode({ baseUrl: "https://mdq.example" })) === "auth-saml/no-mdq-entity");
+
+  // The metadata fetch dials a federation operator's server. A consumer that
+  // routes its outbound calls through one instrumented client needs this dial
+  // inside it, and needs the host pinned so a mangled baseUrl cannot become an
+  // egress. Driven through an injected client, so no network is touched.
+  var seen = [];
+  var xml = "<EntityDescriptor xmlns=\"urn:oasis:names:tc:SAML:2.0:metadata\" entityID=\"" +
+            IDP_ENTITY_ID + "\"></EntityDescriptor>";
+  var fake = { request: function (req) {
+    seen.push(req);
+    return Promise.resolve({ statusCode: 200, headers: {}, body: Buffer.from(xml, "utf8") });
+  } };
+  var got = await b.auth.saml.fetchMdq({
+    baseUrl:  "https://mdq.federation.example",
+    entityId: IDP_ENTITY_ID,
+    http:     { client: fake, allowedHosts: ["mdq.federation.example"] },
+  });
+  check("fetchMdq: dials through the supplied client", seen.length === 1);
+  check("fetchMdq: returns what that client answered", got === xml);
+  check("fetchMdq: carries the host pin onto the request",
+        seen[0].allowedHosts && seen[0].allowedHosts.length === 1 &&
+        seen[0].allowedHosts[0] === "mdq.federation.example");
+  check("fetchMdq: still addresses the MDQ path the spec defines",
+        seen[0].url.indexOf("/entities/%7Bsha1%7D") !== -1);
+
+  // The pin has to be ENFORCED, not handed to the client as a request field.
+  // An injected client's contract is a `request` method and nothing more, so
+  // it need not know what allowedHosts means — this one ignores it completely,
+  // as any consumer's own client legitimately might. The dial must still be
+  // refused, or the operator believes a pin is in force that is not.
+  var wentAnywhere = [];
+  var obliviousClient = { request: function (req) {
+    wentAnywhere.push(req.url);
+    return Promise.resolve({ statusCode: 200, headers: {}, body: Buffer.from(xml, "utf8") });
+  } };
+  var pinErr = null;
+  try {
+    await b.auth.saml.fetchMdq({
+      baseUrl:  "https://mdq.evil.example",
+      entityId: IDP_ENTITY_ID,
+      http:     { client: obliviousClient, allowedHosts: ["mdq.federation.example"] },
+    });
+  } catch (e) { pinErr = e; }
+  check("fetchMdq: a client that ignores allowedHosts is still held to the pin",
+        pinErr !== null && /allowedHosts/.test(pinErr.message));
+  check("fetchMdq: the refused dial never reached the client at all",
+        wentAnywhere.length === 0);
+  // And the same client inside the pin still gets through.
+  await b.auth.saml.fetchMdq({
+    baseUrl:  "https://mdq.federation.example",
+    entityId: IDP_ENTITY_ID,
+    http:     { client: obliviousClient, allowedHosts: ["mdq.federation.example"] },
+  });
+  check("fetchMdq: a dial inside the pin reaches the client", wentAnywhere.length === 1);
+
+  // The TLS requirement is the fetch's own, not a side effect of which client
+  // dials. b.httpClient refuses a non-TLS destination itself, so an injected
+  // client must not be able to smuggle one past: trustCertPem is optional, and
+  // an http:// metadata fetch with no signature to check lets anyone on the
+  // path substitute the federation's signing keys.
+  var httpReached = [];
+  var anyScheme = { request: function (req) {
+    httpReached.push(req.url);
+    return Promise.resolve({ statusCode: 200, headers: {}, body: Buffer.from(xml, "utf8") });
+  } };
+  var schemeErr = null;
+  try {
+    await b.auth.saml.fetchMdq({
+      baseUrl:  "http://mdq.federation.example",
+      entityId: IDP_ENTITY_ID,
+      http:     { client: anyScheme },
+    });
+  } catch (e) { schemeErr = e; }
+  check("fetchMdq: an http:// baseUrl is refused even with an injected client",
+        schemeErr !== null);
+  check("fetchMdq: the refused http:// dial never reached the client",
+        httpReached.length === 0);
+  check("fetchMdq: https:// through the same client still works",
+        (await b.auth.saml.fetchMdq({
+          baseUrl:  "https://mdq.federation.example",
+          entityId: IDP_ENTITY_ID,
+          http:     { client: anyScheme },
+        })) === xml && httpReached.length === 1);
+
+  check("fetchMdq: http.client without a request method refused",
+        (await mdqCode({ baseUrl: "https://m.example", entityId: "e", http: { client: {} } }))
+          === "auth-saml/bad-http-client");
+  check("fetchMdq: http.allowedHosts as a bare string refused",
+        (await mdqCode({ baseUrl: "https://m.example", entityId: "e", http: { allowedHosts: "h" } }))
+          === "auth-saml/bad-http-allowed-hosts");
+  check("fetchMdq: unknown key under http refused",
+        (await mdqCode({ baseUrl: "https://m.example", entityId: "e", http: { nope: 1 } }))
+          === "auth-saml/bad-http");
 }
 
 // ---------------------------------------------------------------------------

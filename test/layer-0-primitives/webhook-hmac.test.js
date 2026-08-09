@@ -158,7 +158,70 @@ function run() {
   testConfigurableFieldsAndProfiles();
   testAlgorithms();
   testConfigTimeValidation();
+  testInjectedClock();
   testErrorClass();
+}
+
+
+// A consumer that owns an injectable clock cannot adopt this primitive while
+// the replay window is measured against wall time: its own window check and
+// this one disagree the moment the injected clock is not now. That shows up
+// first in tests advancing a clock to reach a rotation grace window, but the
+// same applies to replaying a captured delivery for forensics.
+//
+// An injected clock is the right shape rather than a skip-the-check flag: the
+// replay defense stays inside the primitive, and forgetting the option fails
+// closed (wall time) instead of silently accepting arbitrarily old deliveries.
+function testInjectedClock() {
+  // 25 hours on, the shape of a rotation-grace-window test.
+  var futureMs = Date.now() + (25 * 60 * 60 * 1000);
+  var futureSec = Math.floor(futureMs / 1000);
+  var hdr = _header(futureSec, BODY, SECRET);
+
+  var refused = _threw(function () {
+    b.webhookHmac.verify({ header: hdr, rawBody: BODY, secret: SECRET });
+  });
+  check("without a clock the far-future delivery is still refused",
+        refused && refused.code === "webhook-hmac/timestamp-skew");
+
+  var r = b.webhookHmac.verify({
+    header: hdr, rawBody: BODY, secret: SECRET, now: futureMs,
+  });
+  check("an injected clock accepts a delivery signed at that time", r.valid === true);
+  check("the parsed timestamp still comes back", r.timestamp === futureSec);
+
+  // The window is still enforced AGAINST the injected clock, not skipped.
+  var stale = _threw(function () {
+    b.webhookHmac.verify({
+      header: _header(futureSec - 9999, BODY, SECRET), rawBody: BODY,
+      secret: SECRET, now: futureMs,
+    });
+  });
+  check("the replay window is enforced against the injected clock",
+        stale && stale.code === "webhook-hmac/timestamp-skew");
+
+  // Config-time tier: a bad clock is a boot-time typo, so it throws. The code
+  // is pinned because "some error" would also be satisfied by the delivery
+  // being refused for skew after a bad value silently fell back to wall time,
+  // which is the opposite of what is being asserted.
+  var badTypes = [null, "1700000000000", NaN, Infinity, -1, 1.5, 0];
+  for (var i = 0; i < badTypes.length; i += 1) {
+    var e = _threw((function (v) {
+      return function () {
+        b.webhookHmac.verify({ header: hdr, rawBody: BODY, secret: SECRET, now: v });
+      };
+    })(badTypes[i]));
+    check("a non-positive-integer clock (" + String(badTypes[i]) + ") is refused at config time",
+          e !== null && e.code === "webhook-hmac/bad-now");
+  }
+
+  // Omitting it is not "no window" — it is wall time, so an absent clock still
+  // refuses the far-future delivery.
+  var omitted = _threw(function () {
+    b.webhookHmac.verify({ header: hdr, rawBody: BODY, secret: SECRET, now: undefined });
+  });
+  check("an explicitly undefined clock falls back to wall time",
+        omitted && omitted.code === "webhook-hmac/timestamp-skew");
 }
 
 if (require.main === module) {

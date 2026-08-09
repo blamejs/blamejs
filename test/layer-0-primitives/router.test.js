@@ -1008,6 +1008,48 @@ async function testTlsListenSetup() {
   } finally {
     await _close(s2);
   }
+
+  // Variant 3 — an operator serving legacy clients caps the listener below
+  // TLS 1.3. The framework advertises RFC 8879 certificate compression, which
+  // is a TLS 1.3 extension, and Node refuses the whole options object rather
+  // than ignoring an extension it cannot use — so the listener died at bind
+  // over an option the operator never asked for.
+  var r3 = b.router.create();
+  r3.get("/e", function (req, res) { res.json({ ok: 1 }); });
+  var s3 = null, capErr = null;
+  try {
+    s3 = r3.listen(0, function () {}, {
+      key: cert.key, cert: cert.cert,
+      minVersion: "TLSv1.2", maxVersion: "TLSv1.2",
+    });
+    await _listening(s3);
+  } catch (e) { capErr = e; }
+  try {
+    check("listen() capped below TLS 1.3 binds instead of refusing its own options",
+      capErr === null && s3 !== null && s3.listening === true);
+  } finally {
+    if (s3) await _close(s3);
+  }
+
+  // Lowering the floor stays the operator's call to make explicitly. Node
+  // treats `secureProtocol` as exclusive with any named version, so a method
+  // name arriving beside the framework's TLS 1.3 floor is a genuine conflict —
+  // reported, rather than resolved by quietly dropping the floor.
+  var r4 = b.router.create();
+  r4.get("/e", function (req, res) { res.json({ ok: 1 }); });
+  var floorErr = null, s4 = null;
+  try {
+    s4 = r4.listen(0, function () {}, {
+      key: cert.key, cert: cert.cert, secureProtocol: "SSLv23_method",
+    });
+    await _listening(s4);
+  } catch (e) { floorErr = e; }
+  try {
+    check("the TLS 1.3 floor is not dropped to accommodate a capped method name",
+      floorErr !== null && floorErr.code === "ERR_TLS_PROTOCOL_VERSION_CONFLICT");
+  } finally {
+    if (s4) await _close(s4);
+  }
 }
 
 // A classical (ECDSA P-256) self-signed leaf so a real TLS 1.3 h2

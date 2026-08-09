@@ -994,14 +994,27 @@ function testSystemTrustAndApplyToContext() {
   var ctx = nt.applyToContext({ base: { rejectUnauthorized: true } });
   check("applyToContext preserves base keys", ctx.rejectUnauthorized === true);
   check("applyToContext sets ca array", Array.isArray(ctx.ca) && ctx.ca.length >= 1);
-  check("applyToContext sets groups from key shares",
-        typeof ctx.groups === "string" && ctx.groups.indexOf("X25519MLKEM768") === 0);
+  check("applyToContext sets the group preference from the key shares",
+        typeof ctx.ecdhCurve === "string" && ctx.ecdhCurve.indexOf("X25519MLKEM768") === 0);
+  check("applyToContext emits no key node:tls ignores",
+        ctx.groups === undefined);
   check("systemTrust folds in root certificates",
         ctx.ca.length > 1 || nodeTlsHasNoRoots());
 
-  // Operator-supplied groups override is preserved.
+  // An operator override is preserved, and lands under the name node:tls
+  // reads — `groups` is the spelling this function asked operators for, so it
+  // is translated rather than ignored.
   var ctx2 = nt.applyToContext({ base: { groups: "X25519" } });
-  check("applyToContext keeps operator groups override", ctx2.groups === "X25519");
+  check("applyToContext keeps an operator override given as groups",
+        ctx2.ecdhCurve === "X25519" && ctx2.groups === undefined);
+  var ctx2b = nt.applyToContext({ base: { ecdhCurve: "X25519" } });
+  check("applyToContext keeps an operator override given as ecdhCurve",
+        ctx2b.ecdhCurve === "X25519");
+
+  // An array override joins into the colon-separated form node:tls reads.
+  var ctx2c = nt.applyToContext({ base: { ecdhCurve: ["X25519MLKEM768", "X25519"] } });
+  check("applyToContext joins an array override",
+        ctx2c.ecdhCurve === "X25519MLKEM768:X25519");
 
   nt.useSystemTrust(false);
   check("useSystemTrust(false) disables", nt.isSystemTrustEnabled() === false);
@@ -1009,6 +1022,53 @@ function testSystemTrustAndApplyToContext() {
   var eBad = null;
   try { nt.applyToContext({ nope: 1 }); } catch (e) { eBad = e; }
   check("applyToContext unknown opt throws via validateOpts", eBad && /unknown option/.test(eBad.message));
+  nt._resetForTest();
+}
+
+// A group preference the operator SUPPLIED but that is not a usable list must
+// be refused, not quietly swapped for the framework's own. node:tls rejects a
+// non-string ecdhCurve, so before the preference was translated to that key a
+// malformed override stopped the server at createSecureContext. Substituting a
+// default there would start a listener on groups the operator did not choose,
+// with nothing said — the failure an operator would only find by inspecting a
+// live handshake. Only a genuinely ABSENT override takes the default.
+function testApplyToContextRefusesMalformedOverride() {
+  nt._resetForTest();
+  var malformed = [
+    ["null",             null],
+    ["false",            false],
+    ["a number",         443],
+    ["an empty string",  ""],
+    ["an empty array",   []],
+    ["an object",        {}],
+    ["a non-string element", ["X25519", 7]],
+    ["an empty element", ["X25519", ""]],
+  ];
+  ["ecdhCurve", "groups"].forEach(function (key) {
+    malformed.forEach(function (pair) {
+      var base = {};
+      base[key] = pair[1];
+      var err = null;
+      try { nt.applyToContext({ base: base }); } catch (e) { err = e; }
+      check("applyToContext refuses base." + key + " = " + pair[0],
+            err !== null && /group preference/.test(err.message));
+      check("applyToContext refusal for base." + key + " = " + pair[0] + " names the key",
+            err !== null && err.message.indexOf(key) !== -1);
+    });
+  });
+
+  // The refusal must not swallow the value it rejected: an operator reading the
+  // message needs to see what they wrote.
+  var e2 = null;
+  try { nt.applyToContext({ base: { ecdhCurve: 443 } }); } catch (e) { e2 = e; }
+  check("applyToContext refusal reports the offending type", e2 !== null && /number/.test(e2.message));
+
+  // An absent override still takes the framework preference — the whole point
+  // of the function. `undefined` is indistinguishable from absent and stays so.
+  check("applyToContext with no override still applies the preference",
+        typeof nt.applyToContext({ base: {} }).ecdhCurve === "string");
+  check("applyToContext treats an explicit undefined as absent",
+        typeof nt.applyToContext({ base: { ecdhCurve: undefined } }).ecdhCurve === "string");
   nt._resetForTest();
 }
 function nodeTlsHasNoRoots() {
@@ -1591,7 +1651,7 @@ function testBuildOptionsBranches() {
   var def = nt.buildOptions();
   check("buildOptions default minVersion is TLSv1.3", def.minVersion === "TLSv1.3");
   check("buildOptions default ecdhCurve leads with the hybrid group",
-        def.ecdhCurve.indexOf("X25519MLKEM768") === 0 && def.groups === def.ecdhCurve);
+        def.ecdhCurve.indexOf("X25519MLKEM768") === 0);
 
   // opts must be a plain object — an array refuses at the config-time tier.
   var eArr = null;
@@ -1606,11 +1666,11 @@ function testBuildOptionsBranches() {
 
   // Narrowing the group list (array + string ecdhCurve + string groups) is accepted.
   check("buildOptions narrows groups[] to a subset",
-        nt.buildOptions({ groups: ["X25519MLKEM768"] }).groups === "X25519MLKEM768");
+        nt.buildOptions({ groups: ["X25519MLKEM768"] }).ecdhCurve === "X25519MLKEM768");
   check("buildOptions narrows ecdhCurve string to a subset",
         nt.buildOptions({ ecdhCurve: "X25519MLKEM768:X25519" }).ecdhCurve === "X25519MLKEM768:X25519");
   check("buildOptions accepts a groups string",
-        nt.buildOptions({ groups: "X25519" }).groups === "X25519");
+        nt.buildOptions({ groups: "X25519" }).ecdhCurve === "X25519");
 
   // Widening to a group outside the framework preferred list refuses.
   var eWide = null;
@@ -1672,7 +1732,7 @@ function testBuildOptionsBranches() {
   // An operator-narrowed key-share set is honored as the preferred list.
   nt.pqc.setKeyShares(["X25519"]);
   check("buildOptions uses the operator-narrowed key-share set",
-        nt.buildOptions().groups === "X25519");
+        nt.buildOptions().ecdhCurve === "X25519");
   nt._resetForTest();
 }
 
@@ -2144,8 +2204,8 @@ function testTrustStoreAuditEmitAndGuards() {
   // both default; PQC groups are still folded in.
   var ctx = nt.applyToContext();
   check("applyToContext() no-arg returns an object", ctx !== null && typeof ctx === "object");
-  check("applyToContext() no-arg still sets PQC groups",
-        typeof ctx.groups === "string" && ctx.groups.indexOf("X25519MLKEM768") === 0);
+  check("applyToContext() no-arg still sets the PQC group preference",
+        typeof ctx.ecdhCurve === "string" && ctx.ecdhCurve.indexOf("X25519MLKEM768") === 0);
 
   // No-argument monitors default their opts, then throw on the missing
   // intervalMs at the config-time tier.
@@ -3270,6 +3330,7 @@ function testCtVerifyHardening() {
 }
 
 async function run() {
+  testApplyToContextRefusesMalformedOverride();
   testNetworkTlsErrorPermanentClassification();
   testInsecureTlsAudit();
   testEchSurface();

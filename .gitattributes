@@ -12,6 +12,12 @@ lib/vendor/** -text binary
 # script fails at line 1.
 *.sh text eol=lf
 
+# Test files carry NUL-byte fixtures, and git classifies a file containing a
+# NUL as binary -- which skips line-ending normalization, so a text-mode write
+# on Windows commits CRLF verbatim and re-writes the whole file. Pin them.
+test/**/*.test.js text eol=lf
+test/*.js text eol=lf
+
 # Derived artifacts the release-notes generator owns end-to-end —
 # rebuild emits LF, so the on-disk file is pinned to LF on every
 # platform. Without this, Windows checkouts would get CRLF and the

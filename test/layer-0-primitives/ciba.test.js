@@ -855,7 +855,151 @@ async function _runOptionDefaults() {
   });
 }
 
+// A CIBA flow dials two ways: this module's own backchannel/token POSTs, and
+// the inner OAuth client's discovery / JWKS. Both have to land on the same
+// client and the same host pin, or half an operator's flow sits outside the
+// breaker and the pin they configured.
+async function _runInjectedHttpClient() {
+  await _withIdp(async function (issuer, holder) {
+    var realHttp = require("../../lib/http-client");
+    var seen = [];
+    var rec  = { request: function (req) { seen.push(req.url); return realHttp.request(req); } };
+
+    holder.onToken = function (body, res) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ access_token: "at-ciba-injected", token_type: "Bearer", expires_in: 300 }));
+    };
+
+    var c = b.auth.ciba.client.create({
+      issuer:       issuer,
+      clientId:     CLIENT_ID,
+      clientSecret: CLIENT_SECRET,
+      deliveryMode: "poll",
+      allowHttp:    true,
+      allowInternal: true,
+      http:         { client: rec },
+    });
+    var ticket = await c.startAuthentication({ loginHint: "alice@example.com" });
+    check("ciba create({http:{client}}): the backchannel POST dials through the supplied client",
+          seen.some(function (u) { return u.indexOf("/bc-auth") !== -1; }));
+    check("ciba create({http:{client}}): discovery dials through the supplied client",
+          seen.some(function (u) { return u.indexOf("openid-configuration") !== -1; }));
+    check("ciba startAuthentication still returns its ticket through the supplied client",
+          !!ticket.authReqId);
+
+    // The host pin covers this module's OWN POSTs, which has to be proven on a
+    // client with explicit endpoints: with discovery in play the inner OAuth
+    // client's pin refuses first, and the assertion passes whether or not this
+    // module ever applies one. Endpoints supplied means the backchannel POST is
+    // the first and only dial.
+    var pinned = _pollClient(issuer, { http: { allowedHosts: ["api.example.invalid"] } });
+    var err = null;
+    try { await pinned.startAuthentication({ loginHint: "alice@example.com" }); } catch (e) { err = e; }
+    check("ciba create({http:{allowedHosts}}): the backchannel POST itself is pinned",
+          err !== null && /allowedHosts/.test(err.message));
+    check("ciba pin refusal names the host that was refused",
+          err !== null && err.message.indexOf("127.0.0.1") !== -1);
+
+    // And the same client with the real host in the pin completes, so the
+    // refusal above is the pin working rather than the option breaking a dial.
+    var allowed = _pollClient(issuer, { http: { allowedHosts: ["127.0.0.1"] } });
+    var ticket2 = await allowed.startAuthentication({ loginHint: "alice@example.com" });
+    check("ciba create({http:{allowedHosts}}): a backchannel POST inside the pin completes",
+          !!ticket2.authReqId);
+  });
+}
+
+// httpClientOpts was handed to the inner OAuth client under a key that client
+// does not read, so an operator configuring it saw it honoured on the
+// backchannel and token POSTs and silently ignored on discovery and JWKS —
+// exactly the split the allowInternal note one line below it warns about.
+async function _runHttpClientOptsReachInnerClient() {
+  await _withIdp(async function (issuer, holder) {
+    var seenHeader = [];
+    var c = b.auth.ciba.client.create({
+      issuer:         issuer,
+      clientId:       CLIENT_ID,
+      clientSecret:   CLIENT_SECRET,
+      deliveryMode:   "poll",
+      allowHttp:      true,
+      allowInternal:  true,
+      httpClientOpts: { headers: { "x-operator-tag": "ciba-opts" } },
+      http:           { client: { request: function (req) {
+        seenHeader.push({ url: req.url, tag: req.headers && req.headers["x-operator-tag"] });
+        return require("../../lib/http-client").request(req);
+      } } },
+    });
+    holder.onToken = function (body, res) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ access_token: "at", token_type: "Bearer", expires_in: 300 }));
+    };
+    await c.startAuthentication({ loginHint: "alice@example.com" });
+    var discovery = seenHeader.filter(function (r) { return r.url.indexOf("openid-configuration") !== -1; });
+    check("ciba httpClientOpts reaches the inner client's discovery fetch",
+          discovery.length > 0 && discovery.every(function (r) { return r.tag === "ciba-opts"; }));
+    var own = seenHeader.filter(function (r) { return r.url.indexOf("/bc-auth") !== -1; });
+    check("ciba httpClientOpts still applies to this module's own POSTs",
+          own.length > 0 && own.every(function (r) { return r.tag === "ciba-opts"; }));
+  });
+}
+
+// The scheme check has to run on the address actually dialed. The options bag
+// is merged into the request after the endpoint is validated and can carry a
+// `url` of its own, and a host pin does not stand in for the scheme — it
+// admits both. These requests hold the Basic credentials.
+async function _runOptionsBagCannotDowngradeScheme() {
+  var reached = [];
+  var anyScheme = { request: function (req) {
+    reached.push(req.url);
+    return Promise.resolve({ statusCode: 200, headers: {},
+      body: Buffer.from(JSON.stringify({ auth_req_id: "leaked", expires_in: 300, interval: 5 }), "utf8") });
+  } };
+  // allowHttp unset, https endpoints — the refusal happens before any dial, so
+  // no server is needed to prove it.
+  var mk = function (extra) {
+    return b.auth.ciba.client.create(Object.assign({
+      issuer:                            "https://idp.example",
+      clientId:                          CLIENT_ID,
+      clientSecret:                      CLIENT_SECRET,
+      tokenEndpoint:                     "https://idp.example/token",
+      backchannelAuthenticationEndpoint: "https://idp.example/bc-auth",
+      deliveryMode:                      "poll",
+    }, extra || {}));
+  };
+  var downgraded = mk({
+    http:           { client: anyScheme },
+    httpClientOpts: { url: "http://idp.insecure.example/clear" },
+  });
+  var err = null;
+  try { await downgraded.startAuthentication({ loginHint: "alice@example.com" }); } catch (e) { err = e; }
+  check("ciba: an options-bag url cannot downgrade the dial to cleartext", err !== null);
+  check("ciba: the downgraded dial never reached the client", reached.length === 0);
+
+  // A host pin does not stand in for the scheme: the same downgrade to an
+  // ALLOWED host must still be refused.
+  var pinnedDowngrade = mk({
+    http:           { client: anyScheme, allowedHosts: ["idp.example"] },
+    httpClientOpts: { url: "http://idp.example/clear" },
+  });
+  var pinErr = null;
+  try { await pinnedDowngrade.startAuthentication({ loginHint: "alice@example.com" }); } catch (e) { pinErr = e; }
+  check("ciba: a pinned host does not excuse a cleartext scheme", pinErr !== null);
+  check("ciba: that dial never reached the client either", reached.length === 0);
+
+  // The same client with an https options-bag url is dialed normally, so the
+  // refusals above are the scheme check and not the option being rejected.
+  var fine = mk({
+    http:           { client: anyScheme },
+    httpClientOpts: { url: "https://idp.example/bc-auth" },
+  });
+  var ticket = await fine.startAuthentication({ loginHint: "alice@example.com" });
+  check("ciba: an https options-bag url still dials", ticket.authReqId === "leaked" && reached.length === 1);
+}
+
 async function _runTests() {
+  await _runOptionsBagCannotDowngradeScheme();
+  await _runInjectedHttpClient();
+  await _runHttpClientOptsReachInnerClient();
   await _runStartAuthenticationHappy();
   await _runCibaBasicAuthEncoding();
   await _runPollTokenHappy();

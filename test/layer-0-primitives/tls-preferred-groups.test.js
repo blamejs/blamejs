@@ -12,6 +12,7 @@
  * the list.
  */
 
+var tls     = require("node:tls");
 var helpers = require("../helpers");
 var b       = helpers.b;
 var check   = helpers.check;
@@ -66,10 +67,57 @@ function testPqcAliasMatchesPreferredGroups() {
 function testApplyToContextEmitsGroups() {
   b.network.tls.preferredGroups.reset();
   var ctx = b.network.tls.applyToContext({ base: {} });
-  check("applyToContext emits groups string",
-        typeof ctx.groups === "string" && ctx.groups.indexOf("X25519MLKEM768") === 0);
-  check("applyToContext groups string contains SecP256r1MLKEM768",
-        ctx.groups.indexOf("SecP256r1MLKEM768") !== -1);
+  check("applyToContext emits the group preference",
+        typeof ctx.ecdhCurve === "string" &&
+        ctx.ecdhCurve.indexOf("X25519MLKEM768") === 0);
+  check("applyToContext group string contains SecP256r1MLKEM768",
+        ctx.ecdhCurve.indexOf("SecP256r1MLKEM768") !== -1);
+}
+
+// applyToContext is the documented way to put the framework's posture onto an
+// operator's own https.Server / https.Agent, so what matters is which group
+// the handshake actually settles on. Reading a key back off the returned
+// object cannot show that: node:tls accepts a key it does not implement and
+// ignores it, which is how the preference came to be emitted under a name the
+// TLS layer never reads. Narrow the preference to the classical group and let
+// a client that PREFERS the hybrid negotiate against it — the server has to
+// be the thing that turns it down.
+async function testApplyToContextRestrictsTheNegotiatedGroup() {
+  var pair = helpers.selfSignedPair();
+  b.network.tls.preferredGroups.set(["X25519"]);
+  var server = null;
+  try {
+    var ctx = b.network.tls.applyToContext({
+      base: { key: pair.key, cert: pair.cert },
+    });
+    server = tls.createServer(ctx, function (sock) { sock.end(); });
+    await new Promise(function (resolve, reject) {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+
+    var negotiated = await new Promise(function (resolve, reject) {
+      var sock = tls.connect({
+        port:       server.address().port,
+        host:       "127.0.0.1",
+        ca:         [pair.cert],
+        servername: pair.commonName,
+        minVersion: "TLSv1.3",
+        ecdhCurve:  "X25519MLKEM768:X25519",
+      }, function () {
+        var info = sock.getEphemeralKeyInfo();
+        resolve((info && info.name) || "");
+        sock.destroy();
+      });
+      sock.on("error", reject);
+    });
+
+    check("a narrowed preference reaches the server's handshake",
+          negotiated === "X25519");
+  } finally {
+    b.network.tls.preferredGroups.reset();
+    if (server) await new Promise(function (r) { server.close(r); });
+  }
 }
 
 // ---- The outbound TLS posture is applied by every client, not per-caller ----
@@ -236,11 +284,11 @@ async function testNarrowedGroupsReachEveryOutboundClient() {
       // So this is the assertion that means anything about the wire.
       check("the HTTP/1.1 agent offers the narrowed groups",
             agent.options.ecdhCurve === expected);
-      // `groups` is carried alongside for callers that read it back; it must
-      // not disagree with ecdhCurve, or the two would tell an operator
-      // different stories about the same agent.
-      check("the agent's groups value does not contradict its ecdhCurve",
-            agent.options.groups === agent.options.ecdhCurve);
+      // Nothing is carried alongside under a name the TLS layer ignores: a
+      // second key holding the same list reads as a second handle on the
+      // preference, and an operator narrowing THAT one would change nothing.
+      check("the agent carries no inert second copy of the group list",
+            agent.options.groups === undefined);
     } finally { agent.destroy(); }
 
     // The process-wide default agent is cached, so it has the same staleness
@@ -421,14 +469,353 @@ async function run() {
   testOperatorOptOut();
   testPqcAliasMatchesPreferredGroups();
   testApplyToContextEmitsGroups();
+  await testApplyToContextRestrictsTheNegotiatedGroup();
   testGroupOrderIsSingleSourced();
   await testFrameworkGroupsDoNotForceHelloRetry();
   testOutboundPostureShape();
+  testEveryPreferredGroupIsKnownToTheRuntime();
+  testExplainOutboundFailure();
+  testAnnotateOutboundFailure();
+  await testCappedDialIsNotBlamedOnTls13();
   await testNarrowedGroupsReachEveryOutboundClient();
   testBuildOptionsCarriesCertCompression();
   await testRedisClientAppliesThePosture();
   await testSyslogSinkAppliesThePosture();
   await testWsClientAppliesThePosture();
+}
+
+
+// ---- A refused handshake is explained, not just reported ----
+//
+// OpenSSL reports a rejected ClientHello as a bare alert. Two of those alerts
+// are routinely the posture doing its job, and they are NOT the same cause:
+// protocol_version means the peer has no TLS 1.3, handshake_failure means it
+// shares none of the offered groups. Conflating them sends an operator after
+// the post-quantum groups for a failure the groups had no part in, which is
+// exactly what happened in the field.
+function _alert(code, text) {
+  var e = new Error(text);
+  e.code = code;
+  return e;
+}
+
+function testExplainOutboundFailure() {
+  b.network.tls.preferredGroups.reset();
+
+  var version = b.network.tls.explainOutboundFailure(
+    _alert("ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION", "ssl3_read_bytes:tlsv1 alert protocol version"),
+    { host: "peer.example", port: 443 });
+  check("a protocol-version alert is attributed to the TLS 1.3 floor",
+        typeof version === "string" && version.indexOf("TLS 1.3") !== -1);
+  check("the explanation names the peer",
+        version.indexOf("peer.example:443") !== -1);
+  check("the explanation clears the group preference of blame",
+        /unrelated to the post-quantum group preference/.test(version));
+  check("the original alert text survives in the explanation",
+        version.indexOf("tlsv1 alert protocol version") !== -1);
+
+  // Alert 40 is generic: a disjoint TLS 1.3 cipher list produces this exact
+  // code with a group both sides support, so it must not be reported as a
+  // group mismatch. It still names the peer and what was pinned.
+  var generic = b.network.tls.explainOutboundFailure(
+    _alert("ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE", "ssl/tls alert handshake failure"),
+    { host: "peer.example" });
+  check("a generic failure alert is still explained", typeof generic === "string");
+  check("a generic failure alert is described as ambiguous",
+        /does not say what it objected to/.test(generic));
+  check("a generic failure alert does not assert the group list as the cause",
+        !/supports none of the key-exchange groups/.test(generic));
+  check("a generic failure alert still lists the cipher suite as a candidate",
+        /cipher suite/.test(generic));
+
+  // The codes that DO mean the group specifically are reported as such, and a
+  // classical group in the list is not proof the peer can pick one -- a TLS
+  // 1.3 peer restricted to secp256r1 shares nothing with the hybrids plus
+  // X25519 -- so a fallback does not suppress them.
+  var definitive = b.network.tls.explainOutboundFailure(
+    _alert("ERR_SSL_NO_SHARED_GROUP", "no shared group"), { host: "peer.example" });
+  check("the definitive no-shared-group code names the group list",
+        typeof definitive === "string" &&
+        /supports none of the key-exchange groups/.test(definitive));
+  var wrongCurve = b.network.tls.explainOutboundFailure(
+    _alert("ERR_SSL_WRONG_CURVE", "wrong curve"), { host: "peer.example" });
+  check("the wrong-curve code names the group list",
+        typeof wrongCurve === "string" &&
+        /supports none of the key-exchange groups/.test(wrongCurve));
+
+  // A caller naming what THIS dial used is authoritative for it. A request on
+  // a caller-supplied agent that pins neither setting must not be diagnosed
+  // against the shared posture -- an agent capped at TLS 1.2 talking to a
+  // 1.3-only peer would otherwise be reported as the peer lacking 1.3.
+  var unpinned = b.network.tls.explainOutboundFailure(
+    _alert("ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION", "tlsv1 alert protocol version"),
+    { host: "peer.example", minVersion: undefined, ecdhCurve: undefined });
+  check("a dial that pinned no floor is not blamed on the shared floor",
+        unpinned === null);
+
+  var unpinnedGroups = b.network.tls.explainOutboundFailure(
+    _alert("ERR_SSL_NO_SHARED_GROUP", "no shared group"),
+    { host: "peer.example", minVersion: undefined, ecdhCurve: undefined });
+  check("a dial that pinned no group list is not blamed on the shared list",
+        unpinnedGroups === null);
+
+  var narrowed = b.network.tls.explainOutboundFailure(
+    _alert("ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE", "ssl/tls alert handshake failure"),
+    { host: "peer.example", ecdhCurve: "X25519MLKEM768:SecP256r1MLKEM768" });
+  check("the offered list is quoted so an operator can see what was pinned",
+        typeof narrowed === "string" &&
+        narrowed.indexOf("X25519MLKEM768:SecP256r1MLKEM768") !== -1);
+  check("a hybrid-only list is called out wherever the groups are in frame",
+        /names only post-quantum hybrids/.test(narrowed));
+
+  check("an unrelated error gets no invented explanation",
+        b.network.tls.explainOutboundFailure(_alert("ECONNREFUSED", "connect ECONNREFUSED")) === null);
+  check("a non-error argument is handled without throwing",
+        b.network.tls.explainOutboundFailure(null) === null);
+}
+
+function testAnnotateOutboundFailure() {
+  b.network.tls.preferredGroups.reset();
+  var err = _alert("ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION", "tlsv1 alert protocol version");
+  var returned = b.network.tls.annotateOutboundFailure(err, { host: "peer.example", port: 443 });
+
+  check("annotate hands back the same error object", returned === err);
+  check("annotate leaves the code alone for callers branching on it",
+        err.code === "ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION");
+  check("annotate rewrites the message", err.message.indexOf("TLS 1.3") !== -1);
+  // A caller that capped the dial below TLS 1.3 — a WebSocket tlsOpts override,
+  // or their own agent — never attempted 1.3, so naming its cipher list would
+  // send them after a setting that had no part in the failure.
+  var generic = _alert("ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE", "alert handshake failure");
+  var wide = b.network.tls.explainOutboundFailure(generic, { host: "peer.example", port: 443 });
+  check("generic alert names the TLS 1.3 cipher list when 1.3 was reachable",
+        /no shared TLS 1.3 cipher suite/.test(wide));
+  var capped = b.network.tls.explainOutboundFailure(
+    _alert("ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE", "alert handshake failure"),
+    { host: "peer.example", port: 443, maxVersion: "TLSv1.2" });
+  check("a dial capped below TLS 1.3 is not sent after its cipher list",
+        /no shared cipher suite/.test(capped) && /TLS 1\.3 cipher/.test(capped) === false);
+  check("the capped explanation still names the group list and the peer",
+        capped.indexOf("peer.example") !== -1 && /key-exchange group/.test(capped));
+
+  // The framework's own clients hand over the options object the dial used
+  // rather than copying settings out of it, so a setting the explanation
+  // learns to read is read everywhere at once.
+  var viaBag = b.network.tls.explainOutboundFailure(
+    _alert("ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE", "alert handshake failure"),
+    { host: "peer.example", port: 443,
+      tlsOpts: { maxVersion: "TLSv1.2", ecdhCurve: "X25519" } });
+  check("a cap inside the dial's own options object is honoured",
+        /TLS 1\.3 cipher/.test(viaBag) === false && /no shared cipher suite/.test(viaBag));
+  check("the group list is read from the dial's options object too",
+        viaBag.indexOf("X25519") !== -1);
+  var namedWins = b.network.tls.explainOutboundFailure(
+    _alert("ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE", "alert handshake failure"),
+    { host: "peer.example", ecdhCurve: "X25519MLKEM768",
+      tlsOpts: { ecdhCurve: "X25519" } });
+  check("a setting named beside the options object wins over it",
+        namedWins.indexOf("X25519MLKEM768") !== -1);
+  var viaMethod = b.network.tls.explainOutboundFailure(
+    _alert("ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE", "alert handshake failure"),
+    { host: "peer.example",
+      tlsOpts: { secureProtocol: "TLSv1_2_method", ecdhCurve: "X25519" } });
+  check("a version-pinned secureProtocol caps the dial as maxVersion does",
+        /TLS 1\.3 cipher/.test(viaMethod) === false);
+  var viaFlexible = b.network.tls.explainOutboundFailure(
+    _alert("ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE", "alert handshake failure"),
+    { host: "peer.example",
+      tlsOpts: { secureProtocol: "TLS_client_method", ecdhCurve: "X25519" } });
+  check("a version-flexible secureProtocol still reaches TLS 1.3",
+        /no shared TLS 1\.3 cipher suite/.test(viaFlexible));
+  // SSLv23_method reads like the version-flexible one and is not: Node maps it
+  // to TLS_method with the ceiling held at TLS 1.2.
+  var viaSslv23 = b.network.tls.explainOutboundFailure(
+    _alert("ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE", "alert handshake failure"),
+    { host: "peer.example",
+      tlsOpts: { secureProtocol: "SSLv23_method", ecdhCurve: "X25519" } });
+  check("SSLv23_method is read as the TLS 1.2 ceiling it is",
+        /TLS 1\.3 cipher/.test(viaSslv23) === false);
+  // Same predicate, other consumer: the framework must not advertise a TLS 1.3
+  // extension on a context that cannot reach TLS 1.3. Node refuses the whole
+  // options object rather than ignoring it, so this is a bind-time crash.
+  var cappedCtx = b.network.tls.applyToContext({ base: { maxVersion: "TLSv1.2" } });
+  var methodCtx = b.network.tls.applyToContext({ base: { secureProtocol: "SSLv23_method" } });
+  var openCtx   = b.network.tls.applyToContext({ base: {} });
+  check("certificate compression is left off a context capped below TLS 1.3",
+        cappedCtx.certificateCompression === undefined &&
+        methodCtx.certificateCompression === undefined);
+  check("and is still advertised on one that reaches it (control)",
+        Array.isArray(openCtx.certificateCompression) &&
+        openCtx.certificateCompression.length > 0);
+  var builtCapped = true, builtMethod = true;
+  try { tls.createSecureContext(cappedCtx); } catch (_e4) { builtCapped = false; }
+  try { tls.createSecureContext(methodCtx); } catch (_e5) { builtMethod = false; }
+  check("the runtime accepts both capped contexts", builtCapped && builtMethod);
+
+  // The stack has to be read BEFORE annotating for this to test anything. V8
+  // formats Error.stack on first access, so an untouched error renders its
+  // stack from whatever the message is by then — the rewrite could be absent
+  // entirely and the stack would still show the new text. An error that a
+  // logger or an outer handler has already stringified is the case where the
+  // stack holds the OLD message and the rewrite is what refreshes it.
+  var eager = _alert("ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION", "tlsv1 alert protocol version");
+  var stackBefore = eager.stack;
+  check("the stack was materialised before annotating (else the next check is vacuous)",
+        typeof stackBefore === "string" && stackBefore.indexOf("TLS 1.3") === -1);
+  b.network.tls.annotateOutboundFailure(eager, { host: "peer.example", port: 443 });
+  check("annotate refreshes the stack's copy of the message",
+        eager.stack.indexOf("TLS 1.3") !== -1);
+
+  // An error can reach more than one handler on its way out; a second pass
+  // must not nest one explanation inside the next one's "Underlying error:".
+  var before = err.message;
+  b.network.tls.annotateOutboundFailure(err, { host: "peer.example", port: 443 });
+  check("annotating twice leaves the message unchanged", err.message === before);
+  check("annotating twice does not nest explanations",
+        (err.message.match(/TLS handshake refused/g) || []).length === 1);
+
+  // The leg that owns the peer claims the error, so an outer handler cannot
+  // relabel it with a different peer. A proxy-leg handshake failure travels
+  // out through the agent callback of the request to the DESTINATION; without
+  // the claim, that handler would report the destination as refusing a
+  // handshake that never reached it.
+  var proxyLeg = _alert("ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION", "tlsv1 alert protocol version");
+  b.network.tls.annotateOutboundFailure(proxyLeg, { host: "proxy.internal", port: 8443 });
+  b.network.tls.annotateOutboundFailure(proxyLeg, { host: "destination.example", port: 443 });
+  check("the peer named is the one whose handshake actually failed",
+        proxyLeg.message.indexOf("proxy.internal:8443") !== -1);
+  // `URL.port` is a string, and a caller passing one straight through had the
+  // endpoint dropped from the message — on a host running several TLS
+  // listeners, the one thing the operator needs.
+  var textPort = b.network.tls.explainOutboundFailure(
+    _alert("ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION", "tlsv1 alert protocol version"),
+    { host: "proxy.internal", port: "8443" });
+  check("a port given as text still names the endpoint",
+        textPort.indexOf("proxy.internal:8443") !== -1);
+  check("a port that is not a number at all is simply omitted",
+        b.network.tls.explainOutboundFailure(
+          _alert("ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION", "tlsv1 alert protocol version"),
+          { host: "proxy.internal", port: "not-a-port" }).indexOf("proxy.internal ") !== -1);
+
+  check("a later leg cannot substitute its own peer",
+        proxyLeg.message.indexOf("destination.example") === -1);
+
+  // Silence from the owning leg does not license an outer guess: an error it
+  // had nothing to say about must not pick up a different peer's name later.
+  var quiet = _alert("ECONNRESET", "socket hang up");
+  b.network.tls.annotateOutboundFailure(quiet, { host: "proxy.internal", port: 8443 });
+  b.network.tls.annotateOutboundFailure(quiet, {
+    host: "destination.example", port: 443, ecdhCurve: "X25519MLKEM768",
+  });
+  check("an error the owning leg could not explain is left alone by later legs",
+        quiet.message === "socket hang up");
+
+  var untouched = _alert("ECONNREFUSED", "connect ECONNREFUSED 10.0.0.1:443");
+  b.network.tls.annotateOutboundFailure(untouched, { host: "peer.example" });
+  check("annotate leaves an error it cannot explain exactly as it was",
+        untouched.message === "connect ECONNREFUSED 10.0.0.1:443");
+}
+
+
+// A dial capped below TLS 1.3 must not be sent after a TLS 1.3 cipher list,
+// and it is the SHIPPED clients that have to honour that, not only a
+// hand-written explainOutboundFailure call. Each client builds the diagnostic
+// context from the options its dial used, so a cap the client never forwards
+// is a cap the explanation never sees.
+//
+// The fixture forces a generic handshake-failure alert without any group or
+// version disagreement: a TLS 1.2-only server offering one RSA-authenticated
+// cipher suite, holding an ECDSA certificate. Nothing can be selected, the
+// peer sends alert 40, and TLS 1.3 was never on the wire.
+async function testCappedDialIsNotBlamedOnTls13() {
+  var nodeTls = require("node:tls");
+  var https   = require("node:https");
+  var pair    = helpers.selfSignedPair();
+  var srv = nodeTls.createServer({
+    key: pair.key, cert: pair.cert,
+    minVersion: "TLSv1.2", maxVersion: "TLSv1.2",
+    ciphers: "ECDHE-RSA-AES128-GCM-SHA256",
+  }, function (s) { s.on("error", function () { /* peer reset */ }); });
+  srv.on("tlsClientError", function () { /* expected — nothing can be selected */ });
+  srv.on("error", function () { /* listen/accept best-effort */ });
+  srv.unref();
+  await new Promise(function (r) { srv.listen(0, "127.0.0.1", r); });
+  var port = srv.address().port;
+
+  async function _dialFailure(fn) {
+    try { await fn(); return null; }
+    catch (e) { return (e && e.message) || String(e); }
+  }
+
+  var viaAgent = await _dialFailure(function () {
+    return b.httpClient.request({
+      url: "https://127.0.0.1:" + port + "/",
+      allowInternal: true, allowedHosts: ["127.0.0.1"], timeout: 4000,
+      agent: new https.Agent({
+        minVersion: "TLSv1.2", maxVersion: "TLSv1.2", ecdhCurve: "X25519",
+        ca: [pair.cert], servername: "localhost",
+      }),
+    });
+  });
+
+  var viaWs = await new Promise(function (resolve) {
+    var conn = require("../../lib/ws-client").connect("wss://127.0.0.1:" + port + "/", {
+      reconnect: false, audit: false, allowInternal: true, handshakeTimeoutMs: 4000,
+      tlsOpts: {
+        minVersion: "TLSv1.2", maxVersion: "TLSv1.2", ecdhCurve: "X25519",
+        ca: [pair.cert], servername: "localhost",
+      },
+    });
+    conn.on("error", function (e) { resolve((e && e.message) || String(e)); });
+    conn.on("open", function () { try { conn.close(); } catch (_e) { /* teardown */ } resolve(null); });
+  });
+  srv.close();
+
+  // Controls: a vacuous pass here would mean the fixture stopped producing the
+  // alert the assertions are about, not that the caps are honoured.
+  check("the capped agent dial was refused with a generic handshake alert (control)",
+        typeof viaAgent === "string" && /generic failure alert/.test(viaAgent));
+  check("the capped wss:// dial was refused with a generic handshake alert (control)",
+        typeof viaWs === "string" && /generic failure alert/.test(viaWs));
+
+  check("a caller's TLS 1.2-capped agent is not sent after a TLS 1.3 cipher list",
+        /TLS 1\.3 cipher/.test(viaAgent) === false && /no shared cipher suite/.test(viaAgent));
+  check("a wss:// tlsOpts cap is not sent after a TLS 1.3 cipher list",
+        /TLS 1\.3 cipher/.test(viaWs) === false && /no shared cipher suite/.test(viaWs));
+}
+
+
+// Every group in the preference has to be a name THIS runtime's OpenSSL
+// knows. The list is now applied as `ecdhCurve`, and an unrecognised name
+// there throws rather than being skipped -- so a group added to the
+// preference that the runtime lacks would not degrade gracefully, it would
+// fail every server and agent built through applyToContext at construction.
+// The bogus control keeps this honest: if createSecureContext ever stopped
+// rejecting unknown names, the assertions above it would pass vacuously.
+function testEveryPreferredGroupIsKnownToTheRuntime() {
+  b.network.tls.preferredGroups.reset();
+  var bogus = false;
+  try { tls.createSecureContext({ ecdhCurve: "definitely-not-a-real-group" }); }
+  catch (_e) { bogus = true; }
+  check("the runtime rejects an unknown group name (control)", bogus);
+
+  var groups = b.network.tls.preferredGroups.get();
+  for (var i = 0; i < groups.length; i += 1) {
+    var ok = true;
+    try { tls.createSecureContext({ ecdhCurve: groups[i] }); }
+    catch (_e2) { ok = false; }
+    check("preferred group '" + groups[i] + "' is known to this runtime", ok);
+  }
+
+  var whole = true;
+  try { tls.createSecureContext({ ecdhCurve: groups.join(":") }); }
+  catch (_e3) { whole = false; }
+  check("the whole preference is accepted as one ecdhCurve string", whole);
+
+  // The hybrid the framework leads with must survive a real handshake, not
+  // merely be a name the context accepts.
+  check("the preference leads with X25519MLKEM768",
+        groups[0] === "X25519MLKEM768");
 }
 
 module.exports = { run: run };

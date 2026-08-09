@@ -156,6 +156,69 @@ function run() {
   var ctxAnon = b.flag.context.fromRequest({ headers: { "x-forwarded-for": "1.2.3.4", "user-agent": "ua" } });
   check("fromRequest: anon targetingKey",        ctxAnon.targetingKey.indexOf("anon:") === 0);
 
+  // The anonymous targeting key decides which bucket an unauthenticated caller
+  // lands in, so whoever controls it controls their own rollout assignment. It
+  // was derived from a raw X-Forwarded-For read with no peer check, which any
+  // client can set: resending with a different value moved them to a different
+  // bucket until one served the variant they wanted. Forwarded headers are
+  // ignored unless the operator declares the proxies they arrive through.
+  var sameSocket = function (xff) {
+    return { socket: { remoteAddress: "198.51.100.7" },
+             headers: { "x-forwarded-for": xff, "user-agent": "ua" } };
+  };
+  var spoofA = b.flag.context.fromRequest(sameSocket("1.2.3.4"));
+  var spoofB = b.flag.context.fromRequest(sameSocket("9.9.9.9"));
+  check("fromRequest: a forged X-Forwarded-For cannot move the anon bucket",
+        spoofA.targetingKey === spoofB.targetingKey);
+
+  // The address is not the only thing a caller controls. The key was also
+  // built from the User-Agent, which the client sets outright, so varying it
+  // re-rolled the bucket just as effectively as varying the address — closing
+  // one and leaving the other open closes nothing.
+  var uaKey = function (ua) {
+    return b.flag.context.fromRequest({
+      socket: { remoteAddress: "198.51.100.7" }, headers: { "user-agent": ua },
+    }).targetingKey;
+  };
+  check("fromRequest: a chosen User-Agent cannot move the anon bucket either",
+        uaKey("agent-one") === uaKey("agent-two") && uaKey("agent-one") === uaKey(""));
+  // Walking many values must not find a different bucket at all.
+  var anonKeys = {};
+  for (var uaI = 0; uaI < 25; uaI += 1) anonKeys[uaKey("ua-" + uaI)] = true;
+  check("fromRequest: 25 chosen User-Agents all land on one key",
+        Object.keys(anonKeys).length === 1);
+  // Still derived from the address, so distinct callers still distribute.
+  check("fromRequest: distinct addresses still get distinct keys",
+        uaKey("x") !== b.flag.context.fromRequest({
+          socket: { remoteAddress: "203.0.113.99" }, headers: { "user-agent": "x" },
+        }).targetingKey);
+  check("fromRequest: the anon key is still derived (not a constant)",
+        spoofA.targetingKey !== b.flag.context.fromRequest({
+          socket: { remoteAddress: "203.0.113.1" }, headers: { "user-agent": "ua" } }).targetingKey);
+
+  // An operator genuinely behind a proxy declares it, and the forwarded address
+  // is honoured through the same peer gate every other helper uses.
+  var behindProxy = { socket: { remoteAddress: "10.0.0.9" },
+    headers: { "x-forwarded-for": "1.2.3.4", "user-agent": "ua" } };
+  var gated = b.flag.context.fromRequest(behindProxy, { trustedProxies: ["10.0.0.0/8"] });
+  var gatedOther = b.flag.context.fromRequest(
+    { socket: { remoteAddress: "10.0.0.9" },
+      headers: { "x-forwarded-for": "5.6.7.8", "user-agent": "ua" } },
+    { trustedProxies: ["10.0.0.0/8"] });
+  check("fromRequest: trustedProxies makes the forwarded address the anon key",
+        gated.targetingKey !== gatedOther.targetingKey);
+  check("fromRequest: an untrusted peer is still ignored with trustedProxies set",
+        b.flag.context.fromRequest(sameSocket("1.2.3.4"), { trustedProxies: ["10.0.0.0/8"] }).targetingKey ===
+        b.flag.context.fromRequest(sameSocket("9.9.9.9"), { trustedProxies: ["10.0.0.0/8"] }).targetingKey);
+
+  // The named-header family reaches this helper too, so a Cloudflare or nginx
+  // deployment is not pushed back onto a hand-rolled read.
+  check("fromRequest: forwardedHeaders selects the family",
+        b.flag.context.fromRequest(
+          { socket: { remoteAddress: "10.0.0.9" }, headers: { "cf-connecting-ip": "1.2.3.4", "user-agent": "ua" } },
+          { trustedProxies: ["10.0.0.0/8"], forwardedHeaders: ["cf-connecting-ip"] }).targetingKey ===
+        gated.targetingKey);
+
   // explicit tenantKey supplies the tenant id (gateway-resolved tenancy)
   var ctxTenant = b.flag.context.fromRequest(
     { user: { id: "u-1" }, headers: {} },
@@ -804,6 +867,35 @@ function run() {
   ctxMw(ctxReq1, {}, function () { ctxNext += 1; });
   check("flagContext mw: calls next",            ctxNext === 1);
   check("flagContext mw: req.flagCtx attached", typeof ctxReq1.flagCtx === "object");
+
+  // This middleware keys an anonymous request by its client address just as
+  // flag.middleware does, so it needs the same way to say which proxies and
+  // which header that address arrives through. Without it every anonymous
+  // caller behind a proxy arrives as the proxy and shares one bucket, with
+  // nothing an operator can do about it.
+  var anonVia = function (mw, xff) {
+    var rq = { socket: { remoteAddress: "10.0.0.9" },
+               headers: { "x-forwarded-for": xff, "user-agent": "ua" } };
+    mw(rq, {}, function () {});
+    return rq.flagCtx.targetingKey;
+  };
+  var ungatedMw = b.middleware.flagContext({});
+  check("flagContext mw: ungated ignores a forged forwarded address",
+        anonVia(ungatedMw, "1.2.3.4") === anonVia(ungatedMw, "9.9.9.9"));
+  var gatedMw = b.middleware.flagContext({ trustedProxies: ["10.0.0.0/8"] });
+  check("flagContext mw: trustedProxies restores per-caller bucketing",
+        anonVia(gatedMw, "1.2.3.4") !== anonVia(gatedMw, "9.9.9.9"));
+  var familyMw = b.middleware.flagContext({
+    trustedProxies: ["10.0.0.0/8"], forwardedHeaders: ["cf-connecting-ip"],
+  });
+  var cfReq = { socket: { remoteAddress: "10.0.0.9" },
+                headers: { "cf-connecting-ip": "1.2.3.4", "user-agent": "ua" } };
+  familyMw(cfReq, {}, function () {});
+  check("flagContext mw: forwardedHeaders selects the family",
+        cfReq.flagCtx.targetingKey === anonVia(gatedMw, "1.2.3.4"));
+  var mwCidrThrew = false;
+  try { b.middleware.flagContext({ trustedProxies: ["not-a-cidr"] }); } catch (_e) { mwCidrThrew = true; }
+  check("flagContext mw: a malformed CIDR fails at construction, not per request", mwCidrThrew);
   check("flagContext mw: targetingKey from header", ctxReq1.flagCtx.targetingKey === "u-101");
   check("flagContext mw: tenantId augmented",   ctxReq1.flagCtx.tenantId === "tenant-A");
   check("flagContext mw: environment augmented", ctxReq1.flagCtx.environment === "test");

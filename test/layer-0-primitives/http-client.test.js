@@ -20,6 +20,7 @@
 
 var http       = require("http");
 var https      = require("https");
+var tls        = require("node:tls");
 var http2      = require("http2");
 var nodeStream = require("stream");
 var nodeCrypto = require("crypto");
@@ -3187,9 +3188,135 @@ async function testRetiredH2SessionDoesNotForceDestroyAnOpenStream() {
   });
 }
 
+// b.httpClient.pinnedClient — an allowedHosts pin that is ENFORCED rather than
+// advertised. A caller-supplied client's contract is a `request` method, so it
+// need not know what the framework's allowedHosts property means; the pin has
+// to be checked here or a client that ignores the field dials anywhere while
+// the operator believes it is in force.
+async function testPinnedClient() {
+  var seen = [];
+  var oblivious = { request: function (opts) {
+    seen.push(opts.url);
+    return Promise.resolve({ statusCode: 200, headers: {}, body: Buffer.from("ok") });
+  } };
+  var pinned = b.httpClient.pinnedClient(oblivious, ["api.partner.com", ".internal.example.com"]);
+
+  var res = await pinned.request({ url: "https://api.partner.com/v1" });
+  check("pinnedClient: an exact-match host reaches the client",
+        res.statusCode === 200 && seen.length === 1);
+  await pinned.request({ url: "https://a.internal.example.com/x" });
+  check("pinnedClient: a suffix-entry host reaches the client", seen.length === 2);
+
+  var denied = null;
+  try { await pinned.request({ url: "https://elsewhere.example/x" }); } catch (e) { denied = e; }
+  check("pinnedClient: a host outside the pin is refused", denied !== null);
+  check("pinnedClient: the refusal names allowedHosts", /allowedHosts/.test(denied.message));
+  check("pinnedClient: the refused dial never reached the client", seen.length === 2);
+
+  // A near-miss must not satisfy a suffix entry.
+  var nearMiss = null;
+  try { await pinned.request({ url: "https://evilinternal.example.com/x" }); } catch (e) { nearMiss = e; }
+  check("pinnedClient: a suffix entry does not match a longer label", nearMiss !== null);
+
+  // An unparseable destination cannot be shown to satisfy the pin.
+  var bad = null;
+  try { await pinned.request({ url: "not a url" }); } catch (e) { bad = e; }
+  check("pinnedClient: an unparseable url is refused, not passed through",
+        bad !== null && seen.length === 2);
+
+  // A redirect the wrapper never sees is a hop the pin never checked, so
+  // redirect following is turned off on every forwarded request.
+  var forwardedOpts = null;
+  var recorder = { request: function (o) { forwardedOpts = o; return Promise.resolve({ statusCode: 302 }); } };
+  var noFollow = b.httpClient.pinnedClient(recorder, ["api.partner.com"]);
+  var original = { url: "https://api.partner.com/v1", maxRedirects: 5, followRedirects: true };
+  await noFollow.request(original);
+  check("pinnedClient: forwards with redirect following disabled",
+        forwardedOpts.maxRedirects === 0 && forwardedOpts.followRedirects === false &&
+        forwardedOpts.redirect === "manual");
+  check("pinnedClient: does not mutate the caller's own request object",
+        original.maxRedirects === 5 && original.followRedirects === true);
+
+  // No pin still means a wrapper. The caller validated one url before handing
+  // the client over; a redirect it follows internally is a hop that validation
+  // never reached, so redirect control does not depend on a pin being named.
+  var noPinCases = [["an empty pin", []], ["an absent pin", undefined]];
+  for (var npi = 0; npi < noPinCases.length; npi += 1) {
+    var label = noPinCases[npi][0];
+    var unpinnedOpts = null;
+    var unpinnedRec = { request: function (o) { unpinnedOpts = o; return Promise.resolve({ statusCode: 200 }); } };
+    var wrapped = b.httpClient.pinnedClient(unpinnedRec, noPinCases[npi][1]);
+    check("pinnedClient: " + label + " still returns a wrapper", wrapped !== unpinnedRec);
+    await wrapped.request({ url: "https://anywhere.example/x", followRedirects: true });
+    check("pinnedClient: " + label + " still disables redirect following",
+          unpinnedOpts.maxRedirects === 0 && unpinnedOpts.followRedirects === false &&
+          unpinnedOpts.redirect === "manual");
+  }
+  // The SSRF gate came free while b.httpClient was the only dialer. What is
+  // enforceable for a transport this does not own is the textual half, and it
+  // applies with or without a pin.
+  var ssrfSeen = [];
+  var ssrfRec = { request: function (o) { ssrfSeen.push(o.url); return Promise.resolve({ statusCode: 200 }); } };
+  var guarded = b.httpClient.pinnedClient(ssrfRec, null);
+  var metaErr = null;
+  try { await guarded.request({ url: "http://169.254.169.254/latest/meta-data/" }); } catch (e) { metaErr = e; }
+  check("pinnedClient: a cloud-metadata address is refused", metaErr !== null);
+  var loopErr = null;
+  try { await guarded.request({ url: "http://127.0.0.1:9/x" }); } catch (e) { loopErr = e; }
+  check("pinnedClient: a loopback literal is refused without allowInternal", loopErr !== null);
+  var privErr = null;
+  try { await guarded.request({ url: "http://10.1.2.3/x" }); } catch (e) { privErr = e; }
+  check("pinnedClient: a private literal is refused without allowInternal", privErr !== null);
+  check("pinnedClient: none of the refused internal dials reached the client", ssrfSeen.length === 0);
+  // A loopback NAME is the same destination as the literal. The whole
+  // `localhost` TLD resolves there, so checking only IP literals would let
+  // `localhost` past a gate that refuses 127.0.0.1.
+  var nameErr = null;
+  try { await guarded.request({ url: "http://localhost:9/x" }); } catch (e) { nameErr = e; }
+  check("pinnedClient: the loopback NAME is refused, not just the literal", nameErr !== null);
+  var subErr = null;
+  try { await guarded.request({ url: "http://app.localhost:9/x" }); } catch (e) { subErr = e; }
+  check("pinnedClient: a name under the loopback TLD is refused too", subErr !== null);
+  check("pinnedClient: neither loopback name reached the client", ssrfSeen.length === 0);
+
+  // allowInternal is the caller's deliberate waiver, in either documented
+  // form — `true`, or the CIDR array ssrfGuard itself honours. Reading only
+  // the boolean would drop a documented option the moment a client is supplied.
+  await guarded.request({ url: "http://127.0.0.1:9/x", allowInternal: true });
+  check("pinnedClient: allowInternal permits the loopback dial", ssrfSeen.length === 1);
+  await guarded.request({ url: "https://10.1.2.3/t", allowInternal: ["10.0.0.0/8"] });
+  check("pinnedClient: the CIDR-array form of allowInternal waives too", ssrfSeen.length === 2);
+  await guarded.request({ url: "https://10.1.2.3/t", allowInternal: ["10.1.2.3/32"] });
+  check("pinnedClient: an exact /32 waiver is honoured", ssrfSeen.length === 3);
+  var wrongCidr = null;
+  try { await guarded.request({ url: "https://10.1.2.3/t", allowInternal: ["192.168.0.0/16"] }); }
+  catch (e) { wrongCidr = e; }
+  check("pinnedClient: a CIDR that does not cover the host waives nothing",
+        wrongCidr !== null && ssrfSeen.length === 3);
+  var badCidr = null;
+  try { await guarded.request({ url: "https://10.1.2.3/t", allowInternal: ["not-a-cidr"] }); }
+  catch (e) { badCidr = e; }
+  check("pinnedClient: a malformed waiver entry waives nothing", badCidr !== null);
+  var reachedBefore = ssrfSeen.length;
+  var metaWaived = null;
+  try { await guarded.request({ url: "http://169.254.169.254/x", allowInternal: true }); }
+  catch (e) { metaWaived = e; }
+  check("pinnedClient: allowInternal does NOT unlock cloud metadata",
+        metaWaived !== null && ssrfSeen.length === reachedBefore);
+
+  // With no pin every public host is reachable — the wrapper adds redirect and
+  // egress control, not an allowlist that was never configured.
+  var anyHostOpts = null;
+  var anyHostRec = { request: function (o) { anyHostOpts = o; return Promise.resolve({ statusCode: 200 }); } };
+  await b.httpClient.pinnedClient(anyHostRec, undefined).request({ url: "https://anywhere.example/x" });
+  check("pinnedClient: with no pin a dial to any host still reaches the client",
+        anyHostOpts !== null && anyHostOpts.url === "https://anywhere.example/x");
+}
+
 async function run() {
   try {
     testSurface();
+    await testPinnedClient();
     await testPostureChangeDoesNotAbortInFlightRequests();
     await testH2DrainWaitsOnProgressButNotOnAStall();
     await testRequestSurvivesLosingTheTransportCacheRace();
@@ -3260,8 +3387,68 @@ async function run() {
     await testDownloadStreamAuditThrows();
     await testBeforeHookFalsyThrow();
     await testCacheMoreBranches();
+    await testTls12PeerFailureNamesTheFloor();
   } finally {
     await _drainTcpHandles();
+  }
+}
+
+
+// ---- A refused handshake names the posture that refused it ----
+//
+// The outbound posture pins a TLS 1.3 floor, so a peer that offers only TLS
+// 1.2 is turned away with a bare `tlsv1 alert protocol version`. That alert
+// names neither the peer nor the floor, and reads as a version problem with
+// the request rather than a policy the client applied -- in practice it gets
+// attributed to the post-quantum group preference, which is not involved.
+// Driven through b.httpClient.request against a loopback server capped at TLS
+// 1.2, which is the operator's path, not the primitive's.
+async function testTls12PeerFailureNamesTheFloor() {
+  var pair = helpers.selfSignedPair();
+  var server = tls.createServer({
+    key:        pair.key,
+    cert:       pair.cert,
+    maxVersion: "TLSv1.2",
+    minVersion: "TLSv1.2",
+  }, function (sock) { sock.end(); });
+  await new Promise(function (resolve, reject) {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  var port = server.address().port;
+  try {
+    var caught = null;
+    try {
+      await b.httpClient.request({
+        method:    "GET",
+        url:       "https://127.0.0.1:" + port + "/",
+        tlsOpts:   { ca: [pair.cert], servername: pair.commonName },
+        allowedHosts:  ["127.0.0.1"],
+        allowInternal: true,
+      });
+    } catch (e) { caught = e; }
+
+    // Pin WHICH failure: without this the egress gate refusing loopback
+    // satisfies "the request failed" and the assertions below never see a
+    // handshake at all.
+    check("the request fails on the handshake, not an earlier gate",
+          caught !== null && caught.code === "ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION");
+    var msg = (caught && caught.message) || "";
+    check("the failure names the TLS 1.3 floor as the cause",
+          msg.indexOf("TLS 1.3") !== -1);
+    check("the failure names the peer",
+          msg.indexOf("127.0.0.1:" + port) !== -1);
+    check("the failure says the group preference is not the cause",
+          /unrelated to the post-quantum group preference/.test(msg));
+    check("the original alert text is carried through, not replaced",
+          /alert protocol version|EPROTO|wrong version/i.test(msg));
+  } finally {
+    // Tear the origin's transport down here rather than leaving it for the
+    // end-of-file drain: a failed handshake still parks a socket in the pool,
+    // and every one of those left standing narrows the drain's window under a
+    // parallel run.
+    b.httpClient._resetForTest();
+    await new Promise(function (r) { server.close(r); });
   }
 }
 

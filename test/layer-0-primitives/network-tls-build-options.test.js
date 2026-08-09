@@ -9,6 +9,7 @@
  * documented `network-tls/bad-tls-options` code.
  */
 
+var tls     = require("node:tls");
 var helpers = require("../helpers");
 var b       = helpers.b;
 var check   = helpers.check;
@@ -27,8 +28,6 @@ function testDefaults() {
   check("default ecdhCurve is the framework PQC list",
         typeof opts.ecdhCurve === "string" &&
         opts.ecdhCurve.indexOf("X25519MLKEM768") === 0);
-  check("default groups mirrors ecdhCurve",
-        opts.groups === opts.ecdhCurve);
   check("no cert/key/ca/servername when omitted",
         opts.cert === undefined && opts.key === undefined &&
         opts.ca === undefined && opts.servername === undefined);
@@ -37,7 +36,7 @@ function testDefaults() {
 function testNarrowGroups() {
   var opts = b.network.tls.buildOptions({ groups: ["X25519MLKEM768"] });
   check("narrowing to subset of preferred is accepted",
-        opts.groups === "X25519MLKEM768");
+        opts.ecdhCurve === "X25519MLKEM768");
 
   var opts2 = b.network.tls.buildOptions({ ecdhCurve: "X25519MLKEM768:X25519" });
   check("string ecdhCurve subset is accepted",
@@ -113,6 +112,65 @@ function testUnknownKey() {
   check("unknown opts key refuses via validateOpts", threw);
 }
 
+// A key node:tls does not implement is accepted and ignored, so a group
+// list handed over under one of these names never reaches the
+// handshake while looking like it did. `curves` shipped that way on the
+// WebSocket client. The inert set is re-proved here on the running Node
+// rather than asserted from the docs: a value no implementation could
+// accept throws on an option that is honoured, and is swallowed by one
+// that is not.
+var INERT_TLS_KEYS = ["groups", "curves"];
+
+function _isHonouredByNodeTls(key) {
+  var opts = { minVersion: "TLSv1.3", host: "127.0.0.1", port: 1 };
+  opts[key] = "definitely-not-a-real-group";
+  var sock = null;
+  try {
+    sock = tls.connect(opts);
+    sock.on("error", function () {});
+    return false;
+  } catch (_e) {
+    return true;
+  } finally {
+    if (sock) sock.destroy();
+  }
+}
+
+function testNoInertKeysEmitted() {
+  // Control: the option that IS load-bearing must reject the same value,
+  // or the probe above proves nothing about the keys it clears.
+  check("ecdhCurve is honoured by node:tls (probe control)",
+        _isHonouredByNodeTls("ecdhCurve"));
+
+  var built = b.network.tls.buildOptions();
+  for (var i = 0; i < INERT_TLS_KEYS.length; i += 1) {
+    var key = INERT_TLS_KEYS[i];
+    if (_isHonouredByNodeTls(key)) {
+      // Node grew support for it. Emitting it is now a real decision
+      // rather than decoration, so this stops being a silent pass.
+      check("node:tls now honours `" + key + "` — revisit emitting it", false);
+      continue;
+    }
+    check("buildOptions does not emit the inert `" + key + "` key",
+          !Object.prototype.hasOwnProperty.call(built, key));
+  }
+}
+
+function testAgentCarriesNoInertKeys() {
+  var agent = b.pqcAgent.create();
+  var agentOpts = agent.options || {};
+  for (var i = 0; i < INERT_TLS_KEYS.length; i += 1) {
+    var key = INERT_TLS_KEYS[i];
+    if (_isHonouredByNodeTls(key)) continue;
+    check("pqcAgent.create does not set the inert `" + key + "` key",
+          !Object.prototype.hasOwnProperty.call(agentOpts, key));
+  }
+  check("pqcAgent.create still pins the load-bearing ecdhCurve",
+        typeof agentOpts.ecdhCurve === "string" &&
+        agentOpts.ecdhCurve.length > 0);
+  agent.destroy();
+}
+
 async function run() {
   testSurface();
   testDefaults();
@@ -122,6 +180,8 @@ async function run() {
   testSni();
   testCertKeyPassThrough();
   testUnknownKey();
+  testNoInertKeysEmitted();
+  testAgentCarriesNoInertKeys();
 }
 
 module.exports = { run: run };

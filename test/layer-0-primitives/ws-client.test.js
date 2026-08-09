@@ -312,35 +312,43 @@ async function _runTests() {
   client.on("error", function (e) { errSeen = e; });
   client.on("close", function (code, reason) { closeSeen = { code: code, reason: reason }; });
 
-  await _sleep(300);
+  // Waiting FOR an event polls; a fixed budget is only ever long enough until
+  // the runner is busy, and these echoes are what fail first under load.
+  await helpers.waitUntil(function () { return openSeen === true; },
+    { timeoutMs: 5000, label: "ws-client: connection open" });
   check("connect: open emitted",                  openSeen === true);
   check("connect: readyState open",               client.readyState === "open");
   check("connect: no error",                      errSeen === null);
 
   client.send("hello world");
-  await _sleep(100);
+  await helpers.waitUntil(function () { return msgSeen === "hello world"; },
+    { timeoutMs: 5000, label: "ws-client: text echo" });
   check("send/message: text echo",                msgSeen === "hello world");
 
   // Binary
   msgSeen = null;
   client.send(Buffer.from([1, 2, 3, 4, 5]));
-  await _sleep(100);
+  await helpers.waitUntil(function () { return Buffer.isBuffer(msgSeen); },
+    { timeoutMs: 5000, label: "ws-client: binary echo" });
   check("send/message: binary echo",              Buffer.isBuffer(msgSeen) && msgSeen.length === 5);
 
   // JSON
   msgSeen = null;
   client.send({ hello: "world", n: 42 });
-  await _sleep(100);
+  await helpers.waitUntil(function () { return typeof msgSeen === "string"; },
+    { timeoutMs: 5000, label: "ws-client: json echo" });
   check("send/message: object → json string",     typeof msgSeen === "string" && msgSeen.indexOf("hello") !== -1);
 
-  // ping
+  // ping — nothing is asserted to ARRIVE, only that the connection survives,
+  // so this one genuinely observes a window rather than waiting for an event.
   client.ping(Buffer.from("ping-data"));
   await _sleep(100);
   check("ping: round-trips",                      true);
 
   // close
   client.close(1000, "bye");
-  await _sleep(300);
+  await helpers.waitUntil(function () { return closeSeen !== null; },
+    { timeoutMs: 5000, label: "ws-client: close emitted" });
   check("close: emitted with normal code",        closeSeen && closeSeen.code === 1000);
   check("close: readyState closed",               client.readyState === "closed");
 

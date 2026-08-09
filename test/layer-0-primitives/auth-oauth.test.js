@@ -1772,6 +1772,188 @@ async function scenarioBranchFillLoopback(base, routes) {
         adTok && Array.isArray(adTok.authorizationDetails) && adTok.authorizationDetails.length === 1);
 }
 
+// ---- create({ http }) — the client this module dials with ----------------
+//
+// The token exchange reached for b.httpClient directly. `opts.httpClient` is
+// options merged into that request, not a client, so a consumer with its own
+// pinned/instrumented client could not route the exchange through it: adopting
+// clientCredentialsManager meant giving up their SSRF host pin and dropping the
+// token endpoint outside the circuit breaker that protects their other dials.
+async function scenarioInjectedHttpClient(base, routes) {
+  var realHttp = require("../../lib/http-client");
+
+  // A client that records what it was asked to dial and then delegates, so the
+  // round-trips still complete and the assertion is about ROUTING, not mocking.
+  function recorder() {
+    var seen = [];
+    return {
+      seen:    seen,
+      request: function (req) { seen.push(req.url); return realHttp.request(req); },
+    };
+  }
+
+  var rec = recorder();
+  var oa  = mkDisc(base, "injected-client", { http: { client: rec } });
+
+  routes["/token"] = { json: { access_token: "at-injected", token_type: "Bearer", expires_in: 3600 } };
+  routes["/userinfo"] = { json: { sub: "u-injected" } };
+  routes["/revoke"] = { status: 200, json: {} };
+
+  await oa.clientCredentials({ scope: "read" });
+  check("create({http:{client}}): the token exchange dials through the supplied client",
+        rec.seen.some(function (u) { return u.indexOf("/token") !== -1; }));
+  check("create({http:{client}}): discovery dials through the supplied client too",
+        rec.seen.some(function (u) { return u.indexOf("openid-configuration") !== -1; }));
+
+  var before = rec.seen.length;
+  await oa.fetchUserInfo("at-injected", { idTokenSub: "u-injected" });
+  check("create({http:{client}}): userinfo dials through the supplied client",
+        rec.seen.length > before &&
+        rec.seen.slice(before).some(function (u) { return u.indexOf("/userinfo") !== -1; }));
+
+  before = rec.seen.length;
+  await oa.revokeToken("at-injected");
+  check("create({http:{client}}): revocation dials through the supplied client",
+        rec.seen.slice(before).some(function (u) { return u.indexOf("/revoke") !== -1; }));
+
+  // Every dial site, not just the ones a token flow happens to touch: a new
+  // endpoint added later that reaches for the module's own client would leave
+  // exactly one call outside the operator's instrumentation and pin, which is
+  // how this started. registerClient / the dynamic-registration request / the
+  // device-grant poll each build their own request rather than routing through
+  // the shared token POST, so each is asserted directly.
+  routes["/register"] = { json: { client_id: "reg-injected", client_secret: "s" } };
+  before = rec.seen.length;
+  await oa.registerClient({ redirect_uris: ["https://rp.example/cb"] });
+  check("create({http:{client}}): dynamic client registration dials through the supplied client",
+        rec.seen.slice(before).some(function (u) { return u.indexOf("/register") !== -1; }));
+
+  routes["/dcr"] = function (req, res) {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ client_id: "reg-injected" }));
+  };
+  before = rec.seen.length;
+  await oa.readClient(base + "/dcr", "rat");
+  check("create({http:{client}}): the registration-management request dials through the supplied client",
+        rec.seen.slice(before).some(function (u) { return u.indexOf("/dcr") !== -1; }));
+
+  routes["/device"] = { json: { device_code: "dc-1", user_code: "UC", verification_uri: "https://v", expires_in: 5, interval: 1 } };
+  routes["/token"] = { status: 400, json: { error: "expired_token" } };
+  before = rec.seen.length;
+  try { await oa.pollDeviceCode("dc-1", { intervalSec: 1 }); } catch (_e) { /* terminal by design */ }
+  check("create({http:{client}}): the device-grant poll dials through the supplied client",
+        rec.seen.slice(before).some(function (u) { return u.indexOf("/token") !== -1; }));
+  routes["/token"] = { json: { access_token: "at-injected", token_type: "Bearer", expires_in: 3600 } };
+
+  // clientCredentialsManager is the primitive this unblocks — its renewal has
+  // to land on the same client, or a consumer keeps one dial outside their
+  // breaker precisely where the cached token expires.
+  var mgrRec = recorder();
+  var mgrOa  = mkDisc(base, "injected-mgr", { http: { client: mgrRec } });
+  var mgr    = mgrOa.clientCredentialsManager({ scope: "read" });
+  await mgr.getToken();
+  check("clientCredentialsManager: renewal dials through the supplied client",
+        mgrRec.seen.some(function (u) { return u.indexOf("/token") !== -1; }));
+
+  // The default is unchanged: omit `http` and the module uses b.httpClient.
+  var plain = mkDisc(base, "default-client");
+  var tok   = await plain.clientCredentials({ scope: "read" });
+  check("create() without http still completes over the framework client",
+        tok.accessToken === "at-injected");
+}
+
+// allowedHosts is the SSRF pin. b.httpClient.request already enforces it; the
+// module simply had no way to pass one, so every dial it made was outside a
+// consumer's pin even when every other dial in the same adapter was inside it.
+async function scenarioHttpAllowedHosts(base, routes) {
+  routes["/token"] = { json: { access_token: "at-pinned", token_type: "Bearer", expires_in: 3600 } };
+
+  var pinnedOut = mkDisc(base, "pinned-wrong", { http: { allowedHosts: ["api.example.invalid"] } });
+  var err = null;
+  try { await pinnedOut.clientCredentials({ scope: "read" }); } catch (e) { err = e; }
+  check("create({http:{allowedHosts}}): a dial outside the pin is refused",
+        err !== null && /allowedHosts/.test(err.message));
+
+  // The same pin naming the real host lets the exchange through — the refusal
+  // above is the pin working, not the option breaking every request.
+  var pinnedIn = mkDisc(base, "pinned-right", { http: { allowedHosts: ["127.0.0.1"] } });
+  var tok = await pinnedIn.clientCredentials({ scope: "read" });
+  check("create({http:{allowedHosts}}): a dial inside the pin completes",
+        tok.accessToken === "at-pinned");
+
+  // The pin covers discovery as well as the token endpoint — a mangled issuer
+  // is the SSRF egress this defends, and discovery is where it is read.
+  var discErr = null;
+  try { await mkDisc(base, "pinned-disc", { http: { allowedHosts: ["api.example.invalid"] } }).discover(); }
+  catch (e) { discErr = e; }
+  check("create({http:{allowedHosts}}): discovery is inside the pin",
+        discErr !== null && /allowedHosts/.test(discErr.message));
+}
+
+function testHttpOptValidation() {
+  var mkOpts = function (http) {
+    return { clientId: "a", redirectUri: "https://x/cb", http: http };
+  };
+  rejects("create: http must be an object",
+          function () { X.create(mkOpts("nope")); }, "auth-oauth/bad-http");
+  rejects("create: http.client without a request method refused",
+          function () { X.create(mkOpts({ client: {} })); }, "auth-oauth/bad-http-client");
+  rejects("create: http.client as a function refused (needs .request)",
+          function () { X.create(mkOpts({ client: function () {} })); }, "auth-oauth/bad-http-client");
+  rejects("create: http.allowedHosts as a bare string refused",
+          function () { X.create(mkOpts({ allowedHosts: "api.example.com" })); }, "auth-oauth/bad-http-allowed-hosts");
+  rejects("create: http.allowedHosts with a non-string member refused",
+          function () { X.create(mkOpts({ allowedHosts: ["ok.example", 7] })); }, "auth-oauth/bad-http-allowed-hosts");
+  rejects("create: http.allowedHosts with an empty member refused",
+          function () { X.create(mkOpts({ allowedHosts: ["ok.example", ""] })); }, "auth-oauth/bad-http-allowed-hosts");
+  rejects("create: unknown key under http refused",
+          function () { X.create(mkOpts({ nope: 1 })); }, "auth-oauth/bad-http");
+  check("create: http accepted when omitted entirely",
+        !!X.create({ clientId: "a", redirectUri: "https://x/cb" }));
+  check("create: an empty http object is accepted",
+        !!X.create(mkOpts({})));
+}
+
+// The TLS requirement on these endpoints is this module's, not a side effect
+// of dialing through b.httpClient. These are the requests carrying the client
+// secret, the authorization code and the access token, so a supplied client —
+// which promises nothing about schemes — must not be able to take them over
+// cleartext when allowHttp was never set.
+async function testInjectedClientStillHeldToSchemePolicy() {
+  var reached = [];
+  var anyScheme = { request: function (req) {
+    reached.push(req.url);
+    return Promise.resolve({ statusCode: 200, headers: {},
+      body: Buffer.from(JSON.stringify({ access_token: "leaked", token_type: "Bearer" }), "utf8") });
+  } };
+  var cleartext = X.create({
+    clientId:      "scheme-check",
+    clientSecret:  "sec",
+    redirectUri:   "https://rp.example/cb",
+    tokenEndpoint: "http://idp.insecure.example/token",
+    http:          { client: anyScheme },
+  });
+  var err = null;
+  try { await cleartext.clientCredentials({ scope: "read" }); } catch (e) { err = e; }
+  check("an http:// token endpoint is refused with a supplied client and allowHttp unset",
+        err !== null);
+  check("the refused cleartext dial never reached the supplied client", reached.length === 0);
+
+  // The same endpoint with allowHttp set is the operator's explicit decision.
+  var permitted = X.create({
+    clientId:      "scheme-check-dev",
+    clientSecret:  "sec",
+    redirectUri:   "https://rp.example/cb",
+    tokenEndpoint: "http://localhost/token",
+    allowHttp:     true,
+    allowInternal: true,
+    http:          { client: anyScheme },
+  });
+  var tok = await permitted.clientCredentials({ scope: "read" });
+  check("allowHttp still permits the dev loopback endpoint through a supplied client",
+        tok.accessToken === "leaked" && reached.length === 1);
+}
+
 async function run() {
   // ---- module surface ----
   check("oauth.create is fn",                    typeof X.create === "function");
@@ -2238,6 +2420,8 @@ async function run() {
   await scenarioAttestationVerify();
   await scenarioOfflineExtras();
   await scenarioBranchFillOffline();
+  testHttpOptValidation();
+  await testInjectedClientStillHeldToSchemePolicy();
 
   console.log("auth-oauth offline checks passed");
 
@@ -2262,6 +2446,8 @@ async function run() {
     await scenarioDiscovery(base, routes);
     await scenarioBuildersAndUrls(base, routes);
     await scenarioBranchFillLoopback(base, routes);
+    await scenarioInjectedHttpClient(base, routes);
+    await scenarioHttpAllowedHosts(base, routes);
   } finally {
     server.close();
     await _drainTcpHandles();

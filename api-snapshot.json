@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.18.17",
-  "createdAt": "2026-08-08T16:22:21.969Z",
+  "frameworkVersion": "0.18.18",
+  "createdAt": "2026-08-09T12:30:30.592Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -40012,6 +40012,10 @@
           "type": "function",
           "arity": 1
         },
+        "pinnedClient": {
+          "type": "function",
+          "arity": 2
+        },
         "request": {
           "type": "function",
           "arity": 1
@@ -46107,6 +46111,10 @@
               "type": "function",
               "arity": 2
             },
+            "annotateOutboundFailure": {
+              "type": "function",
+              "arity": 2
+            },
             "applyToContext": {
               "type": "function",
               "arity": 1
@@ -46179,6 +46187,10 @@
             "expiryMonitor": {
               "type": "function",
               "arity": 1
+            },
+            "explainOutboundFailure": {
+              "type": "function",
+              "arity": 2
             },
             "getCaPems": {
               "type": "function",
@@ -47638,6 +47650,10 @@
                   "valueType": "number"
                 }
               }
+            },
+            "prepare": {
+              "type": "function",
+              "arity": 1
             }
           }
         },
@@ -48181,6 +48197,10 @@
                   "valueType": "number"
                 }
               }
+            },
+            "prepare": {
+              "type": "function",
+              "arity": 1
             }
           }
         },
@@ -48240,6 +48260,10 @@
                   "valueType": "number"
                 }
               }
+            },
+            "prepare": {
+              "type": "function",
+              "arity": 1
             }
           }
         },
@@ -48299,6 +48323,10 @@
                   "valueType": "number"
                 }
               }
+            },
+            "prepare": {
+              "type": "function",
+              "arity": 1
             }
           }
         },

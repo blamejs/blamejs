@@ -1870,7 +1870,13 @@ function testFormatValidatorLengthCap() {
       // anything over the cap just as `.length` does.
       var window = (lines[li-2] || "") + (lines[li-1] || "") +
                    line + (lines[li+1] || "") + (lines[li+2] || "");
-      if (/\.length\s*[><=!]/.test(window) || /byteLength/.test(window)) continue;
+      // A literal `.slice(0, N)` on the tested expression bounds it outright,
+      // which is a stronger guarantee than comparing a length and branching:
+      // there is no path on which the regex sees more than N characters. Only
+      // counted on the test line itself, so a slice of some OTHER value
+      // nearby cannot vouch for this one.
+      if (/\.length\s*[><=!]/.test(window) || /byteLength/.test(window) ||
+          /\.slice\(\s*0\s*,\s*\d+\s*\)/.test(line)) continue;
       bad.push({
         file:    _relPath(files[fi]),
         line:    li + 1,
@@ -6605,6 +6611,15 @@ var KNOWN_ANTIPATTERNS = [
     regex: /ruleId\s*\|\|\s*['"][a-zA-Z0-9_-]+\.refused['"]/,
     allowlist: ["lib/guard-auth.js"],
     reason: "v0.15.0 #103 — the guard sanitize/parse refuse-on-critical|high throw (err(issue.ruleId || '<x>.refused', 'guard<Name>.<op>: ' + issue.snippet)) is owned by gateContract.throwOnRefusalSeverity; 18 guards reuse it (this was the failing STRONG-DUP fp:f349a8d1f51b before extraction). A hand-rolled `issues[i].ruleId || '<x>.refused'` throw re-implements it. lib/guard-auth.js is the one genuine holdout (its message embeds issues[i].source: 'guardAuth.sanitize [<source>]:') pending task #104; the primitive itself uses a `fallback` variable (no .refused literal) so it does not match. Any other lib file with this shape must call gateContract.throwOnRefusalSeverity (the severities / op options cover the critical-only + parse variants).",
+  },
+  {
+    id: "client-address-must-compose-trustedClientIp",
+    primitive: "b.requestHelpers.trustedClientIp",
+    scanScope: "lib",
+    skipCommentLines: true,
+    regex: /headers\s*\[\s*["']x-forwarded-for["']\s*\]/,
+    allowlist: [],
+    reason: "Reading X-Forwarded-For straight off the request headers has no peer gate, and the header is set by anyone who can reach the listener. Whatever the value keys — a rate-limit bucket, an IP-bound grant, an anonymous rollout bucket — the caller then chooses it for themselves by resending with a different value. b.requestHelpers.trustedClientIp owns this: it honours the header only when the immediate TCP peer is one of the operator's declared trustedProxies, folds an IPv4-mapped IPv6 peer so a dual-stack listener still matches, walks a multi-hop chain right-to-left to the first untrusted address, and reports peerGated so a gate can refuse to run ungated. Its forwardedHeaders opt covers deployments where the address arrives as CF-Connecting-IP or X-Real-IP instead, so needing a different header is not a reason to hand-roll the read. This shipped once in flag-evaluation-context's anonymous targeting key, where a client could pick their own flag variant. Empty allowlist: request-helpers.js reads the family through a variable, so the primitive's own home does not match this shape either.",
   },
   {
     id: "byte-cap-must-vet-type-before-measuring",
@@ -12043,6 +12058,29 @@ var KNOWN_ANTIPATTERNS = [
     reason: "A db-handle primitive that hand-rolls DML by concatenating a SQL string literal into db.prepare/runSql re-implements b.sql's identifier quoting + sealed-field rewrite and drifts from db.from() — the tenant-quota storage query accrued reserved-word, schema-qualified and sealed-column parity defects across six review rounds doing exactly this. Compose `sql.select/insert/update/delete(table, { dialect: 'sqlite', quoteName: true }).….toSql()` and `db.prepare(built.sql)` instead (skip the unseal loop when you need raw on-disk bytes). Matches an inline SELECT/INSERT/UPDATE/DELETE literal passed to db.prepare/runSql (optionally wrapped in one helper call such as safeSql.assertSingleStatement); a db.prepare(<variable>) built by b.sql does not match, and DDL/PRAGMA is out of scope. See lib/tenant-quota.js and lib/dsr.js for the composed shape.",
   },
 
+
+  {
+    id: "tls-group-preference-under-an-inert-key",
+    primitive: "b.network.tls",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // node:tls reads the TLS 1.3 named-group preference as `ecdhCurve` and
+    // nothing else. A key it does not implement is accepted and silently
+    // ignored -- tls.createSecureContext({ groups }) and { curves } both
+    // return a context that negotiates on the runtime defaults, while a
+    // malformed ecdhCurve throws. Routing the group list through one of those
+    // names therefore produces code that reads as though it pins the
+    // preference and pins nothing: the WebSocket client shipped `curves` that
+    // way, and the shared context filler emitted `groups`, so an operator
+    // narrowing the list had it apply to neither. Matches only an assignment
+    // whose value is visibly the group preference (an ecdhCurve, a key-share
+    // list, an ML-KEM group name, the shared constant), which is what makes
+    // this a preference routed through a dead name rather than an unrelated
+    // property that happens to be spelled `groups`.
+    regex: /\b(?:groups|curves|namedCurves)\s*[:=]\s*[^;\r\n]*(?:ecdhCurve|[Kk]eyShares|MLKEM|TLS_GROUP)/,
+    allowlist: [],
+    reason: "The TLS named-group preference must be assigned to `ecdhCurve` -- the only spelling node:tls reads. `groups` / `curves` / `namedCurves` are accepted and ignored by tls.connect and tls.createSecureContext, so a preference assigned to one of them never reaches the handshake while looking like it does: b.wsClient shipped a `curves` list that was inert for several releases, and network-tls.applyToContext filled `groups`, leaving every operator https.Server built through it negotiating on Node's defaults instead of the configured key shares. Assign the resolved list to `ecdhCurve` and emit nothing under a second name -- a duplicate key reads as a second handle on the preference that an operator can narrow to no effect. Matches only where the assigned value is visibly the group preference.",
+  },
 ];
 
 // @example placeholder detection lives in
