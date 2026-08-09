@@ -236,13 +236,37 @@ function run() {
     var refs = (sbom.components || []).map(function (c) { return c["bom-ref"]; });
     check("vendor sbom: every bom-ref is unique",
           refs.length === new Set(refs).size);
+    // @noble/hashes is embedded by two different bundles. Both copies have to
+    // survive into the SBOM as their own components, attributed to their own
+    // parent — a scanner that saw one entry would report one of the two
+    // bundles as carrying a version it does not. The versions coincide when
+    // both parents happen to build against the same release, which is when a
+    // naive dedup collapses them, so identity is asserted on the bom-ref and
+    // each version is checked against what its own parent declares.
     var hashesCopies = (sbom.components || []).filter(function (c) {
       return c.name === "@noble/hashes";
     });
-    check("vendor sbom: both embedded @noble/hashes copies are reported, each " +
-          "at the version its own bundle was built against",
-          hashesCopies.length === 2 &&
-          hashesCopies[0].version !== hashesCopies[1].version);
+    var hashesParents = Object.keys(manifest.packages || {}).filter(function (k) {
+      var comps = (manifest.packages[k] || {}).components;
+      return !!(comps && comps["@noble/hashes"]);
+    });
+    check("vendor sbom: the manifest declares more than one bundle embedding " +
+          "@noble/hashes (guards against the next two checks going vacuous)",
+          hashesParents.length >= 2);
+    check("vendor sbom: every bundle embedding @noble/hashes contributes its " +
+          "own component entry",
+          hashesCopies.length === hashesParents.length &&
+          new Set(hashesCopies.map(function (c) { return c["bom-ref"]; })).size ===
+            hashesCopies.length);
+    var wrongVersion = hashesParents.filter(function (parent) {
+      var want = manifest.packages[parent].components["@noble/hashes"].version;
+      return !hashesCopies.some(function (c) {
+        return c["bom-ref"].indexOf(parent) !== -1 && c.version === want;
+      });
+    });
+    check("vendor sbom: each copy carries the version its own bundle was built " +
+          "against" + (wrongVersion.length ? " (wrong: " + wrongVersion.join(", ") + ")" : ""),
+          wrongVersion.length === 0);
   }
 
   // Operator-facing license-summary consistency. The README dependency-inventory

@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.18.18",
-  "createdAt": "2026-08-09T04:51:07.984Z",
+  "createdAt": "2026-08-09T05:17:20.214Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -47650,6 +47650,10 @@
                   "valueType": "number"
                 }
               }
+            },
+            "prepare": {
+              "type": "function",
+              "arity": 1
             }
           }
         },
@@ -48193,6 +48197,10 @@
                   "valueType": "number"
                 }
               }
+            },
+            "prepare": {
+              "type": "function",
+              "arity": 1
             }
           }
         },
@@ -48252,6 +48260,10 @@
                   "valueType": "number"
                 }
               }
+            },
+            "prepare": {
+              "type": "function",
+              "arity": 1
             }
           }
         },
@@ -48311,6 +48323,10 @@
                   "valueType": "number"
                 }
               }
+            },
+            "prepare": {
+              "type": "function",
+              "arity": 1
             }
           }
         },
