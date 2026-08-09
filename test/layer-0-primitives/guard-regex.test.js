@@ -577,6 +577,8 @@ function testEverySpellingOfAmbiguityIsRefused() {
         assertSafeAccepts("^\\s*.*(?!)$") === false);
   check("so is a word boundary",
         assertSafeAccepts("^\\s*.*\\b$") === false);
+  check("a trailing START anchor is a failure point, unlike an end anchor",
+        assertSafeAccepts("^\\s*.*^$") === false);
   check("the same pair with only an end anchor is still linear",
         assertSafeAccepts("^\\s*.*$"));
 
