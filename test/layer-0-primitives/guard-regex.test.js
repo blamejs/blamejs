@@ -137,8 +137,11 @@ function testAmbiguousShapesStillRefused() {
     // concatenation. Six disjoint alternations in a row took ~0.7s on 80
     // characters before the suppression required a single quantified group.
     "^(?:a|b)+(?:a|b)+(?:a|b)+(?:a|b)+(?:a|b)+(?:a|b)+!$",
+    "^(?:[a-z]+-)*(?:[a-z]+-)*!$",   // the second group matches `-` too, so the split floats
+    // Conservative: `[bc]` and `[de]` are disjoint so this one is in fact
+    // linear, but the only multi-term boundary proven here is the delimited
+    // one, and neither group carries a delimiter. Refusing is the safe answer.
     "(?:b|c)+(?:d|e)+",
-    "^(?:[a-z]+-)*(?:[a-z]+-)*!$",
     "(?:(?:[a-z]+)+-)*",           // the body carries its own nested quantifier
     "(?:[a-z]+)*-",                // the delimiter is OUTSIDE the group
     // the classic catastrophic set, unchanged
