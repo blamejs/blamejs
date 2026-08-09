@@ -166,6 +166,11 @@ function testAmbiguousShapesStillRefused() {
     "^(?:[a-z]{1,3}\\.?)+$",
     "(?:a?)+",
     "(?:ab?b?)+c",                 // two optional atoms over the same character
+    // A group with no quantifier of its own still varies when its body does.
+    // Twenty adjacent `(?:aa?)` groups can redistribute their optional `a`s
+    // among themselves and into the repetition that follows.
+    "^" + new Array(21).join("(?:aa?)") + "(?:a|b)+!$",
+    "^(?:aa?)(?:aa?)(?:a|b)+!$",
     // the classic catastrophic set, unchanged
     "(a+)+$", "((a)+)+", "(?:a+)+", "(([a-z]+)*)*", "(a+){2,}",
   ];
