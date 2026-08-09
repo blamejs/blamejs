@@ -709,6 +709,36 @@ function testSeparatorsAndVaryingPartsAreJudgedOnWhatTheyMatch() {
   ambiguous.forEach(function (src) {
     check("still refuses " + JSON.stringify(src), assertSafeAccepts(src) === false);
   });
+
+  // The hand-off between two varying parts runs the whole way along the fixed
+  // atoms between them, not one atom at a time. In `a*[ab][bc]c*` no single
+  // atom touches both ends, and `abc` still parses twice — every atom takes its
+  // neighbour's character and the segment shifts by one. Against
+  // `"abc-".repeat(n) + "!"` that is 202 ms at n=24, 3.2 s at n=28 and 52 s at
+  // n=32.
+  check("varying parts that trade along a CHAIN of atoms are ambiguous",
+        assertSafeAccepts("^(?:a*[ab][bc]c*-)+$") === false &&
+        assertSafeAccepts("^(?:a*[ab]b*-)+$") === false);
+  // A chain broken anywhere carries nothing: `=` is neither a letter nor a
+  // digit, so the two runs beside it cannot reach each other.
+  check("but one broken anywhere along it is not",
+        assertSafeAccepts("^(?:&[a-z]+=[0-9]+)*$") &&
+        assertSafeAccepts("^[a-z]+(?:,\\s*[a-z]+)*$"));
+  // The chain is read one character at a time, so parentheses cannot change the
+  // answer: `(?:ax)(?:xb)` is `a` `x` `x` `b`, and the step from `a` to `x`
+  // breaks it exactly as the written-out form does.
+  check("the chain is read character by character, however it is grouped",
+        assertSafeAccepts("^(?:a*(?:ax)(?:xb)b*-)+$") &&
+        assertSafeAccepts("^(?:a*axxbb*-)+$") &&
+        assertSafeAccepts("^(?:a*(?:[ab])(?:[bc])c*-)+$") === false);
+  // Reading the chain must not become the cost it is screening for. A count is
+  // never written out: repeating one set carries exactly as one copy does.
+  var started = Date.now();
+  assertSafeAccepts("^(?:a*[ab]{1000000000}b*-)+$");
+  assertSafeAccepts("^(?:a*[ab]{999999999999999999999}b*-)+$");
+  assertSafeAccepts("^(?:a*(?:ab){100000000}b*-)+$");
+  check("a huge repetition count costs the screen nothing to read",
+        Date.now() - started < b.constants.TIME.seconds(2));
 }
 
 // A pattern that is not anchored at the start is retried at EVERY position in
