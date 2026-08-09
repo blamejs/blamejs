@@ -748,6 +748,128 @@ function testUnanchoredScanCost() {
   check("wrapping an anchored pattern is still fine",
         assertSafeAccepts("^(a+b)$") && assertSafeAccepts("(?:^a+b$)"));
 
+  // A choice is several scans and only one of them has to run away. It need
+  // not be the first thing in the pattern — every starting position enters the
+  // same branch whatever fixed atoms precede it.
+  check("a choice that runs away in one branch is a scan wherever it sits",
+        assertSafeAccepts("(?:x|a+b)") === false &&
+        assertSafeAccepts("a(?:x|a+b)") === false &&
+        assertSafeAccepts("(?:x|(?:y|a+b))") === false);
+
+  // A lookaround consumes nothing, which is not the same as costing nothing:
+  // its body is a pattern in its own right, re-run wherever the attempt
+  // reaches it.
+  check("an assertion whose BODY is a scan is a scan",
+        assertSafeAccepts("(?=a+b)") === false &&
+        assertSafeAccepts("(?!a+b)") === false &&
+        assertSafeAccepts("[ax]*(?=a+b)") === false);
+  check("but the body is read whole, anchors included",
+        assertSafeAccepts("(?=^a+b)") && assertSafeAccepts("^(?=a+b)"));
+  // Reached from only a bounded number of positions, its body runs a bounded
+  // number of times: no subject both matches the `x` everywhere and feeds the
+  // `a+`.
+  check("and an assertion the subject cannot reach everywhere is not",
+        assertSafeAccepts("x(?=a+b)"));
+  // A lookBEHIND is matched backwards, so which end runs away is the other one.
+  // `(?<=a+b)` tests the neighbouring `b` first and fails there at nearly every
+  // position; `(?<=ba+)` walks back through everything before it at every one.
+  check("a lookbehind is read the way it is matched",
+        assertSafeAccepts("(?<=a+b)") && assertSafeAccepts("(?<=ab)") &&
+        assertSafeAccepts("(?<=\\bfoo)bar"));
+  check("so a lookbehind that walks its way back is a scan",
+        assertSafeAccepts("(?<=ba+)") === false);
+
+  // What `^` pins depends on the flags in force WHERE IT STANDS. A modifier
+  // group turns multiline on for part of a pattern, and then the anchor is a
+  // line start rather than the one position the whole rule turns on.
+  check("a scoped m is read where it applies",
+        assertSafeAccepts("(?=(?m:^[\\s\\S]+z))") === false &&
+        assertSafeAccepts("(?m:^a+b)"));
+
+  // An anchor in front of a scan can hold it to a bounded number of runs. `$`
+  // outside multiline succeeds once, so what follows it runs once. The others
+  // succeed often, and it depends on the scan: their firings are separated by a
+  // newline or by a character of the other class, so a scan that cannot match
+  // across that separator gets no further than the next one and the two trade
+  // off exactly. A scan that CAN cross reaches the end from every firing.
+  check("an end anchor holds the assertion after it to one run",
+        assertSafeAccepts("$(?=a+b)"));
+  check("a boundary holds a scan that cannot cross it",
+        assertSafeAccepts("\\b(?=a+b)") && assertSafeAccepts("\\ba+b") &&
+        assertSafeAccepts("\\b\\w+\\s+\\d+"));
+  check("but not one that can",
+        assertSafeAccepts("\\b.*z") === false);
+  // `\B` is the opposite assertion: it succeeds everywhere EXCEPT the
+  // transitions, so it fires all the way through a run instead of separating
+  // one from the next, and bounds nothing.
+  // An assertion is judged on what it STARTS by consuming, exactly as the same
+  // shape written directly is: `\b(?=\w+\s+\d+)` costs what `\b\w+\s+\d+` costs.
+  check("an assertion is bounded on the same terms as the shape written out",
+        assertSafeAccepts("\\b(?=\\w+\\s+\\d+)") && assertSafeAccepts("\\b\\w+\\s+\\d+") &&
+        assertSafeAccepts("\\b(?=.*z)") === false);
+  check("and the opposite assertion bounds nothing",
+        assertSafeAccepts("\\b\\w+z") && assertSafeAccepts("\\B\\w+z") === false &&
+        assertSafeAccepts("\\B(?=a+b)") === false);
+  check("a line anchor holds a scan that stops at the newline",
+        assertSafeAccepts2(new RegExp("^a+b", "m")) &&
+        assertSafeAccepts2(new RegExp("^.*z", "m")));
+  check("but not one that reads straight through it",
+        assertSafeAccepts2(new RegExp("^[\\s\\S]*z", "m")) === false);
+  // Every line terminator counts, not just the newline: `^` under `m` fires
+  // after a carriage return and after U+2028 / U+2029 as well. `.` excludes all
+  // four, which is why it stops where a hand-written `[^\n]` does not.
+  check("a scan that stops at only SOME line terminators is not held",
+        assertSafeAccepts2(new RegExp("^[^\\n]*z", "m")) === false &&
+        assertSafeAccepts2(new RegExp("^[^\\r\\n]*z", "m")) === false);
+
+  // An assertion that always SUCCEEDS still costs what its run costs, and
+  // something failing after it makes the engine pay that again from the next
+  // position. `(?=a+)` on its own matches at the first position and stops.
+  check("what follows an assertion is where its attempt can fail",
+        assertSafeAccepts("(?=a+)[^a]") === false &&
+        assertSafeAccepts("(?<=a+)[^a]") === false &&
+        assertSafeAccepts("(?=a*)[^a]") === false);
+  check("with nothing after it to fail on, it is not a scan",
+        assertSafeAccepts("(?=a+)") && assertSafeAccepts("^(?=a+)[^a]"));
+  // For a NEGATED assertion the body succeeding IS the failure, so nothing
+  // after it matters: `(?!a+)` refuses at every position, each time having
+  // walked the rest of the subject to find the `a+` it forbids.
+  check("a negated assertion needs nothing after it to be a scan",
+        assertSafeAccepts("(?!a+)") === false && assertSafeAccepts("(?!a+)a") === false);
+  // An anchor only pins what comes AFTER it. An assertion in front of one is
+  // evaluated before the anchor can refuse, so the anchor does not cover it.
+  check("an anchor does not pin an assertion that precedes it",
+        assertSafeAccepts("(?=a+b)^") === false && assertSafeAccepts("^(?=a+b)"));
+  check("and a harmless assertion in front of one is still fine",
+        assertSafeAccepts("(?=x)^a+b"));
+  // A positive lookahead in front of another tests the same position, so it
+  // decides where the second is reached at all: where an `x` stands, the `a+`
+  // stops at once.
+  check("an assertion the one before it rules out is not reached everywhere",
+        assertSafeAccepts("(?=x)(?=a+b)") && assertSafeAccepts("(?=[^a])(?=a+b)"));
+  check("but one it lets through is",
+        assertSafeAccepts("(?=a)(?=a+b)") === false);
+  // A negative one narrows too, when what it forbids is a character rather
+  // than a sequence. `(?!ab)` leaves every `a` not followed by a `b`.
+  check("what a negative assertion forbids narrows the next one",
+        assertSafeAccepts("(?!a)(?=a+b)") && assertSafeAccepts("(?!a|b)(?=[ab]+c)") &&
+        assertSafeAccepts("(?!ab)(?=a+b)") === false);
+  // Parentheses alone change nothing about what is forbidden.
+  check("however it is written",
+        assertSafeAccepts("(?!(?:a))(?=a+b)") && assertSafeAccepts("(?!((a)))(?=a+b)") &&
+        assertSafeAccepts("(?!(?:a|b))(?=[ab]+c)") &&
+        assertSafeAccepts("(?!(?:ab))(?=a+b)") === false &&
+        assertSafeAccepts("(?!a{2})(?=a+b)") === false);
+  // The body consumes nothing, so a following assertion is tested where the
+  // body STARTED. `(?=a+)` succeeds and `(?!a)` then refuses at the same `a`,
+  // at every position, each having paid for the run.
+  check("an assertion after one is where it stands, not past the body",
+        assertSafeAccepts("(?=a+)(?!a)") === false);
+  // The lookaheads operators actually write are anchored and stay accepted.
+  check("real anchored assertions are unaffected",
+        assertSafeAccepts("^(?=.*[a-z])(?=.*\\d)[A-Za-z\\d]{8,}$") &&
+        assertSafeAccepts("^(?!.*\\.\\.)[\\w./-]+$"));
+
   // The run that walks away need not be the FIRST thing in the pattern. A
   // fixed atom in front costs an attempt nothing, so `aa+b` scans every suffix
   // from every position exactly as `a+b` does.
