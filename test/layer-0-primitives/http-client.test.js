@@ -3268,15 +3268,41 @@ async function testPinnedClient() {
   try { await guarded.request({ url: "http://10.1.2.3/x" }); } catch (e) { privErr = e; }
   check("pinnedClient: a private literal is refused without allowInternal", privErr !== null);
   check("pinnedClient: none of the refused internal dials reached the client", ssrfSeen.length === 0);
-  // allowInternal is the caller's deliberate waiver, and metadata is not
-  // covered by it.
+  // A loopback NAME is the same destination as the literal. The whole
+  // `localhost` TLD resolves there, so checking only IP literals would let
+  // `localhost` past a gate that refuses 127.0.0.1.
+  var nameErr = null;
+  try { await guarded.request({ url: "http://localhost:9/x" }); } catch (e) { nameErr = e; }
+  check("pinnedClient: the loopback NAME is refused, not just the literal", nameErr !== null);
+  var subErr = null;
+  try { await guarded.request({ url: "http://app.localhost:9/x" }); } catch (e) { subErr = e; }
+  check("pinnedClient: a name under the loopback TLD is refused too", subErr !== null);
+  check("pinnedClient: neither loopback name reached the client", ssrfSeen.length === 0);
+
+  // allowInternal is the caller's deliberate waiver, in either documented
+  // form — `true`, or the CIDR array ssrfGuard itself honours. Reading only
+  // the boolean would drop a documented option the moment a client is supplied.
   await guarded.request({ url: "http://127.0.0.1:9/x", allowInternal: true });
   check("pinnedClient: allowInternal permits the loopback dial", ssrfSeen.length === 1);
+  await guarded.request({ url: "https://10.1.2.3/t", allowInternal: ["10.0.0.0/8"] });
+  check("pinnedClient: the CIDR-array form of allowInternal waives too", ssrfSeen.length === 2);
+  await guarded.request({ url: "https://10.1.2.3/t", allowInternal: ["10.1.2.3/32"] });
+  check("pinnedClient: an exact /32 waiver is honoured", ssrfSeen.length === 3);
+  var wrongCidr = null;
+  try { await guarded.request({ url: "https://10.1.2.3/t", allowInternal: ["192.168.0.0/16"] }); }
+  catch (e) { wrongCidr = e; }
+  check("pinnedClient: a CIDR that does not cover the host waives nothing",
+        wrongCidr !== null && ssrfSeen.length === 3);
+  var badCidr = null;
+  try { await guarded.request({ url: "https://10.1.2.3/t", allowInternal: ["not-a-cidr"] }); }
+  catch (e) { badCidr = e; }
+  check("pinnedClient: a malformed waiver entry waives nothing", badCidr !== null);
+  var reachedBefore = ssrfSeen.length;
   var metaWaived = null;
   try { await guarded.request({ url: "http://169.254.169.254/x", allowInternal: true }); }
   catch (e) { metaWaived = e; }
   check("pinnedClient: allowInternal does NOT unlock cloud metadata",
-        metaWaived !== null && ssrfSeen.length === 1);
+        metaWaived !== null && ssrfSeen.length === reachedBefore);
 
   // With no pin every public host is reachable — the wrapper adds redirect and
   // egress control, not an allowlist that was never configured.
