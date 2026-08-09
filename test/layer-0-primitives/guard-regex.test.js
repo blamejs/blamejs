@@ -88,6 +88,13 @@ function testProvablyUnambiguousShapesAccepted() {
     "(?:ab?)+c",
     "(?:ab?c?)+d",
     "(?:a[0-9]{0,2})+z",
+    // Two repeated groups in a row, where nothing the second can begin with is
+    // something the first could have taken instead. The split between them
+    // cannot float, so each group is judged on its own and both are decided.
+    "(?:b|c)+(?:d|e)+",
+    "^[a-z0-9]+(?:-[a-z0-9]+)*$",   // the separator leads each repetition
+    "^\\w+(?:\\.\\w+)*$",
+    "^[^,]+(?:,[^,]+)*$",
   ];
   linear.forEach(function (src) {
     check("assertSafe accepts provably-unambiguous " + JSON.stringify(src), assertSafeAccepts(src));
@@ -145,10 +152,6 @@ function testAmbiguousShapesStillRefused() {
     // characters before the suppression required a single quantified group.
     "^(?:a|b)+(?:a|b)+(?:a|b)+(?:a|b)+(?:a|b)+(?:a|b)+!$",
     "^(?:[a-z]+-)*(?:[a-z]+-)*!$",   // the second group matches `-` too, so the split floats
-    // Conservative: `[bc]` and `[de]` are disjoint so this one is in fact
-    // linear, but the only multi-term boundary proven here is the delimited
-    // one, and neither group carries a delimiter. Refusing is the safe answer.
-    "(?:b|c)+(?:d|e)+",
     "(?:(?:[a-z]+)+-)*",           // the body carries its own nested quantifier
     "(?:[a-z]+)*-",                // the delimiter is OUTSIDE the group
     // A repeated group is catastrophic when its body can match a VARYING
@@ -384,6 +387,12 @@ function testRepetitionSpellingsAllReachTheAnalysis() {
         assertSafeAccepts2(new RegExp("^(?i:a|A)+!$")) === false);
   check("a modifier that turns case-insensitivity OFF is honoured too",
         assertSafeAccepts2(new RegExp("^(?-i:a|A)+$", "i")));
+  check("and reach the body-variation proof, not only the branch proof",
+        assertSafeAccepts2(new RegExp("^(?i:aA?)+!$")) === false &&
+        assertSafeAccepts2(new RegExp("^(?i:[A-Z]+z)*$")) === false);
+  check("the same bodies without the modifier are still proven",
+        assertSafeAccepts2(new RegExp("^(?:aA?)+!$")) &&
+        assertSafeAccepts2(new RegExp("^(?i:ab?)+c$")));
 
   // The `?` after an escaped metacharacter is a real quantifier. Deciding by
   // the preceding SOURCE character reads the metacharacter as the lazy marker
@@ -399,6 +408,92 @@ function testRepetitionSpellingsAllReachTheAnalysis() {
   check("a lazy quantifier is still not counted twice",
         assertSafeAccepts2(/^(?:[a-z]+?-)*[a-z]+$/));
 
+}
+
+// Every spelling of an ambiguous repetition that was once accepted, kept in
+// one place. Each was measured super-linear against a failing input — between
+// a tenth of a second and seventeen seconds at twenty-eight characters — and
+// each got through because two readers of the pattern disagreed about what
+// they were looking at. They are listed by the disagreement they came from.
+function testEverySpellingOfAmbiguityIsRefused() {
+  var bad = [
+    // the canonical shapes
+    "(a+)+$", "(a|a)+$", "(a+)*", "((a)+)+", "(([a-z]+)*)*",
+    // a wrapper that neither repeats nor chooses
+    "((a|a))+!", "((a)|a)+$", "(?:(a)|a)+$", "(?:(?:(a|a)))+!",
+    // a ceiling is not a defence
+    "(a+){2,30}!", "(a+){1,100}!", "(a+){10}!", "(?:a{1,10}){1,10}!",
+    "(a|a){2,60}!", "(a|a){1,}!",
+    // a bound too long for a reader that counted digits
+    "(a|a){0000000002,}!", "(a+){2,99999999999999999999}$",
+    // an optional after an escaped metacharacter is a real quantifier
+    "(?:a}?}?)+!", "(?:a\\*?\\*?)+!", "(?:a\\(?\\(?)+!", "(?:ab?b?)+!",
+    // two positions repeating over characters they share
+    "^a*a*!$", "^a*a*a*!$", "^\\w*\\w*!$", "^(a*)(a*)!", "^(?:\\w*)(?:\\w*)!$",
+    "^a*b?a*!", "^a\\.\\w*\\w*!$", "^[^a]*[^b]*!$",
+    // the delimiter pins where a repetition ends, not what happens inside it
+    "(?:a*a*-)*", "(?:\\w+\\d*;)*", "(?:[^-]*[^-]*-)*",
+    // branch choice decided, branch length not
+    "(?:ab?|b)+", "(?:ab{1,2}|b)+",
+  ];
+  bad.forEach(function (src) {
+    check("refuses " + JSON.stringify(src), assertSafeAccepts(src) === false);
+  });
+
+  // The same, where the flags are what makes it ambiguous.
+  var flagged = [
+    ["^(?:x+a)*(?:[^ab]A)*!$", "i"],       // a later term reaches the delimiter only by folding
+    ["^(a|A)+$", "i"],
+    ["^(?i:a|a)+b$", ""],                  // a modifier group hid the alternation
+    ["^(?i:a|A)+!$", ""],                  // its own flags make the branches one
+    ["^(?i:aA?)+!$", ""],                  // and reach the body-variation proof
+    ["^(?i:[A-Z]+z)*$", ""],
+  ];
+  flagged.forEach(function (pair) {
+    check("refuses /" + pair[0] + "/" + pair[1],
+          assertSafeAccepts2(new RegExp(pair[0], pair[1])) === false);
+  });
+  var longName = "(?<" + new Array(301).join("n") + ">a|a)+b";
+  check("a name longer than the parser expected does not hide the alternation",
+        assertSafeAccepts2(new RegExp(longName)) === false);
+
+  // Patterns an operator actually writes, which must keep working. Several of
+  // these were refused before the analysis read a parse tree rather than the
+  // pattern source.
+  var ordinary = [
+    "^[a-z0-9]+(?:-[a-z0-9]+)*$",                  // slug — the separator LEADS each repetition
+    "^\\w+(?:\\.\\w+)*$",                          // dotted key
+    "^[^,]+(?:,[^,]+)*$",                          // one csv row
+    "^(?:\\d{1,3}\\.){3}\\d{1,3}$",                // dotted quad
+    "^(?:\\d{1,3}\\.){3}\\d{1,3}\\/\\d{1,2}$",     // with a prefix length
+    "^(?:\\d{1,3}\\.){3}\\d{1,3}:\\d+$",           // with a port
+    "^(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$",      // mac address
+    "^(?:GET|POST|PUT|DELETE)$",
+    "^\\w+\\s*=\\s*.*$",                           // a config line
+    "^\\s*[-*+]\\s+.*$",                           // a list item
+    "^a*b*c*d*!$",                                 // adjacent, over characters they do not share
+    "^v\\d+\\.\\d+\\.\\d+(?:[-+][0-9A-Za-z.-]+)?-linux-x64$",
+    "^(?:b|c)+(?:d|e)+$",                          // neither group can start on the other's characters
+  ];
+  ordinary.forEach(function (src) {
+    check("accepts " + JSON.stringify(src), assertSafeAccepts(src));
+  });
+
+  // The screener must not become the denial of service it exists to prevent.
+  // A kilobyte of pairwise-disjoint 256-character ranges cost over two seconds
+  // to analyse when sets were arrays and folding was repeated at each reader.
+  var wide = "[";
+  var cp = 0x0100;
+  for (var i = 0; i < 78; i += 1) {
+    wide += String.fromCharCode(cp) + "-" + String.fromCharCode(cp + 255);
+    cp += 256;
+  }
+  wide += "]*b*";
+  var started = Date.now();
+  try { b.guardRegex.assertSafe(new RegExp(wide, "i"), "x"); } catch (_e) { /* verdict is not the point */ }
+  var elapsed = Date.now() - started;
+  check("analysing a kilobyte of disjoint ranges stays well under a second " +
+        "(took " + elapsed + "ms)", elapsed < 500);
 }
 
 // ---- other ReDoS classes the guard covers stay covered ----
@@ -452,6 +547,7 @@ async function run() {
   testAnalysisWorkIsBounded();
   testRegExpFlagsReachTheAnalysis();
   testRepetitionSpellingsAllReachTheAnalysis();
+  testEverySpellingOfAmbiguityIsRefused();
   testCatastrophicShapesRefused();
   testOtherClasses();
   await testGate();
