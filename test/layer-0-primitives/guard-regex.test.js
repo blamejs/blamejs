@@ -551,6 +551,24 @@ function testEverySpellingOfAmbiguityIsRefused() {
   check("both are still read as the classes they are",
         assertSafeAccepts("^[]$") && assertSafeAccepts("^[^]$"));
 
+  // The engine decides which characters are one under `i`. A lower/upper pass
+  // does not compute the fold class: the Kelvin sign folds to `k`, but `k`
+  // upper-cases to `K` and never back, so a pass starting at `K` never reaches
+  // it and two branches that both match it read as disjoint. The engine is
+  // asked about the characters the pattern actually contains.
+  var kelvin = String.fromCharCode(0x212a);
+  var longS  = String.fromCharCode(0x017f);
+  var angstrom = String.fromCharCode(0x212b);
+  check("a fold the engine makes but lower/upper does not is still found",
+        assertSafeAccepts2(new RegExp("^(?:K|(?-i:" + kelvin + "))+!$", "iu")) === false);
+  check("and for the long s",
+        assertSafeAccepts2(new RegExp("^(?:s|(?-i:" + longS + "))+!$", "iu")) === false);
+  check("and for the angstrom sign",
+        assertSafeAccepts2(new RegExp("^(?:" + angstrom + "|(?-i:" +
+              String.fromCharCode(0x00c5) + "))+!$", "iu")) === false);
+  check("branches that genuinely do not fold together are still proven",
+        assertSafeAccepts2(new RegExp("^(?:b|c)+$", "iu")));
+
   // The screener must not become the denial of service it exists to prevent.
   // A kilobyte of pairwise-disjoint 256-character ranges cost over two seconds
   // to analyse when sets were arrays and folding was repeated at each reader.
