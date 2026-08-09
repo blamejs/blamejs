@@ -597,6 +597,8 @@ function testEverySpellingOfAmbiguityIsRefused() {
   check("and for the angstrom sign",
         assertSafeAccepts2(new RegExp("^(?:" + angstrom + "|(?-i:" +
               String.fromCharCode(0x00c5) + "))+!$", "iu")) === false);
+  check("folding switched on inside the pattern gets the same treatment",
+        assertSafeAccepts2(new RegExp("^(?i:K|(?-i:" + kelvin + "))+!$", "u")) === false);
   check("branches that genuinely do not fold together are still proven",
         assertSafeAccepts2(new RegExp("^(?:b|c)+$", "iu")));
 
