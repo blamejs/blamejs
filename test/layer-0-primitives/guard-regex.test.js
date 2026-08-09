@@ -551,6 +551,24 @@ function testEverySpellingOfAmbiguityIsRefused() {
   check("both are still read as the classes they are",
         assertSafeAccepts("^[]$") && assertSafeAccepts("^[^]$"));
 
+  // Every flag an inline modifier names changes what its body means, not just
+  // the one about case: with `s` a dot covers a newline, so the two branches
+  // below are the same character and the pattern is exponential.
+  check("dotAll inside a modifier group reaches the analysis",
+        assertSafeAccepts("^(?s:.|\\n)+!$") === false);
+  check("without it the two branches really are disjoint",
+        assertSafeAccepts("^(?:.|\\n)+!$"));
+
+  // An astral letter's case partner is astral too. A length check that only
+  // accepted a single UTF-16 unit dropped it, and two Deseret letters the
+  // engine treats as one read as disjoint.
+  var deseretUpper = String.fromCodePoint(0x10400);
+  var deseretLower = String.fromCodePoint(0x10428);
+  check("an astral case pair folds together",
+        assertSafeAccepts2(new RegExp("^(?:" + deseretUpper + "|" + deseretLower + ")+!$", "iu")) === false);
+  check("an astral letter beside something else is still proven",
+        assertSafeAccepts2(new RegExp("^(?:" + deseretUpper + "|b)+!$", "iu")));
+
   // An assertion consumes nothing but can still refuse, and a refusal is what
   // sends the engine back for another split. Only a start-or-end anchor after a
   // pair that covers every character is safe, and only because the greedy first
