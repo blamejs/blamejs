@@ -577,6 +577,13 @@ function testEverySpellingOfAmbiguityIsRefused() {
         assertSafeAccepts("^\\s*.*(?!)$") === false);
   check("so is a word boundary",
         assertSafeAccepts("^\\s*.*\\b$") === false);
+  // A group hides what comes after it: the pair inside sees only the rest of
+  // its own sequence, so the `!` beyond the closing parenthesis went unnoticed.
+  check("a failure point outside the group still reaches the pair inside it",
+        assertSafeAccepts("^(?:\\s*.*)!$") === false);
+  check("and the same group with nothing fallible after it is still linear",
+        assertSafeAccepts("^(?:\\s*.*)$"));
+
   check("a trailing START anchor is a failure point, unlike an end anchor",
         assertSafeAccepts("^\\s*.*^$") === false);
   check("the same pair with only an end anchor is still linear",
