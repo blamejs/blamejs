@@ -77,7 +77,10 @@ function testProvablyUnambiguousShapesAccepted() {
     "(?:[a-z]+-)*",
     "(?:[a-z]+/)*",
     "(?:[^/]+/)*",                 // the delimiter is exactly what the class excludes
-    "(?:\\w+\\.)+",
+    // Anchored: the body is unambiguous, and a MANDATORY repetition of it is
+    // separately a scan when it is not pinned to one position (see the
+    // unanchored-scan checks).
+    "^(?:\\w+\\.)+$",
     "(?:\\d+,)*",
     "(?:[a-z]+_)*",
     "^/blog/(?:[a-z0-9-]+/)*[a-z0-9-]+$",
@@ -836,6 +839,17 @@ function testUnanchoredScanCost() {
   // walked the rest of the subject to find the `a+` it forbids.
   check("a negated assertion needs nothing after it to be a scan",
         assertSafeAccepts("(?!a+)") === false && assertSafeAccepts("(?!a+)a") === false);
+
+  // The failure can be INSIDE the term that runs away. `(?:a+b)+` has nothing
+  // after it to fail on and fails on its own `b` at every position all the same.
+  check("a failure inside a repeated group is still a failure",
+        assertSafeAccepts("(?:a+b)+") === false && assertSafeAccepts("(?:a+b){2}") === false);
+  // Only while the repetition is MANDATORY: one that can be left out matches
+  // empty and the attempt succeeds there and then.
+  check("but one that can be left out matches empty and succeeds at once",
+        assertSafeAccepts("(?:a+b)*") && assertSafeAccepts("(?:[a-z]+-)*"));
+  check("and anchoring it pins the attempt as ever",
+        assertSafeAccepts("^(?:a+b)+$") && assertSafeAccepts("^(?:\\w+\\.)+$"));
   // An anchor only pins what comes AFTER it. An assertion in front of one is
   // evaluated before the anchor can refuse, so the anchor does not cover it.
   check("an anchor does not pin an assertion that precedes it",

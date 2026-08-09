@@ -340,6 +340,41 @@ async function testASyncIterableMayYieldPromises() {
         ended2 === false);
 }
 
+// A producer that cancels itself and then lets its own pull reject leaves a
+// promise nobody is waiting for. Unobserved, that is an unhandled rejection,
+// which by default takes the whole process down — one cancelled export killing
+// every other in-flight request.
+async function testAnAbandonedPullIsNotAnUnhandledRejection() {
+  var res = _res();
+  res.destroy = function () { res.destroyed = true; };
+  var ac = new AbortController();
+  var unhandled = [];
+  function onUnhandled(e) { unhandled.push(e); }
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    var source = {};
+    source[Symbol.asyncIterator] = function () {
+      return {
+        next: function () {
+          // The producer decides to cancel, THEN hands back a pull that fails.
+          ac.abort();
+          return new Promise(function (_resolve, reject) {
+            setImmediate(function () { reject(new Error("query cancelled")); });
+          });
+        },
+        "return": function () { return Promise.resolve({ done: true }); },
+      };
+    };
+    await b.render.stream(res, source, { signal: ac.signal });
+    // Give the abandoned pull time to reject and the rejection time to surface.
+    await helpers.passiveObserve(200, "render.stream: the abandoned pull settles unobserved");
+    check("an abandoned pull does not become an unhandled rejection", unhandled.length === 0);
+    check("and the truncated response is still broken, not ended", res.destroyed === true);
+  } finally {
+    process.removeListener("unhandledRejection", onUnhandled);
+  }
+}
+
 async function testOnErrorRethrowLeavesTheSocketToTheCaller() {
   var res = _res();
   var destroyed = false;
@@ -604,6 +639,7 @@ async function run() {
   await testCancellationReachesAGeneratorBlockedInItsOwnAwait();
   await testAFailureToOpenTheSourceIsNotACommittedResponse();
   await testAMalformedIteratorFailsRatherThanSpinning();
+  await testAnAbandonedPullIsNotAnUnhandledRejection();
   await testASyncIterableMayYieldPromises();
   await testOnErrorRethrowLeavesTheSocketToTheCaller();
   await testRejectsInputItCannotStream();
