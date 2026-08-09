@@ -171,6 +171,12 @@ function testAmbiguousShapesStillRefused() {
     // among themselves and into the repetition that follows.
     "^" + new Array(21).join("(?:aa?)") + "(?:a|b)+!$",
     "^(?:aa?)(?:aa?)(?:a|b)+!$",
+    // A complement's members are what it EXCLUDES, so a term mixing `[^b]`
+    // with a positive set must not come out as a set that excludes both — read
+    // that way the boundary proof concludes a later term cannot consume an
+    // earlier delimiter when it plainly can.
+    "^(?:x+a)*(?:[^b]a?){30}!$",
+    "^(?:x+a)*(?:[^b]a?)+!$",
     // the classic catastrophic set, unchanged
     "(a+)+$", "((a)+)+", "(?:a+)+", "(([a-z]+)*)*", "(a+){2,}",
   ];
