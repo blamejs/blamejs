@@ -291,6 +291,18 @@ function testRegExpFlagsReachTheAnalysis() {
         assertSafeAccepts2(/^(a|a){1,2}$/));
   check("a disjoint alternation spelled `{1,}` is still proven",
         assertSafeAccepts2(/^(?:b|c){1,}$/));
+  // A wrapper that neither repeats nor chooses changes nothing about how the
+  // engine backtracks: `((a|a))+` repeats the same alternation `(a|a)+` does.
+  // Reading only the outermost body sees no alternation where the engine sees
+  // one, and the inner group carries no quantifier of its own to catch it.
+  check("an alternation inherited through a plain wrapper is refused",
+        assertSafeAccepts2(/^((a|a))+!$/) === false);
+  check("through two plain wrappers as well",
+        assertSafeAccepts2(/^(?:(?:(a|a)))+!$/) === false);
+  check("and through a wrapper repeated with `{1,}`",
+        assertSafeAccepts2(/^((a|a)){1,}!$/) === false);
+  check("a disjoint alternation behind the same wrapper is still proven",
+        assertSafeAccepts2(/^((a|b))+!$/));
   // A caller screening a raw STRING declares the flags it will compile with.
   var strictOpts = function (f) {
     return { profile: "strict", boundedRepeatPolicy: "allow", regexFlags: f };
