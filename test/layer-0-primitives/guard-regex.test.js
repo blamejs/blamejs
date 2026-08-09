@@ -551,6 +551,17 @@ function testEverySpellingOfAmbiguityIsRefused() {
   check("both are still read as the classes they are",
         assertSafeAccepts("^[]$") && assertSafeAccepts("^[^]$"));
 
+  // An assertion consumes nothing but can still refuse, and a refusal is what
+  // sends the engine back for another split. Only a start-or-end anchor after a
+  // pair that covers every character is safe, and only because the greedy first
+  // attempt already reached the end.
+  check("a never-matching lookahead after the pair is a failure point",
+        assertSafeAccepts("^\\s*.*(?!)$") === false);
+  check("so is a word boundary",
+        assertSafeAccepts("^\\s*.*\\b$") === false);
+  check("the same pair with only an end anchor is still linear",
+        assertSafeAccepts("^\\s*.*$"));
+
   // The engine decides which characters are one under `i`. A lower/upper pass
   // does not compute the fold class: the Kelvin sign folds to `k`, but `k`
   // upper-cases to `K` and never back, so a pass starting at `K` never reaches
