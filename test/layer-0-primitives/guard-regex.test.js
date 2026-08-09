@@ -796,6 +796,26 @@ function testUnanchoredScanCost() {
         assertSafeAccepts("a+a") && assertSafeAccepts("\\w+\\w"));
   check("but a suffix INSIDE the run's characters still is",
         assertSafeAccepts(".*b") === false);
+  // The whole suffix has to hold, not its first character, and a group with a
+  // count hides the rest of it: `(?:ab){2}` asks for the same `b` as `ab` does.
+  check("a suffix whose LATER parts the run cannot satisfy is a failure point",
+        assertSafeAccepts("a+(?:ab){2}") === false &&
+        assertSafeAccepts("a+ab") === false &&
+        assertSafeAccepts("a+a?b") === false);
+  check("while one the run satisfies all the way through is not",
+        assertSafeAccepts("a+aa") && assertSafeAccepts("\\w+\\w\\w"));
+  // "Can the run satisfy it" is not "can SOME string over the run's characters
+  // satisfy it" — the subject is the attacker's to choose. A run over `[ab]`
+  // eats both, but against a subject of nothing but `a` the `b` is never there.
+  check("a suffix satisfiable by only SOME of the run's strings is a failure point",
+        assertSafeAccepts("[ab]+(?=ab)") === false &&
+        assertSafeAccepts("[ab]+ab") === false);
+  // Branches cover the run together, not one at a time: `(?:a|b)` is `[ab]`
+  // written out long, and the engine takes the branch the character calls for.
+  check("branches that cover the run between them are not a failure point",
+        assertSafeAccepts("[ab]+(?:a|b)") && assertSafeAccepts("[ab]+(?=a|b)"));
+  check("but only while each of them holds on its own characters",
+        assertSafeAccepts("[ab]+(?:ab|b)") === false);
 
   // It is its own rule, so an operator who bounds the subject length instead
   // can turn it off without giving up the backtracking classes.
