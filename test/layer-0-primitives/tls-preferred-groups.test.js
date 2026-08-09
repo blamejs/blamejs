@@ -684,6 +684,19 @@ function testAnnotateOutboundFailure() {
   b.network.tls.annotateOutboundFailure(proxyLeg, { host: "destination.example", port: 443 });
   check("the peer named is the one whose handshake actually failed",
         proxyLeg.message.indexOf("proxy.internal:8443") !== -1);
+  // `URL.port` is a string, and a caller passing one straight through had the
+  // endpoint dropped from the message — on a host running several TLS
+  // listeners, the one thing the operator needs.
+  var textPort = b.network.tls.explainOutboundFailure(
+    _alert("ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION", "tlsv1 alert protocol version"),
+    { host: "proxy.internal", port: "8443" });
+  check("a port given as text still names the endpoint",
+        textPort.indexOf("proxy.internal:8443") !== -1);
+  check("a port that is not a number at all is simply omitted",
+        b.network.tls.explainOutboundFailure(
+          _alert("ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION", "tlsv1 alert protocol version"),
+          { host: "proxy.internal", port: "not-a-port" }).indexOf("proxy.internal ") !== -1);
+
   check("a later leg cannot substitute its own peer",
         proxyLeg.message.indexOf("destination.example") === -1);
 
