@@ -375,6 +375,40 @@ async function testAnAbandonedPullIsNotAnUnhandledRejection() {
   }
 }
 
+// The producer is opened before anything is committed, which leaves a window:
+// a status out of range or a header value Node refuses throws AFTER the cursor
+// is open. Without cleanup that handle is held for the life of the process.
+async function testAHeaderMistakeStillReleasesTheProducer() {
+  var res = _res();
+  res.writeHead = function () { throw new RangeError("Invalid status code: 99"); };
+  var released = false;
+  var source = {};
+  source[Symbol.asyncIterator] = function () {
+    return {
+      next: function () { return Promise.resolve({ done: true }); },
+      "return": function () { released = true; return Promise.resolve({ done: true }); },
+    };
+  };
+  var caught = null;
+  try { await b.render.stream(res, source, { status: 99 }); } catch (e) { caught = e; }
+  check("the configuration mistake reaches the caller", caught instanceof RangeError);
+  check("and the producer it had already opened is released", released === true);
+
+  // The same for the producer-function form, whose signal must be dropped too.
+  var res2 = _res();
+  res2.writeHead = function () { throw new RangeError("Invalid header value"); };
+  var sawAbort = false;
+  var caught2 = null;
+  try {
+    await b.render.stream(res2, function (signal) {
+      signal.addEventListener("abort", function () { sawAbort = true; }, { once: true });
+      return _rows(3);
+    });
+  } catch (e) { caught2 = e; }
+  check("a factory producer sees the same failure", caught2 instanceof RangeError);
+  check("and is told to stop", sawAbort === true);
+}
+
 async function testOnErrorRethrowLeavesTheSocketToTheCaller() {
   var res = _res();
   var destroyed = false;
@@ -640,6 +674,7 @@ async function run() {
   await testAFailureToOpenTheSourceIsNotACommittedResponse();
   await testAMalformedIteratorFailsRatherThanSpinning();
   await testAnAbandonedPullIsNotAnUnhandledRejection();
+  await testAHeaderMistakeStillReleasesTheProducer();
   await testASyncIterableMayYieldPromises();
   await testOnErrorRethrowLeavesTheSocketToTheCaller();
   await testRejectsInputItCannotStream();
