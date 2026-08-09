@@ -409,6 +409,99 @@ async function testAHeaderMistakeStillReleasesTheProducer() {
   check("and is told to stop", sawAbort === true);
 }
 
+// A sink that takes the chunk and fails afterwards. `write()` returning true
+// only means there is room for more, so resolving on it dropped the listeners
+// before the failure arrived — and an unhandled 'error' ends the process.
+async function testAWriteThatFailsAfterAcceptingIsStillAFailure() {
+  var Writable = require("node:stream").Writable;
+  var sink = new Writable({
+    write: function (_chunk, _enc, cb) {
+      setImmediate(function () { cb(new Error("disk full")); });
+    },
+  });
+  var unhandled = [];
+  function onUnhandled(e) { unhandled.push(e); }
+  process.on("unhandledRejection", onUnhandled);
+  var caught = null;
+  try {
+    await b.safeAsync.writeChunk(sink, "row\n");
+  } catch (e) { caught = e; } finally {
+    process.removeListener("unhandledRejection", onUnhandled);
+  }
+  check("a sink that fails after taking the chunk rejects the write",
+        caught !== null && caught.message === "disk full");
+  check("and nothing is left unhandled behind it", unhandled.length === 0);
+
+  // A sink that succeeds still resolves, so the common path is unchanged.
+  var written = [];
+  var good = new Writable({
+    write: function (chunk, _enc, cb) { written.push(chunk.toString()); setImmediate(cb); },
+  });
+  await b.safeAsync.writeChunk(good, "row\n");
+  check("a sink that takes the chunk cleanly resolves", written.join("") === "row\n");
+
+  // Whether a sink reports completion is asked of the object, not of how its
+  // `write` happens to be declared: a wrapper written with rest parameters
+  // supports the callback exactly as one written out in full does.
+  var innerFail = new Writable({
+    write: function (_c, _e, cb) { setImmediate(function () { cb(new Error("disk full")); }); },
+  });
+  var wrapper = Object.create(innerFail);
+  wrapper.write = function () { return innerFail.write.apply(innerFail, arguments); };
+  var caughtWrapped = null;
+  try { await b.safeAsync.writeChunk(wrapper, "row\n"); } catch (e) { caughtWrapped = e; }
+  check("a wrapper declared with rest parameters still reports its failure",
+        caughtWrapped !== null && caughtWrapped.message === "disk full");
+  // And a response double, which reports nothing, is still answered on the spot.
+  var double = _res();
+  await b.safeAsync.writeChunk(double, "row\n");
+  check("while a plain response double resolves as before",
+        double._captured().toString("utf8") === "row\n");
+
+  // A sink can answer before `write()` has even returned. Settling on that
+  // answer alone would resolve a write that still owes a drain — and leave the
+  // listeners attached after it with nothing left to remove them.
+  var syncInner = new Writable({ write: function (_c, _e, cb) { cb(); } });
+  var syncSink = Object.create(syncInner);
+  var drainRequested = false;
+  syncSink.write = function (chunk, cb) {
+    if (typeof cb === "function") cb(null);                 // answers first
+    return false;                                           // and asks for a drain
+  };
+  syncSink.once = function (event, fn) {
+    if (event === "drain") { drainRequested = true; setImmediate(fn); }
+    return syncSink;
+  };
+  syncSink.removeListener = function () { return syncSink; };
+  await b.safeAsync.writeChunk(syncSink, "row\n");
+  check("a sink that answers before it returns is still made to drain", drainRequested === true);
+
+  // The absorber covers only the error the callback said was coming. A failure
+  // that ARRIVES as an error event has no second one behind it, and arming for
+  // one would swallow whatever unrelated failure happened to follow.
+  var emitter = new Writable({ write: function (_c, _e, cb) { cb(); } });
+  emitter.write = function () { return false; };            // no completion callback
+  var caught2 = null;
+  var later = [];
+  var pending = b.safeAsync.writeChunk(emitter, "row\n").catch(function (e) { caught2 = e; });
+  emitter.emit("error", new Error("first"));
+  await pending;
+  emitter.on("error", function (e) { later.push(e.message); });
+  emitter.emit("error", new Error("second, unrelated"));
+  check("an error event settles the write", caught2 !== null && caught2.message === "first");
+  check("and a later unrelated error is not swallowed", later.join("") === "second, unrelated");
+}
+
+// `create({ engine })` returns the same helpers bound to that engine. A new one
+// missing from it is a primitive the documented surface cannot reach.
+function testTheEngineBoundRendererCarriesEveryHelper() {
+  var renderer = b.render.create({ engine: { render: function () { return "<p>x</p>"; } } });
+  var expected = ["html", "htmlString", "json", "stream", "text", "redirect"];
+  var missing = expected.filter(function (name) { return typeof renderer[name] !== "function"; });
+  check("every module helper is on the engine-bound renderer too", missing.length === 0);
+  check("including stream", renderer.stream === b.render.stream);
+}
+
 async function testOnErrorRethrowLeavesTheSocketToTheCaller() {
   var res = _res();
   var destroyed = false;
@@ -675,6 +768,8 @@ async function run() {
   await testAMalformedIteratorFailsRatherThanSpinning();
   await testAnAbandonedPullIsNotAnUnhandledRejection();
   await testAHeaderMistakeStillReleasesTheProducer();
+  await testAWriteThatFailsAfterAcceptingIsStillAFailure();
+  testTheEngineBoundRendererCarriesEveryHelper();
   await testASyncIterableMayYieldPromises();
   await testOnErrorRethrowLeavesTheSocketToTheCaller();
   await testRejectsInputItCannotStream();
