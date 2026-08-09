@@ -464,6 +464,20 @@ function testTrustedClientIpForwardedHeaderFamily() {
   check("trustedClientIp order is the operator's, not a fixed precedence",
         reversed.resolve(both) === "203.0.113.30");
 
+  // PRESENT decides, not non-empty. A first-listed header that arrives empty
+  // says this request carries no forwarded address; falling through to a
+  // lower-priority header would answer with one the client may have set.
+  var emptyFirst = {
+    socket:  { remoteAddress: "10.0.0.9" },
+    headers: { "x-real-ip": "", "x-forwarded-for": "203.0.113.30" },
+  };
+  check("trustedClientIp stops at an empty higher-priority header",
+        ordered.resolve(emptyFirst) === "10.0.0.9");
+  // Absent is different from empty — that one is skipped.
+  check("trustedClientIp skips an ABSENT higher-priority header",
+        ordered.resolve({ socket: { remoteAddress: "10.0.0.9" },
+                          headers: { "x-forwarded-for": "203.0.113.30" } }) === "203.0.113.30");
+
   // A header earlier in the list but absent from the request is skipped.
   var onlyXff = {
     socket:  { remoteAddress: "10.0.0.9" },
