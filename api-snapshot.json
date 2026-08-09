@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.18.19",
-  "createdAt": "2026-08-09T14:50:16.783Z",
+  "createdAt": "2026-08-09T15:46:02.160Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -49569,6 +49569,10 @@
           "type": "function",
           "arity": 3
         },
+        "stream": {
+          "type": "function",
+          "arity": 3
+        },
         "text": {
           "type": "function",
           "arity": 3
@@ -49684,6 +49688,10 @@
           "arity": 2
         },
         "extractBearer": {
+          "type": "function",
+          "arity": 1
+        },
+        "failAfterHeaders": {
           "type": "function",
           "arity": 1
         },
@@ -50113,6 +50121,10 @@
           "arity": 3
         },
         "withTimeoutSignal": {
+          "type": "function",
+          "arity": 2
+        },
+        "writeChunk": {
           "type": "function",
           "arity": 2
         }
@@ -53488,7 +53500,7 @@
         },
         "streamingRes": {
           "type": "function",
-          "arity": 0
+          "arity": 1
         },
         "tempDir": {
           "type": "function",

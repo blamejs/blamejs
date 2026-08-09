@@ -847,8 +847,40 @@ function testHooksThrowWithoutMessage() {
   check("renderHtml throw-null → built-in fallback", bodyOf(rHtml).indexOf("<!doctype html>") !== -1);
 }
 
+// Once the status line and headers are on the wire the handler cannot replace
+// them, and pretending otherwise is worse than failing: `writeHead` throws
+// ERR_HTTP_HEADERS_SENT, the catch falls through to `res.end("Internal Server
+// Error")`, and a consumer receives a 200 whose last row is those three words.
+// A spreadsheet or an ETL job reads that as a complete, successful export.
+//
+// After the first byte the only honest signal left is an incomplete transfer:
+// destroy the socket so the chunked stream ends unterminated and the client
+// reports a failed download.
+function testMidStreamFailureIsNotDressedAsSuccess() {
+  var destroyed = false;
+  var res = _mockRes();
+  res.headersSent = true;                       // the status line is already out
+  res.destroy = function () { destroyed = true; };
+  var handler = b.errorPage.create({ env: "production", log: quietLog, audit: false });
+  handler(new Error("cursor died halfway"), _mockReq({ headers: { accept: "text/csv" } }), res);
+
+  check("a failure after the first byte destroys the connection", destroyed === true);
+  var captured = res._captured();
+  check("it does not append prose to the body the client already has",
+        String(captured.body || "").indexOf("Internal Server Error") === -1);
+  check("and it does not claim a status it cannot send",
+        captured.status === undefined || captured.status === null);
+
+  // Nothing changes before the first byte: the handler still owns the response.
+  var fresh = _mockRes();
+  handler(new Error("failed before writing"), _mockReq({ headers: { accept: "text/html" } }), fresh);
+  check("a failure before the first byte still writes a real error page",
+        fresh._captured().status === 500 && String(fresh._captured().body).length > 0);
+}
+
 async function run() {
   testSurface();
+  testMidStreamFailureIsNotDressedAsSuccess();
   testClassifyViaJson();
   testClassifyDefaultMessages();
   testDevHtmlEdgeReq();
