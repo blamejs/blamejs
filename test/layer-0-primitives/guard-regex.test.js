@@ -81,6 +81,13 @@ function testProvablyUnambiguousShapesAccepted() {
     "(?:\\d+,)*",
     "(?:[a-z]+_)*",
     "^/blog/(?:[a-z0-9-]+/)*[a-z0-9-]+$",
+    // A varying body is not by itself ambiguous. Every repetition here must
+    // begin at an `a`, and the optional tail cannot be re-attributed to the
+    // next one, so the split is decided — measured flat to 200,000 characters.
+    // Refusing these would re-open the complaint this release set out to fix.
+    "(?:ab?)+c",
+    "(?:ab?c?)+d",
+    "(?:a[0-9]{0,2})+z",
   ];
   linear.forEach(function (src) {
     check("assertSafe accepts provably-unambiguous " + JSON.stringify(src), assertSafeAccepts(src));
@@ -144,6 +151,21 @@ function testAmbiguousShapesStillRefused() {
     "(?:b|c)+(?:d|e)+",
     "(?:(?:[a-z]+)+-)*",           // the body carries its own nested quantifier
     "(?:[a-z]+)*-",                // the delimiter is OUTSIDE the group
+    // A repeated group is catastrophic when its body can match a VARYING
+    // number of characters that the next repetition could have taken instead
+    // — the quantifier doing the varying need not be unbounded. `{1,2}` and
+    // `?` vary just as `+` does, and the detector counted only the unbounded
+    // ones, so a dotted-quad or version validator an operator would plausibly
+    // write was accepted and pins a core on ~30 characters.
+    "^(?:\\d{1,3}\\.?)+$",
+    "(?:a{1,2})+b",
+    "^(?:a?a?)+b",
+    "^(?:[a-z]{1,2})+$",
+    "^(?:[A-Za-z0-9]{1,2})+$",
+    "^(?:\\w{0,3})+$",
+    "^(?:[a-z]{1,3}\\.?)+$",
+    "(?:a?)+",
+    "(?:ab?b?)+c",                 // two optional atoms over the same character
     // the classic catastrophic set, unchanged
     "(a+)+$", "((a)+)+", "(?:a+)+", "(([a-z]+)*)*", "(a+){2,}",
   ];
