@@ -120,13 +120,222 @@ async function testThrowOnTheFirstRowStillEndsTheTransfer() {
   var destroyed = false;
   res.destroy = function () { destroyed = true; res.destroyed = true; };
   async function* failsImmediately() {
-    throw new Error("query rejected");
-    yield "unreachable";                             // eslint-disable-line no-unreachable
+    if (res) throw new Error("query rejected");       // always taken; keeps the yield reachable
+    yield "never";
   }
   var caught = null;
   try { await b.render.stream(res, failsImmediately()); } catch (e) { caught = e; }
   check("the failure is re-thrown", caught !== null);
   check("the response does not stay open once its headers are out", destroyed === true);
+}
+
+// A signal that was already aborted when the call began takes the same path as
+// one that fires mid-stream: the status line has gone out, so an empty export
+// ended normally is still a truncated one presented as success.
+async function testAPreAbortedSignalIsATruncationToo() {
+  var res = _res();
+  var destroyed = false;
+  res.destroy = function () { destroyed = true; res.destroyed = true; };
+  var ac = new AbortController();
+  ac.abort();
+  await b.render.stream(res, _rows(5), { signal: ac.signal });
+  check("a signal aborted before the call does not end as a success", destroyed === true);
+  check("and nothing was produced", res._captured().length === 0);
+}
+
+// A rejected iterator step does not run `for await`'s cleanup, so a producer
+// abandoned mid-pull stays suspended and whatever it holds — a cursor, a file
+// handle, a `finally` that closes a connection — is never released.
+async function testTheProducerIsReleasedWhenTheLoopStopsEarly() {
+  var res = _res();
+  res.destroy = function () { res.destroyed = true; };
+  var returned = false;
+  var ac = new AbortController();
+  var source = {};
+  source[Symbol.asyncIterator] = function () {
+    return {
+      next: function () {
+        ac.abort();
+        return new Promise(function () { /* a query that never answers */ });
+      },
+      return: function () { returned = true; return Promise.resolve({ done: true }); },
+    };
+  };
+  await b.render.stream(res, source, { signal: ac.signal });
+  check("the producer is given its cleanup when an abort wins the pull", returned === true);
+
+  // The same when the PEER goes rather than the caller aborting.
+  var res2 = _res();
+  var returned2 = false;
+  var source2 = {};
+  source2[Symbol.asyncIterator] = function () {
+    return {
+      next: function () {
+        res2.destroyed = true;
+        res2.emit("close");
+        return new Promise(function () { /* never answers */ });
+      },
+      return: function () { returned2 = true; return Promise.resolve({ done: true }); },
+    };
+  };
+  var settled = false;
+  b.render.stream(res2, source2).then(function () { settled = true; }, function () { settled = true; });
+  await helpers.waitUntil(function () { return settled; }, {
+    timeoutMs: 4000, label: "render.stream: a disconnect settles a blocked pull",
+  });
+  check("a disconnect during a blocked pull settles the stream", settled === true);
+  check("and releases the producer", returned2 === true);
+}
+
+// `return()` on an async generator queues behind the pull it means to cancel,
+// so a generator parked in an unresolved `await` never reaches its `finally`
+// and whatever it holds stays open. Cancellation has to reach that pending work
+// instead, which is what the signal handed to a producer function is for.
+async function testCancellationReachesAGeneratorBlockedInItsOwnAwait() {
+  var res = _res();
+  res.destroy = function () { res.destroyed = true; };
+  var ended = false;
+  res.on("finish", function () { ended = true; });
+  var ac = new AbortController();
+  var cursorClosed = false;
+  var pullStarted = false;
+
+  // A real async generator — not a hand-written iterator with an obliging
+  // `return()`, which is exactly what hides this.
+  async function* rows(signal) {
+    try {
+      yield "header\n";
+      pullStarted = true;
+      await new Promise(function (resolve, reject) {
+        // The query the client walked away from. Only the signal ends it.
+        signal.addEventListener("abort", function () { reject(new Error("cancelled")); },
+                                { once: true });
+      });
+      yield "never\n";
+    } finally {
+      cursorClosed = true;
+    }
+  }
+
+  var done = false;
+  b.render.stream(res, function (signal) { return rows(signal); }, { signal: ac.signal })
+    .then(function () { done = true; }, function () { done = true; });
+  await helpers.waitUntil(function () { return pullStarted; }, {
+    timeoutMs: 4000, label: "render.stream: the generator reached its blocking await",
+  });
+  ac.abort();
+  await helpers.waitUntil(function () { return done && cursorClosed; }, {
+    timeoutMs: 4000, label: "render.stream: the blocked generator ran its finally",
+  });
+  check("a generator blocked in its own await still releases what it holds", cursorClosed === true);
+  check("and the truncated response is not passed off as complete",
+        ended === false && res.destroyed === true);
+
+  // A producer that ignores the signal is still not allowed to hold the
+  // response open — the stream settles and the transfer is broken either way.
+  var res2 = _res();
+  res2.destroy = function () { res2.destroyed = true; };
+  var ac2 = new AbortController();
+  async function* stubborn() { yield "a"; await new Promise(function () {}); }
+  var settled2 = false;
+  b.render.stream(res2, stubborn(), { signal: ac2.signal })
+    .then(function () { settled2 = true; }, function () { settled2 = true; });
+  await helpers.waitUntil(function () { return res2._captured().length >= 1; }, {
+    timeoutMs: 4000, label: "render.stream: the stubborn producer wrote its first chunk",
+  });
+  ac2.abort();
+  await helpers.waitUntil(function () { return settled2; }, {
+    timeoutMs: 4000, label: "render.stream: an unco-operative producer does not pin the response",
+  });
+  check("an unco-operative producer does not keep the response alive", settled2 === true);
+}
+
+// A source that throws while being opened must not leave a committed response
+// behind: the status line is not written until there is something to stream.
+async function testAFailureToOpenTheSourceIsNotACommittedResponse() {
+  var res = _res();
+  var ended = false;
+  res.on("finish", function () { ended = true; });
+  var boom = {};
+  boom[Symbol.asyncIterator] = function () { throw new Error("cannot open cursor"); };
+  var caught = null;
+  try { await b.render.stream(res, boom); } catch (e) { caught = e; }
+  check("an iterator method that throws reaches the caller", caught !== null &&
+        caught.message === "cannot open cursor");
+  check("with nothing committed, so an error page is still possible",
+        res.headersSent === false && ended === false);
+
+  var res2 = _res();
+  var caught2 = null;
+  try {
+    await b.render.stream(res2, function () { throw new Error("no connection"); });
+  } catch (e) { caught2 = e; }
+  check("so does a producer factory that throws", caught2 !== null &&
+        caught2.message === "no connection");
+  check("and it commits nothing either", res2.headersSent === false);
+
+  var res3 = _res();
+  var caught3 = null;
+  try { await b.render.stream(res3, function () { return 42; }); } catch (e) { caught3 = e; }
+  check("a factory that does not return an iterable is refused", caught3 !== null);
+}
+
+// A producer that breaks the iterator protocol has to fail, not be tolerated:
+// reading `done` off a non-object yields undefined every time, so a forgiving
+// loop pulls from it forever with the response held open.
+async function testAMalformedIteratorFailsRatherThanSpinning() {
+  var res = _res();
+  var destroyed = false;
+  res.destroy = function () { destroyed = true; res.destroyed = true; };
+  var pulls = 0;
+  var broken = {};
+  broken[Symbol.asyncIterator] = function () {
+    return { next: function () { pulls += 1; return Promise.resolve(undefined); } };
+  };
+  var caught = null;
+  var settled = false;
+  b.render.stream(res, broken).then(function () { settled = true; },
+                                    function (e) { caught = e; settled = true; });
+  await helpers.waitUntil(function () { return settled; }, {
+    timeoutMs: 4000, label: "render.stream: a malformed producer settles rather than spinning",
+  });
+  check("a step that is not an iterator result is a failure", caught instanceof TypeError);
+  check("and it is not retried in a loop", pulls === 1);
+  check("and the committed response is broken rather than completed", destroyed === true);
+
+  // The same for a sync iterable, whose `next` is not wrapped in a promise.
+  var res2 = _res();
+  res2.destroy = function () { res2.destroyed = true; };
+  var syncBroken = {};
+  syncBroken[Symbol.iterator] = function () { return { next: function () { return null; } }; };
+  var caught2 = null;
+  try { await b.render.stream(res2, syncBroken); } catch (e) { caught2 = e; }
+  check("a sync producer breaking the protocol fails too", caught2 instanceof TypeError);
+}
+
+// `for await` resolves a promise yielded by a SYNC iterable before handing it
+// on; a hand-rolled loop that skips that writes "[object Promise]" into the
+// export.
+async function testASyncIterableMayYieldPromises() {
+  var res = _res();
+  await b.render.stream(res, [Promise.resolve("a,"), "b,", Promise.resolve("c")]);
+  check("promised chunks from a sync iterable are resolved before writing",
+        res._captured().toString("utf8") === "a,b,c");
+
+  // A rejected one is a mid-stream failure like any other.
+  var res2 = _res();
+  var destroyed = false;
+  var ended2 = false;
+  res2.on("finish", function () { ended2 = true; });
+  res2.destroy = function () { destroyed = true; res2.destroyed = true; };
+  var caught = null;
+  try {
+    await b.render.stream(res2, ["a", Promise.reject(new Error("row 2 failed"))]);
+  } catch (e) { caught = e; }
+  check("a rejected chunk surfaces to the caller", caught !== null &&
+        caught.message === "row 2 failed");
+  check("and breaks the transfer rather than completing it", destroyed === true &&
+        ended2 === false);
 }
 
 async function testOnErrorRethrowLeavesTheSocketToTheCaller() {
@@ -388,6 +597,12 @@ async function run() {
   await testStopsWhenThePeerGoes();
   await testMidStreamThrowDestroysRatherThanLying();
   await testThrowOnTheFirstRowStillEndsTheTransfer();
+  await testAPreAbortedSignalIsATruncationToo();
+  await testTheProducerIsReleasedWhenTheLoopStopsEarly();
+  await testCancellationReachesAGeneratorBlockedInItsOwnAwait();
+  await testAFailureToOpenTheSourceIsNotACommittedResponse();
+  await testAMalformedIteratorFailsRatherThanSpinning();
+  await testASyncIterableMayYieldPromises();
   await testOnErrorRethrowLeavesTheSocketToTheCaller();
   await testRejectsInputItCannotStream();
   await testWriteChunkSettlesOnAClosedStream();

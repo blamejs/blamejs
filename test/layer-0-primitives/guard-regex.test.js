@@ -748,6 +748,55 @@ function testUnanchoredScanCost() {
   check("wrapping an anchored pattern is still fine",
         assertSafeAccepts("^(a+b)$") && assertSafeAccepts("(?:^a+b$)"));
 
+  // The run that walks away need not be the FIRST thing in the pattern. A
+  // fixed atom in front costs an attempt nothing, so `aa+b` scans every suffix
+  // from every position exactly as `a+b` does.
+  check("a fixed atom in front does not bound the scan",
+        assertSafeAccepts("aa+b") === false && assertSafeAccepts("a.*b") === false);
+  // Unless that atom is something the run cannot eat: no single input can both
+  // match a leading dot everywhere and feed a run of hex digits.
+  check("but a mandatory prefix the run cannot consume does",
+        assertSafeAccepts("\\.[a-f0-9]{8,}\\."));
+
+  // An assertion after the run consumes nothing and can still refuse, which is
+  // what sends the engine back to the next starting position.
+  check("a trailing anchor is a late failure point",
+        assertSafeAccepts("a+$") === false);
+  check("so is a trailing lookahead",
+        assertSafeAccepts("a+(?=b)") === false);
+  // But only when the run cannot satisfy it. A lookahead asking for what the
+  // run just ate is answered by handing one character back, and a NEGATIVE one
+  // asking about a character the run never matches is answered by standing
+  // still — both settle on the first attempt.
+  check("a lookahead the run itself satisfies is not a failure point",
+        assertSafeAccepts("a+(?=a)") && assertSafeAccepts("\\w+(?=\\w)"));
+  check("and one it satisfies with room to spare",
+        assertSafeAccepts("a+(?=[ab])") && assertSafeAccepts("a+(?=ab?)") &&
+        assertSafeAccepts("a+(?=a|b)"));
+  // What it can START with does not decide it. `(?=a[^a])` opens on ground a
+  // run of `a` covers and then asks for a character that run never supplies,
+  // so it fails at every depth the engine backtracks to.
+  check("a lookahead the run can begin but not finish is still a failure point",
+        assertSafeAccepts("a+(?=a[^a])") === false &&
+        assertSafeAccepts("a+(?=aab)") === false &&
+        assertSafeAccepts("a+(?=b|c)") === false);
+  check("nor is a negative lookahead the run can never trip",
+        assertSafeAccepts("a+(?!b)") && assertSafeAccepts("[a-z]+(?![0-9])"));
+  check("nor one that forbids only what a greedy run has already eaten",
+        assertSafeAccepts("a+(?!a)") && assertSafeAccepts("[a-z]+(?![a-c])"));
+  // The partial overlap is the one that walks back through the run refusing at
+  // every step: `a+(?![ab])` on a run of `a` ending in `b`.
+  check("a negative lookahead reaching both inside and outside the run does fail late",
+        assertSafeAccepts("a+(?![ab])") === false &&
+        assertSafeAccepts("[ab]+(?![bc])") === false);
+
+  // A suffix the run could always hand back is not a failure point: wherever
+  // the run matched enough, the match succeeds on its first attempt.
+  check("a suffix the run itself satisfies is not quadratic",
+        assertSafeAccepts("a+a") && assertSafeAccepts("\\w+\\w"));
+  check("but a suffix INSIDE the run's characters still is",
+        assertSafeAccepts(".*b") === false);
+
   // It is its own rule, so an operator who bounds the subject length instead
   // can turn it off without giving up the backtracking classes.
   var relaxed = b.guardRegex.validate("(\\w+)\\s+(\\d+)",

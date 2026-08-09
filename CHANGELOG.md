@@ -16,6 +16,8 @@ Separately, the screen only ever modelled what ONE match attempt costs. An unanc
 
 The third is the one worth fixing centrally, and it is fixed for every route rather than only for streaming ones — see the Fixed entry below.
 
+Stopping the loop is not the same as stopping the producer. Calling `return()` on an async generator queues behind the pull it is trying to cancel, so a generator parked in `await query()` does not reach its `finally` — and the cursor, connection or file handle it holds stays open — until that query finishes on its own, long after the client has gone. Pass a function in place of the iterable and it is called with a signal that aborts when the client disconnects, the caller aborts, or the stream fails, so a producer can cancel work already in flight.
+
 The drain-aware write is now `b.safeAsync.writeChunk(writable, chunk)`, which is what the archive writer had been carrying privately. One implementation, so the closed-peer case — the half that hangs a request rather than failing it — cannot be got right in one place and wrong in the other.
 
 `b.testing.streamingRes` takes a `highWaterMark`. Its `write()` always returned true, which is the one thing a real socket does not do, so a consumer that discards the return value looked correct against the double and failed against a slow client. Past the mark it now reports full and emits `drain` on the next tick. · *guardRegex reports the cost of retrying an unanchored pattern at every position* — Every analysis in the screen reasons about one match attempt: whether a repetition's parts compete for the same characters, whether the boundary between two terms can float, how many ways a body can match. None of it says anything about how many attempts there are.
