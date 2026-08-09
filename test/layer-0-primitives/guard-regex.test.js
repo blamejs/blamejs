@@ -504,6 +504,53 @@ function testEverySpellingOfAmbiguityIsRefused() {
   check("the class alone is still accepted",
         assertSafeAccepts("^[^\\D]+$"));
 
+  // Under `u` a surrogate pair is ONE character to the engine, so a quantifier
+  // after it repeats the whole code point. Read a code unit at a time, an
+  // astral literal looks like a fixed lead followed by a repeated trail — and
+  // the canonical nested quantifier written with an emoji stopped looking like
+  // one.
+  var astral = String.fromCodePoint(0x1f600);
+  check("an astral literal is one atom under the u flag",
+        assertSafeAccepts2(new RegExp("^(?:" + astral + "+)+!$", "u")) === false);
+  check("and its branches overlap the same way",
+        assertSafeAccepts2(new RegExp("^(?:" + astral + "|" + astral + ")+!$", "u")) === false);
+  check("one repetition of it is still fine",
+        assertSafeAccepts2(new RegExp("^" + astral + "+!$", "u")));
+
+  // Two positions repeating over characters they share, with nothing after them
+  // but an anchor. The engine still comes back to try another split whenever
+  // the match can fail, and it can fail on any character neither position
+  // accepts — which is the difference between these and the linear
+  // `^\s*.*$`, where between them they accept everything.
+  var anchored = [
+    ["^a*a*$", false], ["^a*a*a*$", false], ["^[a-z]*[a-z0-9]*$", false],
+    ["^(?:a*)(?:a*)$", false],
+    ["^\\s*.*$", true], ["^\\w+\\s*=\\s*.*$", true],
+    ["^a*b*c*d*!$", true],
+  ];
+  anchored.forEach(function (pair) {
+    check((pair[1] ? "accepts " : "refuses ") + JSON.stringify(pair[0]),
+          assertSafeAccepts(pair[0]) === pair[1]);
+  });
+
+  // Positions that are each cheap on their own are not cheap together: their
+  // ways of matching multiply, so four of them divide a run four-deep.
+  check("bounded positions compose rather than each being excused",
+        assertSafeAccepts("^a{0,4095}a{0,4095}x$") === false &&
+        assertSafeAccepts("^a{0,4095}a{0,4095}a{0,4095}x$") === false);
+  check("but a genuinely small pair is still fine",
+        assertSafeAccepts("^\\d{1,3}\\d{1,2}x$"));
+
+  // `]` ends a character class wherever it appears. Treating the first one as
+  // a member walked past the real terminator and swallowed the rest of the
+  // pattern, so every repetition after it disappeared from the tree.
+  check("an empty class does not swallow the pattern behind it",
+        assertSafeAccepts("^[]*a*a*x$") === false);
+  check("nor does the any-class",
+        assertSafeAccepts("^[^]*[^]*x$") === false);
+  check("both are still read as the classes they are",
+        assertSafeAccepts("^[]$") && assertSafeAccepts("^[^]$"));
+
   // The screener must not become the denial of service it exists to prevent.
   // A kilobyte of pairwise-disjoint 256-character ranges cost over two seconds
   // to analyse when sets were arrays and folding was repeated at each reader.
