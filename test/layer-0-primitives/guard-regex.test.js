@@ -184,13 +184,15 @@ function testAmbiguousShapesStillRefused() {
     check("assertSafe still refuses ambiguous " + JSON.stringify(src), assertSafeAccepts(src) === false);
   });
 
-  // The alternation shape check has always been paren-blind: a branch holding
-  // a group means its `[^()]*` cannot span the alternation, so the check never
-  // fires and the analysis above is never consulted. Pinned so a later change
-  // to either half is a deliberate one — the pattern is linear (`x` and `y`
-  // cannot both start a branch), so accepting it is right.
-  check("a grouped branch does not reach the alternation check at all",
+  // A branch holding a group reaches the analysis and is judged on what it
+  // matches: a group that neither repeats nor alternates is its own contents,
+  // so `(x)` is `x`. This pattern is linear — `x` and `y` cannot both start a
+  // branch — and is accepted because that was proven, not because the check
+  // could not see it.
+  check("a grouped branch is analysed, and a disjoint one is accepted",
         assertSafeAccepts("(?:(x)|y)+"));
+  check("a grouped branch that OVERLAPS its sibling is refused",
+        assertSafeAccepts("(?:(x)|x)+") === false);
 }
 
 // The screener must not become the denial of service it exists to prevent.
@@ -257,6 +259,38 @@ function testRegExpFlagsReachTheAnalysis() {
         assertSafeAccepts2(/^(?:[A-Z]+z)*$/));
   check("case-insensitive delimiter genuinely outside the class accepted",
         assertSafeAccepts2(/^(?:[a-z]+-)*$/i));
+  // The boundary proof asks what a LATER term can match, which is the union of
+  // its atoms. Folding case after combining that union loses which characters
+  // a positive atom supplied: `[^ab]` unioned with `A` is everything-but-a-and-b,
+  // and folding THAT excludes `a` outright — so `A`, which matches `a` under
+  // `i`, reads as unable to consume the `a` delimiter of the group before it.
+  // The split between the two groups floats, and the pattern is super-linear.
+  check("a later term reaching the delimiter only by case folding is refused",
+        assertSafeAccepts2(/^(?:x+a)*(?:[^ab]A)*!$/i) === false);
+  check("the same shape with more of the pattern in front is refused too",
+        assertSafeAccepts2(/^(?:x+a)*(?:[^abA]+A)*(?:[^abA]A)*!$/i) === false);
+  check("the same source WITHOUT the flag is still refused (a is a plain overlap)",
+        assertSafeAccepts2(/^(?:x+a)*(?:[^ab]a)*!$/) === false);
+  check("a later term that genuinely cannot reach the delimiter is still proven",
+        assertSafeAccepts2(/^(?:x+a)*(?:[^abA]B)*!$/i));
+
+  // The same overlapping alternation, spelled three ways. A shape check that
+  // reads the pattern differently from the analysis that judges it lets the
+  // spellings it cannot see straight through: `{1,}` IS `+`, and one paren
+  // around a branch changes nothing about how the engine backtracks. Both were
+  // exponential and accepted at every profile.
+  check("an overlapping alternation is refused as `+`", assertSafeAccepts2(/^(a|a)+$/) === false);
+  check("the same repetition spelled `{1,}` is refused too",
+        assertSafeAccepts2(/^(a|a){1,}$/) === false);
+  check("and spelled `{0,}`", assertSafeAccepts2(/^(a|a){0,}$/) === false);
+  check("a branch wrapped in a group does not hide the overlap",
+        assertSafeAccepts2(/^((a)|a)+$/) === false);
+  check("nor does wrapping the other branch",
+        assertSafeAccepts2(/^(?:a|(a))+$/) === false);
+  check("a bounded repetition of the same alternation is not this rule's shape",
+        assertSafeAccepts2(/^(a|a){1,2}$/));
+  check("a disjoint alternation spelled `{1,}` is still proven",
+        assertSafeAccepts2(/^(?:b|c){1,}$/));
   // A caller screening a raw STRING declares the flags it will compile with.
   var strictOpts = function (f) {
     return { profile: "strict", boundedRepeatPolicy: "allow", regexFlags: f };

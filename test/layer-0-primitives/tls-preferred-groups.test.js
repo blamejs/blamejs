@@ -476,6 +476,7 @@ async function run() {
   testEveryPreferredGroupIsKnownToTheRuntime();
   testExplainOutboundFailure();
   testAnnotateOutboundFailure();
+  await testCappedDialIsNotBlamedOnTls13();
   await testNarrowedGroupsReachEveryOutboundClient();
   testBuildOptionsCarriesCertCompression();
   await testRedisClientAppliesThePosture();
@@ -597,6 +598,60 @@ function testAnnotateOutboundFailure() {
   check("the capped explanation still names the group list and the peer",
         capped.indexOf("peer.example") !== -1 && /key-exchange group/.test(capped));
 
+  // The framework's own clients hand over the options object the dial used
+  // rather than copying settings out of it, so a setting the explanation
+  // learns to read is read everywhere at once.
+  var viaBag = b.network.tls.explainOutboundFailure(
+    _alert("ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE", "alert handshake failure"),
+    { host: "peer.example", port: 443,
+      tlsOpts: { maxVersion: "TLSv1.2", ecdhCurve: "X25519" } });
+  check("a cap inside the dial's own options object is honoured",
+        /TLS 1\.3 cipher/.test(viaBag) === false && /no shared cipher suite/.test(viaBag));
+  check("the group list is read from the dial's options object too",
+        viaBag.indexOf("X25519") !== -1);
+  var namedWins = b.network.tls.explainOutboundFailure(
+    _alert("ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE", "alert handshake failure"),
+    { host: "peer.example", ecdhCurve: "X25519MLKEM768",
+      tlsOpts: { ecdhCurve: "X25519" } });
+  check("a setting named beside the options object wins over it",
+        namedWins.indexOf("X25519MLKEM768") !== -1);
+  var viaMethod = b.network.tls.explainOutboundFailure(
+    _alert("ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE", "alert handshake failure"),
+    { host: "peer.example",
+      tlsOpts: { secureProtocol: "TLSv1_2_method", ecdhCurve: "X25519" } });
+  check("a version-pinned secureProtocol caps the dial as maxVersion does",
+        /TLS 1\.3 cipher/.test(viaMethod) === false);
+  var viaFlexible = b.network.tls.explainOutboundFailure(
+    _alert("ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE", "alert handshake failure"),
+    { host: "peer.example",
+      tlsOpts: { secureProtocol: "TLS_client_method", ecdhCurve: "X25519" } });
+  check("a version-flexible secureProtocol still reaches TLS 1.3",
+        /no shared TLS 1\.3 cipher suite/.test(viaFlexible));
+  // SSLv23_method reads like the version-flexible one and is not: Node maps it
+  // to TLS_method with the ceiling held at TLS 1.2.
+  var viaSslv23 = b.network.tls.explainOutboundFailure(
+    _alert("ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE", "alert handshake failure"),
+    { host: "peer.example",
+      tlsOpts: { secureProtocol: "SSLv23_method", ecdhCurve: "X25519" } });
+  check("SSLv23_method is read as the TLS 1.2 ceiling it is",
+        /TLS 1\.3 cipher/.test(viaSslv23) === false);
+  // Same predicate, other consumer: the framework must not advertise a TLS 1.3
+  // extension on a context that cannot reach TLS 1.3. Node refuses the whole
+  // options object rather than ignoring it, so this is a bind-time crash.
+  var cappedCtx = b.network.tls.applyToContext({ base: { maxVersion: "TLSv1.2" } });
+  var methodCtx = b.network.tls.applyToContext({ base: { secureProtocol: "SSLv23_method" } });
+  var openCtx   = b.network.tls.applyToContext({ base: {} });
+  check("certificate compression is left off a context capped below TLS 1.3",
+        cappedCtx.certificateCompression === undefined &&
+        methodCtx.certificateCompression === undefined);
+  check("and is still advertised on one that reaches it (control)",
+        Array.isArray(openCtx.certificateCompression) &&
+        openCtx.certificateCompression.length > 0);
+  var builtCapped = true, builtMethod = true;
+  try { tls.createSecureContext(cappedCtx); } catch (_e4) { builtCapped = false; }
+  try { tls.createSecureContext(methodCtx); } catch (_e5) { builtMethod = false; }
+  check("the runtime accepts both capped contexts", builtCapped && builtMethod);
+
   // The stack has to be read BEFORE annotating for this to test anything. V8
   // formats Error.stack on first access, so an untouched error renders its
   // stack from whatever the message is by then — the rewrite could be absent
@@ -646,6 +701,74 @@ function testAnnotateOutboundFailure() {
   b.network.tls.annotateOutboundFailure(untouched, { host: "peer.example" });
   check("annotate leaves an error it cannot explain exactly as it was",
         untouched.message === "connect ECONNREFUSED 10.0.0.1:443");
+}
+
+
+// A dial capped below TLS 1.3 must not be sent after a TLS 1.3 cipher list,
+// and it is the SHIPPED clients that have to honour that, not only a
+// hand-written explainOutboundFailure call. Each client builds the diagnostic
+// context from the options its dial used, so a cap the client never forwards
+// is a cap the explanation never sees.
+//
+// The fixture forces a generic handshake-failure alert without any group or
+// version disagreement: a TLS 1.2-only server offering one RSA-authenticated
+// cipher suite, holding an ECDSA certificate. Nothing can be selected, the
+// peer sends alert 40, and TLS 1.3 was never on the wire.
+async function testCappedDialIsNotBlamedOnTls13() {
+  var nodeTls = require("node:tls");
+  var https   = require("node:https");
+  var pair    = helpers.selfSignedPair();
+  var srv = nodeTls.createServer({
+    key: pair.key, cert: pair.cert,
+    minVersion: "TLSv1.2", maxVersion: "TLSv1.2",
+    ciphers: "ECDHE-RSA-AES128-GCM-SHA256",
+  }, function (s) { s.on("error", function () { /* peer reset */ }); });
+  srv.on("tlsClientError", function () { /* expected — nothing can be selected */ });
+  srv.on("error", function () { /* listen/accept best-effort */ });
+  srv.unref();
+  await new Promise(function (r) { srv.listen(0, "127.0.0.1", r); });
+  var port = srv.address().port;
+
+  async function _dialFailure(fn) {
+    try { await fn(); return null; }
+    catch (e) { return (e && e.message) || String(e); }
+  }
+
+  var viaAgent = await _dialFailure(function () {
+    return b.httpClient.request({
+      url: "https://127.0.0.1:" + port + "/",
+      allowInternal: true, allowedHosts: ["127.0.0.1"], timeout: 4000,
+      agent: new https.Agent({
+        minVersion: "TLSv1.2", maxVersion: "TLSv1.2", ecdhCurve: "X25519",
+        ca: [pair.cert], servername: "localhost",
+      }),
+    });
+  });
+
+  var viaWs = await new Promise(function (resolve) {
+    var conn = require("../../lib/ws-client").connect("wss://127.0.0.1:" + port + "/", {
+      reconnect: false, audit: false, allowInternal: true, handshakeTimeoutMs: 4000,
+      tlsOpts: {
+        minVersion: "TLSv1.2", maxVersion: "TLSv1.2", ecdhCurve: "X25519",
+        ca: [pair.cert], servername: "localhost",
+      },
+    });
+    conn.on("error", function (e) { resolve((e && e.message) || String(e)); });
+    conn.on("open", function () { try { conn.close(); } catch (_e) { /* teardown */ } resolve(null); });
+  });
+  srv.close();
+
+  // Controls: a vacuous pass here would mean the fixture stopped producing the
+  // alert the assertions are about, not that the caps are honoured.
+  check("the capped agent dial was refused with a generic handshake alert (control)",
+        typeof viaAgent === "string" && /generic failure alert/.test(viaAgent));
+  check("the capped wss:// dial was refused with a generic handshake alert (control)",
+        typeof viaWs === "string" && /generic failure alert/.test(viaWs));
+
+  check("a caller's TLS 1.2-capped agent is not sent after a TLS 1.3 cipher list",
+        /TLS 1\.3 cipher/.test(viaAgent) === false && /no shared cipher suite/.test(viaAgent));
+  check("a wss:// tlsOpts cap is not sent after a TLS 1.3 cipher list",
+        /TLS 1\.3 cipher/.test(viaWs) === false && /no shared cipher suite/.test(viaWs));
 }
 
 
