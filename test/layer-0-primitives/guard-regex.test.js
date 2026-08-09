@@ -479,6 +479,31 @@ function testEverySpellingOfAmbiguityIsRefused() {
     check("accepts " + JSON.stringify(src), assertSafeAccepts(src));
   });
 
+  // A lookaround consumes nothing, so it takes no characters from what follows
+  // — but the engine backtracks inside an assertion exactly as it does outside
+  // one, and a body skipped to its closing parenthesis is a body never judged.
+  var lookarounds = [
+    ["^(?=((a|a)+!))", false],
+    ["^(?=(a+)+b)", false],
+    ["^(?<=x)(a|a)+$", false],
+    ["^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d).{8,}$", true],   // the everyday password policy
+    ["^(?!.*\\.\\.)[\\w.]+$", true],
+    ["^(?=[a-z])[a-z0-9]{2,30}$", true],
+  ];
+  lookarounds.forEach(function (pair) {
+    check((pair[1] ? "accepts " : "refuses ") + JSON.stringify(pair[0]),
+          assertSafeAccepts(pair[0]) === pair[1]);
+  });
+
+  // A negated shorthand inside a negated class is a complement of a complement.
+  // Copying its exclusions in as members and then negating the class states the
+  // opposite of what it means, which made two branches that both match a digit
+  // look disjoint.
+  check("a double-negated class does not read as its own opposite",
+        assertSafeAccepts("(?:[^\\D]|5)+!$") === false);
+  check("the class alone is still accepted",
+        assertSafeAccepts("^[^\\D]+$"));
+
   // The screener must not become the denial of service it exists to prevent.
   // A kilobyte of pairwise-disjoint 256-character ranges cost over two seconds
   // to analyse when sets were arrays and folding was repeated at each reader.
