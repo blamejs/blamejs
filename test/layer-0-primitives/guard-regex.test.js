@@ -669,6 +669,31 @@ function testSeparatorsAndVaryingPartsAreJudgedOnWhatTheyMatch() {
   check("accepts the published semver validation pattern", assertSafeAccepts(semver));
   check("accepts the WHATWG email-input pattern", assertSafeAccepts(email));
 
+  // A separator only separates when there is something on the other side of
+  // it. If the rest of the body can match nothing, the body IS the separator
+  // and a run of its characters divides among repetitions every possible way —
+  // `(?:b*a+)+` is `(a+)+` with a nullable decoration.
+  var nullableRemainder = [
+    "^(?:b*a+)+$", "^(?:\\s*[a-z]+)+$", "^(?:\\d*[a-z]+)+$",
+    "^(?:a+b*)+$", "^(?:[bc]*a+)+$", "^(?:[^a]*a+)*$",
+  ];
+  nullableRemainder.forEach(function (src) {
+    check("a separator with a nullable remainder is refused " + JSON.stringify(src),
+          assertSafeAccepts(src) === false);
+  });
+  check("the same shapes with a mandatory remainder are still proven",
+        assertSafeAccepts("^(?:b+a+)+$") && assertSafeAccepts("^(?:b*a)+$"));
+
+  // Two varying parts can trade through a fixed-width term between them: in
+  // `a*[ab]b*` the segment "aab" parses two ways, so comparing only the
+  // varying parts to each other misses it — `[ab]` bridges {a} and {b}.
+  check("varying parts that trade through a fixed term between them are refused",
+        assertSafeAccepts("^(?:a*[ab]b*-)+$") === false);
+  check("and through a wider bridging class",
+        assertSafeAccepts("^(?:[a-z]*[a-z0-9][0-9]*-)+$") === false);
+  check("a fixed term that bridges nothing still lets the parts be proven",
+        assertSafeAccepts("^(?:[a-z]*=[0-9]*-)+$"));
+
   // The separator has to be something a repetition MUST contain, and the
   // varying parts still have to be unable to trade characters.
   var ambiguous = [
@@ -711,6 +736,17 @@ function testUnanchoredScanCost() {
   });
   check("the sticky flag pins the attempt to one position",
         assertSafeAccepts2(new RegExp("(\\w+)\\s+(\\d+)", "y")));
+
+  // A group around the whole pattern changes nothing about how many positions
+  // the engine tries it at, so reading only the outermost term list let one
+  // pair of parentheses hide the cost.
+  var wrapped = ["(a+b)", "([^>]*>)", "(?:(a+b))", "(?:x|a+b)"];
+  wrapped.forEach(function (src) {
+    check("a wrapping group does not hide the scan cost " + JSON.stringify(src),
+          assertSafeAccepts(src) === false);
+  });
+  check("wrapping an anchored pattern is still fine",
+        assertSafeAccepts("^(a+b)$") && assertSafeAccepts("(?:^a+b$)"));
 
   // It is its own rule, so an operator who bounds the subject length instead
   // can turn it off without giving up the backtracking classes.
