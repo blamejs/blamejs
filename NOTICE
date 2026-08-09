@@ -37,16 +37,16 @@ Used for:    RFC 9497 Oblivious Pseudo-Random Function (OPRF / VOPRF / POPRF)
 --------------------------------------------------------------------------------
 Component:   @noble/hashes
 Version:     2.3.0 (bundled inside noble-curves.cjs),
-             2.2.0 (bundled inside noble-post-quantum.cjs)
+             2.3.0 (bundled inside noble-post-quantum.cjs)
 Source:      https://github.com/paulmillr/noble-hashes
 License:     MIT
 Copyright:   Copyright (c) 2022 Paul Miller (https://paulmillr.com)
 Used for:    The hash and extendable-output primitives that noble-curves.cjs
              and noble-post-quantum.cjs build on — SHA-3 / SHAKE, HMAC, HKDF.
              It is not vendored as a file of its own; each of those bundles
-             carries the version it was built against, which is why two
-             versions ship. Thank you to Paul Miller for the audited
-             noble-hashes suite.
+             carries the version it was built against, so both copies are
+             listed even when they agree. Thank you to Paul Miller for the
+             audited noble-hashes suite.
 --------------------------------------------------------------------------------
 Component:   @noble/post-quantum
 Version:     0.7.0

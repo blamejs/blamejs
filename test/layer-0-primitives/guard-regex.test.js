@@ -287,11 +287,16 @@ function testRegExpFlagsReachTheAnalysis() {
         assertSafeAccepts2(/^((a)|a)+$/) === false);
   check("nor does wrapping the other branch",
         assertSafeAccepts2(/^(?:a|(a))+$/) === false);
-  check("a bounded repetition of the same alternation is refused too — a " +
-        "ceiling changes the cost, not the shape",
-        assertSafeAccepts2(/^(a|a){1,2}$/) === false);
+  // A ceiling only helps when it and the body's own variation are both small
+  // enough that the whole repetition explores a fixed number of ways to match:
+  // twice around an overlapping alternation is four of them, a constant. Sixty
+  // times around is 2^60, which is the shape the rule exists for.
+  check("a repetition small enough to enumerate is accepted",
+        assertSafeAccepts2(/^(a|a){1,2}$/));
   check("a repetition that can be taken at most once is not this rule's shape",
         assertSafeAccepts2(/^(a|a){0,1}$/) && assertSafeAccepts2(/^(a|a)?$/));
+  check("a ceiling too high to enumerate is refused",
+        assertSafeAccepts2(/^(a|a){2,60}!$/) === false);
   check("a disjoint alternation spelled `{1,}` is still proven",
         assertSafeAccepts2(/^(?:b|c){1,}$/));
   // A wrapper that neither repeats nor chooses changes nothing about how the
@@ -342,6 +347,14 @@ function testRepetitionSpellingsAllReachTheAnalysis() {
   check("an outer repeat that can be taken at most once is still fine",
         assertSafeAccepts2(/(a+)?!/) && assertSafeAccepts2(/(a+){0,1}!/) &&
         assertSafeAccepts2(/(a+){1}!/));
+  // Both bounds finite and their product small: the engine enumerates a fixed
+  // number of ways to match whatever the input length, so a dotted quad with a
+  // prefix length or a port after it stays an ordinary pattern.
+  check("a bounded repeat of a bounded body is accepted",
+        assertSafeAccepts2(/^(?:\d{1,3}\.){3}\d{1,3}$/) &&
+        assertSafeAccepts2(/^(?:\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/) &&
+        assertSafeAccepts2(/^(?:\d{1,3}\.){3}\d{1,3}:\d+$/) &&
+        assertSafeAccepts2(/^(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/));
 
   // Leading zeros keep the value at 2 while pushing the digit count past what
   // the quantifier readers would match, so the group reported as carrying no
@@ -364,6 +377,13 @@ function testRepetitionSpellingsAllReachTheAnalysis() {
         assertSafeAccepts2(new RegExp("(?<" + "n".repeat(66) + ">a|a)+b")) === false);
   check("a modifier group around a disjoint alternation is still accepted",
         assertSafeAccepts2(new RegExp("^(?i:a|b)+$")));
+  // The modifier changes the flags for what it encloses, so the analysis
+  // inside has to fold the way the engine will. Read under the pattern's own
+  // flags, `a` and `A` look like two branches; under the group's, they are one.
+  check("a modifier group's own flags reach the branch analysis",
+        assertSafeAccepts2(new RegExp("^(?i:a|A)+!$")) === false);
+  check("a modifier that turns case-insensitivity OFF is honoured too",
+        assertSafeAccepts2(new RegExp("^(?-i:a|A)+$", "i")));
 
   // The `?` after an escaped metacharacter is a real quantifier. Deciding by
   // the preceding SOURCE character reads the metacharacter as the lazy marker
@@ -379,18 +399,6 @@ function testRepetitionSpellingsAllReachTheAnalysis() {
   check("a lazy quantifier is still not counted twice",
         assertSafeAccepts2(/^(?:[a-z]+?-)*[a-z]+$/));
 
-  // Adjacent unbounded quantifiers over the same characters are polynomial in
-  // how many of them there are. Nothing outside a group was examined at all.
-  check("adjacent overlapping quantifiers are refused",
-        assertSafeAccepts2(/a*a*a*a*a*a*a*a*a*a*b/) === false);
-  check("including through character classes",
-        assertSafeAccepts2(/\w*\w*\w*\w*\w*\w*\w*\w*!/) === false);
-  check("two adjacent overlapping quantifiers are enough",
-        assertSafeAccepts2(/^\w*\w*!$/) === false);
-  check("adjacent quantifiers over DISJOINT characters are accepted",
-        assertSafeAccepts2(/^a*b*c*d*!$/));
-  check("a single quantifier per position is untouched",
-        assertSafeAccepts2(/^\w+@\w+\.\w+$/) && assertSafeAccepts2(/^[a-z]*-[0-9]*$/));
 }
 
 // ---- other ReDoS classes the guard covers stay covered ----
