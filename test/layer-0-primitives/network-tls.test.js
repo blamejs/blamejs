@@ -618,7 +618,6 @@ function testNetworkTlsErrorPermanentClassification() {
 
 var OID_TLS_FEATURE = "1.3.6.1.5.5.7.1.24";
 var OID_CT_SCT_LIST = "1.3.6.1.4.1.11129.2.4.2";
-var OID_OCSP_NONCE  = "1.3.6.1.5.5.7.48.1.2";
 
 // ---- synthetic-cert builders --------------------------------------
 
@@ -748,65 +747,6 @@ function _sctExt(sctListRaw) {
     asn1.writeOid(OID_CT_SCT_LIST),
     asn1.writeOctetString(asn1.writeOctetString(sctListRaw)),
   ]);
-}
-
-// Build a signed BasicOCSPResponse over a single (serial, issuer) CertID.
-function _buildOcsp(o) {
-  o = o || {};
-  var serial    = o.serial || Buffer.from([0x12, 0x34, 0x56, 0x78]);
-  var issuerDer = o.issuerDer;
-  var kp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
-  var issuerPem = kp.publicKey.export({ type: "spki", format: "pem" });
-  var req = nt.ocsp.buildRequest({
-    leafCertDer:   _synthCert({ serial: serial, cn: "Leaf", keyBytes: Buffer.from("leaf-key-bytes-aaaaaaaaaaaaaaaa") }),
-    issuerCertDer: issuerDer,
-    nonce:         false,
-  });
-  var reqTop  = asn1.readNode(req.requestDer);
-  var reqTbs  = asn1.readSequence(reqTop.value)[0];
-  var reqList = asn1.readSequence(reqTbs.value)[0];
-  var reqOne  = asn1.readSequence(reqList.value)[0];
-  var certId  = asn1.readSequence(reqOne.value)[0];
-
-  var certStatus;
-  if (o.status === "revoked") {
-    certStatus = asn1.writeContextImplicit(1, asn1.writeNode(0x18, Buffer.from("20250101000000Z")));
-  } else if (o.status === "unknown") {
-    certStatus = asn1.writeContextImplicit(2, Buffer.alloc(0));
-  } else {
-    certStatus = asn1.writeContextImplicit(0, Buffer.alloc(0));
-  }
-  var timeTag = o.timeTag === undefined ? 0x18 : o.timeTag;
-  var thisU = asn1.writeNode(timeTag, Buffer.from(o.thisUpdate || "20250615000000Z"));
-  var srKids = [certId.raw, certStatus, thisU];
-  if (o.nextUpdate !== null) {
-    srKids.push(asn1.writeContextExplicit(0, asn1.writeNode(0x18,
-      Buffer.from(o.nextUpdate || "20991231000000Z"))));
-  }
-  var singleResponse = asn1.writeSequence(srKids);
-  var responderId = asn1.writeContextExplicit(2, asn1.writeOctetString(Buffer.alloc(20, 0xcc)));
-  var producedAt  = asn1.writeNode(0x18, Buffer.from("20250615000000Z"));
-  var responses   = asn1.writeSequence([singleResponse]);
-  var rdKids = [responderId, producedAt, responses];
-  if (o.nonce) {
-    var nonceExt = asn1.writeSequence([
-      asn1.writeOid(OID_OCSP_NONCE),
-      asn1.writeOctetString(asn1.writeOctetString(o.nonce)),
-    ]);
-    rdKids.push(asn1.writeContextExplicit(1, asn1.writeSequence([nonceExt])));
-  }
-  var tbs = asn1.writeSequence(rdKids);
-  var sig = o.badSig
-    ? Buffer.alloc(70, 0x00)
-    : nodeCrypto.sign("sha256", tbs, kp.privateKey);
-  var sigAlg = asn1.writeSequence([asn1.writeOid(o.sigAlgOid || "1.2.840.10045.4.3.2")]);
-  var basic  = asn1.writeSequence([tbs, sigAlg, asn1.writeBitString(sig)]);
-  var rbInner = asn1.writeSequence([asn1.writeOid("1.3.6.1.5.5.7.48.1.1"), asn1.writeOctetString(basic)]);
-  var der = asn1.writeSequence([
-    asn1.writeNode(0x0a, Buffer.from([0])),
-    asn1.writeContextExplicit(0, rbInner),
-  ]);
-  return { der: der, issuerPem: issuerPem };
 }
 
 function _ctLeafHash(signedEntryDer, ts) {
@@ -1231,7 +1171,7 @@ function testOcspParseUnsupportedResponseType() {
 
 function testOcspParseBadTime() {
   var issuer = _synthCert({ serial: Buffer.from([0x01]), cn: "T CA", keyBytes: Buffer.from("real-ca-key-bytes-aaaaaaaaaaaaaa") });
-  var fx = _buildOcsp({ issuerDer: issuer, status: "good", thisUpdate: "2025Z" });  // too short for either time form
+  var fx = helpers.buildOcspResponse({ certIdIssuerDer: issuer, certStatus: "good", rawThisUpdate: "2025Z" , rawNextUpdate: "20991231000000Z" });  // too short for either time form
   var threw = null;
   try { nt.ocsp.parseResponse(fx.der); } catch (e) { threw = e; }
   check("parseResponse rejects malformed time with ocsp-bad-time",
@@ -1241,7 +1181,7 @@ function testOcspParseBadTime() {
 function testOcspParseUtcTimeYear() {
   var issuer = _synthCert({ serial: Buffer.from([0x01]), cn: "U CA", keyBytes: Buffer.from("real-ca-key-bytes-aaaaaaaaaaaaaa") });
   // UTCTime (0x17) YY>=50 -> 19xx.
-  var fx = _buildOcsp({ issuerDer: issuer, status: "good", timeTag: 0x17, thisUpdate: "750101000000Z", nextUpdate: null });
+  var fx = helpers.buildOcspResponse({ certIdIssuerDer: issuer, certStatus: "good", timeTag: 0x17, rawThisUpdate: "750101000000Z", rawNextUpdate: null  });
   var parsed = nt.ocsp.parseResponse(fx.der);
   var ms = parsed.basic.responses[0].thisUpdate;
   check("parseResponse UTCTime YY>=50 maps to 19xx",
@@ -1251,7 +1191,7 @@ function testOcspParseUtcTimeYear() {
 function testOcspEvaluateBranches() {
   var issuer = _synthCert({ serial: Buffer.from([0x01]), cn: "Eval CA", keyBytes: Buffer.from("real-ca-key-bytes-aaaaaaaaaaaaaa") });
 
-  var good = _buildOcsp({ issuerDer: issuer, status: "good", serial: _SERIAL });
+  var good = helpers.buildOcspResponse({ certIdIssuerDer: issuer, certStatus: "good", serial: _SERIAL , rawNextUpdate: "20991231000000Z", rawThisUpdate: "20250615000000Z" });
   var okRv = nt.ocsp.evaluate(good.der, { issuerPem: good.issuerPem, serialHex: _SERIAL.toString("hex"), now: _NOW });
   check("evaluate good response ok=true", okRv.ok === true && okRv.certStatus === "good");
 
@@ -1265,32 +1205,32 @@ function testOcspEvaluateBranches() {
         /no entry for the requested cert serial/.test((notFound.errors || []).join(" ")));
 
   // Revoked.
-  var rev = _buildOcsp({ issuerDer: issuer, status: "revoked", serial: _SERIAL });
+  var rev = helpers.buildOcspResponse({ certIdIssuerDer: issuer, certStatus: "revoked", serial: _SERIAL , rawNextUpdate: "20991231000000Z", rawThisUpdate: "20250615000000Z" });
   var revRv = nt.ocsp.evaluate(rev.der, { issuerPem: rev.issuerPem, serialHex: _SERIAL.toString("hex"), now: _NOW });
   check("evaluate revoked -> ok=false certStatus=revoked", revRv.ok === false && revRv.certStatus === "revoked");
 
   // Unknown certStatus.
-  var unk = _buildOcsp({ issuerDer: issuer, status: "unknown", serial: _SERIAL });
+  var unk = helpers.buildOcspResponse({ certIdIssuerDer: issuer, certStatus: "unknown", serial: _SERIAL , rawNextUpdate: "20991231000000Z", rawThisUpdate: "20250615000000Z" });
   var unkRv = nt.ocsp.evaluate(unk.der, { issuerPem: unk.issuerPem, serialHex: _SERIAL.toString("hex"), now: _NOW });
   check("evaluate unknown certStatus -> ok=false", unkRv.ok === false && unkRv.certStatus === "unknown");
 
   // Bad signature -> signatureValid false.
-  var bad = _buildOcsp({ issuerDer: issuer, status: "good", serial: _SERIAL, badSig: true });
+  var bad = helpers.buildOcspResponse({ certIdIssuerDer: issuer, certStatus: "good", serial: _SERIAL, badSignatureBytes: true , rawNextUpdate: "20991231000000Z", rawThisUpdate: "20250615000000Z" });
   var badRv = nt.ocsp.evaluate(bad.der, { issuerPem: bad.issuerPem, serialHex: _SERIAL.toString("hex"), now: _NOW });
   check("evaluate bad signature -> ok=false signatureValid=false", badRv.ok === false && badRv.signatureValid === false);
 
   // Unsupported signature algorithm OID.
-  var badAlg = _buildOcsp({ issuerDer: issuer, status: "good", serial: _SERIAL, sigAlgOid: "1.2.3.999" });
+  var badAlg = helpers.buildOcspResponse({ certIdIssuerDer: issuer, certStatus: "good", serial: _SERIAL, signatureAlgOid: "1.2.3.999" , rawNextUpdate: "20991231000000Z", rawThisUpdate: "20250615000000Z" });
   var badAlgRv = nt.ocsp.evaluate(badAlg.der, { issuerPem: badAlg.issuerPem, serialHex: _SERIAL.toString("hex"), now: _NOW });
   check("evaluate unsupported sig-alg -> ok=false signatureValid=false", badAlgRv.ok === false && badAlgRv.signatureValid === false);
 
   // thisUpdate in the future.
-  var fut = _buildOcsp({ issuerDer: issuer, status: "good", serial: _SERIAL, thisUpdate: "20990101000000Z" });
+  var fut = helpers.buildOcspResponse({ certIdIssuerDer: issuer, certStatus: "good", serial: _SERIAL, rawThisUpdate: "20990101000000Z" , rawNextUpdate: "20991231000000Z" });
   var futRv = nt.ocsp.evaluate(fut.der, { issuerPem: fut.issuerPem, serialHex: _SERIAL.toString("hex"), now: _NOW });
   check("evaluate future thisUpdate -> ok=false", futRv.ok === false && /future/.test((futRv.errors || []).join(" ")));
 
   // Past nextUpdate.
-  var past = _buildOcsp({ issuerDer: issuer, status: "good", serial: _SERIAL, thisUpdate: "20200101000000Z", nextUpdate: "20200201000000Z" });
+  var past = helpers.buildOcspResponse({ certIdIssuerDer: issuer, certStatus: "good", serial: _SERIAL, rawThisUpdate: "20200101000000Z", rawNextUpdate: "20200201000000Z"  });
   var pastRv = nt.ocsp.evaluate(past.der, { issuerPem: past.issuerPem, serialHex: _SERIAL.toString("hex"), now: _NOW });
   check("evaluate past nextUpdate -> ok=false", pastRv.ok === false && /past nextUpdate/.test((pastRv.errors || []).join(" ")));
 
@@ -1302,7 +1242,7 @@ function testOcspEvaluateBranches() {
 function testOcspEvaluateNonce() {
   var issuer = _synthCert({ serial: Buffer.from([0x01]), cn: "Nonce CA", keyBytes: Buffer.from("real-ca-key-bytes-aaaaaaaaaaaaaa") });
   var nonce = Buffer.from("0123456789abcdef");
-  var fx = _buildOcsp({ issuerDer: issuer, status: "good", serial: _SERIAL, nonce: nonce });
+  var fx = helpers.buildOcspResponse({ certIdIssuerDer: issuer, certStatus: "good", serial: _SERIAL, nonce: nonce , nonceWrapped: true, rawNextUpdate: "20991231000000Z", rawThisUpdate: "20250615000000Z" });
 
   var match = nt.ocsp.evaluate(fx.der, { issuerPem: fx.issuerPem, serialHex: _SERIAL.toString("hex"), now: _NOW, expectedNonce: nonce });
   check("evaluate nonce match -> ok=true nonce=matched", match.ok === true && match.nonce === "matched");
@@ -1319,14 +1259,14 @@ function testOcspEvaluateNonce() {
   check("evaluate nonce present-not-checked", present.nonce === "present-not-checked");
 
   // expectedNonce supplied but response carries none.
-  var noNonceFx = _buildOcsp({ issuerDer: issuer, status: "good", serial: _SERIAL });
+  var noNonceFx = helpers.buildOcspResponse({ certIdIssuerDer: issuer, certStatus: "good", serial: _SERIAL , rawNextUpdate: "20991231000000Z", rawThisUpdate: "20250615000000Z" });
   var missing = nt.ocsp.evaluate(noNonceFx.der, { issuerPem: noNonceFx.issuerPem, serialHex: _SERIAL.toString("hex"), now: _NOW, expectedNonce: nonce });
   check("evaluate expected nonce but response has none -> ok=false", missing.ok === false && /missing nonce/.test((missing.errors || []).join(" ")));
 }
 
 function testOcspEvaluateIssuerBindShapeErrors() {
   var issuer = _synthCert({ serial: Buffer.from([0x01]), cn: "Bind CA", keyBytes: Buffer.from("real-ca-key-bytes-aaaaaaaaaaaaaa") });
-  var fx = _buildOcsp({ issuerDer: issuer, status: "good", serial: _SERIAL });
+  var fx = helpers.buildOcspResponse({ certIdIssuerDer: issuer, certStatus: "good", serial: _SERIAL , rawNextUpdate: "20991231000000Z", rawThisUpdate: "20250615000000Z" });
   // issuerCertDer not a Buffer -> shape error.
   var rv = nt.ocsp.evaluate(fx.der, { issuerPem: fx.issuerPem, serialHex: _SERIAL.toString("hex"), now: _NOW, issuerCertDer: "not-a-buffer" });
   check("evaluate issuerCertDer non-Buffer -> ok=false", rv.ok === false && /must be a Buffer/.test((rv.errors || []).join(" ")));
@@ -1782,7 +1722,7 @@ async function testOcspConnectRealPaths() {
 
   // 5. requireGood — staple binds a DIFFERENT serial → evaluation fails,
   //    requireGood throws tls/ocsp-not-good.
-  var badFx = _buildOcsp({ issuerDer: issuer, status: "good", serial: Buffer.from([0x99, 0x99]) });
+  var badFx = helpers.buildOcspResponse({ certIdIssuerDer: issuer, certStatus: "good", serial: Buffer.from([0x99, 0x99]) , rawNextUpdate: "20991231000000Z", rawThisUpdate: "20250615000000Z" });
   var s5 = await _startTlsServer(badFx.der);
   var e5 = null;
   try {
@@ -1794,7 +1734,7 @@ async function testOcspConnectRealPaths() {
 
   // 6. requireGood — staple binds the peer serial (_SERIAL), good + fresh →
   //    resolves with a passing evaluation.
-  var goodFx = _buildOcsp({ issuerDer: issuer, status: "good", serial: _SERIAL });
+  var goodFx = helpers.buildOcspResponse({ certIdIssuerDer: issuer, certStatus: "good", serial: _SERIAL , rawNextUpdate: "20991231000000Z", rawThisUpdate: "20250615000000Z" });
   var s6 = await _startTlsServer(goodFx.der);
   try {
     var r6 = await nt.ocsp.requireGood({ host: "127.0.0.1", port: s6.port,
@@ -1843,7 +1783,7 @@ function testOcspEvaluateDeepBinding() {
     keyBytes: Buffer.from("real-ca-key-bytes-aaaaaaaaaaaaaa") });
   var other  = _synthCert({ serial: Buffer.from([0x02]), cn: "Other CA",
     keyBytes: Buffer.from("other-ca-key-bytes-bbbbbbbbbbbb") });
-  var fx = _buildOcsp({ issuerDer: issuer, status: "good", serial: _SERIAL });
+  var fx = helpers.buildOcspResponse({ certIdIssuerDer: issuer, certStatus: "good", serial: _SERIAL , rawNextUpdate: "20991231000000Z", rawThisUpdate: "20250615000000Z" });
   var serialHex = _SERIAL.toString("hex");
 
   // Unparseable issuer public key PEM → verify throws, caught → ok:false.
@@ -2867,15 +2807,27 @@ function testOcspEvaluateMoreBranches() {
     keyBytes: Buffer.from("real-ca-key-bytes-aaaaaaaaaaaaaa") });
   var serialHex = _SERIAL.toString("hex");
 
-  // Each recognized signatureAlgorithm OID maps to a node hash and the
-  // response still parses as "successful" (the signature verifies or fails
-  // to verify against the EC issuer key, but the OID-mapping arm executes).
-  [_OID_RSA_SHA256, _OID_RSA_SHA384, _OID_RSA_SHA512,
-   _OID_ECDSA_SHA384, _OID_ECDSA_SHA512].forEach(function (oid) {
-    var fx = _buildOcsp({ issuerDer: issuer, status: "good", serial: _SERIAL, sigAlgOid: oid });
+  // Each recognized signatureAlgorithm OID maps to a node hash, so the
+  // response parses as "successful" whatever it declares. What happens next
+  // depends on whether that declaration agrees with the issuer key: these are
+  // signed by an EC key, so the ECDSA OIDs reach the signature verify and the
+  // RSA ones are refused for the disagreement rather than being verified
+  // under a hash chosen by a field nobody checked.
+  [{ oid: _OID_RSA_SHA256, agrees: false }, { oid: _OID_RSA_SHA384, agrees: false },
+   { oid: _OID_RSA_SHA512, agrees: false }, { oid: _OID_ECDSA_SHA384, agrees: true },
+   { oid: _OID_ECDSA_SHA512, agrees: true }].forEach(function (c) {
+    var fx = helpers.buildOcspResponse({ certIdIssuerDer: issuer, certStatus: "good", serial: _SERIAL, signatureAlgOid: c.oid, rawNextUpdate: "20991231000000Z", rawThisUpdate: "20250615000000Z" });
     var rv = nt.ocsp.evaluate(fx.der, { issuerPem: fx.issuerPem, serialHex: serialHex, now: _NOW });
-    check("evaluate maps signatureAlgorithm OID " + oid + " to a hash (status successful)",
+    check("evaluate maps signatureAlgorithm OID " + c.oid + " to a hash (status successful)",
           rv && rv.status === "successful" && typeof rv.signatureValid === "boolean");
+    var algErrs = (rv.errors || []).join(" ; ");
+    if (c.agrees) {
+      check("an ECDSA OID against the EC issuer key reaches the signature verify: " + c.oid,
+            !/does not match the issuer key/.test(algErrs));
+    } else {
+      check("an RSA OID against an EC issuer key is refused for the disagreement: " + c.oid,
+            rv.ok === false && /does not match the issuer key/.test(algErrs));
+    }
   });
 
   // evaluate with NO opts defaults opts and refuses on the missing issuer.
@@ -2885,7 +2837,7 @@ function testOcspEvaluateMoreBranches() {
 
   // A finite clockSkewMs is honored (the freshness window still passes for a
   // fresh good response).
-  var good = _buildOcsp({ issuerDer: issuer, status: "good", serial: _SERIAL });
+  var good = helpers.buildOcspResponse({ certIdIssuerDer: issuer, certStatus: "good", serial: _SERIAL , rawNextUpdate: "20991231000000Z", rawThisUpdate: "20250615000000Z" });
   var rvSkew = nt.ocsp.evaluate(good.der, { issuerPem: good.issuerPem, serialHex: serialHex,
     now: _NOW, clockSkewMs: C.TIME.minutes(1) });
   check("evaluate honors a finite clockSkewMs", rvSkew.ok === true && rvSkew.certStatus === "good");
@@ -3030,7 +2982,7 @@ function testCtMerkleGuardsMore() {
 async function testOcspRequireGoodWithIssuerBinding() {
   var issuer = _synthCert({ serial: Buffer.from([0x01]), cn: "RGBind CA",
     keyBytes: Buffer.from("real-ca-key-bytes-aaaaaaaaaaaaaa") });
-  var goodFx = _buildOcsp({ issuerDer: issuer, status: "good", serial: _SERIAL });
+  var goodFx = helpers.buildOcspResponse({ certIdIssuerDer: issuer, certStatus: "good", serial: _SERIAL , rawNextUpdate: "20991231000000Z", rawThisUpdate: "20250615000000Z" });
   var s = await _startTlsServer(goodFx.der);
   try {
     var r = await nt.ocsp.requireGood({ host: "127.0.0.1", port: s.port,
@@ -3059,7 +3011,7 @@ function testOcspEvaluateParseAndStatusBranches() {
         ts.ok === false && ts.status === "tryLater");
 
   // All-zero serial normalizes to "0" on both sides and still binds.
-  var zeroFx = _buildOcsp({ issuerDer: issuer, status: "good", serial: Buffer.from([0x00]) });
+  var zeroFx = helpers.buildOcspResponse({ certIdIssuerDer: issuer, certStatus: "good", serial: Buffer.from([0x00]) , rawNextUpdate: "20991231000000Z", rawThisUpdate: "20250615000000Z" });
   var zeroRv = nt.ocsp.evaluate(zeroFx.der, { issuerPem: zeroFx.issuerPem, serialHex: "00", now: _NOW });
   check("evaluate all-zero serial normalizes and binds good",
         zeroRv.ok === true && zeroRv.certStatus === "good");

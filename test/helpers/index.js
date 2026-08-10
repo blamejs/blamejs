@@ -33,6 +33,7 @@ var _otel     = require("./otel");
 var _wait     = require("./wait");
 var _fsWatch  = require("./fs-watch");
 var _tls      = require("./tls");
+var _ocsp     = require("./ocsp");
 
 module.exports = {
   // Framework binding + Node stdlib re-exports for ergonomics.
@@ -85,6 +86,11 @@ module.exports = {
 
   // Loopback TLS server certificate (verify with `ca: [pair.cert]`)
   selfSignedPair:     _tls.selfSignedPair,
+
+  // RFC 6960 OCSP responder — one parameterized builder for the accept path
+  // and every refusal shape (status, certStatus, nonce, CertID, signature).
+  buildOcspResponse:  _ocsp.buildOcspResponse,
+  synthCertForOcsp:   _ocsp.synthCert,
 
   // OTel fake (for tracing + observability tests)
   makeFakeOtelApi:    _otel.makeFakeOtelApi,
