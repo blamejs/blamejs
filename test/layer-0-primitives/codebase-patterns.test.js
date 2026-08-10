@@ -2024,6 +2024,63 @@ function testNoDynamicRegexFromOperatorInput() {
 // same. This is the structural guard the operator-regex-ReDoS class (a Codex
 // finding) earns so it can't be reintroduced. The ALLOW map covers files whose
 // accepted RegExp is matched against a TRUSTED value, not attacker request data.
+// A status written as a number is a number the reader has to recognise; written
+// as its name it says what it means, and the set of them lives in one place
+// where the protocol's own rules can be asked rather than restated. `C.TIME`
+// earns its rule the same way.
+//
+// Only the forms that are unmistakably an HTTP status: a comparison against
+// `statusCode`, a `writeHead(...)`, a `status:` field. A bare three-digit
+// number is left alone deliberately — SMTP and DNS speak in those too, and 421
+// is both an HTTP Misdirected Request and an SMTP service-unavailable.
+function testHttpStatusesGoThroughConstants() {
+  // Protocols that borrow HTTP's numbers without being HTTP. An ICAP status
+  // line (RFC 3507) has its own 200/204/403; naming those through C.HTTP would
+  // assert something untrue about the wire.
+  var NOT_HTTP = {
+    "lib/safe-icap.js": "ICAP status line (RFC 3507) — its own codes, which merely look like HTTP's",
+    "lib/mail-scan.js": "reads an ICAP response (RFC 3507), not an HTTP one",
+  };
+  var files = _libFiles();
+  var bad = [];
+  var FORMS = [
+    { re: /\bstatus(?:Code)?\s*(?:===|!==|==)\s*(\d{3})\b/, why: "compared against a raw status" },
+    { re: /\bwriteHead\s*\(\s*(\d{3})\b/,                   why: "writeHead with a raw status" },
+    { re: /\bstatus(?:Code)?\s*:\s*(\d{3})\b/,              why: "a raw status field" },
+  ];
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    if (rel === "lib/constants.js") continue;              // where the names are defined
+    if (NOT_HTTP[rel]) continue;
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    var lines = content.split(/\r?\n/);
+    var inBlock = false;
+    for (var li = 0; li < lines.length; li++) {
+      var line = lines[li];
+      var trimmed = line.replace(/^\s+/, "");
+      if (inBlock) { if (trimmed.indexOf("*/") !== -1) inBlock = false; continue; }
+      if (trimmed.indexOf("/*") === 0) { inBlock = trimmed.indexOf("*/") === -1; continue; }
+      if (trimmed.indexOf("//") === 0 || trimmed.indexOf("*") === 0) continue;
+      var code = line.replace(/"(?:[^"\\]|\\.)*"/g, "").replace(/'(?:[^'\\]|\\.)*'/g, "");
+      for (var f = 0; f < FORMS.length; f++) {
+        var hit = FORMS[f].re.exec(code);
+        if (hit === null) continue;
+        bad.push({
+          file:    rel,
+          line:    li + 1,
+          content: FORMS[f].why + " (" + hit[1] + ") — use C.HTTP.STATUS.<NAME>, or " +
+                   "C.HTTP.bodiless / .success / .redirect / .clientError / .serverError " +
+                   "where the question is which CLASS it is",
+        });
+        break;
+      }
+    }
+  }
+  _report("HTTP statuses are named through C.HTTP.STATUS rather than written as numbers", bad);
+}
+
 // A guard must not be built out of the construct it guards, or it carries the
 // failure it exists to refuse. `b.guardRegex` screens operator patterns for
 // catastrophic backtracking and used to do it WITH regexes applied to those
@@ -16770,6 +16827,7 @@ async function run() {
   testBuildProfileWrongKey();
   testNoSilentCatchSwallow();
   testNoDynamicRegexFromOperatorInput();
+  testHttpStatusesGoThroughConstants();
   testRegexModulesContainNoRegexes();
   testOperatorRegexScreenedForReDoS();
   testModuleLoadListMatchesNativeModuleNaming();

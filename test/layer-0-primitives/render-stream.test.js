@@ -758,8 +758,10 @@ function testFailAfterHeadersPicksTheRightSignal() {
   check("HTTP/2 closes the stream with a non-zero error code", closedWith === 0x02);
 
   // Nothing can be truncated in a response that carries no body, so destroying
-  // would throw away a valid one.
-  [204, 304].forEach(function (status) {
+  // would throw away a valid one. RFC 9110 gives the whole set — every 1xx,
+  // 204, 205 and 304 — and a 205 belongs there for the same reason a 204 does:
+  // it is defined to carry nothing.
+  [100, 101, 204, 205, 304].forEach(function (status) {
     var ended = false, killed = false;
     var bodiless = {
       headersSent: true, statusCode: status,
@@ -767,6 +769,17 @@ function testFailAfterHeadersPicksTheRightSignal() {
     };
     check("a " + status + " is completed rather than destroyed",
           helpersApi.failAfterHeaders(bodiless) === true && ended === true && killed === false);
+  });
+  // And a status that DOES carry one is still broken, or the truncation signal
+  // this exists for would be lost.
+  [200, 302, 500].forEach(function (status) {
+    var wasKilled = false;
+    var carries = {
+      headersSent: true, statusCode: status,
+      end: function () {}, destroy: function () { wasKilled = true; },
+    };
+    helpersApi.failAfterHeaders(carries);
+    check("a " + status + " is still destroyed, since it can be truncated", wasKilled === true);
   });
   var headEnded = false;
   var head = {
