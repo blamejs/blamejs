@@ -89,6 +89,12 @@ var CORPUS_SUBJECTS = [
 
 var CORPUS_FLAGS = ["", "i", "m", "s", "u", "iu"];
 
+// One shape does not belong in the corpus while the platform reads it the way
+// it currently does: a character class immediately before a `$`, under `u`,
+// against an astral subject. The platform misses that match and its own
+// `^`-anchored form finds it, so a corpus entry of that shape would report a
+// difference that is not this matcher's — see the test that pins it.
+
 // Every pattern, every subject, every flag set — compared with the platform.
 function testAgreesWithThePlatformOverACorpus() {
   var compared = 0;
@@ -564,8 +570,95 @@ function testCompilingOneClassCannotWidenAnother() {
         b.regexLinear.compile("b\\b").test("b{") === true);
 }
 
+// Which characters may be escaped is not one rule but four, because it differs
+// inside a class from outside one and under `u` from without it. Rather than
+// name the characters that matter, this asks the platform about every printable
+// one in all four positions — `\-` is legal in a class under `u` and a syntax
+// error outside it, and nothing but an exhaustive question finds that.
+function testEveryEscapedCharacterIsReadTheWayThePlatformReadsIt() {
+  // A digit escape is refused on purpose: `\1` is a backreference where a group
+  // exists and a legacy octal escape where none does, and the message says to
+  // write `\xNN` for the character. It is the one deliberate departure.
+  var deliberate = "123456789";
+  var disagreeing = [];
+  ["", "u"].forEach(function (flags) {
+    for (var cp = 0x20; cp < 0x7F; cp += 1) {
+      var ch = String.fromCharCode(cp);
+      [["\\" + ch, "outside a class"], ["[\\" + ch + "]", "inside a class"]]
+        .forEach(function (form) {
+          if (deliberate.indexOf(ch) !== -1 && form[1] === "outside a class") return;
+          var platform = true;
+          try { new RegExp(form[0], flags); } catch (_e) { platform = false; }
+          var linear = true;
+          try { b.regexLinear.compile(form[0], flags); } catch (_e2) { linear = false; }
+          if (platform !== linear) {
+            disagreeing.push("\\" + ch + " " + form[1] + " /" + flags + "/ — " +
+                             "platform " + (platform ? "accepts" : "refuses") +
+                             ", linear " + (linear ? "accepts" : "refuses"));
+          }
+        });
+    }
+  });
+  check("every printable character escaped in every position is read alike" +
+        (disagreeing.length ? " — " + disagreeing.join(" | ") : ""),
+        disagreeing.length === 0);
+
+  // And the deliberate departure is still deliberate, rather than quietly gone.
+  var code = null;
+  try { b.regexLinear.compile("\\1"); } catch (e) { code = e.code; }
+  check("a digit escape is still refused by name",
+        code === "regex/unsupported-backreference");
+}
+
+// The one shape where the two answers differ, and why the difference is the
+// platform's. Under `u`, an unanchored pattern ending in a character class then
+// `$` misses a subject ending in an astral character — but the same pattern
+// with a `^` in front of it finds the match, and a `^` can only take positions
+// away. This does not assert what the platform answers, so a fix there will not
+// break it; it asserts that the answer given here is the one the platform's own
+// anchored form agrees with.
+function testTheAstralEndAnchorFollowsTheLanguageNotThePlatformShortcut() {
+  var emoji = "\u{1F600}";
+  // Every shape whose class can match at most one code point before the `$`.
+  var shapes = ["[^a]$", "[\\s\\S]$", "(?:[^a])$", "[^a]{1}$", "[^a]?$",
+                "[^a]{0,1}$"];
+  var disagreeing = [];
+  shapes.forEach(function (src) {
+    var mine = b.regexLinear.compile(src, "u").exec(emoji);
+    // What the platform says when the same pattern is pinned to position zero,
+    // where its end-anchor shortcut does not apply.
+    var anchored = new RegExp("^" + src, "u").exec(emoji);
+    if (mine === null || anchored === null || mine[0] !== anchored[0] ||
+        mine.index !== anchored.index) {
+      disagreeing.push("/" + src + "/u — linear " + JSON.stringify(mine && mine[0]) +
+                       ", platform anchored " + JSON.stringify(anchored && anchored[0]));
+    }
+  });
+  check("a class before an end anchor matches an astral character, as the " +
+        "platform's own anchored form confirms" +
+        (disagreeing.length ? " — " + disagreeing.join(" | ") : ""),
+        disagreeing.length === 0);
+
+  // The shapes the platform reads correctly stay identical, so the departure is
+  // this one shortcut rather than a difference in how astral input is read.
+  // And the neighbours: a class that may run on, a shorthand, the dot, and the
+  // character written out. The shortcut does not reach any of them.
+  var unaffected = ["\\W$", ".$", "[^a]+$", "[^a]*$", "\\u{1F600}$"];
+  var differing = [];
+  unaffected.forEach(function (src) {
+    var verdict = agrees(src, "u", emoji);
+    if (!verdict.same) {
+      differing.push("/" + src + "/u — linear " + verdict.mine + ", native " + verdict.theirs);
+    }
+  });
+  check("and every neighbouring shape still matches the platform exactly" +
+        (differing.length ? " — " + differing.join(" | ") : ""), differing.length === 0);
+}
+
 function run() {
   testAgreesWithThePlatformOverACorpus();
+  testEveryEscapedCharacterIsReadTheWayThePlatformReadsIt();
+  testTheAstralEndAnchorFollowsTheLanguageNotThePlatformShortcut();
   testCompilingOneClassCannotWidenAnother();
   testAgreesWithThePlatformOverGeneratedPatterns();
   testTheShapesThatHangThePlatformRunInLinearTime();
