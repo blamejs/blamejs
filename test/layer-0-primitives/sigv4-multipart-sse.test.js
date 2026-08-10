@@ -784,21 +784,6 @@ async function testSseMismatchRejectsPut() {
   }
 }
 
-// The sigv4 store dispatches every part / initiate / complete request through
-// the shared httpClient keep-alive transport pool; cached client sockets
-// finalize their destroy on a later event-loop turn, past the forked worker's
-// grace window. Reset the pool, then poll until every TCP handle has actually
-// drained so none outlives run().
-async function _drainTcpHandles() {
-  b.httpClient._resetForTest();
-  if (typeof process.getActiveResourcesInfo !== "function") return;
-  await helpers.waitUntil(function () {
-    return process.getActiveResourcesInfo().filter(function (t) {
-      return t === "TCPSocketWrap" || t === "TCPServerWrap";
-    }).length === 0;
-  }, { timeoutMs: 5000, label: "sigv4-multipart-sse: TCP handle drain after _resetForTest" });
-}
-
 async function run() {
   try {
     await testSinglePutRemainsBufferAtThreshold();
@@ -823,7 +808,7 @@ async function run() {
     await testCompleteEtagFallsBackToResponseHeader();
     await testSseMismatchRejectsPut();
   } finally {
-    await _drainTcpHandles();
+    await helpers.drainOpenHandles("sigv4-multipart-sse");
   }
 }
 

@@ -2844,19 +2844,6 @@ async function testCacheMoreBranches() {
   b.httpClient._resetForTest();
 }
 
-// Destroy the httpClient transport pool and wait for every TCP handle to
-// close, so the async teardown completes inside run() rather than in the
-// forked worker's post-run grace window. Poll, don't sleep.
-async function _drainTcpHandles() {
-  b.httpClient._resetForTest();
-  if (typeof process.getActiveResourcesInfo !== "function") return;
-  await helpers.waitUntil(function () {
-    return process.getActiveResourcesInfo().filter(function (t) {
-      return t === "TCPSocketWrap" || t === "TCPServerWrap";
-    }).length === 0;
-  }, { timeoutMs: 5000, label: "http-client: TCP handle drain after _resetForTest" });
-}
-
 // Retiring the pooled transports because the TLS posture changed must not
 // abort work already in flight. The obvious implementation — destroy the
 // agents and clear the cache — resets sockets that are mid-response
@@ -3389,10 +3376,9 @@ async function run() {
     await testCacheMoreBranches();
     await testTls12PeerFailureNamesTheFloor();
   } finally {
-    await _drainTcpHandles();
+    await helpers.drainOpenHandles("http-client");
   }
 }
-
 
 // ---- A refused handshake names the posture that refused it ----
 //

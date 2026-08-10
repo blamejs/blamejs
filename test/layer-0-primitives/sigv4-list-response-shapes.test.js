@@ -522,19 +522,6 @@ async function testPutStringAndNonBufferBodies() {
   });
 }
 
-// The store dispatches through the shared httpClient keep-alive pool; cached
-// sockets finalize their destroy on a later event-loop turn. Reset the pool,
-// then poll until every TCP handle has drained so none outlives run().
-async function _drainTcpHandles() {
-  b.httpClient._resetForTest();
-  if (typeof process.getActiveResourcesInfo !== "function") return;
-  await helpers.waitUntil(function () {
-    return process.getActiveResourcesInfo().filter(function (t) {
-      return t === "TCPSocketWrap" || t === "TCPServerWrap";
-    }).length === 0;
-  }, { timeoutMs: 5000, label: "sigv4-list-response-shapes: TCP handle drain after _resetForTest" });
-}
-
 async function run() {
   try {
     await testListPaginationParamsReachTheWire();
@@ -553,7 +540,7 @@ async function run() {
     await testGetStreamDeliversBytesAndSurfacesErrors();
     await testPutStringAndNonBufferBodies();
   } finally {
-    await _drainTcpHandles();
+    await helpers.drainOpenHandles("sigv4-list-response-shapes");
   }
 }
 

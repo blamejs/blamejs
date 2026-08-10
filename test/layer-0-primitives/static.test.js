@@ -2012,20 +2012,9 @@ async function testBandwidthChargeFailureSwallowed() {
   }
 }
 
-// The _get helper drives each fixture server with a default-agent http.request
-// (keep-alive), and srv.close() runs fire-and-forget. The kept-alive client
-// sockets, the servers' accept sockets, and any in-flight static-file read
-// (FSReqCallback) finalize their teardown on a later event-loop turn — past the
-// forked worker's grace window. Destroy the global-agent socket pool, then poll
-// until every TCP/fs handle has drained so none outlives run().
-async function _drainTcpHandles() {
+async function _drainOpenHandles() {
   http.globalAgent.destroy();
-  if (typeof process.getActiveResourcesInfo !== "function") return;
-  await helpers.waitUntil(function () {
-    return process.getActiveResourcesInfo().filter(function (t) {
-      return t === "TCPSocketWrap" || t === "TCPServerWrap" || t === "FSReqCallback";
-    }).length === 0;
-  }, { timeoutMs: 5000, label: "static: TCP/fs handle drain after globalAgent.destroy" });
+  await helpers.drainOpenHandles("static");
 }
 
 async function run() {
@@ -2118,7 +2107,7 @@ async function run() {
     await testIdleTimeoutTearsDownStalledStream();
     await testBandwidthChargeFailureSwallowed();
   } finally {
-    await _drainTcpHandles();
+    await _drainOpenHandles();
   }
 }
 

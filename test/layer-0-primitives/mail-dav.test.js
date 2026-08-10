@@ -1571,15 +1571,6 @@ async function testBranchExtras() {
     rDisc.statusCode === 301 && rDisc.headers["location"] === "/caldav/");
 }
 
-async function _drainTcpHandles() {
-  if (typeof process.getActiveResourcesInfo !== "function") return;
-  await helpers.waitUntil(function () {
-    return process.getActiveResourcesInfo().filter(function (t) {
-      return t === "TCPSocketWrap" || t === "TCPServerWrap";
-    }).length === 0;
-  }, { timeoutMs: 5000, label: "mail-dav: TCP handle drain after run" });
-}
-
 async function run() {
   testSurface();
   testRefusesNoStorage();
@@ -1625,7 +1616,7 @@ async function run() {
     await wtt("carddav writes",     testCarddavWrites);
     await wtt("discovery",          testDiscovery);
   } finally {
-    await _drainTcpHandles();
+    await helpers.drainOpenHandles("mail-dav");
   }
 }
 

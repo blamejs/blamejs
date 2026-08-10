@@ -1037,25 +1037,11 @@ async function testSendFailureAudit() {
   }
 }
 
-// signer.send dispatches through the shared httpClient keep-alive transport
-// pool; a cached client socket finalizes its destroy on a later event-loop
-// turn, past the forked worker's grace window. Reset the pool, then poll until
-// every TCP handle has actually drained so none outlives run().
-async function _drainTcpHandles() {
-  b.httpClient._resetForTest();
-  if (typeof process.getActiveResourcesInfo !== "function") return;
-  await helpers.waitUntil(function () {
-    return process.getActiveResourcesInfo().filter(function (t) {
-      return t === "TCPSocketWrap" || t === "TCPServerWrap";
-    }).length === 0;
-  }, { timeoutMs: 5000, label: "webhook: TCP handle drain after _resetForTest" });
-}
-
 async function run() {
   try {
     await _runTests();
   } finally {
-    await _drainTcpHandles();
+    await helpers.drainOpenHandles("webhook");
   }
 }
 

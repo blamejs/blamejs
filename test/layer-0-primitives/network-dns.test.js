@@ -214,19 +214,9 @@ function _startTlsResponder(replyBytes, keyPem, certPem) {
   });
 }
 
-// The DNS primitive's system-resolver TCP query (and DoT pool sockets)
-// open client sockets; _resetForTest() destroys them, but socket.destroy()
-// finalizes the underlying handle asynchronously — past the forked worker's
-// post-run grace window. Reset, then poll until the TCP client handle has
-// actually closed so it doesn't outlive run() and hold the event loop open.
-async function _drainTcpHandles() {
+async function _drainOpenHandles() {
   _resetAll();
-  if (typeof process.getActiveResourcesInfo !== "function") return;
-  await helpers.waitUntil(function () {
-    return process.getActiveResourcesInfo().filter(function (t) {
-      return t === "TCPSocketWrap" || t === "TCPServerWrap";
-    }).length === 0;
-  }, { timeoutMs: 5000, label: "network-dns: TCP handle drain after _resetForTest" });
+  await helpers.drainOpenHandles("network-dns");
 }
 
 // DnsError carries a terminal-vs-transient signal on err.permanent so a caller
@@ -971,7 +961,7 @@ async function testLookupDohDotNoResult() {
   dnsModule.setLookupTimeoutMs(1500);
   check("lookup(DoT, dead upstream): handshake fails → dns/no-result",
     await _throwsAsync(function () { return dnsModule.lookup("public.example.com"); }, "dns/no-result"));
-  await _drainTcpHandles();
+  await _drainOpenHandles();
 }
 
 // ======================================================================
@@ -1009,7 +999,7 @@ async function testResolveTransportErrors() {
   dnsModule.setLookupTimeoutMs(1500);
   check("resolve4(auto DoT, dead upstream): surfaces DnsError",
     await _throwsAsync(function () { return dnsModule.resolve4("public.example.com"); }));
-  await _drainTcpHandles();
+  await _drainOpenHandles();
 }
 
 async function testResolveDispatch() {
@@ -1037,7 +1027,7 @@ async function testResolveDispatch() {
   check("resolve: 'HTTPS' dispatches to queryHttps (system transport)",
     Array.isArray(https) && https.length === 1 && https[0].params.alpn[0] === "h2");
   fix.srv.close();
-  await _drainTcpHandles();
+  await _drainOpenHandles();
 }
 
 // ======================================================================
@@ -1078,7 +1068,7 @@ async function testResolveSecure() {
     await _throwsAsync(function () { return dnsModule.resolveSecure("example.com", "A"); }));
   check("resolveSecure: valid AAAA query against dead upstream surfaces DnsError",
     await _throwsAsync(function () { return dnsModule.resolveSecure("example.com", "AAAA"); }));
-  await _drainTcpHandles();
+  await _drainOpenHandles();
 }
 
 // ======================================================================
@@ -1143,7 +1133,7 @@ async function testSystemRawQueryErrors() {
       return dnsModule.querySvcb("example.com", { transport: "system" });
     }, "dns/system-failed"));
   closer.srv.close();
-  await _drainTcpHandles();
+  await _drainOpenHandles();
 
   // Connection refused → dns/system-failed.
   _reset();
@@ -1155,7 +1145,7 @@ async function testSystemRawQueryErrors() {
     await _throwsAsync(function () {
       return dnsModule.querySvcb("example.com", { transport: "system" });
     }, "dns/system-failed"));
-  await _drainTcpHandles();
+  await _drainOpenHandles();
 }
 
 async function testSystemRawQueryV6Bracket() {
@@ -1188,7 +1178,7 @@ async function testSystemRawQueryV6Bracket() {
     await _throwsAsync(function () {
       return dnsModule.querySvcb("example.com", { transport: "system" });
     }));
-  await _drainTcpHandles();
+  await _drainOpenHandles();
 }
 
 // ======================================================================
@@ -1210,7 +1200,7 @@ async function testDiscoverEncryptedBranches() {
   check("discoverEncrypted: NXDOMAIN mapped to dns/ddr-not-discovered",
     await _throwsAsync(function () { return dnsModule.discoverEncrypted(); }, "dns/ddr-not-discovered"));
   nxFix.srv.close();
-  await _drainTcpHandles();
+  await _drainOpenHandles();
 
   // Only an AliasMode (priority 0) record present → all skipped → not-discovered.
   _reset();
@@ -1224,7 +1214,7 @@ async function testDiscoverEncryptedBranches() {
   check("discoverEncrypted: alias-only records skipped → dns/ddr-not-discovered",
     await _throwsAsync(function () { return dnsModule.discoverEncrypted(); }, "dns/ddr-not-discovered"));
   aliasFix.srv.close();
-  await _drainTcpHandles();
+  await _drainOpenHandles();
 
   // ServiceMode with an unrecognized alpn (no dot/h2/h3, no dohpath) → skipped.
   _reset();
@@ -1239,7 +1229,7 @@ async function testDiscoverEncryptedBranches() {
   check("discoverEncrypted: no recognized transport → dns/ddr-not-discovered",
     await _throwsAsync(function () { return dnsModule.discoverEncrypted(); }, "dns/ddr-not-discovered"));
   ntFix.srv.close();
-  await _drainTcpHandles();
+  await _drainOpenHandles();
 
   // insecureSystemResolverOnly:false → transport auto (system here) still works.
   _reset();
@@ -1258,7 +1248,7 @@ async function testDiscoverEncryptedBranches() {
   check("discoverEncrypted: insecureSystemResolverOnly:false auto transport returns a DoH descriptor",
     Array.isArray(res) && res.length === 1 && res[0].transport === "doh" && res[0].dohpath === "/dns-query");
   goodFix.srv.close();
-  await _drainTcpHandles();
+  await _drainOpenHandles();
 }
 
 // ======================================================================
@@ -1318,7 +1308,7 @@ async function testDotSecureTransport() {
     var a = await dnsModule.lookup("secure.example.com", { family: 4 });
     check("lookup(DoT): A record resolves via real TLS 1.3 handshake",
       a.address === "203.0.113.5" && a.family === 4);
-  } finally { dotA.close(); await _drainTcpHandles(); }
+  } finally { dotA.close(); await _drainOpenHandles(); }
 
   // ---- AAAA-record resolve6 over DoT (_resolveProtocol DoT branch) ----
   _reset();
@@ -1332,7 +1322,7 @@ async function testDotSecureTransport() {
     var r6 = await dnsModule.resolve6("v6.example.com");
     check("resolve6(DoT): AAAA record decodes to an IPv6 string",
       Array.isArray(r6) && r6.length === 1 && r6[0].indexOf("2001:") === 0);
-  } finally { dotAAAA.close(); await _drainTcpHandles(); }
+  } finally { dotAAAA.close(); await _drainOpenHandles(); }
 
   // ---- SVCB query over DoT (_dotRawQuery raw path) ----
   _reset();
@@ -1347,7 +1337,7 @@ async function testDotSecureTransport() {
     var svcb = await dnsModule.querySvcb("svc.example.com", { transport: "dot" });
     check("querySvcb(DoT): SVCB record parses over the TLS transport",
       Array.isArray(svcb) && svcb.length === 1 && svcb[0].params.alpn[0] === "h2");
-  } finally { dotSvcb.close(); await _drainTcpHandles(); }
+  } finally { dotSvcb.close(); await _drainOpenHandles(); }
 }
 
 // ======================================================================
@@ -1371,7 +1361,7 @@ async function testDohSecureTransport() {
     var r4 = await dnsModule.resolve4("doh.example.com");
     check("resolve4(DoH): A record via _resolveProtocol DoH branch",
       Array.isArray(r4) && r4[0] === "198.51.100.9");
-  } finally { dohA.close(); await _drainTcpHandles(); }
+  } finally { dohA.close(); await _drainOpenHandles(); }
 
   // ---- POST method (usePost branch: content-type/length + req.write) ----
   _reset();
@@ -1381,7 +1371,7 @@ async function testDohSecureTransport() {
   try {
     var ap = await dnsModule.lookup("doh.example.com", { family: 4 });
     check("lookup(DoH POST): A record resolves via POST body", ap.address === "198.51.100.9");
-  } finally { dohP.close(); await _drainTcpHandles(); }
+  } finally { dohP.close(); await _drainOpenHandles(); }
 
   // ---- resolveSecure over DoH with the AD bit set (_dohLookupSecure) ----
   _reset();
@@ -1396,7 +1386,7 @@ async function testDohSecureTransport() {
     var sec = await dnsModule.resolveSecure("secure.example.com", "A");
     check("resolveSecure(DoH): returns { rrs, ad } with the AD bit surfaced",
       sec && Array.isArray(sec.rrs) && sec.rrs[0] === "203.0.113.1" && sec.ad === true);
-  } finally { dohSec.close(); await _drainTcpHandles(); }
+  } finally { dohSec.close(); await _drainOpenHandles(); }
 
   // ---- SVCB over DoH (_dohRawQuery raw path) ----
   _reset();
@@ -1411,7 +1401,7 @@ async function testDohSecureTransport() {
     var svcb = await dnsModule.querySvcb("svc.example.com", { transport: "doh" });
     check("querySvcb(DoH): SVCB record parses over HTTPS",
       Array.isArray(svcb) && svcb.length === 1 && svcb[0].params.alpn[0] === "h3");
-  } finally { dohSvcb.close(); await _drainTcpHandles(); }
+  } finally { dohSvcb.close(); await _drainOpenHandles(); }
 
   // ---- DoH non-200 status → dns/doh-http ----
   _reset();
@@ -1423,7 +1413,7 @@ async function testDohSecureTransport() {
       await _throwsAsync(function () {
         return dnsModule.querySvcb("svc.example.com", { transport: "doh" });
       }, "dns/doh-http"));
-  } finally { doh500.close(); await _drainTcpHandles(); }
+  } finally { doh500.close(); await _drainOpenHandles(); }
 }
 
 // ======================================================================
@@ -1448,7 +1438,7 @@ async function testSecureTransportTimeouts() {
     // req.setTimeout; give the request-teardown callback a window to fire
     // before the fixture is destroyed (verifies no lingering handle).
     await helpers.passiveObserve(400, "network-dns: DoH request-teardown grace");
-  } finally { dohHang.close(); await _drainTcpHandles(); }
+  } finally { dohHang.close(); await _drainOpenHandles(); }
 
   // ---- DoT handshake completes, query stalls → socket deadline tears down ----
   _reset();
@@ -1459,7 +1449,7 @@ async function testSecureTransportTimeouts() {
     check("resolve4(DoT stalled): idle socket deadline surfaces a DnsError",
       await _throwsAsync(function () { return dnsModule.resolve4("hang.example.com"); }));
     await helpers.passiveObserve(400, "network-dns: DoT socket-teardown grace");
-  } finally { dotHang.close(); await _drainTcpHandles(); }
+  } finally { dotHang.close(); await _drainOpenHandles(); }
 }
 
 // ======================================================================
@@ -1652,7 +1642,7 @@ async function testDiscoverEncryptedRethrow() {
   try {
     check("discoverEncrypted: connection failure (not NXDOMAIN) is rethrown unchanged",
       await _throwsAsync(function () { return dnsModule.discoverEncrypted(); }, "dns/system-failed"));
-  } finally { await _drainTcpHandles(); }
+  } finally { await _drainOpenHandles(); }
 }
 
 function testReadDnsNameLimits() {
@@ -1714,7 +1704,7 @@ async function testSystemRawQueryTimeout() {
     // The socket-level sock.setTimeout deadline can fire a hair after the
     // promise-level _withTimeout; let it settle before the fixture teardown.
     await helpers.passiveObserve(250, "network-dns: system socket-teardown grace");
-  } finally { hang.close(); await _drainTcpHandles(); }
+  } finally { hang.close(); await _drainOpenHandles(); }
 }
 
 async function testNativeErrorWraps() {
@@ -1759,7 +1749,7 @@ async function testDotDecodeAndErrorBranches() {
     var a = await dnsModule.lookup("comp.example.com", { family: 4 });
     check("lookup(DoT): compressed answer name decodes (name-compression branch)",
       a.address === "192.0.2.7");
-  } finally { s1.close(); await _drainTcpHandles(); }
+  } finally { s1.close(); await _drainOpenHandles(); }
 
   // ---- SERVFAIL rcode over DoT → decode raises dns/no-result ----
   _reset();
@@ -1771,7 +1761,7 @@ async function testDotDecodeAndErrorBranches() {
   try {
     check("resolve4(DoT): SERVFAIL rcode surfaces a DnsError (decode reject path)",
       await _throwsAsync(function () { return dnsModule.resolve4("sf.example.com"); }));
-  } finally { s2.close(); await _drainTcpHandles(); }
+  } finally { s2.close(); await _drainOpenHandles(); }
 
   // ---- truncated rdata over DoT → decode raises dns/bad-reply ----
   _reset();
@@ -1784,7 +1774,7 @@ async function testDotDecodeAndErrorBranches() {
   try {
     check("resolve4(DoT): truncated rdata surfaces a DnsError (decode reject path)",
       await _throwsAsync(function () { return dnsModule.resolve4("tr.example.com"); }));
-  } finally { s3.close(); await _drainTcpHandles(); }
+  } finally { s3.close(); await _drainOpenHandles(); }
 
   // ---- querySvcb with NO opts → auto-selects the configured DoT transport ----
   _reset();
@@ -1797,7 +1787,7 @@ async function testDotDecodeAndErrorBranches() {
     var svcb = await dnsModule.querySvcb("auto.example.com");                     // no opts → _rawQuery auto-selects DoT
     check("querySvcb(auto): no transport opt auto-selects the configured DoT",
       Array.isArray(svcb) && svcb.length === 1 && svcb[0].params.alpn[0] === "h2");
-  } finally { s5.close(); await _drainTcpHandles(); }
+  } finally { s5.close(); await _drainOpenHandles(); }
 
   // ---- SVCB reply carrying a non-matching answer type → skipped ----
   _reset();
@@ -1812,7 +1802,7 @@ async function testDotDecodeAndErrorBranches() {
     var mr = await dnsModule.querySvcb("mix.example.com", { transport: "dot" });
     check("querySvcb(DoT): a non-SVCB answer record is filtered out",
       Array.isArray(mr) && mr.length === 1 && mr[0].params.alpn[0] === "h3");
-  } finally { s6.close(); await _drainTcpHandles(); }
+  } finally { s6.close(); await _drainOpenHandles(); }
 
   // ---- reply shorter than a DNS header → decode rejects (buf < 12) ----
   _reset();
@@ -1822,7 +1812,7 @@ async function testDotDecodeAndErrorBranches() {
   try {
     check("resolve4(DoT): sub-header reply surfaces a DnsError (buf<12 guard)",
       await _throwsAsync(function () { return dnsModule.resolve4("short.example.com"); }));
-  } finally { s7.close(); await _drainTcpHandles(); }
+  } finally { s7.close(); await _drainOpenHandles(); }
 
   // ---- ancount lies (claims an answer, none present) → record-header truncated ----
   _reset();
@@ -1834,7 +1824,7 @@ async function testDotDecodeAndErrorBranches() {
   try {
     check("resolve4(DoT): lying ANCOUNT surfaces a DnsError (record-header guard)",
       await _throwsAsync(function () { return dnsModule.resolve4("lie.example.com"); }));
-  } finally { s8.close(); await _drainTcpHandles(); }
+  } finally { s8.close(); await _drainOpenHandles(); }
 
   // ---- NOERROR reply with zero answers → resolve raises dns/no-result ----
   _reset();
@@ -1845,7 +1835,7 @@ async function testDotDecodeAndErrorBranches() {
   try {
     check("resolve6(DoT): NOERROR with no matching answers → dns/no-result",
       await _throwsAsync(function () { return dnsModule.resolve6("empty.example.com"); }, "dns/no-result"));
-  } finally { s9.close(); await _drainTcpHandles(); }
+  } finally { s9.close(); await _drainOpenHandles(); }
 }
 
 // ======================================================================
@@ -1866,7 +1856,7 @@ async function testDohDecodeAndErrorBranches() {
     var a = await dnsModule.lookup("doh2.example.com", { family: 4 });
     check("lookup(DoH, url with existing query): appends the dns param with '&'",
       a.address === "198.51.100.42");
-  } finally { qsrv.close(); await _drainTcpHandles(); }
+  } finally { qsrv.close(); await _drainOpenHandles(); }
 
   // ---- resolveSecure over DoH via POST + '?'-url (usePost + '&' branches) ----
   _reset();
@@ -1880,7 +1870,7 @@ async function testDohDecodeAndErrorBranches() {
     var sec = await dnsModule.resolveSecure("sec.example.com", "A");
     check("resolveSecure(DoH POST, ?-url): decodes via POST body over the '&' getUrl branch",
       sec && Array.isArray(sec.rrs) && sec.rrs[0] === "203.0.113.9" && sec.ad === true);
-  } finally { psec.close(); await _drainTcpHandles(); }
+  } finally { psec.close(); await _drainOpenHandles(); }
 
   // ---- querySvcb over DoH via POST + auto transport (raw usePost branch) ----
   _reset();
@@ -1893,7 +1883,7 @@ async function testDohDecodeAndErrorBranches() {
     var svcb = await dnsModule.querySvcb("praw.example.com");                     // no transport → auto DoH, POST body
     check("querySvcb(DoH POST, auto transport): raw query round-trips via POST body",
       Array.isArray(svcb) && svcb.length === 1 && svcb[0].params.alpn[0] === "h2");
-  } finally { praw.close(); await _drainTcpHandles(); }
+  } finally { praw.close(); await _drainOpenHandles(); }
 
   // ---- non-200 for lookup (_dohLookup) + resolveSecure (_dohLookupSecure) ----
   _reset();
@@ -1909,7 +1899,7 @@ async function testDohDecodeAndErrorBranches() {
       await _throwsAsync(function () {
         return dnsModule.resolveSecure("x.example.com", "A");
       }, "dns/doh-http"));
-  } finally { e500.close(); await _drainTcpHandles(); }
+  } finally { e500.close(); await _drainOpenHandles(); }
 
   // ---- family-0 dual-stack over DoH with ipv6first ordering ----
   _reset();
@@ -1921,7 +1911,7 @@ async function testDohDecodeAndErrorBranches() {
     var all = await dnsModule.lookup("doh2.example.com", { all: true });          // family 0 → _dualStack both families
     check("lookup(DoH, family 0, ipv6first): dual-stack returns the A answer",
       Array.isArray(all) && all.length >= 1 && all[0].address === "198.51.100.42");
-  } finally { dsrv.close(); await _drainTcpHandles(); }
+  } finally { dsrv.close(); await _drainOpenHandles(); }
 }
 
 async function testResolveTypeAndNodeLookupBranches() {
@@ -1981,7 +1971,7 @@ async function testMoreTransportBranches() {
       await _throwsAsync(function () { return dnsModule.resolveSecure("bad.example.com", "A"); }));
     check("querySvcb(DoH): malformed 200 body surfaces a DnsError (_dohRawQuery)",
       await _throwsAsync(function () { return dnsModule.querySvcb("bad.example.com", { transport: "doh" }); }));
-  } finally { mErr.close(); await _drainTcpHandles(); }
+  } finally { mErr.close(); await _drainOpenHandles(); }
 
   // ---- querySvcb(DoT) against a closed port → _dotRawQuery handshake failure ----
   _reset();
@@ -1991,7 +1981,7 @@ async function testMoreTransportBranches() {
   try {
     check("querySvcb(DoT, dead upstream): raw-query handshake failure surfaces a DnsError",
       await _throwsAsync(function () { return dnsModule.querySvcb("svc.example.com", { transport: "dot" }); }));
-  } finally { await _drainTcpHandles(); }
+  } finally { await _drainOpenHandles(); }
 
   // ---- system transport: upstream FINs after the query, no reply ----
   _reset();
@@ -2004,7 +1994,7 @@ async function testMoreTransportBranches() {
       await _throwsAsync(function () {
         return dnsModule.querySvcb("example.com", { transport: "system" });
       }, "dns/system-failed"));
-  } finally { fin.close(); await _drainTcpHandles(); }
+  } finally { fin.close(); await _drainOpenHandles(); }
 
   // ---- deadline disabled (lookupTimeoutMs === 0) over a healthy DoH upstream ----
   // Exercises the ms<=0 short-circuits in _withTimeout + _armRequestTimeout.
@@ -2018,7 +2008,7 @@ async function testMoreTransportBranches() {
     var a = await dnsModule.lookup("ok.example.com", { family: 4 });
     check("lookup(DoH, timeout disabled): resolves without arming a deadline",
       a.address === "192.0.2.200");
-  } finally { okSrv.close(); await _drainTcpHandles(); }
+  } finally { okSrv.close(); await _drainOpenHandles(); }
 
   // ---- deadline disabled over a healthy DoT upstream (_dotConnect skips setTimeout) ----
   _reset();
@@ -2029,7 +2019,7 @@ async function testMoreTransportBranches() {
     var d = await dnsModule.resolve4("ok.example.com");
     check("resolve4(DoT, timeout disabled): resolves without arming a socket deadline",
       Array.isArray(d) && d[0] === "192.0.2.200");
-  } finally { okDot.close(); await _drainTcpHandles(); }
+  } finally { okDot.close(); await _drainOpenHandles(); }
 }
 
 // ---- additional loopback fixtures for the remaining branch coverage --------
@@ -2232,7 +2222,7 @@ async function testDohOversizedBody() {
       await _throwsAsync(function () {
         return dnsModule.lookup("big.example.com", { family: 4 });
       }, "dns/doh-too-large"));
-  } finally { s1.close(); await _drainTcpHandles(); }
+  } finally { s1.close(); await _drainOpenHandles(); }
 
   // ---- resolveSecure (_dohLookupSecure) ----
   _reset();
@@ -2244,7 +2234,7 @@ async function testDohOversizedBody() {
       await _throwsAsync(function () {
         return dnsModule.resolveSecure("big.example.com", "A");
       }, "dns/doh-too-large"));
-  } finally { s2.close(); await _drainTcpHandles(); }
+  } finally { s2.close(); await _drainOpenHandles(); }
 
   // ---- querySvcb (_dohRawQuery) ----
   _reset();
@@ -2256,7 +2246,7 @@ async function testDohOversizedBody() {
       await _throwsAsync(function () {
         return dnsModule.querySvcb("big.example.com", { transport: "doh" });
       }, "dns/doh-too-large"));
-  } finally { s3.close(); await _drainTcpHandles(); }
+  } finally { s3.close(); await _drainOpenHandles(); }
 }
 
 // ======================================================================
@@ -2275,7 +2265,7 @@ async function testDotMidQueryReset() {
   try {
     check("resolve4(DoT): mid-query connection reset surfaces a DnsError (_dotLookup onErr)",
       await _throwsAsync(function () { return dnsModule.resolve4("abrupt.example.com"); }, "dns/dot-failed"));
-  } finally { r1.close(); await _drainTcpHandles(); }
+  } finally { r1.close(); await _drainOpenHandles(); }
 
   // querySvcb over DoT: same reset, through the raw-query onErr path.
   _reset();
@@ -2287,7 +2277,7 @@ async function testDotMidQueryReset() {
       await _throwsAsync(function () {
         return dnsModule.querySvcb("abrupt.example.com", { transport: "dot" });
       }, "dns/dot-failed"));
-  } finally { r2.close(); await _drainTcpHandles(); }
+  } finally { r2.close(); await _drainOpenHandles(); }
 }
 
 // ======================================================================
@@ -2310,7 +2300,7 @@ async function testDotSocketReuse() {
     var a2 = await dnsModule.lookup("reuse.example.com", { family: 4 });   // pooled socket reused (no reconnect)
     check("lookup(DoT): a back-to-back second lookup reuses the pooled TLS socket",
       a1.address === "203.0.113.77" && a2.address === a1.address && aSrv.connCount() === 1);
-  } finally { aSrv.close(); await _drainTcpHandles(); }
+  } finally { aSrv.close(); await _drainOpenHandles(); }
 
   // ---- raw-query pool reuse (_dotRawQuery pool-hit branch) ----
   _reset();
@@ -2327,7 +2317,7 @@ async function testDotSocketReuse() {
     check("querySvcb(DoT): a back-to-back second raw query reuses the pooled TLS socket",
       Array.isArray(q1) && q1.length === 1 && Array.isArray(q2) && q2.length === 1 &&
       q2[0].params.alpn[0] === "h2" && sSrv.connCount() === 1);
-  } finally { sSrv.close(); await _drainTcpHandles(); }
+  } finally { sSrv.close(); await _drainOpenHandles(); }
 }
 
 // ======================================================================
@@ -2353,7 +2343,7 @@ async function testDiscoverEncryptedMappingDefaults() {
     check("discoverEncrypted: DoH record advertised via dohpath with no alpn yields an empty alpn list",
       resolvers[1].transport === "doh" && Array.isArray(resolvers[1].alpn) &&
       resolvers[1].alpn.length === 0 && resolvers[1].dohpath === "/dns-query");
-  } finally { fix.srv.close(); await _drainTcpHandles(); }
+  } finally { fix.srv.close(); await _drainOpenHandles(); }
 }
 
 // ======================================================================
@@ -2391,7 +2381,7 @@ async function testDotRawCloseHandler() {
     // Let the upstream FIN land so the pool's socket-close handler runs while
     // the pool entry is still current (removing it from the pool).
     await helpers.passiveObserve(400, "network-dns: DoT raw pool close-handler window");
-  } finally { s.close(); await _drainTcpHandles(); }
+  } finally { s.close(); await _drainOpenHandles(); }
 }
 
 // ======================================================================
@@ -2634,7 +2624,7 @@ async function testSystemRawQueryDefaultPortFallback() {
       err !== null && err.permanent === false);
   } finally {
     if (saved.length > 0) dnsModule.setServers(saved);
-    await _drainTcpHandles();
+    await _drainOpenHandles();
   }
 }
 
@@ -2671,7 +2661,7 @@ async function testDohDefaultPortFallback() {
     check("querySvcb(DoH): a port-less url dials the HTTPS default port 443",
       e2 !== null && e2.code === "dns/doh-failed" &&
       e2.message.indexOf("ECONNREFUSED 127.99.88.77:443") !== -1);
-  } finally { await _drainTcpHandles(); }
+  } finally { await _drainOpenHandles(); }
 }
 
 // ======================================================================
@@ -2702,7 +2692,7 @@ async function testDotPoolIdleEviction() {
     check("resolve4(DoT): a pool entry idle past the ceiling is evicted and the query reconnects",
       Array.isArray(second) && second.length === 1 && second[0] === "198.51.100.5" &&
       aSrv.connCount() === 2);
-  } finally { Date.now = realNow; aSrv.close(); await _drainTcpHandles(); }
+  } finally { Date.now = realNow; aSrv.close(); await _drainOpenHandles(); }
 
   // ---- raw-query path (_dotRawQuery) ----
   _reset();
@@ -2725,7 +2715,7 @@ async function testDotPoolIdleEviction() {
       Array.isArray(q2) && q2.length === 1 && q2[0].priority === 1 &&
       q2[0].target === "t.example.net" && q2[0].params.alpn[0] === "h2" &&
       sSrv.connCount() === 2);
-  } finally { Date.now = realNow; sSrv.close(); await _drainTcpHandles(); }
+  } finally { Date.now = realNow; sSrv.close(); await _drainOpenHandles(); }
 }
 
 // ======================================================================
@@ -2778,7 +2768,7 @@ function testDesignatedResolversUncodedEntryFailure() {
 
 async function run() {
   try { await _runTests(); }
-  finally { await _drainTcpHandles(); }
+  finally { await _drainOpenHandles(); }
 }
 
 async function _runTests() {

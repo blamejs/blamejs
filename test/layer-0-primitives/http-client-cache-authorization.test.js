@@ -325,18 +325,8 @@ async function run() {
     await testSmaxagePermitsSharedAuthReuse();
     await testPrivateCacheCachesAuthedResponse();
   } finally {
-    await _drainTcpHandles();
+    await helpers.drainOpenHandles("http-client-cache-authorization");
   }
-}
-
-async function _drainTcpHandles() {
-  b.httpClient._resetForTest();
-  if (typeof process.getActiveResourcesInfo !== "function") return;
-  await helpers.waitUntil(function () {
-    return process.getActiveResourcesInfo().filter(function (t) {
-      return t === "TCPSocketWrap" || t === "TCPServerWrap";
-    }).length === 0;
-  }, { timeoutMs: 5000, label: "http-client-cache-authorization: TCP handle drain" });
 }
 
 module.exports = { run: run };

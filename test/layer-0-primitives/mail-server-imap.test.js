@@ -1868,21 +1868,6 @@ async function testMiscBranchGaps() {
   } finally { cl.destroy(); await s3.srv.close(); }
 }
 
-// Each test connects a raw client socket to a live IMAP TLS server and
-// destroys both at the end; socket.destroy() and the server-side teardown
-// finalize their handles asynchronously — past the forked worker's post-run
-// grace window. Poll until every TCP handle has actually closed so the last
-// test's client/server don't outlive run() and hold the event loop open on
-// a slow runner.
-async function _drainTcpHandles() {
-  if (typeof process.getActiveResourcesInfo !== "function") return;
-  await helpers.waitUntil(function () {
-    return process.getActiveResourcesInfo().filter(function (t) {
-      return t === "TCPSocketWrap" || t === "TCPServerWrap";
-    }).length === 0;
-  }, { timeoutMs: 5000, label: "mail-server-imap: TCP handle drain after run" });
-}
-
 async function run() {
   var wtt = helpers.withTestTimeout;
   try {
@@ -1937,7 +1922,7 @@ async function run() {
     await wtt("notify emit fallbacks",  testNotifyEmitFallbacks);
     await wtt("misc branch gaps",       testMiscBranchGaps);
   } finally {
-    await _drainTcpHandles();
+    await helpers.drainOpenHandles("mail-server-imap");
   }
 }
 

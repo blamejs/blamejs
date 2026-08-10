@@ -1651,8 +1651,7 @@ async function testWebSocket() {
   } finally { await _stop(sUn.server); }
 }
 
-// ---- teardown: force every WS client + socket down, wait for TCP drain ----
-async function _drainTcpHandles() {
+async function _drainOpenHandles() {
   _wsClients.forEach(function (c) {
     try { c.cancelReconnect(); } catch (_e) { /* best-effort */ }
     try { c.close(); } catch (_e) { /* best-effort */ }
@@ -1668,12 +1667,7 @@ async function _drainTcpHandles() {
     });
   }));
   _wsClients = []; _wsSockets = []; _httpServers = [];
-  if (typeof process.getActiveResourcesInfo !== "function") return;
-  await helpers.waitUntil(function () {
-    return process.getActiveResourcesInfo().filter(function (t) {
-      return t === "TCPSocketWrap" || t === "TCPServerWrap";
-    }).length === 0;
-  }, { timeoutMs: 5000, label: "mail-server-jmap: TCP handle drain after run" });
+  await helpers.drainOpenHandles("mail-server-jmap");
 }
 
 async function run() {
@@ -1782,7 +1776,7 @@ async function run() {
     await wtt("ws push non-fn unsubscribe", testWebSocketPushSubscribeNonFunction);
     await wtt("ws push reject non-error", testWebSocketPushSubscribeRejectNonError);
   } finally {
-    await _drainTcpHandles();
+    await _drainOpenHandles();
   }
 }
 

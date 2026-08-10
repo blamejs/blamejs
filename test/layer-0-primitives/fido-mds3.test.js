@@ -1281,21 +1281,6 @@ function testVerifyAuthenticatorEntryWithoutStatusReports() {
 
 // ---- run ----
 
-// fido-mds3.fetch dials the MDS3 endpoint through the shared httpClient
-// keep-alive transport pool; a cached client socket finalizes its destroy on a
-// later event-loop turn, past the forked worker's grace window. Reset the pool,
-// then poll until every TCP handle has actually drained so it doesn't outlive
-// run().
-async function _drainTcpHandles() {
-  b.httpClient._resetForTest();
-  if (typeof process.getActiveResourcesInfo !== "function") return;
-  await helpers.waitUntil(function () {
-    return process.getActiveResourcesInfo().filter(function (t) {
-      return t === "TCPSocketWrap" || t === "TCPServerWrap";
-    }).length === 0;
-  }, { timeoutMs: 5000, label: "fido-mds3: TCP handle drain after _resetForTest" });
-}
-
 async function run() {
   try {
     testSurface();
@@ -1348,7 +1333,7 @@ async function run() {
     testCertifiedLevelSkipsMalformedReports();
     testVerifyAuthenticatorEntryWithoutStatusReports();
   } finally {
-    await _drainTcpHandles();
+    await helpers.drainOpenHandles("fido-mds3");
   }
 }
 
