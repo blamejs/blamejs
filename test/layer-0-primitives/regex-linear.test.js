@@ -276,6 +276,22 @@ function testTheShapesThatHangThePlatformRunInLinearTime() {
   check("the longest pattern the cap admits compiles in one pass over it, not " +
         "one pass per escape (" + compileTook + "ms)",
         compileTook < b.constants.TIME.seconds(1) / 2);
+
+  // The `y` flag allows exactly ONE start. Once its attempt has died there is
+  // nothing left to seed, and reading the rest of the subject buys an answer
+  // already in hand — two million characters were being walked to say no.
+  var pinned = b.regexLinear.compile("z", "y");
+  var haystack = "a".repeat(2000000);
+  var stickyStarted = Date.now();
+  var stickyFound = pinned.test(haystack);
+  var stickyTook = Date.now() - stickyStarted;
+  check("a sticky pattern that fails at its one position stops there (" +
+        stickyTook + "ms over two million characters)",
+        stickyFound === false && stickyTook < b.constants.TIME.seconds(1) / 4);
+  // The same pattern without `y` has every position to try and must read them,
+  // so the saving belongs to stickiness rather than to giving up early.
+  check("while the same pattern unanchored still searches the whole subject",
+        b.regexLinear.compile("z", "").test(haystack + "z") === true);
 }
 
 // The rule both the matcher and the screen fold by, checked directly: two
