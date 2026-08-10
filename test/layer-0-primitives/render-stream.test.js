@@ -790,8 +790,59 @@ function testFailAfterHeadersPicksTheRightSignal() {
   check("a HEAD response is completed rather than destroyed", headEnded === true);
 }
 
+// A status the caller GAVE is sent as given. `0` and `NaN` are falsy, and
+// defaulting them away would answer a misconfigured handler with a successful
+// response instead of letting the socket refuse the value.
+async function testAStatusThatWasGivenIsNotDefaultedAway() {
+  var sent = [];
+  function recorder() {
+    return {
+      headersSent: false, writableEnded: false,
+      writeHead: function (status) { sent.push(status); throw new Error("invalid status"); },
+      setHeader: function () {}, end: function () {}, destroy: function () {},
+    };
+  }
+
+  var jsonThrew = false;
+  try { b.render.json(recorder(), { ok: true }, { status: 0 }); }
+  catch (_e) { jsonThrew = true; }
+  check("render.json passes a zero status through rather than sending 200",
+        sent[0] === 0 && jsonThrew === true);
+
+  sent.length = 0;
+  var nanThrew = false;
+  try { b.render.json(recorder(), { ok: true }, { status: NaN }); }
+  catch (_e2) { nanThrew = true; }
+  check("and a NaN status likewise",
+        Number.isNaN(sent[0]) && nanThrew === true);
+
+  // Absent still takes the default, which is the whole point of the option.
+  sent.length = 0;
+  try { b.render.json(recorder(), { ok: true }); } catch (_e3) { /* the recorder throws */ }
+  check("while an absent status still takes the default",
+        sent[0] === b.constants.HTTP.STATUS.OK);
+
+  // The streaming path reports it the same way, as a failure to open rather
+  // than a committed response.
+  var streamRes = recorder();
+  var streamFailed = false;
+  try {
+    await b.render.stream(streamRes, (async function* () { yield "x"; })(), { status: 0 });
+  } catch (_e4) { streamFailed = true; }
+  check("render.stream refuses a zero status rather than streaming a 200",
+        streamFailed === true);
+
+  // And a redirect says so by name, since it knows what range it needs.
+  var redirectMessage = "";
+  try { b.render.redirect(recorder(), "/x", { status: 0 }); }
+  catch (e5) { redirectMessage = e5.message; }
+  check("and render.redirect names the range it needed",
+        redirectMessage.indexOf("3xx") !== -1);
+}
+
 async function run() {
   testFailAfterHeadersPicksTheRightSignal();
+  await testAStatusThatWasGivenIsNotDefaultedAway();
   await testWritesEveryChunkAndEnds();
   await testAgainstARealServer();
   await testAlreadyClosedStreamRejects();

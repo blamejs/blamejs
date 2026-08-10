@@ -812,6 +812,16 @@ function testUnanchoredScanCost() {
   check("but one it can eat does not",
         assertSafeAccepts("(?<=a)a+b") === false &&
         assertSafeAccepts("(?<=a)(?=a+b)") === false);
+  // Any position the lookbehind insists on will do, not only the one nearest
+  // the start: `(?<=xa)a+b` puts the `x` two characters back and a scan of
+  // `a`s stops at it just the same.
+  check("a separator further back still separates",
+        assertSafeAccepts("(?<=xa)a+b") && assertSafeAccepts("(?<=ax)a+b") &&
+        assertSafeAccepts("(?<=xaa)a+b") && assertSafeAccepts("(?<=[xy]a)a+b") &&
+        assertSafeAccepts("(?<=xa)(?=a+b)"));
+  check("and none of them separates a scan that eats it",
+        assertSafeAccepts("(?<=aa)a+b") === false &&
+        assertSafeAccepts("(?<=xa)\\w+b") === false);
   // What holds a scan is judged on what the scan WALKS, which is neither the
   // character it starts on nor everything the assertion can match:
   // `(?=a[ax]*z)` starts on an `a` and then walks over `x` as well.
