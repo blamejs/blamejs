@@ -403,6 +403,66 @@ function testRefusesWhatThePlatformItselfRefuses() {
   try { b.regexLinear.compile("[a&&b]", "v"); } catch (e) { vCode = e.code; }
   check("and the v flag is refused rather than read as ordinary class members",
         vCode === "regex/unsupported-flag");
+
+  // Every flag the platform takes lands in one of three states, and which one
+  // is what the docstring promises. Compiling without throwing is NOT evidence
+  // of honouring: an implementation that read `i` and did nothing with it would
+  // pass that. Each honoured flag is asked for a result it alone produces.
+  var probes = {
+    // flag: [pattern, subject, matches with the flag, matches without it]
+    i: ["a",        "A",    true,  false],
+    m: ["^b",       "a\nb", true,  false],
+    s: ["a.b",      "a\nb", true,  false],
+    u: ["\\u{61}",  "a",    true,  false],
+  };
+  var wrongFlags = [];
+  Object.keys(probes).forEach(function (flag) {
+    var probe = probes[flag];
+    var withFlag, without;
+    try { withFlag = b.regexLinear.compile(probe[0], flag).test(probe[1]); }
+    catch (e) { withFlag = "threw " + e.code; }
+    try { without = b.regexLinear.compile(probe[0], "").test(probe[1]); }
+    catch (e2) { without = "threw " + e2.code; }
+    if (withFlag !== probe[2] || without !== probe[3]) {
+      wrongFlags.push(flag + ": with=" + withFlag + " without=" + without +
+                      " (wanted " + probe[2] + "/" + probe[3] + ")");
+    }
+    // And the platform reads the same pattern the same way.
+    if (new RegExp(probe[0], flag).test(probe[1]) !== probe[2]) {
+      wrongFlags.push(flag + ": the platform no longer behaves this way");
+    }
+  });
+  // Sticky anchors the attempt where it starts rather than scanning forward.
+  var sticky = b.regexLinear.compile("a", "y").exec("ba");
+  var scanning = b.regexLinear.compile("a", "").exec("ba");
+  if (sticky !== null || scanning === null || scanning.index !== 1) {
+    wrongFlags.push("y: sticky " + JSON.stringify(sticky) + ", scanning " +
+                    JSON.stringify(scanning && scanning.index));
+  }
+  check("every honoured flag changes a result that names it" +
+        (wrongFlags.length ? " — " + wrongFlags.join(" | ") : ""), wrongFlags.length === 0);
+
+  // `g` is ACCEPTED and deliberately does nothing, because the matcher returns
+  // one match and the caller decides what comes next. That is a third state,
+  // and saying so keeps it from being mistaken for a flag that was honoured.
+  var withG = b.regexLinear.compile("a", "g").exec("aa");
+  var withoutG = b.regexLinear.compile("a", "").exec("aa");
+  check("g is accepted and changes nothing, which is what it promises",
+        withG !== null && withoutG !== null && withG.index === withoutG.index &&
+        withG[0] === withoutG[0]);
+
+  // And the two that are refused by name are refused for every pattern, not
+  // only the one that shows why.
+  var notRefused = [];
+  ["d", "v"].forEach(function (flag) {
+    ["a", "[abc]", "(x)y"].forEach(function (src) {
+      var code = null;
+      try { b.regexLinear.compile(src, flag); } catch (e) { code = e.code; }
+      if (code !== "regex/unsupported-flag") notRefused.push("/" + src + "/" + flag + " → " + code);
+    });
+  });
+  check("d and v are refused by name whatever the pattern" +
+        (notRefused.length ? " — " + notRefused.join(" | ") : ""), notRefused.length === 0);
   // `\u{61}` is Unicode-mode syntax; without `u` the platform reads it as a
   // repeated `u`, and so does this.
   check("escape syntax is read under the mode that applies to it",
