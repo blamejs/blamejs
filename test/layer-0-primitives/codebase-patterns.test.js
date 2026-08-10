@@ -11515,6 +11515,22 @@ var KNOWN_ANTIPATTERNS = [
     // back out of reach. Structural duplication a behavioral test can't assert
     // (every copy behaves identically until the day one fails), so the detector
     // is the guard.
+    // An OCSP response is ~40 lines of nested DER, and a suite that needs one
+    // refusal shape ends up building the whole thing. Two suites did, each
+    // reaching only the shapes it happened to need, which is how the
+    // signature-algorithm-versus-issuer-key disagreement went untested: no
+    // builder could express it. One builder with options makes a new refusal
+    // an argument instead of a third copy. Structural duplication a behavioral
+    // test can't assert, so the detector is the guard.
+    id: "test-hand-rolled-ocsp-response-builder",
+    primitive: "a test that needs an OCSP response must build it with helpers.buildOcspResponse(opts) — a hand-assembled BasicOCSPResponse only ever reaches the shapes its own suite thought of",
+    scanScope: "test",
+    regex: /writeOid\(\s*"1\.3\.6\.1\.5\.5\.7\.48\.1\.1"/,
+    skipCommentLines: true,
+    allowlist: ["test/helpers/ocsp.js"],
+    reason: "0.18.21 — tls-ocsp-freshness.test.js and tls-ocsp-verify.test.js each grew a near-identical BasicOCSPResponse assembler, and between them covered the accept path, staleness and the CertID issuer binding while leaving certStatus revoked/unknown, a non-successful responseStatus, both nonce encodings, an empty responses SEQUENCE and the signature-algorithm/issuer-key agreement untested — none of which either builder could express. helpers.buildOcspResponse(opts) builds all of them from one place, and closing those paths surfaced that the verifier accepted a response declaring RSA while carrying ECDSA (and the reverse). Anchored on the id-pkix-ocsp-basic OID, which appears only when assembling a response; the allowlist entry is the helper itself, the one legitimate site. Fires on a re-hand-rolled builder; silent on both migrated suites.",
+  },
+  {
     id: "test-hand-rolled-tcp-handle-drain",
     primitive: "a poll for open handles to drain must go through helpers.drainOpenHandles(label) — a hand-rolled waitUntil over process.getActiveResourcesInfo() owns its own budget, its own resource-type list, and reports only that it timed out, never what stayed open",
     scanScope: "test",

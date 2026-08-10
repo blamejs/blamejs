@@ -1,0 +1,36 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.18.22",
+  "date": "2026-08-10",
+  "headline": "An OCSP response that declared one signature algorithm and carried another was accepted — the field steering the digest was never checked against the key doing the verifying",
+  "summary": "`b.network.tls.ocsp.evaluate` read the responder's `signatureAlgorithm` OID to pick a digest, then handed the bytes to `node:crypto`, which selects RSA or ECDSA from the KEY rather than from that field. A response declaring `sha256WithRSAEncryption` while carrying an ECDSA signature therefore verified, and so did the reverse.\n\nThis is not a forgery path and was never exploitable: the issuer's private key is required either way, and a response signed by any other key is still refused. What it meant is that the declared algorithm and the algorithm actually verified were allowed to differ, with nothing in the result saying so. RFC 6960 §4.2.1 gives that field one job; the verifier now holds it to it, and a mismatch is refused with `tls/ocsp-sig-alg-key-mismatch`.\n\nIt surfaced while covering the refusal paths of the revocation checker — the half of a security primitive that only matters when something is wrong, and the half that had the least coverage.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "The OCSP signatureAlgorithm must agree with the issuer key",
+          "body": "The verifier mapped the response's `signatureAlgorithm` OID to a digest — `sha256WithRSAEncryption` to SHA-256, `ecdsa-with-SHA384` to SHA-384, and so on — and then called `node:crypto.verify(digest, tbs, issuerKey, signature)`. Node decides RSA versus ECDSA from the key object, so the OID's algorithm half was read and discarded. An EC-signed response declaring RSA verified; an RSA-signed response declaring ECDSA verified.\n\nNothing was forgeable through it. Producing a signature that verifies under the issuer key still requires that private key, and the release ships a test asserting that a response signed by a different key is refused. The defect is that a field the verifier depends on to choose the digest was never validated against the key it verified with, so what a response claimed and what was actually checked could differ silently.\n\n`evaluate` now requires the OID family and the issuer key type to agree, and refuses with `tls/ocsp-sig-alg-key-mismatch` when they do not. Responders that declare their own algorithm — every conformant one — are unaffected."
+        }
+      ]
+    },
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "The revocation checker's refusal paths are covered",
+          "body": "A revocation check earns its cost only by saying NO for every reason it should, and the accept path is the part that gets exercised. Each refusal now has a test driving the real `evaluate` call with a response that is well-formed in every respect except the one under test: `certStatus` revoked (with and without a CRLReason) and unknown; a `responseStatus` that is not successful; a ResponseData carrying no responses at all; a nonce that does not echo and one absent when required; a signature that does not verify and one made by the wrong key; a CertID under an unrecognised hash algorithm and one naming a different issuer than the certificate under validation; a SingleResponse with no thisUpdate.\n\nBoth encodings of the nonce extension are covered — the RFC 8954 raw form and the RFC 6960 double-wrapped one — because a verifier that reads only one scores a live responder's echo as a mismatch and refuses a good response."
+        }
+      ]
+    },
+    {
+      "heading": "Detectors",
+      "items": [
+        {
+          "title": "one OCSP response builder for the test suite",
+          "body": "An OCSP response is layers of nested DER, so each suite that needed one grew its own assembler — three of them, each reaching only the shapes that suite had thought of. Between them they covered the accept path, staleness and the CertID issuer binding, and could not express the signature-algorithm disagreement above at all: no builder had a knob for it. A shared builder makes a new refusal shape an argument rather than a fourth copy, and a detector fires on a re-hand-rolled one."
+        }
+      ]
+    }
+  ]
+}
