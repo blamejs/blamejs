@@ -343,6 +343,24 @@ function testRefusesWhatItCannotRunInLinearTime() {
   check("a long chain of zero-width steps runs rather than overflowing",
         b.regexLinear.compile("(){2000}").test("") === new RegExp("(){2000}").test(""));
 
+  // Recording a capture must not copy every slot, or a pattern of N groups does
+  // N-squared work and the promised bound holds only for patterns that were
+  // small anyway. Eight hundred groups is not a real pattern; it is the shape
+  // that shows the difference.
+  function groupsCost(n) {
+    var many = b.regexLinear.compile("()".repeat(n) + "a");
+    var began = Date.now();
+    many.exec("a");
+    return Date.now() - began;
+  }
+  groupsCost(200);                                        // warm, so the first call pays no extra
+  var eightHundred = groupsCost(800);
+  check("many capture groups cost their number, not its square",
+        eightHundred < b.constants.TIME.seconds(1));
+  check("and the captures they record are still right",
+        JSON.stringify(b.regexLinear.compile("(a)(b)?(c)").exec("ac").slice(0)) ===
+        JSON.stringify(new RegExp("(a)(b)?(c)").exec("ac").slice(0)));
+
   // The catastrophic shapes it DOES accept are the ones operators hit.
   check("the shapes people actually get bitten by are accepted, not refused",
         b.regexLinear.compile("(a+)+$").test("aaa!") === false &&
@@ -366,6 +384,18 @@ function testTheSurfaceReportsWhatItCompiled() {
         b.regexLinear.compile("a").exec("bba", 2).index === 2);
   check("the sticky flag pins it to where it was told to start",
         b.regexLinear.compile("a", "y").exec("ba") === null);
+
+  // Under `u` an offset that splits a surrogate pair does not name a place a
+  // character starts, and the platform's own answer there is not one rule — a
+  // zero-width assertion matches at the split index while a consuming pattern
+  // reports the index before it. Refusing beats differing quietly.
+  var splitOffset = null;
+  try { b.regexLinear.compile(".", "u").exec("😀", 1); }
+  catch (e) { splitOffset = e; }
+  check("an offset splitting a surrogate pair is refused under u",
+        splitOffset instanceof RangeError);
+  check("while the same offset is ordinary without u",
+        b.regexLinear.compile("\ude00", "").exec("😀", 1) !== null);
 }
 
 function testRefusesInputItCannotCompile() {
