@@ -832,6 +832,112 @@ function testUnanchoredScanCost() {
   check("so a lookbehind that walks its way back is a scan",
         assertSafeAccepts("(?<=ba+)") === false);
 
+  // A NEGATIVE assertion after a run reads opposite ground depending on which
+  // way it looks, and forbidding what the run eats is the safe case only for
+  // the one that looks forward. `a+(?!a)` holds the moment the greedy run stops,
+  // because it stopped on something it could not eat. `a+(?<!a)` reads the
+  // characters the run just ate, so it refuses at the end of the run, refuses
+  // again at every character handed back, and repeats the whole walk from every
+  // later start.
+  check("a negative lookahead the run satisfies by stopping is not a failure",
+        assertSafeAccepts("a+(?!a)") && assertSafeAccepts("[ab]+(?![ab])"));
+  check("but the same shape looking BEHIND fails at every endpoint",
+        assertSafeAccepts("a+(?<!a)") === false &&
+        assertSafeAccepts("[ab]+(?<!a)") === false &&
+        assertSafeAccepts("\\w+(?<!a)") === false &&
+        assertSafeAccepts("a+(?<![ab])") === false);
+  check("while one forbidding what the run never eats settles at once",
+        assertSafeAccepts("a+(?<!b)") && assertSafeAccepts("a*(?<!b)"));
+  // What decides it is whether the run's own characters can SPELL the whole
+  // assertion, not whether every character it eats satisfies it. `[ab]+(?<!a)`
+  // has a `b` that does not satisfy the `a` and is quadratic all the same,
+  // because the run can end on an `a`; `a+(?<!ab)` and `a+(?<!ba)` both need a
+  // `b` the run never supplies, so the assertion holds where the run stops.
+  check("a lookbehind the run cannot spell holds where the run stops",
+        assertSafeAccepts("a+(?<!ab)") && assertSafeAccepts("a+(?<!ba)") &&
+        assertSafeAccepts("a+(?<!aab)"));
+  // And the whole body counts, not the character beside the position: these
+  // reach back over the run and over what precedes it, and both find what they
+  // are looking for there, so they walk the subject again from every start.
+  check("but one it can spell in full is a failure at every endpoint",
+        assertSafeAccepts("a+(?<!.a)") === false &&
+        assertSafeAccepts("a+(?<![ab]a)") === false);
+  // Reaching past the run's shortest, it meets the character in FRONT of the
+  // run — which the run did not eat, or it would have started there. An `a`
+  // demanded in that position is a demand the subject cannot meet.
+  check("and one demanding a run character in front of the run cannot match",
+        assertSafeAccepts("a+(?<!a[ab])") && assertSafeAccepts("a+(?<!aa)"));
+  // A run that may match NOTHING settles at its own start, where a lookbehind
+  // has nothing to read and a negative one therefore holds — one walk, not one
+  // per position. What comes AFTER it is judged on its own.
+  // The first attempt hands characters back until the run is at its shortest,
+  // and where the run begins the pattern that leaves exactly the run's own
+  // minimum behind the endpoint. An assertion reaching further back than that
+  // cannot match there, so it holds and the search ends after one walk.
+  check("a run settles at its shortest, where the assertion outreaches it",
+        assertSafeAccepts("a*(?<!a)") && assertSafeAccepts("a+(?<!aa)") &&
+        assertSafeAccepts("a+(?<!aaa)") && assertSafeAccepts("[ab]+(?<!aa)") &&
+        assertSafeAccepts("^a+(?<!a)"));
+  check("and not where the assertion reaches no further than the run owes",
+        assertSafeAccepts("a+(?<!a)") === false &&
+        assertSafeAccepts("(?:ab)+(?<!ab)") === false);
+  // Settling that way rests on the character in front of the run being one the
+  // run does not eat, and only a run that takes ONE character at a time would
+  // have started there. `(?:ab)+` advances two at a time and begins at each
+  // `a`, so a `b` can sit in front of it — which is what `(?<!bab)` finds.
+  check("a run that advances by more than one keeps no such guarantee",
+        assertSafeAccepts("(?:ab)+(?<!bab)") === false &&
+        assertSafeAccepts("(?:ab)+(?<!abab)") === false);
+  // Only where nothing stands in front of the run, not even something
+  // zero-width — a `\B` refuses position zero — and only where the assertion
+  // follows it immediately, since anything between can refuse the short
+  // endpoint the settling depends on.
+  check("but not when an assertion in front of it refuses that position",
+        assertSafeAccepts("\\Ba*(?<!a)") === false);
+  check("nor when one between them refuses the short endpoint",
+        assertSafeAccepts("a*(?!a)(?<!a)") === false);
+  check("and anything after the assertion is still weighed",
+        assertSafeAccepts("a*(?<!a)b") === false);
+  // Settling there works because nothing stands behind position zero for the
+  // assertion to read. A body that can match NOTHING reads nothing happily and
+  // matches anyway, so the negative refuses at position zero as well and the
+  // run buys nothing by shrinking.
+  check("a lookbehind that can match nothing refuses everywhere",
+        assertSafeAccepts("a*(?<!)") === false &&
+        assertSafeAccepts("a*(?<!a?)") === false &&
+        assertSafeAccepts("a*(?<!(?:))") === false &&
+        assertSafeAccepts("a*(?<!b?)") === false);
+  // An alternation is spellable when ANY branch is.
+  check("one branch the run can spell is enough to make it a failure",
+        assertSafeAccepts("a+(?<!a|b)") === false &&
+        assertSafeAccepts("a+(?<!b|c)"));
+  // A run repeats whole copies of its body, so what stands behind an endpoint
+  // is the body read backwards over and over — `(?:ab)+` leaves a `b`, then an
+  // `a`, then a `b` — and the assertion is read against those positions one at
+  // a time. Every one of these is spelled entirely out of characters the run
+  // eats, which is all a set-membership test can see; the order is what tells
+  // them apart.
+  check("the assertion is read against the run's positions, not its characters",
+        assertSafeAccepts("(?:ab)+(?<!a)") && assertSafeAccepts("(?:ab)+(?<!aa)") &&
+        assertSafeAccepts("(?:ab)+(?<!ba)") && assertSafeAccepts("(?:ab)+(?<!bb)") &&
+        assertSafeAccepts("(?:abc)+(?<!ac)"));
+  check("and one that lines up with them is a failure at every endpoint",
+        assertSafeAccepts("(?:ab)+(?<!b)") === false &&
+        assertSafeAccepts("(?:ab)+(?<!ab)") === false &&
+        assertSafeAccepts("(?:ab)+(?<![ab]b)") === false &&
+        assertSafeAccepts("(?:abc)+(?<!c)") === false &&
+        assertSafeAccepts("(?:abc)+(?<!bc)") === false);
+  // A `^` or `$` inside the assertion pins it to one end of the subject, which
+  // the endpoints of a run are not, so one backtrack settles it.
+  check("an edge anchor inside the assertion places it outside the run",
+        assertSafeAccepts("a+(?<!a$)") && assertSafeAccepts("a+(?<!^a)"));
+  // A word boundary is not so easily placed: `\B` holds between two word
+  // characters, which is every endpoint inside a run of them.
+  check("but a word boundary inside it is not proven away",
+        assertSafeAccepts("a+(?<!a\\B)") === false);
+  check("a positive lookbehind the run satisfies out of its own characters is fine",
+        assertSafeAccepts("a+(?<=a)") && assertSafeAccepts("a+(?<=b)") === false);
+
   // What `^` pins depends on the flags in force WHERE IT STANDS. A modifier
   // group turns multiline on for part of a pattern, and then the anchor is a
   // line start rather than the one position the whole rule turns on.
