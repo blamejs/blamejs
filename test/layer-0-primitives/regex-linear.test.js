@@ -568,6 +568,32 @@ function testTheSurfaceReportsWhatItCompiled() {
   check("and by number", found[2] === "example");
   check("with the index it was found at", found.index === 0);
 
+  // A name may spell its characters with the identifier escapes the language
+  // allows, and the decoded name is the one `groups` carries. Judging the
+  // source spelling refused a name the platform accepts, and would have filed
+  // the match under the escape rather than under the letter.
+  var escaped = b.regexLinear.compile("(?<\\u0061>x)");
+  check("a capture name written as an escape is the name it spells",
+        escaped.groupNames.join(",") === "a" &&
+        escaped.exec("x").groups.a === "x" &&
+        new RegExp("(?<\\u0061>x)").exec("x").groups.a === "x");
+  check("and the escapes compose with ordinary characters",
+        b.regexLinear.compile("(?<a\\u0031>x)").groupNames.join(",") === "a1" &&
+        b.regexLinear.compile("(?<\\u{61}>x)").groupNames.join(",") === "a" &&
+        b.regexLinear.compile("(?<\\u0024x>x)").groupNames.join(",") === "$x");
+  var spelledNames = [];
+  ["(?<\\u0031>x)", "(?<\\u002D>x)", "(?<\\uZZZZ>x)", "(?<\\u0061>x)(?<a>y)"]
+    .forEach(function (src) {
+      var platformTakesIt = true;
+      try { new RegExp(src); } catch (_e) { platformTakesIt = false; }
+      var code = null;
+      try { b.regexLinear.compile(src); } catch (e) { code = e.code; }
+      if (platformTakesIt || code !== "regex/bad-group") spelledNames.push(src + " → " + code);
+    });
+  check("a name the escapes spell badly is still refused by name" +
+        (spelledNames.length ? " — " + spelledNames.join(" | ") : ""),
+        spelledNames.length === 0);
+
   check("a RegExp can be handed over whole",
         b.regexLinear.compile(/^a+$/i).test("AAA") === true);
   check("exec can start part-way along",

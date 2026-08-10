@@ -900,8 +900,41 @@ async function testAHeaderThatThrowsWhileBeingReadReleasesNothingBecauseNothingW
         releasedTwo === true);
 }
 
+// What the iterable's method HANDS BACK has to be an iterator, and asking at the
+// first pull was too late: the status line had gone out, so a malformed producer
+// arrived as a committed response that was then destroyed rather than as a bad
+// argument the caller could still render an error page for.
+async function testAnIteratorMethodThatReturnsNonsenseIsCaughtBeforeTheStatusLine() {
+  var returns = { "null": null, "a number": 42, "no next": { done: true },
+                  "a next that is not callable": { next: 7 } };
+  var wrong = [];
+  var labels = Object.keys(returns);
+  for (var i = 0; i < labels.length; i += 1) {
+    var label = labels[i];
+    var iterable = {};
+    iterable[Symbol.asyncIterator] = (function (value) {
+      return function () { return value; };
+    })(returns[label]);
+    var committed = false;
+    var res = {
+      headersSent: false, writableEnded: false,
+      writeHead: function () { committed = true; },
+      setHeader: function () {}, write: function () { return true; },
+      end: function () {}, destroy: function () {},
+    };
+    var failed = false;
+    try { await b.render.stream(res, iterable, {}); } catch (_e) { failed = true; }
+    if (!failed || committed) {
+      wrong.push(label + ": failed=" + failed + " headersWritten=" + committed);
+    }
+  }
+  check("a malformed iterator is refused with the status line still unsent" +
+        (wrong.length ? " — " + wrong.join(" | ") : ""), wrong.length === 0);
+}
+
 async function run() {
   testFailAfterHeadersPicksTheRightSignal();
+  await testAnIteratorMethodThatReturnsNonsenseIsCaughtBeforeTheStatusLine();
   await testAStatusThatWasGivenIsNotDefaultedAway();
   await testAHeaderThatThrowsWhileBeingReadReleasesNothingBecauseNothingWasTaken();
   await testWritesEveryChunkAndEnds();
