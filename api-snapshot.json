@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.18.19",
-  "createdAt": "2026-08-09T20:56:15.915Z",
+  "createdAt": "2026-08-10T01:07:13.915Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -7040,6 +7040,14 @@
         "assertNoCharThreats": {
           "type": "function",
           "arity": 4
+        },
+        "canonicalizeForCase": {
+          "type": "function",
+          "arity": 2
+        },
+        "caseFoldPartners": {
+          "type": "function",
+          "arity": 2
         },
         "charClass": {
           "type": "function",
@@ -49547,6 +49555,19 @@
         "registerValueDetector": {
           "type": "function",
           "arity": 3
+        }
+      }
+    },
+    "regexLinear": {
+      "type": "object",
+      "members": {
+        "RegexLinearError": {
+          "type": "function",
+          "arity": 4
+        },
+        "compile": {
+          "type": "function",
+          "arity": 2
         }
       }
     },

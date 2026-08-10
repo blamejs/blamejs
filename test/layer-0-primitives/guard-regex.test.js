@@ -803,6 +803,26 @@ function testUnanchoredScanCost() {
   // `a+`.
   check("and an assertion the subject cannot reach everywhere is not",
         assertSafeAccepts("x(?=a+b)"));
+  // A positive lookbehind says what stands immediately before every viable
+  // start. When the scan cannot eat that character, the starts are separated by
+  // something it has to stop at, so the runs do not overlap and their lengths
+  // add up to the subject rather than multiplying by it.
+  check("a lookbehind the scan cannot cross separates its starts",
+        assertSafeAccepts("(?<=x)a+b") && assertSafeAccepts("(?<=x)(?=a+b)"));
+  check("but one it can eat does not",
+        assertSafeAccepts("(?<=a)a+b") === false &&
+        assertSafeAccepts("(?<=a)(?=a+b)") === false);
+  // What holds a scan is judged on what the scan WALKS, which is neither the
+  // character it starts on nor everything the assertion can match:
+  // `(?=a[ax]*z)` starts on an `a` and then walks over `x` as well.
+  check("and the walk is what counts, not the character it starts on",
+        assertSafeAccepts("(?<=x)(?=a+z)") &&
+        assertSafeAccepts("(?<=x)(?=a[ax]*z)") === false);
+  // A scan nested inside another assertion consumes nothing the enclosing one
+  // can see, so no separator gets to claim it holds a scan it could not read.
+  check("a walk it cannot read is never held",
+        assertSafeAccepts("(?<=a)(?=(?=a+b))") === false &&
+        assertSafeAccepts("(?<=x)(?=(?=a+b))") === false);
   // A lookBEHIND is matched backwards, so which end runs away is the other one.
   // `(?<=a+b)` tests the neighbouring `b` first and fails there at nearly every
   // position; `(?<=ba+)` walks back through everything before it at every one.
