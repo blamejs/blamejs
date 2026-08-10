@@ -849,7 +849,7 @@ function testStatusPredicatesClassifyWholeNumbersOnly() {
   // A whole number outside the bands is ANSWERED, not refused: `b.webhook`
   // reports on a delivery whose transport failed with the status defaulted to
   // zero, and throwing there would turn a failed delivery into a crash.
-  var answered = true;
+  var answered;
   try {
     answered = HTTP.success(0) === false && HTTP.serverError(0) === false &&
                HTTP.bodiless(0) === false && HTTP.success(999) === false;
