@@ -323,8 +323,8 @@ async function _checkOne(key, manifestEntry) {
     // decision (wait, or push the parents) is taken with it in hand.
     var ahead = null;
     try {
-      var latest = await _registryFetch(key);
-      if (latest && latest !== manifestEntry.version) ahead = latest;
+      var published = await _registryFetch(key);
+      if (published && published !== manifestEntry.version) ahead = published;
     } catch (_e) { ahead = null; }                          // registry trouble is not this gate's
     return { key: key, status: "current", current: manifestEntry.version,
              latest: manifestEntry.version,

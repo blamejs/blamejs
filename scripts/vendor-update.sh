@@ -42,6 +42,23 @@ DATE=$(date +%Y-%m-%d)
 # `vendor-update.sh argon2`.
 VENDORED_PACKAGES=("@noble/ciphers" "@noble/curves" "@noble/hashes" "@noble/post-quantum" "@simplewebauthn/server" "@blamejs/pki")
 
+# Packages whose version is decided by the bundles that INLINE them rather than
+# by npm's newest. @noble/curves pins its copy of @noble/hashes exactly, so a
+# standalone bundle that jumped ahead would no longer be the code inside the
+# server bundles — which is the whole reason the browser build exists. The
+# check modes say so instead of advertising an update that cannot be taken.
+# scripts/check-vendor-currency.js holds the same rule for the CI gate.
+#
+# Written as a `case` rather than an associative array: `declare -A` is Bash 4,
+# and macOS still ships 3.2, where it is a parse error that would take the whole
+# script down — including the modes that have nothing to do with this.
+pinned_by_inliner() {
+  case "$1" in
+    "@noble/hashes") echo "@noble/curves + @noble/post-quantum" ;;
+    *)               echo "" ;;
+  esac
+}
+
 get_vendored_ver() {
   node -e "var m=require('./$MANIFEST'); var p=m.packages['$1']; console.log(p?p.version:'?')"
 }
@@ -88,7 +105,15 @@ if [ "${1:-}" = "--check" ]; then
     vendored=$(get_vendored_ver "$pkg")
     bundled=$(node -e "var m=require('./$MANIFEST'); var p=m.packages['$pkg']; console.log(p&&p.bundledAt?p.bundledAt:'?')")
     latest=$(npm view "$pkg" version 2>/dev/null || echo "?")
-    if [ "$vendored" = "$latest" ]; then status="up to date"; else status="UPDATE AVAILABLE"; fi
+    pinned_by=$(pinned_by_inliner "$pkg")
+    if [ -n "$pinned_by" ]; then
+      # Its currency is the version its inliners carry, not npm's newest.
+      # Advertising an update here would advertise one that cannot produce a
+      # valid tree: taking it moves the standalone bundle alone, and the
+      # manifest gate then refuses it for no longer matching the copies inside
+      # the bundles that embed it.
+      if [ "$vendored" = "$latest" ]; then status="up to date"; else status="pinned by $pinned_by (npm has $latest)"; fi
+    elif [ "$vendored" = "$latest" ]; then status="up to date"; else status="UPDATE AVAILABLE"; fi
     printf "%-30s %-15s %-15s %-12s %s\n" "$pkg" "$vendored" "$latest" "$bundled" "$status"
   done
   exit 0
@@ -367,6 +392,47 @@ echo "=== Vendoring $PKG@$VER ==="
 npm install "${PKG}@${VER}" --no-save --ignore-scripts 2>/dev/null
 INSTALLED_VER=$(node -e "console.log(require('./node_modules/${PKG}/package.json').version)")
 echo "Installed: $PKG@$INSTALLED_VER"
+
+# The versions of the packages this bundle EMBEDS, read from what npm actually
+# resolved rather than from what the manifest last said. esbuild inlines
+# whichever copy is on disk, so a parent whose range resolved to a newer
+# transitive dependency ships that code — and the manifest, the SBOM and the
+# pinned-by-inliner comparison all went on describing the old one. Read here,
+# consumed by the manifest updater below, which already had the field and
+# nothing that filled it.
+_component_versions() {
+  node -e "
+    var fs = require('fs');
+    var path = require('path');
+    var createRequire = require('node:module').createRequire;
+    var manifest = JSON.parse(fs.readFileSync('$MANIFEST', 'utf8'));
+    var entry = manifest.packages['$PKG'];
+    var comps = (entry && entry.components) || {};
+    // Resolved FROM THE PARENT, which is where esbuild resolves from. npm may
+    // nest a copy under the parent when a hoisted one has a conflicting
+    // version, and reading the hoisted copy would record a version the bundle
+    // does not contain — the drift this exists to stop, arrived at by a
+    // different route.
+    var parentDir = path.resolve('node_modules', '$PKG');
+    var fromParent = createRequire(path.join(parentDir, 'package.json'));
+    var out = {};
+    Object.keys(comps).forEach(function (name) {
+      try {
+        out[name] = fromParent(name + '/package.json').version;
+      } catch (_e) {
+        try {
+          out[name] = require('./node_modules/' + name + '/package.json').version;
+        } catch (_e2) { /* not resolvable — leave the recorded value alone */ }
+      }
+    });
+    console.log(JSON.stringify(out));
+  " 2>/dev/null || echo "{}"
+}
+COMPONENT_VERSIONS_JSON=$(_component_versions)
+if [ "$COMPONENT_VERSIONS_JSON" != "{}" ] && [ -n "$COMPONENT_VERSIONS_JSON" ]; then
+  echo "Embedded:  $COMPONENT_VERSIONS_JSON"
+fi
+export COMPONENT_VERSIONS_JSON
 
 # Browser builds land here. Created before the case block rather than inside an
 # arm, so a new browser artifact cannot fail on a missing directory depending on
