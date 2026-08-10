@@ -135,6 +135,35 @@ async function testAThrowBeforeTheFirstRowNeverCommitsTheResponse() {
   check("so there is nothing to destroy", destroyed === false);
   check("and no headers were written", Object.keys(res._headers || {}).length === 0);
 
+  // A value the stream SKIPS is not proof the producer can produce — the loop
+  // never writes a null or an undefined — so the window has to keep pulling
+  // past them rather than commit on the strength of one.
+  var skipped = _res();
+  var destroyedSkipped = false;
+  var pulls = 0;
+  res.destroy = function () { /* the earlier double, untouched */ };
+  skipped.destroy = function () { destroyedSkipped = true; skipped.destroyed = true; };
+  async function* blanksThenFails() {
+    pulls += 1; yield null;
+    pulls += 1; yield undefined;
+    pulls += 1; throw new Error("query rejected after the optional rows");
+  }
+  var caughtBlank = null;
+  try { await b.render.stream(skipped, blanksThenFails()); } catch (e) { caughtBlank = e; }
+  check("a producer that yields only skipped values and then fails never commits",
+        caughtBlank !== null && skipped.headersSent !== true && destroyedSkipped === false);
+  check("and the window pulled past both of them", pulls === 3);
+
+  // One real chunk after the skipped ones commits, as it should.
+  var eventually = _res();
+  async function* blanksThenRow() {
+    yield null;
+    yield "id\n";
+  }
+  await b.render.stream(eventually, blanksThenRow());
+  check("while a real chunk after them is written normally",
+        eventually._captured().toString("utf8") === "id\n");
+
   // A producer that yields once and THEN fails is the other case, and stays a
   // truncation: those rows are on the wire and cannot be taken back.
   var res2 = _res();
