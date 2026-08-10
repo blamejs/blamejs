@@ -74,6 +74,21 @@ var SPECIAL_MAP = {
     type: "skip",
     reason: "operator-managed VMC/CMC trust anchors — empty source-tree default by design; operators populate + refresh per the file-header procedure, so there is no single upstream version to track"
   },
+  "@noble/hashes": {
+    // Vendored as a browser build so a client half can hash, and ALSO inlined
+    // by the bundles that use it server-side. What matters is that those are
+    // one version: a browser must run the hash the server's PQC bundle carries.
+    //
+    // So npm's latest is the wrong question here, and asking it would make the
+    // tree unreleasable rather than current. A parent pins its own copy — the
+    // curves bundle pins an exact version — so when upstream publishes a new
+    // hashes release the standalone CANNOT move to it without leaving the
+    // inlined copies behind, and nothing could satisfy both gates until the
+    // parents publish in turn. The version its inliners declare IS its
+    // currency; when they move, this reports that it must be re-vendored.
+    type: "pinned-by-inliner",
+    reason: "pinned to the version @noble/curves and @noble/post-quantum inline, so the browser build and the copy inside the server bundles are the same code"
+  },
   "SecLists-common-passwords-top-10000": {
     type: "github-master",
     owner: "danielmiessler",
@@ -269,6 +284,55 @@ async function _checkOne(key, manifestEntry) {
   if (special && special.type === "skip") {
     return { key: key, status: "skipped", reason: special.reason };
   }
+  if (special && special.type === "pinned-by-inliner") {
+    // Every bundle that declares this package as an embedded component, and
+    // what version each says it carries.
+    var manifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, "utf8"));
+    var inlined = [];
+    Object.keys(manifest.packages || {}).forEach(function (parent) {
+      var comps = manifest.packages[parent].components;
+      if (comps && comps[key] && comps[key].version) {
+        inlined.push({ parent: parent, version: comps[key].version });
+      }
+    });
+    if (inlined.length === 0) {
+      // Reported under a status the gate's failure policy already knows, or it
+      // would print the problem and exit zero — a check that says nothing is
+      // worse than no check, because it reads as coverage.
+      return { key: key, status: "registry-error",
+               error: "declared pinned-by-inliner but no bundle lists it as a component — " +
+                      "either it is no longer embedded, in which case track it against npm " +
+                      "latest by dropping the SPECIAL_MAP entry, or a components entry was " +
+                      "dropped and the pin now compares against nothing" };
+    }
+    var behind = inlined.filter(function (i) { return i.version !== manifestEntry.version; });
+    if (behind.length > 0) {
+      return { key: key, status: "stale", current: manifestEntry.version,
+               latest: behind.map(function (i) { return i.version; }).join("/"),
+               reason: behind.map(function (i) { return i.parent + " inlines " + i.version; })
+                 .join(", ") + " — re-vendor @noble/hashes so the browser build " +
+                 "runs the same code the server bundles carry" };
+    }
+    // The pin decides whether this FAILS, but npm is still asked, because
+    // "matches its parents" and "carries no published fix" are different
+    // questions and the second one is the release gate SECURITY.md states.
+    // It cannot fail here: the parents pin their copy, so until they publish
+    // against a newer release there is nothing an operator could do about it —
+    // reporting it as stale would make the tree unreleasable rather than
+    // current. It is surfaced instead, so a newer upstream is visible and the
+    // decision (wait, or push the parents) is taken with it in hand.
+    var ahead = null;
+    try {
+      var published = await _registryFetch(key);
+      if (published && published !== manifestEntry.version) ahead = published;
+    } catch (_e) { ahead = null; }                          // registry trouble is not this gate's
+    return { key: key, status: "current", current: manifestEntry.version,
+             latest: manifestEntry.version,
+             reason: ahead
+               ? "pinned by its inliners; npm publishes " + ahead + " — re-vendor once " +
+                 "@noble/curves and @noble/post-quantum carry it"
+               : special.reason };
+  }
   if (special && special.type === "github-master") {
     // Compare upstream master/main commit date against the manifest's
     // bundledAt date. If upstream has commits newer than bundledAt,
@@ -463,7 +527,14 @@ async function main() {
   // registry-error for it is therefore ALWAYS a hard failure (never
   // advisory), even without BLAMEJS_VENDOR_CURRENCY_STRICT — the gate
   // must not pass while it cannot prove @blamejs/pki is current.
-  var ALWAYS_STRICT_ERROR = { "@blamejs/pki": true };
+  //
+  // @noble/hashes is always-strict for a different reason: it is pinned by its
+  // inliners and asks the registry nothing, so an error for it can never be the
+  // flaky network the advisory default exists to tolerate. It can only mean the
+  // manifest no longer carries the components entries the pin is compared
+  // against — the comparison basis is gone, and the gate would otherwise print
+  // that and pass, which reads as coverage it no longer has.
+  var ALWAYS_STRICT_ERROR = { "@blamejs/pki": true, "@noble/hashes": true };
   var hardErrored = errored.filter(function (r) {
     return strictErrors || ALWAYS_STRICT_ERROR[r.key] === true;
   });

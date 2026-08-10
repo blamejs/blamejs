@@ -22,6 +22,7 @@ var childProcess = require("child_process");
 var check = require("../helpers/check").check;
 
 var MANIFEST_PATH = "lib/vendor/MANIFEST.json";
+var REPO_ROOT = path.resolve(__dirname, "..", "..");
 
 function hashFile(p) {
   return "sha256:" + crypto.createHash("sha256")
@@ -250,12 +251,17 @@ function run() {
       var comps = (manifest.packages[k] || {}).components;
       return !!(comps && comps["@noble/hashes"]);
     });
+    // It is also vendored in its own right, as the browser build, so the count
+    // is the embedded copies PLUS that one. Asserting a bare equality against
+    // the parents would have read the top-level entry as a duplicate of one of
+    // them — the opposite of what this checks.
+    var hashesTopLevel = (manifest.packages || {})["@noble/hashes"] ? 1 : 0;
     check("vendor sbom: the manifest declares more than one bundle embedding " +
           "@noble/hashes (guards against the next two checks going vacuous)",
           hashesParents.length >= 2);
     check("vendor sbom: every bundle embedding @noble/hashes contributes its " +
-          "own component entry",
-          hashesCopies.length === hashesParents.length &&
+          "own component entry, and the vendored package its own on top",
+          hashesCopies.length === hashesParents.length + hashesTopLevel &&
           new Set(hashesCopies.map(function (c) { return c["bom-ref"]; })).size ===
             hashesCopies.length);
     var wrongVersion = hashesParents.filter(function (parent) {
@@ -296,9 +302,160 @@ function run() {
   }
 }
 
-module.exports = { run: run };
+// The browser builds exist so a consumer's client half is not a SECOND vendoring
+// path for the same upstream packages — two copies, two currency stories,
+// drifting apart. What makes that true is not the bundling, which is one esbuild
+// line: it is that a browser artifact is pinned, hashed, currency-checked and
+// SBOM-listed by the machinery its server counterpart already goes through, and
+// that both are built from one install so the two halves of a hybrid exchange
+// cannot be different releases of the same algorithm.
+//
+// Two things are checked, and they are different claims. That the halves cannot
+// be DIFFERENT VERSIONS is structural: one `version` field covers both slots of
+// a package, and one vendor-update run builds both from one install — so it is
+// asserted on the manifest, below, not on behaviour. What behaviour proves is
+// that the artifacts WORK and agree: a standard is a standard, so two correct
+// ML-KEM builds would interoperate even at different versions, which is exactly
+// why the version property is not left to the round-trip to demonstrate.
+async function runBrowserBuilds() {
+  var manifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, "utf8"));
+  var pathToFileURL = require("node:url").pathToFileURL;
+
+  var browserSlots = Object.keys(manifest.packages).filter(function (name) {
+    var files = manifest.packages[name].files || {};
+    return typeof files.browser === "string";
+  });
+  check("vendor browser: the manifest declares browser builds (guards against " +
+        "the rest of this passing vacuously)", browserSlots.length >= 3);
+
+  var wrong = [];
+  browserSlots.forEach(function (name) {
+    var rel = manifest.packages[name].files.browser;
+    if (rel.indexOf("lib/vendor/browser/") !== 0) wrong.push(name + ": " + rel + " is not under lib/vendor/browser/");
+    if (!fs.existsSync(rel)) { wrong.push(name + ": " + rel + " is missing"); return; }
+    // The same hashing every server bundle gets — a browser artifact that
+    // escaped it would be the one file in the tree nothing could verify.
+    var recorded = (manifest.packages[name].hashes || {}).browser;
+    if (recorded !== hashFile(rel)) wrong.push(name + ": recorded hash does not match the file");
+    var head = fs.readFileSync(rel, "utf8").slice(0, 400);
+    if (head.indexOf(manifest.packages[name].version) === -1) {
+      wrong.push(name + ": the bundle header does not name the version it was built from");
+    }
+  });
+  check("vendor browser: every browser build is present, hashed and stamped" +
+        (wrong.length ? " — " + wrong.join(" | ") : ""), wrong.length === 0);
+
+  // A package carrying BOTH halves has one version field covering them, which
+  // is the structural reason they cannot diverge. Worth asserting, because a
+  // future refresh that gave the browser slot its own version would break it
+  // silently.
+  var bothHalves = browserSlots.filter(function (name) {
+    return typeof (manifest.packages[name].files || {}).server === "string";
+  });
+  check("vendor browser: at least one package ships both halves", bothHalves.length >= 2);
+
+  // @noble/hashes is the one that CANNOT rely on that, because it is vendored
+  // separately AND inlined by two other bundles — three copies pinned in three
+  // places. Refreshing one of the parents bumps that parent's `components[]`
+  // entry and leaves the standalone browser build where it was, and nothing in
+  // the currency gate compares them, so the browser's hash and the hash inside
+  // the server's PQC bundle could drift apart silently. This is what says they
+  // have not.
+  var hashesVersion = (manifest.packages["@noble/hashes"] || {}).version;
+  var inliners = [];
+  Object.keys(manifest.packages).forEach(function (name) {
+    var comps = manifest.packages[name].components;
+    if (comps && comps["@noble/hashes"]) {
+      inliners.push({ parent: name, version: comps["@noble/hashes"].version });
+    }
+  });
+  check("vendor browser: the bundles inlining @noble/hashes are declared " +
+        "(guards against this comparison going vacuous)", inliners.length >= 2);
+  var drifted = inliners.filter(function (i) { return i.version !== hashesVersion; });
+  check("vendor browser: the standalone @noble/hashes is the version its " +
+        "inliners carry, so a browser runs the hash the server's PQC bundle has" +
+        (drifted.length ? " — " + drifted.map(function (d) {
+          return d.parent + " inlines " + d.version + ", standalone is " + hashesVersion;
+        }).join(" | ") : ""),
+        hashesVersion !== undefined && drifted.length === 0);
+
+  var serverPQ = require(path.join(REPO_ROOT, "lib", "vendor", "noble-post-quantum.cjs"));
+  var serverCiphers = require(path.join(REPO_ROOT, "lib", "vendor", "noble-ciphers.cjs"));
+  var browserPQ = await import(pathToFileURL(
+    path.join(REPO_ROOT, "lib", "vendor", "browser", "noble-post-quantum.mjs")).href);
+  var browserCiphers = await import(pathToFileURL(
+    path.join(REPO_ROOT, "lib", "vendor", "browser", "noble-ciphers.mjs")).href);
+  var browserHashes = await import(pathToFileURL(
+    path.join(REPO_ROOT, "lib", "vendor", "browser", "noble-hashes.mjs")).href);
+
+  function hex(u8) { return Buffer.from(u8).toString("hex"); }
+
+  // The vault flow: the browser encapsulates to a server key.
+  var keys = serverPQ.ml_kem1024.keygen();
+  var enc = browserPQ.ml_kem1024.encapsulate(keys.publicKey);
+  check("vendor browser: an ML-KEM-1024 secret the browser encapsulates is the " +
+        "one the server bundle decapsulates",
+        hex(enc.sharedSecret) === hex(serverPQ.ml_kem1024.decapsulate(enc.cipherText, keys.secretKey)));
+
+  // And the share flow, the other way round.
+  var bKeys = browserPQ.ml_kem1024.keygen();
+  var sEnc = serverPQ.ml_kem1024.encapsulate(bKeys.publicKey);
+  check("vendor browser: and the reverse direction agrees too",
+        hex(sEnc.sharedSecret) === hex(browserPQ.ml_kem1024.decapsulate(sEnc.cipherText, bKeys.secretKey)));
+
+  // The API payload envelope: sealed client-side, opened server-side.
+  var key = new Uint8Array(32).fill(7);
+  var nonce = new Uint8Array(24).fill(9);
+  var sealed = browserCiphers.xchacha20poly1305(key, nonce).encrypt(Buffer.from("payload envelope"));
+  check("vendor browser: an envelope the browser cipher seals opens on the server one",
+        Buffer.from(serverCiphers.xchacha20poly1305(key, nonce).decrypt(sealed)).toString("utf8") ===
+          "payload envelope");
+
+  // The KDF: the server half of this one is node:crypto, not a vendored bundle,
+  // so the browser build has to agree with THAT rather than with a sibling file.
+  var shakeHex = hex(browserHashes.shake256(Buffer.from("abc"), { dkLen: 32 }));
+  check("vendor browser: SHAKE256 agrees with the node:crypto the server uses",
+        shakeHex === crypto.createHash("shake256", { outputLength: 32 })
+          .update("abc").digest("hex"));
+  check("vendor browser: and it is the FIPS 202 vector for \"abc\"",
+        shakeHex === "483366601360a8771c6863080cc4114d8db44530f8f1e1ee4f94ea37e78b5739");
+  check("vendor browser: HKDF agrees with node:crypto hkdfSync",
+        hex(browserHashes.hkdf(browserHashes.sha256, new Uint8Array([1, 2, 3]),
+                               new Uint8Array([4]), new Uint8Array([5]), 32)) ===
+          Buffer.from(crypto.hkdfSync("sha256", Buffer.from([1, 2, 3]),
+                                      Buffer.from([4]), Buffer.from([5]), 32)).toString("hex"));
+
+  // The surface each artifact advertises is the surface it has.
+  var surfaceWrong = [];
+  function surfaceOf(mod) {
+    return Object.keys(mod).filter(function (k) { return k !== "default"; }).sort().join(",");
+  }
+  var pqWant = (manifest.packages["@noble/post-quantum"].browser_exports || []).slice().sort().join(",");
+  if (surfaceOf(browserPQ) !== pqWant) {
+    surfaceWrong.push("@noble/post-quantum: " + surfaceOf(browserPQ) + " vs " + pqWant);
+  }
+  var hashWant = (manifest.packages["@noble/hashes"].exports || []).slice().sort().join(",");
+  if (surfaceOf(browserHashes) !== hashWant) {
+    surfaceWrong.push("@noble/hashes: " + surfaceOf(browserHashes) + " vs " + hashWant);
+  }
+  check("vendor browser: each build exports exactly what the manifest advertises" +
+        (surfaceWrong.length ? " — " + surfaceWrong.join(" | ") : ""),
+        surfaceWrong.length === 0);
+}
+
+// One entry point, so a runner that only knows `run()` still drives the browser
+// checks — a second export the smoke list did not know about would leave them
+// running nowhere.
+async function runAll() {
+  run();
+  await runBrowserBuilds();
+}
+
+module.exports = { run: runAll, runSync: run, runBrowserBuilds: runBrowserBuilds };
 
 if (require.main === module) {
-  run();
-  process.stdout.write("OK — vendor-manifest passed\n");
+  runAll().then(
+    function () { process.stdout.write("OK — vendor-manifest passed\n"); },
+    function (e) { console.error("FAIL:", (e && e.stack) || e); process.exit(1); }
+  );
 }

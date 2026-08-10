@@ -110,12 +110,15 @@ async function testMidStreamThrowDestroysRatherThanLying() {
         res._captured().toString("utf8") === "order_id,total\nord_1,10.00\n");
 }
 
-// The status line is written before the first chunk is pulled, so there is no
-// "before commit" window: a producer that fails on its very first row has
-// already put headers and `Transfer-Encoding: chunked` on the wire. Treating
-// that as uncommitted left the response neither ended nor destroyed and the
-// client waited forever.
-async function testThrowOnTheFirstRowStillEndsTheTransfer() {
+// Opening an async generator runs none of its body — that waits for the first
+// pull — so "the source opened" said nothing about whether the producer can
+// produce. The first value is fetched while the status line is still unsent, so
+// a producer that fails before yielding anything is a failure to OPEN rather
+// than a truncated export: nothing was committed, and the caller can still
+// render an error page. Committing first turned an outage into a download that
+// died partway, which is the one failure an error page has something to say
+// about.
+async function testAThrowBeforeTheFirstRowNeverCommitsTheResponse() {
   var res = _res();
   var destroyed = false;
   res.destroy = function () { destroyed = true; res.destroyed = true; };
@@ -127,8 +130,54 @@ async function testThrowOnTheFirstRowStillEndsTheTransfer() {
   }
   var caught = null;
   try { await b.render.stream(res, failsImmediately()); } catch (e) { caught = e; }
-  check("the failure is re-thrown", caught !== null);
-  check("the response does not stay open once its headers are out", destroyed === true);
+  check("the failure is re-thrown", caught !== null && caught.message === "query rejected");
+  check("with the status line still unsent", res.headersSent !== true);
+  check("so there is nothing to destroy", destroyed === false);
+  check("and no headers were written", Object.keys(res._headers || {}).length === 0);
+
+  // A value the stream SKIPS is not proof the producer can produce — the loop
+  // never writes a null or an undefined — so the window has to keep pulling
+  // past them rather than commit on the strength of one.
+  var skipped = _res();
+  var destroyedSkipped = false;
+  var pulls = 0;
+  res.destroy = function () { /* the earlier double, untouched */ };
+  skipped.destroy = function () { destroyedSkipped = true; skipped.destroyed = true; };
+  async function* blanksThenFails() {
+    pulls += 1; yield null;
+    pulls += 1; yield undefined;
+    pulls += 1; throw new Error("query rejected after the optional rows");
+  }
+  var caughtBlank = null;
+  try { await b.render.stream(skipped, blanksThenFails()); } catch (e) { caughtBlank = e; }
+  check("a producer that yields only skipped values and then fails never commits",
+        caughtBlank !== null && skipped.headersSent !== true && destroyedSkipped === false);
+  check("and the window pulled past both of them", pulls === 3);
+
+  // One real chunk after the skipped ones commits, as it should.
+  var eventually = _res();
+  async function* blanksThenRow() {
+    yield null;
+    yield "id\n";
+  }
+  await b.render.stream(eventually, blanksThenRow());
+  check("while a real chunk after them is written normally",
+        eventually._captured().toString("utf8") === "id\n");
+
+  // A producer that yields once and THEN fails is the other case, and stays a
+  // truncation: those rows are on the wire and cannot be taken back.
+  var res2 = _res();
+  var destroyed2 = false;
+  res2.destroy = function () { destroyed2 = true; res2.destroyed = true; };
+  async function* failsAfterOne() {
+    yield "row\n";
+    throw new Error("cursor died");
+  }
+  var caught2 = null;
+  try { await b.render.stream(res2, failsAfterOne()); } catch (e) { caught2 = e; }
+  check("a failure after the first row is still re-thrown", caught2 !== null);
+  check("and that one IS a committed, destroyed response",
+        res2.headersSent === true && destroyed2 === true);
 }
 
 // A signal that was already aborted when the call began takes the same path as
@@ -303,7 +352,10 @@ async function testAMalformedIteratorFailsRatherThanSpinning() {
   });
   check("a step that is not an iterator result is a failure", caught instanceof TypeError);
   check("and it is not retried in a loop", pulls === 1);
-  check("and the committed response is broken rather than completed", destroyed === true);
+  // The FIRST step is read before the status line goes out, so a producer that
+  // answers wrongly from the start is a bad argument and not a committed
+  // response — there is nothing on the wire to break.
+  check("and nothing was committed to break", destroyed === false && res.headersSent !== true);
 
   // The same for a sync iterable, whose `next` is not wrapped in a promise.
   var res2 = _res();
@@ -313,6 +365,28 @@ async function testAMalformedIteratorFailsRatherThanSpinning() {
   var caught2 = null;
   try { await b.render.stream(res2, syncBroken); } catch (e) { caught2 = e; }
   check("a sync producer breaking the protocol fails too", caught2 instanceof TypeError);
+
+  // Breaking it LATER is the committed case, and stays one.
+  var res3 = _res();
+  var destroyed3 = false;
+  res3.destroy = function () { destroyed3 = true; res3.destroyed = true; };
+  var late = {};
+  late[Symbol.asyncIterator] = function () {
+    var sent = false;
+    return {
+      next: function () {
+        if (sent) return Promise.resolve(undefined);
+        sent = true;
+        return Promise.resolve({ value: "row\n", done: false });
+      },
+    };
+  };
+  var caught3 = null;
+  try { await b.render.stream(res3, late); } catch (e) { caught3 = e; }
+  check("a producer that breaks the protocol after a row still fails",
+        caught3 instanceof TypeError);
+  check("and that response IS committed and broken",
+        res3.headersSent === true && destroyed3 === true);
 }
 
 // `for await` resolves a promise yielded by a SYNC iterable before handing it
@@ -607,18 +681,93 @@ async function testAgainstARealServer() {
     });
   }
 
-  // A producer that fails on its FIRST row still has headers on the wire, so
-  // the response must not be left open. It used to hang the client forever.
+  // A producer that fails BEFORE producing anything is not a truncated export —
+  // nothing was ever produced. Opening an async generator runs none of its body,
+  // so the first value is fetched while the status line is still unsent, and the
+  // failure reaches the route with a response it can still answer on. What the
+  // operator sees is the difference: an export attempted while the database is
+  // down gives a page saying so rather than a download that dies partway.
+  var earlyCommitted = null;
   var srvEarly = await serve(async function (req, res) {
-    async function* fails() { throw new Error("query rejected"); }
-    try { await b.render.stream(res, fails()); } catch (_e) { /* logged by the caller */ }
+    async function* fails() { throw new Error("query rejected before any row"); }
+    try {
+      await b.render.stream(res, fails(), { headers: { "Content-Type": "text/csv" } });
+    } catch (_e) {
+      earlyCommitted = res.headersSent;
+      b.render.json(res, { error: "export unavailable" }, { status: 503 });
+    }
   });
   var early = await get(srvEarly.address().port, { timeoutMs: 3000 });
   srvEarly.close();
-  check("a failure on the first row does not leave the client waiting",
-        early.error !== "TIMEOUT");
-  check("and it is not reported as a complete transfer",
-        early.complete !== true || early.body === "");
+  check("a failure before the first row leaves the response uncommitted",
+        earlyCommitted === false);
+  check("so the route can still answer it, completely",
+        early.status === 503 && early.complete === true);
+  check("and the client is told what happened rather than getting a dead download",
+        String(early.body).indexOf("export unavailable") !== -1);
+
+  // "Before the status line goes out" is this primitive's own status line. A
+  // route may have sent one already — the documented shape where it writes its
+  // own head and streams into it, which is how SSE is written — and then there
+  // is no pre-commit window to fail into. Those headers are on the wire, so the
+  // only honest ending is an incomplete transfer; leaving the response neither
+  // ended nor destroyed reads to the client as a body that never arrives, and
+  // holds the socket for the life of the process.
+  var preCommitted = [
+    { label: "the producer fails on its first pull",
+      make: function () { return (async function* () { throw new Error("subscribe failed"); })(); } },
+    { label: "the source fails to open at all",
+      make: function () { return function () { throw new Error("factory blew up"); }; } },
+    { label: "the first step is not an iterator result",
+      make: function () {
+        var broken = {};
+        broken[Symbol.asyncIterator] = function () {
+          return { next: function () { return Promise.resolve(undefined); } };
+        };
+        return broken;
+      } },
+  ];
+  var hanging = [];
+  for (var pc = 0; pc < preCommitted.length; pc += 1) {
+    var shape = preCommitted[pc];
+    var srvOwn = await serve(async function (req, res) {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.flushHeaders();
+      try { await b.render.stream(res, shape.make()); } catch (_e) { /* logged by the caller */ }
+    });
+    var own = await get(srvOwn.address().port, { timeoutMs: 3000 });
+    srvOwn.close();
+    if (own.error === "TIMEOUT") hanging.push(shape.label);
+  }
+  check("a response the ROUTE committed is ended even when nothing was produced" +
+        (hanging.length ? " — hung on: " + hanging.join(", ") : ""),
+        hanging.length === 0);
+
+  // And that response does not wait for a first value before its headers reach
+  // the client. There is no pre-commit window to protect once the route has
+  // sent its own head, so holding the stream back would only delay a connection
+  // the client is waiting to see established — minutes, for an event stream
+  // whose first event is minutes away.
+  var release = null;
+  var slowFirst = new Promise(function (r) { release = r; });
+  var srvSlow = await serve(async function (req, res) {
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    res.flushHeaders();
+    async function* waits() { await slowFirst; yield "data: 1\n\n"; }
+    try { await b.render.stream(res, waits()); } catch (_e) { /* logged */ }
+  });
+  var slowPort = srvSlow.address().port;
+  var sawHeaders = await new Promise(function (resolve) {
+    var req = http.get({ host: "127.0.0.1", port: slowPort, path: "/" }, function (r) {
+      resolve(r.statusCode === 200 && r.headers["content-type"] === "text/event-stream");
+      r.resume();
+    });
+    req.setTimeout(3000, function () { req.destroy(); resolve(false); });
+  });
+  check("and its headers reach the client before the producer has anything to say",
+        sawHeaders === true);
+  release();
+  srvSlow.close();
 
   // The whole point: a truncated export must not arrive as a complete one.
   var srvMid = await serve(async function (req, res) {
@@ -932,8 +1081,114 @@ async function testAnIteratorMethodThatReturnsNonsenseIsCaughtBeforeTheStatusLin
         (wrong.length ? " — " + wrong.join(" | ") : ""), wrong.length === 0);
 }
 
+// Setting a header is the ordinary way for a route to say what its response is,
+// and `writeHead(status, headers)` lets its own object win on a name they share.
+// So a DEFAULT silently replaced the route's own answer — and only for the names
+// the defaults happen to carry, which is what made it hard to see: a
+// `Content-Disposition` survived while the `Content-Type` beside it did not.
+async function testADefaultDoesNotOverrideAHeaderTheRouteAlreadySet() {
+  var wrong = [];
+
+  function fresh() {
+    var res = _res();
+    res.setHeader("content-type", "text/csv; charset=utf-8");
+    res.setHeader("content-disposition", 'attachment; filename="m.csv"');
+    return res;
+  }
+  function typeOn(res) {
+    return res.getHeader("content-type");
+  }
+
+  var streamed = fresh();
+  await b.render.stream(streamed, (async function* () { yield "a,b\n"; })());
+  if (typeOn(streamed) !== "text/csv; charset=utf-8") {
+    wrong.push("stream: " + typeOn(streamed));
+  }
+  if (streamed.getHeader("content-disposition") !== 'attachment; filename="m.csv"') {
+    wrong.push("stream lost the disposition it never set");
+  }
+  check("the octet-stream default steps aside for a type the route already set" +
+        (wrong.length ? " — " + wrong.join(" | ") : ""), wrong.length === 0);
+
+  // The helpers that ENCODE the body do not inherit it. Their Content-Type
+  // describes the bytes they just produced, so a `text/html` left on the
+  // response by an earlier route is how a JSON error body carrying a reflected
+  // value comes to be parsed as markup by the browser, same-origin.
+  var inherited = [];
+  var jsoned = fresh();
+  b.render.json(jsoned, { ok: true });
+  if (typeOn(jsoned) !== "application/json; charset=utf-8") inherited.push("json: " + typeOn(jsoned));
+
+  var texted = fresh();
+  b.render.text(texted, "hello");
+  if (typeOn(texted) !== "text/plain; charset=utf-8") inherited.push("text: " + typeOn(texted));
+
+  var htmled = fresh();
+  b.render.htmlString(htmled, "<p>hi</p>");
+  if (typeOn(htmled) !== "text/html; charset=utf-8") inherited.push("htmlString: " + typeOn(htmled));
+
+  var htmlPage = _res();
+  htmlPage.setHeader("content-type", "text/html; charset=utf-8");
+  b.render.json(htmlPage, { error: "<img src=x onerror=alert(1)>" }, { status: 400 });
+  if (String(htmlPage.getHeader("content-type")).indexOf("text/html") === 0) {
+    inherited.push("a JSON error body inherited text/html from the page route");
+  }
+  check("a helper that encodes the body sends its own content type" +
+        (inherited.length ? " — " + inherited.join(" | ") : ""), inherited.length === 0);
+
+  // Cache-Control is a security default rather than a formatting one, so it
+  // does not step aside for anything an earlier setHeader put there.
+  var relaxed = _res();
+  relaxed.setHeader("cache-control", "public, max-age=31536000");
+  await b.render.stream(relaxed, (async function* () { yield "x"; })());
+  check("and the revalidation default is not relaxed by an earlier setHeader",
+        relaxed.getHeader("cache-control") === "private, no-cache, must-revalidate");
+
+  // An explicit `opts.headers` entry still wins over both, which is the
+  // documented precedence and the reason this is a change to the DEFAULTS only.
+  var explicit = fresh();
+  await b.render.stream(explicit, (async function* () { yield "x"; })(),
+                        { headers: { "Content-Type": "application/json" } });
+  check("and an explicit opts.headers entry still wins over both",
+        explicit.getHeader("content-type") === "application/json");
+
+  // A length describes the bytes THIS call is writing, so a stale one a route
+  // guessed earlier would mis-frame the response.
+  var stale = _res();
+  stale.setHeader("content-length", "9999");
+  b.render.json(stale, { ok: true });
+  check("a content length the route guessed earlier does not survive",
+        Number(stale.getHeader("content-length")) ===
+          Buffer.byteLength(JSON.stringify({ ok: true }), "utf8"));
+
+  // A header set to nothing states nothing, so the default still applies.
+  var blank = _res();
+  blank.setHeader("content-type", "");
+  await b.render.stream(blank, (async function* () { yield "x"; })());
+  check("an empty content type is not an answer, so the default still applies",
+        blank.getHeader("content-type") === "application/octet-stream");
+
+  // Nothing set beforehand: the defaults apply exactly as they always did.
+  var plain = _res();
+  b.render.json(plain, { ok: true });
+  check("with nothing set beforehand the defaults still apply",
+        plain.getHeader("content-type") === "application/json; charset=utf-8" &&
+        plain.getHeader("cache-control") === "private, no-cache, must-revalidate");
+
+  // A response double with no getHeader at all must not break the merge.
+  var bare = {
+    headersSent: false, writableEnded: false, _h: null,
+    writeHead: function (s, h) { this._h = h; },
+    end: function () {}, destroy: function () {},
+  };
+  b.render.json(bare, { ok: true });
+  check("a response that cannot be asked about its headers still gets the defaults",
+        bare._h && bare._h["Content-Type"] === "application/json; charset=utf-8");
+}
+
 async function run() {
   testFailAfterHeadersPicksTheRightSignal();
+  await testADefaultDoesNotOverrideAHeaderTheRouteAlreadySet();
   await testAnIteratorMethodThatReturnsNonsenseIsCaughtBeforeTheStatusLine();
   await testAStatusThatWasGivenIsNotDefaultedAway();
   await testAHeaderThatThrowsWhileBeingReadReleasesNothingBecauseNothingWasTaken();
@@ -943,7 +1198,7 @@ async function run() {
   await testAwaitsBackpressure();
   await testStopsWhenThePeerGoes();
   await testMidStreamThrowDestroysRatherThanLying();
-  await testThrowOnTheFirstRowStillEndsTheTransfer();
+  await testAThrowBeforeTheFirstRowNeverCommitsTheResponse();
   await testAPreAbortedSignalIsATruncationToo();
   await testTheProducerIsReleasedWhenTheLoopStopsEarly();
   await testCancellationReachesAGeneratorBlockedInItsOwnAwait();
