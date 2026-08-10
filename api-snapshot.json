@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.18.19",
-  "createdAt": "2026-08-10T11:51:18.043Z",
+  "frameworkVersion": "0.18.20",
+  "createdAt": "2026-08-10T16:39:21.497Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -52168,7 +52168,7 @@
         },
         "quoteQualified": {
           "type": "function",
-          "arity": 2
+          "arity": 3
         },
         "toPositional": {
           "type": "function",

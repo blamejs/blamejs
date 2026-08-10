@@ -40,7 +40,7 @@ DATE=$(date +%Y-%m-%d)
 # (see lib/argon2-builtin.js). The case-block below preserves the
 # `argon2` operator-friendly error message for anyone who still tries
 # `vendor-update.sh argon2`.
-VENDORED_PACKAGES=("@noble/ciphers" "@noble/curves" "@noble/post-quantum" "@simplewebauthn/server" "@blamejs/pki")
+VENDORED_PACKAGES=("@noble/ciphers" "@noble/curves" "@noble/hashes" "@noble/post-quantum" "@simplewebauthn/server" "@blamejs/pki")
 
 get_vendored_ver() {
   node -e "var m=require('./$MANIFEST'); var p=m.packages['$1']; console.log(p?p.version:'?')"
@@ -368,13 +368,40 @@ npm install "${PKG}@${VER}" --no-save --ignore-scripts 2>/dev/null
 INSTALLED_VER=$(node -e "console.log(require('./node_modules/${PKG}/package.json').version)")
 echo "Installed: $PKG@$INSTALLED_VER"
 
+# Browser builds land here. Created before the case block rather than inside an
+# arm, so a new browser artifact cannot fail on a missing directory depending on
+# which package is being refreshed first.
+mkdir -p lib/vendor/browser
+
 case "$PKG" in
   "@noble/ciphers")
     echo 'export { xchacha20poly1305 } from "@noble/ciphers/chacha.js";' > _entry.mjs
     npx esbuild _entry.mjs --bundle --format=cjs --platform=node --outfile=lib/vendor/noble-ciphers.cjs
+    # The browser half of the SAME install, so a client cannot be running a
+    # different upstream version from the server it is talking to.
+    npx esbuild _entry.mjs --bundle --format=esm --platform=browser --outfile=lib/vendor/browser/noble-ciphers.mjs
     rm _entry.mjs
-    BUNDLER_DESC="esbuild --format=cjs --platform=node"
+    BUNDLER_DESC="esbuild --format=cjs --platform=node (server), esbuild --format=esm --platform=browser (browser)"
     sed -i "1s|^|// XChaCha20-Poly1305 — vendored from @noble/ciphers v${INSTALLED_VER} by Paul Miller\n// License: MIT — https://github.com/paulmillr/noble-ciphers\n// Bundled with esbuild. Exports: xchacha20poly1305\n|" lib/vendor/noble-ciphers.cjs
+    sed -i "1s|^|// XChaCha20-Poly1305 — vendored from @noble/ciphers v${INSTALLED_VER} by Paul Miller\n// License: MIT — https://github.com/paulmillr/noble-ciphers\n// Browser build (ESM), bundled with esbuild from the same install as the\n// server bundle beside it. Exports: xchacha20poly1305\n|" lib/vendor/browser/noble-ciphers.mjs
+    ;;
+
+  "@noble/hashes")
+    # Browser only. The server side reaches SHAKE256, SHA3-512 and HKDF through
+    # node:crypto, which has carried all three since the Node floor — a .cjs
+    # here would be a bundle nothing requires. A browser has no node:crypto, so
+    # the client half of a hybrid exchange needs its own copy, and this is the
+    # one blamejs owns rather than a second vendoring path in the consumer.
+    cat > _entry.mjs <<'ENTRY'
+export { shake128, shake256, sha3_256, sha3_512 } from "@noble/hashes/sha3.js";
+export { sha256, sha512 } from "@noble/hashes/sha2.js";
+export { hmac } from "@noble/hashes/hmac.js";
+export { hkdf } from "@noble/hashes/hkdf.js";
+ENTRY
+    npx esbuild _entry.mjs --bundle --format=esm --platform=browser --outfile=lib/vendor/browser/noble-hashes.mjs
+    rm _entry.mjs
+    BUNDLER_DESC="esbuild --format=esm --platform=browser (browser only)"
+    sed -i "1s|^|// @noble/hashes v${INSTALLED_VER} — vendored from Paul Miller\n// License: MIT — https://github.com/paulmillr/noble-hashes\n// Browser build (ESM), bundled with esbuild. The server side uses node:crypto\n// for these, so there is no .cjs beside it.\n// Exports: shake128 / shake256 / sha3_256 / sha3_512 (FIPS 202),\n//   sha256 / sha512, hmac (RFC 2104), hkdf (RFC 5869).\n|" lib/vendor/browser/noble-hashes.mjs
     ;;
 
   "@noble/curves")
@@ -395,8 +422,19 @@ export { ml_dsa44, ml_dsa65, ml_dsa87 } from "@noble/post-quantum/ml-dsa.js";
 export { slh_dsa_sha2_128f, slh_dsa_sha2_192f, slh_dsa_sha2_256f, slh_dsa_shake_128f, slh_dsa_shake_192f, slh_dsa_shake_256f } from "@noble/post-quantum/slh-dsa.js";
 ENTRY
     npx esbuild _entry.mjs --bundle --format=cjs --platform=node --outfile=lib/vendor/noble-post-quantum.cjs
+    # The browser half carries the KEM suites only. A client half encapsulates;
+    # it does not sign, and the FIPS 204 / 205 signature suites beside them are
+    # 60 KB a browser would download and never call. Built from the SAME
+    # install as the server bundle, so the two cannot be different versions of
+    # the same algorithm.
+    cat > _entry_browser.mjs <<'ENTRY'
+export { ml_kem512, ml_kem768, ml_kem1024 } from "@noble/post-quantum/ml-kem.js";
+ENTRY
+    npx esbuild _entry_browser.mjs --bundle --format=esm --platform=browser --outfile=lib/vendor/browser/noble-post-quantum.mjs
+    rm _entry_browser.mjs
     rm _entry.mjs
-    BUNDLER_DESC="esbuild --format=cjs --platform=node"
+    BUNDLER_DESC="esbuild --format=cjs --platform=node (server), esbuild --format=esm --platform=browser (browser)"
+    sed -i "1s|^|// @noble/post-quantum v${INSTALLED_VER} — vendored from Paul Miller\n// License: MIT — https://github.com/paulmillr/noble-post-quantum\n// Browser build (ESM), bundled with esbuild from the same install as the\n// server bundle beside it. The KEM suites only — a client half encapsulates\n// and does not sign.\n// Exports: ml_kem512 / ml_kem768 / ml_kem1024 (FIPS 203).\n|" lib/vendor/browser/noble-post-quantum.mjs
     sed -i "1s|^|// @noble/post-quantum v${INSTALLED_VER} — vendored from Paul Miller\n// License: MIT — https://github.com/paulmillr/noble-post-quantum\n// Bundled with esbuild. Exports: ml_kem512 / ml_kem768 / ml_kem1024 (FIPS 203 KEM),\n//   ml_dsa44 / ml_dsa65 / ml_dsa87 (FIPS 204 lattice signatures),\n//   slh_dsa_sha2_*f / slh_dsa_shake_*f (FIPS 205 hash signatures).\n|" lib/vendor/noble-post-quantum.cjs
     ;;
 
@@ -515,12 +553,27 @@ var m = require('./$MANIFEST');
 var p = m.packages['$PKG'];
 if (!p || !p.files) { console.log('  (no files entry; skipping)'); process.exit(0); }
 var ok = true;
+var pending = [];
 Object.values(p.files).forEach(function(f) {
-  if (typeof f !== 'string' || !f.endsWith('.cjs')) return;
-  try { require('./' + f); console.log('  ' + f + ': OK'); }
-  catch(e) { console.log('  ' + f + ': FAIL — ' + e.message); ok = false; }
+  if (typeof f !== 'string') return;
+  if (f.endsWith('.cjs')) {
+    try { require('./' + f); console.log('  ' + f + ': OK'); }
+    catch(e) { console.log('  ' + f + ': FAIL — ' + e.message); ok = false; }
+    return;
+  }
+  // A browser bundle is ESM and cannot be require()d — that throws
+  // ERR_REQUIRE_ESM whatever the file contains, so relaxing the extension
+  // filter alone would report every browser artifact as broken. Importing it
+  // proves the same thing: no import survived the bundling that the npm
+  // uninstall just took away.
+  if (f.endsWith('.mjs')) {
+    pending.push(import(require('node:url').pathToFileURL(f).href).then(
+      function() { console.log('  ' + f + ': OK'); },
+      function(e) { console.log('  ' + f + ': FAIL — ' + e.message); ok = false; }
+    ));
+  }
 });
-if (!ok) process.exit(1);
+Promise.all(pending).then(function() { if (!ok) process.exit(1); });
 " || { echo "Bundle verification failed — do not commit."; exit 1; }
 
 echo ""
