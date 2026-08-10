@@ -59,6 +59,15 @@
           "body": "The docstring described the primitive as the guard for request-lifecycle code matching an operator-supplied regex against attacker-controlled input, which implied a completeness the analysis does not have. It now separates the two costs it reaches — what one match attempt costs, and how many attempts there are — says plainly that the first is conservative rather than a decision procedure, so a pattern that is in fact linear can still be refused and usually needs a small rewrite, and states that neither answers how long a particular match will take on a particular input. Where the subject is attacker-controlled, cap its length as well as screening the pattern."
         }
       ]
+    },
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "The vendored PKI bundle moves to 0.4.13, binding a CMS content cipher to the container that declares it",
+          "body": "An `EnvelopedData` whose algorithm identifier had been changed to a same-key-length AES-GCM identifier decrypted successfully as unauthenticated AES-CBC, while reporting the AEAD algorithm in its result — so a caller reading `contentEncryptionAlgorithm` to establish that the content was authenticated was answered from a field the decryption had not honoured. The container and the cipher's mode are now checked against each other before the content-encryption key is used, and a mismatch is refused as an unsupported algorithm naming both.\n\nThe same bundle wipes an ML-KEM shared secret and the key-encryption key derived from it as soon as they stop being needed, on the failing path as well as the succeeding one — the path an attacker chooses — and performs the FIPS 203 ciphertext-length check in the crypto engine, so a caller reaching decapsulation directly is covered rather than only the CMS path. Operators upgrading get all of this by upgrading; nothing in the framework's own API changes."
+        }
+      ]
     }
   ]
 }
