@@ -264,6 +264,24 @@ function testCaseFoldingFollowsTheLanguageRatherThanCaseConversion() {
   check("case folding matches the platform across every awkward class" +
         (differing.length ? " — " + differing.join(" | ") : ""), differing.length === 0);
 
+  // Between the halves of an astral character is a position the engine still
+  // looks at, where a zero-width pattern still matches — and nothing that
+  // consumes can, because no character begins there.
+  var astralSubjects = ["a💩b", "💩", "x💩", "💩x"];
+  var splitPatterns = ["\\B", "x|\\B", "\\Bb", "\\b", "(?:)", "\\B\\w", "\\w\\B", "^\\B", "\\B$", "."];
+  var splitDiffs = [];
+  splitPatterns.forEach(function (src) {
+    astralSubjects.forEach(function (subject) {
+      var verdict = agrees(src, "u", subject);
+      if (!verdict.same && splitDiffs.length < 4) {
+        splitDiffs.push("/" + src + "/u on " + JSON.stringify(subject) +
+                        " — linear " + verdict.mine + ", native " + verdict.theirs);
+      }
+    });
+  });
+  check("a position inside a surrogate pair is looked at exactly as the platform looks at it" +
+        (splitDiffs.length ? " — " + splitDiffs.join(" | ") : ""), splitDiffs.length === 0);
+
   // An astral letter is one character, not two units, so its case forms meet.
   var astralUpper = String.fromCodePoint(0x10400);
   var astralLower = String.fromCodePoint(0x10428);
