@@ -840,9 +840,70 @@ async function testAStatusThatWasGivenIsNotDefaultedAway() {
         redirectMessage.indexOf("3xx") !== -1);
 }
 
+// Copying the caller's headers runs whatever `opts.headers` chooses to run.
+// Doing that after the producer was opened left a throw there with no path back
+// to the cleanup, and the producer's cursor or file handle stayed held.
+async function testAHeaderThatThrowsWhileBeingReadReleasesNothingBecauseNothingWasTaken() {
+  var opened = false;
+  var released = false;
+  var source = {};
+  source[Symbol.asyncIterator] = function () {
+    opened = true;
+    return {
+      next: function () { return Promise.resolve({ value: "x", done: false }); },
+      return: function () { released = true; return Promise.resolve({ done: true }); },
+    };
+  };
+
+  var hostile = {};
+  Object.defineProperty(hostile, "X-Trouble", {
+    enumerable: true,
+    get: function () { throw new Error("header getter refused"); },
+  });
+
+  var res = {
+    headersSent: false, writableEnded: false,
+    writeHead: function () {}, setHeader: function () {},
+    write: function () { return true; }, end: function () {}, destroy: function () {},
+  };
+
+  var message = "";
+  try { await b.render.stream(res, source, { headers: hostile }); }
+  catch (e) { message = e.message; }
+  check("the header mistake reaches the caller", message === "header getter refused");
+  check("and the producer was never opened, so there is nothing to leak",
+        opened === false && released === false);
+
+  // A producer that WAS opened is still released when the status line is the
+  // thing Node refuses, which is the neighbouring path.
+  var openedTwo = false;
+  var releasedTwo = false;
+  var second = {};
+  second[Symbol.asyncIterator] = function () {
+    openedTwo = true;
+    return {
+      next: function () { return Promise.resolve({ value: "x", done: false }); },
+      return: function () { releasedTwo = true; return Promise.resolve({ done: true }); },
+    };
+  };
+  var refusing = {
+    headersSent: false, writableEnded: false,
+    writeHead: function () { throw new Error("status out of range"); },
+    setHeader: function () {}, write: function () { return true; },
+    end: function () {}, destroy: function () {},
+  };
+  var secondMessage = "";
+  try { await b.render.stream(refusing, second, { status: 0 }); }
+  catch (e2) { secondMessage = e2.message; }
+  check("a status Node refuses still releases the producer it had opened",
+        secondMessage === "status out of range" && openedTwo === true &&
+        releasedTwo === true);
+}
+
 async function run() {
   testFailAfterHeadersPicksTheRightSignal();
   await testAStatusThatWasGivenIsNotDefaultedAway();
+  await testAHeaderThatThrowsWhileBeingReadReleasesNothingBecauseNothingWasTaken();
   await testWritesEveryChunkAndEnds();
   await testAgainstARealServer();
   await testAlreadyClosedStreamRejects();
