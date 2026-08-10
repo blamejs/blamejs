@@ -48,6 +48,16 @@ var CORPUS_PATTERNS = [
   "[\\x00-\\x1f]", "", "()", "(|a)", "ab|cd|ef", "(ab|a)(b?)c", "[^\\n]*",
   "^$", "\\w{0}", "(a)(b)?(c)", "^(\\w+)@([\\w.]+)$", "(a+)+$", "(a|a)*$",
   "^\\s*$", "\\b\\w+\\s+\\d+", "[ab]+(?:a|b)", "(?:a+b)+", "a(?:x|a+b)",
+  // A shorthand at either end of what looks like a range is not a range: these
+  // are the shorthand, a hyphen, and the character beside it, and the tail of
+  // `[\d-a-z]` must not be picked back up as an `a`-to-`z` range.
+  "[\\d-a-z]", "[\\d-z]", "[a-\\d]", "[a-\\dz]", "[\\w-\\d]", "[\\d-]", "[-\\d]",
+  "[\\W-a]", "[\\d-a-z-0-9]",
+  // A complemented shorthand has to be complemented on its case closure, or the
+  // fold test finds a character on both sides of the complement.
+  "[\\W]", "[^\\W]", "[\\W\\d]", "[\\Wx]", "[\\D]", "[\\S]", "[^\\w]", "\\W",
+  // Braces that are text, not a quantifier.
+  "{a}", "a{", "a{1", "}", "a}b", "[{]", "[}]", "\\{1\\}",
 ];
 
 var CORPUS_SUBJECTS = [
@@ -55,10 +65,16 @@ var CORPUS_SUBJECTS = [
   "foobar", "a b", "a\nb", "\n", "hello world", "ada@example.com", "127.0.0.1",
   "$12.34", "xy", "a-z", "-", "_", "a1b2c3", "   ", "one, two, three",
   "my-slug-here", "aaaaaaaaaaaa", "aaaaaaaaaaaa!", "tab\there", "A", "z",
-  "a,b", "0", "9", "ab 12",
+  "a,b", "0", "9", "ab 12", "m", "k", "s", "{1}", "{a}", "}",
+  // A final sigma reaches its class through neither of its own cases, and an
+  // astral character is one code point under `u` and two units without it.
+  "ς", "σ", "Σ", "😀",
+  // A Kelvin sign and a long s fold onto ASCII letters under `u`, and onto
+  // nothing without it — the pair that separates a case closure from a cast.
+  "K", "ſ", "aKb",
 ];
 
-var CORPUS_FLAGS = ["", "i", "m", "s"];
+var CORPUS_FLAGS = ["", "i", "m", "s", "u", "iu"];
 
 // Every pattern, every subject, every flag set — compared with the platform.
 function testAgreesWithThePlatformOverACorpus() {
@@ -86,10 +102,28 @@ function testAgreesWithThePlatformOverACorpus() {
 }
 
 // Patterns built from a grammar rather than chosen, so the comparison covers
-// combinations nobody thought to write down. The seed is fixed, so a failure
-// here is reproducible rather than a flake.
+// combinations nobody thought to write down. The seeds are fixed, so a failure
+// here is reproducible rather than a flake; there are several of them because
+// one walk of the grammar reaches one corner of it.
 function testAgreesWithThePlatformOverGeneratedPatterns() {
-  var seed = 12345;
+  var totals = { compared: 0, refused: 0, alsoRefused: 0 };
+  var differing = [];
+  [12345, 424242, 8675309].forEach(function (seed) {
+    generateAndCompare(seed, 1200, totals, differing);
+  });
+  check("the generator produced a real body of comparisons", totals.compared > 6000);
+  check("and refused only what it says it refuses", totals.refused > 0);
+  // A pattern the platform will not compile must not compile here either.
+  // Accepting one is how `{1}` came to mean a literal brace, a digit and a
+  // second brace — a private language nobody can run anywhere else.
+  check("the generator reached patterns the platform itself refuses",
+        totals.alsoRefused > 100);
+  check("every generated pattern agrees with the platform engine" +
+        (differing.length ? " — " + differing.join(" | ") : ""), differing.length === 0);
+}
+
+function generateAndCompare(seedInit, rounds, totals, differing) {
+  var seed = seedInit;
   function rnd() {
     seed ^= seed << 13; seed >>>= 0;
     seed ^= seed >> 17;
@@ -101,10 +135,16 @@ function testAgreesWithThePlatformOverGeneratedPatterns() {
 
   var ATOMS = ["a", "b", "c", "x", "0", "1", "-", "_", ".", "\\d", "\\w", "\\s",
                "\\D", "\\W", "[abc]", "[^abc]", "[a-c]", "[a-z0-9]", "[^\\d]",
-               "\\.", "\\-", "\\n", "\\x41", "\\u0062"];
+               "\\.", "\\-", "\\n", "\\x41", "\\u0062",
+               // A shorthand beside a hyphen, a complemented shorthand, and a
+               // brace that is text rather than a quantifier — the three shapes
+               // where reading the pattern the obvious way parts company with
+               // the platform.
+               "[\\d-a-z]", "[a-\\d]", "[\\w-\\d]", "[\\d-]", "[\\W]", "[^\\W]",
+               "[\\Wx]", "[\\S\\d]", "{", "}", "{a}", "[{]", "K", "ſ"];
   var QUANTS = ["", "", "", "*", "+", "?", "*?", "+?", "??", "{2}", "{1,3}",
                 "{0,2}", "{2,}"];
-  var ALPHABET = "abcx01-_. \nAB";
+  var ALPHABET = "abcx01-_. \nAB{}KſkσςΣ";
 
   function genAtom(depth) {
     if (depth > 0 && chance(0.25)) {
@@ -135,22 +175,31 @@ function testAgreesWithThePlatformOverGeneratedPatterns() {
     return out;
   }
 
-  var compared = 0;
-  var refused = 0;
-  var differing = [];
-  for (var r = 0; r < 1200; r += 1) {
+  for (var r = 0; r < rounds; r += 1) {
     var src = genAlt(2);
-    var flags = pick(["", "", "", "i", "m", "s", "im", "iu"]);
-    try { new RegExp(src, flags); } catch (_invalid) { continue; }
-    try { b.regexLinear.compile(src, flags); }
-    catch (e) {
-      if (String(e.code || "").indexOf("regex/") === 0) { refused += 1; continue; }
-      differing.push("compile /" + src + "/" + flags + " — " + e.message);
+    var flags = pick(["", "", "", "i", "m", "s", "im", "iu", "u", "iu", "ims"]);
+    var platformCompiles = true;
+    try { new RegExp(src, flags); } catch (_invalid) { platformCompiles = false; }
+
+    var refusal = null;
+    try { b.regexLinear.compile(src, flags); } catch (e) { refusal = e; }
+
+    if (!platformCompiles) {
+      // The platform will not run this pattern. Accepting it here would hand
+      // the operator a language only this engine speaks.
+      if (refusal === null && differing.length < 5) {
+        differing.push("accepted a pattern the platform refuses: /" + src + "/" + flags);
+      } else if (refusal !== null) totals.alsoRefused += 1;
+      continue;
+    }
+    if (refusal !== null) {
+      if (String(refusal.code || "").indexOf("regex/") === 0) { totals.refused += 1; continue; }
+      differing.push("compile /" + src + "/" + flags + " — " + refusal.message);
       continue;
     }
     for (var s = 0; s < 5; s += 1) {
       var subject = genSubject();
-      compared += 1;
+      totals.compared += 1;
       var verdict = agrees(src, flags, subject);
       if (!verdict.same && differing.length < 5) {
         differing.push("/" + src + "/" + flags + " on " + JSON.stringify(subject) +
@@ -158,10 +207,6 @@ function testAgreesWithThePlatformOverGeneratedPatterns() {
       }
     }
   }
-  check("the generator produced a real body of comparisons", compared > 2000);
-  check("and refused only what it says it refuses", refused > 0);
-  check("every generated pattern agrees with the platform engine" +
-        (differing.length ? " — " + differing.join(" | ") : ""), differing.length === 0);
 }
 
 // The point of the whole thing: the shapes that make the platform engine hang.
