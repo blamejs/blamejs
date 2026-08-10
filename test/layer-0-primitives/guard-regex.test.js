@@ -815,6 +815,21 @@ function testUnanchoredScanCost() {
   // Any position the lookbehind insists on will do, not only the one nearest
   // the start: `(?<=xa)a+b` puts the `x` two characters back and a scan of
   // `a`s stops at it just the same.
+  // Under `v` a class may be a SET EXPRESSION, and this parser has no
+  // representation for one. Read as an ordinary class it came apart at the
+  // first `]` and the rest was tokenized as pattern text, so the repetition
+  // appeared to belong to a character that was really the tail of the class —
+  // and `[[a-z]--[x]]+b` was called linear where `[a-y]+b` is quadratic. It is
+  // now abandoned at the parse, and what cannot be represented is not judged.
+  check("a class the v flag turns into a set expression is not judged",
+        assertSafeAccepts2(new RegExp("[[a-z]--[x]]+b", "v")) === false &&
+        assertSafeAccepts2(new RegExp("[[a-z]&&[aeiou]]+b", "v")) === false &&
+        assertSafeAccepts2(new RegExp("[\\q{abc}]+b", "v")) === false);
+  // Without `v` those spellings are ordinary members and the parse is right,
+  // so the same source is read normally.
+  check("while without the flag the same source is an ordinary class",
+        assertSafeAccepts("[[a-z]--[x]]+b"));
+
   check("a separator further back still separates",
         assertSafeAccepts("(?<=xa)a+b") && assertSafeAccepts("(?<=ax)a+b") &&
         assertSafeAccepts("(?<=xaa)a+b") && assertSafeAccepts("(?<=[xy]a)a+b") &&
