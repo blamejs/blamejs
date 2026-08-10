@@ -58,6 +58,14 @@ var CORPUS_PATTERNS = [
   "[\\W]", "[^\\W]", "[\\W\\d]", "[\\Wx]", "[\\D]", "[\\S]", "[^\\w]", "\\W",
   // Braces that are text, not a quantifier.
   "{a}", "a{", "a{1", "}", "a}b", "[{]", "[}]", "\\{1\\}",
+  // Escapes the legacy grammar reads differently from the strict one. A `\c`
+  // names a control from a digit or an underscore inside a class and from a
+  // letter anywhere; naming nothing, it is a literal backslash. `\x`, `\p`,
+  // `\P` and a `\k` with no group to name are identity escapes.
+  "[\\c1]", "[\\c_]", "[\\c9]", "[\\cA]", "[\\ca]", "[\\c]", "[\\c-]", "[\\c%]",
+  "\\c1", "\\c_", "\\cA", "\\c", "\\c%", "a\\cb",
+  "\\xZZ", "\\x4", "[\\xZ]", "\\x41", "\\p{L}", "\\P", "[\\p]", "\\k", "\\kx",
+  "[\\k]", "\\q", "[\\q]",
 ];
 
 var CORPUS_SUBJECTS = [
@@ -66,6 +74,11 @@ var CORPUS_SUBJECTS = [
   "$12.34", "xy", "a-z", "-", "_", "a1b2c3", "   ", "one, two, three",
   "my-slug-here", "aaaaaaaaaaaa", "aaaaaaaaaaaa!", "tab\there", "A", "z",
   "a,b", "0", "9", "ab 12", "m", "k", "s", "{1}", "{a}", "}",
+  "\\", "\\c", "\\c1", "\\c_",
+  // The controls those legacy `\c` forms name, spelled as escapes rather than
+  // written into the file as the bytes themselves.
+  "", "", "", "",
+  "xZZ", "x4", "p{L}", "P", "kx", "q", "acb",
   // A final sigma reaches its class through neither of its own cases, and an
   // astral character is one code point under `u` and two units without it.
   "ς", "σ", "Σ", "😀",
@@ -141,7 +154,14 @@ function generateAndCompare(seedInit, rounds, totals, differing) {
                // where reading the pattern the obvious way parts company with
                // the platform.
                "[\\d-a-z]", "[a-\\d]", "[\\w-\\d]", "[\\d-]", "[\\W]", "[^\\W]",
-               "[\\Wx]", "[\\S\\d]", "{", "}", "{a}", "[{]", "K", "ſ"];
+               "[\\Wx]", "[\\S\\d]", "{", "}", "{a}", "[{]", "K", "ſ",
+               // Legacy escapes: the control forms, the identity fallbacks, and
+               // the named group that turns `\k` back into a backreference —
+               // and, inside a class, into a syntax error.
+               "\\c1", "\\c_", "\\cA", "\\c", "\\c%", "[\\c1]", "[\\c_]",
+               "[\\cA]", "[\\c]", "[\\c-]", "\\xZZ", "\\x4", "[\\xZ]",
+               "\\p{L}", "\\P", "[\\p]", "\\k", "\\kx", "[\\k]", "\\q",
+               "(?<n>a)", "\\0", "\\07"];
   var QUANTS = ["", "", "", "*", "+", "?", "*?", "+?", "??", "{2}", "{1,3}",
                 "{0,2}", "{2,}"];
   var ALPHABET = "abcx01-_. \nAB{}KſkσςΣ";
@@ -234,6 +254,22 @@ function testTheShapesThatHangThePlatformRunInLinearTime() {
   longRun = Date.now() - longRun;
   check("and four times the subject is nothing like four times squared the work",
         longRun < b.constants.TIME.seconds(2) && shortRun < b.constants.TIME.seconds(1));
+
+  // Reading the pattern has to stay linear too. Whether a pattern names a group
+  // is a property of the whole source, so asking it once per escape rather than
+  // once per pattern made COMPILING quadratic — and a promise about linear
+  // MATCHING says nothing about a compiler that can be made to crawl.
+  //
+  // 32,768 escapes is the most the 64 KiB source cap admits, which is what puts
+  // the two costs a hundred times apart: reading this once takes about ten
+  // milliseconds, and re-reading it per escape takes about a second.
+  var many = "\\k".repeat(32768);
+  var compileStarted = Date.now();
+  b.regexLinear.compile(many);
+  var compileTook = Date.now() - compileStarted;
+  check("the longest pattern the cap admits compiles in one pass over it, not " +
+        "one pass per escape (" + compileTook + "ms)",
+        compileTook < b.constants.TIME.seconds(1) / 2);
 }
 
 // The rule both the matcher and the screen fold by, checked directly: two
@@ -370,24 +406,27 @@ function testRefusesWhatThePlatformItselfRefuses() {
 // What it cannot simulate, it refuses by name rather than handing to the engine
 // that can be made to hang.
 function testRefusesWhatItCannotRunInLinearTime() {
+  // A property escape is only a property escape under `u`; `/\p{L}+/` without
+  // it is a `p`, a brace, an `L` and a repeated brace, and runs fine.
   var refusals = [
-    ["(a)\\1", "regex/unsupported-backreference"],
-    ["(?<n>a)\\k<n>", "regex/unsupported-backreference"],
-    ["a(?=b)", "regex/unsupported-lookaround"],
-    ["a(?!b)", "regex/unsupported-lookaround"],
-    ["(?<=a)b", "regex/unsupported-lookaround"],
-    ["(?<!a)b", "regex/unsupported-lookaround"],
-    ["(a*)*", "regex/nullable-repetition"],
-    ["(a*)?", "regex/nullable-repetition"],
-    ["(?:a*b*?)*", "regex/nullable-repetition"],
-    ["\\p{L}+", "regex/unsupported-property"],
-    ["a{5000}", "regex/repeat-too-large"],
+    ["(a)\\1", "", "regex/unsupported-backreference"],
+    ["(?<n>a)\\k<n>", "", "regex/unsupported-backreference"],
+    ["a(?=b)", "", "regex/unsupported-lookaround"],
+    ["a(?!b)", "", "regex/unsupported-lookaround"],
+    ["(?<=a)b", "", "regex/unsupported-lookaround"],
+    ["(?<!a)b", "", "regex/unsupported-lookaround"],
+    ["(a*)*", "", "regex/nullable-repetition"],
+    ["(a*)?", "", "regex/nullable-repetition"],
+    ["(?:a*b*?)*", "", "regex/nullable-repetition"],
+    ["\\p{L}+", "u", "regex/unsupported-property"],
+    ["\\P{L}+", "u", "regex/unsupported-property"],
+    ["a{5000}", "", "regex/repeat-too-large"],
   ];
   var wrong = [];
   refusals.forEach(function (entry) {
     var code = null;
-    try { b.regexLinear.compile(entry[0]); } catch (e) { code = e.code; }
-    if (code !== entry[1]) wrong.push(entry[0] + " -> " + code + " (wanted " + entry[1] + ")");
+    try { b.regexLinear.compile(entry[0], entry[1]); } catch (e) { code = e.code; }
+    if (code !== entry[2]) wrong.push(entry[0] + " -> " + code + " (wanted " + entry[2] + ")");
   });
   check("each unsupported construct is refused under its own code" +
         (wrong.length ? " — " + wrong.join(" | ") : ""), wrong.length === 0);
