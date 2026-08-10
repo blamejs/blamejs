@@ -39,11 +39,15 @@ function oneCodePoint(s) {
 function rawCanonical(cp, unicode) {
   var ch = String.fromCodePoint(cp);
   var upper = ch.toUpperCase();
-  if (!oneCodePoint(upper)) return cp;
   if (unicode) {
-    var folded = upper.toLowerCase();
-    return oneCodePoint(folded) ? folded.codePointAt(0) : cp;
+    if (oneCodePoint(upper)) {
+      var folded = upper.toLowerCase();
+      if (oneCodePoint(folded)) return folded.codePointAt(0);
+    }
+    var lowered = ch.toLowerCase();
+    return oneCodePoint(lowered) ? lowered.codePointAt(0) : cp;
   }
+  if (!oneCodePoint(upper)) return cp;
   var canon = upper.codePointAt(0);
   if (cp >= 128 && canon < 128) return cp;
   return canon;
@@ -84,29 +88,97 @@ function truePartition(members, unicode) {
   return groups;
 }
 
+// Everything that might put two characters in the same class. The approximation
+// is deliberately GENEROUS, because the engine below can split a class that is
+// too big and nothing can rejoin one that was never assembled: grouping on the
+// canonical alone meant that where the approximation separated a pair — as it
+// did for a Greek eta with a iota subscript and its capital form, both of whose
+// upper cases expand — the pair was never even offered for testing.
+function groupingKeys(cp, unicode) {
+  var ch = String.fromCodePoint(cp);
+  var keys = ["c:" + rawCanonical(cp, unicode)];
+  [ch.toLowerCase(), ch.toUpperCase(), ch.toUpperCase().toLowerCase()].forEach(function (s) {
+    if (oneCodePoint(s)) keys.push("k:" + s.codePointAt(0));
+  });
+  // The WHOLE mapping, expansion and all, because two characters can share one
+  // while sharing nothing else: a long-s-t ligature and an st ligature both
+  // upper-case to "ST" and neither leads to the other by any single-character
+  // route, and the engine calls them the same character under `iu`.
+  keys.push("U:" + ch.toUpperCase());
+  keys.push("L:" + ch.toLowerCase());
+  return keys;
+}
+
+// What the class should canonicalize to. It has to be a MEMBER of the class:
+// a raw answer pointing outside it is exactly the case the correction exists to
+// repair — a dotless i raw-canonicalizes to an ordinary `i`, which the engine
+// puts in a different class, so the dotless i must answer for itself. Among the
+// members, the value most of them already give keeps the table small; ties go to
+// the lower code point so the output is the same from one run to the next.
+function classCanonical(group, unicode) {
+  var counts = new Map();
+  group.forEach(function (member) {
+    var raw = rawCanonical(member, unicode);
+    if (group.indexOf(raw) === -1) return;                 // points outside the class
+    counts.set(raw, (counts.get(raw) || 0) + 1);
+  });
+  var best = null;
+  var bestCount = -1;
+  Array.from(counts.keys()).sort(function (a, b) { return a - b; }).forEach(function (value) {
+    if (counts.get(value) > bestCount) { best = value; bestCount = counts.get(value); }
+  });
+  return best === null ? group[0] : best;
+}
+
 function classesFor(unicode) {
-  var byCanonical = new Map();
-  for (var cp = 0; cp <= MAX_CODE_POINT; cp += 1) {
+  // Union-find over every grouping key, so a class is assembled from any
+  // relation that suggests it and pulled apart afterwards by the engine.
+  var parent = new Map();
+  function find(x) {
+    while (parent.get(x) !== x) { parent.set(x, parent.get(parent.get(x))); x = parent.get(x); }
+    return x;
+  }
+  function union(a, b) {
+    var ra = find(a);
+    var rb = find(b);
+    if (ra !== rb) parent.set(ra > rb ? ra : rb, ra > rb ? rb : ra);
+  }
+
+  var cp;
+  var byKey = new Map();
+  for (cp = 0; cp <= MAX_CODE_POINT; cp += 1) {
     if (cp >= 0xD800 && cp <= 0xDFFF) continue;            // lone surrogates are not characters
-    var canonical = rawCanonical(cp, unicode);
-    var members = byCanonical.get(canonical);
-    if (members === undefined) { members = []; byCanonical.set(canonical, members); }
+    parent.set(cp, cp);
+  }
+  for (cp = 0; cp <= MAX_CODE_POINT; cp += 1) {
+    if (cp >= 0xD800 && cp <= 0xDFFF) continue;
+    groupingKeys(cp, unicode).forEach(function (key) {
+      var first = byKey.get(key);
+      if (first === undefined) byKey.set(key, cp);
+      else if (parent.has(first)) union(first, cp);
+    });
+  }
+
+  var components = new Map();
+  for (cp = 0; cp <= MAX_CODE_POINT; cp += 1) {
+    if (cp >= 0xD800 && cp <= 0xDFFF) continue;
+    var root = find(cp);
+    var members = components.get(root);
+    if (members === undefined) { members = []; components.set(root, members); }
     members.push(cp);
   }
+
   var extras = new Map();
   var splits = new Map();
-  byCanonical.forEach(function (members, canonical) {
+  components.forEach(function (members) {
     if (members.length < 2) return;
     truePartition(members, unicode).forEach(function (group) {
-      // A group that the approximation put under a canonical it does not
-      // belong to gets its own, so `canonicalizeForCase` can correct itself.
-      if (group.indexOf(canonical) === -1) {
-        // Only where it actually moves the character: a correction that repeats
-        // the raw answer says nothing and would only pad the table.
-        group.forEach(function (member) {
-          if (rawCanonical(member, unicode) !== group[0]) splits.set(member, group[0]);
-        });
-      }
+      var target = classCanonical(group, unicode);
+      // Only where the raw rule actually lands the character elsewhere: a
+      // correction that repeats the raw answer says nothing and pads the table.
+      group.forEach(function (member) {
+        if (rawCanonical(member, unicode) !== target) splits.set(member, target);
+      });
       if (group.length < 2) return;
       group.forEach(function (member) {
         var reach = reachableByCasing(member);

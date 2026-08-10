@@ -655,8 +655,105 @@ function testTheAstralEndAnchorFollowsTheLanguageNotThePlatformShortcut() {
         (differing.length ? " — " + differing.join(" | ") : ""), differing.length === 0);
 }
 
+// The fold table is DERIVED from the running platform, so the thing worth
+// asserting is that the derivation still agrees with it — over every code point
+// that has any case behaviour at all, rather than over the handful of pairs
+// somebody thought to write down. Three separate classes were missing when this
+// was a list: a Greek eta with a iota subscript beside its capital form (both
+// upper-case to two characters, so neither leads to the other), a long-s-t
+// ligature beside an st ligature (which share only the "ST" they upper-case to),
+// and a dotless i, which folds onto an ordinary `i` by every route the casing
+// functions offer and is still not the same character.
+function testTheFoldTableStillAgreesWithThePlatformItWasDerivedFrom() {
+  var canonical = b.codepointClass.canonicalizeForCase;
+  var partners = b.codepointClass.caseFoldPartners;
+  var WINDOW = 32;
+  var MAX = 0x10FFFF;
+
+  function isSurrogate(cp) { return cp >= 0xD800 && cp <= 0xDFFF; }
+  // Whole-string equality rather than a class: without `u`, a class holding an
+  // astral character is a class of its two surrogate halves, and would report a
+  // fold between every pair of Deseret letters.
+  function spell(cp, unicode) {
+    if (unicode) return "\\u{" + cp.toString(16) + "}";
+    return String.fromCodePoint(cp).split("").map(function (unit) {
+      return "\\u" + unit.charCodeAt(0).toString(16).padStart(4, "0");
+    }).join("");
+  }
+  function platformSaysSame(a, bb, flags, unicode) {
+    try {
+      return new RegExp("^" + spell(a, unicode) + "$", flags).test(String.fromCodePoint(bb)) &&
+             new RegExp("^" + spell(bb, unicode) + "$", flags).test(String.fromCodePoint(a));
+    } catch (_e) { return null; }
+  }
+
+  var caseBearing = [];
+  for (var cp = 0; cp <= MAX; cp += 1) {
+    if (isSurrogate(cp)) continue;
+    var ch = String.fromCodePoint(cp);
+    if (ch.toLowerCase() !== ch || ch.toUpperCase() !== ch) caseBearing.push(cp);
+  }
+  check("the sweep covers every code point with any case behaviour",
+        caseBearing.length > 2500);
+
+  var compared = 0;
+  var disagreeing = [];
+  [true, false].forEach(function (unicode) {
+    var flags = unicode ? "iu" : "i";
+    caseBearing.forEach(function (a) {
+      var candidates = Object.create(null);
+      partners(a, unicode).forEach(function (p) { candidates[p] = true; });
+      var s = String.fromCodePoint(a);
+      [s.toLowerCase(), s.toUpperCase(), s.toUpperCase().toLowerCase()].forEach(function (image) {
+        if (image.length === 1 || (image.length === 2 && image.codePointAt(0) > 0xFFFF)) {
+          candidates[image.codePointAt(0)] = true;
+        }
+      });
+      for (var d = -WINDOW; d <= WINDOW; d += 1) {
+        var near = a + d;
+        if (near >= 0 && near <= MAX && !isSurrogate(near)) candidates[near] = true;
+      }
+      Object.keys(candidates).forEach(function (key) {
+        var other = Number(key);
+        if (other === a) return;
+        var theirs = platformSaysSame(a, other, flags, unicode);
+        if (theirs === null) return;
+        compared += 1;
+        var mine = canonical(a, unicode) === canonical(other, unicode);
+        if (mine !== theirs && disagreeing.length < 8) {
+          disagreeing.push("U+" + a.toString(16).toUpperCase() + " and U+" +
+                           other.toString(16).toUpperCase() + " under /" + flags +
+                           "/ — the table says " + mine + ", the platform says " + theirs);
+        }
+      });
+    });
+  });
+  check("the sweep compared a real body of pairs", compared > 300000);
+  check("every pair is folded the way the platform folds it" +
+        (disagreeing.length ? " — " + disagreeing.join(" | ") : ""),
+        disagreeing.length === 0);
+
+  // And every partner it names is a partner, so the table cannot pass by
+  // claiming nothing.
+  var unreal = [];
+  [true, false].forEach(function (unicode) {
+    var flags = unicode ? "iu" : "i";
+    caseBearing.forEach(function (a) {
+      partners(a, unicode).forEach(function (p) {
+        if (platformSaysSame(a, p, flags, unicode) === false && unreal.length < 8) {
+          unreal.push("U+" + a.toString(16).toUpperCase() + " claims U+" +
+                      p.toString(16).toUpperCase() + " under /" + flags + "/");
+        }
+      });
+    });
+  });
+  check("and every partner the table names is one the platform agrees with" +
+        (unreal.length ? " — " + unreal.join(" | ") : ""), unreal.length === 0);
+}
+
 function run() {
   testAgreesWithThePlatformOverACorpus();
+  testTheFoldTableStillAgreesWithThePlatformItWasDerivedFrom();
   testEveryEscapedCharacterIsReadTheWayThePlatformReadsIt();
   testTheAstralEndAnchorFollowsTheLanguageNotThePlatformShortcut();
   testCompilingOneClassCannotWidenAnother();
