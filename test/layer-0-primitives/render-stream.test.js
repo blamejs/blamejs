@@ -531,6 +531,31 @@ async function testRejectsInputItCannotStream() {
   check("a misspelled option is refused rather than silently dropped", unknown);
 }
 
+// The double exists to test streaming a lot of output, so writing a lot of it
+// must not cost more than doing it. Asking for the accumulated payload on every
+// write concatenated every chunk written so far — quadratic, in the helper
+// written for exactly this.
+async function testTheStreamingDoubleCostsWhatItWrites() {
+  var res = _res({ highWaterMark: 1024 });
+  var started = Date.now();
+  for (var i = 0; i < 20000; i += 1) res.write("0123456789");
+  var took = Date.now() - started;
+  check("twenty thousand small chunks cost their number, not its square",
+        took < b.constants.TIME.seconds(2));
+  check("and every byte of them is still there", res._captured().length === 200000);
+
+  // Back-pressure still reports the same way it did.
+  var marked = _res({ highWaterMark: 8 });
+  var under = marked.write("aaaa");
+  var over = marked.write("bbbbb");
+  check("under the mark it takes the chunk, past it it says full",
+        under === true && over === false);
+  await helpers.waitUntil(function () { return marked._pending === 0; }, {
+    timeoutMs: 4000, label: "streamingRes: the double drained",
+  });
+  check("and it drains, leaving what was written", marked._captured().toString("utf8") === "aaaabbbbb");
+}
+
 // The drain-aware write is one primitive, composed by the archive writer and
 // the response streamer alike. A closed stream must reject rather than wait.
 async function testWriteChunkSettlesOnAClosedStream() {
@@ -773,6 +798,7 @@ async function run() {
   await testASyncIterableMayYieldPromises();
   await testOnErrorRethrowLeavesTheSocketToTheCaller();
   await testRejectsInputItCannotStream();
+  await testTheStreamingDoubleCostsWhatItWrites();
   await testWriteChunkSettlesOnAClosedStream();
 }
 
