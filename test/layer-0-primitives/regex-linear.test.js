@@ -293,7 +293,13 @@ function testCaseFoldingFollowsTheLanguageRatherThanCaseConversion() {
 // A pattern the platform refuses must be refused here too, or a configuration
 // mistake passes unnoticed on its way to production.
 function testRefusesWhatThePlatformItselfRefuses() {
-  var alsoInvalid = [["a++", ""], ["a", "ii"], ["a", "uv"], ["a", "gg"], ["\\a", "u"]];
+  var alsoInvalid = [
+    ["a++", ""], ["a", "ii"], ["a", "uv"], ["a", "gg"], ["\\a", "u"],
+    // Nothing repeats an assertion — not even once. `^{1}` is a syntax error
+    // although repeating once would have meant nothing, and `\b{0}` would
+    // silently drop the boundary the operator asked for.
+    ["^{1}a", ""], ["\\b{0}a", ""], ["^*", ""], ["$+", ""], ["\\B{2}x", ""],
+  ];
   var accepted = alsoInvalid.filter(function (c) {
     var nativeThrew = false;
     try { new RegExp(c[0], c[1]); } catch (_e) { nativeThrew = true; }
