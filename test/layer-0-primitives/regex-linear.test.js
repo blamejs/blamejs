@@ -492,8 +492,42 @@ function testItComposesWithTheScreenRatherThanReplacingIt() {
         b.regexLinear.compile(pattern).test("a".repeat(500) + "!") === false);
 }
 
+// Compiling a pattern must not change what a pattern compiled elsewhere means.
+// A class is assembled by concatenating its members' range lists, and a
+// shorthand contributes the shared table itself; a neighbour absorbed into one
+// of those ranges in place widened the shorthand for the whole process, so one
+// operator-supplied pattern silently loosened every validator beside it.
+function testCompilingOneClassCannotWidenAnother() {
+  var pairs = [
+    { widener: "[\\d:]",  probe: "\\d",   subject: ":" },
+    { widener: "[\\d:]",  probe: "[\\d]", subject: ":" },
+    { widener: "[\\w{]",  probe: "\\w",   subject: "{" },
+    { widener: "[\\s!]",  probe: "\\s",   subject: "!" },
+    { widener: "[\\s\\u0008]", probe: "\\s", subject: "" },
+  ];
+  pairs.forEach(function (p) {
+    var before = b.regexLinear.compile(p.probe).test(p.subject);
+    b.regexLinear.compile(p.widener);
+    var after = b.regexLinear.compile(p.probe).test(p.subject);
+    check("/" + p.probe + "/ still refuses " + JSON.stringify(p.subject) +
+          " after /" + p.widener + "/ was compiled",
+          before === false && after === false);
+    check("and the platform agrees about /" + p.probe + "/",
+          new RegExp(p.probe).test(p.subject) === false);
+  });
+  // The complement is built from the same table, so it drifts the other way.
+  b.regexLinear.compile("[\\d:]");
+  check("a complemented shorthand did not narrow either",
+        b.regexLinear.compile("\\D").test(":") === true);
+  // A word boundary reads that table too, so the widening reached assertions.
+  b.regexLinear.compile("[\\w{]");
+  check("and a boundary still sees a brace as a non-word character",
+        b.regexLinear.compile("b\\b").test("b{") === true);
+}
+
 function run() {
   testAgreesWithThePlatformOverACorpus();
+  testCompilingOneClassCannotWidenAnother();
   testAgreesWithThePlatformOverGeneratedPatterns();
   testTheShapesThatHangThePlatformRunInLinearTime();
   testCanonicalizeForCaseIsTheRuleNotACaseConversion();
