@@ -808,6 +808,54 @@ async function run() {
   testExtractBearerLeadingTrailingSpaces();
   testMakeSkipMatcher();
   testMakeResourceAuditEmitter();
+  testStatusPredicatesClassifyWholeNumbersOnly();
+}
+
+// `failAfterHeaders` asks `C.HTTP.bodiless` whether a response carries a body,
+// so the predicates are part of the request path rather than a lookup table
+// beside it.
+function testStatusPredicatesClassifyWholeNumbersOnly() {
+  var HTTP = b.constants.HTTP;
+
+  check("a 1xx is informational and carries no body",
+        HTTP.informational(HTTP.STATUS.CONTINUE) === true &&
+        HTTP.bodiless(HTTP.STATUS.CONTINUE) === true);
+  check("204, 205 and 304 carry no body either",
+        HTTP.bodiless(HTTP.STATUS.NO_CONTENT) === true &&
+        HTTP.bodiless(HTTP.STATUS.RESET_CONTENT) === true &&
+        HTTP.bodiless(HTTP.STATUS.NOT_MODIFIED) === true);
+  check("and an ordinary 200 does",
+        HTTP.bodiless(HTTP.STATUS.OK) === false && HTTP.success(HTTP.STATUS.OK) === true);
+  check("each class answers for its own range",
+        HTTP.redirect(HTTP.STATUS.FOUND) === true &&
+        HTTP.clientError(HTTP.STATUS.NOT_FOUND) === true &&
+        HTTP.serverError(HTTP.STATUS.BAD_GATEWAY) === true &&
+        HTTP.success(HTTP.STATUS.NOT_FOUND) === false);
+
+  // A status is a three-digit integer. A fraction that lands inside a range is
+  // not one, and answering that it is would let a status arrived at by
+  // arithmetic pass here and be refused later by the socket, with the handler
+  // already run and the headers already sent.
+  var refused = [];
+  [200.5, 150.5, 304.1, -0.5, NaN, Infinity, "200", null, undefined, {}]
+    .forEach(function (bad) {
+      var threw = false;
+      try { HTTP.success(bad); } catch (_e) { threw = true; }
+      if (!threw) refused.push(JSON.stringify(bad) + " was accepted");
+    });
+  check("a status that is not a whole number is refused rather than classified" +
+        (refused.length ? " — " + refused.join(" | ") : ""), refused.length === 0);
+
+  // A whole number outside the bands is ANSWERED, not refused: `b.webhook`
+  // reports on a delivery whose transport failed with the status defaulted to
+  // zero, and throwing there would turn a failed delivery into a crash.
+  var answered;
+  try {
+    answered = HTTP.success(0) === false && HTTP.serverError(0) === false &&
+               HTTP.bodiless(0) === false && HTTP.success(999) === false;
+  } catch (_e) { answered = false; }
+  check("a whole number outside every band is answered false, not thrown at",
+        answered === true);
 }
 
 function testMakeResourceAuditEmitter() {

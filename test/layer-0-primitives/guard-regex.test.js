@@ -77,7 +77,10 @@ function testProvablyUnambiguousShapesAccepted() {
     "(?:[a-z]+-)*",
     "(?:[a-z]+/)*",
     "(?:[^/]+/)*",                 // the delimiter is exactly what the class excludes
-    "(?:\\w+\\.)+",
+    // Anchored: the body is unambiguous, and a MANDATORY repetition of it is
+    // separately a scan when it is not pinned to one position (see the
+    // unanchored-scan checks).
+    "^(?:\\w+\\.)+$",
     "(?:\\d+,)*",
     "(?:[a-z]+_)*",
     "^/blog/(?:[a-z0-9-]+/)*[a-z0-9-]+$",
@@ -85,16 +88,23 @@ function testProvablyUnambiguousShapesAccepted() {
     // begin at an `a`, and the optional tail cannot be re-attributed to the
     // next one, so the split is decided — measured flat to 200,000 characters.
     // Refusing these would re-open the complaint this release set out to fix.
-    "(?:ab?)+c",
-    "(?:ab?c?)+d",
-    "(?:a[0-9]{0,2})+z",
+    // They are anchored because unanchored they are quadratic for a reason
+    // that has nothing to do with the body: the whole pattern is retried at
+    // every position (see testUnanchoredScanCost).
+    "^(?:ab?)+c$",
+    "^(?:ab?c?)+d$",
+    "^(?:a[0-9]{0,2})+z$",
     // Two repeated groups in a row, where nothing the second can begin with is
     // something the first could have taken instead. The split between them
     // cannot float, so each group is judged on its own and both are decided.
-    "(?:b|c)+(?:d|e)+",
+    "^(?:b|c)+(?:d|e)+$",
     "^[a-z0-9]+(?:-[a-z0-9]+)*$",   // the separator leads each repetition
     "^\\w+(?:\\.\\w+)*$",
     "^[^,]+(?:,[^,]+)*$",
+    // A separator that repeats is still a separator: nothing else in the body
+    // can match a dash, so the whole run of them belongs to it and the split
+    // is pinned. Measured flat to 64,000 characters.
+    "(?:[a-z]+-+)*",
   ];
   linear.forEach(function (src) {
     check("assertSafe accepts provably-unambiguous " + JSON.stringify(src), assertSafeAccepts(src));
@@ -124,7 +134,6 @@ function testAmbiguousShapesStillRefused() {
     "(?:\\w+_)*",                  // `_` is a member of \w
     "(?:.+/)*",                    // `.` matches the delimiter
     "(?:[^/]+x)*",                 // `x` is matchable by the negated class
-    "(?:[a-z]+-+)*",               // the delimiter is itself quantified
     // A forced delimiter pins where each repetition ENDS, but the number of
     // paths through the whole match is the PRODUCT of the paths through each
     // repetition. Two variable-length atoms in the body give at least two
@@ -347,9 +356,12 @@ function testRepetitionSpellingsAllReachTheAnalysis() {
         assertSafeAccepts2(/(?:a{1,10}){1,10}!/) === false);
   check("a bounded repeat of an overlapping alternation is refused",
         assertSafeAccepts2(/(a|a){2,60}!/) === false);
+  // Anchored, because unanchored these are quadratic for a reason that has
+  // nothing to do with the repetition: the pattern is retried at every
+  // position and each attempt walks the input (see testUnanchoredScanCost).
   check("an outer repeat that can be taken at most once is still fine",
-        assertSafeAccepts2(/(a+)?!/) && assertSafeAccepts2(/(a+){0,1}!/) &&
-        assertSafeAccepts2(/(a+){1}!/));
+        assertSafeAccepts2(/^(a+)?!$/) && assertSafeAccepts2(/^(a+){0,1}!$/) &&
+        assertSafeAccepts2(/^(a+){1}!$/));
   // Both bounds finite and their product small: the engine enumerates a fixed
   // number of ways to match whatever the input length, so a dotted quad with a
   // prefix length or a port after it stays an ordinary pattern.
@@ -626,6 +638,513 @@ function testEverySpellingOfAmbiguityIsRefused() {
         "(took " + elapsed + "ms)", elapsed < 500);
 }
 
+// A separator is whatever a repetition must contain and nothing else in it can
+// match. Requiring that to be exactly one atom occurring exactly once left two
+// everyday shapes unproven: a separator that repeats (`\s+`), and one written
+// as more than one character (`::`). And a body may carry more than one part
+// that varies, as long as those parts cannot take each other's characters —
+// counting them, rather than asking whether they overlap, refused a comma-space
+// list alongside the genuinely ambiguous shapes.
+function testSeparatorsAndVaryingPartsAreJudgedOnWhatTheyMatch() {
+  var linear = [
+    "^[a-z]+(?:\\s+[a-z]+)*$",        // a separator that repeats
+    "^\\w+(?:\\s+\\w+)*$",
+    "^[a-z]+(?:::[a-z]+)*$",          // a separator of two characters
+    "^[A-Za-z]+(?: > [A-Za-z]+)*$",
+    "^[a-z]+(?:,\\s*[a-z]+)*$",       // two varying parts, disjoint, separated
+    "^(?:&[a-z]+=[0-9]+)*$",
+    "^([0-9.]+)(?:,\\s*([0-9.]+))*$",
+    "^[a-z-]+(?:=\\d+)?(?:, [a-z-]+(?:=\\d+)?)*$",
+  ];
+  linear.forEach(function (src) {
+    check("accepts " + JSON.stringify(src), assertSafeAccepts(src));
+  });
+
+  // Two published patterns operators copy verbatim. Both were refused at every
+  // profile, so there was no configuration in which they worked.
+  var semver = "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)" +
+    "(?:-((?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*)" +
+    "(?:\\.(?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?" +
+    "(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$";
+  var email = "^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9]" +
+    "(?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?" +
+    "(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$";
+  check("accepts the published semver validation pattern", assertSafeAccepts(semver));
+  check("accepts the WHATWG email-input pattern", assertSafeAccepts(email));
+
+  // A separator only separates when there is something on the other side of
+  // it. If the rest of the body can match nothing, the body IS the separator
+  // and a run of its characters divides among repetitions every possible way —
+  // `(?:b*a+)+` is `(a+)+` with a nullable decoration.
+  var nullableRemainder = [
+    "^(?:b*a+)+$", "^(?:\\s*[a-z]+)+$", "^(?:\\d*[a-z]+)+$",
+    "^(?:a+b*)+$", "^(?:[bc]*a+)+$", "^(?:[^a]*a+)*$",
+  ];
+  nullableRemainder.forEach(function (src) {
+    check("a separator with a nullable remainder is refused " + JSON.stringify(src),
+          assertSafeAccepts(src) === false);
+  });
+  check("the same shapes with a mandatory remainder are still proven",
+        assertSafeAccepts("^(?:b+a+)+$") && assertSafeAccepts("^(?:b*a)+$"));
+
+  // Two varying parts can trade through a fixed-width term between them: in
+  // `a*[ab]b*` the segment "aab" parses two ways, so comparing only the
+  // varying parts to each other misses it — `[ab]` bridges {a} and {b}.
+  check("varying parts that trade through a fixed term between them are refused",
+        assertSafeAccepts("^(?:a*[ab]b*-)+$") === false);
+  check("and through a wider bridging class",
+        assertSafeAccepts("^(?:[a-z]*[a-z0-9][0-9]*-)+$") === false);
+  check("a fixed term that bridges nothing still lets the parts be proven",
+        assertSafeAccepts("^(?:[a-z]*=[0-9]*-)+$"));
+
+  // The separator has to be something a repetition MUST contain, and the
+  // varying parts still have to be unable to trade characters.
+  var ambiguous = [
+    "^(?:&[a-z]+[a-z0-9]+)*$",        // two varying parts that overlap
+    "(?:a*a*-)*",
+    "(?:[a-z]+a)*",                   // the separator is inside the class
+    "(?:a}?}?)+",                     // the candidate separator is optional
+    "(?:\\w+\\d*;)*",
+  ];
+  ambiguous.forEach(function (src) {
+    check("still refuses " + JSON.stringify(src), assertSafeAccepts(src) === false);
+  });
+
+  // The hand-off between two varying parts runs the whole way along the fixed
+  // atoms between them, not one atom at a time. In `a*[ab][bc]c*` no single
+  // atom touches both ends, and `abc` still parses twice — every atom takes its
+  // neighbour's character and the segment shifts by one. Against
+  // `"abc-".repeat(n) + "!"` that is 202 ms at n=24, 3.2 s at n=28 and 52 s at
+  // n=32.
+  check("varying parts that trade along a CHAIN of atoms are ambiguous",
+        assertSafeAccepts("^(?:a*[ab][bc]c*-)+$") === false &&
+        assertSafeAccepts("^(?:a*[ab]b*-)+$") === false);
+  // A chain broken anywhere carries nothing: `=` is neither a letter nor a
+  // digit, so the two runs beside it cannot reach each other.
+  check("but one broken anywhere along it is not",
+        assertSafeAccepts("^(?:&[a-z]+=[0-9]+)*$") &&
+        assertSafeAccepts("^[a-z]+(?:,\\s*[a-z]+)*$"));
+  // The chain is read one character at a time, so parentheses cannot change the
+  // answer: `(?:ax)(?:xb)` is `a` `x` `x` `b`, and the step from `a` to `x`
+  // breaks it exactly as the written-out form does.
+  check("the chain is read character by character, however it is grouped",
+        assertSafeAccepts("^(?:a*(?:ax)(?:xb)b*-)+$") &&
+        assertSafeAccepts("^(?:a*axxbb*-)+$") &&
+        assertSafeAccepts("^(?:a*(?:[ab])(?:[bc])c*-)+$") === false);
+  // Reading the chain must not become the cost it is screening for. A count is
+  // never written out: repeating one set carries exactly as one copy does.
+  var started = Date.now();
+  assertSafeAccepts("^(?:a*[ab]{1000000000}b*-)+$");
+  assertSafeAccepts("^(?:a*[ab]{999999999999999999999}b*-)+$");
+  assertSafeAccepts("^(?:a*(?:ab){100000000}b*-)+$");
+  check("a huge repetition count costs the screen nothing to read",
+        Date.now() - started < b.constants.TIME.seconds(2));
+}
+
+// A pattern that is not anchored at the start is retried at EVERY position in
+// the subject. When it can consume an unbounded amount before reaching
+// something that must match, each of those attempts costs the length of what
+// remains — so the whole scan is quadratic in the input, with no ambiguity
+// anywhere inside the pattern for the other rules to find.
+function testUnanchoredScanCost() {
+  var quadratic = [
+    "(\\w+)\\s+(\\d+)",               // an ordinary two-field scan
+    "([^;]+);\\s*q=([0-9.]+)",        // an Accept-header q-value
+    "(\\S+)=(\\S+);",
+    "a+b",
+  ];
+  quadratic.forEach(function (src) {
+    check("refuses the unanchored scan " + JSON.stringify(src),
+          assertSafeAccepts(src) === false);
+  });
+
+  var bounded = [
+    "^(\\w+)\\s+(\\d+)$",             // anchored — one attempt
+    "\\.[a-f0-9]{8,}\\.",             // a mandatory fixed head fails an attempt at once
+    "foo",
+    "a+",                             // nothing after it must match, so nothing fails late
+  ];
+  bounded.forEach(function (src) {
+    check("accepts " + JSON.stringify(src), assertSafeAccepts(src));
+  });
+  check("the sticky flag pins the attempt to one position",
+        assertSafeAccepts2(new RegExp("(\\w+)\\s+(\\d+)", "y")));
+
+  // A group around the whole pattern changes nothing about how many positions
+  // the engine tries it at, so reading only the outermost term list let one
+  // pair of parentheses hide the cost.
+  var wrapped = ["(a+b)", "([^>]*>)", "(?:(a+b))", "(?:x|a+b)"];
+  wrapped.forEach(function (src) {
+    check("a wrapping group does not hide the scan cost " + JSON.stringify(src),
+          assertSafeAccepts(src) === false);
+  });
+  check("wrapping an anchored pattern is still fine",
+        assertSafeAccepts("^(a+b)$") && assertSafeAccepts("(?:^a+b$)"));
+
+  // A choice is several scans and only one of them has to run away. It need
+  // not be the first thing in the pattern — every starting position enters the
+  // same branch whatever fixed atoms precede it.
+  check("a choice that runs away in one branch is a scan wherever it sits",
+        assertSafeAccepts("(?:x|a+b)") === false &&
+        assertSafeAccepts("a(?:x|a+b)") === false &&
+        assertSafeAccepts("(?:x|(?:y|a+b))") === false);
+
+  // A lookaround consumes nothing, which is not the same as costing nothing:
+  // its body is a pattern in its own right, re-run wherever the attempt
+  // reaches it.
+  check("an assertion whose BODY is a scan is a scan",
+        assertSafeAccepts("(?=a+b)") === false &&
+        assertSafeAccepts("(?!a+b)") === false &&
+        assertSafeAccepts("[ax]*(?=a+b)") === false);
+  check("but the body is read whole, anchors included",
+        assertSafeAccepts("(?=^a+b)") && assertSafeAccepts("^(?=a+b)"));
+  // Reached from only a bounded number of positions, its body runs a bounded
+  // number of times: no subject both matches the `x` everywhere and feeds the
+  // `a+`.
+  check("and an assertion the subject cannot reach everywhere is not",
+        assertSafeAccepts("x(?=a+b)"));
+  // A positive lookbehind says what stands immediately before every viable
+  // start. When the scan cannot eat that character, the starts are separated by
+  // something it has to stop at, so the runs do not overlap and their lengths
+  // add up to the subject rather than multiplying by it.
+  check("a lookbehind the scan cannot cross separates its starts",
+        assertSafeAccepts("(?<=x)a+b") && assertSafeAccepts("(?<=x)(?=a+b)"));
+  check("but one it can eat does not",
+        assertSafeAccepts("(?<=a)a+b") === false &&
+        assertSafeAccepts("(?<=a)(?=a+b)") === false);
+  // Any position the lookbehind insists on will do, not only the one nearest
+  // the start: `(?<=xa)a+b` puts the `x` two characters back and a scan of
+  // `a`s stops at it just the same.
+  // Under `v` a class may be a SET EXPRESSION, and this parser has no
+  // representation for one. Read as an ordinary class it came apart at the
+  // first `]` and the rest was tokenized as pattern text, so the repetition
+  // appeared to belong to a character that was really the tail of the class —
+  // and `[[a-z]--[x]]+b` was called linear where `[a-y]+b` is quadratic. It is
+  // now abandoned at the parse, and what cannot be represented is not judged.
+  check("a class the v flag turns into a set expression is not judged",
+        assertSafeAccepts2(new RegExp("[[a-z]--[x]]+b", "v")) === false &&
+        assertSafeAccepts2(new RegExp("[[a-z]&&[aeiou]]+b", "v")) === false &&
+        assertSafeAccepts2(new RegExp("[\\q{abc}]+b", "v")) === false);
+  // Without `v` those spellings are ordinary members and the parse is right,
+  // so the same source is read normally.
+  check("while without the flag the same source is an ordinary class",
+        assertSafeAccepts("[[a-z]--[x]]+b"));
+
+  check("a separator further back still separates",
+        assertSafeAccepts("(?<=xa)a+b") && assertSafeAccepts("(?<=ax)a+b") &&
+        assertSafeAccepts("(?<=xaa)a+b") && assertSafeAccepts("(?<=[xy]a)a+b") &&
+        assertSafeAccepts("(?<=xa)(?=a+b)"));
+  check("and none of them separates a scan that eats it",
+        assertSafeAccepts("(?<=aa)a+b") === false &&
+        assertSafeAccepts("(?<=xa)\\w+b") === false);
+  // What holds a scan is judged on what the scan WALKS, which is neither the
+  // character it starts on nor everything the assertion can match:
+  // `(?=a[ax]*z)` starts on an `a` and then walks over `x` as well.
+  check("and the walk is what counts, not the character it starts on",
+        assertSafeAccepts("(?<=x)(?=a+z)") &&
+        assertSafeAccepts("(?<=x)(?=a[ax]*z)") === false);
+  // A scan nested inside another assertion consumes nothing the enclosing one
+  // can see, so no separator gets to claim it holds a scan it could not read.
+  check("a walk it cannot read is never held",
+        assertSafeAccepts("(?<=a)(?=(?=a+b))") === false &&
+        assertSafeAccepts("(?<=x)(?=(?=a+b))") === false);
+  // A lookBEHIND is matched backwards, so which end runs away is the other one.
+  // `(?<=a+b)` tests the neighbouring `b` first and fails there at nearly every
+  // position; `(?<=ba+)` walks back through everything before it at every one.
+  check("a lookbehind is read the way it is matched",
+        assertSafeAccepts("(?<=a+b)") && assertSafeAccepts("(?<=ab)") &&
+        assertSafeAccepts("(?<=\\bfoo)bar"));
+  check("so a lookbehind that walks its way back is a scan",
+        assertSafeAccepts("(?<=ba+)") === false);
+
+  // A NEGATIVE assertion after a run reads opposite ground depending on which
+  // way it looks, and forbidding what the run eats is the safe case only for
+  // the one that looks forward. `a+(?!a)` holds the moment the greedy run stops,
+  // because it stopped on something it could not eat. `a+(?<!a)` reads the
+  // characters the run just ate, so it refuses at the end of the run, refuses
+  // again at every character handed back, and repeats the whole walk from every
+  // later start.
+  check("a negative lookahead the run satisfies by stopping is not a failure",
+        assertSafeAccepts("a+(?!a)") && assertSafeAccepts("[ab]+(?![ab])"));
+  check("but the same shape looking BEHIND fails at every endpoint",
+        assertSafeAccepts("a+(?<!a)") === false &&
+        assertSafeAccepts("[ab]+(?<!a)") === false &&
+        assertSafeAccepts("\\w+(?<!a)") === false &&
+        assertSafeAccepts("a+(?<![ab])") === false);
+  check("while one forbidding what the run never eats settles at once",
+        assertSafeAccepts("a+(?<!b)") && assertSafeAccepts("a*(?<!b)"));
+  // What decides it is whether the run's own characters can SPELL the whole
+  // assertion, not whether every character it eats satisfies it. `[ab]+(?<!a)`
+  // has a `b` that does not satisfy the `a` and is quadratic all the same,
+  // because the run can end on an `a`; `a+(?<!ab)` and `a+(?<!ba)` both need a
+  // `b` the run never supplies, so the assertion holds where the run stops.
+  check("a lookbehind the run cannot spell holds where the run stops",
+        assertSafeAccepts("a+(?<!ab)") && assertSafeAccepts("a+(?<!ba)") &&
+        assertSafeAccepts("a+(?<!aab)"));
+  // And the whole body counts, not the character beside the position: these
+  // reach back over the run and over what precedes it, and both find what they
+  // are looking for there, so they walk the subject again from every start.
+  check("but one it can spell in full is a failure at every endpoint",
+        assertSafeAccepts("a+(?<!.a)") === false &&
+        assertSafeAccepts("a+(?<![ab]a)") === false);
+  // Reaching past the run's shortest, it meets the character in FRONT of the
+  // run — which the run did not eat, or it would have started there. An `a`
+  // demanded in that position is a demand the subject cannot meet.
+  check("and one demanding a run character in front of the run cannot match",
+        assertSafeAccepts("a+(?<!a[ab])") && assertSafeAccepts("a+(?<!aa)"));
+  // A run that may match NOTHING settles at its own start, where a lookbehind
+  // has nothing to read and a negative one therefore holds — one walk, not one
+  // per position. What comes AFTER it is judged on its own.
+  // The first attempt hands characters back until the run is at its shortest,
+  // and where the run begins the pattern that leaves exactly the run's own
+  // minimum behind the endpoint. An assertion reaching further back than that
+  // cannot match there, so it holds and the search ends after one walk.
+  check("a run settles at its shortest, where the assertion outreaches it",
+        assertSafeAccepts("a*(?<!a)") && assertSafeAccepts("a+(?<!aa)") &&
+        assertSafeAccepts("a+(?<!aaa)") && assertSafeAccepts("[ab]+(?<!aa)") &&
+        assertSafeAccepts("^a+(?<!a)"));
+  check("and not where the assertion reaches no further than the run owes",
+        assertSafeAccepts("a+(?<!a)") === false &&
+        assertSafeAccepts("(?:ab)+(?<!ab)") === false);
+  // Settling that way rests on the character in front of the run being one the
+  // run does not eat, and only a run that takes ONE character at a time would
+  // have started there. `(?:ab)+` advances two at a time and begins at each
+  // `a`, so a `b` can sit in front of it — which is what `(?<!bab)` finds.
+  check("a run that advances by more than one keeps no such guarantee",
+        assertSafeAccepts("(?:ab)+(?<!bab)") === false &&
+        assertSafeAccepts("(?:ab)+(?<!abab)") === false);
+  // Only where nothing stands in front of the run, not even something
+  // zero-width — a `\B` refuses position zero — and only where the assertion
+  // follows it immediately, since anything between can refuse the short
+  // endpoint the settling depends on.
+  check("but not when an assertion in front of it refuses that position",
+        assertSafeAccepts("\\Ba*(?<!a)") === false);
+  check("nor when one between them refuses the short endpoint",
+        assertSafeAccepts("a*(?!a)(?<!a)") === false);
+  check("and anything after the assertion is still weighed",
+        assertSafeAccepts("a*(?<!a)b") === false);
+  // Settling there works because nothing stands behind position zero for the
+  // assertion to read. A body that can match NOTHING reads nothing happily and
+  // matches anyway, so the negative refuses at position zero as well and the
+  // run buys nothing by shrinking.
+  check("a lookbehind that can match nothing refuses everywhere",
+        assertSafeAccepts("a*(?<!)") === false &&
+        assertSafeAccepts("a*(?<!a?)") === false &&
+        assertSafeAccepts("a*(?<!(?:))") === false &&
+        assertSafeAccepts("a*(?<!b?)") === false);
+  // An alternation is spellable when ANY branch is.
+  check("one branch the run can spell is enough to make it a failure",
+        assertSafeAccepts("a+(?<!a|b)") === false &&
+        assertSafeAccepts("a+(?<!b|c)"));
+  // A run repeats whole copies of its body, so what stands behind an endpoint
+  // is the body read backwards over and over — `(?:ab)+` leaves a `b`, then an
+  // `a`, then a `b` — and the assertion is read against those positions one at
+  // a time. Every one of these is spelled entirely out of characters the run
+  // eats, which is all a set-membership test can see; the order is what tells
+  // them apart.
+  check("the assertion is read against the run's positions, not its characters",
+        assertSafeAccepts("(?:ab)+(?<!a)") && assertSafeAccepts("(?:ab)+(?<!aa)") &&
+        assertSafeAccepts("(?:ab)+(?<!ba)") && assertSafeAccepts("(?:ab)+(?<!bb)") &&
+        assertSafeAccepts("(?:abc)+(?<!ac)"));
+  check("and one that lines up with them is a failure at every endpoint",
+        assertSafeAccepts("(?:ab)+(?<!b)") === false &&
+        assertSafeAccepts("(?:ab)+(?<!ab)") === false &&
+        assertSafeAccepts("(?:ab)+(?<![ab]b)") === false &&
+        assertSafeAccepts("(?:abc)+(?<!c)") === false &&
+        assertSafeAccepts("(?:abc)+(?<!bc)") === false);
+  // A `^` or `$` inside the assertion pins it to one end of the subject, which
+  // the endpoints of a run are not, so one backtrack settles it.
+  check("an edge anchor inside the assertion places it outside the run",
+        assertSafeAccepts("a+(?<!a$)") && assertSafeAccepts("a+(?<!^a)"));
+  // A word boundary is not so easily placed: `\B` holds between two word
+  // characters, which is every endpoint inside a run of them.
+  check("but a word boundary inside it is not proven away",
+        assertSafeAccepts("a+(?<!a\\B)") === false);
+  check("a positive lookbehind the run satisfies out of its own characters is fine",
+        assertSafeAccepts("a+(?<=a)") && assertSafeAccepts("a+(?<=b)") === false);
+
+  // What `^` pins depends on the flags in force WHERE IT STANDS. A modifier
+  // group turns multiline on for part of a pattern, and then the anchor is a
+  // line start rather than the one position the whole rule turns on.
+  check("a scoped m is read where it applies",
+        assertSafeAccepts("(?=(?m:^[\\s\\S]+z))") === false &&
+        assertSafeAccepts("(?m:^a+b)"));
+
+  // An anchor in front of a scan can hold it to a bounded number of runs. `$`
+  // outside multiline succeeds once, so what follows it runs once. The others
+  // succeed often, and it depends on the scan: their firings are separated by a
+  // newline or by a character of the other class, so a scan that cannot match
+  // across that separator gets no further than the next one and the two trade
+  // off exactly. A scan that CAN cross reaches the end from every firing.
+  check("an end anchor holds the assertion after it to one run",
+        assertSafeAccepts("$(?=a+b)"));
+  check("a boundary holds a scan that cannot cross it",
+        assertSafeAccepts("\\b(?=a+b)") && assertSafeAccepts("\\ba+b") &&
+        assertSafeAccepts("\\b\\w+\\s+\\d+"));
+  check("but not one that can",
+        assertSafeAccepts("\\b.*z") === false);
+  // `\B` is the opposite assertion: it succeeds everywhere EXCEPT the
+  // transitions, so it fires all the way through a run instead of separating
+  // one from the next, and bounds nothing.
+  // An assertion is judged on what it STARTS by consuming, exactly as the same
+  // shape written directly is: `\b(?=\w+\s+\d+)` costs what `\b\w+\s+\d+` costs.
+  check("an assertion is bounded on the same terms as the shape written out",
+        assertSafeAccepts("\\b(?=\\w+\\s+\\d+)") && assertSafeAccepts("\\b\\w+\\s+\\d+") &&
+        assertSafeAccepts("\\b(?=.*z)") === false);
+  check("and the opposite assertion bounds nothing",
+        assertSafeAccepts("\\b\\w+z") && assertSafeAccepts("\\B\\w+z") === false &&
+        assertSafeAccepts("\\B(?=a+b)") === false);
+  check("a line anchor holds a scan that stops at the newline",
+        assertSafeAccepts2(new RegExp("^a+b", "m")) &&
+        assertSafeAccepts2(new RegExp("^.*z", "m")));
+  check("but not one that reads straight through it",
+        assertSafeAccepts2(new RegExp("^[\\s\\S]*z", "m")) === false);
+  // Every line terminator counts, not just the newline: `^` under `m` fires
+  // after a carriage return and after U+2028 / U+2029 as well. `.` excludes all
+  // four, which is why it stops where a hand-written `[^\n]` does not.
+  check("a scan that stops at only SOME line terminators is not held",
+        assertSafeAccepts2(new RegExp("^[^\\n]*z", "m")) === false &&
+        assertSafeAccepts2(new RegExp("^[^\\r\\n]*z", "m")) === false);
+
+  // An assertion that always SUCCEEDS still costs what its run costs, and
+  // something failing after it makes the engine pay that again from the next
+  // position. `(?=a+)` on its own matches at the first position and stops.
+  check("what follows an assertion is where its attempt can fail",
+        assertSafeAccepts("(?=a+)[^a]") === false &&
+        assertSafeAccepts("(?<=a+)[^a]") === false &&
+        assertSafeAccepts("(?=a*)[^a]") === false);
+  check("with nothing after it to fail on, it is not a scan",
+        assertSafeAccepts("(?=a+)") && assertSafeAccepts("^(?=a+)[^a]"));
+  // For a NEGATED assertion the body succeeding IS the failure, so nothing
+  // after it matters: `(?!a+)` refuses at every position, each time having
+  // walked the rest of the subject to find the `a+` it forbids.
+  check("a negated assertion needs nothing after it to be a scan",
+        assertSafeAccepts("(?!a+)") === false && assertSafeAccepts("(?!a+)a") === false);
+
+  // The failure can be INSIDE the term that runs away. `(?:a+b)+` has nothing
+  // after it to fail on and fails on its own `b` at every position all the same.
+  check("a failure inside a repeated group is still a failure",
+        assertSafeAccepts("(?:a+b)+") === false && assertSafeAccepts("(?:a+b){2}") === false);
+  // Only while the repetition is MANDATORY: one that can be left out matches
+  // empty and the attempt succeeds there and then.
+  check("but one that can be left out matches empty and succeeds at once",
+        assertSafeAccepts("(?:a+b)*") && assertSafeAccepts("(?:[a-z]+-)*"));
+  check("and anchoring it pins the attempt as ever",
+        assertSafeAccepts("^(?:a+b)+$") && assertSafeAccepts("^(?:\\w+\\.)+$"));
+  // An anchor only pins what comes AFTER it. An assertion in front of one is
+  // evaluated before the anchor can refuse, so the anchor does not cover it.
+  check("an anchor does not pin an assertion that precedes it",
+        assertSafeAccepts("(?=a+b)^") === false && assertSafeAccepts("^(?=a+b)"));
+  check("and a harmless assertion in front of one is still fine",
+        assertSafeAccepts("(?=x)^a+b"));
+  // A positive lookahead in front of another tests the same position, so it
+  // decides where the second is reached at all: where an `x` stands, the `a+`
+  // stops at once.
+  check("an assertion the one before it rules out is not reached everywhere",
+        assertSafeAccepts("(?=x)(?=a+b)") && assertSafeAccepts("(?=[^a])(?=a+b)"));
+  check("but one it lets through is",
+        assertSafeAccepts("(?=a)(?=a+b)") === false);
+  // A negative one narrows too, when what it forbids is a character rather
+  // than a sequence. `(?!ab)` leaves every `a` not followed by a `b`.
+  check("what a negative assertion forbids narrows the next one",
+        assertSafeAccepts("(?!a)(?=a+b)") && assertSafeAccepts("(?!a|b)(?=[ab]+c)") &&
+        assertSafeAccepts("(?!ab)(?=a+b)") === false);
+  // Parentheses alone change nothing about what is forbidden.
+  check("however it is written",
+        assertSafeAccepts("(?!(?:a))(?=a+b)") && assertSafeAccepts("(?!((a)))(?=a+b)") &&
+        assertSafeAccepts("(?!(?:a|b))(?=[ab]+c)") &&
+        assertSafeAccepts("(?!(?:ab))(?=a+b)") === false &&
+        assertSafeAccepts("(?!a{2})(?=a+b)") === false);
+  // The body consumes nothing, so a following assertion is tested where the
+  // body STARTED. `(?=a+)` succeeds and `(?!a)` then refuses at the same `a`,
+  // at every position, each having paid for the run.
+  check("an assertion after one is where it stands, not past the body",
+        assertSafeAccepts("(?=a+)(?!a)") === false);
+  // The lookaheads operators actually write are anchored and stay accepted.
+  check("real anchored assertions are unaffected",
+        assertSafeAccepts("^(?=.*[a-z])(?=.*\\d)[A-Za-z\\d]{8,}$") &&
+        assertSafeAccepts("^(?!.*\\.\\.)[\\w./-]+$"));
+
+  // The run that walks away need not be the FIRST thing in the pattern. A
+  // fixed atom in front costs an attempt nothing, so `aa+b` scans every suffix
+  // from every position exactly as `a+b` does.
+  check("a fixed atom in front does not bound the scan",
+        assertSafeAccepts("aa+b") === false && assertSafeAccepts("a.*b") === false);
+  // Unless that atom is something the run cannot eat: no single input can both
+  // match a leading dot everywhere and feed a run of hex digits.
+  check("but a mandatory prefix the run cannot consume does",
+        assertSafeAccepts("\\.[a-f0-9]{8,}\\."));
+
+  // An assertion after the run consumes nothing and can still refuse, which is
+  // what sends the engine back to the next starting position.
+  check("a trailing anchor is a late failure point",
+        assertSafeAccepts("a+$") === false);
+  check("so is a trailing lookahead",
+        assertSafeAccepts("a+(?=b)") === false);
+  // But only when the run cannot satisfy it. A lookahead asking for what the
+  // run just ate is answered by handing one character back, and a NEGATIVE one
+  // asking about a character the run never matches is answered by standing
+  // still — both settle on the first attempt.
+  check("a lookahead the run itself satisfies is not a failure point",
+        assertSafeAccepts("a+(?=a)") && assertSafeAccepts("\\w+(?=\\w)"));
+  check("and one it satisfies with room to spare",
+        assertSafeAccepts("a+(?=[ab])") && assertSafeAccepts("a+(?=ab?)") &&
+        assertSafeAccepts("a+(?=a|b)"));
+  // What it can START with does not decide it. `(?=a[^a])` opens on ground a
+  // run of `a` covers and then asks for a character that run never supplies,
+  // so it fails at every depth the engine backtracks to.
+  check("a lookahead the run can begin but not finish is still a failure point",
+        assertSafeAccepts("a+(?=a[^a])") === false &&
+        assertSafeAccepts("a+(?=aab)") === false &&
+        assertSafeAccepts("a+(?=b|c)") === false);
+  check("nor is a negative lookahead the run can never trip",
+        assertSafeAccepts("a+(?!b)") && assertSafeAccepts("[a-z]+(?![0-9])"));
+  check("nor one that forbids only what a greedy run has already eaten",
+        assertSafeAccepts("a+(?!a)") && assertSafeAccepts("[a-z]+(?![a-c])"));
+  // The partial overlap is the one that walks back through the run refusing at
+  // every step: `a+(?![ab])` on a run of `a` ending in `b`.
+  check("a negative lookahead reaching both inside and outside the run does fail late",
+        assertSafeAccepts("a+(?![ab])") === false &&
+        assertSafeAccepts("[ab]+(?![bc])") === false);
+
+  // A suffix the run could always hand back is not a failure point: wherever
+  // the run matched enough, the match succeeds on its first attempt.
+  check("a suffix the run itself satisfies is not quadratic",
+        assertSafeAccepts("a+a") && assertSafeAccepts("\\w+\\w"));
+  check("but a suffix INSIDE the run's characters still is",
+        assertSafeAccepts(".*b") === false);
+  // The whole suffix has to hold, not its first character, and a group with a
+  // count hides the rest of it: `(?:ab){2}` asks for the same `b` as `ab` does.
+  check("a suffix whose LATER parts the run cannot satisfy is a failure point",
+        assertSafeAccepts("a+(?:ab){2}") === false &&
+        assertSafeAccepts("a+ab") === false &&
+        assertSafeAccepts("a+a?b") === false);
+  check("while one the run satisfies all the way through is not",
+        assertSafeAccepts("a+aa") && assertSafeAccepts("\\w+\\w\\w"));
+  // "Can the run satisfy it" is not "can SOME string over the run's characters
+  // satisfy it" — the subject is the attacker's to choose. A run over `[ab]`
+  // eats both, but against a subject of nothing but `a` the `b` is never there.
+  check("a suffix satisfiable by only SOME of the run's strings is a failure point",
+        assertSafeAccepts("[ab]+(?=ab)") === false &&
+        assertSafeAccepts("[ab]+ab") === false);
+  // Branches cover the run together, not one at a time: `(?:a|b)` is `[ab]`
+  // written out long, and the engine takes the branch the character calls for.
+  check("branches that cover the run between them are not a failure point",
+        assertSafeAccepts("[ab]+(?:a|b)") && assertSafeAccepts("[ab]+(?=a|b)"));
+  check("but only while each of them holds on its own characters",
+        assertSafeAccepts("[ab]+(?:ab|b)") === false);
+
+  // It is its own rule, so an operator who bounds the subject length instead
+  // can turn it off without giving up the backtracking classes.
+  var relaxed = b.guardRegex.validate("(\\w+)\\s+(\\d+)",
+    { profile: "strict", boundedRepeatPolicy: "allow", unanchoredScanPolicy: "allow" });
+  check("the finding has a policy of its own", relaxed.ok === true);
+  var reported = b.guardRegex.validate("(\\w+)\\s+(\\d+)",
+    { profile: "strict", boundedRepeatPolicy: "allow" });
+  check("and its own rule id",
+        (reported.issues || []).some(function (i) { return i.ruleId === "regex.unanchored-scan"; }));
+}
+
 // ---- other ReDoS classes the guard covers stay covered ----
 function testOtherClasses() {
   // `(a|b|c)+` is the character class `[abc]+` written out long: no two
@@ -678,6 +1197,8 @@ async function run() {
   testRegExpFlagsReachTheAnalysis();
   testRepetitionSpellingsAllReachTheAnalysis();
   testEverySpellingOfAmbiguityIsRefused();
+  testSeparatorsAndVaryingPartsAreJudgedOnWhatTheyMatch();
+  testUnanchoredScanCost();
   testCatastrophicShapesRefused();
   testOtherClasses();
   await testGate();

@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.18.18",
-  "createdAt": "2026-08-09T12:30:30.592Z",
+  "frameworkVersion": "0.18.19",
+  "createdAt": "2026-08-10T11:51:18.043Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -7041,6 +7041,14 @@
           "type": "function",
           "arity": 4
         },
+        "canonicalizeForCase": {
+          "type": "function",
+          "arity": 2
+        },
+        "caseFoldPartners": {
+          "type": "function",
+          "arity": 2
+        },
         "charClass": {
           "type": "function",
           "arity": 1
@@ -14070,6 +14078,288 @@
             "TOKEN": {
               "type": "primitive",
               "valueType": "string"
+            }
+          }
+        },
+        "HTTP": {
+          "type": "object",
+          "members": {
+            "STATUS": {
+              "type": "object",
+              "members": {
+                "ACCEPTED": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "ALREADY_REPORTED": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "BAD_GATEWAY": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "BAD_REQUEST": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "CONFLICT": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "CONTENT_TOO_LARGE": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "CONTINUE": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "CREATED": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "EARLY_HINTS": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "EXPECTATION_FAILED": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "FAILED_DEPENDENCY": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "FORBIDDEN": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "FOUND": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "GATEWAY_TIMEOUT": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "GONE": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "HTTP_VERSION_NOT_SUPPORTED": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "IM_A_TEAPOT": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "IM_USED": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "INSUFFICIENT_STORAGE": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "INTERNAL_SERVER_ERROR": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "LENGTH_REQUIRED": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "LOCKED": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "LOOP_DETECTED": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "METHOD_NOT_ALLOWED": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "MISDIRECTED_REQUEST": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "MOVED_PERMANENTLY": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "MULTIPLE_CHOICES": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "MULTI_STATUS": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "NETWORK_AUTHENTICATION_REQUIRED": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "NON_AUTHORITATIVE_INFORMATION": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "NOT_ACCEPTABLE": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "NOT_EXTENDED": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "NOT_FOUND": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "NOT_IMPLEMENTED": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "NOT_MODIFIED": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "NO_CONTENT": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "OK": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "PARTIAL_CONTENT": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "PAYMENT_REQUIRED": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "PERMANENT_REDIRECT": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "PRECONDITION_FAILED": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "PRECONDITION_REQUIRED": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "PROCESSING": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "PROXY_AUTHENTICATION_REQUIRED": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "RANGE_NOT_SATISFIABLE": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "REQUEST_HEADER_FIELDS_TOO_LARGE": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "REQUEST_TIMEOUT": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "RESET_CONTENT": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "SEE_OTHER": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "SERVICE_UNAVAILABLE": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "SWITCHING_PROTOCOLS": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "TEMPORARY_REDIRECT": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "TOO_EARLY": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "TOO_MANY_REQUESTS": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "UNAUTHORIZED": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "UNAVAILABLE_FOR_LEGAL_REASONS": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "UNPROCESSABLE_CONTENT": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "UNSUPPORTED_MEDIA_TYPE": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "UPGRADE_REQUIRED": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "URI_TOO_LONG": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "USE_PROXY": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
+                "VARIANT_ALSO_NEGOTIATES": {
+                  "type": "primitive",
+                  "valueType": "number"
+                }
+              }
+            },
+            "bodiless": {
+              "type": "function",
+              "arity": 1
+            },
+            "clientError": {
+              "type": "function",
+              "arity": 1
+            },
+            "informational": {
+              "type": "function",
+              "arity": 1
+            },
+            "redirect": {
+              "type": "function",
+              "arity": 1
+            },
+            "serverError": {
+              "type": "function",
+              "arity": 1
+            },
+            "success": {
+              "type": "function",
+              "arity": 1
             }
           }
         },
@@ -32943,6 +33233,10 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
+                "unanchoredScanPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
                 "zeroWidthPolicy": {
                   "type": "primitive",
                   "valueType": "string"
@@ -33013,6 +33307,10 @@
                   "valueType": "string"
                 },
                 "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "unanchoredScanPolicy": {
                   "type": "primitive",
                   "valueType": "string"
                 },
@@ -33089,6 +33387,10 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
+                "unanchoredScanPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
                 "zeroWidthPolicy": {
                   "type": "primitive",
                   "valueType": "string"
@@ -33159,6 +33461,10 @@
                   "valueType": "string"
                 },
                 "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "unanchoredScanPolicy": {
                   "type": "primitive",
                   "valueType": "string"
                 },
@@ -33234,6 +33540,10 @@
               "valueType": "string"
             },
             "nullBytePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "unanchoredScanPolicy": {
               "type": "primitive",
               "valueType": "string"
             },
@@ -33342,6 +33652,10 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
+                "unanchoredScanPolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
                 "zeroWidthPolicy": {
                   "type": "primitive",
                   "valueType": "string"
@@ -33404,6 +33718,10 @@
                   "valueType": "string"
                 },
                 "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "unanchoredScanPolicy": {
                   "type": "primitive",
                   "valueType": "string"
                 },
@@ -33473,6 +33791,10 @@
                   "valueType": "string"
                 },
                 "nullBytePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "unanchoredScanPolicy": {
                   "type": "primitive",
                   "valueType": "string"
                 },
@@ -49518,6 +49840,19 @@
         }
       }
     },
+    "regexLinear": {
+      "type": "object",
+      "members": {
+        "RegexLinearError": {
+          "type": "function",
+          "arity": 4
+        },
+        "compile": {
+          "type": "function",
+          "arity": 2
+        }
+      }
+    },
     "render": {
       "type": "object",
       "members": {
@@ -49534,6 +49869,10 @@
           "arity": 3
         },
         "redirect": {
+          "type": "function",
+          "arity": 3
+        },
+        "stream": {
           "type": "function",
           "arity": 3
         },
@@ -49652,6 +49991,10 @@
           "arity": 2
         },
         "extractBearer": {
+          "type": "function",
+          "arity": 1
+        },
+        "failAfterHeaders": {
           "type": "function",
           "arity": 1
         },
@@ -50081,6 +50424,10 @@
           "arity": 3
         },
         "withTimeoutSignal": {
+          "type": "function",
+          "arity": 2
+        },
+        "writeChunk": {
           "type": "function",
           "arity": 2
         }
@@ -53456,7 +53803,7 @@
         },
         "streamingRes": {
           "type": "function",
-          "arity": 0
+          "arity": 1
         },
         "tempDir": {
           "type": "function",
