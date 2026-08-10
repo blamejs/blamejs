@@ -1,0 +1,40 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.18.23",
+  "date": "2026-08-10",
+  "headline": "A Certificate Transparency consistency proof was checked against the new tree but not against the tree you pinned — unless your pinned size happened to be a power of two",
+  "summary": "`b.network.tls.ct.verifyConsistency` answers one question: is the tree I pinned earlier still a prefix of the tree this log is showing me now? RFC 9162 §2.1.4.2 answers it by rebuilding BOTH roots from the proof — the first tree's and the second's — and requiring both to match what the operator holds. The implementation rebuilt only the second. The pinned root reached the computation solely as a seed in the branch taken when the first tree is a complete subtree, so for a pinned size of 4, 8 or 16 it was checked by accident, and for 3, 5, 6, 7, 9 and every other size it was not looked at at all. A proof describing an entirely different first tree of the same size verified.\n\nThat is the whole premise of pinning, and it was being taken on trust. Both roots are now rebuilt and both are checked; a proof that does not connect to the pinned tree is refused with `first-root-mismatch`.\n\nTwo smaller defects came out of the same work. A tree is consistent with itself and RFC 9162 says so with an empty proof, which the walk refused for any size that was not a power of two — so an operator re-checking an unchanged STH was told their log was inconsistent. And a proof carrying entries beyond the root was accepted with the remainder ignored, where the sibling inclusion-proof walk refuses exactly that.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "The consistency proof must connect to the pinned first root",
+          "body": "A consistency check has two halves: the proof rebuilds the new tree's root, which must match the STH the log just served, and it rebuilds the old tree's root, which must match the STH the operator pinned. Only the first half was enforced.\n\nThe pinned root was used as the walk's seed when the first tree happened to be a complete subtree — true exactly when the pinned size is a power of two — and in that case the final root comparison carried it along. At every other size the walk seeded from the proof itself and the supplied root was never read. A log could serve a proof for some other first tree of the same size and it verified; so did a pinned root of arbitrary bytes.\n\nThe exposure is not that a log can forge a tree, but that pinning stopped detecting the thing it exists to detect: a log that quietly rewrote history before the point you pinned would still have passed, at 11 of the 16 first-sizes below 17. Both roots are now rebuilt per RFC 9162 §2.1.4.2 and both are checked, with a distinct `first-root-mismatch` reason so a proof that is well-formed but describes the wrong tree does not read as a malformed one."
+        }
+      ]
+    },
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "A tree is consistent with itself",
+          "body": "RFC 9162 §2.1.4 gives the proof for two equal tree sizes as the empty list. The verification walk in §2.1.4.2 is written for a first tree strictly smaller than the second, and running it on equal sizes made it look for a sibling the definition says is not there — so it refused. Not always: for a power-of-two size the index bits shift down to zero on their own and the walk short-circuits, so the failure appeared at 3, 5, 6, 7, 9 and not at 4, 8, 16.\n\nAn operator polling a log that has not grown since their last check got told the log was inconsistent, intermittently by tree size. A false alarm on a security check is worse than a quiet one, because it is the alarm that teaches you to ignore the alarm. Equal sizes now verify on an empty proof and refuse a non-empty one."
+        },
+        {
+          "title": "A consistency proof must be fully consumed",
+          "body": "Entries past the point the walk stopped were ignored rather than refused, while the inclusion-proof walk beside it refuses an audit path with entries beyond the root. Nothing was forgeable through it — the computed root still had to match — but a proof carrying material the verifier never looked at is not the proof the operator believes was checked, and the two walkers disagreeing about what well-formed means is its own defect. Both now refuse a tail."
+        }
+      ]
+    },
+    {
+      "heading": "Detectors",
+      "items": [
+        {
+          "title": "Merkle proofs are tested against real trees",
+          "body": "All three defects were reachable because the tests built their fixtures by hand: four-leaf trees with hand-picked sibling values. A four-leaf tree is a perfect binary tree, so it never takes the uneven split the algorithm turns on, and hand-picked values can be chosen to make the answer come out right without describing any tree at all — one fixture asserted the incomplete-subtree branch with a first root of thirty-two identical bytes, which is exactly the input the missing check would have caught.\n\nThe suite now transcribes RFC 9162's recursive definitions separately from the framework's iterative walk, builds real trees, derives real proofs, and feeds every first-size/second-size pair up to seventeen leaves through the verifier before breaking them one way at a time. The two implementations share no structure, so agreement means something. A detector fires on a re-hand-rolled tree hash."
+        }
+      ]
+    }
+  ]
+}

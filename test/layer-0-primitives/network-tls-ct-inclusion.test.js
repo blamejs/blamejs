@@ -18,15 +18,6 @@ var b       = helpers.b;
 var check   = helpers.check;
 var nodeCrypto = require("crypto");
 
-function _leafHash(d) {
-  return nodeCrypto.createHash("sha256")
-    .update(Buffer.concat([Buffer.from([0x00]), d])).digest();
-}
-function _innerHash(l, r) {
-  return nodeCrypto.createHash("sha256")
-    .update(Buffer.concat([Buffer.from([0x01]), l, r])).digest();
-}
-
 function testSurface() {
   check("network.tls.ct.verifyInclusion is a function",
         typeof b.network.tls.ct.verifyInclusion === "function");
@@ -38,10 +29,10 @@ function testConsistencyCompleteSubtree() {
   // 4-leaf tree.
   var leaves = [Buffer.from("a"), Buffer.from("b"),
                 Buffer.from("c"), Buffer.from("d")];
-  var lh = leaves.map(_leafHash);
-  var n01 = _innerHash(lh[0], lh[1]);
-  var n23 = _innerHash(lh[2], lh[3]);
-  var root = _innerHash(n01, n23);
+  var lh = leaves.map(function (d) { return helpers.merkle.leafHash(d); });
+  var n01 = helpers.merkle.innerHash(lh[0], lh[1]);
+  var n23 = helpers.merkle.innerHash(lh[2], lh[3]);
+  var root = helpers.merkle.innerHash(n01, n23);
 
   // m=2 (complete subtree, root=n01) → n=4 (root). Proof = [n23].
   var ok = b.network.tls.ct.verifyConsistency({
@@ -71,11 +62,11 @@ function testConsistencyCompleteSubtree() {
 function testConsistencyIncompleteSubtree() {
   var leaves = [Buffer.from("a"), Buffer.from("b"),
                 Buffer.from("c"), Buffer.from("d")];
-  var lh = leaves.map(_leafHash);
-  var n01 = _innerHash(lh[0], lh[1]);
-  var n23 = _innerHash(lh[2], lh[3]);
-  var root = _innerHash(n01, n23);
-  var firstRootM3 = _innerHash(n01, _leafHash(leaves[2]));
+  var lh = leaves.map(function (d) { return helpers.merkle.leafHash(d); });
+  var n01 = helpers.merkle.innerHash(lh[0], lh[1]);
+  var n23 = helpers.merkle.innerHash(lh[2], lh[3]);
+  var root = helpers.merkle.innerHash(n01, n23);
+  var firstRootM3 = helpers.merkle.innerHash(n01, helpers.merkle.leafHash(leaves[2]));
 
   // m=3 → n=4. Proof = [lh[2], lh[3], n01] (RFC 9162 §2.1.4 algorithm).
   var ok = b.network.tls.ct.verifyConsistency({
@@ -111,11 +102,11 @@ function testInclusionStandalone() {
     lenBuf, fakeSignedEntry,
     Buffer.from([0x00, 0x00]),                   // empty extensions
   ]);
-  var leafHash = _leafHash(leafBytes);
+  var leafHash = helpers.merkle.leafHash(leafBytes);
 
   // 2-leaf tree with this leaf at index 0; sibling = lh1.
   var sibling = nodeCrypto.randomBytes(32);
-  var root = _innerHash(leafHash, sibling);
+  var root = helpers.merkle.innerHash(leafHash, sibling);
 
   var rv = b.network.tls.ct.verifyInclusion({
     sct: { logIdHex: "abc", timestamp: ts, signedEntryDer: fakeSignedEntry },

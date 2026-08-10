@@ -11522,6 +11522,24 @@ var KNOWN_ANTIPATTERNS = [
     // builder could express it. One builder with options makes a new refusal
     // an argument instead of a third copy. Structural duplication a behavioral
     // test can't assert, so the detector is the guard.
+    // RFC 9162's tree hashes are two lines each, which is exactly why they got
+    // retyped per suite — and a suite that owns its own hashes builds fixtures
+    // by hand, which means small perfect trees and hand-picked sibling values.
+    // A proof assembled that way can be made to come out right without
+    // corresponding to any tree, and one that did hid a real gap: the verifier
+    // never checked the operator's pinned first root, and the fixture asserting
+    // that branch used filler bytes for it. helpers.merkle builds real trees
+    // and derives real proofs, so a fixture cannot quietly stop meaning
+    // anything. Structural duplication a behavioral test can't assert.
+    id: "test-hand-rolled-merkle-tree-hash",
+    primitive: "a test that needs an RFC 9162 tree hash must use helpers.merkle — a per-suite copy leads to hand-built fixtures, and a hand-built proof can be tuned to pass without describing a real tree",
+    scanScope: "test",
+    regex: /createHash\("sha256"\)[\s\S]{0,120}?Buffer\.from\(\[\s*0x0?1\s*\]\)\s*,\s*\w+\s*,\s*\w+/,
+    skipCommentLines: true,
+    allowlist: ["test/helpers/merkle.js"],
+    reason: "0.18.23 — network-tls.test.js and network-tls-ct-inclusion.test.js each retyped the 0x00-leaf / 0x01-interior hashes, and both built consistency fixtures by hand from four-leaf perfect trees with chosen sibling bytes. That shape cannot reach the uneven power-of-two split the algorithm turns on, and one such fixture passed a first root of Buffer.alloc(32, 0x88) — a root belonging to no tree — which is precisely the gap it was sitting on: verifyConsistency rebuilt only the second root, so a pinned first root was never checked unless its size was a power of two. helpers.merkle transcribes the recursive definitions and derives real proofs; the differential suite then found that gap, an m===n refusal, and an unconsumed-proof-tail. Anchored on the interior-hash concatenation shape and tempered to a short window; the allowlist entry is the helper itself. Fires on a re-hand-rolled tree hash.",
+  },
+  {
     id: "test-hand-rolled-ocsp-response-builder",
     primitive: "a test that needs an OCSP response must build it with helpers.buildOcspResponse(opts) — a hand-assembled BasicOCSPResponse only ever reaches the shapes its own suite thought of",
     scanScope: "test",

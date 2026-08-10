@@ -759,11 +759,6 @@ function _ctLeafHash(signedEntryDer, ts) {
   return nodeCrypto.createHash("sha256")
     .update(Buffer.concat([Buffer.from([0]), leafBytes])).digest();
 }
-function _ctInner(left, right) {
-  return nodeCrypto.createHash("sha256")
-    .update(Buffer.concat([Buffer.from([1]), left, right])).digest();
-}
-
 var _SERIAL = Buffer.from([0x12, 0x34, 0x56, 0x78]);
 var _NOW    = Date.parse("2025-06-15T00:00:01Z");
 
@@ -1427,7 +1422,7 @@ function testCtVerifyInclusion() {
 
   // 2-leaf tree, leafIndex 0.
   var sib = Buffer.alloc(32, 0x11);
-  var root2 = _ctInner(leafHash, sib);
+  var root2 = helpers.merkle.innerHash(leafHash, sib);
   var two = nt.ct.verifyInclusion({
     sct: { logIdHex: "aa", timestamp: ts, signedEntryDer: signedEntry },
     leafCertificate: Buffer.from("x"), leafIndex: 0, auditPath: [sib],
@@ -1510,7 +1505,7 @@ function testCtVerifyConsistency() {
   check("verifyConsistency m=n=1 valid", same.valid === true);
 
   var sib = Buffer.alloc(32, 0x33);
-  var second = _ctInner(X, sib);
+  var second = helpers.merkle.innerHash(X, sib);
   var grow = nt.ct.verifyConsistency({ firstSize: 1, secondSize: 2, proof: [sib], firstRoot: X, secondRoot: second });
   check("verifyConsistency m=1 n=2 valid", grow.valid === true);
 
@@ -2056,7 +2051,7 @@ function testCtMerklePaths() {
   var s1 = Buffer.alloc(32, 0x22);
 
   // 4-leaf tree, leafIndex 1 (left child then combined on the right).
-  var root4 = _ctInner(_ctInner(s0, h1), s1);
+  var root4 = helpers.merkle.innerHash(helpers.merkle.innerHash(s0, h1), s1);
   check("verifyInclusion 4-leaf index1 climbs the audit path",
         nt.ct.verifyInclusion({
           sct: { logIdHex: "aa", timestamp: ts, signedEntryDer: signedEntry },
@@ -2065,7 +2060,7 @@ function testCtMerklePaths() {
         }).valid === true);
 
   // 3-leaf tree, right-most leaf (the fn===sn branch).
-  var root3 = _ctInner(s0, h1);
+  var root3 = helpers.merkle.innerHash(s0, h1);
   check("verifyInclusion 3-leaf right-most leaf (fn===sn)",
         nt.ct.verifyInclusion({
           sct: { logIdHex: "aa", timestamp: ts, signedEntryDer: signedEntry },
@@ -2097,19 +2092,35 @@ function testCtMerklePaths() {
           sthFromLog: { treeSize: 2, rootHash: Buffer.alloc(32, 0x00) },
         }).reason === "inclusion-walk-failed");
 
-  // Consistency m=2 → n=4 (the odd-index skip loop runs; first tree complete).
-  var firstHash = Buffer.alloc(32, 0x33);
-  var c0 = Buffer.alloc(32, 0x44);
-  check("verifyConsistency m=2 n=4 valid",
-        nt.ct.verifyConsistency({ firstSize: 2, secondSize: 4, proof: [c0],
-          firstRoot: firstHash, secondRoot: _ctInner(firstHash, c0) }).valid === true);
+  // Consistency over a REAL four-leaf tree. Filler hashes chosen to make the
+  // second root come out right would pass these two branches without the
+  // first root corresponding to any tree at all — which is exactly the shape
+  // that hid the pinned-root gap, so both sizes come from the tree itself.
+  var tree4 = helpers.merkle.buildTree(4);
 
-  // Consistency m=3 → n=4 (first tree NOT a complete subtree; proof shifted).
-  var p0 = Buffer.alloc(32, 0x55), p1 = Buffer.alloc(32, 0x66), p2 = Buffer.alloc(32, 0x77);
+  // m=2 → n=4: the first tree is a complete subtree (the odd-index skip loop
+  // runs and the walk seeds from the supplied root).
+  check("verifyConsistency m=2 n=4 valid",
+        nt.ct.verifyConsistency({ firstSize: 2, secondSize: 4,
+          proof:      tree4.proofFrom(2),
+          firstRoot:  tree4.rootOfFirst(2),
+          secondRoot: tree4.root }).valid === true);
+
+  // m=3 → n=4: the first tree is NOT a complete subtree, so the walk seeds
+  // from the proof and has to rebuild the first root to check it.
   check("verifyConsistency m=3 n=4 incomplete-subtree valid",
-        nt.ct.verifyConsistency({ firstSize: 3, secondSize: 4, proof: [p0, p1, p2],
-          firstRoot: Buffer.alloc(32, 0x88),
-          secondRoot: _ctInner(p2, _ctInner(p0, p1)) }).valid === true);
+        nt.ct.verifyConsistency({ firstSize: 3, secondSize: 4,
+          proof:      tree4.proofFrom(3),
+          firstRoot:  tree4.rootOfFirst(3),
+          secondRoot: tree4.root }).valid === true);
+
+  // The same call with a first root that is not this tree's prefix must be
+  // refused — the assertion above cannot fail without this one beside it.
+  check("verifyConsistency m=3 n=4 refuses a first root from another tree",
+        nt.ct.verifyConsistency({ firstSize: 3, secondSize: 4,
+          proof:      tree4.proofFrom(3),
+          firstRoot:  Buffer.alloc(32, 0x88),
+          secondRoot: tree4.root }).valid === false);
 }
 
 // =====================================================================
