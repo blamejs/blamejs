@@ -105,19 +105,6 @@ async function testConcurrentRequestsIsolated() {
   check("concurrent: every response header matches its request", hdrsMatch);
 }
 
-// Each fixture http.Server is .close()'d, but the listening handle finalizes on
-// a later event-loop turn — past the forked worker's post-run grace window.
-// Poll process.getActiveResourcesInfo until no TCP handle remains; polling
-// drives the real event-loop turns that complete the close inside run().
-async function _drainTcpHandles() {
-  if (typeof process.getActiveResourcesInfo !== "function") return;
-  await helpers.waitUntil(function () {
-    return process.getActiveResourcesInfo().filter(function (t) {
-      return t === "TCPSocketWrap" || t === "TCPServerWrap";
-    }).length === 0;
-  }, { timeoutMs: 5000, label: "request-id-async-context: TCP handle drain" });
-}
-
 async function run() {
   try {
     testSurface();
@@ -125,7 +112,7 @@ async function run() {
     await testDefaultModeDoesNotBindAls();
     await testConcurrentRequestsIsolated();
   } finally {
-    await _drainTcpHandles();
+    await helpers.drainOpenHandles("request-id-async-context");
   }
 }
 

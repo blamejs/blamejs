@@ -158,21 +158,12 @@ function testLiveHandshake() {
   });
 }
 
-// Destroy the live TLS client + server handed back by the handshake, then poll
-// until their TCP handles release. Polling drives the real event-loop turns
-// that complete the async socket teardown inside run(), instead of leaving it
-// to finalize in the worker's post-run grace window.
-async function _drainTcpHandles(handles) {
+async function _drainOpenHandles(handles) {
   if (handles) {
     if (handles.client) { try { handles.client.destroy(); } catch (_e) { /* already torn down */ } }
     if (handles.server) { try { handles.server.close(); } catch (_e) { /* already closed */ } }
   }
-  if (typeof process.getActiveResourcesInfo !== "function") return;
-  await helpers.waitUntil(function () {
-    return process.getActiveResourcesInfo().filter(function (t) {
-      return t === "TCPSocketWrap" || t === "TCPServerWrap";
-    }).length === 0;
-  }, { timeoutMs: 5000, label: "tls-exporter: TCP handle drain after socket destroy" });
+  await helpers.drainOpenHandles("tls-exporter");
 }
 
 async function run() {
@@ -182,7 +173,7 @@ async function run() {
     testValidationPaths();
     handles = await testLiveHandshake();
   } finally {
-    await _drainTcpHandles(handles);
+    await _drainOpenHandles(handles);
   }
 }
 

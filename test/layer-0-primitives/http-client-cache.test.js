@@ -1611,22 +1611,8 @@ async function run() {
     // forked worker's event loop open (delays exit on a slow runner).
     // agent.destroy() schedules the socket teardown asynchronously, so
     // poll until the TCP handles have actually drained before returning.
-    await _drainTcpHandles();
+    await helpers.drainOpenHandles("http-client-cache");
   }
-}
-
-// Destroy the httpClient transport pool and wait for every TCP handle
-// (client sockets + any server-side sockets they kept open) to close.
-// Polling drives real event-loop turns so the close completes inside
-// run(), not in the worker's post-run grace window.
-async function _drainTcpHandles() {
-  b.httpClient._resetForTest();
-  if (typeof process.getActiveResourcesInfo !== "function") return;
-  await helpers.waitUntil(function () {
-    return process.getActiveResourcesInfo().filter(function (t) {
-      return t === "TCPSocketWrap" || t === "TCPServerWrap";
-    }).length === 0;
-  }, { timeoutMs: 5000, label: "http-client-cache: TCP handle drain after _resetForTest" });
 }
 
 module.exports = { run: run };

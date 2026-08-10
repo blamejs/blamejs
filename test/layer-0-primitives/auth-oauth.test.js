@@ -1655,19 +1655,6 @@ async function scenarioParFlows(base, routes) {
   check("pushAuthorizationRequest: expiresIn null when the AS omits expires_in", parNoexp && parNoexp.expiresIn === null);
 }
 
-// b.auth.oauth fetches go through the shared b.httpClient keep-alive agent;
-// its cached sockets (and the mock server) would otherwise keep the forked
-// worker's event loop open. Drain them inside run().
-async function _drainTcpHandles() {
-  b.httpClient._resetForTest();
-  if (typeof process.getActiveResourcesInfo !== "function") return;
-  await helpers.waitUntil(function () {
-    return process.getActiveResourcesInfo().filter(function (t) {
-      return t === "TCPSocketWrap" || t === "TCPServerWrap";
-    }).length === 0;
-  }, { timeoutMs: 5000, label: "auth-oauth: TCP handle drain after _resetForTest" });
-}
-
 // Network-free default-argument + config-time branch fill: the `opts = opts
 // || {}` guards each public entry point applies when called with no argument,
 // plus the allowHttp arm of the insecure-URL message, the numeric-clockSkewMs
@@ -2450,7 +2437,7 @@ async function run() {
     await scenarioHttpAllowedHosts(base, routes);
   } finally {
     server.close();
-    await _drainTcpHandles();
+    await helpers.drainOpenHandles("auth-oauth");
   }
   console.log("auth-oauth loopback checks passed");
 }

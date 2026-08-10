@@ -78,6 +78,11 @@ module.exports = {
   // HTTP helpers
   listenOnRandomPort: _http.listenOnRandomPort,
 
+  // End-of-file teardown: retire the httpClient pool and wait for every
+  // socket and pending file operation to finish, so a leak fails in the file
+  // that caused it rather than as a watchdog kill nobody can attribute.
+  drainOpenHandles:   _http.drainOpenHandles,
+
   // Loopback TLS server certificate (verify with `ca: [pair.cert]`)
   selfSignedPair:     _tls.selfSignedPair,
 

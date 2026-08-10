@@ -10,27 +10,16 @@ var helpers = require("../helpers");
 var b     = helpers.b;
 var check = helpers.check;
 
-// b.testing.request drives the harness server with a default-agent http.request
-// (keep-alive) and closes the fixture server fire-and-forget. The kept-alive
-// client socket and the server's accept socket finalize their destroy on a
-// later event-loop turn, past the forked worker's grace window. Destroy the
-// global-agent socket pool, then poll until every TCP handle has drained so
-// none outlives run().
-async function _drainTcpHandles() {
+async function _drainOpenHandles() {
   http.globalAgent.destroy();
-  if (typeof process.getActiveResourcesInfo !== "function") return;
-  await helpers.waitUntil(function () {
-    return process.getActiveResourcesInfo().filter(function (t) {
-      return t === "TCPSocketWrap" || t === "TCPServerWrap";
-    }).length === 0;
-  }, { timeoutMs: 5000, label: "testing-request: TCP handle drain after globalAgent.destroy" });
+  await helpers.drainOpenHandles("testing-request");
 }
 
 async function run() {
   try {
     await _runTests();
   } finally {
-    await _drainTcpHandles();
+    await _drainOpenHandles();
   }
 }
 

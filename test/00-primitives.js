@@ -4883,12 +4883,25 @@ function testApiSnapshotCompareDetectsArityDecrease() {
         diff.breaking.some(function (e) { return e.kind === "arity-decreased" && e.path === "fn"; }));
 }
 
-function testApiSnapshotCompareIgnoresArityIncrease() {
+// An added trailing parameter cannot break a caller, so it is not breaking.
+// It does move the surface, though, and the committed baseline records arity
+// — so a silent pass leaves the baseline stale while the gate reports "no
+// changes", which is how a signature change reaches a release untracked. That
+// is what `additive` is for: not a failure, a refresh.
+function testApiSnapshotCompareReportsArityIncreaseAsAdditive() {
   var snap1 = b.apiSnapshot.capture({ fn: function (a) {} });          // arity 1
   var snap2 = b.apiSnapshot.capture({ fn: function (a, b, c) {} });    // arity 3
   var diff = b.apiSnapshot.compare(snap1, snap2);
   check("arity increase is NOT breaking (added optional params)",
         diff.breaking.length === 0);
+  check("arity increase surfaces as additive so the baseline gets refreshed",
+        diff.additive.length === 1 && diff.additive[0].path === "fn" &&
+        diff.additive[0].kind === "arity-increased");
+  check("the additive arity entry carries was/is",
+        diff.additive[0].was === "function/1" && diff.additive[0].is === "function/3");
+  check("formatDiff renders the arity change rather than a bare path",
+        b.apiSnapshot.formatDiff(diff).indexOf("function/1") !== -1 &&
+        b.apiSnapshot.formatDiff(diff).indexOf("function/3") !== -1);
 }
 
 function testApiSnapshotCompareDetectsAdditive() {
@@ -19150,7 +19163,7 @@ async function run() {
   testApiSnapshotCompareDetectsRemoval();
   testApiSnapshotCompareDetectsTypeChange();
   testApiSnapshotCompareDetectsArityDecrease();
-  testApiSnapshotCompareIgnoresArityIncrease();
+  testApiSnapshotCompareReportsArityIncreaseAsAdditive();
   testApiSnapshotCompareDetectsAdditive();
   testApiSnapshotFormatDiff();
   testApiSnapshotOnFrameworkSurfaceCaptures();
@@ -19922,7 +19935,7 @@ module.exports = {
   testApiSnapshotCompareDetectsRemoval:      testApiSnapshotCompareDetectsRemoval,
   testApiSnapshotCompareDetectsTypeChange:   testApiSnapshotCompareDetectsTypeChange,
   testApiSnapshotCompareDetectsArityDecrease: testApiSnapshotCompareDetectsArityDecrease,
-  testApiSnapshotCompareIgnoresArityIncrease: testApiSnapshotCompareIgnoresArityIncrease,
+  testApiSnapshotCompareReportsArityIncreaseAsAdditive: testApiSnapshotCompareReportsArityIncreaseAsAdditive,
   testApiSnapshotCompareDetectsAdditive:     testApiSnapshotCompareDetectsAdditive,
   testApiSnapshotFormatDiff:                 testApiSnapshotFormatDiff,
   testApiSnapshotOnFrameworkSurfaceCaptures: testApiSnapshotOnFrameworkSurfaceCaptures,

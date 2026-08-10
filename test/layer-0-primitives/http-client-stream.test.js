@@ -467,21 +467,6 @@ async function testThrottleTransformValidation() {
     { url: "https://x.example/", uploadTransform: { not: "a stream" } });
 }
 
-// Destroy the httpClient transport pool and wait for every TCP handle
-// (client sockets the keep-alive agent cached, plus any server-side
-// sockets they kept open) to close. Polling drives real event-loop
-// turns so the asynchronous socket teardown completes inside run(),
-// not in the forked worker's post-run grace window.
-async function _drainTcpHandles() {
-  b.httpClient._resetForTest();
-  if (typeof process.getActiveResourcesInfo !== "function") return;
-  await helpers.waitUntil(function () {
-    return process.getActiveResourcesInfo().filter(function (t) {
-      return t === "TCPSocketWrap" || t === "TCPServerWrap";
-    }).length === 0;
-  }, { timeoutMs: 5000, label: "http-client-stream: TCP handle drain after _resetForTest" });
-}
-
 async function run() {
   try {
     testSurface();
@@ -499,7 +484,7 @@ async function run() {
     await testUploadMissingFile();
     await testUploadBadOpts();
   } finally {
-    await _drainTcpHandles();
+    await helpers.drainOpenHandles("http-client-stream");
   }
 }
 

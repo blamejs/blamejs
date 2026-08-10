@@ -522,6 +522,50 @@ async function testQuerySingleUnsupportedAeadEncrypt() {
         caught && caught.code === "nts/aead-unsupported");
 }
 
+// Failing closed is only half of it: the query must not keep the datagram
+// socket it opened. Building the request can throw — an unrecognised AEAD id
+// is the reachable case, and the encoder refuses it — and a socket acquired
+// BEFORE that work has nobody left to close it once the throw leaves the
+// Promise executor. The handle then holds the event loop open for the life of
+// the process, which is a leak per failed query in a long-running scheduler,
+// not just a slow teardown.
+function _udpHandleCount() {
+  if (typeof process.getActiveResourcesInfo !== "function") return 0;
+  return process.getActiveResourcesInfo().filter(function (t) { return t === "UDPWrap"; }).length;
+}
+
+async function testQuerySingleClosesItsSocketWhenTheRequestCannotBeBuilt() {
+  var before = _udpHandleCount();
+  // Attached as a .catch rather than awaited in a try: `await` converts a
+  // SYNCHRONOUS throw into a rejection too, so a try/await cannot tell the two
+  // apart. A caller that only attaches .catch can — a sync throw sails past it
+  // and takes the process down — so the refusal must arrive as a rejection,
+  // which is what building inside the Promise executor preserves.
+  var caught = null;
+  var settledAsRejection = false;
+  var call = null;
+  try {
+    call = b.network.ntp.nts.querySingle({
+      host: "127.0.0.1", port: 65000, aeadId: 99,
+      c2sKey: nodeCrypto.randomBytes(32), s2cKey: nodeCrypto.randomBytes(32),
+      cookies: [nodeCrypto.randomBytes(32)], timeoutMs: 1000,
+    });
+  } catch (e) { caught = e; }
+  check("querySingle: an unbuildable request does NOT throw synchronously — it returns a promise",
+        caught === null && call !== null && typeof call.then === "function");
+  await call.catch(function (e) { settledAsRejection = true; caught = e; });
+  check("querySingle: an unbuildable request rejects", settledAsRejection && caught !== null);
+  check("querySingle: the rejection carries the documented refusal code",
+        caught && caught.code === "nts/aead-unsupported");
+  var settled = true;
+  try {
+    await helpers.waitUntil(function () { return _udpHandleCount() <= before; },
+      { timeoutMs: 5000, label: "network-nts: udp handle released after a build failure" });
+  } catch (_e) { settled = false; }
+  check("querySingle: a request that cannot be built leaves no udp handle open",
+        settled && _udpHandleCount() <= before);
+}
+
 async function testQuerySingleTimeout() {
   var aeadId = b.network.ntp.nts.AEAD_AES_SIV_CMAC_256;
   var udp = await _startUdpServer(function () { /* never reply */ });
@@ -645,18 +689,8 @@ async function testQueryFullFlow(cert) {
   }
 }
 
-// Handles finalize asynchronously past a forked worker's grace window; poll
-// until every TCP/UDP handle this suite opened has actually closed so none
-// outlives run() and holds the event loop open on a slow runner.
 async function _drainHandles() {
-  if (typeof process.getActiveResourcesInfo !== "function") return;
-  try {
-    await helpers.waitUntil(function () {
-      return process.getActiveResourcesInfo().filter(function (t) {
-        return t === "TCPSocketWrap" || t === "TCPServerWrap" || t === "UDPWrap";
-      }).length === 0;
-    }, { timeoutMs: 5000, label: "network-nts: TCP/UDP handle drain" });
-  } catch (_e) { /* explicit closes already issued; best-effort settle */ }
+  await helpers.drainOpenHandles("network-nts");
 }
 
 async function run() {
@@ -681,6 +715,7 @@ async function run() {
     await testQuerySingleAdversarialReplies();
     await testQuerySingleAuthFailed();
     await testQuerySingleUnsupportedAeadEncrypt();
+    await testQuerySingleClosesItsSocketWhenTheRequestCannotBeBuilt();
     await testQuerySingleTimeout();
     await testQuerySingleSivSuccess();
     await testQuerySingleChaChaSuccess();

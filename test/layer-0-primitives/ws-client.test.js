@@ -56,7 +56,7 @@ function _trackServer(server) {
   return server;
 }
 
-async function _drainTcpHandles() {
+async function _drainOpenHandles() {
   _liveClients.forEach(function (c) {
     try { c.cancelReconnect(); } catch (_e) { /* best-effort */ }
     try { c.close(); } catch (_e) { /* best-effort */ }
@@ -79,12 +79,7 @@ async function _drainTcpHandles() {
   });
   _liveClients = [];
   _liveServers = [];
-  if (typeof process.getActiveResourcesInfo !== "function") return;
-  await helpers.waitUntil(function () {
-    return process.getActiveResourcesInfo().filter(function (t) {
-      return t === "TCPSocketWrap" || t === "TCPServerWrap";
-    }).length === 0;
-  }, { timeoutMs: 5000, label: "ws-client: TCP handle drain after client teardown" });
+  await helpers.drainOpenHandles("ws-client");
 }
 
 // Minimal in-process WebSocket server using lib/websocket primitives.
@@ -237,7 +232,7 @@ async function run() {
   try {
     await _runTests();
   } finally {
-    await _drainTcpHandles();
+    await _drainOpenHandles();
   }
 }
 

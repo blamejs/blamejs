@@ -301,23 +301,6 @@ async function testSetCorsRulesShape() {
   } finally { await l.close(); }
 }
 
-// bucketOps.create issues its requests (storage API + token endpoint)
-// through the shared b.httpClient keep-alive agent, whose cached client
-// sockets (and the mock servers they keep open) would otherwise outlive
-// run() and hold the forked worker's event loop open. Tear the pool down
-// and poll until the TCP handles have actually closed — agent.destroy()
-// schedules the teardown asynchronously, so polling drives the event-loop
-// turns needed to complete it inside run().
-async function _drainTcpHandles() {
-  b.httpClient._resetForTest();
-  if (typeof process.getActiveResourcesInfo !== "function") return;
-  await helpers.waitUntil(function () {
-    return process.getActiveResourcesInfo().filter(function (t) {
-      return t === "TCPSocketWrap" || t === "TCPServerWrap";
-    }).length === 0;
-  }, { timeoutMs: 5000, label: "gcs-bucket-ops: TCP handle drain after _resetForTest" });
-}
-
 async function run() {
   try {
     await testSurface();
@@ -330,7 +313,7 @@ async function run() {
     await testSetLifecycleValidationAndShape();
     await testSetCorsRulesShape();
   } finally {
-    await _drainTcpHandles();
+    await helpers.drainOpenHandles("gcs-bucket-ops");
   }
 }
 

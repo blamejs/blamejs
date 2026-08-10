@@ -143,20 +143,6 @@ function _pollClient(issuer, extra) {
   }, extra || {}));
 }
 
-// The CIBA client's discovery + JWKS + POST traffic rides the shared
-// b.httpClient keep-alive agent; its cached sockets (and the stub server)
-// would otherwise hold the forked worker's event loop open past run(). Tear
-// the pool down and poll until the TCP handles have actually closed.
-async function _drainTcpHandles() {
-  b.httpClient._resetForTest();
-  if (typeof process.getActiveResourcesInfo !== "function") return;
-  await helpers.waitUntil(function () {
-    return process.getActiveResourcesInfo().filter(function (t) {
-      return t === "TCPSocketWrap" || t === "TCPServerWrap";
-    }).length === 0;
-  }, { timeoutMs: 5000, label: "ciba: TCP handle drain after _resetForTest" });
-}
-
 // ---- startAuthentication (happy path + body assembly) -----------------
 
 async function _runStartAuthenticationHappy() {
@@ -201,7 +187,7 @@ async function _runCibaBasicAuthEncoding() {
     check("ciba startAuthentication (client_secret_basic): credentials form-urlencoded in the Authorization header",
           auth === "Basic " + Buffer.from(encodeURIComponent(CLIENT_ID) + ":" + encodeURIComponent("s:e/c+r%t"), "utf8").toString("base64"));
   });
-  await _drainTcpHandles();
+  await helpers.drainOpenHandles("ciba");
 }
 
 // ---- pollToken (happy path) -------------------------------------------
@@ -1021,7 +1007,7 @@ async function _runTests() {
 
 async function run() {
   try { await _runTests(); }
-  finally { await _drainTcpHandles(); }
+  finally { await helpers.drainOpenHandles("ciba"); }
 }
 
 module.exports = { run: run };
