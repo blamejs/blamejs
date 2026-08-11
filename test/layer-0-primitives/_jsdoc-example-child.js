@@ -33,6 +33,7 @@
  * indistinguishable from result records to anything parsing the stream.
  */
 
+var { AsyncLocalStorage } = require("node:async_hooks");
 var fs   = require("node:fs");
 var os   = require("node:os");
 var path = require("node:path");
@@ -75,26 +76,60 @@ async function main() {
   // would hide exactly what this pass is for: the examples delegated here are
   // the ones that install listeners, timers and callbacks, so a throw from
   // inside one of those IS the example failing — just not on the awaited path.
-  // Record it against whichever example is running and let the loop continue.
+  // Record it against the example that CREATED the work and let the loop
+  // continue.
+  //
+  // Which example that is cannot be read off a "currently running" variable at
+  // delivery time. A timer or promise abandoned by one example settles whenever
+  // it settles — during the next example's database setup, or several examples
+  // later — and blaming whoever happens to be running then would report a clean
+  // example as failed and let the real one pass. Same trap as the per-example
+  // network counter below, and the same answer: capture the owner where the
+  // work is created. The store is set around each example's execution, so it is
+  // inherited by everything that example schedules and travels with it into
+  // these handlers however late they fire.
   //
   // It goes through the SAME classifier as a synchronous throw, so the two
   // paths agree on what counts: a host that does not resolve or a port already
   // taken is the example describing an environment it does not create, exactly
   // as it would be if it had thrown on the awaited path. Only what the
   // classifier calls a defect is recorded as one.
-  var current = null;
+  var owners = new AsyncLocalStorage();
   var asyncFailures = [];
   function noteAsyncFailure(kind, e) {
     var verdict = runtime.classify(e, { timeoutIsFailure: true });
     if (verdict.outcome !== "fail") return;
+    var owner = owners.getStore() || null;
     asyncFailures.push({
-      id: current ? current.id : null,
-      sig: current ? current.sig : "(between examples)",
+      id: owner ? owner.id : null,
+      sig: owner ? owner.sig : "(between examples)",
       error: kind + ": " + ((e && e.message) || String(e)),
     });
   }
   process.on("unhandledRejection", function (e) { noteAsyncFailure("unhandled rejection", e); });
   process.on("uncaughtException", function (e) { noteAsyncFailure("uncaught exception", e); });
+
+  // Fold recorded async failures into the rows already written. A straggler
+  // normally lands AFTER its own example's row exists — a timer it scheduled
+  // outlives the body that scheduled it — so checking only at the moment the
+  // row is built would find nothing and drop a real failure. Runs after every
+  // example, so a throw owned by an earlier one still reaches its row.
+  // Idempotent: a row already failed is left as it is.
+  function applyAsyncFailures(rows) {
+    for (var k = 0; k < asyncFailures.length; k += 1) {
+      var f = asyncFailures[k];
+      if (f.id === null) continue;
+      for (var r2 = 0; r2 < rows.length; r2 += 1) {
+        if (rows[r2].id !== f.id) continue;
+        if (rows[r2].outcome !== "fail") {
+          rows[r2].outcome = "fail";
+          rows[r2].reason = undefined;
+          rows[r2].error = String(f.error).split("\n").slice(0, 2).join(" ");
+        }
+        break;
+      }
+    }
+  }
 
   // Is a network operation OUTSTANDING right now? Not "did this example ever
   // touch the network" — an example that resolves a name successfully and then
@@ -231,7 +266,6 @@ async function main() {
   var root = fs.mkdtempSync(path.join(baseDir, "blamejs-example-child-"));
   for (var i = 0; i < batch.length; i += 1) {
     var item = batch[i];
-    current = item;
     var res;
     // A FRESH database and working directory per example, not per batch. The
     // db is a process singleton, so an example that closes it, re-opens it
@@ -269,23 +303,29 @@ async function main() {
     // A fresh counter per example. Stragglers from an earlier one hold a
     // reference to THEIR counter and can no longer touch this reading.
     netCount = { n: 0 };
+    // Everything this example schedules inherits the store, so a straggler
+    // carries its origin with it no matter which example is running when it
+    // lands. Setup and teardown stay OUTSIDE it: they are the harness's work,
+    // not the example's, and a throw from them is not this example's defect.
     try {
-      res = await runtime.runExampleInContext(item.body, {
-        context:     runtime.makeContext({ allowAnyModule: true }),
-        timeoutMs:   PER_EXAMPLE_MS,
-        // This process IS the isolation, so the example runs in its own realm
-        // rather than a vm one — otherwise a RegExp or Array literal it passes
-        // to the framework fails every instanceof check on the way in.
-        nativeRealm: true,
-        // The synchronous ceiling matches the overall one rather than being
-        // tighter than it: real work here is synchronous — generating a
-        // keypair, deriving with Argon2id — and a shorter sync limit cut off
-        // examples that were finishing well inside their wall-clock budget.
-        syncTimeoutMs: PER_EXAMPLE_MS,
-        // This example has a working database and directory, so running past
-        // the ceiling means it hung. The one exception is decided below, from
-        // what the example DID rather than from what its source looks like.
-        timeoutIsFailure: true,
+      res = await owners.run({ id: item.id, sig: item.sig }, function () {
+        return runtime.runExampleInContext(item.body, {
+          context:     runtime.makeContext({ allowAnyModule: true }),
+          timeoutMs:   PER_EXAMPLE_MS,
+          // This process IS the isolation, so the example runs in its own realm
+          // rather than a vm one — otherwise a RegExp or Array literal it passes
+          // to the framework fails every instanceof check on the way in.
+          nativeRealm: true,
+          // The synchronous ceiling matches the overall one rather than being
+          // tighter than it: real work here is synchronous — generating a
+          // keypair, deriving with Argon2id — and a shorter sync limit cut off
+          // examples that were finishing well inside their wall-clock budget.
+          syncTimeoutMs: PER_EXAMPLE_MS,
+          // This example has a working database and directory, so running past
+          // the ceiling means it hung. The one exception is decided below, from
+          // what the example DID rather than from what its source looks like.
+          timeoutIsFailure: true,
+        });
       });
     } catch (e) { res = runtime.classify(e, { timeoutIsFailure: true }); }
     // The ONLY timeout that is not a defect: a network operation was still
@@ -305,18 +345,18 @@ async function main() {
     // lands after this example has already been recorded as clean.
     await new Promise(function (r) { setImmediate(r); });
     try { await teardownTestDb(dir); } catch (_e) { /* best-effort */ }
-    current = null;
-    var mine = asyncFailures.filter(function (f) { return f.id === item.id; });
-    if (mine.length && res.outcome !== "fail") {
-      res = { outcome: "fail", error: mine[0].error };
-    }
     out.push({ id: item.id, outcome: res.outcome, reason: res.reason,
                error: res.error ? String(res.error).split("\n").slice(0, 2).join(" ") : undefined });
+    applyAsyncFailures(out);
     // Written after every example, not once at the end: a batch killed for
     // wedging still reports everything it got through, and the example it died
     // on is the first one missing.
     fs.writeFileSync(resultPath, JSON.stringify(out));
   }
+  // One more turn after the last example, then a final fold: a throw scheduled
+  // by the last example has nothing running after it to carry it back.
+  await new Promise(function (r) { setImmediate(r); });
+  applyAsyncFailures(out);
   // A throw that landed with no example running still belongs to this batch —
   // reporting it against nobody would put it back in the silence this change
   // is closing.
@@ -324,8 +364,10 @@ async function main() {
   if (orphaned.length && batch.length) {
     out.push({ id: batch[batch.length - 1].id, outcome: "fail",
                error: "after the example completed — " + orphaned[0].error });
-    fs.writeFileSync(resultPath, JSON.stringify(out));
   }
+  // Unconditional: the final fold above can have changed a row even when
+  // nothing was orphaned, and a verdict that is not written is not a verdict.
+  fs.writeFileSync(resultPath, JSON.stringify(out));
   _cleanup(root);
   // Examples start listeners and timers; leaving normally would hang on them.
   process.exit(0);

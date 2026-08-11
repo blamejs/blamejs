@@ -329,6 +329,50 @@ function _checkCalledPaths() {
   });
 }
 
+// A throw an example schedules for later belongs to the example that SCHEDULED
+// it, not to whichever one happens to be running when it lands. Getting this
+// wrong is silent in both directions — a clean example reported as failing, and
+// the real offender reported as clean — so it is driven through the actual
+// child rather than asserted against a model of it.
+function _checkAsyncAttribution() {
+  var tmp = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-example-attrib-"));
+  try {
+    var batchPath  = path.join(tmp, "batch.json");
+    var resultPath = path.join(tmp, "results.json");
+    var marker     = JSON.stringify(path.join(tmp, "fired.marker"));
+    // The first example's timer fires while the SECOND is still running. The
+    // second waits for THAT EVENT rather than for a duration — a fixed sleep
+    // long enough to lose the race on a loaded runner is the flake this whole
+    // gate keeps finding in other people's tests.
+    fs.writeFileSync(batchPath, JSON.stringify([
+      { id: "attrib-a", sig: "attribution probe (scheduler)",
+        body: "setTimeout(function () {\n" +
+              "  require(\"node:fs\").writeFileSync(" + marker + ", \"x\");\n" +
+              "  throw new Error(\"scheduled by the first example\");\n" +
+              "}, 50);\n" },
+      { id: "attrib-b", sig: "attribution probe (bystander)",
+        body: "var _fs = require(\"node:fs\");\n" +
+              "await new Promise(function (r) {\n" +
+              "  var t = setInterval(function () {\n" +
+              "    if (_fs.existsSync(" + marker + ")) { clearInterval(t); r(); }\n" +
+              "  }, 5);\n" +
+              "});\n" },
+    ]));
+    cp.spawnSync(process.execPath, [CHILD, batchPath, resultPath, tmp],
+      { encoding: "utf8", timeout: _batchCeilingMs(2) });
+    var rows = [];
+    try { rows = JSON.parse(fs.readFileSync(resultPath, "utf8")); } catch (_e) { rows = []; }
+    var a = rows.filter(function (x) { return x.id === "attrib-a"; })[0];
+    var b = rows.filter(function (x) { return x.id === "attrib-b"; })[0];
+    check("a late throw fails the example that scheduled it",
+          !!a && a.outcome === "fail" && /scheduled by the first example/.test(String(a.error)));
+    check("a late throw does not fail the example that merely followed it",
+          !!b && b.outcome !== "fail");
+  } finally {
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_e2) { /* temp */ }
+  }
+}
+
 function _checkCodeOnly() {
   var cases = [
     ["b.uuid.v7();",                                   "b.uuid.v7(",     true,  "a plain call"],
@@ -482,6 +526,7 @@ function _runStatefulBatches(items, dir) {
 async function run() {
   _checkCodeOnly();
   _checkCalledPaths();
+  _checkAsyncAttribution();
   var all = _collectExamples();
   var byId = {};
   all.inProcess.concat(all.stateful).forEach(function (it) { byId[it.id] = it; });
