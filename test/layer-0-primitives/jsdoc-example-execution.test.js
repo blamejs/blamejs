@@ -505,6 +505,71 @@ function _checkSoloMarker() {
   }
 }
 
+// A ceiling does not stop an example — an async function already in flight
+// keeps running. So a timed-out example leaves the process dirty, and the
+// child's contract is to report what it finished and ask for a fresh one for
+// the rest. Asserted on the child directly: the batch OUTCOME looks the same
+// either way, and what distinguishes them is that the remainder is handed
+// over rather than run alongside the abandoned example.
+function _checkTimeoutHandsOver() {
+  var tmp = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-example-resume-"));
+  try {
+    var batchPath  = path.join(tmp, "batch.json");
+    var resultPath = path.join(tmp, "results.json");
+    fs.writeFileSync(batchPath, JSON.stringify([
+      { id: "hangs", sig: "resume probe (hangs)",
+        body: "await new Promise(function () { /* never settles */ });\n" },
+      { id: "after", sig: "resume probe (the remainder)",
+        body: "var _x = 1;\n" },
+    ]));
+    var rv = cp.spawnSync(process.execPath, [CHILD, batchPath, resultPath, tmp],
+      { encoding: "utf8", timeout: _batchCeilingMs(2) });
+    var rows = [];
+    try { rows = JSON.parse(fs.readFileSync(resultPath, "utf8")); } catch (_e) { rows = []; }
+    var resume = null;
+    try { resume = JSON.parse(fs.readFileSync(resultPath + ".resume", "utf8")); } catch (_e2) { resume = null; }
+
+    check("a timed-out example makes the child ask for a restart",
+          rv.status === RESUME_EXIT);
+    check("the timed-out example is still reported, as a failure",
+          rows.length === 1 && rows[0].id === "hangs" && rows[0].outcome === "fail");
+    // The NEXT index, not this one: the example that timed out has a verdict
+    // already, and resuming at it would run it again and hang again.
+    check("the restart is requested from the example after the one that hung",
+          !!resume && resume.resumeFrom === 1);
+  } finally {
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_e3) { /* temp */ }
+  }
+}
+
+// The restarts are bounded, so they are spent only where they buy something.
+// A synchronous example the VM interrupted really did stop — the interpreter
+// took the thread back — so there is nothing in flight to hand over, and
+// restarting would burn the batch's budget on examples that need none.
+function _checkSyncTimeoutStaysInProcess() {
+  var tmp = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-example-synctimeout-"));
+  try {
+    var batchPath  = path.join(tmp, "batch.json");
+    var resultPath = path.join(tmp, "results.json");
+    fs.writeFileSync(batchPath, JSON.stringify([
+      { id: "spins", sig: "sync-timeout probe (spins)",
+        body: "for (;;) { /* interrupted by the synchronous ceiling */ }\n" },
+      { id: "follows", sig: "sync-timeout probe (the remainder)",
+        body: "var _x = 1;\n" },
+    ]));
+    var rv = cp.spawnSync(process.execPath, [CHILD, batchPath, resultPath, tmp],
+      { encoding: "utf8", timeout: _batchCeilingMs(2) });
+    var rows = [];
+    try { rows = JSON.parse(fs.readFileSync(resultPath, "utf8")); } catch (_e) { rows = []; }
+    check("an interrupted synchronous example does not spend a restart",
+          rv.status !== RESUME_EXIT);
+    check("and the examples after it run in the same process",
+          rows.length === 2 && rows[1].id === "follows");
+  } finally {
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_e2) { /* temp */ }
+  }
+}
+
 // The other half of ownership: a network operation an example STARTS late.
 // A timeout is excused as "waiting on the network" only when THAT example had
 // something outstanding, so a request opened by an earlier example must not
@@ -708,6 +773,8 @@ async function run() {
   _checkSoloMarker();
   _checkAsyncAttribution();
   _checkNetworkAttribution();
+  _checkTimeoutHandsOver();
+  _checkSyncTimeoutStaysInProcess();
   var all = _collectExamples();
   var byId = {};
   all.inProcess.concat(all.stateful).forEach(function (it) { byId[it.id] = it; });

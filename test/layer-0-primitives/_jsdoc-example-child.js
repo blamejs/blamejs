@@ -364,6 +364,20 @@ async function main() {
         });
       });
     } catch (e) { res = runtime.classify(e, { timeoutIsFailure: true }); }
+    // A ceiling that expired did not STOP the example — nothing here can
+    // cancel an async function already in flight. It is still running, and the
+    // loop is about to tear its database down and build the next one.
+    //
+    // Only the ASYNC ceiling, though. The classifier gives the same wrapper to
+    // a synchronous example the VM interrupted, and that one really did stop:
+    // the interpreter took the thread back mid-statement, so there is no
+    // continuation left to contaminate anything. Restarting for those too
+    // would spend the batch's bounded restarts on examples that need none, and
+    // a batch holding more than MAX_RESUMES of them would give up before
+    // running the examples after them.
+    var errText = String(res.error || "");
+    var timedOut = /did not settle within its ceiling/.test(errText) &&
+                   !/Script execution timed out/.test(errText);
     // The ONLY timeout that is not a defect: a network operation was still
     // OUTSTANDING when the ceiling expired. Then the ceiling is timing a
     // remote host or this machine's route to it, neither of which says
@@ -384,6 +398,20 @@ async function main() {
     out.push({ id: item.id, outcome: res.outcome, reason: res.reason,
                error: res.error ? String(res.error).split("\n").slice(0, 2).join(" ") : undefined });
     applyAsyncFailures(out, asyncFailures);
+    // A timed-out example is dirty process state, for the same reason a failed
+    // setup is, and it gets the same answer: report what is finished and ask
+    // for a fresh process for the rest. Carrying on in this one leaves the
+    // abandoned example's continuation free to run during the NEXT example's
+    // setup — writing its files, reopening the shared database handle — and
+    // the next example then fails for something it did not do. Worse when the
+    // timeout was reclassified as a network skip, because then the batch shows
+    // no failure at the example that actually caused one.
+    if (timedOut) {
+      fs.writeFileSync(resultPath, JSON.stringify(out));
+      fs.writeFileSync(resultPath + ".resume", JSON.stringify({ resumeFrom: i + 1 }));
+      _cleanup(root);
+      process.exit(RESUME_EXIT);
+    }
     // Written after every example, not once at the end: a batch killed for
     // wedging still reports everything it got through, and the example it died
     // on is the first one missing.
