@@ -34,6 +34,7 @@ var _wait     = require("./wait");
 var _fsWatch  = require("./fs-watch");
 var _tls      = require("./tls");
 var _ocsp     = require("./ocsp");
+var _merkle   = require("./merkle");
 
 module.exports = {
   // Framework binding + Node stdlib re-exports for ergonomics.
@@ -90,6 +91,10 @@ module.exports = {
   // RFC 6960 OCSP responder — one parameterized builder for the accept path
   // and every refusal shape (status, certStatus, nonce, CertID, signature).
   buildOcspResponse:  _ocsp.buildOcspResponse,
+
+  // RFC 9162 Merkle tree — the recursive definitions, for checking the
+  // framework's iterative proof walk against real trees and real proofs.
+  merkle:             _merkle,
   synthCertForOcsp:   _ocsp.synthCert,
 
   // OTel fake (for tracing + observability tests)
