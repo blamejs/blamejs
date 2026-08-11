@@ -190,7 +190,12 @@ async function runExampleInContext(body, opts) {
         settled = true;
         reject(new Error("test timed out: jsdoc @example execution (after " + timeoutMs + "ms)"));
       }, timeoutMs);
-      if (typeof timer.unref === "function") timer.unref();
+      // Deliberately NOT unref'd. An example that awaits a promise which never
+      // settles and holds no handle of its own leaves this timer as the only
+      // thing keeping the loop alive — unref it and the process exits 0 before
+      // the timeout fires or the final checks run, turning exactly the wedged
+      // example this ceiling exists to catch into a silent pass. Every settle
+      // path clears it, so keeping it referenced costs nothing.
       Promise.resolve()
         .then(function () {
           if (opts.nativeRealm) {
