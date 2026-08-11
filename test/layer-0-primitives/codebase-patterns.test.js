@@ -11658,6 +11658,28 @@ var KNOWN_ANTIPATTERNS = [
     // this file with the broadened regex (Codex P2 from v0.10.14 —
     // catches block-bodied arrows, multi-arg arrows, function bodies
     // with leading statements).
+    id: "guard-gate-prose-names-a-method-the-gate-lacks",
+    primitive: "the gate surface built by lib/gate-contract.js — check / mode / audit / observability / metrics",
+    // A guard's @primitive block is its documentation page. When the prose
+    // attributes a call to "the gate" it is telling an operator which method to
+    // reach for, and the example right below it is telling them a different
+    // one — the block teaches two incompatible names and only the example is
+    // executed by the @example gate, so the prose half rots unobserved.
+    //
+    // Precise because it is anchored twice: the POSSESSIVE "gate's" ties the
+    // call to the gate specifically, and the alternation is the ACTUAL surface
+    // gate-contract.js returns. A method added there is added here.
+    //
+    // The possessive is required, not optional. Written loosely enough to
+    // accept a bare "gate", it also matches prose using the word as a noun —
+    // "fails the same gate `cacImplicitLabel({...})` enforces" names a writer
+    // primitive, not a method on a gate, and reporting it would be the
+    // cried-wolf failure that makes a catalog entry worth ignoring.
+    regex: /gate(?:'s|s') `(?!(?:check|mode|audit|observability|metrics)\b)[A-Za-z_$][\w$]*\s*\(/,
+    allowlist: [],
+    reason: "a guard's prose must name a method the gate actually exposes; `decide(ctx)` outlived the rename to `check` in guard-smtp-command.js and kept teaching it",
+  },
+  {
     id: "test-promise-settimeout-sleep",
     primitive: "helpers.waitUntil(predicate, { timeoutMs, label }) for condition-waits OR helpers.passiveObserve(ms, label) for the rare case of verifying ABSENCE of an event over a window",
     scanScope: "test",
