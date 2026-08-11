@@ -1,6 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) blamejs contributors
 "use strict";
+
+// SMOKE_RUN_SOLO — the smoke runner (test/smoke.js) runs this file ALONE with
+// the whole machine instead of inside the parallel layer-0 pool. This gate is
+// itself a fan-out: it spawns a child process per batch to execute the
+// examples that touch real resources, so inside the pool its children compete
+// with 64 sibling forks for the same cores and the file overruns the ordinary
+// per-file budget. Running solo gives it the box and the multiplied solo
+// budget, which it needs because its cost scales with the example corpus.
+
 /**
  * End-to-end @example validation. The comment-block validator only PARSE-checks
  * each @example (vm.Script — never runs it), so an example can compile yet be
@@ -121,12 +130,30 @@ function _codeOnly(src) {
   // the pattern's text stays searchable and its contents read as real calls.
   var EXPRESSION_KEYWORDS = ["return", "typeof", "case", "in", "of", "delete",
     "void", "instanceof", "new", "do", "else", "yield", "await", "throw"];
+  // `)` is where the value test alone gets it wrong. It ends a value in
+  // `f(a) / x` and `(a + b) / x`, but in `if (ok) /re/.test(s)` it closes a
+  // CONDITION and a pattern follows. Telling them apart needs only the word in
+  // front of the matching `(`, so each open paren remembers whether it was a
+  // control head and the close reads it back.
+  // ...and the word alone is not enough either: `obj.if(ok) / x / y` is a
+  // method named like a keyword, so the `)` ends a VALUE and the slash divides.
+  // A keyword reached through member access is never a control head.
+  var CONTROL_HEADS = ["if", "while", "for", "with"];
+  var parenIsControl = [];
+  var closedControl = false;
+  var wordAfterDot = false;
   var lastMeaningful = "";
+  // The most recent CONTIGUOUS identifier, and the one before it. Two words
+  // are needed because a control head can be two (`for await`), and they must
+  // not be run together: appending across the space would read `return await`
+  // as one word, match no keyword, and parse the pattern after it as division.
   var lastWord = "";
+  var prevWord = "";
   function opensRegex() {
     if (lastMeaningful === "") return true;
     if (/[A-Za-z0-9_$]/.test(lastMeaningful)) return EXPRESSION_KEYWORDS.indexOf(lastWord) !== -1;
-    return ")]".indexOf(lastMeaningful) === -1;
+    if (lastMeaningful === ")") return closedControl;
+    return "]".indexOf(lastMeaningful) === -1;
   }
   while (i < n) {
     var c = src[i], d = src[i + 1];
@@ -147,13 +174,30 @@ function _codeOnly(src) {
         blank(i, r + 1);
         i = r + 1;
         lastMeaningful = ")";                          // a regex is a value
+        closedControl = false;                         // ...not a closed condition
         continue;
       }
     }
     if (!/\s/.test(c)) {
+      var isWordChar = /[A-Za-z0-9_$]/.test(c);
+      if (isWordChar && !(i > 0 && /[A-Za-z0-9_$]/.test(src[i - 1]))) {
+        // A new word starts here — remember the previous one and whether this
+        // one was reached through member access (`obj.if` is not a control
+        // head, however much the word looks like one).
+        prevWord = lastWord;
+        wordAfterDot = (lastMeaningful === ".");
+      }
+      if (c === "(") {
+        parenIsControl.push(!wordAfterDot && (CONTROL_HEADS.indexOf(lastWord) !== -1 ||
+          (lastWord === "await" && prevWord === "for")));
+      } else if (c === ")") {
+        closedControl = parenIsControl.length ? parenIsControl.pop() : false;
+      }
       lastMeaningful = c;
-      // Carry the whole trailing word, so `return` can be told from `count`.
-      lastWord = /[A-Za-z0-9_$]/.test(c) ? lastWord + c : "";
+      // Carry the trailing word, so `return` can be told from `count`.
+      lastWord = isWordChar
+        ? ((i > 0 && /[A-Za-z0-9_$]/.test(src[i - 1])) ? lastWord + c : c)
+        : "";
     }
     if (c === "\"" || c === "'") {
       var j = i + 1;
@@ -169,6 +213,7 @@ function _codeOnly(src) {
       // the rest of the expression — hiding any call inside it.
       lastMeaningful = ")";
       lastWord = "";
+      closedControl = false;
       continue;
     }
     if (c === "`") {
@@ -215,6 +260,7 @@ function _codeOnly(src) {
       // for a plain string literal above.
       lastMeaningful = ")";
       lastWord = "";
+      closedControl = false;
       continue;
     }
     i += 1;
@@ -225,18 +271,61 @@ function _codeOnly(src) {
 // The surface check below is only as good as the stripper feeding it, and a
 // stripper is exactly the kind of code that looks right and is not. These pin
 // both directions: prose must not be read as a call, and code must survive.
-// Is this path, as written in the RAW example, sitting between two slashes on
-// one line — the shape of a regex literal's body? Deliberately generous: it
-// only ever suppresses a report, so being wrong here costs a check rather than
-// failing an example that was fine all along.
-function _looksLikeRegexContext(body, pathStr) {
-  var needle = "b." + pathStr;
-  return String(body).split("\n").some(function (line) {
-    var at = line.indexOf(needle);
-    if (at === -1) return false;
-    var before = line.slice(0, at);
-    var after = line.slice(at + needle.length);
-    return before.lastIndexOf("/") !== -1 && after.indexOf("/") !== -1;
+// Every `b.…(` path an example NAMES, in source order, over the stripped code.
+// The gate and its self-test both go through here, so a filter added between
+// extraction and reporting cannot be silently untested.
+function _calledPaths(body) {
+  var code = _codeOnly(body);
+  var re = /\bb\.((?:[A-Za-z_$][\w$]*)(?:\.[A-Za-z_$][\w$]*)*)\s*\(/g;
+  var out = [];
+  var m;
+  while ((m = re.exec(code)) !== null) out.push(m[1]);
+  return out;
+}
+
+function _checkCalledPaths() {
+  var cases = [
+    // A `/` after `)` is the ambiguous one, and both readings appear in real
+    // examples: `if (ok) /re/.test(s)` opens a pattern, `f(a) / x / y` divides.
+    // Getting either wrong is silent — a missed report, or a VALID example
+    // failed for a call it never makes — so both directions are pinned here.
+    ["var q = total / b.removed() / scale;", "removed", true,
+     "a call between two division operators is reported"],
+    ["var q = (a + b) / b.divided() / c;", "divided", true,
+     "a call divided after a parenthesized expression is reported"],
+    ["var q = f(a) / b.afterCall() / c;", "afterCall", true,
+     "a call divided after a call is reported"],
+    ["var q = arr[0] / b.afterIndex() / c;", "afterIndex", true,
+     "a call divided after an index is reported"],
+    ["if (ok) { } var q = f(a) / b.afterBlock() / c;", "afterBlock", true,
+     "a division after an if block is reported"],
+    ["var re = /b\\.inRegex\\(/;", "inRegex", false,
+     "a call inside a regex literal is not reported"],
+    ["if (ok) /b\\.inCond\\(/.test(x);", "inCond", false,
+     "a call inside a regex after an if condition is not reported"],
+    ["while (n) /b\\.inWhile\\(/.test(x);", "inWhile", false,
+     "a call inside a regex after a while condition is not reported"],
+    ["for (;;) /b\\.inFor\\(/.test(x);", "inFor", false,
+     "a call inside a regex after a for header is not reported"],
+    ["if (a) { if (b) /b\\.nested\\(/.test(x); }", "nested", false,
+     "a call inside a regex after a nested condition is not reported"],
+    // A method may be NAMED like a keyword; reached through a dot it is a
+    // value, so the slash after it divides.
+    ["obj.if(ok) / b.missing() / scale;", "missing", true,
+     "a call divided after a method named like a keyword is reported"],
+    ["o?.while(x) / b.missingToo() / n;", "missingToo", true,
+     "a call divided after an optional-chained keyword-named method is reported"],
+    // A keyword can be two words, and running them together matches neither.
+    ["for await (const x of y) /b\\.inForAwait\\(/.test(s);", "inForAwait", false,
+     "a call inside a regex after a for-await header is not reported"],
+    ["return await /b\\.inReturnAwait\\(/.test(s);", "inReturnAwait", false,
+     "a call inside a regex after return-await is not reported"],
+    ["for (var k in o) /b\\.inForIn\\(/.test(k);", "inForIn", false,
+     "a call inside a regex after a for-in header is not reported"],
+  ];
+  cases.forEach(function (c) {
+    check("example surface scan: " + c[3],
+          (_calledPaths(c[0]).indexOf(c[1]) !== -1) === c[2]);
   });
 }
 
@@ -392,6 +481,7 @@ function _runStatefulBatches(items, dir) {
 
 async function run() {
   _checkCodeOnly();
+  _checkCalledPaths();
   var all = _collectExamples();
   var byId = {};
   all.inProcess.concat(all.stateful).forEach(function (it) { byId[it.id] = it; });
@@ -460,13 +550,9 @@ async function run() {
   var unresolved = [];
   var seen = {};
   all.inProcess.concat(all.stateful).forEach(function (item) {
-    var code = _codeOnly(item.body);
-    var re = /\bb\.((?:[A-Za-z_$][\w$]*)(?:\.[A-Za-z_$][\w$]*)*)\s*\(/g;
-    var m;
-    while ((m = re.exec(code)) !== null) {
-      var pathStr = m[1];
+    _calledPaths(item.body).forEach(function (pathStr) {
       var key = item.sig + "::" + pathStr;
-      if (seen[key]) continue;
+      if (seen[key]) return;
       seen[key] = true;
       var node = runtime.b;
       var parts = pathStr.split(".");
@@ -481,18 +567,10 @@ async function run() {
       // CALL. A path that resolves to something not callable therefore fails
       // the example just as surely as a missing one — a method demoted to a
       // plain property is the same drift wearing a different hat.
-      if (ok && typeof node === "function") continue;
-      // Last guard before reporting. Telling a regex literal from a division
-      // needs real parsing in the general case — `if (ok) /re/.test(x)` opens a
-      // pattern where `(a + b) / c` divides, and the stripper cannot see the
-      // difference. The two failure modes are not equal: missing a check costs
-      // a check, while a false report fails a VALID example and there is
-      // nothing downstream to catch that. So anything that even looks like it
-      // sits inside a regex on its own line is left alone.
-      if (_looksLikeRegexContext(item.body, pathStr)) continue;
+      if (ok && typeof node === "function") return;
       if (!ok) unresolved.push(item.sig + " calls b." + pathStr + "() — no such member");
       else unresolved.push(item.sig + " calls b." + pathStr + "() — resolves to " + typeof node);
-    }
+    });
   });
   if (unresolved.length) {
     unresolved.slice(0, 25).forEach(function (u) { console.log("  MISSING " + u); });
