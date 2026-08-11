@@ -373,6 +373,170 @@ function _checkAsyncAttribution() {
   }
 }
 
+// The child decides which row a late failure lands on, and every one of those
+// branches used to be reachable only by spawning a whole batch — so the ones
+// that need an awkward batch to provoke were never executed at all. Driven
+// directly here: it is a pure function of the rows and the failures.
+function _checkApplyAsyncFailures() {
+  var child = require("./_jsdoc-example-child.js");
+  var apply = child.applyAsyncFailures;
+
+  var rows = [{ id: "x", outcome: "ran" }];
+  apply(rows, [{ id: "x", error: "boom" }]);
+  check("a late failure turns its own row into a failure",
+        rows[0].outcome === "fail" && rows[0].error === "boom");
+
+  // A skip carries a reason; once the row fails, a stale reason would read as
+  // an explanation for the failure.
+  var skipped = [{ id: "x", outcome: "skip", reason: "no network" }];
+  apply(skipped, [{ id: "x", error: "boom" }]);
+  check("a late failure clears the reason it is overriding",
+        skipped[0].outcome === "fail" && skipped[0].reason === undefined);
+
+  // The example's own thrown error is the more useful one.
+  var already = [{ id: "x", outcome: "fail", error: "thrown by the example" }];
+  apply(already, [{ id: "x", error: "the straggler" }]);
+  check("a row that already failed keeps its own error",
+        already[0].error === "thrown by the example");
+
+  var two = [{ id: "x", outcome: "ran" }];
+  apply(two, [{ id: "x", error: "first" }, { id: "x", error: "second" }]);
+  check("the first late failure for a row wins", two[0].error === "first");
+
+  // The resume path writes rows for the examples it finished and hands the
+  // rest to a new process, so a straggler can name an id no row carries.
+  var absent = [{ id: "x", outcome: "ran" }];
+  apply(absent, [{ id: "not-in-this-batch", error: "boom" }]);
+  check("a late failure naming no row in the batch changes nothing",
+        absent[0].outcome === "ran");
+
+  // Unowned ones are the caller's business — it reports them against the
+  // batch rather than silently attaching them to whichever row is handy.
+  var unowned = [{ id: "x", outcome: "ran" }];
+  apply(unowned, [{ id: null, error: "boom" }, { error: "no id at all" }]);
+  check("an unowned late failure is left for the batch-level report",
+        unowned[0].outcome === "ran");
+
+  var untouched = [{ id: "x", outcome: "ran" }];
+  apply(untouched, []);
+  check("no late failures leaves every row alone", untouched[0].outcome === "ran");
+
+  // Applied after every example AND once at the end, so it runs over rows it
+  // has already folded into.
+  var twice = [{ id: "x", outcome: "ran" }];
+  var fs2 = [{ id: "x", error: "boom" }];
+  apply(twice, fs2);
+  apply(twice, fs2);
+  check("folding the same failure twice is idempotent",
+        twice[0].outcome === "fail" && twice[0].error === "boom");
+}
+
+// The outstanding-network counter decides whether a timeout is a hang or a
+// wait, which is the difference between failing an example and excusing it.
+// Driven directly: the end-to-end probes below can only reach the case they
+// stage, and the ones that matter most are the ones awkward to stage.
+function _checkNetworkTracking() {
+  var child = require("./_jsdoc-example-child.js");
+
+  var a = { id: "a", sig: "a", net: { n: 0 } };
+  var b2 = { id: "b", sig: "b", net: { n: 0 } };
+
+  var settleA = child.owners.run(a, function () { return child.trackNetwork(); });
+  check("an operation counts against the example that started it", a.net.n === 1);
+  check("and against no other example", b2.net.n === 0);
+
+  // The straggler case: A's operation settles while B is the one running.
+  child.owners.run(b2, function () { settleA(); });
+  check("a settle credits the starter even when another example is running",
+        a.net.n === 0 && b2.net.n === 0);
+
+  // A request can error AND close; decrementing twice would push a later
+  // reading negative, and a negative reading looks like "nothing outstanding".
+  var s2 = child.owners.run(a, function () { return child.trackNetwork(); });
+  s2();
+  s2();
+  check("settling twice only counts once", a.net.n === 0);
+
+  // Work started outside any example has somewhere to go that is not an
+  // example's tally.
+  check("outside an example the tracker falls back to the shared counter",
+        child.netOwner() === child.orphanNet);
+  var before = child.orphanNet.n;
+  var s3 = child.trackNetwork();
+  check("unowned work counts on the shared counter", child.orphanNet.n === before + 1);
+  s3();
+  check("and settles back off it", child.orphanNet.n === before);
+  check("unowned work never touches an example's counter", a.net.n === 0 && b2.net.n === 0);
+}
+
+// The solo marker is read by ONE helper that both runner paths call, and this
+// file is one of the files it holds back. Asserting it here means the claim in
+// this file's own header — that it gets the whole box and the longer budget —
+// is checked rather than trusted.
+function _checkSoloMarker() {
+  var soloFile = require("../helpers/solo-file");
+  check("this file declares itself solo", soloFile.isSoloFile(__filename) === true);
+  check("a file with no marker is not solo",
+        soloFile.isSoloFile(path.join(__dirname, "_jsdoc-example-child.js")) === false);
+  check("a missing file is not solo, and does not throw",
+        soloFile.isSoloFile(path.join(__dirname, "no-such-file-here.js")) === false);
+  // The marker is only honoured if it is near the top; a file that buries it
+  // past the window reads as an ordinary pool file, and silently so.
+  var deep = path.join(os.tmpdir(), "blamejs-solo-probe-" + process.pid + ".js");
+  try {
+    fs.writeFileSync(deep, "//" + new Array(soloFile.HEAD_BYTES + 64).join("x") + "\n// SMOKE_RUN_SOLO\n");
+    check("a marker past the head window is not read as solo",
+          soloFile.isSoloFile(deep) === false);
+  } finally {
+    try { fs.rmSync(deep, { force: true }); } catch (_e) { /* temp */ }
+  }
+}
+
+// The other half of ownership: a network operation an example STARTS late.
+// A timeout is excused as "waiting on the network" only when THAT example had
+// something outstanding, so a request opened by an earlier example must not
+// buy the next one an excuse for hanging locally. Deterministic and offline —
+// the first example runs its own server and never answers it.
+function _checkNetworkAttribution() {
+  var tmp = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-example-net-"));
+  try {
+    var batchPath  = path.join(tmp, "batch.json");
+    var resultPath = path.join(tmp, "results.json");
+    var marker     = JSON.stringify(path.join(tmp, "requested.marker"));
+    fs.writeFileSync(batchPath, JSON.stringify([
+      // The request starts from the listen callback, so it is in flight after
+      // this example's own body has returned — which is the case under test.
+      { id: "net-a", sig: "network attribution probe (starter)",
+        body: "var _http = require(\"node:http\");\n" +
+              "var _fs = require(\"node:fs\");\n" +
+              "var srv = _http.createServer(function () { /* never answers */ });\n" +
+              "srv.listen(0, \"127.0.0.1\", function () {\n" +
+              "  _http.get({ host: \"127.0.0.1\", port: srv.address().port, path: \"/\" }, function () {});\n" +
+              "  _fs.writeFileSync(" + marker + ", \"x\");\n" +
+              "});\n" },
+      // Waits for the previous example's request to be in flight, then hangs
+      // with nothing of its own outstanding. Its ceiling must read as a hang.
+      { id: "net-b", sig: "network attribution probe (local hang)",
+        body: "var _fs = require(\"node:fs\");\n" +
+              "await new Promise(function (r) {\n" +
+              "  var t = setInterval(function () {\n" +
+              "    if (_fs.existsSync(" + marker + ")) { clearInterval(t); r(); }\n" +
+              "  }, 5);\n" +
+              "});\n" +
+              "await new Promise(function () { /* hangs locally, forever */ });\n" },
+    ]));
+    cp.spawnSync(process.execPath, [CHILD, batchPath, resultPath, tmp],
+      { encoding: "utf8", timeout: _batchCeilingMs(2) });
+    var rows = [];
+    try { rows = JSON.parse(fs.readFileSync(resultPath, "utf8")); } catch (_e) { rows = []; }
+    var b = rows.filter(function (x) { return x.id === "net-b"; })[0];
+    check("a local hang is not excused by an earlier example's outstanding request",
+          !!b && b.outcome === "fail");
+  } finally {
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_e2) { /* temp */ }
+  }
+}
+
 function _checkCodeOnly() {
   var cases = [
     ["b.uuid.v7();",                                   "b.uuid.v7(",     true,  "a plain call"],
@@ -526,7 +690,11 @@ function _runStatefulBatches(items, dir) {
 async function run() {
   _checkCodeOnly();
   _checkCalledPaths();
+  _checkApplyAsyncFailures();
+  _checkNetworkTracking();
+  _checkSoloMarker();
   _checkAsyncAttribution();
+  _checkNetworkAttribution();
   var all = _collectExamples();
   var byId = {};
   all.inProcess.concat(all.stateful).forEach(function (it) { byId[it.id] = it; });

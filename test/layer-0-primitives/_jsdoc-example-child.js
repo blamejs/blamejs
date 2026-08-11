@@ -50,6 +50,72 @@ var RESUME_EXIT    = 75;                                                        
 // resume one both. A sealed database, its vault key and the key's sidecars
 // live under `root`, so leaving it behind means that material outlives the
 // process that needed it.
+// Who owns the work in flight. One store for the process, set around each
+// example's execution, so everything an example schedules inherits it and
+// carries its origin into a handler that fires long afterwards.
+var owners = new AsyncLocalStorage();
+
+// Is a network operation OUTSTANDING right now? Not "did this example ever
+// touch the network" — an example that resolves a name successfully and then
+// hangs in a callback has hung locally, and excusing it because of the earlier
+// lookup would hide exactly the defect this pass is for.
+//
+// The counter comes from the owner store for the same reason the failures do.
+// A timed-out example's retry can OPEN a connection after the next example has
+// started; reading a mutable "current" counter would credit that connection to
+// the newcomer, and the newcomer's own local hang would then be excused as a
+// network wait. Taking it from the store binds it to the example that started
+// the work, so neither the open nor the close can move another example's
+// reading.
+//
+// Work started outside any example — the harness's own setup and teardown —
+// lands on this shared counter, which nothing reads for a verdict. It exists
+// so an unowned settle has somewhere to go other than an example's tally.
+var orphanNet = { n: 0 };
+function netOwner() {
+  var store = owners.getStore();
+  return store ? store.net : orphanNet;
+}
+
+// Counts one operation as outstanding until it settles, ONCE: a request that
+// both errors and closes must not decrement twice and push the reading
+// negative, which would read as "nothing outstanding" for a later example.
+function trackNetwork() {
+  var owner = netOwner();
+  owner.n += 1;
+  var settled = false;
+  return function settle() { if (!settled) { settled = true; owner.n -= 1; } };
+}
+
+// Fold recorded async failures into the rows already written. A straggler
+// normally lands AFTER its own example's row exists — a timer it scheduled
+// outlives the body that scheduled it — so checking only at the moment the row
+// is built would find nothing and drop a real failure. Called after every
+// example, so a throw owned by an earlier one still reaches its row.
+//
+// Module scope, and a pure function of its two arguments, so the branches can
+// be driven directly instead of only through a spawned batch: a straggler
+// whose example never produced a row, a row that already failed, and the
+// unowned ones the caller reports against the batch instead.
+function applyAsyncFailures(rows, failures) {
+  for (var k = 0; k < failures.length; k += 1) {
+    var f = failures[k];
+    if (f.id === null || f.id === undefined) continue;
+    for (var r = 0; r < rows.length; r += 1) {
+      if (rows[r].id !== f.id) continue;
+      // First failure wins, and a row that already failed keeps its own error:
+      // an example's own thrown verdict is more use than a straggler's.
+      if (rows[r].outcome !== "fail") {
+        rows[r].outcome = "fail";
+        rows[r].reason = undefined;
+        rows[r].error = String(f.error).split("\n").slice(0, 2).join(" ");
+      }
+      break;
+    }
+  }
+  return rows;
+}
+
 function _cleanup(root) {
   try { process.chdir(os.tmpdir()); } catch (_e) { /* already elsewhere */ }
   try { fs.rmSync(root, { recursive: true, force: true }); }
@@ -94,7 +160,6 @@ async function main() {
   // taken is the example describing an environment it does not create, exactly
   // as it would be if it had thrown on the awaited path. Only what the
   // classifier calls a defect is recorded as one.
-  var owners = new AsyncLocalStorage();
   var asyncFailures = [];
   function noteAsyncFailure(kind, e) {
     var verdict = runtime.classify(e, { timeoutIsFailure: true });
@@ -109,28 +174,6 @@ async function main() {
   process.on("unhandledRejection", function (e) { noteAsyncFailure("unhandled rejection", e); });
   process.on("uncaughtException", function (e) { noteAsyncFailure("uncaught exception", e); });
 
-  // Fold recorded async failures into the rows already written. A straggler
-  // normally lands AFTER its own example's row exists — a timer it scheduled
-  // outlives the body that scheduled it — so checking only at the moment the
-  // row is built would find nothing and drop a real failure. Runs after every
-  // example, so a throw owned by an earlier one still reaches its row.
-  // Idempotent: a row already failed is left as it is.
-  function applyAsyncFailures(rows) {
-    for (var k = 0; k < asyncFailures.length; k += 1) {
-      var f = asyncFailures[k];
-      if (f.id === null) continue;
-      for (var r2 = 0; r2 < rows.length; r2 += 1) {
-        if (rows[r2].id !== f.id) continue;
-        if (rows[r2].outcome !== "fail") {
-          rows[r2].outcome = "fail";
-          rows[r2].reason = undefined;
-          rows[r2].error = String(f.error).split("\n").slice(0, 2).join(" ");
-        }
-        break;
-      }
-    }
-  }
-
   // Is a network operation OUTSTANDING right now? Not "did this example ever
   // touch the network" — an example that resolves a name successfully and then
   // hangs in a callback has hung locally, and excusing it because of the
@@ -139,20 +182,14 @@ async function main() {
   // Observed rather than read off the source: an example can reach out through
   // a name lookup with no URL in it anywhere (the RBL, BIMI, WKD and ECH ones
   // all do), and a URL in a comment reaches nothing at all.
-  // Per-example counter, not a shared number. A network operation abandoned by
-  // a timed-out example still settles later, and if its callback decremented
-  // whatever counter happened to be current it would corrupt a LATER example's
-  // reading — pushing it negative, so that example's own genuine network wait
-  // then reads as zero and its timeout is reported as a hang. Each wrapper
-  // captures the counter that was current when it was called, so a straggler
-  // can only ever adjust its own.
-  var netCount = { n: 0 };
-  function trackNetwork() {
-    var owner = netCount;
-    owner.n += 1;
-    var settled = false;
-    return function settle() { if (!settled) { settled = true; owner.n -= 1; } };
-  }
+  // Per-example counter, not a shared number, and it comes from the SAME owner
+  // store as the async-failure attribution above — for the same reason. A
+  // timed-out example's retry can OPEN a connection after the next example has
+  // started; reading a mutable "current" counter would credit that connection
+  // to the newcomer, and the newcomer's own local hang would then be excused as
+  // a network wait. Taking the counter from the store binds it to the example
+  // that started the work, so neither the open nor the close can move another
+  // example's reading.
   var nodeDns = require("node:dns");
   var nodeNet = require("node:net");
   ["lookup", "resolve", "resolve4", "resolve6", "resolveTxt", "resolveMx", "resolveSrv"]
@@ -300,15 +337,14 @@ async function main() {
       _cleanup(root);
       process.exit(RESUME_EXIT);
     }
-    // A fresh counter per example. Stragglers from an earlier one hold a
-    // reference to THEIR counter and can no longer touch this reading.
-    netCount = { n: 0 };
-    // Everything this example schedules inherits the store, so a straggler
+    // One owner per example, carrying its identity AND its own network
+    // counter. Everything this example schedules inherits it, so a straggler
     // carries its origin with it no matter which example is running when it
     // lands. Setup and teardown stay OUTSIDE it: they are the harness's work,
     // not the example's, and a throw from them is not this example's defect.
+    var owner = { id: item.id, sig: item.sig, net: { n: 0 } };
     try {
-      res = await owners.run({ id: item.id, sig: item.sig }, function () {
+      res = await owners.run(owner, function () {
         return runtime.runExampleInContext(item.body, {
           context:     runtime.makeContext({ allowAnyModule: true }),
           timeoutMs:   PER_EXAMPLE_MS,
@@ -336,7 +372,7 @@ async function main() {
     // "Outstanding", not "happened at some point": an example that resolves a
     // name successfully and then hangs in its own callback hung locally, and
     // that stays a failure.
-    if (res.outcome === "fail" && netCount.n > 0 &&
+    if (res.outcome === "fail" && owner.net.n > 0 &&
         /did not settle within its ceiling/.test(String(res.error || ""))) {
       res = { outcome: "skip", reason: "timed out with a network operation still outstanding" };
     }
@@ -347,7 +383,7 @@ async function main() {
     try { await teardownTestDb(dir); } catch (_e) { /* best-effort */ }
     out.push({ id: item.id, outcome: res.outcome, reason: res.reason,
                error: res.error ? String(res.error).split("\n").slice(0, 2).join(" ") : undefined });
-    applyAsyncFailures(out);
+    applyAsyncFailures(out, asyncFailures);
     // Written after every example, not once at the end: a batch killed for
     // wedging still reports everything it got through, and the example it died
     // on is the first one missing.
@@ -356,7 +392,7 @@ async function main() {
   // One more turn after the last example, then a final fold: a throw scheduled
   // by the last example has nothing running after it to carry it back.
   await new Promise(function (r) { setImmediate(r); });
-  applyAsyncFailures(out);
+  applyAsyncFailures(out, asyncFailures);
   // A throw that landed with no example running still belongs to this batch —
   // reporting it against nobody would put it back in the silence this change
   // is closing.
@@ -373,7 +409,19 @@ async function main() {
   process.exit(0);
 }
 
-main().then(function () { /* exits above */ }, function (e) {
-  process.stderr.write("child failed: " + ((e && e.stack) || e) + "\n");
-  process.exit(1);
-});
+// Only when SPAWNED. Without the guard, requiring this file to reach the pure
+// helper above would run a whole batch and exit the process that required it.
+if (require.main === module) {
+  main().then(function () { /* exits above */ }, function (e) {
+    process.stderr.write("child failed: " + ((e && e.stack) || e) + "\n");
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  applyAsyncFailures: applyAsyncFailures,
+  owners:             owners,
+  trackNetwork:       trackNetwork,
+  netOwner:           netOwner,
+  orphanNet:          orphanNet,
+};

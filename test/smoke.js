@@ -52,6 +52,7 @@ var path = require("node:path");
 var { fork } = require("node:child_process");
 var os   = require("node:os");
 var helpers = require("./helpers");
+var { isSoloFile } = require("./helpers/solo-file");
 var b       = helpers.b;
 
 // ---- Persistent output ----
@@ -162,19 +163,6 @@ async function _runModuleBody(mod, displayName) {
 // FILE_TIMEOUT_MS budget: the main loop stays responsive while a
 // threadpool thread is stuck, so the timer fires, names the file, and
 // fails fast and diagnosably.
-// Does this file declare SMOKE_RUN_SOLO? The ONE reader of the marker, so the
-// sequential and parallel paths cannot disagree about which files are heavy.
-// Marker-based, not timing-based, so it works on a fresh CI runner that has no
-// persisted timings yet; only the head of the file is read because the marker
-// belongs at the top where a reader meets it.
-function _isSoloFile(fullPath) {
-  try {
-    return fs.readFileSync(fullPath, "utf8").slice(0, 2048).indexOf("SMOKE_RUN_SOLO") !== -1;
-  } catch (_e) {
-    return false;
-  }
-}
-
 async function _runTestModule(modulePath, displayName) {
   var mod = require(modulePath);
   var fileStart = Date.now();
@@ -184,7 +172,7 @@ async function _runTestModule(modulePath, displayName) {
   // whether or not the runner happens to be in parallel mode — and reading the
   // marker in only one branch is how the sequential default (`npm test`, no
   // SMOKE_PARALLEL) kept the ordinary ceiling while claiming the solo one.
-  var budgetMs = _isSoloFile(modulePath) ? SOLO_TIMEOUT_MS : FILE_TIMEOUT_MS;
+  var budgetMs = isSoloFile(modulePath) ? SOLO_TIMEOUT_MS : FILE_TIMEOUT_MS;
   var timed = new Promise(function (_resolve, reject) {
     watchdog = setTimeout(function () {
       reject(new Error(displayName + ": sequential-layer watchdog — exceeded " +
@@ -481,7 +469,7 @@ async function _runLayer(layerNum, legacyPath, layerName) {
     var soloFiles = [];
     var poolFiles = [];
     for (var pf = 0; pf < files.length; pf += 1) {
-      (_isSoloFile(path.join(dir, files[pf])) ? soloFiles : poolFiles).push(files[pf]);
+      (isSoloFile(path.join(dir, files[pf])) ? soloFiles : poolFiles).push(files[pf]);
     }
 
     // Solo phase — heavy files one at a time, each with the full box and the
