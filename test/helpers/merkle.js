@@ -104,7 +104,12 @@ function _subproof(m, entries, b) {
 function buildTree(n, labeller) {
   var entries = [];
   for (var i = 0; i < n; i += 1) {
-    entries.push(Buffer.from(labeller ? labeller(i) : "entry-" + i, "utf8"));
+    // A labeller may return a Buffer, which is used as-is: real CT leaves are
+    // MerkleTreeLeaf bytes with timestamps and length prefixes in them, and
+    // round-tripping those through a utf8 string silently rewrites every byte
+    // above 0x7f.
+    var v = labeller ? labeller(i) : "entry-" + i;
+    entries.push(Buffer.isBuffer(v) ? v : Buffer.from(v, "utf8"));
   }
   return {
     entries:  entries,

@@ -130,6 +130,77 @@ function testATreeIsConsistentWithItself() {
   check("equal sizes with disagreeing roots are still refused", wrongRoot.valid === false);
 }
 
+// Math.floor(Infinity) === Infinity, so an integer check alone lets an
+// infinite tree size through. There is no such tree, and the equal-sizes
+// shortcut has no loop to run out of, so the refusal has to be explicit.
+function testNonFiniteTreeSizesAreRefused() {
+  var t = merkle.buildTree(4);
+  [
+    { firstSize: Infinity, secondSize: Infinity, what: "both sizes infinite" },
+    { firstSize: 4, secondSize: Infinity, what: "an infinite second size" },
+    { firstSize: Infinity, secondSize: 4, what: "an infinite first size" },
+    { firstSize: NaN, secondSize: 4, what: "a NaN first size" },
+    { firstSize: 4, secondSize: NaN, what: "a NaN second size" },
+  ].forEach(function (c) {
+    var rv = b.network.tls.ct.verifyConsistency({
+      firstSize: c.firstSize, secondSize: c.secondSize,
+      firstRoot: t.root, secondRoot: t.root, proof: [],
+    });
+    check("verifyConsistency refuses " + c.what, rv.valid === false);
+  });
+}
+
+// The same distinction has to survive composition: verifyInclusion runs the
+// consistency check inside itself, and a mismatched pinned root there means
+// the same thing it means standalone.
+function testTheComposedInclusionPathKeepsTheFirstRootReason() {
+  // The inclusion half has to actually PASS, or the call never reaches the
+  // consistency block and the assertion below would hold for the wrong reason.
+  // signedEntryDer supplies the logged entry directly, so no certificate
+  // parsing stands between here and the walk.
+  var ts = 1700000000000;                                                                        // allow:raw-time-literal — a fixed SCT timestamp, not a duration
+
+  // RFC 9162 §4.6 MerkleTreeLeaf bytes for the i-th logged entry, so the tree
+  // below is a tree of real leaves and its audit path is the real one. Both
+  // halves of the call then run against ONE tree, which is what makes the
+  // consistency block reachable at all.
+  function leafBytesFor(i) {
+    var signedEntry = Buffer.from("CERT-DER-BYTES-" + i);
+    var tsBuf = Buffer.alloc(8);
+    tsBuf.writeBigUInt64BE(BigInt(ts));
+    var lenBuf = Buffer.alloc(3);
+    lenBuf.writeUIntBE(signedEntry.length, 0, 3);
+    return {
+      signedEntry: signedEntry,
+      bytes: Buffer.concat([
+        Buffer.from([0x00]), Buffer.from([0x00]), tsBuf, Buffer.from([0x00, 0x00]),
+        lenBuf, signedEntry, Buffer.from([0x00, 0x00]),
+      ]),
+    };
+  }
+  var leaves = [];
+  for (var i = 0; i < 11; i += 1) leaves.push(leafBytesFor(i));
+  var tree = merkle.buildTree(11, function (idx) { return leaves[idx].bytes; });
+
+  var inclusion = {
+    sct:             { logIdHex: "abc", timestamp: ts, signedEntryDer: leaves[0].signedEntry },
+    leafCertificate: Buffer.from("placeholder"),
+    leafIndex:       0,
+    auditPath:       tree.pathFor(0),
+    sthFromLog:      { treeSize: 11, rootHash: tree.root },
+  };
+  check("the inclusion half of the composed call verifies on its own",
+        b.network.tls.ct.verifyInclusion(inclusion).valid === true);
+
+  var other = merkle.buildTree(11, function (idx) { return "other-" + idx; });
+  var rv = b.network.tls.ct.verifyInclusion(Object.assign({}, inclusion, {
+    consistency: { firstSize: 5, firstRoot: other.rootOfFirst(5), proof: tree.proofFrom(5) },
+  }));
+  check("a wrong pinned root inside verifyInclusion is refused", rv.valid === false);
+  check("and it keeps the pinned-history reason rather than reading as a malformed proof",
+        rv.reason === "first-root-mismatch");
+}
+
 // Each of these breaks exactly one thing in an otherwise-valid proof.
 function testBrokenConsistencyProofsAreRefused() {
   var t = merkle.buildTree(11);
@@ -234,6 +305,8 @@ async function run() {
   testAProofDoesNotTransferToAnotherTree();
   testTheProofMustConnectToThePinnedFirstRoot();
   testATreeIsConsistentWithItself();
+  testNonFiniteTreeSizesAreRefused();
+  testTheComposedInclusionPathKeepsTheFirstRootReason();
   testBrokenConsistencyProofsAreRefused();
   testConsistencyArgumentRefusals();
 }
