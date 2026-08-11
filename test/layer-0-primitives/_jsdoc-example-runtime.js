@@ -53,11 +53,25 @@ var SAFE_BUILTINS = { crypto: 1, "node:crypto": 1, path: 1, "node:path": 1,
 // builtin is the POINT rather than a reason to skip, so the whole builtin set
 // is allowed. A non-builtin is still refused — an example naming a package the
 // framework does not ship is illustrative wherever it runs.
+// `module.isBuiltin` knows the subpaths; the builtinModules list is the
+// fallback for a runtime that predates it.
+var _nodeModule = require("node:module");
+function _isBuiltinModule(name) {
+  if (typeof _nodeModule.isBuiltin === "function") return _nodeModule.isBuiltin(name);
+  var bare = String(name).replace(/^node:/, "");
+  return (_nodeModule.builtinModules || []).indexOf(bare) !== -1;
+}
+
 function makeRequire(allowAnyModule) {
   return function exampleRequire(name) {
     if (name === "blamejs" || name === "@blamejs/core") return Object.assign({}, b);
     if (Object.prototype.hasOwnProperty.call(SAFE_BUILTINS, name)) return require(name);
-    if (allowAnyModule && /^(?:node:)?[a-z_]+$/.test(name)) {
+    // Ask Node what its built-ins are rather than describing them with a
+    // pattern: an identifier-shaped test rejects the SUBPATH forms
+    // (`node:dns/promises`, `node:fs/promises`, `node:stream/consumers`), and
+    // an example importing one was then filed as "external module" and never
+    // executed — a silent hole exactly where the API drift would be.
+    if (allowAnyModule && _isBuiltinModule(name)) {
       try { return require(name); } catch (_e) { /* fall through to illustrative */ }
     }
     var e = new Error("example references external module '" + name + "'");
