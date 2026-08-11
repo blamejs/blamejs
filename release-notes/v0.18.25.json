@@ -18,6 +18,10 @@
       "heading": "Changed",
       "items": [
         {
+          "title": "Vendored `@blamejs/pki` 0.4.14 → 0.4.15",
+          "body": "The PKI toolkit behind `b.mtlsCa` gains real answers for two revocation shapes it previously reported as undetermined: a CA that partitions revocations by reason code, and one that publishes a delta CRL alongside its base."
+        },
+        {
           "title": "An abort test measured the runner instead of the abort",
           "body": "The assertion that aborting a five-second `safeAsync.sleep` short-circuits it required the call to return within 200ms. That is a measure of how promptly a loaded machine delivers a 20ms timer, not of whether the abort worked, and it failed under a parallel run. The bound is now well below the sleep it cancels: nothing but a working abort can return early, and scheduler jitter cannot fail it."
         },

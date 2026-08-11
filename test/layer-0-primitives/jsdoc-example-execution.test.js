@@ -59,6 +59,35 @@ var RESUME_EXIT = 75;                                                           
 // of the batch is reported unexecuted rather than retried forever.
 var MAX_RESUMES = 8;                                                                             // allow:raw-byte-literal — restarts per batch
 
+// Which permission-model flags does THIS node accept? The set has grown across
+// releases — `--allow-net` exists on 26 and not on the 24 LTS floor — and a
+// flag the runtime does not know is a hard "bad option" exit before any code
+// runs, so every child dies and the gate reports the whole batch unexecuted.
+// Probing beats a version comparison: it stays right through a backport and
+// through whatever is added next.
+var _flagCache = null;
+function _permissionFlags(writableDirs) {
+  if (_flagCache === null) {
+    var probe = function (args) {
+      var rv = cp.spawnSync(process.execPath, args.concat(["-e", "0"]),
+        { stdio: ["ignore", "ignore", "pipe"] });
+      return rv.status === 0;
+    };
+    _flagCache = {
+      permission: probe(["--permission", "--allow-fs-read=*"]),
+      net:        probe(["--permission", "--allow-fs-read=*", "--allow-net"]),
+    };
+  }
+  if (!_flagCache.permission) return null;
+  var flags = ["--permission", "--allow-fs-read=*"];
+  writableDirs.forEach(function (d) { flags.push("--allow-fs-write=" + path.join(d, "*")); });
+  // Where the flag exists, network has to be granted explicitly or an example
+  // that binds a port is denied for doing what it documents. Where it does not,
+  // the runtime does not govern network at all and the same examples run.
+  if (_flagCache.net) flags.push("--allow-net");
+  return flags;
+}
+
 function _collectExamples() {
   var docs = parser.parseTree(path.join(ROOT, "lib"));
   var inProcess = [], stateful = [];
@@ -129,14 +158,9 @@ function _runStatefulBatches(items, dir) {
       //     it documents; the ones that reach a real external host declare it
       //     with a `// requires:` line and are never executed here.
       // child_process is NOT allowed: an example that shells out is denied.
-      var child = cp.spawn(process.execPath, [
-        "--permission",
-        "--allow-fs-read=*",
-        "--allow-fs-write=" + path.join(dir, "*"),
-        "--allow-fs-write=" + path.join(os.tmpdir(), "*"),
-        "--allow-net",
-        CHILD, batchPath, resultPath, dir,
-      ], { stdio: ["ignore", "ignore", "pipe"] });
+      var flags = _permissionFlags([dir, os.tmpdir()]) || [];
+      var child = cp.spawn(process.execPath, flags.concat([CHILD, batchPath, resultPath, dir]),
+        { stdio: ["ignore", "ignore", "pipe"] });
       var stderr = "";
       var killed = false;
       var watchdog = setTimeout(function () {
@@ -214,6 +238,12 @@ async function run() {
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_e2) { /* best-effort */ }
   }
 
+  // Say it out loud when the runtime cannot confine the child, rather than
+  // quietly executing spawn/write examples with the runner's full privileges.
+  if (_permissionFlags([tmp]) === null) {
+    console.log("[jsdoc-example-execution] WARNING: this Node has no permission model — " +
+                "stateful examples ran WITHOUT write confinement or subprocess denial");
+  }
   var summary = "[jsdoc-example-execution] executed " + ran + ", skipped " + skipped +
     " (illustrative + declared prerequisites), failed " + failures.length +
     "  [" + all.inProcess.length + " in process, " + all.stateful.length + " in child processes; " +
