@@ -164,7 +164,13 @@ function _codeOnly(src) {
   var prevWord = "";
   function opensRegex() {
     if (lastMeaningful === "") return true;
-    if (/[A-Za-z0-9_$]/.test(lastMeaningful)) return EXPRESSION_KEYWORDS.indexOf(lastWord) !== -1;
+    // A keyword reached through member access is a PROPERTY, not a keyword —
+    // `a.await / x / y` divides, `await /re/` does not. Same rule the control
+    // heads need, and it has to be applied in both places or one of them keeps
+    // reading a property name as syntax.
+    if (/[A-Za-z0-9_$]/.test(lastMeaningful)) {
+      return !wordAfterDot && EXPRESSION_KEYWORDS.indexOf(lastWord) !== -1;
+    }
     if (lastMeaningful === ")") return closedControl;
     return "]".indexOf(lastMeaningful) === -1;
   }
@@ -356,6 +362,11 @@ function _checkCalledPaths() {
      "a call divided after a prefix increment is reported"],
     ["var s = a + +b + b.afterUnaryPlus();", "afterUnaryPlus", true,
      "a call after a unary plus is reported"],
+    // A keyword reached through a dot is a property name, not syntax.
+    ["var q = a.await / b.afterAwaitProp() / c;", "afterAwaitProp", true,
+     "a call divided after a property named like an expression keyword is reported"],
+    ["var q = a.return / b.afterReturnProp() / c;", "afterReturnProp", true,
+     "a call divided after a property named return is reported"],
   ];
   cases.forEach(function (c) {
     check("example surface scan: " + c[3],
@@ -746,14 +757,37 @@ function _runStatefulBatches(items, dir) {
           env: Object.assign({}, process.env, { TMPDIR: childTmp, TEMP: childTmp, TMP: childTmp }) });
       var stderr = "";
       var killed = false;
+      var finished = false;
       var ceilingMs = _batchCeilingMs(items.length);
       var watchdog = setTimeout(function () {
         killed = true;
         try { child.kill("SIGKILL"); } catch (_e) { /* already gone */ }
       }, ceilingMs);
       if (typeof watchdog.unref === "function") watchdog.unref();
-      child.stderr.on("data", function (d) { stderr += d.toString("utf8"); });
+      // `spawn` can fail before there is a process at all — EAGAIN or EMFILE on
+      // a loaded runner, which is exactly the state this gate creates by
+      // spawning a child per batch. That arrives as an `error` event, and an
+      // `error` with no listener is thrown: the whole gate would die, on the
+      // machines most likely to hit it, for a condition the smoke runner
+      // already treats as transient. There may be no stdio to read either.
+      if (child.stderr) {
+        child.stderr.on("data", function (d) { stderr += d.toString("utf8"); });
+      }
+      child.on("error", function (e) {
+        if (finished) return;
+        finished = true;
+        clearTimeout(watchdog);
+        // Transient, so retry it — bounded by the same budget a resume uses.
+        if (attempt < MAX_RESUMES) { runBatch(bi, items, attempt + 1, done); return; }
+        items.forEach(function (it) {
+          results.push({ id: it.id, outcome: "fail",
+                         error: "batch could not start: " + ((e && e.message) || String(e)) });
+        });
+        done();
+      });
       child.on("close", function (code) {
+        if (finished) return;
+        finished = true;
         clearTimeout(watchdog);
         var got = [];
         try { got = JSON.parse(fs.readFileSync(resultPath, "utf8")); } catch (_e) { got = []; }
@@ -829,6 +863,12 @@ async function run() {
     process.chdir(origCwd);
     process.removeListener("unhandledRejection", onReject);
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_e2) { /* best-effort */ }
+    // The last batch resolves from its child's `close`, which fires before Node
+    // has finished releasing the ChildProcess itself — so without this the file
+    // returns with a handle still registered and the runner force-exits the
+    // worker to get rid of it. Waiting for the release keeps the exit clean and
+    // keeps a REAL leak here visible instead of buried in that same warning.
+    await helpers.drainOpenHandles("jsdoc-example-execution");
   }
 
   // Say it out loud when the runtime cannot confine the child, rather than

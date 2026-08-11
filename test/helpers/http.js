@@ -21,7 +21,21 @@ var wait = require("./wait");
 // as a stream socket does, and a file that serves static content is not
 // special for having one outstanding. Anything that keeps the worker alive
 // past run() belongs here.
-var OPEN_HANDLE_TYPES = ["TCPSocketWrap", "TCPServerWrap", "UDPWrap", "FSReqCallback"];
+// ProcessWrap is on the list for the same reason, and it was missing: a
+// spawned child holds the event loop open exactly as a socket does, and the
+// runner's end-of-pass audit already reports one — so a file could leak a
+// child, be told about it by the runner, and still drain "clean" here.
+//
+// The name is the RESOURCE's, not the JS object's. The runner reports the
+// constructor ("ChildProcess") because it reads process._getActiveHandles();
+// this list is matched against getActiveResourcesInfo(), which calls the same
+// thing ProcessWrap. Using the friendlier name matches nothing and drains
+// green past exactly the leak it was added for.
+//
+// PipeWrap is deliberately absent: a process whose own stdout is a pipe — any
+// run whose output is redirected — reports two of them for its own streams,
+// and the IPC channel of a forked worker is a third.
+var OPEN_HANDLE_TYPES = ["TCPSocketWrap", "TCPServerWrap", "UDPWrap", "FSReqCallback", "ProcessWrap"];
 
 // Only a handle that NEVER closes should fail a file. That is the invariant
 // the drain is here for — a leaked socket keeps the forked worker alive past
