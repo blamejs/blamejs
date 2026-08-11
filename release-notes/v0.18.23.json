@@ -28,6 +28,15 @@
       ]
     },
     {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "Vendored `@blamejs/pki` 0.4.13 → 0.4.14",
+          "body": "The PKI toolkit behind `b.mtlsCa` now wipes every key-establishment secret it allocates once that secret stops being needed, classical as well as post-quantum, and reaches raw key material through a single path that clears the copy it hands out. A password supplied as a string or `Uint8Array` is encoded into a buffer the toolkit allocated — a credential copy — and that copy is cleared once the key derivation has consumed it; a caller-supplied `Buffer` is borrowed and left untouched. Public API behaviour is unchanged."
+        }
+      ]
+    },
+    {
       "heading": "Detectors",
       "items": [
         {
