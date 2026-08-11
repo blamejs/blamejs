@@ -195,10 +195,16 @@ async function testSchedulerTaskFireAndFailure() {
   s.register("bad-task", 1000, function () { throw new Error("task boom"); });
   await s.start();
   try {
+    // Wait for BOTH tasks, by the same measure each assertion below uses.
+    // `totalFires` counts across tasks, so the failing task alone satisfies
+    // `totalFires >= 1 && withErrors >= 1` — and on a loaded runner the two
+    // first-fires separate far enough for that to happen, leaving the wait
+    // satisfied while `okRuns` was still 0. The success path has its own
+    // counter; wait on that.
     await helpers.waitUntil(function () {
       var agg = s.getStatus().aggregate;
-      return agg.totalFires >= 1 && agg.withErrors >= 1;
-    }, { timeoutMs: 8000, label: "scheduler: ok task fired + bad task failed" });
+      return okRuns >= 1 && agg.totalFires >= 1 && agg.withErrors >= 1;
+    }, { timeoutMs: 8000, label: "scheduler: ok task ran + bad task failed" });
     var agg = s.getStatus().aggregate;
     check("task success path fired (totalFires>=1 + run body ran)", agg.totalFires >= 1 && okRuns >= 1);
     check("task failure path recorded (aggregate.withErrors>=1)", agg.withErrors >= 1);
