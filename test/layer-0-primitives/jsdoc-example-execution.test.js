@@ -53,7 +53,17 @@ var BATCH_SIZE  = 30;                                                           
 // small: enough to keep the child pass a few seconds, not enough to multiply
 // the machine's process count by the batch count.
 var CONCURRENCY = 4;                                                                             // allow:raw-byte-literal — child processes at a time
-var CHILD_MS    = 120000;                                                                        // allow:raw-byte-literal // allow:raw-time-literal — whole-batch ceiling
+// The batch ceiling is DERIVED from the work, not a flat number. Each example
+// gets a fresh database, which is deliberately expensive to create — Argon2id
+// plus a sealed vault — so a fixed 120s expired mid-batch on a CPU-constrained
+// runner and killed children that were making normal progress, reporting their
+// remaining examples as unexecuted. A ceiling that does not scale with the
+// batch is measuring the runner, not the work.
+var PER_EXAMPLE_BUDGET_MS = 12000;                                                               // allow:raw-byte-literal // allow:raw-time-literal — per-example share of the batch ceiling
+var CHILD_MS_FLOOR        = 120000;                                                              // allow:raw-byte-literal // allow:raw-time-literal — never below the original ceiling
+function _batchCeilingMs(count) {
+  return Math.max(CHILD_MS_FLOOR, count * PER_EXAMPLE_BUDGET_MS);
+}
 var RESUME_EXIT = 75;                                                                            // allow:raw-byte-literal — child says "state is dirty, relaunch me"
 // Bounded so a pathological example cannot spin the pool: past this, the rest
 // of the batch is reported unexecuted rather than retried forever.
@@ -163,10 +173,11 @@ function _runStatefulBatches(items, dir) {
         { stdio: ["ignore", "ignore", "pipe"] });
       var stderr = "";
       var killed = false;
+      var ceilingMs = _batchCeilingMs(items.length);
       var watchdog = setTimeout(function () {
         killed = true;
         try { child.kill("SIGKILL"); } catch (_e) { /* already gone */ }
-      }, CHILD_MS);
+      }, ceilingMs);
       if (typeof watchdog.unref === "function") watchdog.unref();
       child.stderr.on("data", function (d) { stderr += d.toString("utf8"); });
       child.on("close", function (code) {
@@ -189,7 +200,7 @@ function _runStatefulBatches(items, dir) {
         if (got.length < items.length) {
           var missing = items.slice(got.length);
           results.push({ id: missing[0].id, outcome: "fail",
-            error: "child " + (killed ? "exceeded " + CHILD_MS + "ms" :
+            error: "child " + (killed ? "exceeded " + ceilingMs + "ms" :
                                code === RESUME_EXIT ? "hit the resume limit" : "exited (code " + code + ")") +
                    " with " + missing.length + " example(s) unreported, starting at " +
                    missing[0].sig + (stderr ? " — " + stderr.split("\n")[0].slice(0, 160) : "") });

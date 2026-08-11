@@ -132,8 +132,10 @@ function classify(e, opts) {
   // examples the child pass exists to reach silently unexamined.
   if (opts.timeoutIsFailure && e &&
       /^test timed out:|Script execution timed out/.test(String(e.message || ""))) {
+    // `e` is proven truthy by the guard on this branch, so the usual
+    // (e && e.message) shape would be dead here.
     return { outcome: "fail",
-             error: "example did not settle within its ceiling: " + ((e && e.message) || String(e)) };
+             error: "example did not settle within its ceiling: " + (e.message || String(e)) };
   }
   // Errors thrown INSIDE the vm context are instances of the context's own
   // constructors, so cross-realm `instanceof` fails — classify by name/flag.
