@@ -170,6 +170,18 @@ function _codeOnly(src) {
   }
   while (i < n) {
     var c = src[i], d = src[i + 1];
+    // `++` and `--` are ONE token, and whichever side their operand sits on the
+    // result is a value — so `counter++ / x / y` divides. Read character by
+    // character instead, the trailing `+` is the last thing seen, `+` is not a
+    // value, and the slash after it opens a pattern that swallows the rest of
+    // the expression.
+    if ((c === "+" && d === "+") || (c === "-" && d === "-")) {
+      lastMeaningful = ")";
+      lastWord = "";
+      closedControl = false;
+      i += 2;
+      continue;
+    }
     if (c === "/" && d === "/") { var e = src.indexOf("\n", i); e = e === -1 ? n : e; blank(i, e); i = e; continue; }
     if (c === "/" && d === "*") { var b2 = src.indexOf("*/", i + 2); b2 = b2 === -1 ? n : b2 + 2; blank(i, b2); i = b2; continue; }
     if (c === "/" && opensRegex()) {
@@ -335,6 +347,15 @@ function _checkCalledPaths() {
      "a call inside a regex after return-await is not reported"],
     ["for (var k in o) /b\\.inForIn\\(/.test(k);", "inForIn", false,
      "a call inside a regex after a for-in header is not reported"],
+    // `++`/`--` are one token and produce a value on either side of it.
+    ["var q = counter++ / b.afterPostfix() / scale;", "afterPostfix", true,
+     "a call divided after a postfix increment is reported"],
+    ["var q = counter-- / b.afterPostfixDec() / scale;", "afterPostfixDec", true,
+     "a call divided after a postfix decrement is reported"],
+    ["var q = ++counter / b.afterPrefix() / scale;", "afterPrefix", true,
+     "a call divided after a prefix increment is reported"],
+    ["var s = a + +b + b.afterUnaryPlus();", "afterUnaryPlus", true,
+     "a call after a unary plus is reported"],
   ];
   cases.forEach(function (c) {
     check("example surface scan: " + c[3],
