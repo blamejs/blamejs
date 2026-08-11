@@ -98,6 +98,164 @@ function _permissionFlags(writableDirs) {
   return flags;
 }
 
+// Blank out everything that is not executable code — comments and string,
+// template and regex literals — leaving the offsets intact so a scan over the
+// result still lines up with the source. Without this, an example that WRITES
+// about an API ("// do not call b.legacy()", or a message quoting a removed
+// name) would be read as calling it, and the surface check below would fail a
+// perfectly good example for something it only mentions.
+function _codeOnly(src) {
+  var out = String(src).split("");
+  var i = 0, n = out.length;
+  function blank(from, to) { for (var k = from; k < to && k < n; k += 1) { if (out[k] !== "\n") out[k] = " "; } }
+  // Does a `/` here open a regex literal, or divide? After a VALUE — an
+  // identifier, a number, `)`, `]` — it divides; anywhere a value is expected
+  // it opens a pattern. A punctuation test alone is not enough: `return /x/`
+  // and `typeof /x/` end in a letter, so the keyword has to be recognised or
+  // the pattern's text stays searchable and its contents read as real calls.
+  var EXPRESSION_KEYWORDS = ["return", "typeof", "case", "in", "of", "delete",
+    "void", "instanceof", "new", "do", "else", "yield", "await", "throw"];
+  var lastMeaningful = "";
+  var lastWord = "";
+  function opensRegex() {
+    if (lastMeaningful === "") return true;
+    if (/[A-Za-z0-9_$]/.test(lastMeaningful)) return EXPRESSION_KEYWORDS.indexOf(lastWord) !== -1;
+    return ")]".indexOf(lastMeaningful) === -1;
+  }
+  while (i < n) {
+    var c = src[i], d = src[i + 1];
+    if (c === "/" && d === "/") { var e = src.indexOf("\n", i); e = e === -1 ? n : e; blank(i, e); i = e; continue; }
+    if (c === "/" && d === "*") { var b2 = src.indexOf("*/", i + 2); b2 = b2 === -1 ? n : b2 + 2; blank(i, b2); i = b2; continue; }
+    if (c === "/" && opensRegex()) {
+      var r = i + 1, inClass = false, closed = false;
+      while (r < n) {
+        if (src[r] === "\\") { r += 2; continue; }
+        if (src[r] === "\n") break;                   // unterminated — not a regex after all
+        if (src[r] === "[") inClass = true;
+        else if (src[r] === "]") inClass = false;
+        else if (src[r] === "/" && !inClass) { closed = true; break; }
+        r += 1;
+      }
+      if (closed) {
+        while (r + 1 < n && /[a-z]/.test(src[r + 1])) r += 1;   // trailing flags
+        blank(i, r + 1);
+        i = r + 1;
+        lastMeaningful = ")";                          // a regex is a value
+        continue;
+      }
+    }
+    if (!/\s/.test(c)) {
+      lastMeaningful = c;
+      // Carry the whole trailing word, so `return` can be told from `count`.
+      lastWord = /[A-Za-z0-9_$]/.test(c) ? lastWord + c : "";
+    }
+    if (c === "\"" || c === "'") {
+      var j = i + 1;
+      while (j < n) {
+        if (src[j] === "\\") { j += 2; continue; }
+        if (src[j] === c) break;
+        j += 1;
+      }
+      blank(i, Math.min(j + 1, n));
+      i = j + 1;
+      // A string is a VALUE, so a `/` after it divides. Leaving the state at
+      // the opening quote would read that slash as opening a regex and blank
+      // the rest of the expression — hiding any call inside it.
+      lastMeaningful = ")";
+      lastWord = "";
+      continue;
+    }
+    if (c === "`") {
+      // A template's static text is prose; its `${…}` interpolations are code
+      // and must stay scannable — an unreachable `${b.removed()}` is exactly
+      // the call the execution pass cannot reach and this check exists for.
+      //
+      // Order is what makes it safe: strip the template BODY first, by the
+      // same rules, so nested strings, comments and regexes inside it are
+      // already blanked. Brace counting over that result cannot then be thrown
+      // off by a `}` living inside a string, which is what makes finding the
+      // end of an interpolation reliable without a full tokenizer.
+      var k = i + 1;
+      while (k < n) {
+        if (src[k] === "\\") { k += 2; continue; }
+        if (src[k] === "`") break;
+        k += 1;
+      }
+      var bodyStart = i + 1;
+      var bodyEnd = Math.min(k, n);
+      var stripped = _codeOnly(src.slice(bodyStart, bodyEnd));
+      // Everything is prose unless it sits inside a `${…}`.
+      var keep = new Array(stripped.length).fill(false);
+      for (var s = 0; s < stripped.length - 1; s += 1) {
+        if (stripped[s] !== "$" || stripped[s + 1] !== "{") continue;
+        var depth = 1;
+        var p2 = s + 2;
+        while (p2 < stripped.length && depth > 0) {
+          if (stripped[p2] === "{") depth += 1;
+          else if (stripped[p2] === "}") depth -= 1;
+          if (depth > 0) keep[p2] = true;
+          p2 += 1;
+        }
+        s = p2 - 1;
+      }
+      out[i] = " ";
+      for (var t2 = 0; t2 < stripped.length; t2 += 1) {
+        var ch = keep[t2] ? stripped[t2] : (stripped[t2] === "\n" ? "\n" : " ");
+        out[bodyStart + t2] = ch;
+      }
+      if (bodyEnd < n) out[bodyEnd] = " ";
+      i = k + 1;
+      // A template is a VALUE, so a `/` after it divides — same reasoning as
+      // for a plain string literal above.
+      lastMeaningful = ")";
+      lastWord = "";
+      continue;
+    }
+    i += 1;
+  }
+  return out.join("");
+}
+
+// The surface check below is only as good as the stripper feeding it, and a
+// stripper is exactly the kind of code that looks right and is not. These pin
+// both directions: prose must not be read as a call, and code must survive.
+// Is this path, as written in the RAW example, sitting between two slashes on
+// one line — the shape of a regex literal's body? Deliberately generous: it
+// only ever suppresses a report, so being wrong here costs a check rather than
+// failing an example that was fine all along.
+function _looksLikeRegexContext(body, pathStr) {
+  var needle = "b." + pathStr;
+  return String(body).split("\n").some(function (line) {
+    var at = line.indexOf(needle);
+    if (at === -1) return false;
+    var before = line.slice(0, at);
+    var after = line.slice(at + needle.length);
+    return before.lastIndexOf("/") !== -1 && after.indexOf("/") !== -1;
+  });
+}
+
+function _checkCodeOnly() {
+  var cases = [
+    ["b.uuid.v7();",                                   "b.uuid.v7(",     true,  "a plain call"],
+    ["// b.commented()",                               "b.commented(",   false, "a line comment"],
+    ["/* b.blockCommented() */",                       "b.blockCommented(", false, "a block comment"],
+    ["var s = \"b.inString()\";",                      "b.inString(",    false, "a string literal"],
+    ["var re = /b\\.inRegex\\(/;",                     "b.inRegex(",     false, "a regex literal"],
+    ["return /b\\.afterReturn\\(/;",                   "b.afterReturn(", false, "a regex after a keyword"],
+    ["var q = count / total; b.afterDivide();",        "b.afterDivide(", true,  "a call after a division"],
+    ["var t = `static b.inStatic() text`;",            "b.inStatic(",    false, "template static text"],
+    ["var t = `${b.inInterp()}`;",                     "b.inInterp(",    true,  "a template interpolation"],
+    ["var t = `${JSON.stringify(\"b.inNested()\")}`;", "b.inNested(",    false, "a string inside an interpolation"],
+    ["var t = `${f(\"}\")}`; b.afterBraceInString();", "b.afterBraceInString(", true, "code after a brace inside a string"],
+    ["var x = \"a\" / b.afterStringDivide() / 2;",     "b.afterStringDivide(", true, "a division after a string literal"],
+    ["var x = `a` / b.afterTemplateDivide() / 2;",     "b.afterTemplateDivide(", true, "a division after a template"],
+  ];
+  cases.forEach(function (c) {
+    var kept = _codeOnly(c[0]).indexOf(c[1]) !== -1;
+    check("example scanner: " + c[3] + " is " + (c[2] ? "kept" : "ignored"), kept === c[2]);
+  });
+}
+
 function _collectExamples() {
   var docs = parser.parseTree(path.join(ROOT, "lib"));
   var inProcess = [], stateful = [];
@@ -227,6 +385,7 @@ function _runStatefulBatches(items, dir) {
 }
 
 async function run() {
+  _checkCodeOnly();
   var all = _collectExamples();
   var byId = {};
   all.inProcess.concat(all.stateful).forEach(function (it) { byId[it.id] = it; });
@@ -283,6 +442,57 @@ async function run() {
 
   check("every @example runs without throwing (renamed/removed API, wrong shape)",
         failures.length === 0);
+
+  // Execution stops at the FIRST throw, so a placeholder the surrounding prose
+  // defines — `certFile`, `req`, `myHttp01Server` — ends an example before
+  // anything after it is reached, and a call to a method that does not exist
+  // can sit there unexamined. Two did: `b.db.handle()` in the POP3 and
+  // ManageSieve server docs, behind an undefined `certFile`.
+  //
+  // Reading every `b.…` path an example NAMES and resolving it against the
+  // shipped surface cannot be masked that way, because it never runs anything.
+  var unresolved = [];
+  var seen = {};
+  all.inProcess.concat(all.stateful).forEach(function (item) {
+    var code = _codeOnly(item.body);
+    var re = /\bb\.((?:[A-Za-z_$][\w$]*)(?:\.[A-Za-z_$][\w$]*)*)\s*\(/g;
+    var m;
+    while ((m = re.exec(code)) !== null) {
+      var pathStr = m[1];
+      var key = item.sig + "::" + pathStr;
+      if (seen[key]) continue;
+      seen[key] = true;
+      var node = runtime.b;
+      var parts = pathStr.split(".");
+      var ok = true;
+      for (var i = 0; i < parts.length; i += 1) {
+        if (node === null || node === undefined ||
+            !(typeof node === "object" || typeof node === "function") ||
+            !(parts[i] in Object(node))) { ok = false; break; }
+        node = node[parts[i]];
+      }
+      // The pattern only matches a path followed by `(`, so every match is a
+      // CALL. A path that resolves to something not callable therefore fails
+      // the example just as surely as a missing one — a method demoted to a
+      // plain property is the same drift wearing a different hat.
+      if (ok && typeof node === "function") continue;
+      // Last guard before reporting. Telling a regex literal from a division
+      // needs real parsing in the general case — `if (ok) /re/.test(x)` opens a
+      // pattern where `(a + b) / c` divides, and the stripper cannot see the
+      // difference. The two failure modes are not equal: missing a check costs
+      // a check, while a false report fails a VALID example and there is
+      // nothing downstream to catch that. So anything that even looks like it
+      // sits inside a regex on its own line is left alone.
+      if (_looksLikeRegexContext(item.body, pathStr)) continue;
+      if (!ok) unresolved.push(item.sig + " calls b." + pathStr + "() — no such member");
+      else unresolved.push(item.sig + " calls b." + pathStr + "() — resolves to " + typeof node);
+    }
+  });
+  if (unresolved.length) {
+    unresolved.slice(0, 25).forEach(function (u) { console.log("  MISSING " + u); });
+  }
+  check("every b.* method an @example calls exists on the shipped surface",
+        unresolved.length === 0);
   // Counted separately from the in-process pass on purpose: a combined total is
   // dominated by the ~900 in-process examples, so a child pass that spawned
   // nothing at all would still satisfy it and the gate would quietly go back to
