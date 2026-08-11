@@ -168,9 +168,22 @@ function _runStatefulBatches(items, dir) {
       //     it documents; the ones that reach a real external host declare it
       //     with a `// requires:` line and are never executed here.
       // child_process is NOT allowed: an example that shells out is denied.
-      var flags = _permissionFlags([dir, os.tmpdir()]) || [];
+      // ONLY this run's own tree. Granting the whole system temp directory
+      // would hand every stateful example write access to whatever else lives
+      // there — on some hosts that includes the checkout itself — which is the
+      // containment this child process exists to provide.
+      var flags = _permissionFlags([dir]) || [];
+      // Point the child's temp directory INSIDE the confined tree, so an
+      // example that legitimately does `fs.mkdtempSync(os.tmpdir() + …)` — a
+      // documented pattern, e.g. in the backup primitives — keeps working and
+      // keeps its coverage, instead of being denied and quietly reclassified.
+      // Confinement is preserved: os.tmpdir() now resolves to somewhere this
+      // run owns and deletes.
+      var childTmp = path.join(dir, "tmp");
+      fs.mkdirSync(childTmp, { recursive: true });
       var child = cp.spawn(process.execPath, flags.concat([CHILD, batchPath, resultPath, dir]),
-        { stdio: ["ignore", "ignore", "pipe"] });
+        { stdio: ["ignore", "ignore", "pipe"],
+          env: Object.assign({}, process.env, { TMPDIR: childTmp, TEMP: childTmp, TMP: childTmp }) });
       var stderr = "";
       var killed = false;
       var ceilingMs = _batchCeilingMs(items.length);

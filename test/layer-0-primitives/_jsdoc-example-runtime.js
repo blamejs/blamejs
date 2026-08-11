@@ -103,10 +103,36 @@ function makeContext(opts) {
 // visible. A silent skip list in here would cost nothing and mean nothing.
 var DECLARES_PREREQUISITE = /^\s*\/\/\s*requires:/;
 
+// The error codes that mean "the machine did not provide something", listed
+// rather than matched. A pattern over `E…` codes is tempting and wrong: it
+// also swallows `ERR_INVALID_ARG_TYPE`, `ERR_INVALID_ARG_VALUE` and
+// `ERR_MISSING_ARGS`, which is Node saying an example passed an argument shape
+// the API no longer accepts — precisely the drift this gate exists to catch.
+// `ERR_ACCESS_DENIED` is deliberately absent too: the permission model
+// refusing an example is a prerequisite it must declare, not a free pass.
+var ENVIRONMENTAL_CODES = {
+  ENOENT: 1, EACCES: 1, EPERM: 1, EEXIST: 1, EISDIR: 1, ENOTDIR: 1, ENOTEMPTY: 1,
+  EROFS: 1, EMFILE: 1, ENFILE: 1, ENOSPC: 1, EBUSY: 1, EXDEV: 1,
+  EADDRINUSE: 1, EADDRNOTAVAIL: 1, ECONNREFUSED: 1, ECONNRESET: 1, EPIPE: 1,
+  ENOTFOUND: 1, EAI_AGAIN: 1, ETIMEDOUT: 1, EHOSTUNREACH: 1, ENETUNREACH: 1,
+  ENETDOWN: 1, EPROTO: 1, ECONNABORTED: 1, EDESTADDRREQ: 1,
+  // Resolver verdicts about the NAME rather than about the code: no record of
+  // the requested type, an upstream failure, a refusal. A DNS example asking
+  // about a name this network cannot answer for is describing an environment.
+  ENODATA: 1, ESERVFAIL: 1, EREFUSED: 1, ENOTIMP: 1, EFORMERR: 1, EBADRESP: 1,
+  ECANCELLED: 1, ETIMEOUT: 1,
+};
+
 function declaresPrerequisite(body) {
   var first = String(body || "").split("\n").find(function (l) { return l.trim() !== ""; });
   return DECLARES_PREREQUISITE.test(first || "");
 }
+
+// Note: there is deliberately no source-text test for "does this example reach
+// out". Two attempts at one were wrong in opposite directions — a URL sitting
+// in a comment suppressed a real hang, and the examples that reach out through
+// a name lookup have no URL to find at all. The child watches what the example
+// actually does instead; see the network instrumentation there.
 
 // One classifier for both passes. A throw is only a DEFECT when it says the
 // documented API is wrong — a renamed method, a removed export, an argument
@@ -150,7 +176,9 @@ function classify(e, opts) {
   if (e && e.isFrameworkError) return { outcome: "skip", reason: "framework error (precondition/input demo)" };
   // Node/fs/network errors from an environment the example describes rather
   // than creates — a listener already bound, a host that does not resolve.
-  if (e && /^E[A-Z]+$/.test(String(e.code || ""))) return { outcome: "skip", reason: "filesystem/OS error" };
+  if (e && ENVIRONMENTAL_CODES[String(e.code || "")] === 1) {
+    return { outcome: "skip", reason: "filesystem/OS error" };
+  }
   // The example assumes an operator-declared table/column the isolated test db
   // doesn't have (e.g. subject.rectify over a `users` table) — illustrative.
   if (e && /no such (table|column)/i.test(String(e.message || ""))) return { outcome: "skip", reason: "needs operator-specific schema" };

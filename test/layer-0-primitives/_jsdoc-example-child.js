@@ -96,6 +96,136 @@ async function main() {
   process.on("unhandledRejection", function (e) { noteAsyncFailure("unhandled rejection", e); });
   process.on("uncaughtException", function (e) { noteAsyncFailure("uncaught exception", e); });
 
+  // Is a network operation OUTSTANDING right now? Not "did this example ever
+  // touch the network" — an example that resolves a name successfully and then
+  // hangs in a callback has hung locally, and excusing it because of the
+  // earlier lookup would hide exactly the defect this pass is for.
+  //
+  // Observed rather than read off the source: an example can reach out through
+  // a name lookup with no URL in it anywhere (the RBL, BIMI, WKD and ECH ones
+  // all do), and a URL in a comment reaches nothing at all.
+  // Per-example counter, not a shared number. A network operation abandoned by
+  // a timed-out example still settles later, and if its callback decremented
+  // whatever counter happened to be current it would corrupt a LATER example's
+  // reading — pushing it negative, so that example's own genuine network wait
+  // then reads as zero and its timeout is reported as a hang. Each wrapper
+  // captures the counter that was current when it was called, so a straggler
+  // can only ever adjust its own.
+  var netCount = { n: 0 };
+  function trackNetwork() {
+    var owner = netCount;
+    owner.n += 1;
+    var settled = false;
+    return function settle() { if (!settled) { settled = true; owner.n -= 1; } };
+  }
+  var nodeDns = require("node:dns");
+  var nodeNet = require("node:net");
+  ["lookup", "resolve", "resolve4", "resolve6", "resolveTxt", "resolveMx", "resolveSrv"]
+    .forEach(function (fn) {
+      if (typeof nodeDns[fn] === "function") {
+        var real = nodeDns[fn];
+        nodeDns[fn] = function () {
+          var args = Array.prototype.slice.call(arguments);
+          var cb = args[args.length - 1];
+          if (typeof cb === "function") {
+            var settle = trackNetwork();
+            args[args.length - 1] = function () { settle(); return cb.apply(this, arguments); };
+          }
+          return real.apply(nodeDns, args);
+        };
+      }
+      if (nodeDns.promises && typeof nodeDns.promises[fn] === "function") {
+        var realP = nodeDns.promises[fn];
+        nodeDns.promises[fn] = function () {
+          var settle = trackNetwork();
+          return realP.apply(nodeDns.promises, arguments).then(
+            function (v) { settle(); return v; },
+            function (e) { settle(); throw e; });
+        };
+      }
+    });
+  // An HTTP request is outstanding from the moment it is made until its
+  // response has been consumed. Tracking the REQUEST rather than its socket is
+  // what makes this accurate in both directions: a keep-alive socket stays
+  // open long after its request finished (so socket lifetime would keep
+  // claiming a network wait that is over, and excuse a later local hang), and
+  // a request served from the connection pool never opens a socket at all (so
+  // socket lifetime would miss it entirely).
+  [require("node:http"), require("node:https")].forEach(function (mod) {
+    ["request", "get"].forEach(function (fn) {
+      var real = mod[fn];
+      if (typeof real !== "function") return;
+      mod[fn] = function () {
+        var req = real.apply(mod, arguments);
+        var settle = trackNetwork();
+        req.once("error", settle);
+        req.once("close", settle);
+        req.once("response", function (res) {
+          res.once("end", settle);
+          res.once("close", settle);
+          res.once("error", settle);
+        });
+        return req;
+      };
+    });
+  });
+
+  // A raw socket counts from the moment it starts connecting until it is
+  // finished with. "Finished with" is three things, and all three are needed:
+  //
+  //   close / error — the socket is gone.
+  //   free          — an agent has taken it back into the keep-alive pool. Its
+  //                   request is over, so it must stop counting; otherwise the
+  //                   idle socket would excuse a LOCAL hang later in the same
+  //                   example.
+  //
+  // Settling on `connect` instead would be wrong in the other direction: a
+  // peer that accepts the connection and then stalls mid-handshake or
+  // mid-protocol — a DNS-over-TLS or ECH example against a slow server — is
+  // still waiting on the network, and calling that a local hang would make the
+  // gate depend on how responsive a remote host felt like being.
+  var realConnect = nodeNet.Socket.prototype.connect;
+  nodeNet.Socket.prototype.connect = function () {
+    var self = this;
+    var settle = trackNetwork();
+    self.once("close", settle);
+    self.once("error", settle);
+    self.once("free", settle);
+    return realConnect.apply(self, arguments);
+  };
+
+  // The global fetch is undici, not node:http, so none of the wrappers above
+  // see it. An example whose fetch reaches a host that accepts the connection
+  // and then says nothing would otherwise look like a local hang.
+  //
+  // The request is not over when the promise resolves: fetch settles on
+  // HEADERS, and the body arrives afterwards. An example that awaits
+  // `res.text()` against a host that stops sending mid-body is still waiting
+  // on the network, so the response's body readers stay tracked too.
+  if (typeof globalThis.fetch === "function") {
+    var realFetch = globalThis.fetch;
+    globalThis.fetch = function () {
+      var settle = trackNetwork();
+      var rv;
+      try { rv = realFetch.apply(globalThis, arguments); }
+      catch (e) { settle(); throw e; }
+      return Promise.resolve(rv).then(function (res) {
+        settle();
+        ["text", "json", "arrayBuffer", "blob", "bytes", "formData"].forEach(function (m) {
+          if (!res || typeof res[m] !== "function") return;
+          var realBody = res[m].bind(res);
+          res[m] = function () {
+            var bodySettle = trackNetwork();
+            return Promise.resolve().then(realBody).then(
+              function (v) { bodySettle(); return v; },
+              function (e) { bodySettle(); throw e; });
+          };
+        });
+        return res;
+      }, function (e) { settle(); throw e; });
+    };
+  }
+
   var out = [];
   var baseDir = process.argv[4] || os.tmpdir();
   var root = fs.mkdtempSync(path.join(baseDir, "blamejs-example-child-"));
@@ -136,6 +266,9 @@ async function main() {
       _cleanup(root);
       process.exit(RESUME_EXIT);
     }
+    // A fresh counter per example. Stragglers from an earlier one hold a
+    // reference to THEIR counter and can no longer touch this reading.
+    netCount = { n: 0 };
     try {
       res = await runtime.runExampleInContext(item.body, {
         context:     runtime.makeContext({ allowAnyModule: true }),
@@ -145,10 +278,23 @@ async function main() {
         // to the framework fails every instanceof check on the way in.
         nativeRealm: true,
         // This example has a working database and directory, so running past
-        // the ceiling means it hung rather than that the sandbox starved it.
+        // the ceiling means it hung. The one exception is decided below, from
+        // what the example DID rather than from what its source looks like.
         timeoutIsFailure: true,
       });
     } catch (e) { res = runtime.classify(e, { timeoutIsFailure: true }); }
+    // The ONLY timeout that is not a defect: a network operation was still
+    // OUTSTANDING when the ceiling expired. Then the ceiling is timing a
+    // remote host or this machine's route to it, neither of which says
+    // anything about whether the API the example documents still exists.
+    //
+    // "Outstanding", not "happened at some point": an example that resolves a
+    // name successfully and then hangs in its own callback hung locally, and
+    // that stays a failure.
+    if (res.outcome === "fail" && netCount.n > 0 &&
+        /did not settle within its ceiling/.test(String(res.error || ""))) {
+      res = { outcome: "skip", reason: "timed out with a network operation still outstanding" };
+    }
     // Give a callback the example scheduled one turn to throw before the
     // verdict is written — without it, a listener that fails on the next tick
     // lands after this example has already been recorded as clean.

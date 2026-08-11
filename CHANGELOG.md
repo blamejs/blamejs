@@ -20,7 +20,7 @@ Such an example now says so on its first line: `// requires: a views directory o
 - `b.https.createServer(…)` — three examples in the TLS-exporter docs. There is no `b.https`; those examples now require Node's `node:https`, which is what they always meant.
 - `b.db.handle()` — five examples, in the crypto-field, DSR, IMAP and JMAP docs. `b.db` is itself the handle those APIs want.
 - `b.scheduler.every(ms, fn)` — the scheduler is `create()` then `register(name, ms, fn)` then `start()`.
-- `b.httpClient.create({ baseUrl })` — the pinned client is `pinnedClient(url, opts)`.
+- `b.httpClient.create({ baseUrl })` — the pinned client is `pinnedClient(client, allowedHosts)`, wrapping a request-capable client.
 - `b.network.tls.reload()`, `b.externalDb.backend(name)`, `b.objectStore.put(key, body)`, `b.worker.create(…)` — none exist. The cluster example also documented `externalDbBackend` as an object when it takes the NAME of a backend registered through `externalDb.init`, so the option list was wrong alongside the example.
 - `gate.decide(…)` on a guard gate — the method is `check(…)`.
 - `b.openapi.security.bearer({ bearerFormat })` and `b.mail.create({ host, port })` — both named options the validators reject; the log-stream local sink example passed `path` where the sink requires `dir`.
