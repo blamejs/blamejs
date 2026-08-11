@@ -436,7 +436,11 @@ async function testAsyncSafeSleepAbort() {
   catch (e) { threw = e; }
   var elapsed = Date.now() - t0;
   check("sleep: abort cancels mid-sleep",  threw && threw.code === "async/aborted");
-  check("sleep: abort short-circuits the wait", elapsed < 200);
+  // Far below the 5s the sleep asked for, not "fast" in absolute terms: a
+  // tighter bound measures how promptly a loaded runner can deliver a 20ms
+  // timer, which is not what this asserts and is what made it flake under
+  // SMOKE_PARALLEL=64. Nothing but a working abort can return here early.
+  check("sleep: abort short-circuits the wait", elapsed < 2500);
 
   // Pre-aborted signal rejects immediately (no waiting).
   var preAborted = new AbortController();
