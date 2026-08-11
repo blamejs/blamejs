@@ -62,14 +62,46 @@ async function _withTwoServers(handlerA, handlerB, fn) {
   }
 }
 
+// Close an http2 server and WAIT for it to be gone. `close()` on its own is
+// fire-and-forget and, worse, only stops accepting — it waits for live sessions
+// to end, so a server whose peer session is still tearing down stays listening
+// after the test that owned it has finished. That is a leaked listener, and
+// under a parallel run it is the one the end-of-run drain reports.
+async function _closeH2Server(srv) {
+  (srv._sessions || []).forEach(function (s) {
+    try { if (!s.destroyed) s.destroy(); } catch (_e) { /* already gone */ }
+  });
+  var closed = false;
+  try { srv.close(function () { closed = true; }); } catch (_e) { closed = true; }
+  // Bounded: a session the server does not know about can hold it open, and
+  // wedging the suite here would be worse than moving on — the end-of-run
+  // drain names any listener that genuinely survives.
+  try {
+    await helpers.waitUntil(function () { return closed; },
+      { timeoutMs: 2000, label: "http-client: h2 server closed" });                               // allow:raw-byte-literal // allow:raw-time-literal — close backstop
+  } catch (_e) { /* the drain reports it if it really leaked */ }
+}
+
+// Track server-side sessions so _closeH2Server can end them.
+function _trackH2Sessions(srv) {
+  srv._sessions = [];
+  srv.on("session", function (s) {
+    srv._sessions.push(s);
+    s.once("close", function () {
+      srv._sessions = srv._sessions.filter(function (x) { return x !== s; });
+    });
+  });
+  return srv;
+}
+
 async function _withH2cServer(onStream, fn) {
-  var server = http2.createServer();
+  var server = _trackH2Sessions(http2.createServer());
   server.on("stream", onStream);
   var port = await b.testing.listenOnRandomPort(server, "127.0.0.1");
   try {
     return await fn("http://127.0.0.1:" + port);
   } finally {
-    await new Promise(function (resolve) { server.close(function () { resolve(); }); });
+    await _closeH2Server(server);
   }
 }
 
@@ -2943,7 +2975,7 @@ async function testH2DrainWaitsOnProgressButNotOnAStall() {
   var GRACE = 120;
 
   // (1) A session still moving bytes survives well past the grace window.
-  var srvA = http2mod.createServer();
+  var srvA = _trackH2Sessions(http2mod.createServer());
   var tick = null;
   srvA.on("stream", function (stream) {
     stream.respond({ ":status": 200 });
@@ -2965,11 +2997,11 @@ async function testH2DrainWaitsOnProgressButNotOnAStall() {
     sessA.destroyed === false);
   if (tick) clearInterval(tick);
   try { sessA.destroy(); } catch (_e) { /* teardown */ }
-  srvA.close();
+  await _closeH2Server(srvA);
 
   // (2) A session that has gone quiet is force-destroyed, so the socket is
   // never held open indefinitely.
-  var srvB = http2mod.createServer();
+  var srvB = _trackH2Sessions(http2mod.createServer());
   srvB.on("stream", function (stream) {
     stream.respond({ ":status": 200 });
     stream.write("start");                                    // then nothing, ever
@@ -2987,7 +3019,7 @@ async function testH2DrainWaitsOnProgressButNotOnAStall() {
     { timeoutMs: 5000, label: "http-client: stalled h2 session force-destroyed" });
   check("the drain force-destroys an h2 session that has stopped making progress",
     sessB.destroyed === true);
-  srvB.close();
+  await _closeH2Server(srvB);
 
   // (3) A session still moving bytes is NEVER destroyed, however long it takes
   // — there is no wall-clock ceiling to cut a long transfer. Driven against a

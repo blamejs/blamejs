@@ -243,15 +243,41 @@ async function runExampleInContext(body, opts) {
       Promise.resolve()
         .then(function () {
           if (opts.nativeRealm) {
-            var ctx = opts.context;
+            // THIS realm, so a RegExp or Array literal the example passes to
+            // the framework satisfies its `instanceof` checks — but compiled
+            // through vm, because `vm` is the only way to bound SYNCHRONOUS
+            // execution. A `new Function` call cannot be interrupted, so an
+            // example with an accidental infinite loop before its first await
+            // blocks the event loop and the wall-clock timer below never gets
+            // to fire; the whole batch then has to be killed to recover.
+            // runInThisContext keeps the realm and adds the ceiling.
+            //
             // The compiled string is an @example body read out of this repo's
-            // OWN lib/ comment blocks — it is the code under test, not input.
-            // There is no untrusted value interpolated here and no path by
-            // which one could be: the parser's only source is the checked-in
-            // tree, which is also what the vm branch below executes. Running
-            // it is the entire point of the gate.
-            var fn = new Function("b", "require", "console", "\"use strict\";\nreturn " + wrapped);
-            return fn(ctx.b, ctx.require, ctx.console);
+            // OWN lib/ comment blocks — the code under test, not input. Its
+            // only source is the checked-in tree.
+            //
+            // `b`, `require` and `console` arrive as PARAMETERS, captured the
+            // moment the wrapper is entered. Handing them over as globals
+            // instead would mean an example that times out and resumes later
+            // finds whatever the globals hold by then — the process's real
+            // require, or the next example's — so a stale continuation could
+            // slip past makeRequire or have its failure blamed on someone
+            // else. Parameters belong to the invocation and outlive the
+            // timeout with it. The hand-off object is read synchronously by
+            // the wrapper, so it is gone before control returns here.
+            var ctx = opts.context;
+            var HANDOFF = "__jsdocExampleBindings";
+            globalThis[HANDOFF] = { b: ctx.b, require: ctx.require, console: ctx.console };
+            try {
+              return vm.runInThisContext(
+                "(function (b, require, console) {\n" +
+                "\"use strict\";\nreturn " + wrapped + "\n})(globalThis." + HANDOFF + ".b, " +
+                "globalThis." + HANDOFF + ".require, globalThis." + HANDOFF + ".console);",
+                {
+                  filename: "example.js",
+                  timeout: opts.syncTimeoutMs || 2000,                                           // allow:raw-byte-literal // allow:raw-time-literal — synchronous ceiling
+                });
+            } finally { delete globalThis[HANDOFF]; }
           }
           return new vm.Script(wrapped, { filename: "example.js" })
             .runInContext(opts.context, { timeout: opts.syncTimeoutMs || 1000 });                // allow:raw-byte-literal // allow:raw-time-literal — synchronous ceiling

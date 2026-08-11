@@ -277,6 +277,11 @@ async function main() {
         // rather than a vm one — otherwise a RegExp or Array literal it passes
         // to the framework fails every instanceof check on the way in.
         nativeRealm: true,
+        // The synchronous ceiling matches the overall one rather than being
+        // tighter than it: real work here is synchronous — generating a
+        // keypair, deriving with Argon2id — and a shorter sync limit cut off
+        // examples that were finishing well inside their wall-clock budget.
+        syncTimeoutMs: PER_EXAMPLE_MS,
         // This example has a working database and directory, so running past
         // the ceiling means it hung. The one exception is decided below, from
         // what the example DID rather than from what its source looks like.

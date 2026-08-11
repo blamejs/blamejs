@@ -48,7 +48,7 @@ var parser = require(path.join(ROOT, "examples", "wiki", "lib", "source-doc-pars
 var { setupTestDb, teardownTestDb } = require("../helpers/db");
 
 var CHILD       = path.join(__dirname, "_jsdoc-example-child.js");
-var BATCH_SIZE  = 30;                                                                            // allow:raw-byte-literal — examples per child process
+var BATCH_SIZE  = 12;                                                                            // allow:raw-byte-literal — examples per child; small enough that a full batch's budget fits the file watchdog
 // This file is itself one of ~64 forked smoke workers, so the fan-out stays
 // small: enough to keep the child pass a few seconds, not enough to multiply
 // the machine's process count by the batch count.
@@ -59,8 +59,14 @@ var CONCURRENCY = 4;                                                            
 // runner and killed children that were making normal progress, reporting their
 // remaining examples as unexecuted. A ceiling that does not scale with the
 // batch is measuring the runner, not the work.
-var PER_EXAMPLE_BUDGET_MS = 12000;                                                               // allow:raw-byte-literal // allow:raw-time-literal — per-example share of the batch ceiling
-var CHILD_MS_FLOOR        = 120000;                                                              // allow:raw-byte-literal // allow:raw-time-literal — never below the original ceiling
+var PER_EXAMPLE_BUDGET_MS = 10000;                                                               // allow:raw-byte-literal // allow:raw-time-literal — each example's share of the batch ceiling
+var CHILD_MS_FLOOR        = 60000;                                                               // allow:raw-byte-literal // allow:raw-time-literal — a small batch still gets a minute
+// The ceiling is the batch's own budget, never truncated below it: capping it
+// would kill children whose every example was still inside its allowance, on
+// exactly the slow runners the allowance exists for. The batch is kept SMALL
+// instead, so a full one's budget (12 x 10s) lands at the same two minutes the
+// original flat ceiling gave — comfortably inside smoke's 300s per-file
+// watchdog, which is the real constraint a bigger batch would collide with.
 function _batchCeilingMs(count) {
   return Math.max(CHILD_MS_FLOOR, count * PER_EXAMPLE_BUDGET_MS);
 }
