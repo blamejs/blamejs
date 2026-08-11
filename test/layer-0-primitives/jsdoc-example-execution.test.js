@@ -101,7 +101,6 @@ function _permissionFlags(writableDirs) {
     _flagCache = {
       permission: probe(["--permission", "--allow-fs-read=*"]),
       net:        probe(["--permission", "--allow-fs-read=*", "--allow-net"]),
-      worker:     probe(["--permission", "--allow-fs-read=*", "--allow-worker"]),
     };
   }
   if (!_flagCache.permission) return null;
@@ -111,14 +110,19 @@ function _permissionFlags(writableDirs) {
   // that binds a port is denied for doing what it documents. Where it does not,
   // the runtime does not govern network at all and the same examples run.
   if (_flagCache.net) flags.push("--allow-net");
-  // Same reasoning for worker threads, and the failure it prevents is the
-  // quiet one: a denied worker throws a framework error, a framework error is
-  // read as the example describing a precondition rather than being broken, and
-  // the example is recorded as skipped. Every worker-pool example would sit in
-  // that bucket looking accounted for. Spawning a SUBPROCESS stays denied —
-  // a worker runs in this process under the same permission set, which is the
-  // confinement; a child process would start a fresh unrestricted one.
-  if (_flagCache.worker) flags.push("--allow-worker");
+  // Worker threads are NOT granted, and the reason is worth writing down
+  // because the opposite looks reasonable. A worker inherits the permission
+  // set only while it inherits the parent's arguments: constructed with
+  // `execArgv: []` — the ordinary way to keep a worker from inheriting parent
+  // flags — it starts without the permission model at all and can write
+  // anywhere on the host. Measured, not assumed: under
+  // `--allow-fs-write=<tree>/*` a worker with inherited arguments was refused
+  // and one with `execArgv: []` created a file outside the tree.
+  //
+  // So `--allow-worker` does not confine worker examples, it removes the
+  // confinement from every OTHER example in the same child. Examples that need
+  // a worker declare it instead, which costs their execution and keeps the
+  // bound on the ~600 that do run — several of which name real host paths.
   return flags;
 }
 
