@@ -89,12 +89,16 @@ async function run() {
                  (i.severity !== "high" && i.severity !== "critical");
         }));
 
-  // An empty array is a configured allowlist that permits nothing, so it takes
-  // the same warning path rather than reading as "anything goes".
+  // An empty array is a CONFIGURATION that permits nothing — the shape an
+  // operator uses to deny callbacks until config loads. It is not the absent
+  // case and must not take the advisory path: nothing matches, so it refuses.
   var rvEmptyList = b.guardOauth.validate(BENIGN_FLOW,
     { profile: "strict", codeReusePolicy: "allow", allowedRedirectUris: [] });
-  check("guard-oauth: an EMPTY allowlist is reported, not treated as open",
-        rvEmptyList.issues.some(function (i) { return i.ruleId === "oauth.redirect-uri-allowlist-missing"; }));
+  check("guard-oauth: an EMPTY allowlist denies every redirect_uri",
+        rvEmptyList.ok === false &&
+        rvEmptyList.issues.some(function (i) { return i.ruleId === "oauth.redirect-uri-not-allowed"; }));
+  check("guard-oauth: ...and is not reported as an unconfigured allowlist",
+        !rvEmptyList.issues.some(function (i) { return i.ruleId === "oauth.redirect-uri-allowlist-missing"; }));
 
   // A CONFIGURED allowlist still refuses a redirect_uri outside it — the check
   // this whole policy exists for must keep working.
