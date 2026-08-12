@@ -154,6 +154,36 @@ function testOauthOptForwarding() {
     Object.assign({}, BASE, { codeReusePolicy: "allow", pkcePolicy: "allow" }));
   check("guardAuth: a missing PKCE challenge is refused by default", strictPkce.ok === false);
   check("guardAuth: pkcePolicy reaches guardOauth", relaxedPkce.ok === true);
+
+  // `maxBytes` is the one name the two guards both use and mean differently:
+  // here it caps the whole auth BUNDLE, in guardOauth it caps the flow. So the
+  // child's cap gets its own wrapper name rather than being unreachable —
+  // `maxParamBytes` was already tunable through the wrapper, which made the
+  // absence of a flow-size control arbitrary.
+  var bigFlow = Object.assign({}, FLOW, { scope: "x".repeat(9 * 1024) });
+  function withCaps(extra) {
+    return b.guardAuth.validate({ oauthFlow: bigFlow },
+      Object.assign({ profile: "strict", codeReusePolicy: "allow",
+                      allowedRedirectUris: ["https://app.example.com/callback"] }, extra || {}));
+  }
+  var cappedByChild = withCaps({ maxBytes: 65536 });
+  check("guardAuth: its own maxBytes does NOT raise the child's flow cap",
+        cappedByChild.issues.some(function (i) { return i.ruleId === "oauth.flow-cap"; }));
+
+  var raised = withCaps({ oauthMaxBytes: 32 * 1024 });
+  check("guardAuth: oauthMaxBytes raises the child's flow cap",
+        !raised.issues.some(function (i) { return i.ruleId === "oauth.flow-cap"; }));
+
+  var tightened = withCaps({ oauthMaxBytes: 512 });
+  check("guardAuth: oauthMaxBytes can tighten the child's flow cap too",
+        tightened.issues.some(function (i) { return i.ruleId === "oauth.flow-cap"; }));
+
+  // ...and it must not be mistaken for the bundle cap, which still applies.
+  var bundleCapped = b.guardAuth.validate({ oauthFlow: bigFlow },
+    { profile: "strict", codeReusePolicy: "allow",
+      allowedRedirectUris: ["https://app.example.com/callback"],
+      oauthMaxBytes: 32 * 1024, maxBytes: 1024 });
+  check("guardAuth: the bundle cap still governs the wrapper", bundleCapped.ok === false);
 }
 
 async function run() {
