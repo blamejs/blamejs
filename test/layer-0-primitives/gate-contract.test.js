@@ -1130,7 +1130,45 @@ async function testComposeGates() {
     check: async function (ctx) { seenBytes = GC.extractBytesAsText(ctx); return serveCheck(); },
   })], { firstRefusalWins: false });
   var nf = await noFeed.check({ bytes: Buffer.from("dirty") });
-  check("composeGates: firstRefusalWins false skips feed", seenBytes === "dirty" && nf.action === "serve");
+  check("composeGates: firstRefusalWins false skips feed", seenBytes === "dirty");
+  // Not feeding the scrubbed bytes FORWARD is the opt; losing the fact that a
+  // member sanitized is not. The caller still needs the disposition and the
+  // scrubbed output, or it forwards the original.
+  check("composeGates: firstRefusalWins false still reports the sanitize",
+    nf.action === "sanitize" && !!nf.sanitized);
+
+  // A composition REPORTS what its members did. Reporting "serve" after a member
+  // sanitized tells the caller the content was clean, and hands back no
+  // scrubbed bytes — so the caller forwards the ORIGINAL. That is how a real
+  // CSV formula-injection payload survived a composed chain: the member gate
+  // returned sanitize with a critical finding, and the chain reported serve
+  // with none.
+  var oneSan = GC.composeGates([sanitizeGate("only")]);
+  var os = await oneSan.check({ bytes: Buffer.from("dirty") });
+  check("composeGates: a member's sanitize is reported, not swallowed",
+    os.action === "sanitize");
+  check("composeGates: the scrubbed bytes reach the caller",
+    !!os.sanitized && os.sanitized.toString() === "clean");
+
+  // Issues are the evidence. A chain that drops them leaves the operator's
+  // audit trail empty for content that was actually modified.
+  var issueGate = GC.defineGate({
+    name: "issuer",
+    check: async function () {
+      return { ok: true, action: "sanitize", sanitized: Buffer.from("clean"),
+               issues: [{ kind: "formula-prefix-cell", severity: "critical",
+                          ruleId: "csv.formula-injection" }] };
+    },
+  });
+  var withIssues = GC.composeGates([issueGate, serveGate("after")]);
+  var wi = await withIssues.check({ bytes: Buffer.from("=1+1") });
+  check("composeGates: a member's findings survive the composition",
+    (wi.issues || []).length === 1 && wi.issues[0].ruleId === "csv.formula-injection");
+
+  // And through a member that serves AFTER the sanitizer — the serve must not
+  // erase what an earlier member already found.
+  check("composeGates: a later serve does not erase an earlier sanitize",
+    wi.action === "sanitize");
 }
 
 async function testMultiplexAndContentTypeMux() {

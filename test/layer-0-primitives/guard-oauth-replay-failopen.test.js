@@ -47,6 +47,68 @@ async function run() {
   check("guard-oauth: a replay-store error FAILS CLOSED (code not accepted)", rvErr.ok === false);
   check("guard-oauth: a replay-store error surfaces a could-not-verify refusal",
         rvErr.issues.some(function (i) { return i.ruleId === "oauth.code-reuse-unverifiable"; }));
+
+  // The door NEXT to the one already closed. The earlier fix made a store that
+  // ERRORS fail closed; a store that is simply ABSENT still skipped the check
+  // entirely, which is the same "could not prove the code is unused" state with
+  // a quieter cause. "Unconditional" has to mean unconditional: an operator who
+  // does not want the check says so with codeReusePolicy "allow".
+  var rvNoStore = b.guardOauth.validate(BENIGN_FLOW, OPTS);
+  check("guard-oauth: a MISSING replay store fails closed too", rvNoStore.ok === false);
+  check("guard-oauth: a missing replay store says why",
+        rvNoStore.issues.some(function (i) { return i.ruleId === "oauth.code-reuse-unverifiable"; }));
+
+  // ...and the explicit opt-out still works, so this is a default, not a wall.
+  var rvOptOut = b.guardOauth.validate(BENIGN_FLOW, Object.assign({}, OPTS, { codeReusePolicy: "allow" }));
+  check("guard-oauth: codeReusePolicy 'allow' still skips the check", rvOptOut.ok === true);
+
+  // A flow with no code at all has nothing to replay.
+  var noCode = Object.assign({}, BENIGN_FLOW); delete noCode.code;
+  check("guard-oauth: a flow without a code is unaffected",
+        b.guardOauth.validate(noCode, OPTS).ok === true);
+
+  // The same shape one policy over: redirectUriPolicy "require-exact-allowlist"
+  // (strict AND balanced, and every compliance posture pins strict) skipped the
+  // exact-match check when the operator supplied no allowlist — so the
+  // attacker-controlled redirect_uri class the policy exists for passed. The
+  // @intro excused it by pointing at a startup audit that does not exist
+  // anywhere in lib/.
+  // This one is REPORTED, not refused: with no allowlist the guard cannot say
+  // the redirect_uri is wrong, only that it was never given anything to compare
+  // against. Refusing would make the primitive unusable before it is
+  // configured. What was broken is that the warning went nowhere — the @intro
+  // deferred it to a startup audit that does not exist in lib/.
+  var noAllowlist = { profile: "strict", codeReusePolicy: "allow" };
+  var rvNoList = b.guardOauth.validate(BENIGN_FLOW, noAllowlist);
+  check("guard-oauth: a missing allowlist is REPORTED",
+        rvNoList.issues.some(function (i) { return i.ruleId === "oauth.redirect-uri-allowlist-missing"; }));
+  check("guard-oauth: ...without refusing an otherwise-clean flow", rvNoList.ok === true);
+  check("guard-oauth: ...at a severity that stays out of the refusal set",
+        rvNoList.issues.every(function (i) {
+          return i.ruleId !== "oauth.redirect-uri-allowlist-missing" ||
+                 (i.severity !== "high" && i.severity !== "critical");
+        }));
+
+  // An empty array is a configured allowlist that permits nothing, so it takes
+  // the same warning path rather than reading as "anything goes".
+  var rvEmptyList = b.guardOauth.validate(BENIGN_FLOW,
+    { profile: "strict", codeReusePolicy: "allow", allowedRedirectUris: [] });
+  check("guard-oauth: an EMPTY allowlist is reported, not treated as open",
+        rvEmptyList.issues.some(function (i) { return i.ruleId === "oauth.redirect-uri-allowlist-missing"; }));
+
+  // A CONFIGURED allowlist still refuses a redirect_uri outside it — the check
+  // this whole policy exists for must keep working.
+  var rvMismatch = b.guardOauth.validate(
+    Object.assign({}, BENIGN_FLOW, { redirect_uri: "https://attacker.example/steal" }),
+    { profile: "strict", codeReusePolicy: "allow", allowedRedirectUris: ["https://app.example.com/callback"] });
+  check("guard-oauth: a configured allowlist still refuses a foreign redirect_uri",
+        rvMismatch.ok === false &&
+        rvMismatch.issues.some(function (i) { return i.ruleId === "oauth.redirect-uri-not-allowed"; }));
+
+  // The permissive profile audits rather than requires, so it is unaffected.
+  var rvAudit = b.guardOauth.validate(BENIGN_FLOW, { profile: "permissive", codeReusePolicy: "allow" });
+  check("guard-oauth: redirectUriPolicy 'audit' does not demand an allowlist",
+        !rvAudit.issues.some(function (i) { return i.ruleId === "oauth.redirect-uri-allowlist-missing"; }));
 }
 
 module.exports = { run: run };

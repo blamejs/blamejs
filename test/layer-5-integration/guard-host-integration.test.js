@@ -416,11 +416,23 @@ async function _runGraphqlGuard(g) {
 
 async function _runOauthFlowGuard(g) {
   var fx = g.INTEGRATION_FIXTURES;
-  var gate = g.gate({ profile: "strict" });
+  // A guard may declare the opts a CONFIGURED deployment supplies. Without
+  // them the benign case measures the harness's own under-configuration
+  // rather than the guard: guard-oauth's strict profile requires a
+  // redirect_uri allowlist, and reports that it has none.
+  var gate = g.gate(Object.assign({ profile: "strict" }, fx.gateOpts || {}));
 
   var rvBenign = await gate.check({ oauthFlow: fx.benignOauthFlow });
   check("[" + g.NAME + "] direct gate: benign oauthFlow → serve",
         rvBenign.ok === true && rvBenign.action === "serve");
+
+  // ...and UNCONFIGURED, the same benign flow must still say so rather than
+  // pass silently — the configuration gap is a finding, not a non-event.
+  if (fx.gateOpts) {
+    var bare = await g.gate({ profile: "strict" }).check({ oauthFlow: fx.benignOauthFlow });
+    check("[" + g.NAME + "] an unconfigured gate reports the gap",
+          (bare.issues || []).length > 0);
+  }
 
   var rvHostile = await gate.check({ oauthFlow: fx.hostileOauthFlow });
   check("[" + g.NAME + "] direct gate: hostile oauthFlow → not serve",
