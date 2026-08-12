@@ -184,6 +184,44 @@ function testOauthOptForwarding() {
       allowedRedirectUris: ["https://app.example.com/callback"],
       oauthMaxBytes: 32 * 1024, maxBytes: 1024 });
   check("guardAuth: the bundle cap still governs the wrapper", bundleCapped.ok === false);
+
+  // guardOauth runs every parameter through detectCharThreats, which reads the
+  // shared character policies. Omitting them from the forwarding list made the
+  // wrapper stricter than the guard it wraps: identical opts, different verdict.
+  // Built rather than pasted: an attack codepoint stays out of the source.
+  var RLO = String.fromCharCode(0x202E);                       // RIGHT-TO-LEFT OVERRIDE
+  var bidiFlow = Object.assign({}, FLOW, { state: "s" + RLO + "x" });
+  var direct = b.guardOauth.validate(bidiFlow,
+    { profile: "strict", bidiPolicy: "allow", codeReusePolicy: "allow",
+      allowedRedirectUris: ["https://app.example.com/callback"] });
+  var wrapped = b.guardAuth.validate({ oauthFlow: bidiFlow },
+    { profile: "strict", bidiPolicy: "allow", codeReusePolicy: "allow",
+      allowedRedirectUris: ["https://app.example.com/callback"] });
+  check("guardAuth: a character policy reaches guardOauth",
+        direct.issues.length === wrapped.issues.length);
+  check("guardAuth: ...and the default still refuses the bidi override",
+        b.guardAuth.validate({ oauthFlow: bidiFlow },
+          { profile: "strict", codeReusePolicy: "allow",
+            allowedRedirectUris: ["https://app.example.com/callback"] }).ok === false);
+
+  // guardAuth ALREADY resolves compliancePosture into childProfile, and an
+  // explicit childProfile beats it. Forwarding the posture as well made the
+  // child resolve it a second time and overwrite that choice — the operator's
+  // explicit request silently lost to a posture they had already overridden.
+  var bareFlow = { response_type: "code", redirect_uri: "https://app.example.com/callback",
+                   state: "csrf-rand-1", scope: "openid" };
+  var overridden = b.guardAuth.validate({ oauthFlow: bareFlow },
+    { compliancePosture: "hipaa", childProfile: "permissive", codeReusePolicy: "allow",
+      allowedRedirectUris: ["https://app.example.com/callback"] });
+  check("guardAuth: an explicit childProfile outranks the posture in the child",
+        overridden.ok === true);
+  // ...while the posture alone still reaches the child as the strict profile.
+  var postureOnly = b.guardAuth.validate({ oauthFlow: bareFlow },
+    { compliancePosture: "hipaa", codeReusePolicy: "allow",
+      allowedRedirectUris: ["https://app.example.com/callback"] });
+  check("guardAuth: the posture alone still tightens the child",
+        postureOnly.ok === false &&
+        postureOnly.issues.some(function (i) { return i.kind === "pkce-missing"; }));
 }
 
 async function run() {
