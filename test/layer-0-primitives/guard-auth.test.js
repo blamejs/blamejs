@@ -104,9 +104,168 @@ async function testGate() {
   check("guardAuth.gate no-bundle action=serve",    none.action === "serve");
 }
 
+// guardAuth is a WRAPPER, so an option the operator sets for the guard it wraps
+// has to reach that guard. It forwarded two keys out of guardOauth's fifteen,
+// so every policy and every companion object was dropped on the floor — silently
+// while the dropped checks were themselves silent, and fatally once the replay
+// check began failing closed: a code-bearing flow refused, and supplying the
+// store that would satisfy it changed nothing, because the store never arrived.
+function testOauthOptForwarding() {
+  var FLOW = {
+    response_type: "code",
+    redirect_uri:  "https://app.example.com/callback",
+    state:         "csrf-rand-1",
+    scope:         "openid profile",
+    code_challenge: "abc123def456ghi789jkl012mno345pqr678",
+    code_challenge_method: "S256",
+    code:          "auth-code-xyz",
+  };
+  var BASE = { profile: "strict", allowedRedirectUris: ["https://app.example.com/callback"] };
+  function validate(extra) {
+    return b.guardAuth.validate({ oauthFlow: FLOW }, Object.assign({}, BASE, extra || {}));
+  }
+
+  // A working store must satisfy the replay check THROUGH the wrapper.
+  var withStore = validate({ seenCodeStore: { hasSeen: function () { return false; } } });
+  check("guardAuth: a seenCodeStore reaches guardOauth", withStore.ok === true);
+
+  // ...and a store reporting a replay must still refuse through it.
+  var replayed = validate({ seenCodeStore: { hasSeen: function () { return true; } } });
+  check("guardAuth: a replayed code is refused through the wrapper",
+        replayed.ok === false &&
+        replayed.issues.some(function (i) { return i.ruleId === "oauth.code-reused"; }));
+
+  // The documented opt-out must be reachable too, or the only escape from the
+  // fail-closed default is to stop using the wrapper.
+  var optOut = validate({ codeReusePolicy: "allow" });
+  check("guardAuth: codeReusePolicy reaches guardOauth", optOut.ok === true);
+
+  // Unconfigured still fails closed — the forwarding fix must not reopen the
+  // hole it exists to make fixable.
+  check("guardAuth: no store still fails closed", validate().ok === false);
+
+  // A policy opt other than the replay pair proves this is forwarding, not two
+  // special cases: relaxing PKCE must reach the child guard.
+  var noPkce = Object.assign({}, FLOW);
+  delete noPkce.code_challenge; delete noPkce.code_challenge_method;
+  var strictPkce = b.guardAuth.validate({ oauthFlow: noPkce },
+    Object.assign({}, BASE, { codeReusePolicy: "allow" }));
+  var relaxedPkce = b.guardAuth.validate({ oauthFlow: noPkce },
+    Object.assign({}, BASE, { codeReusePolicy: "allow", pkcePolicy: "allow" }));
+  check("guardAuth: a missing PKCE challenge is refused by default", strictPkce.ok === false);
+  check("guardAuth: pkcePolicy reaches guardOauth", relaxedPkce.ok === true);
+
+  // `maxBytes` is the one name the two guards both use and mean differently:
+  // here it caps the whole auth BUNDLE, in guardOauth it caps the flow. So the
+  // child's cap gets its own wrapper name rather than being unreachable —
+  // `maxParamBytes` was already tunable through the wrapper, which made the
+  // absence of a flow-size control arbitrary.
+  var bigFlow = Object.assign({}, FLOW, { scope: "x".repeat(9 * 1024) });
+  function withCaps(extra) {
+    return b.guardAuth.validate({ oauthFlow: bigFlow },
+      Object.assign({ profile: "strict", codeReusePolicy: "allow",
+                      allowedRedirectUris: ["https://app.example.com/callback"] }, extra || {}));
+  }
+  var cappedByChild = withCaps({ maxBytes: 65536 });
+  check("guardAuth: its own maxBytes does NOT raise the child's flow cap",
+        cappedByChild.issues.some(function (i) { return i.ruleId === "oauth.flow-cap"; }));
+
+  var raised = withCaps({ oauthMaxBytes: 32 * 1024 });
+  check("guardAuth: oauthMaxBytes raises the child's flow cap",
+        !raised.issues.some(function (i) { return i.ruleId === "oauth.flow-cap"; }));
+
+  var tightened = withCaps({ oauthMaxBytes: 512 });
+  check("guardAuth: oauthMaxBytes can tighten the child's flow cap too",
+        tightened.issues.some(function (i) { return i.ruleId === "oauth.flow-cap"; }));
+
+  // ...and it must not be mistaken for the bundle cap, which still applies.
+  var bundleCapped = b.guardAuth.validate({ oauthFlow: bigFlow },
+    { profile: "strict", codeReusePolicy: "allow",
+      allowedRedirectUris: ["https://app.example.com/callback"],
+      oauthMaxBytes: 32 * 1024, maxBytes: 1024 });
+  check("guardAuth: the bundle cap still governs the wrapper", bundleCapped.ok === false);
+
+  // guardOauth runs every parameter through detectCharThreats, which reads the
+  // shared character policies. Omitting them from the forwarding list made the
+  // wrapper stricter than the guard it wraps: identical opts, different verdict.
+  // Built rather than pasted: an attack codepoint stays out of the source.
+  var RLO = String.fromCharCode(0x202E);                       // RIGHT-TO-LEFT OVERRIDE
+  var bidiFlow = Object.assign({}, FLOW, { state: "s" + RLO + "x" });
+  var direct = b.guardOauth.validate(bidiFlow,
+    { profile: "strict", bidiPolicy: "allow", codeReusePolicy: "allow",
+      allowedRedirectUris: ["https://app.example.com/callback"] });
+  var wrapped = b.guardAuth.validate({ oauthFlow: bidiFlow },
+    { profile: "strict", bidiPolicy: "allow", codeReusePolicy: "allow",
+      allowedRedirectUris: ["https://app.example.com/callback"] });
+  check("guardAuth: a character policy reaches guardOauth",
+        direct.issues.length === wrapped.issues.length);
+  check("guardAuth: ...and the default still refuses the bidi override",
+        b.guardAuth.validate({ oauthFlow: bidiFlow },
+          { profile: "strict", codeReusePolicy: "allow",
+            allowedRedirectUris: ["https://app.example.com/callback"] }).ok === false);
+
+  // The invariant, stated once and checked over the whole matrix: a wrapper
+  // answers what the guard it wraps answers. Anything else means an operator's
+  // options mean two different things depending on which entry point they use.
+  //
+  // Posture precedence is where it bites. guardAuth's own resolveOpts lets an
+  // explicit childProfile outrank a posture; guardOauth's resolver does the
+  // opposite — a posture overlays the profile. Resolving that in the wrapper
+  // picks one model and diverges under the other, so the wrapper forwards and
+  // the child decides. Driven as a matrix rather than case-by-case because
+  // each individual case looked defensible on its own while disagreeing with
+  // the guard.
+  var bareFlow = { response_type: "code", redirect_uri: "https://app.example.com/callback",
+                   state: "csrf-rand-1", scope: "openid" };
+  var SHARED = { codeReusePolicy: "allow",
+                 allowedRedirectUris: ["https://app.example.com/callback"] };
+  function equivalent(label, wrapperExtra, childExtra) {
+    var viaWrapper = b.guardAuth.validate({ oauthFlow: bareFlow },
+      Object.assign({}, SHARED, wrapperExtra));
+    var direct = b.guardOauth.validate(bareFlow, Object.assign({}, SHARED, childExtra));
+    check("guardAuth: " + label + " matches a direct guardOauth call",
+          viaWrapper.ok === direct.ok);
+    return direct.ok;
+  }
+
+  equivalent("an explicit posture",
+             { compliancePosture: "hipaa" }, { compliancePosture: "hipaa" });
+  equivalent("a posture plus an explicit child profile",
+             { compliancePosture: "hipaa", childProfile: "permissive" },
+             { compliancePosture: "hipaa", profile: "permissive" });
+  equivalent("a child profile alone",
+             { childProfile: "permissive" }, { profile: "permissive" });
+
+  // The posture is not decorative in either direction.
+  check("guardAuth: a posture tightens the child",
+        b.guardAuth.validate({ oauthFlow: bareFlow },
+          Object.assign({}, SHARED, { compliancePosture: "hipaa" })).issues
+          .some(function (i) { return i.kind === "pkce-missing"; }));
+
+  // A PROCESS-GLOBAL posture (b.compliance.set) is a deployment declaration
+  // every primitive picks up without per-call wiring. The same equivalence has
+  // to hold under one — including when an explicit per-call posture DIFFERS
+  // from the global, which is where dropping the posture in the wrapper
+  // silently handed the operator the deployment's posture instead of theirs.
+  var savedPosture = b.compliance.current();
+  try {
+    b.compliance.set("gdpr");
+    equivalent("an explicit posture that differs from the global one",
+               { compliancePosture: "hipaa" }, { compliancePosture: "hipaa" });
+    equivalent("no explicit posture, under a global one", {}, {});
+    equivalent("an explicit child profile, under a global posture",
+               { childProfile: "permissive" }, { profile: "permissive" });
+  } finally {
+    // Process-global: leaving it set would retune every later test.
+    if (typeof savedPosture === "string" && savedPosture.length > 0) b.compliance.set(savedPosture);
+    else b.compliance.clear();
+  }
+}
+
 async function run() {
   testValidate();
   testSanitize();
+  testOauthOptForwarding();
   await testGate();
 }
 

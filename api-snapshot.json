@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.18.25",
-  "createdAt": "2026-08-11T03:04:43.551Z",
+  "frameworkVersion": "0.18.26",
+  "createdAt": "2026-08-12T00:49:10.077Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -31984,6 +31984,15 @@
                 "state": {
                   "type": "primitive",
                   "valueType": "string"
+                }
+              }
+            },
+            "gateOpts": {
+              "type": "object",
+              "members": {
+                "allowedRedirectUris": {
+                  "type": "instance",
+                  "ctorName": "Array"
                 }
               }
             },

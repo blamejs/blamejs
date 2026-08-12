@@ -156,6 +156,46 @@ function testNonCanonicalRejected() {
   void canonical4;
 }
 
+// Padding is part of the canonical form, for the same reason the trailing bits
+// are: RFC 4648 §6 fixes exactly how many "=" a given symbol count takes, so a
+// decoder that accepts any other number lets several strings decode to one
+// value. "MZXW6YTBOI======", "MZXW6YTBOI=====" and bare "MZXW6YTBOI" all mean
+// "foobar" — three spellings of one secret, which is the malleability this
+// module already refuses for the final symbol's low bits.
+//
+// Strict mode only. `loose` exists precisely to accept the hand-typed and
+// TOTP-shaped inputs that omit padding, and lib/totp.js passes it.
+function testPaddingCanonicalityRejected() {
+  var canonical = b.base32.encode(Buffer.from("foobar"));          // "MZXW6YTBOI======"
+  check("canonical padding decodes", b.base32.decode(canonical).toString() === "foobar");
+
+  check("under-padded rejected in strict mode",
+    threwCode(function () { b.base32.decode("MZXW6YTBOI====="); }) === "base32/bad-padding");
+  check("over-padded rejected in strict mode",
+    threwCode(function () { b.base32.decode("MZXW6YTBOI======="); }) === "base32/bad-padding");
+  // Entirely unpadded stays ACCEPTED: encode({ padding: false }) emits exactly
+  // that, so refusing it would break this module against itself.
+  check("unpadded is still accepted in strict mode",
+    b.base32.decode("MZXW6YTBOI").toString() === "foobar");
+  check("encode({padding:false}) round-trips in strict mode",
+    b.base32.decode(b.base32.encode(Buffer.from("foobar"), { padding: false })).toString() === "foobar");
+
+  // The value that used to be in this module's own @example: base32 of
+  // "abcdefgh" is "MFRGGZDFMZTWQ===" — with FOUR "=" it is not canonical.
+  check("the documented over-padded value is rejected",
+    threwCode(function () { b.base32.decode("MFRGGZDFMZTWQ===="); }) === "base32/bad-padding");
+  check("...and its canonical three-pad form is accepted",
+    b.base32.decode("MFRGGZDFMZTWQ===").toString() === "abcdefgh");
+
+  // loose keeps working — that is the whole point of the opt.
+  check("loose still accepts a missing pad", b.base32.decode("MZXW6YTBOI", { loose: true }).toString() === "foobar");
+  check("loose still accepts an odd pad count",
+    b.base32.decode("MZXW6YTBOI=====", { loose: true }).toString() === "foobar");
+  // A full group needs no padding at all, in either mode.
+  check("an exact 8-symbol group needs no padding",
+    b.base32.decode(b.base32.encode(Buffer.from("abcde"))).toString() === "abcde");
+}
+
 // Impossible symbol counts: 1, 3, 6 (mod 8) cannot represent whole bytes.
 function testBadLengthRejected() {
   ["A", "ABC", "ABCDEF"].forEach(function (s) {
@@ -180,6 +220,7 @@ async function run() {
   testDecodeStrictRejects();
   testDecodeLoose();
   testNonCanonicalRejected();
+  testPaddingCanonicalityRejected();
   testBadLengthRejected();
 }
 module.exports = { run: run };
