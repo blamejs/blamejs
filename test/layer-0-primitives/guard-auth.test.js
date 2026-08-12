@@ -204,47 +204,57 @@ function testOauthOptForwarding() {
           { profile: "strict", codeReusePolicy: "allow",
             allowedRedirectUris: ["https://app.example.com/callback"] }).ok === false);
 
-  // guardAuth ALREADY resolves compliancePosture into childProfile, and an
-  // explicit childProfile beats it. Forwarding the posture as well made the
-  // child resolve it a second time and overwrite that choice — the operator's
-  // explicit request silently lost to a posture they had already overridden.
+  // The invariant, stated once and checked over the whole matrix: a wrapper
+  // answers what the guard it wraps answers. Anything else means an operator's
+  // options mean two different things depending on which entry point they use.
+  //
+  // Posture precedence is where it bites. guardAuth's own resolveOpts lets an
+  // explicit childProfile outrank a posture; guardOauth's resolver does the
+  // opposite — a posture overlays the profile. Resolving that in the wrapper
+  // picks one model and diverges under the other, so the wrapper forwards and
+  // the child decides. Driven as a matrix rather than case-by-case because
+  // each individual case looked defensible on its own while disagreeing with
+  // the guard.
   var bareFlow = { response_type: "code", redirect_uri: "https://app.example.com/callback",
                    state: "csrf-rand-1", scope: "openid" };
-  var overridden = b.guardAuth.validate({ oauthFlow: bareFlow },
-    { compliancePosture: "hipaa", childProfile: "permissive", codeReusePolicy: "allow",
-      allowedRedirectUris: ["https://app.example.com/callback"] });
-  check("guardAuth: an explicit childProfile outranks the posture in the child",
-        overridden.ok === true);
-  // ...while the posture alone still reaches the child as the strict profile.
-  var postureOnly = b.guardAuth.validate({ oauthFlow: bareFlow },
-    { compliancePosture: "hipaa", codeReusePolicy: "allow",
-      allowedRedirectUris: ["https://app.example.com/callback"] });
-  check("guardAuth: the posture alone still tightens the child",
-        postureOnly.ok === false &&
-        postureOnly.issues.some(function (i) { return i.kind === "pkce-missing"; }));
+  var SHARED = { codeReusePolicy: "allow",
+                 allowedRedirectUris: ["https://app.example.com/callback"] };
+  function equivalent(label, wrapperExtra, childExtra) {
+    var viaWrapper = b.guardAuth.validate({ oauthFlow: bareFlow },
+      Object.assign({}, SHARED, wrapperExtra));
+    var direct = b.guardOauth.validate(bareFlow, Object.assign({}, SHARED, childExtra));
+    check("guardAuth: " + label + " matches a direct guardOauth call",
+          viaWrapper.ok === direct.ok);
+    return direct.ok;
+  }
+
+  equivalent("an explicit posture",
+             { compliancePosture: "hipaa" }, { compliancePosture: "hipaa" });
+  equivalent("a posture plus an explicit child profile",
+             { compliancePosture: "hipaa", childProfile: "permissive" },
+             { compliancePosture: "hipaa", profile: "permissive" });
+  equivalent("a child profile alone",
+             { childProfile: "permissive" }, { profile: "permissive" });
+
+  // The posture is not decorative in either direction.
+  check("guardAuth: a posture tightens the child",
+        b.guardAuth.validate({ oauthFlow: bareFlow },
+          Object.assign({}, SHARED, { compliancePosture: "hipaa" })).issues
+          .some(function (i) { return i.kind === "pkce-missing"; }));
 
   // A PROCESS-GLOBAL posture (b.compliance.set) is a deployment declaration
-  // that every primitive picks up without per-call wiring, and it overlays the
-  // profile deliberately — a deployment-wide posture is not something a
-  // per-call profile silently lowers. The property this wrapper owes is not
-  // "an explicit childProfile always wins" but "the wrapper answers exactly
-  // what the guard it wraps answers". Pinned here because the obvious-looking
-  // fix — suppressing the child's global-posture fallback once guardAuth has
-  // resolved precedence — would make the wrapper quietly ignore a deployment
-  // posture that a direct guardOauth call honours.
+  // every primitive picks up without per-call wiring. The same equivalence has
+  // to hold under one — including when an explicit per-call posture DIFFERS
+  // from the global, which is where dropping the posture in the wrapper
+  // silently handed the operator the deployment's posture instead of theirs.
   var savedPosture = b.compliance.current();
   try {
-    b.compliance.set("hipaa");
-    var childOpts = { profile: "permissive", codeReusePolicy: "allow",
-                      allowedRedirectUris: ["https://app.example.com/callback"] };
-    var viaWrapper = b.guardAuth.validate({ oauthFlow: bareFlow },
-      { childProfile: "permissive", codeReusePolicy: "allow",
-        allowedRedirectUris: ["https://app.example.com/callback"] });
-    var directUnderGlobal = b.guardOauth.validate(bareFlow, childOpts);
-    check("guardAuth: under a global posture the wrapper matches the guard",
-          viaWrapper.ok === directUnderGlobal.ok);
-    check("guardAuth: ...and the global posture is honoured, not dropped",
-          directUnderGlobal.ok === false);
+    b.compliance.set("gdpr");
+    equivalent("an explicit posture that differs from the global one",
+               { compliancePosture: "hipaa" }, { compliancePosture: "hipaa" });
+    equivalent("no explicit posture, under a global one", {}, {});
+    equivalent("an explicit child profile, under a global posture",
+               { childProfile: "permissive" }, { profile: "permissive" });
   } finally {
     // Process-global: leaving it set would retune every later test.
     if (typeof savedPosture === "string" && savedPosture.length > 0) b.compliance.set(savedPosture);
