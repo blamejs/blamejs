@@ -222,6 +222,34 @@ function testOauthOptForwarding() {
   check("guardAuth: the posture alone still tightens the child",
         postureOnly.ok === false &&
         postureOnly.issues.some(function (i) { return i.kind === "pkce-missing"; }));
+
+  // A PROCESS-GLOBAL posture (b.compliance.set) is a deployment declaration
+  // that every primitive picks up without per-call wiring, and it overlays the
+  // profile deliberately — a deployment-wide posture is not something a
+  // per-call profile silently lowers. The property this wrapper owes is not
+  // "an explicit childProfile always wins" but "the wrapper answers exactly
+  // what the guard it wraps answers". Pinned here because the obvious-looking
+  // fix — suppressing the child's global-posture fallback once guardAuth has
+  // resolved precedence — would make the wrapper quietly ignore a deployment
+  // posture that a direct guardOauth call honours.
+  var savedPosture = b.compliance.current();
+  try {
+    b.compliance.set("hipaa");
+    var childOpts = { profile: "permissive", codeReusePolicy: "allow",
+                      allowedRedirectUris: ["https://app.example.com/callback"] };
+    var viaWrapper = b.guardAuth.validate({ oauthFlow: bareFlow },
+      { childProfile: "permissive", codeReusePolicy: "allow",
+        allowedRedirectUris: ["https://app.example.com/callback"] });
+    var directUnderGlobal = b.guardOauth.validate(bareFlow, childOpts);
+    check("guardAuth: under a global posture the wrapper matches the guard",
+          viaWrapper.ok === directUnderGlobal.ok);
+    check("guardAuth: ...and the global posture is honoured, not dropped",
+          directUnderGlobal.ok === false);
+  } finally {
+    // Process-global: leaving it set would retune every later test.
+    if (typeof savedPosture === "string" && savedPosture.length > 0) b.compliance.set(savedPosture);
+    else b.compliance.clear();
+  }
 }
 
 async function run() {
