@@ -11650,14 +11650,35 @@ var KNOWN_ANTIPATTERNS = [
     reason: "The smoke worker requires each test module and only `await mod.run()`. A test written as a top-level `(async function run(){...})()` IIFE runs DETACHED on require: the worker measures + prints its result before the IIFE's post-await assertions execute, so every check after the first await silently never counts (parsers-standalone reported 4 of 26 checks this way) and a failing post-await assertion is never seen — a false pass. Export `run` and invoke under `if (require.main === module)`. Fires on a column-0 `(async` (function or arrow IIFE); `async function run()` (no leading paren), `module.exports = { run }`, and an indented async IIFE inside a helper stay silent. Synchronous `(function(){...})()` IIFEs complete during require, so they do not undercount and are out of scope here.",
   },
   {
-    // `Promise + setTimeout` direct sleep in tests is forbidden;
-    // tests waiting on an asynchronous condition MUST use
-    // `helpers.waitUntil`. v0.10.14 introduced the detector with a
-    // narrower regex + a 49-file backlog under a separate test-side
-    // runner; v0.11.19 consolidated the test-discipline catalog into
-    // this file with the broadened regex (Codex P2 from v0.10.14 —
-    // catches block-bodied arrows, multi-arg arrows, function bodies
-    // with leading statements).
+    id: "gate-issue-severity-outside-the-contract-enum",
+    primitive: "b.gateContract.ISSUE_SEVERITIES — info / warn / high / critical",
+    // The severity is not decoration: gate-contract's aggregateIssues refuses on
+    // "critical" and "high" and passes everything else, so a value outside the
+    // enum silently lands in the non-blocking bucket. A guard that meant to
+    // raise an alarm instead files a note, and audit consumers reading the
+    // documented enum can drop or misclassify the finding.
+    //
+    // Anchored on ruleId, which is what makes it precise rather than noisy:
+    // that field marks the object as an ISSUE flowing into a gate decision.
+    // lib/ carries 42 other `severity:` values — WCAG conformance levels,
+    // backup-report and NTP-check grades — that are each module's own
+    // vocabulary and correctly not this enum. Scoping by filename would flag
+    // all of them; scoping by ruleId flags none. Verified across 231 real gate
+    // issues: every one is in-enum, so this entry ships with an empty
+    // allowlist and no exceptions to explain.
+    //
+    // The tempered token stops at the `})` closing an `issues.push({...})`, so
+    // the two fields must belong to the SAME object and the match cannot run
+    // from one issue into the next. The quantifier is a ReDoS backstop only,
+    // set far above any real issue body — a char bound doing the precision
+    // work silently rots the day a `snippet` grows past it, which an earlier
+    // {0,200} version of this entry did for any issue whose ruleId sat behind
+    // a long snippet.
+    regex: /severity:\s*"(?!(?:info|warn|high|critical)")[a-z-]+"(?:(?!\}\s*\))[\s\S]){0,2000}?ruleId:|ruleId:(?:(?!\}\s*\))[\s\S]){0,2000}?severity:\s*"(?!(?:info|warn|high|critical)")[a-z-]+"/,
+    allowlist: [],
+    reason: "an issue carrying a ruleId is read by aggregateIssues, which only refuses on high/critical — an invented severity (\"medium\") is silently advisory",
+  },
+  {
     id: "guard-gate-prose-names-a-method-the-gate-lacks",
     primitive: "the gate surface built by lib/gate-contract.js — check / mode / audit / observability / metrics",
     // A guard's @primitive block is its documentation page. When the prose
@@ -11680,6 +11701,14 @@ var KNOWN_ANTIPATTERNS = [
     reason: "a guard's prose must name a method the gate actually exposes; `decide(ctx)` outlived the rename to `check` in guard-smtp-command.js and kept teaching it",
   },
   {
+    // `Promise + setTimeout` direct sleep in tests is forbidden;
+    // tests waiting on an asynchronous condition MUST use
+    // `helpers.waitUntil`. v0.10.14 introduced the detector with a
+    // narrower regex + a 49-file backlog under a separate test-side
+    // runner; v0.11.19 consolidated the test-discipline catalog into
+    // this file with the broadened regex (Codex P2 from v0.10.14 —
+    // catches block-bodied arrows, multi-arg arrows, function bodies
+    // with leading statements).
     id: "test-promise-settimeout-sleep",
     primitive: "helpers.waitUntil(predicate, { timeoutMs, label }) for condition-waits OR helpers.passiveObserve(ms, label) for the rare case of verifying ABSENCE of an event over a window",
     scanScope: "test",
