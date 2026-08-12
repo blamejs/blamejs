@@ -104,9 +104,62 @@ async function testGate() {
   check("guardAuth.gate no-bundle action=serve",    none.action === "serve");
 }
 
+// guardAuth is a WRAPPER, so an option the operator sets for the guard it wraps
+// has to reach that guard. It forwarded two keys out of guardOauth's fifteen,
+// so every policy and every companion object was dropped on the floor — silently
+// while the dropped checks were themselves silent, and fatally once the replay
+// check began failing closed: a code-bearing flow refused, and supplying the
+// store that would satisfy it changed nothing, because the store never arrived.
+function testOauthOptForwarding() {
+  var FLOW = {
+    response_type: "code",
+    redirect_uri:  "https://app.example.com/callback",
+    state:         "csrf-rand-1",
+    scope:         "openid profile",
+    code_challenge: "abc123def456ghi789jkl012mno345pqr678",
+    code_challenge_method: "S256",
+    code:          "auth-code-xyz",
+  };
+  var BASE = { profile: "strict", allowedRedirectUris: ["https://app.example.com/callback"] };
+  function validate(extra) {
+    return b.guardAuth.validate({ oauthFlow: FLOW }, Object.assign({}, BASE, extra || {}));
+  }
+
+  // A working store must satisfy the replay check THROUGH the wrapper.
+  var withStore = validate({ seenCodeStore: { hasSeen: function () { return false; } } });
+  check("guardAuth: a seenCodeStore reaches guardOauth", withStore.ok === true);
+
+  // ...and a store reporting a replay must still refuse through it.
+  var replayed = validate({ seenCodeStore: { hasSeen: function () { return true; } } });
+  check("guardAuth: a replayed code is refused through the wrapper",
+        replayed.ok === false &&
+        replayed.issues.some(function (i) { return i.ruleId === "oauth.code-reused"; }));
+
+  // The documented opt-out must be reachable too, or the only escape from the
+  // fail-closed default is to stop using the wrapper.
+  var optOut = validate({ codeReusePolicy: "allow" });
+  check("guardAuth: codeReusePolicy reaches guardOauth", optOut.ok === true);
+
+  // Unconfigured still fails closed — the forwarding fix must not reopen the
+  // hole it exists to make fixable.
+  check("guardAuth: no store still fails closed", validate().ok === false);
+
+  // A policy opt other than the replay pair proves this is forwarding, not two
+  // special cases: relaxing PKCE must reach the child guard.
+  var noPkce = Object.assign({}, FLOW);
+  delete noPkce.code_challenge; delete noPkce.code_challenge_method;
+  var strictPkce = b.guardAuth.validate({ oauthFlow: noPkce },
+    Object.assign({}, BASE, { codeReusePolicy: "allow" }));
+  var relaxedPkce = b.guardAuth.validate({ oauthFlow: noPkce },
+    Object.assign({}, BASE, { codeReusePolicy: "allow", pkcePolicy: "allow" }));
+  check("guardAuth: a missing PKCE challenge is refused by default", strictPkce.ok === false);
+  check("guardAuth: pkcePolicy reaches guardOauth", relaxedPkce.ok === true);
+}
+
 async function run() {
   testValidate();
   testSanitize();
+  testOauthOptForwarding();
   await testGate();
 }
 
