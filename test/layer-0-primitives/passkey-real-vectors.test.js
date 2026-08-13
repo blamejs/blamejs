@@ -969,6 +969,160 @@ async function testAuthenticatorExtensionResults() {
         plainRv.rv.registrationInfo.authenticatorExtensionResults === undefined);
 }
 
+// ---- A stored credential id keeps working whichever encoder wrote it ----
+
+async function testPaddedStoredCredentialIdStillLogsIn() {
+  // The compatibility case that motivated accepting padded ids at all: a
+  // deployment whose credential column holds `...=` from whichever encoder
+  // wrote the row. startAuthentication hands the browser the canonical
+  // unpadded spelling, the browser returns THAT, and the binding then
+  // compares it against the still-padded stored value. Comparing raw strings
+  // there turns two spellings of ONE credential into a mismatch and locks out
+  // exactly the deployments the padding support was added for.
+  var challenge = b64url(crypto.randomBytes(32));
+  var reg = makeRegistration(challenge);
+  var regRv = await regOutcome({
+    response: reg.response, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("padded stored id: setup registration verifies", regRv.ok === true);
+
+  // The same credential id as a padding-emitting encoder would have stored it.
+  var storedPadded = Buffer.from(reg.credId).toString("base64")
+    .replace(/\+/g, "-").replace(/\//g, "_");
+  check("padded stored id: the fixture really is the padded spelling",
+        storedPadded !== b64url(reg.credId) &&
+        storedPadded.replace(/=+$/, "") === b64url(reg.credId));
+
+  var authChallenge = b64url(crypto.randomBytes(32));
+  var assertion = makeAssertion(reg.keyPair.privateKey, reg.credId, authChallenge, 1);
+  var rv = await authOutcome({
+    response: assertion.response, expectedChallenge: authChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    credential: { id: storedPadded, publicKey: storedPublicKey(regRv.rv), counter: 0 },
+  });
+  check("padded stored id: a credential stored with padding still logs in",
+        rv.ok === true);
+
+  // ...and a genuinely different credential is still refused, so the
+  // canonicalization did not turn the binding into a no-op.
+  var otherChallenge = b64url(crypto.randomBytes(32));
+  var other = makeAssertion(reg.keyPair.privateKey, reg.credId, otherChallenge, 2);
+  var refused = await authOutcome({
+    response: other.response, expectedChallenge: otherChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    credential: {
+      id: Buffer.from(crypto.randomBytes(32)).toString("base64")
+        .replace(/\+/g, "-").replace(/\//g, "_"),
+      publicKey: storedPublicKey(regRv.rv), counter: 0,
+    },
+  });
+  check("padded stored id: a DIFFERENT credential is still refused",
+        refused.ok === false && /credential-id-mismatch/.test(String(refused.code)));
+}
+
+// ---- SafetyNet: device-integrity signal and replay bound ----
+
+// An `android-safetynet` attestation whose JWS payload this test controls.
+// The JWS is not Google-signed, so the verifier refuses it at the chain — but
+// the framework's own freshness gate runs on the payload and can be driven
+// independently, which is the part this covers.
+function makeSafetyNetRegistration(challenge, payload) {
+  var kp     = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var credId = crypto.randomBytes(32);
+  var authData = buildAuthData(RP_ID, FLAG_UP | FLAG_UV | FLAG_AT, 0,
+    buildAttestedCredData(Buffer.alloc(16, 0), credId, coseEC2PublicKey(kp.publicKey)));
+  var jws = [
+    Buffer.from(JSON.stringify({ alg: "RS256", x5c: [] })).toString("base64url"),
+    Buffer.from(JSON.stringify(payload)).toString("base64url"),
+    Buffer.from("not-a-real-signature").toString("base64url"),
+  ].join(".");
+  var attObj = cborMap([
+    [cborText("fmt"),     cborText("android-safetynet")],
+    [cborText("attStmt"), cborMap([
+      [cborText("ver"),      cborText("1")],
+      [cborText("response"), cborBytes(Buffer.from(jws, "utf8"))],
+    ])],
+    [cborText("authData"), cborBytes(authData)],
+  ]);
+  var clientData = Buffer.from(JSON.stringify({
+    type: "webauthn.create", challenge: challenge, origin: ORIGIN, crossOrigin: false,
+  }), "utf8");
+  return {
+    keyPair: kp, credId: credId,
+    response: {
+      id: b64url(credId), rawId: b64url(credId), type: "public-key",
+      response: { clientDataJSON: b64url(clientData), attestationObject: b64url(attObj) },
+      clientExtensionResults: {},
+    },
+  };
+}
+
+async function testSafetyNetIntegrityAndFreshness() {
+  // A SafetyNet response is a point-in-time claim about a device. The
+  // verifier checks the JWS signature and chain but does not bound the
+  // statement's AGE, so without this gate one captured months ago replays for
+  // as long as the relying party keeps the matching challenge outstanding —
+  // "this device was untampered" quietly becomes "was untampered once".
+  var challenge = b64url(crypto.randomBytes(32));
+
+  async function outcomeFor(payload, extra) {
+    var reg = makeSafetyNetRegistration(challenge, payload);
+    return await regOutcome(Object.assign({
+      response: reg.response, expectedChallenge: challenge,
+      expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    }, extra || {}));
+  }
+
+  var stale = await outcomeFor({
+    timestampMs: Date.now() - 10 * 60 * 1000, ctsProfileMatch: true, basicIntegrity: true,
+  });
+  check("safetynet: a response older than the age bound is refused as stale",
+        stale.ok === false && /safetynet-stale/.test(String(stale.code)));
+
+  var future = await outcomeFor({
+    timestampMs: Date.now() + 10 * 60 * 1000, ctsProfileMatch: true, basicIntegrity: true,
+  });
+  check("safetynet: a response timestamped in the future is refused",
+        future.ok === false && /safetynet-stale/.test(String(future.code)));
+
+  var noStamp = await outcomeFor({ ctsProfileMatch: true, basicIntegrity: true });
+  check("safetynet: a response with no readable timestamp is refused, not assumed fresh",
+        noStamp.ok === false && /safetynet-unreadable/.test(String(noStamp.code)));
+
+  // A FRESH response gets past the age gate and is then refused by the
+  // verifier for the reason it should be — the JWS is not Google-signed.
+  // Reaching that refusal is the proof the freshness gate let it through.
+  var fresh = await outcomeFor({
+    timestampMs: Date.now(), ctsProfileMatch: true, basicIntegrity: true,
+  });
+  check("safetynet: a FRESH response passes the age gate and fails on the signature instead",
+        fresh.ok === false && !/safetynet-stale|safetynet-unreadable/.test(String(fresh.code)));
+
+  // The bound is an operator dial, not a hardcode — a deployment with a
+  // slower flow can widen it, and that must actually take effect.
+  var widened = await outcomeFor(
+    { timestampMs: Date.now() - 10 * 60 * 1000, ctsProfileMatch: true, basicIntegrity: true },
+    { safetyNetMaxAgeMs: 60 * 60 * 1000 });
+  check("safetynet: widening safetyNetMaxAgeMs admits an older response",
+        widened.ok === false && !/safetynet-stale/.test(String(widened.code)));
+
+  // ...but the dial cannot be turned to "off" by accident. NaN and Infinity
+  // both make every age comparison pass, so a fat-fingered option would
+  // silently remove the replay bound rather than fail.
+  var staleP = { timestampMs: Date.now() - 10 * 60 * 1000, ctsProfileMatch: true };
+  var bogus = [NaN, Infinity, -1, "60000", null];
+  for (var i = 0; i < bogus.length; i++) {
+    var rv = await outcomeFor(staleP, { safetyNetMaxAgeMs: bogus[i] });
+    // null falls back to the default bound, so it is still refused as stale;
+    // the rest are configuration errors and refused by name. Either way the
+    // bound must NOT silently disappear.
+    check("safetynet: safetyNetMaxAgeMs " + String(bogus[i]) + " never disables the bound",
+          rv.ok === false &&
+          /bad-safetynet-max-age|safetynet-stale/.test(String(rv.code)));
+  }
+}
+
 // ---- residentKey and requireResidentKey state ONE requirement ----
 
 async function testResidentKeySelectorsAgree() {
@@ -1862,6 +2016,8 @@ async function run() {
   await testAttestationRootsArePinned();
   await testCredPropsAndPaddedDescriptors();
   await testAuthenticatorExtensionResults();
+  await testPaddedStoredCredentialIdStillLogsIn();
+  await testSafetyNetIntegrityAndFreshness();
   await testResidentKeySelectorsAgree();
   await testDefaultHintsFollowTheAttachment();
   await testCrossOriginEmbedderAllowList();
