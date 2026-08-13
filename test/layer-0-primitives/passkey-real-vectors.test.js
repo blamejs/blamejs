@@ -969,6 +969,83 @@ async function testAuthenticatorExtensionResults() {
         plainRv.rv.registrationInfo.authenticatorExtensionResults === undefined);
 }
 
+// ---- Response shape: credential type, and formats we will not anchor ----
+
+async function testCredentialTypeAndUnsupportedFormats() {
+  // WebAuthn defines exactly one credential type. A response with a missing
+  // or altered `type` is malformed; defaulting it into the result would write
+  // a value nothing verified into the credential row, and any consumer that
+  // dispatches on it is then dispatching on the attacker's string.
+  var challenge = b64url(crypto.randomBytes(32));
+  var reg = makeRegistration(challenge);
+
+  async function typeRefused(value, label) {
+    var lied = JSON.parse(JSON.stringify(reg.response));
+    if (value === undefined) { delete lied.type; } else { lied.type = value; }
+    var rv = await regOutcome({
+      response: lied, expectedChallenge: challenge,
+      expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    });
+    check("credential type: " + label,
+          rv.ok === false && rv.threw === true &&
+          /bad-credential-type/.test(String(rv.code)));
+  }
+  await typeRefused(undefined, "a registration with no type is refused");
+  await typeRefused("", "a registration with an empty type is refused");
+  await typeRefused("public-key-ish", "a registration with an altered type is refused");
+
+  // The same on the authentication side, so the two ceremonies agree.
+  var okRv = await regOutcome({
+    response: reg.response, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("credential type: an honest registration verifies and records it",
+        okRv.ok === true && okRv.rv.registrationInfo.credentialType === "public-key");
+
+  var authChallenge = b64url(crypto.randomBytes(32));
+  var assertion = makeAssertion(reg.keyPair.privateKey, reg.credId, authChallenge, 1);
+  var liedAuth = JSON.parse(JSON.stringify(assertion.response));
+  liedAuth.type = "not-a-public-key";
+  var authRv = await authOutcome({
+    response: liedAuth, expectedChallenge: authChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    credential: { id: b64url(reg.credId), publicKey: storedPublicKey(okRv.rv), counter: 0 },
+  });
+  check("credential type: an assertion with a bad type is refused too",
+        authRv.ok === false && /bad-credential-type/.test(String(authRv.code)));
+
+  // A `compound` statement nests several attestations, each with its own
+  // trust path. Anchoring off the OUTER format would leave a nested `apple`
+  // element unanchored — the same manufacturer-provenance bypass, one level
+  // down. It is refused until anchors can be derived per nested element; the
+  // verifier this release replaced did not implement compound either, so
+  // nothing that worked before stops working.
+  var compound = cborMap([
+    [cborText("fmt"),      cborText("compound")],
+    [cborText("attStmt"),  cborMap([])],
+    [cborText("authData"), cborBytes(buildAuthData(RP_ID, FLAG_UP | FLAG_UV | FLAG_AT, 0,
+      buildAttestedCredData(Buffer.alloc(16, 0), reg.credId,
+                            coseEC2PublicKey(reg.keyPair.publicKey))))],
+  ]);
+  var compoundRv = await regOutcome({
+    response: {
+      id: b64url(reg.credId), rawId: b64url(reg.credId), type: "public-key",
+      response: {
+        clientDataJSON:    reg.response.response.clientDataJSON,
+        attestationObject: b64url(compound),
+      },
+      clientExtensionResults: {},
+    },
+    expectedChallenge: challenge, expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("compound: a compound attestation is refused rather than left unanchored",
+        compoundRv.ok === false && rvIsUnsupportedFormat(compoundRv));
+}
+
+function rvIsUnsupportedFormat(rv) {
+  return rv.threw === true && /unsupported-attestation-format/.test(String(rv.code));
+}
+
 // ---- A stored credential id keeps working whichever encoder wrote it ----
 
 async function testPaddedStoredCredentialIdStillLogsIn() {
@@ -2016,6 +2093,7 @@ async function run() {
   await testAttestationRootsArePinned();
   await testCredPropsAndPaddedDescriptors();
   await testAuthenticatorExtensionResults();
+  await testCredentialTypeAndUnsupportedFormats();
   await testPaddedStoredCredentialIdStillLogsIn();
   await testSafetyNetIntegrityAndFreshness();
   await testResidentKeySelectorsAgree();
