@@ -314,7 +314,7 @@ jobs:
       - name: Build vendored-deps CycloneDX SBOM
         # The framework ships ZERO npm runtime deps — its security-critical
         # crypto (@noble/ciphers, @noble/curves, @noble/post-quantum,
-        # @simplewebauthn/server, @blamejs/pki) is VENDORED under
+        # @blamejs/pki) is VENDORED under
         # lib/vendor/, so `npm audit` / Dependabot / Socket never see it.
         # check-vendor-currency.js tracks whether the vendored copies are
         # up to date, but currency is not the same as "no known CVE". This

@@ -8,6 +8,55 @@ upgrading across more than a few patches at a time.
 
 ## v0.18.x
 
+- v0.18.27 (2026-08-12) — **Passkey verification moves onto the PKI toolkit the framework already ships, the `@simplewebauthn/server` bundle is gone, and the ceremony now refuses cross-origin registrations and logins.** `b.auth.passkey` verified WebAuthn attestations and assertions through a second vendored library. `@blamejs/pki` — already in the tarball for `b.mtlsCa` — does the same job, so the 889 KB `@simplewebauthn/server` bundle no longer ships. One fewer third-party bundle to track advisories against, and no new dependency to replace it.
+
+The surface is deliberately unchanged: the same four calls, the same options, the same result fields, and the same stored-credential bytes, so existing credential rows keep working and no migration is needed.
+
+What is new is a check the previous verifier never made. `CollectedClientData.crossOrigin` says whether the ceremony ran inside an iframe rather than at the top level, and nothing read it — a registration or login driven from a hostile embedding page was indistinguishable from one the user performed on your site, because the signature, challenge, origin and RP ID all genuinely check out. Both ceremonies now refuse it.
+
+One behaviour narrows in a way that can need action: the verifier accepts the three algorithms the framework advertises, where the previous one advertised three and accepted ten. If your deployment issued credentials outside that set, name them in `allowedAlgorithms` — details below. **Changed:** *Verified algorithms are the advertised ones — widen with `allowedAlgorithms` if you issued others* — `startRegistration` has always offered Ed25519, ES256 and RS256. The verifier behind it accepted ten algorithms, including RSA with SHA-1. It now accepts exactly what is offered.
+
+An authenticator is supposed to pick from the advertised list, so for most deployments nothing changes. But the wider set was accepted for as long as it was offered, so a credential registered outside it may exist — and refusing its assertions locks that user out of an account they can still prove they own.
+
+`allowedAlgorithms` names the set for a call, and drives both halves of a ceremony: what `startRegistration` offers and what the verifiers enforce, so a deployment cannot advertise one set and accept another.
+
+```js
+await b.auth.passkey.verifyAuthentication({
+  response, expectedChallenge, expectedOrigin, expectedRPID, credential,
+  allowedAlgorithms: [-8, -7, -257, -36],   // + ES512, for credentials issued earlier
+});
+```
+
+Supported identifiers are -8, -7, -35, -36, -37, -257, -258, -259. The default is unchanged and the option applies only to the call it is passed to. RSA with SHA-1 (-65535) is refused however it is asked for: the option exists to keep working credentials working, not to make a broken primitive reachable through configuration, and a credential using it has to be re-registered. An unsupported identifier, a non-integer, or an empty list is refused at the call rather than falling back to the default.
+
+If you are unsure which algorithms your table holds, the COSE key's `alg` (label 3) in each stored `credential.publicKey` is the answer. · *`@simplewebauthn/server` is no longer vendored* — Attestation and assertion verification, CBOR parsing, COSE key handling and signature checking now run in `@blamejs/pki`, which the framework already vendors. Nothing about `b.auth.passkey`'s API changes: the same calls, options, result fields, and stored-credential format — the persisted public key is the authenticator's COSE key bytes verbatim, as before.
+
+The ceremony options `startRegistration` and `startAuthentication` return are now built in the framework rather than delegated. They are plain JSON documents the browser reads, with no secret in them beyond the challenge, and the challenge comes from `b.crypto.generateBytes` like every other secret the framework mints.
+
+`registrationInfo.credential.publicKey` is now a `Buffer` rather than a bare `Uint8Array`. A `Buffer` is a `Uint8Array`, the bytes are identical, and code that stores or compares it is unaffected. · *A credential key stored as base64url text is read as base64url* — `credential.publicKey` may now be handed back as a `Buffer`, a `Uint8Array`, or the base64url string an operator wrote to a TEXT column. Previously a string was neither decoded nor rejected — it was read as UTF-8, producing bytes that are not a COSE key, and the login failed with a message about a malformed credential while the stored row was perfectly intact.
+
+A string that is not base64url, and any other type, is now refused as `auth-passkey/bad-credential-key` rather than coerced into bytes that merely happen to parse. **Fixed:** *A multi-origin deployment records which origin the ceremony ran at* — `expectedOrigin` accepts an allow-list, for one relying party served from several origins. Both verification results reported that list back as the ceremony's `origin` — so a field every consumer reads as a string held an array, and an audit row named every permitted origin instead of the one that was actually used.
+
+Both results now carry the origin from the verified client data. A single-origin deployment sees no change. · *Every passkey refusal is an `AuthError` again* — A stale or replayed registration challenge — the most ordinary failure a WebAuthn deployment sees — escaped as the verification library's own error type with a `webauthn/*` code. The documented contract is `catch (e) { if (e.isAuthError) ... }` with an `auth-passkey/*` code, the same framing as `b.auth.password` and `b.auth.totp`, so that handler missed it and the request became a 500.
+
+Every call into the verifier is now re-framed through one path, and which check refused is still carried in the code. **Security:** *Cross-origin ceremonies are refused by default* — `CollectedClientData` carries a `crossOrigin` flag, set by the browser when WebAuthn ran in a frame whose top-level origin is not yours. The previous verifier never read it.
+
+That leaves an embedded ceremony looking exactly like a legitimate one: the credential really was used at your origin — inside somebody else's page, driven by their script, at a moment the user did not choose. The user sees their own authenticator prompt and approves it.
+
+`verifyRegistration` and `verifyAuthentication` now refuse `crossOrigin: true` with `auth-passkey/cross-origin-ceremony`.
+
+A deployment that genuinely is embedded — a checkout widget, a partner portal — names the embedders it has:
+
+```js
+allowCrossOrigin: ["https://partner.example"]   // matched against clientData.topOrigin
+```
+
+`allowCrossOrigin: true` accepts any embedder, for the case where the partner set is not a list you can write down. A browser that reports `crossOrigin` without naming the top origin never satisfies a list — an unnamed embedder is the case the list exists to exclude. · *Both spellings of the credential ID are bound to the credential being used* — A WebAuthn response states its credential ID twice — `id` and its binary spelling `rawId` — and neither is covered by any signature. Registration checks both against the ID inside the attestation, which the authenticator signs; authentication checks both against the stored record.
+
+This is not what admits an attacker — a mismatched record carries the wrong public key, so the signature fails regardless. It is about what an operator is told when it happens. An application that looks a credential up by user rather than by asserted ID could pair a valid key with the wrong row and see only an opaque signature failure; it now gets `auth-passkey/credential-id-mismatch`, which names the actual problem. · *The FIDO metadata trust root is pinned in the source* — `b.auth.fidoMds3` anchored MDS3 BLOB chains to a GlobalSign Root CA - R3 certificate read out of the removed bundle. That certificate is now a constant in the framework, and a test asserts its subject, self-signature, validity window and SHA-256 fingerprint — so substituting it during a refactor fails a gate instead of silently widening what can sign a metadata BLOB.
+
+The `caCertificate` override is unchanged, and still replaces the pinned root rather than adding to it. **Detectors:** *`passkey-credential-id-binding-goes-through-the-helper`* — A hand-rolled comparison of `response.id` or `response.rawId` in the passkey module fails the pattern gate. A response states the same identity in two spellings; binding one and forgetting the other is how the two ceremonies would come to enforce different rules, so the check lives in one helper that takes both. · *`passkey-result-origin-is-the-verified-one-not-the-allowlist`* — `origin: opts.expectedOrigin` in either ceremony's result fails the pattern gate. The option may be an allow-list; the result field is a single verified origin, and the two ceremonies reached for the wrong one independently.
+
 - v0.18.26 (2026-08-11) — **Two guards passed attacks they had already detected: `b.gateContract.composeGates` reported `serve` after a member gate sanitized, and `b.guardOauth` skipped its redirect_uri and code-replay checks whenever the operator had not supplied a companion object.** Both are the same shape — a control that runs, reaches a verdict, and then loses it — and both are fixed.
 
 Composing gates is the documented way to chain guards, and it discarded what the members found. A single `b.guardCsv` gate answers a spreadsheet-formula payload with `action: "sanitize"`, one critical finding, and the scrubbed bytes. Wrapping that same gate in `composeGates` answered `serve`, no findings, and no scrubbed output — so a caller that trusted the verdict forwarded the original payload and recorded nothing.
