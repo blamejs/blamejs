@@ -43,6 +43,14 @@
       "heading": "Fixed",
       "items": [
         {
+          "title": "`residentKey` and `requireResidentKey` can no longer disagree",
+          "body": "WebAuthn states \"this credential must be discoverable\" in two places: `residentKey`, and the Level 1 boolean `requireResidentKey`. Browsers in the field read one or the other, so the pair has to agree.\n\n`startRegistration` read the caller's two inputs independently, which let them contradict: `{ residentKey: \"required\" }` emitted `requireResidentKey: false`, and the legacy boolean on its own was dropped entirely — `{ requireResidentKey: true }` emitted `residentKey: \"preferred\"`.\n\nA browser honouring the half that says \"not required\" then creates a non-discoverable credential for a relying party that required a discoverable one. Nothing fails at registration; the credential works, and only username-less and conditional-UI login are quietly missing.\n\nBoth fields now come from one resolved requirement. `residentKey` decides when present, the legacy boolean still states the requirement on its own, and `requireResidentKey` always equals `residentKey === \"required\"`."
+        },
+        {
+          "title": "Default authenticator hints follow `authenticatorAttachment`",
+          "body": "`hints` and `authenticatorAttachment` both say which authenticator a ceremony is for, and the browser gives hints precedence in the UI. The default hint list did not consider the attachment, so a ceremony restricted to `cross-platform` still hinted at the platform authenticator — offering the user a path the attachment forbids, and refusing the credential on the one they picked.\n\nWith no explicit `hints`, the default is now `[\"security-key\", \"hybrid\"]` for `cross-platform` and `[\"client-device\"]` for `platform`. With no attachment set it is unchanged. An explicit `hints` list still passes through untouched."
+        },
+        {
           "title": "A multi-origin deployment records which origin the ceremony ran at",
           "body": "`expectedOrigin` accepts an allow-list, for one relying party served from several origins. Both verification results reported that list back as the ceremony's `origin` — so a field every consumer reads as a string held an array, and an audit row named every permitted origin instead of the one that was actually used.\n\nBoth results now carry the origin from the verified client data. A single-origin deployment sees no change."
         },
@@ -62,6 +70,10 @@
         {
           "title": "`passkey-result-origin-is-the-verified-one-not-the-allowlist`",
           "body": "`origin: opts.expectedOrigin` in either ceremony's result fails the pattern gate. The option may be an allow-list; the result field is a single verified origin, and the two ceremonies reached for the wrong one independently."
+        },
+        {
+          "title": "`passkey-resident-key-selectors-derive-from-one-requirement`",
+          "body": "Reading the caller's `requireResidentKey` alongside `residentKey` fails the pattern gate. One requirement stated in two fields has to be resolved once and written twice, not read twice."
         }
       ]
     }

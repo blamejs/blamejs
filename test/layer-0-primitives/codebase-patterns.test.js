@@ -7059,6 +7059,21 @@ var KNOWN_ANTIPATTERNS = [
     reason: "An encrypted-boot db.enc length check (packed.length < <min>) must fail closed (throw), not silently return — a return opens a fresh empty database that the next flush persists over the corrupt durable snapshot (silent data loss). Fires on a packed.length check whose block returns before it throws.",
   },
   {
+    id: "passkey-resident-key-selectors-derive-from-one-requirement",
+    primitive: "b.auth.passkey",
+    scanScope: "lib",
+    // WebAuthn states "this credential must be discoverable" twice:
+    // `residentKey` (L2/L3) and the L1 boolean `requireResidentKey`. Browsers
+    // in the field read one or the other, so reading the caller's two inputs
+    // independently emits a contradictory pair — and a browser reading the
+    // half that says "not required" creates a NON-discoverable credential for
+    // a relying party that required one. Nothing fails at registration; only
+    // username-less and conditional-UI login are quietly missing.
+    regex: /requireResidentKey:\s*sel\.requireResidentKey/,
+    allowlist: [],
+    reason: "b.auth.passkey must derive requireResidentKey from the single resolved residentKey requirement (requireResidentKey === (residentKey === 'required')), never read the caller's boolean alongside it. Reading both independently emits a contradictory pair, and a browser honouring the field that says 'not required' creates a non-discoverable credential the relying party required to be discoverable.",
+  },
+  {
     id: "passkey-result-origin-is-the-verified-one-not-the-allowlist",
     primitive: "b.auth.passkey",
     scanScope: "lib",

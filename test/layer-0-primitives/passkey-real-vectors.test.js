@@ -605,6 +605,96 @@ function makeRegistrationCrossOrigin(challenge, topOrigin) {
 // PKCS#1 v1.5 with no DER-vs-raw unwrapping step, so it exercises a different
 // branch of whatever verifies it, and a verifier that silently only handled EC
 // would pass every existing test in this file.
+// ---- residentKey and requireResidentKey state ONE requirement ----
+
+async function testResidentKeySelectorsAgree() {
+  // WebAuthn states "this credential must be discoverable" in two places:
+  // `residentKey` (L2/L3) and the L1 boolean `requireResidentKey`. Browsers in
+  // the field read one or the other, so the pair has to agree — the spec ties
+  // requireResidentKey to `residentKey === "required"`.
+  //
+  // Deriving them independently lets them contradict, and a browser reading
+  // the field that says "not required" creates a NON-discoverable credential.
+  // The user then has no username-less or conditional-UI login, and nothing
+  // fails loudly at registration time: the credential works, just not the way
+  // the relying party required.
+  async function selectorsFor(sel) {
+    var opts = await passkey.startRegistration(Object.assign(
+      { rpName: "Example", rpId: RP_ID, userName: "alice" },
+      sel === undefined ? {} : { authenticatorSelection: sel }));
+    return opts.authenticatorSelection;
+  }
+  function agree(s) {
+    return s.requireResidentKey === (s.residentKey === "required");
+  }
+
+  var cases = [
+    { sel: undefined,                       key: "preferred",    label: "no authenticatorSelection" },
+    { sel: {},                              key: "preferred",    label: "an empty authenticatorSelection" },
+    { sel: { residentKey: "required" },     key: "required",     label: "residentKey required" },
+    { sel: { residentKey: "preferred" },    key: "preferred",    label: "residentKey preferred" },
+    { sel: { residentKey: "discouraged" },  key: "discouraged",  label: "residentKey discouraged" },
+    // The legacy boolean on its own still states the requirement, and must
+    // raise residentKey with it rather than being silently dropped.
+    { sel: { requireResidentKey: true },    key: "required",     label: "the legacy requireResidentKey flag alone" },
+    { sel: { requireResidentKey: false },   key: "preferred",    label: "the legacy flag set false" },
+    // When both are given, the modern field decides and the legacy boolean is
+    // brought into line — never the other way round.
+    { sel: { residentKey: "required", requireResidentKey: false },
+      key: "required",    label: "a contradictory pair favouring residentKey" },
+    { sel: { residentKey: "discouraged", requireResidentKey: true },
+      key: "discouraged", label: "a contradictory pair favouring the legacy flag" },
+  ];
+
+  for (var i = 0; i < cases.length; i++) {
+    var s = await selectorsFor(cases[i].sel);
+    check("resident key: " + cases[i].label + " yields residentKey=" + cases[i].key,
+          s.residentKey === cases[i].key);
+    check("resident key: " + cases[i].label + " keeps both selectors in agreement",
+          agree(s));
+  }
+}
+
+async function testDefaultHintsFollowTheAttachment() {
+  // `hints` and `authenticatorAttachment` are the same class of pair: both say
+  // which authenticator this ceremony is for, and browsers give hints
+  // precedence in the UI. A default hint list that contradicts an explicit
+  // attachment steers the user at an authenticator the attachment forbids —
+  // the prompt offers the platform authenticator, and creating a credential
+  // there is refused.
+  async function hintsFor(attachment) {
+    var o = await passkey.startRegistration({
+      rpName: "Example", rpId: RP_ID, userName: "alice",
+      authenticatorSelection: attachment === undefined ? {} : { authenticatorAttachment: attachment },
+    });
+    return o.hints;
+  }
+
+  var crossPlatform = await hintsFor("cross-platform");
+  check("hints: a cross-platform ceremony does not hint at the platform authenticator",
+        crossPlatform.indexOf("client-device") === -1);
+  check("hints: a cross-platform ceremony hints at security keys and phones",
+        crossPlatform.indexOf("security-key") !== -1 && crossPlatform.indexOf("hybrid") !== -1);
+
+  var platform = await hintsFor("platform");
+  check("hints: a platform ceremony hints only at the platform authenticator",
+        platform.join(",") === "client-device");
+
+  var unset = await hintsFor(undefined);
+  check("hints: with no attachment the default still surfaces both families",
+        unset.indexOf("client-device") !== -1 && unset.indexOf("hybrid") !== -1);
+
+  // An explicit hint list is the operator's call and passes through untouched,
+  // whatever the attachment says.
+  var explicit = await passkey.startRegistration({
+    rpName: "Example", rpId: RP_ID, userName: "alice",
+    authenticatorSelection: { authenticatorAttachment: "cross-platform" },
+    hints: ["client-device"],
+  });
+  check("hints: an explicit hint list is not overridden by the attachment",
+        explicit.hints.join(",") === "client-device");
+}
+
 // ---- The cross-origin opt-in can name WHICH embedder is permitted ----
 
 async function testCrossOriginEmbedderAllowList() {
@@ -1385,6 +1475,8 @@ async function run() {
   await testAuthenticationGenuineAndTampered();
   await testCeremonyPolicyRefusals();
   await testRegistrationCredentialIdIsAttested();
+  await testResidentKeySelectorsAgree();
+  await testDefaultHintsFollowTheAttachment();
   await testCrossOriginEmbedderAllowList();
   await testRegistrationResultSurface();
   await testRegistrationInfoFeedsFidoMds3();
