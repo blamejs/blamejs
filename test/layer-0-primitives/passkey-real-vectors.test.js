@@ -1220,6 +1220,26 @@ async function testLegacyAlgorithmOptIn() {
   check("legacy alg: an algorithm the verifier cannot handle is refused at config time",
         unknown && /bad-algorithm/.test(String(unknown.code)));
 
+  // Every identifier the option ADVERTISES as supported must actually be
+  // accepted — a list that names an algorithm the verifier cannot check sends
+  // an operator to configure their way out of a lockout and lands them in a
+  // different one. Config-time acceptance for each, since the end-to-end
+  // signature path is exercised for ES256 / ES512 / RS256 above and in
+  // testRsaCredentialRoundTrip.
+  var advertised = [-8, -7, -35, -36, -37, -38, -39, -257, -258, -259];
+  for (var a = 0; a < advertised.length; a++) {
+    var accepted = true;
+    try {
+      var o = await passkey.startRegistration({
+        rpName: "Example", rpId: RP_ID, userName: "alice",
+        allowedAlgorithms: [advertised[a]],
+      });
+      accepted = o.pubKeyCredParams.length === 1 &&
+                 o.pubKeyCredParams[0].alg === advertised[a];
+    } catch (_e) { accepted = false; }
+    check("legacy alg: COSE " + advertised[a] + " is accepted as documented", accepted);
+  }
+
   // What the browser is offered follows the same list, so the ceremony cannot
   // advertise one set and verify another.
   var opts = await passkey.startRegistration({

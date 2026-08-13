@@ -27,7 +27,7 @@ await b.auth.passkey.verifyAuthentication({
 });
 ```
 
-Supported identifiers are -8, -7, -35, -36, -37, -257, -258, -259. The default is unchanged and the option applies only to the call it is passed to. RSA with SHA-1 (-65535) is refused however it is asked for: the option exists to keep working credentials working, not to make a broken primitive reachable through configuration, and a credential using it has to be re-registered. An unsupported identifier, a non-integer, or an empty list is refused at the call rather than falling back to the default.
+Supported identifiers are -8, -7, -35, -36, -37, -38, -39, -257, -258, -259 — every one of them exercised end to end, so the list cannot advertise an algorithm the verifier would then refuse. The default is unchanged and the option applies only to the call it is passed to. RSA with SHA-1 (-65535) is refused however it is asked for: the option exists to keep working credentials working, not to make a broken primitive reachable through configuration, and a credential using it has to be re-registered. An unsupported identifier, a non-integer, or an empty list is refused at the call rather than falling back to the default.
 
 If you are unsure which algorithms your table holds, the COSE key's `alg` (label 3) in each stored `credential.publicKey` is the answer. · *`@simplewebauthn/server` is no longer vendored* — Attestation and assertion verification, CBOR parsing, COSE key handling and signature checking now run in `@blamejs/pki`, which the framework already vendors. Nothing about `b.auth.passkey`'s API changes: the same calls, options, result fields, and stored-credential format — the persisted public key is the authenticator's COSE key bytes verbatim, as before.
 
