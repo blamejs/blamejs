@@ -1976,6 +1976,82 @@ async function testBadAttestationSignatureIsANegativeResult() {
   check("bad attestation signature: the result shape a caller reads is intact",
         rv.threw === false && rv.rv.registrationInfo === null &&
         rv.rv.backupEligible === false && rv.rv.backupState === false);
+
+  // The verifier spends ONE code on two different things: a bad signature and
+  // a failed attestation BINDING (the apple nonce, TPM's certInfo extraData
+  // and attested Name). A binding violation is an attack indicator, so those
+  // two formats stay exceptional rather than being reported as an ordinary
+  // decline that a caller cannot tell apart from a typo'd passkey.
+  var appleChallenge = b64url(crypto.randomBytes(32));
+  var appleKp = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var appleCred = crypto.randomBytes(32);
+  var appleAuthData = buildAuthData(RP_ID, FLAG_UP | FLAG_UV | FLAG_AT, 0,
+    buildAttestedCredData(Buffer.alloc(16, 0), appleCred,
+                          coseEC2PublicKey(appleKp.publicKey)));
+  var appleCert = Buffer.from(
+    helpers.selfSignedPair({ commonName: "apple-ish" }).cert
+      .replace(/-----[^-]+-----/g, "").replace(/\s+/g, ""), "base64");
+  var appleRv = await regOutcome({
+    response: {
+      id: b64url(appleCred), rawId: b64url(appleCred), type: "public-key",
+      response: {
+        clientDataJSON: b64url(Buffer.from(JSON.stringify({
+          type: "webauthn.create", challenge: appleChallenge, origin: ORIGIN,
+          crossOrigin: false,
+        }), "utf8")),
+        attestationObject: b64url(cborMap([
+          [cborText("fmt"),     cborText("apple")],
+          [cborText("attStmt"), cborMap([
+            [cborText("x5c"), cborArray([cborBytes(appleCert)])],
+          ])],
+          [cborText("authData"), cborBytes(appleAuthData)],
+        ])),
+      },
+      clientExtensionResults: {},
+    },
+    expectedChallenge: appleChallenge, expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("attestation binding: an apple attestation failure stays exceptional",
+        appleRv.ok === false && appleRv.threw === true &&
+        /^auth-passkey\//.test(String(appleRv.code)));
+}
+
+async function testMalformedSafetyNetIsFramed() {
+  // The JWS is attacker-supplied CBOR. A truthy non-byte value makes the
+  // byte conversion throw its OWN error type, which escapes the freshness
+  // gate un-framed — no isAuthError, no auth-passkey/* code — so a handler
+  // written to the documented contract misses it entirely.
+  var challenge = b64url(crypto.randomBytes(32));
+  var kp = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var credId = crypto.randomBytes(32);
+  var authData = buildAuthData(RP_ID, FLAG_UP | FLAG_UV | FLAG_AT, 0,
+    buildAttestedCredData(Buffer.alloc(16, 0), credId, coseEC2PublicKey(kp.publicKey)));
+  var att = cborMap([
+    [cborText("fmt"),     cborText("android-safetynet")],
+    [cborText("attStmt"), cborMap([
+      [cborText("ver"),      cborText("1")],
+      // A MAP where a byte string belongs.
+      [cborText("response"), cborMap([[cborText("a"), cborInt(1)]])],
+    ])],
+    [cborText("authData"), cborBytes(authData)],
+  ]);
+  var rv = await regOutcome({
+    response: {
+      id: b64url(credId), rawId: b64url(credId), type: "public-key",
+      response: {
+        clientDataJSON: b64url(Buffer.from(JSON.stringify({
+          type: "webauthn.create", challenge: challenge, origin: ORIGIN,
+          crossOrigin: false,
+        }), "utf8")),
+        attestationObject: b64url(att),
+      },
+      clientExtensionResults: {},
+    },
+    expectedChallenge: challenge, expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("safetynet: a malformed JWS is refused as an AuthError, not a raw type error",
+        rv.ok === false && rv.threw === true &&
+        /^auth-passkey\/safetynet-unreadable$/.test(String(rv.code)));
 }
 
 // ---- Every refusal is an AuthError in the auth-passkey namespace ----
@@ -2502,6 +2578,7 @@ async function run() {
   await testZeroSignCountAuthenticators();
   await testStoredKeyAcceptedFormats();
   await testBadAttestationSignatureIsANegativeResult();
+  await testMalformedSafetyNetIsFramed();
   await testRefusalsAreFramedAsAuthErrors();
   await testLegacyAlgorithmOptIn();
   await testMultiOriginAllowList();

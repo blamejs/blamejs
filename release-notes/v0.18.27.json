@@ -47,7 +47,7 @@
         },
         {
           "title": "A bad attestation signature is a negative result, not an exception",
-          "body": "A registration whose attestation signature does not verify is the registration-side equivalent of a failed login — an ordinary negative outcome. It was being raised as an `AuthError`, so a caller writing `if (!result.verified) deny()` took an exception path and returned a 500 where a refusal belonged.\n\nIt now returns `{ verified: false, registrationInfo: null }`, matching both the authentication path and the verifier this release replaced. Everything else — a binding that disagrees, an unanchored chain, a policy the ceremony failed — still throws, because which check refused is the actionable part."
+          "body": "A registration whose attestation signature does not verify is the registration-side equivalent of a failed login — an ordinary negative outcome. It was being raised as an `AuthError`, so a caller writing `if (!result.verified) deny()` took an exception path and returned a 500 where a refusal belonged.\n\nIt now returns `{ verified: false, registrationInfo: null }`, matching both the authentication path and the verifier this release replaced. Everything else — a binding that disagrees, an unanchored chain, a policy the ceremony failed — still throws, because which check refused is the actionable part.\n\n`apple` and `tpm` are the exception and keep throwing. Those two formats report a failed attestation *binding* (the Apple nonce, TPM's `certInfo` extraData and attested Name) through the same underlying code as a bad signature, and a binding violation is an attack indicator rather than an ordinary decline — so it is not flattened into one."
         }
       ]
     },
