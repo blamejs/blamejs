@@ -806,6 +806,26 @@ async function testCredPropsAndPaddedDescriptors() {
         withExt.extensions && withExt.extensions.credProps === true &&
         typeof withExt.extensions.credBlob === "string");
 
+  // Requesting it is only half the job: the browser's ANSWER — credProps.rk,
+  // whether the credential it created is actually discoverable — has to reach
+  // the caller, or the request has no usable effect at all.
+  var propsChallenge = b64url(crypto.randomBytes(32));
+  var propsReg = makeRegistration(propsChallenge);
+  propsReg.response.clientExtensionResults = { credProps: { rk: true } };
+  var propsRv = await regOutcome({
+    response: propsReg.response, expectedChallenge: propsChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("credProps: the browser's answer reaches the verification result",
+        propsRv.ok === true &&
+        propsRv.rv.registrationInfo.clientExtensionResults &&
+        propsRv.rv.registrationInfo.clientExtensionResults.credProps.rk === true);
+  // Kept SEPARATE from the signed set: these are client-reported and nothing
+  // signs them, so merging the two would let an unsigned claim read as an
+  // authenticator's answer.
+  check("credProps: client-reported results are not merged into the signed set",
+        propsRv.rv.registrationInfo.authenticatorExtensionResults === undefined);
+
   // A credential id stored years ago by a padding-emitting base64url encoder
   // is still that credential. Refusing the padding would not reject an attack
   // — it would stop the deployment starting authentication at all.
@@ -1044,6 +1064,64 @@ async function testCredentialTypeAndUnsupportedFormats() {
 
 function rvIsUnsupportedFormat(rv) {
   return rv.threw === true && /unsupported-attestation-format/.test(String(rv.code));
+}
+
+// ---- Signal API identifiers name exactly one credential ----
+
+function testSignalApiIdsAreCanonical() {
+  // The browser ACTS on these ids. signalUnknownCredential asks it to remove
+  // the named credential, and signalAllAcceptedCredentials is exhaustive —
+  // the browser deletes passkeys that are NOT on the list. A non-canonical
+  // spelling decodes to different bytes ("YW" names "YQ"), so a lax check
+  // here removes the wrong passkey, or drops one the operator meant to keep
+  // out of the accepted list and has the browser delete it.
+  var bad = ["Y", "YW", "YWJj==", "==="];
+  for (var i = 0; i < bad.length; i++) {
+    var threw = null;
+    try { passkey.signalUnknownCredential({ rpId: RP_ID, credentialId: bad[i] }); }
+    catch (e) { threw = e; }
+    check("signal: signalUnknownCredential refuses the non-canonical id " +
+          JSON.stringify(bad[i]),
+          threw && /bad-credential-id/.test(String(threw.code)));
+
+    var threwList = null;
+    try {
+      passkey.signalAllAcceptedCredentials({
+        rpId: RP_ID, userId: "AAAA", allAcceptedCredentialIds: ["AAAA", bad[i]],
+      });
+    } catch (e) { threwList = e; }
+    check("signal: the accepted list refuses the non-canonical id " +
+          JSON.stringify(bad[i]),
+          threwList && /bad-accepted-list/.test(String(threwList.code)));
+
+    var threwUser = null;
+    try { passkey.signalCurrentUserDetails({ rpId: RP_ID, userId: bad[i], name: "a", displayName: "a" }); }
+    catch (e) { threwUser = e; }
+    check("signal: signalCurrentUserDetails refuses the non-canonical user id " +
+          JSON.stringify(bad[i]),
+          threwUser && /bad-user-id/.test(String(threwUser.code)));
+  }
+
+  // A correctly-padded id is the same credential, so it is accepted and
+  // handed to the browser in canonical form.
+  var raw = crypto.randomBytes(32);
+  var padded = raw.toString("base64").replace(/\+/g, "-").replace(/\//g, "_");
+  var out = passkey.signalUnknownCredential({ rpId: RP_ID, credentialId: padded });
+  check("signal: a correctly-padded id is normalized before it reaches the browser",
+        out.credentialId === raw.toString("base64url"));
+
+  var list = passkey.signalAllAcceptedCredentials({
+    rpId: RP_ID, userId: padded, allAcceptedCredentialIds: [padded],
+  });
+  check("signal: the accepted list and user id are normalized too",
+        list.userId === raw.toString("base64url") &&
+        list.allAcceptedCredentialIds[0] === raw.toString("base64url"));
+
+  var details = passkey.signalCurrentUserDetails({
+    rpId: RP_ID, userId: padded, name: "alice", displayName: "Alice",
+  });
+  check("signal: signalCurrentUserDetails normalizes its user id",
+        details.userId === raw.toString("base64url"));
 }
 
 // ---- A stored credential id keeps working whichever encoder wrote it ----
@@ -1335,6 +1413,36 @@ async function testCrossOriginEmbedderAllowList() {
   check("cross-origin: an unnamed embedder cannot satisfy an embedder allow-list",
         noTop.ok === false && noTop.threw === true &&
         /cross-origin-ceremony/.test(String(noTop.code)));
+
+  // A cross-origin ceremony whose clientDataJSON is LARGE must still be
+  // caught. The policy parser once capped at 8 KiB and returned — allowed —
+  // when it could not read the document, on the assumption the verifier would
+  // refuse it anyway. The verifier accepts client data far larger than that,
+  // so every size in between was verified with the policy never applied:
+  // pad the JSON past the old cap and a hostile embedder walks through.
+  var big = makeRegistrationCrossOrigin(challenge, HOSTILE);
+  var bigCd = JSON.parse(Buffer.from(
+    big.response.response.clientDataJSON, "base64url").toString("utf8"));
+  bigCd.pad = "x".repeat(64 * 1024);                                               // allow:raw-byte-literal — past the old 8 KiB policy cap
+  big.response.response.clientDataJSON =
+    b64url(Buffer.from(JSON.stringify(bigCd), "utf8"));
+  var bigRv = await regOutcome({
+    response: big.response, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("cross-origin: a LARGE cross-origin ceremony is still refused",
+        bigRv.ok === false && /cross-origin-ceremony/.test(String(bigRv.code)));
+
+  // ...and one this cannot read at all is refused rather than waved through.
+  var unreadable = makeRegistrationCrossOrigin(challenge, HOSTILE);
+  unreadable.response.response.clientDataJSON = b64url(Buffer.from("not json", "utf8"));
+  var unreadableRv = await regOutcome({
+    response: unreadable.response, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("cross-origin: an unreadable clientDataJSON refuses instead of skipping the check",
+        unreadableRv.ok === false &&
+        /unreadable-client-data/.test(String(unreadableRv.code)));
 
   // `true` still means "any embedder" — the blunt opt-in remains, because a
   // deployment behind an unknown set of partners has no list to write.
@@ -2093,6 +2201,7 @@ async function run() {
   await testAttestationRootsArePinned();
   await testCredPropsAndPaddedDescriptors();
   await testAuthenticatorExtensionResults();
+  testSignalApiIdsAreCanonical();
   await testCredentialTypeAndUnsupportedFormats();
   await testPaddedStoredCredentialIdStillLogsIn();
   await testSafetyNetIntegrityAndFreshness();
