@@ -363,6 +363,35 @@ function testGuardCsvSerializedFormulaPassesOwnValidate() {
   });
 }
 
+// A quoted cell leading with TAB is skipped because that is what the
+// prefix-tab mitigation produces — but only under that policy. TAB is a
+// formula trigger in its own right, so under `reject` (or any policy that does
+// not emit a TAB prefix) the same cell is an ordinary triggering cell and
+// escapeCell refuses it. A scan that exempts it regardless reports `ok` on a
+// document its own serializer would not produce.
+function testGuardCsvQuotedTabExemptionIsScopedToPrefixTab() {
+  var doc = "a\r\n\"\t=2+3\"";
+  var mitigating = b.guardCsv.validate(doc, { formulaInjectionPolicy: "prefix-tab" });
+  check("under prefix-tab a quoted TAB-led cell is the mitigated form",
+        (mitigating.issues || []).every(function (i) {
+          return i.ruleId !== "csv.formula-injection";
+        }));
+
+  ["reject", "prefix-quote", "wrap-with-quotes-and-prefix", "allowlist"].forEach(function (p) {
+    var v = b.guardCsv.validate(doc, { formulaInjectionPolicy: p, formulasAllowlist: ["SUM"] });
+    check("under " + p + " a quoted TAB-led cell is still a formula finding",
+          (v.issues || []).some(function (i) { return i.ruleId === "csv.formula-injection"; }));
+  });
+
+  // The serializer already refuses the equivalent cell under reject, so the
+  // scan agreeing with it is the point.
+  var threw = null;
+  try { b.guardCsv.escapeCell("\t=2+3", { formulaInjectionPolicy: "reject" }); }
+  catch (e) { threw = e; }
+  check("escapeCell refuses the same cell under reject",
+        threw !== null && threw.code === "csv.formula-injection");
+}
+
 // The cell walk has to use the quote character the operator configured. With a
 // different quote, a double quote is ordinary content — and a scanner that
 // reads it as opening a quoted field skips forward looking for a close that
@@ -1472,6 +1501,7 @@ async function run() {
   testGuardCsvSchemaNullableAndCode();
   testGuardCsvSchemaTypeViolations();
   testGuardCsvSchemaRange();
+  testGuardCsvQuotedTabExemptionIsScopedToPrefixTab();
   testGuardCsvCellScannerHonorsTheConfiguredQuote();
   testGuardCsvQuotingScopedToDocumentsThatNeedIt();
   testGuardCsvFormulaDetectedAtLineStart();

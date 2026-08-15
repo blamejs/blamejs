@@ -311,7 +311,7 @@ function testGuardAllByContentTypeShape() {
 
 // ---- Run all ----
 
-function run() {
+async function run() {
   testGuardAllSurface();
   testGuardAllRegistryParity();
   testGuardAllDefaultAllOn();
@@ -325,6 +325,8 @@ function run() {
   testGuardAllByExtensionShape();
   testGuardAllByContentTypeShape();
   testGuardFamilySanitizeNeverServesThreatVerbatim();
+  testGuardFamilyGateReachesTagsEnforcement();
+  await testGuardFamilyTagsDispositionMatchesZeroWidth();
   testGuardFamilyValidateIsDeterministicAcrossCalls();
   return testGuardAllDispatchRoutesByMime();
 }
@@ -374,6 +376,109 @@ function testGuardFamilySanitizeNeverServesThreatVerbatim() {
   // above pass vacuously, which is the failure mode that hides a regression.
   check("family sanitize invariant probed at least three content guards",
         covered >= 3);
+}
+
+// ---- Family invariant: the gate reaches the enforcement sanitize has ----
+
+// A content gate validates first and only sanitizes when validation found
+// something. So enforcement that exists ONLY in the sanitize path is
+// unreachable through the gate: the document validates clean and is served
+// unchanged, with the strip that would have removed the threat never running.
+// Unicode Tags shipped exactly that way — every guard's strip table handles
+// them, and no guard but one reported them.
+function testGuardFamilyGateReachesTagsEnforcement() {
+  var TAG = String.fromCodePoint(0xE0041);
+  var probed = 0;
+  b.guardAll.allGuards().forEach(function (g) {
+    if (g.KIND !== "content" || typeof g.validate !== "function") return;
+    var fixtures = g.INTEGRATION_FIXTURES;
+    if (!fixtures || fixtures.benignBytes === undefined) return;
+    var carrier = Buffer.isBuffer(fixtures.benignBytes)
+      ? fixtures.benignBytes.toString("utf8") : String(fixtures.benignBytes);
+    // Only guards that accept their own benign fixture can be probed.
+    var clean;
+    try { clean = g.validate(carrier, { profile: "strict" }); }
+    catch (_e) { return; }
+    if (!clean || !Array.isArray(clean.issues)) return;
+    probed += 1;
+
+    var v;
+    try { v = g.validate(carrier + TAG, { profile: "strict" }); }
+    catch (_e2) { return; }          // refusing outright is enforcement too
+    check("guard " + g.NAME + ": validate reports a Unicode Tags character",
+          (v.issues || []).length > (clean.issues || []).length);
+  });
+  check("tags-detection invariant probed at least three content guards", probed >= 3);
+}
+
+// Detecting a class is only half of it: the gate maps each finding kind to a
+// disposition, and a kind no map knows degrades to severity. For a class the
+// sanitizer can physically remove that means refusing a document it could have
+// repaired — at every profile, including permissive.
+//
+// Tags inherits the zero-width POLICY, so zero-width is the reference for
+// whether the gate repairs — but not for severity. The two are rated
+// differently on purpose: a zero-width character is a spacing artifact, a Tags
+// character carries an invisible copy of ASCII text, and guardText has always
+// rated the second higher. guardEmail acts on that difference (it maps severity
+// straight to a disposition, serving one and refusing the other), which is
+// right rather than a divergence to flatten.
+//
+// So two properties, both true of every guard:
+//   - a Tags character is never SERVED with the character intact
+//   - where the gate repairs zero-width, it repairs Tags too — a repairable
+//     class must not refuse a document the sanitizer could have fixed
+async function testGuardFamilyTagsDispositionMatchesZeroWidth() {
+  var TAG = String.fromCodePoint(0xE0041);
+  var ZWSP = String.fromCharCode(0x200B);
+  var probed = 0;
+  var guards = b.guardAll.allGuards().filter(function (g) {
+    return g.KIND === "content" && typeof g.gate === "function" &&
+           g.INTEGRATION_FIXTURES && g.INTEGRATION_FIXTURES.benignBytes !== undefined;
+  });
+  for (var i = 0; i < guards.length; i += 1) {
+    var g = guards[i];
+    var carrier = Buffer.isBuffer(g.INTEGRATION_FIXTURES.benignBytes)
+      ? g.INTEGRATION_FIXTURES.benignBytes.toString("utf8")
+      : String(g.INTEGRATION_FIXTURES.benignBytes);
+    // Only meaningful where the guard applies the same policy to both.
+    var resolved = typeof g.resolveOpts === "function"
+      ? g.resolveOpts({ profile: "balanced" }) : null;
+    if (!resolved || resolved.tagsPolicy !== undefined) continue;
+
+    var withTag, withZw, base;
+    try {
+      base    = await g.gate({ profile: "balanced" }).check({ bytes: Buffer.from(carrier, "utf8") });
+      withTag = await g.gate({ profile: "balanced" }).check({ bytes: Buffer.from(carrier + TAG, "utf8") });
+      withZw  = await g.gate({ profile: "balanced" }).check({ bytes: Buffer.from(carrier + ZWSP, "utf8") });
+    } catch (_e) { continue; }
+
+    // Appending to a structured document can break its syntax — for JSON or
+    // XML that is a parse finding and refusing is right. Compare only where
+    // each append introduced exactly its own invisible-character finding.
+    function addedKinds(v) {
+      return (v.issues || []).map(function (x) { return x.kind; }).filter(function (k) {
+        return !(base.issues || []).some(function (bi) { return bi.kind === k; });
+      });
+    }
+    var tagAdded = addedKinds(withTag), zwAdded = addedKinds(withZw);
+    if (tagAdded.length !== 1 || tagAdded[0] !== "unicode-tags") continue;
+    probed += 1;
+
+    check("guard " + g.NAME + ": a Tags character is never served intact",
+          withTag.action !== "serve" &&
+          !(withTag.sanitized &&
+            Buffer.from(withTag.sanitized).toString("utf8").indexOf(TAG) !== -1));
+
+    // Repair parity, only where zero-width is itself the lone added finding
+    // and the gate chose to repair it.
+    if (zwAdded.length === 1 && zwAdded[0] === "zero-width" &&
+        withZw.action === "sanitize") {
+      check("guard " + g.NAME + ": Tags is repaired where zero-width is repaired",
+            withTag.action === "sanitize");
+    }
+  }
+  check("tags disposition probed at least two content guards", probed >= 2);
 }
 
 // ---- Family invariant: a verdict does not depend on how many came before ----
