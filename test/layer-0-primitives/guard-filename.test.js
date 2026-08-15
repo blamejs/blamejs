@@ -789,7 +789,25 @@ function testVerifyExtractionPathDotSegment() {
         resolved === path.resolve(root, "a/b.txt"));
 }
 
+// An over-long name is refused under THIS guard's length rule, and the error
+// says so: `filename.length`. A shared character-scan helper that applied a
+// byte ceiling of its own would refuse the same input a step earlier under a
+// different code, and an operator matching on the documented one would stop
+// recognising it.
+function testOverLongNameIsRefusedUnderThisGuardsOwnRule() {
+  var long = "a".repeat(300) + ".txt";
+  ["strict", "balanced", "permissive"].forEach(function (p) {
+    var err = null;
+    try { b.guardFilename.sanitize(long, { profile: p }); }
+    catch (e) { err = e; }
+    check("over-long name refused under " + p, err !== null);
+    check("over-long name refused as filename.length under " + p,
+          err !== null && err.code === "filename.length");
+  });
+}
+
 async function run() {
+  testOverLongNameIsRefusedUnderThisGuardsOwnRule();
   testGuardFilenameSurface();
   testGuardFilenameStandalonePrimitive();
   testGuardFilenamePathTraversal();

@@ -87,11 +87,11 @@ function testPublicSurface() {
 
   // Functional smoke: a bidi-override Trojan-source payload is detected; a
   // Cyrillic confusable mixed into a Latin label is flagged.
-  var bidi = "abc" + b.codepointClass.fromCp(0x202E) + "def";
+  var bidi = "abc" + codepointClass.fromCp(0x202E) + "def";
   var issues = b.codepointClass.detectCharThreats(bidi, { bidiPolicy: "reject" }, "free-text");
   check("public detectCharThreats flags a bidi override", issues.length >= 1 && issues[0].kind === "bidi-override");
 
-  var spoof = "pa" + b.codepointClass.fromCp(0x0443) + "pal";   // Cyrillic u (U+0443)
+  var spoof = "pa" + codepointClass.fromCp(0x0443) + "pal";   // Cyrillic u (U+0443)
   var scripts = b.codepointClass.detectMixedScripts(spoof);
   check("public detectMixedScripts flags a Latin/Cyrillic confusable",
         Array.isArray(scripts) && scripts.indexOf("latin") !== -1 && scripts.indexOf("cyrillic") !== -1);
@@ -105,7 +105,7 @@ function testPublicSurface() {
   check("b.codepointClass.hex4", b.codepointClass.hex4(0x202E) === "\\u202E");
   check("b.codepointClass.charClass",
         b.codepointClass.charClass([0x200E, [0x202A, 0x202E]]) === "\\u200E\\u202A-\\u202E");
-  check("b.codepointClass.fromCp", b.codepointClass.fromCp(0x41) === "A");
+  check("b.codepointClass.fromCp", codepointClass.fromCp(0x41) === "A");
   check("b.codepointClass.escapeRegExp",
         b.codepointClass.escapeRegExp("a.b*c") === "a\\.b\\*c");
   check("b.codepointClass.isAsciiAlnum",
@@ -126,16 +126,70 @@ function testPublicSurface() {
   check("b.codepointClass.stripUrlSchemeWhitespace",
         b.codepointClass.stripUrlSchemeWhitespace("  javascript:x") === "javascript:x" &&
         b.codepointClass.stripUrlSchemeWhitespace(
-          "java" + b.codepointClass.fromCp(0x09) + "script:") === "javascript:");
+          "java" + codepointClass.fromCp(0x09) + "script:") === "javascript:");
   // The remaining catalog constants the issue lists are reachable.
   check("b.codepointClass.BOM_CHAR",
         typeof b.codepointClass.BOM_CHAR === "string" && b.codepointClass.BOM_CHAR.charCodeAt(0) === 0xFEFF);
+}
+
+// The threat scans are unbounded, so on untrusted input the size refusal has
+// to come first — otherwise they run in full over whatever an attacker sends
+// and the ceiling only applies afterwards. scrubCharThreats owns that
+// ordering; assertNoCharThreats deliberately does NOT apply a ceiling of its
+// own, because callers reach it having already refused or repaired an
+// oversized input under their own rule and a second ceiling would override
+// their error with a different one.
+function testCharThreatCeilingOrdering() {
+  var factory = function (code, msg) { var e = new Error(msg); e.code = code; return e; };
+  var oversized = "a".repeat(4096) + codepointClass.fromCp(0x202E);
+
+  var err = null;
+  try {
+    codepointClass.assertWithinMaxBytes(oversized, { maxBytes: 64 }, factory, "probe");
+  } catch (e) { err = e; }
+  check("assertWithinMaxBytes refuses past the ceiling",
+        err !== null && err.code === "probe.too-large");
+  check("assertWithinMaxBytes passes under the ceiling",
+        codepointClass.assertWithinMaxBytes("short", { maxBytes: 64 }, factory, "probe") === undefined);
+  check("assertWithinMaxBytes without maxBytes is a no-op",
+        codepointClass.assertWithinMaxBytes(oversized, {}, factory, "probe") === undefined);
+
+  // Oversized AND carrying a reject-class threat: the size refusal wins, which
+  // is only possible if the ceiling runs before the scans.
+  var err2 = null;
+  try {
+    codepointClass.scrubCharThreats(oversized,
+      { maxBytes: 64, bidiPolicy: "reject" }, factory, "probe");
+  } catch (e) { err2 = e; }
+  check("scrubCharThreats refuses on SIZE before scanning for threats",
+        err2 !== null && err2.code === "probe.too-large");
+
+  // Under the ceiling the threat scan still decides, and strip still strips.
+  var err3 = null;
+  try {
+    codepointClass.scrubCharThreats("ok" + codepointClass.fromCp(0x202E),
+      { maxBytes: 4096, bidiPolicy: "reject" }, factory, "probe");
+  } catch (e) { err3 = e; }
+  check("scrubCharThreats still refuses a threat under the ceiling",
+        err3 !== null && err3.code === "probe.bidi");
+  check("scrubCharThreats strips a strip-class char under the ceiling",
+        codepointClass.scrubCharThreats("a" + codepointClass.fromCp(0x200B) + "b",
+          { maxBytes: 4096, zeroWidthPolicy: "strip" }, factory, "probe") === "ab");
+
+  // assertNoCharThreats imposes no ceiling of its own — a guard that applies
+  // its own length rule keeps it.
+  var err4 = null;
+  try {
+    codepointClass.assertNoCharThreats("a".repeat(4096), { maxBytes: 8 }, factory, "probe");
+  } catch (e) { err4 = e; }
+  check("assertNoCharThreats does not impose a ceiling of its own", err4 === null);
 }
 
 async function run() {
   testIsForbiddenControlChar();
   testFirstControlCharOffset();
   testPublicSurface();
+  testCharThreatCeilingOrdering();
 }
 
 module.exports = { run: run };

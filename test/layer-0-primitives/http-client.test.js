@@ -68,27 +68,59 @@ async function _withTwoServers(handlerA, handlerB, fn) {
 // after the test that owned it has finished. That is a leaked listener, and
 // under a parallel run it is the one the end-of-run drain reports.
 async function _closeH2Server(srv) {
+  var closed = false;
+  try { srv.close(function () { closed = true; }); } catch (_e) { closed = true; }
+  // Sessions first, then the raw sockets underneath them. Http2Server has no
+  // closeAllConnections() (that is http.Server), so anything still connected
+  // has to be ended by hand or close() waits for it forever.
   (srv._sessions || []).forEach(function (s) {
     try { if (!s.destroyed) s.destroy(); } catch (_e) { /* already gone */ }
   });
-  var closed = false;
-  try { srv.close(function () { closed = true; }); } catch (_e) { closed = true; }
-  // Bounded: a session the server does not know about can hold it open, and
-  // wedging the suite here would be worse than moving on — the end-of-run
-  // drain names any listener that genuinely survives.
-  try {
-    await helpers.waitUntil(function () { return closed; },
-      { timeoutMs: 2000, label: "http-client: h2 server closed" });                               // allow:raw-byte-literal // allow:raw-time-literal — close backstop
-  } catch (_e) { /* the drain reports it if it really leaked */ }
+  (srv._sockets || []).forEach(function (sock) {
+    try { if (!sock.destroyed) sock.destroy(); } catch (_e) { /* already gone */ }
+  });
+  // Nothing holds the listener now, so this returns immediately. The budget is
+  // a backstop against a hang, NOT the mechanism — raising it was the old
+  // temptation and it only moved the failure to the end-of-run drain.
+  await helpers.waitUntil(function () { return closed; },
+    { timeoutMs: 5000, label: "http-client: h2 server closed" });                                 // allow:raw-time-literal — hang backstop
+  // Asserted HERE, at the fixture that owns the server, rather than left to
+  // the end-of-run drain. The drain reports "something leaked" long after the
+  // test responsible has finished; this names it while the cause is still on
+  // the stack.
+  //
+  // The listener is only half of it: srv.close() releases the port even with
+  // peers attached, so a server that stopped listening can still be holding
+  // live CONNECTIONS. Those are what the drain reports, so those are what
+  // this asserts.
+  var liveSockets = (srv._sockets || []).filter(function (s) { return !s.destroyed; });
+  var liveSessions = (srv._sessions || []).filter(function (s) { return !s.destroyed; });
+  check("h2 fixture: the server stopped listening after close", srv.listening === false);
+  check("h2 fixture: no connection outlives the fixture that opened it",
+        liveSockets.length === 0 && liveSessions.length === 0);
 }
 
-// Track server-side sessions so _closeH2Server can end them.
+// Track what can hold the listener open so _closeH2Server can end it.
+//
+// BOTH layers, not just sessions. `srv.close()` waits for every live
+// CONNECTION, and a raw socket that never became an http2 session — a peer
+// that connected and stalled, or one still negotiating — is invisible to the
+// "session" event. Tracking only sessions left those sockets holding the
+// listener, close never completed, and the end-of-run drain reported the
+// listener as leaked. Under a parallel run that is the failure that surfaces.
 function _trackH2Sessions(srv) {
   srv._sessions = [];
+  srv._sockets = [];
   srv.on("session", function (s) {
     srv._sessions.push(s);
     s.once("close", function () {
       srv._sessions = srv._sessions.filter(function (x) { return x !== s; });
+    });
+  });
+  srv.on("connection", function (sock) {
+    srv._sockets.push(sock);
+    sock.once("close", function () {
+      srv._sockets = srv._sockets.filter(function (x) { return x !== sock; });
     });
   });
   return srv;
@@ -3332,12 +3364,53 @@ async function testPinnedClient() {
         anyHostOpts !== null && anyHostOpts.url === "https://anywhere.example/x");
 }
 
+// A peer that connects and then does nothing — no client preface, no stream.
+// `srv.close()` stops accepting but WAITS for live connections, so a fixture
+// that only stops accepting leaves the listener up after the test that owned
+// it has finished. Under a parallel run that is the handle the end-of-run
+// drain reports, which is why it read as a flake rather than a defect.
+//
+// (Node does create a session for a bare TCP connect, so session tracking
+// alone would also reach this one — the socket list is what covers a
+// connection that is torn down before its session is established.)
+async function testH2ServerClosesDespiteStalledConnection() {
+  var net = require("node:net");
+  var server = _trackH2Sessions(http2.createServer());
+  server.on("stream", function (stream) { stream.respond({ ":status": 200 }); stream.end("ok"); });
+  var port = await b.testing.listenOnRandomPort(server, "127.0.0.1");
+
+  var stalled = net.connect(port, "127.0.0.1");
+  await new Promise(function (resolve, reject) {
+    stalled.once("connect", resolve);
+    stalled.once("error", reject);
+  });
+  await helpers.waitUntil(function () { return (server._sockets || []).length >= 1; },
+    { timeoutMs: 5000, label: "h2 stalled-connection: server saw the connection" }); // allow:raw-time-literal — fixture setup
+
+  // The invariant: the listener comes back even though a peer is still
+  // connected and idle. Without the teardown, close() waits on that peer and
+  // the server is still listening when the fixture returns.
+  await _closeH2Server(server);
+  check("h2 stalled-connection: the listener is released despite an idle peer",
+        server.listening === false);
+
+  // The client half is this test's own; end it and WAIT for the close rather
+  // than assuming destroy() is synchronous, or the handle outlives the test
+  // that made it and the end-of-run drain reports it.
+  await new Promise(function (resolve) {
+    if (stalled.destroyed) { resolve(); return; }
+    stalled.once("close", resolve);
+    try { stalled.destroy(); } catch (_e) { resolve(); }
+  });
+}
+
 async function run() {
   try {
     testSurface();
     await testPinnedClient();
     await testPostureChangeDoesNotAbortInFlightRequests();
     await testH2DrainWaitsOnProgressButNotOnAStall();
+    await testH2ServerClosesDespiteStalledConnection();
     await testRequestSurvivesLosingTheTransportCacheRace();
     await testRetiredH2SessionDoesNotForceDestroyAnOpenStream();
     await testConfigurePool();

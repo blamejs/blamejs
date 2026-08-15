@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.18.27",
-  "createdAt": "2026-08-15T07:10:08.070Z",
+  "frameworkVersion": "0.18.28",
+  "createdAt": "2026-08-15T15:13:45.372Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -7041,6 +7041,10 @@
           "type": "function",
           "arity": 4
         },
+        "assertWithinMaxBytes": {
+          "type": "function",
+          "arity": 4
+        },
         "canonicalizeForCase": {
           "type": "function",
           "arity": 2
@@ -7100,6 +7104,10 @@
         "scriptFor": {
           "type": "function",
           "arity": 1
+        },
+        "scrubCharThreats": {
+          "type": "function",
+          "arity": 4
         },
         "stripUrlSchemeWhitespace": {
           "type": "function",

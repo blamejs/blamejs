@@ -259,6 +259,63 @@ function testSanitizePreservesMultibyte() {
   check("sanitize preserves Han, strips zwsp",   clean === "你好世界");
 }
 
+// Under a "reject" policy sanitize must REFUSE, never hand the threat back
+// unchanged. The strip table only removes classes set to "strip", so a guard
+// whose sanitize also never refuses would return a reject-policy threat
+// verbatim — no error, no repair, and stricter settings weaker than looser
+// ones. Every sibling guard (html / svg / xml / markdown / email / filename)
+// throws here; these pin that guardText does too, for all five classes.
+function testSanitizeRefusesUnderRejectPolicy() {
+  var cases = [
+    ["bidi",       RLO,  "text.bidi"],
+    ["control",    BELL, "text.control"],
+    ["null byte",  NUL,  "text.null-byte"],
+    ["zero-width", ZWSP, "text.zero-width"],
+    ["tags",       TAGA, "text.unicode-tags"],
+  ];
+  cases.forEach(function (c) {
+    var label = c[0], ch = c[1], code = c[2];
+    var out = null, err = null;
+    try { out = b.guardText.sanitize("ok " + ch + "danger", { profile: "strict" }); }
+    catch (e) { err = e; }
+    check("sanitize refuses " + label + " under strict rather than returning it",
+          err !== null && typeof out !== "string");
+    check("sanitize refusal for " + label + " carries " + code,
+          err !== null && err.code === code);
+    // The refusal must be the policy's doing, not a blanket strict-mode throw:
+    // the same call on clean input still succeeds.
+    check("sanitize still serves benign input under strict (" + label + ")",
+          b.guardText.sanitize("ok danger", { profile: "strict" }) === "ok danger");
+  });
+}
+
+// Sanitize's contract per class is: refuse it ("reject"), remove it ("strip"),
+// or leave it and let the finding stand ("audit" / "allow"). So the checkable
+// post-condition is that nothing set to "strip" survives and that running the
+// output back through changes nothing — NOT that the output validates clean,
+// which would wrongly demand that an audit policy repair what it only reports.
+function testSanitizeOutputIsAFixedPoint() {
+  var dirty = "a" + RLO + "b" + BELL + "c" + NUL + "d" + TAGA + "e" + ZWSP + "f";
+  var classChars = {
+    bidiPolicy: RLO, controlPolicy: BELL, nullBytePolicy: NUL,
+    zeroWidthPolicy: ZWSP, tagsPolicy: TAGA,
+  };
+  ["balanced", "permissive"].forEach(function (p) {
+    var profile = b.guardText.PROFILES[p];
+    var clean;
+    try { clean = b.guardText.sanitize(dirty, { profile: p }); }
+    catch (_e) { clean = null; }
+    if (clean === null) return;             // refusing is the other valid answer
+    Object.keys(classChars).forEach(function (policyName) {
+      if (profile[policyName] !== "strip") return;
+      check("sanitize removes every " + policyName + " char under " + p,
+            clean.indexOf(classChars[policyName]) === -1);
+    });
+    check("sanitize is idempotent under " + p,
+          b.guardText.sanitize(clean, { profile: p }) === clean);
+  });
+}
+
 function testSanitizeAmplificationContract() {
   // Sanitize is shrinking by contract: stripping can only remove, never grow.
   var clean = b.guardText.sanitize("hello world", { profile: "balanced" });
@@ -347,6 +404,8 @@ async function run() {
   await testGateRefuseInvalidEncoding();
   testSanitizeStripsInvisibles();
   testSanitizeStripsBidiControlNullTags();
+  testSanitizeRefusesUnderRejectPolicy();
+  testSanitizeOutputIsAFixedPoint();
   testSanitizePreservesMultibyte();
   testSanitizeAmplificationContract();
   await testGateServe();

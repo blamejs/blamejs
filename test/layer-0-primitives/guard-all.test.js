@@ -324,7 +324,55 @@ function run() {
   testGuardAllAuditEmitsAllOnByDefault();
   testGuardAllByExtensionShape();
   testGuardAllByContentTypeShape();
+  testGuardFamilySanitizeNeverServesThreatVerbatim();
   return testGuardAllDispatchRoutesByMime();
+}
+
+// ---- Family invariant: sanitize never serves a threat back verbatim ----
+
+// Every content guard's strip table removes only the classes an operator set
+// to "strip". A guard whose sanitize also never refuses therefore has a hole
+// at "reject": neither branch runs, and the threat is returned unchanged with
+// no error — the strictest setting the weakest behavior. This walks the live
+// registry rather than a hardcoded list, so a guard added later is covered the
+// day it registers.
+var THREAT_CODEPOINTS = [
+  ["bidi override",  String.fromCharCode(0x202E)],
+  ["C0 control",     String.fromCharCode(0x07)],
+  ["null byte",      String.fromCharCode(0x00)],
+  ["zero width",     String.fromCharCode(0x200B)],
+  ["Unicode tags",   String.fromCodePoint(0xE0041)],
+];
+
+function testGuardFamilySanitizeNeverServesThreatVerbatim() {
+  var covered = 0;
+  b.guardAll.allGuards().forEach(function (g) {
+    if (g.KIND !== "content" || typeof g.sanitize !== "function") return;
+    var fixtures = g.INTEGRATION_FIXTURES;
+    if (!fixtures || fixtures.benignBytes === undefined) return;
+    var carrier = Buffer.isBuffer(fixtures.benignBytes)
+      ? fixtures.benignBytes.toString("utf8")
+      : String(fixtures.benignBytes);
+    // Only guards whose sanitize accepts their own benign fixture can be
+    // probed this way; one that refuses it has nothing to say about a threat
+    // appended to it.
+    try { g.sanitize(carrier, { profile: "strict" }); }
+    catch (_e) { return; }
+    covered += 1;
+    THREAT_CODEPOINTS.forEach(function (t) {
+      var label = t[0], ch = t[1];
+      var out = null, threw = false;
+      try { out = g.sanitize(carrier + ch, { profile: "strict" }); }
+      catch (_e) { threw = true; }
+      var servedVerbatim = !threw && typeof out === "string" && out.indexOf(ch) !== -1;
+      check("guard " + g.NAME + ": sanitize refuses or strips " + label +
+            " under strict, never serves it", servedVerbatim === false);
+    });
+  });
+  // Guard the guard: if the probe stops reaching any member the assertions
+  // above pass vacuously, which is the failure mode that hides a regression.
+  check("family sanitize invariant probed at least three content guards",
+        covered >= 3);
 }
 
 module.exports = { run: run };
