@@ -328,6 +328,7 @@ async function run() {
   testGuardFamilyGateReachesTagsEnforcement();
   await testGuardFamilyTagsDispositionMatchesZeroWidth();
   testGuardFamilySeverityAgreesWithPolicy();
+  testGuardFamilyEveryStripPathRemovesTheSameClasses();
   testGuardFamilyValidateIsDeterministicAcrossCalls();
   return testGuardAllDispatchRoutesByMime();
 }
@@ -518,6 +519,61 @@ function testGuardFamilySeverityAgreesWithPolicy() {
     }
   });
   check("severity/policy agreement probed at least three content guards", probed >= 3);
+}
+
+// Every public entry point that REMOVES characters has to remove the same set.
+// A guard whose validate reports a class while some other hand-rolled strip
+// path in the same guard hands it back is the mismatch this catches:
+// guardJson.parse and guardFilename.sanitize each replaced zero-width and not
+// Unicode Tags, so balanced validation called the character a threat and
+// balanced parsing returned it inside the value.
+function testGuardFamilyEveryStripPathRemovesTheSameClasses() {
+  var TAG = String.fromCodePoint(0xE0041);
+  var ZWSP = String.fromCharCode(0x200B);
+  var probes = [
+    ["guardJson.parse", function () {
+      return JSON.stringify(b.guardJson.parse("{\"a\":\"x" + TAG + ZWSP + "\"}",
+                                              { profile: "balanced" }));
+    }],
+    ["guardFilename.sanitize strip", function () {
+      return b.guardFilename.sanitize("re" + TAG + ZWSP + "port.txt",
+                                      { profile: "balanced", mode: "strip" });
+    }],
+    ["guardCsv.sanitize", function () {
+      return b.guardCsv.sanitize("a,b\r\nx,y" + TAG + ZWSP + "\r\n", { profile: "balanced" });
+    }],
+    ["guardText.sanitize", function () {
+      return b.guardText.sanitize("ok" + TAG + ZWSP, { profile: "balanced" });
+    }],
+    ["guardHtml.sanitize", function () {
+      return b.guardHtml.sanitize("<p>x" + TAG + ZWSP + "</p>", { profile: "balanced" });
+    }],
+  ];
+  probes.forEach(function (p) {
+    var out = null;
+    try { out = String(p[1]()); }
+    catch (_e) { return; }        // refusing is the other valid answer
+    check(p[0] + ": removes the Unicode Tags character",
+          out.indexOf(TAG) === -1);
+    check(p[0] + ": removes the zero-width character",
+          out.indexOf(ZWSP) === -1);
+  });
+
+  // The inheritance runs one way only: an EXPLICIT tagsPolicy wins over the
+  // zero-width setting it would otherwise borrow. A scrub path that re-derives
+  // the policy by reading `zeroWidthPolicy` alone strips a character its own
+  // validate says to allow.
+  var allowOpts = { profile: "balanced", tagsPolicy: "allow" };
+  var jsonAllowed = b.guardJson.parse("{\"a\":\"x" + TAG + "\"}", allowOpts);
+  check("guardJson.parse honors an explicit tagsPolicy: allow",
+        String(jsonAllowed.a).indexOf(TAG) !== -1);
+  check("guardJson.validate agrees — no Tags finding under allow",
+        (b.guardJson.validate("{\"a\":\"x" + TAG + "\"}", allowOpts).issues || [])
+          .every(function (i) { return i.kind !== "unicode-tags"; }));
+  var nameAllowed = b.guardFilename.sanitize("re" + TAG + "port.txt",
+    { profile: "balanced", mode: "strip", tagsPolicy: "allow" });
+  check("guardFilename.sanitize honors an explicit tagsPolicy: allow",
+        String(nameAllowed).indexOf(TAG) !== -1);
 }
 
 // ---- Family invariant: a verdict does not depend on how many came before ----

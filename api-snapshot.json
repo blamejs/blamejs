@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.18.28",
-  "createdAt": "2026-08-15T22:00:22.109Z",
+  "createdAt": "2026-08-15T23:11:52.296Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -7098,6 +7098,10 @@
           "arity": 2
         },
         "isUnreserved": {
+          "type": "function",
+          "arity": 1
+        },
+        "resolveTagsPolicy": {
           "type": "function",
           "arity": 1
         },

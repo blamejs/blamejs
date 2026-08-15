@@ -139,6 +139,23 @@ function testPublicSurface() {
 // own, because callers reach it having already refused or repaired an
 // oversized input under their own rule and a second ceiling would override
 // their error with a different one.
+// The Tags policy inherits the zero-width one, but only when the guard names
+// none of its own. Every scrub path resolves it here rather than re-reading
+// `zeroWidthPolicy` — a second reading silently overrides an explicit
+// `tagsPolicy: "allow"`, so validate reports nothing while the scrub strips.
+function testResolveTagsPolicy() {
+  check("resolveTagsPolicy inherits zeroWidthPolicy when tagsPolicy is unset",
+        codepointClass.resolveTagsPolicy({ zeroWidthPolicy: "strip" }) === "strip");
+  check("an explicit tagsPolicy wins over the inherited one",
+        codepointClass.resolveTagsPolicy({ zeroWidthPolicy: "strip", tagsPolicy: "allow" }) === "allow");
+  check("an explicit reject wins the same way",
+        codepointClass.resolveTagsPolicy({ zeroWidthPolicy: "allow", tagsPolicy: "reject" }) === "reject");
+  check("neither set resolves to undefined",
+        codepointClass.resolveTagsPolicy({}) === undefined);
+  check("no opts at all resolves to undefined",
+        codepointClass.resolveTagsPolicy(null) === undefined);
+}
+
 function testCharThreatCeilingOrdering() {
   var factory = function (code, msg) { var e = new Error(msg); e.code = code; return e; };
   var oversized = "a".repeat(4096) + codepointClass.fromCp(0x202E);
@@ -189,6 +206,7 @@ async function run() {
   testIsForbiddenControlChar();
   testFirstControlCharOffset();
   testPublicSurface();
+  testResolveTagsPolicy();
   testCharThreatCeilingOrdering();
 }
 
