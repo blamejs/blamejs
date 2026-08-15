@@ -388,6 +388,51 @@ async function testGuardCsvAlternateDelimiterFindingIsActuallyMitigated() {
   check("the repaired cell carries the mitigation inside quotes",
         served.indexOf("\"\t=cmd|y\"") !== -1);
 
+  // The allowlist policy leaves a named-safe call unprefixed on purpose, and
+  // the scan still reports every formula-leading cell. A residual check that
+  // cannot tell those apart refuses exactly what the operator allowed.
+  var allowed = await b.guardCsv.gate({
+    profile: "strict", formulaInjectionPolicy: "allowlist", formulasAllowlist: ["SUM"],
+  }).check({ bytes: Buffer.from("a\r\n=SUM(A1)\r\n", "utf8") });
+  check("an allowlisted formula is not refused by the residual check",
+        allowed.action !== "refuse");
+  if (allowed.sanitized) {
+    check("the allowlisted call is served unprefixed",
+          Buffer.from(allowed.sanitized).toString("utf8").indexOf("=SUM(A1)") !== -1);
+  }
+  var notAllowed = await b.guardCsv.gate({
+    profile: "strict", formulaInjectionPolicy: "allowlist", formulasAllowlist: ["SUM"],
+  }).check({ bytes: Buffer.from("a\r\n=cmd|x\r\n", "utf8") });
+  check("a non-allowlisted formula is still acted on under allowlist",
+        notAllowed.action === "sanitize" || notAllowed.action === "refuse");
+
+  // An allowlisted call must not SHIELD a later one. The scan reports the
+  // first formula-leading cell it finds, so a residual check that inspects
+  // only that finding exempts the whole document on the strength of its
+  // safest cell.
+  var shielded = await b.guardCsv.gate({
+    profile: "strict", formulaInjectionPolicy: "allowlist", formulasAllowlist: ["SUM"],
+  }).check({ bytes: Buffer.from("a\r\n=SUM(A1);=cmd|x\r\n", "utf8") });
+  var shieldedOut = shielded.sanitized
+    ? Buffer.from(shielded.sanitized).toString("utf8") : null;
+  check("an allowlisted cell does not shield a later unsafe one",
+        shielded.action === "refuse" ||
+        (shieldedOut !== null && shieldedOut.indexOf(";=cmd|x") === -1));
+
+  // `allow` and `audit-only` permit formulas on purpose — detect suppresses the
+  // finding entirely. A residual check that does not read the policy refuses
+  // the document whenever some UNRELATED repairable issue (a zero-width char,
+  // a stray BOM) sends it through the sanitizer.
+  var ZWSP = String.fromCharCode(0x200B);
+  for (var pi = 0; pi < 2; pi += 1) {
+    var permissivePolicy = ["allow", "audit-only"][pi];
+    var pv = await b.guardCsv.gate({
+      profile: "balanced", formulaInjectionPolicy: permissivePolicy,
+    }).check({ bytes: Buffer.from("h\r\n=SUM(A1)" + ZWSP + "\r\n", "utf8") });
+    check("formulaInjectionPolicy " + permissivePolicy + " still serves a formula " +
+          "when an unrelated issue triggers sanitize", pv.action !== "refuse");
+  }
+
   // Whatever sanitize does serve must not still trip its own scan.
   var re = b.guardCsv.validate(served, { profile: "strict" });
   check("the sanitized output has no formula finding left",
@@ -461,6 +506,51 @@ function testGuardCsvCellScannerHonorsTheConfiguredQuote() {
     check("a formula after a configured " + JSON.stringify(delim) + " delimiter is detected",
           (dv.issues || []).some(function (i) { return i.ruleId === "csv.formula-injection"; }));
   });
+}
+
+// The gate's disposition for a formula, across every policy the guard accepts
+// and both boundary kinds the scan recognises. Four consecutive review rounds
+// went to fixing this one function from the direction of the last symptom —
+// enforcement missing, then the allowlist broken, then a safe cell shielding an
+// unsafe one, then the permissive policies overridden. Each patch was locally
+// right and globally incomplete. The matrix is the contract; a change to
+// _gateProduceSanitized that moves any cell of it is a decision, not a detail.
+async function testGuardCsvFormulaPolicyMatrix() {
+  var ZWSP = String.fromCharCode(0x200B);
+  var rows = [
+    // policy,           document,                         expected action
+    ["allow",            "h\r\n=SUM(A1)" + ZWSP,           "sanitize"],
+    ["audit-only",       "h\r\n=SUM(A1)" + ZWSP,           "sanitize"],
+    ["prefix-tab",       "h\r\n=cmd|x",                    "sanitize"],
+    ["prefix-quote",     "h\r\n=cmd|x",                    "sanitize"],
+    ["allowlist",        "h\r\n=SUM(A1)",                  "sanitize"],
+    ["allowlist",        "h\r\n=cmd|x",                    "sanitize"],
+    ["reject",           "h\r\n=cmd|x",                    "refuse"],
+    // A formula behind an ALTERNATE delimiter cannot be disarmed without
+    // rewriting for a dialect the guard is not emitting.
+    ["prefix-tab",       "h\r\nsafe;=cmd|x",               "refuse"],
+    ["allowlist",        "h\r\n=SUM(A1);=cmd|x",           "refuse"],
+    // ...unless the policy permits formulas outright.
+    ["allow",            "h\r\nsafe;=cmd|x" + ZWSP,        "sanitize"],
+    // The dangerous-function denylist is a separate axis and survives even a
+    // policy that permits formulas.
+    ["allow",            "h\r\n=WEBSERVICE(\"http://x\")" + ZWSP, "refuse"],
+  ];
+  for (var i = 0; i < rows.length; i += 1) {
+    var policy = rows[i][0], doc = rows[i][1], expected = rows[i][2];
+    var v = await b.guardCsv.gate({
+      profile: "balanced", formulaInjectionPolicy: policy, formulasAllowlist: ["SUM"],
+    }).check({ bytes: Buffer.from(doc + "\r\n", "utf8") });
+    check("policy " + policy + " on " + JSON.stringify(doc) + " -> " + expected,
+          v.action === expected);
+    // Nothing served may still carry a bare, unmitigated payload.
+    if (v.sanitized) {
+      var out = Buffer.from(v.sanitized).toString("utf8");
+      var permits = policy === "allow" || policy === "audit-only";
+      check("policy " + policy + ": served output carries no bare `;=cmd`",
+            permits || out.indexOf(";=cmd") === -1);
+    }
+  }
 }
 
 // The gate's sanitize action re-parses the cleaned text and re-serializes it
@@ -1559,6 +1649,7 @@ async function run() {
   await testGuardCsvGateSanitizeReserializesFormula();
   await testGuardCsvGateSanitizePreservesTheConfiguredDialect();
   await testGuardCsvAlternateDelimiterFindingIsActuallyMitigated();
+  await testGuardCsvFormulaPolicyMatrix();
 }
 
 module.exports = { run: run };
