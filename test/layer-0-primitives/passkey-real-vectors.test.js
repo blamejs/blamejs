@@ -1421,6 +1421,29 @@ async function testAssertionFlagsComeFromTheVerifiedBytes() {
   try { await racePending; } catch (e) { raceThrew = e; }
   check("snapshot: a mismatching registration cannot be corrected mid-verification",
         raceThrew && /credential-id-mismatch/.test(String(raceThrew.code)));
+
+  // The snapshot copies CALLER-supplied key names, so it has the same
+  // prototype-key hazard as the CBOR converter: `__proto__` assigned to an
+  // ordinary object hits the legacy setter, and the key disappears from
+  // Object.keys and JSON while its contents become inherited properties.
+  var protoChallenge = b64url(crypto.randomBytes(32));
+  var protoAssertion = makeAssertion(reg.keyPair.privateKey, reg.credId, protoChallenge, 7);
+  protoAssertion.response.clientExtensionResults =
+    JSON.parse('{"__proto__":{"polluted":1},"credProps":{"rk":true}}');
+  var protoRv = await authOutcome({
+    response: protoAssertion.response, expectedChallenge: protoChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    credential: { id: storedId, publicKey: storedPublicKey(regRv.rv), counter: 0 },
+  });
+  var snapped = protoRv.ok && protoRv.rv.authenticationInfo.clientExtensionResults;
+  check("snapshot: a `__proto__` key survives as an own property",
+        snapped && Object.keys(snapped).indexOf("__proto__") !== -1);
+  check("snapshot: and it round-trips through JSON rather than vanishing",
+        snapped && JSON.parse(JSON.stringify(snapped))["__proto__"].polluted === 1);
+  check("snapshot: sibling keys are unaffected",
+        snapped && snapped.credProps.rk === true);
+  check("snapshot: nothing leaked onto a plain object's prototype",
+        ({}).polluted === undefined);
 }
 
 // ---- Response shape: credential type, and formats we will not anchor ----
@@ -2305,6 +2328,33 @@ async function testWireFieldsMustBeCanonical() {
   check("wire fields: the junk really is dropped by the decoder",
         Buffer.from("!" + assertion.response.response.signature, "base64url")
           .equals(Buffer.from(assertion.response.response.signature, "base64url")));
+
+  // The EXPECTED challenge is base64url the operator stored, and it is
+  // decoded the same permissive way. A stored value corrupted to "AQ!ID"
+  // decodes equal to "AQID", so a response would verify against a challenge
+  // that was not the one held — the framework's own challenges are canonical,
+  // so this only bites a session store that mangled it or a caller minting
+  // challenges themselves, which is when it is hardest to notice.
+  var junkChallenge = "!" + authChallenge;
+  check("wire fields: the junk challenge really decodes to the same bytes",
+        Buffer.from(junkChallenge, "base64url")
+          .equals(Buffer.from(authChallenge, "base64url")));
+  var badChalAuth = await authOutcome({
+    response: JSON.parse(JSON.stringify(assertion.response)),
+    expectedChallenge: junkChallenge, expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    credential: credential,
+  });
+  check("wire fields: a non-canonical expectedChallenge is refused at authentication",
+        badChalAuth.ok === false && badChalAuth.threw === true &&
+        /bad-expectedChallenge/.test(String(badChalAuth.code)));
+
+  var badChalReg = await regOutcome({
+    response: reg.response, expectedChallenge: "!" + challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("wire fields: a non-canonical expectedChallenge is refused at registration",
+        badChalReg.ok === false && badChalReg.threw === true &&
+        /bad-expectedChallenge/.test(String(badChalReg.code)));
 
   for (var f = 0; f < 3; f++) {
     var field = ["authenticatorData", "signature", "clientDataJSON"][f];

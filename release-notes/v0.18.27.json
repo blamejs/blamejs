@@ -18,7 +18,7 @@
         },
         {
           "title": "Binary response fields must be canonical base64url",
-          "body": "`authenticatorData`, `signature`, `clientDataJSON` and `attestationObject` are now required to be canonical base64url. Node's decoder discards characters it does not recognise, so `AQ!ID` and `A Q I D` decode to the same bytes as `AQID` — the verifier saw the genuine signed bytes and returned `verified: true` while the response as posted had unboundedly many spellings.\n\nThat matters beyond tidiness: anything keyed on the response as sent — a replay cache, an idempotency key, a request digest — counts each spelling as a new request."
+          "body": "`authenticatorData`, `signature`, `clientDataJSON` and `attestationObject` are now required to be canonical base64url. Node's decoder discards characters it does not recognise, so `AQ!ID` and `A Q I D` decode to the same bytes as `AQID` — the verifier saw the genuine signed bytes and returned `verified: true` while the response as posted had unboundedly many spellings.\n\nThat matters beyond tidiness: anything keyed on the response as sent — a replay cache, an idempotency key, a request digest — counts each spelling as a new request.\n\n`expectedChallenge` is held to the same rule, because it is decoded the same way: a stored challenge corrupted to `AQ!ID` compares equal to `AQID`, so a response would verify against a challenge that was not the one held. Challenges minted by `startRegistration` / `startAuthentication` are already canonical; this catches a session store that mangled the value, or a caller building ceremonies itself."
         },
         {
           "title": "A response must state the one credential type WebAuthn defines",
@@ -94,6 +94,10 @@
         {
           "title": "`passkey-result-origin-is-the-verified-one-not-the-allowlist`",
           "body": "`origin: opts.expectedOrigin` in either ceremony's result fails the pattern gate. The option may be an allow-list; the result field is a single verified origin, and the two ceremonies reached for the wrong one independently."
+        },
+        {
+          "title": "`passkey-untrusted-key-objects-build-with-null-prototype`",
+          "body": "The passkey module builds objects out of key names it does not choose — CBOR extension labels from the authenticator, `clientExtensionResults` from the browser — and both converters must build them with a null prototype. `var out = {}` there lets a key called `__proto__` hit the legacy prototype setter, so it disappears from `Object.keys()` and JSON while its contents become inherited properties.\n\nThis one is a detector because it recurred: the hazard was fixed in the CBOR converter and reintroduced verbatim in the snapshot converter written two changes later."
         },
         {
           "title": "`passkey-resident-key-selectors-derive-from-one-requirement`",

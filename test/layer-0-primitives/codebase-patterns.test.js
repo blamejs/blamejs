@@ -7059,6 +7059,24 @@ var KNOWN_ANTIPATTERNS = [
     reason: "An encrypted-boot db.enc length check (packed.length < <min>) must fail closed (throw), not silently return — a return opens a fresh empty database that the next flush persists over the corrupt durable snapshot (silent data loss). Fires on a packed.length check whose block returns before it throws.",
   },
   {
+    id: "passkey-untrusted-key-objects-build-with-null-prototype",
+    primitive: "b.auth.passkey",
+    scanScope: "lib",
+    // b.auth.passkey builds objects out of key names it does not choose: CBOR
+    // extension labels from the authenticator, and clientExtensionResults from
+    // the browser. Assigning a key called `__proto__` to an ordinary object
+    // hits the legacy prototype setter -- the key vanishes from Object.keys
+    // and from JSON, and its contents reappear as INHERITED properties, so
+    // verified data is lost and unverified-looking data is gained.
+    //
+    // Both converters must build through _plainObject(). This fired for real:
+    // the hazard was fixed in the CBOR converter and then reintroduced
+    // verbatim in the snapshot converter written two changes later.
+    regex: /function _(?:plainFromCbor|snapshotValue)\b(?:(?!\n\})[\s\S]){0,2000}?\bvar out = \{\}/,
+    allowlist: [],
+    reason: "The converters in b.auth.passkey build objects from key names supplied by the authenticator (CBOR extension labels) or the browser (clientExtensionResults), so they must build through _plainObject() — a null-prototype object. `var out = {}` there lets a key called __proto__ hit the legacy prototype setter: it disappears from Object.keys and JSON while its contents become inherited properties, losing verified extension data and adding properties nothing signed.",
+  },
+  {
     id: "passkey-resident-key-selectors-derive-from-one-requirement",
     primitive: "b.auth.passkey",
     scanScope: "lib",
