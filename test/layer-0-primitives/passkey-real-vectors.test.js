@@ -1341,6 +1341,64 @@ async function testAssertionFlagsComeFromTheVerifiedBytes() {
   check("verified flags: so does the device type",
         rv.ok === true &&
         rv.rv.authenticationInfo.credentialDeviceType === "singleDevice");
+
+  // Everything the result reports about the CALLER's input is snapshotted at
+  // validation time too. Verification is async and the caller keeps opts, so
+  // a later read reports whatever the object holds by then. The sharp one is
+  // the credential id: a consumer persisting newCounter against
+  // authenticationInfo.credentialID would update the wrong credential row
+  // while the response said verified: true.
+  var mutChallenge = b64url(crypto.randomBytes(32));
+  var mutAssertion = makeAssertion(reg.keyPair.privateKey, reg.credId, mutChallenge, 5);
+  var storedId = b64url(reg.credId);
+  var otherId = b64url(crypto.randomBytes(32));
+  var credential = {
+    id: storedId, publicKey: storedPublicKey(regRv.rv), counter: 0,
+  };
+  var mutOpts = {
+    response: mutAssertion.response, expectedChallenge: mutChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID, credential: credential,
+  };
+  var pending = passkey.verifyAuthentication(mutOpts);
+  // Mutate WHILE the verification is in flight.
+  credential.id = otherId;
+  mutOpts.expectedRPID = "attacker.test";
+  var mutRv = await pending;
+  check("snapshot: the ceremony still verifies", mutRv.verified === true);
+  check("snapshot: credentialID is the one that was validated, not the mutated one",
+        mutRv.authenticationInfo.credentialID === storedId);
+  check("snapshot: rpID is the one that was verified against",
+        mutRv.authenticationInfo.rpID === RP_ID);
+
+  // A snapshot of the REFERENCE is not a snapshot: mutating what is INSIDE
+  // the response mid-flight would still show through into the result.
+  var deepChallenge = b64url(crypto.randomBytes(32));
+  var deepAssertion = makeAssertion(reg.keyPair.privateKey, reg.credId, deepChallenge, 6);
+  deepAssertion.response.clientExtensionResults = { credProps: { rk: true } };
+  var deepPending = passkey.verifyAuthentication({
+    response: deepAssertion.response, expectedChallenge: deepChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    credential: { id: storedId, publicKey: storedPublicKey(regRv.rv), counter: 0 },
+  });
+  deepAssertion.response.clientExtensionResults.credProps.rk = false;
+  var deepRv = await deepPending;
+  check("snapshot: nested extension values are copied, not shared by reference",
+        deepRv.verified === true &&
+        deepRv.authenticationInfo.clientExtensionResults.credProps.rk === true);
+
+  // ...and the same for the registration side's transports.
+  var tChallenge = b64url(crypto.randomBytes(32));
+  var tReg = makeRegistration(tChallenge);
+  tReg.response.response.transports = ["usb"];
+  var tPending = passkey.verifyRegistration({
+    response: tReg.response, expectedChallenge: tChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  tReg.response.response.transports.push("nfc");
+  var tRv = await tPending;
+  check("snapshot: transports are copied at validation time",
+        tRv.verified === true &&
+        tRv.registrationInfo.credential.transports.join(",") === "usb");
 }
 
 // ---- Response shape: credential type, and formats we will not anchor ----
