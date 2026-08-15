@@ -53,7 +53,7 @@ That field is kept separate from `authenticatorExtensionResults`, and the distin
 
 `registrationInfo.credential.transports` carries the browser's `getTransports()` through again. Persist it, hand it back in `allowCredentials`, and the next login goes straight to the right transport instead of prompting for all of them.
 
-`authenticatorExtensionResults` is back on both results, decoded from the signed authenticator data through `b.cbor`. These are the authenticator's own `credProtect` / `credBlob` answers — inside the bytes the signature covers, unlike `clientExtensionResults`, which the browser reports and nothing signs.
+`authenticatorExtensionResults` is back on both results, decoded from the signed authenticator data through `b.cbor`. These are the authenticator's own `credProtect` / `credBlob` answers — inside the bytes the signature covers, unlike `clientExtensionResults`, which the browser reports and nothing signs. Nested structures (`largeBlob`, `devicePubKey`) are converted all the way down: a CBOR map left in place looks right in memory and serializes to `{}`, so persisting or logging the result would drop verified data with nothing failing.
 
 A credential ID carrying `=` padding is accepted and normalized rather than refused. base64url is canonically unpadded, but plenty of encoders emit it, and a stored credential ID is whatever the encoder of the day wrote. Refusing it rejected no attack — it stopped affected deployments from starting authentication at all. The credential-ID binding compares canonical forms for the same reason, so a padded stored ID and the unpadded spelling the browser returns are one credential rather than a mismatch.
 

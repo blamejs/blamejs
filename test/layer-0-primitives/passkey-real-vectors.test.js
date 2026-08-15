@@ -975,6 +975,66 @@ async function testAuthenticatorExtensionResults() {
         authRv.rv.authenticationInfo.authenticatorExtensionResults &&
         authRv.rv.authenticationInfo.authenticatorExtensionResults.credProtect === 3);
 
+  // Extension outputs nest. A value left as a CBOR Map survives in memory and
+  // then serializes to `{}` — so an operator who persists the verification
+  // result, or logs it, loses verified data with nothing failing. The
+  // conversion has to reach all the way down.
+  var nestedChallenge = b64url(crypto.randomBytes(32));
+  var nestedKp = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var nestedCredId = crypto.randomBytes(32);
+  // Keys in CTAP2 canonical order — shortest first, then bytewise. The
+  // verifier enforces deterministic encoding, so an out-of-order fixture is
+  // refused before reaching the code under test.
+  var nestedExt = cborMap([
+    [cborText("list"), cborArray([cborMap([[cborText("x"), cborInt(1)]])])],
+    [cborText("largeBlob"),   cborMap([
+      [cborText("inner"),     cborMap([[cborText("deep"), cborInt(7)]])],
+      [cborText("supported"), cborInt(1)],
+    ])],
+    [cborText("credProtect"), cborInt(2)],
+  ]);
+  var nestedAuthData = Buffer.concat([
+    buildAuthData(RP_ID, FLAG_UP | FLAG_UV | FLAG_AT | 0x80, 0,                     // allow:raw-byte-literal — ED flag
+      buildAttestedCredData(Buffer.alloc(16, 0), nestedCredId,
+                            coseEC2PublicKey(nestedKp.publicKey))),
+    nestedExt,
+  ]);
+  var nestedAtt = cborMap([
+    [cborText("fmt"),      cborText("none")],
+    [cborText("attStmt"),  cborMap([])],
+    [cborText("authData"), cborBytes(nestedAuthData)],
+  ]);
+  var nestedRv = await regOutcome({
+    response: {
+      id: b64url(nestedCredId), rawId: b64url(nestedCredId), type: "public-key",
+      response: {
+        clientDataJSON: b64url(Buffer.from(JSON.stringify({
+          type: "webauthn.create", challenge: nestedChallenge, origin: ORIGIN,
+          crossOrigin: false,
+        }), "utf8")),
+        attestationObject: b64url(nestedAtt),
+      },
+      clientExtensionResults: {},
+    },
+    expectedChallenge: nestedChallenge, expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("signed extensions: a registration with nested extensions verifies",
+        nestedRv.ok === true);
+  var nestedOut = nestedRv.ok && nestedRv.rv.registrationInfo.authenticatorExtensionResults;
+  check("signed extensions: a nested map is converted, not left as a Map",
+        nestedOut && nestedOut.largeBlob && !(nestedOut.largeBlob instanceof Map) &&
+        nestedOut.largeBlob.supported === 1);
+  check("signed extensions: the conversion reaches all the way down",
+        nestedOut && nestedOut.largeBlob && nestedOut.largeBlob.inner &&
+        nestedOut.largeBlob.inner.deep === 7);
+  check("signed extensions: maps inside arrays are converted too",
+        nestedOut && Array.isArray(nestedOut.list) && nestedOut.list[0] &&
+        !(nestedOut.list[0] instanceof Map) && nestedOut.list[0].x === 1);
+  // The decisive check: what an operator persists must still carry the data.
+  check("signed extensions: the result survives a JSON round trip intact",
+        nestedOut &&
+        JSON.parse(JSON.stringify(nestedOut)).largeBlob.inner.deep === 7);
+
   // A ceremony with no extensions leaves the field absent rather than an
   // empty object, so "none reported" stays distinguishable from "reported
   // none" — the same rule transports follows.
