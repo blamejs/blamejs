@@ -1035,6 +1035,49 @@ async function testAuthenticatorExtensionResults() {
         nestedOut &&
         JSON.parse(JSON.stringify(nestedOut)).largeBlob.inner.deep === 7);
 
+  // A signed extension may legally be named `__proto__`. Assigning that to an
+  // ordinary object hits the legacy prototype setter: the key disappears from
+  // Object.keys and from JSON, and its contents come back as INHERITED
+  // properties — verified data lost, and unverified-looking data gained.
+  var protoChallenge = b64url(crypto.randomBytes(32));
+  var protoKp = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var protoCredId = crypto.randomBytes(32);
+  var protoExt = cborMap([                                                         // canonical order: shortest key first
+    [cborText("__proto__"), cborMap([[cborText("polluted"), cborInt(1)]])],
+  ]);
+  var protoAuthData = Buffer.concat([
+    buildAuthData(RP_ID, FLAG_UP | FLAG_UV | FLAG_AT | 0x80, 0,                     // allow:raw-byte-literal — ED flag
+      buildAttestedCredData(Buffer.alloc(16, 0), protoCredId,
+                            coseEC2PublicKey(protoKp.publicKey))),
+    protoExt,
+  ]);
+  var protoRv = await regOutcome({
+    response: {
+      id: b64url(protoCredId), rawId: b64url(protoCredId), type: "public-key",
+      response: {
+        clientDataJSON: b64url(Buffer.from(JSON.stringify({
+          type: "webauthn.create", challenge: protoChallenge, origin: ORIGIN,
+          crossOrigin: false,
+        }), "utf8")),
+        attestationObject: b64url(cborMap([
+          [cborText("fmt"),      cborText("none")],
+          [cborText("attStmt"),  cborMap([])],
+          [cborText("authData"), cborBytes(protoAuthData)],
+        ])),
+      },
+      clientExtensionResults: {},
+    },
+    expectedChallenge: protoChallenge, expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  var protoOut = protoRv.ok && protoRv.rv.registrationInfo.authenticatorExtensionResults;
+  check("signed extensions: a `__proto__` extension is kept as an own property",
+        protoOut && Object.keys(protoOut).indexOf("__proto__") !== -1 &&
+        protoOut["__proto__"].polluted === 1);
+  check("signed extensions: it survives serialization rather than vanishing",
+        protoOut && JSON.parse(JSON.stringify(protoOut))["__proto__"].polluted === 1);
+  check("signed extensions: and nothing leaks onto a plain object's prototype",
+        ({}).polluted === undefined);
+
   // A ceremony with no extensions leaves the field absent rather than an
   // empty object, so "none reported" stays distinguishable from "reported
   // none" — the same rule transports follows.
@@ -1047,6 +1090,49 @@ async function testAuthenticatorExtensionResults() {
   check("signed extensions: absent when the authenticator reported none",
         plainRv.ok === true &&
         plainRv.rv.registrationInfo.authenticatorExtensionResults === undefined);
+}
+
+async function testAssertionFlagsComeFromTheVerifiedBytes() {
+  // Verification is async, and the caller keeps a reference to the response
+  // object throughout. Re-reading response.response.authenticatorData after
+  // the await reports bits from whatever it holds THEN — so a ceremony could
+  // return verified:true alongside UV/BE/BS values no signature covered.
+  //
+  // Driven deterministically with a getter that yields the genuine bytes to
+  // the verifier and different bytes to any later read: whichever the result
+  // reflects tells us which read it used.
+  var challenge = b64url(crypto.randomBytes(32));
+  var reg = makeRegistration(challenge);
+  var regRv = await regOutcome({
+    response: reg.response, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("verified flags: setup registration verifies", regRv.ok === true);
+
+  // Genuine assertion: UP + UV set, BE/BS clear.
+  var authChallenge = b64url(crypto.randomBytes(32));
+  var genuine = makeAssertion(reg.keyPair.privateKey, reg.credId, authChallenge, 1);
+  var genuineAuthData = genuine.response.response.authenticatorData;
+  // Swapped bytes: BE + BS set. Never signed, and never seen by the verifier.
+  var swapped = b64url(buildAuthData(RP_ID, FLAG_UP | FLAG_UV | FLAG_BE | FLAG_BS, 1, null));
+
+  var reads = 0;
+  Object.defineProperty(genuine.response.response, "authenticatorData", {
+    configurable: true,
+    get: function () { reads += 1; return reads === 1 ? genuineAuthData : swapped; },
+  });
+
+  var rv = await authOutcome({
+    response: genuine.response, expectedChallenge: authChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    credential: { id: b64url(reg.credId), publicKey: storedPublicKey(regRv.rv), counter: 0 },
+  });
+  check("verified flags: the assertion still verifies", rv.ok === true);
+  check("verified flags: backup bits come from the VERIFIED bytes, not a later read",
+        rv.ok === true && rv.rv.backupEligible === false && rv.rv.backupState === false);
+  check("verified flags: so does the device type",
+        rv.ok === true &&
+        rv.rv.authenticationInfo.credentialDeviceType === "singleDevice");
 }
 
 // ---- Response shape: credential type, and formats we will not anchor ----
@@ -2302,6 +2388,7 @@ async function run() {
   await testAttestationRootsArePinned();
   await testCredPropsAndPaddedDescriptors();
   await testAuthenticatorExtensionResults();
+  await testAssertionFlagsComeFromTheVerifiedBytes();
   testSignalApiIdsAreCanonical();
   await testCredentialTypeAndUnsupportedFormats();
   await testPaddedStoredCredentialIdStillLogsIn();
