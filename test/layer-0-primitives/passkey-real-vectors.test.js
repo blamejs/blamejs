@@ -1399,6 +1399,28 @@ async function testAssertionFlagsComeFromTheVerifiedBytes() {
   check("snapshot: transports are copied at validation time",
         tRv.verified === true &&
         tRv.registrationInfo.credential.transports.join(",") === "usb");
+
+  // Registration's credential-ID binding is the one check that CANNOT run
+  // before the await — the authoritative id comes out of the attestation. So
+  // it must compare the ids the response STATED, not what the caller's object
+  // holds by the time the verifier returns: otherwise a mismatching response
+  // can be corrected into passing mid-flight.
+  var raceChallenge = b64url(crypto.randomBytes(32));
+  var raceReg = makeRegistration(raceChallenge);
+  var victimId = b64url(crypto.randomBytes(32));
+  raceReg.response.id = victimId;                 // claims a credential it did not attest
+  raceReg.response.rawId = victimId;
+  var racePending = passkey.verifyRegistration({
+    response: raceReg.response, expectedChallenge: raceChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  // "Fix" the response while verification is in flight.
+  raceReg.response.id = b64url(raceReg.credId);
+  raceReg.response.rawId = b64url(raceReg.credId);
+  var raceThrew = null;
+  try { await racePending; } catch (e) { raceThrew = e; }
+  check("snapshot: a mismatching registration cannot be corrected mid-verification",
+        raceThrew && /credential-id-mismatch/.test(String(raceThrew.code)));
 }
 
 // ---- Response shape: credential type, and formats we will not anchor ----
