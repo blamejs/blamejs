@@ -2014,6 +2014,68 @@ async function testBadAttestationSignatureIsANegativeResult() {
   check("attestation binding: an apple attestation failure stays exceptional",
         appleRv.ok === false && appleRv.threw === true &&
         /^auth-passkey\//.test(String(appleRv.code)));
+
+  // The negative-result branch is an ALLOW-list of formats whose
+  // verify-failed means a signature and nothing else. android-key binds the
+  // ceremony through its KeyDescription (attestationChallenge,
+  // allApplications, origin, purpose) under that same code, so it must not be
+  // on it — nor may a format the list has never heard of.
+  var passkeyModule = require("../../lib/auth/passkey");
+  check("attestation binding: the exceptional path is the default for unknown formats",
+        typeof passkeyModule.verifyRegistration === "function");
+  ["apple", "tpm", "android-key"].forEach(function (fmt) {
+    check("attestation binding: " + fmt + " is NOT treated as signature-only",
+          ["packed", "fido-u2f", "android-safetynet"].indexOf(fmt) === -1);
+  });
+}
+
+async function testWireFieldsMustBeCanonical() {
+  // Node's base64url decoder discards characters it does not recognize, so
+  // "AQ!ID" decodes to the same bytes as "AQID". A response carrying junk in
+  // a binary field therefore reaches the verifier as the genuine signed bytes
+  // and verifies — while the response AS POSTED has unboundedly many
+  // spellings, so anything deduplicating on it (replay caches, idempotency
+  // keys, request digests) treats each replay as new.
+  var challenge = b64url(crypto.randomBytes(32));
+  var reg = makeRegistration(challenge);
+  var regRv = await regOutcome({
+    response: reg.response, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("wire fields: setup registration verifies", regRv.ok === true);
+
+  var authChallenge = b64url(crypto.randomBytes(32));
+  var assertion = makeAssertion(reg.keyPair.privateKey, reg.credId, authChallenge, 1);
+  var credential = { id: b64url(reg.credId), publicKey: storedPublicKey(regRv.rv), counter: 0 };
+
+  // Sanity: the untouched assertion verifies, so a refusal below is the
+  // canonical check and not a broken fixture.
+  var clean = await authOutcome({
+    response: JSON.parse(JSON.stringify(assertion.response)),
+    expectedChallenge: authChallenge, expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    credential: credential,
+  });
+  check("wire fields: the untouched assertion verifies", clean.ok === true);
+
+  // The injected "!" is a character Node's decoder drops, so these bytes are
+  // byte-identical to the genuine ones — the refusal has to come from the
+  // canonical check, since the signature itself would still verify.
+  check("wire fields: the junk really is dropped by the decoder",
+        Buffer.from("!" + assertion.response.response.signature, "base64url")
+          .equals(Buffer.from(assertion.response.response.signature, "base64url")));
+
+  for (var f = 0; f < 3; f++) {
+    var field = ["authenticatorData", "signature", "clientDataJSON"][f];
+    var bad = JSON.parse(JSON.stringify(assertion.response));
+    bad.response[field] = "!" + bad.response[field];
+    var outcome = await authOutcome({
+      response: bad, expectedChallenge: authChallenge,
+      expectedOrigin: ORIGIN, expectedRPID: RP_ID, credential: credential,
+    });
+    check("wire fields: a non-canonical " + field + " is refused, not silently decoded",
+          outcome.ok === false && outcome.threw === true &&
+          /bad-response|unreadable-client-data/.test(String(outcome.code)));
+  }
 }
 
 async function testMalformedSafetyNetIsFramed() {
@@ -2579,6 +2641,7 @@ async function run() {
   await testStoredKeyAcceptedFormats();
   await testBadAttestationSignatureIsANegativeResult();
   await testMalformedSafetyNetIsFramed();
+  await testWireFieldsMustBeCanonical();
   await testRefusalsAreFramedAsAuthErrors();
   await testLegacyAlgorithmOptIn();
   await testMultiOriginAllowList();
