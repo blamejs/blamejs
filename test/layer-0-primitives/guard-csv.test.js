@@ -363,6 +363,44 @@ function testGuardCsvSerializedFormulaPassesOwnValidate() {
   });
 }
 
+// The cell walk has to use the quote character the operator configured. With a
+// different quote, a double quote is ordinary content — and a scanner that
+// reads it as opening a quoted field skips forward looking for a close that
+// never comes, walking past every later cell boundary to the end of input. The
+// cells after it are then never scanned at all, so a formula there is missed
+// rather than merely mis-located.
+function testGuardCsvCellScannerHonorsTheConfiguredQuote() {
+  var doc = "\"ordinary,=2+3";
+  var v = b.guardCsv.validate(doc, { profile: "strict", quote: "'" });
+  var ids = (v.issues || []).map(function (i) { return i.ruleId; });
+  check("a formula after an ordinary double quote is detected under quote:'",
+        ids.indexOf("csv.formula-injection") !== -1);
+
+  // The configured quote still opens a quoted field, and the TAB mitigation
+  // inside it is still recognized as the mitigation rather than a threat.
+  var mitigated = b.guardCsv.serialize([["=cmd|x"]], { profile: "strict", quote: "'" });
+  var mv = b.guardCsv.validate(mitigated, { profile: "strict", quote: "'" });
+  check("output escaped under a custom quote passes its own validate",
+        (mv.issues || []).every(function (i) { return i.ruleId !== "csv.formula-injection"; }));
+
+  // The default quote is unchanged: there the same bytes really are one
+  // unterminated quoted field, with no second cell to flag.
+  var d = b.guardCsv.validate(doc, { profile: "strict" });
+  check("under the default quote the same bytes are one quoted field",
+        (d.issues || []).every(function (i) { return i.ruleId !== "csv.formula-injection"; }));
+
+  // Same shape for the delimiter. The scanner knows the delimiters a document
+  // may plausibly use, but the operator can configure one outside that set —
+  // and a cell boundary the scanner does not recognize is a cell it never
+  // scans, so the formula after it is missed entirely.
+  [":", "~", "^", "#"].forEach(function (delim) {
+    var dv = b.guardCsv.validate("a" + delim + "=cmd|x",
+                                 { profile: "strict", delimiter: delim });
+    check("a formula after a configured " + JSON.stringify(delim) + " delimiter is detected",
+          (dv.issues || []).some(function (i) { return i.ruleId === "csv.formula-injection"; }));
+  });
+}
+
 // The gate's sanitize action re-parses the cleaned text and re-serializes it
 // with the formula mitigation applied. That round trip has to use the dialect
 // the operator configured: reading a semicolon-delimited document back as
@@ -1434,6 +1472,7 @@ async function run() {
   testGuardCsvSchemaNullableAndCode();
   testGuardCsvSchemaTypeViolations();
   testGuardCsvSchemaRange();
+  testGuardCsvCellScannerHonorsTheConfiguredQuote();
   testGuardCsvQuotingScopedToDocumentsThatNeedIt();
   testGuardCsvFormulaDetectedAtLineStart();
   testGuardCsvBlankRowsAreNotFormulas();

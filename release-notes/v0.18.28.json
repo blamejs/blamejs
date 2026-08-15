@@ -51,6 +51,14 @@
           "body": "TAB is both the mitigation prefix and one of the characters that triggers the mitigation, so escaping a value that `escapeCell` had already returned prefixed it again. Escaping is now a fixed point: a pipeline that escapes twice produces the same bytes as one that escapes once."
         },
         {
+          "title": "`b.guardYaml.validate` reported a leading-zero octal on every other call",
+          "body": "The scan for a leading-zero numeric — the value YAML 1.1 reads as octal — used a global regular expression, which carries its position between calls. `.test()` resumed from wherever the previous call stopped, so the same document answered yes, then no, then yes: the finding was reported on roughly half of invocations, and nothing about the input said which answer you got. A guard that detects a rule when you try it and misses it in production is worse than one that never detected it. Present since the rule shipped.\n\nThe guard registry test now drives every guard's `validate` repeatedly on the same input and requires an identical verdict, so a scan that carries state between calls fails the suite wherever it is introduced."
+        },
+        {
+          "title": "The CSV cell scan ignored a configured `quote` or `delimiter`",
+          "body": "Both scans located cell boundaries using the default quote and a fixed set of delimiters rather than the dialect in the options.\n\nWith `quote` set to anything else, an ordinary double quote in the data was read as opening a quoted field; the scan then looked for a closing quote that never came and ran to the end of the input, so no later cell was examined at all. `{ delimiter: \",\", quote: \"'\" }` over `\"ordinary,=2+3` reported nothing and the gate served it unchanged.\n\nA configured `delimiter` outside the recognized set had the same effect at every boundary it marked: under `delimiter: \":\"`, `a:=cmd|x` was not reported. Both scans now take the configured quote and add the configured delimiter to the boundaries they recognize."
+        },
+        {
           "title": "`b.csv` lost a row consisting of a single empty cell",
           "body": "Two halves of the same round-trip. `b.csv.parse` dropped a final record made of a quoted empty field — nothing accumulates for one, so the end-of-input check could not tell it apart from having already consumed a line ending, and `\"a\"\\r\\n\"\"` returned one row instead of two. `b.csv.stringify` emitted such a row bare, which makes it an empty line that the reader cannot distinguish from the terminator of the row before it; it is now quoted so the record has a body. A row with more than one cell keeps its delimiters and is unchanged."
         }

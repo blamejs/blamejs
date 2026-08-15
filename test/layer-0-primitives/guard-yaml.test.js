@@ -99,6 +99,29 @@ function testGuardYamlLeadingZeroOctal() {
   var rv = b.guardYaml.validate("mode: 0777\n", { profile: "strict" });
   check("leading-zero octal detected",
         rv.issues.some(function (issue) { return issue.kind === "leading-zero-octal"; }));
+
+  // Repeated on the SAME input. A scan whose matcher carries state between
+  // calls answers the same question differently each time — a validator that
+  // detects a finding on the first document and misses it on the second is
+  // worse than one that never detected it, because nothing about the input
+  // says which answer you got. A single call can never show this, which is
+  // why the check above passed while every other invocation missed.
+  var seen = 0;
+  for (var i = 0; i < 6; i += 1) {
+    var again = b.guardYaml.validate("mode: 0777\n", { profile: "strict" });
+    if (again.issues.some(function (issue) { return issue.kind === "leading-zero-octal"; })) seen += 1;
+  }
+  check("leading-zero octal detected on every repeat call, not alternating",
+        seen === 6);
+
+  // Distinct documents in sequence, the shape an operator's gate actually sees.
+  var docs = ["mode: 0777\n", "perm: 0644\n", "umask: 0022\n", "bits: 0755\n"];
+  var missed = docs.filter(function (doc) {
+    return !b.guardYaml.validate(doc, { profile: "strict" }).issues
+      .some(function (issue) { return issue.kind === "leading-zero-octal"; });
+  });
+  check("leading-zero octal detected across a run of distinct documents",
+        missed.length === 0);
 }
 
 function testGuardYamlMergeKey() {

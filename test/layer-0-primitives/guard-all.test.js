@@ -325,6 +325,7 @@ function run() {
   testGuardAllByExtensionShape();
   testGuardAllByContentTypeShape();
   testGuardFamilySanitizeNeverServesThreatVerbatim();
+  testGuardFamilyValidateIsDeterministicAcrossCalls();
   return testGuardAllDispatchRoutesByMime();
 }
 
@@ -373,6 +374,64 @@ function testGuardFamilySanitizeNeverServesThreatVerbatim() {
   // above pass vacuously, which is the failure mode that hides a regression.
   check("family sanitize invariant probed at least three content guards",
         covered >= 3);
+}
+
+// ---- Family invariant: a verdict does not depend on how many came before ----
+
+// Scanning state must not survive a call. A regex carrying `g` keeps its
+// `lastIndex` between invocations and `.test()` resumes from it, so the same
+// document answers true, then false, then true — the guard reports a finding on
+// every other call and nothing about the input says which answer you got. That
+// is worse than never detecting it: an operator sees the rule work when they
+// try it and miss half the traffic in production. guardYaml's leading-zero
+// octal scan shipped exactly this way.
+//
+// A lexical detector cannot catch the class. The declaration and the `.test()`
+// sit thousands of characters apart with no structural boundary between them,
+// and whether it is safe depends on what else touches that ONE name — a
+// data-flow question a pattern match cannot ask. Driving the shipped consumer
+// path twice can: it catches statefulness of any origin, however reintroduced.
+//
+// Its reach is bounded by the fixtures: it can only observe drift in rules the
+// hostile fixture actually trips, so a guard whose fixture exercises one rule
+// is checked for that rule alone. That is an argument for richer fixtures, not
+// against the invariant — and the per-guard repeat tests cover the rest.
+function testGuardFamilyValidateIsDeterministicAcrossCalls() {
+  var probed = 0;
+  b.guardAll.allGuards().forEach(function (g) {
+    if (typeof g.validate !== "function") return;
+    var fixtures = g.INTEGRATION_FIXTURES;
+    if (!fixtures) return;
+    var hostile = fixtures.hostileIdentifier !== undefined ? fixtures.hostileIdentifier
+                : fixtures.hostileFilename   !== undefined ? fixtures.hostileFilename
+                : fixtures.hostileMetadata   !== undefined ? fixtures.hostileMetadata
+                : fixtures.hostileBytes;
+    if (hostile === undefined) return;
+    // Content guards take bytes OR text; several refuse a Buffer outright, and
+    // a `bad-input` verdict exercises no rule at all. Prefer the text form so
+    // the probe reaches the scanners it is meant to be watching.
+    if (Buffer.isBuffer(hostile) && g.KIND === "content") hostile = hostile.toString("utf8");
+
+    var first;
+    try { first = g.validate(hostile); }
+    catch (_e) { return; }              // refusing is a verdict too, just not one to diff here
+    if (!first || !Array.isArray(first.issues)) return;
+    if (first.issues.length === 0) return;   // nothing to observe drift in
+    probed += 1;
+
+    var firstIds = first.issues.map(function (i) { return i.ruleId; }).sort().join(",");
+    var stable = true;
+    for (var n = 0; n < 5 && stable; n += 1) {
+      var again;
+      try { again = g.validate(hostile); } catch (_e2) { stable = false; break; }
+      var againIds = (again.issues || []).map(function (i) { return i.ruleId; }).sort().join(",");
+      if (againIds !== firstIds || again.ok !== first.ok) stable = false;
+    }
+    check("guard " + g.NAME + ": validate returns the same verdict on repeat calls",
+          stable);
+  });
+  // Guard the guard: vacuous passes are the failure mode this is meant to stop.
+  check("determinism invariant probed at least eight guards", probed >= 8);
 }
 
 module.exports = { run: run };
