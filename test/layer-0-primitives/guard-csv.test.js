@@ -363,6 +363,50 @@ function testGuardCsvSerializedFormulaPassesOwnValidate() {
   });
 }
 
+// The gate's sanitize action re-parses the cleaned text and re-serializes it
+// with the formula mitigation applied. That round trip has to use the dialect
+// the operator configured: reading a semicolon-delimited document back as
+// comma-delimited collapses every row into a single cell, so the document the
+// gate serves has a different shape from the one it was given.
+async function testGuardCsvGateSanitizePreservesTheConfiguredDialect() {
+  var doc = "a;b\r\n=2+3;safe";
+  var v = await b.guardCsv.gate({ profile: "strict", delimiter: ";" })
+    .check({ bytes: Buffer.from(doc, "utf8") });
+  check("a row-leading formula under a non-comma dialect reaches sanitize",
+        v.action === "sanitize");
+  var served = Buffer.from(v.sanitized).toString("utf8");
+  var rows = b.csv.parse(served, { header: false, delimiter: ";" });
+  check("sanitized output keeps both rows",    rows.length === 2);
+  check("sanitized output keeps both columns", rows.every(function (r) { return r.length === 2; }));
+  check("the formula cell is still mitigated",
+        rows[1][0].charAt(0) === "\t" && rows[1][0].indexOf("=2+3") !== -1);
+  check("the untouched cell survives intact",  rows[1][1] === "safe");
+  // The whole round trip, not just the delimiter the finding named: every
+  // dialect the guard accepts has to survive it, and the comma case must not
+  // regress in the process.
+  var dialects = [
+    ["comma",        {}],
+    ["tab",          { delimiter: "\t" }],
+    ["pipe",         { delimiter: "|" }],
+    ["LF endings",   { lineEnding: "\n" }],
+    ["BOM prefix",   { bomPrefix: true }],
+    ["custom quote", { quote: "'" }],
+  ];
+  for (var di = 0; di < dialects.length; di += 1) {
+    var label = dialects[di][0], cfg = dialects[di][1];
+    var d = cfg.delimiter || ",";
+    var eol = cfg.lineEnding || "\r\n";
+    var vd = await b.guardCsv.gate(Object.assign({ profile: "strict" }, cfg))
+      .check({ bytes: Buffer.from("a" + d + "b" + eol + "=2+3" + d + "safe", "utf8") });
+    var rowsD = b.csv.parse(Buffer.from(vd.sanitized).toString("utf8"),
+                            { header: false, delimiter: d, quote: cfg.quote || "\"" });
+    check("sanitize round-trip preserves shape under " + label,
+          rowsD.length === 2 && rowsD.every(function (r) { return r.length === 2; }));
+    check("sanitize round-trip preserves the untouched cell under " + label,
+          rowsD[1][1] === "safe");
+  }
+}
+
 // Quoting is part of the formula mitigation, so it applies when the
 // mitigation fires and not otherwise. Quoting every export unconditionally
 // would add about a third to a table that carries no trigger at all, which
@@ -1411,6 +1455,7 @@ async function run() {
   testGuardCsvGateDispositionDefault();
   await testGuardCsvGateOperatorRuleDefaultsAndCatch();
   await testGuardCsvGateSanitizeReserializesFormula();
+  await testGuardCsvGateSanitizePreservesTheConfiguredDialect();
 }
 
 module.exports = { run: run };
