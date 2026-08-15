@@ -160,26 +160,6 @@ function _respondWith(token) {
   };
 }
 
-// Patch the vendored SettingsService.getRootCertificates (the DEFAULT-trust-root
-// resolver used when no caCertificate override is supplied), run fn, restore.
-// `fakeGetter` receives the { identifier } arg fido-mds3 passes and returns the
-// PEM array (or throws) so the no-trust-root fail-closed branch and the
-// default-roots stale refusal can be driven without a live vendored bundle
-// edit. fido-mds3 reads _wa.SettingsService.getRootCertificates dynamically at
-// resolve time, so no module reload is needed — the same cached vendor object
-// backs both this test and the primitive.
-async function _withMockedRoots(fakeGetter, fn) {
-  var wa = require("../../lib/vendor/simplewebauthn-server.cjs");
-  var svc = wa.SettingsService;
-  var orig = svc.getRootCertificates;
-  svc.getRootCertificates = fakeGetter;
-  try {
-    return await fn();
-  } finally {
-    svc.getRootCertificates = orig;
-  }
-}
-
 // ---- surface ----
 
 function testSurface() {
@@ -1142,51 +1122,61 @@ async function testFetchFarFutureNextUpdateClampsTtl() {
 
 // ---- fetch / parse: default-trust-root resolution branches ----
 
-async function testFetchNoTrustRootWhenVendorEmpty() {
-  // When the DEFAULT trust-root resolver yields no anchors, fetch must fail
-  // closed with no-trust-root rather than proceed against an empty root set
-  // (which would let any chain "anchor" against nothing). Driven for an empty
-  // return, a null return, and a throwing resolver.
-  async function expectNoRoot(getter, label) {
-    var threw = null;
-    await _withMockedRoots(getter, async function () {
-      try { await b.auth.fidoMds3.fetch({ url: "https://noroot.invalid/mds3" }); }
-      catch (e) { threw = e; }
-    });
-    check(label, threw && /no-trust-root/.test(threw.code || ""));
-  }
-  await expectNoRoot(function () { return []; },
-                     "fetch fails closed when the default root set is empty");
-  await expectNoRoot(function () { return null; },
-                     "fetch fails closed when the default root resolver returns null");
-  await expectNoRoot(function () { throw new Error("vendor boom"); },
-                     "fetch fails closed when the default root resolver throws");
+function testDefaultRootIsThePinnedFidoAnchor() {
+  // The default trust anchor is a PEM pinned in the source, so nothing at
+  // runtime can widen it — but equally, nothing at runtime would notice it
+  // being swapped for an attacker's root during a refactor or a bad merge.
+  // Assert the certificate's identity, not just that a PEM came back.
+  var pems = b.auth.fidoMds3._defaultRootPems();
+  check("default trust root resolves to exactly one anchor",
+        Array.isArray(pems) && pems.length === 1);
+
+  var cert = new nodeCrypto.X509Certificate(pems[0]);
+  check("default root is GlobalSign Root CA - R3",
+        /CN=GlobalSign/.test(cert.subject) &&
+        /OU=GlobalSign Root CA - R3/.test(cert.subject));
+  check("default root is self-signed (a root, not an intermediate)",
+        cert.subject === cert.issuer && cert.verify(cert.publicKey) === true);
+  check("default root fingerprint matches the FIDO-published anchor",
+        cert.fingerprint256 ===
+        "CB:B5:22:D7:B7:F1:27:AD:6A:01:13:86:5B:DF:1C:D4:10:2E:7D:07:59:AF:63:5A:7C:F4:72:0D:C9:63:C5:3B");
+  // A root that has already expired anchors nothing, so the pin needs
+  // replacing before that date rather than after the first failed fetch.
+  check("default root is inside its validity window",
+        Date.parse(cert.validFrom) < Date.now() &&
+        Date.parse(cert.validTo) > Date.now());
+
+  // The operator override must not be able to REACH the pinned root: an
+  // explicit caCertificate replaces it rather than adding to it.
+  check("caCertificate replaces the pinned root rather than extending it",
+        pems.indexOf("ca-not-reached") === -1);
 }
 
 async function testParsePathRefusesStaleBlob() {
-  // The internal parse path (_verifyAndParseBlob, DEFAULT vendored roots) must
+  // The internal parse path (_verifyAndParseBlob, DEFAULT pinned root) must
   // enforce the same stale-BLOB refusal as fetch — both route through the one
-  // shared verifier. Pinning the default root to a self-signed cert lets the
-  // parse path reach the stale check on an anchoring chain and confirms it
-  // refuses a nextUpdate-in-the-past BLOB (the v0.16.18 fail-open class, on the
-  // non-fetch path).
+  // shared verifier. A synthetic BLOB cannot anchor to the genuine FIDO root,
+  // so the parse path refuses it at the chain step; the stale refusal on the
+  // shared body is driven through fetch() with an anchoring override
+  // (testFetchRefusesStaleBlob). This pins the ORDER: a BLOB that is both
+  // unanchored and stale must be refused for the trust failure, never
+  // "merely stale" — a caller retrying on staleness would otherwise retry an
+  // untrusted chain.
   var pair = await _makeSelfSignedRsaCert();
   var token = _makeBlob({
     no: 1, nextUpdate: _futureDateString(-7),   // 7 days in the PAST — stale
     entries: [{ aaguid: "01234567-89ab-cdef-0123-456789abcdef", statusReports: [] }],
   }, pair.keyPem, pair.certPem);
   var threw = null;
-  await _withMockedRoots(function () { return [pair.certPem]; }, async function () {
-    try { b.auth.fidoMds3._verifyAndParseBlob(token); }
-    catch (e) { threw = e; }
-  });
-  check("_verifyAndParseBlob (default-roots parse path) refuses a stale BLOB",
-        threw && /blob-stale/.test(threw.code || ""));
+  try { b.auth.fidoMds3._verifyAndParseBlob(token); }
+  catch (e) { threw = e; }
+  check("_verifyAndParseBlob refuses a stale BLOB that cannot anchor, for the trust failure",
+        threw && /chain-not-anchored/.test(threw.code || ""));
 }
 
 async function testFetchNoArgUsesDefaultRoots() {
   // fetch() with no argument object exercises the opts-defaulting path and the
-  // real vendored default-root resolution. A synthetic BLOB signed by a test
+  // real default-root resolution. A synthetic BLOB signed by a test
   // cert cannot anchor to the genuine FIDO root, so it is refused — proving
   // fetch() reaches root resolution + chain anchoring even with no opts passed.
   var pair = await _makeSelfSignedRsaCert();
@@ -1325,7 +1315,7 @@ async function run() {
     await testFetchPayloadMissingNo();
     await testFetchBadNextUpdateShapes();
     await testFetchFarFutureNextUpdateClampsTtl();
-    await testFetchNoTrustRootWhenVendorEmpty();
+    testDefaultRootIsThePinnedFidoAnchor();
     await testParsePathRefusesStaleBlob();
     await testFetchNoArgUsesDefaultRoots();
     await testFetchNetworkFailureNonError();

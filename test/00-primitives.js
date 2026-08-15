@@ -1079,10 +1079,10 @@ function testAuthTotpSurface() {
 //   - hints default ["client-device", "hybrid"] so platform AND
 //     cross-device authenticators surface
 //
-// The verify* paths rely on real signed assertions; round-tripping
-// without an authenticator would mean stubbing the simplewebauthn
-// internals, which would test our stub more than our wrapper.
-// Operators get full ceremony coverage at the integration layer.
+// The verify* paths rely on real signed assertions, so they are driven
+// against a software authenticator with real keys in
+// test/layer-0-primitives/passkey-real-vectors.test.js rather than
+// stubbed here.
 
 async function testAuthPasskeySurface() {
   var p = b.auth.passkey;
@@ -1092,12 +1092,13 @@ async function testAuthPasskeySurface() {
   check("auth.passkey.startAuthentication is a function", typeof p.startAuthentication === "function");
   check("auth.passkey.verifyAuthentication is a function", typeof p.verifyAuthentication === "function");
 
-  // Vendor bundle loads + exports the four core entry points
-  var v = require("../lib/vendor/simplewebauthn-server.cjs");
-  check("vendor exports generateRegistrationOptions",    typeof v.generateRegistrationOptions === "function");
-  check("vendor exports verifyRegistrationResponse",     typeof v.verifyRegistrationResponse === "function");
-  check("vendor exports generateAuthenticationOptions",  typeof v.generateAuthenticationOptions === "function");
-  check("vendor exports verifyAuthenticationResponse",   typeof v.verifyAuthenticationResponse === "function");
+  // Vendor bundle loads + exports the WebAuthn verification surface the
+  // ceremony wrappers are built on.
+  var v = require("../lib/vendor/blamejs-pki.cjs").webauthn;
+  check("vendor exports webauthn.verify",                typeof v.verify === "function");
+  check("vendor exports webauthn.verifyAssertion",       typeof v.verifyAssertion === "function");
+  check("vendor exports webauthn.parseClientData",       typeof v.parseClientData === "function");
+  check("vendor exports webauthn.parseAuthenticatorData", typeof v.parseAuthenticatorData === "function");
 }
 
 async function testAuthPasskeyStartRegistrationOptions() {

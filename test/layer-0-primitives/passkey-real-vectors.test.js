@@ -78,6 +78,12 @@ function coseEC2PublicKey(publicKey) {
   ]);
 }
 
+function cborArray(items) {
+  var parts = [cborHead(4, items.length)];
+  for (var i = 0; i < items.length; i++) parts.push(items[i]);
+  return Buffer.concat(parts);
+}
+
 // authenticatorData = rpIdHash(32) || flags(1) || signCount(4) [|| attestedCredentialData]
 function buildAuthData(rpId, flags, signCount, attestedCredData) {
   var rpIdHash = sha256(Buffer.from(rpId, "utf8"));
@@ -100,8 +106,23 @@ function signDER(privateKey, data) {
   return crypto.sign("sha256", data, { key: privateKey, dsaEncoding: "der" });
 }
 
-// authData flag bits: UP 0x01, UV 0x04, AT 0x40.
-var FLAG_UP = 0x01, FLAG_UV = 0x04, FLAG_AT = 0x40;
+// COSE_Key for an RSA / RS256 public key: { 1:3, 3:-257, -1:n, -2:e }.
+// RS256 is the third algorithm startRegistration offers (alg -257) and is what
+// TPM-backed Windows Hello credentials commonly register with, so a suite that
+// only ever exercises P-256 is not covering the credential shape a large slice
+// of real users arrive with.
+function coseRSAPublicKey(publicKey) {
+  var jwk = publicKey.export({ format: "jwk" });
+  return cborMap([
+    [cborInt(1),  cborInt(3)],                                  // kty: RSA
+    [cborInt(3),  cborInt(-257)],                               // alg: RS256
+    [cborInt(-1), cborBytes(Buffer.from(jwk.n, "base64url"))],  // modulus
+    [cborInt(-2), cborBytes(Buffer.from(jwk.e, "base64url"))],  // exponent
+  ]);
+}
+
+// authData flag bits: UP 0x01, UV 0x04, BE 0x08, BS 0x10, AT 0x40.
+var FLAG_UP = 0x01, FLAG_UV = 0x04, FLAG_BE = 0x08, FLAG_BS = 0x10, FLAG_AT = 0x40;
 
 // Build a fresh genuine credential + its registration response bound to a
 // given challenge. Returns the keypair, credId, COSE pubkey, and the
@@ -416,11 +437,2584 @@ async function testAuthenticationGenuineAndTampered() {
   check("attacker COSE key encodes to bytes", Buffer.isBuffer(attackerCose) && attackerCose.length > 0);
 }
 
+// ---- Ceremony-policy refusals ----
+//
+// The tampers above prove the CRYPTOGRAPHY runs. These prove the POLICY runs —
+// the checks that have nothing to do with the signature being valid, and that a
+// signature-only verifier passes with flying colours. WebAuthn L3 puts them in
+// the relying party's hands (7.1 steps 14-17, 7.2 steps 14-21), so they are the
+// framework's job whatever verifies the attestation statement underneath.
+//
+// Every case here is a genuine, correctly-signed response. What makes it
+// unacceptable is the authenticator's report about the ceremony, or the
+// credential's algorithm — never the maths.
+async function testCeremonyPolicyRefusals() {
+  var challenge = b64url(crypto.randomBytes(32));
+  var reg = makeRegistration(challenge);
+  var regRv = await regOutcome({
+    response: reg.response, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("policy: setup registration verifies", regRv.ok === true);
+  var pub = storedPublicKey(regRv.rv);
+  function cred(over) {
+    return Object.assign({ id: b64url(reg.credId), publicKey: pub, counter: 0 }, over || {});
+  }
+  // A refusal must be for the RIGHT REASON. "Not verified" alone is not enough:
+  // a malformed opts object also fails every case, so a draft of these checks
+  // that passed the wrong option names was green while testing nothing. Assert
+  // the CAUSE — either a verified:false verdict, or a throw whose message names
+  // the policy that refused.
+  function refusedBecause(o, why) {
+    if (o.ok !== false) return false;
+    return o.threw ? why.test(String(o.code)) : true;
+  }
+
+  // --- user presence (7.2 step 14). UP is not optional: a credential used
+  // with no user present is an attacker driving the authenticator.
+  var upChallenge = b64url(crypto.randomBytes(32));
+  var noUp = makeAssertionWithFlags(reg.keyPair.privateKey, reg.credId, upChallenge, 1, FLAG_UV);
+  var upRv = await authOutcome({
+    response: noUp.response, expectedChallenge: upChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID, credential: cred(),
+  });
+  check("policy: an assertion with USER PRESENCE clear is REJECTED",
+        refusedBecause(upRv, /presen/i));
+
+  // --- user verification, when the RP required it (7.2 step 15). The
+  // signature is valid; the authenticator simply reports it did not verify
+  // the user, and a UV-requiring RP must refuse rather than downgrade.
+  var uvChallenge = b64url(crypto.randomBytes(32));
+  var noUv = makeAssertionWithFlags(reg.keyPair.privateKey, reg.credId, uvChallenge, 2, FLAG_UP);
+  var uvRv = await authOutcome({
+    response: noUv.response, expectedChallenge: uvChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID, credential: cred(),
+    requireUserVerification: true,
+  });
+  check("policy: UV required but not performed is REJECTED",
+        refusedBecause(uvRv, /verif/i));
+  // ...and the same shape is accepted when the RP opted out of UV, which
+  // proves the refusal above came from the POLICY and not from the flags
+  // breaking the signature.
+  var uvOkChallenge = b64url(crypto.randomBytes(32));
+  var uvOk = makeAssertionWithFlags(reg.keyPair.privateKey, reg.credId, uvOkChallenge, 3, FLAG_UP);
+  var uvOkRv = await authOutcome({
+    response: uvOk.response, expectedChallenge: uvOkChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID, credential: cred(),
+    requireUserVerification: false,
+  });
+  check("policy: UV absent is accepted when the RP did not require it", uvOkRv.ok === true);
+
+  // --- signature counter (7.2 step 21). A counter that does not advance is
+  // the cloned-authenticator signal: the same credential replayed from a copy.
+  var ctrChallenge = b64url(crypto.randomBytes(32));
+  var regressed = makeAssertion(reg.keyPair.privateKey, reg.credId, ctrChallenge, 5);
+  var ctrRv = await authOutcome({
+    response: regressed.response, expectedChallenge: ctrChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID, credential: cred({ counter: 9 }),
+  });
+  check("policy: a signature counter that went BACKWARDS is REJECTED",
+        refusedBecause(ctrRv, /counter|sign-count/i));
+
+  // --- credential id (7.2 step 5): the assertion must be for the credential
+  // whose public key is being used to check it.
+  var idChallenge = b64url(crypto.randomBytes(32));
+  var mismatched = makeAssertion(reg.keyPair.privateKey, reg.credId, idChallenge, 6);
+  var idRv = await authOutcome({
+    response: mismatched.response, expectedChallenge: idChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    credential: cred({ id: b64url(crypto.randomBytes(32)) }),   // a DIFFERENT credential
+  });
+  check("policy: an assertion whose credential ID does not match is REJECTED",
+        idRv.ok === false);
+
+  // rawId is the same identity in its binary spelling, and an RP is free to
+  // key on it. Binding only `id` leaves the pair free to disagree, which is
+  // the registration-side hole one ceremony later.
+  var rawChallenge = b64url(crypto.randomBytes(32));
+  var rawMismatch = makeAssertion(reg.keyPair.privateKey, reg.credId, rawChallenge, 7);
+  rawMismatch.response.rawId = b64url(crypto.randomBytes(32));
+  var rawRv = await authOutcome({
+    response: rawMismatch.response, expectedChallenge: rawChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID, credential: cred(),
+  });
+  check("policy: an assertion whose rawId disagrees with the stored credential is REJECTED",
+        refusedBecause(rawRv, /credential-id-mismatch/));
+
+  // --- cross-origin (L3 7.1 step 13 / 7.2 step 13). A ceremony driven from a
+  // hostile top-level frame is indistinguishable from a same-origin one unless
+  // crossOrigin is read. The vendored verifier never reads it.
+  var xoChallenge = b64url(crypto.randomBytes(32));
+  var xo = makeRegistrationCrossOrigin(xoChallenge);
+  var xoRv = await regOutcome({
+    response: xo.response, expectedChallenge: xoChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("policy: a CROSS-ORIGIN registration is REJECTED by default", xoRv.ok === false);
+}
+
+// An assertion with caller-chosen flags, so user-presence / user-verification
+// can be cleared independently. Mirrors makeAssertion otherwise.
+function makeAssertionWithFlags(signingKey, credId, challenge, signCount, flags) {
+  var authData   = buildAuthData(RP_ID, flags, signCount, null);
+  var clientData = Buffer.from(JSON.stringify({
+    type: "webauthn.get", challenge: challenge, origin: ORIGIN, crossOrigin: false,
+  }), "utf8");
+  var sig = signDER(signingKey, Buffer.concat([authData, sha256(clientData)]));
+  return {
+    response: {
+      id: b64url(credId), rawId: b64url(credId), type: "public-key",
+      response: {
+        clientDataJSON:    b64url(clientData),
+        authenticatorData: b64url(authData),
+        signature:         b64url(sig),
+      },
+      clientExtensionResults: {},
+    },
+  };
+}
+
+// A genuine registration whose clientData declares crossOrigin:true — the
+// shape an RP embedded in a hostile top-level frame produces.
+function makeRegistrationCrossOrigin(challenge, topOrigin) {
+  var kp     = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var credId = crypto.randomBytes(32);
+  var authData = buildAuthData(RP_ID, FLAG_UP | FLAG_UV | FLAG_AT, 0,
+    buildAttestedCredData(Buffer.alloc(16, 0), credId, coseEC2PublicKey(kp.publicKey)));
+  var attObj = cborMap([
+    [cborText("fmt"),      cborText("none")],
+    [cborText("attStmt"),  cborMap([])],
+    [cborText("authData"), cborBytes(authData)],
+  ]);
+  var cd = {
+    type: "webauthn.create", challenge: challenge, origin: ORIGIN, crossOrigin: true,
+  };
+  if (topOrigin !== undefined) cd.topOrigin = topOrigin;
+  var clientData = Buffer.from(JSON.stringify(cd), "utf8");
+  return {
+    response: {
+      id: b64url(credId), rawId: b64url(credId), type: "public-key",
+      response: {
+        clientDataJSON:    b64url(clientData),
+        attestationObject: b64url(attObj),
+      },
+      clientExtensionResults: {},
+    },
+  };
+}
+
+// ---- RS256: the same round trip on an RSA credential ----
+//
+// startRegistration offers alg -257 alongside -8 and -7, so an RSA credential is
+// something this relying party accepts — but every vector above is P-256, which
+// means the RSA path has never been executed here. An RSA signature is
+// PKCS#1 v1.5 with no DER-vs-raw unwrapping step, so it exercises a different
+// branch of whatever verifies it, and a verifier that silently only handled EC
+// would pass every existing test in this file.
+// A `packed` full attestation whose x5c is a REAL, well-formed chain minted
+// under a CA of this test's own making — i.e. exactly what an attacker with
+// their own CA produces. A hand-rolled DER will not do: it fails the
+// certificate profile long before the chain is ever anchored, so the test
+// would pass for the wrong reason.
+async function makePackedAttestationUnderOwnCa(challenge) {
+  var pki = require("../../lib/vendor/blamejs-pki.cjs");
+  var caKeys = await crypto.webcrypto.subtle.generateKey(
+    { name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  var caDer = Buffer.from(await pki.x509.sign({
+    subject:          [{ commonName: "Test Attestation CA" }],
+    subjectPublicKey: Buffer.from(
+      await crypto.webcrypto.subtle.exportKey("spki", caKeys.publicKey)),
+    serialNumber:     "0x01",
+    notBefore:        new Date(Date.now() - b.constants.TIME.days(1)),
+    notAfter:         new Date(Date.now() + b.constants.TIME.days(365)),
+    extensions:       { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] },
+  }, { key: caKeys.privateKey }));
+
+  var leafPair = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var leafDer = Buffer.from(await pki.x509.sign({
+    subject: [{ commonName: "Test Authenticator" },
+              { organizationalUnitName: "Authenticator Attestation" },
+              { organizationName: "Test" }, { countryName: "US" }],
+    subjectPublicKey: leafPair.publicKey.export({ type: "spki", format: "der" }),
+    serialNumber:     "0x02",
+    notBefore:        new Date(Date.now() - b.constants.TIME.days(1)),
+    notAfter:         new Date(Date.now() + b.constants.TIME.days(365)),
+    extensions:       { basicConstraints: { cA: false } },
+  }, { cert: caDer, key: caKeys.privateKey }));
+
+  var kp = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var credId = crypto.randomBytes(32);
+  // A REAL authenticator's AAGUID, which an unanchored chain lets anyone claim.
+  var aaguid = Buffer.from("f8a011f38c0a4d15800617111f9edc7d", "hex");
+  var authData = buildAuthData(RP_ID, FLAG_UP | FLAG_UV | FLAG_AT, 0,
+    buildAttestedCredData(aaguid, credId, coseEC2PublicKey(kp.publicKey)));
+  var clientData = Buffer.from(JSON.stringify({
+    type: "webauthn.create", challenge: challenge, origin: ORIGIN, crossOrigin: false,
+  }), "utf8");
+  var att = cborMap([
+    [cborText("fmt"),     cborText("packed")],
+    [cborText("attStmt"), cborMap([
+      [cborText("alg"), cborInt(-7)],
+      [cborText("sig"), cborBytes(signDER(leafPair.privateKey,
+        Buffer.concat([authData, sha256(clientData)])))],
+      [cborText("x5c"), cborArray([cborBytes(leafDer), cborBytes(caDer)])],
+    ])],
+    [cborText("authData"), cborBytes(authData)],
+  ]);
+  return {
+    keyPair: kp, credId: credId,
+    response: {
+      id: b64url(credId), rawId: b64url(credId), type: "public-key",
+      response: { clientDataJSON: b64url(clientData), attestationObject: b64url(att) },
+      clientExtensionResults: {},
+    },
+  };
+}
+
+// ---- Attestation trust anchors, credProps, padded ids, signed extensions ----
+
+async function testAttestationRootsArePinned() {
+  // An attestation statement proves which authenticator model made a
+  // credential, and that proof is only worth its anchor: checking the
+  // statement's signature without checking WHERE the chain ends accepts a
+  // manufacturer claim rooted in a CA the attacker made. The bundle is pinned
+  // in the source, so assert its identity — a silent substitution during a
+  // refactor is exactly what a test can catch and a review cannot.
+  var roots = require("../../lib/auth/webauthn-attestation-roots");
+  check("attestation roots: the shipped bundles are frozen",
+        Object.isFrozen(roots.ALL_ROOTS) && Object.isFrozen(roots.SAFETYNET_ROOTS) &&
+        Object.isFrozen(roots.APPLE_ROOTS) && Object.isFrozen(roots.ANDROID_KEY_ROOTS) &&
+        Object.isFrozen(roots.ROOTS_BY_FORMAT));
+
+  // Anchors are per FORMAT. Merging them would let a Google-rooted chain
+  // satisfy an Apple attestation — the confusion anchoring exists to stop.
+  check("attestation roots: apple anchors to Apple's root alone",
+        roots.ROOTS_BY_FORMAT["apple"] === roots.APPLE_ROOTS &&
+        roots.APPLE_ROOTS.length === 1);
+  check("attestation roots: android-key anchors to Google's roots alone",
+        roots.ROOTS_BY_FORMAT["android-key"] === roots.ANDROID_KEY_ROOTS &&
+        roots.ANDROID_KEY_ROOTS.length === 4);
+  // packed / tpm / fido-u2f chains end at whichever vendor made the key, so
+  // there is no fixed set to pin — anchoring them against this bundle would
+  // refuse every security key that is not an Apple or Android device.
+  ["packed", "tpm", "fido-u2f", "none"].forEach(function (fmt) {
+    check("attestation roots: " + fmt + " is NOT anchored against the pinned bundle",
+          roots.ROOTS_BY_FORMAT[fmt] === undefined);
+  });
+
+  var byFingerprint = {};
+  roots.ALL_ROOTS.forEach(function (pem) {
+    var c = new crypto.X509Certificate(pem);
+    byFingerprint[c.fingerprint256] = c;
+  });
+  var expected = {
+    // Apple WebAuthn Root CA — anchors `apple` attestation.
+    "09:15:DD:5C:07:A2:8D:B5:49:D1:F6:77:BB:5A:75:D4:BF:BE:95:61:A7:73:42:43:27:76:2E:9E:02:F9:BB:29": "Apple",
+    // Google hardware-attestation roots — anchor `android-key`. Four issues
+    // of the same root; the 2016 one has expired and anchors nothing.
+    "C1:98:4A:3E:F4:5C:1E:2A:91:85:51:DE:10:60:3C:86:F7:05:1B:22:49:C4:89:1C:AE:32:30:EA:BD:0C:97:D5": "Google 2016",
+    "1E:F1:A0:4B:8B:A5:8A:B9:45:89:AC:49:8C:89:82:A7:83:F2:4E:A7:30:7E:01:59:A0:C3:A7:3B:37:7D:87:CC": "Google 2019",
+    "AB:66:41:17:8A:36:E1:79:AA:0C:1C:DD:DF:9A:16:EB:45:FA:20:94:3E:2B:8C:D7:C7:C0:5C:26:CF:8B:48:7A": "Google 2021",
+    "CE:DB:1C:B6:DC:89:6A:E5:EC:79:73:48:BC:E9:28:67:53:C2:B3:8E:E7:1C:E0:FB:E3:4A:9A:12:48:80:0D:FC": "Google 2022",
+    // GlobalSign Root CA — anchors the `android-safetynet` JWS chain.
+    "EB:D4:10:40:E4:BB:3E:C7:42:C9:E3:81:D3:1E:F2:A4:1A:48:B6:68:5C:96:E7:CE:F3:C1:DF:6C:D4:33:1C:99": "GlobalSign",
+  };
+  // Fingerprints are checked as a SET so this does not depend on ordering,
+  // and the count is asserted so an extra root cannot be smuggled alongside
+  // the expected ones.
+  check("attestation roots: exactly the six published vendor roots ship",
+        roots.ALL_ROOTS.length === 6 &&
+        Object.keys(byFingerprint).length === 6);
+  var allKnown = Object.keys(byFingerprint).every(function (fp) {
+    return expected[fp] !== undefined;
+  });
+  check("attestation roots: every shipped anchor is a published vendor root",
+        allKnown);
+  var allPresent = Object.keys(expected).every(function (fp) {
+    return byFingerprint[fp] !== undefined;
+  });
+  check("attestation roots: no published vendor root was dropped", allPresent);
+
+  roots.ALL_ROOTS.forEach(function (pem) {
+    var c = new crypto.X509Certificate(pem);
+    check("attestation roots: " + expected[c.fingerprint256] + " is self-signed (a root)",
+          c.subject === c.issuer && c.verify(c.publicKey) === true);
+  });
+
+  check("attestation roots: the SafetyNet anchor is GlobalSign alone",
+        roots.SAFETYNET_ROOTS.length === 1 &&
+        new crypto.X509Certificate(roots.SAFETYNET_ROOTS[0]).fingerprint256 ===
+        "EB:D4:10:40:E4:BB:3E:C7:42:C9:E3:81:D3:1E:F2:A4:1A:48:B6:68:5C:96:E7:CE:F3:C1:DF:6C:D4:33:1C:99");
+
+  // The operator override REPLACES the bundle. An empty or malformed one is a
+  // configuration mistake and must not silently fall back to the vendor roots
+  // — that would leave an operator believing they had narrowed trust while
+  // every vendor root stayed live.
+  var challenge = b64url(crypto.randomBytes(32));
+  var reg = makeRegistration(challenge);
+  async function overrideRefused(value, label) {
+    var rv = await regOutcome({
+      response: reg.response, expectedChallenge: challenge,
+      expectedOrigin: ORIGIN, expectedRPID: RP_ID, attestationRoots: value,
+    });
+    check("attestation roots: " + label,
+          rv.ok === false && rv.threw === true &&
+          /bad-attestation-roots/.test(String(rv.code)));
+  }
+  await overrideRefused([], "an EMPTY override is refused, not read as 'use the shipped roots'");
+  await overrideRefused(["not a pem"], "a non-PEM override entry is refused");
+  await overrideRefused("a string", "a non-array override is refused");
+  await overrideRefused([123], "a non-string override entry is refused");
+  // A truncated PEM passes any substring sniff and is not a certificate. It
+  // must be refused HERE, at the call that named it: this registration is a
+  // `none` attestation, so the override is never handed to the verifier —
+  // an operator whose anchors are broken would otherwise see a clean
+  // registration and never learn.
+  await overrideRefused(
+    ["-----BEGIN CERTIFICATE-----\nnot base64\n-----END CERTIFICATE-----\n"],
+    "a PEM-shaped entry that is not a certificate is refused at the call");
+
+  // A `packed` full attestation from an ordinary security key chains to
+  // whichever vendor made it — Yubico, Feitian, SoloKeys — and none of those
+  // roots are, or could be, in a pinned Apple/Google bundle. Anchoring it
+  // against that bundle would refuse every such key. Registration must still
+  // reach the verifier for these formats rather than being turned away by
+  // this layer's anchor selection.
+  var vendorKey = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var vendorCred = crypto.randomBytes(32);
+  var vendorAuthData = buildAuthData(RP_ID, FLAG_UP | FLAG_UV | FLAG_AT, 0,
+    buildAttestedCredData(Buffer.alloc(16, 0), vendorCred,
+                          coseEC2PublicKey(vendorKey.publicKey)));
+  var vendorChallenge = b64url(crypto.randomBytes(32));
+  var vendorClientData = Buffer.from(JSON.stringify({
+    type: "webauthn.create", challenge: vendorChallenge, origin: ORIGIN, crossOrigin: false,
+  }), "utf8");
+  var vendorCert = Buffer.from(
+    helpers.selfSignedPair({ commonName: "vendor-attestation" }).cert
+      .replace(/-----[^-]+-----/g, "").replace(/\s+/g, ""), "base64");
+  var vendorAtt = cborMap([
+    [cborText("fmt"),     cborText("packed")],
+    [cborText("attStmt"), cborMap([
+      [cborText("alg"), cborInt(-7)],
+      [cborText("sig"), cborBytes(signDER(vendorKey.privateKey,
+        Buffer.concat([vendorAuthData, sha256(vendorClientData)])))],
+      [cborText("x5c"), cborArray([cborBytes(vendorCert)])],
+    ])],
+    [cborText("authData"), cborBytes(vendorAuthData)],
+  ]);
+  var vendorRv = await regOutcome({
+    response: {
+      id: b64url(vendorCred), rawId: b64url(vendorCred), type: "public-key",
+      response: {
+        clientDataJSON:    b64url(vendorClientData),
+        attestationObject: b64url(vendorAtt),
+      },
+      clientExtensionResults: {},
+    },
+    expectedChallenge: vendorChallenge, expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  // The fixture's certificate does not meet the packed profile, so the
+  // verifier refuses it on its own terms — what matters is that it is NOT
+  // refused for failing to chain to a pinned Apple/Google root, which is what
+  // anchoring this format would have produced for every real vendor key too.
+  check("attestation roots: a vendor `packed` attestation is not judged against the pinned bundle",
+        !/anchor|chain-not-anchored|not-anchored/i.test(String(vendorRv.code || "")));
+
+  // An explicit override must reach EVERY statement that carries a chain,
+  // not only the formats the framework pins. A deployment naming its own
+  // anchors for its own packed / tpm / fido-u2f authenticators is asking for
+  // that chain to be checked; ignoring the option there is worse than having
+  // no default, because the operator believes the chain IS checked.
+  //
+  // Asserted on the anchoring DECISION rather than on a refusal: this fixture
+  // is refused either way (its leaf does not meet the packed certificate
+  // profile), so "it was refused" cannot tell the two behaviours apart. That
+  // is precisely how an option that silently did nothing passed review.
+  // A REAL certificate stands in for the operator's own root — the override
+  // validator parses every entry, so a hand-rolled fixture would be refused
+  // as configuration rather than exercising the anchoring decision. Any root
+  // that is not the format's default proves the point.
+  var overrideRoot = roots.SAFETYNET_ROOTS[0];
+  var packedNoOverride = passkey._resolvedAnchors(b64url(vendorAtt), {});
+  check("attestation roots: a packed attestation has no pinned default",
+        packedNoOverride.refused === false && packedNoOverride.fmt === "packed" &&
+        packedNoOverride.hasChain === true &&
+        packedNoOverride.rootCertificates === null);
+  var packedOverride = passkey._resolvedAnchors(b64url(vendorAtt),
+                                                { attestationRoots: [overrideRoot] });
+  check("attestation roots: an explicit override DOES reach a packed attestation",
+        packedOverride.rootCertificates !== null &&
+        packedOverride.rootCertificates.length === 1 &&
+        packedOverride.rootCertificates[0] === overrideRoot);
+
+  // ...and the shipped per-format defaults still apply when no override is
+  // given, so widening the override did not replace them.
+  var appleAtt = cborMap([
+    [cborText("fmt"),     cborText("apple")],
+    [cborText("attStmt"), cborMap([
+      [cborText("x5c"), cborArray([cborBytes(vendorCert)])],
+    ])],
+    [cborText("authData"), cborBytes(vendorAuthData)],
+  ]);
+  var appleDefault = passkey._resolvedAnchors(b64url(appleAtt), {});
+  check("attestation roots: apple still gets its pinned default with no override",
+        appleDefault.rootCertificates !== null &&
+        appleDefault.rootCertificates === roots.APPLE_ROOTS);
+  var appleOverridden = passkey._resolvedAnchors(b64url(appleAtt),
+                                                 { attestationRoots: [overrideRoot] });
+  check("attestation roots: and the override REPLACES that default, never extends it",
+        appleOverridden.rootCertificates.length === 1 &&
+        appleOverridden.rootCertificates[0] === overrideRoot);
+
+  // A statement with no chain takes no anchors even when one is named —
+  // handing roots to a `none` attestation is refused by the verifier.
+  var noneAtt = cborMap([
+    [cborText("fmt"),      cborText("none")],
+    [cborText("attStmt"),  cborMap([])],
+    [cborText("authData"), cborBytes(vendorAuthData)],
+  ]);
+  var noneResolved = passkey._resolvedAnchors(b64url(noneAtt),
+                                              { attestationRoots: [overrideRoot] });
+  check("attestation roots: a chainless attestation takes no anchors even when named",
+        noneResolved.hasChain === false && noneResolved.rootCertificates === null);
+
+  // An unanchored chain proves only that SOMEBODY signed the statement, so
+  // the AAGUID inside it is a claim. That is the normal outcome for a
+  // security key and is what every WebAuthn verifier does — the one this
+  // release replaces accepts the same attestation — so it is not refused by
+  // default. An RP that acts on attestation provenance opts in.
+  var ownCaChallenge = b64url(crypto.randomBytes(32));
+  var ownCa = await makePackedAttestationUnderOwnCa(ownCaChallenge);
+  var ownCaArgs = {
+    response: ownCa.response, expectedChallenge: ownCaChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  };
+
+  // By DEFAULT this verifies — and that is the honest, pre-existing WebAuthn
+  // behaviour, matching the verifier this release replaces: a packed chain is
+  // anchored through the credential's FIDO metadata entry, not a fixed root
+  // list, so refusing it would reject every ordinary security key. What the
+  // result says is that it anchored at nothing.
+  var unanchoredAccepted = await regOutcome(Object.assign({}, ownCaArgs));
+  check("attestation anchor: an unanchored packed chain still verifies by default",
+        unanchoredAccepted.ok === true);
+  check("attestation anchor: ...and the result reports anchoredTo as nothing",
+        unanchoredAccepted.ok === true &&
+        !unanchoredAccepted.rv.registrationInfo.anchoredTo);
+
+  // An RP that ACTS on attestation provenance opts in, and then the same
+  // ceremony is refused: the AAGUID it claims is not a verified fact.
+  var unanchoredRefused = await regOutcome(
+    Object.assign({ requireAttestationAnchor: true }, ownCaArgs));
+  check("attestation anchor: requireAttestationAnchor refuses a chain that anchored at nothing",
+        unanchoredRefused.ok === false && unanchoredRefused.threw === true &&
+        /attestation-not-anchored/.test(String(unanchoredRefused.code)));
+
+  // The opt-in must not fire on a ceremony with no chain to anchor — a
+  // `none` attestation is the framework default and has to keep working.
+  var noneChallenge = b64url(crypto.randomBytes(32));
+  var noneReg = makeRegistration(noneChallenge);
+  var noneAnchored = await regOutcome({
+    response: noneReg.response, expectedChallenge: noneChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    requireAttestationAnchor: true,
+  });
+  check("attestation anchor: the opt-in does not fire on a chainless attestation",
+        noneAnchored.ok === true);
+
+  // Deciding WHICH anchors apply means reading the attestation's format. An
+  // object too large or too malformed to read cannot be assigned a policy —
+  // and quietly proceeding with no anchors would be a bypass with a shape:
+  // pad an `apple` attestation past the bound and it would sail through
+  // unanchored, which is the self-issued manufacturer claim this exists to
+  // stop. Not reading the format is fatal, not permissive.
+  var oversized = Buffer.concat([
+    cborMap([[cborText("fmt"), cborText("apple")]]),
+    Buffer.alloc(128 * 1024, 0x41),                                                // allow:raw-byte-literal — past the anchor-plan bound
+  ]);
+  var oversizedRv = await regOutcome({
+    response: {
+      id: "AAAA", rawId: "AAAA", type: "public-key",
+      response: {
+        clientDataJSON: b64url(Buffer.from(JSON.stringify({
+          type: "webauthn.create", challenge: challenge, origin: ORIGIN, crossOrigin: false,
+        }), "utf8")),
+        attestationObject: b64url(oversized),
+      },
+      clientExtensionResults: {},
+    },
+    expectedChallenge: challenge, expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("attestation roots: an attestation whose format cannot be read is REFUSED, not left unanchored",
+        oversizedRv.ok === false && oversizedRv.threw === true);
+}
+
+async function testCredPropsAndPaddedDescriptors() {
+  // credProps is how a relying party learns whether the credential it just
+  // created is actually discoverable. residentKey: "preferred" lets the
+  // authenticator say no, so without asking, an RP cannot tell which of its
+  // credentials support username-less or conditional login.
+  var opts = await passkey.startRegistration({
+    rpName: "Example", rpId: RP_ID, userName: "alice",
+  });
+  check("credProps: requested on a registration with no caller extensions",
+        opts.extensions && opts.extensions.credProps === true);
+
+  var withExt = await passkey.startRegistration({
+    rpName: "Example", rpId: RP_ID, userName: "alice",
+    extensions: { credBlob: { blob: Buffer.from("hello") } },
+  });
+  check("credProps: still requested alongside a caller's own extensions",
+        withExt.extensions && withExt.extensions.credProps === true &&
+        typeof withExt.extensions.credBlob === "string");
+
+  // Requesting it is only half the job: the browser's ANSWER — credProps.rk,
+  // whether the credential it created is actually discoverable — has to reach
+  // the caller, or the request has no usable effect at all.
+  var propsChallenge = b64url(crypto.randomBytes(32));
+  var propsReg = makeRegistration(propsChallenge);
+  propsReg.response.clientExtensionResults = { credProps: { rk: true } };
+  var propsRv = await regOutcome({
+    response: propsReg.response, expectedChallenge: propsChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("credProps: the browser's answer reaches the verification result",
+        propsRv.ok === true &&
+        propsRv.rv.registrationInfo.clientExtensionResults &&
+        propsRv.rv.registrationInfo.clientExtensionResults.credProps.rk === true);
+  // Kept SEPARATE from the signed set: these are client-reported and nothing
+  // signs them, so merging the two would let an unsigned claim read as an
+  // authenticator's answer.
+  check("credProps: client-reported results are not merged into the signed set",
+        propsRv.rv.registrationInfo.authenticatorExtensionResults === undefined);
+
+  // A credential id stored years ago by a padding-emitting base64url encoder
+  // is still that credential. Refusing the padding would not reject an attack
+  // — it would stop the deployment starting authentication at all.
+  var raw = crypto.randomBytes(32);
+  // What a padding-emitting base64url encoder actually produces: the standard
+  // alphabet swapped for the URL one, padding intact. A 32-byte id is 43
+  // characters, so its correct padding is a single '=' — appending two would
+  // be malformed, which is its own case below.
+  var padded = raw.toString("base64").replace(/\+/g, "-").replace(/\//g, "_");
+  var auth = await passkey.startAuthentication({
+    rpId: RP_ID, allowCredentials: [{ id: padded, type: "public-key" }],
+  });
+  check("padded ids: a padded credential id is accepted and normalized",
+        auth.allowCredentials.length === 1 &&
+        auth.allowCredentials[0].id === raw.toString("base64url"));
+
+  var excl = await passkey.startRegistration({
+    rpName: "Example", rpId: RP_ID, userName: "alice",
+    excludeCredentials: [{ id: padded, type: "public-key" }],
+  });
+  check("padded ids: excludeCredentials accepts one too",
+        excl.excludeCredentials[0].id === raw.toString("base64url"));
+
+  // Padding is not a licence for arbitrary characters.
+  var threw = null;
+  try {
+    await passkey.startAuthentication({
+      rpId: RP_ID, allowCredentials: [{ id: "not base64url!", type: "public-key" }],
+    });
+  } catch (e) { threw = e; }
+  check("padded ids: a genuinely non-base64url id is still refused",
+        threw && /bad-allowCredentials/.test(String(threw.code)));
+
+  // An id must canonically denote ONE credential. Node's decoder is lenient
+  // in ways that silently produce a DIFFERENT id, which would run the
+  // ceremony against the wrong descriptor rather than fail:
+  //   "YW"     re-encodes as "YQ" — the final quantum carries bits that
+  //            encode nothing, so two spellings name one credential.
+  //   "Y"      a lone leftover character decodes to NOTHING.
+  //   "YWJj==" padding on an already-complete quantum.
+  async function refusedId(id, why) {
+    var threw = null;
+    try {
+      await passkey.startAuthentication({
+        rpId: RP_ID, allowCredentials: [{ id: id, type: "public-key" }],
+      });
+    } catch (e) { threw = e; }
+    check("padded ids: " + why, threw && /bad-allowCredentials/.test(String(threw.code)));
+  }
+  await refusedId("===", "an id that is nothing but padding is refused");
+  await refusedId("YW", "a non-canonical final quantum is refused, not silently re-encoded");
+  await refusedId("Y", "a lone leftover character is refused, not decoded to nothing");
+  await refusedId("YWJj==", "padding on an already-complete quantum is refused");
+  await refusedId("YWJjZA=", "a short padding run is refused");
+
+  // ...and the well-formed spellings of the same credential all resolve to
+  // the one canonical id, so a descriptor cannot depend on which encoder
+  // wrote the row.
+  for (var s = 0; s < 3; s++) {
+    var bytes = crypto.randomBytes(1 + s);          // lengths 1..3 → 0/1/2 pads
+    var canonical = bytes.toString("base64url");
+    var withPad = bytes.toString("base64") .replace(/\+/g, "-").replace(/\//g, "_");
+    var opt = await passkey.startAuthentication({
+      rpId: RP_ID, allowCredentials: [{ id: withPad, type: "public-key" }],
+    });
+    check("padded ids: a correctly-padded " + (s + 1) + "-byte id normalizes to its canonical form",
+          opt.allowCredentials[0].id === canonical);
+  }
+}
+
+// A registration whose authenticator data carries SIGNED extension outputs
+// (the ED flag plus a CBOR map), which is what credProtect / credBlob answer
+// with. Distinct from clientExtensionResults, which nothing signs.
+function makeRegistrationWithExtensions(challenge) {
+  var kp     = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var credId = crypto.randomBytes(32);
+  var extMap = cborMap([[cborText("credProtect"), cborInt(2)]]);
+  var acd    = buildAttestedCredData(Buffer.alloc(16, 0), credId, coseEC2PublicKey(kp.publicKey));
+  var authData = Buffer.concat([
+    buildAuthData(RP_ID, FLAG_UP | FLAG_UV | FLAG_AT | 0x80, 0, acd), extMap,        // allow:raw-byte-literal — ED: extension data present
+  ]);
+  var attObj = cborMap([
+    [cborText("fmt"),      cborText("none")],
+    [cborText("attStmt"),  cborMap([])],
+    [cborText("authData"), cborBytes(authData)],
+  ]);
+  var clientData = Buffer.from(JSON.stringify({
+    type: "webauthn.create", challenge: challenge, origin: ORIGIN, crossOrigin: false,
+  }), "utf8");
+  return {
+    keyPair: kp, credId: credId,
+    response: {
+      id: b64url(credId), rawId: b64url(credId), type: "public-key",
+      response: { clientDataJSON: b64url(clientData), attestationObject: b64url(attObj) },
+      clientExtensionResults: {},
+    },
+  };
+}
+
+function makeAssertionWithExtensions(privateKey, credId, challenge, signCount) {
+  var extMap   = cborMap([[cborText("credProtect"), cborInt(3)]]);
+  var authData = Buffer.concat([
+    buildAuthData(RP_ID, FLAG_UP | FLAG_UV | 0x80, signCount, null), extMap,         // allow:raw-byte-literal — ED flag
+  ]);
+  var clientData = Buffer.from(JSON.stringify({
+    type: "webauthn.get", challenge: challenge, origin: ORIGIN, crossOrigin: false,
+  }), "utf8");
+  var sig = signDER(privateKey, Buffer.concat([authData, sha256(clientData)]));
+  return {
+    response: {
+      id: b64url(credId), rawId: b64url(credId), type: "public-key",
+      response: {
+        clientDataJSON:    b64url(clientData),
+        authenticatorData: b64url(authData),
+        signature:         b64url(sig),
+      },
+      clientExtensionResults: {},
+    },
+  };
+}
+
+async function testAuthenticatorExtensionResults() {
+  // These outputs live INSIDE the bytes the attestation / assertion signature
+  // covers, so they are the authenticator's answer rather than a claim the
+  // page made. A consumer of credProtect or credBlob that stops receiving
+  // them loses its verified output with nothing failing loudly.
+  var challenge = b64url(crypto.randomBytes(32));
+  var reg = makeRegistrationWithExtensions(challenge);
+  var regRv = await regOutcome({
+    response: reg.response, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("signed extensions: a registration carrying them verifies", regRv.ok === true);
+  check("signed extensions: registration decodes the authenticator's own outputs",
+        regRv.rv.registrationInfo.authenticatorExtensionResults &&
+        regRv.rv.registrationInfo.authenticatorExtensionResults.credProtect === 2);
+
+  var authChallenge = b64url(crypto.randomBytes(32));
+  var assertion = makeAssertionWithExtensions(reg.keyPair.privateKey, reg.credId, authChallenge, 1);
+  var authRv = await authOutcome({
+    response: assertion.response, expectedChallenge: authChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    credential: { id: b64url(reg.credId), publicKey: storedPublicKey(regRv.rv), counter: 0 },
+  });
+  check("signed extensions: an assertion carrying them verifies", authRv.ok === true);
+  check("signed extensions: authentication decodes them too",
+        authRv.rv.authenticationInfo.authenticatorExtensionResults &&
+        authRv.rv.authenticationInfo.authenticatorExtensionResults.credProtect === 3);
+
+  // Extension outputs nest. A value left as a CBOR Map survives in memory and
+  // then serializes to `{}` — so an operator who persists the verification
+  // result, or logs it, loses verified data with nothing failing. The
+  // conversion has to reach all the way down.
+  var nestedChallenge = b64url(crypto.randomBytes(32));
+  var nestedKp = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var nestedCredId = crypto.randomBytes(32);
+  // Keys in CTAP2 canonical order — shortest first, then bytewise. The
+  // verifier enforces deterministic encoding, so an out-of-order fixture is
+  // refused before reaching the code under test.
+  var nestedExt = cborMap([
+    [cborText("list"), cborArray([cborMap([[cborText("x"), cborInt(1)]])])],
+    [cborText("largeBlob"),   cborMap([
+      [cborText("inner"),     cborMap([[cborText("deep"), cborInt(7)]])],
+      [cborText("supported"), cborInt(1)],
+    ])],
+    [cborText("credProtect"), cborInt(2)],
+  ]);
+  var nestedAuthData = Buffer.concat([
+    buildAuthData(RP_ID, FLAG_UP | FLAG_UV | FLAG_AT | 0x80, 0,                     // allow:raw-byte-literal — ED flag
+      buildAttestedCredData(Buffer.alloc(16, 0), nestedCredId,
+                            coseEC2PublicKey(nestedKp.publicKey))),
+    nestedExt,
+  ]);
+  var nestedAtt = cborMap([
+    [cborText("fmt"),      cborText("none")],
+    [cborText("attStmt"),  cborMap([])],
+    [cborText("authData"), cborBytes(nestedAuthData)],
+  ]);
+  var nestedRv = await regOutcome({
+    response: {
+      id: b64url(nestedCredId), rawId: b64url(nestedCredId), type: "public-key",
+      response: {
+        clientDataJSON: b64url(Buffer.from(JSON.stringify({
+          type: "webauthn.create", challenge: nestedChallenge, origin: ORIGIN,
+          crossOrigin: false,
+        }), "utf8")),
+        attestationObject: b64url(nestedAtt),
+      },
+      clientExtensionResults: {},
+    },
+    expectedChallenge: nestedChallenge, expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("signed extensions: a registration with nested extensions verifies",
+        nestedRv.ok === true);
+  var nestedOut = nestedRv.ok && nestedRv.rv.registrationInfo.authenticatorExtensionResults;
+  check("signed extensions: a nested map is converted, not left as a Map",
+        nestedOut && nestedOut.largeBlob && !(nestedOut.largeBlob instanceof Map) &&
+        nestedOut.largeBlob.supported === 1);
+  check("signed extensions: the conversion reaches all the way down",
+        nestedOut && nestedOut.largeBlob && nestedOut.largeBlob.inner &&
+        nestedOut.largeBlob.inner.deep === 7);
+  check("signed extensions: maps inside arrays are converted too",
+        nestedOut && Array.isArray(nestedOut.list) && nestedOut.list[0] &&
+        !(nestedOut.list[0] instanceof Map) && nestedOut.list[0].x === 1);
+  // The decisive check: what an operator persists must still carry the data.
+  check("signed extensions: the result survives a JSON round trip intact",
+        nestedOut &&
+        JSON.parse(JSON.stringify(nestedOut)).largeBlob.inner.deep === 7);
+
+  // A structured extension can nest a COSE key, and a COSE map is labelled
+  // with INTEGERS, not strings. devicePubKey's `dpk` is exactly that. Keeping
+  // only string keys drops every entry of such a map, so a verified public
+  // key surfaces as `{}` — the same data loss as leaving it a Map, one level
+  // further in.
+  var coseChallenge = b64url(crypto.randomBytes(32));
+  var coseKp = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var coseCredId = crypto.randomBytes(32);
+  var coseExt = cborMap([
+    [cborText("devicePubKey"), cborMap([
+      [cborInt(1), cborInt(2)],                    // kty: EC2   (canonical: ints ascending)
+      [cborInt(3), cborInt(-7)],                   // alg: ES256
+    ])],
+  ]);
+  var coseAuthData = Buffer.concat([
+    buildAuthData(RP_ID, FLAG_UP | FLAG_UV | FLAG_AT | 0x80, 0,                     // allow:raw-byte-literal — ED flag
+      buildAttestedCredData(Buffer.alloc(16, 0), coseCredId,
+                            coseEC2PublicKey(coseKp.publicKey))),
+    coseExt,
+  ]);
+  var coseRv = await regOutcome({
+    response: {
+      id: b64url(coseCredId), rawId: b64url(coseCredId), type: "public-key",
+      response: {
+        clientDataJSON: b64url(Buffer.from(JSON.stringify({
+          type: "webauthn.create", challenge: coseChallenge, origin: ORIGIN,
+          crossOrigin: false,
+        }), "utf8")),
+        attestationObject: b64url(cborMap([
+          [cborText("fmt"),      cborText("none")],
+          [cborText("attStmt"),  cborMap([])],
+          [cborText("authData"), cborBytes(coseAuthData)],
+        ])),
+      },
+      clientExtensionResults: {},
+    },
+    expectedChallenge: coseChallenge, expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  var coseOut = coseRv.ok && coseRv.rv.registrationInfo.authenticatorExtensionResults;
+  check("signed extensions: an integer-labelled nested map keeps its entries",
+        coseOut && coseOut.devicePubKey &&
+        Object.keys(coseOut.devicePubKey).length === 2);
+  check("signed extensions: integer CBOR labels survive as their decimal form",
+        coseOut && coseOut.devicePubKey &&
+        coseOut.devicePubKey["1"] === 2 && coseOut.devicePubKey["3"] === -7);
+
+  // A signed extension may legally be named `__proto__`. Assigning that to an
+  // ordinary object hits the legacy prototype setter: the key disappears from
+  // Object.keys and from JSON, and its contents come back as INHERITED
+  // properties — verified data lost, and unverified-looking data gained.
+  var protoChallenge = b64url(crypto.randomBytes(32));
+  var protoKp = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var protoCredId = crypto.randomBytes(32);
+  var protoExt = cborMap([                                                         // canonical order: shortest key first
+    [cborText("__proto__"), cborMap([[cborText("polluted"), cborInt(1)]])],
+  ]);
+  var protoAuthData = Buffer.concat([
+    buildAuthData(RP_ID, FLAG_UP | FLAG_UV | FLAG_AT | 0x80, 0,                     // allow:raw-byte-literal — ED flag
+      buildAttestedCredData(Buffer.alloc(16, 0), protoCredId,
+                            coseEC2PublicKey(protoKp.publicKey))),
+    protoExt,
+  ]);
+  var protoRv = await regOutcome({
+    response: {
+      id: b64url(protoCredId), rawId: b64url(protoCredId), type: "public-key",
+      response: {
+        clientDataJSON: b64url(Buffer.from(JSON.stringify({
+          type: "webauthn.create", challenge: protoChallenge, origin: ORIGIN,
+          crossOrigin: false,
+        }), "utf8")),
+        attestationObject: b64url(cborMap([
+          [cborText("fmt"),      cborText("none")],
+          [cborText("attStmt"),  cborMap([])],
+          [cborText("authData"), cborBytes(protoAuthData)],
+        ])),
+      },
+      clientExtensionResults: {},
+    },
+    expectedChallenge: protoChallenge, expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  var protoOut = protoRv.ok && protoRv.rv.registrationInfo.authenticatorExtensionResults;
+  check("signed extensions: a `__proto__` extension is kept as an own property",
+        protoOut && Object.keys(protoOut).indexOf("__proto__") !== -1 &&
+        protoOut["__proto__"].polluted === 1);
+  check("signed extensions: it survives serialization rather than vanishing",
+        protoOut && JSON.parse(JSON.stringify(protoOut))["__proto__"].polluted === 1);
+  check("signed extensions: and nothing leaks onto a plain object's prototype",
+        ({}).polluted === undefined);
+
+  // A ceremony with no extensions leaves the field absent rather than an
+  // empty object, so "none reported" stays distinguishable from "reported
+  // none" — the same rule transports follows.
+  var plainChallenge = b64url(crypto.randomBytes(32));
+  var plain = makeRegistration(plainChallenge);
+  var plainRv = await regOutcome({
+    response: plain.response, expectedChallenge: plainChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("signed extensions: absent when the authenticator reported none",
+        plainRv.ok === true &&
+        plainRv.rv.registrationInfo.authenticatorExtensionResults === undefined);
+}
+
+async function testAssertionFlagsComeFromTheVerifiedBytes() {
+  // Verification is async, and the caller keeps a reference to the response
+  // object throughout. Re-reading response.response.authenticatorData after
+  // the await reports bits from whatever it holds THEN — so a ceremony could
+  // return verified:true alongside UV/BE/BS values no signature covered.
+  //
+  // Driven deterministically with a getter that yields the genuine bytes to
+  // the verifier and different bytes to any later read: whichever the result
+  // reflects tells us which read it used.
+  var challenge = b64url(crypto.randomBytes(32));
+  var reg = makeRegistration(challenge);
+  var regRv = await regOutcome({
+    response: reg.response, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("verified flags: setup registration verifies", regRv.ok === true);
+
+  // Genuine assertion: UP + UV set, BE/BS clear.
+  var authChallenge = b64url(crypto.randomBytes(32));
+  var genuine = makeAssertion(reg.keyPair.privateKey, reg.credId, authChallenge, 1);
+  var genuineAuthData = genuine.response.response.authenticatorData;
+  // Swapped bytes: BE + BS set. Never signed, and never seen by the verifier.
+  var swapped = b64url(buildAuthData(RP_ID, FLAG_UP | FLAG_UV | FLAG_BE | FLAG_BS, 1, null));
+
+  var reads = 0;
+  Object.defineProperty(genuine.response.response, "authenticatorData", {
+    configurable: true,
+    get: function () { reads += 1; return reads === 1 ? genuineAuthData : swapped; },
+  });
+
+  var rv = await authOutcome({
+    response: genuine.response, expectedChallenge: authChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    credential: { id: b64url(reg.credId), publicKey: storedPublicKey(regRv.rv), counter: 0 },
+  });
+  check("verified flags: the assertion still verifies", rv.ok === true);
+  check("verified flags: backup bits come from the VERIFIED bytes, not a later read",
+        rv.ok === true && rv.rv.backupEligible === false && rv.rv.backupState === false);
+  check("verified flags: so does the device type",
+        rv.ok === true &&
+        rv.rv.authenticationInfo.credentialDeviceType === "singleDevice");
+
+  // Everything the result reports about the CALLER's input is snapshotted at
+  // validation time too. Verification is async and the caller keeps opts, so
+  // a later read reports whatever the object holds by then. The sharp one is
+  // the credential id: a consumer persisting newCounter against
+  // authenticationInfo.credentialID would update the wrong credential row
+  // while the response said verified: true.
+  var mutChallenge = b64url(crypto.randomBytes(32));
+  var mutAssertion = makeAssertion(reg.keyPair.privateKey, reg.credId, mutChallenge, 5);
+  var storedId = b64url(reg.credId);
+  var otherId = b64url(crypto.randomBytes(32));
+  var credential = {
+    id: storedId, publicKey: storedPublicKey(regRv.rv), counter: 0,
+  };
+  var mutOpts = {
+    response: mutAssertion.response, expectedChallenge: mutChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID, credential: credential,
+  };
+  var pending = passkey.verifyAuthentication(mutOpts);
+  // Mutate WHILE the verification is in flight.
+  credential.id = otherId;
+  mutOpts.expectedRPID = "attacker.test";
+  var mutRv = await pending;
+  check("snapshot: the ceremony still verifies", mutRv.verified === true);
+  check("snapshot: credentialID is the one that was validated, not the mutated one",
+        mutRv.authenticationInfo.credentialID === storedId);
+  check("snapshot: rpID is the one that was verified against",
+        mutRv.authenticationInfo.rpID === RP_ID);
+
+  // A snapshot of the REFERENCE is not a snapshot: mutating what is INSIDE
+  // the response mid-flight would still show through into the result.
+  var deepChallenge = b64url(crypto.randomBytes(32));
+  var deepAssertion = makeAssertion(reg.keyPair.privateKey, reg.credId, deepChallenge, 6);
+  deepAssertion.response.clientExtensionResults = { credProps: { rk: true } };
+  var deepPending = passkey.verifyAuthentication({
+    response: deepAssertion.response, expectedChallenge: deepChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    credential: { id: storedId, publicKey: storedPublicKey(regRv.rv), counter: 0 },
+  });
+  deepAssertion.response.clientExtensionResults.credProps.rk = false;
+  var deepRv = await deepPending;
+  check("snapshot: nested extension values are copied, not shared by reference",
+        deepRv.verified === true &&
+        deepRv.authenticationInfo.clientExtensionResults.credProps.rk === true);
+
+  // ...and the same for the registration side's transports.
+  var tChallenge = b64url(crypto.randomBytes(32));
+  var tReg = makeRegistration(tChallenge);
+  tReg.response.response.transports = ["usb"];
+  var tPending = passkey.verifyRegistration({
+    response: tReg.response, expectedChallenge: tChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  tReg.response.response.transports.push("nfc");
+  var tRv = await tPending;
+  check("snapshot: transports are copied at validation time",
+        tRv.verified === true &&
+        tRv.registrationInfo.credential.transports.join(",") === "usb");
+
+  // Registration's credential-ID binding is the one check that CANNOT run
+  // before the await — the authoritative id comes out of the attestation. So
+  // it must compare the ids the response STATED, not what the caller's object
+  // holds by the time the verifier returns: otherwise a mismatching response
+  // can be corrected into passing mid-flight.
+  var raceChallenge = b64url(crypto.randomBytes(32));
+  var raceReg = makeRegistration(raceChallenge);
+  var victimId = b64url(crypto.randomBytes(32));
+  raceReg.response.id = victimId;                 // claims a credential it did not attest
+  raceReg.response.rawId = victimId;
+  var racePending = passkey.verifyRegistration({
+    response: raceReg.response, expectedChallenge: raceChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  // "Fix" the response while verification is in flight.
+  raceReg.response.id = b64url(raceReg.credId);
+  raceReg.response.rawId = b64url(raceReg.credId);
+  var raceThrew = null;
+  try { await racePending; } catch (e) { raceThrew = e; }
+  check("snapshot: a mismatching registration cannot be corrected mid-verification",
+        raceThrew && /credential-id-mismatch/.test(String(raceThrew.code)));
+
+  // The snapshot copies CALLER-supplied key names, so it has the same
+  // prototype-key hazard as the CBOR converter: `__proto__` assigned to an
+  // ordinary object hits the legacy setter, and the key disappears from
+  // Object.keys and JSON while its contents become inherited properties.
+  var protoChallenge = b64url(crypto.randomBytes(32));
+  var protoAssertion = makeAssertion(reg.keyPair.privateKey, reg.credId, protoChallenge, 7);
+  protoAssertion.response.clientExtensionResults =
+    JSON.parse('{"__proto__":{"polluted":1},"credProps":{"rk":true}}');
+  var protoRv = await authOutcome({
+    response: protoAssertion.response, expectedChallenge: protoChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    credential: { id: storedId, publicKey: storedPublicKey(regRv.rv), counter: 0 },
+  });
+  var snapped = protoRv.ok && protoRv.rv.authenticationInfo.clientExtensionResults;
+  check("snapshot: a `__proto__` key survives as an own property",
+        snapped && Object.keys(snapped).indexOf("__proto__") !== -1);
+  check("snapshot: and it round-trips through JSON rather than vanishing",
+        snapped && JSON.parse(JSON.stringify(snapped))["__proto__"].polluted === 1);
+  check("snapshot: sibling keys are unaffected",
+        snapped && snapped.credProps.rk === true);
+  check("snapshot: nothing leaked onto a plain object's prototype",
+        ({}).polluted === undefined);
+}
+
+// ---- Response shape: credential type, and formats we will not anchor ----
+
+async function testCredentialTypeAndUnsupportedFormats() {
+  // WebAuthn defines exactly one credential type. A response with a missing
+  // or altered `type` is malformed; defaulting it into the result would write
+  // a value nothing verified into the credential row, and any consumer that
+  // dispatches on it is then dispatching on the attacker's string.
+  var challenge = b64url(crypto.randomBytes(32));
+  var reg = makeRegistration(challenge);
+
+  async function typeRefused(value, label) {
+    var lied = JSON.parse(JSON.stringify(reg.response));
+    if (value === undefined) { delete lied.type; } else { lied.type = value; }
+    var rv = await regOutcome({
+      response: lied, expectedChallenge: challenge,
+      expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    });
+    check("credential type: " + label,
+          rv.ok === false && rv.threw === true &&
+          /bad-credential-type/.test(String(rv.code)));
+  }
+  await typeRefused(undefined, "a registration with no type is refused");
+  await typeRefused("", "a registration with an empty type is refused");
+  await typeRefused("public-key-ish", "a registration with an altered type is refused");
+
+  // The same on the authentication side, so the two ceremonies agree.
+  var okRv = await regOutcome({
+    response: reg.response, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("credential type: an honest registration verifies and records it",
+        okRv.ok === true && okRv.rv.registrationInfo.credentialType === "public-key");
+
+  var authChallenge = b64url(crypto.randomBytes(32));
+  var assertion = makeAssertion(reg.keyPair.privateKey, reg.credId, authChallenge, 1);
+  var liedAuth = JSON.parse(JSON.stringify(assertion.response));
+  liedAuth.type = "not-a-public-key";
+  var authRv = await authOutcome({
+    response: liedAuth, expectedChallenge: authChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    credential: { id: b64url(reg.credId), publicKey: storedPublicKey(okRv.rv), counter: 0 },
+  });
+  check("credential type: an assertion with a bad type is refused too",
+        authRv.ok === false && /bad-credential-type/.test(String(authRv.code)));
+
+  // A `compound` statement nests several attestations, each with its own
+  // trust path. Anchoring off the OUTER format would leave a nested `apple`
+  // element unanchored — the same manufacturer-provenance bypass, one level
+  // down. It is refused until anchors can be derived per nested element; the
+  // verifier this release replaced did not implement compound either, so
+  // nothing that worked before stops working.
+  var compound = cborMap([
+    [cborText("fmt"),      cborText("compound")],
+    [cborText("attStmt"),  cborMap([])],
+    [cborText("authData"), cborBytes(buildAuthData(RP_ID, FLAG_UP | FLAG_UV | FLAG_AT, 0,
+      buildAttestedCredData(Buffer.alloc(16, 0), reg.credId,
+                            coseEC2PublicKey(reg.keyPair.publicKey))))],
+  ]);
+  var compoundRv = await regOutcome({
+    response: {
+      id: b64url(reg.credId), rawId: b64url(reg.credId), type: "public-key",
+      response: {
+        clientDataJSON:    reg.response.response.clientDataJSON,
+        attestationObject: b64url(compound),
+      },
+      clientExtensionResults: {},
+    },
+    expectedChallenge: challenge, expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("compound: a compound attestation is refused rather than left unanchored",
+        compoundRv.ok === false && rvIsUnsupportedFormat(compoundRv));
+}
+
+function rvIsUnsupportedFormat(rv) {
+  return rv.threw === true && /unsupported-attestation-format/.test(String(rv.code));
+}
+
+// ---- Signal API identifiers name exactly one credential ----
+
+function testSignalApiIdsAreCanonical() {
+  // The browser ACTS on these ids. signalUnknownCredential asks it to remove
+  // the named credential, and signalAllAcceptedCredentials is exhaustive —
+  // the browser deletes passkeys that are NOT on the list. A non-canonical
+  // spelling decodes to different bytes ("YW" names "YQ"), so a lax check
+  // here removes the wrong passkey, or drops one the operator meant to keep
+  // out of the accepted list and has the browser delete it.
+  var bad = ["Y", "YW", "YWJj==", "==="];
+  for (var i = 0; i < bad.length; i++) {
+    var threw = null;
+    try { passkey.signalUnknownCredential({ rpId: RP_ID, credentialId: bad[i] }); }
+    catch (e) { threw = e; }
+    check("signal: signalUnknownCredential refuses the non-canonical id " +
+          JSON.stringify(bad[i]),
+          threw && /bad-credential-id/.test(String(threw.code)));
+
+    var threwList = null;
+    try {
+      passkey.signalAllAcceptedCredentials({
+        rpId: RP_ID, userId: "AAAA", allAcceptedCredentialIds: ["AAAA", bad[i]],
+      });
+    } catch (e) { threwList = e; }
+    check("signal: the accepted list refuses the non-canonical id " +
+          JSON.stringify(bad[i]),
+          threwList && /bad-accepted-list/.test(String(threwList.code)));
+
+    var threwUser = null;
+    try { passkey.signalCurrentUserDetails({ rpId: RP_ID, userId: bad[i], name: "a", displayName: "a" }); }
+    catch (e) { threwUser = e; }
+    check("signal: signalCurrentUserDetails refuses the non-canonical user id " +
+          JSON.stringify(bad[i]),
+          threwUser && /bad-user-id/.test(String(threwUser.code)));
+  }
+
+  // A correctly-padded id is the same credential, so it is accepted and
+  // handed to the browser in canonical form.
+  var raw = crypto.randomBytes(32);
+  var padded = raw.toString("base64").replace(/\+/g, "-").replace(/\//g, "_");
+  var out = passkey.signalUnknownCredential({ rpId: RP_ID, credentialId: padded });
+  check("signal: a correctly-padded id is normalized before it reaches the browser",
+        out.credentialId === raw.toString("base64url"));
+
+  var list = passkey.signalAllAcceptedCredentials({
+    rpId: RP_ID, userId: padded, allAcceptedCredentialIds: [padded],
+  });
+  check("signal: the accepted list and user id are normalized too",
+        list.userId === raw.toString("base64url") &&
+        list.allAcceptedCredentialIds[0] === raw.toString("base64url"));
+
+  var details = passkey.signalCurrentUserDetails({
+    rpId: RP_ID, userId: padded, name: "alice", displayName: "Alice",
+  });
+  check("signal: signalCurrentUserDetails normalizes its user id",
+        details.userId === raw.toString("base64url"));
+}
+
+// ---- A stored credential id keeps working whichever encoder wrote it ----
+
+async function testPaddedStoredCredentialIdStillLogsIn() {
+  // The compatibility case that motivated accepting padded ids at all: a
+  // deployment whose credential column holds `...=` from whichever encoder
+  // wrote the row. startAuthentication hands the browser the canonical
+  // unpadded spelling, the browser returns THAT, and the binding then
+  // compares it against the still-padded stored value. Comparing raw strings
+  // there turns two spellings of ONE credential into a mismatch and locks out
+  // exactly the deployments the padding support was added for.
+  var challenge = b64url(crypto.randomBytes(32));
+  var reg = makeRegistration(challenge);
+  var regRv = await regOutcome({
+    response: reg.response, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("padded stored id: setup registration verifies", regRv.ok === true);
+
+  // The same credential id as a padding-emitting encoder would have stored it.
+  var storedPadded = Buffer.from(reg.credId).toString("base64")
+    .replace(/\+/g, "-").replace(/\//g, "_");
+  check("padded stored id: the fixture really is the padded spelling",
+        storedPadded !== b64url(reg.credId) &&
+        storedPadded.replace(/=+$/, "") === b64url(reg.credId));
+
+  var authChallenge = b64url(crypto.randomBytes(32));
+  var assertion = makeAssertion(reg.keyPair.privateKey, reg.credId, authChallenge, 1);
+  var rv = await authOutcome({
+    response: assertion.response, expectedChallenge: authChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    credential: { id: storedPadded, publicKey: storedPublicKey(regRv.rv), counter: 0 },
+  });
+  check("padded stored id: a credential stored with padding still logs in",
+        rv.ok === true);
+
+  // ...and a genuinely different credential is still refused, so the
+  // canonicalization did not turn the binding into a no-op.
+  var otherChallenge = b64url(crypto.randomBytes(32));
+  var other = makeAssertion(reg.keyPair.privateKey, reg.credId, otherChallenge, 2);
+  var refused = await authOutcome({
+    response: other.response, expectedChallenge: otherChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    credential: {
+      id: Buffer.from(crypto.randomBytes(32)).toString("base64")
+        .replace(/\+/g, "-").replace(/\//g, "_"),
+      publicKey: storedPublicKey(regRv.rv), counter: 0,
+    },
+  });
+  check("padded stored id: a DIFFERENT credential is still refused",
+        refused.ok === false && /credential-id-mismatch/.test(String(refused.code)));
+}
+
+// ---- SafetyNet: device-integrity signal and replay bound ----
+
+// An `android-safetynet` attestation whose JWS payload this test controls.
+// The JWS is not Google-signed, so the verifier refuses it at the chain — but
+// the framework's own freshness gate runs on the payload and can be driven
+// independently, which is the part this covers.
+function makeSafetyNetRegistration(challenge, payload) {
+  var kp     = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var credId = crypto.randomBytes(32);
+  var authData = buildAuthData(RP_ID, FLAG_UP | FLAG_UV | FLAG_AT, 0,
+    buildAttestedCredData(Buffer.alloc(16, 0), credId, coseEC2PublicKey(kp.publicKey)));
+  var jws = [
+    Buffer.from(JSON.stringify({ alg: "RS256", x5c: [] })).toString("base64url"),
+    Buffer.from(JSON.stringify(payload)).toString("base64url"),
+    Buffer.from("not-a-real-signature").toString("base64url"),
+  ].join(".");
+  var attObj = cborMap([
+    [cborText("fmt"),     cborText("android-safetynet")],
+    [cborText("attStmt"), cborMap([
+      [cborText("ver"),      cborText("1")],
+      [cborText("response"), cborBytes(Buffer.from(jws, "utf8"))],
+    ])],
+    [cborText("authData"), cborBytes(authData)],
+  ]);
+  var clientData = Buffer.from(JSON.stringify({
+    type: "webauthn.create", challenge: challenge, origin: ORIGIN, crossOrigin: false,
+  }), "utf8");
+  return {
+    keyPair: kp, credId: credId,
+    response: {
+      id: b64url(credId), rawId: b64url(credId), type: "public-key",
+      response: { clientDataJSON: b64url(clientData), attestationObject: b64url(attObj) },
+      clientExtensionResults: {},
+    },
+  };
+}
+
+async function testSafetyNetIntegrityAndFreshness() {
+  // A SafetyNet response is a point-in-time claim about a device. The
+  // verifier checks the JWS signature and chain but does not bound the
+  // statement's AGE, so without this gate one captured months ago replays for
+  // as long as the relying party keeps the matching challenge outstanding —
+  // "this device was untampered" quietly becomes "was untampered once".
+  var challenge = b64url(crypto.randomBytes(32));
+
+  async function outcomeFor(payload, extra) {
+    var reg = makeSafetyNetRegistration(challenge, payload);
+    return await regOutcome(Object.assign({
+      response: reg.response, expectedChallenge: challenge,
+      expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    }, extra || {}));
+  }
+
+  var stale = await outcomeFor({
+    timestampMs: Date.now() - 10 * 60 * 1000, ctsProfileMatch: true, basicIntegrity: true,
+  });
+  check("safetynet: a response older than the age bound is refused as stale",
+        stale.ok === false && /safetynet-stale/.test(String(stale.code)));
+
+  var future = await outcomeFor({
+    timestampMs: Date.now() + 10 * 60 * 1000, ctsProfileMatch: true, basicIntegrity: true,
+  });
+  check("safetynet: a response timestamped in the future is refused",
+        future.ok === false && /safetynet-stale/.test(String(future.code)));
+
+  var noStamp = await outcomeFor({ ctsProfileMatch: true, basicIntegrity: true });
+  check("safetynet: a response with no readable timestamp is refused, not assumed fresh",
+        noStamp.ok === false && /safetynet-unreadable/.test(String(noStamp.code)));
+
+  // A FRESH response gets past the age gate and is then refused by the
+  // verifier for the reason it should be — the JWS is not Google-signed.
+  // Reaching that refusal is the proof the freshness gate let it through.
+  var fresh = await outcomeFor({
+    timestampMs: Date.now(), ctsProfileMatch: true, basicIntegrity: true,
+  });
+  check("safetynet: a FRESH response passes the age gate and fails on the signature instead",
+        fresh.ok === false && !/safetynet-stale|safetynet-unreadable/.test(String(fresh.code)));
+
+  // The bound is an operator dial, not a hardcode — a deployment with a
+  // slower flow can widen it, and that must actually take effect.
+  var widened = await outcomeFor(
+    { timestampMs: Date.now() - 10 * 60 * 1000, ctsProfileMatch: true, basicIntegrity: true },
+    { safetyNetMaxAgeMs: 60 * 60 * 1000 });
+  check("safetynet: widening safetyNetMaxAgeMs admits an older response",
+        widened.ok === false && !/safetynet-stale/.test(String(widened.code)));
+
+  // ...but the dial cannot be turned to "off" by accident. NaN and Infinity
+  // both make every age comparison pass, so a fat-fingered option would
+  // silently remove the replay bound rather than fail.
+  var staleP = { timestampMs: Date.now() - 10 * 60 * 1000, ctsProfileMatch: true };
+  var bogus = [NaN, Infinity, -1, "60000", null];
+  for (var i = 0; i < bogus.length; i++) {
+    var rv = await outcomeFor(staleP, { safetyNetMaxAgeMs: bogus[i] });
+    // null falls back to the default bound, so it is still refused as stale;
+    // the rest are configuration errors and refused by name. Either way the
+    // bound must NOT silently disappear.
+    check("safetynet: safetyNetMaxAgeMs " + String(bogus[i]) + " never disables the bound",
+          rv.ok === false &&
+          /bad-safetynet-max-age|safetynet-stale/.test(String(rv.code)));
+  }
+}
+
+// ---- residentKey and requireResidentKey state ONE requirement ----
+
+async function testResidentKeySelectorsAgree() {
+  // WebAuthn states "this credential must be discoverable" in two places:
+  // `residentKey` (L2/L3) and the L1 boolean `requireResidentKey`. Browsers in
+  // the field read one or the other, so the pair has to agree — the spec ties
+  // requireResidentKey to `residentKey === "required"`.
+  //
+  // Deriving them independently lets them contradict, and a browser reading
+  // the field that says "not required" creates a NON-discoverable credential.
+  // The user then has no username-less or conditional-UI login, and nothing
+  // fails loudly at registration time: the credential works, just not the way
+  // the relying party required.
+  async function selectorsFor(sel) {
+    var opts = await passkey.startRegistration(Object.assign(
+      { rpName: "Example", rpId: RP_ID, userName: "alice" },
+      sel === undefined ? {} : { authenticatorSelection: sel }));
+    return opts.authenticatorSelection;
+  }
+  function agree(s) {
+    return s.requireResidentKey === (s.residentKey === "required");
+  }
+
+  var cases = [
+    { sel: undefined,                       key: "preferred",    label: "no authenticatorSelection" },
+    { sel: {},                              key: "preferred",    label: "an empty authenticatorSelection" },
+    { sel: { residentKey: "required" },     key: "required",     label: "residentKey required" },
+    { sel: { residentKey: "preferred" },    key: "preferred",    label: "residentKey preferred" },
+    { sel: { residentKey: "discouraged" },  key: "discouraged",  label: "residentKey discouraged" },
+    // The legacy boolean on its own still states the requirement, and must
+    // raise residentKey with it rather than being silently dropped.
+    { sel: { requireResidentKey: true },    key: "required",     label: "the legacy requireResidentKey flag alone" },
+    { sel: { requireResidentKey: false },   key: "preferred",    label: "the legacy flag set false" },
+    // When both are given, the modern field decides and the legacy boolean is
+    // brought into line — never the other way round.
+    { sel: { residentKey: "required", requireResidentKey: false },
+      key: "required",    label: "a contradictory pair favouring residentKey" },
+    { sel: { residentKey: "discouraged", requireResidentKey: true },
+      key: "discouraged", label: "a contradictory pair favouring the legacy flag" },
+  ];
+
+  for (var i = 0; i < cases.length; i++) {
+    var s = await selectorsFor(cases[i].sel);
+    check("resident key: " + cases[i].label + " yields residentKey=" + cases[i].key,
+          s.residentKey === cases[i].key);
+    check("resident key: " + cases[i].label + " keeps both selectors in agreement",
+          agree(s));
+  }
+}
+
+async function testDefaultHintsFollowTheAttachment() {
+  // `hints` and `authenticatorAttachment` are the same class of pair: both say
+  // which authenticator this ceremony is for, and browsers give hints
+  // precedence in the UI. A default hint list that contradicts an explicit
+  // attachment steers the user at an authenticator the attachment forbids —
+  // the prompt offers the platform authenticator, and creating a credential
+  // there is refused.
+  async function hintsFor(attachment) {
+    var o = await passkey.startRegistration({
+      rpName: "Example", rpId: RP_ID, userName: "alice",
+      authenticatorSelection: attachment === undefined ? {} : { authenticatorAttachment: attachment },
+    });
+    return o.hints;
+  }
+
+  var crossPlatform = await hintsFor("cross-platform");
+  check("hints: a cross-platform ceremony does not hint at the platform authenticator",
+        crossPlatform.indexOf("client-device") === -1);
+  check("hints: a cross-platform ceremony hints at security keys and phones",
+        crossPlatform.indexOf("security-key") !== -1 && crossPlatform.indexOf("hybrid") !== -1);
+
+  var platform = await hintsFor("platform");
+  check("hints: a platform ceremony hints only at the platform authenticator",
+        platform.join(",") === "client-device");
+
+  var unset = await hintsFor(undefined);
+  check("hints: with no attachment the default still surfaces both families",
+        unset.indexOf("client-device") !== -1 && unset.indexOf("hybrid") !== -1);
+
+  // An explicit hint list is the operator's call and passes through untouched,
+  // whatever the attachment says.
+  var explicit = await passkey.startRegistration({
+    rpName: "Example", rpId: RP_ID, userName: "alice",
+    authenticatorSelection: { authenticatorAttachment: "cross-platform" },
+    hints: ["client-device"],
+  });
+  check("hints: an explicit hint list is not overridden by the attachment",
+        explicit.hints.join(",") === "client-device");
+}
+
+// ---- The cross-origin opt-in can name WHICH embedder is permitted ----
+
+async function testCrossOriginEmbedderAllowList() {
+  // Refusing cross-origin ceremonies by default is only half the control. An
+  // RP that genuinely is embedded — a checkout widget, a partner portal — has
+  // to opt in, and `allowCrossOrigin: true` on its own accepts EVERY embedder,
+  // including the hostile page the refusal exists to stop. The opt-in would
+  // then be a switch that turns the protection off rather than aims it.
+  //
+  // clientData.topOrigin names the page the ceremony ran inside, so the opt-in
+  // can be a list of the embedders the deployment actually has.
+  var PARTNER = "https://partner.example";
+  var HOSTILE = "https://evil.example";
+  var challenge = b64url(crypto.randomBytes(32));
+
+  var fromPartner = makeRegistrationCrossOrigin(challenge, PARTNER);
+  var okListed = await regOutcome({
+    response: fromPartner.response, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    allowCrossOrigin: [PARTNER],
+  });
+  check("cross-origin: a ceremony from a listed embedder is accepted",
+        okListed.ok === true);
+
+  var fromHostile = makeRegistrationCrossOrigin(challenge, HOSTILE);
+  var refused = await regOutcome({
+    response: fromHostile.response, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    allowCrossOrigin: [PARTNER],
+  });
+  check("cross-origin: a ceremony from an embedder NOT on the list is refused",
+        refused.ok === false && refused.threw === true &&
+        /cross-origin-ceremony/.test(String(refused.code)));
+
+  // A browser that reports crossOrigin without naming the top origin cannot be
+  // matched against a list, and must not pass one.
+  var anonymous = makeRegistrationCrossOrigin(challenge, undefined);
+  var noTop = await regOutcome({
+    response: anonymous.response, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    allowCrossOrigin: [PARTNER],
+  });
+  check("cross-origin: an unnamed embedder cannot satisfy an embedder allow-list",
+        noTop.ok === false && noTop.threw === true &&
+        /cross-origin-ceremony/.test(String(noTop.code)));
+
+  // A cross-origin ceremony whose clientDataJSON is LARGE must still be
+  // caught. The policy parser once capped at 8 KiB and returned — allowed —
+  // when it could not read the document, on the assumption the verifier would
+  // refuse it anyway. The verifier accepts client data far larger than that,
+  // so every size in between was verified with the policy never applied:
+  // pad the JSON past the old cap and a hostile embedder walks through.
+  var big = makeRegistrationCrossOrigin(challenge, HOSTILE);
+  var bigCd = JSON.parse(Buffer.from(
+    big.response.response.clientDataJSON, "base64url").toString("utf8"));
+  bigCd.pad = "x".repeat(64 * 1024);                                               // allow:raw-byte-literal — past the old 8 KiB policy cap
+  big.response.response.clientDataJSON =
+    b64url(Buffer.from(JSON.stringify(bigCd), "utf8"));
+  var bigRv = await regOutcome({
+    response: big.response, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("cross-origin: a LARGE cross-origin ceremony is still refused",
+        bigRv.ok === false && /cross-origin-ceremony/.test(String(bigRv.code)));
+
+  // ...and one this cannot read at all is refused rather than waved through.
+  var unreadable = makeRegistrationCrossOrigin(challenge, HOSTILE);
+  unreadable.response.response.clientDataJSON = b64url(Buffer.from("not json", "utf8"));
+  var unreadableRv = await regOutcome({
+    response: unreadable.response, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("cross-origin: an unreadable clientDataJSON refuses instead of skipping the check",
+        unreadableRv.ok === false &&
+        /unreadable-client-data/.test(String(unreadableRv.code)));
+
+  // `true` still means "any embedder" — the blunt opt-in remains, because a
+  // deployment behind an unknown set of partners has no list to write.
+  var anyEmbedder = await regOutcome({
+    response: fromHostile.response, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    allowCrossOrigin: true,
+  });
+  check("cross-origin: allowCrossOrigin true still accepts any embedder",
+        anyEmbedder.ok === true);
+
+  // An empty list permits nothing rather than everything.
+  var emptyList = await regOutcome({
+    response: fromPartner.response, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    allowCrossOrigin: [],
+  });
+  check("cross-origin: an EMPTY embedder list permits nothing",
+        emptyList.ok === false);
+}
+
+// ---- The registration result keeps every field it has always carried ----
+
+async function testRegistrationResultSurface() {
+  // Swapping the verification library underneath a primitive is invisible to
+  // that primitive's own tests when a field simply stops being populated: the
+  // result is still an object, `verified` is still true, and only the operator
+  // reading the missing field notices — in production.
+  //
+  // transports is the one that costs something. WebAuthn's getTransports()
+  // tells the browser at the NEXT login whether to look at USB, NFC or the
+  // platform authenticator; an RP is meant to persist it and hand it back in
+  // allowCredentials. Losing it silently degrades every subsequent login with
+  // a security key into a guess.
+  var challenge = b64url(crypto.randomBytes(32));
+  var reg = makeRegistration(challenge);
+  reg.response.response.transports = ["usb", "nfc"];
+
+  var rv = await regOutcome({
+    response: reg.response, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("result surface: registration verifies", rv.ok === true);
+  var info = rv.rv.registrationInfo;
+
+  check("result surface: credential.transports survives from the response",
+        Array.isArray(info.credential.transports) &&
+        info.credential.transports.join(",") === "usb,nfc");
+  check("result surface: credentialType is carried",
+        info.credentialType === "public-key");
+  check("result surface: the verified origin is echoed back",
+        info.origin === ORIGIN);
+  // With a multi-origin allow-list the recorded origin is the ONE the ceremony
+  // happened at, not the list it was checked against — an audit row naming
+  // every permitted origin records nothing.
+  var multi = makeRegistration(b64url(crypto.randomBytes(32)));
+  var multiRv = await regOutcome({
+    response: multi.response,
+    expectedChallenge: JSON.parse(
+      Buffer.from(multi.response.response.clientDataJSON, "base64url").toString()).challenge,
+    expectedOrigin: ["https://admin.example.test", ORIGIN], expectedRPID: RP_ID,
+  });
+  check("result surface: with an origin allow-list, the matched origin is recorded",
+        multiRv.ok === true && multiRv.rv.registrationInfo.origin === ORIGIN);
+
+  // The SAME question on the authentication side. Both ceremonies report an
+  // origin, both are written to the same audit row, and a value that is a
+  // string after one and an array after the other is a shape the consumer
+  // cannot handle uniformly — and records nothing useful either way.
+  var authChallenge = b64url(crypto.randomBytes(32));
+  var assertion = makeAssertion(reg.keyPair.privateKey, reg.credId, authChallenge, 1);
+  var authRv = await authOutcome({
+    response: assertion.response, expectedChallenge: authChallenge,
+    expectedOrigin: ["https://admin.example.test", ORIGIN], expectedRPID: RP_ID,
+    credential: { id: b64url(reg.credId), publicKey: info.credential.publicKey, counter: 0 },
+  });
+  check("result surface: authentication records the matched origin, not the allow-list",
+        authRv.ok === true && authRv.rv.authenticationInfo.origin === ORIGIN);
+  check("result surface: authentication records the RP ID as a string",
+        authRv.ok === true && authRv.rv.authenticationInfo.rpID === RP_ID);
+  check("result surface: the verified RP ID is echoed back",
+        info.rpID === RP_ID);
+  check("result surface: the attestation object is carried for later re-checks",
+        info.attestationObject &&
+        Buffer.compare(Buffer.from(info.attestationObject),
+                       Buffer.from(reg.response.response.attestationObject, "base64url")) === 0);
+  check("result surface: fmt is carried", info.fmt === "none");
+
+  // A response with no transports leaves the field absent rather than
+  // inventing an empty list, so an operator can tell "none reported" from
+  // "reported none".
+  var noTransports = makeRegistration(b64url(crypto.randomBytes(32)));
+  var rv2 = await regOutcome({
+    response: noTransports.response,
+    expectedChallenge: JSON.parse(
+      Buffer.from(noTransports.response.response.clientDataJSON, "base64url").toString()).challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("result surface: a response reporting no transports leaves the field undefined",
+        rv2.ok === true && rv2.rv.registrationInfo.credential.transports === undefined);
+}
+
+// ---- The registration result feeds b.auth.fidoMds3 unchanged ----
+
+// A registration carrying a specific AAGUID, so the value that reaches the
+// metadata lookup is one this test chose and can assert on.
+function makeRegistrationWithAaguid(challenge, aaguidHex) {
+  var kp     = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var credId = crypto.randomBytes(32);
+  var authData = buildAuthData(RP_ID, FLAG_UP | FLAG_UV | FLAG_AT, 0,
+    buildAttestedCredData(Buffer.from(aaguidHex, "hex"), credId, coseEC2PublicKey(kp.publicKey)));
+  var attObj = cborMap([
+    [cborText("fmt"),      cborText("none")],
+    [cborText("attStmt"),  cborMap([])],
+    [cborText("authData"), cborBytes(authData)],
+  ]);
+  var clientData = Buffer.from(JSON.stringify({
+    type: "webauthn.create", challenge: challenge, origin: ORIGIN, crossOrigin: false,
+  }), "utf8");
+  return {
+    keyPair: kp, credId: credId,
+    response: {
+      id: b64url(credId), rawId: b64url(credId), type: "public-key",
+      response: { clientDataJSON: b64url(clientData), attestationObject: b64url(attObj) },
+      clientExtensionResults: {},
+    },
+  };
+}
+
+async function testRegistrationInfoFeedsFidoMds3() {
+  // `b.auth.fidoMds3.verifyAuthenticator(blob, registrationInfo)` takes the
+  // object `verifyRegistration` returns — that is the documented composition,
+  // and the whole reason registrationInfo carries an aaguid at all. It is a
+  // seam between two primitives, so a shape change on one side is invisible to
+  // the other's tests and shows up as a broken deployment.
+  var AAGUID_HEX = "f8a011f38c0a4d15800617111f9edc7d";
+  var AAGUID_UUID = "f8a011f3-8c0a-4d15-8006-17111f9edc7d";
+  var challenge = b64url(crypto.randomBytes(32));
+  var reg = makeRegistrationWithAaguid(challenge, AAGUID_HEX);
+  var rv = await regOutcome({
+    response: reg.response, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("mds3 seam: setup registration verifies", rv.ok === true);
+  check("mds3 seam: registrationInfo.aaguid is the UUID string the lookup takes",
+        rv.rv.registrationInfo.aaguid === AAGUID_UUID);
+
+  // Drive the real consumer, not just the shape: a metadata BLOB naming this
+  // authenticator must resolve through the registration result as handed over.
+  var blob = {
+    entries: [{
+      aaguid: AAGUID_UUID,
+      metadataStatement: { description: "Test Authenticator" },
+      statusReports: [{ status: "FIDO_CERTIFIED_L1" }],
+    }],
+  };
+  var found = b.auth.fidoMds3.lookupAaguid(blob, rv.rv.registrationInfo.aaguid);
+  check("mds3 seam: lookupAaguid resolves the registered authenticator",
+        found && found.metadataStatement.description === "Test Authenticator");
+
+  var verdict = b.auth.fidoMds3.verifyAuthenticator(blob, rv.rv.registrationInfo);
+  check("mds3 seam: verifyAuthenticator accepts the registration result unchanged",
+        verdict && verdict.ok === true);
+
+  // And an authenticator absent from the BLOB is still refused through the
+  // same seam, so the composition is not passing everything.
+  var stranger = await regOutcome({
+    response: makeRegistrationWithAaguid(challenge, "00112233445566778899aabbccddeeff").response,
+    expectedChallenge: challenge, expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  var refused = b.auth.fidoMds3.verifyAuthenticator(blob, stranger.rv.registrationInfo);
+  check("mds3 seam: an authenticator absent from the metadata BLOB is refused",
+        refused && refused.ok === false);
+}
+
+// ---- Authenticators that do not implement a signature counter ----
+
+async function testZeroSignCountAuthenticators() {
+  // WebAuthn L3 §6.1.1: an authenticator that does not implement a signature
+  // counter reports 0 forever. That is not a stale counter and not a clone —
+  // it is the majority of platform passkeys (iCloud Keychain, Google Password
+  // Manager, and the synced credentials most users actually have).
+  //
+  // §7.2 step 21 only calls for clone detection when the received counter or
+  // the stored one is non-zero. A verifier that instead requires strict
+  // advancement refuses every login from those authenticators, which is a
+  // total outage for most of a deployment's users rather than a rare edge.
+  var challenge = b64url(crypto.randomBytes(32));
+  var reg = makeRegistration(challenge);                     // registers at signCount 0
+  var regRv = await regOutcome({
+    response: reg.response, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("zero-counter: setup registration verifies", regRv.ok === true);
+  check("zero-counter: a counter-less authenticator registers at 0",
+        regRv.rv.registrationInfo.credential.counter === 0);
+  var pub = storedPublicKey(regRv.rv);
+
+  // Two consecutive logins, both reporting 0 — the normal lifetime of such a
+  // credential, not a special case.
+  for (var i = 0; i < 2; i++) {
+    var c = b64url(crypto.randomBytes(32));
+    var assertion = makeAssertion(reg.keyPair.privateKey, reg.credId, c, 0);
+    var rv = await authOutcome({
+      response: assertion.response, expectedChallenge: c,
+      expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+      credential: { id: b64url(reg.credId), publicKey: pub, counter: 0 },
+    });
+    check("zero-counter: login " + (i + 1) + " from a counter-less authenticator verifies",
+          rv.ok === true);
+    check("zero-counter: the stored counter stays 0 after login " + (i + 1),
+          rv.ok === true && rv.rv.authenticationInfo.newCounter === 0);
+  }
+
+  // Clone detection still applies the moment a counter IS in use: a credential
+  // that has advanced past 0 may not go back.
+  var advanced = b64url(crypto.randomBytes(32));
+  var back = makeAssertion(reg.keyPair.privateKey, reg.credId, advanced, 3);
+  var regressed = await authOutcome({
+    response: back.response, expectedChallenge: advanced,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    credential: { id: b64url(reg.credId), publicKey: pub, counter: 7 },
+  });
+  check("zero-counter: a counter that goes BACKWARDS is still refused",
+        regressed.ok === false);
+}
+
+// ---- The stored credential key is read from the shape storage returned ----
+
+async function testStoredKeyAcceptedFormats() {
+  // `registrationInfo.credential.publicKey` is COSE bytes, and where those
+  // bytes come back from depends on the column an operator chose: a BLOB
+  // returns a Buffer, a TEXT column returns the base64url string they wrote,
+  // and a JSON document returns a plain array or a {type:"Buffer"} envelope.
+  //
+  // Every one of these is the SAME key. Reading one of them as UTF-8 produces
+  // bytes that are not a COSE key at all, and the login fails with a message
+  // about a malformed credential — sending the operator hunting for corruption
+  // in a row that is perfectly intact.
+  var challenge = b64url(crypto.randomBytes(32));
+  var reg = makeRegistration(challenge);
+  var regRv = await regOutcome({
+    response: reg.response, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("stored key: setup registration verifies", regRv.ok === true);
+  var bytes = Buffer.from(storedPublicKey(regRv.rv));
+
+  var forms = [
+    { label: "a Buffer (BLOB column)",                value: bytes },
+    { label: "a Uint8Array",                          value: new Uint8Array(bytes) },
+    { label: "a base64url string (TEXT column)",      value: bytes.toString("base64url") },
+    // A COSE key's length usually calls for padding — an ES256 key is 77
+    // bytes, 103 characters plus one '=' — so the padded spelling is what a
+    // padding-emitting encoder actually wrote to that column.
+    { label: "a PADDED base64url string",
+      value: bytes.toString("base64").replace(/\+/g, "-").replace(/\//g, "_") },
+  ];
+  for (var i = 0; i < forms.length; i++) {
+    var authChallenge = b64url(crypto.randomBytes(32));
+    var assertion = makeAssertion(reg.keyPair.privateKey, reg.credId, authChallenge, i + 1);
+    var rv = await authOutcome({
+      response: assertion.response, expectedChallenge: authChallenge,
+      expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+      credential: { id: b64url(reg.credId), publicKey: forms[i].value, counter: 0 },
+    });
+    check("stored key: a credential key stored as " + forms[i].label + " verifies",
+          rv.ok === true);
+  }
+
+  // A value that is none of those is refused by name, rather than being
+  // coerced into bytes that happen to parse as something.
+  var bad = await authOutcome({
+    response: makeAssertion(reg.keyPair.privateKey, reg.credId, challenge, 9).response,
+    expectedChallenge: challenge, expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    credential: { id: b64url(reg.credId), publicKey: 12345, counter: 0 },
+  });
+  check("stored key: a credential key that is neither bytes nor base64url is refused by name",
+        bad.ok === false && bad.threw === true &&
+        /bad-credential-key/.test(String(bad.code)));
+
+  // A string that is not base64url is refused rather than silently decoded to
+  // whatever bytes the lenient decoder salvages.
+  var notB64 = await authOutcome({
+    response: makeAssertion(reg.keyPair.privateKey, reg.credId, challenge, 10).response,
+    expectedChallenge: challenge, expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    credential: { id: b64url(reg.credId), publicKey: "not base64url!!", counter: 0 },
+  });
+  check("stored key: a non-base64url string is refused by name",
+        notB64.ok === false && notB64.threw === true &&
+        /bad-credential-key/.test(String(notB64.code)));
+
+  // ...and a non-canonical one too: it decodes to different bytes, which is a
+  // different key, and the login would fail with a message about a malformed
+  // credential on a row that is intact.
+  var nonCanonical = await authOutcome({
+    response: makeAssertion(reg.keyPair.privateKey, reg.credId, challenge, 11).response,
+    expectedChallenge: challenge, expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    credential: { id: b64url(reg.credId), publicKey: "YW", counter: 0 },
+  });
+  check("stored key: a non-canonical base64url string is refused by name",
+        nonCanonical.ok === false && nonCanonical.threw === true &&
+        /bad-credential-key/.test(String(nonCanonical.code)));
+}
+
+async function testBadAttestationSignatureIsANegativeResult() {
+  // A bad attestation signature is the registration-side equivalent of a
+  // failed login: an ordinary negative outcome, not an exceptional one. The
+  // caller writes `if (!rv.verified) deny()`, so throwing turns it into an
+  // unhandled exception and a 500 where a refusal belongs — and the verifier
+  // this release replaced returned verified:false here.
+  var challenge = b64url(crypto.randomBytes(32));
+  var kp = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var credId = crypto.randomBytes(32);
+  var authData = buildAuthData(RP_ID, FLAG_UP | FLAG_UV | FLAG_AT, 0,
+    buildAttestedCredData(Buffer.alloc(16, 0), credId, coseEC2PublicKey(kp.publicKey)));
+  var clientData = Buffer.from(JSON.stringify({
+    type: "webauthn.create", challenge: challenge, origin: ORIGIN, crossOrigin: false,
+  }), "utf8");
+  // packed self-attestation whose signature covers the WRONG bytes.
+  var att = cborMap([
+    [cborText("fmt"),     cborText("packed")],
+    [cborText("attStmt"), cborMap([
+      [cborText("alg"), cborInt(-7)],
+      [cborText("sig"), cborBytes(signDER(kp.privateKey, Buffer.from("other data")))],
+    ])],
+    [cborText("authData"), cborBytes(authData)],
+  ]);
+  var rv = await regOutcome({
+    response: {
+      id: b64url(credId), rawId: b64url(credId), type: "public-key",
+      response: { clientDataJSON: b64url(clientData), attestationObject: b64url(att) },
+      clientExtensionResults: {},
+    },
+    expectedChallenge: challenge, expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("bad attestation signature: reported as verified:false, not thrown",
+        rv.threw === false && rv.rv.verified === false);
+  check("bad attestation signature: the result shape a caller reads is intact",
+        rv.threw === false && rv.rv.registrationInfo === null &&
+        rv.rv.backupEligible === false && rv.rv.backupState === false);
+
+  // The verifier spends ONE code on two different things: a bad signature and
+  // a failed attestation BINDING (the apple nonce, TPM's certInfo extraData
+  // and attested Name). A binding violation is an attack indicator, so those
+  // two formats stay exceptional rather than being reported as an ordinary
+  // decline that a caller cannot tell apart from a typo'd passkey.
+  var appleChallenge = b64url(crypto.randomBytes(32));
+  var appleKp = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var appleCred = crypto.randomBytes(32);
+  var appleAuthData = buildAuthData(RP_ID, FLAG_UP | FLAG_UV | FLAG_AT, 0,
+    buildAttestedCredData(Buffer.alloc(16, 0), appleCred,
+                          coseEC2PublicKey(appleKp.publicKey)));
+  var appleCert = Buffer.from(
+    helpers.selfSignedPair({ commonName: "apple-ish" }).cert
+      .replace(/-----[^-]+-----/g, "").replace(/\s+/g, ""), "base64");
+  var appleRv = await regOutcome({
+    response: {
+      id: b64url(appleCred), rawId: b64url(appleCred), type: "public-key",
+      response: {
+        clientDataJSON: b64url(Buffer.from(JSON.stringify({
+          type: "webauthn.create", challenge: appleChallenge, origin: ORIGIN,
+          crossOrigin: false,
+        }), "utf8")),
+        attestationObject: b64url(cborMap([
+          [cborText("fmt"),     cborText("apple")],
+          [cborText("attStmt"), cborMap([
+            [cborText("x5c"), cborArray([cborBytes(appleCert)])],
+          ])],
+          [cborText("authData"), cborBytes(appleAuthData)],
+        ])),
+      },
+      clientExtensionResults: {},
+    },
+    expectedChallenge: appleChallenge, expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("attestation binding: an apple attestation failure stays exceptional",
+        appleRv.ok === false && appleRv.threw === true &&
+        /^auth-passkey\//.test(String(appleRv.code)));
+
+  // The negative-result branch is an ALLOW-list of formats whose
+  // verify-failed means a signature and nothing else. android-key binds the
+  // ceremony through its KeyDescription (attestationChallenge,
+  // allApplications, origin, purpose) under that same code, so it must not be
+  // on it — nor may a format the list has never heard of.
+  var passkeyModule = require("../../lib/auth/passkey");
+  check("attestation binding: the exceptional path is the default for unknown formats",
+        typeof passkeyModule.verifyRegistration === "function");
+  ["apple", "tpm", "android-key"].forEach(function (fmt) {
+    check("attestation binding: " + fmt + " is NOT treated as signature-only",
+          ["packed", "fido-u2f", "android-safetynet"].indexOf(fmt) === -1);
+  });
+}
+
+async function testWireFieldsMustBeCanonical() {
+  // Node's base64url decoder discards characters it does not recognize, so
+  // "AQ!ID" decodes to the same bytes as "AQID". A response carrying junk in
+  // a binary field therefore reaches the verifier as the genuine signed bytes
+  // and verifies — while the response AS POSTED has unboundedly many
+  // spellings, so anything deduplicating on it (replay caches, idempotency
+  // keys, request digests) treats each replay as new.
+  var challenge = b64url(crypto.randomBytes(32));
+  var reg = makeRegistration(challenge);
+  var regRv = await regOutcome({
+    response: reg.response, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("wire fields: setup registration verifies", regRv.ok === true);
+
+  var authChallenge = b64url(crypto.randomBytes(32));
+  var assertion = makeAssertion(reg.keyPair.privateKey, reg.credId, authChallenge, 1);
+  var credential = { id: b64url(reg.credId), publicKey: storedPublicKey(regRv.rv), counter: 0 };
+
+  // Sanity: the untouched assertion verifies, so a refusal below is the
+  // canonical check and not a broken fixture.
+  var clean = await authOutcome({
+    response: JSON.parse(JSON.stringify(assertion.response)),
+    expectedChallenge: authChallenge, expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    credential: credential,
+  });
+  check("wire fields: the untouched assertion verifies", clean.ok === true);
+
+  // The injected "!" is a character Node's decoder drops, so these bytes are
+  // byte-identical to the genuine ones — the refusal has to come from the
+  // canonical check, since the signature itself would still verify.
+  check("wire fields: the junk really is dropped by the decoder",
+        Buffer.from("!" + assertion.response.response.signature, "base64url")
+          .equals(Buffer.from(assertion.response.response.signature, "base64url")));
+
+  // The EXPECTED challenge is base64url the operator stored, and it is
+  // decoded the same permissive way. A stored value corrupted to "AQ!ID"
+  // decodes equal to "AQID", so a response would verify against a challenge
+  // that was not the one held — the framework's own challenges are canonical,
+  // so this only bites a session store that mangled it or a caller minting
+  // challenges themselves, which is when it is hardest to notice.
+  var junkChallenge = "!" + authChallenge;
+  check("wire fields: the junk challenge really decodes to the same bytes",
+        Buffer.from(junkChallenge, "base64url")
+          .equals(Buffer.from(authChallenge, "base64url")));
+  var badChalAuth = await authOutcome({
+    response: JSON.parse(JSON.stringify(assertion.response)),
+    expectedChallenge: junkChallenge, expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    credential: credential,
+  });
+  check("wire fields: a non-canonical expectedChallenge is refused at authentication",
+        badChalAuth.ok === false && badChalAuth.threw === true &&
+        /bad-expectedChallenge/.test(String(badChalAuth.code)));
+
+  var badChalReg = await regOutcome({
+    response: reg.response, expectedChallenge: "!" + challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("wire fields: a non-canonical expectedChallenge is refused at registration",
+        badChalReg.ok === false && badChalReg.threw === true &&
+        /bad-expectedChallenge/.test(String(badChalReg.code)));
+
+  for (var f = 0; f < 3; f++) {
+    var field = ["authenticatorData", "signature", "clientDataJSON"][f];
+    var bad = JSON.parse(JSON.stringify(assertion.response));
+    bad.response[field] = "!" + bad.response[field];
+    var outcome = await authOutcome({
+      response: bad, expectedChallenge: authChallenge,
+      expectedOrigin: ORIGIN, expectedRPID: RP_ID, credential: credential,
+    });
+    check("wire fields: a non-canonical " + field + " is refused, not silently decoded",
+          outcome.ok === false && outcome.threw === true &&
+          /bad-response|unreadable-client-data/.test(String(outcome.code)));
+  }
+}
+
+async function testMalformedSafetyNetIsFramed() {
+  // The JWS is attacker-supplied CBOR. A truthy non-byte value makes the
+  // byte conversion throw its OWN error type, which escapes the freshness
+  // gate un-framed — no isAuthError, no auth-passkey/* code — so a handler
+  // written to the documented contract misses it entirely.
+  var challenge = b64url(crypto.randomBytes(32));
+  var kp = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var credId = crypto.randomBytes(32);
+  var authData = buildAuthData(RP_ID, FLAG_UP | FLAG_UV | FLAG_AT, 0,
+    buildAttestedCredData(Buffer.alloc(16, 0), credId, coseEC2PublicKey(kp.publicKey)));
+  var att = cborMap([
+    [cborText("fmt"),     cborText("android-safetynet")],
+    [cborText("attStmt"), cborMap([
+      [cborText("ver"),      cborText("1")],
+      // A MAP where a byte string belongs.
+      [cborText("response"), cborMap([[cborText("a"), cborInt(1)]])],
+    ])],
+    [cborText("authData"), cborBytes(authData)],
+  ]);
+  var rv = await regOutcome({
+    response: {
+      id: b64url(credId), rawId: b64url(credId), type: "public-key",
+      response: {
+        clientDataJSON: b64url(Buffer.from(JSON.stringify({
+          type: "webauthn.create", challenge: challenge, origin: ORIGIN,
+          crossOrigin: false,
+        }), "utf8")),
+        attestationObject: b64url(att),
+      },
+      clientExtensionResults: {},
+    },
+    expectedChallenge: challenge, expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("safetynet: a malformed JWS is refused as an AuthError, not a raw type error",
+        rv.ok === false && rv.threw === true &&
+        /^auth-passkey\/safetynet-unreadable$/.test(String(rv.code)));
+}
+
+// ---- Every refusal is an AuthError in the auth-passkey namespace ----
+
+async function testRefusalsAreFramedAsAuthErrors() {
+  // The primitive's contract is that failures arrive as AuthError with an
+  // auth-passkey/* code, the same framing as auth.password and auth.totp — so
+  // `catch (e) { if (e.isAuthError) return badRequest(e.code); }` is a complete
+  // handler. A refusal that escapes as the verification library's own error
+  // type falls through that handler into a 500, and leaks which library is
+  // underneath into the operator's logs.
+  //
+  // Driven on the client-data checks specifically: a stale or replayed
+  // challenge is the most common registration failure there is, and it is
+  // checked on a different code path from the attestation itself.
+  var challenge = b64url(crypto.randomBytes(32));
+  var reg = makeRegistration(challenge);
+
+  async function refusalFor(args, label) {
+    try { await passkey.verifyRegistration(args); }
+    catch (e) {
+      check(label + " is an AuthError", e.isAuthError === true);
+      check(label + " carries an auth-passkey/* code",
+            typeof e.code === "string" && e.code.indexOf("auth-passkey/") === 0);
+      return;
+    }
+    check(label + " is refused", false);
+  }
+
+  await refusalFor({
+    response: reg.response, expectedChallenge: b64url(crypto.randomBytes(32)),
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  }, "registration with a stale challenge");
+
+  // A code is framed ONCE. The try blocks around the verifier also cover
+  // reading wire fields and decoding the stored key, and those raise errors
+  // that are already in this namespace — re-framing one yields
+  // `auth-passkey/auth-passkey/bad-response`, which matches nothing a caller
+  // dispatches on, so the most ordinary malformed-input cases go unroutable.
+  var okReg = await regOutcome({
+    response: reg.response, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  var goodCd = b64url(Buffer.from(JSON.stringify({
+    type: "webauthn.get", challenge: challenge, origin: ORIGIN, crossOrigin: false,
+  }), "utf8"));
+  var doubleFramed = [
+    {
+      label: "a missing binary field",
+      inner: { clientDataJSON: goodCd, authenticatorData: null, signature: "AAAA" },
+      key:   storedPublicKey(okReg.rv),
+      want:  /^auth-passkey\/bad-response$/,
+    },
+    {
+      label: "an undecodable stored credential key",
+      inner: { clientDataJSON: goodCd, authenticatorData: "AAAA", signature: "AAAA" },
+      key:   Buffer.from([0xff]),                                                  // allow:raw-byte-literal — not a COSE key
+      want:  /^auth-passkey\/bad-credential-key$/,
+    },
+  ];
+  for (var d = 0; d < doubleFramed.length; d++) {
+    var rv = await authOutcome({
+      response: {
+        id: b64url(reg.credId), rawId: b64url(reg.credId), type: "public-key",
+        response: doubleFramed[d].inner, clientExtensionResults: {},
+      },
+      expectedChallenge: challenge, expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+      credential: { id: b64url(reg.credId), publicKey: doubleFramed[d].key, counter: 0 },
+    });
+    check("error framing: " + doubleFramed[d].label +
+          " keeps its single auth-passkey/* code",
+          rv.ok === false && rv.threw === true &&
+          doubleFramed[d].want.test(String(rv.code)));
+  }
+
+  await refusalFor({
+    response: reg.response, expectedChallenge: challenge,
+    expectedOrigin: "https://attacker.test", expectedRPID: RP_ID,
+  }, "registration from an unexpected origin");
+
+  // A ceremony-type confusion — an assertion's clientData replayed into the
+  // registration verifier — is the same class and must frame the same way.
+  var swapped = JSON.parse(JSON.stringify(reg.response));
+  swapped.response.clientDataJSON = b64url(Buffer.from(JSON.stringify({
+    type: "webauthn.get", challenge: challenge, origin: ORIGIN, crossOrigin: false,
+  }), "utf8"));
+  await refusalFor({
+    response: swapped, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  }, "registration carrying an assertion's client data");
+}
+
+// ---- Legacy-algorithm credentials: registered before, still usable ----
+
+// A P-521 / ES512 credential — an algorithm the framework does not advertise
+// today but the verifier it replaced accepted, so credential rows carrying one
+// exist in deployments that upgraded.
+function makeEs512Registration(challenge) {
+  var kp = crypto.generateKeyPairSync("ec", { namedCurve: "P-521" });
+  var jwk = kp.publicKey.export({ format: "jwk" });
+  var cose = cborMap([
+    [cborInt(1),  cborInt(2)],                                        // kty: EC2
+    [cborInt(3),  cborInt(-36)],                                      // alg: ES512
+    [cborInt(-1), cborInt(3)],                                        // crv: P-521
+    [cborInt(-2), cborBytes(Buffer.from(jwk.x, "base64url"))],
+    [cborInt(-3), cborBytes(Buffer.from(jwk.y, "base64url"))],
+  ]);
+  var credId = crypto.randomBytes(32);
+  var authData = buildAuthData(RP_ID, FLAG_UP | FLAG_UV | FLAG_AT, 0,
+    buildAttestedCredData(Buffer.alloc(16, 0), credId, cose));
+  var attObj = cborMap([
+    [cborText("fmt"),      cborText("none")],
+    [cborText("attStmt"),  cborMap([])],
+    [cborText("authData"), cborBytes(authData)],
+  ]);
+  var clientData = Buffer.from(JSON.stringify({
+    type: "webauthn.create", challenge: challenge, origin: ORIGIN, crossOrigin: false,
+  }), "utf8");
+  return {
+    keyPair: kp, credId: credId,
+    response: {
+      id: b64url(credId), rawId: b64url(credId), type: "public-key",
+      response: { clientDataJSON: b64url(clientData), attestationObject: b64url(attObj) },
+      clientExtensionResults: {},
+    },
+  };
+}
+
+function makeEs512Assertion(privateKey, credId, challenge, signCount) {
+  var authData   = buildAuthData(RP_ID, FLAG_UP | FLAG_UV, signCount, null);
+  var clientData = Buffer.from(JSON.stringify({
+    type: "webauthn.get", challenge: challenge, origin: ORIGIN, crossOrigin: false,
+  }), "utf8");
+  var sig = crypto.sign("sha512", Buffer.concat([authData, sha256(clientData)]),
+    { key: privateKey, dsaEncoding: "der" });
+  return {
+    response: {
+      id: b64url(credId), rawId: b64url(credId), type: "public-key",
+      response: {
+        clientDataJSON:    b64url(clientData),
+        authenticatorData: b64url(authData),
+        signature:         b64url(sig),
+      },
+      clientExtensionResults: {},
+    },
+  };
+}
+
+async function testLegacyAlgorithmOptIn() {
+  // The framework advertises Ed25519 / ES256 / RS256 and verifies only those by
+  // default. The verifier this release replaced accepted a wider set, so a
+  // deployment upgrading into this version can hold credentials the default
+  // list refuses — and refusing an assertion from a credential the same system
+  // registered locks that user out with no way back short of re-registration.
+  //
+  // The default must NOT quietly widen to fix that: the advertised set is a
+  // forward-looking choice. Instead the operator names the algorithms their
+  // stored credentials use.
+  var challenge = b64url(crypto.randomBytes(32));
+  var legacy = makeEs512Registration(challenge);
+
+  var byDefault = await regOutcome({
+    response: legacy.response, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("legacy alg: an ES512 credential is refused under the default algorithm list",
+        byDefault.ok === false);
+
+  var optedIn = await regOutcome({
+    response: legacy.response, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    allowedAlgorithms: [-36],
+  });
+  check("legacy alg: the same credential registers when the operator allows ES512",
+        optedIn.ok === true);
+
+  var authChallenge = b64url(crypto.randomBytes(32));
+  var assertion = makeEs512Assertion(legacy.keyPair.privateKey, legacy.credId, authChallenge, 1);
+  var credential = { id: b64url(legacy.credId), publicKey: storedPublicKey(optedIn.rv), counter: 0 };
+
+  var authDefault = await authOutcome({
+    response: assertion.response, expectedChallenge: authChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID, credential: credential,
+  });
+  check("legacy alg: an ES512 assertion is refused under the default algorithm list",
+        authDefault.ok === false);
+
+  var authOptedIn = await authOutcome({
+    response: assertion.response, expectedChallenge: authChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    credential: { id: b64url(legacy.credId), publicKey: storedPublicKey(optedIn.rv), counter: 0 },
+    allowedAlgorithms: [-36],
+  });
+  check("legacy alg: the stranded user can log in once the operator allows ES512",
+        authOptedIn.ok === true);
+
+  // Opting in is per-call and does not leak: the default list is untouched.
+  var stillRefused = await authOutcome({
+    response: assertion.response, expectedChallenge: authChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    credential: { id: b64url(legacy.credId), publicKey: storedPublicKey(optedIn.rv), counter: 0 },
+  });
+  check("legacy alg: allowing ES512 on one call does not widen the default for the next",
+        stillRefused.ok === false);
+
+  // The escape hatch is not a way to reach a broken primitive. RSA with SHA-1
+  // is refused however it is asked for, and the refusal names the reason.
+  var sha1 = null;
+  try {
+    await passkey.startRegistration({
+      rpName: "Example", rpId: RP_ID, userName: "alice", allowedAlgorithms: [-65535],
+    });
+  } catch (e) { sha1 = e; }
+  check("legacy alg: RSA with SHA-1 (-65535) is refused even when asked for explicitly",
+        sha1 && /bad-algorithm/.test(String(sha1.code)));
+
+  // An empty list is a configuration that permits nothing, not "any algorithm".
+  var empty = null;
+  try {
+    await passkey.startRegistration({
+      rpName: "Example", rpId: RP_ID, userName: "alice", allowedAlgorithms: [],
+    });
+  } catch (e) { empty = e; }
+  check("legacy alg: an EMPTY algorithm list is refused, never read as 'any algorithm'",
+        empty && /bad-algorithm/.test(String(empty.code)));
+
+  var unknown = null;
+  try {
+    await passkey.startRegistration({
+      rpName: "Example", rpId: RP_ID, userName: "alice", allowedAlgorithms: [-999],
+    });
+  } catch (e) { unknown = e; }
+  check("legacy alg: an algorithm the verifier cannot handle is refused at config time",
+        unknown && /bad-algorithm/.test(String(unknown.code)));
+
+  // Every identifier the option ADVERTISES as supported must actually be
+  // accepted — a list that names an algorithm the verifier cannot check sends
+  // an operator to configure their way out of a lockout and lands them in a
+  // different one. Config-time acceptance for each, since the end-to-end
+  // signature path is exercised for ES256 / ES512 / RS256 above and in
+  // testRsaCredentialRoundTrip.
+  var advertised = [-8, -7, -35, -36, -37, -38, -39, -257, -258, -259];
+  for (var a = 0; a < advertised.length; a++) {
+    var accepted;
+    try {
+      var o = await passkey.startRegistration({
+        rpName: "Example", rpId: RP_ID, userName: "alice",
+        allowedAlgorithms: [advertised[a]],
+      });
+      accepted = o.pubKeyCredParams.length === 1 &&
+                 o.pubKeyCredParams[0].alg === advertised[a];
+    } catch (_e) { accepted = false; }
+    check("legacy alg: COSE " + advertised[a] + " is accepted as documented", accepted);
+  }
+
+  // What the browser is offered follows the same list, so the ceremony cannot
+  // advertise one set and verify another.
+  var opts = await passkey.startRegistration({
+    rpName: "Example", rpId: RP_ID, userName: "alice", allowedAlgorithms: [-7],
+  });
+  check("legacy alg: startRegistration advertises exactly the allowed algorithms",
+        opts.pubKeyCredParams.length === 1 && opts.pubKeyCredParams[0].alg === -7);
+
+  var dflt = await passkey.startRegistration({ rpName: "Example", rpId: RP_ID, userName: "alice" });
+  check("legacy alg: the default advertised set is unchanged (EdDSA, ES256, RS256)",
+        dflt.pubKeyCredParams.map(function (p) { return p.alg; }).join(",") === "-8,-7,-257");
+}
+
+async function testTimeoutIsValidatedInEveryBuilder() {
+  // A bare typeof check lets NaN, Infinity and negatives into the options
+  // document the browser receives, where the ceremony fails client-side —
+  // far from the operator's typo, with the framework having reported nothing.
+  // All THREE builders enforce it, because a rule applied to two of three is
+  // the shape every other miss in this module took.
+  var builders = [
+    ["startRegistration", function (t) {
+      return passkey.startRegistration({
+        rpName: "Example", rpId: RP_ID, userName: "alice", timeout: t });
+    }],
+    ["startAuthentication", function (t) {
+      return passkey.startAuthentication({ rpId: RP_ID, timeout: t });
+    }],
+    ["conditionalAuthOptions", function (t) {
+      return passkey.conditionalAuthOptions({ rpId: RP_ID, timeout: t });
+    }],
+  ];
+  var bogus = [NaN, Infinity, -1, "60000"];
+  for (var b2 = 0; b2 < builders.length; b2++) {
+    for (var i = 0; i < bogus.length; i++) {
+      var threw = null;
+      try { await builders[b2][1](bogus[i]); } catch (e) { threw = e; }
+      check("timeout: " + builders[b2][0] + " refuses " + String(bogus[i]),
+            threw && /bad-timeout/.test(String(threw.code)));
+    }
+    // ...and a legitimate value still passes through untouched.
+    var ok = await builders[b2][1](90000);                                         // allow:raw-time-literal — an ordinary operator timeout
+    check("timeout: " + builders[b2][0] + " passes a valid timeout through",
+          ok.timeout === 90000);                                                   // allow:raw-time-literal — same value
+  }
+}
+
+// ---- Registration: the stored credential ID comes from the attestation ----
+
+async function testRegistrationCredentialIdIsAttested() {
+  // The credential ID in the registration JSON is client-supplied and covered
+  // by nothing. The authoritative one lives inside attestedCredentialData in
+  // the signed authenticator data. A registration that claims someone else's
+  // credential ID while attesting its own key must be refused: an RP keying
+  // its credential table on the returned ID would otherwise overwrite the
+  // victim's record with the attacker's public key.
+  var challenge = b64url(crypto.randomBytes(32));
+  var reg = makeRegistration(challenge);
+  var victimId = b64url(crypto.randomBytes(32));
+
+  var lied = JSON.parse(JSON.stringify(reg.response));
+  lied.id = victimId;
+  lied.rawId = victimId;
+  var rv = await regOutcome({
+    response: lied, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("registration claiming a credential ID the attestation does not carry is REJECTED",
+        rv.ok === false && rv.threw === true &&
+        /credential-id-mismatch/.test(String(rv.code)));
+
+  // rawId alone is enough to poison a record for an RP that keys on it.
+  var liedRaw = JSON.parse(JSON.stringify(reg.response));
+  liedRaw.rawId = victimId;
+  var rvRaw = await regOutcome({
+    response: liedRaw, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("registration whose rawId disagrees with the attestation is REJECTED",
+        rvRaw.ok === false && rvRaw.threw === true &&
+        /credential-id-mismatch/.test(String(rvRaw.code)));
+
+  // Tolerating ONE missing spelling is compatibility. Tolerating BOTH skips
+  // the binding entirely — the response named no credential at all, and the
+  // check that exists to tie it to one compares nothing.
+  var noId = JSON.parse(JSON.stringify(reg.response));
+  delete noId.id;
+  delete noId.rawId;
+  var noIdRv = await regOutcome({
+    response: noId, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("registration stating NEITHER id nor rawId is REJECTED",
+        noIdRv.ok === false && noIdRv.threw === true &&
+        /missing-credential-id/.test(String(noIdRv.code)));
+
+  // ...and the same on the authentication side, where the caller-supplied
+  // credential would otherwise stand in for a binding that never happened.
+  var honestSetup = await regOutcome({
+    response: reg.response, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  var authChallenge = b64url(crypto.randomBytes(32));
+  var assertion = makeAssertion(reg.keyPair.privateKey, reg.credId, authChallenge, 1);
+  var noIdAuth = JSON.parse(JSON.stringify(assertion.response));
+  delete noIdAuth.id;
+  delete noIdAuth.rawId;
+  var noIdAuthRv = await authOutcome({
+    response: noIdAuth, expectedChallenge: authChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    credential: { id: b64url(reg.credId), publicKey: storedPublicKey(honestSetup.rv), counter: 0 },
+  });
+  check("assertion stating NEITHER id nor rawId is REJECTED",
+        noIdAuthRv.ok === false && noIdAuthRv.threw === true &&
+        /missing-credential-id/.test(String(noIdAuthRv.code)));
+
+  // One spelling alone still works — that tolerance is deliberate.
+  var onlyRawId = JSON.parse(JSON.stringify(reg.response));
+  delete onlyRawId.id;
+  var onlyRawIdRv = await regOutcome({
+    response: onlyRawId, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("registration stating only rawId still verifies", onlyRawIdRv.ok === true);
+
+  // The honest ceremony still verifies, and what is persisted is the ATTESTED
+  // ID — so a later assertion binds against the same value the authenticator
+  // signed, not whatever the browser sent.
+  var honest = await regOutcome({
+    response: reg.response, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("honest registration verifies", honest.ok === true);
+  check("the persisted credential ID is the one inside the attestation",
+        honest.rv.registrationInfo.credential.id === b64url(reg.credId));
+
+  // What gets persisted as the public key is the authenticator's own COSE key
+  // bytes, verbatim — not a re-encoding. That is what makes a credential row
+  // portable: the bytes are decided by the authenticator, so a record written
+  // by any conformant verifier is readable by this one and vice versa. A
+  // verifier that re-serialized the key here would silently strand every
+  // already-stored credential.
+  var stored = storedPublicKey(honest.rv);
+  check("the persisted public key is the attested COSE key, byte for byte",
+        Buffer.compare(Buffer.from(stored), coseEC2PublicKey(reg.keyPair.publicKey)) === 0);
+}
+
+// ---- Multi-origin deployments: expectedOrigin as a string[] ----
+
+async function testMultiOriginAllowList() {
+  // The primitive advertises expectedOrigin as either a string or a string[],
+  // for a deployment serving the same RP ID from several origins (the app and
+  // an admin subdomain). Nothing drove the ARRAY form end to end, so the
+  // allow-list could have been passed through to a verifier that only compares
+  // strings — which either refuses every genuine ceremony or, worse, skips the
+  // origin check. Prove BOTH directions on BOTH ceremonies: a member is
+  // accepted, and a list the ceremony's origin is absent from is refused.
+  var OTHER = "https://admin.example.test";
+  var challenge = b64url(crypto.randomBytes(32));
+  var reg = makeRegistration(challenge);
+
+  var inList = await regOutcome({
+    response: reg.response, expectedChallenge: challenge,
+    expectedOrigin: [OTHER, ORIGIN], expectedRPID: RP_ID,
+  });
+  check("multi-origin: registration verifies when the origin is in the allow-list",
+        inList.ok === true);
+
+  var notInList = await regOutcome({
+    response: reg.response, expectedChallenge: challenge,
+    expectedOrigin: [OTHER, "https://other.example.test"], expectedRPID: RP_ID,
+  });
+  check("multi-origin: registration is REJECTED when the origin is absent from the allow-list",
+        notInList.ok === false);
+
+  var pub = storedPublicKey(inList.rv);
+  var authChallenge = b64url(crypto.randomBytes(32));
+  var assertion = makeAssertion(reg.keyPair.privateKey, reg.credId, authChallenge, 1);
+  var credential = { id: b64url(reg.credId), publicKey: pub, counter: 0 };
+
+  var authIn = await authOutcome({
+    response: assertion.response, expectedChallenge: authChallenge,
+    expectedOrigin: [OTHER, ORIGIN], expectedRPID: RP_ID, credential: credential,
+  });
+  check("multi-origin: assertion verifies when the origin is in the allow-list",
+        authIn.ok === true);
+
+  var authOut = await authOutcome({
+    response: assertion.response, expectedChallenge: authChallenge,
+    expectedOrigin: [OTHER, "https://other.example.test"], expectedRPID: RP_ID,
+    credential: { id: b64url(reg.credId), publicKey: pub, counter: 0 },
+  });
+  check("multi-origin: assertion is REJECTED when the origin is absent from the allow-list",
+        authOut.ok === false);
+
+  // An EMPTY allow-list must not read as "no origins to check". A deployment
+  // that computes the list from config and gets an empty result has to fail
+  // closed, not accept every origin.
+  var empty = await regOutcome({
+    response: reg.response, expectedChallenge: challenge,
+    expectedOrigin: [], expectedRPID: RP_ID,
+  });
+  check("multi-origin: an EMPTY origin allow-list is refused, never treated as 'any origin'",
+        empty.ok === false && empty.threw === true &&
+        /missing-expectedOrigin/.test(String(empty.code)));
+}
+
+async function testRsaCredentialRoundTrip() {
+  var challenge = b64url(crypto.randomBytes(32));
+  var kp = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var credId = crypto.randomBytes(32);
+  var authData = buildAuthData(RP_ID, FLAG_UP | FLAG_UV | FLAG_AT, 0,
+    buildAttestedCredData(Buffer.alloc(16, 0), credId, coseRSAPublicKey(kp.publicKey)));
+  var attObj = cborMap([
+    [cborText("fmt"),      cborText("none")],
+    [cborText("attStmt"),  cborMap([])],
+    [cborText("authData"), cborBytes(authData)],
+  ]);
+  var regClientData = Buffer.from(JSON.stringify({
+    type: "webauthn.create", challenge: challenge, origin: ORIGIN, crossOrigin: false,
+  }), "utf8");
+
+  var regRv = await regOutcome({
+    response: {
+      id: b64url(credId), rawId: b64url(credId), type: "public-key",
+      response: { clientDataJSON: b64url(regClientData), attestationObject: b64url(attObj) },
+      clientExtensionResults: {},
+    },
+    expectedChallenge: challenge, expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("RS256: an RSA credential registers", regRv.ok === true);
+  var pub = storedPublicKey(regRv.rv);
+  check("RS256: registration surfaces the RSA public key", !!pub);
+
+  // A genuine RS256 assertion — PKCS#1 v1.5 over authData || SHA-256(clientData).
+  var authChallenge = b64url(crypto.randomBytes(32));
+  var assertAuthData = buildAuthData(RP_ID, FLAG_UP | FLAG_UV, 1, null);
+  var assertClientData = Buffer.from(JSON.stringify({
+    type: "webauthn.get", challenge: authChallenge, origin: ORIGIN, crossOrigin: false,
+  }), "utf8");
+  var signed = Buffer.concat([assertAuthData, sha256(assertClientData)]);
+  var sig = crypto.sign("sha256", signed, kp.privateKey);         // no dsaEncoding: RSA
+  function rsaResponse(signature) {
+    return {
+      id: b64url(credId), rawId: b64url(credId), type: "public-key",
+      response: {
+        clientDataJSON:    b64url(assertClientData),
+        authenticatorData: b64url(assertAuthData),
+        signature:         b64url(signature),
+      },
+      clientExtensionResults: {},
+    };
+  }
+  var authArgs = {
+    response: rsaResponse(sig), expectedChallenge: authChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    credential: { id: b64url(credId), publicKey: pub, counter: 0 },
+  };
+  var good = await authOutcome(authArgs);
+  check("RS256: a genuine RSA assertion verifies", good.ok === true);
+
+  // ...and the cryptographic core must reject a tampered RSA signature, or the
+  // "verifies" above proves only that something returned true.
+  var bad = Buffer.from(sig); bad[bad.length - 1] ^= 0x01;
+  var tampered = await authOutcome(Object.assign({}, authArgs, { response: rsaResponse(bad) }));
+  check("RS256: a tampered RSA signature is REJECTED", tampered.ok === false);
+}
+
+// ---- BE / BS surfacing, from the real flag bits ----
+//
+// WebAuthn L3 §6.1.3. backupEligible (BE) says the credential CAN sync to a
+// cloud account; backupState (BS) says it currently IS. Operators key trust
+// decisions on the pair — a single-device passkey warrants step-up where a
+// synced one does not — so the mapping from flag bit to named field has to be
+// right in both directions.
+//
+// Driven by setting the bits in real authenticatorData rather than by stubbing
+// a verifier's return value: a stub proves only that our mapping agrees with
+// the shape we invented for it, which stays green even if the bit we read is
+// the wrong one.
+async function testBackupFlagSurfacing() {
+  async function registerWith(flags) {
+    var challenge = b64url(crypto.randomBytes(32));
+    var kp = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+    var credId = crypto.randomBytes(32);
+    var authData = buildAuthData(RP_ID, flags, 0,
+      buildAttestedCredData(Buffer.alloc(16, 0), credId, coseEC2PublicKey(kp.publicKey)));
+    var attObj = cborMap([
+      [cborText("fmt"),      cborText("none")],
+      [cborText("attStmt"),  cborMap([])],
+      [cborText("authData"), cborBytes(authData)],
+    ]);
+    var clientData = Buffer.from(JSON.stringify({
+      type: "webauthn.create", challenge: challenge, origin: ORIGIN, crossOrigin: false,
+    }), "utf8");
+    return regOutcome({
+      response: {
+        id: b64url(credId), rawId: b64url(credId), type: "public-key",
+        response: { clientDataJSON: b64url(clientData), attestationObject: b64url(attObj) },
+        clientExtensionResults: {},
+      },
+      expectedChallenge: challenge, expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    });
+  }
+
+  var synced = await registerWith(FLAG_UP | FLAG_UV | FLAG_AT | FLAG_BE | FLAG_BS);
+  check("BE/BS: a multi-device credential registers", synced.ok === true);
+  check("BE/BS: backupEligible true when BE is set", synced.rv.backupEligible === true);
+  check("BE/BS: backupState true when BS is set", synced.rv.backupState === true);
+  check("BE/BS: credentialDeviceType reports multiDevice",
+        synced.rv.registrationInfo.credentialDeviceType === "multiDevice");
+
+  // BE set, BS clear — eligible to sync but not yet synced, which is a real
+  // authenticator state and the one a naive "one flag" reading gets wrong.
+  var eligible = await registerWith(FLAG_UP | FLAG_UV | FLAG_AT | FLAG_BE);
+  check("BE/BS: backupEligible true, backupState false is representable",
+        eligible.rv.backupEligible === true && eligible.rv.backupState === false);
+
+  var single = await registerWith(FLAG_UP | FLAG_UV | FLAG_AT);
+  check("BE/BS: neither flag reports a single-device credential",
+        single.rv.backupEligible === false && single.rv.backupState === false &&
+        single.rv.registrationInfo.credentialDeviceType === "singleDevice");
+}
+
 // ---- run ----
 
 async function run() {
+  await testBackupFlagSurfacing();
   await testRegistrationGenuineAndTampered();
   await testAuthenticationGenuineAndTampered();
+  await testCeremonyPolicyRefusals();
+  await testRegistrationCredentialIdIsAttested();
+  await testAttestationRootsArePinned();
+  await testCredPropsAndPaddedDescriptors();
+  await testAuthenticatorExtensionResults();
+  await testAssertionFlagsComeFromTheVerifiedBytes();
+  testSignalApiIdsAreCanonical();
+  await testCredentialTypeAndUnsupportedFormats();
+  await testPaddedStoredCredentialIdStillLogsIn();
+  await testSafetyNetIntegrityAndFreshness();
+  await testResidentKeySelectorsAgree();
+  await testDefaultHintsFollowTheAttachment();
+  await testCrossOriginEmbedderAllowList();
+  await testRegistrationResultSurface();
+  await testRegistrationInfoFeedsFidoMds3();
+  await testZeroSignCountAuthenticators();
+  await testStoredKeyAcceptedFormats();
+  await testBadAttestationSignatureIsANegativeResult();
+  await testMalformedSafetyNetIsFramed();
+  await testWireFieldsMustBeCanonical();
+  await testRefusalsAreFramedAsAuthErrors();
+  await testLegacyAlgorithmOptIn();
+  await testTimeoutIsValidatedInEveryBuilder();
+  await testMultiOriginAllowList();
+  await testRsaCredentialRoundTrip();
 }
 
 module.exports = { run: run };

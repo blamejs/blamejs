@@ -15,7 +15,7 @@
 //       { name, version, license, sourceUrl, sha256, files,
 //         usedBy: [ "lib/crypto.js", ... ],
 //         usedFor: "XChaCha20-Poly1305 AEAD cipher",
-//         category: "Crypto" | "PKI" | "WebAuthn" | "Other" },
+//         category: "Crypto" | "PKI" | "Other" },
 //       ...
 //     ] }
 //
@@ -41,10 +41,9 @@ var LIB_ROOT      = path.join(REPO_ROOT, "lib");
 var USED_FOR = {
   "@noble/ciphers":               "XChaCha20-Poly1305 AEAD cipher",
   "@noble/post-quantum":          "ML-KEM / ML-DSA / SLH-DSA via FIPS 203 / 204 / 205",
-  "@simplewebauthn/server":       "WebAuthn / passkey registration and authentication",
   "SecLists-common-passwords-top-10000":
                                   "NIST 800-63B §5.1.1.2 breached-password list",
-  "@blamejs/pki":                 "Zero-dep X.509 / CRL / PKCS#12 / CMS toolkit for b.mtlsCa (ML-DSA-87 + ECDSA-P384)",
+  "@blamejs/pki":                 "Zero-dep X.509 / CRL / PKCS#12 / CMS toolkit for b.mtlsCa (ML-DSA-87 + ECDSA-P384), plus WebAuthn verification for b.auth.passkey",
 };
 
 // Category bucketing. Every manifest entry MUST resolve to one of the
@@ -52,13 +51,12 @@ var USED_FOR = {
 var CATEGORY = {
   "@noble/ciphers":               "Crypto",
   "@noble/post-quantum":          "Crypto",
-  "@simplewebauthn/server":       "WebAuthn",
   "SecLists-common-passwords-top-10000":
                                   "Other",
   "@blamejs/pki":                 "PKI",
 };
 
-var CATEGORY_ORDER = ["Crypto", "PKI", "WebAuthn", "Other"];
+var CATEGORY_ORDER = ["Crypto", "PKI", "Other"];
 
 // ---------------------------------------------------------------------
 // _walkLibJs — recursive lister of every .js file under lib/, returned

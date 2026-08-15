@@ -7059,6 +7059,70 @@ var KNOWN_ANTIPATTERNS = [
     reason: "An encrypted-boot db.enc length check (packed.length < <min>) must fail closed (throw), not silently return — a return opens a fresh empty database that the next flush persists over the corrupt durable snapshot (silent data loss). Fires on a packed.length check whose block returns before it throws.",
   },
   {
+    id: "passkey-untrusted-key-objects-build-with-null-prototype",
+    primitive: "b.auth.passkey",
+    scanScope: "lib",
+    // b.auth.passkey builds objects out of key names it does not choose: CBOR
+    // extension labels from the authenticator, and clientExtensionResults from
+    // the browser. Assigning a key called `__proto__` to an ordinary object
+    // hits the legacy prototype setter -- the key vanishes from Object.keys
+    // and from JSON, and its contents reappear as INHERITED properties, so
+    // verified data is lost and unverified-looking data is gained.
+    //
+    // Both converters must build through _plainObject(). This fired for real:
+    // the hazard was fixed in the CBOR converter and then reintroduced
+    // verbatim in the snapshot converter written two changes later.
+    regex: /function _(?:plainFromCbor|snapshotValue)\b(?:(?!\n\})[\s\S]){0,2000}?\bvar out = \{\}/,
+    allowlist: [],
+    reason: "The converters in b.auth.passkey build objects from key names supplied by the authenticator (CBOR extension labels) or the browser (clientExtensionResults), so they must build through _plainObject() — a null-prototype object. `var out = {}` there lets a key called __proto__ hit the legacy prototype setter: it disappears from Object.keys and JSON while its contents become inherited properties, losing verified extension data and adding properties nothing signed.",
+  },
+  {
+    id: "passkey-resident-key-selectors-derive-from-one-requirement",
+    primitive: "b.auth.passkey",
+    scanScope: "lib",
+    // WebAuthn states "this credential must be discoverable" twice:
+    // `residentKey` (L2/L3) and the L1 boolean `requireResidentKey`. Browsers
+    // in the field read one or the other, so reading the caller's two inputs
+    // independently emits a contradictory pair — and a browser reading the
+    // half that says "not required" creates a NON-discoverable credential for
+    // a relying party that required one. Nothing fails at registration; only
+    // username-less and conditional-UI login are quietly missing.
+    regex: /requireResidentKey:\s*sel\.requireResidentKey/,
+    allowlist: [],
+    reason: "b.auth.passkey must derive requireResidentKey from the single resolved residentKey requirement (requireResidentKey === (residentKey === 'required')), never read the caller's boolean alongside it. Reading both independently emits a contradictory pair, and a browser honouring the field that says 'not required' creates a non-discoverable credential the relying party required to be discoverable.",
+  },
+  {
+    id: "passkey-result-origin-is-the-verified-one-not-the-allowlist",
+    primitive: "b.auth.passkey",
+    scanScope: "lib",
+    // `expectedOrigin` may be a single origin OR an allow-list for a
+    // deployment serving one RP ID from several. Recording it as the ceremony's
+    // origin therefore writes an ARRAY into a field every consumer reads as a
+    // string, and names every permitted origin instead of the one that was
+    // used. The verified origin is in the parsed client data, which both
+    // ceremonies already have. Both result objects got this wrong
+    // independently, one of them after the other had been fixed.
+    regex: /\borigin:\s*opts\.expectedOrigin\b/,
+    allowlist: [],
+    reason: "b.auth.passkey result objects must report the origin from the VERIFIED client data, never opts.expectedOrigin — which may be an allow-list, and would put an array in a string-valued field while recording every permitted origin instead of the one the ceremony ran at. Fires on `origin: opts.expectedOrigin` in either ceremony's result.",
+  },
+  {
+    id: "passkey-credential-id-binding-goes-through-the-helper",
+    primitive: "b.auth.passkey",
+    scanScope: "lib",
+    // A WebAuthn response states its credential ID twice — `id` and its binary
+    // spelling `rawId` — and neither is covered by a signature. The binding to
+    // the authoritative ID (inside the attestation at registration, the stored
+    // record at authentication) lives in _requireCredentialIdMatches, which
+    // checks BOTH spellings against the one authority. A hand-rolled comparison
+    // at a call site is how the two ceremonies drifted apart in the first place:
+    // registration bound neither, and authentication bound `id` while leaving
+    // `rawId` free to name a different credential.
+    regex: /\bresponse\.(?:id|rawId)\s*[!=]==/,
+    allowlist: [],
+    reason: "The credential-ID binding in b.auth.passkey must run through _requireCredentialIdMatches, which checks response.id AND response.rawId against the single authoritative ID (attested at registration, stored at authentication). A hand-rolled `response.id !== ...` at a call site binds one spelling and leaves the other free to claim a different credential — an RP keying on the unbound field overwrites the victim's credential row with the attacker's public key.",
+  },
+  {
     id: "local-http-loopback-guard-requires-ip-literal",
     primitive: "b.localHttp",
     scanScope: "lib",

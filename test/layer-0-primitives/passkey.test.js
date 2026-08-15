@@ -24,114 +24,6 @@ var helpers = require("../helpers");
 var b     = helpers.b;
 var check = helpers.check;
 
-// ---- BE/BS surfacing ----
-
-async function testRegistrationBackupFlagsMultiDevice() {
-  var path = require.resolve("../../lib/vendor/simplewebauthn-server.cjs");
-  var orig = require.cache[path].exports;
-  require.cache[path].exports = Object.assign({}, orig, {
-    verifyRegistrationResponse: async function () {
-      return {
-        verified: true,
-        registrationInfo: {
-          credentialDeviceType: "multiDevice",
-          credentialBackedUp:   true,
-        },
-      };
-    },
-  });
-  // Force passkey.js to re-resolve the vendor binding via _vendor() —
-  // the wrapper is direct require, so we override the cache before the
-  // call and restore after. The test only exercises the post-vendor
-  // mapping logic.
-  delete require.cache[require.resolve("../../lib/auth/passkey")];
-  var passkey = require("../../lib/auth/passkey");
-  try {
-    var rv = await passkey.verifyRegistration({
-      response:          { id: "x" },
-      expectedChallenge: "c",
-      expectedOrigin:    "https://x.test",
-      expectedRPID:      "x.test",
-    });
-    check("verifyRegistration backupEligible=true on multiDevice",
-          rv.backupEligible === true);
-    check("verifyRegistration backupState=true on credentialBackedUp=true",
-          rv.backupState === true);
-    check("verifyRegistration registrationInfo passes through",
-          rv.registrationInfo && rv.registrationInfo.credentialDeviceType === "multiDevice");
-  } finally {
-    require.cache[path].exports = orig;
-    delete require.cache[require.resolve("../../lib/auth/passkey")];
-  }
-}
-
-async function testRegistrationBackupFlagsSingleDevice() {
-  var path = require.resolve("../../lib/vendor/simplewebauthn-server.cjs");
-  var orig = require.cache[path].exports;
-  require.cache[path].exports = Object.assign({}, orig, {
-    verifyRegistrationResponse: async function () {
-      return {
-        verified: true,
-        registrationInfo: {
-          credentialDeviceType: "singleDevice",
-          credentialBackedUp:   false,
-        },
-      };
-    },
-  });
-  delete require.cache[require.resolve("../../lib/auth/passkey")];
-  var passkey = require("../../lib/auth/passkey");
-  try {
-    var rv = await passkey.verifyRegistration({
-      response:          { id: "x" },
-      expectedChallenge: "c",
-      expectedOrigin:    "https://x.test",
-      expectedRPID:      "x.test",
-    });
-    check("verifyRegistration backupEligible=false on singleDevice",
-          rv.backupEligible === false);
-    check("verifyRegistration backupState=false on credentialBackedUp=false",
-          rv.backupState === false);
-  } finally {
-    require.cache[path].exports = orig;
-    delete require.cache[require.resolve("../../lib/auth/passkey")];
-  }
-}
-
-async function testAuthenticationBackupFlags() {
-  var path = require.resolve("../../lib/vendor/simplewebauthn-server.cjs");
-  var orig = require.cache[path].exports;
-  require.cache[path].exports = Object.assign({}, orig, {
-    verifyAuthenticationResponse: async function () {
-      return {
-        verified: true,
-        authenticationInfo: {
-          newCounter: 5,
-          credentialDeviceType: "multiDevice",
-          credentialBackedUp:   true,
-        },
-      };
-    },
-  });
-  delete require.cache[require.resolve("../../lib/auth/passkey")];
-  var passkey = require("../../lib/auth/passkey");
-  try {
-    var rv = await passkey.verifyAuthentication({
-      response:          { id: "x" },
-      expectedChallenge: "c",
-      expectedOrigin:    "https://x.test",
-      expectedRPID:      "x.test",
-      credential:        { id: "abc", publicKey: Buffer.from("00", "hex"), counter: 0 },
-    });
-    check("verifyAuthentication backupEligible=true on multiDevice",
-          rv.backupEligible === true);
-    check("verifyAuthentication backupState=true on credentialBackedUp=true",
-          rv.backupState === true);
-  } finally {
-    require.cache[path].exports = orig;
-    delete require.cache[require.resolve("../../lib/auth/passkey")];
-  }
-}
 
 // ---- Extension helpers ----
 
@@ -588,45 +480,6 @@ async function testVerifyRegistrationOriginValidation() {
         threw && !/missing-expectedOrigin/.test(threw.code || ""));
 }
 
-// ---- verifyRegistration BE/BS fallback when the vendor returns no info ----
-
-async function testVerifyRegistrationNoRegistrationInfoFallback() {
-  var path = require.resolve("../../lib/vendor/simplewebauthn-server.cjs");
-  var orig = require.cache[path].exports;
-  var vendorReturn = { verified: false };                                            // no registrationInfo
-  require.cache[path].exports = Object.assign({}, orig, {
-    verifyRegistrationResponse: async function () { return vendorReturn; },
-  });
-  delete require.cache[require.resolve("../../lib/auth/passkey")];
-  var passkey = require("../../lib/auth/passkey");
-  var input = {
-    response:          { id: "x" },
-    expectedChallenge: "c",
-    expectedOrigin:    "https://x.test",
-    expectedRPID:      "x.test",
-  };
-  try {
-    // (a) vendor returns a result object with no registrationInfo — the
-    //     BE/BS fields default to false and verified:false is preserved.
-    var rv = await passkey.verifyRegistration(input);
-    check("verifyRegistration defaults backupEligible=false without registrationInfo",
-          rv.backupEligible === false);
-    check("verifyRegistration defaults backupState=false without registrationInfo",
-          rv.backupState === false);
-    check("verifyRegistration preserves verified:false in the fallback",
-          rv.verified === false);
-
-    // (b) vendor returns nullish — the defensive `rv = rv || {}` fallback
-    //     synthesizes a result rather than throwing on a missing return.
-    vendorReturn = null;
-    var rv2 = await passkey.verifyRegistration(input);
-    check("verifyRegistration synthesizes a result when the vendor returns nullish",
-          rv2 && rv2.backupEligible === false && rv2.backupState === false);
-  } finally {
-    require.cache[path].exports = orig;
-    delete require.cache[require.resolve("../../lib/auth/passkey")];
-  }
-}
 
 // ---- verifyAuthentication: response / credential / counter guards ----
 
@@ -699,43 +552,6 @@ async function testVerifyAuthenticationGuards() {
   }
 }
 
-// ---- verifyAuthentication BE/BS fallback when the vendor returns no info ----
-
-async function testVerifyAuthenticationNoAuthInfoFallback() {
-  var path = require.resolve("../../lib/vendor/simplewebauthn-server.cjs");
-  var orig = require.cache[path].exports;
-  var vendorReturn = { verified: false };                                            // no authenticationInfo
-  require.cache[path].exports = Object.assign({}, orig, {
-    verifyAuthenticationResponse: async function () { return vendorReturn; },
-  });
-  delete require.cache[require.resolve("../../lib/auth/passkey")];
-  var passkey = require("../../lib/auth/passkey");
-  var input = {
-    response:          { id: "x" },
-    expectedChallenge: "c",
-    expectedOrigin:    "https://x.test",
-    expectedRPID:      "x.test",
-    credential:        { id: "abc", publicKey: Buffer.from("00", "hex"), counter: 0 },
-  };
-  try {
-    var rv = await passkey.verifyAuthentication(input);
-    check("verifyAuthentication defaults backupEligible=false without authenticationInfo",
-          rv.backupEligible === false);
-    check("verifyAuthentication defaults backupState=false without authenticationInfo",
-          rv.backupState === false);
-    check("verifyAuthentication preserves verified:false in the fallback",
-          rv.verified === false);
-
-    // vendor returns nullish — defensive `rv = rv || {}` synthesizes a result.
-    vendorReturn = null;
-    var rv2 = await passkey.verifyAuthentication(input);
-    check("verifyAuthentication synthesizes a result when the vendor returns nullish",
-          rv2 && rv2.backupEligible === false && rv2.backupState === false);
-  } finally {
-    require.cache[path].exports = orig;
-    delete require.cache[require.resolve("../../lib/auth/passkey")];
-  }
-}
 
 // ---- compareBackupState — all verdicts + input guards ----
 
@@ -941,10 +757,13 @@ function testExportedAllowedExtensionKeys() {
 
 // ---- run ----
 
+// The BE/BS surfacing tests that lived here stubbed the verifier's return
+// value through a require-cache override, so they proved only that the mapping
+// agreed with the shape the stub invented. They now live in
+// passkey-real-vectors.test.js driven by the real authenticatorData flag bits,
+// which is the thing the mapping is actually reading — and there is no vendor
+// module left to override.
 async function run() {
-  await testRegistrationBackupFlagsMultiDevice();
-  await testRegistrationBackupFlagsSingleDevice();
-  await testAuthenticationBackupFlags();
   testPrfExt();
   testLargeBlobExt();
   testCredBlobExt();
@@ -957,9 +776,7 @@ async function run() {
   await testConditionalAuthCustomHints();
   testExtensionInputBounds();
   await testVerifyRegistrationOriginValidation();
-  await testVerifyRegistrationNoRegistrationInfoFallback();
   await testVerifyAuthenticationGuards();
-  await testVerifyAuthenticationNoAuthInfoFallback();
   testCompareBackupState();
   testSignalUnknownCredential();
   testSignalAllAcceptedCredentials();

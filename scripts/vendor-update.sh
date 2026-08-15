@@ -40,7 +40,7 @@ DATE=$(date +%Y-%m-%d)
 # (see lib/argon2-builtin.js). The case-block below preserves the
 # `argon2` operator-friendly error message for anyone who still tries
 # `vendor-update.sh argon2`.
-VENDORED_PACKAGES=("@noble/ciphers" "@noble/curves" "@noble/hashes" "@noble/post-quantum" "@simplewebauthn/server" "@blamejs/pki")
+VENDORED_PACKAGES=("@noble/ciphers" "@noble/curves" "@noble/hashes" "@noble/post-quantum" "@blamejs/pki")
 
 # Packages whose version is decided by the bundles that INLINE them rather than
 # by npm's newest. @noble/curves pins its copy of @noble/hashes exactly, so a
@@ -502,19 +502,6 @@ ENTRY
     BUNDLER_DESC="esbuild --format=cjs --platform=node (server), esbuild --format=esm --platform=browser (browser)"
     sed -i "1s|^|// @noble/post-quantum v${INSTALLED_VER} — vendored from Paul Miller\n// License: MIT — https://github.com/paulmillr/noble-post-quantum\n// Browser build (ESM), bundled with esbuild from the same install as the\n// server bundle beside it. The KEM suites only — a client half encapsulates\n// and does not sign.\n// Exports: ml_kem512 / ml_kem768 / ml_kem1024 (FIPS 203).\n|" lib/vendor/browser/noble-post-quantum.mjs
     sed -i "1s|^|// @noble/post-quantum v${INSTALLED_VER} — vendored from Paul Miller\n// License: MIT — https://github.com/paulmillr/noble-post-quantum\n// Bundled with esbuild. Exports: ml_kem512 / ml_kem768 / ml_kem1024 (FIPS 203 KEM),\n//   ml_dsa44 / ml_dsa65 / ml_dsa87 (FIPS 204 lattice signatures),\n//   slh_dsa_sha2_*f / slh_dsa_shake_*f (FIPS 205 hash signatures).\n|" lib/vendor/noble-post-quantum.cjs
-    ;;
-
-  "@simplewebauthn/server")
-    # reflect-metadata (pulled in via @peculiar/x509) resolves to its upstream
-    # ./lite entry: identical metadata API and cross-copy registry, but built
-    # for runtimes with native globalThis / Map / Set / WeakMap — it has none
-    # of the legacy global-object probes (Function("return this") / indirect
-    # eval) that can never execute on the Node versions the framework supports.
-    echo "module.exports = require(\"@simplewebauthn/server\");" > _entry.cjs
-    npx esbuild _entry.cjs --bundle --format=cjs --platform=node --alias:reflect-metadata=reflect-metadata/lite --external:crypto --external:node:crypto --outfile=lib/vendor/simplewebauthn-server.cjs
-    rm _entry.cjs
-    BUNDLER_DESC="esbuild --format=cjs --platform=node --alias:reflect-metadata=reflect-metadata/lite --external:crypto --external:node:crypto"
-    sed -i "1s|^|// @simplewebauthn/server v${INSTALLED_VER} — vendored. License: MIT\n// https://github.com/MasterKale/SimpleWebAuthn\n|" lib/vendor/simplewebauthn-server.cjs
     ;;
 
   "@blamejs/pki")
