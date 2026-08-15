@@ -760,6 +760,64 @@ async function testAttestationRootsArePinned() {
   check("attestation roots: a vendor `packed` attestation is not judged against the pinned bundle",
         !/anchor|chain-not-anchored|not-anchored/i.test(String(vendorRv.code || "")));
 
+  // An explicit override must reach EVERY statement that carries a chain,
+  // not only the formats the framework pins. A deployment naming its own
+  // anchors for its own packed / tpm / fido-u2f authenticators is asking for
+  // that chain to be checked; ignoring the option there is worse than having
+  // no default, because the operator believes the chain IS checked.
+  //
+  // Asserted on the anchoring DECISION rather than on a refusal: this fixture
+  // is refused either way (its leaf does not meet the packed certificate
+  // profile), so "it was refused" cannot tell the two behaviours apart. That
+  // is precisely how an option that silently did nothing passed review.
+  // A REAL certificate stands in for the operator's own root — the override
+  // validator parses every entry, so a hand-rolled fixture would be refused
+  // as configuration rather than exercising the anchoring decision. Any root
+  // that is not the format's default proves the point.
+  var overrideRoot = roots.SAFETYNET_ROOTS[0];
+  var packedNoOverride = passkey._resolvedAnchors(b64url(vendorAtt), {});
+  check("attestation roots: a packed attestation has no pinned default",
+        packedNoOverride.refused === false && packedNoOverride.fmt === "packed" &&
+        packedNoOverride.hasChain === true &&
+        packedNoOverride.rootCertificates === null);
+  var packedOverride = passkey._resolvedAnchors(b64url(vendorAtt),
+                                                { attestationRoots: [overrideRoot] });
+  check("attestation roots: an explicit override DOES reach a packed attestation",
+        packedOverride.rootCertificates !== null &&
+        packedOverride.rootCertificates.length === 1 &&
+        packedOverride.rootCertificates[0] === overrideRoot);
+
+  // ...and the shipped per-format defaults still apply when no override is
+  // given, so widening the override did not replace them.
+  var appleAtt = cborMap([
+    [cborText("fmt"),     cborText("apple")],
+    [cborText("attStmt"), cborMap([
+      [cborText("x5c"), cborArray([cborBytes(vendorCert)])],
+    ])],
+    [cborText("authData"), cborBytes(vendorAuthData)],
+  ]);
+  var appleDefault = passkey._resolvedAnchors(b64url(appleAtt), {});
+  check("attestation roots: apple still gets its pinned default with no override",
+        appleDefault.rootCertificates !== null &&
+        appleDefault.rootCertificates === roots.APPLE_ROOTS);
+  var appleOverridden = passkey._resolvedAnchors(b64url(appleAtt),
+                                                 { attestationRoots: [overrideRoot] });
+  check("attestation roots: and the override REPLACES that default, never extends it",
+        appleOverridden.rootCertificates.length === 1 &&
+        appleOverridden.rootCertificates[0] === overrideRoot);
+
+  // A statement with no chain takes no anchors even when one is named —
+  // handing roots to a `none` attestation is refused by the verifier.
+  var noneAtt = cborMap([
+    [cborText("fmt"),      cborText("none")],
+    [cborText("attStmt"),  cborMap([])],
+    [cborText("authData"), cborBytes(vendorAuthData)],
+  ]);
+  var noneResolved = passkey._resolvedAnchors(b64url(noneAtt),
+                                              { attestationRoots: [overrideRoot] });
+  check("attestation roots: a chainless attestation takes no anchors even when named",
+        noneResolved.hasChain === false && noneResolved.rootCertificates === null);
+
   // Deciding WHICH anchors apply means reading the attestation's format. An
   // object too large or too malformed to read cannot be assigned a policy —
   // and quietly proceeding with no anchors would be a bypass with a shape:
