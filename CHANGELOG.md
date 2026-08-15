@@ -89,7 +89,21 @@ A deployment that trusts a different set passes `attestationRoots` (and `safetyN
 
 That matters beyond tidiness: anything keyed on the response as sent — a replay cache, an idempotency key, a request digest — counts each spelling as a new request. · *A response must state the one credential type WebAuthn defines* — WebAuthn has exactly one credential type, `"public-key"`. A registration or assertion whose outer `type` is missing or altered is now refused with `auth-passkey/bad-credential-type`, rather than the value being defaulted into `registrationInfo.credentialType`.
 
-Writing a type nothing verified into a credential row misleads anything that later dispatches on it, and storing the attacker's string does so more directly. · *Both spellings of the credential ID are bound to the credential being used* — A WebAuthn response states its credential ID twice — `id` and its binary spelling `rawId` — and neither is covered by any signature. Registration checks both against the ID inside the attestation, which the authenticator signs; authentication checks both against the stored record.
+Writing a type nothing verified into a credential row misleads anything that later dispatches on it, and storing the attacker's string does so more directly. · *`requireAttestationAnchor` for relying parties that act on attestation provenance* — A `packed`, `tpm` or `fido-u2f` attestation chains to whichever vendor made the key. WebAuthn anchors those through the FIDO metadata entry for the credential's AAGUID rather than a fixed root list, so a verifier with no metadata wired in accepts a chain that terminates anywhere — including a CA the attacker created — and the AAGUID in the statement is a claim rather than a verified fact.
+
+That is unchanged here and is what the verifier this release replaces does too; refusing such chains by default would reject every ordinary security key. What the result tells you is `registrationInfo.anchoredTo`: the root the chain reached, or nothing.
+
+A relying party that makes decisions on attestation provenance can now require it:
+
+```js
+await b.auth.passkey.verifyRegistration({
+  response, expectedChallenge, expectedOrigin, expectedRPID,
+  requireAttestationAnchor: true,          // refuse a chain that anchored at nothing
+  attestationRoots: [ /* this deployment's authenticator roots */ ],
+});
+```
+
+Without `attestationRoots`, pair it with an AAGUID check against FIDO metadata via `b.auth.fidoMds3`. The option does not fire on `none` or self attestation, which carry no chain to anchor. · *Both spellings of the credential ID are bound to the credential being used* — A WebAuthn response states its credential ID twice — `id` and its binary spelling `rawId` — and neither is covered by any signature. Registration checks both against the ID inside the attestation, which the authenticator signs; authentication checks both against the stored record.
 
 This is not what admits an attacker — a mismatched record carries the wrong public key, so the signature fails regardless. It is about what an operator is told when it happens. An application that looks a credential up by user rather than by asserted ID could pair a valid key with the wrong row and see only an opaque signature failure; it now gets `auth-passkey/credential-id-mismatch`, which names the actual problem. · *The FIDO metadata trust root is pinned in the source* — `b.auth.fidoMds3` anchored MDS3 BLOB chains to a GlobalSign Root CA - R3 certificate read out of the removed bundle. That certificate is now a constant in the framework, and a test asserts its subject, self-signature, validity window and SHA-256 fingerprint — so substituting it during a refactor fails a gate instead of silently widening what can sign a metadata BLOB.
 

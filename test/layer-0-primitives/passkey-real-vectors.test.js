@@ -611,6 +611,66 @@ function makeRegistrationCrossOrigin(challenge, topOrigin) {
 // PKCS#1 v1.5 with no DER-vs-raw unwrapping step, so it exercises a different
 // branch of whatever verifies it, and a verifier that silently only handled EC
 // would pass every existing test in this file.
+// A `packed` full attestation whose x5c is a REAL, well-formed chain minted
+// under a CA of this test's own making — i.e. exactly what an attacker with
+// their own CA produces. A hand-rolled DER will not do: it fails the
+// certificate profile long before the chain is ever anchored, so the test
+// would pass for the wrong reason.
+async function makePackedAttestationUnderOwnCa(challenge) {
+  var pki = require("../../lib/vendor/blamejs-pki.cjs");
+  var caKeys = await crypto.webcrypto.subtle.generateKey(
+    { name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  var caDer = Buffer.from(await pki.x509.sign({
+    subject:          [{ commonName: "Test Attestation CA" }],
+    subjectPublicKey: Buffer.from(
+      await crypto.webcrypto.subtle.exportKey("spki", caKeys.publicKey)),
+    serialNumber:     "0x01",
+    notBefore:        new Date(Date.now() - b.constants.TIME.days(1)),
+    notAfter:         new Date(Date.now() + b.constants.TIME.days(365)),
+    extensions:       { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] },
+  }, { key: caKeys.privateKey }));
+
+  var leafPair = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var leafDer = Buffer.from(await pki.x509.sign({
+    subject: [{ commonName: "Test Authenticator" },
+              { organizationalUnitName: "Authenticator Attestation" },
+              { organizationName: "Test" }, { countryName: "US" }],
+    subjectPublicKey: leafPair.publicKey.export({ type: "spki", format: "der" }),
+    serialNumber:     "0x02",
+    notBefore:        new Date(Date.now() - b.constants.TIME.days(1)),
+    notAfter:         new Date(Date.now() + b.constants.TIME.days(365)),
+    extensions:       { basicConstraints: { cA: false } },
+  }, { cert: caDer, key: caKeys.privateKey }));
+
+  var kp = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var credId = crypto.randomBytes(32);
+  // A REAL authenticator's AAGUID, which an unanchored chain lets anyone claim.
+  var aaguid = Buffer.from("f8a011f38c0a4d15800617111f9edc7d", "hex");
+  var authData = buildAuthData(RP_ID, FLAG_UP | FLAG_UV | FLAG_AT, 0,
+    buildAttestedCredData(aaguid, credId, coseEC2PublicKey(kp.publicKey)));
+  var clientData = Buffer.from(JSON.stringify({
+    type: "webauthn.create", challenge: challenge, origin: ORIGIN, crossOrigin: false,
+  }), "utf8");
+  var att = cborMap([
+    [cborText("fmt"),     cborText("packed")],
+    [cborText("attStmt"), cborMap([
+      [cborText("alg"), cborInt(-7)],
+      [cborText("sig"), cborBytes(signDER(leafPair.privateKey,
+        Buffer.concat([authData, sha256(clientData)])))],
+      [cborText("x5c"), cborArray([cborBytes(leafDer), cborBytes(caDer)])],
+    ])],
+    [cborText("authData"), cborBytes(authData)],
+  ]);
+  return {
+    keyPair: kp, credId: credId,
+    response: {
+      id: b64url(credId), rawId: b64url(credId), type: "public-key",
+      response: { clientDataJSON: b64url(clientData), attestationObject: b64url(att) },
+      clientExtensionResults: {},
+    },
+  };
+}
+
 // ---- Attestation trust anchors, credProps, padded ids, signed extensions ----
 
 async function testAttestationRootsArePinned() {
@@ -817,6 +877,50 @@ async function testAttestationRootsArePinned() {
                                               { attestationRoots: [overrideRoot] });
   check("attestation roots: a chainless attestation takes no anchors even when named",
         noneResolved.hasChain === false && noneResolved.rootCertificates === null);
+
+  // An unanchored chain proves only that SOMEBODY signed the statement, so
+  // the AAGUID inside it is a claim. That is the normal outcome for a
+  // security key and is what every WebAuthn verifier does — the one this
+  // release replaces accepts the same attestation — so it is not refused by
+  // default. An RP that acts on attestation provenance opts in.
+  var ownCaChallenge = b64url(crypto.randomBytes(32));
+  var ownCa = await makePackedAttestationUnderOwnCa(ownCaChallenge);
+  var ownCaArgs = {
+    response: ownCa.response, expectedChallenge: ownCaChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  };
+
+  // By DEFAULT this verifies — and that is the honest, pre-existing WebAuthn
+  // behaviour, matching the verifier this release replaces: a packed chain is
+  // anchored through the credential's FIDO metadata entry, not a fixed root
+  // list, so refusing it would reject every ordinary security key. What the
+  // result says is that it anchored at nothing.
+  var unanchoredAccepted = await regOutcome(Object.assign({}, ownCaArgs));
+  check("attestation anchor: an unanchored packed chain still verifies by default",
+        unanchoredAccepted.ok === true);
+  check("attestation anchor: ...and the result reports anchoredTo as nothing",
+        unanchoredAccepted.ok === true &&
+        !unanchoredAccepted.rv.registrationInfo.anchoredTo);
+
+  // An RP that ACTS on attestation provenance opts in, and then the same
+  // ceremony is refused: the AAGUID it claims is not a verified fact.
+  var unanchoredRefused = await regOutcome(
+    Object.assign({ requireAttestationAnchor: true }, ownCaArgs));
+  check("attestation anchor: requireAttestationAnchor refuses a chain that anchored at nothing",
+        unanchoredRefused.ok === false && unanchoredRefused.threw === true &&
+        /attestation-not-anchored/.test(String(unanchoredRefused.code)));
+
+  // The opt-in must not fire on a ceremony with no chain to anchor — a
+  // `none` attestation is the framework default and has to keep working.
+  var noneChallenge = b64url(crypto.randomBytes(32));
+  var noneReg = makeRegistration(noneChallenge);
+  var noneAnchored = await regOutcome({
+    response: noneReg.response, expectedChallenge: noneChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    requireAttestationAnchor: true,
+  });
+  check("attestation anchor: the opt-in does not fire on a chainless attestation",
+        noneAnchored.ok === true);
 
   // Deciding WHICH anchors apply means reading the attestation's format. An
   // object too large or too malformed to read cannot be assigned a policy —
