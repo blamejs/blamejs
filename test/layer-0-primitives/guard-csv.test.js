@@ -20,6 +20,7 @@
  */
 
 var helpers = require("../helpers");
+var C       = require("../../lib/constants");
 var b       = helpers.b;
 var check   = helpers.check;
 
@@ -333,6 +334,438 @@ function testGuardCsvFormulaInjectionPrefixTab() {
         out.indexOf("\t=cmd|x") !== -1);
 }
 
+// TAB is itself a formula trigger, so prefixing an already-prefixed cell
+// stacks a second one and the mitigation stops being a fixed point: escaping
+// a value that came out of escapeCell must return it unchanged, and the
+// escaped value must satisfy the module's own formula check.
+function testGuardCsvEscapeCellPrefixTabIsIdempotent() {
+  var opts  = { formulaInjectionPolicy: "prefix-tab" };
+  var once  = b.guardCsv.escapeCell("=SUM(A1)", opts);
+  var twice = b.guardCsv.escapeCell(once, opts);
+  check("escapeCell prefix-tab applies exactly one TAB",
+        once === "\t=SUM(A1)");
+  check("escapeCell prefix-tab is idempotent",
+        twice === once);
+  check("escapeCell prefix-tab does not stack triggers",
+        twice.indexOf("\t\t") === -1);
+}
+
+// A neutralized cell must not still read as a formula-prefix cell to the
+// module's own scanner, or a round-trip through serialize → validate reports
+// the mitigation as the threat it was applied to prevent.
+function testGuardCsvSerializedFormulaPassesOwnValidate() {
+  ["strict", "balanced"].forEach(function (p) {
+    var out = b.guardCsv.serialize([["note"], ["=SUM(A1)"]], { profile: p });
+    var v   = b.guardCsv.validate(out, { profile: p });
+    var ids = (v.issues || []).map(function (i) { return i.ruleId; });
+    check("serialize output has no formula-injection finding under " + p,
+          ids.indexOf("csv.formula-injection") === -1);
+  });
+}
+
+// The scan treats every common delimiter as a cell boundary, because a
+// recipient may open the file under a different dialect than the one it was
+// written in. Whatever it flags on that basis has to be MITIGATED on the same
+// basis: a finding the sanitizer cannot act on is a gate that reports
+// `sanitize` and hands back the payload untouched.
+async function testGuardCsvAlternateDelimiterFindingIsActuallyMitigated() {
+  var doc = "a\r\nsafe;=2+3\r\n";
+  var v = await b.guardCsv.gate({ profile: "strict" })
+    .check({ bytes: Buffer.from(doc, "utf8") });
+  // It cannot be disarmed without rewriting the document for a dialect the
+  // guard is not emitting, so the gate refuses rather than serving it under a
+  // "sanitize" verdict.
+  check("a formula behind an alternate delimiter is refused, not served",
+        v.action === "refuse");
+  check("nothing is served for it", !v.sanitized);
+
+  // The ordinary case still repairs — this is not a blanket escalation.
+  var normal = await b.guardCsv.gate({ profile: "strict" })
+    .check({ bytes: Buffer.from("a,b\r\nx,=cmd|y\r\n", "utf8") });
+  check("a formula in a configured-dialect cell is still repaired",
+        normal.action === "sanitize");
+  var served = Buffer.from(normal.sanitized).toString("utf8");
+  check("the repaired cell carries the mitigation inside quotes",
+        served.indexOf("\"\t=cmd|y\"") !== -1);
+
+  // The allowlist policy leaves a named-safe call unprefixed on purpose, and
+  // the scan still reports every formula-leading cell. A residual check that
+  // cannot tell those apart refuses exactly what the operator allowed.
+  var allowed = await b.guardCsv.gate({
+    profile: "strict", formulaInjectionPolicy: "allowlist", formulasAllowlist: ["SUM"],
+  }).check({ bytes: Buffer.from("a\r\n=SUM(A1)\r\n", "utf8") });
+  check("an allowlisted formula is not refused by the residual check",
+        allowed.action !== "refuse");
+  if (allowed.sanitized) {
+    check("the allowlisted call is served unprefixed",
+          Buffer.from(allowed.sanitized).toString("utf8").indexOf("=SUM(A1)") !== -1);
+  }
+  var notAllowed = await b.guardCsv.gate({
+    profile: "strict", formulaInjectionPolicy: "allowlist", formulasAllowlist: ["SUM"],
+  }).check({ bytes: Buffer.from("a\r\n=cmd|x\r\n", "utf8") });
+  check("a non-allowlisted formula is still acted on under allowlist",
+        notAllowed.action === "sanitize" || notAllowed.action === "refuse");
+
+  // An allowlisted call must not SHIELD a later one. The scan reports the
+  // first formula-leading cell it finds, so a residual check that inspects
+  // only that finding exempts the whole document on the strength of its
+  // safest cell.
+  var shielded = await b.guardCsv.gate({
+    profile: "strict", formulaInjectionPolicy: "allowlist", formulasAllowlist: ["SUM"],
+  }).check({ bytes: Buffer.from("a\r\n=SUM(A1);=cmd|x\r\n", "utf8") });
+  var shieldedOut = shielded.sanitized
+    ? Buffer.from(shielded.sanitized).toString("utf8") : null;
+  check("an allowlisted cell does not shield a later unsafe one",
+        shielded.action === "refuse" ||
+        (shieldedOut !== null && shieldedOut.indexOf(";=cmd|x") === -1));
+
+  // `allow` and `audit-only` permit formulas on purpose — detect suppresses the
+  // finding entirely. A residual check that does not read the policy refuses
+  // the document whenever some UNRELATED repairable issue (a zero-width char,
+  // a stray BOM) sends it through the sanitizer.
+  var ZWSP = String.fromCharCode(0x200B);
+  for (var pi = 0; pi < 2; pi += 1) {
+    var permissivePolicy = ["allow", "audit-only"][pi];
+    var pv = await b.guardCsv.gate({
+      profile: "balanced", formulaInjectionPolicy: permissivePolicy,
+    }).check({ bytes: Buffer.from("h\r\n=SUM(A1)" + ZWSP + "\r\n", "utf8") });
+    check("formulaInjectionPolicy " + permissivePolicy + " still serves a formula " +
+          "when an unrelated issue triggers sanitize", pv.action !== "refuse");
+  }
+
+  // Whatever sanitize does serve must not still trip its own scan.
+  var re = b.guardCsv.validate(served, { profile: "strict" });
+  check("the sanitized output has no formula finding left",
+        (re.issues || []).every(function (i) {
+          return i.ruleId !== "csv.formula-injection";
+        }));
+}
+
+// A quoted cell leading with TAB is skipped because that is what the
+// prefix-tab mitigation produces — but only under that policy. TAB is a
+// formula trigger in its own right, so under `reject` (or any policy that does
+// not emit a TAB prefix) the same cell is an ordinary triggering cell and
+// escapeCell refuses it. A scan that exempts it regardless reports `ok` on a
+// document its own serializer would not produce.
+function testGuardCsvQuotedTabExemptionIsScopedToPrefixTab() {
+  var doc = "a\r\n\"\t=2+3\"";
+  var mitigating = b.guardCsv.validate(doc, { formulaInjectionPolicy: "prefix-tab" });
+  check("under prefix-tab a quoted TAB-led cell is the mitigated form",
+        (mitigating.issues || []).every(function (i) {
+          return i.ruleId !== "csv.formula-injection";
+        }));
+
+  ["reject", "prefix-quote", "wrap-with-quotes-and-prefix", "allowlist"].forEach(function (p) {
+    var v = b.guardCsv.validate(doc, { formulaInjectionPolicy: p, formulasAllowlist: ["SUM"] });
+    check("under " + p + " a quoted TAB-led cell is still a formula finding",
+          (v.issues || []).some(function (i) { return i.ruleId === "csv.formula-injection"; }));
+  });
+
+  // The serializer already refuses the equivalent cell under reject, so the
+  // scan agreeing with it is the point.
+  var threw = null;
+  try { b.guardCsv.escapeCell("\t=2+3", { formulaInjectionPolicy: "reject" }); }
+  catch (e) { threw = e; }
+  check("escapeCell refuses the same cell under reject",
+        threw !== null && threw.code === "csv.formula-injection");
+}
+
+// The cell walk has to use the quote character the operator configured. With a
+// different quote, a double quote is ordinary content — and a scanner that
+// reads it as opening a quoted field skips forward looking for a close that
+// never comes, walking past every later cell boundary to the end of input. The
+// cells after it are then never scanned at all, so a formula there is missed
+// rather than merely mis-located.
+function testGuardCsvCellScannerHonorsTheConfiguredQuote() {
+  var doc = "\"ordinary,=2+3";
+  var v = b.guardCsv.validate(doc, { profile: "strict", quote: "'" });
+  var ids = (v.issues || []).map(function (i) { return i.ruleId; });
+  check("a formula after an ordinary double quote is detected under quote:'",
+        ids.indexOf("csv.formula-injection") !== -1);
+
+  // The configured quote still opens a quoted field, and the TAB mitigation
+  // inside it is still recognized as the mitigation rather than a threat.
+  var mitigated = b.guardCsv.serialize([["=cmd|x"]], { profile: "strict", quote: "'" });
+  var mv = b.guardCsv.validate(mitigated, { profile: "strict", quote: "'" });
+  check("output escaped under a custom quote passes its own validate",
+        (mv.issues || []).every(function (i) { return i.ruleId !== "csv.formula-injection"; }));
+
+  // The default quote is unchanged: there the same bytes really are one
+  // unterminated quoted field, with no second cell to flag.
+  var d = b.guardCsv.validate(doc, { profile: "strict" });
+  check("under the default quote the same bytes are one quoted field",
+        (d.issues || []).every(function (i) { return i.ruleId !== "csv.formula-injection"; }));
+
+  // Same shape for the delimiter. The scanner knows the delimiters a document
+  // may plausibly use, but the operator can configure one outside that set —
+  // and a cell boundary the scanner does not recognize is a cell it never
+  // scans, so the formula after it is missed entirely.
+  [":", "~", "^", "#"].forEach(function (delim) {
+    var dv = b.guardCsv.validate("a" + delim + "=cmd|x",
+                                 { profile: "strict", delimiter: delim });
+    check("a formula after a configured " + JSON.stringify(delim) + " delimiter is detected",
+          (dv.issues || []).some(function (i) { return i.ruleId === "csv.formula-injection"; }));
+  });
+}
+
+// The gate's disposition for a formula, across every policy the guard accepts
+// and both boundary kinds the scan recognises. Four consecutive review rounds
+// went to fixing this one function from the direction of the last symptom —
+// enforcement missing, then the allowlist broken, then a safe cell shielding an
+// unsafe one, then the permissive policies overridden. Each patch was locally
+// right and globally incomplete. The matrix is the contract; a change to
+// _gateProduceSanitized that moves any cell of it is a decision, not a detail.
+async function testGuardCsvFormulaPolicyMatrix() {
+  var ZWSP = String.fromCharCode(0x200B);
+  var rows = [
+    // policy,           document,                         expected action
+    ["allow",            "h\r\n=SUM(A1)" + ZWSP,           "sanitize"],
+    ["audit-only",       "h\r\n=SUM(A1)" + ZWSP,           "sanitize"],
+    ["prefix-tab",       "h\r\n=cmd|x",                    "sanitize"],
+    ["prefix-quote",     "h\r\n=cmd|x",                    "sanitize"],
+    ["allowlist",        "h\r\n=SUM(A1)",                  "sanitize"],
+    ["allowlist",        "h\r\n=cmd|x",                    "sanitize"],
+    ["reject",           "h\r\n=cmd|x",                    "refuse"],
+    // A formula behind an ALTERNATE delimiter cannot be disarmed without
+    // rewriting for a dialect the guard is not emitting.
+    ["prefix-tab",       "h\r\nsafe;=cmd|x",               "refuse"],
+    ["allowlist",        "h\r\n=SUM(A1);=cmd|x",           "refuse"],
+    // ...unless the policy permits formulas outright.
+    ["allow",            "h\r\nsafe;=cmd|x" + ZWSP,        "sanitize"],
+    // The dangerous-function denylist is a separate axis and survives even a
+    // policy that permits formulas.
+    ["allow",            "h\r\n=WEBSERVICE(\"http://x\")" + ZWSP, "refuse"],
+  ];
+  for (var i = 0; i < rows.length; i += 1) {
+    var policy = rows[i][0], doc = rows[i][1], expected = rows[i][2];
+    var v = await b.guardCsv.gate({
+      profile: "balanced", formulaInjectionPolicy: policy, formulasAllowlist: ["SUM"],
+    }).check({ bytes: Buffer.from(doc + "\r\n", "utf8") });
+    check("policy " + policy + " on " + JSON.stringify(doc) + " -> " + expected,
+          v.action === expected);
+    // Nothing served may still carry a bare, unmitigated payload.
+    if (v.sanitized) {
+      var out = Buffer.from(v.sanitized).toString("utf8");
+      var permits = policy === "allow" || policy === "audit-only";
+      check("policy " + policy + ": served output carries no bare `;=cmd`",
+            permits || out.indexOf(";=cmd") === -1);
+    }
+  }
+}
+
+// The gate's sanitize action re-parses the cleaned text and re-serializes it
+// with the formula mitigation applied. That round trip has to use the dialect
+// the operator configured: reading a semicolon-delimited document back as
+// comma-delimited collapses every row into a single cell, so the document the
+// gate serves has a different shape from the one it was given.
+async function testGuardCsvGateSanitizePreservesTheConfiguredDialect() {
+  var doc = "a;b\r\n=2+3;safe";
+  var v = await b.guardCsv.gate({ profile: "strict", delimiter: ";" })
+    .check({ bytes: Buffer.from(doc, "utf8") });
+  check("a row-leading formula under a non-comma dialect reaches sanitize",
+        v.action === "sanitize");
+  var served = Buffer.from(v.sanitized).toString("utf8");
+  var rows = b.csv.parse(served, { header: false, delimiter: ";" });
+  check("sanitized output keeps both rows",    rows.length === 2);
+  check("sanitized output keeps both columns", rows.every(function (r) { return r.length === 2; }));
+  check("the formula cell is still mitigated",
+        rows[1][0].charAt(0) === "\t" && rows[1][0].indexOf("=2+3") !== -1);
+  check("the untouched cell survives intact",  rows[1][1] === "safe");
+  // The whole round trip, not just the delimiter the finding named: every
+  // dialect the guard accepts has to survive it, and the comma case must not
+  // regress in the process.
+  var dialects = [
+    ["comma",        {}],
+    ["tab",          { delimiter: "\t" }],
+    ["pipe",         { delimiter: "|" }],
+    ["LF endings",   { lineEnding: "\n" }],
+    ["BOM prefix",   { bomPrefix: true }],
+    ["custom quote", { quote: "'" }],
+  ];
+  for (var di = 0; di < dialects.length; di += 1) {
+    var label = dialects[di][0], cfg = dialects[di][1];
+    var d = cfg.delimiter || ",";
+    var eol = cfg.lineEnding || "\r\n";
+    var vd = await b.guardCsv.gate(Object.assign({ profile: "strict" }, cfg))
+      .check({ bytes: Buffer.from("a" + d + "b" + eol + "=2+3" + d + "safe", "utf8") });
+    var rowsD = b.csv.parse(Buffer.from(vd.sanitized).toString("utf8"),
+                            { header: false, delimiter: d, quote: cfg.quote || "\"" });
+    check("sanitize round-trip preserves shape under " + label,
+          rowsD.length === 2 && rowsD.every(function (r) { return r.length === 2; }));
+    check("sanitize round-trip preserves the untouched cell under " + label,
+          rowsD[1][1] === "safe");
+  }
+}
+
+// Quoting is part of the formula mitigation, so it applies when the
+// mitigation fires and not otherwise. Quoting every export unconditionally
+// would add about a third to a table that carries no trigger at all, which
+// for a large one is the difference between fitting under maxTotalBytes and
+// being refused.
+function testGuardCsvQuotingScopedToDocumentsThatNeedIt() {
+  var benign = [["name", "note"], ["alice", "hello"], ["bob", "world"]];
+  var out = b.guardCsv.serialize(benign, { profile: "strict" });
+  check("a table with no formula trigger is not quoted throughout",
+        out.indexOf("\"") === -1);
+
+  var withTrigger = [["name", "note"], ["alice", "=cmd|x"], ["bob", "world"]];
+  var out2 = b.guardCsv.serialize(withTrigger, { profile: "strict" });
+  check("one triggering cell quotes the emitted document",
+        out2.indexOf("\"\t=cmd|x\"") !== -1);
+  check("the untriggered cells in that document are quoted too",
+        out2.indexOf("\"alice\"") !== -1);
+  check("the mitigated document still passes its own validate",
+        (b.guardCsv.validate(out2, { profile: "strict" }).issues || [])
+          .every(function (i) { return i.ruleId !== "csv.formula-injection"; }));
+
+  // An explicit alwaysQuote is still honored on a benign table.
+  check("explicit alwaysQuote still quotes a benign table",
+        b.guardCsv.serialize(benign, { profile: "strict", alwaysQuote: true })
+          .indexOf("\"name\"") !== -1);
+
+  // Whether the mitigation fired is a fact about what escaping DID, not about
+  // what the escaped value happens to start with. Under the apostrophe
+  // policies a cell that already began with one was never modified, so reading
+  // the leading character as evidence would quote the whole document for a
+  // value the guard did not touch.
+  ["prefix-quote", "wrap-with-quotes-and-prefix", "allowlist"].forEach(function (p) {
+    var rows = [["note"], ["'tis a quiet table"], ["ok"]];
+    var out = b.guardCsv.serialize(rows, {
+      formulaInjectionPolicy: p, formulasAllowlist: ["SUM"],
+    });
+    check("a pre-existing apostrophe does not read as a mitigation under " + p,
+          out.indexOf("\"") === -1);
+    // And a cell the policy really does prefix still quotes the document.
+    var triggered = b.guardCsv.serialize([["note"], ["=cmd|x"]], {
+      formulaInjectionPolicy: p, formulasAllowlist: ["SUM"],
+    });
+    check("a genuinely prefixed cell still quotes the document under " + p,
+          triggered.indexOf("\"'=cmd|x\"") !== -1);
+  });
+
+  // The mirror case. Under prefix-tab a cell already beginning with TAB IS a
+  // triggering cell, left unchanged only because a second TAB would be
+  // redundant — but bare it is still the unquoted form the mitigation exists
+  // to avoid, so it needs the quoting even though nothing was added.
+  var tabLed = b.guardCsv.serialize([["\tx"]], { profile: "strict" });
+  check("a cell already leading with TAB is still emitted quoted",
+        tabLed.indexOf("\"\tx\"") !== -1);
+}
+
+// The formula scan anchors on start-of-input or a delimiter. A cell that
+// opens a row is preceded by neither — it follows the line ending — so
+// without a multiline anchor the first column of every row but the first goes
+// unscanned, which is where a formula is most likely to sit.
+function testGuardCsvFormulaDetectedAtLineStart() {
+  var payloads = ["=WEBSERVICE(\"http://x\")", "=cmd|x", "+cmd|x", "@SUM(A1)"];
+  payloads.forEach(function (p) {
+    var doc = "header\r\n" + p + "\r\n";
+    var v   = b.guardCsv.validate(doc, { profile: "strict" });
+    var ids = (v.issues || []).map(function (i) { return i.ruleId; });
+    check("formula at the start of a row is detected: " + JSON.stringify(p),
+          ids.indexOf("csv.formula-injection") !== -1);
+  });
+  // Same payload in a later column is already caught; this pins that the
+  // line-start case reaches the same verdict rather than a weaker one.
+  var inline = b.guardCsv.validate("h1,h2\r\nx,=cmd|x\r\n", { profile: "strict" });
+  var lead   = b.guardCsv.validate("h1,h2\r\n=cmd|x,x\r\n", { profile: "strict" });
+  check("row-leading and mid-row formulas reach the same verdict",
+        inline.ok === lead.ok);
+}
+
+// The number of cell boundaries in a document is proportional to its size — a
+// document of nothing but delimiters has one per byte. A scan that collects
+// the boundaries before examining them therefore turns an untrusted input into
+// an index array many times its size, which is a memory amplification an
+// attacker picks the input for. The scan visits each boundary instead, so what
+// it holds is bounded by the findings, not by the document.
+function testGuardCsvDelimiterDenseInputDoesNotAmplifyMemory() {
+  var mib = 8;
+  var doc = "a" + ",".repeat(C.BYTES.mib(mib));
+  var before = process.memoryUsage().heapUsed;
+  var v = b.guardCsv.validate(doc, { profile: "strict" });
+  var deltaMib = (process.memoryUsage().heapUsed - before) / C.BYTES.mib(1);
+  // Retaining the boundaries costs well over 10x the input; visiting them
+  // costs about 1x, which is the input string itself. 4x separates the two
+  // with room for allocator noise in either direction.
+  check("delimiter-dense input does not amplify memory (" +
+        deltaMib.toFixed(1) + " MiB for " + mib + " MiB)",
+        deltaMib < mib * 4);
+  check("delimiter-dense input still produces a verdict", Array.isArray(v.issues));
+}
+
+// CR and LF are formula triggers as CELL CONTENT, which unquoted they can
+// never be — there they are the row separator. A blank row, a leading blank
+// row, and a trailing newline are ordinary documents, not injected formulas.
+function testGuardCsvBlankRowsAreNotFormulas() {
+  var benign = ["\r\n\r\n", "\r\n", "\r\na,b\r\n1,2\r\n", "a,b\r\n\r\n1,2\r\n",
+                "a,b\r\n1,2\r\n\r\n", "\n\n", "a\nb\n"];
+  benign.forEach(function (doc) {
+    var v = b.guardCsv.validate(doc, { profile: "strict" });
+    var ids = (v.issues || []).map(function (i) { return i.ruleId; });
+    check("blank rows are not read as formulas: " + JSON.stringify(doc),
+          ids.indexOf("csv.formula-injection") === -1);
+  });
+  // A CR that really is cell content sits inside quotes, and there it stands.
+  var quoted = b.guardCsv.validate("a,b\r\nx,\"\rpayload\"\r\n", { profile: "strict" });
+  check("a CR inside a quoted cell is still a formula-leading cell",
+        (quoted.issues || []).some(function (i) {
+          return i.ruleId === "csv.formula-injection";
+        }));
+}
+
+function testGuardCsvDangerousFunctionDetectedAtLineStart() {
+  var v = b.guardCsv.validate("header\r\n=WEBSERVICE(\"http://x\")\r\n",
+                              { profile: "strict" });
+  var ids = (v.issues || []).map(function (i) { return i.ruleId; });
+  check("dangerous function at the start of a row is detected",
+        ids.indexOf("csv.dangerous-function") !== -1);
+}
+
+// The allowlist policy exists to let documented-safe functions through
+// unprefixed. Anything it cannot positively identify as allowlisted must be
+// prefixed — a cell whose leading word the matcher does not recognize is the
+// unknown case, not the safe one.
+function testGuardCsvAllowlistPolicyFailsClosed() {
+  var opts = { formulaInjectionPolicy: "allowlist", formulasAllowlist: ["SUM", "AVERAGE"] };
+  check("allowlisted function passes through unprefixed",
+        b.guardCsv.escapeCell("=SUM(A1)", opts) === "=SUM(A1)");
+  var mustPrefix = ["=cmd|x", "+cmd|x", "-cmd|x", "@cmd|x", "=cmd", "=2+3",
+                    "=HYPERLINK(\"http://x\")"];
+  mustPrefix.forEach(function (v) {
+    var out = b.guardCsv.escapeCell(v, opts);
+    check("allowlist prefixes non-allowlisted cell " + JSON.stringify(v),
+          out !== v && out.charAt(0) === "'");
+  });
+  // Spreadsheet function names are case-insensitive, so a lowercase spelling
+  // of an allowlisted function is the same function.
+  check("allowlist recognizes a lowercase spelling of an allowlisted function",
+        b.guardCsv.escapeCell("=sum(A1)", opts) === "=sum(A1)");
+}
+
+// Same reject-policy fail-open the sibling guards refuse: the strip table only
+// removes a class set to "strip", and this scrubber never refuses, so a class
+// set to "reject" would come back verbatim.
+function testGuardCsvSanitizeRefusesUnderRejectPolicy() {
+  var cases = [
+    ["bidi",      String.fromCharCode(0x202E), "csv.bidi"],
+    ["control",   String.fromCharCode(0x07),   "csv.control"],
+    ["null byte", String.fromCharCode(0x00),   "csv.null-byte"],
+  ];
+  cases.forEach(function (c) {
+    var label = c[0], ch = c[1], code = c[2];
+    var out = null, err = null;
+    try { out = b.guardCsv.sanitize("a,b\r\nok," + ch + "x\r\n", { profile: "strict" }); }
+    catch (e) { err = e; }
+    check("csv sanitize refuses " + label + " under strict rather than returning it",
+          err !== null && typeof out !== "string");
+    check("csv sanitize refusal for " + label + " carries " + code,
+          err !== null && err.code === code);
+  });
+  check("csv sanitize still serves benign input under strict",
+        typeof b.guardCsv.sanitize("a,b\r\nok,x\r\n", { profile: "strict" }) === "string");
+}
+
 function testGuardCsvFormulaInjectionWrap() {
   // strict profile now uses prefix-tab per OWASP — Excel-resistant
   // (apostrophe gets stripped on save+reopen). Verify the default.
@@ -381,19 +814,23 @@ function testGuardCsvFormulaInjectionReject() {
 }
 
 function testGuardCsvFormulaInjectionEveryPrefix() {
-  // strict profile uses prefix-tab per OWASP. Every formula-trigger char
-  // gets a leading TAB which Excel/LibreOffice strip on save+reopen but
-  // disarm at evaluation time. csv.stringify will quote the cell because
-  // \t is non-bare; either way the original prefix char is no longer
-  // first inside the quoted body.
+  // strict uses prefix-tab per OWASP, whose form is a TAB (0x09) placed
+  // INSIDE the quoted field. What has to hold for every trigger char is that
+  // the emitted field is quoted and its first character inside the quotes is
+  // the TAB — not that a TAB is stacked on whatever was there. TAB is itself
+  // one of the triggers, so a cell already starting with one is already in
+  // the mitigated form and a second TAB would add nothing.
   var prefixes = ["=", "+", "-", "@", "\t", "\r", "\n", "|"];
-  var allWrapped = true;
-  for (var i = 0; i < prefixes.length; i++) {
-    var out = b.guardCsv.serialize([[prefixes[i] + "x"]], { profile: "strict" });
-    if (out.indexOf("\t" + prefixes[i]) === -1) allWrapped = false;
-  }
-  check("formula injection: all 8 prefix chars TAB-prefixed under strict",
-        allWrapped);
+  prefixes.forEach(function (p) {
+    var out  = b.guardCsv.serialize([[p + "x"]], { profile: "strict" });
+    var body = out.split("\r\n")[0];
+    check("formula trigger " + JSON.stringify(p) + " emits a quoted field",
+          body.charAt(0) === "\"" && body.charAt(body.length - 1) === "\"");
+    check("formula trigger " + JSON.stringify(p) + " leads with TAB inside the quotes",
+          body.charAt(1) === "\t");
+    check("formula trigger " + JSON.stringify(p) + " does not stack triggers",
+          body.indexOf("\t\t") === -1);
+  });
 }
 
 function testGuardCsvFormulaAllowlist() {
@@ -1187,6 +1624,17 @@ async function run() {
   testGuardCsvSchemaNullableAndCode();
   testGuardCsvSchemaTypeViolations();
   testGuardCsvSchemaRange();
+  testGuardCsvQuotedTabExemptionIsScopedToPrefixTab();
+  testGuardCsvCellScannerHonorsTheConfiguredQuote();
+  testGuardCsvQuotingScopedToDocumentsThatNeedIt();
+  testGuardCsvFormulaDetectedAtLineStart();
+  testGuardCsvBlankRowsAreNotFormulas();
+  testGuardCsvDelimiterDenseInputDoesNotAmplifyMemory();
+  testGuardCsvDangerousFunctionDetectedAtLineStart();
+  testGuardCsvAllowlistPolicyFailsClosed();
+  testGuardCsvEscapeCellPrefixTabIsIdempotent();
+  testGuardCsvSerializedFormulaPassesOwnValidate();
+  testGuardCsvSanitizeRefusesUnderRejectPolicy();
   testGuardCsvSchemaBoundValidate();
   testGuardCsvSerializeRowsNotArray();
   testGuardCsvSerializeRedact();
@@ -1199,6 +1647,9 @@ async function run() {
   testGuardCsvGateDispositionDefault();
   await testGuardCsvGateOperatorRuleDefaultsAndCatch();
   await testGuardCsvGateSanitizeReserializesFormula();
+  await testGuardCsvGateSanitizePreservesTheConfiguredDialect();
+  await testGuardCsvAlternateDelimiterFindingIsActuallyMitigated();
+  await testGuardCsvFormulaPolicyMatrix();
 }
 
 module.exports = { run: run };

@@ -311,7 +311,7 @@ function testGuardAllByContentTypeShape() {
 
 // ---- Run all ----
 
-function run() {
+async function run() {
   testGuardAllSurface();
   testGuardAllRegistryParity();
   testGuardAllDefaultAllOn();
@@ -324,7 +324,314 @@ function run() {
   testGuardAllAuditEmitsAllOnByDefault();
   testGuardAllByExtensionShape();
   testGuardAllByContentTypeShape();
+  testGuardFamilySanitizeNeverServesThreatVerbatim();
+  testGuardFamilyGateReachesTagsEnforcement();
+  await testGuardFamilyTagsDispositionMatchesZeroWidth();
+  testGuardFamilySeverityAgreesWithPolicy();
+  testGuardFamilyEveryStripPathRemovesTheSameClasses();
+  testGuardFamilyValidateIsDeterministicAcrossCalls();
   return testGuardAllDispatchRoutesByMime();
+}
+
+// ---- Family invariant: sanitize never serves a threat back verbatim ----
+
+// Every content guard's strip table removes only the classes an operator set
+// to "strip". A guard whose sanitize also never refuses therefore has a hole
+// at "reject": neither branch runs, and the threat is returned unchanged with
+// no error — the strictest setting the weakest behavior. This walks the live
+// registry rather than a hardcoded list, so a guard added later is covered the
+// day it registers.
+var THREAT_CODEPOINTS = [
+  ["bidi override",  String.fromCharCode(0x202E)],
+  ["C0 control",     String.fromCharCode(0x07)],
+  ["null byte",      String.fromCharCode(0x00)],
+  ["zero width",     String.fromCharCode(0x200B)],
+  ["Unicode tags",   String.fromCodePoint(0xE0041)],
+];
+
+function testGuardFamilySanitizeNeverServesThreatVerbatim() {
+  var covered = 0;
+  b.guardAll.allGuards().forEach(function (g) {
+    if (g.KIND !== "content" || typeof g.sanitize !== "function") return;
+    var fixtures = g.INTEGRATION_FIXTURES;
+    if (!fixtures || fixtures.benignBytes === undefined) return;
+    var carrier = Buffer.isBuffer(fixtures.benignBytes)
+      ? fixtures.benignBytes.toString("utf8")
+      : String(fixtures.benignBytes);
+    // Only guards whose sanitize accepts their own benign fixture can be
+    // probed this way; one that refuses it has nothing to say about a threat
+    // appended to it.
+    try { g.sanitize(carrier, { profile: "strict" }); }
+    catch (_e) { return; }
+    covered += 1;
+    THREAT_CODEPOINTS.forEach(function (t) {
+      var label = t[0], ch = t[1];
+      var out = null, threw = false;
+      try { out = g.sanitize(carrier + ch, { profile: "strict" }); }
+      catch (_e) { threw = true; }
+      var servedVerbatim = !threw && typeof out === "string" && out.indexOf(ch) !== -1;
+      check("guard " + g.NAME + ": sanitize refuses or strips " + label +
+            " under strict, never serves it", servedVerbatim === false);
+    });
+  });
+  // Guard the guard: if the probe stops reaching any member the assertions
+  // above pass vacuously, which is the failure mode that hides a regression.
+  check("family sanitize invariant probed at least three content guards",
+        covered >= 3);
+}
+
+// ---- Family invariant: the gate reaches the enforcement sanitize has ----
+
+// A content gate validates first and only sanitizes when validation found
+// something. So enforcement that exists ONLY in the sanitize path is
+// unreachable through the gate: the document validates clean and is served
+// unchanged, with the strip that would have removed the threat never running.
+// Unicode Tags shipped exactly that way — every guard's strip table handles
+// them, and no guard but one reported them.
+function testGuardFamilyGateReachesTagsEnforcement() {
+  var TAG = String.fromCodePoint(0xE0041);
+  var probed = 0;
+  b.guardAll.allGuards().forEach(function (g) {
+    if (g.KIND !== "content" || typeof g.validate !== "function") return;
+    var fixtures = g.INTEGRATION_FIXTURES;
+    if (!fixtures || fixtures.benignBytes === undefined) return;
+    var carrier = Buffer.isBuffer(fixtures.benignBytes)
+      ? fixtures.benignBytes.toString("utf8") : String(fixtures.benignBytes);
+    // Only guards that accept their own benign fixture can be probed.
+    var clean;
+    try { clean = g.validate(carrier, { profile: "strict" }); }
+    catch (_e) { return; }
+    if (!clean || !Array.isArray(clean.issues)) return;
+    probed += 1;
+
+    var v;
+    try { v = g.validate(carrier + TAG, { profile: "strict" }); }
+    catch (_e2) { return; }          // refusing outright is enforcement too
+    check("guard " + g.NAME + ": validate reports a Unicode Tags character",
+          (v.issues || []).length > (clean.issues || []).length);
+  });
+  check("tags-detection invariant probed at least three content guards", probed >= 3);
+}
+
+// Detecting a class is only half of it: the gate maps each finding kind to a
+// disposition, and a kind no map knows degrades to severity. For a class the
+// sanitizer can physically remove that means refusing a document it could have
+// repaired — at every profile, including permissive.
+//
+// Tags inherits the zero-width POLICY, so zero-width is the reference for
+// whether the gate repairs — but not for severity. The two are rated
+// differently on purpose: a zero-width character is a spacing artifact, a Tags
+// character carries an invisible copy of ASCII text, and guardText has always
+// rated the second higher. guardEmail acts on that difference (it maps severity
+// straight to a disposition, serving one and refusing the other), which is
+// right rather than a divergence to flatten.
+//
+// So two properties, both true of every guard:
+//   - a Tags character is never SERVED with the character intact
+//   - where the gate repairs zero-width, it repairs Tags too — a repairable
+//     class must not refuse a document the sanitizer could have fixed
+async function testGuardFamilyTagsDispositionMatchesZeroWidth() {
+  var TAG = String.fromCodePoint(0xE0041);
+  var ZWSP = String.fromCharCode(0x200B);
+  var probed = 0;
+  var guards = b.guardAll.allGuards().filter(function (g) {
+    return g.KIND === "content" && typeof g.gate === "function" &&
+           g.INTEGRATION_FIXTURES && g.INTEGRATION_FIXTURES.benignBytes !== undefined;
+  });
+  for (var i = 0; i < guards.length; i += 1) {
+    var g = guards[i];
+    var carrier = Buffer.isBuffer(g.INTEGRATION_FIXTURES.benignBytes)
+      ? g.INTEGRATION_FIXTURES.benignBytes.toString("utf8")
+      : String(g.INTEGRATION_FIXTURES.benignBytes);
+    // Only meaningful where the guard applies the same policy to both.
+    var resolved = typeof g.resolveOpts === "function"
+      ? g.resolveOpts({ profile: "balanced" }) : null;
+    if (!resolved || resolved.tagsPolicy !== undefined) continue;
+
+    var withTag, withZw, base;
+    try {
+      base    = await g.gate({ profile: "balanced" }).check({ bytes: Buffer.from(carrier, "utf8") });
+      withTag = await g.gate({ profile: "balanced" }).check({ bytes: Buffer.from(carrier + TAG, "utf8") });
+      withZw  = await g.gate({ profile: "balanced" }).check({ bytes: Buffer.from(carrier + ZWSP, "utf8") });
+    } catch (_e) { continue; }
+
+    // Appending to a structured document can break its syntax — for JSON or
+    // XML that is a parse finding and refusing is right. Compare only where
+    // each append introduced exactly its own invisible-character finding.
+    function addedKinds(v) {
+      return (v.issues || []).map(function (x) { return x.kind; }).filter(function (k) {
+        return !(base.issues || []).some(function (bi) { return bi.kind === k; });
+      });
+    }
+    var tagAdded = addedKinds(withTag), zwAdded = addedKinds(withZw);
+    if (tagAdded.length !== 1 || tagAdded[0] !== "unicode-tags") continue;
+    probed += 1;
+
+    check("guard " + g.NAME + ": a Tags character is never served intact",
+          withTag.action !== "serve" &&
+          !(withTag.sanitized &&
+            Buffer.from(withTag.sanitized).toString("utf8").indexOf(TAG) !== -1));
+
+    // Repair parity, only where zero-width is itself the lone added finding
+    // and the gate chose to repair it.
+    if (zwAdded.length === 1 && zwAdded[0] === "zero-width" &&
+        withZw.action === "sanitize") {
+      check("guard " + g.NAME + ": Tags is repaired where zero-width is repaired",
+            withTag.action === "sanitize");
+    }
+  }
+  check("tags disposition probed at least two content guards", probed >= 2);
+}
+
+// A finding's SEVERITY has to agree with the policy that produced it. Several
+// guards refuse a critical finding before their transform runs, so a class
+// stamped critical while the resolved policy says `strip` makes the public
+// `sanitize` throw on input it was configured to repair — the same
+// policy-versus-behaviour mismatch as a strip table that never strips.
+function testGuardFamilySeverityAgreesWithPolicy() {
+  var TAG = String.fromCodePoint(0xE0041);
+  var probed = 0;
+  b.guardAll.allGuards().forEach(function (g) {
+    if (g.KIND !== "content" || typeof g.sanitize !== "function") return;
+    if (typeof g.resolveOpts !== "function") return;
+    var fixtures = g.INTEGRATION_FIXTURES;
+    if (!fixtures || fixtures.benignBytes === undefined) return;
+    var carrier = Buffer.isBuffer(fixtures.benignBytes)
+      ? fixtures.benignBytes.toString("utf8") : String(fixtures.benignBytes);
+    var resolved = g.resolveOpts({ profile: "balanced" });
+    var policy = resolved.tagsPolicy === undefined
+      ? resolved.zeroWidthPolicy : resolved.tagsPolicy;
+    if (policy !== "strip") return;
+    // The guard must accept its own benign fixture first, or the probe says
+    // nothing about the Tags character.
+    try { g.sanitize(carrier, { profile: "balanced" }); }
+    catch (_e) { return; }
+    probed += 1;
+
+    var out = null, threw = null;
+    try { out = g.sanitize(carrier + TAG, { profile: "balanced" }); }
+    catch (e) { threw = e; }
+    check("guard " + g.NAME + ": sanitize strips a strip-policy Tags char " +
+          "rather than refusing it", threw === null);
+    if (threw === null) {
+      check("guard " + g.NAME + ": the stripped output no longer carries it",
+            String(out).indexOf(TAG) === -1);
+    }
+  });
+  check("severity/policy agreement probed at least three content guards", probed >= 3);
+}
+
+// Every public entry point that REMOVES characters has to remove the same set.
+// A guard whose validate reports a class while some other hand-rolled strip
+// path in the same guard hands it back is the mismatch this catches:
+// guardJson.parse and guardFilename.sanitize each replaced zero-width and not
+// Unicode Tags, so balanced validation called the character a threat and
+// balanced parsing returned it inside the value.
+function testGuardFamilyEveryStripPathRemovesTheSameClasses() {
+  var TAG = String.fromCodePoint(0xE0041);
+  var ZWSP = String.fromCharCode(0x200B);
+  var probes = [
+    ["guardJson.parse", function () {
+      return JSON.stringify(b.guardJson.parse("{\"a\":\"x" + TAG + ZWSP + "\"}",
+                                              { profile: "balanced" }));
+    }],
+    ["guardFilename.sanitize strip", function () {
+      return b.guardFilename.sanitize("re" + TAG + ZWSP + "port.txt",
+                                      { profile: "balanced", mode: "strip" });
+    }],
+    ["guardCsv.sanitize", function () {
+      return b.guardCsv.sanitize("a,b\r\nx,y" + TAG + ZWSP + "\r\n", { profile: "balanced" });
+    }],
+    ["guardText.sanitize", function () {
+      return b.guardText.sanitize("ok" + TAG + ZWSP, { profile: "balanced" });
+    }],
+    ["guardHtml.sanitize", function () {
+      return b.guardHtml.sanitize("<p>x" + TAG + ZWSP + "</p>", { profile: "balanced" });
+    }],
+  ];
+  probes.forEach(function (p) {
+    var out = null;
+    try { out = String(p[1]()); }
+    catch (_e) { return; }        // refusing is the other valid answer
+    check(p[0] + ": removes the Unicode Tags character",
+          out.indexOf(TAG) === -1);
+    check(p[0] + ": removes the zero-width character",
+          out.indexOf(ZWSP) === -1);
+  });
+
+  // The inheritance runs one way only: an EXPLICIT tagsPolicy wins over the
+  // zero-width setting it would otherwise borrow. A scrub path that re-derives
+  // the policy by reading `zeroWidthPolicy` alone strips a character its own
+  // validate says to allow.
+  var allowOpts = { profile: "balanced", tagsPolicy: "allow" };
+  var jsonAllowed = b.guardJson.parse("{\"a\":\"x" + TAG + "\"}", allowOpts);
+  check("guardJson.parse honors an explicit tagsPolicy: allow",
+        String(jsonAllowed.a).indexOf(TAG) !== -1);
+  check("guardJson.validate agrees — no Tags finding under allow",
+        (b.guardJson.validate("{\"a\":\"x" + TAG + "\"}", allowOpts).issues || [])
+          .every(function (i) { return i.kind !== "unicode-tags"; }));
+  var nameAllowed = b.guardFilename.sanitize("re" + TAG + "port.txt",
+    { profile: "balanced", mode: "strip", tagsPolicy: "allow" });
+  check("guardFilename.sanitize honors an explicit tagsPolicy: allow",
+        String(nameAllowed).indexOf(TAG) !== -1);
+}
+
+// ---- Family invariant: a verdict does not depend on how many came before ----
+
+// Scanning state must not survive a call. A regex carrying `g` keeps its
+// `lastIndex` between invocations and `.test()` resumes from it, so the same
+// document answers true, then false, then true — the guard reports a finding on
+// every other call and nothing about the input says which answer you got. That
+// is worse than never detecting it: an operator sees the rule work when they
+// try it and miss half the traffic in production. guardYaml's leading-zero
+// octal scan shipped exactly this way.
+//
+// A lexical detector cannot catch the class. The declaration and the `.test()`
+// sit thousands of characters apart with no structural boundary between them,
+// and whether it is safe depends on what else touches that ONE name — a
+// data-flow question a pattern match cannot ask. Driving the shipped consumer
+// path twice can: it catches statefulness of any origin, however reintroduced.
+//
+// Its reach is bounded by the fixtures: it can only observe drift in rules the
+// hostile fixture actually trips, so a guard whose fixture exercises one rule
+// is checked for that rule alone. That is an argument for richer fixtures, not
+// against the invariant — and the per-guard repeat tests cover the rest.
+function testGuardFamilyValidateIsDeterministicAcrossCalls() {
+  var probed = 0;
+  b.guardAll.allGuards().forEach(function (g) {
+    if (typeof g.validate !== "function") return;
+    var fixtures = g.INTEGRATION_FIXTURES;
+    if (!fixtures) return;
+    var hostile = fixtures.hostileIdentifier !== undefined ? fixtures.hostileIdentifier
+                : fixtures.hostileFilename   !== undefined ? fixtures.hostileFilename
+                : fixtures.hostileMetadata   !== undefined ? fixtures.hostileMetadata
+                : fixtures.hostileBytes;
+    if (hostile === undefined) return;
+    // Content guards take bytes OR text; several refuse a Buffer outright, and
+    // a `bad-input` verdict exercises no rule at all. Prefer the text form so
+    // the probe reaches the scanners it is meant to be watching.
+    if (Buffer.isBuffer(hostile) && g.KIND === "content") hostile = hostile.toString("utf8");
+
+    var first;
+    try { first = g.validate(hostile); }
+    catch (_e) { return; }              // refusing is a verdict too, just not one to diff here
+    if (!first || !Array.isArray(first.issues)) return;
+    if (first.issues.length === 0) return;   // nothing to observe drift in
+    probed += 1;
+
+    var firstIds = first.issues.map(function (i) { return i.ruleId; }).sort().join(",");
+    var stable = true;
+    for (var n = 0; n < 5 && stable; n += 1) {
+      var again;
+      try { again = g.validate(hostile); } catch (_e2) { stable = false; break; }
+      var againIds = (again.issues || []).map(function (i) { return i.ruleId; }).sort().join(",");
+      if (againIds !== firstIds || again.ok !== first.ok) stable = false;
+    }
+    check("guard " + g.NAME + ": validate returns the same verdict on repeat calls",
+          stable);
+  });
+  // Guard the guard: vacuous passes are the failure mode this is meant to stop.
+  check("determinism invariant probed at least eight guards", probed >= 8);
 }
 
 module.exports = { run: run };

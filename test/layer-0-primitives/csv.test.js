@@ -31,6 +31,46 @@ async function run() {
   var p3 = b.csv.parse("a,b\n1,2");
   check("parse: no trailing newline ok",   p3.length === 1 && p3[0].a === "1");
 
+  // A final record that is a QUOTED EMPTY field, with no trailing line
+  // terminator. Nothing accumulates for it — the field is empty and the row is
+  // empty — so an end-of-input check that asks only whether either holds
+  // content drops the record, losing a row on round-trip. Distinct from a
+  // trailing newline, which really does end the data.
+  var pq = b.csv.parse("\"a\"\r\n\"\"", { header: false });
+  check("parse: quoted-empty final row survives",  pq.length === 2);
+  check("parse: quoted-empty final row is empty",  pq[1] && pq[1].length === 1 && pq[1][0] === "");
+  var pq2 = b.csv.parse("\"\"", { header: false });
+  check("parse: a lone quoted-empty field is one row", pq2.length === 1 && pq2[0][0] === "");
+  var pq3 = b.csv.parse("a,\"\"", { header: false });
+  check("parse: quoted-empty trailing FIELD survives",
+        pq3.length === 1 && pq3[0].length === 2 && pq3[0][1] === "");
+  // The cases either side of it must not move.
+  check("parse: trailing newline still ends the data",
+        b.csv.parse("a\r\n", { header: false }).length === 1);
+  check("parse: empty input is no rows",
+        b.csv.parse("", { header: false }).length === 0);
+  // Round-trip: what stringify emits, parse must read back. A row of one
+  // empty cell has no characters of its own, so emitted bare it is an empty
+  // line and the record is lost — stringify quotes it to give it a body.
+  var rtRows = [["a"], [""], ["b"]];
+  var rtDoc = b.csv.stringify(rtRows, { header: false });
+  var rt = b.csv.parse(rtDoc, { header: false });
+  check("stringify: a row of one empty cell is emitted quoted",
+        rtDoc.indexOf("\"\"") !== -1);
+  check("parse: stringify round-trip preserves an empty row",
+        rt.length === 3 && rt[1][0] === "");
+  // The same row in final position is the case that actually went missing.
+  var tailDoc = b.csv.stringify([["a"], [""]], { header: false });
+  check("parse: stringify round-trip preserves a TRAILING empty row",
+        b.csv.parse(tailDoc, { header: false }).length === 2);
+  // A multi-cell row carries its shape in its delimiters and is untouched.
+  var multi = b.csv.stringify([["a", ""], ["", "b"]], { header: false });
+  check("stringify: a multi-cell row with empty cells is not quoted",
+        multi.indexOf("\"") === -1);
+  check("parse: multi-cell empty cells round-trip",
+        JSON.stringify(b.csv.parse(multi, { header: false })) ===
+        JSON.stringify([["a", ""], ["", "b"]]));
+
   // BOM stripped
   var p4 = b.csv.parse("﻿a,b\n1,2\n");
   check("parse: leading BOM consumed",     p4[0].a === "1");
