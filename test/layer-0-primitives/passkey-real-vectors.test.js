@@ -1035,6 +1035,52 @@ async function testAuthenticatorExtensionResults() {
         nestedOut &&
         JSON.parse(JSON.stringify(nestedOut)).largeBlob.inner.deep === 7);
 
+  // A structured extension can nest a COSE key, and a COSE map is labelled
+  // with INTEGERS, not strings. devicePubKey's `dpk` is exactly that. Keeping
+  // only string keys drops every entry of such a map, so a verified public
+  // key surfaces as `{}` — the same data loss as leaving it a Map, one level
+  // further in.
+  var coseChallenge = b64url(crypto.randomBytes(32));
+  var coseKp = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var coseCredId = crypto.randomBytes(32);
+  var coseExt = cborMap([
+    [cborText("devicePubKey"), cborMap([
+      [cborInt(1), cborInt(2)],                    // kty: EC2   (canonical: ints ascending)
+      [cborInt(3), cborInt(-7)],                   // alg: ES256
+    ])],
+  ]);
+  var coseAuthData = Buffer.concat([
+    buildAuthData(RP_ID, FLAG_UP | FLAG_UV | FLAG_AT | 0x80, 0,                     // allow:raw-byte-literal — ED flag
+      buildAttestedCredData(Buffer.alloc(16, 0), coseCredId,
+                            coseEC2PublicKey(coseKp.publicKey))),
+    coseExt,
+  ]);
+  var coseRv = await regOutcome({
+    response: {
+      id: b64url(coseCredId), rawId: b64url(coseCredId), type: "public-key",
+      response: {
+        clientDataJSON: b64url(Buffer.from(JSON.stringify({
+          type: "webauthn.create", challenge: coseChallenge, origin: ORIGIN,
+          crossOrigin: false,
+        }), "utf8")),
+        attestationObject: b64url(cborMap([
+          [cborText("fmt"),      cborText("none")],
+          [cborText("attStmt"),  cborMap([])],
+          [cborText("authData"), cborBytes(coseAuthData)],
+        ])),
+      },
+      clientExtensionResults: {},
+    },
+    expectedChallenge: coseChallenge, expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  var coseOut = coseRv.ok && coseRv.rv.registrationInfo.authenticatorExtensionResults;
+  check("signed extensions: an integer-labelled nested map keeps its entries",
+        coseOut && coseOut.devicePubKey &&
+        Object.keys(coseOut.devicePubKey).length === 2);
+  check("signed extensions: integer CBOR labels survive as their decimal form",
+        coseOut && coseOut.devicePubKey &&
+        coseOut.devicePubKey["1"] === 2 && coseOut.devicePubKey["3"] === -7);
+
   // A signed extension may legally be named `__proto__`. Assigning that to an
   // ordinary object hits the legacy prototype setter: the key disappears from
   // Object.keys and from JSON, and its contents come back as INHERITED
