@@ -1763,6 +1763,47 @@ async function testRefusalsAreFramedAsAuthErrors() {
     expectedOrigin: ORIGIN, expectedRPID: RP_ID,
   }, "registration with a stale challenge");
 
+  // A code is framed ONCE. The try blocks around the verifier also cover
+  // reading wire fields and decoding the stored key, and those raise errors
+  // that are already in this namespace — re-framing one yields
+  // `auth-passkey/auth-passkey/bad-response`, which matches nothing a caller
+  // dispatches on, so the most ordinary malformed-input cases go unroutable.
+  var okReg = await regOutcome({
+    response: reg.response, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  var goodCd = b64url(Buffer.from(JSON.stringify({
+    type: "webauthn.get", challenge: challenge, origin: ORIGIN, crossOrigin: false,
+  }), "utf8"));
+  var doubleFramed = [
+    {
+      label: "a missing binary field",
+      inner: { clientDataJSON: goodCd, authenticatorData: null, signature: "AAAA" },
+      key:   storedPublicKey(okReg.rv),
+      want:  /^auth-passkey\/bad-response$/,
+    },
+    {
+      label: "an undecodable stored credential key",
+      inner: { clientDataJSON: goodCd, authenticatorData: "AAAA", signature: "AAAA" },
+      key:   Buffer.from([0xff]),                                                  // allow:raw-byte-literal — not a COSE key
+      want:  /^auth-passkey\/bad-credential-key$/,
+    },
+  ];
+  for (var d = 0; d < doubleFramed.length; d++) {
+    var rv = await authOutcome({
+      response: {
+        id: b64url(reg.credId), rawId: b64url(reg.credId), type: "public-key",
+        response: doubleFramed[d].inner, clientExtensionResults: {},
+      },
+      expectedChallenge: challenge, expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+      credential: { id: b64url(reg.credId), publicKey: doubleFramed[d].key, counter: 0 },
+    });
+    check("error framing: " + doubleFramed[d].label +
+          " keeps its single auth-passkey/* code",
+          rv.ok === false && rv.threw === true &&
+          doubleFramed[d].want.test(String(rv.code)));
+  }
+
   await refusalFor({
     response: reg.response, expectedChallenge: challenge,
     expectedOrigin: "https://attacker.test", expectedRPID: RP_ID,
