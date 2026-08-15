@@ -2579,6 +2579,49 @@ async function testRegistrationCredentialIdIsAttested() {
         rvRaw.ok === false && rvRaw.threw === true &&
         /credential-id-mismatch/.test(String(rvRaw.code)));
 
+  // Tolerating ONE missing spelling is compatibility. Tolerating BOTH skips
+  // the binding entirely — the response named no credential at all, and the
+  // check that exists to tie it to one compares nothing.
+  var noId = JSON.parse(JSON.stringify(reg.response));
+  delete noId.id;
+  delete noId.rawId;
+  var noIdRv = await regOutcome({
+    response: noId, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("registration stating NEITHER id nor rawId is REJECTED",
+        noIdRv.ok === false && noIdRv.threw === true &&
+        /missing-credential-id/.test(String(noIdRv.code)));
+
+  // ...and the same on the authentication side, where the caller-supplied
+  // credential would otherwise stand in for a binding that never happened.
+  var honestSetup = await regOutcome({
+    response: reg.response, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  var authChallenge = b64url(crypto.randomBytes(32));
+  var assertion = makeAssertion(reg.keyPair.privateKey, reg.credId, authChallenge, 1);
+  var noIdAuth = JSON.parse(JSON.stringify(assertion.response));
+  delete noIdAuth.id;
+  delete noIdAuth.rawId;
+  var noIdAuthRv = await authOutcome({
+    response: noIdAuth, expectedChallenge: authChallenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    credential: { id: b64url(reg.credId), publicKey: storedPublicKey(honestSetup.rv), counter: 0 },
+  });
+  check("assertion stating NEITHER id nor rawId is REJECTED",
+        noIdAuthRv.ok === false && noIdAuthRv.threw === true &&
+        /missing-credential-id/.test(String(noIdAuthRv.code)));
+
+  // One spelling alone still works — that tolerance is deliberate.
+  var onlyRawId = JSON.parse(JSON.stringify(reg.response));
+  delete onlyRawId.id;
+  var onlyRawIdRv = await regOutcome({
+    response: onlyRawId, expectedChallenge: challenge,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("registration stating only rawId still verifies", onlyRawIdRv.ok === true);
+
   // The honest ceremony still verifies, and what is persisted is the ATTESTED
   // ID — so a later assertion binds against the same value the authenticator
   // signed, not whatever the browser sent.
