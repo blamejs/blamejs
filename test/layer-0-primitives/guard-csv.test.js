@@ -363,6 +363,39 @@ function testGuardCsvSerializedFormulaPassesOwnValidate() {
   });
 }
 
+// The scan treats every common delimiter as a cell boundary, because a
+// recipient may open the file under a different dialect than the one it was
+// written in. Whatever it flags on that basis has to be MITIGATED on the same
+// basis: a finding the sanitizer cannot act on is a gate that reports
+// `sanitize` and hands back the payload untouched.
+async function testGuardCsvAlternateDelimiterFindingIsActuallyMitigated() {
+  var doc = "a\r\nsafe;=2+3\r\n";
+  var v = await b.guardCsv.gate({ profile: "strict" })
+    .check({ bytes: Buffer.from(doc, "utf8") });
+  // It cannot be disarmed without rewriting the document for a dialect the
+  // guard is not emitting, so the gate refuses rather than serving it under a
+  // "sanitize" verdict.
+  check("a formula behind an alternate delimiter is refused, not served",
+        v.action === "refuse");
+  check("nothing is served for it", !v.sanitized);
+
+  // The ordinary case still repairs — this is not a blanket escalation.
+  var normal = await b.guardCsv.gate({ profile: "strict" })
+    .check({ bytes: Buffer.from("a,b\r\nx,=cmd|y\r\n", "utf8") });
+  check("a formula in a configured-dialect cell is still repaired",
+        normal.action === "sanitize");
+  var served = Buffer.from(normal.sanitized).toString("utf8");
+  check("the repaired cell carries the mitigation inside quotes",
+        served.indexOf("\"\t=cmd|y\"") !== -1);
+
+  // Whatever sanitize does serve must not still trip its own scan.
+  var re = b.guardCsv.validate(served, { profile: "strict" });
+  check("the sanitized output has no formula finding left",
+        (re.issues || []).every(function (i) {
+          return i.ruleId !== "csv.formula-injection";
+        }));
+}
+
 // A quoted cell leading with TAB is skipped because that is what the
 // prefix-tab mitigation produces — but only under that policy. TAB is a
 // formula trigger in its own right, so under `reject` (or any policy that does
@@ -1525,6 +1558,7 @@ async function run() {
   await testGuardCsvGateOperatorRuleDefaultsAndCatch();
   await testGuardCsvGateSanitizeReserializesFormula();
   await testGuardCsvGateSanitizePreservesTheConfiguredDialect();
+  await testGuardCsvAlternateDelimiterFindingIsActuallyMitigated();
 }
 
 module.exports = { run: run };
