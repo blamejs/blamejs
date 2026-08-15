@@ -1841,6 +1841,11 @@ async function testStoredKeyAcceptedFormats() {
     { label: "a Buffer (BLOB column)",                value: bytes },
     { label: "a Uint8Array",                          value: new Uint8Array(bytes) },
     { label: "a base64url string (TEXT column)",      value: bytes.toString("base64url") },
+    // A COSE key's length usually calls for padding — an ES256 key is 77
+    // bytes, 103 characters plus one '=' — so the padded spelling is what a
+    // padding-emitting encoder actually wrote to that column.
+    { label: "a PADDED base64url string",
+      value: bytes.toString("base64").replace(/\+/g, "-").replace(/\//g, "_") },
   ];
   for (var i = 0; i < forms.length; i++) {
     var authChallenge = b64url(crypto.randomBytes(32));
@@ -1875,6 +1880,56 @@ async function testStoredKeyAcceptedFormats() {
   check("stored key: a non-base64url string is refused by name",
         notB64.ok === false && notB64.threw === true &&
         /bad-credential-key/.test(String(notB64.code)));
+
+  // ...and a non-canonical one too: it decodes to different bytes, which is a
+  // different key, and the login would fail with a message about a malformed
+  // credential on a row that is intact.
+  var nonCanonical = await authOutcome({
+    response: makeAssertion(reg.keyPair.privateKey, reg.credId, challenge, 11).response,
+    expectedChallenge: challenge, expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+    credential: { id: b64url(reg.credId), publicKey: "YW", counter: 0 },
+  });
+  check("stored key: a non-canonical base64url string is refused by name",
+        nonCanonical.ok === false && nonCanonical.threw === true &&
+        /bad-credential-key/.test(String(nonCanonical.code)));
+}
+
+async function testBadAttestationSignatureIsANegativeResult() {
+  // A bad attestation signature is the registration-side equivalent of a
+  // failed login: an ordinary negative outcome, not an exceptional one. The
+  // caller writes `if (!rv.verified) deny()`, so throwing turns it into an
+  // unhandled exception and a 500 where a refusal belongs — and the verifier
+  // this release replaced returned verified:false here.
+  var challenge = b64url(crypto.randomBytes(32));
+  var kp = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var credId = crypto.randomBytes(32);
+  var authData = buildAuthData(RP_ID, FLAG_UP | FLAG_UV | FLAG_AT, 0,
+    buildAttestedCredData(Buffer.alloc(16, 0), credId, coseEC2PublicKey(kp.publicKey)));
+  var clientData = Buffer.from(JSON.stringify({
+    type: "webauthn.create", challenge: challenge, origin: ORIGIN, crossOrigin: false,
+  }), "utf8");
+  // packed self-attestation whose signature covers the WRONG bytes.
+  var att = cborMap([
+    [cborText("fmt"),     cborText("packed")],
+    [cborText("attStmt"), cborMap([
+      [cborText("alg"), cborInt(-7)],
+      [cborText("sig"), cborBytes(signDER(kp.privateKey, Buffer.from("other data")))],
+    ])],
+    [cborText("authData"), cborBytes(authData)],
+  ]);
+  var rv = await regOutcome({
+    response: {
+      id: b64url(credId), rawId: b64url(credId), type: "public-key",
+      response: { clientDataJSON: b64url(clientData), attestationObject: b64url(att) },
+      clientExtensionResults: {},
+    },
+    expectedChallenge: challenge, expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("bad attestation signature: reported as verified:false, not thrown",
+        rv.threw === false && rv.rv.verified === false);
+  check("bad attestation signature: the result shape a caller reads is intact",
+        rv.threw === false && rv.rv.registrationInfo === null &&
+        rv.rv.backupEligible === false && rv.rv.backupState === false);
 }
 
 // ---- Every refusal is an AuthError in the auth-passkey namespace ----
@@ -2400,6 +2455,7 @@ async function run() {
   await testRegistrationInfoFeedsFidoMds3();
   await testZeroSignCountAuthenticators();
   await testStoredKeyAcceptedFormats();
+  await testBadAttestationSignatureIsANegativeResult();
   await testRefusalsAreFramedAsAuthErrors();
   await testLegacyAlgorithmOptIn();
   await testMultiOriginAllowList();
