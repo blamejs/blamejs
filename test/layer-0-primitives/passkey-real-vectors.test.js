@@ -2674,6 +2674,39 @@ async function testLegacyAlgorithmOptIn() {
         dflt.pubKeyCredParams.map(function (p) { return p.alg; }).join(",") === "-8,-7,-257");
 }
 
+async function testTimeoutIsValidatedInEveryBuilder() {
+  // A bare typeof check lets NaN, Infinity and negatives into the options
+  // document the browser receives, where the ceremony fails client-side —
+  // far from the operator's typo, with the framework having reported nothing.
+  // All THREE builders enforce it, because a rule applied to two of three is
+  // the shape every other miss in this module took.
+  var builders = [
+    ["startRegistration", function (t) {
+      return passkey.startRegistration({
+        rpName: "Example", rpId: RP_ID, userName: "alice", timeout: t });
+    }],
+    ["startAuthentication", function (t) {
+      return passkey.startAuthentication({ rpId: RP_ID, timeout: t });
+    }],
+    ["conditionalAuthOptions", function (t) {
+      return passkey.conditionalAuthOptions({ rpId: RP_ID, timeout: t });
+    }],
+  ];
+  var bogus = [NaN, Infinity, -1, "60000"];
+  for (var b2 = 0; b2 < builders.length; b2++) {
+    for (var i = 0; i < bogus.length; i++) {
+      var threw = null;
+      try { await builders[b2][1](bogus[i]); } catch (e) { threw = e; }
+      check("timeout: " + builders[b2][0] + " refuses " + String(bogus[i]),
+            threw && /bad-timeout/.test(String(threw.code)));
+    }
+    // ...and a legitimate value still passes through untouched.
+    var ok = await builders[b2][1](90000);                                         // allow:raw-time-literal — an ordinary operator timeout
+    check("timeout: " + builders[b2][0] + " passes a valid timeout through",
+          ok.timeout === 90000);                                                   // allow:raw-time-literal — same value
+  }
+}
+
 // ---- Registration: the stored credential ID comes from the attestation ----
 
 async function testRegistrationCredentialIdIsAttested() {
@@ -2979,6 +3012,7 @@ async function run() {
   await testWireFieldsMustBeCanonical();
   await testRefusalsAreFramedAsAuthErrors();
   await testLegacyAlgorithmOptIn();
+  await testTimeoutIsValidatedInEveryBuilder();
   await testMultiOriginAllowList();
   await testRsaCredentialRoundTrip();
 }

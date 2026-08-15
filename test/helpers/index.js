@@ -35,6 +35,7 @@ var _fsWatch  = require("./fs-watch");
 var _tls      = require("./tls");
 var _ocsp     = require("./ocsp");
 var _merkle   = require("./merkle");
+var _webauthn = require("./webauthn");
 
 module.exports = {
   // Framework binding + Node stdlib re-exports for ergonomics.
@@ -87,6 +88,8 @@ module.exports = {
 
   // Loopback TLS server certificate (verify with `ca: [pair.cert]`)
   selfSignedPair:     _tls.selfSignedPair,
+  registerCredential: _webauthn.registerCredential,
+  assertCredential:   _webauthn.assertCredential,
 
   // RFC 6960 OCSP responder — one parameterized builder for the accept path
   // and every refusal shape (status, certStatus, nonce, CertID, signature).

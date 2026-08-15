@@ -1047,6 +1047,60 @@ async function testPasskeyFactorPath() {
     } catch (e) { threw = e; }
     check("passkey: malformed assertion rejected as bad-factor",
           threw && /breakglass\/bad-factor/.test(threw.code));
+
+    // A REAL assertion, and the ceremony policy the operator set on the
+    // factor. This wrapper enumerates the options it forwards, so an option
+    // the ceremony gained later silently stops reaching it — and the one that
+    // matters is allowedAlgorithms: b.auth.passkey verifies only the three
+    // algorithms it advertises, so a break-glass credential enrolled under a
+    // wider set is refused with no way to say otherwise. Losing emergency
+    // access is a worse outcome than any narrowed default protects against.
+    //
+    // The forwarding is observable without a legacy key: name an algorithm
+    // list that EXCLUDES this credential's and the assertion must fail; name
+    // one that includes it and the same assertion must pass. If the option
+    // were dropped, both would behave identically.
+    var reg = helpers.registerCredential({ rpId: "example.test" });
+    var enrolled = await b.auth.passkey.verifyRegistration({
+      response:          reg.response,
+      expectedChallenge: reg.challenge,
+      expectedOrigin:    reg.origin,
+      expectedRPID:      reg.rpId,
+    });
+    check("passkey: the fixture credential enrolls", enrolled.verified === true);
+    var stored = {
+      id:        enrolled.registrationInfo.credential.id,
+      publicKey: enrolled.registrationInfo.credential.publicKey,
+      counter:   0,
+    };
+
+    async function grantWith(allowedAlgorithms) {
+      var a = helpers.assertCredential(reg, { signCount: 1 });
+      var factor = {
+        type:              "passkey",
+        response:          a.response,
+        expectedChallenge: a.challenge,
+        expectedOrigin:    reg.origin,
+        expectedRPID:      reg.rpId,
+        credential:        stored,
+      };
+      if (allowedAlgorithms !== undefined) factor.allowedAlgorithms = allowedAlgorithms;
+      try {
+        await b.breakGlass.grant({
+          req: _fakeReq(), table: "patients",
+          reason: "investigating ticket #12345 for compliance review",
+          factor: factor,
+        });
+        return null;
+      } catch (e) { return e; }
+    }
+
+    check("passkey: a genuine assertion grants with the default algorithm list",
+          (await grantWith(undefined)) === null);
+    check("passkey: allowedAlgorithms reaches the ceremony — an excluding list refuses",
+          (await grantWith([-36])) !== null);
+    check("passkey: ...and an including list still grants",
+          (await grantWith([-7])) === null);
   } finally {
     await teardownTestDb(tmpDir);
   }
