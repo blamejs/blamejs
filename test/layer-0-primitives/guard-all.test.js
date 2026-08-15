@@ -327,6 +327,7 @@ async function run() {
   testGuardFamilySanitizeNeverServesThreatVerbatim();
   testGuardFamilyGateReachesTagsEnforcement();
   await testGuardFamilyTagsDispositionMatchesZeroWidth();
+  testGuardFamilySeverityAgreesWithPolicy();
   testGuardFamilyValidateIsDeterministicAcrossCalls();
   return testGuardAllDispatchRoutesByMime();
 }
@@ -479,6 +480,44 @@ async function testGuardFamilyTagsDispositionMatchesZeroWidth() {
     }
   }
   check("tags disposition probed at least two content guards", probed >= 2);
+}
+
+// A finding's SEVERITY has to agree with the policy that produced it. Several
+// guards refuse a critical finding before their transform runs, so a class
+// stamped critical while the resolved policy says `strip` makes the public
+// `sanitize` throw on input it was configured to repair — the same
+// policy-versus-behaviour mismatch as a strip table that never strips.
+function testGuardFamilySeverityAgreesWithPolicy() {
+  var TAG = String.fromCodePoint(0xE0041);
+  var probed = 0;
+  b.guardAll.allGuards().forEach(function (g) {
+    if (g.KIND !== "content" || typeof g.sanitize !== "function") return;
+    if (typeof g.resolveOpts !== "function") return;
+    var fixtures = g.INTEGRATION_FIXTURES;
+    if (!fixtures || fixtures.benignBytes === undefined) return;
+    var carrier = Buffer.isBuffer(fixtures.benignBytes)
+      ? fixtures.benignBytes.toString("utf8") : String(fixtures.benignBytes);
+    var resolved = g.resolveOpts({ profile: "balanced" });
+    var policy = resolved.tagsPolicy === undefined
+      ? resolved.zeroWidthPolicy : resolved.tagsPolicy;
+    if (policy !== "strip") return;
+    // The guard must accept its own benign fixture first, or the probe says
+    // nothing about the Tags character.
+    try { g.sanitize(carrier, { profile: "balanced" }); }
+    catch (_e) { return; }
+    probed += 1;
+
+    var out = null, threw = null;
+    try { out = g.sanitize(carrier + TAG, { profile: "balanced" }); }
+    catch (e) { threw = e; }
+    check("guard " + g.NAME + ": sanitize strips a strip-policy Tags char " +
+          "rather than refusing it", threw === null);
+    if (threw === null) {
+      check("guard " + g.NAME + ": the stripped output no longer carries it",
+            String(out).indexOf(TAG) === -1);
+    }
+  });
+  check("severity/policy agreement probed at least three content guards", probed >= 3);
 }
 
 // ---- Family invariant: a verdict does not depend on how many came before ----
