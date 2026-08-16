@@ -263,6 +263,9 @@ function testYamlScreensAgreeWithThePatternsTheyReplaced() {
     "use:\n  << : *d", "use:\n  <<:*d", "use:\n  <<  :  *d", "no merge here",
     "---\na: 1\n---\nb: 2", "--- \nx: 1", "a: 1\n---\nb: 2", "---",
     "--- ", "\n--- x", "a: 1\n--- ",
+    // An empty first document is the cheapest multi-document stream to write,
+    // and its first separator sits at index 1 rather than at index 0.
+    "\n--- \na: 1", "\n---\na: 1\n---\nb: 2", "\r\n--- \na: 1",
   ];
 
   var diffs = [];
@@ -282,6 +285,10 @@ function testYamlScreensAgreeWithThePatternsTheyReplaced() {
     compare("norway", NORWAY_BOOL_QUIRK_RE.test(doc), has("norway-implicit-bool"));
     compare("octal", LEADING_ZERO_OCTAL_RE.test(doc), has("leading-zero-octal"));
     compare("merge-key", MERGE_KEY_RE.test(doc), has("merge-key"));
+    // Under strict, multiDocPolicy is reject, so the finding appears whenever
+    // the scan counted at least one separator.
+    compare("multi-document", (doc.match(/(^|\n)---\s/g) || []).length > 0,
+            has("multi-document"));
   });
   check("every YAML screen agrees with the pattern it replaced (" +
         DOCS.length + " documents)", diffs.length === 0,

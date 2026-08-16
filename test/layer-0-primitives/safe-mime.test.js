@@ -827,9 +827,14 @@ function testParsingWalksAgreeWithThePatternsTheyReplaced() {
   check("the boundary-grammar walk agrees with the patterns it replaced",
         boundaryDiffs.length === 0, boundaryDiffs.join(" | "));
 
+  // `=3=\r\nD` is the case a single pass gets wrong: removing the soft break
+  // JOINS the text into `=3D`, and only a second pass decodes it — so a
+  // wrapped message must decode to the same bytes as the unwrapped one.
   var QP = ["", "plain", "=41", "=41=42", "a=\r\nb", "a=\nb", "=", "=4",
             "=4G", "==41", "=41=", "a=3Db", "=0D=0A", "=\r", "=\r\nx",
-            "abc=E2=82=ACdef", "=zz", "=41z=42"];
+            "abc=E2=82=ACdef", "=zz", "=41z=42",
+            "=3=\r\nD", "=3=\nD", "=4=\r\n1", "a=4=\r\n1b", "=3D",
+            "=\r\n=41", "=41=\r\n", "=E2=\r\n=82=AC"];
   var qpDiffs = [];
   QP.forEach(function (s) {
     var ref = s.replace(/=\r?\n/g, "")
