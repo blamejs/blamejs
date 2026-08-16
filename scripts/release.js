@@ -107,7 +107,7 @@ function _quoteWinArg(a) {
   return '"' + a.replace(/"/g, '""') + '"';
 }
 
-function _run(cmd, args, opts) {
+function _runSpawn(cmd, args, opts) {
   opts = opts || {};
   args = args || [];
   var spawnCmd = cmd;
@@ -138,7 +138,13 @@ function _run(cmd, args, opts) {
   return rv;
 }
 
-function _capture(cmd, args, opts) {
+// Test seam for the MUTATING half of the flow (commits, pushes, merges, the
+// gate runs). Kept separate from the _capture seam on purpose: a query may be
+// retried, a mutation never is.
+var _runImpl = _runSpawn;
+function _run(cmd, args, opts) { return _runImpl(cmd, args, opts); }
+
+function _captureSpawn(cmd, args, opts) {
   opts = opts || {};
   args = args || [];
   // Mirror _run's shell handling: shell ONLY for npm/npx on win32 (their .cmd
@@ -164,16 +170,157 @@ function _capture(cmd, args, opts) {
     status: rv.status,
     stdout: (rv.stdout || "").toString().trim(),
     stderr: (rv.stderr || "").toString().trim(),
+    // A binary that could not be spawned at all reports status null with BOTH
+    // streams empty (`gh` not installed -> ENOENT). Carrying the spawn error
+    // is what lets the failure describe itself instead of looking like a
+    // command that succeeded and printed nothing.
+    spawnError: (rv.error && rv.error.code) || null,
   };
 }
 
+// Test seam. Every shell-out that asks a QUESTION routes through this one
+// indirection, so the fail-closed tests can drive each gate with a stub that
+// fails and prove the gate REFUSES rather than reading the failure as an empty
+// answer. Production always runs _captureSpawn.
+var _captureImpl = _captureSpawn;
+function _capture(cmd, args, opts) { return _captureImpl(cmd, args, opts); }
+
+// Describe a failed shell-out well enough to act on: what was being asked,
+// the command line, how it failed, and whatever the tool said.
+function _describeFailure(what, cmd, args, rv) {
+  var how = rv.spawnError
+    ? "could not be spawned (" + rv.spawnError + ")"
+    : "exited " + rv.status;
+  return "release: " + what + " failed -- `" + cmd + " " + (args || []).join(" ") +
+         "` " + how + ".\nAn unreadable result is not an empty one.\n" +
+         (rv.stderr || rv.stdout || "(no output)");
+}
+
+// The form for a question whose answer must be trustworthy: throws unless the
+// command actually ran and succeeded.
+//
+// Plain `_capture` returns `stdout: ""` for BOTH "the command succeeded and
+// printed nothing" and "the command never ran", and every gate in this file
+// that reads `.stdout` directly resolves that ambiguity the permissive way: a
+// failed `git status` reads as a CLEAN tree, a failed `git diff` as NO backend
+// touched (skipping the live-integration gate), a failed `gh pr list` as NO
+// open PR. Each of those defaults lets the release proceed past a gate that
+// never ran.
+//
+// Use plain `_capture` ONLY where a non-zero exit is itself a valid answer --
+// an existence probe like `git rev-parse --verify --quiet <ref>`, or a check
+// that greps the output and warns.
+function _captureOk(what, cmd, args, opts) {
+  var rv = _capture(cmd, args, opts);
+  if (rv.status !== 0) throw new Error(_describeFailure(what, cmd, args, rv));
+  return rv;
+}
+
+// Connection-level failure signatures, matched against a failed query's
+// stderr. The exit code cannot do this job: `gh` reports BOTH a dial failure
+// ("error connecting to <host>") and a rejected token ("Bad credentials (HTTP
+// 401)") as exit 1, so only the message separates the flake worth retrying
+// from the stable answer that retrying cannot change.
+//
+// Erring toward retrying is the safe direction. Retrying a stable failure
+// costs four seconds and then reports the same error; NOT retrying a flake
+// aborts a release step -- or, in _waitForCodexReview, spends the full ten
+// minutes and then blames Codex for a network blip.
+var TRANSIENT_QUERY_MARKERS = [
+  // Dial + DNS
+  "error connecting to", "check your internet connection", "connection reset",
+  "connection refused", "no such host", "server misbehaving",
+  "temporary failure in name resolution", "eai_again", "enotfound",
+  "econnreset", "econnrefused", "etimedout", "esockettimedout",
+  // TLS. Match "handshake" on its own rather than a specific failure phrase:
+  // Go spells the same class at least three ways ("remote error: tls:
+  // handshake failure", "net/http: TLS handshake timeout", "tls: bad record
+  // MAC"), and a phrase-level marker silently misses the spellings it did not
+  // anticipate.
+  "tls: ", "handshake", "unexpected eof", "broken pipe", "socket hang up",
+  // Timeouts
+  "i/o timeout", "context deadline exceeded", "client.timeout exceeded",
+  "timeout awaiting response headers",
+  // Server-side + throttling
+  "rate limit", "http 429", "http 500", "http 502", "http 503", "http 504",
+  "bad gateway", "service unavailable", "gateway timeout",
+];
+
+var QUERY_ATTEMPTS = 3;
+// Mutable so the retry tests can collapse the backoff instead of sleeping four
+// real seconds per case.
+var QUERY_BACKOFF_MS = [1000, 3000];
+
+// A read-only query worth retrying? A binary that is not installed never is
+// (ENOENT does not heal), and neither is a stable rejection -- 401, 404 and
+// "permission denied" answer the question, they just answer it badly.
+function _isTransientQueryFailure(rv) {
+  if (rv.spawnError) return false;
+  var text = ((rv.stderr || "") + "\n" + (rv.stdout || "")).toLowerCase();
+  return TRANSIENT_QUERY_MARKERS.some(function (m) { return text.indexOf(m) !== -1; });
+}
+
+function _firstLine(text) {
+  var lines = String(text || "").split("\n");
+  for (var i = 0; i < lines.length; i += 1) {
+    if (lines[i].trim()) return lines[i].trim();
+  }
+  return "(no output)";
+}
+
+// Run a READ-ONLY network query (gh / npm view), retrying the connection-level
+// failures. The orchestrator makes these in tight bursts that a hand-run never
+// produces -- _waitForCodexReview alone spawns three `gh` processes every 20
+// seconds for up to ten minutes, and each one is a fresh TLS handshake to
+// api.github.com with no connection reuse. That burst is what turns an
+// occasional handshake reset into a reproducible release-flow failure.
+//
+// Retries are safe here BECAUSE the caller is read-only. Mutations go through
+// _run and are never retried: re-running `gh pr merge` or `git push` after an
+// ambiguous failure is a different and much worse hazard.
+function _captureQuery(what, cmd, args, opts) {
+  var rv = null;
+  for (var attempt = 1; attempt <= QUERY_ATTEMPTS; attempt += 1) {
+    rv = _capture(cmd, args, opts);
+    if (rv.status === 0) return rv;
+    if (attempt === QUERY_ATTEMPTS || !_isTransientQueryFailure(rv)) break;
+    var backoffMs = QUERY_BACKOFF_MS[attempt - 1] || QUERY_BACKOFF_MS[QUERY_BACKOFF_MS.length - 1];
+    console.log("  " + what + ": transient failure (attempt " + attempt + "/" + QUERY_ATTEMPTS +
+                "), retrying in " + Math.round(backoffMs / 1000) + "s -- " + _firstLine(rv.stderr));
+    _sleepSync(backoffMs);
+  }
+  var err = new Error(_describeFailure(what, cmd, args, rv));
+  // Tagged so a caller that polls -- and is therefore its own, much longer,
+  // retry loop -- can absorb a connection blip and keep asking, while still
+  // aborting immediately on a stable rejection that no amount of asking fixes.
+  err.lookupFailed = true;
+  err.transient    = _isTransientQueryFailure(rv);
+  throw err;
+}
+
+// The advisory form of _captureQuery, for the two places that REPORT rather
+// than gate (`publish`'s npm version echo, `status`'s PR line). It returns a
+// two-branch result with no `stdout` on the failure branch, so a caller cannot
+// fall back into reading a failure as an empty answer -- the shape makes the
+// old bug unspellable rather than merely discouraged.
+function _captureQueryTolerant(what, cmd, args, opts) {
+  try {
+    return { ok: true, stdout: _captureQuery(what, cmd, args, opts).stdout };
+  } catch (e) {
+    // Only a LOOKUP failure is tolerable. Anything else here is a bug in this
+    // script, and reporting it as "the lookup failed" would disguise it as a
+    // network problem the operator should ignore.
+    if (!e || !e.lookupFailed) throw e;
+    return { ok: false, failure: e.message };
+  }
+}
+
 function _gitClean() {
-  var rv = _capture("git", ["status", "--porcelain"]);
-  return rv.stdout === "";
+  return _captureOk("working-tree status", "git", ["status", "--porcelain"]).stdout === "";
 }
 
 function _gitBranch() {
-  return _capture("git", ["rev-parse", "--abbrev-ref", "HEAD"]).stdout;
+  return _captureOk("current branch", "git", ["rev-parse", "--abbrev-ref", "HEAD"]).stdout;
 }
 
 function _gitOnMain() {
@@ -271,8 +418,13 @@ function _verifyCommitSignature(label) {
     if (verifyRv.stderr) hint += "\n" + verifyRv.stderr;
     throw new Error(hint);
   }
+  // Cosmetic only — `verify-commit` above is the verdict, and it has already
+  // passed by the time we get here. Reading the status keeps that explicit:
+  // this line failing says nothing about the signature.
   var sig = _capture("git", ["log", "-1", "--pretty=%h %G? %GS"]);
-  console.log("signature: " + (sig.stdout || "(captured empty — verify-commit reports Good)"));
+  console.log("signature: " + (sig.status === 0 && sig.stdout
+    ? sig.stdout
+    : "(not displayable on this platform — verify-commit above reports Good)"));
   _ok(label + " commit signature verified");
 }
 
@@ -416,6 +568,15 @@ var BACKEND_LIVE_MAP = [
 // capture it — so by the time `push` runs the change may be EITHER
 // committed (bump-only cut) or still uncommitted (feature+release cut). We
 // union both so the gate can't be slipped by running before the commit.
+// The ref the release branch diverged from. `origin/main` is the merge target;
+// fall back to local `main` when the remote ref isn't fetched. This is the one
+// place the RAW capture is correct: a non-zero exit from `rev-parse --verify
+// --quiet` is the answer (the ref does not exist), not a failure to answer.
+function _mergeBaseRef() {
+  var probe = _capture("git", ["rev-parse", "--verify", "--quiet", "origin/main"]);
+  return probe.status === 0 ? "origin/main" : "main";
+}
+
 function _changedFilesForBackendDetection() {
   var seen = {};
   function add(list) {
@@ -424,17 +585,18 @@ function _changedFilesForBackendDetection() {
       if (p) seen[p] = true;
     });
   }
-  // Committed delta vs main. `origin/main` is the merge target; fall back
-  // to local `main` if the remote ref isn't fetched.
-  var base = "origin/main";
-  if (_capture("git", ["rev-parse", "--verify", "--quiet", base]).status !== 0) {
-    base = "main";
-  }
-  add(_capture("git", ["diff", "--name-only", base + "...HEAD"]).stdout.split(/\r?\n/));
+  var base = _mergeBaseRef();
+  // Every one of these must be trustworthy: an empty change set means "no
+  // backend touched", which SKIPS the live-integration gate entirely. A git
+  // failure read as an empty diff is the quietest way to ship a backend change
+  // that was never proven against the backend.
+  add(_captureOk("committed changes vs " + base, "git",
+                 ["diff", "--name-only", base + "...HEAD"]).stdout.split(/\r?\n/));
   // Uncommitted working-tree delta (staged + unstaged + untracked).
-  add(_capture("git", ["diff", "--name-only"]).stdout.split(/\r?\n/));
-  add(_capture("git", ["diff", "--name-only", "--cached"]).stdout.split(/\r?\n/));
-  add(_capture("git", ["ls-files", "--others", "--exclude-standard"]).stdout.split(/\r?\n/));
+  add(_captureOk("unstaged changes", "git", ["diff", "--name-only"]).stdout.split(/\r?\n/));
+  add(_captureOk("staged changes", "git", ["diff", "--name-only", "--cached"]).stdout.split(/\r?\n/));
+  add(_captureOk("untracked files", "git",
+                 ["ls-files", "--others", "--exclude-standard"]).stdout.split(/\r?\n/));
   return Object.keys(seen);
 }
 
@@ -610,22 +772,35 @@ function cmdRegen() {
   console.log("\nnext: re-run the phase you were on (commit / push / watch / ...)");
 }
 
+// Did this release touch examples/wiki? A failed diff must not read as
+// "untouched": that skips the e2e gate silently, the same class as the
+// live-integration skip.
+//
+// Three-dot against the merge base, matching the backend detector. The two-dot
+// form compares the two endpoints directly, so a wiki commit that landed on
+// main but not on this branch counted as touched here — extra work, but it
+// also meant the two gates were answering the same question from different
+// diffs.
+//
+// Separate from cmdSmoke so the decision can be tested without running the
+// gate's side effects (cmdSmoke wipes the wiki's data directories before the
+// e2e, which a test must never do to the real working tree).
+function _wikiTouched() {
+  var base = _mergeBaseRef();
+  function touchesWiki(rv) {
+    return rv.stdout.split(/\r?\n/).some(function (p) { return p.indexOf("examples/wiki") === 0; });
+  }
+  if (touchesWiki(_captureOk("committed changes vs " + base, "git",
+                             ["diff", "--name-only", base + "...HEAD"]))) return true;
+  return touchesWiki(_captureOk("unstaged changes", "git", ["diff", "--name-only"]));
+}
+
 function cmdSmoke() {
   _section("smoke");
   _run("node", ["test/smoke.js"], { env: { SMOKE_PARALLEL: "64" } });
   _ok("framework smoke clean");
 
-  // wiki e2e — only if examples/wiki was touched in the diff since main.
-  var diffRv = _capture("git", ["diff", "--name-only", "origin/main..HEAD"]);
-  var changed = diffRv.stdout.split(/\r?\n/);
-  var wikiTouched = changed.some(function (p) { return p.indexOf("examples/wiki") === 0; });
-  if (!wikiTouched) {
-    var localDiffRv = _capture("git", ["diff", "--name-only"]);
-    wikiTouched = localDiffRv.stdout.split(/\r?\n/).some(function (p) {
-      return p.indexOf("examples/wiki") === 0;
-    });
-  }
-  if (wikiTouched) {
+  if (_wikiTouched()) {
     _section("wiki e2e");
     var wikiDir = path.join(ROOT, "examples", "wiki");
     try { fs.rmSync(path.join(wikiDir, "data"),     { recursive: true, force: true }); } catch (_e) { /* ignore */ }
@@ -670,7 +845,7 @@ function cmdCommit() {
   // signature failure was resolved out-of-band, or just an over-eager
   // re-invocation), skip the second commit. Verify the existing
   // signature instead.
-  var headSubject = _capture("git", ["log", "-1", "--pretty=%s"]).stdout;
+  var headSubject = _captureOk("HEAD commit subject", "git", ["log", "-1", "--pretty=%s"]).stdout;
   if (headSubject.indexOf(next + " — ") === 0) {
     _ok("HEAD already carries a " + next + " release commit (resume mode)");
     _verifyCommitSignature("existing");
@@ -747,9 +922,15 @@ function cmdPush(opts) {
 // ---- PR / review helpers (shared by watch / merge / push-fix) ------------
 
 // Resolve the open release PR number for a branch; fail closed if none.
+// A branch with no open PR is exit 0 with EMPTY stdout (`--jq '.[0].number'`
+// over an empty array prints nothing), so "no PR" and "the lookup failed" are
+// genuinely distinguishable — the old code just didn't distinguish them, and
+// reported an expired token or a dropped connection as "no open PR for branch
+// X", sending the operator to look for a PR that was there all along.
 function _openPrNumber(branch) {
-  var prNum = _capture("gh", ["pr", "list", "--head", branch, "--state", "open",
-                              "--json", "number", "--jq", ".[0].number"]).stdout;
+  var prNum = _captureQuery("open PR for " + branch, "gh",
+                            ["pr", "list", "--head", branch, "--state", "open",
+                             "--json", "number", "--jq", ".[0].number"]).stdout;
   if (!prNum) {
     throw new Error("release: no open PR for branch " + branch);
   }
@@ -813,11 +994,19 @@ function _isCodexLogin(login) {
 // two forms and both must count, or the wait times out on the clean case:
 //   (1) a formal review node whose commit is the head (it HAS findings);
 //   (2) a clean-verdict issue comment citing the head sha (no review node).
+// Every lookup here fails CLOSED. Returning false on an unreadable answer is
+// especially costly in this function: the caller polls it for ten minutes, so
+// a gh outage spent the whole budget and then reported the timeout as Codex
+// being slow — the one explanation that is definitely wrong.
 function _codexReviewedHead(prNum) {
-  var head = (_capture("gh", ["pr", "view", prNum, "--json", "headRefOid",
-                              "--jq", ".headRefOid"]).stdout || "").trim();
-  if (!head) return false;
-  var rv = _capture("gh", ["api", "graphql",
+  var head = _captureQuery("PR #" + prNum + " head sha", "gh",
+                           ["pr", "view", prNum, "--json", "headRefOid",
+                            "--jq", ".headRefOid"]).stdout.trim();
+  if (!head) {
+    throw new Error("release: PR #" + prNum + " reported no head sha -- " +
+                    "an unreadable result is not an empty one.");
+  }
+  var rv = _captureQuery("PR #" + prNum + " review list", "gh", ["api", "graphql",
     "-f", "query=query { repository(owner:\"blamejs\",name:\"blamejs\") { pullRequest(number:" + prNum +
       ") { reviews(last:100) { nodes { author{login} commit{oid} } } } } }",
     "--jq", ".data.repository.pullRequest.reviews.nodes"]);
@@ -825,7 +1014,8 @@ function _codexReviewedHead(prNum) {
   if ((nodes || []).some(function (r) {
     return r && r.author && _isCodexLogin(r.author.login) && r.commit && r.commit.oid === head;
   })) return true;
-  var cv = _capture("gh", ["pr", "view", prNum, "--json", "comments", "--jq", ".comments"]);
+  var cv = _captureQuery("PR #" + prNum + " comment list", "gh",
+                         ["pr", "view", prNum, "--json", "comments", "--jq", ".comments"]);
   var comments = _ghJson(cv, "PR #" + prNum + " comment list");
   var headPrefix = head.slice(0, 10);
   return (comments || []).some(function (c) {
@@ -840,21 +1030,53 @@ function _codexReviewedHead(prNum) {
 // merge time -- so a merge fired the instant CI is green outruns Codex and
 // ships its findings. RELEASE_SKIP_CODEX_WAIT=1 is the escape hatch for a
 // confirmed Codex outage only, not a routine bypass.
+// Poll cadence and budget. Held in an object rather than inline literals so
+// the wait's branching (transient absorbed, stable aborts, timeout reports
+// UNKNOWN) is testable without a ten-minute test.
+var CODEX_WAIT = { stepMs: 20 * 1000, budgetMs: 10 * 60 * 1000 };
+
 function _waitForCodexReview(prNum) {
   if (process.env.RELEASE_SKIP_CODEX_WAIT === "1") {
     _ok("Codex-review wait skipped (RELEASE_SKIP_CODEX_WAIT=1)");
     return;
   }
-  var stepMs = 20 * 1000, budgetMs = 10 * 60 * 1000, waitedMs = 0;
+  // Measured against the clock, not by summing the sleeps: each tick can now
+  // also spend _captureQuery's retry budget inside the lookup, so counting
+  // only `stepMs` per pass understates elapsed time and stretches a "10
+  // minute" wait well past ten minutes.
+  var stepMs = CODEX_WAIT.stepMs, budgetMs = CODEX_WAIT.budgetMs;
+  var startedAt = Date.now();
   console.log("waiting for Codex (" + CODEX_LOGIN + ") to review PR #" + prNum +
               " head before the thread gate (up to 10m; it reviews a bit after CI)...");
-  while (waitedMs <= budgetMs) {
-    if (_codexReviewedHead(prNum)) {
+  // This poll IS a retry loop, thirty times longer than _captureQuery's. A
+  // connection blip should therefore be absorbed and re-asked on the next
+  // tick, NOT abort the merge -- but it must never be absorbed as "Codex has
+  // not reviewed yet", which is what reading the failure as `false` used to do.
+  // A stable rejection (an expired token, a deleted PR) aborts at once: asking
+  // again for ten minutes cannot change that answer.
+  var lastLookupFailure = null;
+  while (Date.now() - startedAt <= budgetMs) {
+    var reviewed = false;
+    try {
+      reviewed = _codexReviewedHead(prNum);
+      lastLookupFailure = null;
+    } catch (e) {
+      if (!e || !e.lookupFailed || !e.transient) throw e;
+      lastLookupFailure = e;
+      console.log("  review lookup failed transiently; re-asking on the next tick -- " +
+                  _firstLine(e.message));
+    }
+    if (reviewed) {
       _ok("Codex has reviewed the current PR head -- thread gate now sees its findings");
       return;
     }
     _sleepSync(stepMs);
-    waitedMs += stepMs;
+  }
+  if (lastLookupFailure) {
+    throw new Error("release: could not read PR #" + prNum + " review state for 10m -- " +
+      "the lookup kept failing, so whether Codex has reviewed this head is UNKNOWN " +
+      "(not 'no'). Fix the connection to api.github.com and re-run " +
+      "`node scripts/release.js merge`.\n" + lastLookupFailure.message);
   }
   throw new Error("release: Codex has not reviewed PR #" + prNum + " head after 10m. " +
     "It reviews asynchronously; a late finding must not be outrun by the merge. Re-run " +
@@ -953,7 +1175,7 @@ function _unresolvedThreads(prNum) {
   var walkedToEnd = false;
   for (var page = 0; page < 100; page += 1) {
     var afterClause = after ? (", after: \"" + after + "\"") : "";
-    var rv = _capture("gh", ["api", "graphql",
+    var rv = _captureQuery("PR #" + prNum + " review-thread page " + page, "gh", ["api", "graphql",
       "-f", "query=query { repository(owner:\"blamejs\",name:\"blamejs\") { pullRequest(number:" + prNum +
         ") { reviewThreads(first:100" + afterClause + ") { pageInfo { hasNextPage endCursor } nodes { " +
         "id isResolved path line comments(first:1) { nodes { author{login} body } } } } } } }"]);
@@ -1049,8 +1271,12 @@ function cmdMerge() {
   // gate below sees any findings it raises.
   _waitForCodexReview(prNum);
 
-  var state = JSON.parse(_capture("gh", ["pr", "view", prNum,
-    "--json", "mergeStateStatus,mergeable"]).stdout || "{}");
+  // Through _ghJson, so an unreadable payload throws instead of degrading to
+  // `{}` -- which used to surface as the actively misleading "not mergeable
+  // (state=undefined mergeable=undefined)".
+  var state = _ghJson(_captureQuery("PR #" + prNum + " merge state", "gh",
+    ["pr", "view", prNum, "--json", "mergeStateStatus,mergeable"]),
+    "PR #" + prNum + " merge state");
   // Pull unresolved review threads FIRST, at merge time. A BLOCKED state is
   // most often unresolved threads — the bot reviews (CodeQL = github-advanced-
   // security, Codex = chatgpt-codex-connector, lint = github-code-quality) post
@@ -1095,7 +1321,7 @@ function cmdTag() {
   // Refuse if the tag already exists. The release-tags ruleset
   // refuses tag overwrites server-side, but a clearer client-side
   // error makes the surprise smaller.
-  var existing = _capture("git", ["tag", "-l", tag]).stdout;
+  var existing = _captureOk("existing tag " + tag, "git", ["tag", "-l", tag]).stdout;
   if (existing === tag) {
     throw new Error("release: tag " + tag + " already exists locally");
   }
@@ -1103,8 +1329,16 @@ function cmdTag() {
   _run("git", ["push", "origin", tag]);
   _ok("tagged + pushed " + tag);
 
+  // Deliberately raw: `git tag -v` exits non-zero on an unverifiable
+  // signature, so a non-zero exit is part of the answer rather than a failure
+  // to answer. The verdict comes from the output text, and a spawn failure is
+  // reported as its own case so "could not run the check" never prints as
+  // "checked, and it was fine".
   var verify = _capture("git", ["tag", "-v", tag]);
-  if (verify.stderr.indexOf("Good") === -1 && verify.stdout.indexOf("Good") === -1) {
+  if (verify.spawnError) {
+    console.error("warning: could not run `git tag -v " + tag + "` (" + verify.spawnError +
+                  ") -- the tag signature was NOT verified.");
+  } else if (verify.stderr.indexOf("Good") === -1 && verify.stdout.indexOf("Good") === -1) {
     console.error("warning: `git tag -v " + tag + "` did not report a Good signature:");
     console.error(verify.stderr || verify.stdout);
   } else {
@@ -1118,39 +1352,40 @@ function cmdPublish() {
   _section("publish");
   var next = _readPackageVersion();
 
-  _section("npm-publish workflow");
-  var npmRunId = _capture("gh", ["run", "list",
-                                  "--workflow=npm-publish.yml",
-                                  "--limit", "1",
-                                  "--json", "databaseId",
-                                  "--jq",   ".[0].databaseId"]).stdout;
-  if (npmRunId) {
-    _run("gh", ["run", "watch", npmRunId, "--exit-status"], { allowFail: true });
-  } else {
-    console.log("no npm-publish run found (workflow may not be configured)");
-  }
-
-  _section("release-container workflow");
-  var containerRunId = _capture("gh", ["run", "list",
-                                        "--workflow=release-container.yml",
-                                        "--limit", "1",
-                                        "--json", "databaseId",
-                                        "--jq",   ".[0].databaseId"]).stdout;
-  if (containerRunId) {
-    _run("gh", ["run", "watch", containerRunId, "--exit-status"], { allowFail: true });
-  } else {
-    console.log("no release-container run found (workflow may not be configured)");
-  }
+  // A failed run lookup used to print "workflow may not be configured", which
+  // reads as a settled fact about the repository rather than a network error —
+  // and then skipped the watch, so a publish nobody watched looked watched.
+  _watchWorkflowRun("npm-publish.yml");
+  _watchWorkflowRun("release-container.yml");
 
   _section("verify");
-  var npmVersion = _capture("npm", ["view", "@blamejs/core", "version"]).stdout;
-  console.log("npm @blamejs/core: " + (npmVersion || "(unable to query)") +
-              "  (expected: " + next + ")");
-  if (npmVersion && npmVersion !== next) {
-    console.error("warning: npm version doesn't match expected — workflow may still be in flight");
-  } else if (npmVersion === next) {
-    _ok("npm matches " + next);
+  var npm = _captureQueryTolerant("published npm version", "npm",
+                                  ["view", "@blamejs/core", "version"]);
+  if (!npm.ok) {
+    console.error("warning: could not read the published npm version, so this step " +
+                  "did NOT confirm " + next + " reached the registry.");
+    console.error(npm.failure);
+    return;
   }
+  console.log("npm @blamejs/core: " + (npm.stdout || "(no version reported)") +
+              "  (expected: " + next + ")");
+  if (npm.stdout === next) {
+    _ok("npm matches " + next);
+  } else {
+    console.error("warning: npm version doesn't match expected — workflow may still be in flight");
+  }
+}
+
+function _watchWorkflowRun(workflow) {
+  _section(workflow.replace(/\.ya?ml$/, "") + " workflow");
+  var runId = _captureQuery("latest " + workflow + " run", "gh",
+                            ["run", "list", "--workflow=" + workflow, "--limit", "1",
+                             "--json", "databaseId", "--jq", ".[0].databaseId"]).stdout;
+  if (!runId) {
+    console.log("no " + workflow + " run found (the workflow has never run for this repo)");
+    return;
+  }
+  _run("gh", ["run", "watch", runId, "--exit-status"], { allowFail: true });
 }
 
 function cmdAll(opts) {
@@ -1170,14 +1405,20 @@ function cmdStatus() {
   console.log("clean:            " + _gitClean());
   console.log("package version:  " + _readPackageVersion());
   console.log("release-notes:    " + (fs.existsSync(_releaseNotesPath(_readPackageVersion())) ? "present" : "missing"));
-  var prNum = _capture("gh", ["pr", "list",
-                              "--author", "@me",
-                              "--head",   _releaseBranchFor(_readPackageVersion()),
-                              "--state",  "open",
-                              "--json",   "number,mergeStateStatus,mergeable",
-                              "--jq",     ".[0]"]).stdout;
-  if (prNum) {
-    console.log("open PR:          " + prNum);
+  // `status` is read-only and stays runnable with the network down, but it has
+  // to say the lookup FAILED rather than print "(none)" — the whole point of
+  // the command is to tell the operator where the release stands, and "no open
+  // PR" is a very different place from "I could not find out".
+  var pr = _captureQueryTolerant("open PR", "gh",
+    ["pr", "list", "--author", "@me",
+     "--head",  _releaseBranchFor(_readPackageVersion()),
+     "--state", "open",
+     "--json",  "number,mergeStateStatus,mergeable",
+     "--jq",    ".[0]"]);
+  if (!pr.ok) {
+    console.log("open PR:          (lookup failed — " + _firstLine(pr.failure) + ")");
+  } else if (pr.stdout) {
+    console.log("open PR:          " + pr.stdout);
   } else {
     console.log("open PR:          (none)");
   }
@@ -1212,12 +1453,9 @@ function cmdHelp() {
 
 // ---- Dispatch ------------------------------------------------------------
 
-var sub = process.argv[2] || "help";
-var args = process.argv.slice(3);
-
 // Parse a `--flag=value` form into its value; returns undefined if absent
 // or if the flag was passed without an `=value` (bare `--flag`).
-function _flagValue(name) {
+function _flagValue(args, name) {
   var prefix = name + "=";
   for (var i = 0; i < args.length; i++) {
     if (args[i].indexOf(prefix) === 0) return args[i].slice(prefix.length);
@@ -1226,8 +1464,8 @@ function _flagValue(name) {
 }
 
 // push-fix's commit message: `-m "<msg>"` / `--message "<msg>"` / `--message=<msg>`.
-function _messageArg() {
-  var v = _flagValue("--message");
+function _messageArg(args) {
+  var v = _flagValue(args, "--message");
   if (v !== undefined) return v;
   var i = args.indexOf("-m");
   if (i === -1) i = args.indexOf("--message");
@@ -1235,46 +1473,91 @@ function _messageArg() {
   return undefined;
 }
 
-var opts = {
-  minor: args.indexOf("--minor") !== -1,
-  message: _messageArg(),
-  // The live-integration gate is on by default. `--skip-live-integration`
-  // opts out, but ONLY together with `--live-skip-reason="<why>"`; the
-  // reason is printed loudly and recorded in the release-flow transcript.
-  // A flag with no reason is refused inside cmdLiveIntegration — the gate
-  // is never silently skippable.
-  skipLiveIntegration: args.indexOf("--skip-live-integration") !== -1,
-  liveSkipReason:      _flagValue("--live-skip-reason"),
+function _parseOpts(args) {
+  return {
+    minor: args.indexOf("--minor") !== -1,
+    message: _messageArg(args),
+    // The live-integration gate is on by default. `--skip-live-integration`
+    // opts out, but ONLY together with `--live-skip-reason="<why>"`; the
+    // reason is printed loudly and recorded in the release-flow transcript.
+    // A flag with no reason is refused inside cmdLiveIntegration — the gate
+    // is never silently skippable.
+    skipLiveIntegration: args.indexOf("--skip-live-integration") !== -1,
+    liveSkipReason:      _flagValue(args, "--live-skip-reason"),
+  };
+}
+
+function main(argv) {
+  var sub  = argv[2] || "help";
+  var args = argv.slice(3);
+  var opts = _parseOpts(args);
+
+  try {
+    switch (sub) {
+      case "prepare": cmdPrepare(opts); break;
+      case "regen":   cmdRegen();       break;
+      case "smoke":   cmdSmoke();       break;
+      case "commit":  cmdCommit();      break;
+      case "live-integration":
+      case "live":    cmdLiveIntegration({
+                        skip:       opts.skipLiveIntegration,
+                        skipReason: opts.liveSkipReason,
+                      });            break;
+      case "push":    cmdPush(opts);    break;
+      case "push-fix": cmdPushFix(opts); break;
+      case "watch":   cmdWatch();       break;
+      case "merge":   cmdMerge();       break;
+      case "tag":     cmdTag();         break;
+      case "publish": cmdPublish();     break;
+      case "all":     cmdAll(opts);     break;
+      case "status":  cmdStatus();      break;
+      case "help":
+      case "--help":
+      case "-h":      cmdHelp();        break;
+      default:
+        console.error("release: unknown subcommand '" + sub + "'");
+        cmdHelp();
+        process.exit(1);
+    }
+  } catch (e) {
+    console.error("\nrelease: FAIL — " + (e.message || e));
+    process.exit(1);
+  }
+}
+
+// Exported for the fail-closed unit tests. `_setCaptureForTest` swaps the
+// shell-out seam so each gate can be driven with a stub that fails, proving it
+// refuses rather than reading the failure as an empty answer.
+module.exports = {
+  _captureOk:               _captureOk,
+  _captureQuery:            _captureQuery,
+  _captureQueryTolerant:    _captureQueryTolerant,
+  _isTransientQueryFailure: _isTransientQueryFailure,
+  _changedFilesForBackendDetection: _changedFilesForBackendDetection,
+  _detectTouchedBackends:   _detectTouchedBackends,
+  _openPrNumber:            _openPrNumber,
+  _unresolvedThreads:       _unresolvedThreads,
+  _codexReviewedHead:       _codexReviewedHead,
+  _waitForCodexReview:      _waitForCodexReview,
+  _mergeBaseRef:            _mergeBaseRef,
+  _wikiTouched:             _wikiTouched,
+  CODEX_WAIT:               CODEX_WAIT,
+  _gitClean:                _gitClean,
+  _gitBranch:               _gitBranch,
+  _ghJson:                  _ghJson,
+  BACKEND_LIVE_MAP:         BACKEND_LIVE_MAP,
+  TRANSIENT_QUERY_MARKERS:  TRANSIENT_QUERY_MARKERS,
+  QUERY_ATTEMPTS:           QUERY_ATTEMPTS,
+  QUERY_BACKOFF_MS:         QUERY_BACKOFF_MS,
+  cmdSmoke:                 cmdSmoke,
+  cmdTag:                   cmdTag,
+  cmdPublish:               cmdPublish,
+  cmdStatus:                cmdStatus,
+  main:                     main,
+  _setCaptureForTest: function (fn) { _captureImpl = fn || _captureSpawn; },
+  _setRunForTest:     function (fn) { _runImpl = fn || _runSpawn; },
 };
 
-try {
-  switch (sub) {
-    case "prepare": cmdPrepare(opts); break;
-    case "regen":   cmdRegen();       break;
-    case "smoke":   cmdSmoke();       break;
-    case "commit":  cmdCommit();      break;
-    case "live-integration":
-    case "live":    cmdLiveIntegration({
-                      skip:       opts.skipLiveIntegration,
-                      skipReason: opts.liveSkipReason,
-                    });            break;
-    case "push":    cmdPush(opts);    break;
-    case "push-fix": cmdPushFix(opts); break;
-    case "watch":   cmdWatch();       break;
-    case "merge":   cmdMerge();       break;
-    case "tag":     cmdTag();         break;
-    case "publish": cmdPublish();     break;
-    case "all":     cmdAll(opts);     break;
-    case "status":  cmdStatus();      break;
-    case "help":
-    case "--help":
-    case "-h":      cmdHelp();        break;
-    default:
-      console.error("release: unknown subcommand '" + sub + "'");
-      cmdHelp();
-      process.exit(1);
-  }
-} catch (e) {
-  console.error("\nrelease: FAIL — " + (e.message || e));
-  process.exit(1);
+if (require.main === module) {
+  main(process.argv);
 }
