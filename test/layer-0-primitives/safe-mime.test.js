@@ -880,8 +880,13 @@ function testParsingWalksAgreeWithThePatternsTheyReplaced() {
   check("the RFC 2047 encoded-word walk agrees with the pattern it replaced",
         wordDiffs.length === 0, wordDiffs.slice(0, 3).join(" | "));
 
+  // A backslash before a line terminator stands for itself: the `.` in the
+  // pattern this replaced never matched one, and a bare CR reaches here.
   var QUOTED = ["", "a", "a\\\"b", "a\\\\b", "a\\", "\\a", "\\\\", "a\\nb",
-                "no escapes"];
+                "no escapes", "a\\\rb", "a\\\nb", "a\\\r\nb",
+                "a\\" + String.fromCharCode(0x2028) + "b",
+                "a\\" + String.fromCharCode(0x2029) + "b",
+                "\\\r", "\\\n"];
   var quotedDiffs = [];
   QUOTED.forEach(function (s) {
     var ref = s.replace(/\\(.)/g, "$1");
