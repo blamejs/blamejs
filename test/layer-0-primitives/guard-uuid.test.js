@@ -68,7 +68,53 @@ function testSanitizeThrowsGuardUuidError() {
     caught instanceof b.frameworkError.GuardUuidError);
 }
 
+// The form classifier is a character walk. It is compared against the four
+// patterns it replaced, over every accepted spelling and the near misses —
+// one digit short, one long, a wrong separator, an unbalanced wrapper.
+function testFormClassifierAgreesWithThePatternsItReplaced() {
+  var UUID_HYPHENATED_RE = /^([0-9a-f]{8})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{12})$/i;
+  var UUID_HYPHENLESS_RE = /^[0-9a-f]{32}$/i;
+  var UUID_BRACED_RE = /^\{([0-9a-f]{8})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{12})\}$/i;
+  var UUID_URN_RE = /^urn:uuid:([0-9a-f]{8})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{12})$/i;
+
+  function oldClassify(s) {
+    if (UUID_URN_RE.test(s)) return "urn";
+    if (UUID_BRACED_RE.test(s)) return "braced";
+    if (UUID_HYPHENATED_RE.test(s)) return "hyphenated";
+    if (UUID_HYPHENLESS_RE.test(s)) return "hyphenless";
+    return null;
+  }
+
+  var U = "550e8400-e29b-41d4-a716-446655440000";
+  var BARE = "550e8400e29b41d4a716446655440000";
+  var INPUTS = ["", "x", U, U.toUpperCase(), "{" + U + "}", "urn:uuid:" + U,
+    "URN:UUID:" + U, "Urn:Uuid:" + U, BARE, BARE.toUpperCase(),
+    U + "x", "x" + U, " " + U, U + " ", "{" + U, U + "}", "{{" + U + "}}",
+    "urn:uuid:" + U + "x", "urn:uuid" + U, "urn:uuid:{" + U + "}",
+    "550e8400-e29b-41d4-a716-44665544000",
+    "550e8400-e29b-41d4-a716-4466554400000",
+    "550e8400-e29b-41d4-a716_446655440000",
+    "550e8400_e29b_41d4_a716_446655440000",
+    "g50e8400-e29b-41d4-a716-446655440000",
+    "00000000-0000-0000-0000-000000000000",
+    "ffffffff-ffff-ffff-ffff-ffffffffffff",
+    "-".repeat(36), "0".repeat(31), "0".repeat(33)];
+
+  var diffs = [];
+  INPUTS.forEach(function (s) {
+    var expected = oldClassify(s);
+    var actual = b.guardUuid._classifyFormForTest(s);
+    if (expected !== actual) {
+      diffs.push(JSON.stringify(s) + " want " + expected + " got " + actual);
+    }
+  });
+  check("the UUID form classifier agrees with the patterns it replaced (" +
+        INPUTS.length + " inputs)", diffs.length === 0,
+        diffs.slice(0, 4).join(" | "));
+}
+
 function run() {
+  testFormClassifierAgreesWithThePatternsItReplaced();
   testGuardUuidSurface();
   testSanitizeCanonicalPassthrough();
   testSanitizeNormalizesUrnPrefix();

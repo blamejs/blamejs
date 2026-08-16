@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.18.29",
-  "createdAt": "2026-08-16T03:00:44.684Z",
+  "frameworkVersion": "0.18.30",
+  "createdAt": "2026-08-16T04:18:40.694Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -6799,6 +6799,22 @@
     "codepointClass": {
       "type": "object",
       "members": {
+        "ASCII_ALNUM": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "ASCII_ALPHA": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "ASCII_DIGITS": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "ASCII_HEX": {
+          "type": "primitive",
+          "valueType": "string"
+        },
         "BIDI_RANGES": {
           "type": "instance",
           "ctorName": "Array"
@@ -7081,9 +7097,25 @@
           "type": "function",
           "arity": 1
         },
+        "isAsciiDigit": {
+          "type": "function",
+          "arity": 1
+        },
+        "isAsciiLetter": {
+          "type": "function",
+          "arity": 1
+        },
         "isForbiddenControlChar": {
           "type": "function",
           "arity": 2
+        },
+        "isIdentifierChar": {
+          "type": "function",
+          "arity": 1
+        },
+        "isRunOf": {
+          "type": "function",
+          "arity": 4
         },
         "isUnreserved": {
           "type": "function",
@@ -7108,6 +7140,14 @@
         "scrubCharThreats": {
           "type": "function",
           "arity": 4
+        },
+        "splitLines": {
+          "type": "function",
+          "arity": 1
+        },
+        "splitOnWhitespace": {
+          "type": "function",
+          "arity": 1
         },
         "stripRanges": {
           "type": "function",

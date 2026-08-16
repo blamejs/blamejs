@@ -240,7 +240,63 @@ function testGuardYamlBadProfile() {
         threw && /unknown profile/i.test(threw.message));
 }
 
+// The anchor, alias, Norway-token, leading-zero and merge-key screens are
+// character walks. Each is compared against the pattern it replaced, over a
+// corpus of the documents this guard exists to classify.
+function testYamlScreensAgreeWithThePatternsTheyReplaced() {
+  var ANCHOR_DECL_RE = /(^|\s|:|-)(&[A-Za-z_][A-Za-z0-9_-]*)/g;
+  var ALIAS_REF_RE   = /(^|\s|:|-|\[|\{|,)(\*[A-Za-z_][A-Za-z0-9_-]*)/g;
+  var NORWAY_BOOL_QUIRK_RE = /:\s*(no|yes|y|n|on|off)\b/gi;
+  var LEADING_ZERO_OCTAL_RE = /:\s*0\d+\b/;
+  var MERGE_KEY_RE = /<<\s*:\s*\*/;
+
+  var DOCS = [
+    "", "a: 1", "a: &anchor 1\nb: *anchor",
+    "a: &x 1\nb: &y 2\nc: *x\nd: *y",
+    "list: [*a, *b]", "map: {k: *a}", "x: -&a", "x:&a", "a&b: 1",
+    "text: this &notanchor", "t: a*b", "s: '*star'",
+    "country: no", "country: NO", "country: nope", "flag: yes", "flag: y",
+    "flag: on", "flag: off", "v: n", "v: none", "v: nyet",
+    "mode: 0777", "mode: 0", "mode: 00", "mode: 0x1f", "mode: 012abc",
+    "v: 0777\nw: 1", "url: http://x", "time: 12:30:00",
+    "defaults: &d\n  a: 1\nuse:\n  <<: *d",
+    "use:\n  << : *d", "use:\n  <<:*d", "use:\n  <<  :  *d", "no merge here",
+    "---\na: 1\n---\nb: 2", "--- \nx: 1", "a: 1\n---\nb: 2", "---",
+    "--- ", "\n--- x", "a: 1\n--- ",
+    // An empty first document is the cheapest multi-document stream to write,
+    // and its first separator sits at index 1 rather than at index 0.
+    "\n--- \na: 1", "\n---\na: 1\n---\nb: 2", "\r\n--- \na: 1",
+  ];
+
+  var diffs = [];
+  DOCS.forEach(function (doc) {
+    var kinds = b.guardYaml.validate(doc, { profile: "strict" }).issues
+      .map(function (i) { return i.kind; });
+    function has(k) { return kinds.indexOf(k) !== -1; }
+    function compare(label, expected, actual) {
+      if (expected !== actual) {
+        diffs.push(label + " " + JSON.stringify(doc) + " kinds=" + JSON.stringify(kinds));
+      }
+    }
+    var anchors = (doc.match(ANCHOR_DECL_RE) || []).length;
+    var aliases = (doc.match(ALIAS_REF_RE) || []).length;
+    compare("alias", anchors > 0 || aliases > 0, has("alias-disabled"));
+    NORWAY_BOOL_QUIRK_RE.lastIndex = 0;
+    compare("norway", NORWAY_BOOL_QUIRK_RE.test(doc), has("norway-implicit-bool"));
+    compare("octal", LEADING_ZERO_OCTAL_RE.test(doc), has("leading-zero-octal"));
+    compare("merge-key", MERGE_KEY_RE.test(doc), has("merge-key"));
+    // Under strict, multiDocPolicy is reject, so the finding appears whenever
+    // the scan counted at least one separator.
+    compare("multi-document", (doc.match(/(^|\n)---\s/g) || []).length > 0,
+            has("multi-document"));
+  });
+  check("every YAML screen agrees with the pattern it replaced (" +
+        DOCS.length + " documents)", diffs.length === 0,
+        diffs.slice(0, 4).join(" | "));
+}
+
 async function run() {
+  testYamlScreensAgreeWithThePatternsTheyReplaced();
   testGuardYamlSurface();
   testGuardYamlRegistryParity();
   testGuardYamlDangerousTags();

@@ -299,7 +299,107 @@ function testGuardEmailCompliancePosture() {
         threw && /unknown/.test(threw.message));
 }
 
+// The address, IP-literal, punycode, smuggling and display-name shapes are
+// character walks. Each is compared against the pattern it replaced, over a
+// corpus of the addresses and messages this guard exists to classify.
+function testAddressShapesAgreeWithThePatternsTheyReplaced() {
+  var api = b.guardEmail._shapesForTest;
+
+  var _LOCAL = "[A-Za-z0-9!#$%&'*+/=?^_`{|}~.-]+";
+  var _LABEL = "[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?";
+  var _DOMAIN = "(?:" + _LABEL + "(?:\\." + _LABEL + ")+)";
+  var ADDRESS_RE = new RegExp("^(" + _LOCAL + ")@(" + _DOMAIN + ")$");
+  var IP_LITERAL_RE = /^[^@]+@\[[^\]]+\]$/;
+  var PUNYCODE_LABEL_RE = /(?:^|\.)xn--/i;
+  var SMUGGLED_VERB_RE = /(?:\r(?!\n)|(?<!\r)\n)\.?\s*(?:MAIL FROM|RCPT TO|DATA|EHLO|HELO|RSET|QUIT)\b/i;
+  var DISPLAY_PHRASE_ANGLE_RE = /^\s*(.*?)\s*<\s*([^>]+)\s*>\s*$/;
+
+  var ADDRESSES = [
+    "", "a", "@", "a@", "@b", "a@b", "a@b.c", "user@example.com",
+    "user.name+tag@example.co.uk", "a@b@c.com", "user@@example.com",
+    "user@[1.2.3.4]", "user@[::1]", "user@[]", "user@[a]b", "u@[1.2]3.4]",
+    "user@example", "user@.com", "user@com.", "user@-a.com", "user@a-.com",
+    "user@a--b.com", "user@" + "a".repeat(63) + ".com",
+    "user@" + "a".repeat(64) + ".com",
+    "user@xn--80ak6aa92e.com", "user@sub.xn--p1ai", "user@XN--P1AI.com",
+    "user@notxn--a.com", "us er@example.com", "us(er@example.com",
+    "user@example.com ", "caf" + String.fromCharCode(0xE9) + "@example.com",
+    "user@caf" + String.fromCharCode(0xE9) + ".com", "!#$%&'*+/=?^_@a.bb",
+  ];
+  var strictDiffs = [], ipDiffs = [], punyDiffs = [];
+  ADDRESSES.forEach(function (a) {
+    if (ADDRESS_RE.test(a) !== api.isStrictAddress(a)) strictDiffs.push(JSON.stringify(a));
+    if (IP_LITERAL_RE.test(a) !== api.isIpLiteralAddress(a)) ipDiffs.push(JSON.stringify(a));
+    var at = a.lastIndexOf("@");
+    var domain = at === -1 ? "" : a.slice(at + 1);
+    if (PUNYCODE_LABEL_RE.test(domain) !== api.hasPunycodeLabel(domain)) {
+      punyDiffs.push(JSON.stringify(domain));
+    }
+  });
+  check("the strict-address walk agrees with the pattern it replaced",
+        strictDiffs.length === 0, strictDiffs.slice(0, 4).join(" | "));
+  check("the IP-literal walk agrees with the pattern it replaced",
+        ipDiffs.length === 0, ipDiffs.slice(0, 4).join(" | "));
+  check("the punycode-label walk agrees with the pattern it replaced",
+        punyDiffs.length === 0, punyDiffs.slice(0, 4).join(" | "));
+
+  var MESSAGES = [
+    "", "Subject: x\r\n\r\nbody", "Subject: x\r\n\r\nbody\r\nDATA\r\n",
+    "a\rMAIL FROM:<x>", "a\nRCPT TO:<x>", "a\r\nDATA", "a\n.DATA",
+    "a\n . data", "a\nDATABASE", "a\ndatalink", "a\rquit", "a\rQUIT",
+    "a\n\tEHLO x", "a\r\n\r\n.\r\nMAIL FROM:<y>", "no bare endings here\r\n",
+    "trailing\r", "\nDATA", "\rHELO x", "body\n.\nRSET",
+  ];
+  var smugDiffs = [];
+  MESSAGES.forEach(function (m) {
+    if (SMUGGLED_VERB_RE.test(m) !== api.hasSmuggledVerb(m)) {
+      smugDiffs.push(JSON.stringify(m));
+    }
+  });
+  check("the SMTP-smuggling walk agrees with the pattern it replaced",
+        smugDiffs.length === 0, smugDiffs.slice(0, 4).join(" | "));
+
+  var LINES = [
+    "", "a@b.com", "<a@b.com>", "Name <a@b.com>", "  Name   <a@b.com>  ",
+    "\"Name\" <a@b.com>", "\"a>b\" <x@y.com>", "a>b <x@y.com>",
+    "Name <>", "Name < >", "Name <  a@b.com  >", "Name <a@b.com",
+    "Name a@b.com>", "Name <a@b><c@d>", "Name <a<b@c.com>",
+    "Support <support@apple.com> <evil@bad.com>",
+    "line\nbreak <a@b.com>", "line\rbreak <a@b.com>",
+    "\n  Name <a@b.com>", "Name <a@b.com>\n",
+  ];
+  var parseDiffs = [];
+  LINES.forEach(function (line) {
+    var m = line.match(DISPLAY_PHRASE_ANGLE_RE);
+    var expected = m
+      ? { display: m[1].replace(/^"|"$/g, ""), envelope: m[2] }
+      : { display: "", envelope: line.trim() };
+    var actual = api.parseAddressLine(line);
+    if (expected.display !== actual.display || expected.envelope !== actual.envelope) {
+      parseDiffs.push(JSON.stringify(line) + " want " + JSON.stringify(expected) +
+                      " got " + JSON.stringify(actual));
+    }
+  });
+  check("the display-name split agrees with the pattern it replaced",
+        parseDiffs.length === 0, parseDiffs.slice(0, 3).join(" | "));
+
+  var SECTIONS = ["", "a", "a\nb", "a\r\nb", "a\r\nb\nc", "\n", "\r\n",
+                  "a\n\nb", "a\rb", "a\r\n", "a\n"];
+  var splitDiffs = [];
+  SECTIONS.forEach(function (s) {
+    var ref = s.split(/\r?\n/);
+    var got = api.splitLines(s);
+    if (JSON.stringify(ref) !== JSON.stringify(got)) {
+      splitDiffs.push(JSON.stringify(s) + " want " + JSON.stringify(ref) +
+                      " got " + JSON.stringify(got));
+    }
+  });
+  check("the header-line split agrees with the pattern it replaced",
+        splitDiffs.length === 0, splitDiffs.slice(0, 3).join(" | "));
+}
+
 async function run() {
+  testAddressShapesAgreeWithThePatternsTheyReplaced();
   testGuardEmailSurface();
   testGuardEmailRegistryParity();
   testGuardEmailCleanAddress();
