@@ -594,6 +594,27 @@ function testTokenAndSplitPrimitives() {
   check("isRunOf rejects a non-string",
         CP.isRunOf(null, CP.ASCII_ALPHA) === false);
 
+  // Codepoints on both sides: a set holding an astral character must not
+  // admit either surrogate half alone, and one character counts as one
+  // toward the length bound.
+  var GRIN2 = String.fromCodePoint(0x1F600);
+  check("isRunOf does not admit a lone surrogate from an astral set member",
+        CP.isRunOf("\uDE00\uD83D", GRIN2) === false);
+  check("isRunOf counts an astral character as one unit of length",
+        CP.isRunOf(GRIN2, GRIN2, 1, 1) === true);
+  check("isRunOf rejects two astral characters against a max of one",
+        CP.isRunOf(GRIN2 + GRIN2, GRIN2, 1, 1) === false);
+  check("isRunOf accepts a mixed astral and ASCII run",
+        CP.isRunOf("a" + GRIN2 + "b", CP.ASCII_ALPHA + GRIN2, 1, 3) === true);
+  // A zero-length run never enters the loop, so the bound is checked after it
+  // too — a negative max rejects even the empty string.
+  check("isRunOf applies max to a zero-length run",
+        CP.isRunOf("", CP.ASCII_ALPHA, 0, -1) === false);
+  check("isRunOf accepts the empty string when min is 0",
+        CP.isRunOf("", CP.ASCII_ALPHA, 0) === true);
+  check("isRunOf rejects the empty string at the default min",
+        CP.isRunOf("", CP.ASCII_ALPHA) === false);
+
   check("isAsciiLetter", CP.isAsciiLetter(0x41) && CP.isAsciiLetter(0x7A) &&
         !CP.isAsciiLetter(0x30) && !CP.isAsciiLetter(0x5F));
   check("isAsciiDigit", CP.isAsciiDigit(0x30) && CP.isAsciiDigit(0x39) &&

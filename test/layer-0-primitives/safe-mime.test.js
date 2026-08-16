@@ -834,7 +834,10 @@ function testParsingWalksAgreeWithThePatternsTheyReplaced() {
             "=4G", "==41", "=41=", "a=3Db", "=0D=0A", "=\r", "=\r\nx",
             "abc=E2=82=ACdef", "=zz", "=41z=42",
             "=3=\r\nD", "=3=\nD", "=4=\r\n1", "a=4=\r\n1b", "=3D",
-            "=\r\n=41", "=41=\r\n", "=E2=\r\n=82=AC"];
+            "=\r\n=41", "=41=\r\n", "=E2=\r\n=82=AC",
+            // An `=` immediately before the break: the break goes and the
+            // retained `=` then forms an escape with what follows.
+            "==\r\n3Cscript", "==\n3Cscript", "a==\r\n41b"];
   var qpDiffs = [];
   QP.forEach(function (s) {
     var ref = s.replace(/=\r?\n/g, "")
