@@ -322,6 +322,49 @@ function testValidJsonIsNotRefusedForTheContentOfItsStrings() {
           JSON.stringify(rv.issues.map(function (i) { return i.kind; })));
   });
 
+  // Number shapes, written as source rather than built from JS values: a long
+  // run of digits AFTER a decimal point or in an exponent is part of a double
+  // the author wrote, not an integer past 2^53. Reading only the leading run
+  // and stepping over the separator reports the fraction as its own integer.
+  var CLEAN_NUMBERS = [
+    ["a long fractional part",        '{"a":0.1234567890123456789}'],
+    ["a long fraction after digits",  '{"a":1.234567890123456789}'],
+    ["a signed long exponent",        '{"a":1e-123456789012345678}'],
+    ["a fraction and an exponent",    '{"a":1.234567890123456789e5}'],
+    ["the largest finite double",     '{"a":1.7976931348623157e308}'],
+    ["an ordinary integer",           '{"a":42}'],
+    ["a 16-digit integer",            '{"a":1234567890123456}'],
+  ];
+  CLEAN_NUMBERS.forEach(function (row) {
+    var rv = b.guardJson.validate(row[1], { profile: "strict" });
+    check("valid JSON with " + row[0] + " is clean",
+          rv.ok === true && rv.issues.length === 0,
+          JSON.stringify(rv.issues.map(function (i) { return i.kind; })));
+  });
+
+  // A negative hex literal is finite. Reading the sign as part of the token
+  // makes the conversion NaN, which is not an overflow — a JSON5 document
+  // with hex allowed would then be refused for a value of -1.
+  var negHex = b.guardJson.validate('{"a":-0x1}',
+    { profile: "strict", json5SyntaxPolicy: "allow" }).issues;
+  check("a negative hex literal is not reported as non-finite",
+        negHex.every(function (i) { return i.kind !== "nan-infinity"; }),
+        JSON.stringify(negHex.map(function (i) { return i.kind; })));
+  var bigNegHex = b.guardJson.validate('{"a":-0x' + "f".repeat(300) + '}',
+    { profile: "strict", json5SyntaxPolicy: "allow" }).issues;
+  check("a negative hex literal past the double range IS reported",
+        bigNegHex.some(function (i) { return i.kind === "nan-infinity"; }),
+        JSON.stringify(bigNegHex.map(function (i) { return i.kind; })));
+
+  // JSON5 accepts a trailing decimal point where RFC 8259 does not, so this
+  // document fails the parse — but a decimal point makes the token a float
+  // either way, and the precision check must not call it an integer.
+  var trailingPoint = b.guardJson.validate('{"a":12345678901234567.}',
+                                           { profile: "strict" }).issues;
+  check("a trailing decimal point is not reported as an integer past 2^53",
+        trailingPoint.every(function (i) { return i.kind !== "numeric-precision-loss"; }),
+        JSON.stringify(trailingPoint.map(function (i) { return i.kind; })));
+
   // And the same documents pass the gate rather than being refused.
   return Promise.all(CLEAN.map(function (row) {
     return b.guardJson.gate({ profile: "strict" })
@@ -358,6 +401,14 @@ function testJson5ShapesAreFoundWhereverTheySit() {
     ["a single-quoted key after an escaped one",  "{'a\\'b':1,'c':2}", "single-quoted-key"],
     ["an integer past 2^53",               '{"a":123456789012345678}', "numeric-precision-loss"],
     ["a negative integer past 2^53",       '{"a":-123456789012345678}', "numeric-precision-loss"],
+    ["a big integer beside a long float",  '{"a":0.1234567890123456789,"b":123456789012345678}',
+                                           "numeric-precision-loss"],
+    // A magnitude no double can hold reaches the consumer as Infinity, which
+    // is what nanInfinityPolicy refuses — written as an exponent rather than
+    // as the word, so a scan for the word alone never sees it.
+    ["an exponent that overflows to Infinity", '{"a":1e123456789012345678}', "nan-infinity"],
+    ["a negative overflowing exponent",        '{"a":-1e400}',               "nan-infinity"],
+    ["the first double past the maximum",      '{"a":1.8e308}',              "nan-infinity"],
     ["a __proto__ key",                    '{"__proto__":{"x":1}}', "prototype-pollution-key"],
   ];
   HOSTILE.forEach(function (row) {
