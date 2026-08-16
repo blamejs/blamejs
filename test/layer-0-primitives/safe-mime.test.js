@@ -895,6 +895,11 @@ function testParsingWalksAgreeWithThePatternsTheyReplaced() {
     "attachment; FILENAME=a.txt", "attachment; filename*=UTF-8''a%20b.txt",
     "inline; filename=a.txt; size=1", "attachment; xfilename=a.txt",
     "attachment; filename=", "attachment; filename",
+    // A character whose case fold is not length-preserving, before the
+    // parameter: an index found in a lower-cased copy names a different
+    // position in the header, so the value sliced from it is a different name.
+    "attachment; x=" + String.fromCharCode(0x0130) + "; filename=a.txt",
+    "attachment; " + String.fromCharCode(0x0130) + "=1; FileName=\"b c.txt\"",
   ];
   var cdDiffs = [];
   DISPOSITIONS.forEach(function (cd) {
