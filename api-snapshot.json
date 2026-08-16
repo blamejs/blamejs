@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.18.29",
-  "createdAt": "2026-08-16T01:06:31.250Z",
+  "createdAt": "2026-08-16T01:32:54.671Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -7059,7 +7059,7 @@
         },
         "firstInRanges": {
           "type": "function",
-          "arity": 2
+          "arity": 3
         },
         "fromCp": {
           "type": "function",

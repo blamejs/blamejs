@@ -418,6 +418,42 @@ function testCharSetScanners() {
         codepointClass.stripRanges("a" + String.fromCharCode(0x200B) + "b",
           codepointClass.ZERO_WIDTH_RANGES));
 
+  // Every one of the four reads the set AND the subject as codepoints. A
+  // code-unit walk lets a set holding one astral character match half of an
+  // unrelated pair, and replaces one character with two replacements.
+  var GRIN = String.fromCodePoint(0x1F600);
+  var TAG_A = String.fromCodePoint(0xE0041);
+  check("indexOfAny finds an astral member of the set",
+        codepointClass.indexOfAny("ab" + GRIN, GRIN) === 2);
+  check("indexOfAny does not match a lone surrogate against a different pair",
+        codepointClass.indexOfAny(TAG_A, "\uDB40") === -1);
+  check("indexOfAny skips over an astral non-member",
+        codepointClass.indexOfAny(GRIN + "x", "x") === 2);
+  check("indexOfAny honors `from`",
+        codepointClass.indexOfAny("axbx", "x", 2) === 3);
+  // A `from` inside a surrogate pair belongs to a character starting BEFORE
+  // it, so that character is not at or after `from` and must not be returned:
+  // an index below `from` makes a caller that advances `from` in a loop run
+  // forever.
+  check("indexOfAny never returns an index below `from`",
+        codepointClass.indexOfAny(GRIN + "x", GRIN, 1) === -1);
+  check("indexOfAny with `from` inside a pair still finds a later member",
+        codepointClass.indexOfAny(GRIN + "x" + GRIN, GRIN, 1) === 3);
+  check("indexOfAny with `from` at the start of a pair finds it",
+        codepointClass.indexOfAny("x" + GRIN, GRIN, 1) === 1);
+  // The answer is a string index, so it is always an integer whatever the
+  // caller passed.
+  check("a fractional `from` still returns the character's real offset",
+        codepointClass.firstInRanges("ab", [0x62], 1.5) === 1);
+  check("a fractional `from` past the match still finds the next one",
+        codepointClass.firstInRanges("aba", [0x62], 0.5) === 1);
+  check("a negative `from` scans from the start",
+        codepointClass.firstInRanges("ab", [0x62], -5) === 1);
+  check("replaceAny replaces an astral member once",
+        codepointClass.replaceAny("a" + GRIN + "b", GRIN, "_") === "a_b");
+  check("replaceAny leaves an unrelated pair intact when the set holds a surrogate",
+        codepointClass.replaceAny(GRIN, "\uD83D", "_") === GRIN);
+
   // replaceAny replaces EVERY occurrence — the incomplete-sanitization defect
   // a non-global pattern ships.
   check("replaceAny replaces every occurrence, not the first",
