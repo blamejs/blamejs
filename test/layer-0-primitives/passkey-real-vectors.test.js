@@ -224,7 +224,7 @@ async function testRegistrationGenuineAndTampered() {
   var regOpts   = await passkey.startRegistration({ rpName: "Example", rpId: RP_ID, userName: "alice" });
   var challenge = regOpts.challenge;
   check("startRegistration returns a base64url challenge",
-        typeof challenge === "string" && helpers.b.safeBuffer.BASE64URL_RE.test(challenge));
+        helpers.b.safeBuffer.isBase64Url(challenge));
 
   var reg = makeRegistration(challenge);
 

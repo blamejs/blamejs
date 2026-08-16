@@ -203,6 +203,60 @@ function testNonFiniteToleranceDoesNotDisableFreshness() {
   }
 }
 
+// RFC 9421 §2.4 carries the signature as an RFC 8941 §3.3.5 sf-binary: whole
+// four-character base64 groups between colons. Node's decoder DROPS characters
+// it cannot use rather than failing, so a malformed field decodes to a short
+// buffer and reports as a signature that did not verify — which sends the
+// operator to look at keys. The shape check that should have caught this was
+// `if (!safeBuffer.BASE64URL_RE && ...)`, and a RegExp object is truthy, so it
+// never ran at all.
+function testMalformedSignatureEncodingIsReportedAsSuch() {
+  var keys = _genEd25519();
+  var msg = {
+    method: "GET", url: "https://api.example.com/x",
+    headers: { host: "api.example.com" },
+  };
+  var signed = b.crypto.httpSig.sign(msg, {
+    keyid: "k1", alg: "ed25519", privateKey: keys.privateKey,
+    covered: ["@method", "@target-uri"],
+  });
+
+  // Each of these is a value the alphabet-and-padding check accepts and no
+  // decoder can turn into bytes: one character carries no whole byte, and
+  // padding alone carries nothing at all.
+  ["A", "=", "AAAAA", "A==="].forEach(function (malformed) {
+    // `sign` emits `Signature` capitalized; a lower-case key would ADD a
+    // second header rather than replace this one, and the test would pass
+    // against the original signature without noticing.
+    var vmsg = Object.assign({}, msg, {
+      headers: Object.assign({}, signed.headers, {
+        "Signature": "sig1=:" + malformed + ":",
+      }),
+    });
+    var v = b.crypto.httpSig.verify(vmsg, {
+      keyResolver: function () { return keys.publicKey; },
+    });
+    check("httpSig: signature :" + malformed + ": is reported as a malformed " +
+          "encoding, not a failed verification",
+          v.valid === false && v.reason === "bad-signature-encoding",
+          JSON.stringify(v.reason));
+  });
+
+  // A well-formed signature that simply does not verify keeps its own verdict,
+  // so the new refusal has not swallowed the real one.
+  var wrongKeys = _genEd25519();
+  var honest = Object.assign({}, msg, {
+    headers: Object.assign({}, signed.headers),
+  });
+  var mismatched = b.crypto.httpSig.verify(honest, {
+    keyResolver: function () { return wrongKeys.publicKey; },
+  });
+  check("httpSig: a well-formed signature under the wrong key is still a " +
+        "verification failure, not an encoding one",
+        mismatched.valid === false && mismatched.reason !== "bad-signature-encoding",
+        JSON.stringify(mismatched.reason));
+}
+
 function testUnknownKeyid() {
   var keys = _genEd25519();
   var msg = {
@@ -1200,6 +1254,7 @@ async function run() {
   testAlgKeyBinding();
   testContentDigestVerifyBranches();
   testMultiLabelSignature();
+  testMalformedSignatureEncodingIsReportedAsSuch();
   testCryptoVerdicts();
   testBuildBaseFailed();
   testSignatureInputParamTolerance();

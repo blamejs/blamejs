@@ -5031,10 +5031,66 @@ function testDeprecateSurface() {
   check("warn is a function",                     typeof b.deprecate.warn === "function");
   check("wrap is a function",                     typeof b.deprecate.wrap === "function");
   check("alias is a function",                    typeof b.deprecate.alias === "function");
+  check("removed is a function",                  typeof b.deprecate.removed === "function");
   check("list is a function",                     typeof b.deprecate.list === "function");
   check("reset is a function",                    typeof b.deprecate.reset === "function");
   check("getMode is a function",                  typeof b.deprecate.getMode === "function");
   check("DeprecateError is a class",            typeof b.deprecate.DeprecateError === "function");
+}
+
+// `alias` keeps a renamed property working; `removed` makes a deleted one FAIL
+// LOUDLY, naming what to call now. The distinction matters where an alias
+// would be unsafe rather than merely inconvenient — where reading the old name
+// has to stop working, not keep working quietly.
+function testDeprecateRemoved() {
+  var api = { isHex: function () { return true; } };
+  b.deprecate.removed(api, "HEX_RE", {
+    since:  "0.18.31",
+    use:    "isHex(value)",
+    reason: "a walk, so its cost is the length of the input",
+  });
+
+  var readErr = null;
+  try { void api.HEX_RE; } catch (e) { readErr = e; }
+  check("b.deprecate.removed throws on read", readErr !== null &&
+        readErr.code === "deprecate/removed");
+  check("the message names the property, the version and the replacement",
+        readErr.message.indexOf("HEX_RE") !== -1 &&
+        readErr.message.indexOf("0.18.31") !== -1 &&
+        readErr.message.indexOf("isHex(value)") !== -1);
+  check("the reason rides along when given",
+        readErr.message.indexOf("a walk") !== -1);
+
+  var writeErr = null;
+  try { api.HEX_RE = /x/; } catch (e) { writeErr = e; }
+  check("removed throws on write too, so the old name cannot be restored",
+        writeErr !== null && writeErr.code === "deprecate/removed");
+
+  check("a removed property does not enumerate",
+        Object.keys(api).indexOf("HEX_RE") === -1);
+  check("the replacement is still reachable", api.isHex() === true);
+
+  // Unlike `warn`, this is not a once-per-process notice: every access is a
+  // failure, so a second reader is told the same thing rather than nothing.
+  var second = null;
+  try { void api.HEX_RE; } catch (e) { second = e; }
+  check("every access throws, not just the first",
+        second !== null && second.code === "deprecate/removed");
+
+  function code(fn) {
+    try { fn(); return "OK"; } catch (e) { return e && e.code; }
+  }
+  check("removed refuses a non-object target",
+        code(function () { b.deprecate.removed(null, "x", { since: "1", use: "y" }); })
+          === "deprecate/bad-target");
+  check("removed refuses a missing key",
+        code(function () { b.deprecate.removed({}, "", { since: "1", use: "y" }); })
+          === "deprecate/bad-name");
+  check("removed refuses a missing since / use",
+        code(function () { b.deprecate.removed({}, "x", { since: "1" }); })
+          === "deprecate/bad-name" &&
+        code(function () { b.deprecate.removed({}, "x", null); })
+          === "deprecate/bad-name");
 }
 
 function testDeprecateModeResolution() {
@@ -19175,6 +19231,7 @@ async function run() {
   await testCliApiSnapshotCaptureAndCompare();
   // deprecate — runtime deprecation warnings + LTS-contract enforcement
   testDeprecateSurface();
+  testDeprecateRemoved();
   testDeprecateModeResolution();
   testDeprecateWarnEmitsOnce();
   testDeprecateSilentMode();

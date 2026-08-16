@@ -917,6 +917,125 @@ function run() {
   testInputEmailNoAutocomplete();
   testSkipForms();
   testFormsStandalone();
+  testTagWalkAgreesWithThePatternsItReplaced();
+}
+
+// Every WCAG scanner read the page through one pair of shared patterns. They
+// are now one pass of the tokenizer the HTML and SVG guards already use.
+function testTagWalkAgreesWithThePatternsItReplaced() {
+  var tagwalk = require("../../lib/guard-html-wcag-tagwalk");
+
+  var TAG_RE = /<\/?([a-zA-Z][a-zA-Z0-9-]*)\b([^>]*)>/g;
+  var ATTR_RE = /([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*(?:=\s*("([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
+
+  var DOCS = [
+    "", "no markup here", "<p>", "</p>", "<p></p>", "<br/>", "<br />",
+    "<div class=\"a\">", "<div class='a'>", "<div class=a>", "<div class>",
+    "<div  class = \"a\"  id = 'b' >", "<INPUT TYPE=TEXT>",
+    "<a href=\"/x\">text</a>", "<img src=x alt=\"a b\">",
+    "<my-element foo=\"1\">", "<x-y-z>", "<h1>t</h1><h2>u</h2>",
+    "<", "<>", "< p>", "<1p>", "<p", "<p attr", "<p attr=\"unclosed",
+    "<p>a</p ></p >", "</ p>", "<p/>", "<p //>",
+    "<table><caption>c</caption></table>",
+    "<fieldset><legend>l</legend></fieldset>",
+    "<label for=\"x\">L</label><input id=\"x\">",
+    "<span role=\"button presentation\">", "<span aria-labelledby=\"a  b\">",
+    "<a href=\"#main\">Skip to content</a>", "<a href=\"#main\">Skipper</a>",
+    "<a href=\"#\">Skip</a>", "<a href=\"#1\">Skip</a>",
+    "<p title=\"a&gt;b\">x</p>", "<p data-x='1'>", "<p _x=\"1\" :y=\"2\">",
+    "<!-- comment --><p>", "<!DOCTYPE html><html lang=\"en\">",
+    "<script>if (a<b) {}</script>", "<p>1 < 2</p>",
+  ];
+
+  function viaPattern(html) {
+    TAG_RE.lastIndex = 0;
+    var out = [];
+    var m;
+    while ((m = TAG_RE.exec(html))) {
+      out.push({
+        name: m[1].toLowerCase(), index: m.index,
+        closing: m[0].charAt(1) === "/", attrSrc: m[2],
+      });
+    }
+    return out;
+  }
+
+  function attrsViaPattern(attrString) {
+    var out = Object.create(null);
+    if (!attrString) return out;
+    ATTR_RE.lastIndex = 0;
+    var m;
+    while ((m = ATTR_RE.exec(attrString))) {
+      out[m[1].toLowerCase()] = m[3] !== undefined ? m[3] :
+                                m[4] !== undefined ? m[4] :
+                                m[5] !== undefined ? m[5] : "";
+    }
+    return out;
+  }
+
+  var diffs = [];
+  DOCS.forEach(function (html) {
+    // A `>` inside a quoted attribute value ends the tag for the pattern but
+    // not for a browser, so those documents are compared for the ATTRIBUTES
+    // the two agree on rather than for tag boundaries.
+    var quotedGt = /["'][^"']*>/.test(html);
+    var want = viaPattern(html);
+    var got = tagwalk.tags(html);
+    if (!quotedGt && want.length !== got.length) {
+      diffs.push("tag count " + JSON.stringify(html) + " want " + want.length +
+                 " got " + got.length);
+      return;
+    }
+    for (var i = 0; i < Math.min(want.length, got.length); i += 1) {
+      if (quotedGt) break;
+      if (want[i].name !== got[i].name || want[i].index !== got[i].index ||
+          want[i].closing !== got[i].closing) {
+        diffs.push("tag " + i + " " + JSON.stringify(html) + " want " +
+                   JSON.stringify(want[i]) + " got " +
+                   JSON.stringify({ name: got[i].name, index: got[i].index,
+                                    closing: got[i].closing }));
+        continue;
+      }
+      // An attribute list carrying a `<` is not one — it is text the tag
+      // screen ran past, and the two disagree there by design (below).
+      if (want[i].attrSrc.indexOf("<") !== -1) continue;
+      var wantAttrs = attrsViaPattern(want[i].attrSrc);
+      var gotAttrs = tagwalk.parseAttrs(got[i].attrSrc);
+      Object.keys(wantAttrs).forEach(function (k) {
+        if (gotAttrs[k] !== wantAttrs[k]) {
+          diffs.push("attr " + k + " of " + JSON.stringify(html) + " want " +
+                     JSON.stringify(wantAttrs[k]) + " got " + JSON.stringify(gotAttrs[k]));
+        }
+      });
+    }
+  });
+  check("the WCAG tag walk agrees with the patterns it replaced (" +
+        DOCS.length + " documents)", diffs.length === 0, diffs.slice(0, 5).join(" | "));
+
+  // The deliberate widening: a `>` inside a quoted value does not end the tag,
+  // which is what a browser does. Reading it as the end turns an `img` with a
+  // text alternative into one without, and reports a page that is accessible
+  // as one that is not.
+  var quoted = tagwalk.tags("<img alt=\"a > b\" src=x>");
+  check("a `>` inside a quoted attribute value does not end the tag",
+        quoted.length === 1 && quoted[0].name === "img");
+  check("...so the text alternative is still read",
+        tagwalk.parseAttrs(quoted[0].attrSrc).alt === "a > b");
+  check("...and the page is not reported as missing one",
+        b.guardHtml.wcag.audit("<img alt=\"a > b\" src=x>").findings
+          .every(function (f) { return f.sc !== "1.1.1"; }));
+
+  // The second widening: the attribute reader stops at the first thing that
+  // is not an attribute rather than scanning past it for the next name. The
+  // pattern skipped `) {}</` in `<script>if (a<b) {}</script>` and reported
+  // the element as carrying an attribute called `script` — a name that
+  // appears nowhere in the document as one.
+  var scriptish = tagwalk.tags("<script>if (a<b) {}</script>");
+  var inventedByPattern = attrsViaPattern(scriptish[1].attrSrc);
+  check("the pattern invented an attribute out of skipped text",
+        "script" in inventedByPattern);
+  check("the walk does not skip forward to find the next attribute name",
+        !("script" in tagwalk.parseAttrs(scriptish[1].attrSrc)));
 }
 
 module.exports = { run: run };

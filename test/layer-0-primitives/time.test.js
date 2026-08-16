@@ -152,6 +152,150 @@ async function run() {
         b.time.toIso8601NoMs(Date.UTC(2026, 4, 9, 14, 30, 0, 500)) === "2026-05-09T14:30:00Z");
   check("toIso8601NoMs: an already-second-resolution string round-trips",
         b.time.toIso8601NoMs("2026-05-09T14:30:00Z") === "2026-05-09T14:30:00Z");
+
+  testIso8601ReadersAgreeWithThePatternTheyReplaced();
+}
+
+// The ISO 8601 grammar used to be spelled as a pattern in five places, which
+// agreed on the easy cases and diverged on the ones that matter. These three
+// readers are the grammar; every caller supplies the policy.
+function _parseIsoCode(s) {
+  try { b.time.parseISO(s); return "OK"; }
+  catch (e) { return e && e.code; }
+}
+
+function testIso8601ReadersAgreeWithThePatternTheyReplaced() {
+  check("b.time.readDate is fn",     typeof b.time.readDate === "function");
+  check("b.time.readTime is fn",     typeof b.time.readTime === "function");
+  check("b.time.readDateTime is fn", typeof b.time.readDateTime === "function");
+
+  // The pattern parseISO used to run, restated.
+  var ISO_RE = /^(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?(Z|[+-]\d{2}:?\d{2})?)?$/;
+
+  var VALUES = [
+    "2026-08-16", "2026-08-16T12:34:56Z", "2026-08-16 12:34:56Z",
+    "2026-08-16T12:34:56", "2026-08-16T12:34:56.789Z", "2026-08-16T12:34:56+01:00",
+    "2026-08-16T12:34:56+0100", "2026-08-16T12:34:56-05:30", "2026-08-16T12:34",
+    "2026-08-16t12:34:56Z", "2026-08-16T12:34:56.Z", "2026-08-16T12:34:56ZZ",
+    "2026-8-16", "26-08-16", "2026-08-16T", "T12:34:56Z", "", " ",
+    "2026-08-16T12:34:56.123456789+01:00", "2026-08-16X12:34:56Z",
+    // A time with no seconds, which ISO 8601 permits and RFC 3339 does not.
+    "2026-08-16T12:34Z", "2026-08-16T12:34+01:00", "2026-08-16T12:34.5Z",
+    "2026-08-16T12:3", "2026-08-16 12:34",
+  ];
+
+  // The acceptance set parseISO has always had, asserted through parseISO
+  // itself rather than through the reader — the contract belongs to the
+  // public function, and every option it passes exists to hold it.
+  var diffs = [];
+  VALUES.forEach(function (v) {
+    var want = ISO_RE.test(v);
+    var got = _parseIsoCode(v) === "OK";
+    if (want !== got) diffs.push(JSON.stringify(v) + " pattern=" + want + " parseISO=" + got);
+  });
+  check("parseISO accepts exactly what the pattern it replaced accepted (" +
+        VALUES.length + " values)", diffs.length === 0, diffs.slice(0, 5).join(" | "));
+
+  // The shapes a NEW caller gets by default are stricter, because RFC 3339
+  // §5.6 is stricter. Both directions are pinned: the reader refuses what the
+  // spec refuses, and parseISO keeps taking what its callers already send.
+  check("a seconds-less time: parseISO takes it, the reader's default does not",
+        _parseIsoCode("2026-08-16T12:34Z") === "OK" &&
+        b.time.readDateTime("2026-08-16T12:34Z") === null &&
+        b.time.readDateTime("2026-08-16T12:34Z", { requireSeconds: false }) !== null);
+  // Without seconds there is no fraction either — a fraction hangs off the
+  // seconds. `readTime` is positional, so it reads `12:34` and reports that it
+  // stopped at index 5; the caller decides whether the remainder is allowed,
+  // and `readDateTime` (which must consume the whole string) refuses.
+  var noSeconds = b.time.readTime("12:34.5Z", 0, { requireSeconds: false });
+  check("without seconds there is no fraction either, as the pattern had it",
+        _parseIsoCode("2026-08-16T12:34.5Z") === "time/bad-iso" &&
+        noSeconds.fraction === "" && noSeconds.end === 5 &&
+        b.time.readDateTime("2026-08-16T12:34.5Z", { requireSeconds: false }) === null);
+  check("a seconds-less time reports an empty second rather than a wrong one",
+        b.time.readTime("12:34Z", 0, { requireSeconds: false }).second === "" &&
+        b.time.readTime("12:34Z", 0, { requireSeconds: false }).minute === "34");
+
+  // RFC 3339 §5.6 permits a lower-case `z`, so the reader takes it — but a
+  // caller that BRANCHES on the returned offset has to say which spellings it
+  // handles. Three in this framework only ever handled `Z`; `parseISO` used to
+  // fall into its numeric-offset branch on a `z` and throw an internal
+  // arithmetic error with no code, which is neither a parse nor a refusal.
+  check("the reader takes a lower-case z by default and refuses it on request",
+        b.time.readTime("12:34:56z") !== null &&
+        b.time.readTime("12:34:56z", 0, { offsetCase: "upper" }) === null);
+  check("parseISO refuses a lower-case z with its own code, as it always did",
+        _parseIsoCode("2026-08-16T12:34:56z") === "time/bad-iso" &&
+        _parseIsoCode("2026-08-16T12:34:56Z") === "OK");
+
+  // Fail closed: no input may leave this function as an Invalid Date, which
+  // reads as an object and fails much later at whatever first formats it.
+  var NEVER_A_DATE = [
+    "2026-13-01T00:00:00Z", "2026-00-01T00:00:00Z", "2026-01-32T00:00:00Z",
+    "2026-01-01T24:00:00Z", "2026-01-01T00:60:00Z", "2026-01-01T00:00:60Z",
+    "2026-08-16T12:34:56z", "275760-09-14T00:00:00Z",
+  ];
+  var leaked = NEVER_A_DATE.filter(function (v) {
+    try { return !isNaN(b.time.parseISO(v).getTime()) ? false : true; }
+    catch (e) { return e.code !== "time/bad-iso"; }
+  });
+  check("parseISO never returns an Invalid Date and never throws without its " +
+        "own code", leaked.length === 0, JSON.stringify(leaked));
+
+  // The fields come back as TEXT, so a caller that reports on its input has
+  // the characters it was given rather than a number it has to re-render.
+  var read = b.time.readDateTime("2026-08-16T12:34:56.789+01:00");
+  check("readDateTime returns each field as text",
+        read.year === "2026" && read.month === "08" && read.day === "16" &&
+        read.hour === "12" && read.minute === "34" && read.second === "56" &&
+        read.fraction === ".789" && read.offset === "+01:00");
+  check("readDate reports where it stopped",
+        b.time.readDate("2026-08-16T00:00:00Z").end === 10);
+  check("readTime reads a bare time and its offset",
+        b.time.readTime("12:34:56Z").offset === "Z" &&
+        b.time.readTime("12:34:56").offset === "");
+  check("readTime refuses a fraction with no digits",
+        b.time.readTime("12:34:56.Z") === null);
+  check("readTime refuses a colon-less offset unless asked",
+        b.time.readTime("12:34:56+0100") === null &&
+        b.time.readTime("12:34:56+0100", 0, { offsetColon: "optional" }).offset === "+0100");
+  check("readDateTime requires the offset when asked",
+        b.time.readDateTime("2026-08-16T12:34:56") !== null &&
+        b.time.readDateTime("2026-08-16T12:34:56", { requireOffset: true }) === null);
+  check("readDateTime refuses a separator outside the allowed set",
+        b.time.readDateTime("2026-08-16 12:34:56Z") !== null &&
+        b.time.readDateTime("2026-08-16 12:34:56Z", { separators: "T" }) === null);
+  // RFC 3339 §5.6 permits a lower-case `t`, and the reader defaults to taking
+  // it — but parseISO stays on the set it has always accepted, because
+  // widening what an existing parser accepts changes every caller below it.
+  check("the reader takes a lower-case t by default; parseISO still does not",
+        b.time.readDateTime("2026-08-16t12:34:56Z") !== null &&
+        _parseIsoCode("2026-08-16t12:34:56Z") === "time/bad-iso");
+  check("readDateTime refuses trailing text rather than ignoring it",
+        b.time.readDateTime("2026-08-16T12:34:56Z trailing") === null);
+  check("the readers refuse a non-string",
+        b.time.readDate(null) === null && b.time.readTime(null) === null &&
+        b.time.readDateTime(null) === null);
+
+  // The millisecond strip, against the pattern it replaced. It runs on a value
+  // that arrived over the wire (safe-json compares two timestamps at
+  // one-second resolution), so it is a walk like everything else that does.
+  var ISO_MS_RE = /\.\d{3}Z$/;
+  var msDiffs = [];
+  ["2026-05-09T14:30:00.789Z", "2026-05-09T14:30:00Z", "2026-05-09T14:30:00.7Z",
+   "2026-05-09T14:30:00.7890Z", "2026-05-09T14:30:00.789", ".789Z", "789Z",
+   "Z", "", ".abcZ", "x.789Z"].forEach(function (v) {
+    var want = v.replace(ISO_MS_RE, "Z");
+    var got = b.time.stripIsoMilliseconds(v);
+    if (want !== got) {
+      msDiffs.push(JSON.stringify(v) + " want " + JSON.stringify(want) +
+                   " got " + JSON.stringify(got));
+    }
+  });
+  check("b.time.stripIsoMilliseconds agrees with /\\.\\d{3}Z$/ on every case",
+        msDiffs.length === 0, msDiffs.join(" | "));
+  check("stripIsoMilliseconds passes a non-string through",
+        b.time.stripIsoMilliseconds(42) === 42);
 }
 
 module.exports = { run: run };

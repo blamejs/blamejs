@@ -784,6 +784,85 @@ async function run() {
   testEntityDecodersMatchARegexReference();
   testResolveTagsPolicy();
   testCharThreatCeilingOrdering();
+  testFoldedSearchAndRangeRuns();
+}
+
+// The walk primitives the guard family screens ASCII-folded literals, range
+// alphabets and wire-format line breaks with — each compared against the
+// pattern a caller would otherwise have written.
+function testFoldedSearchAndRangeRuns() {
+  // Named as the operator sees it (`b.codepointClass`) and bound to the module
+  // under test, which is the same object the framework root exposes.
+  var CP = codepointClass;
+
+  // ---- matchesAtFolded / indexOfFolded ----
+  check("b.codepointClass.matchesAtFolded matches at the given index only",
+        CP.matchesAtFolded("<!DOCTYPE html>", 0, "<!doctype") === true &&
+        CP.matchesAtFolded("<!DOCTYPE html>", 1, "<!doctype") === false);
+  check("matchesAtFolded refuses a needle running past the end",
+        CP.matchesAtFolded("ab", 1, "bcd") === false);
+  check("matchesAtFolded takes a negative index without reading backwards",
+        CP.matchesAtFolded("ab", -1, "a") === false);
+  check("b.codepointClass.indexOfFolded reports where, in the ORIGINAL string",
+        CP.indexOfFolded("a <!ENTITY x>", "<!entity") === 2);
+  check("indexOfFolded honours `from`",
+        CP.indexOfFolded("abab", "AB", 1) === 2);
+  check("indexOfFolded returns -1 when absent",
+        CP.indexOfFolded("abc", "d") === -1);
+  check("indexOfFolded agrees with containsFolded on presence",
+        ["", "a", "ABC", "xabcx", "ab"].every(function (h) {
+          return (CP.indexOfFolded(h, "abc") !== -1) === CP.containsFolded(h, "abc");
+        }));
+  check("a non-string is refused by both",
+        CP.indexOfFolded(null, "a") === -1 && CP.matchesAtFolded(null, 0, "a") === false);
+
+  // ---- isAsciiHexDigit ----
+  var HEX_RE = /[0-9A-Fa-f]/;
+  var hexDiffs = [];
+  for (var cc = 0; cc < 0x80; cc += 1) {
+    var want = HEX_RE.test(String.fromCharCode(cc));
+    if (CP.isAsciiHexDigit(cc) !== want) hexDiffs.push(cc);
+  }
+  check("b.codepointClass.isAsciiHexDigit agrees with [0-9A-Fa-f] across ASCII",
+        hexDiffs.length === 0, JSON.stringify(hexDiffs.slice(0, 5)));
+
+  // ---- isRunOfRanges ----
+  var PRINTABLE = [0x0009, [0x0020, 0x007E]];
+  var PRINTABLE_RE = /^[\t\x20-\x7e]*$/;
+  var runDiffs = [];
+  ["", "hi there", "a\tb", "a\nb", "a\rb", "café", "\u{1F600}", "~", "\x7f"]
+    .forEach(function (v) {
+      var want = PRINTABLE_RE.test(v);
+      var got = CP.isRunOfRanges(v, PRINTABLE, 0);
+      if (want !== got) runDiffs.push(JSON.stringify(v) + " want " + want + " got " + got);
+    });
+  check("b.codepointClass.isRunOfRanges agrees with the class it replaces",
+        runDiffs.length === 0, runDiffs.join(" | "));
+  check("isRunOfRanges honours the length bounds",
+        CP.isRunOfRanges("ab", PRINTABLE, 1, 2) === true &&
+        CP.isRunOfRanges("abc", PRINTABLE, 1, 2) === false &&
+        CP.isRunOfRanges("", PRINTABLE, 1) === false);
+  check("isRunOfRanges refuses a non-array range table",
+        CP.isRunOfRanges("a", "not ranges") === false);
+
+  // ---- splitLinesAny ----
+  var anyDiffs = [];
+  ["", "a", "a\nb", "a\r\nb", "a\rb", "a\r\rb", "a\n\nb", "a\r\n\r\nb",
+   "trailing\n", "trailing\r", "trailing\r\n", "\na", "\ra"].forEach(function (v) {
+    var want = v.split(/\r\n|\r|\n/);
+    var got = CP.splitLinesAny(v);
+    if (JSON.stringify(want) !== JSON.stringify(got)) {
+      anyDiffs.push(JSON.stringify(v) + " want " + JSON.stringify(want) +
+                    " got " + JSON.stringify(got));
+    }
+  });
+  check("b.codepointClass.splitLinesAny breaks on CR, LF and CRLF alike",
+        anyDiffs.length === 0, anyDiffs.slice(0, 3).join(" | "));
+  check("splitLinesAny differs from splitLines exactly on the lone CR",
+        JSON.stringify(CP.splitLinesAny("a\rb")) === JSON.stringify(["a", "b"]) &&
+        JSON.stringify(CP.splitLines("a\rb")) === JSON.stringify(["a\rb"]));
+  check("splitLinesAny refuses a non-string",
+        JSON.stringify(CP.splitLinesAny(null)) === "[]");
 }
 
 module.exports = { run: run };

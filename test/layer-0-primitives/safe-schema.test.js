@@ -159,6 +159,110 @@ function testSafeSchemaBranches(s) {
   // ---- strict object rejects unknown keys ----
   check("object.strict: an unknown key is rejected",
         s.object({ a: s.string() }).strict().safeParse({ a: "x", extra: 1 }).ok === false);
+
+  testShapeChecksAgreeWithThePatternsTheyReplaced();
+}
+
+// The shape checks were exported as PATTERNS, which handed an operator
+// something they would run themselves against a value this module had already
+// length-capped and they had not. Each is now a character walk behind a
+// predicate. These are the patterns they replaced.
+function testShapeChecksAgreeWithThePatternsTheyReplaced() {
+  var s = b.safeSchema;
+
+  var EMAIL_RE    = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  var URL_RE      = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^\s]+$/;
+  var UUID_RE     = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/;
+  var DATE_RE     = /^\d{4}-\d{2}-\d{2}$/;
+  var DATETIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+  var CUID_RE     = /^c[a-z0-9]{24}$/;
+  var ULID_RE     = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+  var BASE64_RE   = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
+  var VALUES = [
+    "", " ", "a", "@", "a@", "@a", "a@b", "a@b.c", "a@b.", "a@.b", "a@b..c",
+    "a@@b.c", "a b@c.d", "a@b c.d", "a@b.c ", " a@b.c", "a@b.c.d", "x@a.b",
+    // A pattern's `\s` covers far more than the ASCII five, and an address
+    // ending in one of the others is a different address than the one screened.
+    "a\u00a0@b.c", "a@b.c\u3000", "a@b.c\u2028",
+    "http://x", "https://x/y", "HTTP://X", "h://x", "://x", "x://", "1http://x",
+    "a+b-c.d://x", "a_b://x", "http:/x", "http:///", "http://a b", "http://a\tb",
+    "ftp://x", "x://y z", "ws://a", "://",
+    "123e4567-e89b-12d3-a456-426614174000", "123E4567-E89B-12D3-A456-426614174000",
+    // The version and variant nibbles are part of the shape.
+    "123e4567-e89b-62d3-a456-426614174000", "123e4567-e89b-12d3-c456-426614174000",
+    "123e4567-e89b-12d3-b456-426614174000", "123e4567-e89b-12d3-9456-426614174000",
+    "123e4567e89b12d3a456426614174000", "123e4567-e89b-12d3-a456-42661417400",
+    "123e4567-e89b-12d3-a456-4266141740000", "g23e4567-e89b-12d3-a456-426614174000",
+    "123e4567_e89b-12d3-a456-426614174000",
+    "2026-08-16", "2026-8-16", "26-08-16", "2026-08-1", "2026-08-166",
+    "x026-08-16", "2026/08/16", "2026-08-16 ",
+    "2026-08-16T12:34:56Z", "2026-08-16T12:34:56.1Z", "2026-08-16T12:34:56.123456Z",
+    "2026-08-16T12:34:56+01:00", "2026-08-16T12:34:56-05:30", "2026-08-16T12:34:56",
+    "2026-08-16T12:34:56.Z", "2026-08-16T12:34:56Zx", "2026-08-16T12:34:56+0100",
+    "2026-08-16T12:34:56+01:0", "2026-08-16t12:34:56Z", "2026-08-16T12:34:5",
+    "2026-08-16T12:34:56.123+01:00", "2026-08-16T12:34:56.123",
+    "c" + "a".repeat(24), "c" + "a".repeat(23), "c" + "a".repeat(25),
+    "d" + "a".repeat(24), "c" + "A".repeat(24), "c" + "0".repeat(24), "c",
+    "01ARZ3NDEKTSV4RRFFQ69G5FAV", "01ARZ3NDEKTSV4RRFFQ69G5FAI",
+    "01ARZ3NDEKTSV4RRFFQ69G5FAL", "01ARZ3NDEKTSV4RRFFQ69G5FAO",
+    "01ARZ3NDEKTSV4RRFFQ69G5FAU", "01arz3ndektsv4rrffq69g5fav",
+    "01ARZ3NDEKTSV4RRFFQ69G5FA",
+    "aGVsbG8=", "aGVsbG8", "aGVsbG8==", "aGVsbG9ybGQ=", "abcd", "abc", "ab", "a",
+    "====", "a===", "ab==", "abc=", "a=bc", "ab=c", "abcd====", "abcdab==",
+    "a+b/c===", "a-b_c", "AAAA", "AAA=", "AA==", "A===",
+  ];
+
+  var CHECKS = [
+    ["isEmail",    EMAIL_RE,    function (v) { return b.safeSchema.isEmail(v); }],
+    ["isUrl",      URL_RE,      function (v) { return b.safeSchema.isUrl(v); }],
+    ["isUuid",     UUID_RE,     function (v) { return b.safeSchema.isUuid(v); }],
+    ["isDate",     DATE_RE,     function (v) { return b.safeSchema.isDate(v); }],
+    ["isDatetime", DATETIME_RE, function (v) { return b.safeSchema.isDatetime(v); }],
+    ["isCuid",     CUID_RE,     function (v) { return b.safeSchema.isCuid(v); }],
+    ["isUlid",     ULID_RE,     function (v) { return b.safeSchema.isUlid(v); }],
+    ["isBase64",   BASE64_RE,   function (v) { return b.safeSchema.isBase64(v); }],
+  ];
+  void s;
+
+  var diffs = [];
+  VALUES.forEach(function (v) {
+    CHECKS.forEach(function (c) {
+      var want = c[1].test(v);
+      var got = c[2](v);
+      if (want !== got) {
+        diffs.push(c[0] + " " + JSON.stringify(v) + " want " + want + " got " + got);
+      }
+    });
+  });
+  check("every schema shape check agrees with the pattern it replaced (" +
+        VALUES.length + " values across " + CHECKS.length + " shapes)",
+        diffs.length === 0, diffs.slice(0, 5).join(" | "));
+
+  // Every one takes whatever a caller hands it.
+  [null, undefined, 42, {}, []].forEach(function (v) {
+    var refused = CHECKS.every(function (c) { return c[2](v) === false; });
+    check("non-string " + Object.prototype.toString.call(v) +
+          " is refused by every shape check", refused);
+  });
+
+  // The IP checks are the algorithmic ones, which is what `.ipv4()` /
+  // `.ipv6()` have always used — the exported pattern was the odd one out.
+  check("isIpv4 accepts a dotted quad and refuses a leading zero",
+        b.safeSchema.isIpv4("192.168.1.1") === true &&
+        b.safeSchema.isIpv4("01.2.3.4") === false);
+  check("isIpv6 accepts a compressed address and refuses a zone id",
+        b.safeSchema.isIpv6("2001:db8::1") === true &&
+        b.safeSchema.isIpv6("fe80::1%eth0") === false);
+
+  // The timezone marker is upper case here, as the pattern this replaced had
+  // it. RFC 3339 §5.6 permits a lower-case `z` and `b.time.readDateTime` takes
+  // it — this check does not, because widening what a validator accepts admits
+  // values the schema previously refused.
+  check("isDatetime keeps its upper-case-only timezone marker",
+        b.safeSchema.isDatetime("2026-08-16T12:34:56Z") === true &&
+        b.safeSchema.isDatetime("2026-08-16T12:34:56z") === false &&
+        b.safeSchema.isDatetime("2026-08-16t12:34:56Z") === false);
 }
 
 module.exports = { run: run };
