@@ -612,7 +612,7 @@ function _withSig(msg, signed) {
 }
 
 // _sfQuotedString refuses any parameter byte outside printable-ASCII
-// (RFC 9651 §3.3.3): a control byte in a signature parameter (here `nonce`)
+// (RFC 8941 §3.3.3): a control byte in a signature parameter (here `nonce`)
 // makes sign() throw BAD_PARAM rather than emit a header that would mis-parse
 // on the wire. Constructed via fromCharCode so no literal control byte lands
 // in the test source.
@@ -1142,7 +1142,7 @@ function testBuildBaseFailed() {
         v.valid === false && v.reason === "build-base-failed");
 }
 
-// RFC 9651 §3.1.2 parameter parsing tolerance: verify rebuilds the canonical
+// RFC 8941 §3.1.2 parameter parsing tolerance: verify rebuilds the canonical
 // @signature-params terminator from the parsed values, so a transmitted
 // Signature-Input with a trailing ';' (empty parameter) or an unquoted string
 // parameter (a conformant peer's serialization variant) still verifies.

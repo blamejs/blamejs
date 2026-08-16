@@ -7552,14 +7552,6 @@ var KNOWN_ANTIPATTERNS = [
     reason: "guard-html / guard-svg (_extractScheme) and guard-markdown (DANGEROUS_SCHEME_RE.test) resolve a URL scheme against a denylist. The WHATWG URL parser removes tab/lf/cr from anywhere and trims a leading/trailing C0-control-or-space run before parsing; neither the C0-control strip (which excludes tab/lf/cr) nor a raw trim (which misses an entity-encoded space) covers that, so the decoded value MUST route through codepointClass.stripUrlSchemeWhitespace. Fires if a scheme extractor drops the shared normalizer, re-opening the java<TAB>script: / &#32;javascript: fail-open XSS.",
   },
   {
-    id: "sfv-citation-must-match-the-referencing-protocol",
-    primitive: "a comment describing ANOTHER protocol's field grammar cites the structured-fields RFC that protocol normatively references (RFC 8941), not the newer RFC 9651",
-    scanScope: "lib",
-    regex: /RFC 9(?:421|530)[^\n]*RFC 9651|RFC 9651[^\n]*RFC 9(?:421|530)/,
-    allowlist: [],
-    reason: "RFC 9651 SS2.4 is explicit that it does not update specifications referencing RFC 8941: a field whose definition references 8941 cannot use 9651's new Date or Display String types, because a recipient may still parse it with an 8941 parser. RFC 9421 (HTTP Message Signatures) and RFC 9530 (Digest Fields) both normatively reference 8941, so a comment asserting what THEIR field grammar is must say 8941 -- naming 9651 there silently opts the protocol into a field model its own spec does not permit. b.structuredFields itself is a standalone RFC 9651 codec and correctly cites 9651. Fires when a line names one of those protocols alongside 9651.",
-  },
-  {
     id: "guard-css-danger-check-must-decode-entities",
     primitive: "a content guard's CSS-danger check must match the entity-decoded style value via codepointClass.decodeMarkupEntities, not the raw bytes -- a style attribute is character-reference-decoded before the CSS parser sees it",
     scanScope: "lib",
@@ -17391,11 +17383,64 @@ function testCaptureStatusChecked() {
           "output (an unreadable result is not an empty one)", bad);
 }
 
+// RFC 9651 §2.4 is explicit that it does NOT update specifications referencing
+// RFC 8941: "a field whose definition references RFC 8941 cannot use the Date
+// type because some recipients might still be using a parser based on RFC 8941
+// to process it." So the structured-fields RFC a comment should name is not
+// "the newest one" — it is whichever one the protocol being described
+// normatively references.
+//
+// The rule is per FILE, not per line. A module implementing RFC 9421 (HTTP
+// Message Signatures) or RFC 9530 (Digest Fields) — both published before 9651
+// and both referencing 8941 — describes that protocol's grammar throughout, so
+// a stray 9651 anywhere in it silently claims a field model the protocol's own
+// spec does not permit. `b.structuredFields` is a standalone codec of the
+// current spec and correctly cites 9651; it names no protocol, so it is not in
+// scope here.
+function testSfvCitationMatchesReferencingProtocol() {
+  // class: sfv-citation-must-match-referencing-protocol
+  // Files whose SUBJECT is a protocol that normatively references RFC 8941 —
+  // an explicit map rather than "the file mentions the RFC", because the codec
+  // module names its consumers and this detector names both RFCs in its own
+  // prose; neither is describing a protocol's grammar. Add a row when a new
+  // SFV-consuming protocol lands, and only if its spec predates RFC 9651.
+  var PROTOCOL_OWNED_FILES = {
+    "lib/content-digest.js":                                  "RFC 9530 (Digest Fields)",
+    "lib/http-message-signature.js":                           "RFC 9421 (HTTP Message Signatures)",
+    "test/layer-0-primitives/content-digest.test.js":          "RFC 9530 (Digest Fields)",
+    "test/layer-0-primitives/http-message-signature.test.js":  "RFC 9421 (HTTP Message Signatures)",
+  };
+
+  var bad = [];
+  _libFiles().concat(_testFiles()).forEach(function (full) {
+    var rel = _relPath(full);
+    var owner = PROTOCOL_OWNED_FILES[rel];
+    if (!owner) return;
+    var src = fs.readFileSync(full, "utf8");
+    if (src.indexOf("RFC 9651") === -1) return;
+    src.split(/\r?\n/).forEach(function (line, i) {
+      if (line.indexOf("RFC 9651") === -1) return;
+      bad.push({
+        file:    rel,
+        line:    i + 1,
+        content: "cites RFC 9651, but this file describes " + owner + ", which " +
+                 "normatively references RFC 8941 — RFC 9651 does not update " +
+                 "specs that reference 8941, so naming it here claims a field " +
+                 "model the protocol does not permit. Cite RFC 8941",
+      });
+    });
+  });
+  bad = _filterMarkers(bad, "sfv-citation-must-match-referencing-protocol");
+  _report("a structured-fields citation names the RFC its protocol references, " +
+          "not the newest one", bad);
+}
+
 async function run() {
   testPrimitiveReachability();
   testDenyPathComposesDenyResponse();
   testNoRegexInGuardAndSafeFamily();
   testCaptureStatusChecked();
+  testSfvCitationMatchesReferencingProtocol();
   testNoInternalNarrativeComments();
   testNoOrphanAllowClass();
   testNoRetiredAllowTokenReRegistered();
