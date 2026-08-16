@@ -826,6 +826,22 @@ function testSchemaPatternRunsInLinearTime() {
   check("a lookahead still matches", verdict("abc", "^(?=a)abc$") === "ok");
   check("a catastrophic pattern the linear matcher cannot take is refused",
         verdict("x", "^(a+)+\\1$") === "json/bad-pattern");
+
+  // The flags decide what the source MEANS. `(a|A)+` reads as two disjoint
+  // branches on its own and as one branch twice under `i`, which is the
+  // overlap the alternation rule exists to catch — so a screen that reads the
+  // source alone passes this and then runs it, under those flags, against a
+  // value from the wire.
+  var flagRedosStarted = Date.now();
+  var flagRedos = verdict("a".repeat(30) + "!", /^(?=(a|A)+$)a+$/i);
+  var flagRedosMs = Date.now() - flagRedosStarted;
+  check("a pattern that is catastrophic only under its flags is refused (" +
+        flagRedosMs + "ms)",
+        flagRedos === "json/bad-pattern" && flagRedosMs < PATTERN_BUDGET_MS,
+        flagRedos);
+  check("...and honest patterns still carry their flags",
+        verdict("ABC", /^(?=a)abc$/i) === "ok" &&
+        verdict("abc", /^(?=a)abc$/) === "ok");
   check("an unparseable pattern is reported as a bad pattern, not a mismatch",
         verdict("abc", "([a-") === "json/bad-pattern");
 
