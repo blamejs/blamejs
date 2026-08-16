@@ -96,7 +96,7 @@ function testParse() {
   check("parse: extension value", r2.directives["x-foo"] === "bar");
   check("parse: extension flag",  r2.directives["x-flag"] === true);
 
-  // Quoted-value tolerance (RFC 9651 §3.3.3 sf-string)
+  // Quoted-value tolerance (RFC 8941 §3.3.3 sf-string)
   var r3 = b.cdnCacheControl.parse('max-age="60"');
   check("parse: quoted numeric tolerated", r3.maxAge === 60);
 

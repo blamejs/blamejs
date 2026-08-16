@@ -17390,32 +17390,33 @@ function testCaptureStatusChecked() {
 // "the newest one" — it is whichever one the protocol being described
 // normatively references.
 //
-// The rule is per FILE, not per line. A module implementing RFC 9421 (HTTP
-// Message Signatures) or RFC 9530 (Digest Fields) — both published before 9651
-// and both referencing 8941 — describes that protocol's grammar throughout, so
-// a stray 9651 anywhere in it silently claims a field model the protocol's own
-// spec does not permit. `b.structuredFields` is a standalone codec of the
-// current spec and correctly cites 9651; it names no protocol, so it is not in
-// scope here.
+// The rule is per FILE, not per line: a module describing a protocol describes
+// it throughout, so a stray 9651 anywhere in it claims a field model that
+// protocol's own spec does not permit. `b.structuredFields` is the one
+// exception — a standalone codec of the current spec, implementing 9651 rather
+// than describing someone else's field.
 function testSfvCitationMatchesReferencingProtocol() {
   // class: sfv-citation-must-match-referencing-protocol
-  // Files whose SUBJECT is a protocol that normatively references RFC 8941 —
-  // an explicit map rather than "the file mentions the RFC", because the codec
-  // module names its consumers and this detector names both RFCs in its own
-  // prose; neither is describing a protocol's grammar. Add a row when a new
-  // SFV-consuming protocol lands, and only if its spec predates RFC 9651.
-  var PROTOCOL_OWNED_FILES = {
-    "lib/content-digest.js":                                  "RFC 9530 (Digest Fields)",
-    "lib/http-message-signature.js":                           "RFC 9421 (HTTP Message Signatures)",
-    "test/layer-0-primitives/content-digest.test.js":          "RFC 9530 (Digest Fields)",
-    "test/layer-0-primitives/http-message-signature.test.js":  "RFC 9421 (HTTP Message Signatures)",
+  // The codec module documents the CURRENT spec because it implements it. Every
+  // other file describes some protocol's field — Cache-Status, Targeted
+  // Cache-Control, Client Hints, Digest Fields, Message Signatures, the HTTP
+  // core — and every one of those specs was published before RFC 9651 and
+  // references RFC 8941. So the rule needs no per-protocol table: outside the
+  // codec, the structured-fields citation is RFC 8941.
+  //
+  // This detector's own prose names both numbers on purpose, hence the
+  // self-exemption.
+  var CODEC_SCOPED = {
+    "lib/structured-fields.js":                                1,
+    "test/layer-0-primitives/structured-fields.test.js":       1,
+    "test/layer-0-primitives/structured-fields-codec.test.js": 1,
+    "test/layer-0-primitives/codebase-patterns.test.js":       1,
   };
 
   var bad = [];
   _libFiles().concat(_testFiles()).forEach(function (full) {
     var rel = _relPath(full);
-    var owner = PROTOCOL_OWNED_FILES[rel];
-    if (!owner) return;
+    if (CODEC_SCOPED[rel]) return;
     var src = fs.readFileSync(full, "utf8");
     if (src.indexOf("RFC 9651") === -1) return;
     src.split(/\r?\n/).forEach(function (line, i) {
@@ -17423,10 +17424,11 @@ function testSfvCitationMatchesReferencingProtocol() {
       bad.push({
         file:    rel,
         line:    i + 1,
-        content: "cites RFC 9651, but this file describes " + owner + ", which " +
-                 "normatively references RFC 8941 — RFC 9651 does not update " +
-                 "specs that reference 8941, so naming it here claims a field " +
-                 "model the protocol does not permit. Cite RFC 8941",
+        content: "cites RFC 9651 outside b.structuredFields. This file describes " +
+                 "a protocol's field, and every structured-fields consumer the " +
+                 "framework implements is specified against RFC 8941 — RFC 9651 " +
+                 "§2.4 does not update those specs, so naming it here claims a " +
+                 "field model the protocol does not permit. Cite RFC 8941",
       });
     });
   });
