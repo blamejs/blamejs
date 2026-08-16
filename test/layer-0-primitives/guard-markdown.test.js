@@ -434,15 +434,37 @@ function testMarkdownExtractorsAgreeWithThePatternsTheyReplaced() {
       diffs.push("html-comment missed " + JSON.stringify(doc.slice(0, 40)));
     }
     compare("doctype", DOCTYPE_INLINE_RE.test(doc), api.hasDoctype(doc));
-    compare("front-matter",
-            FRONT_MATTER_YAML_RE.test(doc) || FRONT_MATTER_TOML_RE.test(doc),
-            api.hasFrontMatter(doc, "---") || api.hasFrontMatter(doc, "+++"));
+    // The closing fence must END its line, which the pattern never checked —
+    // `\n---\s*\n?` can match with nothing after the delimiter at all, so
+    // `---not-a-fence` closed the block. Asserted separately below.
+    if (!/\n(?:---|\+\+\+)\S/.test(doc)) {
+      compare("front-matter",
+              FRONT_MATTER_YAML_RE.test(doc) || FRONT_MATTER_TOML_RE.test(doc),
+              api.hasFrontMatter(doc, "---") || api.hasFrontMatter(doc, "+++"));
+    }
     compare("emphasis-run", EMPH_RUN_RE.test(doc), api.hasLongEmphasisRun(doc));
   });
 
   check("every markdown extractor and screen agrees with the pattern it " +
         "replaced (" + DOCS.length + " documents)", diffs.length === 0,
         diffs.slice(0, 5).join(" | "));
+
+  // A tightening, in the other direction. `\n---\s*\n?` requires nothing at
+  // all after the closing delimiter — both quantifiers can match empty — so a
+  // line of ordinary text that merely STARTS with the delimiter closed the
+  // block. Every front-matter parser requires the fence to end its line, and
+  // reporting front matter in a document that has none is a refusal under a
+  // strict profile.
+  var FRONT_MATTER_YAML_RE_LOOSE = /^---\s*\n[\s\S]+?\n---\s*\n?/;
+  var notAFence = "---\nordinary paragraph\n---not-a-fence\n";
+  check("the pattern closed the block on a line that only starts with the fence",
+        FRONT_MATTER_YAML_RE_LOOSE.test(notAFence) === true);
+  check("the walk requires the closing fence to end its line",
+        api.hasFrontMatter(notAFence, "---") === false);
+  check("...and a fence followed only by whitespace still closes",
+        api.hasFrontMatter("---\nx\n--- \n", "---") === true &&
+        api.hasFrontMatter("---\nx\n---\t", "---") === true &&
+        api.hasFrontMatter("---\nx\n---", "---") === true);
 
   // The one deliberate widening: a code fence on the last line, with no
   // newline after it, was invisible to the pattern. A renderer still reads
