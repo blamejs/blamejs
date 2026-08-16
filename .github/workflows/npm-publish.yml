@@ -278,7 +278,12 @@ jobs:
         id: subjects
         run: |
           set -euo pipefail
-          TARBALL=$(basename "$(find dist -maxdepth 1 -name '*.tgz' | head -1)")
+          TARBALL_PATH=$(find dist -maxdepth 1 -name '*.tgz' | head -1)
+          if [ -z "$TARBALL_PATH" ] || [ ! -f "$TARBALL_PATH" ]; then
+            echo "::error::No packed tarball under dist/ — refusing to continue with an unresolved tarball path."
+            exit 1
+          fi
+          TARBALL=$(basename "$TARBALL_PATH")
           HASHES=$(
             (cd dist && sha256sum "$TARBALL") && \
             sha256sum sbom.cdx.json sbom.vendored.cdx.json ssdf-attestation.json
@@ -478,6 +483,10 @@ jobs:
         run: |
           set -euo pipefail
           TARBALL=$(find dist -maxdepth 1 -name '*.tgz' | head -1)
+          if [ -z "$TARBALL" ] || [ ! -f "$TARBALL" ]; then
+            echo "::error::No packed tarball under dist/ — refusing to continue with an unresolved tarball path."
+            exit 1
+          fi
           node src/scripts/sha3-digest.js "$TARBALL"
 
       - name: PQC sidecar — ML-DSA-65 signature of the tarball
@@ -517,6 +526,10 @@ jobs:
             exit 0
           fi
           TARBALL=$(find dist -maxdepth 1 -name '*.tgz' | head -1)
+          if [ -z "$TARBALL" ] || [ ! -f "$TARBALL" ]; then
+            echo "::error::No packed tarball under dist/ — refusing to continue with an unresolved tarball path."
+            exit 1
+          fi
           # The signer expects keys/release-pqc-pub.json at the
           # framework root for the self-verify cross-check. Symlink
           # the checked-out src/keys/ into the working directory so
@@ -577,6 +590,10 @@ jobs:
             exit 1
           fi
           TARBALL=$(find dist -maxdepth 1 -name '*.tgz' | head -1)
+          if [ -z "$TARBALL" ] || [ ! -f "$TARBALL" ]; then
+            echo "::error::No packed tarball under dist/ — refusing to create a release with an unresolved tarball path."
+            exit 1
+          fi
           # Title comes from the structured release-notes JSON's
           # `headline` field — single source of truth. Format:
           # `vX.Y.Z — <headline>`.
@@ -654,6 +671,13 @@ jobs:
         # spec.
         run: |
           TARBALL=$(find dist -maxdepth 1 -name '*.tgz' | head -1)
+          # An empty result here is the worst fail-open in the whole release
+          # path: `npm publish "./"` publishes the WORKING DIRECTORY as the
+          # package, with this run's provenance attached to it. Refuse instead.
+          if [ -z "$TARBALL" ] || [ ! -f "$TARBALL" ]; then
+            echo "::error::No packed tarball under dist/ — refusing to publish. The publish bundle did not download, and './' is not a substitute for it."
+            exit 1
+          fi
           echo "Publishing: $TARBALL"
           npm publish "./${TARBALL}" --provenance --access public
         env:
