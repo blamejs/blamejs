@@ -1267,6 +1267,41 @@ function testGuardCsvValidateBomMidStream() {
         rv2.issues.some(function (i) { return i.kind === "bom-mid-stream"; }));
 }
 
+// `bomPrefix: true` is the operator saying the file opens with a BOM, which is
+// what makes Excel read it as UTF-8. validate honors that — it flags a leading
+// BOM only when the opt is false. sanitize has to honor the same thing, or a
+// document that validated clean comes back with the byte the operator asked
+// for removed, and Excel reads the file as the local codepage.
+function testGuardCsvSanitizeKeepsTheRequestedLeadingBom() {
+  var BOM = String.fromCharCode(0xFEFF);
+
+  var kept = b.guardCsv.sanitize(BOM + "name,city\r\nalice,paris\r\n",
+                                 { profile: "permissive", bomPrefix: true });
+  check("sanitize: a leading BOM survives when bomPrefix is true",
+        kept.charCodeAt(0) === 0xFEFF);
+  check("sanitize: the rest of the document is unchanged beside it",
+        kept.slice(1) === "name,city\r\nalice,paris\r\n");
+
+  // Only the LEADING one. A BOM mid-stream is the separator-spoofing artifact
+  // validate flags, and stays removed whatever bomPrefix says.
+  var mid = b.guardCsv.sanitize(BOM + "name\r\n" + BOM + "alice\r\n",
+                                { profile: "permissive", bomPrefix: true });
+  check("sanitize: a mid-stream BOM is still removed under bomPrefix",
+        mid === BOM + "name\r\nalice\r\n");
+
+  // With the opt false — the default on every other profile — the leading BOM
+  // is the flagged issue and goes.
+  var dropped = b.guardCsv.sanitize(BOM + "name,city\r\n", { profile: "strict" });
+  check("sanitize: a leading BOM is removed when bomPrefix is false",
+        dropped === "name,city\r\n");
+
+  // No BOM at all, opt on: nothing is invented.
+  var none = b.guardCsv.sanitize("name,city\r\n",
+                                 { profile: "permissive", bomPrefix: true });
+  check("sanitize: bomPrefix does not add a BOM that was not there",
+        none === "name,city\r\n");
+}
+
 function testGuardCsvValidateHomoglyph() {
   // Cyrillic small a (U+0430) mixed with ASCII letters.
   var CYR_A = String.fromCharCode(0x0430);
@@ -1614,6 +1649,7 @@ async function run() {
 
   // guardCsv branch-coverage extensions
   testGuardCsvValidateBomMidStream();
+  testGuardCsvSanitizeKeepsTheRequestedLeadingBom();
   testGuardCsvValidateHomoglyph();
   testGuardCsvValidateFormulaAfterZeroWidthStrip();
   testGuardCsvSanitizeStripVariants();

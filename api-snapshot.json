@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.18.28",
-  "createdAt": "2026-08-15T23:11:52.296Z",
+  "frameworkVersion": "0.18.29",
+  "createdAt": "2026-08-16T01:06:31.250Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -6803,14 +6803,6 @@
           "type": "instance",
           "ctorName": "Array"
         },
-        "BIDI_RE": {
-          "type": "instance",
-          "ctorName": "RegExp"
-        },
-        "BIDI_RE_G": {
-          "type": "instance",
-          "ctorName": "RegExp"
-        },
         "BOM_CHAR": {
           "type": "primitive",
           "valueType": "string"
@@ -6818,14 +6810,6 @@
         "C0_CTRL_RANGES": {
           "type": "instance",
           "ctorName": "Array"
-        },
-        "C0_CTRL_RE": {
-          "type": "instance",
-          "ctorName": "RegExp"
-        },
-        "C0_CTRL_RE_G": {
-          "type": "instance",
-          "ctorName": "RegExp"
         },
         "HEX_PAIR_RE": {
           "type": "instance",
@@ -6956,9 +6940,9 @@
           "type": "primitive",
           "valueType": "string"
         },
-        "NULL_RE_G": {
+        "NULL_RANGES": {
           "type": "instance",
-          "ctorName": "RegExp"
+          "ctorName": "Array"
         },
         "SCRIPT_RANGES": {
           "type": "object",
@@ -7013,25 +6997,13 @@
           "type": "instance",
           "ctorName": "Array"
         },
-        "TAG_RE": {
+        "WHITESPACE_RANGES": {
           "type": "instance",
-          "ctorName": "RegExp"
-        },
-        "TAG_RE_G": {
-          "type": "instance",
-          "ctorName": "RegExp"
+          "ctorName": "Array"
         },
         "ZERO_WIDTH_RANGES": {
           "type": "instance",
           "ctorName": "Array"
-        },
-        "ZERO_WIDTH_RE": {
-          "type": "instance",
-          "ctorName": "RegExp"
-        },
-        "ZW_RE_G": {
-          "type": "instance",
-          "ctorName": "RegExp"
         },
         "applyCharStripPolicies": {
           "type": "function",
@@ -7057,6 +7029,10 @@
           "type": "function",
           "arity": 1
         },
+        "containsFolded": {
+          "type": "function",
+          "arity": 2
+        },
         "decodeMarkupEntities": {
           "type": "function",
           "arity": 1
@@ -7081,6 +7057,10 @@
           "type": "function",
           "arity": 2
         },
+        "firstInRanges": {
+          "type": "function",
+          "arity": 2
+        },
         "fromCp": {
           "type": "function",
           "arity": 1
@@ -7088,6 +7068,14 @@
         "hex4": {
           "type": "function",
           "arity": 1
+        },
+        "inRanges": {
+          "type": "function",
+          "arity": 2
+        },
+        "indexOfAny": {
+          "type": "function",
+          "arity": 3
         },
         "isAsciiAlnum": {
           "type": "function",
@@ -7101,6 +7089,14 @@
           "type": "function",
           "arity": 1
         },
+        "replaceAny": {
+          "type": "function",
+          "arity": 3
+        },
+        "replaceRanges": {
+          "type": "function",
+          "arity": 3
+        },
         "resolveTagsPolicy": {
           "type": "function",
           "arity": 1
@@ -7113,9 +7109,21 @@
           "type": "function",
           "arity": 4
         },
+        "stripRanges": {
+          "type": "function",
+          "arity": 2
+        },
         "stripUrlSchemeWhitespace": {
           "type": "function",
           "arity": 1
+        },
+        "trimChars": {
+          "type": "function",
+          "arity": 3
+        },
+        "trimRanges": {
+          "type": "function",
+          "arity": 3
         }
       }
     },

@@ -806,8 +806,91 @@ function testOverLongNameIsRefusedUnderThisGuardsOwnRule() {
   });
 }
 
+// The shape detectors are character walks. Each one is compared here against
+// the pattern it replaced, over a corpus of the hostile names this guard
+// exists for, so a walk that answers differently from the pattern shows up as
+// a disagreement rather than as a name that quietly stops being refused.
+function testShapeDetectorsAgreeWithThePatternsTheyReplaced() {
+  var NAMES = [
+    "", ".", "..", "...", "....", "a", "a.txt",
+    "../etc/passwd", "..\\windows\\system32", "a/../b", "a/..", "../..",
+    "..a", "a..", "a..b", "x/..y", "y../z", "dir/../../etc/passwd",
+    "%2e%2e/etc", "%2E%2E/etc", "%252e%252e/x", "%c0%ae%c0%ae/x", "%C0%AF",
+    "%2f", "%5C", "%c1%9c", "no-encoding-here",
+    "\\\\server\\share\\f.txt", "//host/path", "/abs/path", "\\single",
+    "C:/win", "c:\\win", "Z:/x", "1:/x", "CC:/x", "C:x",
+    "report.txt:hidden", "a:b:c", "a:b/c", "a:", ":stream", "x:y",
+    "name ", " name", "name.", "name..", " ", ".hidden", "n\u00a0",
+    "\u3000pad", "tab\there", "report<final>.csv", "a|b", "q?", "st*r",
+    "quote\"d", "back\\slash", "fwd/slash", "COM1", "com\u00b91",
+  ];
+
+  // The patterns as they were, restated here so the comparison is against the
+  // old behaviour rather than against the new code.
+  var PATH_TRAVERSAL_RE = /(^|[/\\])\.\.($|[/\\])/;
+  var PERCENT_ENCODED_TRAVERSAL_RE = /%2e%2e|%252e%252e|%c0%ae|%c0%af/i;
+  var URL_ENCODED_SLASH_RE = /%2f|%5c|%c0%af|%c1%9c/i;
+
+  var diffs = [];
+  function compare(label, name, expected, actual) {
+    if (expected !== actual) diffs.push(label + " " + JSON.stringify(name));
+  }
+
+  NAMES.forEach(function (n) {
+    // Traversal, percent-encoded traversal, and encoded separators are read
+    // through validate, which is the surface an operator drives.
+    var issues = b.guardFilename.validate(n, { profile: "strict" }).issues;
+    function has(kind) {
+      return issues.some(function (i) { return i.kind === kind; });
+    }
+    compare("traversal", n,
+            PATH_TRAVERSAL_RE.test(n) || n === "..", has("path-traversal"));
+    compare("encoded-traversal", n,
+            PERCENT_ENCODED_TRAVERSAL_RE.test(n), has("path-traversal-encoded"));
+    compare("encoded-separator", n,
+            URL_ENCODED_SLASH_RE.test(n), has("url-encoded-separator"));
+    compare("unc", n, /^\\\\|^\/\//.test(n), has("unc-path"));
+    compare("ads", n,
+            /:[^:\\/]+$/.test(n) && n.charAt(0) !== "/", has("ntfs-ads"));
+    compare("leading-trailing", n, /^\s|\s$|\.$/.test(n),
+            has("leading-trailing-strip"));
+    compare("reserved-char", n, /[<>:"|?*]/.test(n), has("reserved-char"));
+  });
+
+  check("every shape detector agrees with the pattern it replaced (" +
+        NAMES.length + " names)", diffs.length === 0,
+        diffs.slice(0, 5).join(" | "));
+
+  // The reserved-character strip replaces EVERY occurrence. A single-match
+  // sanitizer returns a name that still carries the rest of them.
+  var stripped = b.guardFilename.sanitize("a<b>c:d|e?f*g\"h", {
+    profile: "balanced", reservedCharPolicy: "strip",
+  });
+  check("every reserved character is replaced, not the first",
+        stripped === "a_b_c_d_e_f_g_h", stripped);
+
+  // Whitespace the filesystem trims is not only the ASCII space: a name
+  // ending in U+00A0 or U+3000 is trimmed by Windows on create, so it has to
+  // be flagged the same way.
+  [0x00A0, 0x3000, 0x2028, 0xFEFF, 0x205F].forEach(function (cp) {
+    var name = "report.txt" + String.fromCharCode(cp);
+    var flagged = b.guardFilename.validate(name, { profile: "strict" }).issues
+      .some(function (i) { return i.kind === "leading-trailing-strip"; });
+    check("a trailing U+" + cp.toString(16).toUpperCase() +
+          " counts as trimmable whitespace", flagged);
+  });
+
+  // An astral character becomes ONE replacement in strip mode, not two.
+  var astral = b.guardFilename.sanitize("a" + String.fromCodePoint(0xE0041) + "b", {
+    mode: "strip", profile: "balanced",
+  });
+  check("an astral Tags character is replaced once, not once per surrogate",
+        astral === "a_b", astral);
+}
+
 async function run() {
   testOverLongNameIsRefusedUnderThisGuardsOwnRule();
+  testShapeDetectorsAgreeWithThePatternsTheyReplaced();
   testGuardFilenameSurface();
   testGuardFilenameStandalonePrimitive();
   testGuardFilenamePathTraversal();

@@ -398,7 +398,78 @@ async function testGateConsumerPath() {
     hasIssue(special.issues, "special-use"));
 }
 
+// The label shapes are character walks. Each is compared against the pattern
+// it replaced, over a corpus of the names this guard exists to classify.
+function testLabelShapesAgreeWithThePatternsTheyReplaced() {
+  var LDH_LABEL_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/;
+  var SERVICE_LABEL_RE = /^_[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/;
+  var PUNYCODE_LABEL_RE = /^xn--/i;
+  var BARE_XN_RE = /^xn--$/i;
+  var IPV6_BRACKET_RE = /^\[[0-9a-fA-F:.]+\]$/;
+  var IPV4_NUMERIC_SEGMENT_RE = /^(?:0[xX][0-9a-fA-F]+|[0-9]+)$/;
+  function oldLooksLikeIpv4(s) {
+    if (!/[0-9]/.test(s)) return false;
+    if (IPV4_NUMERIC_SEGMENT_RE.test(s)) {
+      return s.length > 0 && !/^[0-9]+$/.test(s) ? true : s.length >= 8;
+    }
+    if (s.indexOf(".") === -1) return false;
+    var parts = s.split(".");
+    if (parts.length !== 4) return false;
+    for (var i = 0; i < parts.length; i += 1) {
+      if (!IPV4_NUMERIC_SEGMENT_RE.test(parts[i])) return false;
+    }
+    return true;
+  }
+
+  var LABELS = [
+    "", "a", "ab", "a-b", "-a", "a-", "-", "--", "a--b", "1", "1a", "a1",
+    "example", "EXAMPLE", "xn--", "XN--", "xn--a", "xn--80ak6aa92e", "xnn--a",
+    "x-n--a", "_dmarc", "_", "_-", "_a", "_a-b", "_a-", "a_b", "*", "**", "*a",
+    "a.b", "caf" + String.fromCharCode(0xE9), "a b", "a.b.c", "a_",
+  ];
+  var ldhDiffs = [], svcDiffs = [], punyDiffs = [], bareDiffs = [];
+  LABELS.forEach(function (l) {
+    var api = b.guardDomain._shapesForTest;
+    if (LDH_LABEL_RE.test(l) !== api.isLdhLabel(l)) ldhDiffs.push(JSON.stringify(l));
+    if (SERVICE_LABEL_RE.test(l) !== api.isServiceLabel(l)) svcDiffs.push(JSON.stringify(l));
+    if (PUNYCODE_LABEL_RE.test(l) !== api.hasPunycodePrefix(l)) punyDiffs.push(JSON.stringify(l));
+    if (BARE_XN_RE.test(l) !== api.isBarePunycodePrefix(l)) bareDiffs.push(JSON.stringify(l));
+  });
+  check("the LDH-label walk agrees with the pattern it replaced",
+        ldhDiffs.length === 0, ldhDiffs.slice(0, 4).join(" | "));
+  check("the service-label walk agrees with the pattern it replaced",
+        svcDiffs.length === 0, svcDiffs.slice(0, 4).join(" | "));
+  check("the punycode-prefix walk agrees with the pattern it replaced",
+        punyDiffs.length === 0, punyDiffs.slice(0, 4).join(" | "));
+  check("the bare-xn-- walk agrees with the pattern it replaced",
+        bareDiffs.length === 0, bareDiffs.slice(0, 4).join(" | "));
+
+  var HOSTS = [
+    "", "[::1]", "[fe80::1%25eth0]", "[]", "[g::1]", "[1.2.3.4]", "::1",
+    "192.168.1.1", "0177.0.0.1", "0xC0.0xA8.0x01.0x01", "3232235777",
+    "0xC0A80101", "1234567", "12345678", "1.2.3", "1.2.3.4.5", "a.b.c.d",
+    "0x", "0xZZ", "00.00.00.00", "example.com", "9.9.9.9",
+  ];
+  var v6Diffs = [], v4Diffs = [];
+  HOSTS.forEach(function (h) {
+    var api = b.guardDomain._shapesForTest;
+    if (IPV6_BRACKET_RE.test(h) !== api.isIpv6BracketLiteral(h)) v6Diffs.push(JSON.stringify(h));
+    if (oldLooksLikeIpv4(h) !== api.looksLikeIpv4Permissive(h)) v4Diffs.push(JSON.stringify(h));
+  });
+  check("the IPv6-bracket walk agrees with the pattern it replaced",
+        v6Diffs.length === 0, v6Diffs.slice(0, 4).join(" | "));
+  check("the permissive-IPv4 walk agrees with the code it replaced",
+        v4Diffs.length === 0, v4Diffs.slice(0, 4).join(" | "));
+
+  // A trailing run of dots no longer hides a special-use name: a resolver
+  // that tolerates `localhost..` resolves it as `localhost`.
+  var doubled = b.guardDomain.validate("localhost..", { profile: "strict" }).issues
+    .some(function (i) { return i.kind === "special-use"; });
+  check("a special-use name with a doubled trailing dot is still flagged", doubled);
+}
+
 async function run() {
+  testLabelShapesAgreeWithThePatternsTheyReplaced();
   testSanitize();
   testIpv4PermissiveForms();
   testIpv6BracketLiteral();

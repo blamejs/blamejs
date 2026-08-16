@@ -291,6 +291,81 @@ function testGuardJsonNullByte() {
         rv.issues.some(function (i) { return i.kind === "null-byte"; }));
 }
 
+// The source-shape detectors look for JSON5 / JSONC syntax a downstream parser
+// would accept — comments, bare NaN, a trailing comma, a hex literal, a
+// single-quoted key. All of those are STRUCTURE. The same characters inside a
+// string value are ordinary text: a URL contains `//`, prose contains `NaN`,
+// and a message contains `, }`. Refusing a document for its content is an
+// outage, not a defense — and it lands on exactly the documents most likely to
+// carry a URL.
+function testValidJsonIsNotRefusedForTheContentOfItsStrings() {
+  var CLEAN = [
+    ["a URL in a value",            { url: "http://example.com/a/b" }],
+    ["a protocol-relative URL",     { url: "//cdn.example.com/x" }],
+    ["block-comment text",          { s: "/* not a comment */" }],
+    ["line-comment text",           { s: "// not a comment" }],
+    ["the word NaN in prose",       { s: "the value is NaN here" }],
+    ["Infinity in prose",           { s: "approaches Infinity" }],
+    ["undefined in prose",          { s: "left undefined" }],
+    ["a comma before a bracket",    { s: "one, ] two" }],
+    ["a comma before a brace",      { s: "one, } two" }],
+    ["single quotes around a word", { s: "set 'key' : value" }],
+    ["a hex literal in prose",      { s: "color 0xFF00FF" }],
+    ["a long digit run in prose",   { s: "order 123456789012345678" }],
+    ["a Windows path with slashes", { p: "C:/a/b//c" }],
+  ];
+  CLEAN.forEach(function (row) {
+    var doc = JSON.stringify(row[1]);
+    var rv = b.guardJson.validate(doc, { profile: "strict" });
+    check("valid JSON with " + row[0] + " is clean",
+          rv.ok === true && rv.issues.length === 0,
+          JSON.stringify(rv.issues.map(function (i) { return i.kind; })));
+  });
+
+  // And the same documents pass the gate rather than being refused.
+  return Promise.all(CLEAN.map(function (row) {
+    return b.guardJson.gate({ profile: "strict" })
+      .check({ bytes: Buffer.from(JSON.stringify(row[1]), "utf8") })
+      .then(function (d) {
+        check("the gate serves valid JSON with " + row[0], d.action === "serve",
+              d.action);
+      });
+  }));
+}
+
+// The other half of the same root: a shape the detector cannot see because it
+// sits where the pattern's fixed prefix cannot match. A line comment straight
+// after a string value is the case — the pattern needed a non-quote character
+// in front of the slashes.
+function testJson5ShapesAreFoundWhereverTheySit() {
+  var HOSTILE = [
+    ["line comment after a string value",  '{"a":"b"// c\n}',      "comment-line"],
+    ["line comment after a number",        '{"a":1 // c\n}',       "comment-line"],
+    ["line comment at the start",          '// c\n{"a":1}',        "comment-line"],
+    ["line comment after a brace",         '{// c\n"a":1}',        "comment-line"],
+    ["block comment after a string value", '{"a":"b"/* c */}',     "comment-block"],
+    ["bare NaN after a string value",      '{"a":"b","c":NaN}',    "nan-infinity"],
+    ["bare Infinity",                      '{"a":Infinity}',       "nan-infinity"],
+    ["negative Infinity",                  '{"a":-Infinity}',      "nan-infinity"],
+    ["bare undefined",                     '{"a":undefined}',      "nan-infinity"],
+    ["trailing comma before a brace",      '{"a":"b",}',           "trailing-comma"],
+    ["trailing comma before a bracket",    '["a",]',               "trailing-comma"],
+    ["a hex literal value",                '{"a":0xFF}',           "hex-literal"],
+    ["a negative hex literal",             '{"a":-0x1f}',          "hex-literal"],
+    ["a single-quoted key",                "{'a':1}",              "single-quoted-key"],
+    ["a single-quoted key after a value",  "{\"a\":1,'b':2}",      "single-quoted-key"],
+    ["an integer past 2^53",               '{"a":123456789012345678}', "numeric-precision-loss"],
+    ["a negative integer past 2^53",       '{"a":-123456789012345678}', "numeric-precision-loss"],
+    ["a __proto__ key",                    '{"__proto__":{"x":1}}', "prototype-pollution-key"],
+  ];
+  HOSTILE.forEach(function (row) {
+    var kinds = b.guardJson.validate(row[1], { profile: "strict" }).issues
+      .map(function (i) { return i.kind; });
+    check("flagged: " + row[0], kinds.indexOf(row[2]) !== -1,
+          "want " + row[2] + " got " + JSON.stringify(kinds));
+  });
+}
+
 function testGuardJsonClean() {
   var rv = b.guardJson.validate('{"name":"alice","age":30,"tags":["a","b"]}',
                                 { profile: "strict" });
@@ -376,6 +451,8 @@ async function run() {
   testGuardJsonBidi();
   testGuardJsonNullByte();
   testGuardJsonClean();
+  await testValidJsonIsNotRefusedForTheContentOfItsStrings();
+  testJson5ShapesAreFoundWhereverTheySit();
   testGuardJsonCompliancePosture();
   testGuardJsonBadProfile();
   await testGuardJsonGate();

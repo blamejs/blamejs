@@ -158,9 +158,96 @@ function testConfineToBaseContainsWithoutUserInputStrictness() {
     b.safePath.confineToBase("", "x") === null && b.safePath.confineToBase("/srv", 5) === null);
 }
 
+// The refusal shapes are character walks now. Each is compared against the
+// pattern it replaced, over a corpus of the relative paths this primitive
+// exists to refuse — so a walk that answers differently shows up here rather
+// than as a path that quietly stops being refused.
+function testRefusalShapesAgreeWithThePatternsTheyReplaced() {
+  var CP = require("../../lib/codepoint-class");
+
+  // The patterns as they were.
+  var WIN_RESERVED_RE = /^(con|prn|aux|nul|com[0-9\u00B9\u00B2\u00B3]|lpt[0-9\u00B9\u00B2\u00B3]|conin\$|conout\$)(?:\..*)?$/i;
+  var ENCODED_SEPARATOR_RE = new RegExp(
+    "(%2[fF]|%5[cC]|%C0%AF|%C1%9C|[" +
+    CP.charClass([0xFF0F, 0xFF3C, 0x2215, 0x29F8, 0x2044]) + "])");
+  var C0_RE = new RegExp("[" + CP.charClass([[0x0001, 0x001F], 0x007F]) + "]");
+
+  var RELS = [
+    "a/b.txt", "user/avatar.png", "deep/nested/path/file", "", ".",
+    "con", "CON", "con.txt", "console", "console.txt", "conin$", "CONOUT$.log",
+    "com1", "com0", "com9", "com10", "lpt3", "lpt", "com", "aux.tar.gz",
+    "nul", "nulx", "x/con/y", "x/console/y", "com" + String.fromCharCode(0xB9),
+    "a%2Fb", "a%2fb", "A%5CB", "x%C0%AFy", "x%c1%9cy", "a%2Gb", "plain%20space",
+    "a" + String.fromCharCode(0xFF0F) + "b", "a" + String.fromCharCode(0x2215) + "b",
+    "a" + String.fromCharCode(0x29F8) + "b", "a" + String.fromCharCode(0x2044) + "b",
+    "a" + String.fromCharCode(0xFF3C) + "b",
+    "a" + String.fromCharCode(0x01) + "b", "a" + String.fromCharCode(0x1F) + "b",
+    "a" + String.fromCharCode(0x7F) + "b", "a\tb", "a b",
+    "C:/x", "c:\\x", "Z:/y", "1:/x", "CC:/x", "C:x", "//host/x", "\\\\srv\\s",
+    "/abs", "rel/../x",
+  ];
+
+  var diffs = [];
+  RELS.forEach(function (rel) {
+    var caught = null;
+    try { b.safePath.resolve("/srv", rel); } catch (e) { caught = e; }
+    var code = caught === null ? null : caught.code;
+
+    // Control characters, encoded separators and drive/UNC prefixes are
+    // refused before anything else can, so the code identifies the shape.
+    if (C0_RE.test(rel) && rel.indexOf("\0") === -1) {
+      if (code !== "safe-path/control-char") diffs.push("control " + JSON.stringify(rel) + " -> " + code);
+      return;
+    }
+    if (ENCODED_SEPARATOR_RE.test(rel)) {
+      if (code !== "safe-path/separator-in-segment") {
+        diffs.push("separator " + JSON.stringify(rel) + " -> " + code);
+      }
+      return;
+    }
+    var wasAbsolute = /^[A-Za-z]:[\\/]/.test(rel) || /^\\\\/.test(rel) ||
+                      /^\/\//.test(rel) || rel.charAt(0) === "/";
+    if (wasAbsolute) {
+      if (code !== "safe-path/absolute-rel") diffs.push("absolute " + JSON.stringify(rel) + " -> " + code);
+      return;
+    }
+    // Reserved names are decided per segment.
+    var reserved = rel.split("/").some(function (seg) {
+      if (seg.length === 0 || seg === "." || seg === "..") return false;
+      var lc = seg.toLowerCase();
+      var stem = lc.indexOf(".") === -1 ? lc : lc.slice(0, lc.indexOf("."));
+      return WIN_RESERVED_RE.test(seg) || WIN_RESERVED_RE.test(stem);
+    });
+    if (reserved && code !== "safe-path/win-reserved") {
+      diffs.push("reserved " + JSON.stringify(rel) + " -> " + code);
+    }
+    if (!reserved && code === "safe-path/win-reserved") {
+      diffs.push("not-reserved-but-refused " + JSON.stringify(rel));
+    }
+  });
+  check("every refusal shape agrees with the pattern it replaced (" +
+        RELS.length + " paths)", diffs.length === 0, diffs.slice(0, 5).join(" | "));
+
+  // The bidi set is now the shared table, which carries one codepoint the
+  // local copy did not: the Arabic letter mark.
+  var alm = null;
+  try { b.safePath.resolve("/srv", "a" + String.fromCharCode(0x061C) + "b"); }
+  catch (e) { alm = e; }
+  check("the Arabic letter mark (U+061C) is refused as a bidi codepoint",
+        alm !== null && alm.code === "safe-path/bidi");
+  [0x200E, 0x200F, 0x202A, 0x202E, 0x2066, 0x2069].forEach(function (cp) {
+    var err = null;
+    try { b.safePath.resolve("/srv", "a" + String.fromCharCode(cp) + "b"); }
+    catch (e) { err = e; }
+    check("U+" + cp.toString(16).toUpperCase() + " is still refused as bidi",
+          err !== null && err.code === "safe-path/bidi");
+  });
+}
+
 function run() {
   testHappyPath();
   testRefusalClasses();
+  testRefusalShapesAgreeWithThePatternsTheyReplaced();
   testWindowsTrailing();
   testResolveOrNullReturnsNull();
   testValidateReturnsVerdict();
