@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.18.30",
-  "createdAt": "2026-08-16T04:18:40.694Z",
+  "frameworkVersion": "0.18.31",
+  "createdAt": "2026-08-16T12:31:48.749Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -6831,6 +6831,10 @@
           "type": "instance",
           "ctorName": "RegExp"
         },
+        "LINE_TERMINATOR_RANGES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "NAMED_ENTITY_ASCII": {
           "type": "object",
           "members": {
@@ -7093,11 +7097,19 @@
           "type": "function",
           "arity": 3
         },
+        "indexOfFolded": {
+          "type": "function",
+          "arity": 3
+        },
         "isAsciiAlnum": {
           "type": "function",
           "arity": 1
         },
         "isAsciiDigit": {
+          "type": "function",
+          "arity": 1
+        },
+        "isAsciiHexDigit": {
           "type": "function",
           "arity": 1
         },
@@ -7117,9 +7129,17 @@
           "type": "function",
           "arity": 4
         },
+        "isRunOfRanges": {
+          "type": "function",
+          "arity": 4
+        },
         "isUnreserved": {
           "type": "function",
           "arity": 1
+        },
+        "matchesAtFolded": {
+          "type": "function",
+          "arity": 3
         },
         "replaceAny": {
           "type": "function",
@@ -7142,6 +7162,10 @@
           "arity": 4
         },
         "splitLines": {
+          "type": "function",
+          "arity": 1
+        },
+        "splitLinesAny": {
           "type": "function",
           "arity": 1
         },
@@ -15801,6 +15825,10 @@
         "list": {
           "type": "function",
           "arity": 0
+        },
+        "removed": {
+          "type": "function",
+          "arity": 3
         },
         "reset": {
           "type": "function",
@@ -50505,45 +50533,9 @@
     "safeBuffer": {
       "type": "object",
       "members": {
-        "BASE64URL_RE": {
-          "type": "instance",
-          "ctorName": "RegExp"
-        },
-        "BASE64_RE": {
-          "type": "instance",
-          "ctorName": "RegExp"
-        },
-        "CRLF_RE": {
-          "type": "instance",
-          "ctorName": "RegExp"
-        },
-        "HEX_RE": {
-          "type": "instance",
-          "ctorName": "RegExp"
-        },
-        "IPV6_HEXTET_RE": {
-          "type": "instance",
-          "ctorName": "RegExp"
-        },
-        "RFC7230_TCHAR_RE": {
-          "type": "instance",
-          "ctorName": "RegExp"
-        },
-        "SPAN_ID_HEX_RE": {
-          "type": "instance",
-          "ctorName": "RegExp"
-        },
         "SafeBufferError": {
           "type": "function",
           "arity": 2
-        },
-        "TRACE_ID_HEX_RE": {
-          "type": "instance",
-          "ctorName": "RegExp"
-        },
-        "TRAILING_HSPACE_RE": {
-          "type": "instance",
-          "ctorName": "RegExp"
         },
         "assertHeaderSafe": {
           "type": "function",
@@ -50577,9 +50569,41 @@
           "type": "function",
           "arity": 2
         },
+        "isBase64": {
+          "type": "function",
+          "arity": 1
+        },
+        "isBase64Url": {
+          "type": "function",
+          "arity": 1
+        },
+        "isCanonicalBase64": {
+          "type": "function",
+          "arity": 1
+        },
         "isHex": {
           "type": "function",
           "arity": 2
+        },
+        "isHttpToken": {
+          "type": "function",
+          "arity": 1
+        },
+        "isIpv6Hextet": {
+          "type": "function",
+          "arity": 1
+        },
+        "isLowerHex": {
+          "type": "function",
+          "arity": 2
+        },
+        "isSpanIdHex": {
+          "type": "function",
+          "arity": 1
+        },
+        "isTraceIdHex": {
+          "type": "function",
+          "arity": 1
         },
         "makeByteCoercer": {
           "type": "function",
@@ -50600,6 +50624,10 @@
         "stripCrlf": {
           "type": "function",
           "arity": 2
+        },
+        "stripLeadingHspace": {
+          "type": "function",
+          "arity": 1
         },
         "stripTrailingHspace": {
           "type": "function",
@@ -51782,45 +51810,9 @@
     "safeSchema": {
       "type": "object",
       "members": {
-        "CUID_RE": {
-          "type": "instance",
-          "ctorName": "RegExp"
-        },
-        "DATETIME_RE": {
-          "type": "instance",
-          "ctorName": "RegExp"
-        },
-        "DATE_RE": {
-          "type": "instance",
-          "ctorName": "RegExp"
-        },
-        "EMAIL_RE": {
-          "type": "instance",
-          "ctorName": "RegExp"
-        },
-        "IPV4_RE": {
-          "type": "instance",
-          "ctorName": "RegExp"
-        },
-        "IPV6_RE": {
-          "type": "instance",
-          "ctorName": "RegExp"
-        },
         "SafeSchemaError": {
           "type": "function",
           "arity": 4
-        },
-        "ULID_RE": {
-          "type": "instance",
-          "ctorName": "RegExp"
-        },
-        "URL_RE": {
-          "type": "instance",
-          "ctorName": "RegExp"
-        },
-        "UUID_RE": {
-          "type": "instance",
-          "ctorName": "RegExp"
         },
         "any": {
           "type": "function",
@@ -51839,6 +51831,46 @@
           "arity": 2
         },
         "enum_": {
+          "type": "function",
+          "arity": 1
+        },
+        "isBase64": {
+          "type": "function",
+          "arity": 1
+        },
+        "isCuid": {
+          "type": "function",
+          "arity": 1
+        },
+        "isDate": {
+          "type": "function",
+          "arity": 1
+        },
+        "isDatetime": {
+          "type": "function",
+          "arity": 1
+        },
+        "isEmail": {
+          "type": "function",
+          "arity": 1
+        },
+        "isIpv4": {
+          "type": "function",
+          "arity": 1
+        },
+        "isIpv6": {
+          "type": "function",
+          "arity": 1
+        },
+        "isUlid": {
+          "type": "function",
+          "arity": 1
+        },
+        "isUrl": {
+          "type": "function",
+          "arity": 1
+        },
+        "isUuid": {
           "type": "function",
           "arity": 1
         },
@@ -52195,9 +52227,9 @@
     "safeSql": {
       "type": "object",
       "members": {
-        "DEFAULT_IDENTIFIER_RE": {
-          "type": "instance",
-          "ctorName": "RegExp"
+        "DEFAULT_IDENTIFIER_SHAPE": {
+          "type": "primitive",
+          "valueType": "string"
         },
         "MAX_IDENTIFIER_LENGTH": {
           "type": "primitive",
@@ -52220,6 +52252,10 @@
           "arity": 2
         },
         "countPlaceholders": {
+          "type": "function",
+          "arity": 1
+        },
+        "isDefaultIdentifier": {
           "type": "function",
           "arity": 1
         },
@@ -53887,10 +53923,6 @@
     "time": {
       "type": "object",
       "members": {
-        "ISO_MS_RE": {
-          "type": "instance",
-          "ctorName": "RegExp"
-        },
         "TimeError": {
           "type": "function",
           "arity": 4
@@ -53919,9 +53951,25 @@
           "type": "function",
           "arity": 1
         },
+        "readDate": {
+          "type": "function",
+          "arity": 2
+        },
+        "readDateTime": {
+          "type": "function",
+          "arity": 2
+        },
+        "readTime": {
+          "type": "function",
+          "arity": 3
+        },
         "startOfDay": {
           "type": "function",
           "arity": 2
+        },
+        "stripIsoMilliseconds": {
+          "type": "function",
+          "arity": 1
         },
         "toIso8601NoMs": {
           "type": "function",

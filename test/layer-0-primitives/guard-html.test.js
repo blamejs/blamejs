@@ -452,7 +452,96 @@ function testGdprPostureMatchesBalancedTier() {
 
 // ---- Run all ----
 
+// The scheme, data-URL, event-handler, conditional-comment and CSS screens are
+// character walks. Each is compared against the pattern it replaced, over the
+// shapes an XSS payload is written in — including the ones that only a
+// browser's tolerance for whitespace and case makes reachable.
+function testHtmlScreensAgreeWithThePatternsTheyReplaced() {
+  var api = b.guardHtml._shapesForTest;
+  var CP = b.codepointClass;
+
+  var SCHEME_RE = /^([A-Za-z][A-Za-z0-9+.-]*):/;
+  function oldExtractScheme(rawUrl) {
+    var s = CP.stripUrlSchemeWhitespace(
+      CP.decodeMarkupEntities(String(rawUrl || "").trim()));
+    var m = s.match(SCHEME_RE);
+    return m ? m[1].toLowerCase() : "";
+  }
+  var IMAGE_DATA_RE = /^data:image\/(png|jpeg|jpg|gif|webp);/i;
+  var EVENT_HANDLER_RE = /^on[a-z]/i;
+  var CONDITIONAL_RE = /<!--\s*\[\s*if/i;
+  var CSS_DANGEROUS_PATTERNS = [
+    /expression\s*\(/i, /behavior\s*:/i, /-moz-binding/i, /javascript\s*:/i,
+    /vbscript\s*:/i, /livescript\s*:/i, /@import/i, /@namespace/i,
+  ];
+
+  var URLS = ["", "http://x", "HTTPS://x", "javascript:alert(1)",
+    "JaVaScRiPt:alert(1)", "  javascript:x", "java\tscript:x",
+    "java&Tab;script:x", "&#106;avascript:x", "data:image/png;base64,AA",
+    "DATA:IMAGE/PNG;base64,AA", "data:image/svg+xml,<svg>",
+    "data:image/png,AA", "data:image/pngx;", "data:text/html;base64,AA",
+    "a+b-c.d:x", "1abc:x", ":x", "x:", "//host/path", "#frag", "?q=1",
+    "mailto:a@b", "tel:+1", "vbscript:x", "no-scheme-here"];
+  var schemeDiffs = [], dataDiffs = [];
+  URLS.forEach(function (u) {
+    if (oldExtractScheme(u) !== api.extractScheme(u)) {
+      schemeDiffs.push(JSON.stringify(u) + " want " + oldExtractScheme(u) +
+                       " got " + api.extractScheme(u));
+    }
+    if (IMAGE_DATA_RE.test(String(u).trim()) !== api.isImageDataUrl(u)) {
+      dataDiffs.push(JSON.stringify(u));
+    }
+  });
+  check("the scheme walk agrees with the pattern it replaced",
+        schemeDiffs.length === 0, schemeDiffs.slice(0, 3).join(" | "));
+  check("the image-data-URL walk agrees with the pattern it replaced",
+        dataDiffs.length === 0, dataDiffs.slice(0, 3).join(" | "));
+
+  var ATTRS = ["", "o", "on", "onx", "onclick", "ONCLICK", "OnClick", "on-click",
+               "on1", "one", "onerror", "only", "href", "class", "on_", "on "];
+  var handlerDiffs = [];
+  ATTRS.forEach(function (a) {
+    if (EVENT_HANDLER_RE.test(a) !== api.isEventHandlerAttr(a)) {
+      handlerDiffs.push(JSON.stringify(a));
+    }
+  });
+  check("the event-handler walk agrees with the pattern it replaced",
+        handlerDiffs.length === 0, handlerDiffs.join(" | "));
+
+  var COMMENTS = ["", "<!-- x -->", "<!--[if IE]>", "<!-- [ if IE ]>",
+                  "<!--[IF gte mso 9]>", "<!--[ x ]>", "<!--if]>", "<!-- [if",
+                  "<!--\n[\tif IE]>", "text <!--[if]> more", "[if IE]>",
+                  "<!--[]>", "<!--  [  IF  ]"];
+  var condDiffs = [];
+  COMMENTS.forEach(function (c) {
+    if (CONDITIONAL_RE.test(c) !== api.isConditionalComment(c)) {
+      condDiffs.push(JSON.stringify(c));
+    }
+  });
+  check("the conditional-comment walk agrees with the pattern it replaced",
+        condDiffs.length === 0, condDiffs.join(" | "));
+
+  var STYLES = ["", "color: red", "expression(alert(1))", "EXPRESSION (x)",
+    "expression\t(x)", "expression", "expressionx(", "behavior:url(x)",
+    "behavior : url(x)", "behaviour:x", "-moz-binding:url(x)", "-MOZ-BINDING",
+    "javascript:alert(1)", "javascript :x", "vbscript:x", "livescript:x",
+    "@import url(x)", "@IMPORT", "@namespace x", "background:url(x)",
+    "ex&#x70;ression(1)", "behavior&colon;url(x)", "url(java&Tab;script:x)",
+    "color:blue;font-size:1px"];
+  var cssDiffs = [];
+  STYLES.forEach(function (s) {
+    var decoded = CP.stripUrlSchemeWhitespace(CP.decodeMarkupEntities(s));
+    var expected = CSS_DANGEROUS_PATTERNS.some(function (re) { return re.test(decoded); });
+    if (expected !== api.isCssDangerous(s)) {
+      cssDiffs.push(JSON.stringify(s) + " want " + expected + " got " + api.isCssDangerous(s));
+    }
+  });
+  check("the CSS danger walk agrees with the patterns it replaced",
+        cssDiffs.length === 0, cssDiffs.slice(0, 3).join(" | "));
+}
+
 async function run() {
+  testHtmlScreensAgreeWithThePatternsTheyReplaced();
   testGuardHtmlSurface();
   testGuardHtmlRegistryParity();
   testGuardHtmlDangerousTags();

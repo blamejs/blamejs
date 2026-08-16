@@ -724,6 +724,152 @@ async function run() {
   testValidateObjectConstraints();
   testFormats();
   testRegisterFormatAndIsJsonObject();
+  testFormatsAgreeWithThePatternsTheyReplaced();
+  testSchemaPatternRunsInLinearTime();
+}
+
+// The format table was a set of patterns run against values that arrived over
+// the wire. Each is now a character walk. These are the patterns they replaced.
+function testFormatsAgreeWithThePatternsTheyReplaced() {
+  var f = b.safeJson.formats;
+
+  var EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  var UUID_RE  = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  var ULID_RE  = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
+  var DATE_RE  = /^\d{4}-\d{2}-\d{2}$/;
+  var SLUG_RE  = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+  var OCTET_RE = /^\d{1,3}$/;
+
+  var VALUES = [
+    "", " ", "a@b.c", "a@b", "a b@c.d", "a@@b.c", "a@b.c.d", "a@.b", "a@b.",
+    // The pair below is the same case, built from codepoints so no
+    // invisible character sits in this file.
+    // Built from codepoints: a pattern's `\s` is much wider than the ASCII
+    // five, so an address padded with one of the others is not the address
+    // that was screened.
+    "a@b.c" + String.fromCharCode(0x3000),
+    "a" + String.fromCharCode(0x00A0) + "@b.c",
+    "x".repeat(255) + "@b.c",
+    "123e4567-e89b-12d3-a456-426614174000", "123E4567-E89B-12D3-A456-426614174000",
+    "123e4567e89b12d3a456426614174000", "123e4567-e89b-12d3-a456-42661417400",
+    "g23e4567-e89b-12d3-a456-426614174000",
+    "01ARZ3NDEKTSV4RRFFQ69G5FAV", "81ARZ3NDEKTSV4RRFFQ69G5FAV",
+    "01ARZ3NDEKTSV4RRFFQ69G5FAI", "01arz3ndektsv4rrffq69g5fav",
+    "2026-08-16", "2026-8-16", "2026-13-01", "2026-02-30", "2026-02-28",
+    "a-b", "a-b-c", "-a", "a-", "a--b", "A-b", "a_b", "1-2", "--", "a1-b2",
+    "192.168.1.1", "0.0.0.0", "255.255.255.255", "256.0.0.1", "1.2.3",
+    "1.2.3.4.5", "01.2.3.4", "1.2.3.04", "1.2.3.", ".1.2.3", "a.b.c.d",
+  ];
+
+  var diffs = [];
+  VALUES.forEach(function (v) {
+    function compare(label, expected, actual) {
+      if (expected !== actual) diffs.push(label + " " + JSON.stringify(v.slice(0, 40)) +
+                                          " want " + expected + " got " + actual);
+    }
+    compare("email", v.length <= 254 && EMAIL_RE.test(v), f.email(v));
+    compare("uuid",  UUID_RE.test(v),                     f.uuid(v));
+    compare("ulid",  ULID_RE.test(v),                     f.ulid(v));
+    compare("slug",  SLUG_RE.test(v),                     f.slug(v));
+    var d = new Date(v);
+    compare("iso8601-date",
+            DATE_RE.test(v) && !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v,
+            f["iso8601-date"](v));
+    var parts = v.split(".");
+    var wantIpv4 = parts.length === 4;
+    for (var i = 0; wantIpv4 && i < 4; i += 1) {
+      var n = Number(parts[i]);
+      if (!OCTET_RE.test(parts[i]) || n < 0 || n > 255 || parts[i] !== String(n)) wantIpv4 = false;
+    }
+    compare("ipv4", wantIpv4, f.ipv4(v));
+  });
+  check("every JSON format agrees with the pattern it replaced (" +
+        VALUES.length + " values)", diffs.length === 0, diffs.slice(0, 5).join(" | "));
+
+  // The script-escape is one pass over the five characters that can close or
+  // reinterpret the surrounding inline <script>.
+  check("stringifyForScript escapes the characters that close a script block",
+        b.safeJson.stringifyForScript({ u: "/a</script>&x" }) ===
+        "{\"u\":\"/a\\u003c/script\\u003e\\u0026x\"}");
+  // Built from codepoints rather than typed, so this file carries neither
+  // separator as a literal — an invisible line break in a source file is the
+  // thing being defended against, not a thing to spell out.
+  var separators = "a" + String.fromCharCode(0x2028) + "b" +
+                   String.fromCharCode(0x2029) + "c";
+  check("stringifyForScript escapes the two line separators",
+        b.safeJson.stringifyForScript(separators) === "\"a\\u2028b\\u2029c\"");
+  check("stringifyForScript leaves a value with none of them untouched",
+        b.safeJson.stringifyForScript({ a: 1 }) === "{\"a\":1}");
+}
+
+// A schema's `pattern` is operator-written and runs against a value that
+// arrived over the wire — the arrangement catastrophic backtracking needs.
+function testSchemaPatternRunsInLinearTime() {
+  function verdict(value, pattern) {
+    try { b.safeJson.validate(value, { type: "string", pattern: pattern }); return "ok"; }
+    catch (e) { return e.code; }
+  }
+
+  var PATTERN_BUDGET_MS = 2000;
+  var started = Date.now();
+  var got = verdict("a".repeat(60) + "!", "(a+)+$");
+  var elapsed = Date.now() - started;
+  check("a catastrophic pattern against a hostile value returns rather than " +
+        "hangs (" + elapsed + "ms)",
+        got === "json/validation" && elapsed < PATTERN_BUDGET_MS);
+
+  // A construct the linear matcher cannot take falls back to the platform
+  // engine — but only after the ReDoS screen has passed it.
+  check("a backreference still matches", verdict("aa", "^(a)\\1$") === "ok");
+  check("a backreference still refuses a non-match",
+        verdict("ab", "^(a)\\1$") === "json/validation");
+  check("a lookahead still matches", verdict("abc", "^(?=a)abc$") === "ok");
+  check("a catastrophic pattern the linear matcher cannot take is refused",
+        verdict("x", "^(a+)+\\1$") === "json/bad-pattern");
+
+  // The flags decide what the source MEANS. `(a|A)+` reads as two disjoint
+  // branches on its own and as one branch twice under `i`, which is the
+  // overlap the alternation rule exists to catch — so a screen that reads the
+  // source alone passes this and then runs it, under those flags, against a
+  // value from the wire.
+  var flagRedosStarted = Date.now();
+  var flagRedos = verdict("a".repeat(30) + "!", /^(?=(a|A)+$)a+$/i);
+  var flagRedosMs = Date.now() - flagRedosStarted;
+  check("a pattern that is catastrophic only under its flags is refused (" +
+        flagRedosMs + "ms)",
+        flagRedos === "json/bad-pattern" && flagRedosMs < PATTERN_BUDGET_MS,
+        flagRedos);
+  check("...and honest patterns still carry their flags",
+        verdict("ABC", /^(?=a)abc$/i) === "ok" &&
+        verdict("abc", /^(?=a)abc$/) === "ok");
+  check("an unparseable pattern is reported as a bad pattern, not a mismatch",
+        verdict("abc", "([a-") === "json/bad-pattern");
+
+  // A RegExp instance brings its own flags.
+  check("a RegExp pattern keeps its flags", verdict("AB", /^ab$/i) === "ok");
+
+  // `g` is dropped, because a `g`-flagged RegExp carries `lastIndex` between
+  // calls: a compiled matcher held in the cache would resume mid-subject on
+  // the next request and report a mismatch that is really a leftover cursor.
+  //
+  // Three things have to line up for this to test anything. The pattern needs
+  // a construct the linear matcher cannot take — a lookahead — because only
+  // the platform-engine fallback has a `lastIndex` at all. The instance has to
+  // be held in a variable, since two `/b/g` literals are two objects. And it
+  // takes THREE calls: `lastIndex` cycles 0 → 1 → 2 → 0, so the first two
+  // agree and the third is the one that reports a match as a mismatch.
+  var stateful = /(?=a)a/g;
+  var verdicts = [verdict("aa", stateful), verdict("aa", stateful), verdict("aa", stateful)];
+  check("a RegExp pattern with g does not carry match state between requests",
+        verdicts.every(function (r) { return r === "ok"; }), verdicts.join(", "));
+
+  // `y` is the other stateful flag and advances `lastIndex` the same way, so a
+  // cached sticky matcher alternates between matching and not.
+  var sticky = /(?=a)a/y;
+  var stickyVerdicts = [verdict("a", sticky), verdict("a", sticky), verdict("a", sticky)];
+  check("a RegExp pattern with y does not carry match state between requests",
+        stickyVerdicts.every(function (r) { return r === "ok"; }),
+        stickyVerdicts.join(", "));
 }
 
 module.exports = { run: run };

@@ -34,6 +34,115 @@ function testGuardXmlSurface() {
   check("frameworkError.GuardXmlError exposed",     typeof b.frameworkError.GuardXmlError === "function");
 }
 
+function testXmlShapeScanAgreesWithThePatternsItReplaced() {
+  var scan = b.guardXml._shapesForTest;
+
+  var DOCTYPE_RE = /<!DOCTYPE\b/i;
+  var ENTITY_DECL_RE = /<!ENTITY\b/i;
+  var PARAM_ENTITY_RE = /<!ENTITY\s+%/i;
+  var EXTERNAL_ENTITY_RE = /\b(SYSTEM|PUBLIC)\s+["'](file|http|https|ftp|gopher|jar|netdoc):/i;
+  var XINCLUDE_RE = /<xi:include\b/i;
+  var SCHEMA_LOCATION_RE = /\bxsi:(noNamespace)?[Ss]chemaLocation\s*=/;
+  var PROCESSING_INSTR_RE = /<\?[A-Za-z][\w:-]*/;
+  var CDATA_RE = /<!\[CDATA\[/;
+  var XMLDSIG_RE = /<\w*:?Signature\b[^>]*xmldsig/i;
+  var NCR_RE = /&#(?:[0-9]+|x[0-9a-fA-F]+);/g;
+  var OPEN_TAG_RE = /<[A-Za-z][\w:-]*/g;
+  var XML_DECL_RE = /^\s*<\?xml\s[^?]*\?>/;
+
+  var DOCS = [
+    "", "<root/>", '<?xml version="1.0"?><root><x>1</x></root>',
+    // A keyword that runs into another identifier character is a longer word.
+    "<!DOCTYPE html>", "<!doctype html>", "<!DOCTYPEX", "<!DOCTYPE", "<!DOCTYPE>",
+    '<!ENTITY x "y">', "<!entity x>", "<!ENTITYX x>", "<!ENTITY", "<!ENTITY_",
+    "<!ENTITY % pe SYSTEM 'http://x/'>", "<!ENTITY  \t % pe>", "<!ENTITY% pe>",
+    "<!ENTITY\n%x>", "<!ENTITY" + String.fromCharCode(0x00A0) + "%x>",
+    "<!ENTITY" + String.fromCharCode(0x3000) + "%x>",
+    // The whitespace a parser accepts between the keyword and the literal is
+    // every character the pattern's `\\s` covered, not the ASCII five.
+    'SYSTEM "file:///etc/passwd"', "system 'http://x'", 'PUBLIC "-//X" "https://x"',
+    'MYSYSTEM "file:x"', '_SYSTEM "file:x"', '-SYSTEM "file:x"',
+    'SYSTEM"file:x"', 'SYSTEM  "file:x"', 'SYSTEM "FILE:x"',
+    'SYSTEM "https:x"', 'SYSTEM "http:x"', 'SYSTEM "httpx:x"',
+    'SYSTEM "jar:x"', 'SYSTEM "netdoc:x"', 'SYSTEM "gopher:x"',
+    'SYSTEM "ftp:x"', 'SYSTEM "data:x"', 'SYSTEM "file"', "PUBLICX 'file:x'",
+    "9SYSTEM 'file:x'", "éSYSTEM 'file:x'", "SYSTEM" + String.fromCharCode(0x00A0) + "'file:x'",
+    "<xi:include href='x'/>", "<XI:INCLUDE/>", "<xi:includex/>", "<xi:include",
+    "<xi:include_", "<xi:include>",
+    'xsi:schemaLocation="a b"', 'xsi:noNamespaceSchemaLocation="a"',
+    'xsi:noNamespaceschemaLocation="a"', 'xsi:SchemaLocation ="a"',
+    "xsi:schemaLocation \t =", "xsi:schemaLocation", "xsi:schemaLocationX=",
+    "XSI:schemaLocation=", "axsi:schemaLocation=", "_xsi:schemaLocation=",
+    ".xsi:schemaLocation=", "xsi:noNamespacechemaLocation=",
+    "xsi:noNamespaceSchemaLocationX=", "xsi:noNamespaceSchemaLocation" + String.fromCharCode(0x00A0) + "=",
+    // Only the leading declaration is exempt; a second one is a directive.
+    "<?xml-stylesheet href='x'?>", "<?xml version='1.0'?>",
+    "<?xml version='1.0'?><?php echo 1;?>", "  <?xml v='1'?><?pi?>",
+    "<?xml?>", "<?xml >", "<?xml\tv='1'?><?a?>", "<?9?>", "<? a?>",
+    "<?xml a='?'?><?b?>", "<?xml a='<?c?'?>", "<?xml a=1", "<?xml a=1?",
+    "\n\n<?xml v='1'?>", "<?xml v='1'?>trailing",
+    "<![CDATA[x]]>", "<![cdata[x]]>", "<![CDATA", "a<![CDATA[",
+    // The marker has to reach the element's own tag — a `>` closes the window.
+    "<ds:Signature xmlns='xmldsig'/>", "<Signature xmldsig>",
+    "<Signature>xmldsig", "<Signature xmldsig", "<SignatureX xmldsig>",
+    "<dsSignature xmldsig>", "<:Signature xmldsig>", "<ds:SignatureX xmldsig>",
+    "<ds:xSignature xmldsig>", "<SIGNATURE XMLDSIG>", "<Signature_ xmldsig>",
+    "<Signature a='>' xmldsig>", "<ds:Signature>\n<x xmldsig>",
+    "<Signature", "<Signature ", "xmldsig <Signature>",
+    "<a><Signature xmldsig>", "<Signature x>xmldsig", "<x Signature xmldsig>",
+    // The `x` of the hexadecimal form is lower case only, as XML 1.0 §4.1
+    // writes it, so an upper-case one is not a character reference.
+    "&#65;&#x41;&#X41;&#;&#x;&#12a;&#xzz;&#0;", "&#65", "&#65;&#66;",
+    "&&#65;", "&#x0041;&#X0041;",
+    "&#" + String.fromCharCode(0x00A0) + "65;",
+    "<a><b-c><d:e><1x><_x><éx>", "<a/><a/>", "< a>", "<a-b_c:d.e>",
+    '<?xml v=\'1\'?><!DOCTYPE r [<!ENTITY % p SYSTEM "http://x">]>' +
+      '<r xsi:schemaLocation="a"><![CDATA[&#65;]]></r>',
+  ];
+
+  var diffs = [];
+  DOCS.forEach(function (doc) {
+    var want = {
+      doctype:        DOCTYPE_RE.test(doc),
+      entityDecl:     ENTITY_DECL_RE.test(doc),
+      paramEntity:    PARAM_ENTITY_RE.test(doc),
+      externalEntity: EXTERNAL_ENTITY_RE.test(doc),
+      xinclude:       XINCLUDE_RE.test(doc),
+      schemaLocation: SCHEMA_LOCATION_RE.test(doc),
+      cdata:          CDATA_RE.test(doc),
+      xmlDsig:        XMLDSIG_RE.test(doc),
+      processingInstr: PROCESSING_INSTR_RE.test(doc) &&
+                       PROCESSING_INSTR_RE.test(doc.replace(XML_DECL_RE, "")),
+      ncrCount:       (doc.match(NCR_RE) || []).length,
+      openTagCount:   (doc.match(OPEN_TAG_RE) || []).length,
+    };
+    var got = scan(doc);
+    Object.keys(want).forEach(function (key) {
+      if (want[key] !== got[key]) {
+        diffs.push(key + " " + JSON.stringify(doc.slice(0, 40)) +
+                   " want " + want[key] + " got " + got[key]);
+      }
+    });
+  });
+
+  check("the XML source scan agrees with every pattern it replaced (" +
+        DOCS.length + " documents)", diffs.length === 0, diffs.slice(0, 5).join(" | "));
+
+  // Reading each threat separately meant a document that is one long run of a
+  // shared prefix was walked once per screen, and the cap that bounds this
+  // input is a BYTE cap — so the attacker picks the multiplier.
+  var PREFIX_FLOOD_MS = 4000;
+  [["<!", 1000000], ["<?", 1000000], ["<a", 1000000], ["&#1", 700000],
+   ["<Signature ", 200000], ["SYSTEM \"", 300000], ["xsi:", 500000]].forEach(function (c) {
+    var doc = c[0].repeat(c[1]);
+    var started = Date.now();
+    scan(doc);
+    var elapsed = Date.now() - started;
+    check("a " + doc.length + "-character run of " + JSON.stringify(c[0]) +
+          " scans in linear time (" + elapsed + "ms)", elapsed < PREFIX_FLOOD_MS);
+  });
+}
+
 function testGuardXmlRegistryParity() {
   check("guardXml registered in guardAll",
         b.guardAll.list().some(function (g) { return g.name === "xml"; }));
@@ -217,6 +326,7 @@ function testGuardXmlCompliancePosture() {
 
 async function run() {
   testGuardXmlSurface();
+  testXmlShapeScanAgreesWithThePatternsItReplaced();
   testGuardXmlRegistryParity();
   testGuardXmlDoctype();
   testGuardXmlEntityDeclaration();

@@ -21,32 +21,58 @@ function _code(fn) {
   catch (e) { return e && e.code; }
 }
 
-// ---- DEFAULT_IDENTIFIER_RE ----
+// ---- the default identifier shape ----
 
-function testDefaultIdentifierRe() {
-  check("b.safeSql.DEFAULT_IDENTIFIER_RE is the advertised ASCII identifier shape",
-        String(b.safeSql.DEFAULT_IDENTIFIER_RE) === "/^[A-Za-z_][A-Za-z0-9_]*$/");
+function testDefaultIdentifierShape() {
+  // The shape was exported as a PATTERN, which every consumer then ran
+  // itself. It is a character walk behind a predicate now; this is the
+  // pattern it replaced.
+  var DEFAULT_IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+  var NAMES = [
+    "", "a", "_", "audit_log", "_leading", "A", "Z9", "a_1", "1starts_with_digit",
+    "col-1", "col 1", "col.1", "col;1", "-a", ".a", "9", "a-", "a_", "__",
+    "sqlite_x", "SQLITE_x", "select", "SELECT", "café", "aéb", "a\u{1F600}b",
+  ];
+  var diffs = [];
+  NAMES.forEach(function (n) {
+    var want = DEFAULT_IDENTIFIER_RE.test(n);
+    var got = b.safeSql.isDefaultIdentifier(n);
+    if (want !== got) diffs.push(JSON.stringify(n) + " want " + want + " got " + got);
+  });
+  check("isDefaultIdentifier agrees with the pattern it replaced (" +
+        NAMES.length + " names)", diffs.length === 0, diffs.join(" | "));
 
-  // Advertised @example values: a plain snake_case name matches, a
-  // digit-leading name does not.
-  check("DEFAULT_IDENTIFIER_RE matches a plain identifier",
-        b.safeSql.DEFAULT_IDENTIFIER_RE.test("audit_log") === true);
-  check("DEFAULT_IDENTIFIER_RE rejects a digit-leading identifier",
-        b.safeSql.DEFAULT_IDENTIFIER_RE.test("1starts_with_digit") === false);
+  // Advertised @example values.
+  check("isDefaultIdentifier accepts a plain identifier",
+        b.safeSql.isDefaultIdentifier("audit_log") === true);
+  check("isDefaultIdentifier rejects a digit-leading identifier",
+        b.safeSql.isDefaultIdentifier("1starts_with_digit") === false);
+  check("the shape is described in words for every message that reports it",
+        typeof b.safeSql.DEFAULT_IDENTIFIER_SHAPE === "string" &&
+        b.safeSql.DEFAULT_IDENTIFIER_SHAPE.length > 0);
 
-  // validateIdentifier applies DEFAULT_IDENTIFIER_RE by default: a name the
-  // regex rejects throws sql/bad-shape...
-  check("validateIdentifier accepts a name matching DEFAULT_IDENTIFIER_RE",
+  // validateIdentifier applies the default shape: a name it rejects throws
+  // sql/bad-shape...
+  check("validateIdentifier accepts a name with the default shape",
         b.safeSql.validateIdentifier("audit_log") === "audit_log");
-  check("validateIdentifier refuses a name failing DEFAULT_IDENTIFIER_RE",
+  check("validateIdentifier refuses a name without it",
         _code(function () { b.safeSql.validateIdentifier("col-1"); }) === "sql/bad-shape");
 
-  // ...and the same name passes once a wider opts.pattern overrides the
-  // default shape — proving the default really was DEFAULT_IDENTIFIER_RE.
+  // ...and the same name passes once a wider opts.pattern overrides it.
   check("a wider opts.pattern accepts the name the default shape refused",
         b.safeSql.validateIdentifier("col-1", {
           pattern: /^[A-Za-z][A-Za-z0-9_-]*$/,
         }) === "col-1");
+
+  // An operator-supplied pattern runs against a value that arrived over the
+  // wire. The identifier is capped at 63 characters, but a nested quantifier
+  // over 63 characters does not finish, so the pattern is screened first.
+  check("a catastrophic opts.pattern is refused rather than run",
+        _code(function () {
+          b.safeSql.validateIdentifier("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!", {
+            pattern: /^(a+)+$/,
+          });
+        }) === "sql/unsafe-pattern");
 }
 
 // ---- MAX_IDENTIFIER_LENGTH ----
@@ -128,7 +154,7 @@ function testNormalizeForScan() {
 }
 
 async function run() {
-  testDefaultIdentifierRe();
+  testDefaultIdentifierShape();
   testMaxIdentifierLength();
   testSafeSqlError();
   testNormalizeForScan();
