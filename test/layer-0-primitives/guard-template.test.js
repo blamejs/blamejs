@@ -55,7 +55,47 @@ function testSanitizeThrowsGuardTemplateError() {
     caught instanceof b.frameworkError.GuardTemplateError);
 }
 
+// The template-engine screens are character walks. Each is compared against
+// the pattern it replaced, over the delimiter shapes — complete, unbalanced,
+// and split across lines — an SSTI payload is written in.
+function testTemplateScreensAgreeWithThePatternsTheyReplaced() {
+  var JINJA_EXPR_RE   = /\{\{[\s\S]*?\}\}/;
+  var JINJA_STMT_RE   = /\{%[\s\S]*?%\}/;
+  var ERB_EXPR_RE     = /<%[\s\S]*?%>/;
+  var PUG_INTERP_RE   = /[#!]\{[\s\S]*?\}/;
+  var DOLLAR_BRACE_RE = /\$\{[\s\S]*?\}/;
+  var VELOCITY_DIR_RE = /#(?:set|if|else|elseif|end|foreach|parse|include|stop)\b/i;
+
+  var INPUTS = ["", "plain text", "{{ x }}", "{{x}}", "{{", "}}", "{{ }}",
+    "{{\nmulti\n}}", "a {{ b }} c", "{%if x%}", "{%", "%}", "{% %}",
+    "<% code %>", "<%", "%>", "<%= x %>", "#{x}", "!{x}", "#{", "!{",
+    "#{ }", "${x}", "${", "}", "${ }", "${a{b}", "#set($x=1)", "#SET(1)",
+    "#if(true)", "#ends", "#end", "#endfor", "#foreach($a in $b)", "#stopping",
+    "#stop", "#parse('x')", "# set", "no directives", "css #id { color: red }",
+    "{{a}}{{b}}", "text with } brace", "text with { brace"];
+
+  var diffs = [];
+  INPUTS.forEach(function (s) {
+    var kinds = b.guardTemplate.validate(s, { profile: "strict" }).issues
+      .map(function (i) { return i.kind; });
+    function has(k) { return kinds.indexOf(k) !== -1; }
+    function compare(label, expected, actual) {
+      if (expected !== actual) diffs.push(label + " " + JSON.stringify(s));
+    }
+    compare("jinja-expression", JINJA_EXPR_RE.test(s), has("jinja-expression"));
+    compare("jinja-statement", JINJA_STMT_RE.test(s), has("jinja-statement"));
+    compare("erb-expression", ERB_EXPR_RE.test(s), has("erb-expression"));
+    compare("pug-interpolation", PUG_INTERP_RE.test(s), has("pug-interpolation"));
+    compare("dollar-brace", DOLLAR_BRACE_RE.test(s), has("dollar-brace"));
+    compare("velocity-directive", VELOCITY_DIR_RE.test(s), has("velocity-directive"));
+  });
+  check("every template screen agrees with the pattern it replaced (" +
+        INPUTS.length + " inputs)", diffs.length === 0,
+        diffs.slice(0, 5).join(" | "));
+}
+
 function run() {
+  testTemplateScreensAgreeWithThePatternsTheyReplaced();
   testGuardTemplateSurface();
   testSanitizeCleanPassthrough();
   testSanitizeRefusesJinjaExpression();

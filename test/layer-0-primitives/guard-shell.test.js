@@ -60,7 +60,49 @@ function testSanitizeThrowsGuardShellError() {
     caught instanceof b.frameworkError.GuardShellError);
 }
 
+// The metacharacter and substitution screens are character walks. Each is
+// compared against the pattern it replaced, over every character either one
+// treats as meaningful plus the substitution shapes around them.
+function testShellScreensAgreeWithThePatternsTheyReplaced() {
+  var POSIX_META_RE = /[;&|<>$`\\()[\]{}*?~!#'"]/;
+  var CMD_META_RE = /[&|<>^%"',;=]/;
+  var DOLLAR_PAREN_RE = /\$\(/;
+  var DOLLAR_BRACE_RE = /\$\{/;
+  var DOLLAR_VAR_RE = /\$[A-Za-z_][A-Za-z0-9_]*/;
+  var PROCESS_SUBST_RE = /[<>]\(/;
+  var NEWLINE_RE = /[\r\n]/;
+
+  var INPUTS = ["", "plain", "a b", "a;b", "a&b", "a|b", "a<b", "a>b", "a$b",
+    "a`b", "a\\b", "a(b", "a)b", "a[b", "a]b", "a{b", "a}b", "a*b", "a?b",
+    "a~b", "a!b", "a#b", "a'b", "a\"b", "a^b", "a%b", "a,b", "a=b",
+    "a\nb", "a\rb", "$(id)", "${HOME}", "$HOME", "$1", "$_x", "$ x",
+    "<(cat)", ">(tee)", "a$", "$", "$(", "${", "file.txt", "/usr/bin/x",
+    "x$", "$$", "$9abc"];
+
+  var diffs = [];
+  INPUTS.forEach(function (s) {
+    var kinds = b.guardShell.validate(s, { profile: "strict" }).issues
+      .map(function (i) { return i.kind; });
+    function has(k) { return kinds.indexOf(k) !== -1; }
+    function compare(label, expected, actual) {
+      if (expected !== actual) diffs.push(label + " " + JSON.stringify(s));
+    }
+    compare("dollar-substitution",
+            DOLLAR_PAREN_RE.test(s) || DOLLAR_BRACE_RE.test(s),
+            has("dollar-substitution"));
+    compare("process-substitution", PROCESS_SUBST_RE.test(s), has("process-substitution"));
+    compare("dollar-var", DOLLAR_VAR_RE.test(s), has("dollar-var"));
+    compare("newline", NEWLINE_RE.test(s), has("newline"));
+    compare("posix-metachar", POSIX_META_RE.test(s), has("posix-metachar"));
+    compare("cmd-metachar", CMD_META_RE.test(s), has("cmd-metachar"));
+  });
+  check("every shell screen agrees with the pattern it replaced (" +
+        INPUTS.length + " inputs)", diffs.length === 0,
+        diffs.slice(0, 5).join(" | "));
+}
+
 function run() {
+  testShellScreensAgreeWithThePatternsTheyReplaced();
   testGuardShellSurface();
   testSanitizeCleanPassthrough();
   testSanitizeRefusesMetacharChain();

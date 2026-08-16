@@ -792,7 +792,131 @@ function testBoundaryHardCapIndependentOfMaxBoundary() {
     "safe-mime/malformed-boundary");
 }
 
+// The parsing steps are character walks. Each is compared against the pattern
+// it replaced, over a corpus of the header and body shapes a hostile message
+// carries.
+function testParsingWalksAgreeWithThePatternsTheyReplaced() {
+  var api = b.safeMime._shapesForTest;
+
+  var SECTIONS = ["", "a", "a\nb", "a\r\nb", "a\r\nb\nc", "\n", "\r\n",
+                  "a\n\nb", "a\rb", "a\r\n", "a\n", "\r", "a\r\r\nb"];
+  var splitDiffs = [];
+  SECTIONS.forEach(function (s) {
+    var ref = s.split(/\r?\n/);
+    if (JSON.stringify(ref) !== JSON.stringify(api.splitLines(s))) {
+      splitDiffs.push(JSON.stringify(s));
+    }
+  });
+  check("the header-line split agrees with the pattern it replaced",
+        splitDiffs.length === 0, splitDiffs.join(" | "));
+
+  var BOUNDARIES = ["", "a", "ab", "a b", " ab", "ab ", "a-b", "a_b", "a'b",
+                    "a(b)c", "a+b", "a,b", "a.b", "a/b", "a:b", "a=b", "a?b",
+                    "a\rb", "a\nb", "a\0b", "a\tb", "a#b", "a@b", "a\"b",
+                    "-".repeat(70), "-".repeat(71), "a  b", "  "];
+  var BCHARSNOSPACE = /^[0-9A-Za-z'()+_,./:=?-]+$/;
+  var BCHARS_WITH_SP = /^[0-9A-Za-z'()+_,./:=? -]+$/;
+  var boundaryDiffs = [];
+  BOUNDARIES.forEach(function (v) {
+    var ref = v.length > 0 && v.length <= 70 &&
+              BCHARSNOSPACE.test(v.charAt(0)) &&
+              BCHARSNOSPACE.test(v.charAt(v.length - 1)) &&
+              BCHARS_WITH_SP.test(v);
+    if (ref !== api.isValidMimeBoundary(v)) boundaryDiffs.push(JSON.stringify(v));
+  });
+  check("the boundary-grammar walk agrees with the patterns it replaced",
+        boundaryDiffs.length === 0, boundaryDiffs.join(" | "));
+
+  var QP = ["", "plain", "=41", "=41=42", "a=\r\nb", "a=\nb", "=", "=4",
+            "=4G", "==41", "=41=", "a=3Db", "=0D=0A", "=\r", "=\r\nx",
+            "abc=E2=82=ACdef", "=zz", "=41z=42"];
+  var qpDiffs = [];
+  QP.forEach(function (s) {
+    var ref = s.replace(/=\r?\n/g, "")
+               .replace(/=([0-9A-Fa-f]{2})/g, function (_, hex) {
+                 return String.fromCharCode(parseInt(hex, 16));
+               });
+    var got = api.decodeQuotedPrintable(Buffer.from(s, "binary")).toString("binary");
+    if (ref !== got) {
+      qpDiffs.push(JSON.stringify(s) + " want " + JSON.stringify(ref) +
+                   " got " + JSON.stringify(got));
+    }
+  });
+  check("the quoted-printable walk agrees with the patterns it replaced",
+        qpDiffs.length === 0, qpDiffs.slice(0, 3).join(" | "));
+
+  var WORDS = [
+    "", "plain text", "=?utf-8?Q?Hello?=", "=?utf-8?q?Hello_World?=",
+    "=?UTF-8?B?SGVsbG8=?=", "=?utf-8?Q?a=41b?=", "=?utf-8?X?a?=",
+    "=?utf-8?Q?a?= tail", "lead =?utf-8?Q?a?=", "=?utf-8?Q??=",
+    "=?utf-8?Q?a?==?utf-8?Q?b?=", "=?utf-8?Q?a", "=??Q?a?=", "=?utf-8??a?=",
+    "=?utf-8?Q?a?", "not=?an?encoded?word", "=?us-ascii?Q?a_b?=",
+  ];
+  var wordDiffs = [];
+  WORDS.forEach(function (s) {
+    var ref = s.replace(/=\?([^?]+)\?([QqBb])\?([^?]*)\?=/g,
+      function (_, charset, mode, text) {
+        var raw = (mode === "B" || mode === "b")
+          ? Buffer.from(text, "base64")
+          : Buffer.from(text.replace(/_/g, " ").replace(/=([0-9A-Fa-f]{2})/g,
+              function (__, hex) { return String.fromCharCode(parseInt(hex, 16)); }),
+            "binary");
+        var c = String(charset || "us-ascii").toLowerCase();
+        if (c === "utf-8" || c === "utf8") return raw.toString("utf8");
+        if (c === "us-ascii" || c === "ascii") return raw.toString("ascii");
+        return raw.toString("utf8");
+      });
+    var got = api.decodeRfc2047Words(s);
+    if (ref !== got) {
+      wordDiffs.push(JSON.stringify(s) + " want " + JSON.stringify(ref) +
+                     " got " + JSON.stringify(got));
+    }
+  });
+  check("the RFC 2047 encoded-word walk agrees with the pattern it replaced",
+        wordDiffs.length === 0, wordDiffs.slice(0, 3).join(" | "));
+
+  var QUOTED = ["", "a", "a\\\"b", "a\\\\b", "a\\", "\\a", "\\\\", "a\\nb",
+                "no escapes"];
+  var quotedDiffs = [];
+  QUOTED.forEach(function (s) {
+    var ref = s.replace(/\\(.)/g, "$1");
+    if (ref !== api.unescapeQuotedString(s)) quotedDiffs.push(JSON.stringify(s));
+  });
+  check("the quoted-string unescape agrees with the pattern it replaced",
+        quotedDiffs.length === 0, quotedDiffs.join(" | "));
+
+  var DISPOSITIONS = [
+    "attachment", "attachment; filename=a.txt", "attachment; filename=\"a b.txt\"",
+    "attachment; FILENAME=a.txt", "attachment; filename*=UTF-8''a%20b.txt",
+    "inline; filename=a.txt; size=1", "attachment; xfilename=a.txt",
+    "attachment; filename=", "attachment; filename",
+  ];
+  var cdDiffs = [];
+  DISPOSITIONS.forEach(function (cd) {
+    var m = /filename\*?=([^;]+)/i.exec(cd);
+    var ref = m ? m[1].trim() : null;
+    var got = api.filenameParamValue(cd);
+    if (ref !== got) {
+      cdDiffs.push(JSON.stringify(cd) + " want " + JSON.stringify(ref) +
+                   " got " + JSON.stringify(got));
+    }
+  });
+  check("the filename-parameter walk agrees with the pattern it replaced",
+        cdDiffs.length === 0, cdDiffs.slice(0, 3).join(" | "));
+
+  var EXT_VALUES = ["UTF-8''a", "UTF-8'en'a", "utf_8''x", "''x", "UTF-8'a",
+                    "UTF-8", "a'b'c", "a b'c'", "-''x", "UTF-8''"];
+  var extDiffs = [];
+  EXT_VALUES.forEach(function (v) {
+    var ref = /^[A-Za-z0-9_-]+'[A-Za-z0-9_-]*'/.test(v);
+    if (ref !== api.hasRfc2231CharsetPrefix(v)) extDiffs.push(JSON.stringify(v));
+  });
+  check("the RFC 2231 ext-value prefix walk agrees with the pattern it replaced",
+        extDiffs.length === 0, extDiffs.join(" | "));
+}
+
 async function run() {
+  testParsingWalksAgreeWithThePatternsTheyReplaced();
   testSurface();
   testSimpleTextParse();
   testRfc2047EncodedSubject();
