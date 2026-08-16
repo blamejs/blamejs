@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.18.31",
-  "createdAt": "2026-08-16T11:24:09.430Z",
+  "createdAt": "2026-08-16T12:31:48.749Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -50574,6 +50574,10 @@
           "arity": 1
         },
         "isBase64Url": {
+          "type": "function",
+          "arity": 1
+        },
+        "isCanonicalBase64": {
           "type": "function",
           "arity": 1
         },
