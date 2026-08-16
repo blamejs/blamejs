@@ -558,6 +558,80 @@ function testCharSetScanners() {
         codepointClass.containsFolded("a", null) === false);
 }
 
+// The token-shape and splitting primitives the protocol guards screen with.
+// Each is compared against the pattern shape it replaced across those guards.
+function testTokenAndSplitPrimitives() {
+  var CP = codepointClass;
+
+  check("ASCII_ALNUM is letters then digits",
+        CP.ASCII_ALNUM.length === 62 &&
+        CP.ASCII_ALNUM.indexOf("A") === 0 && CP.ASCII_ALNUM.indexOf("9") === 61);
+  check("ASCII_HEX covers both cases",
+        CP.ASCII_HEX.indexOf("f") !== -1 && CP.ASCII_HEX.indexOf("F") !== -1 &&
+        CP.ASCII_HEX.indexOf("g") === -1);
+
+  // isRunOf against the anchored, length-bounded patterns it replaced.
+  var TAG_RE = /^[A-Za-z0-9._-]{1,64}$/;
+  var NUM_RE = /^[0-9]{1,10}$/;
+  var TOKENS = ["", "A001", "a-b_c.d", "a".repeat(64), "a".repeat(65), "a b",
+                "a+b", "0", "0123456789", "01234567890", "12a", " 1", "1 ",
+                "-", ".", "_"];
+  var tagDiffs = [], numDiffs = [];
+  TOKENS.forEach(function (t) {
+    if (TAG_RE.test(t) !== CP.isRunOf(t, CP.ASCII_ALNUM + "._-", 1, 64)) {
+      tagDiffs.push(JSON.stringify(t));
+    }
+    if (NUM_RE.test(t) !== CP.isRunOf(t, CP.ASCII_DIGITS, 1, 10)) {
+      numDiffs.push(JSON.stringify(t));
+    }
+  });
+  check("isRunOf agrees with the bounded token pattern it replaced",
+        tagDiffs.length === 0, tagDiffs.join(" | "));
+  check("isRunOf agrees with the bounded numeric pattern it replaced",
+        numDiffs.length === 0, numDiffs.join(" | "));
+  check("isRunOf with no max accepts any length",
+        CP.isRunOf("a".repeat(500), CP.ASCII_ALPHA) === true);
+  check("isRunOf rejects a non-string",
+        CP.isRunOf(null, CP.ASCII_ALPHA) === false);
+
+  check("isAsciiLetter", CP.isAsciiLetter(0x41) && CP.isAsciiLetter(0x7A) &&
+        !CP.isAsciiLetter(0x30) && !CP.isAsciiLetter(0x5F));
+  check("isAsciiDigit", CP.isAsciiDigit(0x30) && CP.isAsciiDigit(0x39) &&
+        !CP.isAsciiDigit(0x2F) && !CP.isAsciiDigit(0x3A));
+  check("isIdentifierChar covers letters, digits and underscore",
+        CP.isIdentifierChar(0x41) && CP.isIdentifierChar(0x39) &&
+        CP.isIdentifierChar(0x5F) && !CP.isIdentifierChar(0x2D));
+
+  // splitLines and splitOnWhitespace against the patterns they replaced.
+  var SECTIONS = ["", "a", "a\nb", "a\r\nb", "a\r\nb\nc", "\n", "\r\n",
+                  "a\n\nb", "a\rb", "a\r\n", "a\n", "\r"];
+  var lineDiffs = [];
+  SECTIONS.forEach(function (s) {
+    if (JSON.stringify(s.split(/\r?\n/)) !== JSON.stringify(CP.splitLines(s))) {
+      lineDiffs.push(JSON.stringify(s));
+    }
+  });
+  check("splitLines agrees with the pattern it replaced",
+        lineDiffs.length === 0, lineDiffs.join(" | "));
+
+  var LINES = ["", "a", "a b", "  a   b  ", "\ta\tb\t", "a\nb", "   ",
+               "MAIL FROM:<x>", "one"];
+  var wsDiffs = [];
+  LINES.forEach(function (s) {
+    var ref = s.split(/\s+/).filter(Boolean);
+    if (JSON.stringify(ref) !== JSON.stringify(CP.splitOnWhitespace(s))) {
+      wsDiffs.push(JSON.stringify(s));
+    }
+  });
+  check("splitOnWhitespace agrees with the pattern it replaced",
+        wsDiffs.length === 0, wsDiffs.join(" | "));
+  check("splitOnWhitespace splits on the wide whitespace set too",
+        JSON.stringify(CP.splitOnWhitespace("a" + String.fromCharCode(0x00A0) + "b")) ===
+        JSON.stringify(["a", "b"]));
+  check("splitLines and splitOnWhitespace return [] for a non-string",
+        CP.splitLines(null).length === 0 && CP.splitOnWhitespace(null).length === 0);
+}
+
 // The entity decoders are character walks too. This states the grammar a
 // SECOND time as a regex and compares the two over generated input: the walk
 // and the reference share no code, so a disagreement is a real defect in one
@@ -685,6 +759,7 @@ async function run() {
   testCharClassHandlesAstralCodepoints();
   testRangeScannersMatchARegexReference();
   testCharSetScanners();
+  testTokenAndSplitPrimitives();
   testEntityDecodersMatchARegexReference();
   testResolveTagsPolicy();
   testCharThreatCeilingOrdering();

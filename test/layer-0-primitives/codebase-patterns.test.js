@@ -4186,6 +4186,24 @@ async function testNoDuplicateCodeBlocks() {
       ],
     },
     {
+      // Character-walk scanners — shape-only. Each of these steps an index
+      // through a string, reads the character there, and decides; that loop is
+      // what a scanner IS, so the 60-token shingle is the walk's skeleton
+      // rather than shared logic. What each one decides is unrelated:
+      // guard-filename folds the superscript digits Windows resolves to
+      // COM/LPT device numbers, guard-regex parses a `{lo,hi}` repetition
+      // bound, and guard-yaml recognises a leading-zero value YAML 1.1 reads
+      // as octal. There is no primitive that covers all three — the shared
+      // part is already `codepointClass.isRunOf` / `indexOfAny` / `inRanges`,
+      // which each of them calls.
+      mode:  "family-subset",
+      files: [
+        "lib/guard-filename.js:_foldSuperscriptDigits",
+        "lib/guard-regex.js:_scanBraces",
+        "lib/guard-yaml.js:_hasLeadingZeroOctal",
+      ],
+    },
+    {
       // requireNonEmptyString idiom — shape-only. Every site opens a field
       // check with `if (typeof X !== "string" || X.length === 0) throw …
       // "must be a non-empty string"`, but the shared part is structural only:
@@ -5623,6 +5641,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-json.js:_scanJsonShapes",
         "lib/guard-json.js:_scanRawSource",
         "lib/guard-json.js:gate",
+        "lib/guard-yaml.js:_hasMergeKeyAlias",
         "lib/guard-markdown.js:_allMatches",
         "lib/guard-markdown.js:_detectIssues",
         "lib/guard-markdown.js:_gateDispositionFor",
