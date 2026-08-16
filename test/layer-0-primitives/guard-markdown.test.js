@@ -56,6 +56,35 @@ function testGuardMarkdownDangerousScheme() {
     "[x](vbscript:msgbox)\n", { profile: "strict" });
   check("vbscript: link scheme detected",
         rvVbs.issues.some(function (i) { return i.kind === "link-scheme"; }));
+
+  // A malformed OUTER link can carry a well-formed INNER one, and a renderer
+  // recovers and emits the inner destination. A scan that resumed past the
+  // whole failed candidate skipped the inner `[` and let the scheme through.
+  [
+    "[bad]([ok]( javascript:x))",
+    "[bad]([ok](javascript:x) trailing)",
+    "[a]([b]([c](javascript:x)))",
+    "text [outer]( [inner](vbscript:msgbox) ) more",
+  ].forEach(function (doc) {
+    var nested = b.guardMarkdown.validate(doc, { profile: "strict" });
+    check("a dangerous scheme inside a malformed outer link is still seen: " +
+          JSON.stringify(doc),
+          nested.issues.some(function (i) { return i.kind === "link-scheme"; }),
+          JSON.stringify(nested.issues.map(function (i) { return i.kind; })));
+  });
+
+  // Resuming after a failure must not turn the scan quadratic — the shape it
+  // costs is a document of prefixes that each fail the same way.
+  var NESTED_FLOOD_MS = 4000;
+  [["[a](", 200000], ["[a](\"", 200000], ["[bad]([ok](", 100000]].forEach(function (c) {
+    var doc = c[0].repeat(c[1]);
+    var started = Date.now();
+    b.guardMarkdown._shapesForTest.inlineLinks(doc);
+    var elapsed = Date.now() - started;
+    check("a " + doc.length + "-character run of " + JSON.stringify(c[0]) +
+          " still scans in linear time (" + elapsed + "ms)",
+          elapsed < NESTED_FLOOD_MS);
+  });
 }
 
 function testGuardMarkdownEntityBypass() {

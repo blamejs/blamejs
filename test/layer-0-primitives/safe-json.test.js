@@ -846,6 +846,14 @@ function testSchemaPatternRunsInLinearTime() {
   var verdicts = [verdict("aa", stateful), verdict("aa", stateful), verdict("aa", stateful)];
   check("a RegExp pattern with g does not carry match state between requests",
         verdicts.every(function (r) { return r === "ok"; }), verdicts.join(", "));
+
+  // `y` is the other stateful flag and advances `lastIndex` the same way, so a
+  // cached sticky matcher alternates between matching and not.
+  var sticky = /(?=a)a/y;
+  var stickyVerdicts = [verdict("a", sticky), verdict("a", sticky), verdict("a", sticky)];
+  check("a RegExp pattern with y does not carry match state between requests",
+        stickyVerdicts.every(function (r) { return r === "ok"; }),
+        stickyVerdicts.join(", "));
 }
 
 module.exports = { run: run };

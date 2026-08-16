@@ -271,6 +271,32 @@ function testConsolidatedCallersKeptTheirAcceptanceSets() {
   check("Node's decoder is the reason: it drops what it cannot use",
         Buffer.from("A", "base64").length === 0 &&
         Buffer.from("=", "base64").length === 0);
+
+  // Canonical also means the bits that encode nothing are zero (RFC 4648
+  // §3.5). A padded group carries fewer bits than its characters can express,
+  // and a decoder discards the rest — so `AB==` and `AA==` are two spellings
+  // of one byte, which is what a canonical encoding rules out. The reference
+  // is Node itself: decode then re-encode, and a canonical value is unchanged.
+  var A = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  var padDiffs = [];
+  for (var hi = 0; hi < 64; hi += 1) {
+    for (var lo = 0; lo < 64; lo += 1) {
+      var twoPad = A.charAt(hi) + A.charAt(lo) + "==";
+      var wantTwo = Buffer.from(twoPad, "base64").toString("base64") === twoPad;
+      if (b.safeBuffer.isCanonicalBase64(twoPad) !== wantTwo) padDiffs.push(twoPad);
+      var onePad = A.charAt(hi) + A.charAt(lo) + A.charAt((hi + lo) % 64) + "=";
+      var wantOne = Buffer.from(onePad, "base64").toString("base64") === onePad;
+      if (b.safeBuffer.isCanonicalBase64(onePad) !== wantOne) padDiffs.push(onePad);
+    }
+  }
+  check("every padded encoding agrees with a decode/re-encode round-trip " +
+        "(spare bits must be zero)", padDiffs.length === 0,
+        padDiffs.slice(0, 5).join(" "));
+  check("the named non-canonical pairs are refused",
+        b.safeBuffer.isCanonicalBase64("AB==") === false &&
+        b.safeBuffer.isCanonicalBase64("AA==") === true &&
+        b.safeBuffer.isCanonicalBase64("AAB=") === false &&
+        b.safeBuffer.isCanonicalBase64("AAA=") === true);
 }
 
 // The pattern exports are gone rather than aliased: an alias would hand back a

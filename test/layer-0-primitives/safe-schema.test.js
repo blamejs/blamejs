@@ -225,9 +225,15 @@ function testShapeChecksAgreeWithThePatternsTheyReplaced() {
   ];
   void s;
 
+  // The one deliberate tightening, asserted below rather than waved through:
+  // the pattern accepted a padded group whose spare bits were non-zero, which
+  // is a SECOND spelling of bytes that already have one.
+  var NON_CANONICAL_PAD_BITS = ["AB==", "AAB=", "ab==", "abcdab=="];
+
   var diffs = [];
   VALUES.forEach(function (v) {
     CHECKS.forEach(function (c) {
+      if (c[0] === "isBase64" && NON_CANONICAL_PAD_BITS.indexOf(v) !== -1) return;
       var want = c[1].test(v);
       var got = c[2](v);
       if (want !== got) {
@@ -244,6 +250,19 @@ function testShapeChecksAgreeWithThePatternsTheyReplaced() {
     var refused = CHECKS.every(function (c) { return c[2](v) === false; });
     check("non-string " + Object.prototype.toString.call(v) +
           " is refused by every shape check", refused);
+  });
+
+  // The tightening, stated: a padded base64 group carries fewer bits than its
+  // characters can express, and a decoder discards the rest — so `AB==` and
+  // `AA==` decode to the same byte. RFC 4648 §3.5 requires the spare bits be
+  // zero; the pattern never looked at them, so a schema accepted a second
+  // spelling of a value it had already accepted.
+  NON_CANONICAL_PAD_BITS.forEach(function (v) {
+    var canonical = Buffer.from(v, "base64").toString("base64");
+    check("isBase64 refuses " + v + ", a non-canonical spelling of " + canonical,
+          b.safeSchema.isBase64(v) === false &&
+          b.safeSchema.isBase64(canonical) === true &&
+          Buffer.from(v, "base64").equals(Buffer.from(canonical, "base64")));
   });
 
   // The IP checks are the algorithmic ones, which is what `.ipv4()` /
