@@ -687,7 +687,7 @@ function testParseCacheControlBranches() {
         Object.keys(pcc(123)).length === 0);
 
   // A quoted directive argument must NOT be sliced at the comma inside
-  // the quotes — RFC 9111 §5.2 / RFC 8941 §3.3.3 quote-aware split. A
+  // the quotes — RFC 9111 §5.2 / RFC 9651 §3.3.3 quote-aware split. A
   // naive value.split(",") would emit a fake "Cookie" directive.
   var quoted = pcc('no-cache="Authorization, Cookie", max-age=5');
   check("_parseCacheControl: quoted comma not split into fake directive",

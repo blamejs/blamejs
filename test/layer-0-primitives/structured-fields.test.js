@@ -2,7 +2,7 @@
 // Copyright (c) blamejs contributors
 "use strict";
 /**
- * b.structuredFields — RFC 8941 helpers (splitTopLevel /
+ * b.structuredFields — RFC 9651 helpers (splitTopLevel /
  * refuseControlBytes / containsControlBytes / unquoteSfString).
  */
 

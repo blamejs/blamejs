@@ -85,7 +85,7 @@ and **citation** (the CIS section number).
 ## Framework primitives that close the gap
 
 - **`b.tenantQuota.create`** — per-tenant DB storage caps (CIS 4.5
-  composes; ISO 27001 A.8.1.5)
+  composes; ISO 27001:2022 A.8.6)
 - **`b.tenantQuota.budget`** — per-tenant query budget
 - **`b.tenantQuota.instrumentQuery`** — emits `db.tenant.crossover`
   on RLS-bypass
@@ -94,7 +94,7 @@ and **citation** (the CIS section number).
 - **`b.db.getTableMetadata({ format: "json-schema-2020-12" })`** — JSON
   Schema 2020-12 representation of every table (sealed/derived
   annotations preserved)
-- **`b.audit.export({ format: "cadf" })`** — CADF (ISO/IEC 19395:2017)
+- **`b.audit.export({ format: "cadf" })`** — CADF (DMTF DSP0262)
   envelope export for federated SIEM
 - **`b.drRunbook.emit({ posture: "hipaa", ... })`** — disaster-recovery
   runbook generator composing b.budr + b.cluster + b.backup

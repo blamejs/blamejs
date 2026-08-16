@@ -203,7 +203,7 @@ function testNonFiniteToleranceDoesNotDisableFreshness() {
   }
 }
 
-// RFC 9421 §2.4 carries the signature as an RFC 8941 §3.3.5 sf-binary: whole
+// RFC 9421 §2.4 carries the signature as an RFC 9651 §3.3.5 sf-binary: whole
 // four-character base64 groups between colons. Node's decoder DROPS characters
 // it cannot use rather than failing, so a malformed field decodes to a short
 // buffer and reports as a signature that did not verify — which sends the
@@ -612,7 +612,7 @@ function _withSig(msg, signed) {
 }
 
 // _sfQuotedString refuses any parameter byte outside printable-ASCII
-// (RFC 8941 §3.3.3): a control byte in a signature parameter (here `nonce`)
+// (RFC 9651 §3.3.3): a control byte in a signature parameter (here `nonce`)
 // makes sign() throw BAD_PARAM rather than emit a header that would mis-parse
 // on the wire. Constructed via fromCharCode so no literal control byte lands
 // in the test source.
@@ -1142,7 +1142,7 @@ function testBuildBaseFailed() {
         v.valid === false && v.reason === "build-base-failed");
 }
 
-// RFC 8941 §3.1.2 parameter parsing tolerance: verify rebuilds the canonical
+// RFC 9651 §3.1.2 parameter parsing tolerance: verify rebuilds the canonical
 // @signature-params terminator from the parsed values, so a transmitted
 // Signature-Input with a trailing ';' (empty parameter) or an unquoted string
 // parameter (a conformant peer's serialization variant) still verifies.

@@ -3,7 +3,7 @@
 "use strict";
 /**
  * b.audit.export({ format: "cadf" }) / b.auditTools.exportCadf —
- * CADF (Cloud Auditing Data Federation, ISO/IEC 19395:2017) envelope.
+ * CADF (Cloud Auditing Data Federation, DMTF DSP0262) envelope.
  * Covers F-RFC-2.
  */
 

@@ -19,7 +19,7 @@ cd examples/wiki
 docker compose up --build
 ```
 
-The compose file mounts a named volume (`wiki-data`) at `/data` so the vault key, sqlite database, and audit chain persist across container restarts. Set `WIKI_ADMIN_PASSWORD` (and any other `WIKI_*` envs from `server.js`) in a `.env` file alongside `docker-compose.yml`, or in the host environment, to pin a stable admin credential. Healthcheck hits `/healthz` every 30 seconds.
+The compose file mounts a named volume (`wiki-data`) at `/data` so the vault key, SQLite database, and audit chain persist across container restarts. Set `WIKI_ADMIN_PASSWORD` (and any other `WIKI_*` envs from `server.js`) in a `.env` file alongside `docker-compose.yml`, or in the host environment, to pin a stable admin credential. Healthcheck hits `/healthz` every 30 seconds.
 
 The `Dockerfile` is multi-stage (deps build + slim runtime), runs as the unprivileged `node` user, and uses a `node:24-slim` base (24.14+ — the engine pin in `package.json` requires `>=24.14.1` for CVE-2026-21713 fix). Argon2id routes through Node's built-in `crypto.argon2*` API, so the image carries no native-module prebuild.
 
@@ -120,7 +120,7 @@ Adopters who plan to expand the editor surface beyond a single trusted admin sho
 
 ## File layout
 
-```
+```text
 examples/wiki/
 ├── package.json                  # depends on @blamejs/core via file:../..
 ├── server.js                     # createApp boot, all primitives wired
@@ -154,4 +154,4 @@ examples/wiki/
 - **Search**: `/search?q=...` works against the FTS5 index, but most concern-group pages are still stubs so there isn't much to find yet.
 - **Concern-group pages are stubs**: most landing pages (Auth, Storage, HTTP, etc.) currently have a "Coming soon" body. Full primitive walkthroughs land as each group is written.
 - **Editor is plain HTML**: the admin edit screen is a `<textarea>`. A small client-side enhancement (autosave, slug-from-title preview) is on the list.
-- **Recipe pages**: cluster mode, mail, websocket, FTS5 schema walkthrough — stubbed for now.
+- **Recipe pages**: cluster mode, mail, WebSocket, FTS5 schema walkthrough — stubbed for now.

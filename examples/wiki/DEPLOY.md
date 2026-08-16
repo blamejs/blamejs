@@ -64,7 +64,7 @@ The wiki container reads its configuration from environment. `docker-compose.pro
 | `WIKI_ADMIN_PASSWORD` | **yes (production)** | random + printed to stdout once | Seeded admin login. Setting it explicitly avoids the random-on-each-restart pattern. |
 | `WIKI_ADMIN_EMAIL` | no | `admin@blamejs.com` | Seeded admin login email. |
 | `WIKI_PORT` | no | `3008` | HTTP listen port inside the container. Caddy proxies to this; rarely overridden. |
-| `WIKI_DATA_DIR` | no | `/data` | On-disk path the wiki writes vault key + sqlite + audit chain to. Bound to a Docker volume in the compose. |
+| `WIKI_DATA_DIR` | no | `/data` | On-disk path the wiki writes vault key + SQLite + audit chain to. Bound to a Docker volume in the compose. |
 | `WIKI_WEBHOOK_URL` | no | unset | Outbound HTTPS endpoint that receives one POST per `wiki.page.edited` event. |
 | `WIKI_WEBHOOK_SECRET` | required if URL set | unset | HMAC secret the webhook receiver uses to verify the request signature. |
 
@@ -94,7 +94,7 @@ Every passphrase / webhook secret in the table above is **never** ENV-baked into
 
 ## What's where
 
-- The wiki container persists state in the `wiki-data` named volume — vault key, sealed audit-signing key, sqlite database, audit chain. **Back this up.** Losing it loses the audit chain and admin credentials.
+- The wiki container persists state in the `wiki-data` named volume — vault key, sealed audit-signing key, SQLite database, audit chain. **Back this up.** Losing it loses the audit chain and admin credentials.
 - Caddy persists ACME state in the `caddy-data` named volume. Deleting it forces a re-issuance from scratch — Let's Encrypt rate limits apply, so don't.
 - All TLS is Caddy's. The wiki container only speaks HTTP on the compose network.
 - Prefer nginx? [`nginx.conf`](./nginx.conf) is an equivalent reference config — same TLS 1.3 floor, `www.`→apex 308 redirect, `X-Forwarded-Proto https` / `X-Forwarded-For`, and HSTS `max-age=63072000; includeSubDomains; preload`. nginx does not issue certificates itself; pair it with certbot for the cert paths it references, and set `WIKI_ADMIN_TRUSTED_PROXIES` to the proxy's CIDR so the wiki trusts the forwarded headers.

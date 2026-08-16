@@ -8792,7 +8792,7 @@ var KNOWN_ANTIPATTERNS = [
       // cookies) now route through stripDoubleQuotes. The four below keep the
       // inline test because they do MORE than a plain strip, which stripDouble
       // Quotes does not: they unescape inside the quoted span (http-client-cache
-      // — single-pass RFC 8941; middleware/scim-server — `\"`→`"`; safe-mime —
+      // — single-pass RFC 9651; middleware/scim-server — `\"`→`"`; safe-mime —
       // `\X`→`X`), or they omit the length>=2 guard and the strip is embedded in
       // a larger branch (guard-mime — a single `"` is treated differently).
       // Routing any of them would change behaviour.
@@ -12442,7 +12442,7 @@ var KNOWN_ANTIPATTERNS = [
     // (`.replace(/\\/g,"\\\\")...replace(/\n/g,"\\n")`) is the Prometheus
     // escape signature — a second exposition encoder growing in another
     // lib file, whose escaping/ordering drifts from the canonical one.
-    // The two-step backslash+quote chains used by RFC 8941 sf-string /
+    // The two-step backslash+quote chains used by RFC 9651 sf-string /
     // IMAP / Sieve / Link-header quoted-strings do not escape newline
     // and are deliberately out of scope. The `{1,60}` bound on the
     // optional intermediate replace is a ReDoS backstop, not precision.
@@ -12467,7 +12467,7 @@ var KNOWN_ANTIPATTERNS = [
     // its own detector + owner).
     regex: /\.replace\(\/\\\\\/g,\s*"\\{4}"\)\.replace\(\/"\/g/,
     allowlist: ["lib/safe-buffer.js"],
-    reason: "Backslash+DQUOTE quoted-string escaping is owned by safeBuffer.quoteString (RFC 8941 sf-string, RFC 8288 Link params, RFC 8601 reason, RFC 3501 IMAP, RFC 5804 ManageSieve all route through it). An inline `.replace(/\\\\/g,...).replace(/\"/g,...)` chain in another lib file is the serializer re-implemented — compose safeBuffer.quoteString instead. lib/safe-buffer.js is the primitive's home.",
+    reason: "Backslash+DQUOTE quoted-string escaping is owned by safeBuffer.quoteString (RFC 9651 sf-string, RFC 8288 Link params, RFC 8601 reason, RFC 3501 IMAP, RFC 5804 ManageSieve all route through it). An inline `.replace(/\\\\/g,...).replace(/\"/g,...)` chain in another lib file is the serializer re-implemented — compose safeBuffer.quoteString instead. lib/safe-buffer.js is the primitive's home.",
   },
 
   {
@@ -12709,7 +12709,7 @@ function testNoBoolStringCoerceShape() {
 // `.split(";")`) and ALSO contains an sf-string unquote regex shape
 // — meaning the parser KNOWS its values can be quoted strings but
 // doesn't respect quoted-comma boundaries during the split.
-// RFC 8941 §3.3.3 + RFC 9110 §5.5 quoted-string values legitimately
+// RFC 9651 §3.3.3 + RFC 9110 §5.5 quoted-string values legitimately
 // contain commas inside quotes (e.g. `private="Authorization,
 // Cookie"`); a bare split produces fake list members and corrupts
 // the parse output.
@@ -12739,7 +12739,7 @@ function testNoBareCommaSplitOnQuotedHeader() {
     }
   }
   bad = _filterMarkers(bad, "bare-split-on-quoted-header-token-grammar");
-  _report("RFC structured-fields parser must use quote-aware top-level splitter, not bare `.split(\",\") / .split(\";\")` (RFC 8941 §3.3.3 quoted-string values can contain delimiter chars — cdn-cache-control.parse bug class)",
+  _report("RFC structured-fields parser must use quote-aware top-level splitter, not bare `.split(\",\") / .split(\";\")` (RFC 9651 §3.3.3 quoted-string values can contain delimiter chars — cdn-cache-control.parse bug class)",
     bad);
 }
 
