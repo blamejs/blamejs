@@ -1070,7 +1070,14 @@ function _waitForCodexReview(prNum) {
       _ok("Codex has reviewed the current PR head -- thread gate now sees its findings");
       return;
     }
-    _sleepSync(stepMs);
+    // Sleep only what is left. A full step here would carry the wait PAST the
+    // budget it advertises -- a lookup that returns a moment before the
+    // deadline would still sleep the whole step, and the retries inside the
+    // lookup push it further. Moving the loop condition to the clock is only
+    // half the job; the sleep has to respect the same clock.
+    var remainingMs = budgetMs - (Date.now() - startedAt);
+    if (remainingMs <= 0) break;
+    _sleepSync(Math.min(stepMs, remainingMs));
   }
   if (lastLookupFailure) {
     throw new Error("release: could not read PR #" + prNum + " review state for 10m -- " +

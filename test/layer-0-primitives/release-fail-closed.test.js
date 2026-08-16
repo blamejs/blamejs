@@ -480,6 +480,37 @@ function testCodexWaitStillReportsAGenuineAbsence() {
   });
 }
 
+// Moving the loop CONDITION to the clock is only half the job: an unconditional
+// full-step sleep at the end of the last pass carries the wait past the budget
+// it advertises, and the retries inside a lookup push it further still. The
+// sleep has to respect the same clock the condition does.
+function testCodexWaitHonoursItsWallClockBudget() {
+  var step = release.CODEX_WAIT.stepMs, budget = release.CODEX_WAIT.budgetMs;
+  // A step far larger than the budget: one overrunning sleep is unmissable.
+  release.CODEX_WAIT.stepMs   = 400;
+  release.CODEX_WAIT.budgetMs = 60;
+  try {
+    withQuietConsole(function () {
+      withFastRetry(function () {
+        withCapture(function (cmd, args) {
+          if (args.indexOf("headRefOid") !== -1) return _okResult("c".repeat(40));
+          return _okResult("[]");
+        }, function () {
+          var startedAt = Date.now();
+          threw(function () { release._waitForCodexReview("588"); });
+          var elapsed = Date.now() - startedAt;
+          // Generous ceiling — the point is that it cannot overshoot by a
+          // whole 400ms step, not that it lands on the millisecond.
+          check("the wait stops within its advertised budget (elapsed " + elapsed + "ms)",
+            elapsed < release.CODEX_WAIT.budgetMs + 200);
+        });
+      });
+    });
+  } finally {
+    release.CODEX_WAIT.stepMs = step; release.CODEX_WAIT.budgetMs = budget;
+  }
+}
+
 // ---- publish / status reporting -----------------------------------------
 
 // "no npm-publish run found (workflow may not be configured)" is a very
@@ -609,6 +640,7 @@ function run() {
   testCodexWaitAbortsOnAStableFailure();
   testCodexWaitTimeoutSaysUnknownNotNo();
   testCodexWaitStillReportsAGenuineAbsence();
+  testCodexWaitHonoursItsWallClockBudget();
   testPublishFailsClosedOnAFailedRunLookup();
   testStatusReportsALookupFailureRatherThanNone();
   testStatusStillReportsNoneWhenThereIsNoPr();
