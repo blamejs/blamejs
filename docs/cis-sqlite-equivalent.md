@@ -42,7 +42,7 @@ produces.
 
 | Control intent | NIST 800-53 | Framework posture |
 | -------------- | ----------- | ----------------- |
-| Per-tenant data isolation | AC-3 | `b.tenantQuota.create` / `b.tenantQuota.budget` / `b.tenantQuota.instrumentQuery` provide storage caps + query budget + crossover detection. SOC 2 CC6.1 + ISO 27001:2022 A.8.6. |
+| Per-tenant data isolation | AC-3 | `b.tenantQuota.create` / `b.tenantQuota.budget` / `b.tenantQuota.instrumentQuery` provide storage caps + query budget + crossover detection. SOC 2 CC6.1 + ISO 27001:2022 A.8.3 (isolation) and A.8.6 (caps). |
 | Role-context for every query | AC-6 | `b.dbRoleContext` binds an actor → audit emission row pair on every query the framework executes. |
 | WORM (write-once-read-many) for regulatory tables | AU-9(1) | `b.db.declareWorm({ table })` installs SQLite trigger refusing UPDATE/DELETE; required under postures `sec-17a-4`, `finra-4511`, `fda-21cfr11`. |
 | Dual-control on sensitive operations | AC-3(7) | `b.dualControl.consume` gates `b.db.eraseHard` on declared tables. |

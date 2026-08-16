@@ -203,7 +203,7 @@ function testNonFiniteToleranceDoesNotDisableFreshness() {
   }
 }
 
-// RFC 9421 §2.4 carries the signature as an RFC 9651 §3.3.5 sf-binary: whole
+// RFC 9421 §2.4 carries the signature as an RFC 8941 §3.3.5 sf-binary: whole
 // four-character base64 groups between colons. Node's decoder DROPS characters
 // it cannot use rather than failing, so a malformed field decodes to a short
 // buffer and reports as a signature that did not verify — which sends the

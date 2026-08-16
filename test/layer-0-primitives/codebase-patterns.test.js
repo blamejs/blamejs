@@ -7552,6 +7552,14 @@ var KNOWN_ANTIPATTERNS = [
     reason: "guard-html / guard-svg (_extractScheme) and guard-markdown (DANGEROUS_SCHEME_RE.test) resolve a URL scheme against a denylist. The WHATWG URL parser removes tab/lf/cr from anywhere and trims a leading/trailing C0-control-or-space run before parsing; neither the C0-control strip (which excludes tab/lf/cr) nor a raw trim (which misses an entity-encoded space) covers that, so the decoded value MUST route through codepointClass.stripUrlSchemeWhitespace. Fires if a scheme extractor drops the shared normalizer, re-opening the java<TAB>script: / &#32;javascript: fail-open XSS.",
   },
   {
+    id: "sfv-citation-must-match-the-referencing-protocol",
+    primitive: "a comment describing ANOTHER protocol's field grammar cites the structured-fields RFC that protocol normatively references (RFC 8941), not the newer RFC 9651",
+    scanScope: "lib",
+    regex: /RFC 9(?:421|530)[^\n]*RFC 9651|RFC 9651[^\n]*RFC 9(?:421|530)/,
+    allowlist: [],
+    reason: "RFC 9651 SS2.4 is explicit that it does not update specifications referencing RFC 8941: a field whose definition references 8941 cannot use 9651's new Date or Display String types, because a recipient may still parse it with an 8941 parser. RFC 9421 (HTTP Message Signatures) and RFC 9530 (Digest Fields) both normatively reference 8941, so a comment asserting what THEIR field grammar is must say 8941 -- naming 9651 there silently opts the protocol into a field model its own spec does not permit. b.structuredFields itself is a standalone RFC 9651 codec and correctly cites 9651. Fires when a line names one of those protocols alongside 9651.",
+  },
+  {
     id: "guard-css-danger-check-must-decode-entities",
     primitive: "a content guard's CSS-danger check must match the entity-decoded style value via codepointClass.decodeMarkupEntities, not the raw bytes -- a style attribute is character-reference-decoded before the CSS parser sees it",
     scanScope: "lib",
