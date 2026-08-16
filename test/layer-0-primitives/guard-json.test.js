@@ -354,6 +354,8 @@ function testJson5ShapesAreFoundWhereverTheySit() {
     ["a negative hex literal",             '{"a":-0x1f}',          "hex-literal"],
     ["a single-quoted key",                "{'a':1}",              "single-quoted-key"],
     ["a single-quoted key after a value",  "{\"a\":1,'b':2}",      "single-quoted-key"],
+    ["a single-quoted key with an escaped quote", "{'a\\'b':1}",   "single-quoted-key"],
+    ["a single-quoted key after an escaped one",  "{'a\\'b':1,'c':2}", "single-quoted-key"],
     ["an integer past 2^53",               '{"a":123456789012345678}', "numeric-precision-loss"],
     ["a negative integer past 2^53",       '{"a":-123456789012345678}', "numeric-precision-loss"],
     ["a __proto__ key",                    '{"__proto__":{"x":1}}', "prototype-pollution-key"],
