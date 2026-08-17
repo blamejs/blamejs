@@ -17204,9 +17204,46 @@ function testNoRegexInGuardAndSafeFamily() {
   // here; otherwise it opens an operand. A file that does both is not
   // something this walker can resolve, and the binding wins because a false
   // positive blocks a release while a false negative is caught by review.
+  // Blank out comments and string bodies before looking for the binding.
+  // Reading the raw file means a comment like "var await is legal here", or a
+  // string containing "function await", marks the whole file as binding the
+  // name and switches keyword detection off — including in this very
+  // detector's own prose, which says exactly that.
+  function _codeOnly(src) {
+    var out = "";
+    for (var i = 0; i < src.length; i += 1) {
+      var c = src.charAt(i);
+      if (c === "/" && src.charAt(i + 1) === "/") {
+        while (i < src.length && src.charAt(i) !== "\n") i += 1;
+        out += "\n";
+        continue;
+      }
+      if (c === "/" && src.charAt(i + 1) === "*") {
+        var close = src.indexOf("*/", i + 2);
+        if (close === -1) break;
+        i = close + 1;
+        out += " ";
+        continue;
+      }
+      if (c === "\"" || c === "'" || c === "`") {
+        var quote = c;
+        i += 1;
+        while (i < src.length && src.charAt(i) !== quote) {
+          if (src.charAt(i) === "\\") i += 1;
+          i += 1;
+        }
+        out += '""';
+        continue;
+      }
+      out += c;
+    }
+    return out;
+  }
+
   function awaitIsBound(src) {
-    return /(?:var|let|const|function)\s+await\b/.test(src) ||
-           /\bfunction\s*\([^)]*\bawait\b/.test(src);
+    var code = _codeOnly(src);
+    return /(?:var|let|const|function)\s+await\b/.test(code) ||
+           /\bfunction\s*\([^)]*\bawait\b/.test(code);
   }
 
   function regexLiteralLines(src, awaitBound) {
@@ -17314,6 +17351,10 @@ function testNoRegexInGuardAndSafeFamily() {
     ["var n = obj.delete / 2 / 3;",        false, "delete as member name"],
     ["var await = 12; var r = await / 2 / 3;", false, "await bound as an identifier"],
     ["async function c(v) { await /unsafe/.test(v); }", true, "await as keyword when unbound"],
+    ["// var await is legal in CommonJS\nasync function c(v) { await /unsafe/.test(v); }",
+      true, "a comment mentioning the binding does not bind it"],
+    ["var s = 'function await';\nasync function c(v) { await /unsafe/.test(v); }",
+      true, "a string mentioning the binding does not bind it"],
   ];
 
   var selfCheck = [];
