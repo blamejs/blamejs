@@ -17308,7 +17308,10 @@ function testNoRegexInGuardAndSafeFamily() {
         // prefix one must be followed by an operand, and `/` cannot start
         // one — so the expression has ended and the slash divides. Tracking
         // a single character sees only the second `+`, which is not an ender.
-        if ((c === "+" || c === "-") && prev === c) prev = "x";
+        // Adjacency has to be tested against the SOURCE, not against `prev`:
+        // whitespace and comments do not update `prev`, so `a + +/re/` and
+        // `a +/*c*/+ /re/` would otherwise read as a postfix update.
+        if ((c === "+" || c === "-") && src.charAt(i - 1) === c) prev = "x";
         else prev = c;
         prevWord = "";
       }
@@ -17351,6 +17354,8 @@ function testNoRegexInGuardAndSafeFamily() {
     ["var r = count++ / 2 / 3;",            false, "postfix increment ends the expression"],
     ["var r = count-- / 2 / 3;",            false, "postfix decrement ends the expression"],
     ["var r = a + +b / 2 / 3;",             false, "unary plus is not a postfix operator"],
+    ["var n = a + +/unsafe/.test(v);",       true,  "separated signs are not a postfix update"],
+    ["var n = a - -/unsafe/.test(v);",       true,  "separated minus signs likewise"],
     // Deliberate over-detection: an `await` that is really an identifier is
     // still read as a keyword, because the other bias is silence. Resolved
     // by an allow-marker if a file ever needs it.
