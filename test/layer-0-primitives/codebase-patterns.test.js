@@ -17234,6 +17234,19 @@ function testNoRegexInGuardAndSafeFamily() {
     return cp > 127 && NON_ASCII_SPACE[cp] !== 1;
   }
 
+  // The whole ECMAScript WhiteSpace production, not just space and tab.
+  // Whitespace separates tokens without being one, so anything left out of
+  // this set is recorded as the previous token instead: with NBSP missing,
+  // `count<NBSP>++ / 2 / 3` read the update as a prefix form and the division
+  // after it as a regex literal, blocking valid code. U+2028 and U+2029 are
+  // line terminators rather than whitespace and are handled before this runs.
+  function isWhiteSpace(c) {
+    if (c === " " || c === "\t") return true;
+    var cp = c.charCodeAt(0);
+    if (cp === 0x0B || cp === 0x0C) return true;
+    return cp > 127 && NON_ASCII_SPACE[cp] === 1;
+  }
+
   // `await` cuts both ways. In a CommonJS script it is an ordinary identifier,
   // so treating it as a keyword turns `await / 2 / 3` into a false positive;
   // inside an async function it IS a keyword, so excluding it misses
@@ -17261,19 +17274,62 @@ function testNoRegexInGuardAndSafeFamily() {
     var prevWord = "";
     var prevBeforeSign = "";      // token kind before a ++ / -- pair
     var prevWordBeforeSign = "";  // and the word, when it was one
+    var sawLineTerminator = false;
     var line = 1;
+    // One place that records "the token just consumed ends an expression".
+    // Three branches used to set these three fields by hand, and the string
+    // and regex-literal branches left the line state set — harmless only
+    // because no valid program can put `++` straight after a literal, which
+    // is a guarantee about the input rather than about this walker. Routing
+    // every operand-producing branch through one function makes the omission
+    // unexpressible instead of merely unreachable.
+    function endedExpression() {
+      prev = "x";
+      prevWord = "";
+      sawLineTerminator = false;
+    }
     for (var i = 0; i < src.length; i += 1) {
       var c = src.charAt(i);
-      if (c === "\n") { line += 1; continue; }
+      // ECMAScript forbids ++/-- from crossing a line terminator, so an
+      // operand on the previous line is not this update's operand:
+      // `count\n++/re/.lastIndex` is a new statement with a PREFIX update.
+      // All four ECMAScript line terminators, not just LF: a lone CR and the
+      // line/paragraph separators carry the same restriction.
+      if (c === "\n" || c === "\r" || c === "\u2028" || c === "\u2029") {
+        if (c !== "\r" || src.charAt(i + 1) !== "\n") line += 1;
+        sawLineTerminator = true;
+        continue;
+      }
+      // Whitespace separates tokens without being one. It must not disturb
+      // `prev`, and it must not clear the pending line state — a terminator
+      // followed by indentation still forbids a postfix update.
+      if (isWhiteSpace(c)) continue;
       if (c === "/" && src.charAt(i + 1) === "/") {
-        while (i < src.length && src.charAt(i) !== "\n") i += 1;
+        // A line comment ends at ANY line terminator. Stopping only at LF ran
+        // to end-of-file on a CR-terminated line and swallowed everything
+        // after it, including a literal the gate exists to find.
+        while (i < src.length) {
+          var lc = src.charAt(i);
+          if (lc === "\n" || lc === "\r" || lc === "\u2028" || lc === "\u2029") break;
+          i += 1;
+        }
+        if (src.charAt(i) === "\r" && src.charAt(i + 1) === "\n") i += 1;
         line += 1;
+        sawLineTerminator = true;
         continue;
       }
       if (c === "/" && src.charAt(i + 1) === "*") {
         var close = src.indexOf("*/", i + 2);
         if (close === -1) break;
-        for (var q = i; q < close; q += 1) if (src.charAt(q) === "\n") line += 1;
+        // The no-line-terminator rule applies through a multiline comment
+        // too: `count/*\n*/++/re/` is a prefix update, not a postfix one.
+        for (var q = i; q < close; q += 1) {
+          var qc = src.charAt(q);
+          if (qc === "\n" || qc === "\r" || qc === "\u2028" || qc === "\u2029") {
+            if (qc !== "\r" || src.charAt(q + 1) !== "\n") line += 1;
+            sawLineTerminator = true;
+          }
+        }
         i = close + 1;
         continue;
       }
@@ -17285,12 +17341,56 @@ function testNoRegexInGuardAndSafeFamily() {
           if (src.charAt(i) === "\n") line += 1;
           i += 1;
         }
-        prev = "x";              // a string literal ends an expression
-        prevWord = "";
+        endedExpression();       // a string literal ends an expression
         continue;
       }
       // Consume a whole identifier/keyword run so the token before a `/` is
       // known as a WORD, not just as its final letter.
+      // A numeric literal is one token and ends an expression. Consumed
+      // separately because its tail can hold characters a word run stops at —
+      // `1.` leaves a trailing dot, and `1e-3` an exponent sign — and leaving
+      // either as the previous token makes the next `/` look like an operand
+      // position. Covers `1.`, `.5`, `1e-3`, `0x1f`, `1_000` and `10n`.
+      if ((c >= "0" && c <= "9") ||
+          (c === "." && src.charAt(i + 1) >= "0" && src.charAt(i + 1) <= "9")) {
+        // A `.` belongs to the number ONLY in plain decimal form, and only
+        // once. After an exponent, inside a radix literal, or after the
+        // BigInt suffix it is member access — `1e3.delete`, `0x1.delete` and
+        // `10n.delete` all read the word after the dot as a member name, so
+        // swallowing the dot turns it back into a keyword.
+        var seenDot   = c === ".";
+        var seenExp   = false;
+        var seenBigInt = false;
+        var isRadix   = c === "0" && "xXoObB".indexOf(src.charAt(i + 1)) !== -1;
+        i += 1;
+        if (isRadix) i += 1;
+        while (i < src.length) {
+          var nc = src.charAt(i);
+          if (nc === ".") {
+            if (seenDot || seenExp || seenBigInt || isRadix) break;
+            seenDot = true;
+            i += 1;
+            continue;
+          }
+          if (nc === "n" && !isRadix) { seenBigInt = true; i += 1; continue; }
+          if ((nc === "e" || nc === "E") && !isRadix) {
+            if (seenExp) break;
+            seenExp = true;
+            i += 1;
+            continue;
+          }
+          if (nc >= "0" && nc <= "9") { i += 1; continue; }
+          if (nc === "_") { i += 1; continue; }
+          if (isRadix && (((nc >= "a") && (nc <= "f")) ||
+                          ((nc >= "A") && (nc <= "F")))) { i += 1; continue; }
+          if ((nc === "+" || nc === "-") && seenExp &&
+              "eE".indexOf(src.charAt(i - 1)) !== -1) { i += 1; continue; }
+          break;
+        }
+        i -= 1;
+        endedExpression();
+        continue;
+      }
       if (isWordChar(c)) {
         var wordStart = i;
         while (i < src.length && isWordChar(src.charAt(i))) i += 1;
@@ -17301,6 +17401,7 @@ function testNoRegexInGuardAndSafeFamily() {
         // expression whatever it is called — `a.in`, `obj.delete`, `x.new`.
         prevWord = prev === "." ? "" : src.slice(wordStart, i);
         prev = "w";
+        sawLineTerminator = false;
         i -= 1;
         continue;
       }
@@ -17324,27 +17425,30 @@ function testNoRegexInGuardAndSafeFamily() {
         if (closed) {
           hits.push({ line: line, text: src.slice(i, j + 1) });
           i = j;
-          prev = "x";            // the literal itself ends an expression
-          prevWord = "";
+          endedExpression();     // the literal itself ends an expression
           continue;
         }
       }
-      if (c !== " " && c !== "\t" && c !== "\r") {
-        // `++` and `--` immediately before a `/` can only be POSTFIX — a
-        // prefix one must be followed by an operand, and `/` cannot start
-        // one — so the expression has ended and the slash divides. Tracking
-        // a single character sees only the second `+`, which is not an ender.
-        // `++`/`--` ends an expression only in its POSTFIX form, which is the
-        // one whose operand came before it — so the test is whether the token
-        // preceding the pair had already ended an expression. A prefix update
-        // has not (`++/unsafe/.lastIndex` is a regex literal, absurd but
-        // valid). Adjacency is read from the SOURCE because whitespace and
-        // comments do not update `prev`: `a + +/re/` is two unary signs.
+      // Everything still here is a punctuator, and punctuation clears the
+      // line-break state like any other token. `(count\n)++` has no terminator
+      // between the `)` and the `++`, so that update is postfix and the `/`
+      // after it divides. Whitespace was skipped above and cannot reach here.
+      {
+        // Read the line-break state BEFORE clearing it — this token is the
+        // one it applies to. Clearing first made every terminator invisible.
+        var brokeLine = sawLineTerminator;
+        sawLineTerminator = false;
+        // `++`/`--` ends an expression only in its POSTFIX form, the one whose
+        // operand came before it, so the test is whether the token preceding
+        // the PAIR had already ended an expression. A prefix update has not
+        // (`++/unsafe/.lastIndex` is a literal, absurd but valid), and neither
+        // has an operand on a previous line, because ECMAScript forbids the
+        // update from crossing a line terminator. Adjacency is read from the
+        // SOURCE: whitespace and comments do not move `prev`, so `a + +/re/`
+        // is two unary signs rather than one update.
         if ((c === "+" || c === "-") && src.charAt(i + 1) === c) {
-          // FIRST character of a ++/-- pair: capture what preceded the pair,
-          // which is what decides prefix from postfix.
-          prevBeforeSign = prev;
-          prevWordBeforeSign = prevWord;
+          prevBeforeSign = brokeLine ? "" : prev;
+          prevWordBeforeSign = brokeLine ? "" : prevWord;
           prev = c;
         } else if ((c === "+" || c === "-") && src.charAt(i - 1) === c) {
           prev = tokenEndsExpression(prevBeforeSign, prevWordBeforeSign) ? "x" : c;
@@ -17363,6 +17467,39 @@ function testNoRegexInGuardAndSafeFamily() {
   // which is exactly why the hole survived review. Each row states what the
   // scanner must decide; a wrong verdict is reported as a violation of this
   // class, so the gate fails loudly rather than going quiet.
+  // Invisible characters the fixtures need, built from their codepoints. A
+  // raw one in the source is fragile — one silently became an ordinary space
+  // during an edit here, which turned a fixture into a no-op — and this file
+  // is also swept for stray separators.
+  var LS = {
+    nbsp: String.fromCharCode(0x00A0),
+    line: String.fromCharCode(0x2028),
+    para: String.fromCharCode(0x2029),
+    ideo: String.fromCharCode(0x3000),
+    cr:   String.fromCharCode(0x000D),
+  };
+
+  // The WhiteSpace production, one representative per shape the scanner has
+  // to classify: the two ASCII controls, the Latin-1 no-break space, an
+  // Ogham/thin/medium-mathematical member of the Zs category, and the byte
+  // order mark. Each stands for a character that separates tokens without
+  // being one; leaving any of them out of the whitespace class turns it into
+  // the previous token and the division after it into a reported literal.
+  var WHITESPACE = [
+    [" ",                          "space"],
+    ["\t",                         "tab"],
+    [String.fromCharCode(0x000B),  "vertical tab"],
+    [String.fromCharCode(0x000C),  "form feed"],
+    [LS.nbsp,                      "no-break space"],
+    [String.fromCharCode(0x1680),  "ogham space mark"],
+    [String.fromCharCode(0x2003),  "em space"],
+    [String.fromCharCode(0x2009),  "thin space"],
+    [String.fromCharCode(0x202F),  "narrow no-break space"],
+    [String.fromCharCode(0x205F),  "medium mathematical space"],
+    [LS.ideo,                      "ideographic space"],
+    [String.fromCharCode(0xFEFF),  "byte order mark"],
+  ];
+
   var SCANNER_FIXTURES = [
     // [ source, must-detect, label ]
     ["var re = /unsafe/;",                true,  "assignment"],
@@ -17395,8 +17532,8 @@ function testNoRegexInGuardAndSafeFamily() {
     ["var n = a + +/unsafe/.test(v);",       true,  "separated signs are not a postfix update"],
     ["var n = a - -/unsafe/.test(v);",       true,  "separated minus signs likewise"],
     ["++/unsafe/.lastIndex;",               true,  "prefix update before a literal"],
-    ["return /unsafe/.test(v);",         true,  "NBSP is whitespace, not an identifier"],
-    ["return /unsafe/.test(v);",         true,  "line separator likewise"],
+    ["return" + LS.nbsp + "/unsafe/.test(v);", true, "NBSP is whitespace, not an identifier"],
+    ["return" + LS.line + "/unsafe/.test(v);", true, "line separator likewise"],
     ["var π = 12; var r = π / 2 / 3;",     false, "non-ASCII identifier"],
     // Deliberate over-detection: an `await` that is really an identifier is
     // still read as a keyword, because the other bias is silence. Resolved
@@ -17439,7 +17576,7 @@ function testNoRegexInGuardAndSafeFamily() {
     ["var re = /a\\/b/;",                   true,  "escaped slash in the body"],
     ["var r = a / b / c;",                  false, "division chain"],
     ["var café = 12; var r = café / 2 / 3;", false, "accented identifier"],
-    ["return　/unsafe/.test(v);",       true,  "ideographic space before a literal"],
+    ["return" + LS.ideo + "/unsafe/.test(v);", true, "ideographic space before a literal"],
   ];
 
   // Cross the two axes rather than listing pairs by hand: every word that
@@ -17455,6 +17592,56 @@ function testNoRegexInGuardAndSafeFamily() {
                            "prefix update after " + word]);
   });
 
+  // Every whitespace character against every position where mistaking one for
+  // a token changes the verdict. Only space and tab were treated as separators
+  // once, so each of the other ten became the previous token: `count<NBSP>++`
+  // read as a prefix update and reported the division after it, refusing code
+  // that is entirely regex-free.
+  WHITESPACE.forEach(function (ws) {
+    var w = ws[0];
+    var name = ws[1];
+    SCANNER_FIXTURES.push(["var r = w" + w + "/ 2 / 3;", false,
+                           "division after a " + name]);
+    SCANNER_FIXTURES.push(["var r = count" + w + "++ / 2 / 3;", false,
+                           "postfix update across a " + name]);
+    SCANNER_FIXTURES.push(["var r = count++" + w + "/ 2 / 3;", false,
+                           "division across a " + name]);
+    SCANNER_FIXTURES.push(["return" + w + "/unsafe/.test(v);", true,
+                           "literal after a " + name]);
+    // A line terminator forbids a postfix update whatever indentation follows
+    // it, so the update below is a prefix one and its operand is the literal.
+    SCANNER_FIXTURES.push(["count\n" + w + "++/unsafe/.lastIndex;", true,
+                           "prefix update indented with a " + name]);
+  });
+
+  // All four line terminators carry the no-line-terminator restriction, and a
+  // lone CR and a CRLF pair have to advance the reported line number exactly
+  // once between them. Only the line feed was recognised at first, so a file
+  // using any of the others had its comments run to end of file and its
+  // updates read as postfix — with a regex literal on the far side of either.
+  [[ "\n", "line feed" ], [ LS.cr, "carriage return" ],
+   [ LS.cr + "\n", "CRLF pair" ], [ LS.line, "line separator" ],
+   [ LS.para, "paragraph separator" ]].forEach(function (nl) {
+    var t = nl[0];
+    var name = nl[1];
+    SCANNER_FIXTURES.push(["count" + t + "++/unsafe/.lastIndex;", true,
+                           "prefix update after a " + name]);
+    SCANNER_FIXTURES.push(["count" + t + "--/unsafe/.lastIndex;", true,
+                           "prefix decrement after a " + name]);
+    SCANNER_FIXTURES.push(["count++" + t + "/ 2 / 3;", false,
+                           "postfix update then a " + name]);
+    SCANNER_FIXTURES.push(["var s = 'a';" + t + "var r = n++ / 2 / 3;", false,
+                           "a string spends a " + name]);
+    SCANNER_FIXTURES.push(["var s = `a`;" + t + "var r = n++ / 2 / 3;", false,
+                           "a template spends a " + name]);
+    SCANNER_FIXTURES.push(["var q = 4;" + t + "var r = q++ / 2 / 3;", false,
+                           "a numeric literal spends a " + name]);
+    SCANNER_FIXTURES.push(["// c" + t + "var r = n++ / 2 / 3;", false,
+                           "a comment ended by a " + name]);
+    SCANNER_FIXTURES.push(["// c" + t + "return /unsafe/.test(v);", true,
+                           "a literal on the line after a " + name]);
+  });
+
   // And the mirror: every token that ENDS an expression, against a bare
   // division and a postfix update before one.
   ["count", "f()", "a[0]", "4", "this", "true", "null"].forEach(function (tok) {
@@ -17465,6 +17652,63 @@ function testNoRegexInGuardAndSafeFamily() {
     SCANNER_FIXTURES.push(["var r = " + tok + "++ / 2 / 3;", false,
                            "postfix update after " + tok]);
   });
+
+  // Numeric literal spellings. Each is one token that ends an expression, and
+  // several carry a tail a word run would stop at — the trailing dot in `1.`,
+  // the exponent sign in `1e-3` — leaving that character as the previous
+  // token and making the next `/` look like operand position.
+  ["1.", "0.5", ".5", "1e3", "1e-3", "1E+3", "0x1f", "0X1F", "0o17",
+   "0b1010", "1_000", "10n", "0.0", "4"].forEach(function (num) {
+    SCANNER_FIXTURES.push(["var r = " + num + " / 2 / 3;", false,
+                           "division after the numeric literal " + num]);
+  });
+
+  // Line terminators. ECMAScript forbids ++/-- from crossing one, so the
+  // operand on the previous line is not the update's operand.
+  SCANNER_FIXTURES.push(
+    ["var c = 1;\ncount\n++/unsafe/.lastIndex;", true,
+      "a line terminator makes the update prefix"],
+    ["var r = count\n/ 2 / 3;", false,
+      "division split across a newline"],
+    ["return\n/unsafe/.test(v);", true,
+      "literal on the line after a keyword"],
+    ["count/*\n*/++/unsafe/.lastIndex;", true,
+      "line terminator inside a block comment"],
+    ["var r = a /*\n*/ / 2 / 3;", false,
+      "multiline comment between an operand and its division"],
+    ["return /*\n*/ /unsafe/.test(v);", true,
+      "multiline comment between a keyword and a literal"],
+    // Double-dot property syntax: the first dot belongs to the number, the
+    // second opens a member access, so the word after it is a member name.
+    ["var r = 1..delete / 2 / 3;", false,
+      "double-dot property then a reserved word as member"],
+    ["var r = 1..toString / 2 / 3;", false,
+      "double-dot property then a plain member"],
+    ["var r = 1.5 / 2 / 3;", false,
+      "a single decimal point is part of the number"],
+    // All four ECMAScript line terminators carry the restriction, and the
+    // state must clear at the next token: a break before a CLOSER is not a
+    // break before the update that follows it.
+    ["count\r++/unsafe/.lastIndex;", true,  "a lone carriage return"],
+    ["count" + LS.line + "++/unsafe/.lastIndex;", true, "U+2028 line separator"],
+    ["count/*\r*/++/unsafe/.lastIndex;", true, "carriage return in a block comment"],
+    ["(count\n)++ / 2 / 3;", false,
+      "a break before the closer, not before the update"],
+    ["var r = count\r\n/ 2 / 3;", false, "CRLF then a division"],
+    // A line comment ends at ANY terminator; stopping only at LF swallowed
+    // the rest of the file, literal included.
+    ["return // c\r/unsafe/.test(v);", true,  "carriage-return-terminated line comment"],
+    ["return // c" + LS.line + "/unsafe/.test(v);", true, "U+2028-terminated line comment"],
+    ["var r = a; // c\nvar q = b / 2 / 3;", false, "line comment then a division"],
+    // A dot belongs to a number only in plain decimal form. After an
+    // exponent, in a radix literal, or after the BigInt suffix it is member
+    // access, and the word following it is a member name.
+    ["1e3.delete / 2 / 3;", false, "member access after an exponent"],
+    ["0x1.delete / 2 / 3;", false, "member access after a hex literal"],
+    ["10n.delete / 2 / 3;", false, "member access after a BigInt"],
+    ["0b1010 / 2 / 3;", false, "division after a binary literal"],
+    ["0o17 / 2 / 3;",   false, "division after an octal literal"]
+  );
 
   var selfCheck = [];
   SCANNER_FIXTURES.forEach(function (row) {
