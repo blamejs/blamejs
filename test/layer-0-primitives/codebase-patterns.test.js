@@ -17251,6 +17251,13 @@ function testNoRegexInGuardAndSafeFamily() {
     var prev = "";
     var prevWord = "";
     var line = 1;
+    // Inside an async function body `await` is necessarily the keyword, even
+    // in a file that also binds the name at top level — so the file-wide
+    // answer is not enough. Track which brace depths opened an async body.
+    var depth = 0;
+    var asyncDepths = [];
+    var sawAsync = false;
+    var pendingAsyncBody = false;
     for (var i = 0; i < src.length; i += 1) {
       var c = src.charAt(i);
       if (c === "\n") { line += 1; continue; }
@@ -17286,14 +17293,27 @@ function testNoRegexInGuardAndSafeFamily() {
         // A word reached through `.` is a MEMBER NAME, not a keyword — `a.in`,
         // `obj.delete` and `x.new` are all legal, and the `/` after one is
         // division. Blank the word so only a real keyword opens a literal.
-        prevWord = prev === "." ? "" : src.slice(wordStart, i);
+        var word = src.slice(wordStart, i);
+        if (word === "async") sawAsync = true;
+        else if (word === "function" && sawAsync) { pendingAsyncBody = true; sawAsync = false; }
+        else if (word !== "function") sawAsync = false;
+        prevWord = prev === "." ? "" : word;
         prev = src.charAt(i - 1);
         i -= 1;
         continue;
       }
+      if (c === "{") {
+        depth += 1;
+        if (pendingAsyncBody) { asyncDepths.push(depth); pendingAsyncBody = false; }
+      } else if (c === "}") {
+        if (asyncDepths.length && asyncDepths[asyncDepths.length - 1] === depth) asyncDepths.pop();
+        depth -= 1;
+      }
+      // `await` opens an operand when it cannot be an identifier: either the
+      // file never binds the name, or this occurrence is inside an async body.
+      var awaitOpens = prevWord === "await" && (!awaitBound || asyncDepths.length > 0);
       var wordOpens = prevWord !== "" &&
-                      (KEYWORD_BEFORE_OPERAND[prevWord] === 1 ||
-                       (prevWord === "await" && !awaitBound));
+                      (KEYWORD_BEFORE_OPERAND[prevWord] === 1 || awaitOpens);
       var mayOpen = prev === "" || OPERAND_MAY_FOLLOW.indexOf(prev) !== -1 || wordOpens;
       if (c === "/" && mayOpen) {
         var j = i + 1;
@@ -17355,6 +17375,13 @@ function testNoRegexInGuardAndSafeFamily() {
       true, "a comment mentioning the binding does not bind it"],
     ["var s = 'function await';\nasync function c(v) { await /unsafe/.test(v); }",
       true, "a string mentioning the binding does not bind it"],
+    // Both in one file: the top-level binding is an identifier, the one inside
+    // the async body is necessarily the keyword. A file-wide answer gets one
+    // of them wrong whichever way it resolves.
+    ["var await = 1;\nasync function c(v) { await /unsafe/.test(v); }",
+      true, "async body wins over a top-level binding"],
+    ["var await = 1;\nfunction c(v) { return await / 2 / 3; }",
+      false, "top-level binding outside any async body"],
   ];
 
   var selfCheck = [];
