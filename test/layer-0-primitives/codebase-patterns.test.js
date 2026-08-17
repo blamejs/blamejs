@@ -17212,9 +17212,15 @@ function testNoRegexInGuardAndSafeFamily() {
    "await enum true false null")
     .split(" ").forEach(function (w) { RESERVED_WORDS[w] = 1; });
 
+  // Any non-ASCII character reaching here is part of an identifier: strings,
+  // comments and regex bodies are consumed before this point, so nothing else
+  // in code position can be non-ASCII. Cheaper and safer than an ID_Start /
+  // ID_Continue table, and it stops `var pi = 12; var r = pi / 2 / 3;` written
+  // with a Greek letter from reading as a literal.
   function isWordChar(c) {
     return (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") ||
-           (c >= "0" && c <= "9") || c === "_" || c === "$";
+           (c >= "0" && c <= "9") || c === "_" || c === "$" ||
+           c.charCodeAt(0) > 127;
   }
 
   // `await` cuts both ways. In a CommonJS script it is an ordinary identifier,
@@ -17229,6 +17235,7 @@ function testNoRegexInGuardAndSafeFamily() {
     var hits = [];
     var prev = "";
     var prevWord = "";
+    var prevBeforeSign = "";
     var line = 1;
     for (var i = 0; i < src.length; i += 1) {
       var c = src.charAt(i);
@@ -17281,7 +17288,11 @@ function testNoRegexInGuardAndSafeFamily() {
         endsExpression = prevWord === "" || EXPRESSION_ENDERS[prevWord] === 1 ||
                          RESERVED_WORDS[prevWord] !== 1;
       } else {
-        endsExpression = prev === "x" || CLOSER_ENDS_EXPRESSION.indexOf(prev) !== -1;
+        // `indexOf("")` is 0, not -1 — an empty previous token (start of file)
+        // would otherwise read as a closing bracket and a leading literal
+        // would be missed.
+        endsExpression = prev === "x" ||
+                         (prev !== "" && CLOSER_ENDS_EXPRESSION.indexOf(prev) !== -1);
       }
       if (c === "/" && !endsExpression) {
         var j = i + 1;
@@ -17308,11 +17319,20 @@ function testNoRegexInGuardAndSafeFamily() {
         // prefix one must be followed by an operand, and `/` cannot start
         // one — so the expression has ended and the slash divides. Tracking
         // a single character sees only the second `+`, which is not an ender.
-        // Adjacency has to be tested against the SOURCE, not against `prev`:
-        // whitespace and comments do not update `prev`, so `a + +/re/` and
-        // `a +/*c*/+ /re/` would otherwise read as a postfix update.
-        if ((c === "+" || c === "-") && src.charAt(i - 1) === c) prev = "x";
-        else prev = c;
+        // `++`/`--` ends an expression only in its POSTFIX form, which is the
+        // one whose operand came before it — so the test is whether the token
+        // preceding the pair had already ended an expression. A prefix update
+        // has not (`++/unsafe/.lastIndex` is a regex literal, absurd but
+        // valid). Adjacency is read from the SOURCE because whitespace and
+        // comments do not update `prev`: `a + +/re/` is two unary signs.
+        if ((c === "+" || c === "-") && src.charAt(i - 1) === c) {
+          prev = (prevBeforeSign === "x" || prevBeforeSign === "w" ||
+                  (prevBeforeSign !== "" &&
+                   CLOSER_ENDS_EXPRESSION.indexOf(prevBeforeSign) !== -1)) ? "x" : c;
+        } else {
+          if (!((c === "+" || c === "-") && src.charAt(i + 1) === c)) prevBeforeSign = prev;
+          prev = c;
+        }
         prevWord = "";
       }
     }
@@ -17356,6 +17376,8 @@ function testNoRegexInGuardAndSafeFamily() {
     ["var r = a + +b / 2 / 3;",             false, "unary plus is not a postfix operator"],
     ["var n = a + +/unsafe/.test(v);",       true,  "separated signs are not a postfix update"],
     ["var n = a - -/unsafe/.test(v);",       true,  "separated minus signs likewise"],
+    ["++/unsafe/.lastIndex;",               true,  "prefix update before a literal"],
+    ["var π = 12; var r = π / 2 / 3;",     false, "non-ASCII identifier"],
     // Deliberate over-detection: an `await` that is really an identifier is
     // still read as a keyword, because the other bias is silence. Resolved
     // by an allow-marker if a file ever needs it.
