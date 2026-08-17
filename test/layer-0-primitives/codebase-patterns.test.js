@@ -17209,7 +17209,7 @@ function testNoRegexInGuardAndSafeFamily() {
   ("break case catch class const continue debugger default delete do else " +
    "export extends finally for function if import in instanceof let new " +
    "return static switch this throw try typeof var void while with yield " +
-   "async await enum true false null of get set")
+   "await enum true false null")
     .split(" ").forEach(function (w) { RESERVED_WORDS[w] = 1; });
 
   function isWordChar(c) {
@@ -17337,6 +17337,9 @@ function testNoRegexInGuardAndSafeFamily() {
     ["var of = 12; var ratio = of / 2 / 3;", false, "contextual keyword as identifier"],
     ["var n = a.in / 2 / 3;",              false, "reserved word as member name"],
     ["var n = obj.delete / 2 / 3;",        false, "delete as member name"],
+    ["var async = 12; var r = async / 2 / 3;", false, "async as identifier"],
+    ["var get = 12; var r = get / 2 / 3;",     false, "get as identifier"],
+    ["var set = 12; var r = set / 2 / 3;",     false, "set as identifier"],
     // Deliberate over-detection: an `await` that is really an identifier is
     // still read as a keyword, because the other bias is silence. Resolved
     // by an allow-marker if a file ever needs it.

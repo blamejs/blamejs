@@ -30,7 +30,7 @@ Worth noting for anyone who has written the same comment: RFC 9562 does not desc
 
 **ML-DSA is RFC 9881, not RFC 9909.** RFC 9909 carries the SLH-DSA algorithm identifiers. The two were transposed in `b.cms`, in both directions, so ML-DSA cited the SLH-DSA document and SLH-DSA cited the ML-DSA one. The parameter-set subsections cited alongside them do not exist either: RFC 9881 defines all three ML-DSA OIDs in §2 and has no per-parameter-set section.
 
-**BIMI is not RFC 9091.** RFC 9091 is the experimental DMARC extension for public suffix domains, which is itself now obsoleted. BIMI has never been published as an RFC — it is `draft-blank-ietf-bimi` — so `b.mail.bimi` cites the draft, sixteen occurrences including its own module documentation.
+**BIMI is not RFC 9091.** RFC 9091 is the experimental DMARC extension for public suffix domains, which is itself now obsoleted. BIMI has never been published as an RFC — it is `draft-blank-ietf-bimi` — so `b.mail.bimi` cites the draft, including in its own module documentation. The header comment inside the vendored trust-anchor bundle still carries the old number: that file is verified against a recorded hash and is refreshed from upstream rather than edited here.
 
 Also corrected: `b.jsonapi` described its `sort` direction as following the JSON specification, which says nothing about sort order. · *Smaller corrections, and the citations left deliberately alone* — XMLDSig algorithm URIs are registered in RFC 6931; `PKIFailureInfo` bit names come from RFC 4210; the `filename*` encoding `b.static` emits is RFC 8187 §3.2.1.
 
