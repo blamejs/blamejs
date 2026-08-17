@@ -1,0 +1,39 @@
+{
+  "$schema": "./schema.json",
+  "version": "0.18.33",
+  "date": "2026-08-16",
+  "headline": "Every standard the documentation cites now resolves to the document it names, and no shipped file carries an invisible character",
+  "summary": "A documentation-accuracy release. Nothing in the framework's behavior changes; what changes is whether the references beside that behavior can be looked up and whether the text describing them survives being rendered.\n\nFour citations pointed somewhere other than where they claimed. An ISO 27001 control number that exists in no edition of the standard. The CADF audit envelope attributed to an ISO standard about data-centre power monitoring. A GitHub security advisory identifier with no advisory behind it. And the structured-fields specification cited inconsistently across eighteen files, with no distinction drawn between the codec that implements the current revision and the field parsers whose own protocols are defined against the previous one.\n\nSeparately, six files carried Unicode characters that are invisible when rendered. One was a right-to-left override inside the checklist item that explains right-to-left override attacks — unterminated, so it reordered the rest of the line in any conforming reader. Another was a pair of zero-width joiners inside a media-type wildcard, which meant the value shown in the documentation would not match anything if an operator pasted it into an allowlist.\n\nIf you cite blamejs documentation in your own compliance evidence, the ISO control mapping for per-tenant quotas and the CADF standard reference both changed.",
+  "sections": [
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "An ISO 27001 control number that exists in no edition",
+          "body": "Per-tenant quota enforcement was mapped to `ISO 27001 A.8.1.5`. The 2022 Annex A numbers its technological controls A.8.1 through A.8.34 with no third level, and the 2013 edition's A.8.1 stopped at A.8.1.4 — the control was never real in either.\n\nIt now cites A.8.3 (information access restriction) for the isolation the primitive enforces and A.8.6 (capacity management) for the caps, with the edition year attached, because the numbering is what changed between editions. The mapping appeared in `b.tenantQuota`'s own documentation and therefore in the generated reference, in SECURITY.md, and in both CIS crosswalks.\n\nIf you carried this mapping into a control matrix, it needs the same correction."
+        },
+        {
+          "title": "CADF attributed to the wrong standard",
+          "body": "`b.audit.export({ format: \"cadf\" })` produces a Cloud Auditing Data Federation envelope, which is DMTF DSP0262. The documentation cited it as ISO/IEC 19395, which is a standard about smart data-centre resource monitoring and has nothing to do with audit federation — and gave it an edition year that does not match that standard either. Corrected in seven places, including the two comment blocks that generate the reference page."
+        },
+        {
+          "title": "A security advisory identifier with no advisory behind it",
+          "body": "The markdown guard's threat catalog listed `GHSA-gwjh-c548-f787`, attributed to NuGetGallery. It returns 404 from GitHub's advisory API and is absent from OSV. It has been removed rather than replaced with a guess: a reader who looks up one citation and finds nothing has been given a reason to distrust the rest of the list. The neighbouring Joplin advisory was verified and remains."
+        },
+        {
+          "title": "Structured-fields citations now name the specification each field is defined against",
+          "body": "RFC 8941 was obsoleted by RFC 9651, but which number belongs in a comment depends on what that comment describes, and the documentation was not making the distinction.\n\n`b.structuredFields` implements the current specification, including the Display String type RFC 9651 adds, and now says so throughout. Every other structured-fields citation in the framework describes a *field defined by some other protocol* — Cache-Status, Targeted Cache-Control, Client Hints, Digest Fields, Message Signatures, the HTTP core — and all of those specifications were published before RFC 9651 and reference RFC 8941. RFC 9651 §2.4 is explicit that it does not update them: a field whose definition references RFC 8941 cannot carry the new types, because a recipient may still be parsing it with an RFC 8941 parser. Those citations therefore stay on RFC 8941, and now do so consistently.\n\nIf you are reading the framework's field parsers against a specification, the number beside each one is the number that specification actually normatively references.\n\nAlso corrected: the outbound SMTP wire is produced per RFC 5322, not RFC 822; DMARC's multiple-`From` rule is RFC 9989 §5.3.1, not RFC 7489 §6.6.1; XMLDSig algorithm URIs are registered in RFC 6931; and `PKIFailureInfo` bit names come from RFC 4210."
+        },
+        {
+          "title": "Invisible characters in shipped text",
+          "body": "Six files carried Unicode characters that render as nothing.\n\nThe costly one was in the file-upload checklist in SECURITY.md and in `b.guardFilename`'s own documentation: a live right-to-left override, used to demonstrate the filename-spoofing attack the guard defends against. It had no terminating pop-directional-formatting character, so its effect ran past the example and reordered the remainder of the line. Both now write the codepoint as `<U+202E>`, which also makes it greppable and safe to copy.\n\nThe subtle one was in `b.guardMime`: two zero-width joiners inside a media-type wildcard, inserted so the sequence would not close the surrounding comment block. The rendered documentation showed a wildcard that looked ordinary and would have matched nothing if pasted into an allowlist. The sentence has been rewritten to avoid needing them.\n\nThe remaining three were a byte-order mark in the CSV export and the bidirectional-control set in the log redactor, both functional and now written as escapes, and one more override in an upload comment. The redactor was checked to match the same twelve codepoints as before, and the export to emit the same bytes."
+        },
+        {
+          "title": "Documentation corrections across the repository",
+          "body": "The README claimed a published LTS calendar without linking to it; it now links, and states the 24-month security-patch window and the deprecation-warning commitment inline. A link to a maintainer file that has never existed has been replaced with what actually answers the question. Product names, regional spelling and code-fence language tags were made consistent across the repository documentation, and the CLI usage block is now tagged so it highlights correctly."
+        }
+      ]
+    }
+  ],
+  "references": []
+}

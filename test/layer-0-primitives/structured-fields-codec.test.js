@@ -2,7 +2,7 @@
 // Copyright (c) blamejs contributors
 "use strict";
 /**
- * Layer 0 — b.structuredFields full RFC 8941 codec (parse + serialize).
+ * Layer 0 — b.structuredFields full RFC 9651 codec (parse + serialize).
  * The oracle is a curated set of the official httpwg/structured-field-tests
  * conformance vectors (the same JSON the spec authors maintain): each
  * `raw` parses to the published `expected` value model, each `must_fail`
@@ -76,7 +76,7 @@ var CASES = [
   { name: "unknown boolean", raw: "?Q", t: "item", must_fail: true },
   { name: "basic binary", raw: ":aGVsbG8=:", t: "item", expected: [{ __type: "binary", value: "NBSWY3DP" }, []] },
   { name: "empty binary", raw: "::", t: "item", expected: [{ __type: "binary", value: "" }, []] },
-  { name: "unpadded binary (RFC 8941 §4.2.7 synthesizes padding)", raw: ":aGVsbG8:", t: "item", expected: [{ __type: "binary", value: "NBSWY3DP" }, []] },
+  { name: "unpadded binary (RFC 9651 §4.2.7 synthesizes padding)", raw: ":aGVsbG8:", t: "item", expected: [{ __type: "binary", value: "NBSWY3DP" }, []] },
   { name: "padding at beginning", raw: ":=aGVsbG8=:", t: "item", must_fail: true },
   { name: "empty item", raw: "", t: "item", must_fail: true },
   { name: "leading space item", raw: " \t 1", t: "item", must_fail: true },

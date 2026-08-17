@@ -8,7 +8,7 @@
  *   - CSP3 fenced-frame-src 'none' in DEFAULT_CSP
  *   - Document-Policy header (default + custom + disable)
  *   - Accept-CH / Critical-CH UA Client Hints retry handshake
- *   - RFC 9651 Permissions-Policy structured-fields validation
+ *   - RFC 8941 Permissions-Policy structured-fields validation
  *
  * The pre-v0.8.53 surface (HSTS, CSP, COOP, etc.) is exercised in the
  * existing smoke tests at test/00-primitives.js — this file covers
@@ -96,7 +96,7 @@ function testPermissionsPolicyStructuredFieldsAccepted() {
     });
     ok = true;
   } catch (_e) { ok = false; }
-  check("RFC 9651 Permissions-Policy: well-formed entries accepted at config-time", ok);
+  check("RFC 8941 Permissions-Policy: well-formed entries accepted at config-time", ok);
 }
 
 function testPermissionsPolicyMalformedRefused() {
@@ -106,9 +106,9 @@ function testPermissionsPolicyMalformedRefused() {
       permissionsPolicy: "geolocation",   // missing `=value`
     });
   } catch (e) {
-    threw = e instanceof TypeError && /RFC 9651/.test(e.message);
+    threw = e instanceof TypeError && /RFC 8941/.test(e.message);
   }
-  check("RFC 9651 Permissions-Policy: malformed entry refused at config-time", threw);
+  check("RFC 8941 Permissions-Policy: malformed entry refused at config-time", threw);
 }
 
 function testPermissionsPolicyBareWordRefused() {
@@ -120,7 +120,7 @@ function testPermissionsPolicyBareWordRefused() {
   } catch (e) {
     threw = e instanceof TypeError;
   }
-  check("RFC 9651 Permissions-Policy: bare-word value refused", threw);
+  check("RFC 8941 Permissions-Policy: bare-word value refused", threw);
 }
 
 function testPermissionsPolicyMultiEntryAccepted() {
@@ -131,7 +131,7 @@ function testPermissionsPolicyMultiEntryAccepted() {
     });
     ok = true;
   } catch (_e) { ok = false; }
-  check("RFC 9651 Permissions-Policy: comma-separated entries accepted", ok);
+  check("RFC 8941 Permissions-Policy: comma-separated entries accepted", ok);
 }
 
 function testV0870PermissionsPolicyDefaults() {

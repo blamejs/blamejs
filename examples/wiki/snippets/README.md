@@ -11,7 +11,7 @@ NOT compiled or transformed — what's on disk is what ships.
 
 - One file per primitive example. Filename = `<page-slug>/<primitive>.example.js`.
 - Snippets must run end-to-end inside the e2e harness's sandbox. The
-  primitive-section validator runs every javascript example block as
+  primitive-section validator runs every JavaScript example block as
   part of the wiki e2e test (`test/validate-primitive-sections.js`,
   post-boot pass).
 - Snippets keep their `"use strict"` directive visible — instructive

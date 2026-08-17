@@ -35,14 +35,14 @@ produces.
 | Append-only audit log | AU-9(2) | `audit_log` BEFORE-DELETE trigger refuses writes; chained with SHA3-512 prevHash/rowHash. Every row carries a `monotonicCounter` indexed `unique`. |
 | Audit-log signed checkpoint | AU-10 | `b.audit.checkpoint` emits ML-DSA-87 / SLH-DSA-SHAKE-256f signed `audit_checkpoints` rows. The audit-tip sidecar (`<dataDir>/audit.tip`) detects rollback at boot. |
 | Time-source synchronisation | AU-8(1) | `b.db.init` runs `b.ntpCheck.bootCheck` against operator-supplied NTP servers; warning / fatal thresholds via `BLAMEJS_NTP_DRIFT_*`. |
-| Audit export for federated SIEM | AU-6(3) | `b.audit.export({ format: "cadf" })` emits CADF (ISO/IEC 19395) envelope mapping every audit field. |
+| Audit export for federated SIEM | AU-6(3) | `b.audit.export({ format: "cadf" })` emits CADF (DMTF DSP0262) envelope mapping every audit field. |
 | Tamper-evident integrity check | SI-7 | `b.db.integrityCheck` runs `PRAGMA integrity_check` on demand; `b.db.integrityMonitor({ intervalMs })` schedules periodic verification with audit emission. |
 
 ## Access control
 
 | Control intent | NIST 800-53 | Framework posture |
 | -------------- | ----------- | ----------------- |
-| Per-tenant data isolation | AC-3 | `b.tenantQuota.create` / `b.tenantQuota.budget` / `b.tenantQuota.instrumentQuery` provide storage caps + query budget + crossover detection. SOC 2 CC6.1 + ISO 27001 A.8.1.5. |
+| Per-tenant data isolation | AC-3 | `b.tenantQuota.create` / `b.tenantQuota.budget` / `b.tenantQuota.instrumentQuery` provide storage caps + query budget + crossover detection. SOC 2 CC6.1 + ISO 27001:2022 A.8.3 (isolation) and A.8.6 (caps). |
 | Role-context for every query | AC-6 | `b.dbRoleContext` binds an actor → audit emission row pair on every query the framework executes. |
 | WORM (write-once-read-many) for regulatory tables | AU-9(1) | `b.db.declareWorm({ table })` installs SQLite trigger refusing UPDATE/DELETE; required under postures `sec-17a-4`, `finra-4511`, `fda-21cfr11`. |
 | Dual-control on sensitive operations | AC-3(7) | `b.dualControl.consume` gates `b.db.eraseHard` on declared tables. |

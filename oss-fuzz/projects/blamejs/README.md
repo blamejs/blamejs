@@ -17,7 +17,7 @@ project. To add blamejs:
 2. **Copy** every file in this directory (`oss-fuzz/projects/blamejs/`)
    to `projects/blamejs/` in the fork. The destination tree is:
 
-   ```
+   ```text
    projects/
      blamejs/
        Dockerfile
@@ -28,7 +28,7 @@ project. To add blamejs:
 
 3. **Verify the build locally** using the OSS-Fuzz toolchain:
 
-   ```
+   ```bash
    git clone https://github.com/google/oss-fuzz
    cd oss-fuzz
    cp -r ../path/to/blamejs/oss-fuzz/projects/blamejs projects/

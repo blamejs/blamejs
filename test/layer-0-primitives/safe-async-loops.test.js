@@ -87,8 +87,14 @@ async function run() {
     25,
     { onError: function (e) { caughtError = e; } }
   );
-  await _sleep(60);
-  loop3.stop();
+  try {
+    await waitUntil(function () { return caughtError !== null; }, {
+      timeoutMs: 5000,
+      label:     "safe-async-loops: repeating routed an async rejection to onError",
+    });
+  } finally {
+    loop3.stop();
+  }
   check("repeating: async rejection caught by onError",
         caughtError && caughtError.message === "boom");
 
@@ -99,8 +105,14 @@ async function run() {
     25,
     { onError: function (e) { caughtSync = e; } }
   );
-  await _sleep(60);
-  loop4.stop();
+  try {
+    await waitUntil(function () { return caughtSync !== null; }, {
+      timeoutMs: 5000,
+      label:     "safe-async-loops: repeating routed a sync throw to onError",
+    });
+  } finally {
+    loop4.stop();
+  }
   check("repeating: sync throw caught by onError",
         caughtSync && caughtSync.message === "sync-boom");
 
@@ -149,8 +161,14 @@ async function run() {
     25,
     { onError: function (e) { fErr = e; } }
   );
-  await _sleep(80);
-  lp2.stop();
+  try {
+    await waitUntil(function () { return fErr !== null; }, {
+      timeoutMs: 5000,
+      label:     "safe-async-loops: flushLoop routed a rejection to onError",
+    });
+  } finally {
+    lp2.stop();
+  }
   check("flushLoop: rejection caught by onError",
         fErr && fErr.message === "flush-fail");
 
@@ -163,13 +181,23 @@ async function run() {
   check("flushLoop: drop-silent path survives reject",  true);
 
   // ---- flushLoop: sync throw still reschedules ----
+  // Poll rather than sleep: the assertion is that a SECOND tick happens after
+  // the first one threw, and a fixed budget only asks whether two 25ms ticks
+  // fit in the window. Under SMOKE_PARALLEL they sometimes do not, which fails
+  // the test without the loop having misbehaved.
   var syncThrows = 0;
   var lpSync = b.safeAsync.flushLoop(
     function () { syncThrows += 1; throw new Error("s"); },
     25
   );
-  await _sleep(200);
-  lpSync.stop();
+  try {
+    await helpers.waitUntil(function () { return syncThrows >= 2; }, {
+      timeoutMs: 5000,
+      label:     "safe-async-loops: flushLoop reschedules after a sync throw",
+    });
+  } finally {
+    lpSync.stop();
+  }
   check("flushLoop: sync throw reschedules",   syncThrows >= 2);
 
   // ---- flushLoop: respects stop in mid-flight ----

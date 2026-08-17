@@ -4,7 +4,7 @@ A new contributor's guide to where things live and why. The repository tree at `
 
 ## Top-level layout
 
-```
+```text
 blamejs/
 ├── bin/              # `blamejs` CLI entry shim → lib/cli.js
 ├── index.js          # Single npm export — `var b = require("@blamejs/core")`
@@ -86,7 +86,7 @@ Every primitive is namespaced under `b.X`. `index.js` is the canonical export li
 2. **External DB** (cluster mode only) — if `opts.externalDb` is set, init the cluster's durable backend.
 3. **Cluster lease** — if `opts.cluster` is set, acquire the leader lease before touching any framework schema.
 4. **Framework schema** — `_blamejs_audit_log`, `_blamejs_audit_checkpoints`, `_blamejs_sessions`, `_blamejs_api_keys`, `_blamejs_consent_log`, etc. created if absent (idempotent).
-5. **Local DB** — open the sqlite file (or in-memory tmpfs handle in encrypted-at-rest mode).
+5. **Local DB** — open the SQLite file (or in-memory tmpfs handle in encrypted-at-rest mode).
 6. **Router + middleware stack** — request-id → securityHeaders → botGuard → cors → fetchMetadata → networkAllowlist (when wired) → rateLimit → dailyByteQuota → cspNonce → cookies → bodyParser → compression → attachUser → dbRoleFor (when wired) → csrfProtect → traceLogCorrelation → spanHttpServer → cspReport (route-mounted) → health. Operator-mounted variants: `requireAuth` / `requireAal` / `requireMtls` / `requireStepUp` / `requireBoundKey` / `bearerAuth` / `dpop` / `hostAllowlist` / `requireMethods` / `requireContentType` / `gpc` / `errorHandler`.
 7. **Operator routes** — the `routes: function (router) {...}` callback runs. Operator wires their own routes on top of the middleware stack.
 8. **Error handler** — last so it catches everything from operator routes and middleware.
