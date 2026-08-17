@@ -2,7 +2,7 @@
 // Copyright (c) blamejs contributors
 "use strict";
 /**
- * b.mail.bimi — RFC 9091 BIMI policy lookup, VMC + CMC chain validation,
+ * b.mail.bimi — BIMI (draft-blank-ietf-bimi) policy lookup, VMC + CMC chain validation,
  * and Tiny-PS SVG profile enforcement.
  *
  * Coverage:

@@ -21,8 +21,25 @@
           "body": "RFC 4122 was obsoleted in May 2024. `b.uuid`, `b.guardUuid`, `b.safeSchema` and the request-identifier paths cite RFC 9562 now — §4 for the field layout, §4.1 for the variant field, §5.4 for version 4.\n\nWorth noting for anyone who has written the same comment: RFC 9562 does not describe the `10xx` variant as \"the RFC 4122 variant\". It calls it the variant specified in that document, so the older phrasing was a stale reference rather than a name."
         },
         {
+          "title": "Three references named an unrelated document",
+          "body": "Reported from a downstream tree that vendors this package and swept it for the same class (#593). Each of these named a real RFC that is about something else entirely, so a reader who followed the number landed somewhere with no connection to the code beside it.\n\n**Clear-Site-Data is not RFC 9527.** RFC 9527 specifies DHCPv6 options for the Homenet Naming Authority. Clear-Site-Data has no RFC at all — it is a W3C Working Draft, and the header field it defines is §3.1 there. The wrong number appeared eleven times including in the `@card` annotation that generates the reference page for `b.middleware.clearSiteData`, and in `b.session.logout`, which composes it.\n\n**ML-DSA is RFC 9881, not RFC 9909.** RFC 9909 carries the SLH-DSA algorithm identifiers. The two were transposed in `b.cms`, in both directions, so ML-DSA cited the SLH-DSA document and SLH-DSA cited the ML-DSA one. The parameter-set subsections cited alongside them do not exist either: RFC 9881 defines all three ML-DSA OIDs in §2 and has no per-parameter-set section.\n\n**BIMI is not RFC 9091.** RFC 9091 is the experimental DMARC extension for public suffix domains, which is itself now obsoleted. BIMI has never been published as an RFC — it is `draft-blank-ietf-bimi` — so `b.mail.bimi` cites the draft, sixteen occurrences including its own module documentation.\n\nAlso corrected: `b.jsonapi` described its `sort` direction as following the JSON specification, which says nothing about sort order."
+        },
+        {
           "title": "Smaller corrections, and the citations left deliberately alone",
           "body": "XMLDSig algorithm URIs are registered in RFC 6931; `PKIFailureInfo` bit names come from RFC 4210; the `filename*` encoding `b.static` emits is RFC 8187 §3.2.1.\n\nSeveral references that a currency check flags are correct as they stand, and were kept: `b.safeVcard` cites RFC 2425 and 2426 for the vCard 3.0 shape it still accepts while naming RFC 6350 as its primary specification; `b.middleware.bodyParser` cites RFC 5987 for `iso-8859-1` because RFC 8187 removed that character set; and the S/MIME, 8BITMIME and PKCS #1 references already named both the current document and its predecessor."
+        }
+      ]
+    },
+    {
+      "heading": "Detectors",
+      "items": [
+        {
+          "title": "The regex-literal scanner reads a literal that follows a keyword",
+          "body": "The gate that keeps `b.guard*` and `b.safe*` free of regular expressions decided whether a `/` opened a literal by looking at the preceding punctuation. After a keyword there is no punctuation — the character before the slash is the last letter of the keyword — so `return /unsafe/.test(value)`, the most natural way to write a guard predicate, read as division and passed (#589).\n\nNine keyword positions were affected: `return`, `throw`, `case`, `typeof`, `in`, `void`, `yield`, `await` and `do`. Re-scanning all seventy-eight files with a corrected walker found nothing that had slipped through, so the family really was clean; the gate simply could not have held it.\n\nThe scanner now checks itself. Sixteen fixtures — the keyword positions, plus division and in-string controls that must NOT match — run on every gate execution, and a wrong verdict is reported as a violation. The controls passed throughout the period the hole existed, which is why review did not catch it."
+        },
+        {
+          "title": "Three detector classes registered in the allow-marker table",
+          "body": "`regex-in-guard-or-safe-primitive`, `release-script-capture-status-unchecked` and `sfv-citation-must-match-referencing-protocol` all offer the `// allow:<class>` escape hatch but were absent from the table that validates those markers, so a marker naming one of them would have been rejected as naming no detector (#594). Latent rather than breaking, because the marker scan and those detectors do not currently cover the same files — but it bites the moment either widens."
         }
       ]
     }

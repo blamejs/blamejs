@@ -325,6 +325,9 @@ function _report(label, matches) {
 // does not exist — so the underlying violation it was meant to explain ships
 // unflagged. When you add a detector with a new allow-class, register it here.
 var VALID_ALLOW_CLASSES = {
+  "regex-in-guard-or-safe-primitive": 1,
+  "release-script-capture-status-unchecked": 1,
+  "sfv-citation-must-match-referencing-protocol": 1,
   "ai-disclosure-on-request-without-requested-gate": 1,
   "applydefaults-dropped-opt": 1,
   "archive-gz-without-safedecompress": 1,
@@ -8040,20 +8043,20 @@ var KNOWN_ANTIPATTERNS = [
     allowlist: [],
     reason: "v0.15.11 (Codex P2). A non-global String.replace removes only the LEFTMOST match; on `data:text/html,<script>alert(1)</script>` it strips `data:text/html` and leaves the executable <script>, so sanitize mode returns runnable HTML for the exact vector the vbscript:/data:text/html alternation was added to neutralize. The fix is _redactAll(t, <RE>_G): a global replace repeated to a fixpoint so every dangerous token is removed. The _G global variants do NOT match this regex (`RE_G,` has no `\\s*,` right after `RE`), so the fixed call stays silent; a reverted non-global `.replace(DANGEROUS_HTML_RE,` / `.replace(INJECTION_RE,` fires. Empty allowlist.",
   },
-  // v0.15.9 — the RFC 9527 Clear-Site-Data header value must be built via the
+  // v0.15.9 — the W3C Clear-Site-Data header value must be built via the
   // shared middleware/clear-site-data headerValue() helper (which validates
   // each directive against the known set), not a hand-rolled quoted-token
   // string. A literal `setHeader("Clear-Site-Data", '"cookies", ...')` skips
-  // the directive validation and re-hand-rolls the RFC 9527 quoting the
+  // the directive validation and re-hand-rolls the W3C Clear-Site-Data quoting the
   // primitive owns (the b.session.logout extraction lesson).
   {
     id: "clear-site-data-header-hand-rolled",
-    primitive: "build the Clear-Site-Data response header via clearSiteData.headerValue(types) (validated RFC 9527 quoting) — do not hand-roll the quoted-directive string literal in setHeader",
+    primitive: "build the Clear-Site-Data response header via clearSiteData.headerValue(types) (validated W3C Clear-Site-Data quoting) — do not hand-roll the quoted-directive string literal in setHeader",
     scanScope: "lib",
     regex: /setHeader\(\s*["']Clear-Site-Data["']\s*,\s*["']/,
     skipCommentLines: true,
     allowlist: [],
-    reason: "v0.15.9 (Clear-Site-Data logout wiring). The middleware/clear-site-data headerValue() helper is the single builder of the RFC 9527 §3 quoted-token list and validates every directive against KNOWN_TYPES; both emitters (the middleware's create() and b.session.logout) route through it. A literal `setHeader(\"Clear-Site-Data\", '\"cookies\", ...')` hand-rolls the quoting and skips the validation. Fires when the second setHeader arg is a string literal; the live emitters pass a var/call so they stay silent.",
+    reason: "v0.15.9 (Clear-Site-Data logout wiring). The middleware/clear-site-data headerValue() helper is the single builder of the W3C Clear-Site-Data §3 quoted-token list and validates every directive against KNOWN_TYPES; both emitters (the middleware's create() and b.session.logout) route through it. A literal `setHeader(\"Clear-Site-Data\", '\"cookies\", ...')` hand-rolls the quoting and skips the validation. Fires when the second setHeader arg is a string literal; the live emitters pass a var/call so they stay silent.",
   },
   // #131 — the b.middleware.dpop factory must REQUIRE its replayStore at config
   // time. The store is DPoP's jti-replay defense (RFC 9449 §11.1); reading it
@@ -10150,7 +10153,7 @@ var KNOWN_ANTIPATTERNS = [
   // remaining call sites get per-file review in a later patch.
   {
     // Codex P1 (v0.10.13 PR #102) — PQC AlgorithmIdentifier with NULL
-    // parameters. ML-DSA (RFC 9909 §3), SLH-DSA (RFC 9881 §3), and
+    // parameters. ML-DSA (RFC 9881 §3), SLH-DSA (RFC 9909 §3), and
     // ML-KEM (RFC 9936 §3) all specify that the AlgorithmIdentifier's
     // parameters field is ABSENT. Appending `NULL` makes the CMS
     // (or X.509) structure non-conformant — strict CMS / X.509
@@ -17168,9 +17171,25 @@ function testNoRegexInGuardAndSafeFamily() {
   // class: regex-in-guard-or-safe-primitive
   var OPERAND_MAY_FOLLOW = "=(,:[!&|?{};+-*%<>~^";
 
+  // A `/` also opens a regex directly after a KEYWORD, where the preceding
+  // non-space character is the keyword's last letter rather than punctuation.
+  // Without this the most natural way to write a guard predicate --
+  // `return /unsafe/.test(value)` -- read as division and passed the gate.
+  var KEYWORD_BEFORE_OPERAND = {
+    "return": 1, "throw": 1, "case": 1, "typeof": 1, "instanceof": 1,
+    "in": 1, "of": 1, "delete": 1, "void": 1, "new": 1, "do": 1,
+    "else": 1, "yield": 1, "await": 1,
+  };
+
+  function isWordChar(c) {
+    return (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") ||
+           (c >= "0" && c <= "9") || c === "_" || c === "$";
+  }
+
   function regexLiteralLines(src) {
     var hits = [];
     var prev = "";
+    var prevWord = "";
     var line = 1;
     for (var i = 0; i < src.length; i += 1) {
       var c = src.charAt(i);
@@ -17196,9 +17215,22 @@ function testNoRegexInGuardAndSafeFamily() {
           i += 1;
         }
         prev = quote === "`" ? "`" : "\"";
+        prevWord = "";
         continue;
       }
-      if (c === "/" && (prev === "" || OPERAND_MAY_FOLLOW.indexOf(prev) !== -1)) {
+      // Consume a whole identifier/keyword run so the token before a `/` is
+      // known as a WORD, not just as its final letter.
+      if (isWordChar(c)) {
+        var wordStart = i;
+        while (i < src.length && isWordChar(src.charAt(i))) i += 1;
+        prevWord = src.slice(wordStart, i);
+        prev = src.charAt(i - 1);
+        i -= 1;
+        continue;
+      }
+      var mayOpen = prev === "" || OPERAND_MAY_FOLLOW.indexOf(prev) !== -1 ||
+                    (prevWord !== "" && KEYWORD_BEFORE_OPERAND[prevWord] === 1);
+      if (c === "/" && mayOpen) {
         var j = i + 1;
         var inClass = false;
         var closed = false;
@@ -17214,13 +17246,55 @@ function testNoRegexInGuardAndSafeFamily() {
           hits.push({ line: line, text: src.slice(i, j + 1) });
           i = j;
           prev = "/";
+          prevWord = "";
           continue;
         }
       }
-      if (c !== " " && c !== "\t" && c !== "\r") prev = c;
+      if (c !== " " && c !== "\t" && c !== "\r") { prev = c; prevWord = ""; }
     }
     return hits;
   }
+
+  // The scanner checks itself on every run. A detector that silently stops
+  // matching is worse than no detector, and this one shipped in 0.18.31 blind
+  // to a literal after a keyword -- the controls below passed the whole time,
+  // which is exactly why the hole survived review. Each row states what the
+  // scanner must decide; a wrong verdict is reported as a violation of this
+  // class, so the gate fails loudly rather than going quiet.
+  var SCANNER_FIXTURES = [
+    // [ source, must-detect, label ]
+    ["var re = /unsafe/;",                true,  "assignment"],
+    ["value.replace(/unsafe/g, '');",     true,  "call argument"],
+    ["if (a && /unsafe/.test(v)) {}",     true,  "logical operand"],
+    ["return /unsafe/.test(v);",          true,  "after return"],
+    ["throw /unsafe/.source;",            true,  "after throw"],
+    ["case /unsafe/.source:",             true,  "after case"],
+    ["typeof /unsafe/;",                  true,  "after typeof"],
+    ["void /unsafe/;",                    true,  "after void"],
+    ["yield /unsafe/;",                   true,  "after yield"],
+    ["await /unsafe/;",                   true,  "after await"],
+    ["if (x in /unsafe/) {}",             true,  "after in"],
+    ["do /unsafe/.test(v); while (0);",   true,  "after do"],
+    ["var r = total / count;",            false, "division"],
+    ["var s = 'a /unsafe/ b';",           false, "inside a string"],
+    ["// a /unsafe/ comment",             false, "inside a line comment"],
+    ["var w = width / 2, h = height / 2;", false, "two divisions"],
+  ];
+
+  var selfCheck = [];
+  SCANNER_FIXTURES.forEach(function (row) {
+    var detected = regexLiteralLines(row[0]).length > 0;
+    if (detected === row[1]) return;
+    selfCheck.push({
+      file:    "test/layer-0-primitives/codebase-patterns.test.js",
+      line:    0,
+      content: "the regex-literal scanner mis-reads `" + row[0] + "` (" + row[2] +
+               "): expected it to " + (row[1] ? "DETECT" : "IGNORE") +
+               ", it did not. The gate cannot hold the guard-/safe- family " +
+               "while its scanner is wrong",
+    });
+  });
+  _report("the regex-literal scanner decides its own fixtures correctly", selfCheck);
 
   // guard-regex is the one member exempt from the SPIRIT as well as the
   // letter: it exists to screen operator-supplied patterns, so a pattern is

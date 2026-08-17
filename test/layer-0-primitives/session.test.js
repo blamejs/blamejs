@@ -257,7 +257,7 @@ async function testLogoutValidation() {
     await b.session.logout(res2, s2.token, { cookieName: "session" });
     check("logout honors a custom cookieName", /^session=; /.test(headers2["Set-Cookie"]));
 
-    // An explicit types set overrides the RFC 9527 default directive set.
+    // An explicit types set overrides the W3C Clear-Site-Data default directive set.
     var s3 = await b.session.create({ userId: "u-lo3" });
     var headers3 = {};
     var res3 = { setHeader: function (k, v) { headers3[k] = v; } };
