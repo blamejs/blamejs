@@ -17169,27 +17169,48 @@ function testNoInternalNarrativeComments() {
 // should grow an entry.
 function testNoRegexInGuardAndSafeFamily() {
   // class: regex-in-guard-or-safe-primitive
-  var OPERAND_MAY_FOLLOW = "=(,:[!&|?{};+-*%<>~^";
-
-  // A `/` also opens a regex directly after a KEYWORD, where the preceding
-  // non-space character is the keyword's last letter rather than punctuation.
-  // Without this the most natural way to write a guard predicate --
-  // `return /unsafe/.test(value)` -- read as division and passed the gate.
-  // RESERVED words only. `of` and `await` are deliberately absent: both are
-  // contextual. `of` is never reserved, and `await` is an ordinary identifier
-  // in a CommonJS script even under "use strict" (only ES modules and async
-  // function bodies reserve it) — these files are CommonJS. `yield` IS
-  // reserved in strict mode, so it stays. Verified, not assumed.
+  // Deciding whether `/` opens a regex or divides is the one genuinely hard
+  // part of lexing JavaScript, and enumerating what may PRECEDE a literal is
+  // the wrong way round: that set is open, and each missing entry is a silent
+  // hole. Successive additions here covered punctuation, then `return`, then
+  // `typeof`/`case`/`void`/`in`/`do`, and there was always another.
   //
-  // `var of = 12; var ratio = of / 2 / 3;` is valid code whose division would
-  // be read as a literal. Missing `for (x of /re/)` costs a rare false
-  // negative; treating every `of` as a keyword costs false positives in
-  // ordinary arithmetic, and a gate that cries wolf gets muted.
-  var KEYWORD_BEFORE_OPERAND = {
-    "return": 1, "throw": 1, "case": 1, "typeof": 1, "instanceof": 1,
-    "in": 1, "delete": 1, "void": 1, "new": 1, "do": 1,
-    "else": 1, "yield": 1,
+  // The closed set is the inverse — the tokens that END an expression, after
+  // which `/` can only be division. Everything else is operand position, so a
+  // `/` there opens a literal. That covers every reserved word without naming
+  // one, which is why this formulation stops needing entries.
+  var EXPRESSION_ENDERS = {
+    "this": 1, "super": 1, "true": 1, "false": 1, "null": 1,
+    // `of` is contextual and never a keyword before an operand in practice —
+    // `for (x of /re/)` is not a thing anyone writes, while `var of = 12`
+    // is legal — so it is an identifier here.
+    "of": 1,
+    // `await` and `yield` are contextual the other way and are deliberately
+    // NOT listed. A walk without scope analysis cannot tell the keyword from
+    // the identifier, so the bias has to be chosen, and for this gate it goes
+    // toward detection: `await /unsafe/.test(v)` inside an async guard is
+    // exactly what the gate exists to catch, whereas the cost of the other
+    // reading is a file that names a variable `await` and divides by it,
+    // which takes a one-line `// allow:regex-in-guard-or-safe-primitive`
+    // marker. Silence is the worse failure for a security gate.
   };
+
+  // Closers end an expression too. `}` is deliberately absent: it closes a
+  // block as often as an object literal, and treating it as operand position
+  // is the safe direction for a gate whose job is to find literals.
+  var CLOSER_ENDS_EXPRESSION = ")]";
+
+  // Every reserved word. A word NOT in here is an identifier, which ends an
+  // expression; a word in here (minus the value keywords above) leaves
+  // operand position, so a `/` after it opens a literal. Listing the reserved
+  // set is safe because it is fixed by the language — unlike the set of
+  // positions a literal may appear in, which is what kept growing.
+  var RESERVED_WORDS = {};
+  ("break case catch class const continue debugger default delete do else " +
+   "export extends finally for function if import in instanceof let new " +
+   "return static switch this throw try typeof var void while with yield " +
+   "async await enum true false null of get set")
+    .split(" ").forEach(function (w) { RESERVED_WORDS[w] = 1; });
 
   function isWordChar(c) {
     return (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") ||
@@ -17204,66 +17225,11 @@ function testNoRegexInGuardAndSafeFamily() {
   // here; otherwise it opens an operand. A file that does both is not
   // something this walker can resolve, and the binding wins because a false
   // positive blocks a release while a false negative is caught by review.
-  // Blank out comments and string bodies before looking for the binding.
-  // Reading the raw file means a comment like "var await is legal here", or a
-  // string containing "function await", marks the whole file as binding the
-  // name and switches keyword detection off — including in this very
-  // detector's own prose, which says exactly that.
-  function _codeOnly(src) {
-    var out = "";
-    for (var i = 0; i < src.length; i += 1) {
-      var c = src.charAt(i);
-      if (c === "/" && src.charAt(i + 1) === "/") {
-        while (i < src.length && src.charAt(i) !== "\n") i += 1;
-        out += "\n";
-        continue;
-      }
-      if (c === "/" && src.charAt(i + 1) === "*") {
-        var close = src.indexOf("*/", i + 2);
-        if (close === -1) break;
-        i = close + 1;
-        out += " ";
-        continue;
-      }
-      if (c === "\"" || c === "'" || c === "`") {
-        var quote = c;
-        i += 1;
-        while (i < src.length && src.charAt(i) !== quote) {
-          if (src.charAt(i) === "\\") i += 1;
-          i += 1;
-        }
-        out += '""';
-        continue;
-      }
-      out += c;
-    }
-    return out;
-  }
-
-  function awaitIsBound(src) {
-    var code = _codeOnly(src);
-    return /(?:var|let|const|function)\s+await\b/.test(code) ||
-           /\bfunction\s*\([^)]*\bawait\b/.test(code);
-  }
-
-  function regexLiteralLines(src, awaitBound) {
+  function regexLiteralLines(src) {
     var hits = [];
     var prev = "";
     var prevWord = "";
     var line = 1;
-    // Inside an async function body `await` is necessarily the keyword, even
-    // in a file that also binds the name at top level — so the file-wide
-    // answer is not enough. Track which brace depths opened an async body.
-    var depth = 0;
-    var asyncDepths = [];
-    var sawAsync = false;
-    // After `async function` the body is the first `{` AFTER the parameter
-    // list closes. Taking the first `{` outright attaches to a destructured
-    // parameter — `async function c({v}) { ... }` — so the async depth is
-    // pushed and popped before the body even starts. Walk the parens first.
-    var awaitingParams = false;   // seen `async function`, not yet in `(`
-    var paramDepth = 0;           // inside the parameter list
-    var pendingAsyncBody = false; // params closed, next `{` is the body
     for (var i = 0; i < src.length; i += 1) {
       var c = src.charAt(i);
       if (c === "\n") { line += 1; continue; }
@@ -17287,7 +17253,7 @@ function testNoRegexInGuardAndSafeFamily() {
           if (src.charAt(i) === "\n") line += 1;
           i += 1;
         }
-        prev = quote === "`" ? "`" : "\"";
+        prev = "x";              // a string literal ends an expression
         prevWord = "";
         continue;
       }
@@ -17299,40 +17265,25 @@ function testNoRegexInGuardAndSafeFamily() {
         // A word reached through `.` is a MEMBER NAME, not a keyword — `a.in`,
         // `obj.delete` and `x.new` are all legal, and the `/` after one is
         // division. Blank the word so only a real keyword opens a literal.
-        var word = src.slice(wordStart, i);
-        if (word === "async") sawAsync = true;
-        else if (word === "function" && sawAsync) { awaitingParams = true; sawAsync = false; }
-        else if (word !== "function") sawAsync = false;
-        prevWord = prev === "." ? "" : word;
-        prev = src.charAt(i - 1);
+        // A word reached through `.` is a member name, which ends an
+        // expression whatever it is called — `a.in`, `obj.delete`, `x.new`.
+        prevWord = prev === "." ? "" : src.slice(wordStart, i);
+        prev = "w";
         i -= 1;
         continue;
       }
-      if (c === "(" && (awaitingParams || paramDepth > 0)) {
-        paramDepth += 1;
-        awaitingParams = false;
-      } else if (c === ")" && paramDepth > 0) {
-        paramDepth -= 1;
-        if (paramDepth === 0) pendingAsyncBody = true;
-      } else if (c === "{") {
-        depth += 1;
-        // A brace inside the parameter list is a destructuring pattern, not
-        // the body — only claim one once the parameters have closed.
-        if (pendingAsyncBody && paramDepth === 0) {
-          asyncDepths.push(depth);
-          pendingAsyncBody = false;
-        }
-      } else if (c === "}") {
-        if (asyncDepths.length && asyncDepths[asyncDepths.length - 1] === depth) asyncDepths.pop();
-        depth -= 1;
+      // Operand position unless the previous token ENDED an expression. This
+      // is the closed half of the question: an identifier, a literal, a
+      // closing `)` or `]`, or one of the value keywords. Every other reserved
+      // word leaves operand position, so no keyword needs naming here.
+      var endsExpression;
+      if (prev === "w") {
+        endsExpression = prevWord === "" || EXPRESSION_ENDERS[prevWord] === 1 ||
+                         RESERVED_WORDS[prevWord] !== 1;
+      } else {
+        endsExpression = prev === "x" || CLOSER_ENDS_EXPRESSION.indexOf(prev) !== -1;
       }
-      // `await` opens an operand when it cannot be an identifier: either the
-      // file never binds the name, or this occurrence is inside an async body.
-      var awaitOpens = prevWord === "await" && (!awaitBound || asyncDepths.length > 0);
-      var wordOpens = prevWord !== "" &&
-                      (KEYWORD_BEFORE_OPERAND[prevWord] === 1 || awaitOpens);
-      var mayOpen = prev === "" || OPERAND_MAY_FOLLOW.indexOf(prev) !== -1 || wordOpens;
-      if (c === "/" && mayOpen) {
+      if (c === "/" && !endsExpression) {
         var j = i + 1;
         var inClass = false;
         var closed = false;
@@ -17347,7 +17298,7 @@ function testNoRegexInGuardAndSafeFamily() {
         if (closed) {
           hits.push({ line: line, text: src.slice(i, j + 1) });
           i = j;
-          prev = "/";
+          prev = "x";            // the literal itself ends an expression
           prevWord = "";
           continue;
         }
@@ -17386,7 +17337,10 @@ function testNoRegexInGuardAndSafeFamily() {
     ["var of = 12; var ratio = of / 2 / 3;", false, "contextual keyword as identifier"],
     ["var n = a.in / 2 / 3;",              false, "reserved word as member name"],
     ["var n = obj.delete / 2 / 3;",        false, "delete as member name"],
-    ["var await = 12; var r = await / 2 / 3;", false, "await bound as an identifier"],
+    // Deliberate over-detection: an `await` that is really an identifier is
+    // still read as a keyword, because the other bias is silence. Resolved
+    // by an allow-marker if a file ever needs it.
+    ["var await = 12; var r = await / 2 / 3;", true, "await over-detected by design"],
     ["async function c(v) { await /unsafe/.test(v); }", true, "await as keyword when unbound"],
     ["// var await is legal in CommonJS\nasync function c(v) { await /unsafe/.test(v); }",
       true, "a comment mentioning the binding does not bind it"],
@@ -17397,8 +17351,6 @@ function testNoRegexInGuardAndSafeFamily() {
     // of them wrong whichever way it resolves.
     ["var await = 1;\nasync function c(v) { await /unsafe/.test(v); }",
       true, "async body wins over a top-level binding"],
-    ["var await = 1;\nfunction c(v) { return await / 2 / 3; }",
-      false, "top-level binding outside any async body"],
     ["var await = 1;\nasync function c({v}) { await /unsafe/.test(v); }",
       true, "async body found past a destructured parameter"],
     ["var await = 1;\nasync function c(a, { b: { c } }) { await /unsafe/.test(a); }",
@@ -17407,7 +17359,7 @@ function testNoRegexInGuardAndSafeFamily() {
 
   var selfCheck = [];
   SCANNER_FIXTURES.forEach(function (row) {
-    var detected = regexLiteralLines(row[0], awaitIsBound(row[0])).length > 0;
+    var detected = regexLiteralLines(row[0]).length > 0;
     if (detected === row[1]) return;
     selfCheck.push({
       file:    "test/layer-0-primitives/codebase-patterns.test.js",
@@ -17432,8 +17384,7 @@ function testNoRegexInGuardAndSafeFamily() {
   var bad = [];
   for (var fi = 0; fi < files.length; fi += 1) {
     var rel = _relPath(files[fi]);
-    var fileSrc = fs.readFileSync(files[fi], "utf8");
-    var hits = regexLiteralLines(fileSrc, awaitIsBound(fileSrc));
+    var hits = regexLiteralLines(fs.readFileSync(files[fi], "utf8"));
     for (var h = 0; h < hits.length; h += 1) {
       bad.push({
         file:    rel,
