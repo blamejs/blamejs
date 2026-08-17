@@ -17242,11 +17242,25 @@ function testNoRegexInGuardAndSafeFamily() {
   // here; otherwise it opens an operand. A file that does both is not
   // something this walker can resolve, and the binding wins because a false
   // positive blocks a release while a false negative is caught by review.
+  // One definition of "this token ended an expression", used by both the
+  // regex decision and the prefix/postfix decision. Duplicating it is how
+  // `return ++/unsafe/.lastIndex` went missing: the copy checked only that the
+  // previous token was a WORD, losing the reserved-word half of the rule.
+  function tokenEndsExpression(kind, word) {
+    if (kind === "w") {
+      return word === "" || EXPRESSION_ENDERS[word] === 1 ||
+             RESERVED_WORDS[word] !== 1;
+    }
+    return kind === "x" ||
+           (kind !== "" && CLOSER_ENDS_EXPRESSION.indexOf(kind) !== -1);
+  }
+
   function regexLiteralLines(src) {
     var hits = [];
     var prev = "";
     var prevWord = "";
-    var prevBeforeSign = "";
+    var prevBeforeSign = "";      // token kind before a ++ / -- pair
+    var prevWordBeforeSign = "";  // and the word, when it was one
     var line = 1;
     for (var i = 0; i < src.length; i += 1) {
       var c = src.charAt(i);
@@ -17294,17 +17308,7 @@ function testNoRegexInGuardAndSafeFamily() {
       // is the closed half of the question: an identifier, a literal, a
       // closing `)` or `]`, or one of the value keywords. Every other reserved
       // word leaves operand position, so no keyword needs naming here.
-      var endsExpression;
-      if (prev === "w") {
-        endsExpression = prevWord === "" || EXPRESSION_ENDERS[prevWord] === 1 ||
-                         RESERVED_WORDS[prevWord] !== 1;
-      } else {
-        // `indexOf("")` is 0, not -1 — an empty previous token (start of file)
-        // would otherwise read as a closing bracket and a leading literal
-        // would be missed.
-        endsExpression = prev === "x" ||
-                         (prev !== "" && CLOSER_ENDS_EXPRESSION.indexOf(prev) !== -1);
-      }
+      var endsExpression = tokenEndsExpression(prev, prevWord);
       if (c === "/" && !endsExpression) {
         var j = i + 1;
         var inClass = false;
@@ -17340,11 +17344,10 @@ function testNoRegexInGuardAndSafeFamily() {
           // FIRST character of a ++/-- pair: capture what preceded the pair,
           // which is what decides prefix from postfix.
           prevBeforeSign = prev;
+          prevWordBeforeSign = prevWord;
           prev = c;
         } else if ((c === "+" || c === "-") && src.charAt(i - 1) === c) {
-          prev = (prevBeforeSign === "x" || prevBeforeSign === "w" ||
-                  (prevBeforeSign !== "" &&
-                   CLOSER_ENDS_EXPRESSION.indexOf(prevBeforeSign) !== -1)) ? "x" : c;
+          prev = tokenEndsExpression(prevBeforeSign, prevWordBeforeSign) ? "x" : c;
         } else {
           prev = c;
         }
@@ -17438,6 +17441,30 @@ function testNoRegexInGuardAndSafeFamily() {
     ["var café = 12; var r = café / 2 / 3;", false, "accented identifier"],
     ["return　/unsafe/.test(v);",       true,  "ideographic space before a literal"],
   ];
+
+  // Cross the two axes rather than listing pairs by hand: every word that
+  // leaves operand position, against a bare literal AND a prefix update
+  // before one. The hand-written rows above covered each axis separately,
+  // which is how `return ++/unsafe/.lastIndex` stayed missing — the prefix
+  // rows all started at a statement boundary or an assignment.
+  ["return", "throw", "case", "typeof", "void", "in", "delete", "new",
+   "do", "else", "yield", "await"].forEach(function (word) {
+    SCANNER_FIXTURES.push([word + " /unsafe/.test(v);", true,
+                           "literal after " + word]);
+    SCANNER_FIXTURES.push([word + " ++/unsafe/.lastIndex;", true,
+                           "prefix update after " + word]);
+  });
+
+  // And the mirror: every token that ENDS an expression, against a bare
+  // division and a postfix update before one.
+  ["count", "f()", "a[0]", "4", "this", "true", "null"].forEach(function (tok) {
+    SCANNER_FIXTURES.push(["var r = " + tok + " / 2 / 3;", false,
+                           "division after " + tok]);
+  });
+  ["count", "f()", "a[0]"].forEach(function (tok) {
+    SCANNER_FIXTURES.push(["var r = " + tok + "++ / 2 / 3;", false,
+                           "postfix update after " + tok]);
+  });
 
   var selfCheck = [];
   SCANNER_FIXTURES.forEach(function (row) {
