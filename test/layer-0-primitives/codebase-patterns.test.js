@@ -17257,7 +17257,13 @@ function testNoRegexInGuardAndSafeFamily() {
     var depth = 0;
     var asyncDepths = [];
     var sawAsync = false;
-    var pendingAsyncBody = false;
+    // After `async function` the body is the first `{` AFTER the parameter
+    // list closes. Taking the first `{` outright attaches to a destructured
+    // parameter — `async function c({v}) { ... }` — so the async depth is
+    // pushed and popped before the body even starts. Walk the parens first.
+    var awaitingParams = false;   // seen `async function`, not yet in `(`
+    var paramDepth = 0;           // inside the parameter list
+    var pendingAsyncBody = false; // params closed, next `{` is the body
     for (var i = 0; i < src.length; i += 1) {
       var c = src.charAt(i);
       if (c === "\n") { line += 1; continue; }
@@ -17295,16 +17301,27 @@ function testNoRegexInGuardAndSafeFamily() {
         // division. Blank the word so only a real keyword opens a literal.
         var word = src.slice(wordStart, i);
         if (word === "async") sawAsync = true;
-        else if (word === "function" && sawAsync) { pendingAsyncBody = true; sawAsync = false; }
+        else if (word === "function" && sawAsync) { awaitingParams = true; sawAsync = false; }
         else if (word !== "function") sawAsync = false;
         prevWord = prev === "." ? "" : word;
         prev = src.charAt(i - 1);
         i -= 1;
         continue;
       }
-      if (c === "{") {
+      if (c === "(" && (awaitingParams || paramDepth > 0)) {
+        paramDepth += 1;
+        awaitingParams = false;
+      } else if (c === ")" && paramDepth > 0) {
+        paramDepth -= 1;
+        if (paramDepth === 0) pendingAsyncBody = true;
+      } else if (c === "{") {
         depth += 1;
-        if (pendingAsyncBody) { asyncDepths.push(depth); pendingAsyncBody = false; }
+        // A brace inside the parameter list is a destructuring pattern, not
+        // the body — only claim one once the parameters have closed.
+        if (pendingAsyncBody && paramDepth === 0) {
+          asyncDepths.push(depth);
+          pendingAsyncBody = false;
+        }
       } else if (c === "}") {
         if (asyncDepths.length && asyncDepths[asyncDepths.length - 1] === depth) asyncDepths.pop();
         depth -= 1;
@@ -17382,6 +17399,10 @@ function testNoRegexInGuardAndSafeFamily() {
       true, "async body wins over a top-level binding"],
     ["var await = 1;\nfunction c(v) { return await / 2 / 3; }",
       false, "top-level binding outside any async body"],
+    ["var await = 1;\nasync function c({v}) { await /unsafe/.test(v); }",
+      true, "async body found past a destructured parameter"],
+    ["var await = 1;\nasync function c(a, { b: { c } }) { await /unsafe/.test(a); }",
+      true, "async body found past nested destructuring"],
   ];
 
   var selfCheck = [];
