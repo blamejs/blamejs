@@ -2,7 +2,7 @@
 // Copyright (c) blamejs contributors
 "use strict";
 /**
- * b.guardEnvelope — RFC 7489 §3.1 DMARC Identifier Alignment.
+ * b.guardEnvelope — RFC 9989 §4.4 DMARC Identifier Alignment.
  */
 
 var helpers = require("../helpers");
@@ -160,7 +160,7 @@ function testCompliancePosture() {
 }
 
 function testCaseInsensitive() {
-  // RFC 7489 §3.1 — domain comparison is case-insensitive.
+  // RFC 9989 §4.4 — domain comparison is case-insensitive.
   var v = b.guardEnvelope.check({
     fromHeaderDomain: "EXAMPLE.COM",
     spfResult:        { result: "pass", domain: "Example.Com" },

@@ -3,7 +3,7 @@
 "use strict";
 /**
  * b.mail.dmarc.evaluate — a DMARC record that lacks a valid required p=
- * tag (RFC 7489 §6.3) must NOT recommend "deliver" for a failing/unaligned
+ * tag (RFC 9989 §4.7) must NOT recommend "deliver" for a failing/unaligned
  * message.
  *
  * Regression: _parseDmarcRecord took p= / sp= verbatim and never required
@@ -40,7 +40,7 @@ function dnsReturning(record) {
 }
 
 async function testNoPolicyTagFailsClosed() {
-  // RFC 7489 §6.3 — p= is REQUIRED. A record without it carries no usable
+  // RFC 9989 §4.7 — p= is REQUIRED. A record without it carries no usable
   // policy; the receiver must treat it as none/permerror, NOT deliver.
   var rv = await b.mail.dmarc.evaluate(Object.assign({}, SPOOF, {
     dnsLookup: dnsReturning("v=DMARC1; adkim=s; aspf=s"),
@@ -64,7 +64,7 @@ async function testTypoPolicyTagFailsClosed() {
 }
 
 async function testWhitespacePaddedPolicyTag() {
-  // RFC 7489 §6.4 tag-list grammar permits whitespace around the value;
+  // RFC 9989 §4.8 tag-list grammar permits whitespace around the value;
   // "p= reject " is a legitimate reject policy once the grammar's trim
   // applies — it must NOT deliver the spoofed/failing message.
   var rv = await b.mail.dmarc.evaluate(Object.assign({}, SPOOF, {

@@ -315,7 +315,7 @@ function testExtractBearerNonString() {
 }
 
 function testExtractBearerLeadingTrailingSpaces() {
-  // Tolerate leading/trailing whitespace in the token portion (RFC 7230
+  // Tolerate leading/trailing whitespace in the token portion (RFC 9110 §5.6.3
   // OWS) while still rejecting embedded spaces.
   var t = b.requestHelpers.extractBearer({
     headers: { authorization: "Bearer  abc  " },

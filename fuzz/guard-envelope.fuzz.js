@@ -4,7 +4,7 @@
 /**
  * Fuzz target: b.guardEnvelope.check
  *
- * Targets the RFC 7489 §3.1 DMARC Identifier Alignment primitive.
+ * Targets the RFC 9989 §4.4 DMARC Identifier Alignment primitive.
  * Engine mutates a JSON-encoded ctx; we decode + check.
  */
 

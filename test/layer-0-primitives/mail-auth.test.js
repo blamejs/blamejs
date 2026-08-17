@@ -148,7 +148,7 @@ async function testDmarcEvaluateUnaligned() {
         rv.result === "fail" && rv.recommendedAction === "quarantine");
 }
 
-// ---- b.mail.inbound.verify — receiver pipeline (RFC 7489 §6.6) ----
+// ---- b.mail.inbound.verify — receiver pipeline (RFC 9989 §5.3) ----
 
 function _inboundDns(records) {
   return async function (host, type) {
@@ -261,7 +261,7 @@ async function testInboundVerifyFromHeaderDiscipline() {
     message: "From: safe@aligned.example\r\nFrom: ceo@victim.example\r\n\r\nbody\r\n",
     dnsLookup: dnsLookup,
   });
-  check("inbound.verify: duplicated From → permerror + reject (RFC 7489 §6.6.1)",
+  check("inbound.verify: duplicated From → permerror + reject (RFC 9989 §5.3.1)",
         dup.from.count === 2 && dup.dmarc.result === "permerror" &&
         dup.dmarc.recommendedAction === "reject");
   // Two angle-addr authors inside one field.
@@ -349,7 +349,7 @@ async function testInboundVerifyFromHeaderDiscipline() {
         badFromThrew && /dmarc-bad-from/.test(badFromThrew.code || ""));
 }
 
-// RFC 7489 §6.6.2 — a fail verdict computed while SPF or DKIM returned
+// RFC 9989 §5.3.6 — a fail verdict computed while SPF or DKIM returned
 // temperror must surface as temperror (the transiently-failed lookup
 // could have produced the aligned pass), so the MX gate defers with
 // 451 instead of permanently refusing a legitimate sender mid-DNS-blip.
@@ -1219,7 +1219,7 @@ function testDmarcRuaGunzipBombDistinguished() {
 }
 
 function testDmarcRuaBuildRoundTrip() {
-  // RFC 7489 Appendix C — buildAggregateReport is the inverse of
+  // RFC 9990 Appendix A — buildAggregateReport is the inverse of
   // parseAggregateReport; a shaped report serialized to XML and re-
   // parsed MUST deep-equal the input (the parser adds a derived
   // `totals` convenience field, removed before comparison).
@@ -1302,7 +1302,7 @@ function testDmarcRuaBuildBadInput() {
   }
 }
 
-// RFC 6591 §4.1 / RFC 7489 §7.3 — a DMARC forensic (RUF) failure
+// RFC 6591 §4.1 / RFC 9991 — a DMARC forensic (RUF) failure
 // report: multipart/report (report-type=feedback-report) whose
 // message/feedback-report part carries Feedback-Type: auth-failure plus
 // the forensic-specific fields (Auth-Failure, Delivery-Result,
@@ -1370,7 +1370,7 @@ function testDmarcForensicParse() {
         rep.authFailure === "dmarc");
   check("dmarc.parseForensicReport: deliveryResult=reject",
         rep.deliveryResult === "reject");
-  check("dmarc.parseForensicReport: identityAlignment=none (RFC 7489 §7.3)",
+  check("dmarc.parseForensicReport: identityAlignment=none (RFC 9991)",
         rep.identityAlignment === "none");
   check("dmarc.parseForensicReport: DKIM-* fields shaped",
         rep.dkim && rep.dkim.domain === "sender.example" &&
@@ -1393,7 +1393,7 @@ function testDmarcForensicParse() {
 
 function testDmarcForensicNotAuthFailure() {
   // An RFC 5965 abuse report is a valid ARF report but NOT a DMARC
-  // forensic report — Feedback-Type must be auth-failure (RFC 7489 §7.3).
+  // forensic report — Feedback-Type must be auth-failure (RFC 9991).
   var abuseReport = DMARC_RUF_SAMPLE.replace(
     "Feedback-Type: auth-failure", "Feedback-Type: abuse");
   var rv = b.mail.dmarc.parseForensicReport(abuseReport);
@@ -1925,7 +1925,7 @@ function testDmarcParseDefaultsAndErrors() {
   check("dmarc.parseRecord: wrong version → dmarc-bad-version",
         eVer && /dmarc-bad-version/.test(eVer.code || ""));
   var eNoP = _threw(function () { b.mail.dmarc.parseRecord("v=DMARC1; pct=100"); });
-  check("dmarc.parseRecord: missing required p= → dmarc-missing-policy (RFC 7489 §6.3)",
+  check("dmarc.parseRecord: missing required p= → dmarc-missing-policy (RFC 9989 §4.7)",
         eNoP && /dmarc-missing-policy/.test(eNoP.code || ""));
 }
 
@@ -2395,7 +2395,8 @@ async function testDmarcTemperror() {
         rv.alignment.spf === false && rv.alignment.dkim === false);
 }
 
-// ---- DMARC: pct< 100 sampled disposition (RFC 7489 §6.6.4) ----
+// ---- DMARC: pct< 100 sampled disposition (RFC 7489 §6.6.4; the tag is
+// removed in RFC 9989 and honoured here for records still publishing it) ----
 
 async function testDmarcPctSampledDispositions() {
   // The sample roll is a deterministic SHAKE256 of pctSampleKey → [0,100).
@@ -2774,7 +2775,7 @@ function testAuthResultsEmitVersionControlChars() {
 // ---- DMARC RUA aggregate: size cap + decompression + XML parse faults ----
 
 function testDmarcAggregateSizeAndParseErrors() {
-  // RFC 7489 §7.2.1.1 — a report exceeding the byte ceiling is refused
+  // RFC 9990 §3.5.2 — a report exceeding the byte ceiling is refused
   // before any parse work (resource-exhaustion bound).
   var tooBig = Buffer.alloc(C.BYTES.mib(8) + 1);
   var eBig = _threw(function () { b.mail.dmarc.parseAggregateReport(tooBig); });
@@ -2795,7 +2796,7 @@ function testDmarcAggregateSizeAndParseErrors() {
 }
 
 function testDmarcBuildTooManyRecords() {
-  // RFC 7489 Appendix C — the aggregate builder caps records per report
+  // RFC 9990 Appendix A — the aggregate builder caps records per report
   // (resource-exhaustion bound); over-cap input is a config-time throw.
   var eMany = _threw(function () {
     b.mail.dmarc.buildAggregateReport({
@@ -3854,7 +3855,7 @@ async function testSpfEmptyArgAndBadRedirectMacro() {
         rRedir.result === "permerror" && /not a valid macro-letter/.test(rRedir.explanation || ""));
 }
 
-// ---- DMARC: ambiguous / absent record → none (RFC 7489 §6.6.3) ----
+// ---- DMARC: ambiguous / absent record → none (RFC 9989 §4.10.1) ----
 
 async function testDmarcMultiRecordAndNoMatchAreNone() {
   // When a domain publishes MORE THAN ONE v=DMARC1 record the receiver MUST
@@ -3866,7 +3867,7 @@ async function testDmarcMultiRecordAndNoMatchAreNone() {
   };
   var rMulti = await b.mail.dmarc.evaluate({ from: "a@example.com",
     spf: { result: "pass", domain: "example.com" }, dkim: [], dnsLookup: multi });
-  check("dmarc.evaluate: two v=DMARC1 records → none (ambiguous, RFC 7489 §6.6.3)",
+  check("dmarc.evaluate: two v=DMARC1 records → none (ambiguous, RFC 9989 §4.10.1)",
         rMulti.result === "none");
 
   // TXT present at _dmarc but no record begins with v=DMARC1 → no policy → none.

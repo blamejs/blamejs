@@ -578,7 +578,7 @@ function testNoRawByteLiterals() {
       }
       // HTTP status-code comparisons (`statusCode >= 200 && < 300`,
       // `code < 600`, etc.) overlap with multiples of 8 (200, 208, 256,
-      // 264 …). Same RFC 7231 boundary set as the time-literal filter.
+      // 264 …). Same RFC 9110 §15 boundary set as the time-literal filter.
       var statusCmpRe = /[<>!=]=?\s*(?:200|300|400|500|600|399|599)\b|\b(?:200|300|400|500|600|399|599)\s*[<>!=]=?/;
       if (statusCmpRe.test(stripped)) continue;
       // Strip bit-shift operands (`>>> 8`, `<< 16`) — those are bit
@@ -671,7 +671,7 @@ function testNoRawTimeLiterals() {
         // literal (`C.TIME.days(180)`) and that's the canonical form.
         if (/\bC\.TIME\.\w+\(/.test(stripped)) continue;
         // HTTP status-code comparisons (`statusCode >= 200 && < 300`,
-        // `code < 600`, etc.) — these are domain-fixed RFC 7231 status
+        // `code < 600`, etc.) — these are domain-fixed RFC 9110 §15 status
         // class boundaries, not durations. A line where the only
         // multiple-of-60 literal in 200..599 sits in a comparison is
         // not time math.
@@ -5500,7 +5500,7 @@ async function testNoDuplicateCodeBlocks() {
         // sharedRequest.requirePresignKey / resolvePresignExpires /
         // resolvePresignUploadMinBytes; only the copy-if-present signing assembly
         // remains, which is shape-only. The getResponse conditional-GET sub-dup
-        // (the RFC 7232/7233 If-Match family headers + the response-object
+        // (the RFC 9110 §13/§14 If-Match family headers + the response-object
         // mapping + the 304 short-circuit, byte-identical across azure/gcs/sigv4
         // getResponse) is now ALSO extracted to
         // sharedRequest.applyConditionalGetHeaders / mapGetResponse /
@@ -7787,7 +7787,7 @@ var KNOWN_ANTIPATTERNS = [
     reason: "The presign expiry bounds (PRESIGN_MIN/MAX/DEFAULT_EXPIRES_SECONDS) were duplicated across gcs._v4Presign / gcs.presignedUploadPolicy / sigv4._presign / sigv4.presignedUploadPolicy — byte-identical apart from the message prefix and the V4 vs SigV4 hard-cap label. Centralised in http-request.js so a future cap change is one edit and every backend enforces the same ceiling. The distinctive bounds message anchors the inverse guard; only the helper's home is allowlisted.",
   },
   // Object-store conditional-GET request headers + response projection live in
-  // ONE place. azure/gcs/sigv4 getResponse hand-rolled the same RFC 7232/7233
+  // ONE place. azure/gcs/sigv4 getResponse hand-rolled the same RFC 9110 §13/§14 conditional-header 7232/7233
   // If-Match-family header application and the { statusCode, body, etag,
   // lastModified, contentRange, size, contentType } projection; azure/sigv4/
   // http-put head shared the { size, etag, lastModified } projection. Extracted
@@ -13166,13 +13166,13 @@ function testNoNaiveSuffixAlignment() {
           content: "naive text-suffix alignment — separately-registered " +
                    "confusables (`evil-bank.com` vs `bank.com`) pass. Use " +
                    "`publicSuffix.organizationalDomain(d)` and compare org-" +
-                   "domains (RFC 7489 §3.1.1).",
+                   "domains (RFC 9989 §4.4.1).",
         });
       }
     }
   }
   bad = _filterMarkers(bad, "naive-suffix-alignment");
-  _report("relaxed-mode alignment MUST use publicSuffix.organizationalDomain, not naive text-suffix slice (RFC 7489 §3.1.1)",
+  _report("relaxed-mode alignment MUST use publicSuffix.organizationalDomain, not naive text-suffix slice (RFC 9989 §4.4.1)",
     bad);
 }
 

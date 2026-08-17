@@ -518,7 +518,7 @@ async function testDirectoryIndexServed() {
   }
 }
 
-// RFC 7232 §3.3/§6: If-None-Match takes precedence over If-Modified-Since,
+// RFC 9110 §13.1.3/§13.2.2: If-None-Match takes precedence over If-Modified-Since,
 // and If-Match takes precedence over If-Unmodified-Since. When the strong
 // entity-tag precondition is present, the recipient MUST ignore the
 // date-based one — otherwise a changed resource is falsely reported 304, or
@@ -603,7 +603,7 @@ function _req(port, method, urlPath, headers) {
   });
 }
 
-// --- Range requests (RFC 7233 single-range) ------------------------------
+// --- Range requests (RFC 9110 §14 single-range) ------------------------------
 
 async function testRangeSingle() {
   var ctx = await _ctx({ contentSafety: null }, { "data.txt": "0123456789" });
@@ -705,7 +705,7 @@ async function testAcceptRangesDisabled() {
   } finally { ctx.close(); }
 }
 
-// --- Conditional requests (RFC 7232) -------------------------------------
+// --- Conditional requests (RFC 9110 §13) -------------------------------------
 
 async function testConditionalHits() {
   var ctx = await _ctx({ contentSafety: null }, { "doc.txt": "conditional body" });
@@ -837,7 +837,7 @@ async function testContentSafetySanitizeIntegrityHeaders() {
   // ACTUALLY DELIVERED — not the on-disk original the meta cache hashed.
   // Otherwise a consumer verifying the served body against the advertised
   // X-Integrity fails, and a strong-validator / If-None-Match cache is keyed
-  // to a representation the client never receives (RFC 7232 §2.3 strong
+  // to a representation the client never receives (RFC 9110 §8.8.3 strong
   // validator; W3C SRI).
   var sanitized = Buffer.from("SAFE-BYTES");
   var gate = {

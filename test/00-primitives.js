@@ -9346,7 +9346,7 @@ function testSafeSchemaStringPrimitive() {
 
   check("string().url accepts https",              s.string().url().parse("https://x.io") === "https://x.io");
   check("string().url rejects bare",               s.string().url().safeParse("x.io").ok === false);
-  // v0.6.62 — RFC 7230 §3.1.1 8 KB recommendation. Without this bound,
+  // v0.6.62 — RFC 9112 §3 8 KB recommendation. Without this bound,
   // .url() accepted multi-megabyte URLs that fed unbounded values
   // through downstream HTTP clients / SSRF gates / log lines.
   check("string().url accepts 8192 chars (limit)",
@@ -15481,7 +15481,7 @@ function testUrlSafeMalformed() {
   catch (e) { nullMissing = e; }
   check("url-safe: null rejects",            nullMissing !== null);
 
-  // v0.6.62 — 8 KB cap (RFC 7230 §3.1.1 guidance). Pre-fix the
+  // v0.6.62 — 8 KB cap (RFC 9112 §3 guidance). Pre-fix the
   // framework walked multi-megabyte URLs through Node's parser before
   // the SSRF / protocol / userinfo gates even ran.
   var ok8k = u.parse("https://x.io/" + "a".repeat(8192 - 13));

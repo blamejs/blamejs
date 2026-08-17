@@ -754,7 +754,7 @@ async function scenarioTokenFlows(base, routes) {
   await athrows("clientCredentialsManager: Retry-After keeps the backoff open past backoffSec (no fetch)",
     function () { return mgrRA.getToken(); }, "auth-oauth/backoff-active");
 
-  // Retry-After value shapes (RFC 7231 §7.1.3): an HTTP-date (future + past) and
+  // Retry-After value shapes (RFC 9110 §10.2.3): an HTTP-date (future + past) and
   // an unparseable value are all handled — each still surfaces the 429.
   function _mk429WithRetryAfter(val) {
     return function (req, res) {

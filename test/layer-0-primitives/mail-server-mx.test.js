@@ -555,7 +555,7 @@ async function testGuardEnvelopeGate() {
     // Multi-From spoofing shape → refused.
     var multi = await _transact(sock, "s@external.com",
       "From: s@external.com\r\nFrom: ceo@spoof.example\r\nSubject: x\r\n\r\nbody\r\n");
-    check("guardEnvelope enforce: duplicated From → 550 5.7.1 (RFC 7489 §6.6.1)",
+    check("guardEnvelope enforce: duplicated From → 550 5.7.1 (RFC 9989 §5.3.1)",
       /^550 5\.7\.1/.test(multi) && handoffs.length === 0);
 
     // Aligned pass: delivered with verdict + A-R header. The message
