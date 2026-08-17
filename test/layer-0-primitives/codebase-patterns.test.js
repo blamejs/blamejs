@@ -17196,7 +17196,20 @@ function testNoRegexInGuardAndSafeFamily() {
            (c >= "0" && c <= "9") || c === "_" || c === "$";
   }
 
-  function regexLiteralLines(src) {
+  // `await` cuts both ways. In a CommonJS script it is an ordinary identifier,
+  // so treating it as a keyword turns `await / 2 / 3` into a false positive;
+  // inside an async function it IS a keyword, so excluding it misses
+  // `await /unsafe/.test(v)` — and the guard family does contain async code.
+  // Decide per file: if the file binds `await` as a name, it is an identifier
+  // here; otherwise it opens an operand. A file that does both is not
+  // something this walker can resolve, and the binding wins because a false
+  // positive blocks a release while a false negative is caught by review.
+  function awaitIsBound(src) {
+    return /(?:var|let|const|function)\s+await\b/.test(src) ||
+           /\bfunction\s*\([^)]*\bawait\b/.test(src);
+  }
+
+  function regexLiteralLines(src, awaitBound) {
     var hits = [];
     var prev = "";
     var prevWord = "";
@@ -17241,8 +17254,10 @@ function testNoRegexInGuardAndSafeFamily() {
         i -= 1;
         continue;
       }
-      var mayOpen = prev === "" || OPERAND_MAY_FOLLOW.indexOf(prev) !== -1 ||
-                    (prevWord !== "" && KEYWORD_BEFORE_OPERAND[prevWord] === 1);
+      var wordOpens = prevWord !== "" &&
+                      (KEYWORD_BEFORE_OPERAND[prevWord] === 1 ||
+                       (prevWord === "await" && !awaitBound));
+      var mayOpen = prev === "" || OPERAND_MAY_FOLLOW.indexOf(prev) !== -1 || wordOpens;
       if (c === "/" && mayOpen) {
         var j = i + 1;
         var inClass = false;
@@ -17297,12 +17312,13 @@ function testNoRegexInGuardAndSafeFamily() {
     ["var of = 12; var ratio = of / 2 / 3;", false, "contextual keyword as identifier"],
     ["var n = a.in / 2 / 3;",              false, "reserved word as member name"],
     ["var n = obj.delete / 2 / 3;",        false, "delete as member name"],
-    ["var await = 12; var r = await / 2 / 3;", false, "await as identifier in CommonJS"],
+    ["var await = 12; var r = await / 2 / 3;", false, "await bound as an identifier"],
+    ["async function c(v) { await /unsafe/.test(v); }", true, "await as keyword when unbound"],
   ];
 
   var selfCheck = [];
   SCANNER_FIXTURES.forEach(function (row) {
-    var detected = regexLiteralLines(row[0]).length > 0;
+    var detected = regexLiteralLines(row[0], awaitIsBound(row[0])).length > 0;
     if (detected === row[1]) return;
     selfCheck.push({
       file:    "test/layer-0-primitives/codebase-patterns.test.js",
@@ -17327,7 +17343,8 @@ function testNoRegexInGuardAndSafeFamily() {
   var bad = [];
   for (var fi = 0; fi < files.length; fi += 1) {
     var rel = _relPath(files[fi]);
-    var hits = regexLiteralLines(fs.readFileSync(files[fi], "utf8"));
+    var fileSrc = fs.readFileSync(files[fi], "utf8");
+    var hits = regexLiteralLines(fileSrc, awaitIsBound(fileSrc));
     for (var h = 0; h < hits.length; h += 1) {
       bad.push({
         file:    rel,
