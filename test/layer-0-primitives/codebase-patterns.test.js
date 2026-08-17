@@ -17175,7 +17175,12 @@ function testNoRegexInGuardAndSafeFamily() {
   // non-space character is the keyword's last letter rather than punctuation.
   // Without this the most natural way to write a guard predicate --
   // `return /unsafe/.test(value)` -- read as division and passed the gate.
-  // RESERVED words only. `of` is deliberately absent: it is contextual, so
+  // RESERVED words only. `of` and `await` are deliberately absent: both are
+  // contextual. `of` is never reserved, and `await` is an ordinary identifier
+  // in a CommonJS script even under "use strict" (only ES modules and async
+  // function bodies reserve it) — these files are CommonJS. `yield` IS
+  // reserved in strict mode, so it stays. Verified, not assumed.
+  //
   // `var of = 12; var ratio = of / 2 / 3;` is valid code whose division would
   // be read as a literal. Missing `for (x of /re/)` costs a rare false
   // negative; treating every `of` as a keyword costs false positives in
@@ -17183,7 +17188,7 @@ function testNoRegexInGuardAndSafeFamily() {
   var KEYWORD_BEFORE_OPERAND = {
     "return": 1, "throw": 1, "case": 1, "typeof": 1, "instanceof": 1,
     "in": 1, "delete": 1, "void": 1, "new": 1, "do": 1,
-    "else": 1, "yield": 1, "await": 1,
+    "else": 1, "yield": 1,
   };
 
   function isWordChar(c) {
@@ -17280,7 +17285,6 @@ function testNoRegexInGuardAndSafeFamily() {
     ["typeof /unsafe/;",                  true,  "after typeof"],
     ["void /unsafe/;",                    true,  "after void"],
     ["yield /unsafe/;",                   true,  "after yield"],
-    ["await /unsafe/;",                   true,  "after await"],
     ["if (x in /unsafe/) {}",             true,  "after in"],
     ["do /unsafe/.test(v); while (0);",   true,  "after do"],
     ["var r = total / count;",            false, "division"],
@@ -17293,6 +17297,7 @@ function testNoRegexInGuardAndSafeFamily() {
     ["var of = 12; var ratio = of / 2 / 3;", false, "contextual keyword as identifier"],
     ["var n = a.in / 2 / 3;",              false, "reserved word as member name"],
     ["var n = obj.delete / 2 / 3;",        false, "delete as member name"],
+    ["var await = 12; var r = await / 2 / 3;", false, "await as identifier in CommonJS"],
   ];
 
   var selfCheck = [];
