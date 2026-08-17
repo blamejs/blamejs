@@ -17336,12 +17336,16 @@ function testNoRegexInGuardAndSafeFamily() {
         // has not (`++/unsafe/.lastIndex` is a regex literal, absurd but
         // valid). Adjacency is read from the SOURCE because whitespace and
         // comments do not update `prev`: `a + +/re/` is two unary signs.
-        if ((c === "+" || c === "-") && src.charAt(i - 1) === c) {
+        if ((c === "+" || c === "-") && src.charAt(i + 1) === c) {
+          // FIRST character of a ++/-- pair: capture what preceded the pair,
+          // which is what decides prefix from postfix.
+          prevBeforeSign = prev;
+          prev = c;
+        } else if ((c === "+" || c === "-") && src.charAt(i - 1) === c) {
           prev = (prevBeforeSign === "x" || prevBeforeSign === "w" ||
                   (prevBeforeSign !== "" &&
                    CLOSER_ENDS_EXPRESSION.indexOf(prevBeforeSign) !== -1)) ? "x" : c;
         } else {
-          if (!((c === "+" || c === "-") && src.charAt(i + 1) === c)) prevBeforeSign = prev;
           prev = c;
         }
         prevWord = "";
@@ -17409,6 +17413,30 @@ function testNoRegexInGuardAndSafeFamily() {
       true, "async body found past a destructured parameter"],
     ["var await = 1;\nasync function c(a, { b: { c } }) { await /unsafe/.test(a); }",
       true, "async body found past nested destructuring"],
+    // Positions no review round raised, added by walking the grammar rather
+    // than waiting for the next report.
+    ["var r = f() / 2 / 3;",                false, "division after a call closer"],
+    ["var r = a[0] / 2 / 3;",               false, "division after an index closer"],
+    ["var r = 4 / 2 / 3;",                  false, "division after a numeric literal"],
+    ["var s = `a /unsafe/ b`;",             false, "inside a template literal"],
+    ["/* a /unsafe/ comment */",            false, "inside a block comment"],
+    ["var r = a /* c */ / 2 / 3;",          false, "division across a block comment"],
+    ["return /* c */ /unsafe/.test(v);",    true,  "literal across a block comment"],
+    ["var r = f()++ / 2 / 3;",              false, "postfix after a call"],
+    ["var r = a[0]++ / 2 / 3;",             false, "postfix after an index"],
+    ["var x = ++/unsafe/.lastIndex;",       true,  "prefix update after an assignment"],
+    ["f(++/unsafe/.lastIndex);",            true,  "prefix update in an argument"],
+    ["var r = this / 2 / 3;",               false, "division after this"],
+    ["var r = true / 2 / 3;",               false, "division after a boolean"],
+    ["var r = null / 2 / 3;",               false, "division after null"],
+    ["const c = async v => await /unsafe/.test(v);", true, "async arrow body"],
+    ["async function o() { function i() { return 1 / 2 / 3; } }",
+      false, "sync function nested inside an async one"],
+    ["var re = /[/]/;",                     true,  "slash inside a character class"],
+    ["var re = /a\\/b/;",                   true,  "escaped slash in the body"],
+    ["var r = a / b / c;",                  false, "division chain"],
+    ["var café = 12; var r = café / 2 / 3;", false, "accented identifier"],
+    ["return　/unsafe/.test(v);",       true,  "ideographic space before a literal"],
   ];
 
   var selfCheck = [];
