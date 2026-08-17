@@ -755,7 +755,7 @@ async function _runParseNotificationErrors() {
     check("parseNotification: JSON string body parsed + surfaced",
           info && info.authReqId === "req-strbody" && info.accessToken === "str-at");
 
-    // RFC 9110 §11.3 — the auth-scheme token is ASCII case-insensitive. A
+    // RFC 9110 §11.1 — the auth-scheme token is ASCII case-insensitive. A
     // spec-compliant sender using a lowercase or mixed-case "bearer" scheme
     // with the correct token must authenticate, not be refused as missing.
     var lowerScheme = await ciba.parseNotification(

@@ -17175,9 +17175,14 @@ function testNoRegexInGuardAndSafeFamily() {
   // non-space character is the keyword's last letter rather than punctuation.
   // Without this the most natural way to write a guard predicate --
   // `return /unsafe/.test(value)` -- read as division and passed the gate.
+  // RESERVED words only. `of` is deliberately absent: it is contextual, so
+  // `var of = 12; var ratio = of / 2 / 3;` is valid code whose division would
+  // be read as a literal. Missing `for (x of /re/)` costs a rare false
+  // negative; treating every `of` as a keyword costs false positives in
+  // ordinary arithmetic, and a gate that cries wolf gets muted.
   var KEYWORD_BEFORE_OPERAND = {
     "return": 1, "throw": 1, "case": 1, "typeof": 1, "instanceof": 1,
-    "in": 1, "of": 1, "delete": 1, "void": 1, "new": 1, "do": 1,
+    "in": 1, "delete": 1, "void": 1, "new": 1, "do": 1,
     "else": 1, "yield": 1, "await": 1,
   };
 
@@ -17223,7 +17228,10 @@ function testNoRegexInGuardAndSafeFamily() {
       if (isWordChar(c)) {
         var wordStart = i;
         while (i < src.length && isWordChar(src.charAt(i))) i += 1;
-        prevWord = src.slice(wordStart, i);
+        // A word reached through `.` is a MEMBER NAME, not a keyword — `a.in`,
+        // `obj.delete` and `x.new` are all legal, and the `/` after one is
+        // division. Blank the word so only a real keyword opens a literal.
+        prevWord = prev === "." ? "" : src.slice(wordStart, i);
         prev = src.charAt(i - 1);
         i -= 1;
         continue;
@@ -17279,6 +17287,12 @@ function testNoRegexInGuardAndSafeFamily() {
     ["var s = 'a /unsafe/ b';",           false, "inside a string"],
     ["// a /unsafe/ comment",             false, "inside a line comment"],
     ["var w = width / 2, h = height / 2;", false, "two divisions"],
+    // The false positives the keyword fix could introduce: a contextual
+    // keyword used as an identifier, and a reserved word used as a member
+    // name. Both are legal code whose division must not read as a literal.
+    ["var of = 12; var ratio = of / 2 / 3;", false, "contextual keyword as identifier"],
+    ["var n = a.in / 2 / 3;",              false, "reserved word as member name"],
+    ["var n = obj.delete / 2 / 3;",        false, "delete as member name"],
   ];
 
   var selfCheck = [];
