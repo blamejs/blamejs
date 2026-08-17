@@ -17217,10 +17217,21 @@ function testNoRegexInGuardAndSafeFamily() {
   // in code position can be non-ASCII. Cheaper and safer than an ID_Start /
   // ID_Continue table, and it stops `var pi = 12; var r = pi / 2 / 3;` written
   // with a Greek letter from reading as a literal.
+  // ECMAScript whitespace above ASCII — NBSP, the general-punctuation spaces,
+  // the line/paragraph separators, and the BOM. These are NOT identifier
+  // characters, and swallowing one makes the token before a `/` look like an
+  // identifier: `return<NBSP>/unsafe/.test(v)` would read as division.
+  var NON_ASCII_SPACE = {
+    0x00A0: 1, 0x1680: 1, 0x2028: 1, 0x2029: 1, 0x202F: 1, 0x205F: 1,
+    0x3000: 1, 0xFEFF: 1,
+  };
+  for (var _ws = 0x2000; _ws <= 0x200A; _ws += 1) NON_ASCII_SPACE[_ws] = 1;
+
   function isWordChar(c) {
-    return (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") ||
-           (c >= "0" && c <= "9") || c === "_" || c === "$" ||
-           c.charCodeAt(0) > 127;
+    if ((c >= "a" && c <= "z") || (c >= "A" && c <= "Z") ||
+        (c >= "0" && c <= "9") || c === "_" || c === "$") return true;
+    var cp = c.charCodeAt(0);
+    return cp > 127 && NON_ASCII_SPACE[cp] !== 1;
   }
 
   // `await` cuts both ways. In a CommonJS script it is an ordinary identifier,
@@ -17377,6 +17388,8 @@ function testNoRegexInGuardAndSafeFamily() {
     ["var n = a + +/unsafe/.test(v);",       true,  "separated signs are not a postfix update"],
     ["var n = a - -/unsafe/.test(v);",       true,  "separated minus signs likewise"],
     ["++/unsafe/.lastIndex;",               true,  "prefix update before a literal"],
+    ["return /unsafe/.test(v);",         true,  "NBSP is whitespace, not an identifier"],
+    ["return /unsafe/.test(v);",         true,  "line separator likewise"],
     ["var π = 12; var r = π / 2 / 3;",     false, "non-ASCII identifier"],
     // Deliberate over-detection: an `await` that is really an identifier is
     // still read as a keyword, because the other bias is silence. Resolved
