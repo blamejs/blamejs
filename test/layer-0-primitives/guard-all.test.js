@@ -330,7 +330,81 @@ async function run() {
   testGuardFamilySeverityAgreesWithPolicy();
   testGuardFamilyEveryStripPathRemovesTheSameClasses();
   testGuardFamilyValidateIsDeterministicAcrossCalls();
+  testGuardFamilyStrictRejectsEveryZeroWidthCharacter();
   return testGuardAllDispatchRoutesByMime();
+}
+
+// ---- Family invariant: a declared "reject" actually rejects ----
+
+// A guard whose strict profile says `zeroWidthPolicy: "reject"` has to refuse
+// every character in the zero-width table. That was not true for seven of
+// them: the shared scan was gated on an optional argument, so a caller that
+// omitted it disabled the scan whatever the operator's policy said, and six
+// more passed a hardcoded "warn" that dispositions to serve.
+//
+// The policy is read off each guard rather than listing names, so a new family
+// member is covered the day it lands. A guard whose policy path this cannot
+// reach FAILS rather than quietly shrinking the survey — the C0 controls are
+// the proof it is reached, since every participating guard refuses those.
+function testGuardFamilyStrictRejectsEveryZeroWidthCharacter() {
+  var ZERO_WIDTH = [
+    ["U+00AD", 0x00AD], ["U+200B", 0x200B], ["U+200C", 0x200C],
+    ["U+200D", 0x200D], ["U+2060", 0x2060], ["U+2061", 0x2061],
+    ["U+2062", 0x2062], ["U+2063", 0x2063], ["U+2064", 0x2064],
+    ["U+FEFF", 0xFEFF],
+  ];
+  var LIVENESS = [["U+0000", 0x0000], ["U+001F", 0x001F]];
+  var PAYLOAD = {
+    yaml:     function (c) { return "a: x" + c + "y\n"; },
+    shell:    function (c) { return "echo x" + c + "y"; },
+    regex:    function (c) { return "^a" + c + "b$"; },
+    jsonpath: function (c) { return "$.a" + c + "b"; },
+    json:     function (c) { return '{"a":"x' + c + 'y"}'; },
+    xml:      function (c) { return "<r>x" + c + "y</r>"; },
+    svg:      function (c) { return '<svg xmlns="http://www.w3.org/2000/svg">' +
+                                    "<title>x" + c + "y</title></svg>"; },
+    csv:      function (c) { return "col\r\nx" + c + "y\r\n"; },
+    filename: function (c) { return "re" + c + "port.txt"; },
+    template: function (c) { return "Hello na" + c + "me"; },
+  };
+  function payloadFor(name, ch) {
+    var key = Object.keys(PAYLOAD).find(function (p) { return name.indexOf(p) !== -1; });
+    return key ? PAYLOAD[key](ch) : "safe" + ch + "text";
+  }
+  function refuses(guard, name, cp) {
+    try {
+      var r = guard.validate(payloadFor(name, String.fromCodePoint(cp)),
+                             { profile: "strict" });
+      return !!(r && r.ok === false);
+    } catch (_e) {
+      return true;                    // a throw is a refusal
+    }
+  }
+
+  var declaring = b.guardAll.allGuards().filter(function (g) {
+    return g && typeof g.validate === "function" && g.PROFILES &&
+           g.PROFILES.strict && g.PROFILES.strict.zeroWidthPolicy === "reject";
+  });
+  check("guards declaring zeroWidthPolicy reject in strict were found",
+        declaring.length > 0);
+
+  var unreachable = [], accepted = [];
+  declaring.forEach(function (g) {
+    var name = g.NAME || "?";
+    if (!LIVENESS.every(function (c) { return refuses(g, name, c[1]); })) {
+      unreachable.push(name);
+      return;
+    }
+    ZERO_WIDTH.forEach(function (c) {
+      if (!refuses(g, name, c[1])) accepted.push(name + " accepts " + c[0]);
+    });
+  });
+
+  check("every guard declaring zeroWidthPolicy reject refuses a C0 control " +
+        "on the same path", unreachable.length === 0, unreachable.join(", "));
+  check("every guard declaring zeroWidthPolicy reject refuses every " +
+        "zero-width character", accepted.length === 0,
+        accepted.slice(0, 8).join("; "));
 }
 
 // ---- Family invariant: sanitize never serves a threat back verbatim ----

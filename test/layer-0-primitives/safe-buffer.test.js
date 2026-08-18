@@ -199,7 +199,7 @@ function testConsolidatedCallersKeptTheirAcceptanceSets() {
   ];
 
   var CASES = [
-    // The RFC 7230 tchar set — five call sites had spelled it three ways
+    // The RFC 9110 §5.6.2 tchar set — five call sites had spelled it three ways
     // (guard-mime, middleware/headers, observability baggage, request-helpers,
     // and cookies, whose class listed the same characters in another order).
     ["the tchar set, as guard-mime / headers / baggage / request-helpers had it",

@@ -2,7 +2,7 @@
 // Copyright (c) blamejs contributors
 "use strict";
 /**
- * b.middleware.clearSiteData — RFC 9527 Clear-Site-Data middleware.
+ * b.middleware.clearSiteData — W3C Clear-Site-Data middleware.
  *
  * Layer 0 primitive coverage:
  *   - default token set on logout-style routes
@@ -54,7 +54,7 @@ function testClientHints() {
   var mw = b.middleware.clearSiteData({ types: ["clientHints"] });
   var res = _mkRes();
   mw({}, res, function () {});
-  check("clearSiteData: clientHints (2024 RFC 9527 revision) accepted",
+  check("clearSiteData: clientHints (editor-draft addition) accepted",
     res._hdrs["Clear-Site-Data"] === '"clientHints"');
 }
 

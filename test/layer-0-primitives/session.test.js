@@ -257,7 +257,7 @@ async function testLogoutValidation() {
     await b.session.logout(res2, s2.token, { cookieName: "session" });
     check("logout honors a custom cookieName", /^session=; /.test(headers2["Set-Cookie"]));
 
-    // An explicit types set overrides the RFC 9527 default directive set.
+    // An explicit types set overrides the W3C Clear-Site-Data default directive set.
     var s3 = await b.session.create({ userId: "u-lo3" });
     var headers3 = {};
     var res3 = { setHeader: function (k, v) { headers3[k] = v; } };
@@ -549,6 +549,96 @@ async function run() {
   await testRotateUnparseableCarryForward();
   await testBumpValidFromCheck();
   await testValidFromStoreFallback();
+  await testStoreSwapReleasesTheStoreItReplaces();
+}
+
+// Dropping the reference to a store is not releasing it. `localDbThin` opens a
+// SQLite file, so a swap that only reassigns leaves the handle open for the
+// life of the process — and on Windows an open handle blocks removal of the
+// file AND of the directory holding it, so a caller pointing sessions at a
+// scratch directory cannot clean up after itself.
+//
+// Removing the directory is the assertion because it is the consequence an
+// operator actually hits; asserting on an internal flag would pass while the
+// handle stayed open.
+async function testStoreSwapReleasesTheStoreItReplaces() {
+  function releasedBy(drop) {
+    var dir = _mktmp("release");
+    var store = _thinStore(dir, "release");
+    b.session.useStore(store);
+    drop(store, dir);
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      return true;
+    } catch (_held) {
+      try { store.close(); } catch (_e) { /* best-effort */ }
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+      return false;
+    }
+  }
+
+  check("_resetForTest closes the store it drops",
+        releasedBy(function () { b.session._resetForTest(); }));
+  check("useStore(null) closes the store it reverts from",
+        releasedBy(function () { b.session.useStore(null); }));
+  check("useStore(other) closes the store it replaces",
+        releasedBy(function () {
+          var otherDir = _mktmp("release2");
+          var other = _thinStore(otherDir, "release2");
+          b.session.useStore(other);
+          b.session._resetForTest();
+          try { fs.rmSync(otherDir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+        }));
+
+  // A store is not required to expose close() — only execute/executeOne — so
+  // a swap must not assume one.
+  var noClose = { execute: function () {}, executeOne: function () { return null; } };
+  var threw = null;
+  try { b.session.useStore(noClose); b.session.useStore(null); } catch (e) { threw = e; }
+  check("a store without close() swaps cleanly", threw === null,
+        threw && threw.message);
+
+  // A close() that returns a REJECTED promise must not become an unhandled
+  // rejection — this function is synchronous and cannot await it, so the
+  // rejection is absorbed rather than left to take the process down. The
+  // handler has to be attached in the same turn the promise is created.
+  var unhandled = [];
+  function onUnhandled(reason) { unhandled.push(reason); }
+  process.on("unhandledRejection", onUnhandled);
+  var asyncFail = {
+    execute: function () {}, executeOne: function () { return null; },
+    close: function () { return Promise.reject(new Error("async close failed")); },
+  };
+  var asyncThrew = null;
+  try { b.session.useStore(asyncFail); b.session.useStore(null); } catch (e) { asyncThrew = e; }
+  await new Promise(function (r) { setImmediate(r); });   // let a rejection surface
+  process.removeListener("unhandledRejection", onUnhandled);
+  check("a store whose close() rejects does not raise an unhandled rejection",
+        unhandled.length === 0,
+        unhandled.map(function (u) { return u && u.message; }).join("; "));
+  check("an asynchronous close failure is not reported as a swap failure",
+        asyncThrew === null, asyncThrew && asyncThrew.message);
+
+  // Re-installing the SAME store must not close the one still in use, and a
+  // rejected argument must leave the installed store open and serving.
+  var liveDir = _mktmp("live");
+  var live = _thinStore(liveDir, "live");
+  try {
+    b.session.useStore(live);
+    b.session.useStore(live);
+    var stillUsable = true;
+    try { live.execute("SELECT 1"); } catch (_e) { stillUsable = false; }
+    check("re-installing the same store leaves it open", stillUsable);
+
+    try { b.session.useStore({ nope: 1 }); } catch (_e) { /* expected reject */ }
+    var survivedReject = true;
+    try { live.execute("SELECT 1"); } catch (_e) { survivedReject = false; }
+    check("a rejected store argument leaves the installed store open",
+          survivedReject);
+  } finally {
+    b.session._resetForTest();
+    try { fs.rmSync(liveDir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+  }
 }
 
 // rotate() and updateData() must enforce the SAME idle/absolute floor

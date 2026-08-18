@@ -8,6 +8,9 @@
 var helpers = require("../helpers");
 var check = helpers.check;
 var codepointClass = require("../../lib/codepoint-class");
+var gateContract   = require("../../lib/gate-contract");
+var fs   = require("fs");
+var path = require("path");
 
 function testIsForbiddenControlChar() {
   var f = codepointClass.isForbiddenControlChar;
@@ -785,6 +788,155 @@ async function run() {
   testResolveTagsPolicy();
   testCharThreatCeilingOrdering();
   testFoldedSearchAndRangeRuns();
+  testRangeTablesAgreeWithTheirPredicates();
+}
+
+// The module answered "is this a control character?" twice and the two
+// disagreed: isForbiddenControlChar has always said DEL is one, while the
+// range table the policy paths read left it out — so `controlPolicy: "reject"`
+// accepted DEL. CTRL_RANGES is the table those paths read now, and this pins
+// the two together across the whole C0 + C1 span rather than at DEL alone.
+function testRangeTablesAgreeWithTheirPredicates() {
+  var disagree = [];
+  for (var cp = 0x00; cp <= 0x9F; cp += 1) {
+    // TAB, LF and CR are the predicate's opt-dependent cases — the table has
+    // no opts, so they are compared through the predicate's own defaults
+    // elsewhere rather than here.
+    if (cp === 0x09 || cp === 0x0A || cp === 0x0D) continue;
+    var byPredicate = codepointClass.isForbiddenControlChar(cp);
+    var byTable = codepointClass.firstInRanges(String.fromCharCode(cp),
+                                               codepointClass.CTRL_RANGES) !== -1;
+    if (byPredicate !== byTable) {
+      disagree.push("U+" + cp.toString(16).toUpperCase() +
+                    " predicate=" + byPredicate + " table=" + byTable);
+    }
+  }
+  check("CTRL_RANGES and isForbiddenControlChar agree on every C0/C1 codepoint",
+        disagree.length === 0, disagree.slice(0, 6).join("; "));
+
+  check("CTRL_RANGES covers DEL",
+        codepointClass.firstInRanges(String.fromCharCode(0x7F), codepointClass.CTRL_RANGES) !== -1);
+  check("C0_CTRL_RANGES stays literal to the C0 block and excludes DEL",
+        codepointClass.firstInRanges(String.fromCharCode(0x7F), codepointClass.C0_CTRL_RANGES) === -1);
+
+  // U+2060..U+2064 are Default_Ignorable and grouped together by UAX #31;
+  // covering the word joiner but not its four neighbours was an off-by-four.
+  var invisible = [0x00AD, 0x200B, 0x200C, 0x200D,
+                   0x2060, 0x2061, 0x2062, 0x2063, 0x2064, 0xFEFF];
+  var missing = invisible.filter(function (cp) {
+    return codepointClass.firstInRanges(String.fromCodePoint(cp),
+                                        codepointClass.ZERO_WIDTH_RANGES) === -1;
+  });
+  check("ZERO_WIDTH_RANGES covers every invisible-formatting character",
+        missing.length === 0,
+        missing.map(function (cp) { return "U+" + cp.toString(16).toUpperCase(); }).join(", "));
+
+  // Every finding carries the four fields the docstring promises, at every
+  // policy. Rewriting one branch's object dropped `location` from the control
+  // finding while the others kept it, and nothing noticed — a consumer that
+  // highlights the offending position just got undefined.
+  var shapeErrors = [];
+  [["bidiPolicy", 0x202E], ["controlPolicy", 0x0001], ["controlPolicy", 0x007F],
+   ["nullBytePolicy", 0x0000], ["zeroWidthPolicy", 0x200B],
+   ["tagsPolicy", 0xE0041]].forEach(function (probe) {
+    ["reject", "audit", "strip"].forEach(function (policy) {
+      var opts = {};
+      opts[probe[0]] = policy;
+      var subject = "ab" + String.fromCodePoint(probe[1]) + "cd";
+      codepointClass.detectCharThreats(subject, opts, "shape").forEach(function (issue) {
+        ["kind", "severity", "ruleId", "location", "snippet"].forEach(function (field) {
+          if (issue[field] === undefined) {
+            shapeErrors.push(probe[0] + "/" + policy + " " + issue.kind +
+                             " is missing " + field);
+          }
+        });
+        if (typeof issue.location === "number" && issue.location !== 2) {
+          shapeErrors.push(probe[0] + "/" + policy + " " + issue.kind +
+                           " reported location " + issue.location + ", expected 2");
+        }
+      });
+    });
+  });
+  check("every char-threat finding carries kind, severity, ruleId, location " +
+        "and snippet, and the location is the offset of the character",
+        shapeErrors.length === 0, shapeErrors.slice(0, 5).join("; "));
+
+  // The severity a class reports at each policy, pinned exactly as the
+  // docstring states it. It is deliberately NOT uniform — control's refusing
+  // severity is `high`, and bidi and null-byte ignore the policy entirely —
+  // and a prose claim that it was uniform is what a consumer would have built
+  // a severity filter on. Pinning the table means the two cannot drift again:
+  // change the code and this fails, so the prose has to move with it.
+  var SEVERITY_TABLE = [
+    ["bidiPolicy",      0x202E, "bidi-override", "critical", "critical", "critical"],
+    ["nullBytePolicy",  0x0000, "null-byte",     "critical", "critical", "critical"],
+    ["controlPolicy",   0x0001, "control-char",  "high",     "warn",     "high"],
+    ["zeroWidthPolicy", 0x200B, "zero-width",    "critical", "warn",     "high"],
+    ["tagsPolicy",      0xE0041, "unicode-tags", "critical", "warn",     "high"],
+  ];
+  var severityErrors = [];
+  SEVERITY_TABLE.forEach(function (row) {
+    ["reject", "audit", "strip"].forEach(function (policy, i) {
+      var opts = {};
+      opts[row[0]] = policy;
+      var subject = "ab" + String.fromCodePoint(row[1]) + "cd";
+      var found = codepointClass.detectCharThreats(subject, opts, "sev")
+                    .filter(function (issue) { return issue.kind === row[2]; })[0];
+      if (!found) {
+        severityErrors.push(row[2] + " not reported at " + policy);
+        return;
+      }
+      if (found.severity !== row[3 + i]) {
+        severityErrors.push(row[2] + " at " + policy + " reported " +
+                            found.severity + ", documented " + row[3 + i]);
+      }
+    });
+  });
+  check("each char-threat class reports the severity its docstring documents, " +
+        "at every policy", severityErrors.length === 0,
+        severityErrors.slice(0, 6).join("; "));
+
+  // And the reason the mapping is safe to be non-uniform: disposition is
+  // resolved from the POLICY, not the severity. A caller routed through
+  // charThreatDisposition gets `audit` for an audited bidi override even
+  // though the finding carries a refusing severity.
+  var dispositionErrors = [];
+  SEVERITY_TABLE.forEach(function (row) {
+    [["reject", "refuse"], ["audit", "audit"], ["strip", "sanitize"]].forEach(function (pair) {
+      var opts = {};
+      opts[row[0]] = pair[0];
+      var got = gateContract.charThreatDisposition({ kind: row[2] }, opts);
+      if (got !== pair[1]) {
+        dispositionErrors.push(row[2] + " at " + pair[0] + " disposed " +
+                               got + ", expected " + pair[1]);
+      }
+    });
+  });
+  check("charThreatDisposition resolves every class from its policy, so an " +
+        "audited finding audits whatever severity it carries",
+        dispositionErrors.length === 0, dispositionErrors.slice(0, 6).join("; "));
+
+  // No enforcement path may read the narrower C0 block. Widening the shared
+  // detector to CTRL_RANGES while a strip or escape path still read
+  // C0_CTRL_RANGES meant a guard REPORTED a DEL and then handed it back in the
+  // output — `guardCsv.escapeCell`, `guardFilename.sanitize({mode:"strip"})`
+  // and `guardJson.parse({controlPolicy:"strip"})` all did. Detection and
+  // transformation have to read the same table, so the only permitted mentions
+  // of the block outside this module are in prose.
+  var libDir = path.join(__dirname, "..", "..", "lib");
+  var offenders = [];
+  fs.readdirSync(libDir).forEach(function (file) {
+    if (!/\.js$/.test(file) || file === "codepoint-class.js") return;
+    var src = fs.readFileSync(path.join(libDir, file), "utf8");
+    src.split(/\r?\n/).forEach(function (line, i) {
+      if (line.indexOf("C0_CTRL_RANGES") === -1) return;
+      var code = line.replace(/^\s+/, "");
+      if (code.indexOf("//") === 0 || code.indexOf("*") === 0) return;   // prose
+      offenders.push(file + ":" + (i + 1) + "  " + code.slice(0, 72));
+    });
+  });
+  check("no lib/ enforcement path reads C0_CTRL_RANGES instead of CTRL_RANGES",
+        offenders.length === 0, offenders.slice(0, 5).join(" | "));
 }
 
 // The walk primitives the guard family screens ASCII-folded literals, range

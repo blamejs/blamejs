@@ -273,7 +273,7 @@ async function run() {
   check("HEAD: deferred upload advertises Upload-Defer-Length:1",
     defHead.status === 200 && defHead.headers["upload-defer-length"] === "1");
 
-  // creation-with-upload: the RFC 7231 media type is case-insensitive and may
+  // creation-with-upload: the RFC 9110 §8.3.1 media type is case-insensitive and may
   // carry parameters. An exact-string compare skipped the append path for a
   // compliant `Application/Offset+Octet-Stream` (or `...; charset` variant),
   // creating the upload but silently ignoring the body. Both variants must

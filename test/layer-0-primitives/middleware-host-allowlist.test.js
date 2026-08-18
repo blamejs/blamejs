@@ -43,7 +43,7 @@ function testExactHostAllowed() {
 function testCaseInsensitiveMatch() {
   var mw = b.middleware.hostAllowlist({ hosts: ["app.example.com"] });
   var cap = _drive(mw, "APP.Example.COM");
-  check("hostAllowlist: Host match is case-insensitive (RFC 7230 §5.4)",
+  check("hostAllowlist: Host match is case-insensitive (RFC 9110 §7.2)",
     cap.nextCalled === true);
 }
 

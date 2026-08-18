@@ -5,7 +5,7 @@
  * b.middleware.compression — range/partial-content pass-through.
  *
  * A 206 Partial Content or any Content-Range response must NOT be
- * transformed (RFC 7233 §4.1): compressing it drops Content-Length but
+ * transformed (RFC 9110 §15.3.7): compressing it drops Content-Length but
  * leaves Content-Range advertising an uncompressed byte interval over a
  * now-compressed body, corrupting range-assembling clients.
  */

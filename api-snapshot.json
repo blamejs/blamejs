@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.18.33",
-  "createdAt": "2026-08-16T23:58:07.131Z",
+  "frameworkVersion": "0.18.34",
+  "createdAt": "2026-08-18T09:56:01.404Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -6827,6 +6827,10 @@
           "type": "instance",
           "ctorName": "Array"
         },
+        "CTRL_RANGES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "HEX_PAIR_RE": {
           "type": "instance",
           "ctorName": "RegExp"
@@ -7063,7 +7067,7 @@
         },
         "detectCharThreats": {
           "type": "function",
-          "arity": 4
+          "arity": 3
         },
         "detectMixedScripts": {
           "type": "function",
