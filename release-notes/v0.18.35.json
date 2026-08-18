@@ -21,6 +21,18 @@
           "body": "**Behaviour change.** Under `balanced` and `permissive` these declare `strip` or `audit` for the character classes, and all three now honour it: `sanitize()` returns the repaired document instead of raising, and `parse()` accepts a document carrying an audited character.\n\nA caller that treated the exception as \"this input is dangerous\" now receives a repaired value instead. That is what `strip` asks for, and it is what the corresponding gates already did — the sanitize functions were the outliers. Every class set to `reject` still refuses, verified per guard per profile."
         },
         {
+          "title": "guardJson.parse enforces its byte ceiling before it strips anything",
+          "body": "`maxBytes` was checked at the end of `parse`, after the character-strip policies had already run — so a small document padded with several hundred zero-width, Tags or bidi characters shrank under the limit on the way through and was accepted. A 911-byte input passed a 16-byte cap. A resource cap that an attacker removes by sending MORE input is pointing the wrong way, so the ceiling now binds the input as received, before any strip mutates it.\n\nThe hole was open for zero-width and Tags already; a `bidiPolicy: \"strip\"` pass added in this release made it reachable for a third class, which is how it was noticed."
+        },
+        {
+          "title": "guardJson.sanitize repairs a mid-stream BOM under bomPolicy",
+          "body": "U+FEFF reached the strip table only as a zero-width character, and `parse` removed only a LEADING one — so with `bomPolicy: \"strip\"` and `zeroWidthPolicy: \"allow\"`, validation reported `bom-mid-stream` on a document `sanitize` then returned still carrying it. The repair follows the BOM's own policy now: `strip` removes it wherever it sits, `reject` refuses, `allow` keeps it."
+        },
+        {
+          "title": "Vendored dependencies are current",
+          "body": "`@blamejs/pki` moves to 0.5.10, whose change is a spelling normalization across its documentation and source comments plus a gate that keeps them consistent. No functional change to the module, no lifecycle scripts, and its runtime dependency set stays empty."
+        },
+        {
           "title": "b.guardArchive drops four character policies it never read",
           "body": "Every profile declared `bidiPolicy`, `controlPolicy`, `nullBytePolicy` and `zeroWidthPolicy`, and nothing in the guard consulted any of them — an operator passing `zeroWidthPolicy: \"reject\"` was configuring nothing and had no way to discover that. Entry-name character policy comes from `filenameProfile`, which routes the name through `b.guardFilename`; that is the setting to use, and it is unchanged. The four are removed rather than wired, because two spellings of one setting is how they come to disagree."
         }
