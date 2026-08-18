@@ -17327,10 +17327,6 @@ function testNoRegexInGuardAndSafeFamily() {
     var CONTROL_HEAD_WORDS = {
       "if": 1, "while": 1, "for": 1, "switch": 1, "catch": 1, "with": 1,
     };
-    // `const`, `let` and `var` introduce a BINDING NAME, so an `of` right
-    // after one is the name and not the separator: `for (const of of xs)` is
-    // a loop over `xs` binding a variable called `of`.
-    var DECLARATION_WORDS = { "const": 1, "let": 1, "var": 1 };
     // Consume the raw text of a template from `at`, stopping either after the
     // closing backtick or after the `${` that opens a substitution. Returns
     // the index to resume the main loop at, which for a substitution is the
@@ -17577,7 +17573,18 @@ function testNoRegexInGuardAndSafeFamily() {
           // the binding name, not the separator: `for (const of of xs)` binds
           // a variable called `of` and iterates `xs`. The depth, once-only and
           // not-first constraints keep the rest of the ordinary `of`s out.
-          var afterBinding = (prev === "w" && DECLARATION_WORDS[wordBefore] !== 1) ||
+          // The word before a binding is an IDENTIFIER — the binding's own
+          // name, as in `for (const m of xs)`. A reserved word there means
+          // this `of` is that operator's operand rather than a binding:
+          // `for (typeof of / 2 / 3; …)`, and the same after `void`, `delete`
+          // and `new`, are ordinary divisions. Listing the declaration
+          // keywords caught `const`/`let`/`var` and missed the rest; asking
+          // whether the previous word is reserved covers them all, and `of`
+          // itself is contextual so `for (const of of xs)` still finds the
+          // real separator.
+          var bindingName = prev === "w" && wordBefore !== "" &&
+                            RESERVED_WORDS[wordBefore] !== 1;
+          var afterBinding = bindingName ||
                              prev === "]" || prev === "}" || prev === ")";
           if (head.isFor && head.depth === 0 && !head.sawSeparator && afterBinding) {
             ofWasKeyword = true;
@@ -17847,6 +17854,16 @@ function testNoRegexInGuardAndSafeFamily() {
     ["for (const of of /unsafe/) {}",        true,  "const binding named of"],
     ["for (let of of /unsafe/) {}",          true,  "let binding named of"],
     ["for (var of of /unsafe/) {}",          true,  "var binding named of"],
+    // A reserved word before `of` means it is that operator's operand, not a
+    // binding. Naming only the declaration keywords caught `const`/`let`/`var`
+    // and left these refusing regex-free code.
+    ["var of = 10, i = 0; for (typeof of / 2 / 3; i < 1; i++) {}", false,
+      "of as the operand of typeof"],
+    ["var of = 10, i = 0; for (void of / 2 / 3; i < 1; i++) {}", false,
+      "of as the operand of void"],
+    ["var of = 10, i = 0; for (delete of / 2 / 3; i < 1; i++) {}", false,
+      "of as the operand of delete"],
+    ["var of=1; var r = new of / 2 / 3;",    false, "of as the operand of new"],
     ["#!/usr/bin/env node\nvar r = w / 2 / 3;", false, "a shebang is not JavaScript"],
     ["#!/usr/bin/env node\nreturn /unsafe/.test(v);", true,
       "a literal on the line after a shebang"],
