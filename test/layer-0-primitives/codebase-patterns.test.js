@@ -17327,6 +17327,27 @@ function testNoRegexInGuardAndSafeFamily() {
     var CONTROL_HEAD_WORDS = {
       "if": 1, "while": 1, "for": 1, "switch": 1, "catch": 1, "with": 1,
     };
+    // The jump statements that take an optional label. ECMAScript forbids a
+    // line terminator between the keyword and the label, so a terminator after
+    // the label ends the statement.
+    var JUMP_WORDS = { "break": 1, "continue": 1 };
+    // Set when the word just consumed is the LABEL of such a jump, so the next
+    // line terminator knows it closes a statement. It has to be recorded here
+    // rather than read at the terminator, because `wordBefore` has advanced to
+    // the label itself by then.
+    var jumpLabelPending = false;
+    // Every site that CONSUMES a line terminator calls this — the terminator
+    // branch, the line comment, and the block comment. A terminator inside a
+    // comment ends a labelled jump exactly as a bare one does, and putting the
+    // reset in only the first of the three left `break lbl // c` followed by a
+    // literal unreported. Three readers, one rule.
+    function crossedLineTerminator() {
+      sawLineTerminator = true;
+      if (!jumpLabelPending) return;
+      prev = "";
+      prevWord = "";
+      jumpLabelPending = false;
+    }
     // Consume the raw text of a template from `at`, stopping either after the
     // closing backtick or after the `${` that opens a substitution. Returns
     // the index to resume the main loop at, which for a substitution is the
@@ -17382,7 +17403,14 @@ function testNoRegexInGuardAndSafeFamily() {
       // line/paragraph separators carry the same restriction.
       if (isLineTerminator(c)) {
         if (c !== "\r" || src.charAt(i + 1) !== "\n") line += 1;
-        sawLineTerminator = true;
+        // `break label` and `continue label` END at this terminator — no line
+        // terminator may sit between the keyword and its label, so a newline
+        // after the label closes the statement and the next token starts a new
+        // one, in operand position. Leaving the label as the previous token
+        // made it an expression-ender, so `break lbl\n/unsafe/.test(v)` read
+        // as division and the literal went unreported. A bare `break` already
+        // worked: the keyword itself leaves operand position.
+        crossedLineTerminator();
         continue;
       }
       // A shebang is not JavaScript. Scanned as code, the `!` leaves operand
@@ -17409,7 +17437,7 @@ function testNoRegexInGuardAndSafeFamily() {
         }
         if (src.charAt(i) === "\r" && src.charAt(i + 1) === "\n") i += 1;
         line += 1;
-        sawLineTerminator = true;
+        crossedLineTerminator();
         continue;
       }
       if (c === "/" && src.charAt(i + 1) === "*") {
@@ -17421,7 +17449,7 @@ function testNoRegexInGuardAndSafeFamily() {
           var qc = src.charAt(q);
           if (isLineTerminator(qc)) {
             if (qc !== "\r" || src.charAt(q + 1) !== "\n") line += 1;
-            sawLineTerminator = true;
+            crossedLineTerminator();
           }
         }
         i = close + 1;
@@ -17494,6 +17522,9 @@ function testNoRegexInGuardAndSafeFamily() {
         // one. Words are decided in the word branch, which lets `for await (`
         // through.
         sawControl = "";
+        // Punctuation after the label — a `;` most often — ends the statement
+        // itself, so the terminator no longer has one to close.
+        jumpLabelPending = false;
       }
       // Consume a whole identifier/keyword run so the token before a `/` is
       // known as a WORD, not just as its final letter.
@@ -17611,6 +17642,23 @@ function testNoRegexInGuardAndSafeFamily() {
         // between the two keeps the pairing alive; any other word ends it.
         if (CONTROL_HEAD_WORDS[prevWord] === 1) sawControl = prevWord;
         else if (!(sawControl && prevWord === "await")) sawControl = "";
+        // Read wordBefore while it still holds the PREVIOUS word.
+        // The label of a jump may not be separated from its keyword by a line
+        // terminator, so a name on the next line is a STATEMENT of its own and
+        // never a label. Without that test `break\nlbl\n/ 2 / 3;` — `break;`
+        // followed by an ordinary division — armed the reset, and the second
+        // terminator then blanked `lbl` and turned the division into a
+        // reported literal. A comment carrying the terminator is the same
+        // separation, which is why the test is on the flag rather than on the
+        // source characters between the two words.
+        // The keyword also has to be the ADJACENT token. `wordBefore` survives
+        // punctuation, so `var x = { break: lbl` left it reading `break` across
+        // the colon, armed the reset on `lbl`, and turned the division below it
+        // into a reported literal. Asking that the previous TOKEN was a word
+        // says what the label rule actually means: nothing but whitespace and
+        // comments may sit between the two.
+        jumpLabelPending = JUMP_WORDS[wordBefore] === 1 && prev === "w" &&
+                           prevWord !== "" && !sawLineTerminator;
         wordBefore = prevWord;
         prev = "w";
         sawLineTerminator = false;
@@ -17859,7 +17907,7 @@ function testNoRegexInGuardAndSafeFamily() {
     ["for (var i=0;i<1;i++) /unsafe/.test(v);", true, "unbraced for body"],
     ["for (const m of xs) /unsafe/.test(m);", true, "unbraced for-of body"],
     ["if (f(a)) /unsafe/.test(v);",          true,  "a call inside the head"],
-    ["var r = f(a) / 2 / 3;",                false, "division after a call closer"],
+    ["var r = f(a) / 2 / 3;",                false, "division after a call with an argument"],
     ["var r = (a+b) / 2 / 3;",               false, "division after a grouping"],
     ["if (a) x = b / 2 / 3;",                false, "division inside an unbraced body"],
     ["while (a) x = b / 2 / 3;",             false, "division inside an unbraced while"],
@@ -17899,6 +17947,77 @@ function testNoRegexInGuardAndSafeFamily() {
       "o.of outside a head still divides"],
     ["function* g(){ var of=1,i=0; for (yield of / 2 / 3; i<1; i++) {} }", false,
       "of as the operand of yield"],
+    // A labelled jump ends at the line terminator, because no terminator may
+    // sit between the keyword and its label. Leaving the label as the previous
+    // token made it an expression-ender and hid the literal on the next line.
+    // `break` itself is generated against every spelling of a terminator with
+    // the rest of them; these are the shapes that generator does not reach.
+    ["lbl: while (x) { if (y) continue lbl\n/unsafe/.test(v); }", true,
+      "continue label then a literal"],
+    ["while (x) { if (y) break\n/unsafe/.test(v); }", true,
+      "bare break then a literal"],
+    // A comment can carry the terminator, and it ends the jump the same way.
+    ["lbl: while (x) { if (y) break lbl // c\n/unsafe/.test(v); }", true,
+      "a line comment carries the terminator"],
+    ["lbl: while (x) { if (y) break lbl /*\n*/ /unsafe/.test(v); }", true,
+      "a block comment carries the terminator"],
+    ["lbl: while (x) { if (y) continue lbl // c\n/unsafe/.test(v); }", true,
+      "continue, terminator inside a line comment"],
+    ["lbl: while (x) { if (y) break lbl /* c */ ; }\nvar r = w / 2 / 3;", false,
+      "a comment carrying no terminator does not end it"],
+    // A label may not be separated from its keyword by a terminator, so a name
+    // on the next line is a statement of its own and the `/` after it divides.
+    ["lbl: while (x) { if (y) break /*\n*/ lbl\n/ 2 / 3; }", false,
+      "a comment carrying that terminator separates them too"],
+    ["lbl: while (x) { if (y) continue\nlbl\n/ 2 / 3; }", false,
+      "continue, terminator before the name"],
+    ["lbl: while (x) { if (y) break /* c */ lbl\n/unsafe/.test(v); }", true,
+      "a comment carrying no terminator keeps the label"],
+    // And the mirror of that rule: only a terminator BETWEEN the keyword and
+    // the name separates them. One anywhere earlier is spent by the token that
+    // follows it, so a jump on its own line still takes its label. Reading a
+    // stale flag here would leave the label armed as an expression-ender and
+    // the literal below it unreported, which is the silent half of the failure.
+    ["lbl: while (x) { v = 1\nbreak lbl\n/unsafe/.test(v); }", true,
+      "a terminator before the keyword does not disarm the label"],
+    ["lbl: while (x) { v = 1 // c\nbreak lbl\n/unsafe/.test(v); }", true,
+      "one in a preceding comment does not either"],
+    // The keyword has to be the token immediately before the name. Reading the
+    // previous WORD instead saw `break` across the colon of a property whose
+    // key it is, and reported the division below it.
+    ["var lbl=4; var x = { break: lbl\n/ 2 / 3 };", false,
+      "break as a property key is not a jump"],
+    ["var lbl=4; var x = { continue: lbl\n/ 2 / 3 };", false,
+      "continue as a property key is not a jump"],
+    ["var lbl=4; var x = { break: lbl, c: 1 };\nvar r = lbl / 2 / 3;", false,
+      "and the division after that key still divides"],
+    ["var lbl=4; var o = { \"break\": lbl\n/ 2 / 3 };", false,
+      "a quoted key named break is not a jump"],
+    ["var lbl=4; var o = { [`break`]: lbl\n/ 2 / 3 };", false,
+      "a computed key named break is not a jump"],
+    ["var lbl=4; var o = { break(){} };\nvar r = lbl / 2 / 3;", false,
+      "a method named break is not a jump"],
+    // A member name is blanked, so it cannot arm the jump either — the same
+    // blanking that stops `o.break` being read back as the keyword.
+    ["var lbl=4; var o={break:1,lbl:2}; var r = o.break\no.lbl / 2 / 3;", false,
+      "break reached through a dot arms nothing"],
+    ["class C { #break(){} m(){ var lbl=4; this.#break\nlbl / 2 / 3; } }", false,
+      "break as a private name arms nothing"],
+    ["lbl: while (x) { if (y) break lbl\nvar q = 1; var r = w / 2 / 3; }", false,
+      "the reset applies to one token, not the rest of the line"],
+    // Every statement a label can carry, since the jump ends inside each.
+    ["lbl: { break lbl\n/unsafe/.test(v); }", true, "labelled block"],
+    ["lbl: do { break lbl\n/unsafe/.test(v); } while (x);", true,
+      "labelled do-while"],
+    ["outer: while(a){ inner: while(b){ break outer\n/unsafe/.test(v); } }", true,
+      "the outer of two labels"],
+    ["lbl: while (x) { if (y) break lbl }\n/unsafe/.test(v);", true,
+      "a closing brace between the jump and the literal"],
+    ["lbl: while (x) { if (y) break lbl; }\nvar r = w / 2 / 3;", false,
+      "a semicolon ends it, so the next line divides"],
+    ["var lbl=4; var r = lbl / 2 / 3;", false, "a label-like identifier divides"],
+    ["var o={break:1}; var r = o.break / 2 / 3;", false,
+      "break as a member name divides"],
     ["#!/usr/bin/env node\nvar r = w / 2 / 3;", false, "a shebang is not JavaScript"],
     ["#!/usr/bin/env node\nreturn /unsafe/.test(v);", true,
       "a literal on the line after a shebang"],
@@ -18026,6 +18145,17 @@ function testNoRegexInGuardAndSafeFamily() {
                            "a comment ended by a " + name]);
     SCANNER_FIXTURES.push(["// c" + t + "return /unsafe/.test(v);", true,
                            "a literal on the line after a " + name]);
+    // The label of a jump takes the restriction on both sides: one after the
+    // label ends the statement, and one before the name means there was never
+    // a label to end. Both readings hold for every spelling of a terminator,
+    // which is the whole point of asking `isLineTerminator` rather than
+    // comparing against a line feed.
+    SCANNER_FIXTURES.push(["lbl: while (x) { if (y) break lbl" + t +
+                           "/unsafe/.test(v); }", true,
+                           "a labelled jump ended by a " + name]);
+    SCANNER_FIXTURES.push(["lbl: while (x) { if (y) break" + t + "lbl" + t +
+                           "/ 2 / 3; }", false,
+                           "a " + name + " before the name leaves no label"]);
   });
 
   // And the mirror: every token that ENDS an expression, against a bare
@@ -18095,6 +18225,37 @@ function testNoRegexInGuardAndSafeFamily() {
     ["0b1010 / 2 / 3;", false, "division after a binary literal"],
     ["0o17 / 2 / 3;",   false, "division after an octal literal"]
   );
+
+  // Most rows come from crossing token kinds against positions, so two
+  // crossings can land on the same source with the same expectation. Keep the
+  // first of each pair: a failure is reported by its label, and two rows that
+  // differ only in what they are called cannot be told apart in the report.
+  // Nineteen such pairs had accumulated, three of them sharing a label too.
+  var scannerSeen = {};
+  SCANNER_FIXTURES = SCANNER_FIXTURES.filter(function (row) {
+    var key = String(row[1]) + " " + row[0];
+    if (scannerSeen[key]) return false;
+    scannerSeen[key] = 1;
+    return true;
+  });
+
+  // Two rows that survive that still have to be distinguishable, because a
+  // failing one is named by its label alone. Two different sources sharing one
+  // send the reader to whichever they happen to find first.
+  var scannerLabels = {};
+  var scannerLabelClashes = [];
+  SCANNER_FIXTURES.forEach(function (row) {
+    if (!scannerLabels[row[2]]) { scannerLabels[row[2]] = 1; return; }
+    scannerLabelClashes.push({
+      file:    "test/layer-0-primitives/codebase-patterns.test.js",
+      line:    0,
+      content: "two regex-literal scanner fixtures are both called `" + row[2] +
+               "`, so a failure in either names code the reader cannot find. " +
+               "Give each row a label of its own",
+    });
+  });
+  _report("every regex-literal scanner fixture has a label of its own",
+          scannerLabelClashes);
 
   var selfCheck = [];
   SCANNER_FIXTURES.forEach(function (row) {
