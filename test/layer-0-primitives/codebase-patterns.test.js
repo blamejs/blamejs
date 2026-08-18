@@ -17234,6 +17234,16 @@ function testNoRegexInGuardAndSafeFamily() {
     return cp > 127 && NON_ASCII_SPACE[cp] !== 1;
   }
 
+  // The four ECMAScript line terminators, by codepoint so the source carries
+  // no invisible character of its own. Written out per site at first, and the
+  // fourth copy — inside the template reader — omitted the case where the
+  // terminator hides behind a line-continuation backslash, which reported
+  // every later hit an early line. One definition, four callers.
+  function isLineTerminator(c) {
+    var cp = c.charCodeAt(0);
+    return cp === 0x0A || cp === 0x0D || cp === 0x2028 || cp === 0x2029;
+  }
+
   // The whole ECMAScript WhiteSpace production, not just space and tab.
   // Whitespace separates tokens without being one, so anything left out of
   // this set is recorded as the previous token instead: with NBSP missing,
@@ -17288,6 +17298,56 @@ function testNoRegexInGuardAndSafeFamily() {
       prevWord = "";
       sawLineTerminator = false;
     }
+    // Open template substitutions, innermost last, each holding the brace
+    // depth reached inside it. A template can nest inside its own
+    // substitution, so one counter is not enough.
+    var templates = [];
+    // Consume the raw text of a template from `at`, stopping either after the
+    // closing backtick or after the `${` that opens a substitution. Returns
+    // the index to resume the main loop at, which for a substitution is the
+    // first character of the expression — scanned as ordinary code.
+    function consumeTemplateRaw(at) {
+      var k = at;
+      while (k < src.length) {
+        var t = src.charAt(k);
+        if (t === "\\") {
+          // A line continuation hides a terminator behind the backslash.
+          // Skipping the pair without counting it reported every later hit an
+          // early line, which is the one thing a violation has to get right.
+          var esc = src.charAt(k + 1);
+          if (isLineTerminator(esc)) {
+            line += 1;
+            if (esc === "\r" && src.charAt(k + 2) === "\n") k += 1;
+          }
+          k += 2;
+          continue;
+        }
+        if (isLineTerminator(t)) {
+          if (t !== "\r" || src.charAt(k + 1) !== "\n") line += 1;
+          k += 1;
+          continue;
+        }
+        if (t === "`") {
+          // The template is over and its value ends an expression, so a `/`
+          // after it divides.
+          endedExpression();
+          return k;
+        }
+        if (t === "$" && src.charAt(k + 1) === "{") {
+          // A substitution body starts in operand position: `${/re/}` is a
+          // literal, not a division.
+          templates.push(0);
+          prev = "";
+          prevWord = "";
+          sawLineTerminator = false;
+          return k + 1;
+        }
+        k += 1;
+      }
+      // Unterminated — treat the rest as text rather than scanning it as code.
+      endedExpression();
+      return src.length;
+    }
     for (var i = 0; i < src.length; i += 1) {
       var c = src.charAt(i);
       // ECMAScript forbids ++/-- from crossing a line terminator, so an
@@ -17295,7 +17355,7 @@ function testNoRegexInGuardAndSafeFamily() {
       // `count\n++/re/.lastIndex` is a new statement with a PREFIX update.
       // All four ECMAScript line terminators, not just LF: a lone CR and the
       // line/paragraph separators carry the same restriction.
-      if (c === "\n" || c === "\r" || c === "\u2028" || c === "\u2029") {
+      if (isLineTerminator(c)) {
         if (c !== "\r" || src.charAt(i + 1) !== "\n") line += 1;
         sawLineTerminator = true;
         continue;
@@ -17310,7 +17370,7 @@ function testNoRegexInGuardAndSafeFamily() {
         // after it, including a literal the gate exists to find.
         while (i < src.length) {
           var lc = src.charAt(i);
-          if (lc === "\n" || lc === "\r" || lc === "\u2028" || lc === "\u2029") break;
+          if (isLineTerminator(lc)) break;
           i += 1;
         }
         if (src.charAt(i) === "\r" && src.charAt(i + 1) === "\n") i += 1;
@@ -17325,7 +17385,7 @@ function testNoRegexInGuardAndSafeFamily() {
         // too: `count/*\n*/++/re/` is a prefix update, not a postfix one.
         for (var q = i; q < close; q += 1) {
           var qc = src.charAt(q);
-          if (qc === "\n" || qc === "\r" || qc === "\u2028" || qc === "\u2029") {
+          if (isLineTerminator(qc)) {
             if (qc !== "\r" || src.charAt(q + 1) !== "\n") line += 1;
             sawLineTerminator = true;
           }
@@ -17333,7 +17393,7 @@ function testNoRegexInGuardAndSafeFamily() {
         i = close + 1;
         continue;
       }
-      if (c === "\"" || c === "'" || c === "`") {
+      if (c === "\"" || c === "'") {
         var quote = c;
         i += 1;
         while (i < src.length && src.charAt(i) !== quote) {
@@ -17343,6 +17403,28 @@ function testNoRegexInGuardAndSafeFamily() {
         }
         endedExpression();       // a string literal ends an expression
         continue;
+      }
+      // A template literal is only PART text. Every `${...}` holds ordinary
+      // JavaScript, so consuming through to the closing backtick swallowed an
+      // expression along with it and `` `${/unsafe/.source}` `` passed the
+      // gate. Skip the raw segments, scan the substitutions, and let the `}`
+      // that closes one return to raw text.
+      if (c === "`") {
+        i = consumeTemplateRaw(i + 1);
+        continue;
+      }
+      // The brace that ends a substitution, as opposed to one closing an
+      // object or a block inside it. Only the innermost template can be
+      // closed, and only once its own braces are balanced.
+      if (c === "}" && templates.length > 0) {
+        if (templates[templates.length - 1] === 0) {
+          templates.pop();
+          i = consumeTemplateRaw(i + 1);
+          continue;
+        }
+        templates[templates.length - 1] -= 1;
+      } else if (c === "{" && templates.length > 0) {
+        templates[templates.length - 1] += 1;
       }
       // Consume a whole identifier/keyword run so the token before a `/` is
       // known as a WORD, not just as its final letter.
@@ -17559,6 +17641,28 @@ function testNoRegexInGuardAndSafeFamily() {
     ["var r = a[0] / 2 / 3;",               false, "division after an index closer"],
     ["var r = 4 / 2 / 3;",                  false, "division after a numeric literal"],
     ["var s = `a /unsafe/ b`;",             false, "inside a template literal"],
+    // A template is only PART text. Consuming through to the closing backtick
+    // swallowed the `${...}` expressions with it, so a literal inside one was
+    // never seen. Raw segments stay text; substitutions are scanned as code,
+    // and each starts in operand position.
+    ["var v = `${/unsafe/.source}`;",       true,  "literal in a substitution"],
+    ["var v = `a${/unsafe/.test(x)}b`;",    true,  "substitution between raw segments"],
+    ["var v = `${ {k: /unsafe/} }`;",       true,  "literal in an object in a substitution"],
+    ["var v = `${a}${/unsafe/.source}`;",   true,  "the second of two substitutions"],
+    ["var v = `${`${/unsafe/.source}`}`;",  true,  "template nested in a substitution"],
+    ["tag`${/unsafe/.source}`;",            true,  "tagged template substitution"],
+    ["var v = `${x / 2 / 3}`;",             false, "division inside a substitution"],
+    ["var v = `${ `inner /x/ raw` }`;",     false, "raw text of a nested template"],
+    ["var v = `${o.p}` + total / count;",   false, "division after a template"],
+    ["var v = `${ f({a:{b:1}}) }` + w / 2 / 3;", false,
+      "nested braces do not close the substitution early"],
+    ["var v = `${ /* c */ /unsafe/.test(x) }`;", true,
+      "comment then literal inside a substitution"],
+    ["var v = `${ '}' }` + q / 2 / 3;",     false, "a brace inside a string in a substitution"],
+    ["var v = `${ '}' }` + /unsafe/.test(x);", true,
+      "literal after a substitution holding a brace in a string"],
+    ["var re = /`/;",                       true,  "backtick inside a regex body"],
+    ["var re = /[${]/;",                    true,  "substitution opener inside a character class"],
     ["/* a /unsafe/ comment */",            false, "inside a block comment"],
     ["var r = a /* c */ / 2 / 3;",          false, "division across a block comment"],
     ["return /* c */ /unsafe/.test(v);",    true,  "literal across a block comment"],
@@ -17724,6 +17828,44 @@ function testNoRegexInGuardAndSafeFamily() {
     });
   });
   _report("the regex-literal scanner decides its own fixtures correctly", selfCheck);
+
+  // Where the scanner says a violation is, not merely that there is one: a
+  // report pointing at the wrong line sends the reader to code that is fine.
+  // Each row puts the literal on line 3 by a different route, so a terminator
+  // any reader swallows without counting shows up as an off-by-one. The
+  // template reader did exactly that with a line continuation, whose
+  // terminator is hidden behind a backslash.
+  var LINE_FIXTURES = [
+    ["var a = 1;\nvar b = 2;\nreturn /unsafe/.test(v);", 3, "two plain lines"],
+    ["var a = 1;\rvar b = 2;\rreturn /unsafe/.test(v);", 3, "carriage returns"],
+    ["var a = 1;\r\nvar b = 2;\r\nreturn /unsafe/.test(v);", 3, "CRLF pairs"],
+    ["var a = 1;" + LS.line + "var b = 2;" + LS.line + "return /unsafe/.test(v);", 3, "line separators"],
+    ["var a = 1;" + LS.para + "var b = 2;" + LS.para + "return /unsafe/.test(v);", 3, "paragraph separators"],
+    ["var a = 1;\n// c\nreturn /unsafe/.test(v);", 3, "a line comment between"],
+    ["var a = 1;\n/* c\n*/ return /unsafe/.test(v);", 3, "a block comment spanning one"],
+    ["var s = 'a\\\nb';\nreturn /unsafe/.test(v);", 3, "a continuation in a string"],
+    ["var pad = 1;\nvar v = `first\\\nsecond${/unsafe/.source}`;", 3,
+      "a continuation in template text"],
+    ["var pad = 1;\nvar v = `first\nsecond${/unsafe/.source}`;", 3,
+      "a plain terminator in template text"],
+    ["var pad = 1;\nvar v = `${ `a\nb` }${/unsafe/.source}`;", 3,
+      "a terminator in a nested template"],
+  ];
+  var lineCheck = [];
+  LINE_FIXTURES.forEach(function (row) {
+    var hits = regexLiteralLines(row[0]);
+    if (hits.length && hits[0].line === row[1]) return;
+    lineCheck.push({
+      file:    "test/layer-0-primitives/codebase-patterns.test.js",
+      line:    0,
+      content: "the regex-literal scanner reports the wrong location for " +
+               row[2] + ": expected line " + row[1] + ", got " +
+               (hits.length ? hits[0].line : "no hit at all") +
+               ". A violation pointing at the wrong line sends the reader to " +
+               "code that is fine",
+    });
+  });
+  _report("the regex-literal scanner reports the line it found a literal on", lineCheck);
 
   // guard-regex is the one member exempt from the SPIRIT as well as the
   // letter: it exists to screen operator-supplied patterns, so a pattern is
