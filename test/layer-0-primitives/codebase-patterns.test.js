@@ -17309,13 +17309,28 @@ function testNoRegexInGuardAndSafeFamily() {
     // depth reached inside it. A template can nest inside its own
     // substitution, so one counter is not enough.
     var templates = [];
-    // Open for-heads, innermost last, each holding the paren depth reached
-    // inside it — `for (const m of f(a, (b)))` must not close on the inner
-    // parens. `of` is the for-of keyword only while one of these is open.
-    var forHeads = [];
-    var sawFor = false;          // a `for` word is waiting for its `(`
+    // Open control heads — `if`, `while`, `for`, `switch`, `catch`, `with` —
+    // innermost last, each holding the paren depth reached inside it so
+    // `for (const m of f(a, (b)))` does not close on the inner parens, and a
+    // flag for whether it is a `for` (only those can hold an `of` separator).
+    //
+    // Two things depend on this. The `)` that closes one leaves STATEMENT
+    // position, not expression position, so `if (v) /unsafe/.test(v)` — an
+    // unbraced body — opens a literal where a plain `f(a) / 2` divides. And
+    // `of` is the for-of keyword only inside a for-head.
+    var controlHeads = [];
+    var sawControl = "";         // a control keyword waiting for its `(`
+    var closedControlHead = false;  // the `)` being consumed closed one
     var ofWasKeyword = false;    // the reading recorded for the last `of`
     var ofBeforeSign = false;    // and the same, for the token before a ++/--
+    var wordBefore = "";         // the word before the one just consumed
+    var CONTROL_HEAD_WORDS = {
+      "if": 1, "while": 1, "for": 1, "switch": 1, "catch": 1, "with": 1,
+    };
+    // `const`, `let` and `var` introduce a BINDING NAME, so an `of` right
+    // after one is the name and not the separator: `for (const of of xs)` is
+    // a loop over `xs` binding a variable called `of`.
+    var DECLARATION_WORDS = { "const": 1, "let": 1, "var": 1 };
     // Consume the raw text of a template from `at`, stopping either after the
     // closing backtick or after the `${` that opens a substitution. Returns
     // the index to resume the main loop at, which for a substitution is the
@@ -17460,22 +17475,29 @@ function testNoRegexInGuardAndSafeFamily() {
       // The parens of a for-head, tracked so `of` can be read per occurrence.
       // The `(` that follows a `for` opens one; every other paren inside it
       // just changes the depth, and the balancing `)` closes it.
+      closedControlHead = false;
       if (c === "(") {
-        if (sawFor) {
-          forHeads.push({ depth: 0, sawSeparator: false });
-          sawFor = false;
-        } else if (forHeads.length > 0) {
-          forHeads[forHeads.length - 1].depth += 1;
+        if (sawControl) {
+          controlHeads.push({ depth: 0, sawSeparator: false,
+                              isFor: sawControl === "for" });
+          sawControl = "";
+        } else if (controlHeads.length > 0) {
+          controlHeads[controlHeads.length - 1].depth += 1;
         }
-      } else if (c === ")" && forHeads.length > 0) {
-        if (forHeads[forHeads.length - 1].depth === 0) forHeads.pop();
-        else forHeads[forHeads.length - 1].depth -= 1;
+      } else if (c === ")" && controlHeads.length > 0) {
+        if (controlHeads[controlHeads.length - 1].depth === 0) {
+          controlHeads.pop();
+          closedControlHead = true;
+        } else {
+          controlHeads[controlHeads.length - 1].depth -= 1;
+        }
       } else if (!isWordChar(c)) {
-        // `for` must be followed by its `(`; any other punctuation and it was
-        // not a loop head. Whitespace and comments never reach here, so they
-        // cannot break the pairing — `for /* c */ (x of y)` still opens one.
-        // Words are decided in the word branch, which lets `for await (` past.
-        sawFor = false;
+        // A control keyword must be followed by its `(`; any other punctuation
+        // and it was not a head. Whitespace and comments never reach here, so
+        // they cannot break the pairing — `for /* c */ (x of y)` still opens
+        // one. Words are decided in the word branch, which lets `for await (`
+        // through.
+        sawControl = "";
       }
       // Consume a whole identifier/keyword run so the token before a `/` is
       // known as a WORD, not just as its final letter.
@@ -17547,23 +17569,27 @@ function testNoRegexInGuardAndSafeFamily() {
         // all three divide, and reading any of them as the keyword would
         // refuse valid code. `prev` here is still the token before this word.
         ofWasKeyword = false;
-        if (prevWord === "of" && forHeads.length > 0) {
-          var head = forHeads[forHeads.length - 1];
+        if (prevWord === "of" && controlHeads.length > 0) {
+          var head = controlHeads[controlHeads.length - 1];
           // A binding is an identifier, the close of a destructuring pattern,
           // or a parenthesized target — `for ((x) of xs)` is valid and leaves
-          // a `)` here. The depth, once-only and not-first constraints are
-          // what keep this from swallowing an ordinary `of`.
-          var afterBinding = prev === "w" || prev === "]" ||
-                             prev === "}" || prev === ")";
-          if (head.depth === 0 && !head.sawSeparator && afterBinding) {
+          // a `)` here. But a declaration keyword before it means THIS `of` is
+          // the binding name, not the separator: `for (const of of xs)` binds
+          // a variable called `of` and iterates `xs`. The depth, once-only and
+          // not-first constraints keep the rest of the ordinary `of`s out.
+          var afterBinding = (prev === "w" && DECLARATION_WORDS[wordBefore] !== 1) ||
+                             prev === "]" || prev === "}" || prev === ")";
+          if (head.isFor && head.depth === 0 && !head.sawSeparator && afterBinding) {
             ofWasKeyword = true;
             head.sawSeparator = true;
           }
         }
-        // A `for` opens a head only as a keyword, and only if a `(` follows.
-        // `for await (... of ...)` is a for-head too, so `await` between the
-        // two keeps the pairing alive; any other word ends it.
-        sawFor = prevWord === "for" || (sawFor && prevWord === "await");
+        // A control keyword opens a head only as a keyword, and only if a `(`
+        // follows. `for await (... of ...)` is a for-head too, so `await`
+        // between the two keeps the pairing alive; any other word ends it.
+        if (CONTROL_HEAD_WORDS[prevWord] === 1) sawControl = prevWord;
+        else if (!(sawControl && prevWord === "await")) sawControl = "";
+        wordBefore = prevWord;
         prev = "w";
         sawLineTerminator = false;
         i -= 1;
@@ -17618,6 +17644,12 @@ function testNoRegexInGuardAndSafeFamily() {
         } else if ((c === "+" || c === "-") && src.charAt(i - 1) === c) {
           prev = tokenEndsExpression(prevBeforeSign, prevWordBeforeSign,
                                      ofBeforeSign) ? "x" : c;
+        } else if (closedControlHead) {
+          // The `)` closing a control head does NOT end an expression — what
+          // follows is a statement, and an unbraced body can open with a
+          // literal. Recording it as an ordinary closer made
+          // `if (v) /unsafe/.test(v)` read as division and go unreported.
+          prev = "";
         } else {
           prev = c;
         }
@@ -17796,6 +17828,25 @@ function testNoRegexInGuardAndSafeFamily() {
       "literal inside a private method"],
     ["var o = {delete:4}; var r = o?.delete / 2 / 3;", false,
       "optional chaining to a reserved member name"],
+    // The `)` that closes a control head leaves STATEMENT position, so an
+    // unbraced body can open with a literal. An ordinary call or grouping
+    // closer still ends an expression, which is what keeps the divisions here
+    // from being reported.
+    ["if (v) /unsafe/.test(v);",             true,  "unbraced if body"],
+    ["while (v) /unsafe/.test(v);",          true,  "unbraced while body"],
+    ["for (var i=0;i<1;i++) /unsafe/.test(v);", true, "unbraced for body"],
+    ["for (const m of xs) /unsafe/.test(m);", true, "unbraced for-of body"],
+    ["if (f(a)) /unsafe/.test(v);",          true,  "a call inside the head"],
+    ["var r = f(a) / 2 / 3;",                false, "division after a call closer"],
+    ["var r = (a+b) / 2 / 3;",               false, "division after a grouping"],
+    ["if (a) x = b / 2 / 3;",                false, "division inside an unbraced body"],
+    ["while (a) x = b / 2 / 3;",             false, "division inside an unbraced while"],
+    ["for (const m of xs) x = m / 2 / 3;",   false, "division inside a for-of body"],
+    ["switch (x) { case 1: var r = w / 2 / 3; }", false, "division inside a switch"],
+    // A declaration keyword before `of` means THIS `of` is the binding name.
+    ["for (const of of /unsafe/) {}",        true,  "const binding named of"],
+    ["for (let of of /unsafe/) {}",          true,  "let binding named of"],
+    ["for (var of of /unsafe/) {}",          true,  "var binding named of"],
     ["#!/usr/bin/env node\nvar r = w / 2 / 3;", false, "a shebang is not JavaScript"],
     ["#!/usr/bin/env node\nreturn /unsafe/.test(v);", true,
       "a literal on the line after a shebang"],
