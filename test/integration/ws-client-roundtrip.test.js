@@ -306,7 +306,7 @@ async function run() {
   }, { label: "ws-roundtrip: client5 closed before server5.close()" });
   server5.close();
 
-  console.log("OK — ws-client-roundtrip integration tests");
+  console.log("OK — " + helpers.getChecks() + " checks passed");
 }
 
 module.exports = { run: run };

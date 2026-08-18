@@ -918,7 +918,11 @@ async function run() {
 module.exports = { run: run };
 if (require.main === module) {
   run().then(
-    function () { console.log("[federation-auth] OK"); },
+    // Report the COUNT, not just "OK". The runner reads this line to fill its
+    // summary column, and a file that printed only a bare OK left that column
+    // blank — indistinguishable from a file that had silently stopped
+    // asserting. This one carries 77 checks; that is worth being able to see.
+    function () { console.log("OK — " + helpers.getChecks() + " checks passed"); },
     function (e) { console.error("[federation-auth] FAIL:", e.stack || e); process.exit(1); }
   );
 }
