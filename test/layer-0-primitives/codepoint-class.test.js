@@ -8,6 +8,7 @@
 var helpers = require("../helpers");
 var check = helpers.check;
 var codepointClass = require("../../lib/codepoint-class");
+var gateContract   = require("../../lib/gate-contract");
 var fs   = require("fs");
 var path = require("path");
 
@@ -859,6 +860,61 @@ function testRangeTablesAgreeWithTheirPredicates() {
   check("every char-threat finding carries kind, severity, ruleId, location " +
         "and snippet, and the location is the offset of the character",
         shapeErrors.length === 0, shapeErrors.slice(0, 5).join("; "));
+
+  // The severity a class reports at each policy, pinned exactly as the
+  // docstring states it. It is deliberately NOT uniform — control's refusing
+  // severity is `high`, and bidi and null-byte ignore the policy entirely —
+  // and a prose claim that it was uniform is what a consumer would have built
+  // a severity filter on. Pinning the table means the two cannot drift again:
+  // change the code and this fails, so the prose has to move with it.
+  var SEVERITY_TABLE = [
+    ["bidiPolicy",      0x202E, "bidi-override", "critical", "critical", "critical"],
+    ["nullBytePolicy",  0x0000, "null-byte",     "critical", "critical", "critical"],
+    ["controlPolicy",   0x0001, "control-char",  "high",     "warn",     "high"],
+    ["zeroWidthPolicy", 0x200B, "zero-width",    "critical", "warn",     "high"],
+    ["tagsPolicy",      0xE0041, "unicode-tags", "critical", "warn",     "high"],
+  ];
+  var severityErrors = [];
+  SEVERITY_TABLE.forEach(function (row) {
+    ["reject", "audit", "strip"].forEach(function (policy, i) {
+      var opts = {};
+      opts[row[0]] = policy;
+      var subject = "ab" + String.fromCodePoint(row[1]) + "cd";
+      var found = codepointClass.detectCharThreats(subject, opts, "sev")
+                    .filter(function (issue) { return issue.kind === row[2]; })[0];
+      if (!found) {
+        severityErrors.push(row[2] + " not reported at " + policy);
+        return;
+      }
+      if (found.severity !== row[3 + i]) {
+        severityErrors.push(row[2] + " at " + policy + " reported " +
+                            found.severity + ", documented " + row[3 + i]);
+      }
+    });
+  });
+  check("each char-threat class reports the severity its docstring documents, " +
+        "at every policy", severityErrors.length === 0,
+        severityErrors.slice(0, 6).join("; "));
+
+  // And the reason the mapping is safe to be non-uniform: disposition is
+  // resolved from the POLICY, not the severity. A caller routed through
+  // charThreatDisposition gets `audit` for an audited bidi override even
+  // though the finding carries a refusing severity.
+  var dispositionErrors = [];
+  SEVERITY_TABLE.forEach(function (row) {
+    [["reject", "refuse"], ["audit", "audit"], ["strip", "sanitize"]].forEach(function (pair) {
+      var opts = {};
+      opts[row[0]] = pair[0];
+      var got = gateContract.charThreatDisposition({ kind: row[2] }, opts);
+      if (got !== pair[1]) {
+        dispositionErrors.push(row[2] + " at " + pair[0] + " disposed " +
+                               got + ", expected " + pair[1]);
+      }
+    });
+  });
+  check("charThreatDisposition resolves every class from its policy, so an " +
+        "audited finding audits whatever severity it carries",
+        dispositionErrors.length === 0, dispositionErrors.slice(0, 6).join("; "));
 
   // No enforcement path may read the narrower C0 block. Widening the shared
   // detector to CTRL_RANGES while a strip or escape path still read
