@@ -17181,10 +17181,13 @@ function testNoRegexInGuardAndSafeFamily() {
   // one, which is why this formulation stops needing entries.
   var EXPRESSION_ENDERS = {
     "this": 1, "super": 1, "true": 1, "false": 1, "null": 1,
-    // `of` is contextual and never a keyword before an operand in practice —
-    // `for (x of /re/)` is not a thing anyone writes, while `var of = 12`
-    // is legal — so it is an identifier here.
-    "of": 1,
+    // `of` is deliberately absent: it is contextual and decided per
+    // occurrence, not per file. Inside a for-head it is the for-of keyword
+    // and the `/` after it opens a literal — `for (const m of
+    // /unsafe/g[Symbol.matchAll](v))` is valid and was going unreported.
+    // Anywhere else it is an ordinary identifier and that `/` divides.
+    // Reading it one way for the whole file gets the other position wrong;
+    // see _ofIsKeyword below.
     // `await` and `yield` are contextual the other way and are deliberately
     // NOT listed. A walk without scope analysis cannot tell the keyword from
     // the identifier, so the bias has to be chosen, and for this gate it goes
@@ -17269,8 +17272,12 @@ function testNoRegexInGuardAndSafeFamily() {
   // regex decision and the prefix/postfix decision. Duplicating it is how
   // `return ++/unsafe/.lastIndex` went missing: the copy checked only that the
   // previous token was a WORD, losing the reserved-word half of the rule.
-  function tokenEndsExpression(kind, word) {
+  function tokenEndsExpression(kind, word, ofWasKeyword) {
     if (kind === "w") {
+      // `of` is the one word whose answer depends on where it stood rather
+      // than on what it is, so the caller supplies the reading it recorded
+      // when it consumed the token.
+      if (word === "of") return !ofWasKeyword;
       return word === "" || EXPRESSION_ENDERS[word] === 1 ||
              RESERVED_WORDS[word] !== 1;
     }
@@ -17302,6 +17309,13 @@ function testNoRegexInGuardAndSafeFamily() {
     // depth reached inside it. A template can nest inside its own
     // substitution, so one counter is not enough.
     var templates = [];
+    // Open for-heads, innermost last, each holding the paren depth reached
+    // inside it — `for (const m of f(a, (b)))` must not close on the inner
+    // parens. `of` is the for-of keyword only while one of these is open.
+    var forHeads = [];
+    var sawFor = false;          // a `for` word is waiting for its `(`
+    var ofWasKeyword = false;    // the reading recorded for the last `of`
+    var ofBeforeSign = false;    // and the same, for the token before a ++/--
     // Consume the raw text of a template from `at`, stopping either after the
     // closing backtick or after the `${` that opens a substitution. Returns
     // the index to resume the main loop at, which for a substitution is the
@@ -17426,6 +17440,26 @@ function testNoRegexInGuardAndSafeFamily() {
       } else if (c === "{" && templates.length > 0) {
         templates[templates.length - 1] += 1;
       }
+      // The parens of a for-head, tracked so `of` can be read per occurrence.
+      // The `(` that follows a `for` opens one; every other paren inside it
+      // just changes the depth, and the balancing `)` closes it.
+      if (c === "(") {
+        if (sawFor) {
+          forHeads.push({ depth: 0, sawSeparator: false });
+          sawFor = false;
+        } else if (forHeads.length > 0) {
+          forHeads[forHeads.length - 1].depth += 1;
+        }
+      } else if (c === ")" && forHeads.length > 0) {
+        if (forHeads[forHeads.length - 1].depth === 0) forHeads.pop();
+        else forHeads[forHeads.length - 1].depth -= 1;
+      } else if (!isWordChar(c)) {
+        // `for` must be followed by its `(`; any other punctuation and it was
+        // not a loop head. Whitespace and comments never reach here, so they
+        // cannot break the pairing — `for /* c */ (x of y)` still opens one.
+        // Words are decided in the word branch, which lets `for await (` past.
+        sawFor = false;
+      }
       // Consume a whole identifier/keyword run so the token before a `/` is
       // known as a WORD, not just as its final letter.
       // A numeric literal is one token and ends an expression. Consumed
@@ -17482,6 +17516,33 @@ function testNoRegexInGuardAndSafeFamily() {
         // A word reached through `.` is a member name, which ends an
         // expression whatever it is called — `a.in`, `obj.delete`, `x.new`.
         prevWord = prev === "." ? "" : src.slice(wordStart, i);
+        // Record which `of` this is while the for-head state still refers to
+        // it. A member name is never the keyword, so `o.of / 2` divides.
+        // Being inside a for-head is not enough on its own: the separator sits
+        // at the head's OWN paren depth, occurs once, and follows the binding.
+        // `for (of / 2 / 3; i < n; i++)` opens the head with an ordinary
+        // variable, `for (const x of (of / 2 / 3))` has one nested inside the
+        // iterable, and `for (const m of of)` has one after the separator —
+        // all three divide, and reading any of them as the keyword would
+        // refuse valid code. `prev` here is still the token before this word.
+        ofWasKeyword = false;
+        if (prevWord === "of" && forHeads.length > 0) {
+          var head = forHeads[forHeads.length - 1];
+          // A binding is an identifier, the close of a destructuring pattern,
+          // or a parenthesized target — `for ((x) of xs)` is valid and leaves
+          // a `)` here. The depth, once-only and not-first constraints are
+          // what keep this from swallowing an ordinary `of`.
+          var afterBinding = prev === "w" || prev === "]" ||
+                             prev === "}" || prev === ")";
+          if (head.depth === 0 && !head.sawSeparator && afterBinding) {
+            ofWasKeyword = true;
+            head.sawSeparator = true;
+          }
+        }
+        // A `for` opens a head only as a keyword, and only if a `(` follows.
+        // `for await (... of ...)` is a for-head too, so `await` between the
+        // two keeps the pairing alive; any other word ends it.
+        sawFor = prevWord === "for" || (sawFor && prevWord === "await");
         prev = "w";
         sawLineTerminator = false;
         i -= 1;
@@ -17491,7 +17552,7 @@ function testNoRegexInGuardAndSafeFamily() {
       // is the closed half of the question: an identifier, a literal, a
       // closing `)` or `]`, or one of the value keywords. Every other reserved
       // word leaves operand position, so no keyword needs naming here.
-      var endsExpression = tokenEndsExpression(prev, prevWord);
+      var endsExpression = tokenEndsExpression(prev, prevWord, ofWasKeyword);
       if (c === "/" && !endsExpression) {
         var j = i + 1;
         var inClass = false;
@@ -17531,9 +17592,11 @@ function testNoRegexInGuardAndSafeFamily() {
         if ((c === "+" || c === "-") && src.charAt(i + 1) === c) {
           prevBeforeSign = brokeLine ? "" : prev;
           prevWordBeforeSign = brokeLine ? "" : prevWord;
+          ofBeforeSign = brokeLine ? false : ofWasKeyword;
           prev = c;
         } else if ((c === "+" || c === "-") && src.charAt(i - 1) === c) {
-          prev = tokenEndsExpression(prevBeforeSign, prevWordBeforeSign) ? "x" : c;
+          prev = tokenEndsExpression(prevBeforeSign, prevWordBeforeSign,
+                                     ofBeforeSign) ? "x" : c;
         } else {
           prev = c;
         }
@@ -17663,6 +17726,42 @@ function testNoRegexInGuardAndSafeFamily() {
       "literal after a substitution holding a brace in a string"],
     ["var re = /`/;",                       true,  "backtick inside a regex body"],
     ["var re = /[${]/;",                    true,  "substitution opener inside a character class"],
+    // `of` decided per occurrence. Reading it as an identifier everywhere kept
+    // `var of = 12` working and lost the real keyword position; reading it as
+    // a keyword everywhere would trade one for the other.
+    ["for (const m of /unsafe/g[Symbol.matchAll](v)) {}", true, "for-of over a literal"],
+    ["for (var m of /unsafe/[Symbol.matchAll](v)) {}", true, "for-of, var binding"],
+    ["for (const [a] of /unsafe/g[Symbol.matchAll](v)) {}", true, "for-of, destructured"],
+    ["label: for (const m of /unsafe/g[Symbol.matchAll](v)) {}", true, "labelled for-of"],
+    ["async function g(){ for await (const m of /unsafe/g[Symbol.matchAll](v)) {} }",
+      true, "for await-of over a literal"],
+    ["for (const k in /unsafe/) {}",        true,  "for-in over a literal"],
+    ["for (const m of x) { return /unsafe/.test(m); }", true, "literal in a for-of body"],
+    ["var of = 12; var ratio = of / 2 / 3;", false, "of as a plain identifier"],
+    ["var o = { of: 4 }; var r = o.of / 2 / 3;", false, "of as a member name"],
+    ["function f(of) { return of / 2 / 3; }", false, "of as a parameter"],
+    ["for (const m of x) {} var of = 2; var r = of / 2 / 3;", false,
+      "of is an identifier again once the for-head closes"],
+    ["for (const m of f(a, (b))) {} var r = w / 2 / 3;", false,
+      "parens inside a for-head do not close it early"],
+    ["for (const a of b) { for (const c of d) {} } var r = w / 2 / 3;", false,
+      "nested for-heads both close"],
+    ["for (var i = 0; i < n; i += 1) {} var r = w / 2 / 3;", false,
+      "a classic for-head does not swallow the division"],
+    ["var o = {}; o.for = 1; var r = o.for / 2 / 3;", false, "for as a member name"],
+    // Inside a for-head is not enough on its own — the separator is one
+    // position within it, and the other `of`s there are ordinary variables
+    // whose division must not be refused.
+    ["for (const x of (of / 2 / 3)) {}", false, "of nested inside the iterable"],
+    ["var of=1,i=0,n=3; for (of / 2 / 3; i < n; i++) {}", false, "of opens the head"],
+    ["var of=2; for (const m of of) {} var r = of / 2 / 3;", false,
+      "of after the separator is a variable again"],
+    ["var x; for ((x) of /unsafe/g[Symbol.matchAll](v)) {}", true,
+      "parenthesized for-of target"],
+    ["var of=1,i=0,n=3; for (f(); of < n; of++) {} var r = of / 2 / 3;", false,
+      "of in a classic head that already held a call"],
+    ["for (const m of f(a)) {} var of = 1; var r = of / 2 / 3;", false,
+      "a call in the iterable does not leave the head open"],
     ["/* a /unsafe/ comment */",            false, "inside a block comment"],
     ["var r = a /* c */ / 2 / 3;",          false, "division across a block comment"],
     ["return /* c */ /unsafe/.test(v);",    true,  "literal across a block comment"],
