@@ -17292,6 +17292,11 @@ function testNoRegexInGuardAndSafeFamily() {
     var prevBeforeSign = "";      // token kind before a ++ / -- pair
     var prevWordBeforeSign = "";  // and the word, when it was one
     var sawLineTerminator = false;
+    // Whether any token has been consumed since the last line terminator.
+    // Annex B's `-->` opens a comment only when nothing but whitespace and
+    // comments precedes it on the line; with a token before it on the same
+    // line the source does not parse at all.
+    var lineHasToken = false;
     var line = 1;
     // One place that records "the token just consumed ends an expression".
     // Three branches used to set these three fields by hand, and the string
@@ -17304,6 +17309,7 @@ function testNoRegexInGuardAndSafeFamily() {
       prev = "x";
       prevWord = "";
       sawLineTerminator = false;
+      lineHasToken = true;
     }
     // Open template substitutions, innermost last, each holding the brace
     // depth reached inside it. A template can nest inside its own
@@ -17341,8 +17347,20 @@ function testNoRegexInGuardAndSafeFamily() {
     // comment ends a labelled jump exactly as a bare one does, and putting the
     // reset in only the first of the three left `break lbl // c` followed by a
     // literal unreported. Three readers, one rule.
+    // Every single-line comment form ends the same way: run to the next line
+    // terminator, count a CRLF pair once, and SPEND that terminator through
+    // crossedLineTerminator so it still ends a labelled jump. Three forms share
+    // it — `//` and Annex B's `<!--` and `-->` — and writing the walk out once
+    // per form is precisely how one of them ends up not spending it.
+    function consumeLineComment() {
+      while (i < src.length && !isLineTerminator(src.charAt(i))) i += 1;
+      if (src.charAt(i) === "\r" && src.charAt(i + 1) === "\n") i += 1;
+      line += 1;
+      crossedLineTerminator();
+    }
     function crossedLineTerminator() {
       sawLineTerminator = true;
+      lineHasToken = false;
       if (!jumpLabelPending) return;
       prev = "";
       prevWord = "";
@@ -17426,18 +17444,22 @@ function testNoRegexInGuardAndSafeFamily() {
       // `prev`, and it must not clear the pending line state — a terminator
       // followed by indentation still forbids a postfix update.
       if (isWhiteSpace(c)) continue;
-      if (c === "/" && src.charAt(i + 1) === "/") {
-        // A line comment ends at ANY line terminator. Stopping only at LF ran
-        // to end-of-file on a CR-terminated line and swallowed everything
-        // after it, including a literal the gate exists to find.
-        while (i < src.length) {
-          var lc = src.charAt(i);
-          if (isLineTerminator(lc)) break;
-          i += 1;
-        }
-        if (src.charAt(i) === "\r" && src.charAt(i + 1) === "\n") i += 1;
-        line += 1;
-        crossedLineTerminator();
+      if (c === "/" && src.charAt(i + 1) === "/") { consumeLineComment(); continue; }
+      // Annex B HTML-like comments are part of the Script grammar Node parses
+      // a CommonJS file with, so a scanner that knows only `//` and `/*` reads
+      // their contents as code and reports a literal inside one — the gate
+      // refusing source that holds no regular expression at all.
+      //
+      // `<!--` opens a line comment anywhere a comment may appear, not only at
+      // the start of one: `module.exports = a <!--b;` exports `a` and comments
+      // the rest away rather than comparing. `-->` opens one only when nothing
+      // but whitespace and comments precedes it on the line — with a token
+      // before it the source does not parse, so there is no reading to get
+      // right. Both were confirmed against the running engine rather than read
+      // off the grammar.
+      if (c === "<" && src.substr(i, 4) === "<!--") { consumeLineComment(); continue; }
+      if (c === "-" && !lineHasToken && src.substr(i, 3) === "-->") {
+        consumeLineComment();
         continue;
       }
       if (c === "/" && src.charAt(i + 1) === "*") {
@@ -17662,6 +17684,7 @@ function testNoRegexInGuardAndSafeFamily() {
         wordBefore = prevWord;
         prev = "w";
         sawLineTerminator = false;
+        lineHasToken = true;
         i -= 1;
         continue;
       }
@@ -17724,6 +17747,7 @@ function testNoRegexInGuardAndSafeFamily() {
           prev = c;
         }
         prevWord = "";
+        lineHasToken = true;
       }
     }
     return hits;
@@ -18216,6 +18240,41 @@ function testNoRegexInGuardAndSafeFamily() {
     ["return // c\r/unsafe/.test(v);", true,  "carriage-return-terminated line comment"],
     ["return // c" + LS.line + "/unsafe/.test(v);", true, "U+2028-terminated line comment"],
     ["var r = a; // c\nvar q = b / 2 / 3;", false, "line comment then a division"],
+    // Annex B's HTML-like comments. Node parses a CommonJS file as a Script,
+    // where both forms are comments; reading their contents as code made the
+    // gate refuse source with no regular expression in it. Every expectation
+    // here was confirmed by running the shape, not by reading the grammar.
+    ["\"use strict\";\n<!-- /unsafe/.test(v);\n", false,
+      "an opening HTML comment hides the rest of its line"],
+    ["var a=4;\nvar r = a <!-- /unsafe/.test(v);\n", false,
+      "and it opens one mid-expression, not only at a statement start"],
+    ["var x=1;\n--> /unsafe/.test(v);\n", false,
+      "a closing HTML comment at the start of a line"],
+    ["var x=1;\n   --> /unsafe/.test(v);\n", false,
+      "indentation still leaves it at the start of the line"],
+    ["var x=1;\n/* c */ --> /unsafe/.test(v);\n", false,
+      "so does a block comment before it"],
+    ["-->/unsafe/.test(v);\nvar x=1;\n", false,
+      "a closing HTML comment on the first line of the file"],
+    // The two shapes that must NOT be read as comments.
+    ["var a=4,b=2;\nvar r = a-->b;\nreturn /unsafe/.test(v);", true,
+      "a token before it makes it a decrement and a comparison"],
+    // The row that decides the guard: the literal sits on the SAME line, after
+    // the `-->`. Read as a comment it disappears; read as `a-- >` it is an
+    // operand and has to be reported. `var r = a--> /unsafe/.test(b)` runs and
+    // yields true, so the code is real and so is the literal in it.
+    ["var a=4,b=\"x\";\nvar r = a--> /unsafe/.test(b);", true,
+      "a decrement and a comparison leave the literal on that line reportable"],
+    ["var s = \"<!--\";\nreturn /unsafe/.test(v);", true,
+      "an opening HTML comment inside a string is text"],
+    ["var s = \"-->\";\nreturn /unsafe/.test(v);", true,
+      "a closing one inside a string is text too"],
+    // And they end their line like any other comment — the terminator is still
+    // spent, so it still ends a labelled jump and still advances the count.
+    ["var x=1;\n<!-- c\nreturn /unsafe/.test(v);", true,
+      "the line after an opening HTML comment is scanned"],
+    ["lbl: while (x) { if (y) break lbl <!-- c\n/unsafe/.test(v); }", true,
+      "an opening HTML comment carries the terminator that ends a jump"],
     // A dot belongs to a number only in plain decimal form. After an
     // exponent, in a radix literal, or after the BigInt suffix it is member
     // access, and the word following it is a member name.
