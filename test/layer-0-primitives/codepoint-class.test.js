@@ -8,6 +8,8 @@
 var helpers = require("../helpers");
 var check = helpers.check;
 var codepointClass = require("../../lib/codepoint-class");
+var fs   = require("fs");
+var path = require("path");
 
 function testIsForbiddenControlChar() {
   var f = codepointClass.isForbiddenControlChar;
@@ -857,6 +859,28 @@ function testRangeTablesAgreeWithTheirPredicates() {
   check("every char-threat finding carries kind, severity, ruleId, location " +
         "and snippet, and the location is the offset of the character",
         shapeErrors.length === 0, shapeErrors.slice(0, 5).join("; "));
+
+  // No enforcement path may read the narrower C0 block. Widening the shared
+  // detector to CTRL_RANGES while a strip or escape path still read
+  // C0_CTRL_RANGES meant a guard REPORTED a DEL and then handed it back in the
+  // output — `guardCsv.escapeCell`, `guardFilename.sanitize({mode:"strip"})`
+  // and `guardJson.parse({controlPolicy:"strip"})` all did. Detection and
+  // transformation have to read the same table, so the only permitted mentions
+  // of the block outside this module are in prose.
+  var libDir = path.join(__dirname, "..", "..", "lib");
+  var offenders = [];
+  fs.readdirSync(libDir).forEach(function (file) {
+    if (!/\.js$/.test(file) || file === "codepoint-class.js") return;
+    var src = fs.readFileSync(path.join(libDir, file), "utf8");
+    src.split(/\r?\n/).forEach(function (line, i) {
+      if (line.indexOf("C0_CTRL_RANGES") === -1) return;
+      var code = line.replace(/^\s+/, "");
+      if (code.indexOf("//") === 0 || code.indexOf("*") === 0) return;   // prose
+      offenders.push(file + ":" + (i + 1) + "  " + code.slice(0, 72));
+    });
+  });
+  check("no lib/ enforcement path reads C0_CTRL_RANGES instead of CTRL_RANGES",
+        offenders.length === 0, offenders.slice(0, 5).join(" | "));
 }
 
 // The walk primitives the guard family screens ASCII-folded literals, range
