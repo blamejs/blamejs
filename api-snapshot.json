@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.18.34",
-  "createdAt": "2026-08-18T05:16:46.543Z",
+  "createdAt": "2026-08-18T05:55:25.359Z",
   "exports": {
     "a2a": {
       "type": "object",

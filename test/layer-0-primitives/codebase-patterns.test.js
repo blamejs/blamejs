@@ -17582,8 +17582,23 @@ function testNoRegexInGuardAndSafeFamily() {
           // whether the previous word is reserved covers them all, and `of`
           // itself is contextual so `for (const of of xs)` still finds the
           // real separator.
-          var bindingName = prev === "w" && wordBefore !== "" &&
-                            RESERVED_WORDS[wordBefore] !== 1;
+          // `await` is the exception, because it is contextual: in a CommonJS
+          // script it is an ordinary binding, so `var await; for (await of
+          // /unsafe/) {}` is valid and the literal has to be reported. It sits
+          // in RESERVED_WORDS for the operand-position question, where reading
+          // it as a keyword over-detects; here reading it as a keyword would
+          // make the gate go SILENT on a literal, and silence is the failure
+          // this gate exists to prevent. `yield` is deliberately not included:
+          // for it the same choice runs the other way, turning
+          // `for (yield of / 2 / 3; …)` into a false positive.
+          // A word reached through `.` blanks `wordBefore`, and that is a
+          // MEMBER EXPRESSION — `for (o.prop of xs)` and `for (o.a.b of xs)`
+          // are valid targets, as is `for (o.of of xs)`. Requiring a non-empty
+          // previous word here excluded all three and lost the literal after
+          // them, so the empty case is a target rather than a disqualifier.
+          var bindingName = prev === "w" &&
+                            (RESERVED_WORDS[wordBefore] !== 1 ||
+                             wordBefore === "await");
           var afterBinding = bindingName ||
                              prev === "]" || prev === "}" || prev === ")";
           if (head.isFor && head.depth === 0 && !head.sawSeparator && afterBinding) {
@@ -17864,6 +17879,26 @@ function testNoRegexInGuardAndSafeFamily() {
     ["var of = 10, i = 0; for (delete of / 2 / 3; i < 1; i++) {}", false,
       "of as the operand of delete"],
     ["var of=1; var r = new of / 2 / 3;",    false, "of as the operand of new"],
+    // `await` is contextual, so it CAN be the target. Reading it as a keyword
+    // here would make the gate go silent on a literal; for `yield` the same
+    // choice runs the other way and would refuse regex-free code, so the two
+    // are treated differently on purpose.
+    ["var await; for (await of /unsafe/) {}", true, "await as the for-of target"],
+    // The rest of the target grammar: a member expression is a valid target,
+    // and a word reached through `.` is exactly that rather than a reason to
+    // disqualify one.
+    ["var o={}; for (o.prop of /unsafe/g[Symbol.matchAll](v)) {}", true,
+      "member expression target"],
+    ["var o={}; for (o.a.b of /unsafe/g[Symbol.matchAll](v)) {}", true,
+      "nested member target"],
+    ["var o={}; for (o.of of /unsafe/g[Symbol.matchAll](v)) {}", true,
+      "member named of, then the separator"],
+    ["var o={}; for (o[0] of /unsafe/g[Symbol.matchAll](v)) {}", true,
+      "index target"],
+    ["var o={of:4}; var r = o.of / 2 / 3;", false,
+      "o.of outside a head still divides"],
+    ["function* g(){ var of=1,i=0; for (yield of / 2 / 3; i<1; i++) {} }", false,
+      "of as the operand of yield"],
     ["#!/usr/bin/env node\nvar r = w / 2 / 3;", false, "a shebang is not JavaScript"],
     ["#!/usr/bin/env node\nreturn /unsafe/.test(v);", true,
       "a literal on the line after a shebang"],
