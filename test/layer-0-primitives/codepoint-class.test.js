@@ -785,6 +785,78 @@ async function run() {
   testResolveTagsPolicy();
   testCharThreatCeilingOrdering();
   testFoldedSearchAndRangeRuns();
+  testRangeTablesAgreeWithTheirPredicates();
+}
+
+// The module answered "is this a control character?" twice and the two
+// disagreed: isForbiddenControlChar has always said DEL is one, while the
+// range table the policy paths read left it out — so `controlPolicy: "reject"`
+// accepted DEL. CTRL_RANGES is the table those paths read now, and this pins
+// the two together across the whole C0 + C1 span rather than at DEL alone.
+function testRangeTablesAgreeWithTheirPredicates() {
+  var disagree = [];
+  for (var cp = 0x00; cp <= 0x9F; cp += 1) {
+    // TAB, LF and CR are the predicate's opt-dependent cases — the table has
+    // no opts, so they are compared through the predicate's own defaults
+    // elsewhere rather than here.
+    if (cp === 0x09 || cp === 0x0A || cp === 0x0D) continue;
+    var byPredicate = codepointClass.isForbiddenControlChar(cp);
+    var byTable = codepointClass.firstInRanges(String.fromCharCode(cp),
+                                               codepointClass.CTRL_RANGES) !== -1;
+    if (byPredicate !== byTable) {
+      disagree.push("U+" + cp.toString(16).toUpperCase() +
+                    " predicate=" + byPredicate + " table=" + byTable);
+    }
+  }
+  check("CTRL_RANGES and isForbiddenControlChar agree on every C0/C1 codepoint",
+        disagree.length === 0, disagree.slice(0, 6).join("; "));
+
+  check("CTRL_RANGES covers DEL",
+        codepointClass.firstInRanges(String.fromCharCode(0x7F), codepointClass.CTRL_RANGES) !== -1);
+  check("C0_CTRL_RANGES stays literal to the C0 block and excludes DEL",
+        codepointClass.firstInRanges(String.fromCharCode(0x7F), codepointClass.C0_CTRL_RANGES) === -1);
+
+  // U+2060..U+2064 are Default_Ignorable and grouped together by UAX #31;
+  // covering the word joiner but not its four neighbours was an off-by-four.
+  var invisible = [0x00AD, 0x200B, 0x200C, 0x200D,
+                   0x2060, 0x2061, 0x2062, 0x2063, 0x2064, 0xFEFF];
+  var missing = invisible.filter(function (cp) {
+    return codepointClass.firstInRanges(String.fromCodePoint(cp),
+                                        codepointClass.ZERO_WIDTH_RANGES) === -1;
+  });
+  check("ZERO_WIDTH_RANGES covers every invisible-formatting character",
+        missing.length === 0,
+        missing.map(function (cp) { return "U+" + cp.toString(16).toUpperCase(); }).join(", "));
+
+  // Every finding carries the four fields the docstring promises, at every
+  // policy. Rewriting one branch's object dropped `location` from the control
+  // finding while the others kept it, and nothing noticed — a consumer that
+  // highlights the offending position just got undefined.
+  var shapeErrors = [];
+  [["bidiPolicy", 0x202E], ["controlPolicy", 0x0001], ["controlPolicy", 0x007F],
+   ["nullBytePolicy", 0x0000], ["zeroWidthPolicy", 0x200B],
+   ["tagsPolicy", 0xE0041]].forEach(function (probe) {
+    ["reject", "audit", "strip"].forEach(function (policy) {
+      var opts = {};
+      opts[probe[0]] = policy;
+      var subject = "ab" + String.fromCodePoint(probe[1]) + "cd";
+      codepointClass.detectCharThreats(subject, opts, "shape").forEach(function (issue) {
+        ["kind", "severity", "ruleId", "location", "snippet"].forEach(function (field) {
+          if (issue[field] === undefined) {
+            shapeErrors.push(probe[0] + "/" + policy + " " + issue.kind +
+                             " is missing " + field);
+          }
+        });
+        if (typeof issue.location === "number" && issue.location !== 2) {
+          shapeErrors.push(probe[0] + "/" + policy + " " + issue.kind +
+                           " reported location " + issue.location + ", expected 2");
+        }
+      });
+    });
+  });
+  check("every char-threat finding carries kind, severity, ruleId, location " +
+        "and snippet, and the location is the offset of the character",
+        shapeErrors.length === 0, shapeErrors.slice(0, 5).join("; "));
 }
 
 // The walk primitives the guard family screens ASCII-folded literals, range

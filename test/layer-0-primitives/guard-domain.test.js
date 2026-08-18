@@ -362,14 +362,23 @@ function testCharThreatsAndBadInput() {
     bidi.ok === false && hasIssue(bidi.issues, "bidi-override"));
 
   // A bare zero-width space is a raw non-ASCII codepoint: refused under strict
-  // as a raw-Unicode label. (documents current behavior: permissive, which
-  // allows raw Unicode, does not flag a lone ZWSP as a char threat.)
+  // as a raw-Unicode label.
   var zwStrict = b.guardDomain.validate(ZERO_WIDTH_DOMAIN, { profile: "strict" });
   check("guardDomain.validate zero-width strict -> refuse (raw-unicode)",
     zwStrict.ok === false && hasIssue(zwStrict.issues, "raw-unicode-label"));
+  // Zero-width refuses at EVERY profile, like the bidi override above it: all
+  // three declare `zeroWidthPolicy: "reject"`, because an invisible character
+  // in a domain label is a spoofing vector whatever else the profile permits.
+  // Permissive allows raw Unicode LABELS — it does not allow characters that
+  // render as nothing.
+  //
+  // This previously asserted the opposite and said it documented current
+  // behavior. It documented a fail-open: the shared scan was gated on an
+  // optional argument its caller did not pass, so the declared policy was
+  // never applied and permissive served the character.
   var zwPerm = b.guardDomain.validate(ZERO_WIDTH_DOMAIN, { profile: "permissive" });
-  check("guardDomain.validate zero-width permissive -> allowed (documents current behavior)",
-    zwPerm.ok === true);
+  check("guardDomain.validate zero-width permissive -> refuse (universal)",
+    zwPerm.ok === false && hasIssue(zwPerm.issues, "zero-width"));
 
   var non = b.guardDomain.validate(12345, { profile: "strict" });
   check("guardDomain.validate non-string -> bad-input refuse",

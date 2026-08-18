@@ -598,6 +598,27 @@ async function testStoreSwapReleasesTheStoreItReplaces() {
   check("a store without close() swaps cleanly", threw === null,
         threw && threw.message);
 
+  // A close() that returns a REJECTED promise must not become an unhandled
+  // rejection — this function is synchronous and cannot await it, so the
+  // rejection is absorbed rather than left to take the process down. The
+  // handler has to be attached in the same turn the promise is created.
+  var unhandled = [];
+  function onUnhandled(reason) { unhandled.push(reason); }
+  process.on("unhandledRejection", onUnhandled);
+  var asyncFail = {
+    execute: function () {}, executeOne: function () { return null; },
+    close: function () { return Promise.reject(new Error("async close failed")); },
+  };
+  var asyncThrew = null;
+  try { b.session.useStore(asyncFail); b.session.useStore(null); } catch (e) { asyncThrew = e; }
+  await new Promise(function (r) { setImmediate(r); });   // let a rejection surface
+  process.removeListener("unhandledRejection", onUnhandled);
+  check("a store whose close() rejects does not raise an unhandled rejection",
+        unhandled.length === 0,
+        unhandled.map(function (u) { return u && u.message; }).join("; "));
+  check("an asynchronous close failure is not reported as a swap failure",
+        asyncThrew === null, asyncThrew && asyncThrew.message);
+
   // Re-installing the SAME store must not close the one still in use, and a
   // rejected argument must leave the installed store open and serving.
   var liveDir = _mktmp("live");
