@@ -17374,6 +17374,15 @@ function testNoRegexInGuardAndSafeFamily() {
         sawLineTerminator = true;
         continue;
       }
+      // A shebang is not JavaScript. Scanned as code, the `!` leaves operand
+      // position and `#!/usr/bin/env node` reports `/usr/` as a literal. No
+      // file in the family carries one today, so this costs nothing now and
+      // stops the gate refusing the first one that does.
+      if (i === 0 && c === "#" && src.charAt(1) === "!") {
+        while (i < src.length && !isLineTerminator(src.charAt(i))) i += 1;
+        i -= 1;
+        continue;
+      }
       // Whitespace separates tokens without being one. It must not disturb
       // `prev`, and it must not clear the pending line state — a terminator
       // followed by indentation still forbids a postfix update.
@@ -17515,7 +17524,11 @@ function testNoRegexInGuardAndSafeFamily() {
         // division. Blank the word so only a real keyword opens a literal.
         // A word reached through `.` is a member name, which ends an
         // expression whatever it is called — `a.in`, `obj.delete`, `x.new`.
-        prevWord = prev === "." ? "" : src.slice(wordStart, i);
+        // A word reached through `#` is a private field name, which is a
+        // member name like any other — `this.#delete / 2 / 3` divides. The
+        // `#` stands where the `.` would otherwise be, so it has to blank the
+        // word the same way or the name is read back as its keyword.
+        prevWord = (prev === "." || prev === "#") ? "" : src.slice(wordStart, i);
         // Record which `of` this is while the for-head state still refers to
         // it. A member name is never the keyword, so `o.of / 2` divides.
         // Being inside a for-head is not enough on its own: the separator sits
@@ -17762,6 +17775,22 @@ function testNoRegexInGuardAndSafeFamily() {
       "of in a classic head that already held a call"],
     ["for (const m of f(a)) {} var of = 1; var r = of / 2 / 3;", false,
       "a call in the iterable does not leave the head open"],
+    // A private field name is a member name. `#` stands where the `.` would,
+    // so it has to blank the word the same way or the name reads back as its
+    // keyword and the division after it as a literal.
+    ["class A { #delete = 4; m() { return this.#delete / 2 / 3; } }", false,
+      "private field named delete"],
+    ["class A { #in = 4; m() { return this.#in / 2 / 3; } }", false,
+      "private field named in"],
+    ["class A { static #new = 4; static m() { return A.#new / 2 / 3; } }", false,
+      "static private field named new"],
+    ["class A { #re() { return /unsafe/.source; } }", true,
+      "literal inside a private method"],
+    ["var o = {delete:4}; var r = o?.delete / 2 / 3;", false,
+      "optional chaining to a reserved member name"],
+    ["#!/usr/bin/env node\nvar r = w / 2 / 3;", false, "a shebang is not JavaScript"],
+    ["#!/usr/bin/env node\nreturn /unsafe/.test(v);", true,
+      "a literal on the line after a shebang"],
     ["/* a /unsafe/ comment */",            false, "inside a block comment"],
     ["var r = a /* c */ / 2 / 3;",          false, "division across a block comment"],
     ["return /* c */ /unsafe/.test(v);",    true,  "literal across a block comment"],
@@ -17949,6 +17978,10 @@ function testNoRegexInGuardAndSafeFamily() {
       "a plain terminator in template text"],
     ["var pad = 1;\nvar v = `${ `a\nb` }${/unsafe/.source}`;", 3,
       "a terminator in a nested template"],
+    ["#!/usr/bin/env node\nvar a = 1;\nreturn /unsafe/.test(v);", 3,
+      "a skipped shebang still advances the line"],
+    ["#!/usr/bin/env node\r\nvar a = 1;\r\nreturn /unsafe/.test(v);", 3,
+      "a shebang ended by CRLF advances it once"],
   ];
   var lineCheck = [];
   LINE_FIXTURES.forEach(function (row) {
