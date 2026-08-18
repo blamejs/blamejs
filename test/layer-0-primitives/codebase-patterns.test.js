@@ -1151,6 +1151,273 @@ function testParserPrimitivesHaveFuzzHarness() {
     hits);
 }
 
+// ---- Pattern 8b-ii: a constant-time compare inside a loop with an exit ----
+
+// Return the body text of every loop in `src`, paired with the offset the body
+// starts at. Handles `for (…)`, `for await (…)`, `while (…)`, `do { … }`, and
+// single-statement bodies with no braces.
+//
+// This is brace matching on comment-stripped, string-aware source — not a
+// parser. It exists because "is this comparison inside that loop" is a SCOPE
+// question, and the regex attempts at it kept flagging a verifier that merely
+// sat after an unrelated loop: the tempered token only stops at a brace in
+// column zero, and loop bodies close indented.
+//
+// LIMIT: a regular-expression literal containing an unbalanced `{` or `}` (for
+// example `/[{]/`) would skew the depth count. Deciding where a regex literal
+// begins needs the lexical grammar (blamejs/blamejs#599); guard and safe
+// primitives carry no regex literals at all, and elsewhere a skewed count ends
+// the body early, which under-reports rather than inventing a violation.
+function _loopBodies(src) {
+  var out  = [];
+  // `do` takes no head, so it is matched on its own and the body decided below.
+  //
+  // The leading lookbehind keeps a PROPERTY of the same name out: `queue.do(fn)`
+  // and `schema.for(x)` are calls, not loops, and treating one as a loop header
+  // would open a body over whatever followed and report it.
+  var re   = /(?<![.\w$])(?:for|while)\b\s*(?:await\s+)?\(|(?<![.\w$])do\b/g;
+  var m;
+  while ((m = re.exec(src)) !== null) {
+    var i = m.index + m[0].length;
+    if (m[0].charAt(m[0].length - 1) === "(") {
+      // Walk the head to its closing paren; the body starts after it.
+      var pd = 1;
+      while (i < src.length && pd > 0) {
+        var pc = src.charAt(i);
+        if (pc === "(") pd += 1;
+        else if (pc === ")") pd -= 1;
+        i += 1;
+      }
+    }
+    while (i < src.length && /\s/.test(src.charAt(i))) i += 1;
+    if (src.charAt(i) !== "{") {
+      // Brace-less single-statement body. It ends at the first `;` OUTSIDE any
+      // nesting, or at the `}` that closes a block the statement opened —
+      // `for (…) if (x) { work(); }` has no top-level `;` at all, and running on
+      // to the next one would swallow whatever followed the loop.
+      //
+      // Stopping at end-of-line instead would miss the opposite case,
+      // `for (…)\n  if (eq(…))\n    return true;`, where the exit is two lines
+      // below the header.
+      var j  = i;
+      var sd = 0;
+      while (j < src.length) {
+        var cj = src.charAt(j);
+        if (cj === "(" || cj === "[" || cj === "{") sd += 1;
+        // Only a closing BRACE ends the statement. A `)` returning the depth to
+        // zero is just the end of an `if` condition, and breaking there stopped
+        // before the exit the condition guards.
+        else if (cj === ")" || cj === "]") sd -= 1;
+        else if (cj === "}") {
+          sd -= 1;
+          if (sd <= 0) { j += 1; break; }
+        } else if (cj === ";" && sd === 0) { j += 1; break; }
+        j += 1;
+      }
+      out.push({ start: i, body: src.slice(i, j) });
+      continue;
+    }
+    var depth = 0;
+    var start = i;
+    while (i < src.length) {
+      var c = src.charAt(i);
+      if (c === "{") depth += 1;
+      else if (c === "}") {
+        depth -= 1;
+        if (depth === 0) { i += 1; break; }
+      }
+      i += 1;
+    }
+    out.push({ start: start, body: src.slice(start, i) });
+  }
+  return out;
+}
+
+// Replace the INTERIOR of every string and template literal with spaces, keeping
+// the quotes, the length and the newlines. Brace matching counts characters, and
+// a `{` or `}` inside a literal is text rather than syntax — an unmatched one
+// would extend or truncate the loop body it is measuring, attaching a later
+// comparison to the wrong loop or losing a real exit.
+//
+// A `${…}` substitution holds real code and is blanked with the rest. That could
+// hide a comparison written inside one, which under-reports; a comparison inside
+// a template substitution is not a shape this codebase contains, and the
+// alternative is counting the braces that made the blanking necessary.
+function _blankStringBodies(src) {
+  var out = "";
+  var i   = 0;
+  var n   = src.length;
+  while (i < n) {
+    var c = src.charAt(i);
+    if (c === "\"" || c === "'" || c === "`") {
+      out += c;
+      i   += 1;
+      while (i < n) {
+        var ch = src.charAt(i);
+        if (ch === "\\") { out += "  "; i += 2; continue; }
+        if (ch === c)    { out += c;    i += 1; break; }
+        out += (ch === "\n" ? "\n" : " ");
+        i   += 1;
+      }
+      continue;
+    }
+    out += c;
+    i   += 1;
+  }
+  return out;
+}
+
+function testTimingSafeCompareInLoopBody() {
+  // A constant-time comparison inside a loop that can exit early leaks the
+  // matching candidate's POSITION through the iteration count, however
+  // constant-time each individual comparison is. The companion catalog entry
+  // `timing-safe-compare-with-early-exit` covers the loop-free pair; this covers
+  // loop membership, which needs scope rather than a pattern.
+  // Within a loop body: a POSITIVE comparison guarding a `return` or `break`.
+  //
+  // `continue` is NOT an early exit for this purpose — it skips a candidate that
+  // was never eligible (wrong type, wrong length) and the loop still runs to the
+  // end, which is exactly what b.crypto.timingSafeEqualAny does. Treating it as
+  // an exit flagged that primitive as the defect it was written to fix.
+  //
+  // The exit is any `return`, not `return true`: the real sites return a failure
+  // object and a drift step. The `(?![!)])` temper keeps a NEGATED comparison out
+  // — `if (!eq(a, b)) continue;` is a single-pair guard, not a candidate walk.
+  // Scoping to the loop BODY is what the brace matching buys: a verifier sitting
+  // after an unrelated loop is not in any body and cannot match.
+  // `break` may carry a label — `break outer;` leaves an outer loop and is the
+  // same early exit, so the label is optional rather than absent.
+  //
+  // The comparison must be POSITIVE, and that is said directly with a lookbehind
+  // rather than by forbidding `)` before it. Forbidding `)` also threw away
+  // `if (isEligible(c) && eq(want, c)) return true;` — the closing paren of the
+  // first call ended the match — which is a real position oracle and a common
+  // way to write one. The lookbehind covers a member prefix, so `!b.eq(` and
+  // `!eq(` are both excluded while `f(x) && b.eq(` is not.
+  var BODY_HIT = /if\s*\([^\n]{0,160}?(?<![!\w$.])(?:[\w$]+\.)*timingSafeEqual\([\s\S]{0,200}?(?:\breturn\b|\bbreak\b\s*[\w$]*\s*;)/;
+
+  function offending(src) {
+    return _loopBodies(_blankStringBodies(_stripComments(src))).filter(function (b) {
+      return BODY_HIT.test(b.body);
+    });
+  }
+
+  // Self-test first: this decides a security property, so its own behaviour is
+  // pinned rather than assumed. Both directions, since over-reporting is how a
+  // check earns an allowlist entry and under-reporting is how it goes silent.
+  var SELF = [
+    ["for + return true",        "function f() {\n  for (var i=0;i<d.length;i++) {\n    if (nodeCrypto.timingSafeEqual(a, d[i])) {\n      return true;\n    }\n  }\n  return false;\n}", true],
+    ["for + break",              "function f() {\n  for (var s=0;s<g.length;s+=1) {\n    if (bCrypto.timingSafeEqual(e, g[s])) {\n      matched = true;\n      break;\n    }\n  }\n}", true],
+    ["while + return true",      "function f() {\n  while (i < n) {\n    if (bCrypto.timingSafeEqual(p, list[i])) {\n      return true;\n    }\n    i += 1;\n  }\n}", true],
+    ["for await + return true",  "async function f() {\n  for await (var c of stream) {\n    if (bCrypto.timingSafeEqual(p, c)) {\n      return true;\n    }\n  }\n}", true],
+    ["do..while + break",        "function f() {\n  do {\n    if (bCrypto.timingSafeEqual(p, list[i])) {\n      break;\n    }\n    i += 1;\n  } while (i < n);\n}", true],
+    ["brace-less body",          "function f() {\n  for (var i=0;i<n;i++) if (bCrypto.timingSafeEqual(p, l[i])) return true;\n  return false;\n}", true],
+    // The brace-less body WRAPS: the exit is two lines under the header, so
+    // treating end-of-line as end-of-body lost it.
+    ["brace-less body, wrapped",  "function f() {\n  for (var i=0;i<n;i++)\n    if (bCrypto.timingSafeEqual(p, l[i]))\n      return true;\n  return false;\n}", true],
+    // An unbalanced brace inside a literal is text, not syntax. Left counted, it
+    // moves the end of the body and takes the real exit out of scope.
+    ["unbalanced brace in a string", "function f() {\n  for (var i=0;i<n;i++) {\n    log(\"unexpected } here\");\n    if (bCrypto.timingSafeEqual(p, l[i])) {\n      return true;\n    }\n  }\n}", true],
+    ["unbalanced brace in a template", "function f() {\n  for (var i=0;i<n;i++) {\n    log(`stray { brace`);\n    if (bCrypto.timingSafeEqual(p, l[i])) {\n      return true;\n    }\n  }\n}", true],
+    // A literal brace must not invent a loop body where the code has none.
+    ["braces in a string, no loop", "function f() {\n  var s = \"{{{\";\n  if (bCrypto.timingSafeEqual(actual, expected)) return true;\n  return false;\n}", false],
+    // Loop forms and neighbours that no review raised — pinned so a later
+    // narrowing of the loop matcher has to answer for them.
+    ["labelled loop, break label", "outer: for (var i=0;i<n;i++) {\n  if (bCrypto.timingSafeEqual(p, l[i])) {\n    break outer;\n  }\n}", true],
+    ["for..of",                   "function f() {\n  for (var c of cands) {\n    if (bCrypto.timingSafeEqual(p, c)) {\n      return true;\n    }\n  }\n}", true],
+    ["nested loops, inner exit",  "function f() {\n  for (var i=0;i<n;i++) {\n    for (var j=0;j<m;j++) {\n      if (bCrypto.timingSafeEqual(p, g[i][j])) {\n        return true;\n      }\n    }\n  }\n}", true],
+    ["callback inside a loop",    "function f() {\n  for (var i=0;i<n;i++) {\n    items.map(function (x) { return x + 1; });\n    if (bCrypto.timingSafeEqual(p, l[i])) {\n      return true;\n    }\n  }\n}", true],
+    // A loop that ENDS before the verifier must not capture it, whichever form
+    // the loop took — this is what the text pattern kept getting wrong.
+    ["verifier after do..while",  "function f() {\n  do {\n    work();\n  } while (i < n);\n  if (bCrypto.timingSafeEqual(actual, expected)) return true;\n  return false;\n}", false],
+    ["verifier after for..of",    "function f() {\n  for (var c of list) { tally(c); }\n  if (bCrypto.timingSafeEqual(actual, expected)) return true;\n  return false;\n}", false],
+    // A loop keyword that is not code must not open a body.
+    ["loop keyword in a string",  "function f() {\n  log(\"for (i=0;;) {\");\n  if (bCrypto.timingSafeEqual(actual, expected)) return true;\n  return false;\n}", false],
+    ["loop keyword in a comment", "function f() {\n  // for (var i=0;i<n;i++) {\n  if (bCrypto.timingSafeEqual(actual, expected)) return true;\n  return false;\n}", false],
+    // `do` without braces has no head to walk and no block to match.
+    ["brace-less do..while",      "function f() {\n  do if (bCrypto.timingSafeEqual(p, l[i])) return true; while (more);\n}", true],
+    // A brace-less body whose statement OPENS a block ends at that block's
+    // closing brace. There is no top-level `;`, so scanning on to the next one
+    // swallowed the verifier that followed the loop and reported it.
+    ["brace-less body with a block, verifier after",
+      "function f() {\n  for (var i=0;i<n;i++) if (x) { work(i); }\n  if (bCrypto.timingSafeEqual(actual, expected)) return true;\n  return false;\n}", false],
+    ["brace-less body with a block that DOES exit",
+      "function f() {\n  for (var i=0;i<n;i++) if (bCrypto.timingSafeEqual(p, l[i])) { return true; }\n  return false;\n}", true],
+    // A method named like a loop keyword is a call, not a loop header.
+    ["method named do",           "function f() {\n  queue.do(fn);\n  if (bCrypto.timingSafeEqual(actual, expected)) return true;\n  return false;\n}", false],
+    ["method named for",          "function f() {\n  schema.for(x);\n  if (bCrypto.timingSafeEqual(actual, expected)) return true;\n  return false;\n}", false],
+    // A CALL ahead of the comparison in the same condition. Forbidding `)`
+    // before the comparison — the old way of excluding a negated guard — threw
+    // this away, and it is a common way to write the oracle.
+    ["call guard then compare",   "function f() {\n  for (var i=0;i<n;i++) {\n    if (isEligible(l[i]) && bCrypto.timingSafeEqual(want, l[i])) {\n      return true;\n    }\n  }\n}", true],
+    ["length check then compare", "function f() {\n  for (var i=0;i<n;i++) {\n    if (l[i].length === want.length && bCrypto.timingSafeEqual(want, l[i])) return true;\n  }\n}", true],
+    // Still excluded: the comparison is negated, whatever precedes it.
+    ["call guard then NEGATED compare", "function f() {\n  for (var i=0;i<n;i++) {\n    if (isEligible(l[i]) && !bCrypto.timingSafeEqual(want, l[i])) {\n      continue;\n    }\n  }\n}", false],
+    // Must stay quiet.
+    ["verifier AFTER a loop",    "function f() {\n  for (var i=0;i<n;i++) { work(i); }\n  if (bCrypto.timingSafeEqual(actual, expected)) return true;\n  return false;\n}", false],
+    ["loop, no early exit",      "function f() {\n  for (var m=0;m<p.length;m+=1) {\n    if (nodeCrypto.timingSafeEqual(pb, p[m])) {\n      matched = true;\n    }\n  }\n  return matched;\n}", false],
+    ["negated guard in a loop",  "function f() {\n  for (var i=0;i<n;i++) {\n    if (!bCrypto.timingSafeEqual(mac, tags[i])) {\n      continue;\n    }\n  }\n}", false],
+    // The shape of b.crypto.timingSafeEqualAny itself: `continue` skips a
+    // candidate that was never eligible, the loop still runs to the end, and the
+    // result is accumulated rather than returned from inside. Treating
+    // `continue` as an early exit flagged the primitive written to fix this.
+    ["skip-ineligible then accumulate", "function f() {\n  for (var i=0;i<c.length;i+=1) {\n    if (!Buffer.isBuffer(c[i])) continue;\n    if (c[i].length !== p.length) continue;\n    if (nodeCrypto.timingSafeEqual(p, c[i])) matched = true;\n  }\n  return matched;\n}", false],
+    // Real shapes that exit on a match without saying `return true` — a failure
+    // object and a matched step. Both shipped in lib/ and no pattern caught them.
+    ["loop returns a failure value", "function f() {\n  for (var li=0;li<lines.length;li++) {\n    if (timingSafeEqual(Buffer.from(sfx), Buffer.from(want)) && n >= t) {\n      return _fail(\"breached\", n);\n    }\n  }\n}", true],
+    ["loop returns the match index",  "function f() {\n  for (var d=-drift;d<=drift;d++) {\n    if (timingSafeEqual(expectedBuf, userBuf)) {\n      return step;\n    }\n  }\n}", true],
+    ["no compare at all",        "function f() {\n  for (var i=0;i<n;i++) {\n    if (list[i] === want) return true;\n  }\n}", false],
+    ["compare outside any loop", "function f() {\n  if (bCrypto.timingSafeEqual(actual, expected)) return true;\n  return false;\n}", false],
+  ];
+  var hits = [];
+  SELF.forEach(function (c) {
+    var saw = offending(c[1]).length > 0;
+    if (saw !== c[2]) {
+      hits.push({
+        file: "test/layer-0-primitives/codebase-patterns.test.js", line: 1,
+        content: "timing-safe loop-scope check regression on \"" + c[0] + "\": expected " +
+          (c[2] ? "a violation" : "no violation") + ", got the opposite",
+      });
+    }
+  });
+
+  // Loops where the early exit leaks nothing, because NEITHER OPERAND IS SECRET.
+  // The bar is that the comparison's inputs are public, not that the exit is
+  // convenient — a site whose operand derives from a secret belongs in the fix,
+  // not here.
+  var NO_SECRET_OPERAND = {
+    "lib/network-dane.js":
+      "matchCertificate compares a TLSA association (published in DNS) against a " +
+      "digest of the peer's certificate (presented in the handshake). Both sides " +
+      "are public, so the iteration count reveals nothing an observer could not " +
+      "compute — and the function's contract is to report WHICH record matched, " +
+      "returning usage/selector/matchingType and matchedCertIndex to the caller.",
+  };
+
+  var fs = require("node:fs");
+  _libFiles().forEach(function (full) {
+    var src;
+    try { src = fs.readFileSync(full, "utf8"); }
+    catch (_e) { return; }
+    if (src.indexOf("timingSafeEqual") === -1) return;
+    if (NO_SECRET_OPERAND[_relPath(full)]) return;
+    offending(src).forEach(function (b) {
+      // Comment stripping preserves every newline, so an offset into the
+      // stripped text still counts the same number of lines.
+      var line = _stripComments(src).slice(0, b.start).split("\n").length;
+      hits.push({
+        file: _relPath(full),
+        line: line,
+        content: "constant-time comparison inside a loop that exits early — the iteration " +
+          "count reports WHICH candidate matched. Route through b.crypto.timingSafeEqualAny, " +
+          "which compares against every candidate and has no exit to take.",
+      });
+    });
+  });
+  _report("no constant-time comparison sits inside a loop that can exit as soon as one candidate matches",
+    hits);
+}
+
 // ---- Pattern 8b-i: the comment-stripping helper itself ----
 
 function testCommentStripHelper() {
@@ -12738,7 +13005,30 @@ var KNOWN_ANTIPATTERNS = [
     // a `break` belonging to a later loop in the same file cannot pair with an
     // earlier call. The `{0,80}` / `{0,200}` bounds are ReDoS backstops set far
     // above any real body, not the precision mechanism.
-    regex: /if\s*\((?:(?![!)])[\s\S]){0,80}?timingSafeEqual\((?:(?!\n\})[\s\S]){0,200}?(?:\breturn\s+true\b|\bbreak\s*;)/,
+    //
+    // This entry covers ONE of the two shapes: two comparisons in sequence, each
+    // guarding its own early exit, with no loop at all — the DPoP current/previous
+    // nonce pair. That is a sequence of tokens, so a pattern decides it exactly.
+    //
+    // The LOOP shape is deliberately not here. Whether a comparison sits inside a
+    // particular loop body is a scope question, and answering it with a pattern
+    // flagged an ordinary one-pair verifier that merely followed an unrelated
+    // loop: the tempered token stops only at a brace in column zero, and loop
+    // bodies close indented. testTimingSafeCompareInLoopBody() answers it with
+    // brace matching over comment-stripped source, which also reaches the loop
+    // forms a pattern kept missing — `for await`, `do…while`, and brace-less
+    // single-statement bodies.
+    //
+    // A single positive comparison is not the defect in either place: one
+    // comparison has no position to report.
+    // The second comparison must be POSITIVE, said with a lookbehind rather than
+    // by forbidding `)` ahead of it: forbidding `)` also lost
+    // `if (isFresh(prev) && eq(n, prev.nonce)) return true;`, where the closing
+    // paren of the first call ended the match.
+    regex: new RegExp(
+      "timingSafeEqual\\((?:(?!\\n\\})[\\s\\S]){0,120}?\\breturn\\s+true\\b(?:(?!\\n\\})[\\s\\S]){0,200}?" +
+      "\\bif\\s*\\([^\\n]{0,160}?(?<![!\\w$.])(?:[\\w$]+\\.)*timingSafeEqual\\((?:(?!\\n\\})[\\s\\S]){0,120}?\\breturn\\s+true\\b"
+    ),
     allowlist: [],
     reason: "a multi-candidate constant-time compare must run every comparison; " +
             "stopping at the first match leaks the match's position through timing. " +
@@ -12749,19 +13039,30 @@ var KNOWN_ANTIPATTERNS = [
     // the shapes that decide it are fixtures rather than a comment.
     fixtures: {
       fires: [
-        "  for (var i=0;i<d.length;i++) {\n    if (nodeCrypto.timingSafeEqual(a, b)) {\n      return true;\n    }\n  }\n",
-        "  for (var s=0;s<sigs.length;s+=1) {\n    if (bCrypto.timingSafeEqual(e, f)) {\n      matched = true;\n      break;\n    }\n  }\n",
-        // No loop at all — the DPoP nonce pair. The second compare runs only
+        // The DPoP nonce pair: no loop at all. The second comparison runs only
         // when the first misses, which is the same position oracle.
         "      if (current && bCrypto.timingSafeEqual(n, current.nonce)) return true;\n      if (previous && bCrypto.timingSafeEqual(n, previous.nonce)) return true;\n      return false;\n",
-        // The guard need not be the whole condition, and the exit need not be
-        // the next statement.
-        "  for (var p=0;p<parts.length;p+=1) {\n    if (pair[0] === \"v1\" && bCrypto.timingSafeEqual(x, y)) {\n      any = true;\n      break;\n    }\n  }\n",
+        // The guard need not be the whole condition.
+        "  if (kind === \"v1\" && bCrypto.timingSafeEqual(x, cur)) return true;\n  if (kind === \"v1\" && bCrypto.timingSafeEqual(x, prev)) return true;\n  return false;\n",
+        // A CALL ahead of the second comparison. Excluding a negated guard by
+        // forbidding `)` before the comparison lost this shape entirely.
+        "  if (isFresh(cur) && bCrypto.timingSafeEqual(n, cur.nonce)) return true;\n  if (isFresh(prev) && bCrypto.timingSafeEqual(n, prev.nonce)) return true;\n  return false;\n",
       ],
       quiet: [
+        // Loop shapes belong to testTimingSafeCompareInLoopBody(), which decides
+        // loop membership by matching braces instead of guessing at it. They are
+        // listed here so a later reader doesn't conclude the loop case went
+        // unguarded when this pattern stays silent on it.
+        "  for (var i=0;i<d.length;i++) {\n    if (nodeCrypto.timingSafeEqual(a, d[i])) {\n      return true;\n    }\n  }\n",
+        "  for (var s=0;s<sigs.length;s+=1) {\n    if (bCrypto.timingSafeEqual(e, sigs[s])) {\n      matched = true;\n      break;\n    }\n  }\n",
         // One comparison, so no position to leak. The negated guard is the
         // shape the first review flagged this pattern for refusing.
         "  if (!bCrypto.timingSafeEqual(a, b)) return false;\n  return true;\n}",
+        // The POSITIVE single compare — an ordinary one-pair verifier. No loop
+        // and no second comparison, so nothing about the timing says where a
+        // match was. An earlier version of this pattern refused it, which would
+        // have sent correct code to timingSafeEqualAny for no reason.
+        "  if (bCrypto.timingSafeEqual(actual, expected)) return true;\n  return false;\n}",
         "  if (!bCrypto.timingSafeEqual(sig, exp)) {\n    throw new Error(\"bad\");\n  }\n  return true;\n}",
         // A `.find()` locating a record BY TYPE with the comparison after it —
         // lib/network-nts.js. Three call syntaxes, because every attempt to
@@ -18967,6 +19268,7 @@ async function run() {
   testNoLiteralNulBytesInSource();
   testParserPrimitivesHaveFuzzHarness();
   testCommentStripHelper();
+  testTimingSafeCompareInLoopBody();
   testIntegrationFilesReportCheckCounts();
   testSafeGuardWiredInIndex();
   testSafeGuardHasMustComposeDetector();
