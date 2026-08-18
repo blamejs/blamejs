@@ -320,7 +320,7 @@ async function run() {
 module.exports = { run: run };
 if (require.main === module) {
   run().then(
-    function () { console.log("[mail-crypto-smime] OK"); },
+    function () { console.log("OK — " + helpers.getChecks() + " checks passed"); },
     function (e) { console.error("[mail-crypto-smime] FAIL:", e.stack || e); process.exit(1); }
   );
 }

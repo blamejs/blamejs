@@ -161,6 +161,23 @@ async function _exportCaCert() {
       // Success line: pull the trailing OK line out of stdout so the
       // runner output stays consistent with smoke's format.
       var okLine = (rv.stdout.match(/OK — \d+ checks? passed/g) || []).pop() || "";
+      // Exit 0 alone does not mean the file tested anything. A run() that
+      // resolved before reaching its assertions, or a file whose checks were
+      // commented out, exits 0 exactly like a passing one — and used to print a
+      // blank column here, which reads as a pass. Require the count, and
+      // require it to be non-zero: `OK — 0 checks passed` matches the pattern
+      // while asserting nothing at all.
+      var checkCount = okLine ? Number((okLine.match(/\d+/) || [0])[0]) : -1;
+      if (checkCount < 1) {
+        failed += 1;
+        console.error("  " + _padRight(files[i], 40) + " (" + ms + "ms) " +
+          (checkCount === 0 ? "RAN 0 CHECKS" : "NO CHECK COUNT"));
+        console.error("    Exited 0 without reporting a non-zero check count. Print " +
+          "`OK — \" + helpers.getChecks() + \" checks passed` from the " +
+          "`require.main === module` block so a file that stops asserting is " +
+          "distinguishable from one that passed.");
+        continue;
+      }
       console.log("  " + _padRight(files[i], 40) + " (" + ms + "ms) " + okLine);
     } else {
       failed += 1;

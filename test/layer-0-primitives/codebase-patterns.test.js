@@ -295,6 +295,77 @@ function _filterMarkers(matches, allowClass) {
   });
 }
 
+// Blank whole lines that OPEN with `//`, `/*` or a jsdoc-body `*`, keeping line
+// NUMBERING intact so a reported line still points at the right place.
+//
+// Deliberately line-at-a-time and deliberately incomplete: it does not track
+// block-comment state, so the interior of a `/* ... */` whose lines don't start
+// with `*` survives. That is the SAFE direction for the catalog entries that use
+// it, which all hunt for a BAD shape — leaving commented-out text visible makes
+// such an entry fire on code that isn't live, which is a false positive, and a
+// false positive is loud. Blanking more aggressively would risk hiding a real
+// violation, which is silent. Do not "fix" this to strip more without checking
+// each consuming entry.
+function _blankCommentLines(src) {
+  return src.split(/\r?\n/).map(function (ln) {
+    if (/^\s*(\*|\/\/|\/\*)/.test(ln)) return "";
+    return ln;
+  }).join("\n");
+}
+
+// Remove comments properly, for checks that assert a construct IS PRESENT.
+//
+// Those invert the risk above: a presence check reading a commented-out
+// occurrence concludes the construct is there and stays silent, which is the
+// exact state it exists to catch. So here it is worth tracking state — block
+// comments spanning lines, and string literals, so a `/*` inside a string is not
+// mistaken for a comment opener.
+//
+// Newlines inside block comments are preserved so line numbers don't shift.
+//
+// LIMIT: regular-expression literals are not tracked, so a regex containing an
+// unescaped `//` or `/*` could be misread as a comment opener. Deciding where a
+// regex literal starts requires implementing the ECMAScript lexical grammar
+// (blamejs/blamejs#599 is the same problem one level up) and the consumers here
+// are integration tests and fuzz harnesses, where such a literal does not occur.
+// A wrong call in that case over-strips, which reports rather than hides.
+function _stripComments(src) {
+  var out = "";
+  var i   = 0;
+  var n   = src.length;
+  while (i < n) {
+    var c = src.charAt(i);
+    var d = src.charAt(i + 1);
+    if (c === "/" && d === "/") {
+      while (i < n && src.charAt(i) !== "\n") i += 1;
+      continue;
+    }
+    if (c === "/" && d === "*") {
+      i += 2;
+      while (i < n && !(src.charAt(i) === "*" && src.charAt(i + 1) === "/")) {
+        if (src.charAt(i) === "\n") out += "\n";
+        i += 1;
+      }
+      i += 2;
+      continue;
+    }
+    if (c === "\"" || c === "'" || c === "`") {
+      out += c;
+      i   += 1;
+      while (i < n) {
+        if (src.charAt(i) === "\\") { out += src.substr(i, 2); i += 2; continue; }
+        out += src.charAt(i);
+        if (src.charAt(i) === c) { i += 1; break; }
+        i += 1;
+      }
+      continue;
+    }
+    out += c;
+    i   += 1;
+  }
+  return out;
+}
+
 var _allViolations = [];
 
 function _report(label, matches) {
@@ -1040,7 +1111,10 @@ function testParserPrimitivesHaveFuzzHarness() {
     var content;
     try { content = fs.readFileSync(harnessPath, "utf8"); }
     catch (_e) { content = ""; }
-    if (!/module\.exports\.fuzz\s*=/.test(content)) {
+    // Comments stripped: a harness whose entry point is commented out exports
+    // nothing, and reading raw source would accept the disabled line as proof
+    // the export is there.
+    if (!/module\.exports\.fuzz\s*=/.test(_stripComments(content))) {
       hits.push({
         file: path.relative(repoRoot, harnessPath).replace(/\\/g, "/"), line: 1,
         content: "fuzz harness missing `module.exports.fuzz = function (data) { ... }` — required by jazzer.js / ClusterFuzzLite / OSS-Fuzz",
@@ -1074,6 +1148,111 @@ function testParserPrimitivesHaveFuzzHarness() {
     }
   });
   _report("every lib/safe-*.js / lib/guard-*.js parser-or-validator (plus the untrusted-byte parsers in FUZZ_REQUIRED_EXTRA) has a fuzz/<name>.fuzz.js (or is allowlisted in FUZZ_NOT_REQUIRED), and each FUZZ_REQUIRED_EXTRA parser is wired into both cflite CI matrices",
+    hits);
+}
+
+// ---- Pattern 8b-i: the comment-stripping helper itself ----
+
+function testCommentStripHelper() {
+  // _stripComments decides whether two gates see a construct at all, and both
+  // fail SILENTLY if it under-strips: a commented-out occurrence reads as the
+  // real thing and the gate passes. So its behaviour is pinned here rather than
+  // left to whatever the author happened to try by hand.
+  //
+  // Both directions matter. Under-stripping hides the defect; over-stripping
+  // (treating a `/*` inside a string as a comment opener) reports files that are
+  // fine, which is how a check earns an allowlist entry and stops being read.
+  var PROBE = /getChecks\(\)[^\n]{0,40}checks passed/;
+  var CASES = [
+    ["live call",                   "console.log(\"OK - \" + helpers.getChecks() + \" checks passed\");", true],
+    ["line-commented out",          "// console.log(\"OK\" + helpers.getChecks() + \" checks passed\");", false],
+    ["block comment, starred body", "/*\n * helpers.getChecks() + \" checks passed\"\n */", false],
+    ["block comment, plain body",   "/*\nhelpers.getChecks() + \" checks passed\"\n*/", false],
+    ["inline block comment",        "foo(); /* helpers.getChecks() + \" checks passed\" */ bar();", false],
+    ["trailing line comment",       "run(); // helpers.getChecks() + \" checks passed\"", false],
+    ["live call beside a dead one", "/*\nold getChecks() + \" checks passed\"\n*/\nconsole.log(helpers.getChecks() + \" checks passed\");", true],
+    ["comment opener in a string",  "var s = \"/*\"; console.log(helpers.getChecks() + \" checks passed\");", true],
+    ["url in a string",             "var u = \"https://x/y\"; console.log(helpers.getChecks() + \" checks passed\");", true],
+  ];
+  var hits = [];
+  CASES.forEach(function (c) {
+    var saw = PROBE.test(_stripComments(c[1]));
+    if (saw !== c[2]) {
+      hits.push({
+        file: "test/layer-0-primitives/codebase-patterns.test.js", line: 1,
+        content: "_stripComments regression on \"" + c[0] + "\": expected the probe to " +
+          (c[2] ? "MATCH (live code)" : "MISS (commented out)") + " but it did not",
+      });
+    }
+  });
+  // The line-at-a-time helper keeps its weaker contract on purpose; pin the
+  // difference so a later reader doesn't collapse the two.
+  if (/checks passed/.test(_blankCommentLines("/*\nhelpers.getChecks() + \" checks passed\"\n*/")) !== true) {
+    hits.push({
+      file: "test/layer-0-primitives/codebase-patterns.test.js", line: 1,
+      content: "_blankCommentLines no longer leaves un-starred block-comment bodies visible - " +
+        "catalog entries hunting BAD shapes rely on that (a false positive is loud, a miss is silent); " +
+        "if this changed deliberately, re-check every skipCommentLines entry",
+    });
+  }
+  _report("_stripComments removes line, block and inline comments without stripping comment-like text inside string literals",
+    hits);
+}
+
+// ---- Pattern 8c: integration files must report a non-zero check count ----
+
+function testIntegrationFilesReportCheckCounts() {
+  // scripts/test-integration.js decides a file passed from its exit status and
+  // then prints whatever `OK — <n> checks passed` line the file emitted. A file
+  // that emits nothing gets a blank column, which is indistinguishable from a
+  // pass — and a file whose run() resolves before reaching its assertions exits
+  // 0 exactly like one that ran them. Four of fifty files were in that state,
+  // between them carrying 111 checks nobody could see.
+  //
+  // The runner now refuses a missing or zero count, so this is the fast half of
+  // the same gate: the runner needs the live docker stack and a Keycloak cold
+  // start to say so, this says it during the static gates.
+  //
+  // Requiring `helpers.getChecks()` specifically (rather than any count line)
+  // is deliberate — a hand-maintained literal drifts from the real number the
+  // moment an assertion is added, and a wrong count is worse than none because
+  // it looks verified.
+  var fs   = require("node:fs");
+  var path = require("node:path");
+  var repoRoot = path.resolve(__dirname, "..", "..");
+  var intDir   = path.join(repoRoot, "test", "integration");
+  var hits     = [];
+  var files    = [];
+  try {
+    files = fs.readdirSync(intDir).filter(function (n) { return /\.test\.js$/.test(n); });
+  } catch (_e) { files = []; }
+  files.forEach(function (name) {
+    var rel = "test/integration/" + name;
+    var src;
+    try { src = fs.readFileSync(path.join(intDir, name), "utf8"); }
+    catch (_e) { return; }
+    // The runner reads stdout, so the line has to be reachable from the
+    // `require.main === module` block — each integration file spawns as its own
+    // process. Matching the emitted shape rather than the whole block keeps
+    // this from caring how the file spells its promise handling.
+    // Keyed on getChecks() sitting next to the words the runner greps for, so
+    // concatenation and interpolation both satisfy it. Pinning the `+ " checks
+    // passed"` spelling would refuse a template literal that the runner accepts
+    // at runtime — a check that refuses working code earns an allowlist entry,
+    // and an allowlisted check stops being read.
+    // Comments are stripped first, block comments included. A commented-out
+    // success print contains every token this looks for, and it is the likeliest
+    // way a file ends up silent — so reading raw source would let the gate pass
+    // on exactly the state it exists to catch.
+    if (/getChecks\(\)[^\n]{0,40}checks passed/.test(_stripComments(src))) return;
+    hits.push({
+      file: rel, line: 1,
+      content: "integration file never prints `OK — \" + helpers.getChecks() + \" checks passed` — " +
+        "scripts/test-integration.js cannot tell it from a file that stopped asserting " +
+        "(both exit 0); emit the count from the require.main === module block",
+    });
+  });
+  _report("every test/integration/*.test.js reports its check count so the runner can tell a passing file from a silent one",
     hits);
 }
 
@@ -12519,32 +12698,47 @@ var KNOWN_ANTIPATTERNS = [
     // route through a primitive with no exit to take rather than to review
     // each loop.
     //
-    // Two shapes, because the defect is NOT "a loop with a break". The DPoP
-    // nonce pair had no loop at all — two sequential `if (compare) return true`
-    // statements, where the second comparison only runs when the first misses,
-    // which is the same position oracle. Anchoring on an enclosing loop would
-    // have missed it.
+    // The defect is NOT "a loop with a break". The DPoP nonce pair had no loop
+    // at all — two sequential `if (compare) return true` statements, where the
+    // second comparison only runs when the first misses, which is the same
+    // position oracle. Anchoring on an enclosing loop would have missed it.
     //
     // What every true positive shares is a POSITIVE comparison guarding an
     // early exit. The shape that is fine and must stay quiet is the negated
     // guard — `if (!timingSafeEqual(a, b)) return false; return true;` — which
     // has one comparison and so no position to leak; the `(?![!)])` tempered
-    // token is what tells the two apart. The second branch covers `.some` /
-    // `.find`, which are early exits by construction whatever their callback
-    // returns.
+    // token is what tells the two apart.
     //
-    // The callback branch requires the comparison to sit INSIDE the callback,
-    // not merely near it: `lib/network-nts.js` uses `.find()` to locate an
-    // extension BY TYPE and then makes one negated comparison afterwards, and a
-    // branch that only asked for a `.find(` somewhere in the preceding 200
-    // characters refused it. Tempering on the callback's own `})` is what keeps
-    // an ordinary lookup that happens to precede a compare out of the class.
+    // SCOPE, and why it is this narrow. A `.some` / `.find` callback holding a
+    // comparison is the same defect — those methods stop at the first truthy
+    // result — but this pattern does NOT try to catch it, after seven review
+    // rounds establishing that a regex cannot.
     //
-    // Neither tempered token can cross a function-closing brace at column 0, so
+    // Every one of those rounds was against the callback branch and none
+    // against the `if` branch here. In order: it refused a single negated
+    // compare; anchoring on an enclosing loop would have missed the DPoP pair,
+    // which has no loop; it ignored arrow callbacks; it broke on one level of
+    // nested parens in a parameter list, then on two; tightening it for arrows
+    // silently dropped named function expressions it had previously caught;
+    // and dropping the head-parse entirely then fired on
+    // `list.some(isEligible) && timingSafeEqual(a, b)`, where the comparison
+    // runs after the call and compares one pair. Each fix opened a hole in the
+    // other direction, because "is this comparison inside that callback" is a
+    // parse question and this is a regex.
+    //
+    // So the claim is narrowed to what can be decided lexically: a POSITIVE
+    // comparison guarding an early exit. That is the shape all six shipped
+    // defects took, and it has been stable and precise across every round. The
+    // callback form is left to `b.crypto.timingSafeEqualAny` being the obvious
+    // thing to reach for and to review — an honest gap beats a pattern that
+    // refuses working code, which is how a detector earns an allowlist entry
+    // and stops being read at all. #599 is the same argument one level up.
+    //
+    // The tempered token cannot cross a function-closing brace at column 0, so
     // a `break` belonging to a later loop in the same file cannot pair with an
     // earlier call. The `{0,80}` / `{0,200}` bounds are ReDoS backstops set far
     // above any real body, not the precision mechanism.
-    regex: /(?:if\s*\((?:(?![!)])[\s\S]){0,80}?timingSafeEqual\((?:(?!\n\})[\s\S]){0,200}?(?:\breturn\s+true\b|\bbreak\s*;)|\.(?:some|find|findIndex)\s*\(\s*function[^)]*\)\s*\{(?:(?!\}\s*\))[\s\S]){0,200}?timingSafeEqual\()/,
+    regex: /if\s*\((?:(?![!)])[\s\S]){0,80}?timingSafeEqual\((?:(?!\n\})[\s\S]){0,200}?(?:\breturn\s+true\b|\bbreak\s*;)/,
     allowlist: [],
     reason: "a multi-candidate constant-time compare must run every comparison; " +
             "stopping at the first match leaks the match's position through timing. " +
@@ -12560,20 +12754,36 @@ var KNOWN_ANTIPATTERNS = [
         // No loop at all — the DPoP nonce pair. The second compare runs only
         // when the first misses, which is the same position oracle.
         "      if (current && bCrypto.timingSafeEqual(n, current.nonce)) return true;\n      if (previous && bCrypto.timingSafeEqual(n, previous.nonce)) return true;\n      return false;\n",
-        // `.some` is an early exit by construction, whatever the callback says.
-        "  return cands.some(function (c) {\n    return bCrypto.timingSafeEqual(c, exp);\n  });\n",
+        // The guard need not be the whole condition, and the exit need not be
+        // the next statement.
+        "  for (var p=0;p<parts.length;p+=1) {\n    if (pair[0] === \"v1\" && bCrypto.timingSafeEqual(x, y)) {\n      any = true;\n      break;\n    }\n  }\n",
       ],
       quiet: [
         // One comparison, so no position to leak. The negated guard is the
-        // shape a review flagged this pattern for refusing.
+        // shape the first review flagged this pattern for refusing.
         "  if (!bCrypto.timingSafeEqual(a, b)) return false;\n  return true;\n}",
         "  if (!bCrypto.timingSafeEqual(sig, exp)) {\n    throw new Error(\"bad\");\n  }\n  return true;\n}",
-        // A `.find()` that locates a record BY TYPE, with the comparison after
-        // it rather than inside its callback — lib/network-nts.js.
+        // A `.find()` locating a record BY TYPE with the comparison after it —
+        // lib/network-nts.js. Three call syntaxes, because every attempt to
+        // reach INTO a callback ended up refusing one of them.
         "  var ext = exts.find(function (e) { return e.type === UNIQUE_ID; });\n  if (!ext || !timingSafeEqual(ext.body, unique)) {\n    done(err);\n    return;\n  }\n",
+        "  var ext = exts.find(e => e.type === UNIQUE_ID);\n  if (!ext || !timingSafeEqual(ext.body, unique)) {\n    done(err);\n    return;\n  }\n",
+        "  var ext = exts.find(function byType(e) { return e.type === UNIQUE_ID; });\n  if (!ext || !timingSafeEqual(ext.body, unique)) {\n    done(err);\n    return;\n  }\n",
+        // A predicate call and a single comparison in one expression. The
+        // `.some(` is a function REFERENCE, not a callback body, and the
+        // comparison runs after it against one pair.
+        "  return candidates.some(isEligible) && timingSafeEqual(actual, expected);\n",
         // The correct loop: every candidate compared, no exit to take.
         "    for (var mi=0;mi<p.length;mi+=1) {\n      if (nodeCrypto.timingSafeEqual(peerBuf, p[mi])) {\n        matched = true;\n      }\n    }\n",
         "  return nodeCrypto.timingSafeEqual(bufA, bufB);\n}",
+        // OUT OF SCOPE, deliberately: a comparison inside a `.some` / `.find`
+        // callback is the same defect, and this pattern does not claim it. Seven
+        // rounds of trying to reach into a callback with a regex produced a
+        // false positive or a miss every time. Listed here so the gap is a
+        // decision on the record rather than something a later reader assumes
+        // was covered.
+        "  return cands.some(c => bCrypto.timingSafeEqual(c, exp));\n",
+        "  return cands.some(function matches(c) {\n    return bCrypto.timingSafeEqual(c, exp);\n  });\n",
       ],
     },
   },
@@ -16769,17 +16979,7 @@ function testKnownAntipatterns() {
       // antipatterns (regexes that span lines) MUST NOT set this opt
       // — those need raw content. Per-entry opt-in.
       var subject = content;
-      if (ap.skipCommentLines === true) {
-        subject = content.split(/\r?\n/).map(function (ln) {
-          // Keep `*` lines that are clearly NOT jsdoc bodies (e.g.
-          // a leading-`*` in a star-pattern wildcard outside a
-          // comment block) by only blanking lines where `*` is the
-          // first non-whitespace and the trimmed line starts with
-          // `*` (i.e. ` * ...` or `/* ...` or `*/`).
-          if (/^\s*(\*|\/\/|\/\*)/.test(ln)) return "";
-          return ln;
-        }).join("\n");
-      }
+      if (ap.skipCommentLines === true) subject = _blankCommentLines(content);
       var m = ap.regex.exec(subject);
       if (!m) continue;
       // Companion `requires` check — if the same file content names
@@ -18766,6 +18966,8 @@ async function run() {
   testNoStaleDefers();
   testNoLiteralNulBytesInSource();
   testParserPrimitivesHaveFuzzHarness();
+  testCommentStripHelper();
+  testIntegrationFilesReportCheckCounts();
   testSafeGuardWiredInIndex();
   testSafeGuardHasMustComposeDetector();
   testNoTierTerminologyInLib();

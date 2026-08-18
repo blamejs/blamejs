@@ -269,7 +269,7 @@ async function run() {
 module.exports = { run: run };
 if (require.main === module) {
   run().then(
-    function () { console.log("[openid-federation-chain] OK"); },
+    function () { console.log("OK — " + helpers.getChecks() + " checks passed"); },
     function (e) { console.error("[openid-federation-chain] FAIL:", e.stack || e); process.exit(1); }
   );
 }
