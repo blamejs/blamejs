@@ -256,6 +256,76 @@ function testCertRevoked() {
   try { b.crypto.isCertRevoked(cert.pem, "not-an-array"); }
   catch (e) { threw = e instanceof TypeError; }
   check("isCertRevoked refuses non-array deny list", threw);
+
+  // The verdict must not depend on WHERE in the list the hit sits. This is the
+  // observable half of the no-early-exit property; the timing half is
+  // structural and is held by the codebase-patterns detector, because a leak
+  // that stops the loop early produces the same answer either way.
+  var deep = [];
+  for (var d = 0; d < 24; d += 1) deep.push("00".repeat(64));
+  deep.push(fp.hex);
+  check("isCertRevoked finds a hit at the end of a long deny list",
+    b.crypto.isCertRevoked(cert.pem, deep) === true);
+  check("isCertRevoked finds a hit at the start of the same list",
+    b.crypto.isCertRevoked(cert.pem, [fp.hex].concat(deep.slice(0, 24))) === true);
+  // Both forms present, only the colon one matching, and vice versa — the two
+  // buckets are compared independently because their byte lengths differ.
+  check("isCertRevoked matches the colon form among hex noise",
+    b.crypto.isCertRevoked(cert.pem, ["00".repeat(64), fp.colon]) === true);
+}
+
+// The multi-candidate compare. Its whole reason to exist is that a loop which
+// stops at the first match reports the match's POSITION through timing, so the
+// cases here pin the contract that survives that: same answer wherever the hit
+// sits, and a shape that cannot be talked into returning early.
+function testTimingSafeEqualAny() {
+  var target = Buffer.from("the-presented-secret-value-here");
+  function noise(n) {
+    var out = [];
+    for (var i = 0; i < n; i += 1) out.push(Buffer.from("x".repeat(target.length)));
+    return out;
+  }
+
+  check("timingSafeEqualAny: match at the first position",
+    b.crypto.timingSafeEqualAny(target, [target].concat(noise(8))) === true);
+  check("timingSafeEqualAny: match at the last position",
+    b.crypto.timingSafeEqualAny(target, noise(8).concat([target])) === true);
+  check("timingSafeEqualAny: match in the middle",
+    b.crypto.timingSafeEqualAny(target, noise(4).concat([target], noise(4))) === true);
+  check("timingSafeEqualAny: no match at all",
+    b.crypto.timingSafeEqualAny(target, noise(8)) === false);
+  check("timingSafeEqualAny: an empty candidate list is not a match",
+    b.crypto.timingSafeEqualAny(target, []) === false);
+
+  // A string presented value and string candidates are accepted, and compare
+  // as UTF-8 bytes the same way timingSafeEqual does.
+  check("timingSafeEqualAny: strings compare as their utf8 bytes",
+    b.crypto.timingSafeEqualAny("hello", ["nope!", "hello"]) === true);
+
+  // A wrong-length candidate is a non-match, not a throw — the lengths here
+  // are digest sizes fixed by an algorithm, not secrets.
+  check("timingSafeEqualAny: a wrong-length candidate is skipped, not fatal",
+    b.crypto.timingSafeEqualAny(target, [Buffer.from("short"), target]) === true);
+
+  // A malformed row in an operator-assembled deny list must not fail the
+  // request; it counts as a non-match.
+  check("timingSafeEqualAny: a non-Buffer non-string candidate is a non-match",
+    b.crypto.timingSafeEqualAny(target, [null, 42, {}, target]) === true);
+  check("timingSafeEqualAny: malformed candidates alone do not match",
+    b.crypto.timingSafeEqualAny(target, [null, 42, {}]) === false);
+
+  // Entry-tier on the caller's own arguments: passing the wrong shape is a bug
+  // that would otherwise answer false for every input.
+  var threwPresented = false;
+  try { b.crypto.timingSafeEqualAny(null, [target]); }
+  catch (e) { threwPresented = e instanceof TypeError; }
+  check("timingSafeEqualAny: refuses a non-Buffer non-string presented value",
+    threwPresented);
+
+  var threwList = false;
+  try { b.crypto.timingSafeEqualAny(target, "not-an-array"); }
+  catch (e) { threwList = e instanceof TypeError; }
+  check("timingSafeEqualAny: refuses a non-array candidate list", threwList);
 }
 
 function testCertPeerEnvelopeRoundTrip() {
@@ -353,6 +423,7 @@ function run() {
   testSri();
   testCertFingerprint();
   testCertRevoked();
+  testTimingSafeEqualAny();
   testCertPeerEnvelopeRoundTrip();
   testCertPeerEnvelopeValidation();
 }

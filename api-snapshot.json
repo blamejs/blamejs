@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.18.35",
-  "createdAt": "2026-08-18T14:28:30.535Z",
+  "frameworkVersion": "0.18.36",
+  "createdAt": "2026-08-18T17:12:51.519Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -15162,6 +15162,10 @@
           "arity": 2
         },
         "timingSafeEqual": {
+          "type": "function",
+          "arity": 2
+        },
+        "timingSafeEqualAny": {
           "type": "function",
           "arity": 2
         },

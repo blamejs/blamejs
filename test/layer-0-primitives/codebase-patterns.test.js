@@ -12491,6 +12491,94 @@ var KNOWN_ANTIPATTERNS = [
   },
 
   {
+    id: "timing-safe-compare-with-early-exit",
+    primitive: "b.crypto.timingSafeEqualAny",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // A constant-time compare inside a loop that stops at the first match
+    // answers a second question nobody asked: how far down the list the match
+    // was. The caller's own response time then reports it — matching the first
+    // pinned key returns sooner than matching the last, and matching nothing
+    // runs the whole list. Every comparison being individually constant-time
+    // does not help, because the LEAK IS THE ITERATION COUNT.
+    //
+    // Six sites shipped this way, and three of them carried a comment or
+    // docstring asserting the property the code did not have:
+    // crypto.isCertRevoked ("the answer doesn't leak which entry matched",
+    // with a `return true` inside the loop), eat._nonceMatches ("constant-time
+    // compare against each candidate"), and the DPoP nonce pair ("so
+    // server-issued nonce probing can't narrow the rolling-pair bytes via
+    // response-timing"). The other three were webhook-hmac, standard-webhooks
+    // and http-message-signature's Content-Digest member loop.
+    //
+    // A test cannot hold this. Every one of those sites returned the CORRECT
+    // answer — the defect is only in how long it took, which no assertion on
+    // output can observe and no wall-clock measurement can assert reliably
+    // under a parallel runner. That makes the structural check the primary
+    // guard here rather than the usual belt-and-braces, and the reason to
+    // route through a primitive with no exit to take rather than to review
+    // each loop.
+    //
+    // Two shapes, because the defect is NOT "a loop with a break". The DPoP
+    // nonce pair had no loop at all — two sequential `if (compare) return true`
+    // statements, where the second comparison only runs when the first misses,
+    // which is the same position oracle. Anchoring on an enclosing loop would
+    // have missed it.
+    //
+    // What every true positive shares is a POSITIVE comparison guarding an
+    // early exit. The shape that is fine and must stay quiet is the negated
+    // guard — `if (!timingSafeEqual(a, b)) return false; return true;` — which
+    // has one comparison and so no position to leak; the `(?![!)])` tempered
+    // token is what tells the two apart. The second branch covers `.some` /
+    // `.find`, which are early exits by construction whatever their callback
+    // returns.
+    //
+    // The callback branch requires the comparison to sit INSIDE the callback,
+    // not merely near it: `lib/network-nts.js` uses `.find()` to locate an
+    // extension BY TYPE and then makes one negated comparison afterwards, and a
+    // branch that only asked for a `.find(` somewhere in the preceding 200
+    // characters refused it. Tempering on the callback's own `})` is what keeps
+    // an ordinary lookup that happens to precede a compare out of the class.
+    //
+    // Neither tempered token can cross a function-closing brace at column 0, so
+    // a `break` belonging to a later loop in the same file cannot pair with an
+    // earlier call. The `{0,80}` / `{0,200}` bounds are ReDoS backstops set far
+    // above any real body, not the precision mechanism.
+    regex: /(?:if\s*\((?:(?![!)])[\s\S]){0,80}?timingSafeEqual\((?:(?!\n\})[\s\S]){0,200}?(?:\breturn\s+true\b|\bbreak\s*;)|\.(?:some|find|findIndex)\s*\(\s*function[^)]*\)\s*\{(?:(?!\}\s*\))[\s\S]){0,200}?timingSafeEqual\()/,
+    allowlist: [],
+    reason: "a multi-candidate constant-time compare must run every comparison; " +
+            "stopping at the first match leaks the match's position through timing. " +
+            "Route through b.crypto.timingSafeEqualAny, which has no early exit.",
+    // Precision is pinned, not remembered. Both halves of this pattern were
+    // wrong on the first attempt in opposite directions — it refused a single
+    // negated compare, and a `.find()` locating an NTS extension by type — so
+    // the shapes that decide it are fixtures rather than a comment.
+    fixtures: {
+      fires: [
+        "  for (var i=0;i<d.length;i++) {\n    if (nodeCrypto.timingSafeEqual(a, b)) {\n      return true;\n    }\n  }\n",
+        "  for (var s=0;s<sigs.length;s+=1) {\n    if (bCrypto.timingSafeEqual(e, f)) {\n      matched = true;\n      break;\n    }\n  }\n",
+        // No loop at all — the DPoP nonce pair. The second compare runs only
+        // when the first misses, which is the same position oracle.
+        "      if (current && bCrypto.timingSafeEqual(n, current.nonce)) return true;\n      if (previous && bCrypto.timingSafeEqual(n, previous.nonce)) return true;\n      return false;\n",
+        // `.some` is an early exit by construction, whatever the callback says.
+        "  return cands.some(function (c) {\n    return bCrypto.timingSafeEqual(c, exp);\n  });\n",
+      ],
+      quiet: [
+        // One comparison, so no position to leak. The negated guard is the
+        // shape a review flagged this pattern for refusing.
+        "  if (!bCrypto.timingSafeEqual(a, b)) return false;\n  return true;\n}",
+        "  if (!bCrypto.timingSafeEqual(sig, exp)) {\n    throw new Error(\"bad\");\n  }\n  return true;\n}",
+        // A `.find()` that locates a record BY TYPE, with the comparison after
+        // it rather than inside its callback — lib/network-nts.js.
+        "  var ext = exts.find(function (e) { return e.type === UNIQUE_ID; });\n  if (!ext || !timingSafeEqual(ext.body, unique)) {\n    done(err);\n    return;\n  }\n",
+        // The correct loop: every candidate compared, no exit to take.
+        "    for (var mi=0;mi<p.length;mi+=1) {\n      if (nodeCrypto.timingSafeEqual(peerBuf, p[mi])) {\n        matched = true;\n      }\n    }\n",
+        "  return nodeCrypto.timingSafeEqual(bufA, bufB);\n}",
+      ],
+    },
+  },
+
+  {
     id: "char-threat-strip-without-the-reject-assert",
     primitive: "b.codepointClass.scrubCharThreats",
     scanScope: "lib",
@@ -17184,6 +17272,47 @@ function testNoInternalNarrativeComments() {
 // for one. There is no allowlist — a genuine need for a pattern in this
 // family is a signal that a walk primitive is missing, not that this gate
 // should grow an entry.
+// A detector needs false-positive PRECISION as much as it needs coverage, and
+// a pattern that has only ever been checked against the code it was written for
+// has been checked in one direction. Any KNOWN_ANTIPATTERNS entry may carry
+// `fixtures: { fires: [...], quiet: [...] }`, and this runs them.
+//
+// The entry that prompted it got both directions wrong on the first attempt:
+// it refused a single negated comparison (one compare, nothing to leak), and
+// separately refused a `.find()` locating a record by type merely because a
+// comparison appeared nearby. Neither was visible from the code the pattern was
+// written against — only from shapes deliberately chosen to sit just outside
+// it. Writing those down is cheaper than rediscovering them.
+function testAntipatternFixturesHold() {
+  var wrong = [];
+  var probed = 0;
+  KNOWN_ANTIPATTERNS.forEach(function (entry) {
+    if (!entry.fixtures) return;
+    var re = entry.regex;
+    (entry.fixtures.fires || []).forEach(function (sample, i) {
+      probed += 1;
+      re.lastIndex = 0;
+      if (!re.test(sample)) {
+        wrong.push(entry.id + " fires[" + i + "] did NOT fire: " +
+                   sample.replace(/\s+/g, " ").slice(0, 70));
+      }
+    });
+    (entry.fixtures.quiet || []).forEach(function (sample, i) {
+      probed += 1;
+      re.lastIndex = 0;
+      if (re.test(sample)) {
+        wrong.push(entry.id + " quiet[" + i + "] FALSE POSITIVE: " +
+                   sample.replace(/\s+/g, " ").slice(0, 70));
+      }
+    });
+  });
+  check("every antipattern fixture holds — each pattern fires on the shape it " +
+        "guards and stays quiet on the shape it must not refuse",
+        wrong.length === 0, wrong.slice(0, 6).join("; "));
+  check("antipattern fixtures probed at least eight samples", probed >= 8,
+        "probed " + probed);
+}
+
 function testNoRegexInGuardAndSafeFamily() {
   // class: regex-in-guard-or-safe-primitive
   // Deciding whether `/` opens a regex or divides is the one genuinely hard
@@ -18619,6 +18748,7 @@ function testSfvCitationMatchesReferencingProtocol() {
 async function run() {
   testPrimitiveReachability();
   testDenyPathComposesDenyResponse();
+  testAntipatternFixturesHold();
   testNoRegexInGuardAndSafeFamily();
   testCaptureStatusChecked();
   testSfvCitationMatchesReferencingProtocol();

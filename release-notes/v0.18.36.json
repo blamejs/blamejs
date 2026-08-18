@@ -1,0 +1,67 @@
+{
+  "$schema": "./schema.json",
+  "version": "0.18.36",
+  "date": "2026-08-18",
+  "headline": "Six constant-time comparisons told you which candidate matched, by how long they took",
+  "summary": "A comparison that runs in constant time answers one question without leaking anything. A loop of them that stops at the first match answers a second question nobody asked: how far down the list the match was. Six places in the framework compared a presented value against a list of candidates and returned as soon as one matched, so the response time reported the match's position — which deny-list entry a certificate hit, which verifier's nonce a token carried, where in a key rotation the sender currently sits.\n\nEvery one of them returned the correct answer. The defect is only in how long it took, which is why no test caught it and why the guard that replaces them is structural.\n\n**Upgrade if you use `b.crypto.isCertRevoked`, `b.webhookHmac.verify`, `b.standardWebhooks.verify`, `b.httpMessageSignature.verify`, `b.eat` nonce verification, or the DPoP nonce middleware.** No API changes, no configuration changes — the comparisons simply stop reporting position.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "Six multi-candidate comparisons no longer leak the matching candidate's position",
+          "body": "Each of these compared a presented value against a list and exited on the first hit:\n\n- `b.crypto.isCertRevoked` — which entry of the deny list the certificate's fingerprint matched. Its own docstring promised the opposite: \"every comparison runs through `crypto.timingSafeEqual` so the answer doesn't leak which entry matched\", above a loop that returned inside itself.\n- `b.eat` nonce verification — which verifier's nonce an attestation token carried, under a comment reading \"Constant-time compare against each candidate\".\n- The DPoP nonce middleware — whether a client presented the current or the previous nonce, which locates it in the rotation window. Its comment claimed the compare existed \"so server-issued nonce probing can't narrow the rolling-pair bytes via response-timing\".\n- `b.webhookHmac.verify` and `b.standardWebhooks.verify` — the position of the matching signature in a multi-signature header, which tracks the sender's key rotation.\n- `b.httpMessageSignature.verify` — the position of the matching member in a `Content-Digest` header.\n\nAll six now compare against every candidate. A length mismatch still short-circuits a single comparison and still leaks nothing: the lengths involved are digest and fingerprint sizes fixed by an algorithm, not secrets."
+        }
+      ]
+    },
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "b.crypto.timingSafeEqualAny(presented, candidates)",
+          "body": "Returns `true` when `presented` equals any entry of `candidates`, comparing against every entry whatever the outcome. The loop has no `break` and no `return` inside it, and folds each result into an accumulator rather than writing `matched || compare(...)` — that short-circuits the call away once something matches, which is the early exit wearing different syntax.\n\nA candidate that is neither a Buffer nor a string counts as a non-match rather than throwing, because a deny list assembled from operator configuration should not fail the request on one malformed row. The presented value and the array itself are entry-tier: passing the wrong shape is a caller bug that would otherwise answer `false` for every input."
+        }
+      ]
+    },
+    {
+      "heading": "Detectors",
+      "items": [
+        {
+          "title": "A detector can pin the shapes it must NOT refuse",
+          "body": "A `codebase-patterns` entry may now carry `fixtures: { fires, quiet }`, and a check runs them: every listed shape must fire, every listed shape must stay quiet. Nothing enforced that before, so a pattern's precision lived in whatever its author happened to try by hand — which is one direction, against the code the pattern was written for.\n\nThe entry added in this release got both directions wrong before the fixtures existed. It refused a single negated comparison (`if (!timingSafeEqual(a, b)) return false; return true;` — one comparison, no position to leak), and separately refused a `.find()` locating a record by type merely because a comparison appeared nearby. Neither shape was visible from the code the pattern was aimed at."
+        },
+        {
+          "title": "A constant-time compare in a loop may not exit early",
+          "body": "`timing-safe-compare-with-early-exit` fires on a `timingSafeEqual` call followed by a `break` or a `return true` that it cannot reach across a function boundary.\n\nThis one is the primary guard rather than the usual second line, and the reason is worth stating: every affected site produced the correct output, so no assertion on a return value could observe the defect, and a wall-clock measurement cannot assert it reliably under a parallel test runner. The property is structural — the loop must have no exit to take — so the check is structural too, and the fix routes through a primitive that cannot be talked into returning early rather than asking each loop to be reviewed."
+        }
+      ]
+    },
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "Four NIST SP 800-53 control mappings corrected",
+          "body": "`docs/cis-sqlite-equivalent.md` maps the framework's posture to Revision 5 and cited three enhancements that Revision 5 withdrew: `AU-8(1)` for time-source synchronisation, now `SC-45(1)`; `IA-2(11)` for step-up authentication, now `IA-2(6)`; and `CP-2(8)` for recovery objectives, now folded into `CP-2`.\n\nThe fourth was a live enhancement claimed for a mechanism that does not meet it. `AU-9(1)` requires audit trails written to hardware-enforced write-once media; the framework's WORM tables are a database trigger refusing UPDATE and DELETE. That is software enforcement, and an assessor would reject the mapping. The row now cites `AU-9` and says what a deployment claiming the enhancement has to add underneath."
+        }
+      ]
+    }
+  ],
+  "references": [
+    {
+      "label": "NIST SP 800-53 Rev. 5 SC-45(1) — Synchronization with Authoritative Time Source",
+      "url": "https://csf.tools/reference/nist-sp-800-53/r5/sc/sc-45/sc-45-1/"
+    },
+    {
+      "label": "NIST SP 800-53 Rev. 5 AU-9(1) — Hardware Write-once Media",
+      "url": "https://csf.tools/reference/nist-sp-800-53/r5/au/au-9/au-9-1/"
+    },
+    {
+      "label": "RFC 9449 — OAuth 2.0 Demonstrating Proof of Possession (DPoP), nonce handling",
+      "url": "https://www.rfc-editor.org/rfc/rfc9449.html"
+    },
+    {
+      "label": "RFC 9421 — HTTP Message Signatures, Content-Digest verification",
+      "url": "https://www.rfc-editor.org/rfc/rfc9421.html"
+    }
+  ]
+}
