@@ -17421,7 +17421,15 @@ function testNoRegexInGuardAndSafeFamily() {
         i += 1;
         while (i < src.length && src.charAt(i) !== quote) {
           if (src.charAt(i) === "\\") i += 1;
-          if (src.charAt(i) === "\n") line += 1;
+          // A continuation can carry any of the four terminators, not just a
+          // line feed, and a CRLF pair advances the count once between them.
+          // Counting only LF here reported a later literal an early line —
+          // the same omission the template reader had, in the last of the four
+          // readers that walk a line.
+          var sc = src.charAt(i);
+          if (isLineTerminator(sc)) {
+            if (sc !== "\r" || src.charAt(i + 1) !== "\n") line += 1;
+          }
           i += 1;
         }
         endedExpression();       // a string literal ends an expression
@@ -17824,6 +17832,49 @@ function testNoRegexInGuardAndSafeFamily() {
                            "prefix update after " + word]);
   });
 
+  // Every compound assignment and operator that leaves operand position. These
+  // were derived by walking the grammar rather than waiting for the next
+  // report, which is what the earlier rounds had been doing.
+  ["??", "??=", "||=", "&&=", "**", "**=", "%=", "<<=", ">>>=", "&=", "|=",
+   "^=", "/="].forEach(function (op) {
+    SCANNER_FIXTURES.push(["var a = 1; a " + op + " /unsafe/.source;", true,
+                           "literal after " + op]);
+  });
+
+  // Positions inside an expression where a `/` opens a literal, and the
+  // divisions next to them that must not be read as one.
+  [
+    ["var r = a ? /unsafe/.test(v) : b;",            true,  "ternary consequent"],
+    ["var r = a ? b : /unsafe/.test(v);",            true,  "ternary alternate"],
+    ["var r = (a, /unsafe/.test(v));",               true,  "comma operator"],
+    ["var o = { [/unsafe/.source]: 1 };",            true,  "computed key"],
+    ["var r = a[/unsafe/.source];",                  true,  "computed member"],
+    ["f(...[/unsafe/]);",                            true,  "spread element"],
+    ["var f = (x = /unsafe/) => x;",                 true,  "default parameter"],
+    ["var f = x => /unsafe/.test(x);",               true,  "concise arrow body"],
+    ["function* g(){ yield* [/unsafe/]; }",          true,  "delegated yield"],
+    ["do { x(); } while (/unsafe/.test(v));",        true,  "do-while condition"],
+    ["lbl: /unsafe/.test(v);",                       true,  "after a label"],
+    ["class A { static { var q = /unsafe/.source; } }", true, "class static block"],
+    ["var o = { get x() { return /unsafe/.source; } };", true, "object getter body"],
+    ["var r = new Date() / 2 / 3;",                  false, "division after a constructor call"],
+    ["class A { m() { return super.x / 2 / 3; } }",  false, "division after a super member"],
+    ["var r = a?.b / 2 / 3;",                        false, "division after optional chaining"],
+    ["var r = a?.[0] / 2 / 3;",                      false, "division after an optional index"],
+    ["var f = a => a / 2 / 3;",                      false, "division in a concise arrow body"],
+    ["var o = { get x() { return 1 / 2 / 3; } };",   false, "division in a getter"],
+    ["var r = a ** 2 / 2 / 3;",                      false, "division after an exponent"],
+    ["var r = a ?? b / 2 / 3;",                      false, "division right of nullish"],
+    ["var r = 0.5 / 2 / 3;",                         false, "division after a leading-zero decimal"],
+    // Regex bodies that look like something else to a careless reader.
+    ["var re = //;",                                 false, "an empty regex is a line comment"],
+    ["var re = /[/*]/;",                             true,  "a comment opener inside a class"],
+    ["var re = /a/gimsuy;",                          true,  "every legacy flag"],
+    ["var re = /a/dgv;",                             true,  "the d and v flags"],
+    ["var r = /a/.source / 2 / 3;",                  true,  "a literal and then a division"],
+    ["var re = /[\\]]/;",                            true,  "an escaped bracket inside a class"],
+  ].forEach(function (row) { SCANNER_FIXTURES.push(row); });
+
   // Every whitespace character against every position where mistaking one for
   // a token changes the verdict. Only space and tab were treated as separators
   // once, so each of the other ten became the previous token: `count<NBSP>++`
@@ -17982,6 +18033,17 @@ function testNoRegexInGuardAndSafeFamily() {
       "a skipped shebang still advances the line"],
     ["#!/usr/bin/env node\r\nvar a = 1;\r\nreturn /unsafe/.test(v);", 3,
       "a shebang ended by CRLF advances it once"],
+    // A string continuation can carry any of the four terminators. Counting
+    // only the line feed here left a later literal an early line, which is the
+    // one thing the location check exists to catch.
+    ["var pad = 1;\nvar s = 'a\\\rb';\nreturn /unsafe/.test(v);", 4,
+      "a carriage-return continuation in a string"],
+    ["var pad = 1;\nvar s = 'a\\\r\nb';\nreturn /unsafe/.test(v);", 4,
+      "a CRLF continuation in a string"],
+    ["var pad = 1;\nvar s = \"a\\" + LS.line + "b\";\nreturn /unsafe/.test(v);", 4,
+      "a line-separator continuation in a string"],
+    ["var pad = 1;\nvar s = \"a\\" + LS.para + "b\";\nreturn /unsafe/.test(v);", 4,
+      "a paragraph-separator continuation in a string"],
   ];
   var lineCheck = [];
   LINE_FIXTURES.forEach(function (row) {
