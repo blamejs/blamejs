@@ -13,8 +13,25 @@
 
 var _checks = 0;
 
-function check(label, condition) {
-  if (!condition) throw new Error("FAIL: " + label);
+// `detail` is the diagnostic a failing check wants to hand the reader — the
+// offending items, the count, the name that differed. It was accepted at 1829
+// call sites and discarded by every one of them, so a gate failure printed its
+// label and nothing else, and the work of building the message was thrown away
+// at the moment it was needed. Bounded and flattened to one line for the same
+// reason formatErr is: the text can carry a fixture's bytes verbatim, and a
+// newline in it would forge an extra log line.
+function check(label, condition, detail) {
+  if (!condition) {
+    var extra = "";
+    if (detail !== undefined && detail !== null && detail !== "") {
+      extra = " -- " + String(detail)
+        .replace(/[\r\n]+/g, " ")
+        .replace(/\t+/g, " ")
+        .replace(/ {2,}/g, " ");
+      if (extra.length > 1000) extra = extra.slice(0, 1000) + "...";
+    }
+    throw new Error("FAIL: " + label + extra);
+  }
   _checks += 1;
 }
 

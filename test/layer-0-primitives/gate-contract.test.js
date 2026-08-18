@@ -604,6 +604,70 @@ async function testComposeHooks() {
   check("composeHooks: null then value → value", (await nullFirst({})).x === 1);
 }
 
+// The policy-driven refusal. Its whole reason to exist is that severity is the
+// wrong axis for a guard whose findings carry a policy — so the cases that
+// matter are the two where severity and policy DISAGREE.
+function testThrowOnRefusedDisposition() {
+  var POLICY = { bidiPolicy: "audit", controlPolicy: "reject" };
+  function dispositionFor(issue, opts) {
+    if (issue.kind === "bidi-override") return GC.policyDisposition(opts.bidiPolicy);
+    if (issue.kind === "control-char")  return GC.policyDisposition(opts.controlPolicy);
+    return null;                          // unclassified — severity decides
+  }
+  var cfg = {
+    dispositionFor: dispositionFor, opts: POLICY,
+    errorClass: GCE, codePrefix: "gc",
+  };
+
+  // Critical severity, `audit` policy: must NOT throw. Reading severity here is
+  // what made an audited bidi override refuse the whole document.
+  var threw = null;
+  try {
+    GC.throwOnRefusedDisposition(
+      [{ kind: "bidi-override", severity: "critical", ruleId: "gc.bidi", snippet: "b" }], cfg);
+  } catch (e) { threw = e; }
+  check("throwOnRefusedDisposition: an audited finding does not throw at critical severity",
+    threw === null, threw && threw.code);
+
+  // `reject` policy at a severity BELOW the default refusal set: must throw.
+  // A guard whose kinds never reach critical would otherwise leak one.
+  threw = null;
+  try {
+    GC.throwOnRefusedDisposition(
+      [{ kind: "control-char", severity: "warn", ruleId: "gc.ctrl", snippet: "c" }], cfg);
+  } catch (e) { threw = e; }
+  check("throwOnRefusedDisposition: a rejected finding throws even at warn severity",
+    threw && threw.code === "gc.ctrl", threw && threw.code);
+
+  // Unclassified kinds are not thereby permitted — they keep the severity rule.
+  threw = null;
+  try {
+    GC.throwOnRefusedDisposition(
+      [{ kind: "parse-failed", severity: "critical", ruleId: "gc.parse", snippet: "p" }], cfg);
+  } catch (e) { threw = e; }
+  check("throwOnRefusedDisposition: an unclassified critical finding still refuses",
+    threw && threw.code === "gc.parse", threw && threw.code);
+
+  threw = null;
+  try {
+    GC.throwOnRefusedDisposition(
+      [{ kind: "parse-failed", severity: "warn", ruleId: "gc.parse", snippet: "p" }], cfg);
+  } catch (e) { threw = e; }
+  check("throwOnRefusedDisposition: an unclassified warn finding passes through",
+    threw === null, threw && threw.code);
+
+  // skipKinds is for a caller that already refused the kind with its own message.
+  threw = null;
+  try {
+    GC.throwOnRefusedDisposition(
+      [{ kind: "control-char", severity: "warn", ruleId: "gc.ctrl", snippet: "c" }],
+      { dispositionFor: dispositionFor, opts: POLICY, errorClass: GCE,
+        codePrefix: "gc", skipKinds: ["control-char"] });
+  } catch (e) { threw = e; }
+  check("throwOnRefusedDisposition: skipKinds leaves a kind to its caller",
+    threw === null, threw && threw.code);
+}
+
 function testThrowOnRefusalSeverity() {
   var threw = null;
   try {
@@ -1858,6 +1922,7 @@ async function run() {
   testDetectStringInput();
   await testComposeHooks();
   testThrowOnRefusalSeverity();
+  testThrowOnRefusedDisposition();
   testExtractBytesAsText();
   testIdentifierFixtures();
   testMakeRulePackLoader();
