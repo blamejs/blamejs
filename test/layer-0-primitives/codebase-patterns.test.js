@@ -5637,6 +5637,17 @@ async function testNoDuplicateCodeBlocks() {
       // byte-identical); gate = buildContentGate composition. No two bodies are
       // byte-identical (the genuine shared constants — DANGEROUS/SAFE_URL_SCHEMES,
       // CHAR_THREATS_REJECT_ALL — are already extracted).
+      //
+      // yaml and email joined the _gateDispositionFor set when they stopped
+      // resolving disposition from SEVERITY and started reading each finding's
+      // policy, which is what the rest of the family already did. Their maps are
+      // divergent for the same reason the others are: yaml binds tag / alias /
+      // merge-key / multi-document / octal / norway-bool, email binds only the
+      // shared character classes and leaves its own vocabulary on severity.
+      // guard-json's _sanitizeTransform is the parse-and-re-serialize repair its
+      // gate already ran, lifted so the gate and the public sanitize cannot
+      // drift; guard-yaml's is a character scrub with no re-emit, because a YAML
+      // document has no faithful round-trip.
       mode:  "family-subset",
       files: [
         "lib/guard-archive.js:<top>",
@@ -5661,6 +5672,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-markdown.js:_detectIssues",
         "lib/guard-markdown.js:_gateDispositionFor",
         "lib/guard-markdown.js:_sanitizeTransform",
+        "lib/guard-markdown.js:gate",
         "lib/guard-shell.js:_detectIssues",
         "lib/guard-svg.js:<top>",
         "lib/guard-svg.js:_gateDispositionFor",
@@ -5674,8 +5686,13 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-xml.js:gate",
         "lib/guard-yaml.js:<top>",
         "lib/guard-yaml.js:_detectIssues",
+        "lib/guard-yaml.js:_gateDispositionFor",
+        "lib/guard-yaml.js:_sanitizeTransform",
         "lib/guard-yaml.js:_scanTags",
         "lib/guard-yaml.js:parse",
+        "lib/guard-email.js:_gateDispositionFor",
+        "lib/guard-email.js:gate",
+        "lib/guard-json.js:_sanitizeTransform",
       ],
     },
     {

@@ -19,6 +19,7 @@
 var helpers = require("../helpers");
 var b       = helpers.b;
 var check   = helpers.check;
+var gateContract = require("../../lib/gate-contract");
 
 // ---- Surface ----
 
@@ -330,6 +331,8 @@ async function run() {
   testGuardFamilySeverityAgreesWithPolicy();
   testGuardFamilyEveryStripPathRemovesTheSameClasses();
   testGuardFamilyValidateIsDeterministicAcrossCalls();
+  testGuardFamilyDeclaresOnlyPerformableActions();
+  await testGuardFamilyDispositionFollowsPolicy();
   testGuardFamilyStrictRejectsEveryZeroWidthCharacter();
   return testGuardAllDispatchRoutesByMime();
 }
@@ -580,6 +583,22 @@ function testGuardFamilySeverityAgreesWithPolicy() {
     // nothing about the Tags character.
     try { g.sanitize(carrier, { profile: "balanced" }); }
     catch (_e) { return; }
+    // Appending to a STRUCTURED document can break its syntax, and a guard
+    // whose sanitize re-parses then refuses the malformed result — correctly,
+    // and for a reason that has nothing to do with the Tags policy. Judge only
+    // where the appended character is the lone new finding, the same
+    // discriminator the tags-disposition probe uses. Without it this asserted
+    // that `{"a":1}<TAG>` must sanitize, which is not valid JSON at all.
+    var baseIssues, tagIssues;
+    try {
+      baseIssues = (g.validate(carrier, { profile: "balanced" }).issues || []);
+      tagIssues  = (g.validate(carrier + TAG, { profile: "balanced" }).issues || []);
+    } catch (_e2) { return; }
+    var addedKinds = tagIssues.map(function (i) { return i.kind; })
+      .filter(function (kind) {
+        return !baseIssues.some(function (bi) { return bi.kind === kind; });
+      });
+    if (addedKinds.length !== 1 || addedKinds[0] !== "unicode-tags") return;
     probed += 1;
 
     var out = null, threw = null;
@@ -706,6 +725,126 @@ function testGuardFamilyValidateIsDeterministicAcrossCalls() {
   });
   // Guard the guard: vacuous passes are the failure mode this is meant to stop.
   check("determinism invariant probed at least eight guards", probed >= 8);
+}
+
+// A guard may only declare a policy it can carry out. `strip` is an instruction
+// to repair, and a guard with no `sanitize` has nothing to repair with, so the
+// setting is accepted at config time and silently means "refuse" at runtime.
+// Nothing checked this, and twelve such cells shipped across two content guards
+// — the same shape as a strip table that never strips, one level up: the
+// framework accepting a setting it does not honour.
+//
+// This is structural on purpose. It asks what a guard CAN do, not what it did
+// for one fixture, so it covers every profile of every registered guard
+// including ones whose fixtures never reach the policy in question.
+function testGuardFamilyDeclaresOnlyPerformableActions() {
+  var CHAR_POLICY_KEYS = ["bidiPolicy", "nullBytePolicy", "controlPolicy",
+                          "zeroWidthPolicy", "tagsPolicy"];
+  // The repair vocabulary — anything that promises the input comes back fixed.
+  var REPAIR = { strip: 1, sanitize: 1, escape: 1, "strip-and-audit": 1 };
+  var unperformable = [];
+  var probed = 0;
+  b.guardAll.allGuards().forEach(function (g) {
+    var profiles = g.PROFILES || {};
+    Object.keys(profiles).forEach(function (profile) {
+      var resolved = profiles[profile] || {};
+      CHAR_POLICY_KEYS.forEach(function (key) {
+        var policy = resolved[key];
+        if (policy === undefined || policy === "allow") return;
+        probed += 1;
+        if (REPAIR[policy] !== 1) return;
+        // A repair policy needs a repair. An `entries` guard has none by
+        // design — a hostile archive entry cannot be made safe — so declaring
+        // one there is a contradiction rather than a missing export.
+        if (g.KIND === "entries") {
+          unperformable.push(g.NAME + " " + profile + "." + key + " = " + policy +
+                             " (an entries guard cannot repair its input)");
+          return;
+        }
+        if (typeof g.sanitize !== "function") {
+          unperformable.push(g.NAME + " " + profile + "." + key + " = " + policy +
+                             " (exports no sanitize)");
+        }
+      });
+    });
+  });
+  check("every declared character policy is one the guard can perform",
+        unperformable.length === 0, unperformable.slice(0, 12).join("; "));
+  check("performable-action invariant probed at least forty policy cells",
+        probed >= 40, "probed " + probed);
+}
+
+// And the behavioural half: the action a gate takes on a character threat has
+// to be the one that class's policy asks for. A guard that does not route
+// through `b.gateContract.charThreatDisposition` falls back to the default
+// severity rule, where `critical` and `high` both refuse — so `strip` refuses
+// instead of repairing and `audit` refuses instead of recording. Seventeen
+// cells across three guards resolved that way.
+//
+// The probe compares against a baseline of the same document without the
+// character, and only judges a cell where the injected character is the LONE
+// added finding. Injecting a control byte into an address also makes it
+// malformed, and that finding refuses on its own merits — judging the cell
+// there would test the wrong rule and pass for the wrong reason.
+async function testGuardFamilyDispositionFollowsPolicy() {
+  var CHARS = {
+    bidiPolicy:      { ch: String.fromCharCode(0x202E), kind: "bidi-override" },
+    nullBytePolicy:  { ch: String.fromCharCode(0x0000), kind: "null-byte" },
+    controlPolicy:   { ch: String.fromCharCode(0x0001), kind: "control-char" },
+    zeroWidthPolicy: { ch: String.fromCharCode(0x200B), kind: "zero-width" },
+    tagsPolicy:      { ch: String.fromCodePoint(0xE0041), kind: "unicode-tags" },
+  };
+  var wrong = [];
+  var probed = 0;
+  var guards = b.guardAll.allGuards().filter(function (g) {
+    return g.KIND === "content" && typeof g.gate === "function" &&
+           g.INTEGRATION_FIXTURES && g.INTEGRATION_FIXTURES.benignBytes !== undefined;
+  });
+  for (var i = 0; i < guards.length; i += 1) {
+    var g = guards[i];
+    var carrier = Buffer.isBuffer(g.INTEGRATION_FIXTURES.benignBytes)
+      ? g.INTEGRATION_FIXTURES.benignBytes.toString("utf8")
+      : String(g.INTEGRATION_FIXTURES.benignBytes);
+    var profiles = Object.keys(g.PROFILES || {});
+    for (var p = 0; p < profiles.length; p += 1) {
+      var profile = profiles[p];
+      var resolved = typeof g.resolveOpts === "function"
+        ? g.resolveOpts({ profile: profile }) : (g.PROFILES[profile] || {});
+      var base;
+      try { base = await g.gate({ profile: profile }).check({ bytes: Buffer.from(carrier, "utf8") }); }
+      catch (_e) { continue; }
+      var keys = Object.keys(CHARS);
+      for (var k = 0; k < keys.length; k += 1) {
+        var key = keys[k];
+        var policy = resolved[key];
+        if (policy === undefined || policy === "allow") continue;
+        var got;
+        try {
+          got = await g.gate({ profile: profile })
+                       .check({ bytes: Buffer.from(carrier + CHARS[key].ch, "utf8") });
+        } catch (_e2) { continue; }
+        var added = (got.issues || []).map(function (x) { return x.kind; })
+          .filter(function (kind) {
+            return !(base.issues || []).some(function (bi) { return bi.kind === kind; });
+          });
+        if (added.length !== 1 || added[0] !== CHARS[key].kind) continue;
+        probed += 1;
+        // The two vocabularies spell the same outcome differently: a
+        // disposition of `audit` is the action-chain's `audit-only`. Compare
+        // the outcome, not the word.
+        var want = gateContract.policyDisposition(policy);
+        if (want === "audit") want = "audit-only";
+        if (got.action !== want) {
+          wrong.push(g.NAME + " " + profile + "." + key + " = " + policy +
+                     " -> " + got.action + ", policy asks " + want);
+        }
+      }
+    }
+  }
+  check("a gate disposes a character threat the way its policy asks",
+        wrong.length === 0, wrong.slice(0, 10).join("; "));
+  check("disposition-follows-policy invariant probed at least six cells",
+        probed >= 6, "probed " + probed);
 }
 
 module.exports = { run: run };

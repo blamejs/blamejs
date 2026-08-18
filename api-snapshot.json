@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.18.34",
-  "createdAt": "2026-08-18T09:56:01.404Z",
+  "frameworkVersion": "0.18.35",
+  "createdAt": "2026-08-18T14:28:30.535Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -18347,6 +18347,10 @@
           "type": "function",
           "arity": 2
         },
+        "throwOnRefusedDisposition": {
+          "type": "function",
+          "arity": 2
+        },
         "validateGateShape": {
           "type": "function",
           "arity": 3
@@ -18569,15 +18573,7 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
-                "bidiPolicy": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
                 "caseInsensitiveCollisionPolicy": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "controlPolicy": {
                   "type": "primitive",
                   "valueType": "string"
                 },
@@ -18629,10 +18625,6 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
-                "nullBytePolicy": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
                 "sparseEntryPolicy": {
                   "type": "primitive",
                   "valueType": "string"
@@ -18642,10 +18634,6 @@
                   "valueType": "string"
                 },
                 "traversalPolicy": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "zeroWidthPolicy": {
                   "type": "primitive",
                   "valueType": "string"
                 }
@@ -18658,15 +18646,7 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
-                "bidiPolicy": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
                 "caseInsensitiveCollisionPolicy": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "controlPolicy": {
                   "type": "primitive",
                   "valueType": "string"
                 },
@@ -18718,10 +18698,6 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
-                "nullBytePolicy": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
                 "sparseEntryPolicy": {
                   "type": "primitive",
                   "valueType": "string"
@@ -18731,10 +18707,6 @@
                   "valueType": "string"
                 },
                 "traversalPolicy": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "zeroWidthPolicy": {
                   "type": "primitive",
                   "valueType": "string"
                 }
@@ -18747,15 +18719,7 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
-                "bidiPolicy": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
                 "caseInsensitiveCollisionPolicy": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "controlPolicy": {
                   "type": "primitive",
                   "valueType": "string"
                 },
@@ -18807,10 +18771,6 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
-                "nullBytePolicy": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
                 "sparseEntryPolicy": {
                   "type": "primitive",
                   "valueType": "string"
@@ -18820,10 +18780,6 @@
                   "valueType": "string"
                 },
                 "traversalPolicy": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "zeroWidthPolicy": {
                   "type": "primitive",
                   "valueType": "string"
                 }
@@ -18836,15 +18792,7 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
-                "bidiPolicy": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
                 "caseInsensitiveCollisionPolicy": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "controlPolicy": {
                   "type": "primitive",
                   "valueType": "string"
                 },
@@ -18896,10 +18844,6 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
-                "nullBytePolicy": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
                 "sparseEntryPolicy": {
                   "type": "primitive",
                   "valueType": "string"
@@ -18909,10 +18853,6 @@
                   "valueType": "string"
                 },
                 "traversalPolicy": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "zeroWidthPolicy": {
                   "type": "primitive",
                   "valueType": "string"
                 }
@@ -18927,15 +18867,7 @@
               "type": "primitive",
               "valueType": "string"
             },
-            "bidiPolicy": {
-              "type": "primitive",
-              "valueType": "string"
-            },
             "caseInsensitiveCollisionPolicy": {
-              "type": "primitive",
-              "valueType": "string"
-            },
-            "controlPolicy": {
               "type": "primitive",
               "valueType": "string"
             },
@@ -18991,10 +18923,6 @@
               "type": "primitive",
               "valueType": "string"
             },
-            "nullBytePolicy": {
-              "type": "primitive",
-              "valueType": "string"
-            },
             "sparseEntryPolicy": {
               "type": "primitive",
               "valueType": "string"
@@ -19004,10 +18932,6 @@
               "valueType": "string"
             },
             "traversalPolicy": {
-              "type": "primitive",
-              "valueType": "string"
-            },
-            "zeroWidthPolicy": {
               "type": "primitive",
               "valueType": "string"
             }
@@ -19072,15 +18996,7 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
-                "bidiPolicy": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
                 "caseInsensitiveCollisionPolicy": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "controlPolicy": {
                   "type": "primitive",
                   "valueType": "string"
                 },
@@ -19128,10 +19044,6 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
-                "nullBytePolicy": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
                 "sparseEntryPolicy": {
                   "type": "primitive",
                   "valueType": "string"
@@ -19141,10 +19053,6 @@
                   "valueType": "string"
                 },
                 "traversalPolicy": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "zeroWidthPolicy": {
                   "type": "primitive",
                   "valueType": "string"
                 }
@@ -19157,15 +19065,7 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
-                "bidiPolicy": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
                 "caseInsensitiveCollisionPolicy": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "controlPolicy": {
                   "type": "primitive",
                   "valueType": "string"
                 },
@@ -19213,10 +19113,6 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
-                "nullBytePolicy": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
                 "sparseEntryPolicy": {
                   "type": "primitive",
                   "valueType": "string"
@@ -19226,10 +19122,6 @@
                   "valueType": "string"
                 },
                 "traversalPolicy": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "zeroWidthPolicy": {
                   "type": "primitive",
                   "valueType": "string"
                 }
@@ -19242,15 +19134,7 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
-                "bidiPolicy": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
                 "caseInsensitiveCollisionPolicy": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "controlPolicy": {
                   "type": "primitive",
                   "valueType": "string"
                 },
@@ -19298,10 +19182,6 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
-                "nullBytePolicy": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
                 "sparseEntryPolicy": {
                   "type": "primitive",
                   "valueType": "string"
@@ -19311,10 +19191,6 @@
                   "valueType": "string"
                 },
                 "traversalPolicy": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "zeroWidthPolicy": {
                   "type": "primitive",
                   "valueType": "string"
                 }
@@ -27450,6 +27326,10 @@
         "resolveOpts": {
           "type": "function",
           "arity": 1
+        },
+        "sanitize": {
+          "type": "function",
+          "arity": 2
         },
         "validate": {
           "type": "function",
@@ -40261,6 +40141,10 @@
         "resolveOpts": {
           "type": "function",
           "arity": 1
+        },
+        "sanitize": {
+          "type": "function",
+          "arity": 2
         },
         "validate": {
           "type": "function",

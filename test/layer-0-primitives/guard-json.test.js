@@ -510,6 +510,70 @@ async function run() {
   testGuardJsonBadProfile();
   await testGuardJsonGate();
   await testGuardJsonGateSanitizeByPolicy();
+  testByteCapBindsBeforeAnyStrip();
+  testBomIsRepairedUnderItsOwnPolicy();
+}
+
+// The byte ceiling has to bind the input the CALLER sent. `parse` strips the
+// classes set to a mitigation and only then reaches the cap inside
+// safeJson.parse, so a small value padded with invisible characters shrank
+// under the limit on the way through and was accepted — a resource cap an
+// attacker removes by adding more input, which is the wrong direction for a
+// cap to move. Every strip-able class is checked because the hole was open for
+// zero-width and Tags before bidi joined them.
+function testByteCapBindsBeforeAnyStrip() {
+  var guardJson = b.guardJson;
+  var PADDING = [
+    ["bidiPolicy",      String.fromCharCode(0x202E), "bidi controls"],
+    ["zeroWidthPolicy", String.fromCharCode(0x200B), "zero-width characters"],
+    ["controlPolicy",   String.fromCharCode(0x0001), "control characters"],
+    ["tagsPolicy",      String.fromCodePoint(0xE0041), "Tags characters"],
+  ];
+  PADDING.forEach(function (row) {
+    var pad = new Array(300).join(row[1]);
+    var src = '{"x":1,"p":' + JSON.stringify(pad) + "}";
+    var opts = { maxBytes: 16 };
+    opts[row[0]] = "strip";
+    var threw = null;
+    try { guardJson.parse(src, opts); } catch (e) { threw = e; }
+    check("guardJson.parse: " + row[2] + " cannot pad a document under maxBytes",
+      threw !== null && threw.code === "json.too-large",
+      "got " + (threw ? threw.code : "no throw") +
+      " for " + Buffer.byteLength(src, "utf8") + " bytes against a 16-byte cap");
+  });
+  // The cap still lets a document that genuinely fits through.
+  var ok = null;
+  try { ok = guardJson.parse('{"x":1}', { maxBytes: 64 }); } catch (_e) { ok = null; }
+  check("guardJson.parse: a document within the cap still parses", ok && ok.x === 1);
+}
+
+// U+FEFF reaches the strip table only as a zero-width character, and `parse`
+// removes only a LEADING one — so `bomPolicy: "strip"` with zero-width left on
+// `allow` reported `bom-mid-stream` and handed the document back still carrying
+// it. The repair follows the BOM's own policy now.
+function testBomIsRepairedUnderItsOwnPolicy() {
+  var guardJson = b.guardJson;
+  var BOM = String.fromCharCode(0xFEFF);
+  var src = '{"x":"a' + BOM + 'b"}';
+
+  var out = null;
+  try { out = guardJson.sanitize(src, { bomPolicy: "strip", zeroWidthPolicy: "allow" }); }
+  catch (_e) { out = null; }
+  check("guardJson.sanitize: a mid-stream BOM is removed under bomPolicy strip " +
+        "even when zero-width is allowed",
+    out !== null && out.indexOf(BOM) === -1, JSON.stringify(out));
+
+  var threw = null;
+  try { guardJson.sanitize(src, { bomPolicy: "reject", zeroWidthPolicy: "allow" }); }
+  catch (e) { threw = e; }
+  check("guardJson.sanitize: bomPolicy reject still refuses it",
+    threw !== null, threw && threw.code);
+
+  var kept = null;
+  try { kept = guardJson.sanitize(src, { bomPolicy: "allow", zeroWidthPolicy: "allow" }); }
+  catch (_e) { kept = null; }
+  check("guardJson.sanitize: bomPolicy allow keeps it — allow means allow",
+    kept !== null && kept.indexOf(BOM) !== -1, JSON.stringify(kept));
 }
 
 module.exports = { run: run };
