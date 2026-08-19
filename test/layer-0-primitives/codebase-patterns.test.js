@@ -7326,6 +7326,15 @@ function testStateStampScanningDeferred() {
 //      patterns split across lines still match.
 var KNOWN_ANTIPATTERNS = [
   {
+    id: "domain-labels-must-not-drop-empty-labels",
+    primitive: "b.network.dns",
+    scanScope: "lib",
+    skipCommentLines: true,
+    regex: /split\s*\(\s*["']\.["']\s*\)[^\n]*\.filter\s*\(\s*Boolean\s*\)/,
+    allowlist: [],
+    reason: "Splitting a domain name on '.' and filtering out the empty strings silently REPAIRS a malformed name into a different, real one: `evil..example.com` becomes `evil.example.com`, so the code goes on to query, cache, or apply the policy of a domain the caller never named. It shipped three times — the DMARC tree walk applied a neighbouring domain's record and reported it as the Author Domain's own, and both DNS wire encoders sent a question for a name other than the one asked for. An empty label is not a typo to fix; it makes the name invalid, and the caller has to be told (dns/bad-host, mail-auth/dmarc-bad-from). Only a single trailing root dot may be removed, which is a slice of one character and does not match this shape. Where the inputs are already validated, splitting without the filter is both correct and free — that is what mail-auth's _labelBelow does. Empty allowlist: a name with an empty label has no legitimate reading.",
+  },
+  {
     id: "use-makeProfileResolver-not-handrolled",
     primitive: "b.gateContract.makeProfileResolver",
     scanScope: "lib",

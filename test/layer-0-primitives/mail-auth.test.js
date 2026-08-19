@@ -989,6 +989,386 @@ async function testDmarcEvaluateOrgDomainViaPsl() {
         rv.orgDomain === "example.com");
 }
 
+// A dnsLookup that records every name it was asked for, so the tree walk's
+// query SET and its DoS cap can be asserted rather than inferred.
+function _countingDns(records) {
+  var asked = [];
+  var fn = async function (host, type) {
+    asked.push(host);
+    var key = records[host];
+    if (key) return key;
+    var err = new Error("ENOTFOUND"); err.code = "ENOTFOUND"; throw err;
+  };
+  fn.asked = asked;
+  return fn;
+}
+
+async function testDmarcTreeWalkIntermediateLabel() {
+  // RFC 9989 §4.10. The policy sits at an INTERMEDIATE label: neither the
+  // exact domain nor the PSL organizational domain publishes one, so a
+  // two-step lookup finds nothing and evaluates as `none` — delivering mail
+  // the domain owner meant to reject.
+  var dns = _countingDns({
+    "_dmarc.b.example.com": [["v=DMARC1; p=reject"]],
+  });
+  var rv = await b.mail.dmarc.evaluate({
+    from:      "alice@a.b.example.com",
+    spf:       { result: "pass", domain: "different.org" },
+    dkim:      [],
+    dnsLookup: dns,
+  });
+  check("dmarc tree walk: a policy at an intermediate label is found",
+        rv.policyOriginDomain === "b.example.com" && rv.policy && rv.policy.p === "reject",
+        "origin=" + rv.policyOriginDomain + " p=" + (rv.policy && rv.policy.p));
+  check("dmarc tree walk: that policy is applied, not evaluated as none",
+        rv.result === "fail" && rv.recommendedAction === "reject",
+        "result=" + rv.result + " action=" + rv.recommendedAction);
+  check("dmarc tree walk: the intermediate name was actually queried",
+        dns.asked.indexOf("_dmarc.b.example.com") !== -1,
+        dns.asked.join(", "));
+}
+
+async function testDmarcTreeWalkQueryCap() {
+  // The RFC's own worked example. An Author Domain with more than eight
+  // labels MUST NOT cost more than eight DNS queries — the explicit
+  // denial-of-service guard — and the names are the ones the RFC lists.
+  var dns = _countingDns({});                       // nothing published anywhere
+  await b.mail.dmarc.evaluate({
+    from:      "alice@a.b.c.d.e.f.g.h.i.j.mail.example.com",
+    spf:       { result: "none" },
+    dkim:      [],
+    dnsLookup: dns,
+  });
+  var dmarcQueries = dns.asked.filter(function (h) { return h.indexOf("_dmarc.") === 0; });
+  check("dmarc tree walk: a 12-label domain costs at most 8 DMARC queries",
+        dmarcQueries.length <= 8, "asked " + dmarcQueries.length + ": " + dmarcQueries.join(", "));
+  // Step 4: with x >= 8 the walk jumps straight to seven remaining labels.
+  check("dmarc tree walk: the second query drops to seven labels",
+        dmarcQueries[1] === "_dmarc.g.h.i.j.mail.example.com",
+        "second=" + dmarcQueries[1]);
+  check("dmarc tree walk: it reaches the top of the tree",
+        dmarcQueries.indexOf("_dmarc.com") !== -1, dmarcQueries.join(", "));
+}
+
+async function testDmarcTreeWalkStopsOnPsdTag() {
+  // Step 2: a single valid record carrying psd=n or psd=y STOPS the walk.
+  // Nothing above it should be queried.
+  var dns = _countingDns({
+    "_dmarc.b.example.com": [["v=DMARC1; p=quarantine; psd=n"]],
+    "_dmarc.example.com":   [["v=DMARC1; p=reject"]],
+  });
+  var rv = await b.mail.dmarc.evaluate({
+    from:      "alice@a.b.example.com",
+    spf:       { result: "pass", domain: "different.org" },
+    dkim:      [],
+    dnsLookup: dns,
+  });
+  check("dmarc tree walk: psd=n stops the walk at that name",
+        rv.policyOriginDomain === "b.example.com" && rv.policy.p === "quarantine",
+        "origin=" + rv.policyOriginDomain);
+  check("dmarc tree walk: nothing above the psd= record is queried",
+        dns.asked.indexOf("_dmarc.example.com") === -1, dns.asked.join(", "));
+}
+
+async function testDmarcTreeWalkMultipleRecordsDiscarded() {
+  // Step 2: if MULTIPLE DMARC records are returned for one target they are
+  // ALL discarded, and the walk continues past that name.
+  var dns = _countingDns({
+    "_dmarc.b.example.com": [["v=DMARC1; p=none"], ["v=DMARC1; p=reject"]],
+    "_dmarc.example.com":   [["v=DMARC1; p=quarantine"]],
+  });
+  var rv = await b.mail.dmarc.evaluate({
+    from:      "alice@a.b.example.com",
+    spf:       { result: "pass", domain: "different.org" },
+    dkim:      [],
+    dnsLookup: dns,
+  });
+  check("dmarc tree walk: two records at one name are both discarded",
+        rv.policyOriginDomain === "example.com" && rv.policy.p === "quarantine",
+        "origin=" + rv.policyOriginDomain + " p=" + (rv.policy && rv.policy.p));
+}
+
+async function testDmarcTreeWalkMalformedAncestorIsPermerror() {
+  // A malformed record is a PERMANENT error wherever the walk meets it. If it
+  // were misread as a transient lookup failure the walk would skip that name
+  // and quietly apply a policy from higher up — a weaker one, chosen by an
+  // attacker who can publish the broken record.
+  var dns = _countingDns({
+    "_dmarc.b.example.com": [["v=DMARC1; p=notavalidvalue"]],
+    "_dmarc.example.com":   [["v=DMARC1; p=none"]],
+  });
+  var rv = await b.mail.dmarc.evaluate({
+    from:      "alice@a.b.example.com",
+    spf:       { result: "pass", domain: "different.org" },
+    dkim:      [],
+    dnsLookup: dns,
+  });
+  check("dmarc tree walk: a malformed ancestor record is permerror",
+        rv.result === "permerror", "result=" + rv.result);
+  check("dmarc tree walk: it does not fall through to a policy higher up",
+        rv.policy === null && rv.recommendedAction !== "deliver",
+        "policy=" + JSON.stringify(rv.policy) + " action=" + rv.recommendedAction);
+}
+
+async function testDmarcTreeWalkKeepsPslOrgDomain() {
+  // `orgDomain` reports the Public Suffix List answer, which is what the field
+  // has always meant. The walk may apply a record at an intermediate label —
+  // that name belongs in policyOriginDomain, not in orgDomain.
+  var dns = _countingDns({
+    "_dmarc.b.example.com": [["v=DMARC1; p=reject"]],
+  });
+  var rv = await b.mail.dmarc.evaluate({
+    from:      "alice@a.b.example.com",
+    spf:       { result: "pass", domain: "different.org" },
+    dkim:      [],
+    dnsLookup: dns,
+  });
+  check("dmarc tree walk: orgDomain stays the PSL answer",
+        rv.orgDomain === "example.com", "orgDomain=" + rv.orgDomain);
+  check("dmarc tree walk: the applied name is reported separately",
+        rv.policyOriginDomain === "b.example.com",
+        "policyOriginDomain=" + rv.policyOriginDomain);
+}
+
+async function testDmarcPsdBoundaryConstrainsAlignment() {
+  // `psd=n` declares "I am the organizational boundary". Relaxed alignment must
+  // respect it: an authenticated sibling OUTSIDE the boundary reduces to the
+  // same PSL organizational domain, so without this it would align and satisfy
+  // the policy published inside — turning a reject into a pass on mail the
+  // boundary exists to separate.
+  var dns = _countingDns({
+    "_dmarc.b.example.com": [["v=DMARC1; p=reject; psd=n; aspf=r; adkim=r"]],
+  });
+  var outside = await b.mail.dmarc.evaluate({
+    from:      "alice@a.b.example.com",
+    spf:       { result: "pass", domain: "evil.example.com" },
+    dkim:      [],
+    dnsLookup: dns,
+  });
+  check("dmarc psd=n: a sibling outside the declared boundary does not align",
+        outside.alignment.spf === false && outside.result === "fail",
+        "spfAligned=" + outside.alignment.spf + " result=" + outside.result);
+  check("dmarc psd=n: and the published reject is applied",
+        outside.recommendedAction === "reject", "action=" + outside.recommendedAction);
+
+  // Inside the boundary, relaxed alignment still works normally.
+  var inside = await b.mail.dmarc.evaluate({
+    from:      "alice@a.b.example.com",
+    spf:       { result: "pass", domain: "mx.b.example.com" },
+    dkim:      [],
+    dnsLookup: _countingDns({
+      "_dmarc.b.example.com": [["v=DMARC1; p=reject; psd=n; aspf=r; adkim=r"]],
+    }),
+  });
+  check("dmarc psd=n: a host under the boundary still aligns",
+        inside.alignment.spf === true && inside.result === "pass",
+        "spfAligned=" + inside.alignment.spf + " result=" + inside.result);
+
+  // A near-miss name must not read as being under the boundary: the comparison
+  // is label-wise, not a text suffix.
+  var nearMiss = await b.mail.dmarc.evaluate({
+    from:      "alice@a.b.example.com",
+    spf:       { result: "pass", domain: "evil-b.example.com" },
+    dkim:      [],
+    dnsLookup: _countingDns({
+      "_dmarc.b.example.com": [["v=DMARC1; p=reject; psd=n; aspf=r; adkim=r"]],
+    }),
+  });
+  check("dmarc psd=n: evil-b.example.com is not under b.example.com",
+        nearMiss.alignment.spf === false, "spfAligned=" + nearMiss.alignment.spf);
+}
+
+async function testDmarcTreeWalkTransientBelowIsTemperror() {
+  // A name that did not resolve may publish the controlling policy. Applying
+  // the record found ABOVE it would silently downgrade an unknown `p=reject`
+  // to the `p=none` published higher up, so discovery is indeterminate.
+  var dns = async function (host) {
+    if (host === "_dmarc.example.com") return [["v=DMARC1; p=none"]];
+    if (host === "_dmarc.b.example.com") { var e = new Error("SERVFAIL"); throw e; }
+    var nx = new Error("ENOTFOUND"); nx.code = "ENOTFOUND"; throw nx;
+  };
+  var rv = await b.mail.dmarc.evaluate({
+    from:      "alice@a.b.example.com",
+    spf:       { result: "pass", domain: "different.org" },
+    dkim:      [],
+    dnsLookup: dns,
+  });
+  check("dmarc tree walk: an unresolved name below the found record is temperror",
+        rv.result === "temperror", "result=" + rv.result);
+  check("dmarc tree walk: it does not apply the weaker policy from above",
+        rv.recommendedAction !== "deliver" && rv.policy === null,
+        "action=" + rv.recommendedAction + " policy=" + JSON.stringify(rv.policy));
+}
+
+async function testDmarcTreeWalkTransientAboveOwnRecordStillEvaluates() {
+  // The Author Domain published its own record: `p=` applies directly and no
+  // name the walk failed to read can be more authoritative for the policy.
+  // Temperroring here would make every domain hostage to its parent zone.
+  var dns = async function (host) {
+    if (host === "_dmarc.own.example") return [["v=DMARC1; p=reject"]];
+    throw new Error("SERVFAIL");
+  };
+  var rv = await b.mail.dmarc.evaluate({
+    from:      "alice@own.example",
+    spf:       { result: "pass", domain: "own.example" },
+    dkim:      [],
+    dnsLookup: dns,
+  });
+  check("dmarc tree walk: the domain's own record still evaluates when ancestors fail",
+        rv.result === "pass" && rv.policyOriginDomain === "own.example",
+        "result=" + rv.result + " origin=" + rv.policyOriginDomain);
+}
+
+async function testDmarcIncompleteWalkDoesNotGrantRelaxedAlignment() {
+  // Keeping the Author Domain's own policy when an ancestor is unreadable is a
+  // choice about the POLICY. It says nothing about alignment, and a name the
+  // walk could not read may publish `psd=n` — a boundary narrower than the
+  // Public Suffix List. Computing relaxed alignment without it lets an
+  // authenticated sibling outside that boundary satisfy the `p=reject` inside
+  // it, which is the exact separation the boundary exists to make.
+  //
+  // Strict alignment stays available: every boundary the walk could have found
+  // is an ancestor of the Author Domain, so an exact match is admitted under
+  // all of them. Relaxed is what cannot be decided, so relaxed is what is
+  // withheld until the walk completes.
+  var gappy = async function (host) {
+    if (host === "_dmarc.a.b.example.test") return [["v=DMARC1; p=reject; aspf=r; adkim=r"]];
+    if (host === "_dmarc.b.example.test") throw new Error("SERVFAIL");
+    return null;
+  };
+  var spoof = await b.mail.dmarc.evaluate({
+    from:      "alice@a.b.example.test",
+    spf:       { result: "pass", domain: "evil.example.test" },
+    dkim:      [],
+    dnsLookup: gappy,
+  });
+  check("dmarc: an unreadable ancestor does not let a PSL sibling align",
+        spoof.alignment.spf !== true && spoof.result !== "pass",
+        "alignment.spf=" + spoof.alignment.spf + " result=" + spoof.result +
+        " action=" + spoof.recommendedAction);
+
+  // The domain's own mail still authenticates — the policy exemption is intact.
+  var own = await b.mail.dmarc.evaluate({
+    from:      "alice@a.b.example.test",
+    spf:       { result: "pass", domain: "a.b.example.test" },
+    dkim:      [],
+    dnsLookup: gappy,
+  });
+  check("dmarc: a strictly aligned message still passes across the same gap",
+        own.result === "pass" && own.policyOriginDomain === "a.b.example.test",
+        "result=" + own.result + " origin=" + own.policyOriginDomain);
+
+  // With the walk complete and no boundary published, relaxed alignment is
+  // decidable and still applies.
+  var whole = async function (host) {
+    if (host === "_dmarc.a.b.example.test") return [["v=DMARC1; p=reject; aspf=r; adkim=r"]];
+    return null;
+  };
+  var relaxed = await b.mail.dmarc.evaluate({
+    from:      "alice@a.b.example.test",
+    spf:       { result: "pass", domain: "mail.example.test" },
+    dkim:      [],
+    dnsLookup: whole,
+  });
+  check("dmarc: a complete walk still allows relaxed alignment",
+        relaxed.alignment.spf === true && relaxed.result === "pass",
+        "alignment.spf=" + relaxed.alignment.spf + " result=" + relaxed.result);
+}
+
+async function testDmarcTreeWalkNormalizesTheStartDomain() {
+  // The walk normalizes its targets (lowercase, root dot dropped). If the
+  // Author Domain is matched against the RAW From-header form, a domain written
+  // `example.com.` or `EXAMPLE.com` never matches its own record — the record
+  // is demoted to an ancestor and `sp=` is applied where `p=` governs, so
+  // `p=reject; sp=none` would permit exactly the mail it rejects.
+  var record = [["v=DMARC1; p=reject; sp=none; aspf=s"]];
+  var forms = ["alice@own.example.", "alice@OWN.example", "alice@Own.Example."];
+  for (var i = 0; i < forms.length; i += 1) {
+    var rv = await b.mail.dmarc.evaluate({
+      from:      forms[i],
+      spf:       { result: "pass", domain: "elsewhere.test" },
+      dkim:      [],
+      dnsLookup: _countingDns({ "_dmarc.own.example": record }),
+    });
+    check("dmarc tree walk: " + JSON.stringify(forms[i]) + " applies its own p=, not sp=",
+          rv.policy && rv.policy.p === "reject" && rv.recommendedAction === "reject",
+          "p=" + (rv.policy && rv.policy.p) + " action=" + rv.recommendedAction);
+    check("dmarc tree walk: " + JSON.stringify(forms[i]) + " is not treated as a subdomain",
+          rv.orgDomainPolicyApplied !== true,
+          "orgDomainPolicyApplied=" + rv.orgDomainPolicyApplied);
+  }
+}
+
+async function testDmarcMalformedAncestorDoesNotVoidAnOwnPolicy() {
+  // A domain owner controls what they publish, not what their parent publishes.
+  // Once the Author Domain's own record is in hand, its `p=` applies directly
+  // and no ancestor can be more authoritative for it — so a parent publishing a
+  // broken record must not turn a clean `p=reject` into a permerror the
+  // receiver reads as "no policy". That is the same reasoning the walk already
+  // applies to an ancestor that fails to resolve; the two must not disagree
+  // about which failure abandons a policy that resolved.
+  var dns = _countingDns({
+    "_dmarc.own.example.test":  [["v=DMARC1; p=reject; aspf=s"]],
+    "_dmarc.example.test":      [["v=DMARC1; p=notavalidvalue"]],
+  });
+  var rv = await b.mail.dmarc.evaluate({
+    from: "alice@own.example.test", spf: { result: "pass", domain: "elsewhere.test" },
+    dkim: [], dnsLookup: dns,
+  });
+  check("dmarc: a malformed ancestor does not void the Author Domain's own p=reject",
+        rv.result !== "permerror" && rv.policy && rv.policy.p === "reject" &&
+        rv.recommendedAction === "reject",
+        "result=" + rv.result + " p=" + (rv.policy && rv.policy.p) +
+        " action=" + rv.recommendedAction);
+
+  // With no record at the Author Domain, the malformed ancestor may be the one
+  // whose policy would have applied, and the walk cannot know what it said.
+  // That stays a permanent error rather than skipping to a weaker record above.
+  var dns2 = _countingDns({
+    "_dmarc.sub.example.test": [["v=DMARC1; p=notavalidvalue"]],
+    "_dmarc.example.test":     [["v=DMARC1; p=none"]],
+  });
+  var rv2 = await b.mail.dmarc.evaluate({
+    from: "alice@a.sub.example.test", spf: { result: "pass", domain: "elsewhere.test" },
+    dkim: [], dnsLookup: dns2,
+  });
+  check("dmarc: a malformed ancestor IS a permerror when the domain published nothing itself",
+        rv2.result === "permerror", "result=" + rv2.result);
+}
+
+async function testDmarcEmptyLabelIsNotRepaired() {
+  // A root dot is legal and is dropped; any other empty label makes the domain
+  // malformed. Dropping those too would rewrite `evil..example.test` into the
+  // real, separately-owned `evil.example.test` and evaluate THAT name's policy
+  // — a verdict, and a policyOriginDomain, for a domain the message never
+  // claimed. The From is a permanent error instead.
+  var malformed = ["alice@evil..example.test", "alice@.example.test",
+                   "alice@example.test..", "alice@evil...example.test"];
+  var dns = _countingDns({ "_dmarc.evil.example.test": [["v=DMARC1; p=none"]],
+                           "_dmarc.example.test":      [["v=DMARC1; p=none"]] });
+  for (var i = 0; i < malformed.length; i += 1) {
+    var threw = null;
+    var rv = null;
+    try {
+      rv = await b.mail.dmarc.evaluate({
+        from: malformed[i], spf: { result: "pass", domain: "example.test" },
+        dkim: [], dnsLookup: dns,
+      });
+    } catch (e) { threw = e; }
+    check("dmarc: " + JSON.stringify(malformed[i]) + " is refused, not repaired into another domain",
+          threw !== null && /dmarc-bad-from/.test(threw.code || ""),
+          threw ? "code=" + threw.code
+                : "no throw — policyOriginDomain=" + (rv && rv.policyOriginDomain));
+  }
+  // The legal single root dot still resolves normally.
+  var ok = await b.mail.dmarc.evaluate({
+    from: "alice@example.test.", spf: { result: "pass", domain: "example.test" },
+    dkim: [], dnsLookup: dns,
+  });
+  check("dmarc: a single trailing root dot is still accepted",
+        ok.policy && ok.policy.p === "none", "p=" + (ok.policy && ok.policy.p));
+}
+
 async function testDmarcEvaluateNpPolicy() {
   // np= applies when the message's From-domain doesn't exist.
   // operator-supplied domainExists callback returns false; the
@@ -3488,6 +3868,19 @@ async function run() {
   await testDmarcStrictAlignmentCanonicalizesDomain();
   await testDmarcEvaluateUnaligned();
   await testDmarcEvaluateOrgDomainViaPsl();
+  await testDmarcTreeWalkIntermediateLabel();
+  await testDmarcTreeWalkQueryCap();
+  await testDmarcTreeWalkStopsOnPsdTag();
+  await testDmarcTreeWalkMultipleRecordsDiscarded();
+  await testDmarcTreeWalkMalformedAncestorIsPermerror();
+  await testDmarcTreeWalkKeepsPslOrgDomain();
+  await testDmarcPsdBoundaryConstrainsAlignment();
+  await testDmarcTreeWalkTransientBelowIsTemperror();
+  await testDmarcTreeWalkTransientAboveOwnRecordStillEvaluates();
+  await testDmarcTreeWalkNormalizesTheStartDomain();
+  await testDmarcIncompleteWalkDoesNotGrantRelaxedAlignment();
+  await testDmarcMalformedAncestorDoesNotVoidAnOwnPolicy();
+  await testDmarcEmptyLabelIsNotRepaired();
   await testDmarcEvaluateNpPolicy();
   await testInboundVerifyAlignedPass();
   await testInboundVerifySpoofRejected();

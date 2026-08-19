@@ -1340,6 +1340,93 @@ async function testDotSecureTransport() {
   } finally { dotSvcb.close(); await _drainOpenHandles(); }
 }
 
+// A DoH responder that also CAPTURES the query the framework emitted, so a
+// test can read the wire bytes the encoder produced rather than trusting that
+// a resolved address implies a well-formed question.
+function _startDohCapturingServer(cert, reply) {
+  var seen = [];
+  return new Promise(function (resolve) {
+    var srv = nodeHttps.createServer({
+      key:        cert.keyPem,
+      cert:       cert.certPem,
+      minVersion: "TLSv1.3",
+    }, function (req, res) {
+      req.on("error", function () { /* fixture best-effort */ });
+      var body = [];
+      req.on("data", function (c) { body.push(c); });
+      req.on("end", function () {
+        var q = req.url.indexOf("dns=") !== -1
+          ? Buffer.from(req.url.slice(req.url.indexOf("dns=") + 4), "base64url")
+          : Buffer.concat(body);
+        seen.push(q);
+        res.writeHead(200, { "content-type": "application/dns-message" });
+        res.end(reply || Buffer.alloc(0));
+      });
+    });
+    srv.on("error", function () { /* fixture best-effort */ });
+    srv.unref();
+    var close = _trackAndClosable(srv);
+    srv.listen(0, "127.0.0.1", function () {
+      resolve({ srv: srv, port: srv.address().port, seen: seen, close: close });
+    });
+  });
+}
+
+// The wire encoder must refuse a name it cannot express, not emit bytes that
+// mean something else.
+//
+// A label's length goes into a single octet, and RFC 1035 §4.1.4 gives the top
+// two bits of that octet meaning: `11` is a compression POINTER and `01` is an
+// unassigned label type (RFC 6891 §3). Writing a label's real length with no
+// 1..63 cap therefore lets a hostname with a 192-byte label put a forged
+// pointer into the question section, and one with a 64..191-byte label put an
+// unassigned type there — in both cases the query the upstream resolver reads
+// is not the query the caller asked for.
+//
+// The same encoder dropped empty labels, so `evil..example.com` was silently
+// asked for as `evil.example.com`, and truncated a non-ASCII code unit to its
+// low byte instead of requiring an A-label.
+async function testDnsWireEncoderRefusesUnencodableNames() {
+  var cert = await _mintSecureCert();
+  var reply = _buildReply("ok.example.com", 1, [
+    { name: "ok.example.com", type: 1, rdata: _aRdata(198, 51, 100, 9) },
+  ]);
+  _reset();
+  var doh = await _startDohCapturingServer(cert, reply);
+  dnsModule.useDnsOverHttps({ url: "https://127.0.0.1:" + doh.port + "/dns-query", ca: cert.caPem });
+  dnsModule.setLookupTimeoutMs(5000);
+  try {
+    // Every label length octet in a well-formed question is 1..63.
+    await dnsModule.resolve4("ok.example.com");
+    var wire = doh.seen[0];
+    var octets = [];
+    var off = 12;
+    while (wire && off < wire.length && wire[off] !== 0) {
+      octets.push(wire[off]);
+      off += 1 + wire[off];
+    }
+    check("dns wire: a normal name encodes label octets in 1..63",
+          octets.length > 0 && octets.every(function (n) { return n >= 1 && n <= 63; }),
+          "octets=" + JSON.stringify(octets));
+
+    var unencodable = [
+      { host: "a".repeat(192) + ".example.com", why: "a 192-byte label would be read as a compression pointer" },
+      { host: "a".repeat(64) + ".example.com",  why: "a 64-byte label would be read as an unassigned label type" },
+      { host: "café.example.com",          why: "a non-ASCII label must be an A-label before the wire" },
+    ];
+    for (var i = 0; i < unencodable.length; i += 1) {
+      var before = doh.seen.length;
+      var threw = null;
+      try { await dnsModule.resolve4(unencodable[i].host); } catch (e) { threw = e; }
+      check("dns wire: " + unencodable[i].why,
+            threw !== null && /dns\/bad-host/.test(threw.code || ""),
+            threw ? "code=" + threw.code
+                  : "no throw — emitted " + (doh.seen.length - before) + " quer(y/ies), " +
+                    "first label octet=" + (doh.seen[before] && doh.seen[before][12]));
+    }
+  } finally { doh.close(); await _drainOpenHandles(); }
+}
+
 // ======================================================================
 // DoH success paths — real HTTPS round-trip against a loopback responder
 // (_dohLookup GET + POST, _dohLookupSecure AD bit, _dohRawQuery, non-200)
@@ -3234,6 +3321,7 @@ async function _runTests() {
 
   // real-handshake DoT / DoH transport round-trips + deadlines
   await testDotSecureTransport();
+  await testDnsWireEncoderRefusesUnencodableNames();
   await testDohSecureTransport();
   await testDotDecodeAndErrorBranches();
   await testDohDecodeAndErrorBranches();
