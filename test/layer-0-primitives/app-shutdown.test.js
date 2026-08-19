@@ -304,15 +304,27 @@ async function testAppShutdownWatchdogForcesExitOnHang() {
     return;
   }
   var cp = require("node:child_process");
-  var repoRoot = require("node:path").resolve(__dirname, "..", "..");
+  var nodePath = require("node:path");
+  var repoRoot = nodePath.resolve(__dirname, "..", "..");
+  // Require the module under test, not the package root. The child needs one
+  // primitive, and pulling in the assembled framework to reach it cost 4.3s
+  // uncontended in a container against a bind mount — against 188ms for the
+  // module alone, measured. That 23x is what made the READY budget below a
+  // budget at all: under SMOKE_PARALLEL=64 the cold require ran past 30s and
+  // the test failed with a healthy child still loading. Every other suite
+  // covers the assembled-framework require; for "does a hung shutdown phase
+  // get force-exited", the module IS the unit.
   var script =
-    "var b = require(" + JSON.stringify(repoRoot) + ");" +
-    "b.appShutdown.create({" +
+    "var appShutdown = require(" +
+      JSON.stringify(nodePath.join(repoRoot, "lib", "app-shutdown.js")) + ");" +
+    "appShutdown.create({" +
     "  graceMs: 100, forceExitMarginMs: 150, installSignalHandlers: true," +
     "  phases: [{ name: 'hang', run: function () { return new Promise(function () {}); } }]" +
     "});" +
     "setInterval(function () {}, 60000);" +     // keep the loop alive until the signal
     "process.stdout.write('READY\\n');";
+  var spawnedAt = Date.now();
+  var readyMs = null;
   var child = cp.spawn(process.execPath, ["-e", script], { stdio: ["ignore", "pipe", "pipe"] });
 
   // Single exit observer + bounded waits so a misbehaving child can never
@@ -328,15 +340,26 @@ async function testAppShutdownWatchdogForcesExitOnHang() {
   var sawReady = false;
   child.stdout.on("data", function (d) { if (d.toString().indexOf("READY") !== -1) sawReady = true; });
   try {
-    // The child cold-`require`s the whole framework before printing READY —
-    // ~3.6s uncontended, and that multiplies when the smoke runner has up to
-    // SMOKE_PARALLEL modules competing for the same cores. waitUntil returns
-    // the instant READY arrives, so a generous budget costs nothing on a fast
-    // run but keeps the watchdog leg from flaking under heavy parallelism.
+    // The child cold-`require`s one module before printing READY — ~190ms in a
+    // container against a bind mount, so this budget carries two orders of
+    // magnitude of headroom for the contention SMOKE_PARALLEL creates.
+    // waitUntil returns the instant READY arrives, so the headroom costs
+    // nothing on a fast run.
     await helpers.waitUntil(function () { return sawReady || exited !== null; },
       { timeoutMs: 30000, label: "app-shutdown watchdog: child reached READY" });
+    readyMs = Date.now() - spawnedAt;
   } catch (_e) { /* fall through to the check below */ }
-  check("watchdog child reached READY (stderr: " + stderr.slice(0, 160).replace(/\n/g, " ") + ")",
+  // Say WHICH of the two failures happened. They have opposite causes — a
+  // child that exited early is a real defect in the framework it required, a
+  // child still cold-requiring at the deadline is contention — and a message
+  // carrying neither costs a whole container cycle to tell them apart.
+  check("watchdog child reached READY (" +
+        (exited !== null
+          ? "child exited early: code=" + exited.code + " signal=" + exited.signal
+          : sawReady ? "after " + readyMs + "ms"
+          : "no READY within 30000ms and still running — cold require did not " +
+            "finish") +
+        "; stderr: " + stderr.slice(0, 160).replace(/\n/g, " ") + ")",
         sawReady && exited === null);
   if (!sawReady || exited !== null) { try { child.kill("SIGKILL"); } catch (_e2) { /* gone */ } return; }
 
@@ -373,11 +396,16 @@ async function testAppShutdownExitAfterPhasesExits() {
   // runner. No signal is sent: the child calls shutdown() directly, which
   // distinguishes this from the signal-handler watchdog path.
   var cp = require("node:child_process");
-  var repoRoot = require("node:path").resolve(__dirname, "..", "..");
+  var nodePath = require("node:path");
+  var repoRoot = nodePath.resolve(__dirname, "..", "..");
+  // Same reason as the watchdog leg above: require the module, not the package
+  // root. Two children spawn here, each paying the full-framework cold load to
+  // reach one primitive, and each racing the same 30s budget.
+  var modulePath = nodePath.join(repoRoot, "lib", "app-shutdown.js");
   function _spawnAndExit(phaseBody, label, expectCode) {
     var script =
-      "var b = require(" + JSON.stringify(repoRoot) + ");" +
-      "var o = b.appShutdown.create({ graceMs: 2000, exitAfterPhases: true," +
+      "var appShutdown = require(" + JSON.stringify(modulePath) + ");" +
+      "var o = appShutdown.create({ graceMs: 2000, exitAfterPhases: true," +
       "  phases: [{ name: 'p', run: " + phaseBody + " }] });" +
       "o.shutdown().then(function (r) { process.stdout.write('RESOLVED:' + r.ok + '\\n'); });";
     return new Promise(function (resolve) {
@@ -395,14 +423,28 @@ async function testAppShutdownExitAfterPhasesExits() {
     });
   }
 
+  // `_spawnAndExit` reports code -1 when the wait timed out and the child was
+  // killed. Saying so matters: an empty `out` then means the child never got
+  // far enough to print, which is a different problem from a shutdown that
+  // resolved wrongly, and a message that reads the same for both sends the
+  // next reader looking at the shutdown logic.
+  function _ranAtAll(r, label) {
+    return r && r.code !== -1
+      ? ""
+      : " [" + label + " never completed: wait timed out and the child was " +
+        "killed, out=" + JSON.stringify((r && r.out) || "") + "]";
+  }
+
   var okRun = await _spawnAndExit("function () { return; }", "clean phase", 0);
-  check("exitAfterPhases: clean phase resolved before exit",
+  check("exitAfterPhases: clean phase resolved before exit" +
+        _ranAtAll(okRun, "clean phase"),
         okRun && okRun.out.indexOf("RESOLVED:true") !== -1);
   check("exitAfterPhases: clean phase → process.exit(0) (no kill signal)",
         okRun && okRun.code === 0 && okRun.signal === null);
 
   var failRun = await _spawnAndExit("function () { throw new Error('boom'); }", "failed phase", 1);
-  check("exitAfterPhases: failed phase resolved with ok=false",
+  check("exitAfterPhases: failed phase resolved with ok=false" +
+        _ranAtAll(failRun, "failed phase"),
         failRun && failRun.out.indexOf("RESOLVED:false") !== -1);
   check("exitAfterPhases: failed phase → process.exit(1)",
         failRun && failRun.code === 1 && failRun.signal === null);

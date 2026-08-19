@@ -407,6 +407,184 @@ async function testCreateAppCsrfCustomNaming() {
   }
 }
 
+// Every middleware createApp mounts by default is a security default, and the
+// contract is that turning one off leaves a trace — "security defaults
+// shouldn't be silently opt-out-able". The pair test below covers two of them
+// by name; this one covers ALL of them, and reads the list out of the source
+// rather than restating it, so a default added later is covered the day it
+// lands instead of the day someone remembers to extend a hardcoded array.
+function _defaultMiddlewareNames() {
+  var src = fs.readFileSync(path.join(__dirname, "..", "lib", "app.js"), "utf8");
+  var out = [];
+  var lines = src.split("\n");
+  for (var i = 0; i < lines.length; i += 1) {
+    var at = lines[i].indexOf("_resolveMiddlewareOpt(mwConfig.");
+    if (at === -1) continue;
+    var args = lines[i].slice(at + "_resolveMiddlewareOpt(".length).split(")")[0];
+    var parts = args.split(",").map(function (s) { return s.trim(); });
+    if (parts[1] !== "true") continue;                     // off by default
+    out.push({
+      key:   parts[0].replace("mwConfig.", ""),
+      // The audited name, or null when the call omitted it — which is the
+      // whole point: no name means no audit event, so the opt-out is silent.
+      named: parts.length > 2 ? parts[2].replace(/^["']|["']$/g, "") : null,
+    });
+  }
+  return out;
+}
+
+async function testCreateAppEverySecurityDefaultAuditsItsOptOut() {
+  var defaults = _defaultMiddlewareNames();
+  check("default middleware: the source lists a non-trivial set",
+        defaults.length >= 8, "found=" + defaults.length);
+  var unnamed = defaults.filter(function (d) { return !d.named; })
+                        .map(function (d) { return d.key; });
+  check("default middleware: every on-by-default layer is audited when disabled",
+        unnamed.length === 0, "unaudited=" + JSON.stringify(unnamed));
+
+  process.env.BLAMEJS_SKIP_NTP_CHECK = "1";
+  process.env.BLAMEJS_AUDIT_SIGNING_MODE = "plaintext";
+  b.cluster._resetForTest();
+  b.audit._resetForTest();
+  b.vault._resetForTest();
+  b.db._resetForTest();
+  var dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-app-alloff-"));
+  var emitted = [];
+  var realSafeEmit = b.audit.safeEmit;
+  b.audit.safeEmit = function (ev) { emitted.push(ev); return realSafeEmit.call(b.audit, ev); };
+  var mw = {};
+  defaults.forEach(function (d) { mw[d.key] = false; });
+  var app;
+  try {
+    app = await b.createApp({
+      dataDir: dataDir,
+      vault:   { mode: "plaintext" },
+      db:      { atRest: "plain", auditSigning: { mode: "plaintext" } },
+      schema:  [],
+      middleware: mw,
+      routes:  function (r) { r.get("/", function (req, res) { b.render.text(res, "OK"); }); },
+    });
+    var disabled = emitted
+      .filter(function (e) { return e && e.action === "app.middleware.disabled"; })
+      .map(function (e) { return e.metadata && e.metadata.middleware; });
+    var missing = defaults.map(function (d) { return d.named || d.key; })
+      .filter(function (n) { return disabled.indexOf(n) === -1; });
+    check("default middleware: disabling every default audits every one",
+          missing.length === 0, "no audit for=" + JSON.stringify(missing));
+  } finally {
+    b.audit.safeEmit = realSafeEmit;
+    if (app) await app.shutdown();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+
+  // The chain's ORDER is advertised too — bodyParser is mounted before
+  // csrfProtect specifically "so csrf can read a body-field token". Every
+  // existing default-chain test submits the token in a header, which validates
+  // no matter where bodyParser sits; only a form-body submission can tell the
+  // two orderings apart, and a plain `<form>` post is the shape an operator
+  // relying on server-rendered HTML actually ships.
+  b.cluster._resetForTest();
+  b.audit._resetForTest();
+  b.vault._resetForTest();
+  b.db._resetForTest();
+  var formDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-app-formcsrf-"));
+  var formApp;
+  try {
+    formApp = await b.createApp({
+      dataDir: formDir,
+      vault:   { mode: "plaintext" },
+      db:      { atRest: "plain", auditSigning: { mode: "plaintext" } },
+      schema:  [],
+      routes:  function (r) {
+        r.get("/", function (req, res) { b.render.text(res, "OK"); });
+        r.post("/act", function (req, res) { b.render.text(res, "ACTED"); });
+      },
+    });
+    var formAddr = await formApp.listen({ port: 0, host: "127.0.0.1" });
+    // Browser-shaped, so botGuard passes and the chain under test is the real
+    // default one — the sibling tests opt botGuard out to get a test client
+    // through, which also removes it from the ordering being asserted.
+    var browserish = {
+      "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
+                    "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+      "Accept-Language": "en-US,en;q=0.9",
+      "Accept": "text/html,application/xhtml+xml",
+    };
+    var seed = await b.httpClient.request({
+      url: "http://127.0.0.1:" + formAddr.port + "/",
+      headers: browserish, responseMode: "always-resolve",
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL, allowInternal: true,
+    });
+    check("chain order: a browser-shaped request passes the default botGuard",
+          seed.statusCode === 200, "status=" + seed.statusCode);
+    var formToken = _csrfCookieFrom(seed, "csrf");
+    check("chain order: the default chain issued a csrf cookie to seed from",
+          typeof formToken === "string" && formToken.length > 0,
+          "token=" + formToken);
+
+    var posted = await b.httpClient.request({
+      method: "POST", url: "http://127.0.0.1:" + formAddr.port + "/act",
+      headers: Object.assign({}, browserish, {
+        "Cookie": "csrf=" + formToken,
+        "Content-Type": "application/x-www-form-urlencoded",
+      }),
+      body: Buffer.from("_csrf=" + encodeURIComponent(formToken), "utf8"),
+      responseMode: "always-resolve",
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL, allowInternal: true,
+    });
+    check("chain order: bodyParser runs before csrfProtect, so a form-field " +
+          "token validates", posted.statusCode === 200,
+          "status=" + posted.statusCode);
+
+    // And the field is genuinely being read — a wrong value in it is refused
+    // rather than the request passing for some other reason.
+    var wrong = await b.httpClient.request({
+      method: "POST", url: "http://127.0.0.1:" + formAddr.port + "/act",
+      headers: Object.assign({}, browserish, {
+        "Cookie": "csrf=" + formToken,
+        "Content-Type": "application/x-www-form-urlencoded",
+      }),
+      body: Buffer.from("_csrf=" + "0".repeat(formToken.length), "utf8"),
+      responseMode: "always-resolve",
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL, allowInternal: true,
+    });
+    check("chain order: a wrong form-field token is still refused",
+          wrong.statusCode === 403, "status=" + wrong.statusCode);
+  } finally {
+    if (formApp) await formApp.shutdown();
+    fs.rmSync(formDir, { recursive: true, force: true });
+  }
+
+  // The other half of the contract: an app that opts out of nothing emits no
+  // disabled event at all, so the trace means what it says.
+  b.cluster._resetForTest();
+  b.audit._resetForTest();
+  b.vault._resetForTest();
+  b.db._resetForTest();
+  var cleanDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-app-allon-"));
+  var cleanEvents = [];
+  b.audit.safeEmit = function (ev) { cleanEvents.push(ev); return realSafeEmit.call(b.audit, ev); };
+  var cleanApp;
+  try {
+    cleanApp = await b.createApp({
+      dataDir: cleanDir,
+      vault:   { mode: "plaintext" },
+      db:      { atRest: "plain", auditSigning: { mode: "plaintext" } },
+      schema:  [],
+      routes:  function (r) { r.get("/", function (req, res) { b.render.text(res, "OK"); }); },
+    });
+    var stray = cleanEvents.filter(function (e) {
+      return e && e.action === "app.middleware.disabled";
+    }).map(function (e) { return e.metadata && e.metadata.middleware; });
+    check("default middleware: an app opting out of nothing audits nothing",
+          stray.length === 0, "stray=" + JSON.stringify(stray));
+  } finally {
+    b.audit.safeEmit = realSafeEmit;
+    if (cleanApp) await cleanApp.shutdown();
+    fs.rmSync(cleanDir, { recursive: true, force: true });
+  }
+}
+
 async function testCreateAppSecurityDisableAudits() {
   // Disabling a security default leaves an audit trace (app.middleware.
   // disabled) and actually drops the middleware.
@@ -659,6 +837,7 @@ async function run() {
   await testCreateAppSecurityDefaultsWired();
   await testCreateAppCsrfCustomNaming();
   await testCreateAppSecurityDisableAudits();
+  await testCreateAppEverySecurityDefaultAuditsItsOptOut();
   await testCreateAppCsrfIdempotent();
   await testCreateAppRoutesCallback();
   await testCreateAppWithJobs();
@@ -681,6 +860,7 @@ module.exports = {
   testCreateAppSecurityDefaultsWired: testCreateAppSecurityDefaultsWired,
   testCreateAppCsrfCustomNaming:      testCreateAppCsrfCustomNaming,
   testCreateAppSecurityDisableAudits: testCreateAppSecurityDisableAudits,
+  testCreateAppEverySecurityDefaultAuditsItsOptOut: testCreateAppEverySecurityDefaultAuditsItsOptOut,
   testCreateAppCsrfIdempotent:        testCreateAppCsrfIdempotent,
   testCreateAppRoutesCallback:        testCreateAppRoutesCallback,
   testCreateAppWithJobs:              testCreateAppWithJobs,

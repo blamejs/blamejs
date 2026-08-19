@@ -1298,6 +1298,129 @@ async function testDmarcClosestRecordSuppliesThePolicy() {
         "alignment.spf=" + rv.alignment.spf + " action=" + rv.recommendedAction);
 }
 
+async function testDmarcUnqueryableStartNameKeepsWalking() {
+  // `_dmarc.` is seven octets the Author Domain did not choose. A domain near
+  // the RFC 1035 ceiling is perfectly valid and can carry mail, but its
+  // generated policy name is over the ceiling — so NOBODY can publish a record
+  // there, including its owner. That is not "we could not tell what the policy
+  // is": it is "no record can exist at this name", which is what the walk
+  // already does for a name that returns nothing.
+  //
+  // Aborting instead returned temperror and never asked the ancestors, so a
+  // `p=reject` published one label up was neither found nor applied.
+  var DMARC_QNAME_CEILING = 253;                       // RFC 1035 §2.3.4
+  var L61 = "a".repeat(61);
+  var near = L61 + "." + L61 + "." + L61 + "." + L61;                 // 247 octets
+  check("the fixture is a valid domain whose _dmarc. name is not",
+        near.length <= 253 && ("_dmarc." + near).length > 253,
+        "domain=" + near.length + " qname=" + ("_dmarc." + near).length);
+
+  var asked = [];
+  var dns = async function (host) {
+    asked.push(host);
+    // The parent publishes the policy the walk should reach.
+    if (host === "_dmarc." + near.slice(near.indexOf(".") + 1)) {
+      return [["v=DMARC1; p=reject; sp=reject; aspf=s"]];
+    }
+    return null;
+  };
+  var rv = await b.mail.dmarc.evaluate({
+    from: "alice@" + near,
+    spf: { result: "pass", domain: near },
+    dkim: [], dnsLookup: dns,
+  });
+  check("dmarc: an unqueryable _dmarc. name does not abort the walk",
+        rv.result !== "temperror", "result=" + rv.result);
+  check("dmarc: the ancestor's policy is found and applied",
+        rv.policy && rv.policy.p === "reject",
+        "p=" + (rv.policy && rv.policy.p) + " origin=" + rv.policyOriginDomain);
+  check("dmarc: the over-length name was not queried",
+        asked.indexOf("_dmarc." + near) === -1,
+        "asked=" + JSON.stringify(asked.slice(0, 3)));
+
+  // The "no record anywhere" explanation names a count. It has to be the count
+  // of names the resolver was actually asked about — a skipped name that no
+  // request went to cannot be reported as one that answered nothing.
+  var silent = [];
+  var rvNone = await b.mail.dmarc.evaluate({
+    from: "alice@" + near,
+    spf: { result: "pass", domain: near },
+    dkim: [],
+    dnsLookup: async function (host) { silent.push(host); return null; },
+  });
+  check("dmarc: no record anywhere is still 'none'", rvNone.result === "none",
+        "result=" + rvNone.result);
+  check("dmarc: the explanation counts the names actually queried",
+        rvNone.explanation.indexOf(" " + silent.length + " name(s) queried") !== -1,
+        "asked=" + silent.length + " explanation=" + rvNone.explanation);
+
+  // The skip threshold and the threshold the resolver refuses at have to be the
+  // same number. One octet of daylight either way is a live defect: skip too
+  // early and a publishable policy name is never asked for; skip too late and
+  // the abort this test exists to prevent comes back. Drive the boundary from
+  // both sides through the real resolver path rather than reading the two
+  // constants and judging them equal by eye.
+  // The ceiling is an OCTET count, and an internationalized name is longer in
+  // octets than in characters — this fixture is 211 characters but 247 octets
+  // once converted, so its policy name crosses only after conversion. Measuring
+  // the input would have queried a name the resolver cannot express; measuring
+  // the converted form skips it and reaches the ancestor. (Byte-named caps that
+  // actually count characters are a recurring defect here, so this is pinned
+  // rather than argued from the fact that the walk canonicalizes first.)
+  var wide = [];
+  for (var w = 0; w < 6; w += 1) wide.push("ü".repeat(33));
+  var idnRaw = wide.join(".") + ".example";
+  var idnAscii = b.publicSuffix.canonicalDomain(idnRaw);
+  check("dmarc: the IDN fixture crosses the ceiling only after conversion",
+        idnRaw.length < DMARC_QNAME_CEILING &&
+        idnAscii.length <= DMARC_QNAME_CEILING &&
+        ("_dmarc." + idnAscii).length > DMARC_QNAME_CEILING,
+        "raw=" + idnRaw.length + " ascii=" + idnAscii.length +
+        " qname=" + ("_dmarc." + idnAscii).length);
+
+  var idnParent = idnAscii.slice(idnAscii.indexOf(".") + 1);
+  var idnAsked = [];
+  var idnRv = await b.mail.dmarc.evaluate({
+    from: "alice@" + idnRaw,
+    spf: { result: "pass", domain: idnRaw },
+    dkim: [],
+    dnsLookup: async function (host) {
+      idnAsked.push(host);
+      if (host === "_dmarc." + idnParent) {
+        return [["v=DMARC1; p=reject; sp=reject; aspf=s"]];
+      }
+      return null;
+    },
+  });
+  check("dmarc: an internationalized name over the ceiling still walks up",
+        idnRv.policy && idnRv.policy.p === "reject",
+        "result=" + idnRv.result + " p=" + (idnRv.policy && idnRv.policy.p));
+  check("dmarc: the converted over-length name was not queried",
+        idnAsked.indexOf("_dmarc." + idnAscii) === -1,
+        "asked[0]=" + (idnAsked[0] || "(none)").slice(0, 40));
+
+  var dnsMod = require("../../lib/network-dns.js");
+  var L60 = "b".repeat(60);
+  for (var extra = 0; extra <= 1; extra += 1) {
+    // Every label stays within 1..63 so the only thing under test is the NAME
+    // ceiling — a fixture with an over-long label is refused for that instead
+    // and the two sides of the boundary agree by accident.
+    var qname = "_dmarc." + L61 + "." + L61 + "." + L61 + "." +
+                (extra ? L61 : L60);                              // 253 then 254
+    var labelsOk = qname.split(".").every(function (l) {
+      return l.length >= 1 && l.length <= 63;
+    });
+    var refused = false;
+    try { dnsMod._validateHostShape(qname, "probe"); }
+    catch (e) { refused = e.code === "dns/bad-host"; }
+    check("dmarc: the resolver's ceiling agrees with the walk's at " +
+          qname.length + " octets",
+          labelsOk && refused === (qname.length > DMARC_QNAME_CEILING),
+          "len=" + qname.length + " labelsOk=" + labelsOk +
+          " refused=" + refused);
+  }
+}
+
 async function testDmarcIdeographicRootMarker() {
   // The same root-marker trap the DNS encoder had: UTS #46 maps U+3002 to ".",
   // so an absolute internationalized From only GROWS its trailing dot during
@@ -4114,6 +4237,7 @@ async function run() {
   await testDmarcTreeWalkNormalizesTheStartDomain();
   await testDmarcInternationalizedAuthorDomain();
   await testDmarcClosestRecordSuppliesThePolicy();
+  await testDmarcUnqueryableStartNameKeepsWalking();
   await testDmarcIdeographicRootMarker();
   await testDmarcPsdYAtTheAuthorDomainBoundsAlignment();
   await testDmarcPsdYBoundaryConstrainsAlignment();

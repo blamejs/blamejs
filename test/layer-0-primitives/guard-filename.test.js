@@ -953,7 +953,38 @@ async function testGuardFilenameFloorIgnoresPolicyOverrides() {
   }
 }
 
+// `double-extension` fires on exactly the trigger `shell-exec-ext` does — a
+// last extension in SHELL_EXEC_EXTS — so it is the same finding seen twice and
+// must answer to the same policy. Leaving it unmapped sent it to the
+// conservative severity default, and `critical` refuses: a profile declaring
+// `shellExecExtPolicy: "audit"` then behaved as reject for precisely the
+// disguised-executable names the policy is about, and for nothing else.
+async function testGuardFilenameDoubleExtensionFollowsItsPolicy() {
+  var cases = [
+    ["balanced",   "invoice.pdf.exe"],
+    ["permissive", "invoice.pdf.exe"],
+    ["balanced",   "report.docx.bat"],
+  ];
+  for (var i = 0; i < cases.length; i += 1) {
+    var profile = cases[i][0];
+    var policy = b.guardFilename.PROFILES[profile].shellExecExtPolicy;
+    var d = await b.guardFilename.gate({ profile: profile }).check({ filename: cases[i][1] });
+    check("guardFilename: " + JSON.stringify(cases[i][1]) + " at " + profile +
+          " follows shellExecExtPolicy=" + policy,
+          policy !== "audit" || d.action !== "refuse",
+          "policy=" + policy + " action=" + d.action);
+  }
+
+  // strict still refuses — the policy there says reject, and this must not have
+  // widened into "a disguised executable is always allowed".
+  var strict = await b.guardFilename.gate({ profile: "strict" })
+                     .check({ filename: "invoice.pdf.exe" });
+  check("guardFilename: strict still refuses a disguised executable",
+        strict.action === "refuse", "action=" + strict.action);
+}
+
 async function run() {
+  await testGuardFilenameDoubleExtensionFollowsItsPolicy();
   await testGuardFilenameFloorIgnoresPolicyOverrides();
   testOverLongNameIsRefusedUnderThisGuardsOwnRule();
   testShapeDetectorsAgreeWithThePatternsTheyReplaced();

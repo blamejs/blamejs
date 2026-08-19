@@ -1903,7 +1903,54 @@ function testDefineParser() {
   check("defineParser: missing name throws", threw);
 }
 
+// The gate's entry point owns its context — it neither writes into what the
+// caller handed it nor crashes on something that is not a context at all.
+async function testGateCheckOwnsItsContext() {
+  var seen = null;
+  var g = GC.defineGate({
+    name: "gc-ctx-ownership", version: "1.0.0",
+    check: function (ctx) { seen = ctx; return { ok: true, action: "serve" }; },
+  });
+
+  // A non-object context. `check` is async, so a raw TypeError here does not
+  // just fail the call — it is an unhandled rejection, which takes the process
+  // down rather than the request.
+  for (var bad of ["plain string", 42, true, Symbol("s")]) {
+    var code = null;
+    try { await g.check(bad); }
+    catch (e) { code = e.code || ("raw:" + e.constructor.name); }
+    check("gate.check(" + String(bad) + ") refuses with a framework error",
+          code === "gate-contract/bad-context", "got=" + code);
+  }
+
+  // null / undefined stay the documented "no context" case, not an error.
+  for (var empty of [null, undefined]) {
+    var rv = await g.check(empty);
+    check("gate.check(" + String(empty) + ") is still an empty context",
+          rv && rv.action === "serve", "action=" + (rv && rv.action));
+  }
+
+  // A frozen context is a legitimate thing to hand a gate — an operator who
+  // freezes the request shape to keep middleware from editing it. Stamping the
+  // forensic id onto it threw before, so the freeze was effectively refused.
+  var frozen = Object.freeze({ bytes: Buffer.from("abc") });
+  var frozenRv = await g.check(frozen);
+  check("gate.check accepts a frozen context", frozenRv && frozenRv.action === "serve",
+        "action=" + (frozenRv && frozenRv.action));
+
+  // And the caller's object is not written to at all.
+  var mine = { bytes: Buffer.from("xyz") };
+  await g.check(mine);
+  check("gate.check does not stamp forensicId onto the caller's object",
+        Object.prototype.hasOwnProperty.call(mine, "forensicId") === false,
+        "keys=" + JSON.stringify(Object.keys(mine)));
+  check("gate.check still supplies a forensicId to the guard",
+        seen && typeof seen.forensicId === "string" && seen.forensicId.length > 0,
+        "forensicId=" + (seen && seen.forensicId));
+}
+
 async function run() {
+  await testGateCheckOwnsItsContext();
   testIssueSeverities();
   testSummarizeIssues();
   testSeverityAndPolicyDispositions();
