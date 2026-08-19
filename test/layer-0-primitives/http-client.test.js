@@ -3007,24 +3007,43 @@ async function testH2DrainWaitsOnProgressButNotOnAStall() {
   var GRACE = 120;
 
   // (1) A session still moving bytes survives well past the grace window.
+  //
+  // The write cadence is deliberately several times faster than the grace
+  // window. At one write per 40ms against a 120ms grace there are only three
+  // chances to land a byte in the window, and under SMOKE_PARALLEL=64 the
+  // timer slips far enough to miss all three — at which point the session
+  // genuinely HAS gone quiet and the drain destroying it is correct. The test
+  // then failed on a premise it had stopped meeting rather than on the
+  // behaviour it exists to pin.
+  //
+  // Widening the margin is not enough on its own, because a wide margin that
+  // silently stops being met reads as a pass. The chunk count the client
+  // actually received is asserted FIRST, so a starved fixture fails saying the
+  // stream stopped rather than accusing the drain.
   var srvA = _trackH2Sessions(http2mod.createServer());
   var tick = null;
   srvA.on("stream", function (stream) {
     stream.respond({ ":status": 200 });
     stream.write("start");
-    tick = setInterval(function () { try { stream.write("."); } catch (_e) { /* closed */ } }, 40);
+    tick = setInterval(function () { try { stream.write("."); } catch (_e) { /* closed */ } }, 15);
   });
   var portA = await b.testing.listenOnRandomPort(srvA, "127.0.0.1");
   var sessA = http2mod.connect("http://127.0.0.1:" + portA);
   await new Promise(function (r) { sessA.once("connect", r); });
   var reqA = sessA.request({ ":path": "/stream" });
-  reqA.on("data", function () { /* keep the flow moving */ });
+  var chunksA = 0;
+  reqA.on("data", function () { chunksA += 1; });
   reqA.on("error", function () { /* torn down below */ });
   await helpers.waitUntil(function () { return tick !== null; },
     { timeoutMs: 5000, label: "http-client: h2 stream started" });
   teardown.drainH2Session(sessA, GRACE);
+  var chunksAtDrain = chunksA;
   await helpers.passiveObserve(GRACE * 5,
     "http-client: a progressing h2 session is not force-destroyed");
+  check("the h2 stream kept delivering bytes across the drain window " +
+        "(the premise of the check below)",
+        chunksA > chunksAtDrain,
+        "received " + (chunksA - chunksAtDrain) + " chunk(s) after the drain started");
   check("the drain does not destroy an h2 session that is still moving bytes",
     sessA.destroyed === false);
   if (tick) clearInterval(tick);
