@@ -1429,6 +1429,27 @@ async function testDnsWireEncoderRefusesUnencodableNames() {
       { name: "querySvcb",     call: function () { return dnsModule.querySvcb("café.example.com"); } },
       { name: "queryHttps",    call: function () { return dnsModule.queryHttps("café.example.com"); } },
     ];
+    // discoverEncrypted runs the LDH pass itself rather than inheriting it from
+    // the SVCB path underneath, so the canonical name has to reach it too — or
+    // one entry point resolves an internationalized name and its own caller
+    // refuses it.
+    //
+    // `insecureSystemResolverOnly: false` keeps it on the configured DoH
+    // transport, which is this test's loopback responder: the assertion is the
+    // name that went out, not merely that the call did not throw
+    // `dns/bad-host`. Asserting the absence of one error code would pass on
+    // any other failure, including one where nothing was queried at all — and
+    // dialling the host's real resolver would make a self-contained suite wait
+    // on the network.
+    var ddrMark = doh.seen.length;
+    try { await dnsModule.discoverEncrypted({ name: "café.example.com", insecureSystemResolverOnly: false }); }
+    catch (_ddrE) { /* the fixture answers with an A record, not SVCB — the query is the assertion */ }
+    var ddrSent = doh.seen[ddrMark];
+    var ddrLabel = ddrSent ? ddrSent.slice(13, 13 + ddrSent[12]).toString("ascii") : null;
+    check("dns wire: discoverEncrypted queries the A-label of an internationalized name",
+          ddrLabel === "xn--caf-dma",
+          "first label=" + JSON.stringify(ddrLabel));
+
     for (var k = 0; k < ldhPaths.length; k += 1) {
       var mark = doh.seen.length;
       var perr = null;

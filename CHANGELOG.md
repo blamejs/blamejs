@@ -14,7 +14,9 @@ The walk is now implemented, including the spec's denial-of-service bound and it
 
 The DNS query encoder underneath it is hardened in the same release: it now refuses a hostname it cannot express on the wire instead of encoding some other name.
 
-Upgrade if you evaluate inbound DMARC, or if any hostname you resolve comes from a request. Senders publishing policy only at the Author or organizational domain see no change. **Changed:** *Vendored `@blamejs/pki` 0.5.11 to 0.5.14* — Adds `pki.csr.verify` and `pki.crmf.verifyPop` — proof-of-possession checks on an inbound certification request, the check `openssl req -verify` performs — and records the parsed byte range a proof covers so a rebuilt message cannot present a genuine signature beside a substituted subject. No framework call site changes; `b.mtlsCa` and `b.auth.passkey` behave as before.
+Upgrade if you evaluate inbound DMARC, or if any hostname you resolve comes from a request. Senders publishing policy only at the Author or organizational domain see no change. **Changed:** *Vendored `@blamejs/pki` 0.5.11 to 0.5.15* — Adds the verifying half of three request and delegation formats: `pki.csr.verify` and `pki.crmf.verifyPop` check the proof of possession on an inbound certification request — the check `openssl req -verify` performs — and `pki.attrcert.verify` checks an attribute certificate against the RFC 5755 validation rules, so a consumer reading its privilege attributes is reading ones an issuer actually granted. The parsers now record the byte range a proof covers, so a rebuilt message cannot present a genuine signature beside a substituted subject.
+
+No framework call site changes; `b.mtlsCa` and `b.auth.passkey` behave as before.
 
 The pinned `docker/setup-buildx-action` in the container release workflow moves to v4.3.0. **Security:** *A DMARC policy published at an intermediate label is now found and applied* — Discovery queries `_dmarc.` at the Author Domain and then at each ancestor, so `a.b.example.com` now considers `_dmarc.b.example.com` before `_dmarc.example.com`. A `p=reject` there is applied rather than evaluated as `none`.
 

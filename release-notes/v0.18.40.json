@@ -59,8 +59,8 @@
       "heading": "Changed",
       "items": [
         {
-          "title": "Vendored `@blamejs/pki` 0.5.11 to 0.5.14",
-          "body": "Adds `pki.csr.verify` and `pki.crmf.verifyPop` — proof-of-possession checks on an inbound certification request, the check `openssl req -verify` performs — and records the parsed byte range a proof covers so a rebuilt message cannot present a genuine signature beside a substituted subject. No framework call site changes; `b.mtlsCa` and `b.auth.passkey` behave as before.\n\nThe pinned `docker/setup-buildx-action` in the container release workflow moves to v4.3.0."
+          "title": "Vendored `@blamejs/pki` 0.5.11 to 0.5.15",
+          "body": "Adds the verifying half of three request and delegation formats: `pki.csr.verify` and `pki.crmf.verifyPop` check the proof of possession on an inbound certification request — the check `openssl req -verify` performs — and `pki.attrcert.verify` checks an attribute certificate against the RFC 5755 validation rules, so a consumer reading its privilege attributes is reading ones an issuer actually granted. The parsers now record the byte range a proof covers, so a rebuilt message cannot present a genuine signature beside a substituted subject.\n\nNo framework call site changes; `b.mtlsCa` and `b.auth.passkey` behave as before.\n\nThe pinned `docker/setup-buildx-action` in the container release workflow moves to v4.3.0."
         }
       ]
     }
