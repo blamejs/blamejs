@@ -1219,6 +1219,91 @@ async function testDmarcTreeWalkTransientAboveOwnRecordStillEvaluates() {
         "result=" + rv.result + " origin=" + rv.policyOriginDomain);
 }
 
+async function testDmarcInternationalizedAuthorDomain() {
+  // The mail surface carries EAI/IDN addresses, and the DNS a domain owner
+  // publishes under is the A-label form. A U-label From must therefore be
+  // converted before the walk queries anything — refusing it would report
+  // temperror for a domain whose record resolves perfectly well, and the
+  // domain would never learn its policy was not being applied.
+  var asked = [];
+  var dns = async function (host) {
+    asked.push(host);
+    if (host === "_dmarc.xn--mnchen-3ya.example") return [["v=DMARC1; p=reject; aspf=s"]];
+    return null;
+  };
+  var rv = await b.mail.dmarc.evaluate({
+    from:      "alice@münchen.example",
+    spf:       { result: "pass", domain: "elsewhere.test" },
+    dkim:      [],
+    dnsLookup: dns,
+  });
+  check("dmarc: a U-label Author Domain is queried in its A-label form",
+        asked.indexOf("_dmarc.xn--mnchen-3ya.example") !== -1,
+        "asked=" + JSON.stringify(asked));
+  check("dmarc: the IDN domain's own p=reject applies",
+        rv.result !== "temperror" && rv.policy && rv.policy.p === "reject",
+        "result=" + rv.result + " p=" + (rv.policy && rv.policy.p));
+}
+
+async function testDmarcClosestRecordSuppliesThePolicy() {
+  // Choosing the Organizational Domain and choosing the record whose policy
+  // applies are two different questions. A `psd` record above an intermediate
+  // one answers the first; the closest record answers the second. Letting the
+  // boundary answer both recreates precisely the downgrade the tree walk exists
+  // to stop: a `p=reject` published at `b.example.com` losing to a `p=none` at
+  // `example.com` for mail from `a.b.example.com`.
+  var dns = async function (host) {
+    if (host === "_dmarc.b.example.com")  return [["v=DMARC1; p=reject; aspf=s"]];
+    if (host === "_dmarc.example.com")    return [["v=DMARC1; p=none; psd=n"]];
+    return null;
+  };
+  var rv = await b.mail.dmarc.evaluate({
+    from:      "alice@a.b.example.com",
+    spf:       { result: "pass", domain: "evil.example.com" },
+    dkim:      [],
+    dnsLookup: dns,
+  });
+  check("dmarc: the closest record supplies the policy, not the boundary record",
+        rv.policyOriginDomain === "b.example.com" && rv.policy && rv.policy.p === "reject",
+        "origin=" + rv.policyOriginDomain + " p=" + (rv.policy && rv.policy.p));
+  check("dmarc: the higher psd=n record still bounds alignment",
+        rv.alignment.spf !== true && rv.recommendedAction === "reject",
+        "alignment.spf=" + rv.alignment.spf + " action=" + rv.recommendedAction);
+}
+
+async function testDmarcPsdYBoundaryConstrainsAlignment() {
+  // `psd=y` is a declaration too: the name publishing it says it IS a public
+  // suffix, which puts the Organizational Domain one label below. Honouring it
+  // for policy while reducing to the Public Suffix List for alignment leaves
+  // the same hole `psd=n` had — and it is wider, because a multi-label PSD is
+  // exactly the case the vendored list is most likely to be missing.
+  var dns = async function (host) {
+    if (host === "_dmarc.platform.example") return [["v=DMARC1; p=reject; psd=y; aspf=r"]];
+    return null;
+  };
+  var spoof = await b.mail.dmarc.evaluate({
+    from:      "alice@tenant.platform.example",
+    spf:       { result: "pass", domain: "evil.platform.example" },
+    dkim:      [],
+    dnsLookup: dns,
+  });
+  check("dmarc: a psd=y boundary stops a sibling tenant aligning",
+        spoof.alignment.spf !== true && spoof.result !== "pass",
+        "alignment.spf=" + spoof.alignment.spf + " result=" + spoof.result +
+        " action=" + spoof.recommendedAction);
+
+  // A host genuinely inside the derived organizational domain still aligns.
+  var own = await b.mail.dmarc.evaluate({
+    from:      "alice@tenant.platform.example",
+    spf:       { result: "pass", domain: "mail.tenant.platform.example" },
+    dkim:      [],
+    dnsLookup: dns,
+  });
+  check("dmarc: a host under the derived organizational domain still aligns",
+        own.alignment.spf === true && own.result === "pass",
+        "alignment.spf=" + own.alignment.spf + " result=" + own.result);
+}
+
 async function testDmarcIncompleteWalkDoesNotGrantRelaxedAlignment() {
   // Keeping the Author Domain's own policy when an ancestor is unreadable is a
   // choice about the POLICY. It says nothing about alignment, and a name the
@@ -3878,6 +3963,9 @@ async function run() {
   await testDmarcTreeWalkTransientBelowIsTemperror();
   await testDmarcTreeWalkTransientAboveOwnRecordStillEvaluates();
   await testDmarcTreeWalkNormalizesTheStartDomain();
+  await testDmarcInternationalizedAuthorDomain();
+  await testDmarcClosestRecordSuppliesThePolicy();
+  await testDmarcPsdYBoundaryConstrainsAlignment();
   await testDmarcIncompleteWalkDoesNotGrantRelaxedAlignment();
   await testDmarcMalformedAncestorDoesNotVoidAnOwnPolicy();
   await testDmarcEmptyLabelIsNotRepaired();

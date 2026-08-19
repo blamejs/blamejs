@@ -1385,7 +1385,8 @@ function _startDohCapturingServer(cert, reply) {
 //
 // The same encoder dropped empty labels, so `evil..example.com` was silently
 // asked for as `evil.example.com`, and truncated a non-ASCII code unit to its
-// low byte instead of requiring an A-label.
+// low byte instead of converting the name to the A-label form its owner
+// published it under.
 async function testDnsWireEncoderRefusesUnencodableNames() {
   var cert = await _mintSecureCert();
   var reply = _buildReply("ok.example.com", 1, [
@@ -1409,10 +1410,40 @@ async function testDnsWireEncoderRefusesUnencodableNames() {
           octets.length > 0 && octets.every(function (n) { return n >= 1 && n <= 63; }),
           "octets=" + JSON.stringify(octets));
 
+    // An internationalized name is converted rather than refused — its owner
+    // published it in the `xn--` form, so refusing it would fail a name that
+    // resolves. The query must carry the A-label, not the U-label's low bytes.
+    var beforeIdn = doh.seen.length;
+    await dnsModule.resolve4("café.example.com");
+    var idnWire = doh.seen[beforeIdn];
+    var firstLabel = idnWire ? idnWire.slice(13, 13 + idnWire[12]).toString("ascii") : null;
+    check("dns wire: a U-label is encoded as its A-label",
+          firstLabel === "xn--caf-dma", "first label=" + JSON.stringify(firstLabel));
+
+    // Converting at the encoder alone is not enough: resolveSecure and
+    // querySvcb run an LDH pass of their own first, and an LDH rule has no
+    // reading of a U-label. The canonical name has to reach them, or the same
+    // domain resolves through one entry point and is refused by another.
+    var ldhPaths = [
+      { name: "resolveSecure", call: function () { return dnsModule.resolveSecure("café.example.com"); } },
+      { name: "querySvcb",     call: function () { return dnsModule.querySvcb("café.example.com"); } },
+      { name: "queryHttps",    call: function () { return dnsModule.queryHttps("café.example.com"); } },
+    ];
+    for (var k = 0; k < ldhPaths.length; k += 1) {
+      var mark = doh.seen.length;
+      var perr = null;
+      try { await ldhPaths[k].call(); } catch (e) { perr = e; }
+      var sent = doh.seen[mark];
+      var lbl = sent ? sent.slice(13, 13 + sent[12]).toString("ascii") : null;
+      check("dns wire: " + ldhPaths[k].name + " resolves an internationalized name",
+            !(perr && perr.code === "dns/bad-host") && lbl === "xn--caf-dma",
+            "code=" + (perr && perr.code) + " first label=" + JSON.stringify(lbl));
+    }
+
     var unencodable = [
       { host: "a".repeat(192) + ".example.com", why: "a 192-byte label would be read as a compression pointer" },
       { host: "a".repeat(64) + ".example.com",  why: "a 64-byte label would be read as an unassigned label type" },
-      { host: "café.example.com",          why: "a non-ASCII label must be an A-label before the wire" },
+      { host: "evil..example.com",         why: "an empty label is refused, not repaired into another name" },
     ];
     for (var i = 0; i < unencodable.length; i += 1) {
       var before = doh.seen.length;
