@@ -49,6 +49,15 @@
           "body": "Keeping the Author Domain's policy across a name the walk could not read settles the policy. It does not settle alignment, and the two were being decided together: an unread name may publish `psd=n`, and relaxed alignment computed without that boundary reduces both domains to the Public Suffix List answer. An authenticated `evil.example.com` then aligned with `a.b.example.com` and satisfied its `p=reject` — a pass, and delivery, for the one message the boundary exists to separate.\n\nWhile a name in the walk is unread, relaxed alignment is withheld and only strict applies. Every boundary the walk could have found lies at or above the Author Domain, so an exact match is aligned whichever one is hidden; a relaxed match is the case that cannot be decided, and it is the case now refused. A message aligned strictly still passes across the gap, and a completed walk is unaffected."
         }
       ]
+    },
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "Vendored `@blamejs/pki` 0.5.11 to 0.5.14",
+          "body": "Adds `pki.csr.verify` and `pki.crmf.verifyPop` — proof-of-possession checks on an inbound certification request, the check `openssl req -verify` performs — and records the parsed byte range a proof covers so a rebuilt message cannot present a genuine signature beside a substituted subject. No framework call site changes; `b.mtlsCa` and `b.auth.passkey` behave as before.\n\nThe pinned `docker/setup-buildx-action` in the container release workflow moves to v4.3.0."
+        }
+      ]
     }
   ],
   "references": [
