@@ -419,6 +419,83 @@ function testCanonicalDomain() {
         b.publicSuffix.canonicalDomain(null) === "");
 }
 
+// ONE definition of "is this a domain name", across the three primitives that
+// answer it. b.publicSuffix owns the rule; b.network.dns and b.mail.dmarc route
+// through it. They drifted apart exactly once — each removed a root marker of
+// its own before delegating, so between them two came off and a name with an
+// empty final label became a real, separately-owned one that the resolver then
+// queried and cached, and that DMARC discovered a policy under.
+//
+// The invariant that catches that is not "each layer is correct" but "no layer
+// accepts what the owner refuses" — and it has to actually DRIVE each layer.
+// Checking only DNS would still pass while the mail layer regressed, which is
+// precisely the cross-layer drift this exists to stop.
+async function testDomainDefinitionAgreesAcrossPrimitives() {
+  // EVERY rejection class canonicalDomain has, not just the one the last bug
+  // came from. A fixture drawn from a single family passes while the layers
+  // disagree about all the others — which is what happened: the root-marker
+  // rows agreed while `example.com/evil`, `a\u0000.com` and `a b.com` were
+  // refused here and encoded into DNS query labels over there.
+  var HOSTILE = [
+    // empty label / root marker
+    "example.com..", "example.com。。", "example.com.。", "example.com。.",
+    "example.com．．", "example.com｡｡", "münchen.example..", "münchen.example。。",
+    "evil..example.com", ".example.com", "a..b",
+    // URL-structural delimiters — domainToASCII TRUNCATES at these, so a name
+    // carrying one can masquerade as a trusted prefix of itself
+    "example.com/evil", "example.com?x", "example.com#f", "example.com\\x",
+    "example.com:80", "user@example.com", "[example.com]",
+    // characters domainToASCII itself refuses, which no hand-written list of
+    // "bad characters" reliably reproduces — the reason the rule is asked of
+    // canonicalDomain rather than mirrored
+    // (a quote and braces are NOT here: domainToASCII permits them, so the
+    // owner accepts them and there is nothing for the other layers to disagree
+    // with. Putting them in would assert about the owner's rule rather than
+    // about agreement, which is what this test is for.)
+    "a%b.com", "a^b.com", "a|b.com", "a<b.com", "a>b.com",
+    // control bytes and whitespace
+    "a\u0000.com", "a b.com", "a\tb.com", "a\nb.com", "example.com",
+    // over the RFC 1035 name ceiling. A 64-octet LABEL is deliberately absent:
+    // canonicalDomain caps the whole name at 253 but says nothing about label
+    // length, so it accepts one — the wire encoder is what refuses that, and
+    // this invariant only claims that nothing accepts what the owner refuses.
+    "a".repeat(250) + "." + "b".repeat(250) + ".com",
+  ];
+  var refused = HOSTILE.filter(function (h) { return b.publicSuffix.canonicalDomain(h) === ""; });
+  check("the hostile fixture set is one b.publicSuffix actually refuses",
+        refused.length === HOSTILE.length,
+        "owner accepted: " + HOSTILE.filter(function (h) {
+          return b.publicSuffix.canonicalDomain(h) !== "";
+        }).join(", "));
+
+  var dnsAdmitted = refused.filter(function (h) {
+    try { b.network.dns._validateHostShape(h, "probe"); return true; }
+    catch (_e) { return false; }
+  });
+  check("no b.network.dns entry point accepts a name b.publicSuffix refuses",
+        dnsAdmitted.length === 0,
+        "admitted: " + dnsAdmitted.map(function (h) { return JSON.stringify(h); }).join(", "));
+
+  var mailAdmitted = [];
+  for (var i = 0; i < refused.length; i += 1) {
+    var accepted = true;
+    try {
+      await b.mail.dmarc.evaluate({
+        from: "alice@" + refused[i],
+        spf: { result: "pass", domain: "elsewhere.test" },
+        dkim: [],
+        dnsLookup: async function () { return null; },
+      });
+    } catch (e) {
+      if (/dmarc-bad-from/.test(e.code || "")) accepted = false;
+    }
+    if (accepted) mailAdmitted.push(refused[i]);
+  }
+  check("b.mail.dmarc.evaluate accepts no Author Domain b.publicSuffix refuses",
+        mailAdmitted.length === 0,
+        "admitted: " + mailAdmitted.map(function (h) { return JSON.stringify(h); }).join(", "));
+}
+
 async function run() {
   testExactMatch();
   testInputItselfIsPublicSuffix();
@@ -435,6 +512,7 @@ async function run() {
   testLookupSource();
   testCaseInsensitive();
   testCanonicalDomain();
+  await testDomainDefinitionAgreesAcrossPrimitives();
 }
 
 module.exports = { run: run };

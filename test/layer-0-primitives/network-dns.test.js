@@ -1916,16 +1916,18 @@ async function testSystemRawQueryTimeout() {
 }
 
 async function testNativeErrorWraps() {
-  // resolve4 over the system resolver with an unparseable host → c-ares
-  // rejects with a native EBADNAME (no network); the framework wraps it as
-  // dns/resolve-failed via the non-DnsError branch.
+  // A host carrying spaces no longer reaches c-ares at all: the framework and
+  // b.publicSuffix now share one definition of which characters may appear in
+  // a host, and this is refused at the entry point. That is the stricter
+  // outcome — an unparseable name is not something to hand to a resolver — so
+  // the check moved rather than the rule.
   _reset();
   dnsModule.useSystemResolver();
   dnsModule.setLookupTimeoutMs(5000);
-  check("resolve4(system): native c-ares error wraps as dns/resolve-failed",
+  check("resolve4(system): a host with spaces is refused before the resolver sees it",
     await _throwsAsync(function () {
       return dnsModule.resolve4("bad host with spaces");
-    }, "dns/resolve-failed"));
+    }, "dns/bad-host"));
   _reset();
 
   // reverse of a reserved IP → native ENOTFOUND (no network); wrapped as
@@ -2597,15 +2599,18 @@ async function testDotRawCloseHandler() {
 // ======================================================================
 async function testResolve6SystemNativeError() {
   // resolve6 with no DoH/DoT configured routes through the system resolver's
-  // resolve6 (the family-6 arm); a malformed host rejects natively (no
-  // network) and wraps as dns/resolve-failed.
+  // resolve6 (the family-6 arm). A host carrying spaces is refused before that
+  // arm is reached — the framework and b.publicSuffix share one definition of
+  // which characters may appear in a host — so this pins the refusal, and the
+  // native-error wrap is covered by the reverse() case above, which uses a
+  // syntactically valid input.
   _reset();
   dnsModule.useSystemResolver();
   dnsModule.setLookupTimeoutMs(5000);
-  check("resolve6(system): family-6 resolver selected; native error wraps as dns/resolve-failed",
+  check("resolve6(system): a host with spaces is refused before the family-6 arm",
     await _throwsAsync(function () {
       return dnsModule.resolve6("bad host with spaces");
-    }, "dns/resolve-failed"));
+    }, "dns/bad-host"));
   _reset();
 }
 
