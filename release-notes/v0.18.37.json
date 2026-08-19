@@ -15,11 +15,20 @@
       ]
     },
     {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "A YAML tag beginning with a digit slipped past the tag ban",
+          "body": "`b.parsers.yaml` refuses anchors, aliases, tags and directives. The tag check accepted `!` followed by a letter or `<`, while the comment beside it described the rule as \"alphanumeric or `<`\" — and the code was the weaker of the two. `a: !123` is a local tag, and it parsed as the plain string `\"!123\"` rather than being refused.\n\nIt is now refused, along with `!!123`. A quoted `\"!123\"` is still an ordinary string, because a quoted scalar is not a tag."
+        }
+      ]
+    },
+    {
       "heading": "Changed",
       "items": [
         {
           "title": "The no-regex gate asks a parser instead of walking the source itself",
-          "body": "Deciding whether a `/` opens a regular expression or divides means implementing the ECMAScript lexical grammar, and the previous scanner kept meeting parts of it that were not implemented yet — template substitutions nest, `of` is contextual, a labelled `break` ends at the terminator after its label, `<!--` is a comment, a shebang is not JavaScript.\n\nThe check now runs as an ESLint rule, which sees the file after it has already been parsed. All of those questions are answered before the rule is asked. It needs no new dependency: ESLint already runs over the repository as the first static gate, and a flat config takes an inline rule.\n\nSuppression, if a case ever warrants it, is the standard `// eslint-disable-next-line blamejs/no-regex-in-content-safety` with the reason on the line above, replacing a bespoke marker that was never used.\n\nThe rule reports pattern literals. `new RegExp(...)` is not yet included: three call sites use it and they are not one thing — two compile a pattern in order to validate it, which is the opposite of matching against input, while `b.guardSql` builds its detectors that way and does match input. Reporting all three today would mean either an allowlist entry for the one that should be caught, or a rushed conversion of a set of injection detectors. It is tracked instead, and the rule stays exactly as strict as the scanner it replaces."
+          "body": "Deciding whether a `/` opens a regular expression or divides means implementing the ECMAScript lexical grammar, and the previous scanner kept meeting parts of it that were not implemented yet — template substitutions nest, `of` is contextual, a labelled `break` ends at the terminator after its label, `<!--` is a comment, a shebang is not JavaScript.\n\nThe check now runs as an ESLint rule, which sees the file after it has already been parsed. All of those questions are answered before the rule is asked. It needs no new dependency: ESLint already runs over the repository as the first static gate, and a flat config takes an inline rule.\n\nSuppression, if a case ever warrants it, is the standard `// eslint-disable-next-line blamejs/no-regex-in-content-safety` with the reason on the line above, replacing a bespoke marker that was never used.\n\nThe hand-written scanner is gone with it — about 1,240 lines, including the fixture table that had grown to justify it. Leaving both in place would have meant a justified exception passing one gate and failing the other, since the old one honoured only its own marker.\n\nThe rule reports pattern literals. `new RegExp(...)` is not yet included: three call sites use it and they are not one thing — two compile a pattern in order to validate it, which is the opposite of matching against input, while `b.guardSql` builds its detectors that way and does match input. Reporting all three today would mean either an allowlist entry for the one that should be caught, or a rushed conversion of a set of injection detectors. It is tracked instead, and the rule stays exactly as strict as the scanner it replaces."
         }
       ]
     }
