@@ -18,6 +18,10 @@
       "heading": "Fixed",
       "items": [
         {
+          "title": "Vendored `@blamejs/pki` moves to 0.5.11",
+          "body": "The bundle backing `b.mtlsCa` and `b.auth.passkey`. In 0.5.11 the `pki.key`, `pki.path`, `pki.lint` and `pki.ocsp` verbs refuse an option they do not read rather than ignoring it, so a misspelled `password` on key export can no longer leave a private key unprotected — and they refuse an options object whose values come from a getter, since a getter is asked afresh on every read and the value the check saw need not be the one the verb uses.\n\nNo framework call site passes an unread option, so nothing changes for callers going through `b.mtlsCa` or `b.auth.passkey`. Operators calling the vendored library directly should check their option names against the ones each verb documents."
+        },
+        {
           "title": "A sentence in the 0.18.38 notes described an implementation that was not shipped",
           "body": "The summary said the `COPY` stream exclusion is \"decided by reading the following word rather than by a lookahead\". That describes an approach that was built and then withdrawn; the shipped code keeps the lookahead and moves it in front of the whitespace. The published release body was corrected at the time and the changelog now matches it."
         }
