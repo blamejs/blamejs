@@ -365,12 +365,41 @@ function testCanonicalDomain() {
   // is an empty final label, and removing both would hand the caller a
   // different, real domain than the one they asked about — the same
   // repair-instead-of-refuse mistake the empty-label rule exists to stop.
-  check("canonicalDomain refuses a doubled ASCII root marker",
-        b.publicSuffix.canonicalDomain("example.com..") === "",
-        JSON.stringify(b.publicSuffix.canonicalDomain("example.com..")));
-  check("canonicalDomain refuses a doubled UTS #46 root marker",
-        b.publicSuffix.canonicalDomain("münchen.example。。") === "",
-        JSON.stringify(b.publicSuffix.canonicalDomain("münchen.example。。")));
+  // Every MIXED spelling too. A doubled ASCII pair and a doubled U+3002 pair
+  // are both caught by the pre-existing `..` check once converted, so testing
+  // only those two proves nothing about the at-most-one-marker guard — the
+  // guard is what catches an ASCII dot followed by a mapped marker, where the
+  // first comes off before conversion and the second only appears after it.
+  var doubledMarkers = [
+    "example.com..", "example.com。。", "example.com．．", "example.com｡｡",
+    "example.com.。", "example.com。.", "example.com.．", "example.com．.",
+    "example.com。．", "example.com．。", "example.com.｡", "example.com｡.",
+    "münchen.example..", "münchen.example。。", "münchen.example.。", "münchen.example。.",
+  ];
+  var admitted = doubledMarkers.filter(function (d) {
+    return b.publicSuffix.canonicalDomain(d) !== "";
+  });
+  check("canonicalDomain refuses every spelling of a doubled root marker",
+        admitted.length === 0,
+        "admitted: " + admitted.map(function (d) {
+          return JSON.stringify(d) + " -> " + JSON.stringify(b.publicSuffix.canonicalDomain(d));
+        }).join(", "));
+
+  // The absolute spelling of a maximum-length name is the same name. Measuring
+  // the root marker as a character refused it in every absolute spelling while
+  // accepting the relative one.
+  var maxLabel = "a".repeat(63);
+  var max253 = maxLabel + "." + maxLabel + "." + maxLabel + "." + "a".repeat(61);
+  check("the max-length fixture is exactly 253 characters", max253.length === 253,
+        "length=" + max253.length);
+  var maxSpellings = [".", "。", "．", "｡"].filter(function (m) {
+    return b.publicSuffix.canonicalDomain(max253 + m) !== max253;
+  });
+  check("canonicalDomain accepts a maximum-length name in every absolute spelling",
+        maxSpellings.length === 0,
+        "refused with: " + maxSpellings.map(function (m) {
+          return JSON.stringify(m) + " -> " + JSON.stringify(b.publicSuffix.canonicalDomain(max253 + m));
+        }).join(", "));
   check("canonicalDomain U-label and A-label converge",
         b.publicSuffix.canonicalDomain("bücher.de") === "xn--bcher-kva.de" &&
         b.publicSuffix.canonicalDomain("xn--bcher-kva.de") === "xn--bcher-kva.de");

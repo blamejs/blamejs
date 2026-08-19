@@ -1329,14 +1329,41 @@ async function testDmarcIdeographicRootMarker() {
   // whose From and SPF are the SAME name spelled with the mapped marker must
   // still align with itself. Fixing this at the mail layer instead of in
   // canonicalDomain would leave exactly this pair in two different forms.
-  var aligned = await b.mail.dmarc.evaluate({
-    from: "alice@münchen.example。",
-    spf: { result: "pass", domain: "münchen.example。" },
-    dkim: [], dnsLookup: dns,
-  });
-  check("dmarc: a name spelled with a UTS #46 root marker aligns with itself",
-        aligned.alignment.spf === true && aligned.result === "pass",
-        "alignment.spf=" + aligned.alignment.spf + " result=" + aligned.result);
+  // Deliberately DIFFERENT spellings on the two sides. Passing the same string
+  // twice proves nothing: both sides would take the same path through whatever
+  // normalization exists, including a wrong one. The From carries the mapped
+  // marker and the authenticated domain the ASCII dot, so the two only align if
+  // they truly converge on one canonical name.
+  var spellings = [
+    ["alice@münchen.example。", "münchen.example."],
+    ["alice@münchen.example.", "münchen.example。"],
+    ["alice@münchen.example",  "münchen.example。"],
+    ["alice@münchen.example。", "xn--mnchen-3ya.example"],
+  ];
+  for (var s = 0; s < spellings.length; s += 1) {
+    var aligned = await b.mail.dmarc.evaluate({
+      from: spellings[s][0],
+      spf: { result: "pass", domain: spellings[s][1] },
+      dkim: [], dnsLookup: dns,
+    });
+    check("dmarc: " + JSON.stringify(spellings[s][0]) + " aligns with " +
+          JSON.stringify(spellings[s][1]),
+          aligned.alignment.spf === true && aligned.result === "pass",
+          "alignment.spf=" + aligned.alignment.spf + " result=" + aligned.result);
+  }
+
+  // And a From whose root marker is DOUBLED is a malformed name, not one to
+  // repair into the real domain next door.
+  var doubledFrom = null;
+  try {
+    await b.mail.dmarc.evaluate({
+      from: "alice@münchen.example。.", spf: { result: "pass", domain: "elsewhere.test" },
+      dkim: [], dnsLookup: dns,
+    });
+  } catch (e) { doubledFrom = e; }
+  check("dmarc: a doubled root marker in the From is refused, not repaired",
+        doubledFrom !== null && /dmarc-bad-from/.test(doubledFrom.code || ""),
+        doubledFrom ? "code=" + doubledFrom.code : "accepted");
 }
 
 async function testDmarcPsdYAtTheAuthorDomainBoundsAlignment() {

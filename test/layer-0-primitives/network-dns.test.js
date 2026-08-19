@@ -1454,6 +1454,24 @@ async function testDnsWireEncoderRefusesUnencodableNames() {
           dnsModule._validateHostShape("café.example", "probe") === "xn--caf-dma.example",
           JSON.stringify(dnsModule._validateHostShape("café.example", "probe")));
 
+    // A DOUBLED root marker is an empty final label and must be refused in
+    // every spelling. Two strips in sequence — one here, one inside
+    // canonicalDomain — turned `example.com。。` into `example.com.`, a real and
+    // separately-owned name, which lookup() then cached under. The plain ASCII
+    // `example.com..` spelling of the same mistake was still refused, so the
+    // two disagreed about what counts as a name.
+    var doubled = ["example.com..", "example.com。。", "example.com。.", "example.com.。",
+                   "example.com．．", "example.com｡｡", "café.example。。", "café.example.."];
+    for (var d = 0; d < doubled.length; d += 1) {
+      var derr = null;
+      var dout = null;
+      try { dout = dnsModule._validateHostShape(doubled[d], "probe"); }
+      catch (e) { derr = e; }
+      check("dns: a doubled root marker is refused — " + JSON.stringify(doubled[d]),
+            derr !== null && derr.code === "dns/bad-host",
+            derr ? "code=" + derr.code : "accepted as " + JSON.stringify(dout));
+    }
+
     // The reachable guarantee is that the two spellings CONVERGE at the entry
     // point, so nothing downstream can treat them differently — every later
     // rule (the LDH pass, the 253-octet ceiling, the cache key) sees one
