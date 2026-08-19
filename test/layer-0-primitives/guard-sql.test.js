@@ -342,6 +342,48 @@ function testCopyFileVersusStdStreams() {
         runs[0].n + "=" + runs[0].ms + "ms " + runs[1].n + "=" + runs[1].ms + "ms");
 }
 
+// ---- PRAGMA trusted_schema: same verdicts, without the quadratic ----
+
+function testTrustedSchemaShapeAndCost() {
+  var opFloor = { contextMode: "operator-sql", profile: "permissive", dialect: "sqlite" };
+
+  // Every spelling the detector accepted before still refuses. The `=` is
+  // optional and the whitespace around it free-form, which is what made the old
+  // `\s*=?\s*` ambiguous.
+  ["PRAGMA trusted_schema=on",
+   "PRAGMA trusted_schema = on",
+   "PRAGMA trusted_schema  =  1",
+   "PRAGMA trusted_schema on",
+   "PRAGMA trusted_schema=true",
+   "PRAGMA  trusted_schema   =   TRUE",
+  ].forEach(function (sql) {
+    refusesWith("trusted-schema: " + JSON.stringify(sql), sql, opFloor, "trusted-schema");
+  });
+
+  // And a value outside the set is still not a finding.
+  var off = b.guardSql.validate("PRAGMA trusted_schema = off", opFloor);
+  check("trusted-schema: an OFF value is not the finding",
+        !off.issues.some(function (i) { return i.kind === "trusted-schema"; }));
+
+  // Cost. `\s*=?\s*` let a whitespace run be split between two adjacent
+  // quantifiers in as many ways as it was long, and every split was retried
+  // when the value that followed did not match: 100 ms at 16k spaces, growing
+  // 4x per doubling of the run. Binding the `=` to the whitespace after it
+  // leaves one way to consume the run.
+  var runs = [4000, 16000].map(function (n) {
+    var sql = "PRAGMA trusted_schema" + " ".repeat(n) + "!";
+    var started = Date.now();
+    b.guardSql.validate(sql, opFloor);
+    return { n: n, ms: Date.now() - started };
+  });
+  runs.forEach(function (r) {
+    check("trusted-schema: a " + r.n + "-space run stays cheap (" + r.ms + "ms)", r.ms < 250);
+  });
+  check("trusted-schema: cost does not grow quadratically with the run",
+        runs[1].ms <= Math.max(40, runs[0].ms * 6),
+        runs[0].n + "=" + runs[0].ms + "ms " + runs[1].n + "=" + runs[1].ms + "ms");
+}
+
 // ---- OS-reach floor — refuses at EVERY profile (incl. permissive) ----
 
 function testOsReachFloorEverywhere() {
@@ -479,6 +521,7 @@ async function run() {
   testReconTimingSoftenByProfile();
   testSanitize();
   testCopyFileVersusStdStreams();
+  testTrustedSchemaShapeAndCost();
   await testGateDispositions();
   testSurfaceAndPostures();
 }

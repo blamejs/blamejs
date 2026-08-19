@@ -3,7 +3,7 @@
   "version": "0.18.38",
   "date": "2026-08-19",
   "headline": "`COPY ... TO STDIN` was reported as a server-side file access whenever it carried more than one space",
-  "summary": "`b.guardSql`'s `copy-file` detector finds a `COPY` that reads or writes a file on the database server, and excludes the client-streaming `STDIN` and `STDOUT` forms because those touch no file. The exclusion was a negative lookahead, and it only worked when the whitespace before the keyword was exactly one character: `COPY t TO STDIN` was quiet, `COPY t TO  STDIN` was reported critical.\n\nThe exclusion is now decided by reading the following word rather than by a lookahead, so the spacing no longer changes the verdict.\n\nNo API changes. Upgrade if you pass SQL fragments through `b.guardSql`.",
+  "summary": "`b.guardSql`'s `copy-file` detector finds a `COPY` that reads or writes a file on the database server, and excludes the client-streaming `STDIN` and `STDOUT` forms because those touch no file. The exclusion was a negative lookahead, and it only worked when the whitespace before the keyword was exactly one character: `COPY t TO STDIN` was quiet, `COPY t TO  STDIN` was reported critical.\n\nThe exclusion is now tested before the whitespace is consumed, so the spacing no longer changes the verdict.\n\nNo API changes. Upgrade if you pass SQL fragments through `b.guardSql`.",
   "sections": [
     {
       "heading": "Fixed",
