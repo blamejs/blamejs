@@ -202,4 +202,63 @@ export default [
     },
     rules: COMMON_RULES,
   },
+  // Content-safety primitives screen input by walking characters, never with a
+  // regular expression — an attacker supplies the subject, and a pattern with
+  // nested quantifiers turns that into a denial of service.
+  //
+  // The check asks the PARSER whether a `/` opened a literal. Deciding that by
+  // hand means implementing the ECMAScript lexical grammar, and the previous
+  // scanner kept meeting parts of it that were not implemented yet — template
+  // substitutions nest, `of` is contextual, a labelled `break` ends at the
+  // terminator after its label, `<!--` is a comment, a shebang is not
+  // JavaScript. Every one of those is already settled here, for free, because
+  // eslint has parsed the file before the rule runs.
+  //
+  // Suppression is the standard `// eslint-disable-next-line
+  // blamejs/no-regex-in-content-safety`, with the reason on the line above.
+  {
+    // Nested primitives are in scope too. The scanner this replaces selected on
+    // `lib/(safe-|guard-)[^/]+\.js`, so `lib/parsers/` was never examined and 55
+    // pattern literals sat there — in the five parsers that consume adversarial
+    // bytes, which is where the rule matters most.
+    files: ["lib/**/safe-*.js", "lib/**/guard-*.js"],
+    plugins: {
+      blamejs: {
+        rules: {
+          "no-regex-in-content-safety": {
+            meta: {
+              type: "problem",
+              docs: { description: "no regular expressions in guard-* / safe-* primitives" },
+              schema: [],
+            },
+            create(context) {
+              const ADVICE = " — screen the characters instead " +
+                "(codepointClass.isRunOf / indexOfAny / firstInRanges, markupTokenizer for " +
+                "markup, safeBuffer for byte shapes), or run it on b.regexLinear when a " +
+                "pattern is genuinely the input";
+              // Literals only, for now. `new RegExp(source)` carries the same
+              // risk and is harder to see, but three call sites already use it
+              // and they are not one thing: guard-regex compiles an operator's
+              // pattern to ask whether it COMPILES, and safe-json compiles a
+              // schema pattern precisely so assertSafe can screen the compiled
+              // form — both validate a pattern rather than match against input.
+              // guard-sql builds its detectors that way and does match input,
+              // which is a real finding rather than an exemption. Reporting all
+              // three now would mean either an allowlist entry for the one the
+              // rule should catch, or a rushed conversion; it is tracked
+              // instead, and this stays exactly as strict as the scanner it
+              // replaces so the swap is provably equivalent.
+              return {
+                Literal(node) {
+                  if (!node.regex) return;
+                  context.report({ node, message: "regular expression `/" + node.regex.pattern + "/`" + ADVICE });
+                },
+              };
+            },
+          },
+        },
+      },
+    },
+    rules: { "blamejs/no-regex-in-content-safety": "error" },
+  },
 ];
