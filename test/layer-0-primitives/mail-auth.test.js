@@ -1298,6 +1298,101 @@ async function testDmarcClosestRecordSuppliesThePolicy() {
         "alignment.spf=" + rv.alignment.spf + " action=" + rv.recommendedAction);
 }
 
+async function testDmarcIdeographicRootMarker() {
+  // The same root-marker trap the DNS encoder had: UTS #46 maps U+3002 to ".",
+  // so an absolute internationalized From only GROWS its trailing dot during
+  // canonicalization. Stripping the root before converting leaves that dot in
+  // place, the label split then sees an empty final label, and a valid address
+  // is refused as a malformed From.
+  var asked = [];
+  var dns = async function (host) {
+    asked.push(host);
+    if (host === "_dmarc.xn--mnchen-3ya.example") return [["v=DMARC1; p=reject; aspf=s"]];
+    return null;
+  };
+  var threw = null;
+  var rv = null;
+  try {
+    rv = await b.mail.dmarc.evaluate({
+      from: "alice@münchen.example。",
+      spf: { result: "pass", domain: "elsewhere.test" },
+      dkim: [], dnsLookup: dns,
+    });
+  } catch (e) { threw = e; }
+  check("dmarc: a UTS #46 root marker does not make the From malformed",
+        threw === null && rv && rv.policy && rv.policy.p === "reject",
+        threw ? "threw " + threw.code
+              : "p=" + (rv && rv.policy && rv.policy.p) + " asked=" + JSON.stringify(asked));
+
+  // Normalizing the Author Domain alone is not enough: the authenticated SPF
+  // and DKIM domains go through canonicalDomain independently, so a message
+  // whose From and SPF are the SAME name spelled with the mapped marker must
+  // still align with itself. Fixing this at the mail layer instead of in
+  // canonicalDomain would leave exactly this pair in two different forms.
+  var aligned = await b.mail.dmarc.evaluate({
+    from: "alice@münchen.example。",
+    spf: { result: "pass", domain: "münchen.example。" },
+    dkim: [], dnsLookup: dns,
+  });
+  check("dmarc: a name spelled with a UTS #46 root marker aligns with itself",
+        aligned.alignment.spf === true && aligned.result === "pass",
+        "alignment.spf=" + aligned.alignment.spf + " result=" + aligned.result);
+}
+
+async function testDmarcPsdYAtTheAuthorDomainBoundsAlignment() {
+  // `psd=y` at the Author Domain says the sending name IS a public suffix. RFC
+  // 9989 §4.10 stops the walk on either psd value, so nothing above is queried
+  // — and the "one label below" rule has nothing below to name, since the walk
+  // starts at the Author Domain.
+  //
+  // Falling through to the Public Suffix List there is the wrong answer: a name
+  // that declares itself a public suffix has no organizational parent to share
+  // with, so every other name under the PSL answer is a different organization.
+  // Without a boundary, an authenticated sibling reduces to the same PSL domain
+  // and satisfies the Author Domain's own `p=reject`.
+  var dns = async function (host) {
+    if (host === "_dmarc.tenant.platform.example") return [["v=DMARC1; p=reject; psd=y; aspf=r"]];
+    return null;
+  };
+  var spoof = await b.mail.dmarc.evaluate({
+    from: "alice@tenant.platform.example",
+    spf: { result: "pass", domain: "evil.platform.example" },
+    dkim: [], dnsLookup: dns,
+  });
+  check("dmarc: psd=y at the Author Domain stops a PSL sibling aligning",
+        spoof.alignment.spf !== true && spoof.result !== "pass",
+        "alignment.spf=" + spoof.alignment.spf + " result=" + spoof.result +
+        " action=" + spoof.recommendedAction);
+
+  // A DESCENDANT does not align either, and this is the part that is easy to
+  // get backwards. `psd=y` says the Author Domain IS a public suffix, so each
+  // immediate child is a separately registrable name belonging to whoever
+  // registered it. The suffix operator and a registrant under them are two
+  // organizations, and relaxed alignment exists to join names within ONE
+  // organization — treating the suffix as an organizational boundary its
+  // children sit inside would let any registrant authenticate mail claiming to
+  // come from the registry itself.
+  var descendant = await b.mail.dmarc.evaluate({
+    from: "alice@tenant.platform.example",
+    spf: { result: "pass", domain: "mail.tenant.platform.example" },
+    dkim: [], dnsLookup: dns,
+  });
+  check("dmarc: a registrant under a psd=y Author Domain does not align with it",
+        descendant.alignment.spf !== true && descendant.result !== "pass",
+        "alignment.spf=" + descendant.alignment.spf + " result=" + descendant.result);
+
+  // Exact alignment is what remains available, and it still works — the
+  // declaring name authenticating its own mail.
+  var exact = await b.mail.dmarc.evaluate({
+    from: "alice@tenant.platform.example",
+    spf: { result: "pass", domain: "tenant.platform.example" },
+    dkim: [], dnsLookup: dns,
+  });
+  check("dmarc: a psd=y Author Domain still aligns with itself exactly",
+        exact.alignment.spf === true && exact.result === "pass",
+        "alignment.spf=" + exact.alignment.spf + " result=" + exact.result);
+}
+
 async function testDmarcPsdYBoundaryConstrainsAlignment() {
   // `psd=y` is a declaration too: the name publishing it says it IS a public
   // suffix, which puts the Organizational Domain one label below. Honouring it
@@ -3992,6 +4087,8 @@ async function run() {
   await testDmarcTreeWalkNormalizesTheStartDomain();
   await testDmarcInternationalizedAuthorDomain();
   await testDmarcClosestRecordSuppliesThePolicy();
+  await testDmarcIdeographicRootMarker();
+  await testDmarcPsdYAtTheAuthorDomainBoundsAlignment();
   await testDmarcPsdYBoundaryConstrainsAlignment();
   await testDmarcIncompleteWalkDoesNotGrantRelaxedAlignment();
   await testDmarcMalformedAncestorDoesNotVoidAnOwnPolicy();

@@ -1420,6 +1420,57 @@ async function testDnsWireEncoderRefusesUnencodableNames() {
     check("dns wire: a U-label is encoded as its A-label",
           firstLabel === "xn--caf-dma", "first label=" + JSON.stringify(firstLabel));
 
+    // An absolute internationalized name need not end in an ASCII dot: UTS #46
+    // maps U+3002 and its siblings to ".", so the root marker only BECOMES a
+    // dot during conversion. Stripping the root once beforehand left that dot
+    // in place and the split then saw an empty final label, refusing a valid
+    // absolute spelling as malformed.
+    var beforeIdeographic = doh.seen.length;
+    var ideoErr = null;
+    try { await dnsModule.resolve4("café.example.com。"); }
+    catch (e) { ideoErr = e; }
+    var ideoWire = doh.seen[beforeIdeographic];
+    var ideoLabel = ideoWire ? ideoWire.slice(13, 13 + ideoWire[12]).toString("ascii") : null;
+    check("dns wire: a UTS #46 root marker is stripped after conversion, not before",
+          !(ideoErr && ideoErr.code === "dns/bad-host") && ideoLabel === "xn--caf-dma",
+          "code=" + (ideoErr && ideoErr.code) + " first label=" + JSON.stringify(ideoLabel));
+
+    // The marker also has to keep its MEANING. A resolver reads a trailing root
+    // as "already fully qualified, do not apply the search list", so a name
+    // that arrives absolute must leave absolute — canonicalization removes the
+    // marker whichever spelling it used, and recognising only the ASCII form
+    // would hand the system resolver a relative name for the search list to
+    // expand into a different, cacheable one.
+    var absoluteForms = [
+      ["ASCII root",   "café.example."],
+      ["UTS #46 root", "café.example。"],
+    ];
+    for (var a = 0; a < absoluteForms.length; a += 1) {
+      check("dns: " + absoluteForms[a][0] + " keeps the name absolute through canonicalization",
+            dnsModule._validateHostShape(absoluteForms[a][1], "probe") === "xn--caf-dma.example.",
+            JSON.stringify(dnsModule._validateHostShape(absoluteForms[a][1], "probe")));
+    }
+    check("dns: a relative internationalized name stays relative",
+          dnsModule._validateHostShape("café.example", "probe") === "xn--caf-dma.example",
+          JSON.stringify(dnsModule._validateHostShape("café.example", "probe")));
+
+    // The reachable guarantee is that the two spellings CONVERGE at the entry
+    // point, so nothing downstream can treat them differently — every later
+    // rule (the LDH pass, the 253-octet ceiling, the cache key) sees one
+    // canonical name. Pinning it here is what makes those rules' ASCII-only
+    // reading of the root safe rather than accidental.
+    var maxLabel = "a".repeat(63);
+    var maxName = maxLabel + "." + maxLabel + "." + maxLabel + "." + "a".repeat(61);   // 253
+    check("dns: the fixture is a maximum-length name",
+          maxName.length === 253, "length=" + maxName.length);
+    check("dns: both root spellings of a maximum-length name canonicalize identically",
+          dnsModule._validateHostShape(maxName + ".", "probe") ===
+          dnsModule._validateHostShape(maxName + "。", "probe"),
+          JSON.stringify(dnsModule._validateHostShape(maxName + "。", "probe")).slice(0, 48));
+    check("dns: and both keep the absolute form the resolver needs",
+          dnsModule._validateHostShape(maxName + "。", "probe").slice(-1) === ".",
+          "last char=" + JSON.stringify(dnsModule._validateHostShape(maxName + "。", "probe").slice(-1)));
+
     // Converting at the encoder alone is not enough: resolveSecure and
     // querySvcb run an LDH pass of their own first, and an LDH rule has no
     // reading of a U-label. The canonical name has to reach them, or the same

@@ -345,6 +345,32 @@ function testCanonicalDomain() {
         b.publicSuffix.canonicalDomain("Example.COM.") === "example.com");
   check("canonicalDomain is idempotent on an already-canonical host",
         b.publicSuffix.canonicalDomain("example.com") === "example.com");
+  // The root marker of an absolute name need not be an ASCII dot. UTS #46 maps
+  // U+3002 (and U+FF0E, U+FF61) to ".", so those spellings only BECOME a
+  // trailing dot during IDN normalization — after the one place that strips it.
+  // Returning `xn--mnchen-3ya.example.` from a function documented to strip the
+  // trailing dot leaves every caller to compensate, and two of them did:
+  // `b.mail.dmarc.evaluate` compared an authenticated domain against an Author
+  // Domain in a different canonical form, so a message aligned with itself
+  // failed alignment.
+  check("canonicalDomain strips a UTS #46 root marker, not just an ASCII dot",
+        b.publicSuffix.canonicalDomain("münchen.example。") === "xn--mnchen-3ya.example",
+        JSON.stringify(b.publicSuffix.canonicalDomain("münchen.example。")));
+  check("canonicalDomain agrees across every spelling of one absolute name",
+        b.publicSuffix.canonicalDomain("münchen.example。") ===
+        b.publicSuffix.canonicalDomain("münchen.example.") &&
+        b.publicSuffix.canonicalDomain("münchen.example.") ===
+        b.publicSuffix.canonicalDomain("münchen.example"));
+  // At most ONE root marker comes off, whichever spelling it used. Two of them
+  // is an empty final label, and removing both would hand the caller a
+  // different, real domain than the one they asked about — the same
+  // repair-instead-of-refuse mistake the empty-label rule exists to stop.
+  check("canonicalDomain refuses a doubled ASCII root marker",
+        b.publicSuffix.canonicalDomain("example.com..") === "",
+        JSON.stringify(b.publicSuffix.canonicalDomain("example.com..")));
+  check("canonicalDomain refuses a doubled UTS #46 root marker",
+        b.publicSuffix.canonicalDomain("münchen.example。。") === "",
+        JSON.stringify(b.publicSuffix.canonicalDomain("münchen.example。。")));
   check("canonicalDomain U-label and A-label converge",
         b.publicSuffix.canonicalDomain("bücher.de") === "xn--bcher-kva.de" &&
         b.publicSuffix.canonicalDomain("xn--bcher-kva.de") === "xn--bcher-kva.de");
