@@ -1947,6 +1947,275 @@ async function testGateCheckOwnsItsContext() {
   check("gate.check still supplies a forensicId to the guard",
         seen && typeof seen.forensicId === "string" && seen.forensicId.length > 0,
         "forensicId=" + (seen && seen.forensicId));
+
+  // A context does not have to be a plain object. A class instance, or anything
+  // from Object.create, supplies its fields through the prototype chain — and a
+  // copy built from own enumerable properties alone silently drops every one of
+  // them. That is worse than an error: a guard that reads an absent input as
+  // nothing-to-inspect would SERVE bytes it used to examine, so losing the
+  // prototype is a fail-open, not a cosmetic difference.
+  function Ctx() { this.own = "own-value"; }
+  Ctx.prototype.bytes = Buffer.from("payload-from-prototype");
+  Object.defineProperty(Ctx.prototype, "viaGetter", {
+    get: function () { return "getter-value"; },
+    enumerable: false, configurable: true,
+  });
+
+  seen = null;
+  var protoRv = await g.check(new Ctx());
+  check("gate.check preserves a prototype-backed field",
+        seen && seen.bytes && seen.bytes.toString() === "payload-from-prototype",
+        "bytes=" + (seen && seen.bytes));
+  check("gate.check preserves a non-enumerable prototype getter",
+        seen && seen.viaGetter === "getter-value",
+        "viaGetter=" + (seen && seen.viaGetter));
+  check("gate.check still sees own properties alongside them",
+        seen && seen.own === "own-value", "own=" + (seen && seen.own));
+  check("gate.check on a prototype-backed context still serves",
+        protoRv && protoRv.action === "serve",
+        "action=" + (protoRv && protoRv.action));
+
+  // ...and the caller's instance is still not written to.
+  var inst = new Ctx();
+  await g.check(inst);
+  check("gate.check does not stamp forensicId onto a class instance",
+        Object.prototype.hasOwnProperty.call(inst, "forensicId") === false,
+        "keys=" + JSON.stringify(Object.keys(inst)));
+
+  // Every LATER rebinding of the context has to preserve the chain too. A
+  // beforeCheck hook that returns a transform, and the sanitize path that
+  // rebinds `bytes`, both rebuild the context — and rebuilding it from own
+  // enumerable properties drops whatever the caller supplied, which after the
+  // fix above is reached through the chain rather than owned. That would lose
+  // the subject on exactly the paths an operator adds a hook to, so it is the
+  // same fail-open one step later.
+  var afterTransform = null;
+  var hooked = GC.defineGate({
+    name: "gc-ctx-transform", version: "1.0.0",
+    beforeCheck: function () { return { transform: { extra: "added-by-hook" } }; },
+    check: function (c) { afterTransform = c; return { ok: true, action: "serve" }; },
+  });
+  await hooked.check({ bytes: Buffer.from("subject-bytes"), tag: "keep-me" });
+  check("beforeCheck transform keeps the caller's subject",
+        afterTransform && afterTransform.bytes &&
+        afterTransform.bytes.toString() === "subject-bytes",
+        "bytes=" + (afterTransform && afterTransform.bytes));
+  check("beforeCheck transform keeps the caller's other fields",
+        afterTransform && afterTransform.tag === "keep-me",
+        "tag=" + (afterTransform && afterTransform.tag));
+  check("beforeCheck transform applies its own additions",
+        afterTransform && afterTransform.extra === "added-by-hook",
+        "extra=" + (afterTransform && afterTransform.extra));
+  check("beforeCheck transform still carries the forensic id",
+        afterTransform && typeof afterTransform.forensicId === "string",
+        "forensicId=" + (afterTransform && afterTransform.forensicId));
+
+  // Deriving the context is only half the job — how the gate WRITES onto the
+  // derived object is the other half. Plain assignment (and Object.assign,
+  // which is assignment) performs [[Set]], and [[Set]] walks the prototype
+  // chain: an inherited non-writable property makes it throw, and an inherited
+  // SETTER runs, which writes straight back into the caller's object. Both
+  // undo what deriving the context was for.
+  var frozenOwn = Object.freeze({ bytes: Buffer.from("original"), tag: "t" });
+  var overriding = GC.defineGate({
+    name: "gc-ctx-frozen-transform", version: "1.0.0",
+    beforeCheck: function () { return { transform: { bytes: Buffer.from("replaced") } }; },
+    check: function (c) { return { ok: true, action: "serve", seenBytes: String(c.bytes) }; },
+  });
+  var frozenErr = null;
+  var overrideRv = null;
+  try { overrideRv = await overriding.check(frozenOwn); }
+  catch (e) { frozenErr = e; }
+  check("a transform may override an own property of a FROZEN context",
+        frozenErr === null,
+        "threw=" + (frozenErr && (frozenErr.code || frozenErr.constructor.name) +
+                    ": " + frozenErr.message));
+  check("the frozen caller's own property is unchanged",
+        frozenOwn.bytes.toString() === "original",
+        "caller bytes=" + frozenOwn.bytes);
+  check("the transform still took effect for the guard",
+        overrideRv && overrideRv.action === "serve",
+        "action=" + (overrideRv && overrideRv.action));
+
+  // An inherited setter must never be invoked — that is a write into the
+  // caller's object wearing a different hat.
+  var setterCalls = [];
+  var Trap = function () {};
+  Object.defineProperty(Trap.prototype, "forensicId", {
+    get: function () { return undefined; },
+    set: function (v) { setterCalls.push(v); },
+    configurable: true,
+  });
+  var trapErr = null;
+  try { await g.check(new Trap()); } catch (e) { trapErr = e; }
+  check("stamping the forensic id does not invoke an inherited setter",
+        setterCalls.length === 0 && trapErr === null,
+        "calls=" + setterCalls.length + " threw=" + (trapErr && trapErr.message));
+
+  // The strictest shape: a getter backed by a PRIVATE field. It reads
+  // `this.#x`, so it only works when the receiver is the original instance —
+  // put the instance on a prototype chain and the same getter throws
+  // "Cannot read private member". A gate must handle it on the plain path and
+  // on the transform path, because both derive a context.
+  var Branded = (function () {
+    class B { #payload = Buffer.from("branded-bytes"); get bytes() { return this.#payload; } }
+    return B;
+  })();
+
+  var brandedErr = null;
+  var brandedSeen = null;
+  var branded = GC.defineGate({
+    name: "gc-ctx-branded", version: "1.0.0",
+    check: function (c) { brandedSeen = String(c.bytes); return { ok: true, action: "serve" }; },
+  });
+  try { await branded.check(new Branded()); } catch (e) { brandedErr = e; }
+  check("a private-field getter is read with the right receiver",
+        brandedErr === null && brandedSeen === "branded-bytes",
+        "seen=" + brandedSeen + " threw=" + (brandedErr && brandedErr.message));
+
+  var brandedTransformSeen = null;
+  var brandedTransform = GC.defineGate({
+    name: "gc-ctx-branded-transform", version: "1.0.0",
+    beforeCheck: function () { return { transform: { route: "/added" } }; },
+    check: function (c) {
+      brandedTransformSeen = String(c.bytes) + " " + c.route;
+      return { ok: true, action: "serve" };
+    },
+  });
+  var brandedTransformErr = null;
+  try { await brandedTransform.check(new Branded()); }
+  catch (e) { brandedTransformErr = e; }
+  check("a private-field getter survives a beforeCheck transform",
+        brandedTransformErr === null &&
+        brandedTransformSeen === "branded-bytes /added",
+        "seen=" + brandedTransformSeen +
+        " threw=" + (brandedTransformErr && brandedTransformErr.message));
+
+  // Symbol keys are the other half of "a context is not a plain string-keyed
+  // bag". A guard that tags its context with a Symbol — the usual way to attach
+  // data without risking a name collision — must find it on the other side of
+  // the derivation, and a Symbol-keyed transform override must apply.
+  var SYM = Symbol("gate-ctx-tag");
+  var symSeen = null;
+  var symGate = GC.defineGate({
+    name: "gc-ctx-symbol", version: "1.0.0",
+    beforeCheck: function () {
+      var t = {}; t[Symbol.for("gate-ctx-added")] = "added-by-hook"; return { transform: t };
+    },
+    check: function (c) {
+      symSeen = String(c[SYM]) + "/" + String(c[Symbol.for("gate-ctx-added")]);
+      return { ok: true, action: "serve" };
+    },
+  });
+  var symCtx = { bytes: Buffer.from("x") };
+  symCtx[SYM] = "from-caller";
+  await symGate.check(symCtx);
+  check("a symbol-keyed context field survives the derivation",
+        symSeen === "from-caller/added-by-hook", "seen=" + symSeen);
+
+  // Isolation is unconditional. Supplying a forensic id is not a reason to hand
+  // a guard the caller's own object — a check or hook that assigns to the
+  // context would then be writing into the caller's state, and would throw on
+  // a frozen one. The id being present only means one need not be generated.
+  var writer = GC.defineGate({
+    name: "gc-ctx-writer", version: "1.0.0",
+    check: function (c) { c.scribble = "written-by-guard"; return { ok: true, action: "serve" }; },
+  });
+  var supplied = { bytes: Buffer.from("x"), forensicId: "caller-supplied-id" };
+  await writer.check(supplied);
+  check("a guard writing to the context does not reach the caller's object",
+        Object.prototype.hasOwnProperty.call(supplied, "scribble") === false,
+        "keys=" + JSON.stringify(Object.keys(supplied)));
+
+  var suppliedFrozen = Object.freeze({ bytes: Buffer.from("x"), forensicId: "id2" });
+  var writeErr = null;
+  try { await writer.check(suppliedFrozen); } catch (e) { writeErr = e; }
+  check("a guard writing to a FROZEN caller-supplied context does not throw",
+        writeErr === null, "threw=" + (writeErr && writeErr.message));
+
+  // Isolation has to permit updating an EXISTING field too, not only adding a
+  // new one. A guard that normalizes its subject in place — `ctx.bytes = ...` —
+  // is doing the ordinary thing; if the field is forwarded read-only the
+  // assignment silently does nothing, or throws under strict mode and turns a
+  // completed check into a refusal. The write must land on the derived context
+  // and still leave the caller's object alone.
+  // Read the write back through a closure, not off the decision: the verdict
+  // builder forwards only the fields it knows, so an extra key on the returned
+  // object would arrive undefined and the assertion could never fail.
+  var readBack = null;
+  var updater = GC.defineGate({
+    name: "gc-ctx-updater", version: "1.0.0",
+    check: function (c) {
+      c.bytes = Buffer.from("normalized");
+      readBack = String(c.bytes);
+      return { ok: true, action: "serve" };
+    },
+  });
+  var original = { bytes: Buffer.from("original") };
+  var updRv = await updater.check(original);
+  check("a guard may overwrite an existing context field",
+        updRv && updRv.action === "serve" && readBack === "normalized",
+        "action=" + (updRv && updRv.action) + " readBack=" + readBack);
+  check("overwriting a field does not reach the caller's object",
+        original.bytes.toString() === "original",
+        "caller bytes=" + original.bytes);
+
+  var frozenUpd = Object.freeze({ bytes: Buffer.from("original") });
+  var updErr = null;
+  readBack = null;
+  try { await updater.check(frozenUpd); } catch (e) { updErr = e; }
+  check("overwriting a field of a FROZEN context still works",
+        updErr === null && readBack === "normalized",
+        "threw=" + (updErr && updErr.message) + " readBack=" + readBack);
+  check("overwriting a FROZEN context leaves the caller's bytes alone",
+        frozenUpd.bytes.toString() === "original",
+        "caller bytes=" + frozenUpd.bytes);
+
+  // A transform may replace the forensic id — that is the documented way to
+  // normalize it. The evidence record has to be written under the id the guard
+  // actually saw, or the correlation the id exists for is broken.
+  var written = [];
+  var idGate = GC.defineGate({
+    name: "gc-ctx-id-transform", version: "1.0.0",
+    forensicEvidenceStore: { write: async function (rec) { written.push(rec); } },
+    forensicSnippetBytes: 8,
+    beforeCheck: function () { return { transform: { forensicId: "transformed-id" } }; },
+    check: function () { return { ok: false, action: "refuse" }; },
+  });
+  await idGate.check({ bytes: Buffer.from("evidence") });
+  check("evidence is recorded under the transformed forensic id",
+        written.length === 1 && written[0].forensicId === "transformed-id",
+        "records=" + written.length +
+        " id=" + (written[0] && written[0].forensicId));
+
+  // The derivation must not invent shape. Two ways it can:
+  //
+  //  - A field named `constructor` is an ordinary field when the CALLER put it
+  //    there; only a class prototype's own back-reference is the one to skip.
+  //  - Enumerability is observable. A guard that spreads the context, calls
+  //    Object.keys, or serializes it sees a different object if forwarding
+  //    marks everything enumerable — and serializing a previously hidden
+  //    accessor also RUNS a getter the guard never chose to read.
+  var shapeSeen = null;
+  var shapeGate = GC.defineGate({
+    name: "gc-ctx-shape", version: "1.0.0",
+    beforeCheck: function () { return { transform: { extra: 1 } }; },
+    check: function (c) {
+      shapeSeen = { ctor: c.constructor, keys: Object.keys(c).sort() };
+      return { ok: true, action: "serve" };
+    },
+  });
+  var shapeCtx = { bytes: Buffer.from("x"), constructor: "caller-owned" };
+  Object.defineProperty(shapeCtx, "hidden", {
+    value: "not-enumerable", enumerable: false, configurable: true, writable: true,
+  });
+  await shapeGate.check(shapeCtx);
+  check("a caller field named 'constructor' is preserved",
+        shapeSeen && shapeSeen.ctor === "caller-owned",
+        "ctor=" + (shapeSeen && String(shapeSeen.ctor).slice(0, 40)));
+  check("a non-enumerable field stays non-enumerable",
+        shapeSeen && shapeSeen.keys.indexOf("hidden") === -1,
+        "keys=" + JSON.stringify(shapeSeen && shapeSeen.keys));
 }
 
 async function run() {

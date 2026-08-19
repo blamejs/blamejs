@@ -7337,6 +7337,15 @@ function testStateStampScanningDeferred() {
 //      patterns split across lines still match.
 var KNOWN_ANTIPATTERNS = [
   {
+    id: "gate-context-rebind-must-not-flatten-the-chain",
+    primitive: "b.gateContract.defineGate",
+    scanScope: "lib",
+    skipCommentLines: true,
+    regex: /Object\.assign\s*\(\s*\{\s*\}\s*,\s*ctx\b|Object\.create\s*\(\s*ctx\s*\)/,
+    allowlist: [],
+    reason: "Build a gate context ONLY with _deriveContext. A context is not required to be a plain object, and each shortcut breaks a different kind of one. Object.assign({}, ctx, ...) copies own enumerable properties, so a class instance whose fields come from prototype getters arrives with them missing — a fail-open, because a guard reading an absent subject as nothing-to-inspect SERVES bytes it previously examined. Object.create(ctx) preserves those reads but runs inherited getters with the DERIVED object as `this`, so a getter returning a private field throws and a valid context is refused instead. Assigning overrides onto either one performs [[Set]], which walks the chain: an inherited non-writable property throws (overriding a field of a frozen context failed) and an inherited setter runs, writing into the very object the derivation exists to leave alone. _deriveContext forwards reads to the original receiver and installs overrides with [[DefineOwnProperty]]. All three shapes shipped in this one file across successive fixes, each passing the whole guard family, so the empty allowlist is deliberate.",
+  },
+  {
     id: "domain-labels-must-not-drop-empty-labels",
     primitive: "b.network.dns",
     scanScope: "lib",
