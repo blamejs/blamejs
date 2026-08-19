@@ -3405,7 +3405,12 @@ async function testH2ServerClosesDespiteStalledConnection() {
 }
 
 async function run() {
-  try {
+  // withDrain, not `try/finally` — a throw from a `finally` REPLACES the body's
+  // error, so a failing check here used to surface as "an Http2Server leaked":
+  // the throw skipped every _closeH2Server after it, the drain found the server
+  // those teardowns would have closed, and the drain's error was the only one
+  // reported. The leak was the consequence; the discarded error was the cause.
+  return helpers.withDrain("http-client", async function () {
     testSurface();
     await testPinnedClient();
     await testPostureChangeDoesNotAbortInFlightRequests();
@@ -3480,9 +3485,7 @@ async function run() {
     await testBeforeHookFalsyThrow();
     await testCacheMoreBranches();
     await testTls12PeerFailureNamesTheFloor();
-  } finally {
-    await helpers.drainOpenHandles("http-client");
-  }
+  });
 }
 
 // ---- A refused handshake names the posture that refused it ----

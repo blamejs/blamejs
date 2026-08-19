@@ -6423,6 +6423,15 @@ async function testNoDuplicateCodeBlocks() {
       // each guard's _gateDispositionFor is its own exhaustive per-issue policy
       // map and each sanitize() its own transform. Correct composition + per-guard
       // policy data, not duplication.
+      //
+      // guard-filename and guard-yaml joined the _gateDispositionFor members
+      // when their gates stopped resolving the action from severity: the shared
+      // two lines are the charThreatDisposition delegation every member makes,
+      // and the bodies below them map entirely different kinds (path-traversal /
+      // ntfs-ads / reserved-name for filename; core-tag / merge-key /
+      // norway-implicit-bool for yaml) onto entirely different policy options.
+      // Extracting the delegation would leave each guard's real content — the
+      // kind-to-policy map — exactly where it is.
       mode:  "family-subset",
       files: [
         "lib/guard-auth.js:gate",
@@ -6439,11 +6448,13 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-regex.js:gate",
         "lib/guard-xml.js:gate",
         "lib/guard-csv.js:_gateDispositionFor",
+        "lib/guard-filename.js:_gateDispositionFor",
         "lib/guard-html.js:_gateDispositionFor",
         "lib/guard-json.js:_gateDispositionFor",
         "lib/guard-markdown.js:_gateDispositionFor",
         "lib/guard-svg.js:_gateDispositionFor",
         "lib/guard-xml.js:_gateDispositionFor",
+        "lib/guard-yaml.js:_gateDispositionFor",
         "lib/guard-filename.js:sanitize",
         "lib/guard-html.js:sanitize",
         "lib/guard-svg.js:sanitize",

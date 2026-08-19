@@ -420,10 +420,18 @@ async function testResolverCanonicalizesTheQueryName() {
 
   // An empty label makes the name invalid; it must be refused rather than
   // repaired into the neighbouring domain the collapse would produce.
+  // Asserting the CODE, not merely that something threw: the validation lives
+  // in b.network.dns, which raises its own DnsError, and this API's contract is
+  // a ResolverError with a `resolver/*` code. A bare "it threw" check passes
+  // either way and would let the transport's error class out through the
+  // resolver's surface unnoticed.
   var bad = null;
   try { await r.queryA("evil..example"); } catch (e) { bad = e; }
-  check("resolver: a name with an empty label is refused",
-        bad !== null, "no throw — calls=" + transport._calls.length);
+  check("resolver: a name with an empty label is refused as resolver/bad-input",
+        bad !== null && bad.code === "resolver/bad-input" &&
+        bad.constructor.name === "ResolverError",
+        bad ? "code=" + bad.code + " class=" + bad.constructor.name
+            : "no throw — calls=" + transport._calls.length);
 }
 
 async function testClearCache() {

@@ -2728,8 +2728,14 @@ async function testSystemRawQueryDefaultPortFallback() {
   var saved = dnsModule.getServers();
   try {
     // 127.99.88.77 is inside the loopback /8 with nothing bound to it, so the
-    // dial is refused immediately and the OS error names the port that was
-    // actually used — that string is the proof the 53 fallback ran.
+    // dial fails immediately and the OS error names the address:port that was
+    // actually dialled — that pair is the proof the 53 fallback ran.
+    //
+    // The assertion deliberately does NOT pin the refusal code. Which one the
+    // OS reports is environmental — a restricted or sandboxed host answers
+    // EACCES where an ordinary one answers ECONNREFUSED — and the invariant
+    // under test is the port that was chosen, not the kernel's word for
+    // "no".
     dnsModule.setServers(["[127.99.88.77]:x"]);
     dnsModule.setLookupTimeoutMs(5000);
     var err = null;
@@ -2737,7 +2743,7 @@ async function testSystemRawQueryDefaultPortFallback() {
     catch (e) { err = e; }
     check("querySvcb(system): a bracketed resolver entry with an unparseable port dials port 53",
       err !== null && err.code === "dns/system-failed" &&
-      err.message.indexOf("ECONNREFUSED 127.99.88.77:53") !== -1);
+      err.message.indexOf("127.99.88.77:53") !== -1);
     check("querySvcb(system): a refused resolver dial is classified transient",
       err !== null && err.permanent === false);
   } finally {
@@ -2764,21 +2770,21 @@ async function testDohDefaultPortFallback() {
     catch (e) { e0 = e; }
     check("resolve4(DoH): a port-less url dials the HTTPS default port 443",
       e0 !== null && e0.code === "dns/doh-failed" &&
-      e0.message.indexOf("ECONNREFUSED 127.99.88.77:443") !== -1);
+      e0.message.indexOf("127.99.88.77:443") !== -1);
 
     var e1 = null;
     try { await dnsModule.resolveSecure("sec.example.test", "A"); }
     catch (e) { e1 = e; }
     check("resolveSecure(DoH): a port-less url dials the HTTPS default port 443",
       e1 !== null && e1.code === "dns/doh-failed" &&
-      e1.message.indexOf("ECONNREFUSED 127.99.88.77:443") !== -1);
+      e1.message.indexOf("127.99.88.77:443") !== -1);
 
     var e2 = null;
     try { await dnsModule.querySvcb("svcb.example.test", { transport: "doh" }); }
     catch (e) { e2 = e; }
     check("querySvcb(DoH): a port-less url dials the HTTPS default port 443",
       e2 !== null && e2.code === "dns/doh-failed" &&
-      e2.message.indexOf("ECONNREFUSED 127.99.88.77:443") !== -1);
+      e2.message.indexOf("127.99.88.77:443") !== -1);
   } finally { await _drainOpenHandles(); }
 }
 

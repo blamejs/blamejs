@@ -1243,6 +1243,33 @@ async function testDmarcInternationalizedAuthorDomain() {
   check("dmarc: the IDN domain's own p=reject applies",
         rv.result !== "temperror" && rv.policy && rv.policy.p === "reject",
         "result=" + rv.result + " p=" + (rv.policy && rv.policy.p));
+
+  // With nothing published anywhere, the explanation has to name what was
+  // actually searched. Naming the raw From domain would report a name the walk
+  // never queried — and for a U-label address, a different name entirely.
+  var empty = await b.mail.dmarc.evaluate({
+    from: "alice@münchen.example", spf: { result: "pass", domain: "elsewhere.test" },
+    dkim: [], dnsLookup: async function () { return null; },
+  });
+  check("dmarc: a no-record result names the normalized start and the walk",
+        empty.result === "none" &&
+        empty.explanation.indexOf("xn--mnchen-3ya.example") !== -1 &&
+        empty.explanation.indexOf("2 name(s)") !== -1,
+        "explanation=" + JSON.stringify(empty.explanation));
+
+  // The count must be the names actually queried, not the ancestors that exist.
+  // A domain of eight or more labels has the walk skip the names between the
+  // start and the seven-label suffix, so "every ancestor" would overstate it in
+  // exactly the direction the raw-From-domain wording understated.
+  var deep = await b.mail.dmarc.evaluate({
+    from: "alice@a.b.c.d.e.f.g.h.i.j.mail.example.com",
+    spf: { result: "pass", domain: "elsewhere.test" },
+    dkim: [], dnsLookup: async function () { return null; },
+  });
+  check("dmarc: the no-record count is the capped query count, not the ancestor count",
+        deep.explanation.indexOf("8 name(s)") !== -1 &&
+        deep.explanation.indexOf("ancestor") === -1,
+        "explanation=" + JSON.stringify(deep.explanation));
 }
 
 async function testDmarcClosestRecordSuppliesThePolicy() {

@@ -86,6 +86,13 @@ module.exports = {
   // that caused it rather than as a watchdog kill nobody can attribute.
   drainOpenHandles:   _http.drainOpenHandles,
 
+  // The same drain, run so it cannot swallow the failure that preceded it.
+  // Prefer this over `try { ... } finally { await drainOpenHandles(...) }`:
+  // a throw from a `finally` replaces the body's error, so the check that
+  // actually failed is lost and the leak its skipped teardown caused is all
+  // that gets reported.
+  withDrain:          _http.withDrain,
+
   // Loopback TLS server certificate (verify with `ca: [pair.cert]`)
   selfSignedPair:     _tls.selfSignedPair,
   registerCredential: _webauthn.registerCredential,

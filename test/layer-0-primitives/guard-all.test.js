@@ -786,6 +786,11 @@ function testGuardFamilyDeclaresOnlyPerformableActions() {
 // added finding. Injecting a control byte into an address also makes it
 // malformed, and that finding refuses on its own merits — judging the cell
 // there would test the wrong rule and pass for the wrong reason.
+// The number of policy cells the probe below actually reaches. Raise it when a
+// guard or a class is added; never lower it to make a run green — a drop means
+// a cell stopped being covered, which is the condition this exists to catch.
+var DISPOSITION_PROBE_FLOOR = 63;
+
 async function testGuardFamilyDispositionFollowsPolicy() {
   var CHARS = {
     bidiPolicy:      { ch: String.fromCharCode(0x202E), kind: "bidi-override" },
@@ -796,23 +801,37 @@ async function testGuardFamilyDispositionFollowsPolicy() {
   };
   var wrong = [];
   var probed = 0;
+  var unprobed = [];
+  // Not content-kind only. A `filename` guard declares the same character
+  // policies and routes them through the same helper, and excluding it left
+  // three of its declared cells outside every invariant the family has.
   var guards = b.guardAll.allGuards().filter(function (g) {
-    return g.KIND === "content" && typeof g.gate === "function" &&
-           g.INTEGRATION_FIXTURES && g.INTEGRATION_FIXTURES.benignBytes !== undefined;
+    if (typeof g.gate !== "function" || !g.INTEGRATION_FIXTURES) return false;
+    if (g.KIND === "content") return g.INTEGRATION_FIXTURES.benignBytes !== undefined;
+    if (g.KIND === "filename") return g.INTEGRATION_FIXTURES.benignFilename !== undefined;
+    return false;
   });
+  // A `filename` gate reads the name off the context rather than a byte body,
+  // so the probe has to hand it the shape its own KIND declares.
+  function ctxFor(g, text) {
+    return g.KIND === "filename" ? { filename: text }
+                                 : { bytes: Buffer.from(text, "utf8") };
+  }
   for (var i = 0; i < guards.length; i += 1) {
     var g = guards[i];
-    var carrier = Buffer.isBuffer(g.INTEGRATION_FIXTURES.benignBytes)
-      ? g.INTEGRATION_FIXTURES.benignBytes.toString("utf8")
-      : String(g.INTEGRATION_FIXTURES.benignBytes);
+    var carrier = g.KIND === "filename"
+      ? String(g.INTEGRATION_FIXTURES.benignFilename)
+      : (Buffer.isBuffer(g.INTEGRATION_FIXTURES.benignBytes)
+          ? g.INTEGRATION_FIXTURES.benignBytes.toString("utf8")
+          : String(g.INTEGRATION_FIXTURES.benignBytes));
     var profiles = Object.keys(g.PROFILES || {});
     for (var p = 0; p < profiles.length; p += 1) {
       var profile = profiles[p];
       var resolved = typeof g.resolveOpts === "function"
         ? g.resolveOpts({ profile: profile }) : (g.PROFILES[profile] || {});
       var base;
-      try { base = await g.gate({ profile: profile }).check({ bytes: Buffer.from(carrier, "utf8") }); }
-      catch (_e) { continue; }
+      try { base = await g.gate({ profile: profile }).check(ctxFor(g, carrier)); }
+      catch (_e) { unprobed.push(g.NAME + " " + profile + ": benign fixture refused"); continue; }
       var keys = Object.keys(CHARS);
       for (var k = 0; k < keys.length; k += 1) {
         var key = keys[k];
@@ -821,13 +840,24 @@ async function testGuardFamilyDispositionFollowsPolicy() {
         var got;
         try {
           got = await g.gate({ profile: profile })
-                       .check({ bytes: Buffer.from(carrier + CHARS[key].ch, "utf8") });
-        } catch (_e2) { continue; }
+                       .check(ctxFor(g, carrier + CHARS[key].ch));
+        } catch (_e2) {
+          unprobed.push(g.NAME + " " + profile + "." + key + ": check threw");
+          continue;
+        }
         var added = (got.issues || []).map(function (x) { return x.kind; })
           .filter(function (kind) {
             return !(base.issues || []).some(function (bi) { return bi.kind === kind; });
           });
-        if (added.length !== 1 || added[0] !== CHARS[key].kind) continue;
+        // A cell the probe cannot reach is RECORDED, not silently dropped. The
+        // skips are where the drift hides: a declared policy whose class the
+        // carrier never triggers is a cell no invariant covers, and counting
+        // only the successful probes made that indistinguishable from a pass.
+        if (added.length !== 1 || added[0] !== CHARS[key].kind) {
+          unprobed.push(g.NAME + " " + profile + "." + key + ": carrier did not isolate " +
+                        CHARS[key].kind + " (added " + JSON.stringify(added) + ")");
+          continue;
+        }
         probed += 1;
         // The two vocabularies spell the same outcome differently: a
         // disposition of `audit` is the action-chain's `audit-only`. Compare
@@ -837,14 +867,31 @@ async function testGuardFamilyDispositionFollowsPolicy() {
         if (got.action !== want) {
           wrong.push(g.NAME + " " + profile + "." + key + " = " + policy +
                      " -> " + got.action + ", policy asks " + want);
+        } else if (got.action === "sanitize" &&
+                   (got.sanitized === null || got.sanitized === undefined)) {
+          // A verdict of `sanitize` with nothing sanitized is not a repair, it
+          // is a claim of one: the caller is told the input was cleaned and
+          // handed nothing to use. The verdict builder carries `sanitized`, so
+          // a guard returning the repair under its own field name loses it
+          // silently — and only a guard whose sanitize path is reachable ever
+          // shows the mistake.
+          wrong.push(g.NAME + " " + profile + "." + key + " = " + policy +
+                     " -> sanitize, but the verdict carries no sanitized value");
         }
       }
     }
   }
   check("a gate disposes a character threat the way its policy asks",
-        wrong.length === 0, wrong.slice(0, 10).join("; "));
-  check("disposition-follows-policy invariant probed at least six cells",
-        probed >= 6, "probed " + probed);
+        wrong.length === 0, wrong.slice(0, 12).join("; "));
+  // A floor of six was low enough that the invariant could skip most of the
+  // family and still pass, which is how a wiring gap in two guards stayed
+  // invisible while a helper-level test of the same rule was green. The floor
+  // is now the coverage this actually achieves, so losing a probe is a failure
+  // rather than a quieter run.
+  check("disposition-follows-policy reaches the cells it did before",
+        probed >= DISPOSITION_PROBE_FLOOR,
+        "probed " + probed + " (floor " + DISPOSITION_PROBE_FLOOR + "); unreached: " +
+        unprobed.slice(0, 8).join("; "));
 }
 
 module.exports = { run: run };
