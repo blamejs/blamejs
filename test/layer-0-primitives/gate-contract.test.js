@@ -2216,6 +2216,40 @@ async function testGateCheckOwnsItsContext() {
   check("a non-enumerable field stays non-enumerable",
         shapeSeen && shapeSeen.keys.indexOf("hidden") === -1,
         "keys=" + JSON.stringify(shapeSeen && shapeSeen.keys));
+
+  // Deriving must be side-effect free: it reads DESCRIPTORS and never invokes a
+  // getter. A context may carry a lazy field that is expensive, or one that
+  // throws unless some precondition holds, and neither should fire because a
+  // gate prepared a context — only because a guard actually read it. An
+  // "optimization" that reads values instead of descriptors breaks this
+  // silently, so it is pinned rather than left to inspection.
+  var getterRuns = 0;
+  var lazyCtx = { bytes: Buffer.from("x") };
+  Object.defineProperty(lazyCtx, "lazy", {
+    get: function () { getterRuns += 1; throw new Error("must not run at derivation"); },
+    enumerable: true, configurable: true,
+  });
+  var lazyErr = null;
+  var lazyRv = null;
+  try { lazyRv = await g.check(lazyCtx); } catch (e) { lazyErr = e; }
+  check("deriving a context does not invoke its getters",
+        lazyErr === null && lazyRv && lazyRv.action === "serve" && getterRuns === 0,
+        "runs=" + getterRuns + " action=" + (lazyRv && lazyRv.action) +
+        " threw=" + (lazyErr && lazyErr.message));
+
+  // A context with no prototype at all is still a context.
+  var bare = Object.create(null);
+  bare.bytes = Buffer.from("bare");
+  var bareSeen = null;
+  var bareGate = GC.defineGate({
+    name: "gc-ctx-bare", version: "1.0.0",
+    check: function (c) { bareSeen = String(c.bytes); return { ok: true, action: "serve" }; },
+  });
+  var bareErr = null;
+  try { await bareGate.check(bare); } catch (e) { bareErr = e; }
+  check("a null-prototype context is accepted and readable",
+        bareErr === null && bareSeen === "bare",
+        "seen=" + bareSeen + " threw=" + (bareErr && bareErr.message));
 }
 
 async function run() {
