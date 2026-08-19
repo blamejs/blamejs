@@ -1,0 +1,41 @@
+{
+  "$schema": "./schema.json",
+  "version": "0.18.38",
+  "date": "2026-08-19",
+  "headline": "`b.guardSql`'s injection detectors ran on the platform regex engine, against the SQL they were screening",
+  "summary": "The thirty-two detectors that find OS reach, outbound connections and set-operation exfiltration in a SQL fragment were built with `new RegExp` and run on the platform engine. Their subject is the string this guard exists to be suspicious of, and a backtracking engine offers no bound on what that string can cost. They now compile on `b.regexLinear`, whose cost is the length of the subject whatever the pattern says.\n\nOne detector improves in accuracy as a result, because the construct that made it inexpressible in a linear engine was also making it wrong.\n\nNo API changes. Upgrade if you pass SQL fragments through `b.guardSql`.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "Thirty-two SQL injection detectors moved off the backtracking engine",
+          "body": "`b.guardSql` screens a fragment for `COPY ... PROGRAM`, large-object and `pg_read_file` server-side file access, `dblink` and foreign-data-wrapper outbound channels, untrusted procedural languages, and set operations smuggled into a predicate. Every one was a `new RegExp` run against the caller's SQL.\n\nAll thirty-two now compile on `b.regexLinear`. The detector table is unchanged as data — same sources, same codes, same severities — and each was compared against the pattern it replaced across 3,456 detector-and-subject pairs before the change landed.\n\nThirty-one compiled unaltered. The thirty-second is described below."
+        },
+        {
+          "title": "COPY ... TO STDIN was reported as a server-side file access when it carried extra whitespace",
+          "body": "The `copy-file` detector excluded the client-streaming forms with a negative lookahead — `\\s+(?!STDIN\\b|STDOUT\\b)`. A linear-time engine cannot run lookahead, which is what prompted a closer look, and the construct turned out to be the source of a false positive:\n\n```\nCOPY t TO STDIN     quiet\nCOPY t TO  STDIN    FIRES  (\"reads or writes a server-side file\")\nCOPY t TO   STDIN   FIRES\n```\n\n`\\s+` is greedy but backtracks. Given two spaces it could give one back, leaving ` STDIN` in front of the lookahead — which then read as \"not STDIN\" and reported a statement that touches no file at all. One space was quiet; two were critical.\n\nThe exclusion is now a property of the detector rather than a lookahead: match the structural part, then read the following word and compare it. Whitespace is skipped before the comparison, so the answer no longer depends on how much of a run the engine consumed. `COPY t TO '/etc/passwd'` still fires, `COPY t TO STDINX` still fires because the word does not end there, and `COPY t TO STDOUT; COPY u TO '/tmp/x'` still fires on the second statement — the search continues past an excluded hit rather than stopping, which is the behaviour the backtracking form provided."
+        }
+      ]
+    },
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "The content-safety gate now refuses a pattern built at runtime",
+          "body": "`blamejs/no-regex-in-content-safety` reported pattern literals only, so `new RegExp(source)` passed it — which is how thirty-two detectors sat inside the family unnoticed. It now reports `new RegExp(...)` and `RegExp(...)` as well.\n\nTwo call sites carry a suppression with the reason recorded beside it, and neither matches anything against input. `b.guardRegex` asks the parser whether an operator-supplied pattern compiles at all, discarding the result — the opposite direction from screening with one. `b.safeJson` compiles a schema `pattern` precisely so `assertSafe` can screen the compiled form, because a source-only screen misreads `(a|A)+` under `i`.\n\nSECURITY.md previously said no primitive in the family \"contains a regular expression\" and named a build gate that no longer exists. It now states what is actually enforced: no primitive SCREENS with one, the gate covers literals and runtime construction across nested paths, and the two exceptions validate a pattern rather than run one."
+        }
+      ]
+    }
+  ],
+  "references": [
+    {
+      "label": "PostgreSQL COPY — TO/FROM STDIN and STDOUT stream to the client",
+      "url": "https://www.postgresql.org/docs/current/sql-copy.html"
+    },
+    {
+      "label": "OWASP — Regular expression Denial of Service (ReDoS)",
+      "url": "https://owasp.org/www-community/attacks/Regular_expression_Denial_of_Service_-_ReDoS"
+    }
+  ]
+}

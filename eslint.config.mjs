@@ -236,22 +236,26 @@ export default [
                 "(codepointClass.isRunOf / indexOfAny / firstInRanges, markupTokenizer for " +
                 "markup, safeBuffer for byte shapes), or run it on b.regexLinear when a " +
                 "pattern is genuinely the input";
-              // Literals only, for now. `new RegExp(source)` carries the same
-              // risk and is harder to see, but three call sites already use it
-              // and they are not one thing: guard-regex compiles an operator's
-              // pattern to ask whether it COMPILES, and safe-json compiles a
-              // schema pattern precisely so assertSafe can screen the compiled
-              // form — both validate a pattern rather than match against input.
-              // guard-sql builds its detectors that way and does match input,
-              // which is a real finding rather than an exemption. Reporting all
-              // three now would mean either an allowlist entry for the one the
-              // rule should catch, or a rushed conversion; it is tracked
-              // instead, and this stays exactly as strict as the scanner it
-              // replaces so the swap is provably equivalent.
+              // A pattern built at runtime carries the same cost as a literal
+              // and is harder to see, so `new RegExp(...)` and `RegExp(...)`
+              // report too. The two call sites that remain compile a pattern in
+              // order to VALIDATE it rather than to match against input — the
+              // opposite direction — and carry a disable with that reason.
+              function isRegExpRef(callee) {
+                return callee && callee.type === "Identifier" && callee.name === "RegExp";
+              }
               return {
                 Literal(node) {
                   if (!node.regex) return;
                   context.report({ node, message: "regular expression `/" + node.regex.pattern + "/`" + ADVICE });
+                },
+                NewExpression(node) {
+                  if (!isRegExpRef(node.callee)) return;
+                  context.report({ node, message: "`new RegExp(...)` builds a pattern at runtime" + ADVICE });
+                },
+                CallExpression(node) {
+                  if (!isRegExpRef(node.callee)) return;
+                  context.report({ node, message: "`RegExp(...)` builds a pattern at runtime" + ADVICE });
                 },
               };
             },
