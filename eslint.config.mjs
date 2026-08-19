@@ -236,13 +236,26 @@ export default [
                 "(codepointClass.isRunOf / indexOfAny / firstInRanges, markupTokenizer for " +
                 "markup, safeBuffer for byte shapes), or run it on b.regexLinear when a " +
                 "pattern is genuinely the input";
-              // A pattern built at runtime carries the same cost as a literal
-              // and is harder to see, so `new RegExp(...)` and `RegExp(...)`
-              // report too. The two call sites that remain compile a pattern in
-              // order to VALIDATE it rather than to match against input — the
-              // opposite direction — and carry a disable with that reason.
+              // A pattern built at runtime is reported too. It carries the same
+              // cost as a literal and is harder to see, and leaving it out to
+              // spare one audited exception would mean every other file in the
+              // family could construct patterns unchecked.
+              //
+              // Every spelling of the callee counts. `RegExp(src)` puts an
+              // Identifier there; `globalThis.RegExp(src)` a MemberExpression;
+              // `globalThis["RegExp"](src)` a COMPUTED MemberExpression whose
+              // key is a plain string literal. All three are ordinary syntax, so
+              // recognising only the first two leaves the gate bypassable
+              // without doing anything unusual.
+              //
+              // A computed key that is not a literal — `globalThis[name]` — is
+              // not resolved here, and cannot be without following the value.
               function isRegExpRef(callee) {
-                return callee && callee.type === "Identifier" && callee.name === "RegExp";
+                if (!callee) return false;
+                if (callee.type === "Identifier") return callee.name === "RegExp";
+                if (callee.type !== "MemberExpression" || !callee.property) return false;
+                if (!callee.computed) return callee.property.name === "RegExp";
+                return callee.property.type === "Literal" && callee.property.value === "RegExp";
               }
               return {
                 Literal(node) {

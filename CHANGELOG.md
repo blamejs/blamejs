@@ -8,29 +8,39 @@ upgrading across more than a few patches at a time.
 
 ## v0.18.x
 
-- v0.18.38 (2026-08-19) — **`b.guardSql`'s injection detectors ran on the platform regex engine, against the SQL they were screening.** The thirty-two detectors that find OS reach, outbound connections and set-operation exfiltration in a SQL fragment were built with `new RegExp` and run on the platform engine. Their subject is the string this guard exists to be suspicious of, and a backtracking engine offers no bound on what that string can cost. They now compile on `b.regexLinear`, whose cost is the length of the subject whatever the pattern says.
+- v0.18.38 (2026-08-19) — **`COPY ... TO STDIN` was reported as a server-side file access whenever it carried more than one space.** `b.guardSql`'s `copy-file` detector finds a `COPY` that reads or writes a file on the database server, and excludes the client-streaming `STDIN` and `STDOUT` forms because those touch no file. The exclusion was a negative lookahead, and it only worked when the whitespace before the keyword was exactly one character: `COPY t TO STDIN` was quiet, `COPY t TO  STDIN` was reported critical.
 
-One detector improves in accuracy as a result, because the construct that made it inexpressible in a linear engine was also making it wrong.
+The exclusion is now decided by reading the following word rather than by a lookahead, so the spacing no longer changes the verdict.
 
-No API changes. Upgrade if you pass SQL fragments through `b.guardSql`. **Changed:** *The content-safety gate now refuses a pattern built at runtime* — `blamejs/no-regex-in-content-safety` reported pattern literals only, so `new RegExp(source)` passed it — which is how thirty-two detectors sat inside the family unnoticed. It now reports `new RegExp(...)` and `RegExp(...)` as well.
+No API changes. Upgrade if you pass SQL fragments through `b.guardSql`. **Changed:** *The content-safety gate now refuses a pattern built at runtime* — `blamejs/no-regex-in-content-safety` reported pattern literals only, so `new RegExp(source)` passed it unnoticed anywhere under `lib/**/safe-*.js` or `lib/**/guard-*.js`. It now reports `new RegExp(...)` and `RegExp(...)`, in both the bare and member spellings — `globalThis.RegExp(src)` puts a MemberExpression in the callee and an identifier-only check permits it silently.
 
-Two call sites carry a suppression with the reason recorded beside it, and neither matches anything against input. `b.guardRegex` asks the parser whether an operator-supplied pattern compiles at all, discarding the result — the opposite direction from screening with one. `b.safeJson` compiles a schema `pattern` precisely so `assertSafe` can screen the compiled form, because a source-only screen misreads `(a|A)+` under `i`.
+Three call sites carry a suppression with its reason recorded beside it. Two of them never match anything against input: `b.guardRegex` asks the parser whether an operator-supplied pattern compiles at all and discards the result, and `b.safeJson` compiles a schema `pattern` precisely so `assertSafe` can screen the compiled form. The third is `b.guardSql`'s detector table, described below. · *The SQL detectors stay on the platform engine, and the reason is now recorded* — These 32 detectors are built with `new RegExp` and run against a caller's SQL, which reads like something the content-safety rule should forbid. Moving them to `b.regexLinear` — whose cost is the length of the subject whatever the pattern says — was tried and measured, and it is worse:
 
-SECURITY.md previously said no primitive in the family "contains a regular expression" and named a build gate that no longer exists. It now states what is actually enforced: no primitive SCREENS with one, the gate covers literals and runtime construction across nested paths, and the two exceptions validate a pattern rather than run one. **Security:** *Thirty-two SQL injection detectors moved off the backtracking engine* — `b.guardSql` screens a fragment for `COPY ... PROGRAM`, large-object and `pg_read_file` server-side file access, `dblink` and foreign-data-wrapper outbound channels, untrusted procedural languages, and set operations smuggled into a predicate. Every one was a `new RegExp` run against the caller's SQL.
+| subject | linear | platform |
+| --- | --- | --- |
+| 158-byte benign SELECT | 1.4 ms | 0.001 ms |
+| 4 KiB benign SELECT | 15.4 ms | 0.012 ms |
 
-All thirty-two now compile on `b.regexLinear`. The detector table is unchanged as data — same sources, same codes, same severities — and each was compared against the pattern it replaced across 3,456 detector-and-subject pairs before the change landed.
+The engine expands each `{0,4000}` span into thousands of states, so every ordinary fragment pays. The platform engine's worst case over these same patterns, on adversarial input built to defeat every lazy span, is 5 ms at 32 KiB — less than the linear engine charges for a benign 4 KiB one. The swap would have made every request cost more than the attack it was meant to prevent.
 
-Thirty-one compiled unaltered. The thirty-second is described below. · *COPY ... TO STDIN was reported as a server-side file access when it carried extra whitespace* — The `copy-file` detector excluded the client-streaming forms with a negative lookahead — `\s+(?!STDIN\b|STDOUT\b)`. A linear-time engine cannot run lookahead, which is what prompted a closer look, and the construct turned out to be the source of a false positive:
+What bounds these patterns is the patterns: every span is explicitly capped and none pairs two quantifiers over an overlapping alphabet. That is a property of this table rather than a general licence, and it is written where the table is defined so a new detector gets the same check.
+
+SECURITY.md is corrected to match. It named a build gate retired in 0.18.37, said no primitive in the family "contains a regular expression" where the enforced claim is that none SCREENS with one, and now states plainly that a runtime-built pattern is not yet reported by the gate. **Fixed:** *The COPY file-access detector no longer depends on how much whitespace precedes STDIN* — The pattern excluded the safe forms with `\s+(?!STDIN\b|STDOUT\b)`. `\s+` is greedy but backtracks: given two spaces it could give one back, leaving ` STDIN` in front of the lookahead, which then read as "not STDIN" and reported a statement that opens no file.
 
 ```
 COPY t TO STDIN     quiet
-COPY t TO  STDIN    FIRES  ("reads or writes a server-side file")
-COPY t TO   STDIN   FIRES
+COPY t TO  STDIN    reported as "reads or writes a server-side file"
+COPY t TO   STDIN   reported
+COPY t TO \n STDIN  reported
 ```
 
-`\s+` is greedy but backtracks. Given two spaces it could give one back, leaving ` STDIN` in front of the lookahead — which then read as "not STDIN" and reported a statement that touches no file at all. One space was quiet; two were critical.
+The exclusion is now tested BEFORE the whitespace is consumed — `\b(?:TO|FROM)\b(?!\s+(?:STDIN|STDOUT)\b)\s+` — so it is evaluated once, at a fixed position, and cannot interact with that quantifier at all.
 
-The exclusion is now a property of the detector rather than a lookahead: match the structural part, then read the following word and compare it. Whitespace is skipped before the comparison, so the answer no longer depends on how much of a run the engine consumed. `COPY t TO '/etc/passwd'` still fires, `COPY t TO STDINX` still fires because the word does not end there, and `COPY t TO STDOUT; COPY u TO '/tmp/x'` still fires on the second statement — the search continues past an excluded hit rather than stopping, which is the behaviour the backtracking form provided. **References:** [PostgreSQL COPY — TO/FROM STDIN and STDOUT stream to the client](https://www.postgresql.org/docs/current/sql-copy.html) · [OWASP — Regular expression Denial of Service (ReDoS)](https://owasp.org/www-community/attacks/Regular_expression_Denial_of_Service_-_ReDoS)
+The obvious repair is worse. Teaching the lookahead to skip whitespace where it stood, `\s+(?!\s*(?:STDIN|STDOUT)\b)`, gives the two quantifiers the same alphabet: every backtrack re-scans the remainder of the run, which measures 45 ms on a 16,000-space run and grows quadratically — a denial of service introduced into the primitive whose job is to prevent one. Moving the test in front of `\s+` measures flat, and a cost regression check now covers it.
+
+What the detector catches is unchanged, and the lookahead is kept rather than replaced with a scan for a specific reason: its backtracking is what finds the file in `COPY (SELECT x FROM STDOUT) TO '/tmp/x'`, where the first candidate is excluded and the one that matters appears later in the same statement. A scan that resumed past the excluded match would miss it, because every match has to begin at `COPY`. `COPY t TO '/etc/passwd'` fires, `COPY t TO STDINX` fires because the word does not end at `STDIN`, and `COPY t TO STDOUT; COPY u TO '/tmp/x'` fires on the second statement.
+
+Twenty regression checks cover the whitespace forms, the nested case and the boundary. **References:** [PostgreSQL COPY — TO/FROM STDIN and STDOUT stream to the client](https://www.postgresql.org/docs/current/sql-copy.html)
 
 - v0.18.37 (2026-08-19) — **The no-regex rule for content-safety primitives never covered lib/parsers, where 55 patterns were screening adversarial input.** SECURITY.md states that no `b.guard*` or `b.safe*` primitive contains a regular expression, so a screen costs the length of its input and the byte cap that bounds the input bounds the screen. The build gate enforcing that selected files with `lib/(safe-|guard-)[^/]+\.js` — top level only. Every nested primitive was therefore outside it, and all five of them are the ones that parse untrusted bytes: `b.parsers.yaml`, `b.parsers.toml`, `b.parsers.ini`, `b.parsers.env` and `b.parsers.xml`. Between them they carried 55 pattern literals.
 

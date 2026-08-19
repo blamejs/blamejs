@@ -282,6 +282,66 @@ function testMigrationMode() {
     { contextMode: "migration" }, "copy-program");
 }
 
+// ---- COPY file access vs the client-streaming forms ----
+
+function testCopyFileVersusStdStreams() {
+  var opFloor = { contextMode: "operator-sql", profile: "permissive", dialect: "postgres" };
+
+  // STDIN / STDOUT stream to the CLIENT and open no server-side file. The
+  // amount of whitespace in front of the keyword must not change that: the
+  // exclusion used to be a lookahead that only rejected the keyword when `\s+`
+  // had consumed exactly one character, so one space was quiet and two were
+  // reported critical.
+  ["COPY t TO STDIN",
+   "COPY t TO  STDIN",
+   "COPY t TO   STDIN",
+   "COPY t TO\tSTDIN",
+   "COPY t TO \n STDIN",
+   "COPY t TO STDOUT",
+   "COPY t TO  STDOUT",
+   "COPY t FROM STDIN WITH CSV",
+  ].forEach(function (sql) {
+    var rv = b.guardSql.validate(sql, opFloor);
+    check("copy-file quiet on a client stream: " + JSON.stringify(sql),
+          !rv.issues.some(function (i) { return i.kind === "copy-file"; }));
+  });
+
+  // Naming a file still refuses, whatever the spacing.
+  refusesWith("copy-file: TO a path", "COPY t TO '/etc/passwd'", opFloor, "copy-file");
+  refusesWith("copy-file: TO a path, padded", "COPY t TO   '/etc/passwd'", opFloor, "copy-file");
+  refusesWith("copy-file: FROM a path", "COPY t FROM '/etc/passwd'", opFloor, "copy-file");
+  // The word has to END at STDIN for the exclusion to apply.
+  refusesWith("copy-file: STDINX is not STDIN", "COPY t TO STDINX", opFloor, "copy-file");
+  // A safe statement followed by an unsafe one: the second must still be found.
+  refusesWith("copy-file: safe stream then a file",
+    "COPY t TO STDOUT; COPY u TO '/tmp/x'", opFloor, "copy-file");
+  // An excluded candidate INSIDE the statement whose real target is a file —
+  // the first `FROM` is STDOUT, and the `TO` that matters comes after it.
+  refusesWith("copy-file: excluded candidate inside a file-targeting COPY",
+    "COPY (SELECT x FROM STDOUT) TO '/tmp/x'", opFloor, "copy-file");
+
+  // Cost, not just verdict. Writing the stream exclusion AFTER `\s+` as
+  // `(?!\s*(?:STDIN|STDOUT)\b)` gives the two quantifiers the same alphabet, so
+  // every backtrack re-scans the rest of the whitespace run: that form measured
+  // 45 ms on a 16k-space run and grew quadratically. Testing the exclusion
+  // before the whitespace is consumed keeps it flat. The budget is generous
+  // enough not to flake on a loaded runner and still an order of magnitude
+  // under the shape it guards against.
+  var runs = [4000, 16000].map(function (n) {
+    var sql = "COPY t TO " + " ".repeat(n) + "STDIN";
+    var started = Date.now();
+    b.guardSql.validate(sql, opFloor);
+    return { n: n, ms: Date.now() - started };
+  });
+  runs.forEach(function (r) {
+    check("copy-file: a " + r.n + "-space run stays cheap (" + r.ms + "ms)", r.ms < 250);
+  });
+  // Quadratic growth would show as a ratio near 16 across a 4x length increase.
+  check("copy-file: cost does not grow quadratically with the whitespace run",
+        runs[1].ms <= Math.max(40, runs[0].ms * 6),
+        runs[0].n + "=" + runs[0].ms + "ms " + runs[1].n + "=" + runs[1].ms + "ms");
+}
+
 // ---- OS-reach floor — refuses at EVERY profile (incl. permissive) ----
 
 function testOsReachFloorEverywhere() {
@@ -418,6 +478,7 @@ async function run() {
   testOsReachFloorEverywhere();
   testReconTimingSoftenByProfile();
   testSanitize();
+  testCopyFileVersusStdStreams();
   await testGateDispositions();
   testSurfaceAndPostures();
 }
