@@ -236,22 +236,39 @@ export default [
                 "(codepointClass.isRunOf / indexOfAny / firstInRanges, markupTokenizer for " +
                 "markup, safeBuffer for byte shapes), or run it on b.regexLinear when a " +
                 "pattern is genuinely the input";
-              // Literals only, for now. `new RegExp(source)` carries the same
-              // risk and is harder to see, but three call sites already use it
-              // and they are not one thing: guard-regex compiles an operator's
-              // pattern to ask whether it COMPILES, and safe-json compiles a
-              // schema pattern precisely so assertSafe can screen the compiled
-              // form — both validate a pattern rather than match against input.
-              // guard-sql builds its detectors that way and does match input,
-              // which is a real finding rather than an exemption. Reporting all
-              // three now would mean either an allowlist entry for the one the
-              // rule should catch, or a rushed conversion; it is tracked
-              // instead, and this stays exactly as strict as the scanner it
-              // replaces so the swap is provably equivalent.
+              // A pattern built at runtime is reported too. It carries the same
+              // cost as a literal and is harder to see, and leaving it out to
+              // spare one audited exception would mean every other file in the
+              // family could construct patterns unchecked.
+              //
+              // Every spelling of the callee counts. `RegExp(src)` puts an
+              // Identifier there; `globalThis.RegExp(src)` a MemberExpression;
+              // `globalThis["RegExp"](src)` a COMPUTED MemberExpression whose
+              // key is a plain string literal. All three are ordinary syntax, so
+              // recognising only the first two leaves the gate bypassable
+              // without doing anything unusual.
+              //
+              // A computed key that is not a literal — `globalThis[name]` — is
+              // not resolved here, and cannot be without following the value.
+              function isRegExpRef(callee) {
+                if (!callee) return false;
+                if (callee.type === "Identifier") return callee.name === "RegExp";
+                if (callee.type !== "MemberExpression" || !callee.property) return false;
+                if (!callee.computed) return callee.property.name === "RegExp";
+                return callee.property.type === "Literal" && callee.property.value === "RegExp";
+              }
               return {
                 Literal(node) {
                   if (!node.regex) return;
                   context.report({ node, message: "regular expression `/" + node.regex.pattern + "/`" + ADVICE });
+                },
+                NewExpression(node) {
+                  if (!isRegExpRef(node.callee)) return;
+                  context.report({ node, message: "`new RegExp(...)` builds a pattern at runtime" + ADVICE });
+                },
+                CallExpression(node) {
+                  if (!isRegExpRef(node.callee)) return;
+                  context.report({ node, message: "`RegExp(...)` builds a pattern at runtime" + ADVICE });
                 },
               };
             },
