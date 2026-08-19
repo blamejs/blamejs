@@ -8,9 +8,27 @@ upgrading across more than a few patches at a time.
 
 ## v0.18.x
 
+- v0.18.39 (2026-08-19) — **A `PRAGMA trusted_schema` detector could be made to cost 100 ms by a run of spaces.** `b.guardSql`'s `trusted-schema` detector matched the optional `=` with `\s*=?\s*`. With the `=` absent those two whitespace runs are adjacent, so a run can be divided between them in as many ways as it is long — and every division is retried when the value that follows is not one the detector wants. `PRAGMA trusted_schema` followed by 16,000 spaces and a non-value took 100 ms, growing fourfold for each doubling of the run.
+
+Binding the `=` to the whitespace after it leaves exactly one way to consume the run. Same statements refused, same statements ignored, measured flat.
+
+Upgrade if you screen SQLite statements through `b.guardSql`. **Fixed:** *A sentence in the 0.18.38 notes described an implementation that was not shipped* — The summary said the `COPY` stream exclusion is "decided by reading the following word rather than by a lookahead". That describes an approach that was built and then withdrawn; the shipped code keeps the lookahead and moves it in front of the whitespace. The published release body was corrected at the time and the changelog now matches it. **Security:** *The trusted_schema detector is no longer quadratic in a whitespace run* — The pattern is now `\bPRAGMA\s+trusted_schema\s*(?:=\s*)?(?:on|1|true)\b`. The set of statements it refuses is unchanged — `=on`, `= on`, `  =  1`, a bare ` on`, `=TRUE` — and `PRAGMA trusted_schema = off` is still not a finding. Verified identical across 10,008 constructed inputs before the change landed.
+
+Cost at the ambiguous position, `PRAGMA trusted_schema` + n spaces + a character no value starts with:
+
+| n | before | after |
+| --- | --- | --- |
+| 4,000 | 6 ms | 0.01 ms |
+| 8,000 | 25 ms | 0.01 ms |
+| 16,000 | 100 ms | 0.02 ms |
+
+A cost regression check ships with it, asserting the run does not grow quadratically rather than pinning a wall-clock number.
+
+The other 31 detectors were swept the same way — every one stressed at its own ambiguous positions with six different fillers rather than at its trigger keyword — and none grows superlinearly. This was the only one. **References:** [SQLite PRAGMA trusted_schema](https://www.sqlite.org/pragma.html#pragma_trusted_schema) · [OWASP — Regular expression Denial of Service (ReDoS)](https://owasp.org/www-community/attacks/Regular_expression_Denial_of_Service_-_ReDoS)
+
 - v0.18.38 (2026-08-19) — **`COPY ... TO STDIN` was reported as a server-side file access whenever it carried more than one space.** `b.guardSql`'s `copy-file` detector finds a `COPY` that reads or writes a file on the database server, and excludes the client-streaming `STDIN` and `STDOUT` forms because those touch no file. The exclusion was a negative lookahead, and it only worked when the whitespace before the keyword was exactly one character: `COPY t TO STDIN` was quiet, `COPY t TO  STDIN` was reported critical.
 
-The exclusion is now decided by reading the following word rather than by a lookahead, so the spacing no longer changes the verdict.
+The exclusion is now tested before the whitespace is consumed, so the spacing no longer changes the verdict.
 
 No API changes. Upgrade if you pass SQL fragments through `b.guardSql`. **Changed:** *The content-safety gate now refuses a pattern built at runtime* — `blamejs/no-regex-in-content-safety` reported pattern literals only, so `new RegExp(source)` passed it unnoticed anywhere under `lib/**/safe-*.js` or `lib/**/guard-*.js`. It now reports `new RegExp(...)` and `RegExp(...)`, in both the bare and member spellings — `globalThis.RegExp(src)` puts a MemberExpression in the callee and an identifier-only check permits it silently.
 
