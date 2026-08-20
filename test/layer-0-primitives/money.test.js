@@ -11,7 +11,91 @@ function _threw(fn) {
   catch (e) { return e; }
 }
 
+// #578 — the largest-remainder split was reachable only through
+// Money.prototype.allocate, which needs a Money, which needs a currency from
+// b.money.CURRENCIES. That table carries 43 of the ~180 ISO 4217 codes, so for
+// most codes the split could not be reached at all — and a caller splitting
+// something that is not money (seats, quota, shard weights) had no way in
+// either. b.money.splitUnits is the same algorithm on plain integers.
+function testSplitUnits() {
+  var split = b.money.splitUnits;
+  check("b.money.splitUnits function", typeof split === "function");
+
+  // The canonical largest-remainder case: 100 into thirds is 34/33/33, never
+  // 33/33/33 with a unit dropped.
+  var thirds = split(100n, [1, 1, 1]);
+  check("splitUnits: 100 into three equal parts distributes every unit",
+    thirds.length === 3 && thirds[0] === 34n && thirds[1] === 33n && thirds[2] === 33n);
+
+  // Weighted, and the total is preserved by construction.
+  var weighted = split(1000n, [3, 1, 1]);
+  var sum = weighted.reduce(function (a, x) { return a + x; }, 0n);
+  check("splitUnits: weighted split preserves the total", sum === 1000n);
+  check("splitUnits: weighted split is proportional",
+    weighted[0] === 600n && weighted[1] === 200n && weighted[2] === 200n);
+
+  // Negative totals floor toward -infinity so the leftover pass stays positive.
+  var neg = split(-100n, [1, 1, 1]);
+  var negSum = neg.reduce(function (a, x) { return a + x; }, 0n);
+  check("splitUnits: a negative total is split without losing a unit", negSum === -100n);
+
+  // Integer Numbers are accepted for the total as well as the weights.
+  check("splitUnits: accepts an integer Number total",
+    split(10, [1, 1]).join(",") === "5,5");
+
+  // Zero total splits to zeros rather than throwing.
+  check("splitUnits: a zero total yields zero shares",
+    split(0n, [1, 2, 3]).join(",") === "0,0,0");
+
+  // Refusals mirror allocate's, since it is the same algorithm.
+  check("splitUnits: refuses an empty weight list",
+    _threw(function () { split(10n, []); }) !== null);
+  check("splitUnits: refuses weights summing to zero",
+    _threw(function () { split(10n, [0, 0]); }) !== null);
+  check("splitUnits: refuses a negative weight",
+    _threw(function () { split(10n, [1, -1]); }) !== null);
+  check("splitUnits: refuses a non-integer total",
+    _threw(function () { split(1.5, [1, 1]); }) !== null);
+
+  // Beyond Number.MAX_SAFE_INTEGER a value has ALREADY been rounded before
+  // splitUnits sees it — Number.isInteger still says yes, and BigInt() then
+  // preserves the wrong number. The split would be exact arithmetic over a
+  // total nobody asked for, breaking the one guarantee this function makes.
+  //
+  // Computed rather than written as a literal: the literal form is what
+  // eslint's no-loss-of-precision rule refuses, for the same reason this check
+  // exists. MAX_SAFE_INTEGER + 2 is an integer Number that is not a SAFE one.
+  var unsafeNum = Number.MAX_SAFE_INTEGER + 2;
+  check("splitUnits: the fixture really is an unsafe integer",
+    Number.isInteger(unsafeNum) && !Number.isSafeInteger(unsafeNum));
+  check("splitUnits: refuses an unsafe integer total",
+    _threw(function () { split(unsafeNum, [1, 1]); }) !== null);
+  check("splitUnits: refuses an unsafe integer weight",
+    _threw(function () { split(10n, [1, unsafeNum]); }) !== null);
+  // The same magnitude as a BigInt carries the value exactly, so it is allowed
+  // — and the parts still sum to it, which is the guarantee being protected.
+  var exact = BigInt(Number.MAX_SAFE_INTEGER) + 2n;
+  var big = split(exact, [1, 1]);
+  check("splitUnits: the same total as a BigInt is exact",
+    big[0] + big[1] === exact);
+  check("splitUnits: refuses a non-integer weight",
+    _threw(function () { split(10n, [1, 1.5]); }) !== null);
+
+  // The split is reachable for a currency the table does not carry — which is
+  // the whole point of the issue.
+  check("splitUnits: works with no currency in sight",
+    split(7n, [1, 1]).join(",") === "4,3");
+
+  // And Money.allocate must agree with it exactly: one algorithm, two doors.
+  var viaMoney = b.money.fromMinorUnits(100n, "USD").allocate([1, 1, 1])
+    .map(function (m) { return m.toMinorUnits(); });
+  check("Money.allocate and splitUnits agree",
+    viaMoney.join(",") === thirds.join(","));
+}
+
 function run() {
+  testSplitUnits();
+
   // ---- Public surface ----
   check("b.money exposed",                  typeof b.money === "object");
   check("b.money.of function",              typeof b.money.of === "function");

@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.18.42",
-  "createdAt": "2026-08-20T16:44:33.884Z",
+  "frameworkVersion": "0.18.43",
+  "createdAt": "2026-08-20T18:52:35.421Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -16975,6 +16975,14 @@
         "detect": {
           "type": "function",
           "arity": 2
+        },
+        "extensionFor": {
+          "type": "function",
+          "arity": 1
+        },
+        "mimeFor": {
+          "type": "function",
+          "arity": 1
         }
       }
     },
@@ -45096,6 +45104,10 @@
           "type": "function",
           "arity": 3
         },
+        "splitUnits": {
+          "type": "function",
+          "arity": 2
+        },
         "zero": {
           "type": "function",
           "arity": 1
@@ -49593,6 +49605,10 @@
         "size": {
           "type": "function",
           "arity": 2
+        },
+        "tick": {
+          "type": "function",
+          "arity": 1
         }
       }
     },

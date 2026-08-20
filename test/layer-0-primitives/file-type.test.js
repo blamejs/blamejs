@@ -19,7 +19,59 @@ function _polyglot() {
     Buffer.from("<script>alert(1)</script>", "utf8")]);
 }
 
+// #575 — the MIME/extension table was reachable only through the
+// underscore-prefixed test hook, so a consumer that had just detected a type
+// and needed a name for it forked a partial copy of the table.
+function testMimeExtensionAccessors() {
+  check("fileType.extensionFor is fn", typeof b.fileType.extensionFor === "function");
+  check("fileType.mimeFor is fn",      typeof b.fileType.mimeFor === "function");
+
+  check("extensionFor: image/png -> png", b.fileType.extensionFor("image/png") === "png");
+  check("mimeFor: png -> image/png",      b.fileType.mimeFor("png") === "image/png");
+
+  // A leading dot is the form a caller usually has in hand (path.extname).
+  check("mimeFor: accepts a leading dot", b.fileType.mimeFor(".png") === "image/png");
+  check("extensionFor: returns no leading dot",
+    b.fileType.extensionFor("application/pdf") === "pdf");
+
+  // Case is not significant in either direction: MIME types are
+  // case-insensitive (RFC 2045 sec. 5.1) and extensions arrive in any case.
+  check("extensionFor: MIME lookup is case-insensitive",
+    b.fileType.extensionFor("IMAGE/PNG") === "png");
+  check("mimeFor: extension lookup is case-insensitive",
+    b.fileType.mimeFor("PNG") === "image/png");
+
+  // A parameterised content type still resolves on its bare type — this is
+  // the form a Content-Type header actually arrives in.
+  check("extensionFor: ignores content-type parameters",
+    b.fileType.extensionFor("image/png; name=logo.png") === "png");
+
+  // Unknown is null, never a guess — a caller minting an object-store key
+  // needs to know the framework does not recognise the type.
+  check("extensionFor: unknown MIME is null", b.fileType.extensionFor("application/x-nonesuch") === null);
+  check("mimeFor: unknown extension is null", b.fileType.mimeFor("nonesuch") === null);
+  check("extensionFor: non-string is null",   b.fileType.extensionFor(null) === null);
+  check("mimeFor: non-string is null",        b.fileType.mimeFor(42) === null);
+  check("mimeFor: empty string is null",      b.fileType.mimeFor("") === null);
+  check("extensionFor: empty string is null", b.fileType.extensionFor("") === null);
+
+  // The accessors must agree with the table detect() answers from, in both
+  // directions, for every row — a forked copy is exactly what drifts.
+  var sigs = b.fileType._SIGNATURES;
+  var roundTripped = sigs.every(function (row) {
+    return b.fileType.extensionFor(row.mime) === row.extension &&
+           b.fileType.mimeFor(row.extension) === row.mime;
+  });
+  check("accessors round-trip every signature row", roundTripped);
+
+  // And the answer matches what detect() reports for real bytes.
+  var detected = b.fileType.detect(_png());
+  check("extensionFor names what detect detected",
+    b.fileType.extensionFor(detected.mime) === detected.extension);
+}
+
 async function run() {
+  testMimeExtensionAccessors();
   check("fileType namespace present",                typeof b.fileType === "object");
   check("fileType.detect is fn",                     typeof b.fileType.detect === "function");
   check("fileType.assertOneOf is fn",                typeof b.fileType.assertOneOf === "function");

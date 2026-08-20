@@ -370,18 +370,48 @@ function testTrustedSchemaShapeAndCost() {
   // when the value that followed did not match: 100 ms at 16k spaces, growing
   // 4x per doubling of the run. Binding the `=` to the whitespace after it
   // leaves one way to consume the run.
-  var runs = [4000, 16000].map(function (n) {
+  // Timed with hrtime, not Date.now(). At millisecond resolution the 4k run
+  // rounds to 0 on an unloaded machine, which leaves the ratio below with no
+  // baseline — it then falls back to a fixed millisecond floor, and a fixed
+  // budget is exactly what stops being true when the box is busy. Under
+  // SMOKE_PARALLEL=64 this read 4000=0ms 16000=53ms and failed a check that
+  // passes 3/3 alone. Sub-millisecond resolution gives both sizes a real
+  // number, and a RATIO of two measurements taken moments apart on the same
+  // machine is load-robust in a way an absolute bound is not: contention
+  // scales both of them together.
+  function _msFor(n) {
     var sql = "PRAGMA trusted_schema" + " ".repeat(n) + "!";
-    var started = Date.now();
+    var started = process.hrtime.bigint();
     b.guardSql.validate(sql, opFloor);
-    return { n: n, ms: Date.now() - started };
-  });
+    return Number(process.hrtime.bigint() - started) / 1e6;
+  }
+  // One untimed pass per size first: the first call through a code path pays
+  // for lazy requires and JIT warm-up, which would land entirely on the
+  // smaller run and depress the very baseline the ratio needs.
+  [4000, 16000].forEach(_msFor);
+  // MINIMUM of several samples, not one. A single sample per size is not
+  // load-robust either: under SMOKE_PARALLEL=64 the scheduler preempts one run
+  // and not the other, and this read ratio=37.84 — above even the quadratic
+  // shape it exists to catch. Contention is bursty, so it does not scale the
+  // two measurements together. The minimum is the least-preempted sample and
+  // therefore the closest to the real cost; taking several makes it likely at
+  // least one of each size ran without interruption.
+  function _bestOf(n, samples) {
+    var best = Infinity;
+    for (var i = 0; i < samples; i++) best = Math.min(best, _msFor(n));
+    return best;
+  }
+  var runs = [4000, 16000].map(function (n) { return { n: n, ms: _bestOf(n, 7) }; });
   runs.forEach(function (r) {
-    check("trusted-schema: a " + r.n + "-space run stays cheap (" + r.ms + "ms)", r.ms < 250);
+    check("trusted-schema: a " + r.n + "-space run stays cheap (" + r.ms.toFixed(2) + "ms)", r.ms < 250);
   });
+  // 4x the input. Linear predicts ~4x the time, quadratic ~16x. 8x sits
+  // between them with room for measurement noise on a loaded machine.
   check("trusted-schema: cost does not grow quadratically with the run",
-        runs[1].ms <= Math.max(40, runs[0].ms * 6),
-        runs[0].n + "=" + runs[0].ms + "ms " + runs[1].n + "=" + runs[1].ms + "ms");
+        runs[1].ms <= runs[0].ms * 8,
+        runs[0].n + "=" + runs[0].ms.toFixed(3) + "ms " +
+        runs[1].n + "=" + runs[1].ms.toFixed(3) + "ms " +
+        "ratio=" + (runs[1].ms / (runs[0].ms || Number.MIN_VALUE)).toFixed(2));
 }
 
 // ---- OS-reach floor — refuses at EVERY profile (incl. permissive) ----

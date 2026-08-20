@@ -1,0 +1,35 @@
+{
+  "$schema": "./schema.json",
+  "version": "0.18.43",
+  "date": "2026-08-20",
+  "headline": "Three things the framework already knew how to do, reachable from outside it",
+  "summary": "Each of these existed as working machinery with no public door: the largest-remainder split was locked behind a currency table that carries 43 of the ~180 ISO 4217 codes, the durable queue could only be driven by a resident consumer, and the MIME/extension table was reachable only through a test hook. In each case the predictable consequence downstream was a partial reimplementation of the part that is hardest to get right.",
+  "sections": [
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "`b.queue.tick(opts)` — drain what is due, then return",
+          "body": "Leases at most `max` available jobs, runs the handler over them, applies the same leasing, deterministic backoff and dead-letter transitions `b.queue.consume` applies, and settles. Nothing is left running when the promise resolves: no resident loop, no timer, no consumer for shutdown to wait on. Returns `{ leased, succeeded, failed, stale, movedToDlq, mayHaveMore, queueDepth }`. Loop on `mayHaveMore` — the batch came back full, so more may be due right now. Not on `queueDepth`: that is the queue's total active depth and counts jobs whose `availableAt` is still in the future, so a caller looping on it spins through empty ticks waiting for a delayed job to come due. `queueDepth` is `null` when the backend could not be asked, because unknown is not empty. `stale` counts jobs the tick ran but did not settle — the handler outlived the lease, the job was swept and re-leased, and the backend's attempt fence refused the completion. A non-zero `stale` means `leaseMs` is too short for the handler or the batch too large to finish inside it.\n\nPair it with `b.queue.init({ sweepIntervalMs: 0 })`, new in this release. `init` otherwise starts a 30-second expired-lease sweep timer, and in a frozen isolate that timer either never fires or fires inside a LATER invocation, touching the backend outside any request the platform is accounting for. `tick` sweeps once per invocation itself, so the timer buys nothing there. The option also lets a resident deployment tune the period; the default is unchanged.\n\nIt sweeps expired leases before taking a batch. A job whose holder died between leasing and settling stays `inflight` until something re-pends it, and the thing that normally does is the 30-second sweep timer started at `init` — a timer that never fires in the runtime this driver exists for. Without the sweep an invocation killed mid-lease would strand its job permanently, in exactly the deployment `tick` serves.\n\nThis is the driver a scheduled invocation needs — a Cloudflare `scheduled()` handler, a Lambda on EventBridge, a Kubernetes CronJob. `consume` cannot serve those: it is a resident loop and it starts a background sweep, and such a runtime freezes between invocations, so the timer never fires and the consumer is either blocking the handler or killed mid-lease. Without a per-tick entry point the durable half gets reimplemented by the caller — attempt accounting, backoff schedule, DLQ transition — which is precisely the part that is hard to get right.\n\n`consume` and `tick` now run jobs through one shared path, so the retry schedule and the DLQ transition have exactly one implementation rather than two that can drift.\n\nIt drives the `local` and `redis` protocols, the same boundary `consume` has. An `sqs` backend is refused with `TICK_UNSUPPORTED`: SQS completes and fails by `receiptHandle` and owns redelivery and the dead-letter queue through its own RedrivePolicy, so driving it here would complete without the receipt and let SQS redeliver messages the handler had already processed. Drive SQS directly — lease, handle, complete or fail.",
+          "issue": 576
+        },
+        {
+          "title": "`b.money.splitUnits(total, weights)` — the largest-remainder split without a currency",
+          "body": "Splits an integer into parts proportional to `weights`, distributing every unit: floor each share, then hand the leftovers to the largest remainders, ties broken by index. The total is preserved by construction and no floating point is involved, so the result is identical across runtimes. Negative totals floor toward negative infinity, so the parts still sum to the total.\n\nA `Number` total or weight must be a SAFE integer. Past `Number.MAX_SAFE_INTEGER` the value has already been rounded before the function sees it — `9007199254740993` arrives as `...992` — so exact arithmetic there would faithfully split a total the caller never asked for. Those are refused with a message pointing at BigInt, which carries the value exactly.\n\nThe algorithm was already there as `Money.allocate`, but reaching it required a `Money`, which requires a currency from `b.money.CURRENCIES` — a table carrying the codes the framework has minor-unit data for rather than all of ISO 4217. A caller holding a currency outside that set could not reach the split at all, and neither could a caller splitting something that is not money: seats, quota, shard weights, a rate limit across workers. `Money.allocate` now composes it, so both doors open onto one implementation.",
+          "issue": 578
+        },
+        {
+          "title": "`b.fileType.extensionFor(mime)` and `b.fileType.mimeFor(extension)`",
+          "body": "Read-only accessors over the signature table `b.fileType.detect` already consults, in both directions. Unknown returns `null` rather than a guess — a caller minting an object-store key or a `Content-Disposition` filename needs to know when the framework does not recognise the type. Lookups are case-insensitive, `extensionFor` ignores content-type parameters so a `Content-Type` header value can be passed straight in, and `mimeFor` accepts a leading dot because that is what `path.extname` returns.\n\n`detect` answers what a file is; the next question is usually what to call it, and until now that had no answer, so consumers kept partial copies of a table the framework maintains — copies that drift the moment a signature is added.\n\n`mimeFor` answers a naming question, not a trust question: it reports what an extension claims. Only `detect` establishes what a file IS, by reading the bytes, because an attacker controls the name and never the magic.",
+          "issue": 575
+        }
+      ]
+    }
+  ],
+  "references": [
+    {
+      "label": "RFC 2045 §5.1 — Content-Type is case-insensitive",
+      "url": "https://www.rfc-editor.org/rfc/rfc2045#section-5.1"
+    }
+  ]
+}
