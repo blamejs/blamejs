@@ -15,6 +15,15 @@
       ]
     },
     {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "Vendored `@blamejs/pki` 0.5.16 to 0.5.17",
+          "body": "A failed integrity check now destroys the plaintext it had recovered rather than returning it, `AuthEnvelopedData` validates the attributes it is asked to authenticate, and the refusal for a content cipher in the wrong container cites the rule it actually applies — RFC 5083 §2 defines `AuthEnvelopedData` in terms of authenticated encryption and never names GCM, so the previous message sent operators to argue with a specification that says the opposite."
+        }
+      ]
+    },
+    {
       "heading": "Detectors",
       "items": [
         {
