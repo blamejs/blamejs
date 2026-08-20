@@ -117,8 +117,135 @@ function testUrlDecodeAndQuoteStrip() {
     rv.jar.greeting === "hello world" && rv.issues.length === 0);
 }
 
+// b.cookies.appendSetCookie — the framework's only Set-Cookie writer. It has
+// to accumulate rather than replace (Set-Cookie is the one legitimately
+// repeated response header), and it has to work on a response object that
+// offers appendHeader and on one that does not, because both reach it.
+function testAppendSetCookieAccumulates() {
+  function fallbackRes() {
+    var headers = Object.create(null);
+    return {
+      headers:   headers,
+      setHeader: function (k, v) { headers[k] = v; },
+      getHeader: function (k) { return headers[k]; },
+    };
+  }
+
+  // No appendHeader — the array-merge path.
+  var res = fallbackRes();
+  b.cookies.appendSetCookie(res, "a=1; Path=/");
+  check("appendSetCookie: first cookie queues as an array",
+    Array.isArray(res.headers["Set-Cookie"]) && res.headers["Set-Cookie"].length === 1);
+  b.cookies.appendSetCookie(res, "b=2; Path=/");
+  check("appendSetCookie: a second cookie does not replace the first",
+    res.headers["Set-Cookie"].join("|") === "a=1; Path=/|b=2; Path=/");
+
+  // A response whose header was set as a bare string by other code.
+  var strRes = fallbackRes();
+  strRes.setHeader("Set-Cookie", "existing=1");
+  b.cookies.appendSetCookie(strRes, "added=2");
+  check("appendSetCookie: promotes an existing string header to an array",
+    Array.isArray(strRes.headers["Set-Cookie"]) &&
+    strRes.headers["Set-Cookie"].join("|") === "existing=1|added=2");
+
+  // appendHeader present — the response's own bookkeeping is used.
+  var appended = [];
+  var nodeRes = {
+    setHeader:    function () { throw new Error("setHeader must not be used when appendHeader exists"); },
+    appendHeader: function (k, v) { appended.push(k + ":" + v); },
+  };
+  b.cookies.appendSetCookie(nodeRes, "c=3");
+  check("appendSetCookie: prefers res.appendHeader when the runtime has it",
+    appended.length === 1 && appended[0] === "Set-Cookie:c=3");
+
+  // Refusals — a response that cannot carry a header, and a header that is
+  // not a serialized cookie.
+  var noRes = null;
+  try { b.cookies.appendSetCookie({}, "a=1"); } catch (e) { noRes = e; }
+  check("appendSetCookie: refuses a response without setHeader",
+    noRes !== null && noRes.code === "cookies/no-set-header");
+
+  var badHeader = null;
+  try { b.cookies.appendSetCookie(fallbackRes(), ""); } catch (e) { badHeader = e; }
+  check("appendSetCookie: refuses an empty header string",
+    badHeader !== null && badHeader.code === "cookies/invalid-header");
+
+  var nonString = null;
+  try { b.cookies.appendSetCookie(fallbackRes(), { name: "a" }); } catch (e) { nonString = e; }
+  check("appendSetCookie: refuses a non-string header",
+    nonString !== null && nonString.code === "cookies/invalid-header");
+
+  // A response that can be written but not READ cannot be appended to. With
+  // neither appendHeader nor getHeader there is no way to see what is already
+  // queued, so writing would silently replace it — the exact loss this function
+  // exists to prevent. Refuse rather than pretend the header was empty.
+  var writeOnly = { setHeader: function () {} };
+  var unreadable = null;
+  try { b.cookies.appendSetCookie(writeOnly, "a=1"); } catch (e) { unreadable = e; }
+  check("appendSetCookie: refuses a write-only response rather than clobbering",
+    unreadable !== null && unreadable.code === "cookies/unreadable-response");
+
+  // appendHeader alone is enough — the response does its own merging, so it
+  // never needs to be read.
+  var appendOnlyCalls = [];
+  var appendOnly = {
+    setHeader:    function () {},
+    appendHeader: function (k, v) { appendOnlyCalls.push(k + ":" + v); },
+  };
+  var appendOnlyErr = null;
+  try { b.cookies.appendSetCookie(appendOnly, "a=1"); } catch (e) { appendOnlyErr = e; }
+  check("appendSetCookie: a response with appendHeader needs no getHeader",
+    appendOnlyErr === null && appendOnlyCalls.length === 1);
+}
+
+// b.cookies.assertAppendable is the same contract check, callable BEFORE work
+// that cannot be undone — b.session.logout uses it so an unappendable response
+// is refused rather than discovered after the session row is already revoked.
+function testAssertAppendable() {
+  function err(fn) { try { fn(); return null; } catch (e) { return e; } }
+
+  check("assertAppendable: accepts a readable+writable response",
+    err(function () {
+      b.cookies.assertAppendable({ setHeader: function () {}, getHeader: function () {} });
+    }) === null);
+
+  check("assertAppendable: accepts an appendHeader-only response",
+    err(function () {
+      b.cookies.assertAppendable({ setHeader: function () {}, appendHeader: function () {} });
+    }) === null);
+
+  var writeOnly = err(function () {
+    b.cookies.assertAppendable({ setHeader: function () {} });
+  });
+  check("assertAppendable: refuses a write-only response",
+    writeOnly !== null && writeOnly.code === "cookies/unreadable-response");
+
+  var noSet = err(function () { b.cookies.assertAppendable({ getHeader: function () {} }); });
+  check("assertAppendable: refuses a response with no setHeader",
+    noSet !== null && noSet.code === "cookies/no-set-header");
+
+  var nullRes = err(function () { b.cookies.assertAppendable(null); });
+  check("assertAppendable: refuses a null response",
+    nullRes !== null && nullRes.code === "cookies/no-set-header");
+
+  // It must agree with appendSetCookie exactly — one definition of the
+  // contract, so the early check and the late one cannot drift apart.
+  [
+    { setHeader: function () {} },
+    { getHeader: function () {} },
+    null,
+  ].forEach(function (bad, i) {
+    var early = err(function () { b.cookies.assertAppendable(bad); });
+    var late  = err(function () { b.cookies.appendSetCookie(bad, "a=1"); });
+    check("assertAppendable agrees with appendSetCookie on rejection " + i,
+      early !== null && late !== null && early.code === late.code);
+  });
+}
+
 function run() {
   testCleanHeaderParses();
+  testAppendSetCookieAccumulates();
+  testAssertAppendable();
   testEmptyHeader();
   testDuplicateNameCookieTossing();
   testProtoKeyDoesNotPollute();

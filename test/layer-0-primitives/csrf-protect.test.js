@@ -231,8 +231,101 @@ async function testOriginCheckCanonicalizesHost() {
         r2.outcome === "next");
 }
 
+// Every Set-Cookie the middleware queued, flattened.
+function _issuedCookies(res) {
+  var sc = res.getHeader("set-cookie");
+  return Array.isArray(sc) ? sc : (sc ? [sc] : []);
+}
+
+async function _issueCookie(mwOpts, req) {
+  var res = _mockRes();
+  var mw = b.middleware.csrfProtect(mwOpts);
+  await new Promise(function (r) { mw(req, res, r); });
+  return { res: res, cookies: _issuedCookies(res) };
+}
+
+// The cookie attributes csrf-protect writes come from operator config and go
+// straight into a response header. Path was interpolated into the Set-Cookie
+// string with no CRLF scrub, so a config value carrying a bare CR or LF split
+// the header and appended one of the operator's choosing. b.cookies.serialize
+// scrubs every attribute for exactly this reason; the middleware has to route
+// through it rather than formatting its own.
+async function testCookieAttributesCannotSplitTheHeader() {
+  var req = _mockReq({ method: "GET", url: "/", headers: { host: "example.com" } });
+  var issued = await _issueCookie(
+    { cookie: { path: "/app\r\nX-Injected: yes" } }, req);
+  check("csrf: exactly one cookie issued", issued.cookies.length === 1);
+  var header = issued.cookies[0];
+  check("csrf: a CR in cookie.path cannot reach the response header",
+        header.indexOf("\r") === -1);
+  check("csrf: an LF in cookie.path cannot reach the response header",
+        header.indexOf("\n") === -1);
+  check("csrf: the injected header name did not become a header",
+        issued.res.getHeader("x-injected") === undefined);
+}
+
+// A __Host- name is a promise to the browser: Secure, Path=/, no Domain. With
+// `secure` left to auto-detect, that promise is broken per-request — over
+// plain HTTP the cookie went out as `__Host-csrf` with no Secure, and every
+// browser silently drops it, so the double-submit token never persists and
+// each request looks like a first visit. The boot check could not see it
+// because the decision is made per request; the name and the auto-detect are
+// what conflict, so that is what has to be refused at boot.
+function testHostPrefixWithAutoDetectedSecureRefusedAtBoot() {
+  var threw = null;
+  try { b.middleware.csrfProtect({ cookie: { name: "__Host-csrf" } }); }
+  catch (e) { threw = e; }
+  check("csrf: __Host-* with auto-detected secure is refused at boot",
+        threw !== null && /__Host-/.test(String(threw.message)));
+
+  var threwSecure = null;
+  try { b.middleware.csrfProtect({ cookie: { name: "__Secure-csrf" } }); }
+  catch (e) { threwSecure = e; }
+  check("csrf: __Secure-* with auto-detected secure is refused at boot",
+        threwSecure !== null && /__Secure-/.test(String(threwSecure.message)));
+
+  // Declaring the transport explicitly is the way through — the operator is
+  // asserting HTTPS, which is what the prefix already claims.
+  var ok = null;
+  try { b.middleware.csrfProtect({ cookie: { name: "__Host-csrf", secure: true } }); }
+  catch (e) { ok = e; }
+  check("csrf: __Host-* with an explicit secure: true is accepted", ok === null);
+
+  // A name with no prefix keeps auto-detect — nothing about the common case
+  // changes.
+  var plain = null;
+  try { b.middleware.csrfProtect({ cookie: { name: "csrf" } }); }
+  catch (e) { plain = e; }
+  check("csrf: a prefix-free cookie name still auto-detects", plain === null);
+}
+
+// The issued cookie must survive alongside cookies the route already queued,
+// and must itself be a validly serialized one.
+async function testIssuedCookieShape() {
+  var req = _mockReq({ method: "GET", url: "/", headers: { host: "example.com" } });
+  var res = _mockRes();
+  res.setHeader("Set-Cookie", "locale=en; Path=/");
+  var mw = b.middleware.csrfProtect({ cookie: true });
+  await new Promise(function (r) { mw(req, res, r); });
+  var all = _issuedCookies(res);
+  check("csrf: a cookie already on the response is preserved",
+        all.indexOf("locale=en; Path=/") !== -1);
+  check("csrf: the csrf cookie is queued alongside it",
+        all.filter(function (c) { return c.indexOf("csrf=") === 0; }).length === 1);
+
+  // The token is 64 hex chars — percent-encoding must be a no-op on it, so
+  // the value the browser sends back still matches the double-submit compare.
+  var csrf = all.filter(function (c) { return c.indexOf("csrf=") === 0; })[0];
+  var value = csrf.slice("csrf=".length).split(";")[0];
+  check("csrf: the issued token round-trips unencoded",
+        value === req.csrfToken && /^[a-f0-9]{64}$/.test(value));
+}
+
 async function run() {
   await testSuccessPathDoubleSubmit();
+  await testCookieAttributesCannotSplitTheHeader();
+  testHostPrefixWithAutoDetectedSecureRefusedAtBoot();
+  await testIssuedCookieShape();
   await testMismatchDenied();
   await testPoisonedCookieNamesDoNotPollute();
   await testFirstOccurrenceWinsForDuplicateCookie();

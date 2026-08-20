@@ -33,6 +33,7 @@ var b              = helpers.b;
 var check          = helpers.check;
 var setupTestDb    = helpers.setupTestDb;
 var teardownTestDb = helpers.teardownTestDb;
+var _mockRes       = helpers._mockRes;
 var fs   = require("fs");
 var os   = require("os");
 var path = require("path");
@@ -226,11 +227,11 @@ async function testLogoutValidation() {
     async function throws(fn) { try { await fn(); return null; } catch (e) { return e; } }
 
     var eEmpty = await throws(function () {
-      return b.session.logout({ setHeader: function () {} }, s.token, { cookieName: "" });
+      return b.session.logout(_mockRes(), s.token, { cookieName: "" });
     });
     check("logout rejects an empty cookieName", eEmpty && eEmpty.code === "session/bad-cookie-name");
     var eNonStr = await throws(function () {
-      return b.session.logout({ setHeader: function () {} }, s.token, { cookieName: 42 });
+      return b.session.logout(_mockRes(), s.token, { cookieName: 42 });
     });
     check("logout rejects a non-string cookieName", eNonStr && eNonStr.code === "session/bad-cookie-name");
 
@@ -241,27 +242,29 @@ async function testLogoutValidation() {
     var eBadRes = await throws(function () { return b.session.logout(null, s.token); });
     check("logout rejects a res without setHeader()", eBadRes && eBadRes.code === "session/bad-res");
 
-    // Happy path: destroy the row AND emit the client-wipe headers.
-    var headers = {};
-    var res = { setHeader: function (k, v) { headers[k] = v; } };
+    // Happy path: destroy the row AND emit the client-wipe headers. The shared
+    // mockRes is readable as well as writable, which the cookie appender needs
+    // — it has to see what is already queued before adding to it.
+    var res = _mockRes();
     var destroyed = await b.session.logout(res, s.token);
+    var expiry = res.getHeader("Set-Cookie")[0];
     check("logout returns true when it destroyed the session", destroyed === true);
-    check("logout emitted a Clear-Site-Data header", typeof headers["Clear-Site-Data"] === "string" && headers["Clear-Site-Data"].length > 0);
-    check("logout expired the sid cookie", /(^|\b)sid=; /.test(headers["Set-Cookie"]) && /Max-Age=0/.test(headers["Set-Cookie"]));
+    check("logout emitted a Clear-Site-Data header", typeof res.getHeader("Clear-Site-Data") === "string" && res.getHeader("Clear-Site-Data").length > 0);
+    check("logout expired the sid cookie", /^sid=;/.test(expiry) && /Max-Age=0/.test(expiry));
     check("logout revoked the session server-side", (await b.session.verify(s.token)) === null);
 
     // A custom cookieName is honored on the Set-Cookie.
     var s2 = await b.session.create({ userId: "u-lo2" });
-    var headers2 = {};
-    var res2 = { setHeader: function (k, v) { headers2[k] = v; } };
+    var res2 = _mockRes();
     await b.session.logout(res2, s2.token, { cookieName: "session" });
-    check("logout honors a custom cookieName", /^session=; /.test(headers2["Set-Cookie"]));
+    check("logout honors a custom cookieName", /^session=;/.test(res2.getHeader("Set-Cookie")[0]));
 
     // An explicit types set overrides the W3C Clear-Site-Data default directive set.
     var s3 = await b.session.create({ userId: "u-lo3" });
-    var headers3 = {};
-    var res3 = { setHeader: function (k, v) { headers3[k] = v; } };
+    var res3 = _mockRes();
+    var headers3 = { "Clear-Site-Data": null };
     await b.session.logout(res3, s3.token, { types: ["cookies", "storage"] });
+    headers3["Clear-Site-Data"] = res3.getHeader("Clear-Site-Data");
     check("logout honors an explicit Clear-Site-Data types set",
       /"cookies"/.test(headers3["Clear-Site-Data"]) && /"storage"/.test(headers3["Clear-Site-Data"]));
   } finally {

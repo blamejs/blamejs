@@ -279,14 +279,20 @@ async function run() {
       .map(function (sc) { return String(sc); })
       .find(function (sc) { return /^wiki_sid=/.test(sc); }) || "";
     assert("POST /login sets wiki_sid cookie", /^wiki_sid=[^;]+/.test(sessionCookie));
-    // Since v0.8.61 the framework's sid is wrapped in b.vault.seal,
-    // so the cookie value is `vault:<base64-envelope>`, not the
-    // pre-v0.8.61 hex form. Defend against the [object Object] /
-    // undefined / null stringification regressions, then assert the
-    // sealed-prefix shape.
+    // Since v0.8.61 the framework's sid is wrapped in b.vault.seal, so the
+    // cookie value is `vault:<base64-envelope>`, not the pre-v0.8.61 hex form.
+    // The route writes it with b.cookies.serialize, which percent-encodes the
+    // value per RFC 6265 — `:` `+` `/` `=` all escape — so assert the DECODED
+    // value rather than the raw header, which is what b.cookies.parse hands
+    // any reader. Defend against the [object Object] / undefined / null
+    // stringification regressions on the decoded form too.
+    var rawCookieValue = sessionCookie.split(";")[0].slice("wiki_sid=".length);
+    var decodedCookieValue = decodeURIComponent(rawCookieValue);
+    assert("wiki_sid value is percent-encoded on the wire",
+           !/[:+]/.test(rawCookieValue) && /%3A/i.test(rawCookieValue));
     assert("wiki_sid value is a non-empty token (not '[object Object]')",
-           !/wiki_sid=(\[object|undefined|null|\s*;)/.test(sessionCookie) &&
-           /^wiki_sid=vault:[A-Za-z0-9+/=_-]{16,}/.test(sessionCookie));
+           !/^(\[object|undefined|null|\s*$)/.test(decodedCookieValue) &&
+           /^vault:[A-Za-z0-9+/=_-]{16,}$/.test(decodedCookieValue));
 
     var sessionCookieValue = sessionCookie.split(";")[0]; // wiki_sid=<token>
     var fullCookie = cookieHeader + "; " + sessionCookieValue;
