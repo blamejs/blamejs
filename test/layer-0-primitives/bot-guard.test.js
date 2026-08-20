@@ -3,12 +3,13 @@
 "use strict";
 /**
  * Layer 0 — b.middleware.botGuard.
- * Focus: the Sec-Fetch-Mode heuristic must never refuse a real browser.
- * Browsers omit Fetch Metadata (Sec-Fetch-*) on plain-HTTP non-localhost
- * origins (Umbrel, LAN / *.local reverse proxies) AND in Safari < 16.4
- * even over HTTPS — so a missing Sec-Fetch-Mode is advisory-only (tags in
- * mode:"tag", never blocks). Drive-by bots are still blocked by the
- * missing-Accept-Language and User-Agent heuristics.
+ * Focus: an ABSENT header must never refuse a legitimate client, whichever
+ * header it is. Browsers omit Fetch Metadata (Sec-Fetch-*) on plain-HTTP
+ * non-localhost origins (Umbrel, LAN / *.local reverse proxies) and in
+ * Safari < 16.4 even over HTTPS; every major search-engine crawler omits
+ * Accept-Language. Both are therefore advisory-only — they tag in
+ * mode:"tag" and never block. Drive-by bots are blocked by the User-Agent
+ * deny-list, which is what actually identifies automation.
  */
 
 var b = require("../../index");
@@ -25,6 +26,71 @@ function _run(opts, reqInit) {
   mw(req, res, function () { nexted = true; });
   var cap = res._captured();
   return { nexted: nexted, blocked: cap.status === 403, status: cap.status, body: cap.body, suspectedBot: req.suspectedBot };
+}
+
+// Search-engine crawlers do not send Accept-Language. Google documents that
+// Googlebot "sends HTTP requests without setting Accept-Language in the request
+// header"; bingbot behaves the same. Blocking on that header's absence made
+// every content page of a blamejs site answer 403 to a crawler while a browser
+// sailed through — measured on a live deployment, where the sitemap listed 337
+// URLs and only the nginx-cached homepage was reachable.
+var GOOGLEBOT_UA = "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)";
+var BINGBOT_UA   = "Mozilla/5.0 (compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm)";
+
+function testCrawlersAreNotBlocked() {
+  var goog = _run({ mode: "block" }, {
+    method: "GET", url: "/acme",
+    headers: { "user-agent": GOOGLEBOT_UA, host: "app.example.com" },
+    socket: { encrypted: true },
+  });
+  check("bot-guard: Googlebot without Accept-Language is not blocked",
+        goog.nexted && !goog.blocked);
+
+  var bing = _run({ mode: "block" }, {
+    method: "GET", url: "/acme",
+    headers: { "user-agent": BINGBOT_UA, host: "app.example.com" },
+    socket: { encrypted: true },
+  });
+  check("bot-guard: bingbot without Accept-Language is not blocked",
+        bing.nexted && !bing.blocked);
+
+  // The header's absence is not a block signal for anyone — a client family
+  // that omits it is not evidence of automation, which is the same conclusion
+  // the Sec-Fetch-Mode check reached.
+  var browser = _run({ mode: "block" }, {
+    method: "GET", url: "/",
+    headers: { "user-agent": BROWSER_UA, host: "app.example.com" },
+    socket: { encrypted: true },
+  });
+  check("bot-guard: a browser omitting Accept-Language is not blocked",
+        browser.nexted && !browser.blocked);
+
+  // It survives as an advisory signal, so an operator can still shape traffic
+  // on it (rate-limit, log) without refusing the request.
+  var tagged = _run({ mode: "tag" }, {
+    method: "GET", url: "/",
+    headers: { "user-agent": GOOGLEBOT_UA, host: "app.example.com" },
+    socket: { encrypted: true },
+  });
+  check("bot-guard: tag mode still reports missing-accept-language",
+        tagged.nexted && tagged.suspectedBot === "missing-accept-language");
+
+  // The User-Agent deny-list is untouched — this must not become a way for
+  // automation libraries to walk through.
+  var curl = _run({ mode: "block" }, {
+    method: "GET", url: "/",
+    headers: { "user-agent": "curl/8.4.0", host: "app.example.com" },
+    socket: { encrypted: true },
+  });
+  check("bot-guard: curl is still blocked with no Accept-Language", curl.blocked);
+
+  var curlWithLang = _run({ mode: "block" }, {
+    method: "GET", url: "/",
+    headers: { "user-agent": "curl/8.4.0", "accept-language": "en", host: "app.example.com" },
+    socket: { encrypted: true },
+  });
+  check("bot-guard: curl is still blocked even with Accept-Language",
+        curlWithLang.blocked);
 }
 
 function testSurface() {
@@ -52,10 +118,10 @@ function testSecFetchNeverBlocks() {
 }
 
 function testBotsStillBlocked() {
-  // Missing Accept-Language remains a hard block.
-  var noLang = _run({ mode: "block" }, { method: "GET", url: "/", headers: { "user-agent": BROWSER_UA, host: "app.example.com" }, socket: { encrypted: true } });
-  check("missing Accept-Language is blocked", noLang.blocked && noLang.status === 403 && noLang.body === "Forbidden");
-
+  // The User-Agent deny-list is what identifies automation, and it is the only
+  // thing that blocks. Header ABSENCE never does — see
+  // testCrawlersAreNotBlocked for why, and for the crawler cases it protects.
+  //
   // Known automation UA remains a hard block.
   var curl = _run({ mode: "block" }, { method: "GET", url: "/", headers: { "accept-language": "en", "user-agent": "curl/8.4.0", host: "app.example.com" } });
   check("curl UA is blocked", curl.blocked && curl.status === 403);
@@ -121,6 +187,7 @@ function testPeerGatedAuditIp() {
 
 async function run() {
   testSurface();
+  testCrawlersAreNotBlocked();
   testSecFetchNeverBlocks();
   testBotsStillBlocked();
   testTagModeAdvisory();
