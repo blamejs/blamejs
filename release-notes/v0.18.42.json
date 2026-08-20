@@ -27,8 +27,8 @@
       "heading": "Detectors",
       "items": [
         {
-          "title": "An absent request header may not be a block signal",
-          "body": "A `codebase-patterns` entry refuses the `if (!headers[\"...\"]) return \"<signal>\"` shape anywhere in `lib/`. The reasoning had already been written down twice in this codebase — once in `botGuard`'s own `Sec-Fetch-Mode` comment, once in `fetchMetadata`'s `allowMissing` default — and was not applied to the third case."
+          "title": "No single absent header may block, asserted against the middleware",
+          "body": "`bot-guard.test.js` now starts from a complete browser request and removes one header at a time, asserting that no single omission refuses the request. It covers the headers the middleware inspects — `User-Agent`, `Accept`, `Accept-Language`, `Accept-Encoding` and the three `Sec-Fetch-*` — so the rule holds for whichever one a future change reaches for, not only the one that was wrong.\n\nIt is a behavioural check rather than a source-pattern one deliberately. Written as a pattern check first, it was wrong six different ways: anchored to the first expression in the condition, bounded at the first `)`, bounded to a single line, defeated by a statement before the return, by a guard that was OR'd rather than AND'd, and by a `)` inside a string literal. Each fix was a step further into parsing JavaScript with text matching. Running the middleware decides all six, because it asks what the code does rather than how it is written."
         }
       ]
     }

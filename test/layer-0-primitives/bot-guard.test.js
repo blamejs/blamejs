@@ -93,6 +93,46 @@ function testCrawlersAreNotBlocked() {
         curlWithLang.blocked);
 }
 
+// The invariant behind the fix, asserted directly: NO SINGLE absent header may
+// block. Start from a complete browser request and remove one header at a time.
+//
+// This is stated behaviourally on purpose. It was first written as a
+// codebase-patterns text check, which took six review rounds and was wrong a
+// different way each time — anchored on the first expression in the condition,
+// then bounded at the first `)`, then bounded to one line, then defeated by a
+// statement before the return, by an OR'd guard, and by a `)` inside a string
+// literal. Each round was a step further into hand-parsing JavaScript in a test
+// file, which is what CLAUDE.md rule 2 says not to do: a detector catches one
+// lexical shape and rots, a test catches the behaviour however it is
+// reintroduced. Every one of those six shapes fails this loop, because the loop
+// runs the middleware instead of reading it.
+function testNoSingleAbsentHeaderBlocks() {
+  var full = {
+    "user-agent":      BROWSER_UA,
+    "accept-language": "en-US,en;q=0.9",
+    "accept":          "text/html,application/xhtml+xml",
+    "accept-encoding": "gzip, deflate, br",
+    "sec-fetch-mode":  "navigate",
+    "sec-fetch-site":  "none",
+    "sec-fetch-dest":  "document",
+    host:              "app.example.com",
+  };
+
+  var baseline = _run({ mode: "block" }, {
+    method: "GET", url: "/", headers: full, socket: { encrypted: true },
+  });
+  check("bot-guard: the complete browser request passes", baseline.nexted && !baseline.blocked);
+
+  Object.keys(full).forEach(function (omitted) {
+    var headers = {};
+    Object.keys(full).forEach(function (k) { if (k !== omitted) headers[k] = full[k]; });
+    var r = _run({ mode: "block" }, {
+      method: "GET", url: "/", headers: headers, socket: { encrypted: true },
+    });
+    check("bot-guard: omitting " + omitted + " alone does not block", r.nexted && !r.blocked);
+  });
+}
+
 function testSurface() {
   check("b.middleware.botGuard is a function", typeof b.middleware.botGuard === "function");
   check("returns a (req,res,next) middleware", b.middleware.botGuard({}).length === 3);
@@ -188,6 +228,7 @@ function testPeerGatedAuditIp() {
 async function run() {
   testSurface();
   testCrawlersAreNotBlocked();
+  testNoSingleAbsentHeaderBlocks();
   testSecFetchNeverBlocks();
   testBotsStillBlocked();
   testTagModeAdvisory();

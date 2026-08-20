@@ -7337,15 +7337,6 @@ function testStateStampScanningDeferred() {
 //      patterns split across lines still match.
 var KNOWN_ANTIPATTERNS = [
   {
-    id: "absent-fingerprint-header-must-not-be-a-block-signal",
-    primitive: "b.middleware.botGuard",
-    scanScope: "lib",
-    skipCommentLines: true,
-    regex: /if\s*\(\s*!\s*headers\s*\[\s*["'][a-z-]+["']\s*\]\s*\)\s*return\s+["']missing-/,
-    allowlist: [],
-    reason: "A bot-FINGERPRINT heuristic must not refuse a request because a header is absent. Whole client families omit headers a browser sends: every major search-engine crawler omits Accept-Language (Google documents that Googlebot sends requests without setting it), Safari before 16.4 omits Sec-Fetch-* even over HTTPS, and every plain-HTTP non-localhost origin omits Fetch Metadata entirely. b.middleware.botGuard blocked on a missing Accept-Language and so answered 403 to Googlebot and bingbot on every content page while a browser sailed through — measured on a live deployment whose sitemap listed 337 URLs, of which only the cached homepage was reachable, which is what 'the site is not being indexed' looked like from the outside. Its two sibling checks had already reached the opposite conclusion in writing: bot-guard's own Sec-Fetch-Mode check is tag-only because 'a 403 on it alone refuses real users', and fetch-metadata defaults allowMissing to true to 'not break older clients'. Absence may TAG (mode:\"tag\", req.suspectedBot) so an operator can rate-limit or log on it; refusing belongs to positive evidence such as the User-Agent deny-list. This is deliberately scoped to the fingerprint shape — a bare header-absence test returning a \"missing-*\" SIGNAL NAME from a predicate — and does NOT touch a header that is a protocol requirement. Refusing a request with no Idempotency-Key on an endpoint the operator declared requireKey (lib/middleware/idempotency-key.js), or no acceptable Content-Type on a body method (lib/middleware/require-content-type.js), is correct: those are malformed requests by specification, they are gated on an operator opt, and both answer with a response rather than returning a heuristic name. Empty allowlist: no fingerprint header's absence justifies a refusal on its own.",
-  },
-  {
     id: "set-cookie-must-compose-b-cookies",
     primitive: "b.cookies.serialize",
     scanScope: "lib",
