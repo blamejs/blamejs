@@ -1665,6 +1665,50 @@ async function testDmarcTreeWalkNormalizesTheStartDomain() {
 // The direction matters. A failure BELOW the record is the opposite case: that
 // name is more specific, its policy would have won, and the walk cannot know
 // what it said — so that one is still a temperror.
+// RFC 1035 §2.3.4 bounds a LABEL at 63 octets as well as the whole name at 253,
+// and `canonicalDomain` enforces only the second. An Author Domain carrying a
+// 64-octet label is structurally invalid, so it must be refused before policy
+// discovery — otherwise the outcome depends on which resolver is wired in: the
+// default one raises `dns/bad-host` and the evaluation temperrors, while an
+// operator's own `dnsLookup` answers happily and a policy gets applied for a
+// name that cannot exist.
+async function testDmarcOverlongAuthorDomainLabelIsRefused() {
+  var over = "a".repeat(64) + ".example.com";
+  var justUnder = "a".repeat(63) + ".example.com";
+
+  var asked = [];
+  var refused = null;
+  try {
+    await b.mail.dmarc.evaluate({
+      from: "alice@" + over,
+      spf: { result: "pass", domain: over }, dkim: [],
+      dnsLookup: async function (host) {
+        asked.push(host);
+        return [["v=DMARC1; p=reject"]];
+      },
+    });
+  } catch (e) { refused = e.code; }
+  check("dmarc: a 64-octet Author Domain label is refused",
+        refused === "mail-auth/dmarc-bad-from", "code=" + refused);
+  check("dmarc: no policy lookup happens for an invalid label",
+        asked.length === 0, "asked=" + JSON.stringify(asked.slice(0, 2)));
+
+  // The boundary holds on the legal side: 63 octets is a valid label.
+  var okAsked = [];
+  var rv = await b.mail.dmarc.evaluate({
+    from: "alice@" + justUnder,
+    spf: { result: "pass", domain: justUnder }, dkim: [],
+    dnsLookup: async function (host) {
+      okAsked.push(host);
+      if (host === "_dmarc." + justUnder) return [["v=DMARC1; p=reject; aspf=s"]];
+      return null;
+    },
+  });
+  check("dmarc: a 63-octet label is accepted and queried",
+        okAsked.length > 0 && rv.policy && rv.policy.p === "reject",
+        "asked=" + okAsked.length + " p=" + (rv.policy && rv.policy.p));
+}
+
 async function testDmarcFailureAboveAFoundRecordKeepsIt() {
   var policy = [["v=DMARC1; p=reject; sp=reject; aspf=r"]];
 
@@ -4348,6 +4392,7 @@ async function run() {
   await testDmarcPsdYAtTheAuthorDomainBoundsAlignment();
   await testDmarcPsdYBoundaryConstrainsAlignment();
   await testDmarcIncompleteWalkDoesNotGrantRelaxedAlignment();
+  await testDmarcOverlongAuthorDomainLabelIsRefused();
   await testDmarcFailureAboveAFoundRecordKeepsIt();
   await testDmarcMalformedAncestorKeepsRelaxedAlignment();
   await testDmarcMalformedAncestorDoesNotVoidAnOwnPolicy();

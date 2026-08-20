@@ -1387,6 +1387,40 @@ function _startDohCapturingServer(cert, reply) {
 // asked for as `evil.example.com`, and truncated a non-ASCII code unit to its
 // low byte instead of converting the name to the A-label form its owner
 // published it under.
+// Every name a caller hands in leaves the validator in ONE canonical form,
+// whatever alphabet it arrived in. An internationalized name was already
+// lowercased and converted, but an ASCII one kept whatever case it was typed
+// in — so `Example.COM` and `example.com` took separate cache entries and made
+// separate upstream queries while putting byte-identical questions on the wire,
+// because the encoder lowercases either way. A cache keyed on a spelling rather
+// than on the name is a cache that misses on the same name.
+async function testDnsHostShapeCanonicalizesAsciiCase() {
+  var dnsMod = require("../../lib/network-dns.js");
+  var pairs = [
+    ["Example.COM",   "example.com"],
+    ["EXAMPLE.com",   "example.com"],
+    ["MiXeD.Example.Test", "mixed.example.test"],
+  ];
+  for (var i = 0; i < pairs.length; i += 1) {
+    var got = dnsMod._validateHostShape(pairs[i][0], "test");
+    check("host shape canonicalizes ASCII case: " + pairs[i][0],
+          got === pairs[i][1], "got=" + JSON.stringify(got));
+  }
+
+  // Absoluteness is part of the name, not of its spelling: a trailing root tells
+  // the resolver not to apply the search list, and losing it can resolve — and
+  // cache — a different name entirely.
+  var abs = dnsMod._validateHostShape("EXAMPLE.com.", "test");
+  check("host shape keeps the root marker while canonicalizing case",
+        abs === "example.com.", "got=" + JSON.stringify(abs));
+
+  // An IP literal is not a name and is passed through untouched.
+  check("host shape leaves an IPv4 literal alone",
+        dnsMod._validateHostShape("192.0.2.1", "test") === "192.0.2.1");
+  check("host shape leaves an IPv6 literal alone",
+        dnsMod._validateHostShape("2001:db8::1", "test") === "2001:db8::1");
+}
+
 async function testDnsWireEncoderRefusesUnencodableNames() {
   var cert = await _mintSecureCert();
   var reply = _buildReply("ok.example.com", 1, [
@@ -3453,6 +3487,7 @@ async function _runTests() {
 
   // real-handshake DoT / DoH transport round-trips + deadlines
   await testDotSecureTransport();
+  await testDnsHostShapeCanonicalizesAsciiCase();
   await testDnsWireEncoderRefusesUnencodableNames();
   await testDohSecureTransport();
   await testDotDecodeAndErrorBranches();
