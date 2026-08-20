@@ -1429,6 +1429,41 @@ async function testDnsHostShapeCanonicalizesAsciiCase() {
   // so a root zone that depends on which of the four the caller typed would be
   // the same name resolving through one spelling and not another. All four
   // normalize to the ASCII form, like every other name here.
+  // And the PUBLIC query APIs must accept it too, not just the shape check.
+  // Each of them runs its own LDH pass afterwards, and a name that clears
+  // validation at one entry point and is refused at another is the same defect
+  // this release fixed for internationalized names — one domain resolving
+  // through `resolve4` while `querySvcb` turned it away.
+  //
+  // Asserted on the gate itself rather than by calling the public APIs: driving
+  // `querySvcb(".")` for real would send a live root query, which is
+  // nondeterministic and slow-to-failing on an offline runner. `_validateLdh`
+  // is the exact check that was refusing, and each public entry passes its own
+  // primitive name and underscore policy to it, so covering both settings
+  // covers all three callers.
+  //
+  // A negative assertion needs the call to REACH the check it excludes: the
+  // first version of this passed an options bag those APIs reject, so
+  // `validateOpts` threw first and `code !== "dns/bad-host"` was true without
+  // the name ever being validated.
+  var LDH_CALLERS = [
+    ["dns.querySvcb (underscores allowed)", true],
+    ["resolveSecure (strict LDH)",          false],
+  ];
+  for (var a = 0; a < LDH_CALLERS.length; a += 1) {
+    var ldhErr = null;
+    try { dnsMod._validateLdh(".", LDH_CALLERS[a][0], LDH_CALLERS[a][1]); }
+    catch (e) { ldhErr = e.code; }
+    check("the LDH pass accepts the root zone for " + LDH_CALLERS[a][0],
+          ldhErr === null, "code=" + ldhErr);
+  }
+  // The gate still refuses what it is for — an empty label is not a root.
+  var stillRefused = null;
+  try { dnsMod._validateLdh("a..b", "probe", false); }
+  catch (e) { stillRefused = e.code; }
+  check("the LDH pass still refuses an empty label elsewhere in the name",
+        stillRefused === "dns/bad-host", "code=" + stillRefused);
+
   var ROOTS = [".", "。", "．", "｡"];
   for (var r = 0; r < ROOTS.length; r += 1) {
     var rootErr = null;
