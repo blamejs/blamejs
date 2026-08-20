@@ -430,6 +430,41 @@ function testCanonicalDomain() {
 // accepts what the owner refuses" — and it has to actually DRIVE each layer.
 // Checking only DNS would still pass while the mail layer regressed, which is
 // precisely the cross-layer drift this exists to stop.
+// The 253-octet ceiling is a WIRE-form bound, so it has to be measured on the
+// form that goes on the wire. Measuring the input instead lets an
+// internationalized name through whose A-label expansion crosses the limit:
+// five 44-character labels are 224 characters in and 254 octets out, with every
+// individual label a legal 50 octets, so a per-label check does not catch it
+// either. The name is unrepresentable in DNS, and a caller handed one back
+// treats it as real — which is how it reached a DMARC walk that stepped over
+// the unqueryable target and applied a policy from a shorter ancestor.
+function testCanonicalDomainMeasuresTheConvertedForm() {
+  var wide = [];
+  for (var i = 0; i < 5; i += 1) wide.push("ü".repeat(44));
+  var raw = wide.join(".");
+  check("fixture: under the limit as characters, over it as octets",
+        raw.length <= 253 &&
+        b.publicSuffix.canonicalDomain(raw.slice(0, 10) + ".example").length > 0,
+        "rawChars=" + raw.length);
+
+  var out = b.publicSuffix.canonicalDomain(raw);
+  check("canonicalDomain refuses a name whose A-label form exceeds 253 octets",
+        out === "", "returned=" + JSON.stringify(out.slice(0, 40)) +
+        " len=" + out.length);
+
+  // The boundary still admits a name that converts to exactly 253.
+  var fits = null;
+  for (var w = 44; w >= 20 && fits === null; w -= 1) {
+    var cand = [];
+    for (var j = 0; j < 5; j += 1) cand.push("ü".repeat(w));
+    var c = b.publicSuffix.canonicalDomain(cand.join("."));
+    if (c && c.length >= 240 && c.length <= 253) fits = c;
+  }
+  check("canonicalDomain still accepts an internationalized name that fits",
+        fits !== null && fits.length <= 253,
+        "len=" + (fits && fits.length));
+}
+
 async function testDomainDefinitionAgreesAcrossPrimitives() {
   // EVERY rejection class canonicalDomain has, not just the one the last bug
   // came from. A fixture drawn from a single family passes while the layers
@@ -512,6 +547,7 @@ async function run() {
   testLookupSource();
   testCaseInsensitive();
   testCanonicalDomain();
+  testCanonicalDomainMeasuresTheConvertedForm();
   await testDomainDefinitionAgreesAcrossPrimitives();
 }
 
