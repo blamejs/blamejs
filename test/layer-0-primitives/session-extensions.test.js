@@ -433,12 +433,15 @@ async function testLogoutEmitsClearSiteData() {
       typeof headers["Clear-Site-Data"] === "string" &&
       headers["Clear-Site-Data"].indexOf('"cookies"') !== -1 &&
       headers["Clear-Site-Data"].indexOf('"storage"') !== -1);
+    // Set-Cookie is the one legitimately-repeated response header, so logout
+    // appends an array rather than overwriting whatever was already queued.
+    check("logout queues Set-Cookie as a header array",
+      Array.isArray(headers["Set-Cookie"]) && headers["Set-Cookie"].length === 1);
+    var expiry = headers["Set-Cookie"][0];
     check("logout expires the session cookie",
-      typeof headers["Set-Cookie"] === "string" &&
-      /(^|;)\s*Max-Age=0/.test(headers["Set-Cookie"]) &&
-      headers["Set-Cookie"].indexOf("sid=;") === 0);
+      /(^|;)\s*Max-Age=0/.test(expiry) && expiry.indexOf("sid=;") === 0);
     check("logout cookie is Secure + HttpOnly",
-      /HttpOnly/.test(headers["Set-Cookie"]) && /Secure/.test(headers["Set-Cookie"]));
+      /HttpOnly/.test(expiry) && /Secure/.test(expiry));
 
     // The session is gone cluster-wide.
     var after = await b.session.verify(s.token);
@@ -448,7 +451,7 @@ async function testLogoutEmitsClearSiteData() {
     var s2 = await b.session.create({ userId: "u-logout-2" });
     var h2 = {}; var res2 = { setHeader: function (k, v) { h2[k] = v; } };
     await b.session.logout(res2, s2.token, { cookieName: "__Host-sid" });
-    check("logout honors custom cookieName", h2["Set-Cookie"].indexOf("__Host-sid=;") === 0);
+    check("logout honors custom cookieName", h2["Set-Cookie"][0].indexOf("__Host-sid=;") === 0);
 
     // An unknown directive throws BEFORE any side effect — the session is NOT
     // destroyed and no client-wipe headers are queued (validate-before-revoke).
@@ -471,8 +474,256 @@ async function testLogoutEmitsClearSiteData() {
   }
 }
 
+// A response double that behaves like http.ServerResponse for the headers
+// logout touches: Set-Cookie accumulates, everything else is last-write-wins.
+function _makeRes(preset) {
+  var headers = Object.create(null);
+  if (preset) Object.keys(preset).forEach(function (k) { headers[k] = preset[k]; });
+  return {
+    headers:   headers,
+    setHeader: function (k, v) { headers[k] = v; },
+    getHeader: function (k) { return headers[k]; },
+  };
+}
+
+// Every Set-Cookie logout queued, as a flat array of header strings.
+function _setCookies(res) {
+  var raw = res.headers["Set-Cookie"];
+  if (raw === undefined) return [];
+  return Array.isArray(raw) ? raw.slice() : [raw];
+}
+
+// The one Set-Cookie whose name is `cookieName`.
+function _cookieNamed(res, cookieName) {
+  var all = _setCookies(res);
+  for (var i = 0; i < all.length; i++) {
+    if (all[i].indexOf(cookieName + "=") === 0) return all[i];
+  }
+  return null;
+}
+
+function _hasAttr(header, attr) {
+  var parts = String(header).split(";");
+  for (var i = 0; i < parts.length; i++) {
+    if (parts[i].trim().toLowerCase() === attr.toLowerCase()) return true;
+  }
+  return false;
+}
+
+function _attrValue(header, name) {
+  var parts = String(header).split(";");
+  var prefix = name.toLowerCase() + "=";
+  for (var i = 0; i < parts.length; i++) {
+    var p = parts[i].trim();
+    if (p.toLowerCase().indexOf(prefix) === 0) return p.slice(prefix.length);
+  }
+  return null;
+}
+
+// #606 — the expiry cookie logout emits is built by hand: Secure and
+// SameSite are hardcoded, no Path/Domain override reaches it, the header is
+// set rather than appended, and nothing routes through b.cookies.serialize,
+// so the RFC 6265bis prefix invariants are never enforced on it.
+async function testLogoutCookieAttributes() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ses-logout-attrs-"));
+  try {
+    await setupTestDb(tmpDir);
+
+    // --- Secure resolves from the request scheme, not a constant -----------
+    // A plain-HTTP origin cannot set a Secure cookie: the browser discards
+    // the header, so the session cookie survives the logout it was supposed
+    // to clear.
+    var s1 = await b.session.create({ userId: "u-606-http" });
+    var httpRes = _makeRes();
+    await b.session.logout(httpRes, s1.token, { req: _makeReq() });
+    var httpCookie = _cookieNamed(httpRes, "sid");
+    check("logout over plain HTTP omits Secure (browser would drop it)",
+      httpCookie !== null && !_hasAttr(httpCookie, "Secure"));
+
+    var s2 = await b.session.create({ userId: "u-606-https" });
+    var tlsRes = _makeRes();
+    var tlsReq = _makeReq();
+    tlsReq.socket = { encrypted: true, remoteAddress: "203.0.113.9" };
+    await b.session.logout(tlsRes, s2.token, { req: tlsReq });
+    var tlsCookie = _cookieNamed(tlsRes, "sid");
+    check("logout over TLS keeps Secure",
+      tlsCookie !== null && _hasAttr(tlsCookie, "Secure"));
+
+    // A forwarded scheme is NOT honored from an untrusted peer — the
+    // trustedProtocol contract. An attacker-supplied X-Forwarded-Proto must
+    // not talk logout into marking the cookie Secure on a cleartext hop.
+    var s3 = await b.session.create({ userId: "u-606-spoof" });
+    var spoofRes = _makeRes();
+    await b.session.logout(spoofRes, s3.token, {
+      req: _makeReq({ "x-forwarded-proto": "https" }),
+    });
+    check("logout ignores X-Forwarded-Proto from an untrusted peer",
+      !_hasAttr(_cookieNamed(spoofRes, "sid"), "Secure"));
+
+    // ...and IS honored once the operator declares the proxy trusted.
+    var s4 = await b.session.create({ userId: "u-606-trusted" });
+    var proxRes = _makeRes();
+    var proxReq = _makeReq({ "x-forwarded-proto": "https" });
+    proxReq.socket = { remoteAddress: "10.0.0.4" };
+    await b.session.logout(proxRes, s4.token, {
+      req: proxReq, trustedProxies: ["10.0.0.0/8"],
+    });
+    check("logout honors X-Forwarded-Proto from a trusted proxy",
+      _hasAttr(_cookieNamed(proxRes, "sid"), "Secure"));
+
+    // Explicit opts.secure overrides the resolver in both directions.
+    var s5 = await b.session.create({ userId: "u-606-explicit-off" });
+    var offRes = _makeRes();
+    await b.session.logout(offRes, s5.token, { secure: false });
+    check("logout honors an explicit secure: false",
+      !_hasAttr(_cookieNamed(offRes, "sid"), "Secure"));
+
+    var s6 = await b.session.create({ userId: "u-606-explicit-on" });
+    var onRes = _makeRes();
+    await b.session.logout(onRes, s6.token, { req: _makeReq(), secure: true });
+    check("an explicit secure: true beats a plain-HTTP req",
+      _hasAttr(_cookieNamed(onRes, "sid"), "Secure"));
+
+    // Neither given → the secure default stands, unchanged.
+    var s7 = await b.session.create({ userId: "u-606-default" });
+    var defRes = _makeRes();
+    await b.session.logout(defRes, s7.token);
+    check("logout defaults to Secure when neither req nor secure is given",
+      _hasAttr(_cookieNamed(defRes, "sid"), "Secure"));
+
+    // --- the clear must be able to MATCH the cookie that was set ----------
+    // A browser deletes on name + path + domain. A session cookie written
+    // with Domain=.example.com and Path=/app is untouched by a bare
+    // Path=/ expiry, so logout has to be able to describe it.
+    var s8 = await b.session.create({ userId: "u-606-scope" });
+    var scopeRes = _makeRes();
+    await b.session.logout(scopeRes, s8.token, {
+      path: "/app", domain: "example.com", sameSite: "Lax",
+    });
+    var scoped = _cookieNamed(scopeRes, "sid");
+    check("logout honors opts.path",     _attrValue(scoped, "Path") === "/app");
+    check("logout honors opts.domain",   _attrValue(scoped, "Domain") === "example.com");
+    check("logout honors opts.sameSite", _attrValue(scoped, "SameSite") === "Lax");
+
+    // --- it must not clobber a Set-Cookie the route already queued --------
+    var s9 = await b.session.create({ userId: "u-606-append" });
+    var appendRes = _makeRes({ "Set-Cookie": "csrf=abc; Path=/" });
+    await b.session.logout(appendRes, s9.token);
+    var queued = _setCookies(appendRes);
+    check("logout preserves an already-queued Set-Cookie",
+      queued.length === 2 && queued.indexOf("csrf=abc; Path=/") !== -1);
+    check("logout still queued its own expiry cookie",
+      _cookieNamed(appendRes, "sid") !== null);
+
+    // --- RFC 6265bis prefix invariants reach the expiry cookie ------------
+    // __Host- REQUIRES Secure. Once Secure is conditional, a hand-rolled
+    // string would happily emit an invalid __Host- cookie over HTTP that the
+    // browser silently drops; routing through b.cookies.serialize refuses it.
+    var s10 = await b.session.create({ userId: "u-606-prefix" });
+    var prefixRes = _makeRes();
+    var prefixErr = null;
+    try {
+      await b.session.logout(prefixRes, s10.token, {
+        cookieName: "__Host-sid", secure: false,
+      });
+    } catch (e) { prefixErr = e; }
+    check("logout refuses __Host-* without Secure",
+      prefixErr !== null && prefixErr.code === "cookies/prefix-host-secure-required");
+    check("the refused __Host-* logout queued no headers",
+      prefixRes.headers["Set-Cookie"] === undefined &&
+      prefixRes.headers["Clear-Site-Data"] === undefined);
+    check("the refused __Host-* logout left the session intact",
+      (await b.session.verify(s10.token)) !== null);
+
+    // __Host- also forbids Domain, and requires Path=/.
+    var s11 = await b.session.create({ userId: "u-606-prefix-domain" });
+    var domErr = null;
+    try {
+      await b.session.logout(_makeRes(), s11.token, {
+        cookieName: "__Host-sid", domain: "example.com",
+      });
+    } catch (e) { domErr = e; }
+    check("logout refuses __Host-* with a Domain",
+      domErr !== null && domErr.code === "cookies/prefix-host-no-domain");
+
+    // --- a bad attribute is refused BEFORE the session is revoked ---------
+    // Same validate-before-revoke ordering the Clear-Site-Data directive
+    // check already has: a throw after destroy() would leave the row gone
+    // and the browser still holding its cookie.
+    var s12 = await b.session.create({ userId: "u-606-order" });
+    var orderRes = _makeRes();
+    var orderErr = null;
+    try {
+      await b.session.logout(orderRes, s12.token, { sameSite: "Sideways" });
+    } catch (e) { orderErr = e; }
+    check("logout refuses an invalid sameSite", orderErr !== null);
+    check("the invalid-sameSite logout did NOT revoke the session",
+      (await b.session.verify(s12.token)) !== null);
+    check("the invalid-sameSite logout queued no headers",
+      orderRes.headers["Set-Cookie"] === undefined &&
+      orderRes.headers["Clear-Site-Data"] === undefined);
+
+    // --- a prefixed name outranks the request scheme ----------------------
+    // A __Host- cookie only ever exists on a secure origin, so a plain-HTTP
+    // request has nothing of that name to clear. Resolving `secure` to false
+    // from the request would make serialize() refuse the prefix — and since the
+    // cookie is built BEFORE the row is revoked, that refusal would abort the
+    // logout, letting whoever chose the scheme decide whether the session died.
+    var s14 = await b.session.create({ userId: "u-606-prefix-http" });
+    var prefixHttpRes = _makeRes();
+    var destroyed14 = await b.session.logout(prefixHttpRes, s14.token, {
+      req: _makeReq(), cookieName: "__Host-sid",
+    });
+    check("a __Host- name keeps Secure on a plain-HTTP request",
+      _hasAttr(_cookieNamed(prefixHttpRes, "__Host-sid"), "Secure"));
+    check("a plain-HTTP request cannot stop a __Host- logout revoking the session",
+      destroyed14 === true && (await b.session.verify(s14.token)) === null);
+
+    var s15 = await b.session.create({ userId: "u-606-secure-prefix-http" });
+    var securePrefixRes = _makeRes();
+    var destroyed15 = await b.session.logout(securePrefixRes, s15.token, {
+      req: _makeReq(), cookieName: "__Secure-sid",
+    });
+    check("a __Secure- name keeps Secure on a plain-HTTP request",
+      _hasAttr(_cookieNamed(securePrefixRes, "__Secure-sid"), "Secure"));
+    check("...and that logout revokes the session too",
+      destroyed15 === true && (await b.session.verify(s15.token)) === null);
+
+    // --- a mistyped req must not silently drop Secure ----------------------
+    // trustedProtocol answers "http" for a non-request rather than throwing, so
+    // an unchecked `req` would quietly produce a non-Secure cookie.
+    var s16 = await b.session.create({ userId: "u-606-bad-req" });
+    var badReqErr = null;
+    try { await b.session.logout(_makeRes(), s16.token, { req: null }); }
+    catch (e) { badReqErr = e; }
+    check("logout refuses a null req rather than resolving it to http",
+      badReqErr !== null && badReqErr.code === "session/bad-req");
+    check("the refused-req logout left the session intact",
+      (await b.session.verify(s16.token)) !== null);
+
+    var strReqErr = null;
+    try { await b.session.logout(_makeRes(), s16.token, { req: "https" }); }
+    catch (e) { strReqErr = e; }
+    check("logout refuses a non-object req",
+      strReqErr !== null && strReqErr.code === "session/bad-req");
+
+    // --- an unknown option is a typo, not a silent no-op -------------------
+    var s13 = await b.session.create({ userId: "u-606-typo" });
+    var typoErr = null;
+    try {
+      await b.session.logout(_makeRes(), s13.token, { cookiename: "sid" });
+    } catch (e) { typoErr = e; }
+    check("logout rejects an unknown option key", typoErr !== null);
+    check("the rejected-typo logout left the session intact",
+      (await b.session.verify(s13.token)) !== null);
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
 async function run() {
   await testLogoutEmitsClearSiteData();
+  await testLogoutCookieAttributes();
   await testSealedCookieDefault();
   await testSealedCookieRotateAndDestroy();
   await testClientIpPrefixV4();

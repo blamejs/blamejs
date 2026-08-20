@@ -49,9 +49,6 @@ function register(router, ctx) {
   // otherwise only req.socket.encrypted counts. A direct caller can't forge
   // https with a header to suppress (or force) the Secure flag.
   var secureProtocol = ctx.secureProtocol;
-  function _secureCookieFlag(req) {
-    return secureProtocol(req) === "https" ? "; Secure" : "";
-  }
 
   // ---- Login form ----
   router.get("/login", function (req, res) {
@@ -127,8 +124,13 @@ function register(router, ctx) {
     // honored or the comparison only works by string-coincidence.
     var sess = await session.create({ userId: row.id, data: { email: row.email, scopes: ["wiki:admin"] } });
     var maxAge = Math.max(0, Math.floor((sess.expiresAt - Date.now()) / b.constants.TIME.seconds(1)));
-    res.setHeader("Set-Cookie",
-      "wiki_sid=" + sess.token + "; Path=/; HttpOnly; SameSite=Strict; Max-Age=" + maxAge + _secureCookieFlag(req));
+    b.cookies.appendSetCookie(res, b.cookies.serialize("wiki_sid", sess.token, {
+      httpOnly: true,
+      secure:   secureProtocol(req) === "https",
+      sameSite: "Strict",
+      path:     "/",
+      maxAge:   maxAge,
+    }));
     audit.safeEmit({
       action:   "wiki.login.success",
       outcome:  "success",
@@ -139,11 +141,19 @@ function register(router, ctx) {
 
   // ---- Logout ----
   router.post("/logout", async function (req, res) {
-    if (req.session && req.session.id) {
-      await session.destroy(req.session.id);
-    }
-    res.setHeader("Set-Cookie",
-      "wiki_sid=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0" + _secureCookieFlag(req));
+    // b.session.logout revokes the row, emits Clear-Site-Data, and queues the
+    // expiry cookie — resolving Secure from this request through the same
+    // peer-gated protocol detector the login cookie uses, so the header is not
+    // discarded by a browser on a plain-HTTP origin. Called unconditionally: a
+    // request with no live session still gets the expiry cookie, which is what
+    // clears a stale one from the browser's jar.
+    await session.logout(res, req.session && req.session.id, {
+      cookieName:       "wiki_sid",
+      req:              req,
+      protocolResolver: secureProtocol,
+      sameSite:         "Strict",
+      path:             "/",
+    });
     audit.safeEmit({
       action:   "wiki.logout",
       outcome:  "success",

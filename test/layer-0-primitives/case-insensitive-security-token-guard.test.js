@@ -123,8 +123,10 @@ function testCookieSecurePrefixCaseVariants() {
 }
 
 // ---- csrf-protect: cookie name-prefix invariants are case-insensitive ----
-// csrf-protect builds its OWN Set-Cookie header (not via b.cookies.serialize),
-// so this boot check is the only enforcement point for its cookie name.
+// csrf-protect routes its Set-Cookie through b.cookies.serialize, which applies
+// the same invariants when the header is built. This boot check is what turns an
+// unusable configuration into a startup error the operator reads, rather than a
+// throw on every request that tries to issue the cookie.
 function testCsrfProtectPrefixCaseVariants() {
   // Baseline: exact-case __Host- fires on a bad path.
   check("csrfProtect refuses __Host- with a non-root path (exact)",

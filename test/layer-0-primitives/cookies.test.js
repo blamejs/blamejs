@@ -117,8 +117,68 @@ function testUrlDecodeAndQuoteStrip() {
     rv.jar.greeting === "hello world" && rv.issues.length === 0);
 }
 
+// b.cookies.appendSetCookie — the framework's only Set-Cookie writer. It has
+// to accumulate rather than replace (Set-Cookie is the one legitimately
+// repeated response header), and it has to work on a response object that
+// offers appendHeader and on one that does not, because both reach it.
+function testAppendSetCookieAccumulates() {
+  function fallbackRes() {
+    var headers = Object.create(null);
+    return {
+      headers:   headers,
+      setHeader: function (k, v) { headers[k] = v; },
+      getHeader: function (k) { return headers[k]; },
+    };
+  }
+
+  // No appendHeader — the array-merge path.
+  var res = fallbackRes();
+  b.cookies.appendSetCookie(res, "a=1; Path=/");
+  check("appendSetCookie: first cookie queues as an array",
+    Array.isArray(res.headers["Set-Cookie"]) && res.headers["Set-Cookie"].length === 1);
+  b.cookies.appendSetCookie(res, "b=2; Path=/");
+  check("appendSetCookie: a second cookie does not replace the first",
+    res.headers["Set-Cookie"].join("|") === "a=1; Path=/|b=2; Path=/");
+
+  // A response whose header was set as a bare string by other code.
+  var strRes = fallbackRes();
+  strRes.setHeader("Set-Cookie", "existing=1");
+  b.cookies.appendSetCookie(strRes, "added=2");
+  check("appendSetCookie: promotes an existing string header to an array",
+    Array.isArray(strRes.headers["Set-Cookie"]) &&
+    strRes.headers["Set-Cookie"].join("|") === "existing=1|added=2");
+
+  // appendHeader present — the response's own bookkeeping is used.
+  var appended = [];
+  var nodeRes = {
+    setHeader:    function () { throw new Error("setHeader must not be used when appendHeader exists"); },
+    appendHeader: function (k, v) { appended.push(k + ":" + v); },
+  };
+  b.cookies.appendSetCookie(nodeRes, "c=3");
+  check("appendSetCookie: prefers res.appendHeader when the runtime has it",
+    appended.length === 1 && appended[0] === "Set-Cookie:c=3");
+
+  // Refusals — a response that cannot carry a header, and a header that is
+  // not a serialized cookie.
+  var noRes = null;
+  try { b.cookies.appendSetCookie({}, "a=1"); } catch (e) { noRes = e; }
+  check("appendSetCookie: refuses a response without setHeader",
+    noRes !== null && noRes.code === "cookies/no-set-header");
+
+  var badHeader = null;
+  try { b.cookies.appendSetCookie(fallbackRes(), ""); } catch (e) { badHeader = e; }
+  check("appendSetCookie: refuses an empty header string",
+    badHeader !== null && badHeader.code === "cookies/invalid-header");
+
+  var nonString = null;
+  try { b.cookies.appendSetCookie(fallbackRes(), { name: "a" }); } catch (e) { nonString = e; }
+  check("appendSetCookie: refuses a non-string header",
+    nonString !== null && nonString.code === "cookies/invalid-header");
+}
+
 function run() {
   testCleanHeaderParses();
+  testAppendSetCookieAccumulates();
   testEmptyHeader();
   testDuplicateNameCookieTossing();
   testProtoKeyDoesNotPollute();
