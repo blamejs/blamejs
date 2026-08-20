@@ -1719,6 +1719,49 @@ async function testDmarcFailureAboveAFoundRecordKeepsIt() {
         below.result === "temperror", "result=" + below.result);
 }
 
+// Withholding relaxed alignment is for a name the walk could not READ — such a
+// name may publish `psd=n`, a boundary narrower than the Public Suffix List.
+// A MALFORMED record is not that: the walk read it, and a syntactically invalid
+// record declares no boundary at all. Treating it as an unread name forces both
+// alignment modes to strict and fails mail that aligns correctly under the
+// closer record's own relaxed policy.
+async function testDmarcMalformedAncestorKeepsRelaxedAlignment() {
+  var dns = async function (host) {
+    if (host === "_dmarc.b.example.com") return [["v=DMARC1; p=reject; sp=reject; aspf=r"]];
+    if (host === "_dmarc.example.com")   return [["v=DMARC1; totally-not-a-dmarc-record"]];
+    return null;
+  };
+  var rv = await b.mail.dmarc.evaluate({
+    from: "alice@a.b.example.com",
+    spf: { result: "pass", domain: "c.b.example.com" },
+    dkim: [],
+    dnsLookup: dns,
+  });
+  check("dmarc: a malformed ancestor does not force strict alignment",
+        rv.alignment.spf === true,
+        "spfAligned=" + rv.alignment.spf + " result=" + rv.result);
+  check("dmarc: mail aligned under the closer record still passes",
+        rv.result === "pass" && rv.recommendedAction !== "reject",
+        "result=" + rv.result + " action=" + rv.recommendedAction);
+
+  // The contrast that keeps the rule honest: a name that could not be READ at
+  // all still withholds relaxed alignment, because it may carry the boundary.
+  var unreadable = async function (host) {
+    if (host === "_dmarc.b.example.com") return [["v=DMARC1; p=reject; sp=reject; aspf=r"]];
+    if (host === "_dmarc.example.com")   throw new Error("SERVFAIL");
+    return null;
+  };
+  var rvUnread = await b.mail.dmarc.evaluate({
+    from: "alice@a.b.example.com",
+    spf: { result: "pass", domain: "c.b.example.com" },
+    dkim: [],
+    dnsLookup: unreadable,
+  });
+  check("dmarc: an UNREAD ancestor still withholds relaxed alignment",
+        rvUnread.alignment.spf === false,
+        "spfAligned=" + rvUnread.alignment.spf + " result=" + rvUnread.result);
+}
+
 async function testDmarcMalformedAncestorDoesNotVoidAnOwnPolicy() {
   // A domain owner controls what they publish, not what their parent publishes.
   // Once the Author Domain's own record is in hand, its `p=` applies directly
@@ -4306,6 +4349,7 @@ async function run() {
   await testDmarcPsdYBoundaryConstrainsAlignment();
   await testDmarcIncompleteWalkDoesNotGrantRelaxedAlignment();
   await testDmarcFailureAboveAFoundRecordKeepsIt();
+  await testDmarcMalformedAncestorKeepsRelaxedAlignment();
   await testDmarcMalformedAncestorDoesNotVoidAnOwnPolicy();
   await testDmarcEmptyLabelIsNotRepaired();
   await testDmarcEvaluateNpPolicy();

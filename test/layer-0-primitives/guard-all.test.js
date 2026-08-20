@@ -817,6 +817,19 @@ async function testGuardFamilyDispositionFollowsPolicy() {
     return g.KIND === "filename" ? { filename: text }
                                  : { bytes: Buffer.from(text, "utf8") };
   }
+  // Inject the character where the document stays WELL-FORMED, which for a
+  // line-oriented format means inside the last line rather than after the
+  // trailing newline. Appending past it starts a new bare line, and a guard
+  // that parses its subject then reports a parse failure alongside the
+  // character finding — two added kinds, so the cell is recorded as unreachable
+  // and every one of that guard's policies goes unprobed. YAML lost all twelve
+  // of its cells that way, and a real defect sat behind the gap: seven of them
+  // refused where the profile declared strip or audit.
+  function inject(carrier, ch) {
+    return carrier.endsWith("\n")
+      ? carrier.slice(0, -1) + ch + "\n"
+      : carrier + ch;
+  }
   for (var i = 0; i < guards.length; i += 1) {
     var g = guards[i];
     var carrier = g.KIND === "filename"
@@ -840,7 +853,7 @@ async function testGuardFamilyDispositionFollowsPolicy() {
         var got;
         try {
           got = await g.gate({ profile: profile })
-                       .check(ctxFor(g, carrier + CHARS[key].ch));
+                       .check(ctxFor(g, inject(carrier, CHARS[key].ch)));
         } catch (_e2) {
           unprobed.push(g.NAME + " " + profile + "." + key + ": check threw");
           continue;
