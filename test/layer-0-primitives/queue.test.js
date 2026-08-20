@@ -467,6 +467,14 @@ async function testSqsBackendUnsupportedSurfaces() {
     await rejectsCode("sqs: enqueueFlow rejects FLOW_UNSUPPORTED",
                       b.queue.enqueueFlow({ queueName: "q", children: [{ name: "a", payload: {} }] }),
                       "FLOW_UNSUPPORTED");
+    // tick drives the framework-side lifecycle — lease by count, complete/fail
+    // by jobId, framework backoff and DLQ. SQS completes by receiptHandle and
+    // owns redelivery server-side, so tick would call complete/fail without the
+    // receipt and let SQS redeliver messages the handler already processed.
+    // It refuses for the same reason consume does not drive sqs either.
+    await rejectsCode("sqs: tick rejects TICK_UNSUPPORTED",
+                      b.queue.tick({ queue: "q", handler: function () {} }),
+                      "TICK_UNSUPPORTED");
   } finally {
     b.queue._resetForTest();
   }
@@ -493,7 +501,283 @@ function testBootFromEnvRedisWiresBackend() {
   }
 }
 
+// #576 — b.queue.tick: drain what is due, then return. The shape a scheduled
+// invocation needs, where a resident consumer and a background timer are the
+// two things the runtime cannot host.
+async function testTickDrainsAndReturns() {
+  var tmpDir = _tmp();
+  b.queue._resetForTest();
+  await setupTestDb(tmpDir);
+  try {
+    b.queue.init({ backends: { primary: { protocol: "local" } } });
+    for (var i = 0; i < 5; i++) await b.queue.enqueue("tick-q", { id: i });
+
+    var seen = [];
+    var r = await b.queue.tick({
+      queue:   "tick-q",
+      max:     3,
+      handler: async function (job) { seen.push(job.payload.id); },
+    });
+
+    check("tick: leases at most max", r.leased === 3 && seen.length === 3);
+    check("tick: counts successes", r.succeeded === 3 && r.failed === 0);
+    check("tick: reports the queue depth", r.queueDepth === 2);
+    // The batch came back full, so more may be due — this is the tick-again
+    // signal, not the depth, which also counts jobs that are not yet available.
+    check("tick: a full batch signals there may be more", r.mayHaveMore === true);
+
+    // Nothing resident: no consumer was registered, so a shutdown has nothing
+    // to drain and returns immediately. This is the property the issue is
+    // about — consume() would have left a loop and a sweep timer behind.
+    var second = await b.queue.tick({
+      queue:   "tick-q",
+      max:     10,
+      handler: async function (job) { seen.push(job.payload.id); },
+    });
+    check("tick: a second tick drains the rest", second.leased === 2 && second.succeeded === 2);
+    check("tick: the depth reaches zero", second.queueDepth === 0);
+    check("tick: a short batch signals no more", second.mayHaveMore === false);
+    check("tick: every job ran exactly once",
+      seen.slice().sort().join(",") === "0,1,2,3,4");
+
+    var empty = await b.queue.tick({
+      queue: "tick-q", handler: async function () {},
+    });
+    check("tick: an empty queue is not an error",
+      empty.leased === 0 && empty.succeeded === 0 &&
+      empty.queueDepth === 0 && empty.mayHaveMore === false);
+  } finally {
+    await b.queue.shutdown({ timeoutMs: 2000 });
+    await teardownTestDb(tmpDir);
+  }
+}
+
+// A delayed job is counted by the queue's depth but is not leasable yet. A
+// caller looping on depth would spin through empty ticks until it came due, so
+// the tick-again signal is whether the batch came back FULL, not the depth.
+// A backend that REFUSES to record the outcome — complete or fail rejecting
+// after its own retries — leaves the job inflight and this tick not knowing
+// whether the handler succeeded. Counting that as an ordinary handler failure
+// would report a terminal state the job never reached AND bury an
+// infrastructure problem in a routine tally.
+async function testTickReportsAnUnsettledJob() {
+  var tmpDir = _tmp();
+  b.queue._resetForTest();
+  await setupTestDb(tmpDir);
+  try {
+    b.queue.init({ backends: { primary: { protocol: "local" } } });
+    await b.queue.enqueue("tick-unsettled-q", { id: 1 });
+
+    // Break the settle path underneath the driver, the way an exhausted
+    // breaker or a dead database does.
+    var backend = b.queue._backendForTest({});
+    var realComplete = backend.complete;
+    backend.complete = function () { return Promise.reject(new Error("store unreachable")); };
+    var r;
+    try {
+      r = await b.queue.tick({
+        queue: "tick-unsettled-q", handler: async function () { /* succeeds */ },
+      });
+    } finally { backend.complete = realComplete; }
+
+    check("unsettled: the tick still resolves", r && r.leased === 1);
+    check("unsettled: it is not counted as a handler failure", r.failed === 0);
+    check("unsettled: it is reported as unsettled", r.unsettled === 1);
+    check("unsettled: and not as a success", r.succeeded === 0);
+  } finally {
+    await b.queue.shutdown({ timeoutMs: 2000 });
+    await teardownTestDb(tmpDir);
+  }
+}
+
+// tick promises to leave nothing running, but init starts a 30-second sweep
+// timer of its own. In a frozen isolate that timer either never fires or fires
+// inside a LATER invocation, touching the backend outside any request the
+// platform accounts for — so a scheduled runtime needs to turn it off, and
+// tick's own per-invocation sweep means nothing is lost by doing so.
+async function testInitCanRunWithoutASweepTimer() {
+  var tmpDir = _tmp();
+  b.queue._resetForTest();
+  await setupTestDb(tmpDir);
+  try {
+    b.queue.init({
+      backends:        { primary: { protocol: "local" } },
+      sweepIntervalMs: 0,
+    });
+    await b.queue.enqueue("no-timer-q", { id: 1 });
+    var r = await b.queue.tick({ queue: "no-timer-q", handler: async function () {} });
+    check("timerless init: tick still drains the queue", r.leased === 1 && r.succeeded === 1);
+  } finally {
+    await b.queue.shutdown({ timeoutMs: 2000 });
+    await teardownTestDb(tmpDir);
+  }
+
+  b.queue._resetForTest();
+  var bad = null;
+  try {
+    b.queue.init({ backends: { primary: { protocol: "local" } }, sweepIntervalMs: -1 });
+  } catch (e) { bad = e; }
+  check("timerless init: a negative sweep interval is refused",
+    bad && bad.code === "INVALID_CONFIG");
+  b.queue._resetForTest();
+  var frac = null;
+  try {
+    b.queue.init({ backends: { primary: { protocol: "local" } }, sweepIntervalMs: 1.5 });
+  } catch (e) { frac = e; }
+  check("timerless init: a fractional sweep interval is refused",
+    frac && frac.code === "INVALID_CONFIG");
+
+  // The refusal must leave NOTHING behind. `backends` and `defaultBackend` are
+  // module-level and a later init does not clear them, so validating after
+  // assignment would leave the rejected configuration's queues visible through
+  // listBackends() and selectable by name.
+  var leaked = null;
+  try { b.queue.listBackends(); } catch (e) { leaked = e; }
+  check("timerless init: a refused init registered no backends",
+    leaked && leaked.code === "NOT_INITIALIZED");
+  b.queue._resetForTest();
+}
+
+async function testTickDelayedJobDoesNotLoop() {
+  var tmpDir = _tmp();
+  b.queue._resetForTest();
+  await setupTestDb(tmpDir);
+  try {
+    b.queue.init({ backends: { primary: { protocol: "local" } } });
+    await b.queue.enqueue("tick-delay-q", { id: "now" });
+    await b.queue.enqueue("tick-delay-q", { id: "later" }, { delaySeconds: 3600 });
+
+    var r = await b.queue.tick({
+      queue: "tick-delay-q", max: 10, handler: async function () {},
+    });
+    check("delayed: the due job ran", r.leased === 1 && r.succeeded === 1);
+    check("delayed: the depth still counts the delayed job", r.queueDepth === 1);
+    // The signal that matters: the batch was NOT full, so there is nothing
+    // more to take right now even though the depth is non-zero.
+    check("delayed: mayHaveMore is false despite a non-zero depth",
+      r.mayHaveMore === false);
+  } finally {
+    await b.queue.shutdown({ timeoutMs: 2000 });
+    await teardownTestDb(tmpDir);
+  }
+}
+
+// An invocation that dies between leasing a job and settling it leaves that
+// job inflight. What normally re-pends it is the 30-second sweep timer started
+// at init — and that timer never fires in the runtime tick exists for, because
+// the isolate is frozen between invocations. So tick has to sweep for itself,
+// or a killed invocation strands its job permanently.
+async function testTickRecoversAnAbandonedLease() {
+  var tmpDir = _tmp();
+  b.queue._resetForTest();
+  await setupTestDb(tmpDir);
+  try {
+    b.queue.init({ backends: { primary: { protocol: "local" } } });
+    await b.queue.enqueue("tick-abandon-q", { id: "stranded" });
+
+    // Strand the job the way a killed invocation does: lease it with a lease
+    // that expires almost immediately and never settle it. A consumer whose
+    // handler never resolves, then cancelled, leaves exactly that row state —
+    // inflight, lease expired, nothing coming to complete or fail it.
+    var never = new Promise(function () { /* deliberately never settles */ });
+    var consumer = b.queue.consume("tick-abandon-q",
+      function () { return never; },
+      { concurrency: 1, leaseDurationMs: 1, pollIntervalMs: 10, fastPollMs: 5 });
+    await helpers.waitUntil(function () { return consumer.inFlight.size === 1; }, {
+      timeoutMs: 4000, label: "tick abandon: the job was leased",
+    });
+    consumer.cancel();
+    // Past the 1ms lease — the row is now an expired inflight with no owner.
+    await helpers.passiveObserve(60, "tick abandon: the lease expires unsettled");
+
+    // The sweep timer would recover this after 30s, but a scheduled runtime is
+    // frozen between invocations and never runs it. tick sweeps for itself, so
+    // the abandoned job is leasable again on the next invocation.
+    var handled = [];
+    var r = await b.queue.tick({
+      queue:   "tick-abandon-q",
+      handler: async function (job) { handled.push(job.payload.id); },
+    });
+    check("abandon: tick recovers a job whose lease expired unsettled",
+      r.leased === 1 && r.succeeded === 1 && handled[0] === "stranded");
+    check("abandon: nothing is left behind", r.queueDepth === 0);
+  } finally {
+    await b.queue.shutdown({ timeoutMs: 2000 });
+    await teardownTestDb(tmpDir);
+  }
+}
+
+// A failing handler must take the same route consume() takes: attempt
+// accounting, deterministic backoff, and the DLQ once the attempts run out.
+// That machinery is the reason the issue exists — a caller who cannot reach it
+// reimplements it.
+async function testTickAppliesRetryAndDlq() {
+  var tmpDir = _tmp();
+  b.queue._resetForTest();
+  await setupTestDb(tmpDir);
+  try {
+    b.queue.init({ backends: { primary: { protocol: "local" } } });
+    await b.queue.enqueue("tick-fail-q", { id: "boom" }, { maxAttempts: 1 });
+
+    var r = await b.queue.tick({
+      queue:   "tick-fail-q",
+      handler: async function () { throw new Error("handler exploded"); },
+    });
+    check("tick: a throwing handler counts as failed", r.leased === 1 && r.failed === 1);
+    check("tick: an exhausted job moves to the DLQ", r.movedToDlq === 1);
+
+    var dlq = await b.queue.dlqList("tick-fail-q");
+    check("tick: the failed job is queryable in the DLQ", dlq.length === 1);
+  } finally {
+    await b.queue.shutdown({ timeoutMs: 2000 });
+    await teardownTestDb(tmpDir);
+  }
+}
+
+// tick is async, so its refusals REJECT rather than throw synchronously.
+async function testTickValidation() {
+  b.queue._resetForTest();
+  var uninit = null;
+  try { await b.queue.tick({ queue: "q", handler: function () {} }); } catch (e) { uninit = e; }
+  check("tick: refuses before init", uninit && uninit.code === "NOT_INITIALIZED");
+}
+
+async function testTickOptionRefusals() {
+  var tmpDir = _tmp();
+  b.queue._resetForTest();
+  await setupTestDb(tmpDir);
+  try {
+    b.queue.init({ backends: { primary: { protocol: "local" } } });
+    async function code(opts) {
+      try { await b.queue.tick(opts); return null; } catch (e) { return e.code; }
+    }
+    check("tick: refuses a missing queue",
+      (await code({ handler: function () {} })) === "MISSING_QUEUE");
+    check("tick: refuses a missing handler",
+      (await code({ queue: "q" })) === "INVALID_HANDLER");
+    check("tick: refuses a non-integer max",
+      (await code({ queue: "q", handler: function () {}, max: 1.5 })) === "BAD_MAX");
+    check("tick: refuses a zero max",
+      (await code({ queue: "q", handler: function () {}, max: 0 })) === "BAD_MAX");
+    check("tick: refuses a negative leaseMs",
+      (await code({ queue: "q", handler: function () {}, leaseMs: -1 })) === "BAD_LEASE");
+    check("tick: refuses a zero concurrency",
+      (await code({ queue: "q", handler: function () {}, concurrency: 0 })) === "BAD_CONCURRENCY");
+  } finally {
+    await b.queue.shutdown({ timeoutMs: 2000 });
+    await teardownTestDb(tmpDir);
+  }
+}
+
 async function run() {
+  await testTickDrainsAndReturns();
+  await testTickReportsAnUnsettledJob();
+  await testInitCanRunWithoutASweepTimer();
+  await testTickDelayedJobDoesNotLoop();
+  await testTickRecoversAnAbandonedLease();
+  await testTickAppliesRetryAndDlq();
+  await testTickValidation();
+  await testTickOptionRefusals();
   testBootFromEnvRejectsUnknownProtocol();
   testBootFromEnvRedisRequiresUrl();
   testBootFromEnvLocalDefault();
