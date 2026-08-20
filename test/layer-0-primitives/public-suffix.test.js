@@ -345,6 +345,61 @@ function testCanonicalDomain() {
         b.publicSuffix.canonicalDomain("Example.COM.") === "example.com");
   check("canonicalDomain is idempotent on an already-canonical host",
         b.publicSuffix.canonicalDomain("example.com") === "example.com");
+  // The root marker of an absolute name need not be an ASCII dot. UTS #46 maps
+  // U+3002 (and U+FF0E, U+FF61) to ".", so those spellings only BECOME a
+  // trailing dot during IDN normalization — after the one place that strips it.
+  // Returning `xn--mnchen-3ya.example.` from a function documented to strip the
+  // trailing dot leaves every caller to compensate, and two of them did:
+  // `b.mail.dmarc.evaluate` compared an authenticated domain against an Author
+  // Domain in a different canonical form, so a message aligned with itself
+  // failed alignment.
+  check("canonicalDomain strips a UTS #46 root marker, not just an ASCII dot",
+        b.publicSuffix.canonicalDomain("münchen.example。") === "xn--mnchen-3ya.example",
+        JSON.stringify(b.publicSuffix.canonicalDomain("münchen.example。")));
+  check("canonicalDomain agrees across every spelling of one absolute name",
+        b.publicSuffix.canonicalDomain("münchen.example。") ===
+        b.publicSuffix.canonicalDomain("münchen.example.") &&
+        b.publicSuffix.canonicalDomain("münchen.example.") ===
+        b.publicSuffix.canonicalDomain("münchen.example"));
+  // At most ONE root marker comes off, whichever spelling it used. Two of them
+  // is an empty final label, and removing both would hand the caller a
+  // different, real domain than the one they asked about — the same
+  // repair-instead-of-refuse mistake the empty-label rule exists to stop.
+  // Every MIXED spelling too. A doubled ASCII pair and a doubled U+3002 pair
+  // are both caught by the pre-existing `..` check once converted, so testing
+  // only those two proves nothing about the at-most-one-marker guard — the
+  // guard is what catches an ASCII dot followed by a mapped marker, where the
+  // first comes off before conversion and the second only appears after it.
+  var doubledMarkers = [
+    "example.com..", "example.com。。", "example.com．．", "example.com｡｡",
+    "example.com.。", "example.com。.", "example.com.．", "example.com．.",
+    "example.com。．", "example.com．。", "example.com.｡", "example.com｡.",
+    "münchen.example..", "münchen.example。。", "münchen.example.。", "münchen.example。.",
+  ];
+  var admitted = doubledMarkers.filter(function (d) {
+    return b.publicSuffix.canonicalDomain(d) !== "";
+  });
+  check("canonicalDomain refuses every spelling of a doubled root marker",
+        admitted.length === 0,
+        "admitted: " + admitted.map(function (d) {
+          return JSON.stringify(d) + " -> " + JSON.stringify(b.publicSuffix.canonicalDomain(d));
+        }).join(", "));
+
+  // The absolute spelling of a maximum-length name is the same name. Measuring
+  // the root marker as a character refused it in every absolute spelling while
+  // accepting the relative one.
+  var maxLabel = "a".repeat(63);
+  var max253 = maxLabel + "." + maxLabel + "." + maxLabel + "." + "a".repeat(61);
+  check("the max-length fixture is exactly 253 characters", max253.length === 253,
+        "length=" + max253.length);
+  var maxSpellings = [".", "。", "．", "｡"].filter(function (m) {
+    return b.publicSuffix.canonicalDomain(max253 + m) !== max253;
+  });
+  check("canonicalDomain accepts a maximum-length name in every absolute spelling",
+        maxSpellings.length === 0,
+        "refused with: " + maxSpellings.map(function (m) {
+          return JSON.stringify(m) + " -> " + JSON.stringify(b.publicSuffix.canonicalDomain(max253 + m));
+        }).join(", "));
   check("canonicalDomain U-label and A-label converge",
         b.publicSuffix.canonicalDomain("bücher.de") === "xn--bcher-kva.de" &&
         b.publicSuffix.canonicalDomain("xn--bcher-kva.de") === "xn--bcher-kva.de");
@@ -364,6 +419,118 @@ function testCanonicalDomain() {
         b.publicSuffix.canonicalDomain(null) === "");
 }
 
+// ONE definition of "is this a domain name", across the three primitives that
+// answer it. b.publicSuffix owns the rule; b.network.dns and b.mail.dmarc route
+// through it. They drifted apart exactly once — each removed a root marker of
+// its own before delegating, so between them two came off and a name with an
+// empty final label became a real, separately-owned one that the resolver then
+// queried and cached, and that DMARC discovered a policy under.
+//
+// The invariant that catches that is not "each layer is correct" but "no layer
+// accepts what the owner refuses" — and it has to actually DRIVE each layer.
+// Checking only DNS would still pass while the mail layer regressed, which is
+// precisely the cross-layer drift this exists to stop.
+// The 253-octet ceiling is a WIRE-form bound, so it has to be measured on the
+// form that goes on the wire. Measuring the input instead lets an
+// internationalized name through whose A-label expansion crosses the limit:
+// five 44-character labels are 224 characters in and 254 octets out, with every
+// individual label a legal 50 octets, so a per-label check does not catch it
+// either. The name is unrepresentable in DNS, and a caller handed one back
+// treats it as real — which is how it reached a DMARC walk that stepped over
+// the unqueryable target and applied a policy from a shorter ancestor.
+function testCanonicalDomainMeasuresTheConvertedForm() {
+  var wide = [];
+  for (var i = 0; i < 5; i += 1) wide.push("ü".repeat(44));
+  var raw = wide.join(".");
+  check("fixture: under the limit as characters, over it as octets",
+        raw.length <= 253 &&
+        b.publicSuffix.canonicalDomain(raw.slice(0, 10) + ".example").length > 0,
+        "rawChars=" + raw.length);
+
+  var out = b.publicSuffix.canonicalDomain(raw);
+  check("canonicalDomain refuses a name whose A-label form exceeds 253 octets",
+        out === "", "returned=" + JSON.stringify(out.slice(0, 40)) +
+        " len=" + out.length);
+
+  // The boundary still admits a name that converts to exactly 253.
+  var fits = null;
+  for (var w = 44; w >= 20 && fits === null; w -= 1) {
+    var cand = [];
+    for (var j = 0; j < 5; j += 1) cand.push("ü".repeat(w));
+    var c = b.publicSuffix.canonicalDomain(cand.join("."));
+    if (c && c.length >= 240 && c.length <= 253) fits = c;
+  }
+  check("canonicalDomain still accepts an internationalized name that fits",
+        fits !== null && fits.length <= 253,
+        "len=" + (fits && fits.length));
+}
+
+async function testDomainDefinitionAgreesAcrossPrimitives() {
+  // EVERY rejection class canonicalDomain has, not just the one the last bug
+  // came from. A fixture drawn from a single family passes while the layers
+  // disagree about all the others — which is what happened: the root-marker
+  // rows agreed while `example.com/evil`, `a\u0000.com` and `a b.com` were
+  // refused here and encoded into DNS query labels over there.
+  var HOSTILE = [
+    // empty label / root marker
+    "example.com..", "example.com。。", "example.com.。", "example.com。.",
+    "example.com．．", "example.com｡｡", "münchen.example..", "münchen.example。。",
+    "evil..example.com", ".example.com", "a..b",
+    // URL-structural delimiters — domainToASCII TRUNCATES at these, so a name
+    // carrying one can masquerade as a trusted prefix of itself
+    "example.com/evil", "example.com?x", "example.com#f", "example.com\\x",
+    "example.com:80", "user@example.com", "[example.com]",
+    // characters domainToASCII itself refuses, which no hand-written list of
+    // "bad characters" reliably reproduces — the reason the rule is asked of
+    // canonicalDomain rather than mirrored
+    // (a quote and braces are NOT here: domainToASCII permits them, so the
+    // owner accepts them and there is nothing for the other layers to disagree
+    // with. Putting them in would assert about the owner's rule rather than
+    // about agreement, which is what this test is for.)
+    "a%b.com", "a^b.com", "a|b.com", "a<b.com", "a>b.com",
+    // control bytes and whitespace
+    "a\u0000.com", "a b.com", "a\tb.com", "a\nb.com", "example.com",
+    // over the RFC 1035 name ceiling. A 64-octet LABEL is deliberately absent:
+    // canonicalDomain caps the whole name at 253 but says nothing about label
+    // length, so it accepts one — the wire encoder is what refuses that, and
+    // this invariant only claims that nothing accepts what the owner refuses.
+    "a".repeat(250) + "." + "b".repeat(250) + ".com",
+  ];
+  var refused = HOSTILE.filter(function (h) { return b.publicSuffix.canonicalDomain(h) === ""; });
+  check("the hostile fixture set is one b.publicSuffix actually refuses",
+        refused.length === HOSTILE.length,
+        "owner accepted: " + HOSTILE.filter(function (h) {
+          return b.publicSuffix.canonicalDomain(h) !== "";
+        }).join(", "));
+
+  var dnsAdmitted = refused.filter(function (h) {
+    try { b.network.dns._validateHostShape(h, "probe"); return true; }
+    catch (_e) { return false; }
+  });
+  check("no b.network.dns entry point accepts a name b.publicSuffix refuses",
+        dnsAdmitted.length === 0,
+        "admitted: " + dnsAdmitted.map(function (h) { return JSON.stringify(h); }).join(", "));
+
+  var mailAdmitted = [];
+  for (var i = 0; i < refused.length; i += 1) {
+    var accepted = true;
+    try {
+      await b.mail.dmarc.evaluate({
+        from: "alice@" + refused[i],
+        spf: { result: "pass", domain: "elsewhere.test" },
+        dkim: [],
+        dnsLookup: async function () { return null; },
+      });
+    } catch (e) {
+      if (/dmarc-bad-from/.test(e.code || "")) accepted = false;
+    }
+    if (accepted) mailAdmitted.push(refused[i]);
+  }
+  check("b.mail.dmarc.evaluate accepts no Author Domain b.publicSuffix refuses",
+        mailAdmitted.length === 0,
+        "admitted: " + mailAdmitted.map(function (h) { return JSON.stringify(h); }).join(", "));
+}
+
 async function run() {
   testExactMatch();
   testInputItselfIsPublicSuffix();
@@ -380,6 +547,8 @@ async function run() {
   testLookupSource();
   testCaseInsensitive();
   testCanonicalDomain();
+  testCanonicalDomainMeasuresTheConvertedForm();
+  await testDomainDefinitionAgreesAcrossPrimitives();
 }
 
 module.exports = { run: run };

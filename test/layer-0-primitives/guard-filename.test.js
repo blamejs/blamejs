@@ -888,7 +888,104 @@ function testShapeDetectorsAgreeWithThePatternsTheyReplaced() {
         astral === "a_b", astral);
 }
 
+// The gate documents a floor: path-traversal, null-byte, NTFS-ADS, UNC and
+// overlong UTF-8 always refuse, because none of them can be repaired into a
+// safe name — a UNC prefix reaches another host, a traversal segment escapes
+// the directory, a NUL truncates the name at whichever consumer reads it first,
+// and an ADS suffix names a second stream on the same file.
+//
+// The floor has to hold against the POLICIES, not merely alongside them. When
+// the gate began dispositioning each finding from its own policy, reading these
+// kinds from `traversalPolicy` and `adsPolicy` meant an operator who set those
+// to `audit` — a supported override, and what `permissive` is closest to —
+// served the name unchanged. The classes are refused before any policy is
+// consulted.
+async function testGuardFilenameFloorIgnoresPolicyOverrides() {
+  var override = {
+    profile: "permissive",
+    traversalPolicy:      "audit",
+    pathSeparatorsPolicy: "audit",
+    adsPolicy:            "audit",
+    nullBytePolicy:       "audit",
+    controlPolicy:        "audit",
+  };
+  var floor = [
+    ["UNC path",       "\\\\server\\share\\f.txt"],
+    ["traversal",      "../etc/passwd"],
+    ["NTFS ADS",       "f.txt:stream"],
+    ["null byte",      "f\u0000.txt"],
+  ];
+  for (var i = 0; i < floor.length; i += 1) {
+    var d = await b.guardFilename.gate(override).check({ filename: floor[i][1] });
+    check("guardFilename floor: " + floor[i][0] + " refuses even with its policy set to audit",
+          d.action === "refuse", floor[i][0] + " -> " + d.action);
+  }
+
+  // The repairable classes still repair, or the floor would just be a blanket
+  // refusal wearing a policy map.
+  var clean = await b.guardFilename.gate({ profile: "balanced" })
+                     .check({ filename: "rep\u200Bort.txt" });
+  check("guardFilename: a zero-width character is still repaired at balanced",
+        clean.action === "sanitize" && clean.sanitized === "report.txt",
+        clean.action + " " + JSON.stringify(clean.sanitized));
+
+  // `sanitize()` is a whole-name transform under the profile, not a per-finding
+  // one: a name that enters sanitization because of a `strip` class also has
+  // the profile's other repairs applied, including to a class whose own policy
+  // was `audit`. That is the verb's contract rather than something the gate
+  // decides, and the gate must not diverge from it \u2014 an operator who calls
+  // `b.guardFilename.sanitize()` directly has to get the same string back, or
+  // the gate is repairing to a rule nothing else in the guard implements.
+  var mixed = [
+    ["permissive", "dir/file?.txt"],
+    ["permissive", "ab/c?.txt"],
+    ["balanced",   "rep\u200Bort.txt"],
+  ];
+  for (var m = 0; m < mixed.length; m += 1) {
+    var verdict = await b.guardFilename.gate({ profile: mixed[m][0] })
+                         .check({ filename: mixed[m][1] });
+    if (verdict.action !== "sanitize") continue;
+    var direct = b.guardFilename.sanitize(mixed[m][1], { profile: mixed[m][0] });
+    check("guardFilename: the gate's repair equals sanitize() for " +
+          JSON.stringify(mixed[m][1]) + " at " + mixed[m][0],
+          verdict.sanitized === direct,
+          "gate=" + JSON.stringify(verdict.sanitized) + " verb=" + JSON.stringify(direct));
+  }
+}
+
+// `double-extension` fires on exactly the trigger `shell-exec-ext` does — a
+// last extension in SHELL_EXEC_EXTS — so it is the same finding seen twice and
+// must answer to the same policy. Leaving it unmapped sent it to the
+// conservative severity default, and `critical` refuses: a profile declaring
+// `shellExecExtPolicy: "audit"` then behaved as reject for precisely the
+// disguised-executable names the policy is about, and for nothing else.
+async function testGuardFilenameDoubleExtensionFollowsItsPolicy() {
+  var cases = [
+    ["balanced",   "invoice.pdf.exe"],
+    ["permissive", "invoice.pdf.exe"],
+    ["balanced",   "report.docx.bat"],
+  ];
+  for (var i = 0; i < cases.length; i += 1) {
+    var profile = cases[i][0];
+    var policy = b.guardFilename.PROFILES[profile].shellExecExtPolicy;
+    var d = await b.guardFilename.gate({ profile: profile }).check({ filename: cases[i][1] });
+    check("guardFilename: " + JSON.stringify(cases[i][1]) + " at " + profile +
+          " follows shellExecExtPolicy=" + policy,
+          policy !== "audit" || d.action !== "refuse",
+          "policy=" + policy + " action=" + d.action);
+  }
+
+  // strict still refuses — the policy there says reject, and this must not have
+  // widened into "a disguised executable is always allowed".
+  var strict = await b.guardFilename.gate({ profile: "strict" })
+                     .check({ filename: "invoice.pdf.exe" });
+  check("guardFilename: strict still refuses a disguised executable",
+        strict.action === "refuse", "action=" + strict.action);
+}
+
 async function run() {
+  await testGuardFilenameDoubleExtensionFollowsItsPolicy();
+  await testGuardFilenameFloorIgnoresPolicyOverrides();
   testOverLongNameIsRefusedUnderThisGuardsOwnRule();
   testShapeDetectorsAgreeWithThePatternsTheyReplaced();
   testGuardFilenameSurface();

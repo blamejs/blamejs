@@ -1340,6 +1340,304 @@ async function testDotSecureTransport() {
   } finally { dotSvcb.close(); await _drainOpenHandles(); }
 }
 
+// A DoH responder that also CAPTURES the query the framework emitted, so a
+// test can read the wire bytes the encoder produced rather than trusting that
+// a resolved address implies a well-formed question.
+function _startDohCapturingServer(cert, reply) {
+  var seen = [];
+  return new Promise(function (resolve) {
+    var srv = nodeHttps.createServer({
+      key:        cert.keyPem,
+      cert:       cert.certPem,
+      minVersion: "TLSv1.3",
+    }, function (req, res) {
+      req.on("error", function () { /* fixture best-effort */ });
+      var body = [];
+      req.on("data", function (c) { body.push(c); });
+      req.on("end", function () {
+        var q = req.url.indexOf("dns=") !== -1
+          ? Buffer.from(req.url.slice(req.url.indexOf("dns=") + 4), "base64url")
+          : Buffer.concat(body);
+        seen.push(q);
+        res.writeHead(200, { "content-type": "application/dns-message" });
+        res.end(reply || Buffer.alloc(0));
+      });
+    });
+    srv.on("error", function () { /* fixture best-effort */ });
+    srv.unref();
+    var close = _trackAndClosable(srv);
+    srv.listen(0, "127.0.0.1", function () {
+      resolve({ srv: srv, port: srv.address().port, seen: seen, close: close });
+    });
+  });
+}
+
+// The wire encoder must refuse a name it cannot express, not emit bytes that
+// mean something else.
+//
+// A label's length goes into a single octet, and RFC 1035 §4.1.4 gives the top
+// two bits of that octet meaning: `11` is a compression POINTER and `01` is an
+// unassigned label type (RFC 6891 §3). Writing a label's real length with no
+// 1..63 cap therefore lets a hostname with a 192-byte label put a forged
+// pointer into the question section, and one with a 64..191-byte label put an
+// unassigned type there — in both cases the query the upstream resolver reads
+// is not the query the caller asked for.
+//
+// The same encoder dropped empty labels, so `evil..example.com` was silently
+// asked for as `evil.example.com`, and truncated a non-ASCII code unit to its
+// low byte instead of converting the name to the A-label form its owner
+// published it under.
+// Every name a caller hands in leaves the validator in ONE canonical form,
+// whatever alphabet it arrived in. An internationalized name was already
+// lowercased and converted, but an ASCII one kept whatever case it was typed
+// in — so `Example.COM` and `example.com` took separate cache entries and made
+// separate upstream queries while putting byte-identical questions on the wire,
+// because the encoder lowercases either way. A cache keyed on a spelling rather
+// than on the name is a cache that misses on the same name.
+async function testDnsHostShapeCanonicalizesAsciiCase() {
+  var dnsMod = require("../../lib/network-dns.js");
+  var pairs = [
+    ["Example.COM",   "example.com"],
+    ["EXAMPLE.com",   "example.com"],
+    ["MiXeD.Example.Test", "mixed.example.test"],
+  ];
+  for (var i = 0; i < pairs.length; i += 1) {
+    var got = dnsMod._validateHostShape(pairs[i][0], "test");
+    check("host shape canonicalizes ASCII case: " + pairs[i][0],
+          got === pairs[i][1], "got=" + JSON.stringify(got));
+  }
+
+  // Absoluteness is part of the name, not of its spelling: a trailing root tells
+  // the resolver not to apply the search list, and losing it can resolve — and
+  // cache — a different name entirely.
+  var abs = dnsMod._validateHostShape("EXAMPLE.com.", "test");
+  check("host shape keeps the root marker while canonicalizing case",
+        abs === "example.com.", "got=" + JSON.stringify(abs));
+
+  // An IP literal is not a name and is passed through untouched.
+  check("host shape leaves an IPv4 literal alone",
+        dnsMod._validateHostShape("192.0.2.1", "test") === "192.0.2.1");
+  check("host shape leaves an IPv6 literal alone",
+        dnsMod._validateHostShape("2001:db8::1", "test") === "2001:db8::1");
+
+  // The root zone is a real name to query — `. NS` is how you ask for the root
+  // servers — and it encodes as the empty label list, which the wire encoder
+  // already supports. It is the one name that is nothing but a root marker, so
+  // a canonicalizer that refuses a bare root must not see it.
+  // Every UTS #46 spelling of it, not just the ASCII one. This module already
+  // treats U+3002 / U+FF0E / U+FF61 as equivalent to "." when they END a name,
+  // so a root zone that depends on which of the four the caller typed would be
+  // the same name resolving through one spelling and not another. All four
+  // normalize to the ASCII form, like every other name here.
+  // And the PUBLIC query APIs must accept it too, not just the shape check.
+  // Each of them runs its own LDH pass afterwards, and a name that clears
+  // validation at one entry point and is refused at another is the same defect
+  // this release fixed for internationalized names — one domain resolving
+  // through `resolve4` while `querySvcb` turned it away.
+  //
+  // Asserted on the gate itself rather than by calling the public APIs: driving
+  // `querySvcb(".")` for real would send a live root query, which is
+  // nondeterministic and slow-to-failing on an offline runner. `_validateLdh`
+  // is the exact check that was refusing, and each public entry passes its own
+  // primitive name and underscore policy to it, so covering both settings
+  // covers all three callers.
+  //
+  // A negative assertion needs the call to REACH the check it excludes: the
+  // first version of this passed an options bag those APIs reject, so
+  // `validateOpts` threw first and `code !== "dns/bad-host"` was true without
+  // the name ever being validated.
+  var LDH_CALLERS = [
+    ["dns.querySvcb (underscores allowed)", true],
+    ["resolveSecure (strict LDH)",          false],
+  ];
+  for (var a = 0; a < LDH_CALLERS.length; a += 1) {
+    var ldhErr = null;
+    try { dnsMod._validateLdh(".", LDH_CALLERS[a][0], LDH_CALLERS[a][1]); }
+    catch (e) { ldhErr = e.code; }
+    check("the LDH pass accepts the root zone for " + LDH_CALLERS[a][0],
+          ldhErr === null, "code=" + ldhErr);
+  }
+  // The gate still refuses what it is for — an empty label is not a root.
+  var stillRefused = null;
+  try { dnsMod._validateLdh("a..b", "probe", false); }
+  catch (e) { stillRefused = e.code; }
+  check("the LDH pass still refuses an empty label elsewhere in the name",
+        stillRefused === "dns/bad-host", "code=" + stillRefused);
+
+  var ROOTS = [".", "。", "．", "｡"];
+  for (var r = 0; r < ROOTS.length; r += 1) {
+    var rootErr = null;
+    var root = null;
+    try { root = dnsMod._validateHostShape(ROOTS[r], "test"); }
+    catch (e) { rootErr = e.code; }
+    check("host shape accepts the root zone spelled U+" +
+          ROOTS[r].codePointAt(0).toString(16).toUpperCase().padStart(4, "0"),
+          rootErr === null && root === ".",
+          "got=" + JSON.stringify(root) + " threw=" + rootErr);
+  }
+}
+
+async function testDnsWireEncoderRefusesUnencodableNames() {
+  var cert = await _mintSecureCert();
+  var reply = _buildReply("ok.example.com", 1, [
+    { name: "ok.example.com", type: 1, rdata: _aRdata(198, 51, 100, 9) },
+  ]);
+  _reset();
+  var doh = await _startDohCapturingServer(cert, reply);
+  dnsModule.useDnsOverHttps({ url: "https://127.0.0.1:" + doh.port + "/dns-query", ca: cert.caPem });
+  dnsModule.setLookupTimeoutMs(5000);
+  try {
+    // Every label length octet in a well-formed question is 1..63.
+    await dnsModule.resolve4("ok.example.com");
+    var wire = doh.seen[0];
+    var octets = [];
+    var off = 12;
+    while (wire && off < wire.length && wire[off] !== 0) {
+      octets.push(wire[off]);
+      off += 1 + wire[off];
+    }
+    check("dns wire: a normal name encodes label octets in 1..63",
+          octets.length > 0 && octets.every(function (n) { return n >= 1 && n <= 63; }),
+          "octets=" + JSON.stringify(octets));
+
+    // An internationalized name is converted rather than refused — its owner
+    // published it in the `xn--` form, so refusing it would fail a name that
+    // resolves. The query must carry the A-label, not the U-label's low bytes.
+    var beforeIdn = doh.seen.length;
+    await dnsModule.resolve4("café.example.com");
+    var idnWire = doh.seen[beforeIdn];
+    var firstLabel = idnWire ? idnWire.slice(13, 13 + idnWire[12]).toString("ascii") : null;
+    check("dns wire: a U-label is encoded as its A-label",
+          firstLabel === "xn--caf-dma", "first label=" + JSON.stringify(firstLabel));
+
+    // An absolute internationalized name need not end in an ASCII dot: UTS #46
+    // maps U+3002 and its siblings to ".", so the root marker only BECOMES a
+    // dot during conversion. Stripping the root once beforehand left that dot
+    // in place and the split then saw an empty final label, refusing a valid
+    // absolute spelling as malformed.
+    var beforeIdeographic = doh.seen.length;
+    var ideoErr = null;
+    try { await dnsModule.resolve4("café.example.com。"); }
+    catch (e) { ideoErr = e; }
+    var ideoWire = doh.seen[beforeIdeographic];
+    var ideoLabel = ideoWire ? ideoWire.slice(13, 13 + ideoWire[12]).toString("ascii") : null;
+    check("dns wire: a UTS #46 root marker is stripped after conversion, not before",
+          !(ideoErr && ideoErr.code === "dns/bad-host") && ideoLabel === "xn--caf-dma",
+          "code=" + (ideoErr && ideoErr.code) + " first label=" + JSON.stringify(ideoLabel));
+
+    // The marker also has to keep its MEANING. A resolver reads a trailing root
+    // as "already fully qualified, do not apply the search list", so a name
+    // that arrives absolute must leave absolute — canonicalization removes the
+    // marker whichever spelling it used, and recognising only the ASCII form
+    // would hand the system resolver a relative name for the search list to
+    // expand into a different, cacheable one.
+    var absoluteForms = [
+      ["ASCII root",   "café.example."],
+      ["UTS #46 root", "café.example。"],
+    ];
+    for (var a = 0; a < absoluteForms.length; a += 1) {
+      check("dns: " + absoluteForms[a][0] + " keeps the name absolute through canonicalization",
+            dnsModule._validateHostShape(absoluteForms[a][1], "probe") === "xn--caf-dma.example.",
+            JSON.stringify(dnsModule._validateHostShape(absoluteForms[a][1], "probe")));
+    }
+    check("dns: a relative internationalized name stays relative",
+          dnsModule._validateHostShape("café.example", "probe") === "xn--caf-dma.example",
+          JSON.stringify(dnsModule._validateHostShape("café.example", "probe")));
+
+    // A DOUBLED root marker is an empty final label and must be refused in
+    // every spelling. Two strips in sequence — one here, one inside
+    // canonicalDomain — turned `example.com。。` into `example.com.`, a real and
+    // separately-owned name, which lookup() then cached under. The plain ASCII
+    // `example.com..` spelling of the same mistake was still refused, so the
+    // two disagreed about what counts as a name.
+    var doubled = ["example.com..", "example.com。。", "example.com。.", "example.com.。",
+                   "example.com．．", "example.com｡｡", "café.example。。", "café.example.."];
+    for (var d = 0; d < doubled.length; d += 1) {
+      var derr = null;
+      var dout = null;
+      try { dout = dnsModule._validateHostShape(doubled[d], "probe"); }
+      catch (e) { derr = e; }
+      check("dns: a doubled root marker is refused — " + JSON.stringify(doubled[d]),
+            derr !== null && derr.code === "dns/bad-host",
+            derr ? "code=" + derr.code : "accepted as " + JSON.stringify(dout));
+    }
+
+    // The reachable guarantee is that the two spellings CONVERGE at the entry
+    // point, so nothing downstream can treat them differently — every later
+    // rule (the LDH pass, the 253-octet ceiling, the cache key) sees one
+    // canonical name. Pinning it here is what makes those rules' ASCII-only
+    // reading of the root safe rather than accidental.
+    var maxLabel = "a".repeat(63);
+    var maxName = maxLabel + "." + maxLabel + "." + maxLabel + "." + "a".repeat(61);   // 253
+    check("dns: the fixture is a maximum-length name",
+          maxName.length === 253, "length=" + maxName.length);
+    check("dns: both root spellings of a maximum-length name canonicalize identically",
+          dnsModule._validateHostShape(maxName + ".", "probe") ===
+          dnsModule._validateHostShape(maxName + "。", "probe"),
+          JSON.stringify(dnsModule._validateHostShape(maxName + "。", "probe")).slice(0, 48));
+    check("dns: and both keep the absolute form the resolver needs",
+          dnsModule._validateHostShape(maxName + "。", "probe").slice(-1) === ".",
+          "last char=" + JSON.stringify(dnsModule._validateHostShape(maxName + "。", "probe").slice(-1)));
+
+    // Converting at the encoder alone is not enough: resolveSecure and
+    // querySvcb run an LDH pass of their own first, and an LDH rule has no
+    // reading of a U-label. The canonical name has to reach them, or the same
+    // domain resolves through one entry point and is refused by another.
+    var ldhPaths = [
+      { name: "resolveSecure", call: function () { return dnsModule.resolveSecure("café.example.com"); } },
+      { name: "querySvcb",     call: function () { return dnsModule.querySvcb("café.example.com"); } },
+      { name: "queryHttps",    call: function () { return dnsModule.queryHttps("café.example.com"); } },
+    ];
+    // discoverEncrypted runs the LDH pass itself rather than inheriting it from
+    // the SVCB path underneath, so the canonical name has to reach it too — or
+    // one entry point resolves an internationalized name and its own caller
+    // refuses it.
+    //
+    // `insecureSystemResolverOnly: false` keeps it on the configured DoH
+    // transport, which is this test's loopback responder: the assertion is the
+    // name that went out, not merely that the call did not throw
+    // `dns/bad-host`. Asserting the absence of one error code would pass on
+    // any other failure, including one where nothing was queried at all — and
+    // dialling the host's real resolver would make a self-contained suite wait
+    // on the network.
+    var ddrMark = doh.seen.length;
+    try { await dnsModule.discoverEncrypted({ name: "café.example.com", insecureSystemResolverOnly: false }); }
+    catch (_ddrE) { /* the fixture answers with an A record, not SVCB — the query is the assertion */ }
+    var ddrSent = doh.seen[ddrMark];
+    var ddrLabel = ddrSent ? ddrSent.slice(13, 13 + ddrSent[12]).toString("ascii") : null;
+    check("dns wire: discoverEncrypted queries the A-label of an internationalized name",
+          ddrLabel === "xn--caf-dma",
+          "first label=" + JSON.stringify(ddrLabel));
+
+    for (var k = 0; k < ldhPaths.length; k += 1) {
+      var mark = doh.seen.length;
+      var perr = null;
+      try { await ldhPaths[k].call(); } catch (e) { perr = e; }
+      var sent = doh.seen[mark];
+      var lbl = sent ? sent.slice(13, 13 + sent[12]).toString("ascii") : null;
+      check("dns wire: " + ldhPaths[k].name + " resolves an internationalized name",
+            !(perr && perr.code === "dns/bad-host") && lbl === "xn--caf-dma",
+            "code=" + (perr && perr.code) + " first label=" + JSON.stringify(lbl));
+    }
+
+    var unencodable = [
+      { host: "a".repeat(192) + ".example.com", why: "a 192-byte label would be read as a compression pointer" },
+      { host: "a".repeat(64) + ".example.com",  why: "a 64-byte label would be read as an unassigned label type" },
+      { host: "evil..example.com",         why: "an empty label is refused, not repaired into another name" },
+    ];
+    for (var i = 0; i < unencodable.length; i += 1) {
+      var before = doh.seen.length;
+      var threw = null;
+      try { await dnsModule.resolve4(unencodable[i].host); } catch (e) { threw = e; }
+      check("dns wire: " + unencodable[i].why,
+            threw !== null && /dns\/bad-host/.test(threw.code || ""),
+            threw ? "code=" + threw.code
+                  : "no throw — emitted " + (doh.seen.length - before) + " quer(y/ies), " +
+                    "first label octet=" + (doh.seen[before] && doh.seen[before][12]));
+    }
+  } finally { doh.close(); await _drainOpenHandles(); }
+}
+
 // ======================================================================
 // DoH success paths — real HTTPS round-trip against a loopback responder
 // (_dohLookup GET + POST, _dohLookupSecure AD bit, _dohRawQuery, non-200)
@@ -1708,16 +2006,18 @@ async function testSystemRawQueryTimeout() {
 }
 
 async function testNativeErrorWraps() {
-  // resolve4 over the system resolver with an unparseable host → c-ares
-  // rejects with a native EBADNAME (no network); the framework wraps it as
-  // dns/resolve-failed via the non-DnsError branch.
+  // A host carrying spaces no longer reaches c-ares at all: the framework and
+  // b.publicSuffix now share one definition of which characters may appear in
+  // a host, and this is refused at the entry point. That is the stricter
+  // outcome — an unparseable name is not something to hand to a resolver — so
+  // the check moved rather than the rule.
   _reset();
   dnsModule.useSystemResolver();
   dnsModule.setLookupTimeoutMs(5000);
-  check("resolve4(system): native c-ares error wraps as dns/resolve-failed",
+  check("resolve4(system): a host with spaces is refused before the resolver sees it",
     await _throwsAsync(function () {
       return dnsModule.resolve4("bad host with spaces");
-    }, "dns/resolve-failed"));
+    }, "dns/bad-host"));
   _reset();
 
   // reverse of a reserved IP → native ENOTFOUND (no network); wrapped as
@@ -2389,15 +2689,18 @@ async function testDotRawCloseHandler() {
 // ======================================================================
 async function testResolve6SystemNativeError() {
   // resolve6 with no DoH/DoT configured routes through the system resolver's
-  // resolve6 (the family-6 arm); a malformed host rejects natively (no
-  // network) and wraps as dns/resolve-failed.
+  // resolve6 (the family-6 arm). A host carrying spaces is refused before that
+  // arm is reached — the framework and b.publicSuffix share one definition of
+  // which characters may appear in a host — so this pins the refusal, and the
+  // native-error wrap is covered by the reverse() case above, which uses a
+  // syntactically valid input.
   _reset();
   dnsModule.useSystemResolver();
   dnsModule.setLookupTimeoutMs(5000);
-  check("resolve6(system): family-6 resolver selected; native error wraps as dns/resolve-failed",
+  check("resolve6(system): a host with spaces is refused before the family-6 arm",
     await _throwsAsync(function () {
       return dnsModule.resolve6("bad host with spaces");
-    }, "dns/resolve-failed"));
+    }, "dns/bad-host"));
   _reset();
 }
 
@@ -2610,8 +2913,14 @@ async function testSystemRawQueryDefaultPortFallback() {
   var saved = dnsModule.getServers();
   try {
     // 127.99.88.77 is inside the loopback /8 with nothing bound to it, so the
-    // dial is refused immediately and the OS error names the port that was
-    // actually used — that string is the proof the 53 fallback ran.
+    // dial fails immediately and the OS error names the address:port that was
+    // actually dialled — that pair is the proof the 53 fallback ran.
+    //
+    // The assertion deliberately does NOT pin the refusal code. Which one the
+    // OS reports is environmental — a restricted or sandboxed host answers
+    // EACCES where an ordinary one answers ECONNREFUSED — and the invariant
+    // under test is the port that was chosen, not the kernel's word for
+    // "no".
     dnsModule.setServers(["[127.99.88.77]:x"]);
     dnsModule.setLookupTimeoutMs(5000);
     var err = null;
@@ -2619,7 +2928,7 @@ async function testSystemRawQueryDefaultPortFallback() {
     catch (e) { err = e; }
     check("querySvcb(system): a bracketed resolver entry with an unparseable port dials port 53",
       err !== null && err.code === "dns/system-failed" &&
-      err.message.indexOf("ECONNREFUSED 127.99.88.77:53") !== -1);
+      err.message.indexOf("127.99.88.77:53") !== -1);
     check("querySvcb(system): a refused resolver dial is classified transient",
       err !== null && err.permanent === false);
   } finally {
@@ -2646,21 +2955,21 @@ async function testDohDefaultPortFallback() {
     catch (e) { e0 = e; }
     check("resolve4(DoH): a port-less url dials the HTTPS default port 443",
       e0 !== null && e0.code === "dns/doh-failed" &&
-      e0.message.indexOf("ECONNREFUSED 127.99.88.77:443") !== -1);
+      e0.message.indexOf("127.99.88.77:443") !== -1);
 
     var e1 = null;
     try { await dnsModule.resolveSecure("sec.example.test", "A"); }
     catch (e) { e1 = e; }
     check("resolveSecure(DoH): a port-less url dials the HTTPS default port 443",
       e1 !== null && e1.code === "dns/doh-failed" &&
-      e1.message.indexOf("ECONNREFUSED 127.99.88.77:443") !== -1);
+      e1.message.indexOf("127.99.88.77:443") !== -1);
 
     var e2 = null;
     try { await dnsModule.querySvcb("svcb.example.test", { transport: "doh" }); }
     catch (e) { e2 = e; }
     check("querySvcb(DoH): a port-less url dials the HTTPS default port 443",
       e2 !== null && e2.code === "dns/doh-failed" &&
-      e2.message.indexOf("ECONNREFUSED 127.99.88.77:443") !== -1);
+      e2.message.indexOf("127.99.88.77:443") !== -1);
   } finally { await _drainOpenHandles(); }
 }
 
@@ -3234,6 +3543,8 @@ async function _runTests() {
 
   // real-handshake DoT / DoH transport round-trips + deadlines
   await testDotSecureTransport();
+  await testDnsHostShapeCanonicalizesAsciiCase();
+  await testDnsWireEncoderRefusesUnencodableNames();
   await testDohSecureTransport();
   await testDotDecodeAndErrorBranches();
   await testDohDecodeAndErrorBranches();

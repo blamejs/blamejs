@@ -135,7 +135,41 @@ async function drainOpenHandles(label, opts) {
   }
 }
 
+// Run a file's tests, then drain, WITHOUT letting the drain swallow why the
+// tests stopped.
+//
+// `try { ...tests... } finally { await drainOpenHandles(label) }` reads as
+// correct and is not: when the body throws, every teardown after the throw is
+// skipped, so the drain finds the servers those teardowns would have closed and
+// throws too — and a throw from a `finally` REPLACES the body's error. What
+// surfaces is "a handle leaked", which is a consequence; what caused it is
+// discarded. That is why such a failure reads as an unexplained flake: the
+// check that actually failed is never named, and the leak looks like the bug.
+//
+// Here the body's error wins and the drain's is appended to it, so a run that
+// failed for a reason reports that reason, and a run that only leaked still
+// reports the leak.
+async function withDrain(label, body) {
+  var bodyErr = null;
+  try {
+    await body();
+  } catch (e) {
+    bodyErr = e;
+  }
+  try {
+    await drainOpenHandles(label);
+  } catch (drainErr) {
+    if (!bodyErr) throw drainErr;
+    bodyErr.message += "\n  [the open-handle drain then reported: " +
+      ((drainErr && drainErr.message) || String(drainErr)) +
+      " — teardown after the failure above did not run, so this is likely a " +
+      "consequence of it rather than a separate leak]";
+  }
+  if (bodyErr) throw bodyErr;
+}
+
 module.exports = {
   listenOnRandomPort: b.testing.listenOnRandomPort,
   drainOpenHandles:   drainOpenHandles,
+  withDrain:          withDrain,
 };

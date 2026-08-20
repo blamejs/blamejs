@@ -394,6 +394,46 @@ async function testBadTransport() {
   check("missing lookup refused", threw && threw.code === "resolver/bad-transport");
 }
 
+async function testResolverCanonicalizesTheQueryName() {
+  // The resolver backs DKIM TXT, MTA-STS, DANE TLSA and BIMI discovery, and it
+  // caches on the name it was handed. A U-label and its A-label are the same
+  // DNS name, so handing both through must query and cache once — and the name
+  // that goes upstream has to be the A-label, which is what the zone answers
+  // for. Keying on the raw string instead splits one name across two entries
+  // and asks for a U-label nothing will answer.
+  var transport = _fakeTransport({
+    "xn--caf-dma.example|1": _aRecordResponse("xn--caf-dma.example", "192.0.2.7", 300, false),
+    // Answering the U-label spelling too, so the check that fails is the one
+    // about WHICH name went upstream rather than a parse error on a fixture
+    // the map happens not to cover.
+    "café.example|1":        _aRecordResponse("xn--caf-dma.example", "192.0.2.7", 300, false),
+  });
+  var r = b.network.dns.resolver.create({ transport: transport });
+  await r.queryA("café.example");
+  check("resolver: a U-label is queried in its A-label form",
+        transport._calls.length === 1 && transport._calls[0].name === "xn--caf-dma.example",
+        "calls=" + JSON.stringify(transport._calls.map(function (c) { return c.name; })));
+  await r.queryA("xn--caf-dma.example");
+  check("resolver: both spellings share one cache entry",
+        r.cacheSize() === 1 && transport._calls.length === 1,
+        "cacheSize=" + r.cacheSize() + " calls=" + transport._calls.length);
+
+  // An empty label makes the name invalid; it must be refused rather than
+  // repaired into the neighbouring domain the collapse would produce.
+  // Asserting the CODE, not merely that something threw: the validation lives
+  // in b.network.dns, which raises its own DnsError, and this API's contract is
+  // a ResolverError with a `resolver/*` code. A bare "it threw" check passes
+  // either way and would let the transport's error class out through the
+  // resolver's surface unnoticed.
+  var bad = null;
+  try { await r.queryA("evil..example"); } catch (e) { bad = e; }
+  check("resolver: a name with an empty label is refused as resolver/bad-input",
+        bad !== null && bad.code === "resolver/bad-input" &&
+        bad.constructor.name === "ResolverError",
+        bad ? "code=" + bad.code + " class=" + bad.constructor.name
+            : "no throw — calls=" + transport._calls.length);
+}
+
 async function testClearCache() {
   var transport = _fakeTransport({
     "example.com|1": _aRecordResponse("example.com", "192.0.2.1", 300, false),
@@ -452,6 +492,7 @@ async function run() {
   await testProfileResolution();
   await testPostureResolvesToStrict();
   await testBadTransport();
+  await testResolverCanonicalizesTheQueryName();
   await testClearCache();
   await testTtlCapping();
   await testTtlFloor();

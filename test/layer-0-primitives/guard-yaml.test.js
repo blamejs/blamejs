@@ -220,6 +220,45 @@ async function testGuardYamlGate() {
         hostile.action !== "serve");
 }
 
+// Each character class carries a policy per profile, and the gate's action has
+// to be the one that policy names — `strip` repairs, `audit` records, `reject`
+// refuses. Resolving the action from a finding's SEVERITY instead ignores the
+// policy entirely and refuses every class, so an operator who configured
+// `strip` gets their document rejected rather than cleaned.
+//
+// The carrier is a YAML scalar so the document still parses with the character
+// removed; the guard therefore reports exactly the character finding, and the
+// action under test is unambiguous.
+async function testGuardYamlGateFollowsCharacterPolicy() {
+  var CARRIER = { bidiPolicy: "\u202e", controlPolicy: "\u0001",
+                  zeroWidthPolicy: "\u200b", nullBytePolicy: "\u0000" };
+  var WANT = { reject: "refuse", strip: "sanitize", audit: "audit-only" };
+  var probed = 0;
+  var wrong = [];
+
+  for (var profile of Object.keys(b.guardYaml.PROFILES)) {
+    var policies = b.guardYaml.PROFILES[profile];
+    for (var key of Object.keys(CARRIER)) {
+      var declared = policies[key];
+      if (!declared || !WANT[declared]) continue;
+      var decision = await b.guardYaml.gate({ profile: profile }).check({
+        contentType: "application/yaml",
+        bytes: Buffer.from("key: va" + CARRIER[key] + "lue\n", "utf8"),
+      });
+      probed += 1;
+      if (decision.action !== WANT[declared]) {
+        wrong.push(profile + "." + key + "=" + declared +
+                   " → " + decision.action + " (want " + WANT[declared] + ")");
+      }
+    }
+  }
+
+  check("guard-yaml: every character policy was reachable to probe",
+        probed >= 8, "probed=" + probed);
+  check("guard-yaml: the gate action follows the declared policy",
+        wrong.length === 0, wrong.join("; "));
+}
+
 function testGuardYamlCompliancePosture() {
   var hipaa = b.guardYaml.compliancePosture("hipaa");
   check("compliancePosture('hipaa') sets reject policies",
@@ -315,6 +354,7 @@ async function run() {
   testGuardYamlCompliancePosture();
   testGuardYamlBadProfile();
   await testGuardYamlGate();
+  await testGuardYamlGateFollowsCharacterPolicy();
 }
 
 module.exports = { run: run };

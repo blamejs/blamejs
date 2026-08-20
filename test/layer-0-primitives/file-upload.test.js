@@ -668,6 +668,38 @@ async function testFilenameSafety() {
   await san.finalize({ uploadId: "f-san", manifest: _manifestFor([Buffer.from("body", "utf8")]),
                        actor: { id: "x" } });
   check("filename: sanitize rewrites the filename onFinalize sees", seen === "cleaned.txt");
+
+  // The REAL guard, not a stub. `b.guardFilename`'s gate returns its repaired
+  // name in the gate-contract's `sanitized` field, and the upload has to consume
+  // that one — a filename-specific field of its own never survives the verdict
+  // builder, so reading only that leaves the original name in place.
+  //
+  // Which matters most where the invisible character sits INSIDE the extension.
+  // `report.ht<ZW>ml` keeps an extension that no `contentSafety` key matches, so
+  // the configured `.html` gate never runs — and HTML has no magic bytes, so the
+  // type-confusion fallback cannot catch it either. The file is stored ungated
+  // under a name that renders as ordinary HTML.
+  var realSeen = null;
+  var gatedExts = [];
+  var real = b.fileUpload.create({
+    stagingDir: _tmpDir("fn-real"),
+    filenameSafety: b.guardFilename.gate({ profile: "balanced" }),
+    contentSafety: { ".html": { check: function (ctx) {
+      gatedExts.push(".html");
+      return { ok: true, action: "serve", bytes: ctx.bytes };
+    } } },
+    onFinalize: async function (info) { realSeen = info.metadata.filename; return { ok: true }; },
+  });
+  var htmlBody = Buffer.from("<p>hello</p>", "utf8");
+  await _seedUpload(real, "f-real", [htmlBody], { id: "x" },
+                    { filename: "report.ht\u200bml" });
+  await real.finalize({ uploadId: "f-real", manifest: _manifestFor([htmlBody]),
+                        actor: { id: "x" } });
+  check("filename: the real guard's sanitized name reaches onFinalize",
+        realSeen === "report.html", "seen=" + JSON.stringify(realSeen));
+  check("filename: the cleaned extension routes to its content gate",
+        gatedExts.indexOf(".html") !== -1,
+        "gatesRun=" + JSON.stringify(gatedExts));
 }
 
 // ---- content-safety gate (refuse / throw / sanitize) -----------------------
