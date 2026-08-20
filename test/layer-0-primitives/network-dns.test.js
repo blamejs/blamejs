@@ -1419,6 +1419,27 @@ async function testDnsHostShapeCanonicalizesAsciiCase() {
         dnsMod._validateHostShape("192.0.2.1", "test") === "192.0.2.1");
   check("host shape leaves an IPv6 literal alone",
         dnsMod._validateHostShape("2001:db8::1", "test") === "2001:db8::1");
+
+  // The root zone is a real name to query — `. NS` is how you ask for the root
+  // servers — and it encodes as the empty label list, which the wire encoder
+  // already supports. It is the one name that is nothing but a root marker, so
+  // a canonicalizer that refuses a bare root must not see it.
+  // Every UTS #46 spelling of it, not just the ASCII one. This module already
+  // treats U+3002 / U+FF0E / U+FF61 as equivalent to "." when they END a name,
+  // so a root zone that depends on which of the four the caller typed would be
+  // the same name resolving through one spelling and not another. All four
+  // normalize to the ASCII form, like every other name here.
+  var ROOTS = [".", "。", "．", "｡"];
+  for (var r = 0; r < ROOTS.length; r += 1) {
+    var rootErr = null;
+    var root = null;
+    try { root = dnsMod._validateHostShape(ROOTS[r], "test"); }
+    catch (e) { rootErr = e.code; }
+    check("host shape accepts the root zone spelled U+" +
+          ROOTS[r].codePointAt(0).toString(16).toUpperCase().padStart(4, "0"),
+          rootErr === null && root === ".",
+          "got=" + JSON.stringify(root) + " threw=" + rootErr);
+  }
 }
 
 async function testDnsWireEncoderRefusesUnencodableNames() {
