@@ -2250,6 +2250,173 @@ async function testGateCheckOwnsItsContext() {
   check("a null-prototype context is accepted and readable",
         bareErr === null && bareSeen === "bare",
         "seen=" + bareSeen + " threw=" + (bareErr && bareErr.message));
+
+  // A method observes the DERIVED context, which is the security-relevant half
+  // of a choice that cannot go both ways. `ctx.read()` runs with the derived
+  // object as `this`, so a method reading `this.bytes` sees whatever a
+  // beforeCheck transform or a sanitize step installed. Binding methods to the
+  // caller's object instead would make branded methods work, but every ordinary
+  // method would then read AROUND the overrides — measured returning the
+  // pre-sanitize payload from a method while direct access returned the
+  // sanitized one, which is precisely what a sanitize chain exists to prevent.
+  var Ordinary = function () { this.bytes = Buffer.from("ORIGINAL"); };
+  Ordinary.prototype.read = function () { return String(this.bytes); };
+  var viaMethod = null;
+  var viaField = null;
+  var overrideGate = GC.defineGate({
+    name: "gc-ctx-method-sees-override", version: "1.0.0",
+    beforeCheck: function () { return { transform: { bytes: Buffer.from("SANITIZED") } }; },
+    check: function (c) {
+      viaMethod = c.read();
+      viaField = String(c.bytes);
+      return { ok: true, action: "serve" };
+    },
+  });
+  await overrideGate.check(new Ordinary());
+  check("a method reads the overridden field, not the original",
+        viaMethod === "SANITIZED", "viaMethod=" + viaMethod);
+  check("direct access agrees with the method",
+        viaField === "SANITIZED" && viaField === viaMethod,
+        "viaField=" + viaField + " viaMethod=" + viaMethod);
+
+  // The side that loses: a brand needs the original instance as the receiver,
+  // and the derived context is not it. Such a context is REFUSED rather than
+  // inspected against stale bytes — fail-closed, and visible to the operator,
+  // who can pass the fields directly instead of behind a branded method. This
+  // is asserted so the trade is a decision on record, not an accident.
+  var Branded2 = (function () {
+    class R { #payload = Buffer.from("method-bytes"); read() { return this.#payload; } }
+    return R;
+  })();
+  var brandedRv = null;
+  var brandedGate = GC.defineGate({
+    name: "gc-ctx-branded-method", version: "1.0.0",
+    check: function (c) { return { ok: true, action: "serve", v: String(c.read()) }; },
+  });
+  brandedRv = await brandedGate.check(new Branded2());
+  check("a context readable only through a branded method is refused, " +
+        "never served against stale bytes",
+        brandedRv && brandedRv.action === "refuse",
+        "action=" + (brandedRv && brandedRv.action));
+
+  // Functions keep their identity because nothing is wrapped.
+  var idA = null, idB = null;
+  var idGate2 = GC.defineGate({
+    name: "gc-ctx-method-identity", version: "1.0.0",
+    check: function (c) { idA = c.read; idB = c.read; return { ok: true, action: "serve" }; },
+  });
+  await idGate2.check(new Ordinary());
+  check("a forwarded method has a stable identity across reads",
+        idA !== null && idA === idB && idA === Ordinary.prototype.read,
+        "same=" + (idA === idB) + " original=" + (idA === Ordinary.prototype.read));
+
+  // Binding is for METHODS — functions reached through a prototype, whose
+  // receiver is part of how they work. A function the caller stored as an own
+  // field is a callback they own: a guard may compare it by identity, or
+  // invoke it with a receiver of its choosing via .call(). Binding those would
+  // hand back a wrapper that is neither equal to the original nor callable
+  // against another receiver, so the two cases are treated differently.
+  var callback = function () { return this && this.tag; };
+  var cbCtx = { bytes: Buffer.from("x"), callback: callback };
+  var cbIdentity = null;
+  var cbCalled = null;
+  var cbGate = GC.defineGate({
+    name: "gc-ctx-callback", version: "1.0.0",
+    check: function (c) {
+      cbIdentity = (c.callback === callback);
+      cbCalled = c.callback.call({ tag: "chosen-receiver" });
+      return { ok: true, action: "serve" };
+    },
+  });
+  await cbGate.check(cbCtx);
+  check("an own function field keeps its identity",
+        cbIdentity === true, "identical=" + cbIdentity);
+  check("an own function field can be called with a chosen receiver",
+        cbCalled === "chosen-receiver", "got=" + cbCalled);
+
+  // The line is METHOD vs callback, not inherited vs own. An inherited GETTER
+  // that returns a function is handing back a callback — the getter itself has
+  // already run against the caller's object, so its result needs nothing done
+  // to it. Only an inherited DATA property holding a function is a method.
+  var shared = function () { return this && this.tag; };
+  var ViaGetter = function () { this.bytes = Buffer.from("x"); };
+  Object.defineProperty(ViaGetter.prototype, "callback", {
+    get: function () { return shared; }, enumerable: true, configurable: true,
+  });
+  var gotIdentity = null;
+  var gotCalled = null;
+  var getterCbGate = GC.defineGate({
+    name: "gc-ctx-getter-callback", version: "1.0.0",
+    check: function (c) {
+      gotIdentity = (c.callback === shared);
+      gotCalled = c.callback.call({ tag: "my-receiver" });
+      return { ok: true, action: "serve" };
+    },
+  });
+  await getterCbGate.check(new ViaGetter());
+  check("a callback returned by an inherited getter keeps its identity",
+        gotIdentity === true, "identical=" + gotIdentity);
+  check("a callback from an inherited getter honours a chosen receiver",
+        gotCalled === "my-receiver", "got=" + gotCalled);
+
+  // A function is an object, and its own properties are the caller's to set —
+  // including `bind`. Forwarding must not touch them: a derivation that wrapped
+  // functions would go through `value.bind`, and a shadowed one would make
+  // merely READING the method throw, which the gate reports as a refusal.
+  // Nothing is wrapped, so a shadowed `bind` is simply irrelevant.
+  var Shadowed = function () { this.bytes = Buffer.from("x"); };
+  Shadowed.prototype.read = function () { return "shadow-bytes"; };
+  Shadowed.prototype.read.bind = null;
+  var shadowSeen = null;
+  var shadowIdentity = null;
+  var shadowErr = null;
+  var shadowGate = GC.defineGate({
+    name: "gc-ctx-shadowed-bind", version: "1.0.0",
+    check: function (c) {
+      shadowSeen = c.read();
+      shadowIdentity = (c.read === Shadowed.prototype.read);
+      return { ok: true, action: "serve" };
+    },
+  });
+  var shadowRv = null;
+  try { shadowRv = await shadowGate.check(new Shadowed()); }
+  catch (e) { shadowErr = e; }
+  check("a method whose own 'bind' is shadowed is forwarded untouched",
+        shadowErr === null && shadowRv && shadowRv.action === "serve" &&
+        shadowSeen === "shadow-bytes" && shadowIdentity === true,
+        "seen=" + shadowSeen + " identical=" + shadowIdentity +
+        " action=" + (shadowRv && shadowRv.action) +
+        " threw=" + (shadowErr && shadowErr.message));
+
+  // Whether a key is a method is re-decided when it is read, not frozen when
+  // the context was derived. If the caller shadows an inherited method with an
+  // own function — which can happen between two reads inside one async check —
+  // the replacement is a callback of theirs, and must keep its identity like
+  // any other own function field.
+  var Base2 = (function () {
+    class B2 { bytes = Buffer.from("x"); method() { return "from-prototype"; } }
+    return B2;
+  })();
+  var replacement = function () { return "own-replacement"; };
+  var beforeShadow = null, afterShadow = null, afterIdentity = null;
+  var shadowLater = GC.defineGate({
+    name: "gc-ctx-shadow-later", version: "1.0.0",
+    check: function (c) {
+      beforeShadow = c.method();
+      inst2.method = replacement;               // own property now shadows it
+      afterShadow = c.method();
+      afterIdentity = (c.method === replacement);
+      return { ok: true, action: "serve" };
+    },
+  });
+  var inst2 = new Base2();
+  await shadowLater.check(inst2);
+  check("an inherited method still resolves before it is shadowed",
+        beforeShadow === "from-prototype", "before=" + beforeShadow);
+  check("an own function shadowing a method is read as the replacement",
+        afterShadow === "own-replacement", "after=" + afterShadow);
+  check("an own function shadowing a method keeps its identity",
+        afterIdentity === true, "identical=" + afterIdentity);
 }
 
 async function run() {
