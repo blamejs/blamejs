@@ -555,6 +555,41 @@ async function testTickDrainsAndReturns() {
 // A delayed job is counted by the queue's depth but is not leasable yet. A
 // caller looping on depth would spin through empty ticks until it came due, so
 // the tick-again signal is whether the batch came back FULL, not the depth.
+// A backend that REFUSES to record the outcome — complete or fail rejecting
+// after its own retries — leaves the job inflight and this tick not knowing
+// whether the handler succeeded. Counting that as an ordinary handler failure
+// would report a terminal state the job never reached AND bury an
+// infrastructure problem in a routine tally.
+async function testTickReportsAnUnsettledJob() {
+  var tmpDir = _tmp();
+  b.queue._resetForTest();
+  await setupTestDb(tmpDir);
+  try {
+    b.queue.init({ backends: { primary: { protocol: "local" } } });
+    await b.queue.enqueue("tick-unsettled-q", { id: 1 });
+
+    // Break the settle path underneath the driver, the way an exhausted
+    // breaker or a dead database does.
+    var backend = b.queue._backendForTest({});
+    var realComplete = backend.complete;
+    backend.complete = function () { return Promise.reject(new Error("store unreachable")); };
+    var r;
+    try {
+      r = await b.queue.tick({
+        queue: "tick-unsettled-q", handler: async function () { /* succeeds */ },
+      });
+    } finally { backend.complete = realComplete; }
+
+    check("unsettled: the tick still resolves", r && r.leased === 1);
+    check("unsettled: it is not counted as a handler failure", r.failed === 0);
+    check("unsettled: it is reported as unsettled", r.unsettled === 1);
+    check("unsettled: and not as a success", r.succeeded === 0);
+  } finally {
+    await b.queue.shutdown({ timeoutMs: 2000 });
+    await teardownTestDb(tmpDir);
+  }
+}
+
 // tick promises to leave nothing running, but init starts a 30-second sweep
 // timer of its own. In a frozen isolate that timer either never fires or fires
 // inside a LATER invocation, touching the backend outside any request the
@@ -591,6 +626,16 @@ async function testInitCanRunWithoutASweepTimer() {
   } catch (e) { frac = e; }
   check("timerless init: a fractional sweep interval is refused",
     frac && frac.code === "INVALID_CONFIG");
+
+  // The refusal must leave NOTHING behind. `backends` and `defaultBackend` are
+  // module-level and a later init does not clear them, so validating after
+  // assignment would leave the rejected configuration's queues visible through
+  // listBackends() and selectable by name.
+  var leaked = null;
+  try { b.queue.listBackends(); } catch (e) { leaked = e; }
+  check("timerless init: a refused init registered no backends",
+    leaked && leaked.code === "NOT_INITIALIZED");
+  b.queue._resetForTest();
 }
 
 async function testTickDelayedJobDoesNotLoop() {
@@ -726,6 +771,7 @@ async function testTickOptionRefusals() {
 
 async function run() {
   await testTickDrainsAndReturns();
+  await testTickReportsAnUnsettledJob();
   await testInitCanRunWithoutASweepTimer();
   await testTickDelayedJobDoesNotLoop();
   await testTickRecoversAnAbandonedLease();
