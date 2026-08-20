@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.18.41",
-  "createdAt": "2026-08-20T12:53:01.372Z",
+  "createdAt": "2026-08-20T13:45:43.959Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -14670,6 +14670,10 @@
         "appendSetCookie": {
           "type": "function",
           "arity": 2
+        },
+        "assertAppendable": {
+          "type": "function",
+          "arity": 1
         },
         "create": {
           "type": "function",

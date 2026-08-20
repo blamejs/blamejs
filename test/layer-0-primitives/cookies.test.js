@@ -174,11 +174,78 @@ function testAppendSetCookieAccumulates() {
   try { b.cookies.appendSetCookie(fallbackRes(), { name: "a" }); } catch (e) { nonString = e; }
   check("appendSetCookie: refuses a non-string header",
     nonString !== null && nonString.code === "cookies/invalid-header");
+
+  // A response that can be written but not READ cannot be appended to. With
+  // neither appendHeader nor getHeader there is no way to see what is already
+  // queued, so writing would silently replace it — the exact loss this function
+  // exists to prevent. Refuse rather than pretend the header was empty.
+  var writeOnly = { setHeader: function () {} };
+  var unreadable = null;
+  try { b.cookies.appendSetCookie(writeOnly, "a=1"); } catch (e) { unreadable = e; }
+  check("appendSetCookie: refuses a write-only response rather than clobbering",
+    unreadable !== null && unreadable.code === "cookies/unreadable-response");
+
+  // appendHeader alone is enough — the response does its own merging, so it
+  // never needs to be read.
+  var appendOnlyCalls = [];
+  var appendOnly = {
+    setHeader:    function () {},
+    appendHeader: function (k, v) { appendOnlyCalls.push(k + ":" + v); },
+  };
+  var appendOnlyErr = null;
+  try { b.cookies.appendSetCookie(appendOnly, "a=1"); } catch (e) { appendOnlyErr = e; }
+  check("appendSetCookie: a response with appendHeader needs no getHeader",
+    appendOnlyErr === null && appendOnlyCalls.length === 1);
+}
+
+// b.cookies.assertAppendable is the same contract check, callable BEFORE work
+// that cannot be undone — b.session.logout uses it so an unappendable response
+// is refused rather than discovered after the session row is already revoked.
+function testAssertAppendable() {
+  function err(fn) { try { fn(); return null; } catch (e) { return e; } }
+
+  check("assertAppendable: accepts a readable+writable response",
+    err(function () {
+      b.cookies.assertAppendable({ setHeader: function () {}, getHeader: function () {} });
+    }) === null);
+
+  check("assertAppendable: accepts an appendHeader-only response",
+    err(function () {
+      b.cookies.assertAppendable({ setHeader: function () {}, appendHeader: function () {} });
+    }) === null);
+
+  var writeOnly = err(function () {
+    b.cookies.assertAppendable({ setHeader: function () {} });
+  });
+  check("assertAppendable: refuses a write-only response",
+    writeOnly !== null && writeOnly.code === "cookies/unreadable-response");
+
+  var noSet = err(function () { b.cookies.assertAppendable({ getHeader: function () {} }); });
+  check("assertAppendable: refuses a response with no setHeader",
+    noSet !== null && noSet.code === "cookies/no-set-header");
+
+  var nullRes = err(function () { b.cookies.assertAppendable(null); });
+  check("assertAppendable: refuses a null response",
+    nullRes !== null && nullRes.code === "cookies/no-set-header");
+
+  // It must agree with appendSetCookie exactly — one definition of the
+  // contract, so the early check and the late one cannot drift apart.
+  [
+    { setHeader: function () {} },
+    { getHeader: function () {} },
+    null,
+  ].forEach(function (bad, i) {
+    var early = err(function () { b.cookies.assertAppendable(bad); });
+    var late  = err(function () { b.cookies.appendSetCookie(bad, "a=1"); });
+    check("assertAppendable agrees with appendSetCookie on rejection " + i,
+      early !== null && late !== null && early.code === late.code);
+  });
 }
 
 function run() {
   testCleanHeaderParses();
   testAppendSetCookieAccumulates();
+  testAssertAppendable();
   testEmptyHeader();
   testDuplicateNameCookieTossing();
   testProtoKeyDoesNotPollute();

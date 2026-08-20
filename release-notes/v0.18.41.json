@@ -26,6 +26,10 @@
       "heading": "Added",
       "items": [
         {
+          "title": "`b.cookies.assertAppendable(res)`",
+          "body": "Throws unless a response can carry an appended `Set-Cookie` — the same check `appendSetCookie` performs, exposed so a caller can run it before doing something it cannot undo. A response has to be readable as well as writable to be appended to: without `appendHeader` the merge happens in the framework and needs to see what is already queued, and a response carrying only `setHeader` would have its existing cookies silently replaced. `b.session.logout` calls it up front, because it revokes the session row before queueing the expiry cookie — a refusal at queue time would leave the session destroyed, the browser still holding its cookie, and the request failing."
+        },
+        {
           "title": "`b.cookies.appendSetCookie(res, header)`",
           "body": "Queues one `Set-Cookie` header without discarding the ones already queued. `res.setHeader(\"Set-Cookie\", value)` replaces the header, so a route that issues a session cookie and then a CSRF cookie sends only the second; `Set-Cookie` is the one response header that is legitimately repeated. The appender uses `res.appendHeader` where the runtime offers it and array-merges where it does not.\n\nIt pairs with `b.cookies.serialize`, which validates and builds the header string. `b.cookies.create().write()` and `.clear()` compose both; reach for the two separately when you need to build the header at one point in a flow and queue it at another — validating early, emitting only once the side effect it accompanies has succeeded, which is what `b.session.logout` does with the session row."
         }

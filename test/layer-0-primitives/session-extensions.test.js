@@ -422,11 +422,12 @@ async function testLogoutEmitsClearSiteData() {
     var s = await b.session.create({ userId: "u-logout" });
     check("session created", typeof s.token === "string");
 
-    var headers = {};
-    var res = {
-      setHeader: function (k, v) { headers[k] = v; },
-    };
-    var destroyed = await b.session.logout(res, s.token);
+    // A real http.ServerResponse can be read as well as written, and the
+    // cookie appender requires that — it has to see what is already queued
+    // before it can add to it. _makeRes models both halves.
+    var loRes = _makeRes();
+    var headers = loRes.headers;
+    var destroyed = await b.session.logout(loRes, s.token);
 
     check("logout returns true (session destroyed)", destroyed === true);
     check("logout emits Clear-Site-Data header",
@@ -449,14 +450,14 @@ async function testLogoutEmitsClearSiteData() {
 
     // Custom cookie name + an unknown Clear-Site-Data directive throws.
     var s2 = await b.session.create({ userId: "u-logout-2" });
-    var h2 = {}; var res2 = { setHeader: function (k, v) { h2[k] = v; } };
+    var res2 = _makeRes(); var h2 = res2.headers;
     await b.session.logout(res2, s2.token, { cookieName: "__Host-sid" });
     check("logout honors custom cookieName", h2["Set-Cookie"][0].indexOf("__Host-sid=;") === 0);
 
     // An unknown directive throws BEFORE any side effect — the session is NOT
     // destroyed and no client-wipe headers are queued (validate-before-revoke).
     var s3 = await b.session.create({ userId: "u-logout-3" });
-    var h3 = {}; var res3 = { setHeader: function (k, v) { h3[k] = v; } };
+    var res3 = _makeRes(); var h3 = res3.headers;
     var threw = null;
     try { await b.session.logout(res3, s3.token, { types: ["bogus"] }); }
     catch (e) { threw = e; }
@@ -706,6 +707,22 @@ async function testLogoutCookieAttributes() {
     catch (e) { strReqErr = e; }
     check("logout refuses a non-object req",
       strReqErr !== null && strReqErr.code === "session/bad-req");
+
+    // --- an unappendable response is refused BEFORE the row is revoked -----
+    // The expiry cookie is queued through b.cookies.appendSetCookie, which has
+    // to read the response as well as write it. A response carrying only
+    // setHeader cannot satisfy that — and discovering it after destroy() would
+    // leave the session revoked, Clear-Site-Data queued, no expiry cookie, and
+    // a 500. The response shape is the caller's, fixed for the life of the
+    // process, so it is checked with the other option validation up front.
+    var s17 = await b.session.create({ userId: "u-606-writeonly" });
+    var writeOnlyRes = { setHeader: function () {} };
+    var writeOnlyErr = null;
+    try { await b.session.logout(writeOnlyRes, s17.token); } catch (e) { writeOnlyErr = e; }
+    check("logout refuses a write-only response",
+      writeOnlyErr !== null && writeOnlyErr.code === "cookies/unreadable-response");
+    check("the refused write-only logout did NOT revoke the session",
+      (await b.session.verify(s17.token)) !== null);
 
     // --- an unknown option is a typo, not a silent no-op -------------------
     var s13 = await b.session.create({ userId: "u-606-typo" });
