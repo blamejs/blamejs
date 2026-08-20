@@ -2237,6 +2237,25 @@ async function testGateCheckOwnsItsContext() {
         "runs=" + getterRuns + " action=" + (lazyRv && lazyRv.action) +
         " threw=" + (lazyErr && lazyErr.message));
 
+  // The derived context has to answer `instanceof` the way the caller's object
+  // does. A guard may dispatch or validate on the context's type — refusing
+  // anything that is not the request shape it expects — and a wrapper built on
+  // a bare object would fail that test while carrying every one of the
+  // instance's fields, so a valid context would be refused or routed wrong.
+  var Shaped = function () { this.bytes = Buffer.from("x"); };
+  var instanceSeen = null;
+  var instanceGate = GC.defineGate({
+    name: "gc-ctx-instanceof", version: "1.0.0",
+    beforeCheck: function () { return { transform: { route: "/r" } }; },
+    check: function (c) {
+      instanceSeen = (c instanceof Shaped);
+      return { ok: true, action: "serve" };
+    },
+  });
+  await instanceGate.check(new Shaped());
+  check("a derived context is still instanceof the caller's class",
+        instanceSeen === true, "instanceof=" + instanceSeen);
+
   // A context with no prototype at all is still a context.
   var bare = Object.create(null);
   bare.bytes = Buffer.from("bare");

@@ -1656,6 +1656,69 @@ async function testDmarcTreeWalkNormalizesTheStartDomain() {
   }
 }
 
+// A record found at an INTERMEDIATE name survives a failure above it, for the
+// same reason a record at the Author Domain does: the walk runs most-specific
+// first, so by the time a record is found every closer name has already
+// answered. A name further up cannot carry a policy that beats it — only a
+// boundary, which is what withholding relaxed alignment covers.
+//
+// The direction matters. A failure BELOW the record is the opposite case: that
+// name is more specific, its policy would have won, and the walk cannot know
+// what it said — so that one is still a temperror.
+async function testDmarcFailureAboveAFoundRecordKeepsIt() {
+  var policy = [["v=DMARC1; p=reject; sp=reject; aspf=r"]];
+
+  // Failure ABOVE: the record at b.example.com stands.
+  var askedAbove = [];
+  var above = await b.mail.dmarc.evaluate({
+    from: "alice@a.b.example.com",
+    spf: { result: "pass", domain: "a.b.example.com" },
+    dkim: [],
+    dnsLookup: async function (host) {
+      askedAbove.push(host);
+      if (host === "_dmarc.b.example.com") return policy;
+      if (host === "_dmarc.example.com") throw new Error("SERVFAIL");
+      return null;
+    },
+  });
+  check("dmarc: a lookup failure ABOVE the found record keeps its policy",
+        above.result !== "temperror" && above.policy && above.policy.p === "reject",
+        "result=" + above.result + " p=" + (above.policy && above.policy.p));
+  check("dmarc: the policy is attributed to the name that carried it",
+        above.policyOriginDomain === "b.example.com",
+        "origin=" + above.policyOriginDomain);
+  // The unread ancestor could have declared a boundary, so relaxed alignment is
+  // withheld: this SPF domain aligns only because it is an exact match.
+  var aboveRelaxed = await b.mail.dmarc.evaluate({
+    from: "alice@a.b.example.com",
+    spf: { result: "pass", domain: "evil.example.com" },
+    dkim: [],
+    dnsLookup: async function (host) {
+      if (host === "_dmarc.b.example.com") return policy;
+      if (host === "_dmarc.example.com") throw new Error("SERVFAIL");
+      return null;
+    },
+  });
+  check("dmarc: relaxed alignment stays withheld across the unread ancestor",
+        aboveRelaxed.alignment.spf === false && aboveRelaxed.result === "fail",
+        "spfAligned=" + aboveRelaxed.alignment.spf + " result=" + aboveRelaxed.result);
+
+  // Failure BELOW: the unread name is more specific than the record found
+  // above it, so the walk cannot answer and this stays a temperror.
+  var below = await b.mail.dmarc.evaluate({
+    from: "alice@a.b.example.com",
+    spf: { result: "pass", domain: "a.b.example.com" },
+    dkim: [],
+    dnsLookup: async function (host) {
+      if (host === "_dmarc.a.b.example.com") throw new Error("SERVFAIL");
+      if (host === "_dmarc.example.com") return policy;
+      return null;
+    },
+  });
+  check("dmarc: a lookup failure BELOW the found record is still a temperror",
+        below.result === "temperror", "result=" + below.result);
+}
+
 async function testDmarcMalformedAncestorDoesNotVoidAnOwnPolicy() {
   // A domain owner controls what they publish, not what their parent publishes.
   // Once the Author Domain's own record is in hand, its `p=` applies directly
@@ -4242,6 +4305,7 @@ async function run() {
   await testDmarcPsdYAtTheAuthorDomainBoundsAlignment();
   await testDmarcPsdYBoundaryConstrainsAlignment();
   await testDmarcIncompleteWalkDoesNotGrantRelaxedAlignment();
+  await testDmarcFailureAboveAFoundRecordKeepsIt();
   await testDmarcMalformedAncestorDoesNotVoidAnOwnPolicy();
   await testDmarcEmptyLabelIsNotRepaired();
   await testDmarcEvaluateNpPolicy();
