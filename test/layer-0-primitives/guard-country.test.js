@@ -121,6 +121,43 @@ function testIsValidSugar() {
     b.guardCountry.isValid("gb") === true);
   check("guardCountry: isValid on non-string is false, never a throw",
     b.guardCountry.isValid(null) === false && b.guardCountry.isValid(42) === false);
+
+  // isValid answers ONE question — is this an officially assigned code — and
+  // that answer cannot depend on a profile. The profiles differ only in how
+  // they DISPOSE of a non-assigned code: strict refuses, balanced and
+  // permissive downgrade some findings to `warn`, which leaves validate().ok
+  // true. A predicate that forwarded its opts would therefore call `EU`, `ZZ`,
+  // `SU` and `AN` valid under permissive and feed reserved and sentinel values
+  // straight into residency and jurisdiction routing.
+  //
+  // Checking only the DEFAULT profile is what hid this: that is the one
+  // configuration where the bug cannot appear.
+  var leaked = [];
+  ["strict", "balanced", "permissive"].forEach(function (profile) {
+    MUST_REFUSE.forEach(function (code) {
+      if (b.guardCountry.isValid(code, { profile: profile }) === true) {
+        leaked.push(code + "@" + profile);
+      }
+    });
+  });
+  check("guardCountry: no profile can make isValid accept a non-assigned code" +
+    (leaked.length ? " (accepted " + JSON.stringify(leaked.slice(0, 8)) +
+      (leaked.length > 8 ? " +" + (leaked.length - 8) + " more" : "") + ")" : ""),
+    leaked.length === 0);
+
+  // CONTROL: an assigned code stays valid under every profile, so the check
+  // above cannot pass for a predicate that simply answers false.
+  var lost = [];
+  ["strict", "balanced", "permissive"].forEach(function (profile) {
+    MUST_ACCEPT.forEach(function (code) {
+      if (b.guardCountry.isValid(code, { profile: profile }) !== true) {
+        lost.push(code + "@" + profile);
+      }
+    });
+  });
+  check("guardCountry CONTROL: an assigned code is valid under every profile" +
+    (lost.length ? " (rejected " + JSON.stringify(lost.slice(0, 8)) + ")" : ""),
+    lost.length === 0);
 }
 
 // The reason this is a bundled table rather than an Intl echo test: on a

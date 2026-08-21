@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.18.44",
-  "createdAt": "2026-08-20T23:48:32.795Z",
+  "createdAt": "2026-08-21T01:34:39.336Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -20586,7 +20586,7 @@
         },
         "isValid": {
           "type": "function",
-          "arity": 2
+          "arity": 1
         },
         "loadRulePack": {
           "type": "function",
