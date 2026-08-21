@@ -813,6 +813,31 @@ function testGuardFamilyRefusesAMalformedNumericCap() {
         zeroOnACap.length === 0);
   check("the uncapped-runtime contract was probed family-wide (" + uncapped + " guards)",
         uncapped >= 20);
+
+  // An explicitly-undefined override means "I did not set this", not "remove
+  // the limit". `{ maxBytes: parsedEnvValue }` with the variable unset is the
+  // ordinary way to reach this, and the merge copied the undefined over the
+  // profile default — after which the present-value check skipped it as absent
+  // and every `measured > undefined` comparison was false. Same fail-open as a
+  // malformed value, through a shape a careful operator writes on purpose.
+  var lostDefault = [];
+  b.guardAll.allGuards().forEach(function (g) {
+    if (typeof g.resolveOpts !== "function") return;
+    var base;
+    try { base = g.resolveOpts({}); } catch (_e) { return; }
+    Object.keys(base).forEach(function (k) {
+      if (!(typeof base[k] === "number" && Number.isInteger(base[k]) && base[k] > 0)) return;
+      var o = {};
+      o[k] = undefined;
+      var got;
+      try { got = g.resolveOpts(o); } catch (_e2) { return; }   // refusing is fine too
+      if (got[k] !== base[k]) lostDefault.push(g.NAME + "." + k + "=" + got[k]);
+    });
+  });
+  check("an explicitly-undefined override keeps the profile default" +
+        (lostDefault.length ? " (lost on " + lostDefault.length + ": " +
+          lostDefault.slice(0, 4).join(", ") + ")" : ""),
+        lostDefault.length === 0);
 }
 
 // A guard may only declare a policy it can carry out. `strip` is an instruction

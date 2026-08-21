@@ -490,6 +490,70 @@ function testNestingDepthDoesNotMultiplyBracketMaps() {
         emDeep === emShallow);
 }
 
+// A document with no brackets must not pay for the bracket index.
+//
+// The index was a dense array sized to the document, filled with a sentinel,
+// whatever the document contained — so ordinary prose carrying no brackets at
+// all still allocated one slot per character. At the permissive profile's
+// 64 MiB that is 67 million slots before any rendering, on input with nothing
+// hostile about it, and concurrent requests could exhaust memory while every
+// advertised cap was respected.
+//
+// Asserted on the allocation COUNT rather than heap size, for the same reason
+// as the depth test: exact, and it does not move with GC timing or machine.
+function testBracketFreeTextAllocatesNoIndex() {
+  function allocsFor(src) {
+    var before = b.guardMarkdown._bracketArraysAllocatedForTest();
+    render(src, { profile: "balanced" });
+    return b.guardMarkdown._bracketArraysAllocatedForTest() - before;
+  }
+
+  var prose = "The quick brown fox jumps over the lazy dog. ".repeat(2000);
+  check("render: bracket-free prose allocates no bracket index (" +
+        allocsFor(prose) + ")", allocsFor(prose) === 0);
+
+  // Emphasis and code spans are not brackets either.
+  check("render: emphasis and code spans alone allocate no bracket index",
+        allocsFor("*em* and `code` and **strong**\n\nmore text\n") === 0);
+
+  // The control: a document that DOES contain a matched pair must allocate,
+  // or the checks above pass for a renderer that stopped indexing entirely.
+  check("render: a document with a link does allocate an index",
+        allocsFor("[a](https://example.com)") > 0);
+
+  // A run of unmatched openers records no pair. Still bounded, still rendered.
+  var openers = "[".repeat(50000);
+  var out = render(openers, { profile: "balanced" });
+  check("render: unmatched openers still render as escaped text",
+        out.indexOf("&#91;") !== -1 || out.indexOf("[") !== -1);
+
+  // The index is sized by the DELIMITERS, not by the document. A long document
+  // holding two openers must build a two-entry index — the earlier shape built
+  // one slot per character, so 64 MiB of prose with a single link allocated
+  // three document-sized arrays, roughly 768 MiB, for six brackets' worth of
+  // information.
+  var longWithOneLink = "word ".repeat(40000) + "[a](u)";
+  render(longWithOneLink, { profile: "balanced" });
+  var entries = b.guardMarkdown._bracketIndexEntriesForTest();
+  check("render: the index holds one entry per opener, not per character " +
+        "(" + entries + " for a " + longWithOneLink.length + "-char document)",
+        entries === 2);
+
+  // Making the index sparse must not make LOOKUP superlinear. Resolving each
+  // opener by binary search would cost about log2(k) probes per opener, so a
+  // delimiter-heavy document would do tens of probes per character — trading a
+  // memory problem for a CPU one on exactly the hostile input the index is
+  // meant to bound. The scan walks forward only, so a cursor keeps it linear.
+  var K = 40000;
+  var before = b.guardMarkdown._bracketLookupStepsForTest();
+  render("[".repeat(K), { profile: "balanced" });
+  var steps = b.guardMarkdown._bracketLookupStepsForTest() - before;
+  check("render: opener lookup stays linear in the delimiters (" + steps +
+        " steps for " + K + " openers; binary search would be about " +
+        Math.round(K * Math.log2(K)) + ")",
+        steps <= K * 4);
+}
+
 // The output has to be usable as a fragment: no stray unclosed element, and
 // balanced tags for every construct above.
 function testOutputIsBalanced() {
@@ -526,6 +590,7 @@ async function run() {
   testMalformedLimitsAreRefusedNotIgnored();
   testBlockquoteRecursionHasAnImplementationCeiling();
   testNestingDepthDoesNotMultiplyBracketMaps();
+  testBracketFreeTextAllocatesNoIndex();
   testOutputIsBalanced();
 }
 
