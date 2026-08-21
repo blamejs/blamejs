@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.18.44",
-  "createdAt": "2026-08-21T06:30:21.451Z",
+  "createdAt": "2026-08-21T08:11:48.878Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -18287,6 +18287,10 @@
           "type": "function",
           "arity": 2
         },
+        "ctxValueFrom": {
+          "type": "function",
+          "arity": 2
+        },
         "defineGate": {
           "type": "function",
           "arity": 1
@@ -18310,6 +18314,10 @@
         "identifierFixtures": {
           "type": "function",
           "arity": 3
+        },
+        "identitySanitize": {
+          "type": "function",
+          "arity": 1
         },
         "lookupCompliancePosture": {
           "type": "function",
@@ -19528,6 +19536,10 @@
             }
           }
         },
+        "INT_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "KIND": {
           "type": "primitive",
           "valueType": "string"
@@ -19984,6 +19996,10 @@
             }
           }
         },
+        "INT_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "KIND": {
           "type": "primitive",
           "valueType": "string"
@@ -20439,6 +20455,10 @@
               "valueType": "string"
             }
           }
+        },
+        "INT_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
         },
         "KIND": {
           "type": "primitive",
@@ -21007,6 +21027,10 @@
               "valueType": "string"
             }
           }
+        },
+        "INT_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
         },
         "KIND": {
           "type": "primitive",
@@ -21768,6 +21792,10 @@
               "valueType": "string"
             }
           }
+        },
+        "INT_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
         },
         "KIND": {
           "type": "primitive",
@@ -22735,6 +22763,10 @@
               "valueType": "string"
             }
           }
+        },
+        "INT_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
         },
         "KIND": {
           "type": "primitive",
@@ -23770,6 +23802,10 @@
             }
           }
         },
+        "INT_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "KIND": {
           "type": "primitive",
           "valueType": "string"
@@ -24516,6 +24552,10 @@
             }
           }
         },
+        "INT_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "KIND": {
           "type": "primitive",
           "valueType": "string"
@@ -25223,6 +25263,10 @@
               "valueType": "string"
             }
           }
+        },
+        "INT_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
         },
         "KIND": {
           "type": "primitive",
@@ -26307,6 +26351,10 @@
               "valueType": "string"
             }
           }
+        },
+        "INT_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
         },
         "KIND": {
           "type": "primitive",
@@ -27491,6 +27539,10 @@
             }
           }
         },
+        "INT_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "KIND": {
           "type": "primitive",
           "valueType": "string"
@@ -28142,6 +28194,10 @@
               "valueType": "string"
             }
           }
+        },
+        "INT_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
         },
         "KIND": {
           "type": "primitive",
@@ -28878,6 +28934,10 @@
               "valueType": "string"
             }
           }
+        },
+        "INT_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
         },
         "KIND": {
           "type": "primitive",
@@ -31062,6 +31122,10 @@
             }
           }
         },
+        "INT_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "KIND": {
           "type": "primitive",
           "valueType": "string"
@@ -31832,6 +31896,10 @@
             }
           }
         },
+        "INT_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "KIND": {
           "type": "primitive",
           "valueType": "string"
@@ -32463,6 +32531,10 @@
             }
           }
         },
+        "INT_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "KIND": {
           "type": "primitive",
           "valueType": "string"
@@ -33080,6 +33152,10 @@
               "valueType": "string"
             }
           }
+        },
+        "INT_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
         },
         "KIND": {
           "type": "primitive",
@@ -34031,6 +34107,10 @@
             }
           }
         },
+        "INT_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "KIND": {
           "type": "primitive",
           "valueType": "string"
@@ -34720,6 +34800,10 @@
               "valueType": "string"
             }
           }
+        },
+        "INT_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
         },
         "KIND": {
           "type": "primitive",
@@ -35607,6 +35691,10 @@
             }
           }
         },
+        "INT_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "KIND": {
           "type": "primitive",
           "valueType": "string"
@@ -36461,6 +36549,10 @@
             }
           }
         },
+        "INT_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "KIND": {
           "type": "primitive",
           "valueType": "string"
@@ -37093,6 +37185,10 @@
             }
           }
         },
+        "INT_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "KIND": {
           "type": "primitive",
           "valueType": "string"
@@ -37648,6 +37744,10 @@
             }
           }
         },
+        "INT_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "KIND": {
           "type": "primitive",
           "valueType": "string"
@@ -38191,6 +38291,10 @@
               "valueType": "string"
             }
           }
+        },
+        "INT_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
         },
         "KIND": {
           "type": "primitive",
@@ -38894,6 +38998,10 @@
             }
           }
         },
+        "INT_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "KIND": {
           "type": "primitive",
           "valueType": "string"
@@ -39569,6 +39677,10 @@
               "valueType": "string"
             }
           }
+        },
+        "INT_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
         },
         "KIND": {
           "type": "primitive",
@@ -40321,6 +40433,10 @@
               "valueType": "string"
             }
           }
+        },
+        "INT_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
         },
         "KIND": {
           "type": "primitive",

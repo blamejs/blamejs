@@ -552,6 +552,27 @@ function testBracketFreeTextAllocatesNoIndex() {
         " steps for " + K + " openers; binary search would be about " +
         Math.round(K * Math.log2(K)) + ")",
         steps <= K * 4);
+
+  // Sizing the index by the delimiters is right, but a document that is
+  // NOTHING but delimiters has as many as it has characters — so the byte and
+  // line caps do not bound it: one 64 MiB line of "[" satisfies both. The
+  // delimiter cap does, and it refuses rather than degrading, because ignoring
+  // delimiters past a bound would make link detection depend on how far into
+  // the document a link sits.
+  var over = "[".repeat(2000001);
+  var err = null;
+  try { render(over, { profile: "permissive" }); } catch (e) { err = e; }
+  check("render: a document past the delimiter cap is refused with a code" +
+        (err ? " (" + err.code + ")" : " (it rendered)"),
+        err !== null && err.code === "markdown/too-many-delimiters");
+
+  // The control: just under the cap must still render, or the check above
+  // passes for a renderer that refuses every bracket-heavy document.
+  var under = "[".repeat(1000);
+  var ok = null;
+  try { ok = render(under, { profile: "permissive" }); } catch (_e) { ok = null; }
+  check("render: a bracket-heavy document under the cap still renders",
+        typeof ok === "string" && ok.length > 0);
 }
 
 // Blockquote nesting must not copy the document once per level.

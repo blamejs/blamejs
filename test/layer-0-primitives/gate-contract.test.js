@@ -2447,6 +2447,45 @@ async function testGateCheckOwnsItsContext() {
 // default any caller passes. A consumer overlaying `{ retries: 3, weight: 1 }`
 // then could not set `retries: 0` or `weight: 0.5`, both of which the resolver
 // only ever promised to overlay. The caps are the caller's to declare.
+// The three helpers a guard uses when it binds its own resolver or gate rather
+// than taking defineGuard's. Each exists because hand-rolling it went wrong:
+// a hand-listed cap set drifted from the defaults it mirrored, four guards
+// declared identical identity transforms, and `a || b || ""` served an empty
+// identifier that validate() refused.
+function testGuardAuthoringHelpers() {
+  var DEFAULTS = { maxBytes: 1024, maxDepth: 8, mode: "enforce", ratio: 0.5, off: 0 };
+  var caps = b.gateContract.capKeysOf(DEFAULTS);
+  check("capKeysOf: takes the positive-integer defaults only (" + caps.join(",") + ")",
+        caps.length === 2 && caps.indexOf("maxBytes") !== -1 && caps.indexOf("maxDepth") !== -1);
+  check("capKeysOf: a string, a fraction and a zero are not caps",
+        caps.indexOf("mode") === -1 && caps.indexOf("ratio") === -1 && caps.indexOf("off") === -1);
+  var unioned = b.gateContract.capKeysOf(DEFAULTS, ["maxExtra", "maxBytes"]);
+  check("capKeysOf: a declared name is added once, not duplicated",
+        unioned.indexOf("maxExtra") !== -1 &&
+        unioned.filter(function (k) { return k === "maxBytes"; }).length === 1);
+  check("capKeysOf: no defaults yields no caps",
+        b.gateContract.capKeysOf(null).length === 0);
+
+  var bundle = { alg: "none", state: "x" };
+  check("identitySanitize: returns its input unchanged, by identity",
+        b.gateContract.identitySanitize(bundle) === bundle);
+
+  // The distinction the chain could not make.
+  check("ctxValueFrom: an absent field reads as undefined",
+        b.gateContract.ctxValueFrom({}, ["filename", "name"]) === undefined);
+  check("ctxValueFrom: a field present as \"\" reads as \"\", not undefined",
+        b.gateContract.ctxValueFrom({ filename: "" }, ["filename", "name"]) === "");
+  check("ctxValueFrom: a real value still wins, in declaration order",
+        b.gateContract.ctxValueFrom({ filename: "a.txt", name: "b.txt" },
+                                    ["filename", "name"]) === "a.txt");
+  check("ctxValueFrom: a later field still wins over an earlier empty one",
+        b.gateContract.ctxValueFrom({ filename: "", name: "b.txt" },
+                                    ["filename", "name"]) === "b.txt");
+  check("ctxValueFrom: null and undefined fields are absent, not values",
+        b.gateContract.ctxValueFrom({ filename: null }, ["filename"]) === undefined &&
+        b.gateContract.ctxValueFrom({ filename: undefined }, ["filename"]) === undefined);
+}
+
 function testResolverDoesNotInferCapsFromDefaults() {
   var cfg = { defaults: { retries: 3, weight: 1, timeoutMs: 500 } };
   var got = null;
@@ -2503,6 +2542,7 @@ async function run() {
   await testValidateGateShapeAndRunGate();
   testDefineGateBadOpts();
   testResolverDoesNotInferCapsFromDefaults();
+  testGuardAuthoringHelpers();
   await testDefineGateLifecycle();
   await testDefineGateCheckThrows();
   await testDefineGateTimeout();

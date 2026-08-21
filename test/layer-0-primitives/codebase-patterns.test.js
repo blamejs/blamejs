@@ -6309,8 +6309,20 @@ async function testNoDuplicateCodeBlocks() {
       // operators vs regex ReDoS shapes vs shell metacharacters vs template
       // injection vs XML XXE vs YAML anchors. Templating the bodies would couple
       // unrelated security grammars; only the push-with-severity shape coincides.
+      //
+      // guard-auth's _detectIssues and guard-regex's _detectNestedExtglob joined
+      // when four identical `_sanitizeTransform` bodies were replaced by the
+      // shared gateContract.identitySanitize. Removing those lines moved the
+      // shingle window forward onto the detection bodies, which is where this
+      // class already sits — the pairing is the same coincidence of push-with-
+      // severity shape over an auth-bundle grammar, a GraphQL request grammar,
+      // an OAuth parameter grammar and a glob grammar. They are allowlisted
+      // here rather than under the sanitize class, because those four bodies
+      // WERE byte-identical and were extracted instead of excused.
       mode:  "family-subset",
       files: [
+        "lib/guard-auth.js:_detectIssues",
+        "lib/guard-regex.js:_detectNestedExtglob",
         "lib/guard-cidr.js:_detectIssues",
         "lib/guard-email.js:_detectAddressIssues",
         "lib/guard-email.js:_detectMessageIssues",
