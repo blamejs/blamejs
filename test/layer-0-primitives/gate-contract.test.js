@@ -2438,6 +2438,83 @@ async function testGateCheckOwnsItsContext() {
         afterIdentity === true, "identical=" + afterIdentity);
 }
 
+// resolveProfileAndPosture overlays what it is given. It does not get to infer
+// what a consumer's option MEANS from the shape of its default.
+//
+// The guard family's numeric caps are validated here so a malformed one cannot
+// disable a limit, and that check derived its key set from the defaults — which
+// silently extended "this is a positive-integer cap" to every positive-integer
+// default any caller passes. A consumer overlaying `{ retries: 3, weight: 1 }`
+// then could not set `retries: 0` or `weight: 0.5`, both of which the resolver
+// only ever promised to overlay. The caps are the caller's to declare.
+// The three helpers a guard uses when it binds its own resolver or gate rather
+// than taking defineGuard's. Each exists because hand-rolling it went wrong:
+// a hand-listed cap set drifted from the defaults it mirrored, four guards
+// declared identical identity transforms, and `a || b || ""` served an empty
+// identifier that validate() refused.
+function testGuardAuthoringHelpers() {
+  var DEFAULTS = { maxBytes: 1024, maxDepth: 8, mode: "enforce", ratio: 0.5, off: 0 };
+  var caps = b.gateContract.capKeysOf(DEFAULTS);
+  check("capKeysOf: takes the positive-integer defaults only (" + caps.join(",") + ")",
+        caps.length === 2 && caps.indexOf("maxBytes") !== -1 && caps.indexOf("maxDepth") !== -1);
+  check("capKeysOf: a string, a fraction and a zero are not caps",
+        caps.indexOf("mode") === -1 && caps.indexOf("ratio") === -1 && caps.indexOf("off") === -1);
+  var unioned = b.gateContract.capKeysOf(DEFAULTS, ["maxExtra", "maxBytes"]);
+  check("capKeysOf: a declared name is added once, not duplicated",
+        unioned.indexOf("maxExtra") !== -1 &&
+        unioned.filter(function (k) { return k === "maxBytes"; }).length === 1);
+  check("capKeysOf: no defaults yields no caps",
+        b.gateContract.capKeysOf(null).length === 0);
+
+  var bundle = { alg: "none", state: "x" };
+  check("identitySanitize: returns its input unchanged, by identity",
+        b.gateContract.identitySanitize(bundle) === bundle);
+
+  // The distinction the chain could not make.
+  check("ctxValueFrom: an absent field reads as undefined",
+        b.gateContract.ctxValueFrom({}, ["filename", "name"]) === undefined);
+  check("ctxValueFrom: a field present as \"\" reads as \"\", not undefined",
+        b.gateContract.ctxValueFrom({ filename: "" }, ["filename", "name"]) === "");
+  check("ctxValueFrom: a real value still wins, in declaration order",
+        b.gateContract.ctxValueFrom({ filename: "a.txt", name: "b.txt" },
+                                    ["filename", "name"]) === "a.txt");
+  check("ctxValueFrom: a later field still wins over an earlier empty one",
+        b.gateContract.ctxValueFrom({ filename: "", name: "b.txt" },
+                                    ["filename", "name"]) === "b.txt");
+  check("ctxValueFrom: null and undefined fields are absent, not values",
+        b.gateContract.ctxValueFrom({ filename: null }, ["filename"]) === undefined &&
+        b.gateContract.ctxValueFrom({ filename: undefined }, ["filename"]) === undefined);
+}
+
+function testResolverDoesNotInferCapsFromDefaults() {
+  var cfg = { defaults: { retries: 3, weight: 1, timeoutMs: 500 } };
+  var got = null;
+  var threw = null;
+  try { got = GC.resolveProfileAndPosture({ retries: 0 }, cfg); }
+  catch (e) { threw = e; }
+  check("resolveProfileAndPosture: a consumer may set an undeclared option to 0" +
+        (threw ? " (threw " + (threw.code || threw.message) + ")" : ""),
+        threw === null && got.retries === 0);
+
+  var frac = null;
+  threw = null;
+  try { frac = GC.resolveProfileAndPosture({ weight: 0.5 }, cfg); }
+  catch (e) { threw = e; }
+  check("resolveProfileAndPosture: an undeclared option may be fractional" +
+        (threw ? " (threw " + (threw.code || threw.message) + ")" : ""),
+        threw === null && frac.weight === 0.5);
+
+  // The control: a key the caller DECLARES as a limit is still checked, or the
+  // two checks above pass for a resolver that validates nothing at all.
+  var declared = { defaults: { maxBytes: 1024 }, intOpts: ["maxBytes"],
+                   errCodePrefix: "probe" };
+  var refused = null;
+  try { GC.resolveProfileAndPosture({ maxBytes: "8mb" }, declared); }
+  catch (e) { refused = e; }
+  check("resolveProfileAndPosture: a DECLARED limit still refuses a malformed value",
+        refused !== null);
+}
+
 async function run() {
   await testGateCheckOwnsItsContext();
   testIssueSeverities();
@@ -2464,6 +2541,8 @@ async function run() {
   testMakeRulePackLoader();
   await testValidateGateShapeAndRunGate();
   testDefineGateBadOpts();
+  testResolverDoesNotInferCapsFromDefaults();
+  testGuardAuthoringHelpers();
   await testDefineGateLifecycle();
   await testDefineGateCheckThrows();
   await testDefineGateTimeout();

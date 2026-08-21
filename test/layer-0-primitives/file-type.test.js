@@ -70,8 +70,53 @@ function testMimeExtensionAccessors() {
     b.fileType.extensionFor(detected.mime) === detected.extension);
 }
 
+// A format spelled two ways must answer for both spellings.
+//
+// The extension table took ONE canonical extension per signature row, so every
+// alias answered null: `.jpg` resolved and `.jpeg` did not, though they are the
+// same format and `.jpeg` is what Windows and most cameras write. The gap is
+// symmetric and was not only the reported one — `.tiff` resolved while `.tif`
+// did not.
+//
+// It matters because of what the answer is FOR: a consumer comparing a declared
+// extension against the MIME its detector reports gets `null` for a real image
+// and has to decide what null means. A table that answers for one spelling and
+// not the other is wrong in the direction that produces a wrong decision.
+function testExtensionAliasesResolveToTheSameMime() {
+  var PAIRS = [
+    ["jpg", "jpeg", "image/jpeg"],
+    ["tiff", "tif", "image/tiff"],
+  ];
+  PAIRS.forEach(function (p) {
+    check("fileType.mimeFor: ." + p[0] + " -> " + p[2],
+          b.fileType.mimeFor("." + p[0]) === p[2]);
+    check("fileType.mimeFor: ." + p[1] + " -> " + p[2] + " (the alias spelling)",
+          b.fileType.mimeFor("." + p[1]) === p[2]);
+  });
+
+  // An alias must not become the CANONICAL answer in the other direction: the
+  // reverse lookup still names one extension per type, and it stays the one it
+  // named before.
+  check("fileType.extensionFor: image/jpeg still answers jpg",
+        b.fileType.extensionFor("image/jpeg") === "jpg");
+  check("fileType.extensionFor: image/tiff still answers tiff",
+        b.fileType.extensionFor("image/tiff") === "tiff");
+
+  // The control: an extension the framework genuinely does not know still
+  // answers null, so this is not a table that started answering for anything.
+  check("fileType.mimeFor: an unknown extension is still null",
+        b.fileType.mimeFor(".sfx-not-a-format") === null);
+
+  // And a format with no signature must not gain a MIME mapping. `.ico` is the
+  // case: nothing in the registry detects the icon magic, so answering for the
+  // extension would have mimeFor claim a format the detector cannot recognise.
+  check("fileType.mimeFor: an extension with no signature stays null",
+        b.fileType.mimeFor(".ico") === null);
+}
+
 async function run() {
   testMimeExtensionAccessors();
+  testExtensionAliasesResolveToTheSameMime();
   check("fileType namespace present",                typeof b.fileType === "object");
   check("fileType.detect is fn",                     typeof b.fileType.detect === "function");
   check("fileType.assertOneOf is fn",                typeof b.fileType.assertOneOf === "function");

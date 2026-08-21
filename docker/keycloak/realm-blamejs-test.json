@@ -86,7 +86,7 @@
     {
       "clientId": "https://sp-enc.blamejs-test.example",
       "name": "blamejs SAML SP encrypted (integration test)",
-      "description": "SP entityID for the EncryptedAssertion decrypt-interop stage. Keycloak encrypts the assertion CEK to saml.encryption.certificate; the integration test overrides that cert with a runtime-generated one (via the admin API) so it holds the matching private key. The algorithm attributes request AES-GCM + RSA-OAEP-SHA256, which Keycloak >= 26.2 honors; Keycloak 26.0.x ignores them and emits aes128-cbc + rsa-oaep-mgf1p(SHA-1), which the framework refuses by design.",
+      "description": "SP entityID for the EncryptedAssertion decrypt-interop stage. The test replaces saml.encryption.certificate at runtime so it holds the matching private key, and requests AES-GCM + RSA-OAEP-SHA256. See test/integration/federation-auth.test.js.",
       "enabled": true,
       "protocol": "saml",
       "publicClient": true,

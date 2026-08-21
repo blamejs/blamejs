@@ -527,6 +527,47 @@ function testMarkdownExtractorsAgreeWithThePatternsTheyReplaced() {
         Date.now() - t0 <= PERF_BUDGET_MS);
 }
 
+// A dangerous autolink must not be hidden by wrapping it in a harmless one.
+//
+// The autolink body scan ran to the closing ">" without stopping at "<", so an
+// outer candidate swallowed everything nested inside it. `<a:<javascript:...>>`
+// recorded one URL beginning `a:` — a scheme nothing objects to — and the scan
+// resumed PAST the inner candidate, which was therefore never examined. The
+// scheme filter did not fail; it was never asked.
+//
+// This renderer escapes autolinks rather than emitting them, so the output here
+// is safe either way. The report is what matters: validate() is what an
+// operator consults before handing author Markdown to a renderer that DOES
+// support autolinks, and a finding that goes missing there is a decision made
+// on wrong information. An autolink body cannot contain "<" in CommonMark
+// either, so stopping at one is what the grammar already says.
+function testNestedAutolinkIsNotHiddenByAnOuterCandidate() {
+  var CASES = [
+    "<a:<javascript:alert(1)>>",
+    "<a:<b:<javascript:alert(1)>>>",
+    "<harmless:<vbscript:msgbox(1)>>",
+    "text <x:<javascript:alert(1)>> more",
+  ];
+  CASES.forEach(function (src) {
+    var rv = b.guardMarkdown.validate(src);
+    var found = (rv.issues || []).some(function (i) { return i.kind === "autolink-scheme"; });
+    check("guardMarkdown: nested dangerous autolink is still reported — " +
+          JSON.stringify(src), found);
+  });
+
+  // The control: the same scheme unwrapped is reported, so the checks above
+  // are not passing on a detector that flags everything.
+  var plain = b.guardMarkdown.validate("<javascript:alert(1)>");
+  check("guardMarkdown: the unwrapped case is still reported",
+        (plain.issues || []).some(function (i) { return i.kind === "autolink-scheme"; }));
+
+  // And a genuinely harmless autolink must NOT be reported, or the sweep passes
+  // for a detector that has simply started flagging every angle bracket.
+  var safe = b.guardMarkdown.validate("<https://example.com/a>");
+  check("guardMarkdown: an https autolink is not reported as a bad scheme",
+        !(safe.issues || []).some(function (i) { return i.kind === "autolink-scheme"; }));
+}
+
 async function run() {
   testMarkdownExtractorsAgreeWithThePatternsTheyReplaced();
   testGuardMarkdownSurface();
@@ -534,6 +575,7 @@ async function run() {
   testGuardMarkdownDangerousScheme();
   testGuardMarkdownEntityBypass();
   testGuardMarkdownAutolinkScheme();
+  testNestedAutolinkIsNotHiddenByAnOuterCandidate();
   testGuardMarkdownReferenceLinkSmuggling();
   testGuardMarkdownImageScheme();
   testGuardMarkdownDangerousTag();

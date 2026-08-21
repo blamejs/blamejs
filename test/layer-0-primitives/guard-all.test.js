@@ -332,6 +332,8 @@ async function run() {
   testGuardFamilyEveryStripPathRemovesTheSameClasses();
   testGuardFamilyValidateIsDeterministicAcrossCalls();
   testGuardFamilyDeclaresOnlyPerformableActions();
+  testGuardFamilyRefusesAMalformedNumericCap();
+  await testGuardFamilyGateAgreesWithValidateOnAnEmptyValue();
   await testGuardFamilyDispositionFollowsPolicy();
   testGuardFamilyStrictRejectsEveryZeroWidthCharacter();
   return testGuardAllDispatchRoutesByMime();
@@ -725,6 +727,262 @@ function testGuardFamilyValidateIsDeterministicAcrossCalls() {
   });
   // Guard the guard: vacuous passes are the failure mode this is meant to stop.
   check("determinism invariant probed at least eight guards", probed >= 8);
+}
+
+// A gate must not serve a value its own validator refuses.
+//
+// The ctx reader used a truthy test and returned "" both when a field was
+// absent and when it was present but empty, and the gate short-circuited to
+// serve on the falsy result. So `gate().check({ country: "" })` served while
+// `validate("")` reported the value as empty — the gate disagreeing with the
+// validator it exists to enforce, on eight guards, at the request boundary
+// where residency and jurisdiction decisions are actually made.
+//
+// Absence still short-circuits: a ctx that carries none of a guard's fields
+// has nothing for that guard to look at, and that is the case the
+// short-circuit was written for.
+async function testGuardFamilyGateAgreesWithValidateOnAnEmptyValue() {
+  var CTX_KEYS = ["text", "bytes", "identifier", "country", "countryCode",
+                  "filename", "entries", "value", "input", "sql", "url"];
+  var disagreed = [];
+  var probed = 0;
+  var guards = b.guardAll.allGuards();
+  for (var n = 0; n < guards.length; n += 1) {
+    var g = guards[n];
+    if (typeof g.gate !== "function" || typeof g.validate !== "function") continue;
+    // Only the kinds whose value IS a string. A `metadata`, `entries`,
+    // `oauth-flow`, `graphql-request` or `auth-bundle` guard takes a structured
+    // bag, so validate("") refusing says the type is wrong, not that an empty
+    // identifier slipped through — a different question with a different
+    // answer, and asserting it here would be asserting the wrong thing.
+    if (g.KIND !== "identifier" && g.KIND !== "filename") continue;
+
+    // What does the validator make of an empty value?
+    var refusesEmpty;
+    try {
+      var rv = g.validate("");
+      refusesEmpty = rv && rv.ok === false;
+    } catch (_e) { refusesEmpty = true; }   // cannot parse it is not approval
+    if (!refusesEmpty) continue;            // empty is fine for this guard
+    probed += 1;
+
+    var ctx = {};
+    CTX_KEYS.forEach(function (k) { ctx[k] = ""; });
+    var action;
+    try { action = (await g.gate().check(ctx)).action; }
+    catch (_e2) { action = "threw"; }
+    if (action === "serve") disagreed.push(g.NAME);
+  }
+  check("guard gates do not serve an empty value their validator refuses" +
+        (disagreed.length ? " (served on " + disagreed.join(", ") + ")" : ""),
+        disagreed.length === 0);
+  // A control, so the sweep cannot pass by finding no guard that refuses "".
+  check("the empty-value sweep reached guards that refuse an empty value (" +
+        probed + ")", probed >= 8);
+
+  // And the other half of the contract: an ABSENT field still serves, or this
+  // would turn every request carrying no value for a guard into a refusal.
+  var served = 0;
+  var refusedOnAbsent = [];
+  for (var m = 0; m < guards.length; m += 1) {
+    var g2 = guards[m];
+    if (typeof g2.gate !== "function") continue;
+    var a;
+    try { a = (await g2.gate().check({})).action; } catch (_e3) { a = "threw"; }
+    if (a === "serve") served += 1; else refusedOnAbsent.push(g2.NAME + ":" + a);
+  }
+  check("an absent field still serves" +
+        (refusedOnAbsent.length ? " (refused on " + refusedOnAbsent.slice(0, 5).join(", ") + ")" : ""),
+        refusedOnAbsent.length === 0 && served >= 20);
+}
+
+// A cap an operator can override must refuse a shape it cannot compare against.
+//
+// Every numeric limit in the family is read as `measured > opts.maxThing`. Hand
+// that comparison a string, an Infinity or a fraction and it is false for all
+// input, so a malformed value does not fall back to the default — it DISABLES
+// the cap, on exactly the untrusted input the cap exists to bound. The check
+// existed, but only inside the generated validate(), and the list of keys it
+// covered was hand-maintained per guard: maxRuntimeMs was in every guard's
+// defaults and named in none of them, guard-csv declared no list at all, and
+// the hand-written entry points (guardMarkdown.render and its peers) resolved
+// their own opts and never reached the check. 136 combinations were accepted.
+//
+// Derived from each guard's own resolved defaults rather than from a list here,
+// so a cap added to any guard tomorrow is covered without editing this file.
+function testGuardFamilyRefusesAMalformedNumericCap() {
+  var MALFORMED = [["a string", "8mb"], ["Infinity", Infinity],
+                   ["a fraction", 1.5], ["a negative", -1], ["NaN", NaN]];
+  var probedGuards = 0;
+  var probedCaps = 0;
+  b.guardAll.allGuards().forEach(function (g) {
+    if (typeof g.resolveOpts !== "function") return;
+    var base;
+    try { base = g.resolveOpts({}); } catch (_e) { return; }
+    var caps = Object.keys(base).filter(function (k) {
+      return typeof base[k] === "number" && Number.isInteger(base[k]) && base[k] > 0;
+    });
+    if (caps.length === 0) return;
+    probedGuards += 1;
+    caps.forEach(function (cap) {
+      probedCaps += 1;
+      var accepted = MALFORMED.filter(function (pair) {
+        var o = {};
+        o[cap] = pair[1];
+        try { g.resolveOpts(o); return true; }
+        catch (_e) { return false; }
+      }).map(function (pair) { return pair[0]; });
+      check("guard " + g.NAME + ": " + cap + " refuses a malformed value" +
+            (accepted.length ? " (accepted " + accepted.join(", ") + ")" : ""),
+            accepted.length === 0);
+    });
+  });
+  // A control, so the sweep cannot pass by surveying nothing: the failure this
+  // was written for spanned 27 guards, and a probe that reached two would have
+  // reported clean.
+  check("malformed-cap sweep reached the whole family (" + probedGuards +
+        " guards, " + probedCaps + " caps)", probedGuards >= 20 && probedCaps >= 40);
+  // The same resolver must still ACCEPT a well-formed override, or the sweep
+  // above passes for a resolver that simply refuses everything.
+  var markdown = b.guardAll.allGuards().filter(function (g) { return g.NAME === "markdown"; })[0];
+  var raised = null;
+  try { raised = markdown.resolveOpts({ maxBytes: 1024 }); } catch (_e) { /* raised stays null */ }
+  check("a well-formed cap override is still accepted",
+        raised !== null && raised.maxBytes === 1024);
+
+  // Zero is a VALUE on the options that are not caps. `maxRuntimeMs: 0` means
+  // "no runtime budget" and `nbfFutureSlackMs: 0` means "allow no clock
+  // slack" — settings an operator may already be using, which requiring a
+  // positive integer took away. Derivation cannot tell a cap from a tolerance,
+  // so a derived option is held only to "still a non-negative integer", and an
+  // option the guard AUTHOR declared as a cap keeps refusing zero.
+  //
+  // Both halves are pinned here because the first attempt kept a hand-written
+  // list of the options where zero is a value, and that list had already
+  // missed two.
+  var zeroKept = 0;
+  var zeroRefusedOnANonCap = [];
+  b.guardAll.allGuards().forEach(function (g) {
+    if (typeof g.resolveOpts !== "function") return;
+    var base;
+    try { base = g.resolveOpts({}); } catch (_e) { return; }
+    Object.keys(base).forEach(function (k) {
+      if (!(typeof base[k] === "number" && Number.isInteger(base[k]) && base[k] > 0)) return;
+      var declared = Array.isArray(g.INT_OPTS) && g.INT_OPTS.indexOf(k) !== -1;
+      var o = {};
+      o[k] = 0;
+      var accepted = true;
+      try { g.resolveOpts(o); } catch (_e3) { accepted = false; }
+      if (!declared && !accepted) zeroRefusedOnANonCap.push(g.NAME + "." + k);
+      if (!declared && accepted) zeroKept += 1;
+    });
+  });
+  check("zero stays a setting on an option the guard did not declare a cap" +
+        (zeroRefusedOnANonCap.length
+          ? " (refused on " + zeroRefusedOnANonCap.slice(0, 5).join(", ") + ")" : ""),
+        zeroRefusedOnANonCap.length === 0);
+  check("the zero-is-a-setting contract was probed family-wide (" + zeroKept + " options)",
+        zeroKept >= 20);
+
+  // The other half: a `max*` limit IS a cap, so every guard must declare it and
+  // refuse zero for it. Five guards declared no caps at all and quietly took
+  // `maxRows: 0`, which is fail-closed but is not the contract — an operator
+  // should learn about it at the call that sets it.
+  var undeclaredCaps = [];
+  b.guardAll.allGuards().forEach(function (g) {
+    if (typeof g.resolveOpts !== "function") return;
+    var base;
+    try { base = g.resolveOpts({}); } catch (_e) { base = g.DEFAULTS || {}; }
+    var declared = g.INT_OPTS || [];
+    Object.keys(base).forEach(function (k) {
+      if (k === "maxRuntimeMs") return;                 // a budget, not a cap
+      if (k.indexOf("max") !== 0) return;
+      if (!(typeof base[k] === "number" && Number.isInteger(base[k]) && base[k] > 0)) return;
+      if (declared.indexOf(k) === -1) undeclaredCaps.push(g.NAME + "." + k);
+    });
+  });
+  check("every max* limit is declared as a cap" +
+        (undeclaredCaps.length ? " (undeclared: " + undeclaredCaps.slice(0, 6).join(", ") + ")" : ""),
+        undeclaredCaps.length === 0);
+
+  // The specific cases the reviews named, by name, so they cannot regress
+  // quietly behind an aggregate count.
+  var NAMED = [["guardJwt", "nbfFutureSlackMs"], ["guardJwt", "iatFutureSlackMs"],
+               ["guardMarkdown", "maxRuntimeMs"], ["guardCsv", "maxRuntimeMs"]];
+  NAMED.forEach(function (p) {
+    var g = b[p[0]];
+    if (!g || typeof g.resolveOpts !== "function") return;
+    var o = {};
+    o[p[1]] = 0;
+    var kept = false;
+    try { kept = g.resolveOpts(o)[p[1]] === 0; } catch (_e4) { kept = false; }
+    check(p[0] + ": " + p[1] + " 0 is kept, not refused", kept);
+    // ...and the malformed shapes are still refused on the same option.
+    var stillRefused = ["8mb", Infinity, NaN, 1.5, -1].every(function (bad) {
+      var b2 = {};
+      b2[p[1]] = bad;
+      try { g.resolveOpts(b2); return false; } catch (_e5) { return true; }
+    });
+    check(p[0] + ": " + p[1] + " still refuses a malformed value", stillRefused);
+  });
+
+  // An explicitly-undefined override means "I did not set this", not "remove
+  // the limit". `{ maxBytes: parsedEnvValue }` with the variable unset is the
+  // ordinary way to reach this, and the merge copied the undefined over the
+  // profile default — after which the present-value check skipped it as absent
+  // and every `measured > undefined` comparison was false. Same fail-open as a
+  // malformed value, through a shape a careful operator writes on purpose.
+  var lostDefault = [];
+  b.guardAll.allGuards().forEach(function (g) {
+    if (typeof g.resolveOpts !== "function") return;
+    var base;
+    try { base = g.resolveOpts({}); } catch (_e) { return; }
+    Object.keys(base).forEach(function (k) {
+      if (!(typeof base[k] === "number" && Number.isInteger(base[k]) && base[k] > 0)) return;
+      var o = {};
+      o[k] = undefined;
+      var got;
+      try { got = g.resolveOpts(o); } catch (_e2) { return; }   // refusing is fine too
+      if (got[k] !== base[k]) lostDefault.push(g.NAME + "." + k + "=" + got[k]);
+    });
+  });
+  check("an explicitly-undefined override keeps the profile default" +
+        (lostDefault.length ? " (lost on " + lostDefault.length + ": " +
+          lostDefault.slice(0, 4).join(", ") + ")" : ""),
+        lostDefault.length === 0);
+
+  // Drive gate() too, not just resolveOpts().
+  //
+  // Several guards bind their own resolver inside a hand-written gate() rather
+  // than going through the generated one — guard-image, guard-pdf, guard-sql,
+  // guard-text and guard-yaml all did. A sweep that only exercises resolveOpts
+  // reports clean while those paths accept a malformed cap and compare against
+  // NaN, which is how this was missed twice: the probe and the code agreed
+  // because both went through the same door.
+  var gateAccepted = [];
+  var gatesProbed = 0;
+  b.guardAll.allGuards().forEach(function (g) {
+    if (typeof g.gate !== "function" || typeof g.resolveOpts !== "function") return;
+    var base;
+    try { base = g.resolveOpts({}); } catch (_e) { return; }
+    var caps = Object.keys(base).filter(function (k) {
+      return typeof base[k] === "number" && Number.isInteger(base[k]) && base[k] > 0 &&
+             k !== "maxRuntimeMs";
+    });
+    if (caps.length === 0) return;
+    gatesProbed += 1;
+    // One cap per guard is enough: they share a resolver per guard, so if one
+    // is checked they all are, and this keeps the sweep from being O(caps).
+    var o = {};
+    o[caps[0]] = "8mb";
+    try { g.gate(o); gateAccepted.push(g.NAME + "." + caps[0]); }
+    catch (_e2) { /* refused, as it should be */ }
+  });
+  check("guard gate() refuses a malformed cap as resolveOpts does" +
+        (gateAccepted.length ? " (accepted on " + gateAccepted.join(", ") + ")" : ""),
+        gateAccepted.length === 0);
+  check("the gate-construction sweep reached the family (" + gatesProbed + " guards)",
+        gatesProbed >= 15);
 }
 
 // A guard may only declare a policy it can carry out. `strip` is an instruction
