@@ -443,6 +443,53 @@ function testBlockquoteRecursionHasAnImplementationCeiling() {
     out !== null || (err !== null && typeof err.code === "string"));
 }
 
+// Nesting depth must not multiply the work done per character.
+//
+// The renderer derived a bracket-match map at entry, and the link-label and
+// emphasis paths both recurse on a substring — so every level re-derived a map
+// spanning nearly the whole remaining span, and every parent's map stayed live
+// while it did. Depth is capped at 24, so a document inside the balanced
+// profile's own 8 MiB cap produced twenty-four full-length maps: 6.68 MiB of
+// input grew the heap by 1,334 MiB, and permissive allows eight times the
+// input. Satisfying every advertised cap and still exhausting memory is the
+// failure this asserts against.
+//
+// The assertion is on the COUNT of maps built rather than on elapsed time or
+// heap size, because the count is exact: it does not move with machine speed,
+// GC timing, or how loaded the runner is. Depth-independence is the property —
+// two documents of identical size and different nesting must build the same
+// number of maps.
+function testNestingDepthDoesNotMultiplyBracketMaps() {
+  function nestedLinks(levels, filler) {
+    // Each level must itself be a link for the label path to recurse:
+    // [[[x](u)](u)](u). A label that is merely bracketed does not.
+    return "[".repeat(levels) + "x".repeat(filler) + "](u)".repeat(levels);
+  }
+  function mapsFor(src) {
+    var before = b.guardMarkdown._bracketMapsBuiltForTest();
+    render(src, { profile: "balanced" });
+    return b.guardMarkdown._bracketMapsBuiltForTest() - before;
+  }
+
+  var shallow = mapsFor(nestedLinks(2, 4000));
+  var deep = mapsFor(nestedLinks(24, 4000));
+  check("render: nesting depth does not multiply bracket-map allocations " +
+        "(2 levels built " + shallow + ", 24 levels built " + deep + ")",
+        deep === shallow);
+
+  // A control, so the check above cannot pass by building zero maps in both:
+  // a document with inline syntax must build at least one.
+  check("render: an inline run builds a bracket map at all (" + shallow + ")",
+        shallow >= 1);
+
+  // Emphasis recurses through the same path and must not reintroduce it.
+  var emShallow = mapsFor("*" + "y".repeat(4000) + "*");
+  var emDeep = mapsFor("*".repeat(12) + "y".repeat(4000) + "*".repeat(12));
+  check("render: emphasis nesting does not multiply bracket-map allocations " +
+        "(1 level built " + emShallow + ", 12 levels built " + emDeep + ")",
+        emDeep === emShallow);
+}
+
 // The output has to be usable as a fragment: no stray unclosed element, and
 // balanced tags for every construct above.
 function testOutputIsBalanced() {
@@ -478,6 +525,7 @@ async function run() {
   testInputCapsAreEnforced();
   testMalformedLimitsAreRefusedNotIgnored();
   testBlockquoteRecursionHasAnImplementationCeiling();
+  testNestingDepthDoesNotMultiplyBracketMaps();
   testOutputIsBalanced();
 }
 
