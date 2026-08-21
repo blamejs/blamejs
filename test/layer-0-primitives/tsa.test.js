@@ -771,7 +771,15 @@ function testOpensslInterop() {
   try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* ignore */ }
 
   var resp = b.tsa.parseResponse(tsr);
-  check("openssl interop: response granted", resp.granted === true && resp.status === 0);
+  // Name what openssl actually returned. `ts -reply` exits 0 for a REJECTION
+  // as well as a grant, so a bare boolean here says only "not granted" and
+  // leaves nothing to work from — this failed once under SMOKE_PARALLEL=64 and
+  // passed in isolation, with no way to tell whether our parser was wrong or
+  // openssl had declined to issue.
+  check("openssl interop: response granted (status " + resp.status +
+        (resp.failInfo ? ", failInfo " + JSON.stringify(resp.failInfo) : "") +
+        (resp.statusString ? ", " + JSON.stringify(resp.statusString) : "") + ")",
+        resp.granted === true && resp.status === 0);
   var out = b.tsa.verifyToken(resp.token, { allowUntrustedIssuer: true, data: Buffer.from("hello world"), hashAlg: "SHA-512", nonce: req.nonce });
   check("openssl interop: real token verifies", out.genTime instanceof Date && out.policy === "1.2.3.4.1");
   var out2 = b.tsa.verifyToken(resp.token, { data: Buffer.from("hello world"), hashAlg: "SHA-512", trustAnchorsPem: [anchor] });

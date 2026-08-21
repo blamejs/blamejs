@@ -838,6 +838,39 @@ function testGuardFamilyRefusesAMalformedNumericCap() {
         (lostDefault.length ? " (lost on " + lostDefault.length + ": " +
           lostDefault.slice(0, 4).join(", ") + ")" : ""),
         lostDefault.length === 0);
+
+  // Drive gate() too, not just resolveOpts().
+  //
+  // Several guards bind their own resolver inside a hand-written gate() rather
+  // than going through the generated one — guard-image, guard-pdf, guard-sql,
+  // guard-text and guard-yaml all did. A sweep that only exercises resolveOpts
+  // reports clean while those paths accept a malformed cap and compare against
+  // NaN, which is how this was missed twice: the probe and the code agreed
+  // because both went through the same door.
+  var gateAccepted = [];
+  var gatesProbed = 0;
+  b.guardAll.allGuards().forEach(function (g) {
+    if (typeof g.gate !== "function" || typeof g.resolveOpts !== "function") return;
+    var base;
+    try { base = g.resolveOpts({}); } catch (_e) { return; }
+    var caps = Object.keys(base).filter(function (k) {
+      return typeof base[k] === "number" && Number.isInteger(base[k]) && base[k] > 0 &&
+             k !== "maxRuntimeMs";
+    });
+    if (caps.length === 0) return;
+    gatesProbed += 1;
+    // One cap per guard is enough: they share a resolver per guard, so if one
+    // is checked they all are, and this keeps the sweep from being O(caps).
+    var o = {};
+    o[caps[0]] = "8mb";
+    try { g.gate(o); gateAccepted.push(g.NAME + "." + caps[0]); }
+    catch (_e2) { /* refused, as it should be */ }
+  });
+  check("guard gate() refuses a malformed cap as resolveOpts does" +
+        (gateAccepted.length ? " (accepted on " + gateAccepted.join(", ") + ")" : ""),
+        gateAccepted.length === 0);
+  check("the gate-construction sweep reached the family (" + gatesProbed + " guards)",
+        gatesProbed >= 15);
 }
 
 // A guard may only declare a policy it can carry out. `strip` is an instruction

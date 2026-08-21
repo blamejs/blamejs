@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.18.44",
-  "createdAt": "2026-08-21T05:12:58.655Z",
+  "createdAt": "2026-08-21T06:30:21.451Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -18260,6 +18260,10 @@
           "arity": 2
         },
         "canaryGate": {
+          "type": "function",
+          "arity": 2
+        },
+        "capKeysOf": {
           "type": "function",
           "arity": 2
         },

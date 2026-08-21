@@ -327,6 +327,56 @@ function testAllowSuppressesTheFindingRatherThanDowngradingIt() {
   });
 }
 
+// A misspelled policy must be refused, not read as the mildest one.
+//
+// The severity helper mapped anything that was not "reject" to "warn", so a
+// typo did not fall back to the profile's setting — it silently downgraded a
+// refusal to an audit entry. `{ reservedPolicy: "rejcet" }` returned ok for
+// `EU` and served it. A policy that decides whether a code is refused is
+// config-time input: the operator should learn about the typo at boot, not
+// from a residency decision that quietly went the other way.
+function testAMisspelledPolicyIsRefusedNotTreatedAsWarn() {
+  var BAD = ["rejcet", "REJECT", "deny", "", "warn", null, 1, true, {}];
+  var POLICIES = ["reservedPolicy", "userAssignedPolicy", "formerlyUsedPolicy"];
+  POLICIES.forEach(function (p) {
+    var accepted = BAD.filter(function (v) {
+      var o = {};
+      o[p] = v;
+      try { b.guardCountry.validate("EU", o); return true; }
+      catch (_e) { return false; }
+    });
+    check("guardCountry: " + p + " refuses a value outside reject|audit|allow" +
+          (accepted.length ? " (accepted " + JSON.stringify(accepted) + ")" : ""),
+          accepted.length === 0);
+
+    // The control: the three documented values must still be accepted, or the
+    // check above passes for a guard that refuses every policy.
+    var good = ["reject", "audit", "allow"].filter(function (v) {
+      var o = {};
+      o[p] = v;
+      try { b.guardCountry.validate("EU", o); return true; }
+      catch (_e) { return false; }
+    });
+    check("guardCountry: " + p + " still accepts reject, audit and allow (" +
+          good.length + "/3)", good.length === 3);
+
+    // The refusal has to happen where options are RESOLVED, so a typo is a
+    // boot error rather than a request that fails later. Checking only
+    // validate() would leave gate construction accepting the misconfiguration.
+    var typo = {};
+    typo[p] = "rejcet";
+    var atResolve = null;
+    try { b.guardCountry.resolveOpts(typo); } catch (e) { atResolve = e; }
+    check("guardCountry: " + p + " typo is refused by resolveOpts",
+          atResolve !== null && String(atResolve.code || "").indexOf("bad-opt") !== -1);
+
+    var atGate = null;
+    try { b.guardCountry.gate(typo); } catch (e) { atGate = e; }
+    check("guardCountry: " + p + " typo is refused at gate construction",
+          atGate !== null);
+  });
+}
+
 async function run() {
   testAcceptsAssignedCodes();
   testRefusesEveryNonCountry();
@@ -337,6 +387,7 @@ async function run() {
   testIssueKindsAreSourced();
   testProfilesDiffer();
   testAllowSuppressesTheFindingRatherThanDowngradingIt();
+  testAMisspelledPolicyIsRefusedNotTreatedAsWarn();
   testFamilyRegistration();
   await testGateRefusesThroughTheContract();
   testTableIsComplete();

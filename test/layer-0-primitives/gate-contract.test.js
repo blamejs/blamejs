@@ -2438,6 +2438,44 @@ async function testGateCheckOwnsItsContext() {
         afterIdentity === true, "identical=" + afterIdentity);
 }
 
+// resolveProfileAndPosture overlays what it is given. It does not get to infer
+// what a consumer's option MEANS from the shape of its default.
+//
+// The guard family's numeric caps are validated here so a malformed one cannot
+// disable a limit, and that check derived its key set from the defaults — which
+// silently extended "this is a positive-integer cap" to every positive-integer
+// default any caller passes. A consumer overlaying `{ retries: 3, weight: 1 }`
+// then could not set `retries: 0` or `weight: 0.5`, both of which the resolver
+// only ever promised to overlay. The caps are the caller's to declare.
+function testResolverDoesNotInferCapsFromDefaults() {
+  var cfg = { defaults: { retries: 3, weight: 1, timeoutMs: 500 } };
+  var got = null;
+  var threw = null;
+  try { got = GC.resolveProfileAndPosture({ retries: 0 }, cfg); }
+  catch (e) { threw = e; }
+  check("resolveProfileAndPosture: a consumer may set an undeclared option to 0" +
+        (threw ? " (threw " + (threw.code || threw.message) + ")" : ""),
+        threw === null && got.retries === 0);
+
+  var frac = null;
+  threw = null;
+  try { frac = GC.resolveProfileAndPosture({ weight: 0.5 }, cfg); }
+  catch (e) { threw = e; }
+  check("resolveProfileAndPosture: an undeclared option may be fractional" +
+        (threw ? " (threw " + (threw.code || threw.message) + ")" : ""),
+        threw === null && frac.weight === 0.5);
+
+  // The control: a key the caller DECLARES as a limit is still checked, or the
+  // two checks above pass for a resolver that validates nothing at all.
+  var declared = { defaults: { maxBytes: 1024 }, intOpts: ["maxBytes"],
+                   errCodePrefix: "probe" };
+  var refused = null;
+  try { GC.resolveProfileAndPosture({ maxBytes: "8mb" }, declared); }
+  catch (e) { refused = e; }
+  check("resolveProfileAndPosture: a DECLARED limit still refuses a malformed value",
+        refused !== null);
+}
+
 async function run() {
   await testGateCheckOwnsItsContext();
   testIssueSeverities();
@@ -2464,6 +2502,7 @@ async function run() {
   testMakeRulePackLoader();
   await testValidateGateShapeAndRunGate();
   testDefineGateBadOpts();
+  testResolverDoesNotInferCapsFromDefaults();
   await testDefineGateLifecycle();
   await testDefineGateCheckThrows();
   await testDefineGateTimeout();
