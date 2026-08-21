@@ -325,11 +325,50 @@ async function testResolverTypeErrorIsNotReportedAsBadCredentials() {
     none.nexted === false && none.status === 401);
 }
 
+// A request with no credential must not reach the secrets manager.
+//
+// `opts.secret` may be a resolver backed by a secrets manager, and it was
+// awaited before the gate looked at whether the caller had presented anything
+// at all. So an unauthenticated client could drive that dependency once per
+// request — traffic and latency it never had to earn, and an outage it could
+// amplify — while presenting no credential.
+//
+// The verdict does not change: a request with no header was refused before and
+// is refused now. What changes is that the refusal costs nothing outside the
+// process. During a resolver outage such a request now answers 401 rather than
+// 503, which is the more accurate of the two: the caller brought no credential,
+// so the dependency's health is not what decided it.
+async function testAnAbsentHeaderDoesNotReachTheResolver() {
+  var calls = 0;
+  var opts = {
+    headerName: "x-internal-token",
+    secret:     async function () { calls += 1; return "s3cr3t"; },
+  };
+
+  var absent = await _run(opts, {});
+  check("sharedSecretHeader: a request with no header is still refused",
+        absent.status === 401);
+  check("sharedSecretHeader: and the secret resolver was never called (" +
+        calls + ")", calls === 0);
+
+  // An empty header value is the same case — present but carrying nothing.
+  var empty = await _run(opts, { "x-internal-token": "" });
+  check("sharedSecretHeader: an empty header value does not reach the resolver",
+        empty.status === 401 && calls === 0);
+
+  // The control: a request that DOES present a credential must still reach the
+  // resolver, or the checks above pass for a gate that stopped resolving.
+  var presented = await _run(opts, { "x-internal-token": "s3cr3t" });
+  check("sharedSecretHeader: a presented credential still resolves the secret " +
+        "(" + calls + " call)", calls === 1 && presented.nexted === true);
+}
+
 async function run() {
   await testAcceptsTheMatchingSecret();
   await testRefusesEveryWrongShape();
   await testUnconfiguredSecretFailsClosed();
   await testResolverAvailabilityIsNotAnAuthFailure();
+  await testAnAbsentHeaderDoesNotReachTheResolver();
   await testTelemetryFailureCannotChangeTheAnswer();
   await testResolverTypeErrorIsNotReportedAsBadCredentials();
   await testRepeatedHeaderOverARealSocket();
