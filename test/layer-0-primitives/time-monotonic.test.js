@@ -314,6 +314,57 @@ function testDriftCallbackCannotObserveTimeGoingBackwards() {
     typeof otherOk === "number" && otherOk > 0);
 }
 
+// The two shapes a caller most plausibly arrives with, and why each is refused
+// rather than coerced.
+//
+// A Postgres BIGINT comes back as a decimal STRING through most drivers, so
+// `observeFloor(tipRow.recordedAt)` is the natural thing to write and the
+// natural thing to get wrong. Coercing it silently would also accept `"abc"`
+// as NaN, after which every comparison against the floor is false and the
+// guarantee is gone with nothing said. The conversion is the caller's, and the
+// documented example makes it explicit.
+//
+// A fractional clock — `performance.timeOrigin + performance.now()` — is
+// refused for a different reason: the monotonic promise is kept by handing out
+// `last + 1` when the source has not moved, and that arithmetic needs an
+// integer to stay exact.
+function testTheSourceAndFloorContractsAreStatedByRefusal() {
+  var clock = b.time.monotonicClock({ source: _scriptedSource([1000]) });
+
+  var FLOOR_REFUSED = ["1700000000000", "abc", "", null, {}, [], true, 1.5, NaN, Infinity];
+  var accepted = FLOOR_REFUSED.filter(function (v) {
+    try { clock.observeFloor(v); return true; } catch (_e) { return false; }
+  });
+  check("observeFloor: a non-number floor is refused, not coerced" +
+        (accepted.length ? " (accepted " + JSON.stringify(accepted) + ")" : ""),
+        accepted.length === 0);
+
+  // The control: the converted form a caller is told to pass DOES work.
+  var converted = null;
+  try { clock.observeFloor(Number("1700000000000")); converted = true; }
+  catch (_e) { converted = false; }
+  check("observeFloor: the Number(...) form the example shows is accepted",
+        converted === true);
+
+  // A fractional source is refused at the call that reads it.
+  var fractional = b.time.monotonicClock({
+    source: function () { return 1000.5; },
+  });
+  var srcErr = null;
+  try { fractional.now(); } catch (e) { srcErr = e; }
+  check("monotonicClock: a fractional-millisecond source is refused" +
+        (srcErr ? " (" + srcErr.code + ")" : " (it was accepted)"),
+        srcErr !== null && srcErr.code === "time/monotonic-bad-source");
+
+  // The control: an integer source of the same magnitude works, so the refusal
+  // is about the fraction and not about the value.
+  var integral = b.time.monotonicClock({ source: function () { return 1000; } });
+  var ok = null;
+  try { ok = integral.now(); } catch (_e) { ok = null; }
+  check("monotonicClock: an integer source of the same magnitude is accepted",
+        ok === 1000);
+}
+
 function testConfigRefusals() {
   function code(opts) {
     try { b.time.monotonicClock(opts); return null; }
@@ -614,6 +665,7 @@ async function run() {
   testSafeIntegerCeilingIsRefusedNotSaturated();
   testDriftCallbackCannotReenterAndDuplicate();
   testDriftCallbackCannotObserveTimeGoingBackwards();
+  testTheSourceAndFloorContractsAreStatedByRefusal();
   testConfigRefusals();
   testBadSourceReadingIsRefused();
 
