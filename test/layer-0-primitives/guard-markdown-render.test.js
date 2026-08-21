@@ -554,6 +554,46 @@ function testBracketFreeTextAllocatesNoIndex() {
         steps <= K * 4);
 }
 
+// Blockquote nesting must not copy the document once per level.
+//
+// Stripping a quote level built a fresh array of fresh strings for every line
+// in the run, and every parent's array stayed live while it did — so a
+// document nested to the depth the profile permits retained roughly depth x
+// length. Measured at the permissive profile, 3.94 MiB nested 256 deep grew
+// the heap by 85 MiB, and the byte cap allows sixteen times that input: inside
+// every advertised limit, and still able to exhaust the heap.
+//
+// The property is that ONE offsets array serves the whole document however
+// deeply it nests. Asserted on the allocation count for the same reason as the
+// bracket tests: exact, and independent of machine and GC timing.
+function testBlockquoteNestingDoesNotCopyPerLevel() {
+  function arraysFor(src) {
+    var before = b.guardMarkdown._blockOffsetArraysForTest();
+    render(src, { profile: "permissive" });
+    return b.guardMarkdown._blockOffsetArraysForTest() - before;
+  }
+  function nested(depth, lines) {
+    var line = "> ".repeat(depth) + "text";
+    var doc = [];
+    for (var n = 0; n < lines; n += 1) doc.push(line);
+    return doc.join("\n");
+  }
+
+  var shallow = arraysFor(nested(2, 40));
+  var deep = arraysFor(nested(200, 40));
+  check("render: blockquote depth does not multiply line-array allocations " +
+        "(depth 2 allocated " + shallow + ", depth 200 allocated " + deep + ")",
+        deep === shallow && deep === 1);
+
+  // The control: rendering must still be happening, and nesting still nests.
+  var html = render(nested(3, 2), { profile: "permissive" });
+  var opens = html.split("<blockquote>").length - 1;
+  var closes = html.split("</blockquote>").length - 1;
+  check("render: nested blockquotes still emit balanced elements (" +
+        opens + " open, " + closes + " close)", opens === 3 && closes === 3);
+  check("render: nested blockquote content survives", html.indexOf("text") !== -1);
+}
+
 // The output has to be usable as a fragment: no stray unclosed element, and
 // balanced tags for every construct above.
 function testOutputIsBalanced() {
@@ -591,6 +631,7 @@ async function run() {
   testBlockquoteRecursionHasAnImplementationCeiling();
   testNestingDepthDoesNotMultiplyBracketMaps();
   testBracketFreeTextAllocatesNoIndex();
+  testBlockquoteNestingDoesNotCopyPerLevel();
   testOutputIsBalanced();
 }
 
