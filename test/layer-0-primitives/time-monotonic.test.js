@@ -253,6 +253,67 @@ function testDriftCallbackCannotReenterAndDuplicate() {
     duplicate === null);
 }
 
+// Not handing out a duplicate is not the whole guarantee.
+//
+// Advancing the floor before the report stopped two callers holding one value,
+// but a reporter that calls now() still RETURNED a higher value before the call
+// that triggered it returned a lower one. A callback that stamps its own log
+// line then records the drift on `1002` and the event it describes on `1001` —
+// time running backwards in the record, which is the failure this clock exists
+// to prevent, reintroduced by the reporting path.
+//
+// Re-entering the SAME clock from its own drift report is refused. The report
+// already carries the value it is about in `info.value`, so a reporter has no
+// reason to ask for another one, and `_report` already drops what the callback
+// throws — so the refusal cannot break the append that triggered it.
+function testDriftCallbackCannotObserveTimeGoingBackwards() {
+  var reentrantErr = null;
+  var infoSeen = null;
+  var clock = null;
+  clock = b.time.monotonicClock({
+    source:     _scriptedSource([1000]),
+    maxDriftMs: 2,
+    onDrift:    function (info) {
+      infoSeen = info;
+      try { clock.now(); }
+      catch (e) { reentrantErr = e; }
+    },
+  });
+
+  var returned = [];
+  for (var i = 0; i < 5; i += 1) returned.push(clock.now());
+
+  check("monotonicClock: re-entering the same clock from its drift report is refused" +
+    (reentrantErr ? "" : " (it returned a value instead)"),
+    reentrantErr !== null && reentrantErr.code === "time/monotonic-reentrant");
+
+  // Returned values are strictly increasing, with nothing observed out of order.
+  var ordered = true;
+  for (var n = 1; n < returned.length; n += 1) {
+    if (!(returned[n] > returned[n - 1])) ordered = false;
+  }
+  check("monotonicClock: values stay strictly increasing in return order " +
+    JSON.stringify(returned), ordered);
+
+  // The reporter is not left without a timestamp: the one it is reporting on
+  // is in the info it was handed.
+  check("monotonicClock: the drift report carries the value it describes",
+    infoSeen !== null && returned.indexOf(infoSeen.value) !== -1);
+
+  // A DIFFERENT clock is unaffected — the refusal is per instance, not global.
+  var other = b.time.monotonicClock({ source: _scriptedSource([5000]) });
+  var otherOk = null;
+  var c2 = null;
+  c2 = b.time.monotonicClock({
+    source:     _scriptedSource([2000]),
+    maxDriftMs: 2,
+    onDrift:    function () { try { otherOk = other.now(); } catch (_e) { otherOk = null; } },
+  });
+  for (var k = 0; k < 4; k += 1) c2.now();
+  check("monotonicClock: a report may read a DIFFERENT clock",
+    typeof otherOk === "number" && otherOk > 0);
+}
+
 function testConfigRefusals() {
   function code(opts) {
     try { b.time.monotonicClock(opts); return null; }
@@ -552,6 +613,7 @@ async function run() {
   testDriftCapIsNotTrippedBySlowCalls();
   testSafeIntegerCeilingIsRefusedNotSaturated();
   testDriftCallbackCannotReenterAndDuplicate();
+  testDriftCallbackCannotObserveTimeGoingBackwards();
   testConfigRefusals();
   testBadSourceReadingIsRefused();
 

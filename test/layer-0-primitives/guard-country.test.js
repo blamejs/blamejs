@@ -281,6 +281,52 @@ function testTableIsComplete() {
     }));
 }
 
+// `allow` has to differ from `audit`, or one of the two settings is a lie.
+//
+// The severity helper mapped every policy that was not "reject" to "warn", so
+// an explicitly allowed code still produced a finding, and a finding still
+// dispositions to audit-only. An operator who set `reservedPolicy: "allow"`
+// because they route on `EU` deliberately got the same audit trail as one who
+// asked to be told about it. The rest of the family reads the policy and skips
+// emitting when it says allow.
+//
+// Swept across all three policies and a code from each of their sets, because
+// the report named one and the helper served all three.
+function testAllowSuppressesTheFindingRatherThanDowngradingIt() {
+  var CASES = [
+    { policy: "reservedPolicy",     code: "EU", kind: "country-exceptionally-reserved" },
+    { policy: "userAssignedPolicy", code: "ZZ", kind: "country-user-assigned" },
+    { policy: "formerlyUsedPolicy", code: "AN", kind: "country-formerly-used" },
+  ];
+  CASES.forEach(function (c) {
+    var allowOpts = {};
+    allowOpts[c.policy] = "allow";
+    var allowed = b.guardCountry.validate(c.code, allowOpts);
+    var hit = (allowed.issues || []).filter(function (i) { return i.kind === c.kind; });
+    check("guardCountry: " + c.policy + " allow emits no " + c.kind + " finding " +
+          "(got " + hit.length + ")", hit.length === 0);
+    check("guardCountry: " + c.policy + " allow reports ok for " + c.code,
+          allowed.ok === true);
+
+    // The control: the same code under `audit` must STILL be reported, or the
+    // check above passes for a guard that simply stopped detecting.
+    var auditOpts = {};
+    auditOpts[c.policy] = "audit";
+    var audited = b.guardCountry.validate(c.code, auditOpts);
+    var auditHit = (audited.issues || []).filter(function (i) { return i.kind === c.kind; });
+    check("guardCountry: " + c.policy + " audit still reports " + c.kind,
+          auditHit.length === 1 && auditHit[0].severity === "warn");
+
+    // And `reject` must still refuse, so allow/audit/reject stay three settings.
+    var rejectOpts = {};
+    rejectOpts[c.policy] = "reject";
+    var rejected = b.guardCountry.validate(c.code, rejectOpts);
+    var rejectHit = (rejected.issues || []).filter(function (i) { return i.kind === c.kind; });
+    check("guardCountry: " + c.policy + " reject still refuses " + c.kind,
+          rejectHit.length === 1 && rejectHit[0].severity === "high");
+  });
+}
+
 async function run() {
   testAcceptsAssignedCodes();
   testRefusesEveryNonCountry();
@@ -290,6 +336,7 @@ async function run() {
   testDoesNotConsultIntl();
   testIssueKindsAreSourced();
   testProfilesDiffer();
+  testAllowSuppressesTheFindingRatherThanDowngradingIt();
   testFamilyRegistration();
   await testGateRefusesThroughTheContract();
   testTableIsComplete();
