@@ -332,6 +332,7 @@ async function run() {
   testGuardFamilyEveryStripPathRemovesTheSameClasses();
   testGuardFamilyValidateIsDeterministicAcrossCalls();
   testGuardFamilyDeclaresOnlyPerformableActions();
+  testGuardFamilyRefusesAMalformedNumericCap();
   await testGuardFamilyDispositionFollowsPolicy();
   testGuardFamilyStrictRejectsEveryZeroWidthCharacter();
   return testGuardAllDispatchRoutesByMime();
@@ -725,6 +726,93 @@ function testGuardFamilyValidateIsDeterministicAcrossCalls() {
   });
   // Guard the guard: vacuous passes are the failure mode this is meant to stop.
   check("determinism invariant probed at least eight guards", probed >= 8);
+}
+
+// A cap an operator can override must refuse a shape it cannot compare against.
+//
+// Every numeric limit in the family is read as `measured > opts.maxThing`. Hand
+// that comparison a string, an Infinity or a fraction and it is false for all
+// input, so a malformed value does not fall back to the default — it DISABLES
+// the cap, on exactly the untrusted input the cap exists to bound. The check
+// existed, but only inside the generated validate(), and the list of keys it
+// covered was hand-maintained per guard: maxRuntimeMs was in every guard's
+// defaults and named in none of them, guard-csv declared no list at all, and
+// the hand-written entry points (guardMarkdown.render and its peers) resolved
+// their own opts and never reached the check. 136 combinations were accepted.
+//
+// Derived from each guard's own resolved defaults rather than from a list here,
+// so a cap added to any guard tomorrow is covered without editing this file.
+function testGuardFamilyRefusesAMalformedNumericCap() {
+  var MALFORMED = [["a string", "8mb"], ["Infinity", Infinity],
+                   ["a fraction", 1.5], ["a negative", -1], ["NaN", NaN]];
+  var probedGuards = 0;
+  var probedCaps = 0;
+  b.guardAll.allGuards().forEach(function (g) {
+    if (typeof g.resolveOpts !== "function") return;
+    var base;
+    try { base = g.resolveOpts({}); } catch (_e) { return; }
+    var caps = Object.keys(base).filter(function (k) {
+      return typeof base[k] === "number" && Number.isInteger(base[k]) && base[k] > 0;
+    });
+    if (caps.length === 0) return;
+    probedGuards += 1;
+    caps.forEach(function (cap) {
+      probedCaps += 1;
+      var accepted = MALFORMED.filter(function (pair) {
+        var o = {};
+        o[cap] = pair[1];
+        try { g.resolveOpts(o); return true; }
+        catch (_e) { return false; }
+      }).map(function (pair) { return pair[0]; });
+      check("guard " + g.NAME + ": " + cap + " refuses a malformed value" +
+            (accepted.length ? " (accepted " + accepted.join(", ") + ")" : ""),
+            accepted.length === 0);
+    });
+  });
+  // A control, so the sweep cannot pass by surveying nothing: the failure this
+  // was written for spanned 27 guards, and a probe that reached two would have
+  // reported clean.
+  check("malformed-cap sweep reached the whole family (" + probedGuards +
+        " guards, " + probedCaps + " caps)", probedGuards >= 20 && probedCaps >= 40);
+  // The same resolver must still ACCEPT a well-formed override, or the sweep
+  // above passes for a resolver that simply refuses everything.
+  var markdown = b.guardAll.allGuards().filter(function (g) { return g.NAME === "markdown"; })[0];
+  var raised = null;
+  try { raised = markdown.resolveOpts({ maxBytes: 1024 }); } catch (_e) { /* raised stays null */ }
+  check("a well-formed cap override is still accepted",
+        raised !== null && raised.maxBytes === 1024);
+
+  // Zero is a documented VALUE for maxRuntimeMs — the gate reads it as
+  // `if (maxRuntimeMs > 0)`, so it is how an operator turns the runtime budget
+  // off. Requiring a positive integer everywhere took that setting away; this
+  // pins both halves so neither side drifts. Zero must survive on the runtime
+  // budget, and must NOT quietly become acceptable on a byte or depth cap,
+  // where the comparison makes it "refuse everything" rather than "uncapped".
+  var uncapped = 0;
+  var zeroOnACap = [];
+  b.guardAll.allGuards().forEach(function (g) {
+    if (typeof g.resolveOpts !== "function") return;
+    var base;
+    try { base = g.resolveOpts({}); } catch (_e) { return; }
+    if (typeof base.maxRuntimeMs === "number") {
+      var ok = false;
+      try { ok = g.resolveOpts({ maxRuntimeMs: 0 }).maxRuntimeMs === 0; } catch (_e2) { ok = false; }
+      if (ok) uncapped += 1;
+      check("guard " + g.NAME + ": maxRuntimeMs 0 stays the documented uncapped setting", ok);
+    }
+    Object.keys(base).forEach(function (k) {
+      if (k === "maxRuntimeMs") return;
+      if (!(typeof base[k] === "number" && Number.isInteger(base[k]) && base[k] > 0)) return;
+      var o = {};
+      o[k] = 0;
+      try { g.resolveOpts(o); zeroOnACap.push(g.NAME + "." + k); } catch (_e3) { /* refused, as it should be */ }
+    });
+  });
+  check("zero-is-uncapped applies to the runtime budget only" +
+        (zeroOnACap.length ? " (also accepted on " + zeroOnACap.slice(0, 5).join(", ") + ")" : ""),
+        zeroOnACap.length === 0);
+  check("the uncapped-runtime contract was probed family-wide (" + uncapped + " guards)",
+        uncapped >= 20);
 }
 
 // A guard may only declare a policy it can carry out. `strip` is an instruction

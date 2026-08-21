@@ -392,6 +392,57 @@ function testInputCapsAreEnforced() {
     permissiveErr === null);
 }
 
+// A malformed limit must be refused, not silently disable the limit. `byteLen
+// > "8mb"` is false for every input, so a configuration typo turns the
+// advertised hostile-input cap off without a word. validate() and sanitize()
+// already screen these through the guard factory's intOpts; render must not
+// be the one door that skips it.
+function testMalformedLimitsAreRefusedNotIgnored() {
+  var bad = [
+    { label: "maxBytes string",      opts: { maxBytes: "8mb" } },
+    { label: "maxBytes negative",    opts: { maxBytes: -1 } },
+    { label: "maxBytes zero",        opts: { maxBytes: 0 } },
+    { label: "maxBytes fractional",  opts: { maxBytes: 1.5 } },
+    { label: "maxBytes Infinity",    opts: { maxBytes: Infinity } },
+    { label: "maxLines string",      opts: { maxLines: "many" } },
+    { label: "maxLines negative",    opts: { maxLines: -5 } },
+    { label: "maxBlockquoteDepth fractional", opts: { maxBlockquoteDepth: 1.5 } },
+    { label: "maxBlockquoteDepth string",     opts: { maxBlockquoteDepth: "16" } },
+  ];
+  var accepted = bad.filter(function (c) {
+    try { render("hello", c.opts); return true; } catch (_e) { return false; }
+  }).map(function (c) { return c.label; });
+  check("render: a malformed limit is refused rather than silently disabling the cap" +
+    (accepted.length ? " (accepted " + accepted.join(", ") + ")" : ""),
+    accepted.length === 0);
+
+  // CONTROL: well-formed overrides still work, so the check above cannot pass
+  // for a renderer that refuses every explicit limit.
+  var okErr = null;
+  try { render("hello", { maxBytes: 4096, maxLines: 10, maxBlockquoteDepth: 4 }); }
+  catch (e) { okErr = e; }
+  check("render CONTROL: well-formed limit overrides are accepted" +
+    (okErr ? " (threw " + (okErr.code || okErr.message) + ")" : ""),
+    okErr === null);
+}
+
+// maxBlockquoteDepth is caller-configurable, and blockquotes render by
+// recursion. A policy limit above the call-stack's real ceiling turns a
+// refusal into a native RangeError — the framework crashing rather than
+// declining. The implementation needs its own ceiling, independent of policy.
+function testBlockquoteRecursionHasAnImplementationCeiling() {
+  var deep = "> ".repeat(10000) + "x";
+  var err = null;
+  var out = null;
+  try { out = render(deep, { maxBlockquoteDepth: 10001 }); }
+  catch (e) { err = e; }
+  check("render: 10,000 nested blockquotes do not raise a native RangeError " +
+    (err ? "(got " + (err.code || err.name + ": " + err.message) + ")" : "(rendered)"),
+    err === null || (typeof err.code === "string" && err.name !== "RangeError"));
+  check("render: a policy limit above the implementation ceiling still refuses cleanly",
+    out !== null || (err !== null && typeof err.code === "string"));
+}
+
 // The output has to be usable as a fragment: no stray unclosed element, and
 // balanced tags for every construct above.
 function testOutputIsBalanced() {
@@ -425,6 +476,8 @@ async function run() {
   testProfilesReachTheRenderer();
   testHostileInputIsBoundedNotFatal();
   testInputCapsAreEnforced();
+  testMalformedLimitsAreRefusedNotIgnored();
+  testBlockquoteRecursionHasAnImplementationCeiling();
   testOutputIsBalanced();
 }
 

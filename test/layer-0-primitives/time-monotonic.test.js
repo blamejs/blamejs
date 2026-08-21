@@ -212,6 +212,47 @@ function testSafeIntegerCeilingIsRefusedNotSaturated() {
     strictlyIncreasing && (edgeErr === null || typeof edgeErr.code === "string"));
 }
 
+// The drift callback runs INSIDE now(). If it calls the same clock — which a
+// logging path does the moment it timestamps its own report — the nested call
+// must still get a strictly greater value. Reporting before `last` advances
+// hands the nested call the value still in flight, so two calls return the
+// same number and the primitive's one guarantee fails through its own
+// diagnostics.
+function testDriftCallbackCannotReenterAndDuplicate() {
+  var nested = [];
+  var clock = null;
+  clock = b.time.monotonicClock({
+    source:     _scriptedSource([1000]),
+    maxDriftMs: 2,
+    onDrift:    function () {
+      // Bounded: a reentrant report must not be able to recurse without end
+      // either, so this stops itself rather than relying on the clock to.
+      if (nested.length < 5) nested.push(clock.now());
+    },
+  });
+
+  var outer = [];
+  var threw = null;
+  try { for (var i = 0; i < 6; i += 1) outer.push(clock.now()); }
+  catch (e) { threw = e; }
+
+  check("monotonicClock: a reentrant drift callback does not blow up",
+    threw === null, threw && (threw.code || threw.message));
+
+  var all = outer.concat(nested);
+  var seen = Object.create(null);
+  var duplicate = null;
+  all.forEach(function (v) {
+    if (seen[v]) duplicate = v;
+    seen[v] = true;
+  });
+  check("monotonicClock: no value is handed out twice, even across a " +
+    "callback that re-enters now()" +
+    (duplicate !== null ? " (saw " + duplicate + " twice in " +
+      JSON.stringify(all) + ")" : ""),
+    duplicate === null);
+}
+
 function testConfigRefusals() {
   function code(opts) {
     try { b.time.monotonicClock(opts); return null; }
@@ -510,6 +551,7 @@ async function run() {
   testDriftAheadOfWallClockIsCappedAndSignalled();
   testDriftCapIsNotTrippedBySlowCalls();
   testSafeIntegerCeilingIsRefusedNotSaturated();
+  testDriftCallbackCannotReenterAndDuplicate();
   testConfigRefusals();
   testBadSourceReadingIsRefused();
 
