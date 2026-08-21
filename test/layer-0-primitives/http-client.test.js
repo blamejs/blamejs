@@ -3001,6 +3001,45 @@ async function testPostureChangeDoesNotAbortInFlightRequests() {
 // wall-clock limit, so a fixed timer would cut a multi-minute download short
 // because something unrelated changed the TLS posture. Drive both shapes
 // against a real h2 session with a deliberately tiny grace window.
+// One attempt's worth of fixture for the drain-vs-progress case: a server that
+// keeps writing, a live session, and a chunk counter. Extracted so the retry
+// loop below builds each attempt without declaring a handler inside a loop
+// (which would close over the previous attempt's bindings).
+//
+// The write cadence is deliberately several times faster than the grace window
+// so an ordinary scheduling slip cannot empty one, while still leaving the
+// window tight enough to be a real test of the drain.
+async function _startProgressingH2Session(http2mod, graceMs) {
+  void graceMs;
+  var srv = _trackH2Sessions(http2mod.createServer());
+  var tick = null;
+  srv.on("stream", function (stream) {
+    stream.respond({ ":status": 200 });
+    stream.write("start");
+    tick = setInterval(function () {
+      try { stream.write("."); } catch (_e) { /* closed */ }
+    }, 15);
+  });
+  var port = await b.testing.listenOnRandomPort(srv, "127.0.0.1");
+  var session = http2mod.connect("http://127.0.0.1:" + port);
+  await new Promise(function (r) { session.once("connect", r); });
+  var req = session.request({ ":path": "/stream" });
+  var chunks = 0;
+  req.on("data", function () { chunks += 1; });
+  req.on("error", function () { /* torn down by close() below */ });
+  await helpers.waitUntil(function () { return tick !== null; },
+    { timeoutMs: 5000, label: "http-client: h2 stream started" });
+  return {
+    session: session,
+    chunks:  function () { return chunks; },
+    close:   async function () {
+      if (tick) clearInterval(tick);
+      try { session.destroy(); } catch (_e) { /* teardown */ }
+      await _closeH2Server(srv);
+    },
+  };
+}
+
 async function testH2DrainWaitsOnProgressButNotOnAStall() {
   var teardown = require("../../lib/http2-teardown");
   var http2mod = require("http2");
@@ -3008,47 +3047,52 @@ async function testH2DrainWaitsOnProgressButNotOnAStall() {
 
   // (1) A session still moving bytes survives well past the grace window.
   //
-  // The write cadence is deliberately several times faster than the grace
-  // window. At one write per 40ms against a 120ms grace there are only three
-  // chances to land a byte in the window, and under SMOKE_PARALLEL=64 the
-  // timer slips far enough to miss all three — at which point the session
-  // genuinely HAS gone quiet and the drain destroying it is correct. The test
-  // then failed on a premise it had stopped meeting rather than on the
-  // behaviour it exists to pin.
+  // Judging that needs a fixture that ACTUALLY keeps bytes moving for a whole
+  // drain window. drainH2Session destroys only after two consecutive
+  // GRACE-length ticks read identical cumulative socket bytes, so a >= GRACE
+  // event-loop stall under SMOKE_PARALLEL=64 leaves the session genuinely
+  // quiet — and destroying a quiet session is CORRECT. A test that asserted
+  // there would be failing on a premise it had stopped meeting rather than on
+  // the behaviour it exists to pin.
   //
-  // Widening the margin is not enough on its own, because a wide margin that
-  // silently stops being met reads as a pass. The chunk count the client
-  // actually received is asserted FIRST, so a starved fixture fails saying the
-  // stream stopped rather than accusing the drain.
-  var srvA = _trackH2Sessions(http2mod.createServer());
-  var tick = null;
-  srvA.on("stream", function (stream) {
-    stream.respond({ ":status": 200 });
-    stream.write("start");
-    tick = setInterval(function () { try { stream.write("."); } catch (_e) { /* closed */ } }, 15);
-  });
-  var portA = await b.testing.listenOnRandomPort(srvA, "127.0.0.1");
-  var sessA = http2mod.connect("http://127.0.0.1:" + portA);
-  await new Promise(function (r) { sessA.once("connect", r); });
-  var reqA = sessA.request({ ":path": "/stream" });
-  var chunksA = 0;
-  reqA.on("data", function () { chunksA += 1; });
-  reqA.on("error", function () { /* torn down below */ });
-  await helpers.waitUntil(function () { return tick !== null; },
-    { timeoutMs: 5000, label: "http-client: h2 stream started" });
-  teardown.drainH2Session(sessA, GRACE);
-  var chunksAtDrain = chunksA;
-  await helpers.passiveObserve(GRACE * 5,
-    "http-client: a progressing h2 session is not force-destroyed");
-  check("the h2 stream kept delivering bytes across the drain window " +
-        "(the premise of the check below)",
-        chunksA > chunksAtDrain,
-        "received " + (chunksA - chunksAtDrain) + " chunk(s) after the drain started");
-  check("the drain does not destroy an h2 session that is still moving bytes",
-    sessA.destroyed === false);
-  if (tick) clearInterval(tick);
-  try { sessA.destroy(); } catch (_e) { /* teardown */ }
-  await _closeH2Server(srvA);
+  // So the premise is measured at the drain's OWN granularity (a coarser
+  // window can hold while the drain still saw a dead one), and a starved
+  // attempt is DISCARDED AND RETRIED rather than reported. Only a fixture that
+  // never sustains itself fails, and it says the environment starved instead
+  // of accusing the drain. Asserting on a single starved window would make the
+  // gate red under ordinary parallel load, and a gate that fails under load is
+  // one that gets worked around.
+  var ATTEMPTS = 3;
+  var judged = false;
+  var starvedAttempts = 0;
+
+  for (var attempt = 1; attempt <= ATTEMPTS && !judged; attempt += 1) {
+    var built = await _startProgressingH2Session(http2mod, GRACE);
+    teardown.drainH2Session(built.session, GRACE);
+
+    var starved = false;
+    for (var w = 0; w < 5 && !starved; w += 1) {
+      var beforeWindow = built.chunks();
+      await helpers.passiveObserve(GRACE,
+        "http-client: h2 progress window " + (w + 1) + "/5 (attempt " + attempt + ")");
+      if (built.chunks() === beforeWindow) starved = true;
+    }
+
+    if (starved) {
+      starvedAttempts += 1;
+    } else {
+      check("the drain does not destroy an h2 session that is still moving bytes",
+        built.session.destroyed === false);
+      judged = true;
+    }
+    await built.close();
+  }
+
+  check("the h2 progress fixture sustained itself in at least one of " +
+        ATTEMPTS + " attempts (the premise of the check above)",
+        judged,
+        starvedAttempts + " attempt(s) had a drain-length window with no chunk, " +
+        "so this environment starved the fixture rather than the drain misbehaving");
 
   // (2) A session that has gone quiet is force-destroyed, so the socket is
   // never held open indefinitely.

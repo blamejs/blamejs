@@ -4390,6 +4390,26 @@ async function testNoDuplicateCodeBlocks() {
       ],
     },
     {
+      // validateOpts.shape SCHEMA LITERALS — the extraction already happened.
+      // What repeats is a run of `<field>: { rule: "<token>", code: "<code>" }`
+      // entries, which is the call syntax of the shared primitive rather than
+      // shared behaviour: cloud-events.wrap declares CloudEvents §3 context
+      // attributes, fdx.consentReceipt declares FDX consent-receipt fields, and
+      // time.monotonicClock declares a clock's source / drift / label opts. The
+      // fields differ, the rules differ, and every code is namespaced to its own
+      // primitive. Collapsing them would mean one schema for three unrelated
+      // specs. Reaching for a hand-rolled `if (typeof x !== ...)` preamble
+      // instead is what the dup detector originally fired on and what
+      // validateOpts.shape exists to end, so the allowlist has to end here
+      // rather than push callers back off the primitive.
+      mode:  "family-subset",
+      files: [
+        "lib/cloud-events.js:wrap",
+        "lib/fdx.js:consentReceipt",
+        "lib/time.js:monotonicClock",
+      ],
+    },
+    {
       // Own-property lookup guard — a JS language idiom, not shared behaviour.
       // `if (!Object.prototype.hasOwnProperty.call(TABLE, key)) throw XError(
       // code, msg + key); var v = TABLE[key];` is the framework's canonical way
@@ -4589,6 +4609,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-agent-registry.js:<top>",
         "lib/guard-archive.js:<top>",
         "lib/guard-cidr.js:<top>",
+        "lib/guard-country.js:<top>",
         "lib/guard-domain.js:<top>",
         "lib/guard-email.js:<top>",
         "lib/guard-event-bus-topic.js:<top>",
@@ -4617,13 +4638,14 @@ async function testNoDuplicateCodeBlocks() {
     },
     {
       // Per-guard PROFILES threat-policy tables — shape-only after the one
-      // genuine invariant was extracted. The 12 identifier guards' strict /
+      // genuine invariant was extracted. The 13 identifier guards' strict /
       // balanced / permissive tiers share a STRUCTURE (a run of
       // `<axis>: "<disposition>"` policy lines, then `maxBytes` + `maxRuntimeMs`,
       // then the next tier) but the CONTENT is per-guard security config:
       // the threat axes diverge entirely (guard-domain ldhPolicy / punycodePolicy /
       // dgaPolicy / mixedScriptPolicy vs guard-cidr networkAlignmentPolicy /
-      // reservedRangesPolicy vs guard-jwt's own set), and `maxBytes` is per-guard
+      // reservedRangesPolicy vs guard-country reservedPolicy / userAssignedPolicy /
+      // formerlyUsedPolicy vs guard-jwt's own set), and `maxBytes` is per-guard
       // (64 B … 512 KiB). The only byte-identical invariant — the four char-threat
       // axes all "reject" — is already extracted to gateContract.CHAR_THREATS_REJECT_ALL
       // (its own, now-cleared fingerprint). `maxRuntimeMs: C.TIME.seconds(2)` is
@@ -4632,6 +4654,7 @@ async function testNoDuplicateCodeBlocks() {
       mode:  "family-subset",
       files: [
         "lib/guard-cidr.js:_ipv4ToUint32",
+        "lib/guard-country.js:<top>",
         "lib/guard-domain.js:_shannonEntropy",
         "lib/guard-graphql.js:<top>",
         "lib/guard-jsonpath.js:<top>",
@@ -15492,6 +15515,51 @@ function testResidencyGatesWired() {
         edb.indexOf("REPLICA_RESIDENCY_INCOMPATIBLE") !== -1);
 }
 
+// The Keycloak realm fixture is imported at container start, and a single
+// value too long for its column aborts the WHOLE import — Keycloak then
+// refuses to start, and federation-auth.test.js has no OP to talk to.
+//
+// That failure is invisible until someone recreates the container: a realm
+// edited today keeps working against a container that imported an OLDER file,
+// so the federation gate goes on reporting green while the fixture that
+// defines it can no longer be loaded. It stayed broken that way until a
+// `docker compose down` destroyed the container and the import ran fresh.
+//
+// Keycloak's schema gives these columns VARCHAR(255).
+var KEYCLOAK_REALM_COLUMN_LIMITS = {
+  description: 255, name: 255, clientId: 255,
+  rootUrl: 255, baseUrl: 255, adminUrl: 255,
+};
+
+function testKeycloakRealmFitsItsColumns() {
+  var realm;
+  try { realm = JSON.parse(fs.readFileSync("docker/keycloak/realm-blamejs-test.json", "utf8")); }
+  catch (_e) { return; }
+
+  var tooLong = [];
+  (function walk(node, trail) {
+    if (node === null || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      for (var i = 0; i < node.length; i += 1) walk(node[i], trail + "[" + i + "]");
+      return;
+    }
+    Object.keys(node).forEach(function (k) {
+      var v = node[k];
+      if (typeof v === "string" &&
+          Object.prototype.hasOwnProperty.call(KEYCLOAK_REALM_COLUMN_LIMITS, k) &&
+          v.length > KEYCLOAK_REALM_COLUMN_LIMITS[k]) {
+        tooLong.push(trail + "." + k + " (" + v.length + " > " +
+                     KEYCLOAK_REALM_COLUMN_LIMITS[k] + ")");
+      }
+      walk(v, trail + "." + k);
+    });
+  })(realm, "realm");
+
+  check("keycloak realm: no value exceeds its column width" +
+        (tooLong.length ? " — " + tooLong.join("; ") : ""),
+        tooLong.length === 0);
+}
+
 function testWikiPortAgreesAcrossArtifacts() {
   var bad = [];
   var dockerfile;
@@ -18214,6 +18282,7 @@ async function run() {
   // v0.11.44 wiki-port cross-artifact detector: the Dockerfile's
   // WIKI_PORT default must match the release-container.yml smoke
   // step's port mapping + curl host.
+  testKeycloakRealmFitsItsColumns();
   testWikiPortAgreesAcrossArtifacts();
   testReleasePushPathsRunLiveIntegration();
   testReleaseUnresolvedThreadsFailClosedAtPageCap();
