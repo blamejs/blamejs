@@ -30,6 +30,10 @@ var check = helpers.check;
 
 var CH = String.fromCharCode;
 
+// The renderer's output/source byte ratio, mirrored here so the assertion says
+// what it is comparing against rather than a bare number.
+var MAX_AMPLIFICATION_FOR_TEST = 4;
+
 function render(src, opts) { return b.guardMarkdown.render(src, opts); }
 
 // Does the output contain a live element of this name (a real tag, not the
@@ -575,6 +579,93 @@ function testBracketFreeTextAllocatesNoIndex() {
         typeof ok === "string" && ok.length > 0);
 }
 
+// Escaping and generated markup are where a document GROWS, and no cap bounded
+// either. `'` renders as `&#39;` and `"` as `&quot;` — five and six characters
+// for one — and a six-character `[a](x)` emits a fifty-character anchor with
+// its rel list. A document of nothing but apostrophes satisfies maxBytes,
+// maxLines and the delimiter cap and still renders to five times its size:
+// 16 MiB of them produced 80 MiB of output and retained 528 MiB, and a page of
+// compact links reached 7.6x. The bound is on the ratio, PREDICTED before the
+// escaped string is built, because a check on the finished string would
+// already have spent the memory it exists to prevent.
+function testEscapedOutputCannotAmplifyWithoutBound() {
+  var apostrophes = "'".repeat(400000);
+  var err = null;
+  try { render(apostrophes, { profile: "permissive" }); } catch (e) { err = e; }
+  check("render: an all-escapable document is refused with a code" +
+        (err ? " (" + err.code + ")" : " (it rendered)"),
+        err !== null && err.code === "markdown/output-amplification");
+
+  // Generated markup counts too, or a link flood passes while the escaped text
+  // inside it stays small.
+  var linkFlood = "[a](x) ".repeat(200000);
+  var linkErr = null;
+  try { render(linkFlood, { profile: "permissive" }); } catch (e) { linkErr = e; }
+  check("render: a document of nothing but compact links is refused" +
+        (linkErr ? " (" + linkErr.code + ")" : " (it rendered)"),
+        linkErr !== null && linkErr.code === "markdown/output-amplification");
+
+  // Controls — ordinary prose escapes almost nothing...
+  var prose = "The quick brown fox jumps over the lazy dog. ".repeat(5000);
+  var proseOut = null;
+  try { proseOut = render(prose, { profile: "balanced" }); } catch (_e) { proseOut = null; }
+  check("render: ordinary prose is not caught by the amplification bound",
+        typeof proseOut === "string" && proseOut.indexOf("quick brown fox") !== -1);
+
+  // ...and text that escapes a LITTLE must still render.
+  var mixed = "It's a nice day. ".repeat(5000);
+  var mixedOut = null;
+  try { mixedOut = render(mixed, { profile: "balanced" }); } catch (_e) { mixedOut = null; }
+  check("render: text with ordinary apostrophes still renders",
+        typeof mixedOut === "string" && mixedOut.indexOf("&#39;") !== -1);
+
+  // A page of short fenced samples is legitimate and lands at 3.53x — the
+  // reason the bound is four rather than three.
+  var fences = "```js\ncode\n```\n".repeat(20000);
+  var fenceOut = null;
+  try { fenceOut = render(fences, { profile: "permissive" }); } catch (_e) { fenceOut = null; }
+  check("render: a page of short code fences still renders",
+        typeof fenceOut === "string" && fenceOut.indexOf("language-js") !== -1);
+
+  // Links with an ordinary target must not be double-charged: the href comes
+  // back from _safeHref already escaped, so billing it again refused documents
+  // whose real output was well inside the bound.
+  var realLinks = "[label](https://ex.com/abc/def) ".repeat(20000);
+  var realOut = null;
+  try { realOut = render(realLinks, { profile: "permissive" }); } catch (_e) { realOut = null; }
+  check("render: links with ordinary targets are not double-charged",
+        typeof realOut === "string" && realOut.indexOf("href=") !== -1);
+
+  // The budget must not leak between calls.
+  var after = null;
+  try { after = render("plain text", { profile: "balanced" }); } catch (_e) { after = null; }
+  check("render: a refused render does not poison the next one",
+        typeof after === "string" && after.indexOf("plain text") !== -1);
+
+  // BYTES on both sides. Counting UTF-16 units against a UTF-8 allowance lets
+  // non-ASCII past the stated bound — `é` is one unit and two bytes, an emoji
+  // two units and four — which is this codebase's own recurring bug: a
+  // byte-named limit measuring characters.
+  var wide = "[" + CH(233) + "](x)" + CH(0xD83D) + CH(0xDE00) + CH(0xD83D) + CH(0xDE00);
+  var wideDoc = wide.repeat(8000);
+  var wideBytes = Buffer.byteLength(wideDoc, "utf8");
+  var wideOut = null;
+  try { wideOut = render(wideDoc, { profile: "permissive" }); } catch (_e) { wideOut = null; }
+  var wideRatio = wideOut === null ? null : Buffer.byteLength(wideOut, "utf8") / wideBytes;
+  check("render: non-ASCII output stays inside the byte ratio it advertises " +
+        (wideOut === null ? "(refused)" : "(" + wideRatio.toFixed(2) + "x)"),
+        wideOut === null || wideRatio <= MAX_AMPLIFICATION_FOR_TEST);
+
+  // A source under the exemption is not ratio-bound at all: its output is small
+  // however much it multiplies, and refusing it buys nothing. Measured on the
+  // SOURCE, so the bound starts where the documentation says it does.
+  var smallDegenerate = "'".repeat(20000);        // 20 KiB, renders to ~100 KiB
+  var smallOut = null;
+  try { smallOut = render(smallDegenerate, { profile: "permissive" }); } catch (_e2) { smallOut = null; }
+  check("render: a source under the exemption is not ratio-bound",
+        typeof smallOut === "string" && smallOut.length > smallDegenerate.length);
+}
+
 // Blockquote nesting must not copy the document once per level.
 //
 // Stripping a quote level built a fresh array of fresh strings for every line
@@ -653,6 +744,7 @@ async function run() {
   testNestingDepthDoesNotMultiplyBracketMaps();
   testBracketFreeTextAllocatesNoIndex();
   testBlockquoteNestingDoesNotCopyPerLevel();
+  testEscapedOutputCannotAmplifyWithoutBound();
   testOutputIsBalanced();
 }
 
