@@ -1,0 +1,32 @@
+{
+  "$schema": "./schema.json",
+  "version": "0.18.45",
+  "date": "2026-08-21",
+  "headline": "`b.publicSuffix` returned names that cannot exist — a 64-octet label, and `ex*ample.com`",
+  "summary": "`canonicalDomain` is where the framework decides what a domain IS, and two kinds of non-domain got through it. A label longer than the 63 octets RFC 1035 allows came back as an organizational domain, and 17 of 31 non-LDH characters survived because `domainToASCII` maps a name without validating it as a host. Both answers then travelled: into DMARC alignment, cookie-domain comparisons and residency routing, where a name no resolver will ever return is compared against one that exists.",
+  "sections": [
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "A label longer than 63 octets is no longer a domain",
+          "body": "RFC 1035 §2.3.4 bounds a label at 63 octets and the whole name at 253. `canonicalDomain` enforced the second and not the first, so `<64 a's>.com` came back as a canonical domain and `b.publicSuffix.organizationalDomain` handed it to the caller — a name that cannot be put on the wire, and one the caller cannot tell apart from a name that can.\n\nThat is the argument the 253-octet check was already making. Its own comment describes the failure as handing back a name that \"cannot be put on the wire, and a caller cannot tell\", which is exactly as true of a label. The rest of the framework — `b.guardDomain`, `b.guardEmail`, `b.mailAuth` — enforces both bounds; this was the one place that enforced one and not the other.\n\nMeasured on the CONVERTED form for the same reason the total is: a 30-character internationalized label is well inside 63 as typed and can exceed it as an `xn--` A-label.\n\n`b.mailAuth` had been compensating with its own per-label loop, and the comment there argued a label cap was a DNS wire rule rather than a naming one. That did not survive the observation that the 253 cap is equally a wire rule and was enforced anyway. The loop is gone; the bound now applies wherever a domain is canonicalized rather than at the one caller that remembered."
+        },
+        {
+          "title": "A character that cannot appear in a host is no longer a domain",
+          "body": "`domainToASCII` is a UTS #46 MAPPER, not a hostname validator. It passes through characters that no DNS name may contain, so `ex*ample.com`, `ex(ample.com`, `ex'ample.com` and `ex\"ample.com` all came back from `canonicalDomain` looking canonical — 17 of the 31 non-LDH characters tested. A caller then compared one against a cookie domain, an SPF record or a residency table.\n\nA canonical domain is now letters, digits, hyphens and dots, checked on the converted form where the question has one answer: an internationalized label has already become its `xn--` spelling by then.\n\nUnderscore is deliberately still accepted. `_dmarc`, `_domainkey`, `_acme-challenge` and `_sip._tcp` are real DNS names, and whether to accept a service label is a policy question the framework already answers elsewhere — `b.guardDomain`'s `underscorePolicy` refuses it at strict and allows it at permissive. `canonicalDomain` normalizes a name; it does not judge one.\n\nThe check composes `b.codepointClass.isRunOf` rather than hand-rolling a character loop, so the set reads as the rule it enforces and the range table is built once."
+        }
+      ]
+    }
+  ],
+  "references": [
+    {
+      "label": "RFC 1035 §2.3.4 — size limits",
+      "url": "https://www.rfc-editor.org/rfc/rfc1035#section-2.3.4"
+    },
+    {
+      "label": "UTS #46 — Unicode IDNA Compatibility Processing",
+      "url": "https://www.unicode.org/reports/tr46/"
+    }
+  ]
+}
