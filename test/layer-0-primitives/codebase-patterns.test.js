@@ -12808,6 +12808,26 @@ var KNOWN_ANTIPATTERNS = [
     reason: "0.18.21 — the same drain was copied into 31 test files, differing only in the label except for two that quietly differed in substance: one also waited for UDPWrap and swallowed its own timeout in a catch, which is what hid a real per-query datagram-socket leak in the NTS and NTP clients, and one also waited for FSReqCallback, so consolidating on the majority shape would have dropped an in-flight file read from the static suite's check. The shared list is the UNION for that reason — anything that keeps the worker alive past run() belongs in it, and which file happened to need which type is an accident. The 5s budget was a latency guess rather than a leak verdict, and the failure identified nothing, so a timeout under SMOKE_PARALLEL=64 was unattributable: measurement put the real cost at 25-28ms both idle and with 64 network-heavy copies running at once on 32 cores. helpers.drainOpenHandles(label) holds one ceiling set as a leak verdict and names the surviving handles with addresses and states, or says why none is reachable. Anchored on a waitUntil whose body names TCPSocketWrap and tempered so it cannot cross a function-closing brace at column 0; the helper's own wait reads a named predicate instead, so it needs no allowlist. Fires on any re-hand-rolled drain; silent on the whole migrated tree.",
   },
   {
+    // Having ONE drain made the next defect visible: where it is CALLED FROM.
+    // `try { ...tests... } finally { await drain() }` reads as correct and is
+    // not. When the body throws, every teardown after the throw is skipped, so
+    // the drain finds the servers those teardowns would have closed and throws
+    // too — and a throw from a `finally` REPLACES the body's error. What
+    // surfaces is "a handle leaked", which is the consequence; the check that
+    // actually failed is discarded, which is why this class reads as an
+    // unexplained flake. helpers.withDrain(label, body, teardown?) runs the same
+    // drain with the body's error winning and the others appended to it.
+    // Structural — every copy behaves identically until the day a test fails
+    // inside one, which is the day the diagnostic is needed and gone.
+    id: "test-masking-finally-around-handle-drain",
+    primitive: "a handle drain at the end of a run must go through helpers.withDrain(label, body, teardown?) — a `finally` that drains replaces the body's error with its own, so the check that failed is lost and the leak its skipped teardown caused is all that gets reported",
+    scanScope: "test",
+    regex: /\bfinally\s*\{(?:(?!\n\})[\s\S]){0,400}?\w*drainOpenHandles\s*\(/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "0.18.46 — 30 files ran their tests inside a `try` whose `finally` drained, so a failing check was reported as a handle leak. Two spellings, and the second is why the first count was wrong: 24 called helpers.drainOpenHandles directly, and 6 (network-dns, static, ws-client, tls-exporter, testing-request, mail-server-jmap) called a local `_drainOpenHandles` wrapper that does file-specific teardown — destroying the global agent, closing websocket clients and their detached sockets, resetting module state — before delegating to the shared drain. Those six are not hand-rolled drains and not an exemption; they are the WORSE instance, doing more throwable work in the `finally` and so having more ways to replace the failure. withDrain took an optional pre-drain teardown rather than the six taking an exception, so the wrapper's work runs inside the structure that preserves the error. Anchored on the `finally` + drain pair, tempered so it cannot cross a function-closing brace at column 0, and matching `\\w*drainOpenHandles` because a bare word boundary misses `_drainOpenHandles` — which is exactly how those six went uncounted. The {0,400} is a ReDoS backstop far above any real `finally` body, not the precision mechanism. The helper's own drain call sits in a try/catch, not a finally, so it needs no allowlist entry.",
+  },
+  {
     // A test that asserts a raw ECDSA signature's first byte is NOT 0x30 (the
     // DER SEQUENCE tag) to prove "this is raw, not DER" is NONDETERMINISTIC: the
     // first byte of an IEEE-P1363 r||s signature is r's high octet, which equals

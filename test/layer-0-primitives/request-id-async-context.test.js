@@ -106,14 +106,12 @@ async function testConcurrentRequestsIsolated() {
 }
 
 async function run() {
-  try {
+  await helpers.withDrain("request-id-async-context", async function () {
     testSurface();
     await testAsyncContextBindsAls();
     await testDefaultModeDoesNotBindAls();
     await testConcurrentRequestsIsolated();
-  } finally {
-    await helpers.drainOpenHandles("request-id-async-context");
-  }
+  });
 }
 
 module.exports = { run: run };

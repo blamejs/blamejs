@@ -1566,7 +1566,11 @@ function testRefreshFrom304DirectBranches() {
 // ---- Run ----------------------------------------------------------------
 
 async function run() {
-  try {
+  // The drain tears down the httpClient's keep-alive transport pool so the
+  // client-side sockets it cached do not outlive run() and hold the forked
+  // worker's event loop open. agent.destroy() schedules the socket teardown
+  // asynchronously, so it polls until the TCP handles have actually gone.
+  await helpers.withDrain("http-client-cache", async function () {
     testSurface();
     testCreateBadOpts();
     await testMissThenHit();
@@ -1605,14 +1609,7 @@ async function run() {
     await testOperatorStoreFaultTolerance();
     await testRefreshFrom304DropsShareOptInAuthEvict();
     testRefreshFrom304DirectBranches();
-  } finally {
-    // Tear down the httpClient's keep-alive transport pool so the
-    // client-side sockets it cached don't outlive run() and keep the
-    // forked worker's event loop open (delays exit on a slow runner).
-    // agent.destroy() schedules the socket teardown asynchronously, so
-    // poll until the TCP handles have actually drained before returning.
-    await helpers.drainOpenHandles("http-client-cache");
-  }
+  });
 }
 
 module.exports = { run: run };

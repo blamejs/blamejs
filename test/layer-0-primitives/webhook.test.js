@@ -1038,11 +1038,7 @@ async function testSendFailureAudit() {
 }
 
 async function run() {
-  try {
-    await _runTests();
-  } finally {
-    await helpers.drainOpenHandles("webhook");
-  }
+  await helpers.withDrain("webhook", _runTests);
 }
 
 async function _runTests() {

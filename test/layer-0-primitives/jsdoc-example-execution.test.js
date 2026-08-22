@@ -849,7 +849,13 @@ async function run() {
                          error: String(res.error).split("\n").slice(0, 2).join(" ") });
   }
 
-  try {
+  // The drain runs last for a reason the teardown below depends on: the final
+  // batch resolves from its child's `close`, which fires before Node has
+  // finished releasing the ChildProcess itself, so without waiting the file
+  // returns with a handle still registered and the runner force-exits the
+  // worker to get rid of it. Waiting keeps the exit clean and keeps a REAL leak
+  // visible instead of buried in that same warning.
+  await helpers.withDrain("jsdoc-example-execution", async function () {
     for (var i = 0; i < all.inProcess.length; i += 1) {
       var item = all.inProcess[i];
       record(item, await runtime.runExampleInContext(item.body, {
@@ -858,18 +864,12 @@ async function run() {
     }
     var childResults = await _runStatefulBatches(all.stateful, tmp);
     childResults.forEach(function (r) { record(byId[r.id], r, true); });
-  } finally {
+  }, async function () {
     try { await teardownTestDb(tmp); } catch (_e) { /* best-effort */ }
     process.chdir(origCwd);
     process.removeListener("unhandledRejection", onReject);
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_e2) { /* best-effort */ }
-    // The last batch resolves from its child's `close`, which fires before Node
-    // has finished releasing the ChildProcess itself — so without this the file
-    // returns with a handle still registered and the runner force-exits the
-    // worker to get rid of it. Waiting for the release keeps the exit clean and
-    // keeps a REAL leak here visible instead of buried in that same warning.
-    await helpers.drainOpenHandles("jsdoc-example-execution");
-  }
+  });
 
   // Say it out loud when the runtime cannot confine the child, rather than
   // quietly executing spawn/write examples with the runner's full privileges.

@@ -10,17 +10,14 @@ var helpers = require("../helpers");
 var b     = helpers.b;
 var check = helpers.check;
 
-async function _drainOpenHandles() {
+// The file's own cleanup, handed to withDrain so it runs inside the structure
+// that keeps the body's error rather than in a `finally` that would replace it.
+function _teardown() {
   http.globalAgent.destroy();
-  await helpers.drainOpenHandles("testing-request");
 }
 
 async function run() {
-  try {
-    await _runTests();
-  } finally {
-    await _drainOpenHandles();
-  }
+  await helpers.withDrain("testing-request", _runTests, _teardown);
 }
 
 async function _runTests() {

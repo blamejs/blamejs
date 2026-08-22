@@ -2,10 +2,15 @@
 // Copyright (c) blamejs contributors
 "use strict";
 /**
- * Sanity tests for test/helpers/_shape-match.js. Not part of the
- * smoke test surface (lives outside the per-layer index); the file is
- * a test-time substrate, so unit-test it directly here and only
- * surface failures via the codebase-patterns detectors that compose it.
+ * Tests for test/helpers/_shape-match.js — a test-time substrate,
+ * unit-tested directly rather than only through the codebase-patterns
+ * detectors that compose it.
+ *
+ * This DOES run in smoke: the runner takes every `*.test.js` under the
+ * layer directory, and the only opt-out is a `STANDALONE_ONLY` marker in
+ * the first 2 KiB, which this file does not carry. The header used to say
+ * the opposite, which is the kind of claim that invites a failure here to
+ * be read as not blocking.
  */
 
 var sm = require("../helpers/_shape-match");

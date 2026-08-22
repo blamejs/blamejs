@@ -70,11 +70,16 @@ async function waitUntil(predicate, opts) {
   var intervalMs = typeof opts.intervalMs === "number" ? opts.intervalMs : DEFAULT_INTERVAL_MS;
   var label = opts.label || "condition";
   var deadline = Date.now() + timeoutMs;
+  // Tracked as a flag, not by the truthiness of what was thrown: a predicate
+  // that throws null or "" has still thrown, and naming it in the timeout is
+  // the difference between "the condition never came true" and "the condition
+  // could not be evaluated".
+  var threw = false;
   var lastError = null;
   while (Date.now() < deadline) {
     var rv;
-    try { rv = await predicate(); lastError = null; }
-    catch (e) { lastError = e; rv = false; }
+    try { rv = await predicate(); threw = false; lastError = null; }
+    catch (e) { threw = true; lastError = e; rv = false; }
     if (rv) return rv;
     await new Promise(function (r) { setTimeout(r, intervalMs); });
   }
@@ -83,9 +88,15 @@ async function waitUntil(predicate, opts) {
   try {
     var finalRv = await predicate();
     if (finalRv) return finalRv;
-  } catch (e) { lastError = e; }
+    // It answered. Whatever a previous attempt threw is no longer what
+    // happened last, and the timeout must not report a stale throw as the
+    // reason — that sends the reader after an exception the predicate has
+    // since stopped raising. The loop clears it on every answer; so does this.
+    threw = false;
+    lastError = null;
+  } catch (e) { threw = true; lastError = e; }
   var msg = "waitUntil timeout: " + label + " (after " + timeoutMs + "ms)";
-  if (lastError) msg += " — last predicate threw: " + ((lastError && lastError.message) || String(lastError));
+  if (threw) msg += " — last predicate threw: " + ((lastError && lastError.message) || String(lastError));
   throw new Error(msg);
 }
 

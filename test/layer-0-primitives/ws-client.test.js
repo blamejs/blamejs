@@ -56,7 +56,10 @@ function _trackServer(server) {
   return server;
 }
 
-async function _drainOpenHandles() {
+// The file's own cleanup, handed to withDrain so it runs inside the structure
+// that keeps the body's error rather than in a `finally` that would replace it.
+// withDrain runs the shared drain itself, after this.
+function _teardown() {
   _liveClients.forEach(function (c) {
     try { c.cancelReconnect(); } catch (_e) { /* best-effort */ }
     try { c.close(); } catch (_e) { /* best-effort */ }
@@ -79,7 +82,6 @@ async function _drainOpenHandles() {
   });
   _liveClients = [];
   _liveServers = [];
-  await helpers.drainOpenHandles("ws-client");
 }
 
 // Minimal in-process WebSocket server using lib/websocket primitives.
@@ -229,11 +231,7 @@ async function _expectFrameError(afterHandshake, connOpts, expectedCode, label) 
 }
 
 async function run() {
-  try {
-    await _runTests();
-  } finally {
-    await _drainOpenHandles();
-  }
+  await helpers.withDrain("ws-client", _runTests, _teardown);
 }
 
 async function _runTests() {

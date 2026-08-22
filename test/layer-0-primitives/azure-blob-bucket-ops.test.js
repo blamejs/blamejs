@@ -238,7 +238,7 @@ async function testSetLifecycleNotSupported() {
 }
 
 async function run() {
-  try {
+  await helpers.withDrain("azure-blob-bucket-ops", async function () {
     await testSurface();
     await testFactoryValidation();
     await testContainerNameValidation();
@@ -249,9 +249,7 @@ async function run() {
     await testSetCorsRulesValidation();
     await testSetCorsRulesWireShape();
     await testSetLifecycleNotSupported();
-  } finally {
-    await helpers.drainOpenHandles("azure-blob-bucket-ops");
-  }
+  });
 }
 
 module.exports = { run: run };

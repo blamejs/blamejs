@@ -302,7 +302,7 @@ async function testSetCorsRulesShape() {
 }
 
 async function run() {
-  try {
+  await helpers.withDrain("gcs-bucket-ops", async function () {
     await testSurface();
     await testFactoryValidation();
     await testBucketNameValidation();
@@ -312,9 +312,7 @@ async function run() {
     await testListBuckets();
     await testSetLifecycleValidationAndShape();
     await testSetCorsRulesShape();
-  } finally {
-    await helpers.drainOpenHandles("gcs-bucket-ops");
-  }
+  });
 }
 
 module.exports = { run: run };

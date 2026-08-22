@@ -1926,7 +1926,7 @@ async function testEvaluateRestoreWriteFailureWin32() {
 }
 
 async function run() {
-  try {
+  await helpers.withDrain("self-update", async function () {
     testSurface();
     testCompareTags();
     testCompareTagsFullPrecedence();
@@ -1987,9 +1987,7 @@ async function run() {
     await testEvaluateExpiredHandCraftedArms();
     await testRollbackMoveAsideFailure();
     await testEvaluateRestoreWriteFailureWin32();
-  } finally {
-    await helpers.drainOpenHandles("self-update");
-  }
+  });
 }
 
 module.exports = { run: run };

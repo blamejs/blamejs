@@ -78,12 +78,10 @@ async function testUploadTransformSizeChangeNotTruncated() {
 }
 
 async function run() {
-  try {
+  await helpers.withDrain("http-client-throttle-transform", async function () {
     await testDownloadTransformAppliesInBufferMode();
     await testUploadTransformSizeChangeNotTruncated();
-  } finally {
-    await helpers.drainOpenHandles("http-client-throttle-transform");
-  }
+  });
 }
 
 module.exports = { run: run };

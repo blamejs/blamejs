@@ -1870,7 +1870,7 @@ async function testMiscBranchGaps() {
 
 async function run() {
   var wtt = helpers.withTestTimeout;
-  try {
+  await helpers.withDrain("mail-server-imap", async function () {
     testSurface();
     testRequiresTlsContext();
     testRequiresMailStore();
@@ -1921,9 +1921,7 @@ async function run() {
     await wtt("backend reject fallbacks", testBackendRejectFallbacks);
     await wtt("notify emit fallbacks",  testNotifyEmitFallbacks);
     await wtt("misc branch gaps",       testMiscBranchGaps);
-  } finally {
-    await helpers.drainOpenHandles("mail-server-imap");
-  }
+  });
 }
 
 module.exports = { run: run };

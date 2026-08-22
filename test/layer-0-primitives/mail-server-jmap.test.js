@@ -1651,7 +1651,10 @@ async function testWebSocket() {
   } finally { await _stop(sUn.server); }
 }
 
-async function _drainOpenHandles() {
+// The file's own cleanup, handed to withDrain so it runs inside the structure
+// that keeps the body's error rather than in a `finally` that would replace it.
+// withDrain runs the shared drain itself, after this.
+async function _teardown() {
   _wsClients.forEach(function (c) {
     try { c.cancelReconnect(); } catch (_e) { /* best-effort */ }
     try { c.close(); } catch (_e) { /* best-effort */ }
@@ -1667,7 +1670,6 @@ async function _drainOpenHandles() {
     });
   }));
   _wsClients = []; _wsSockets = []; _httpServers = [];
-  await helpers.drainOpenHandles("mail-server-jmap");
 }
 
 async function run() {
@@ -1761,7 +1763,7 @@ async function run() {
   await testEmailSubmissionSetIdentitiesReturnsNull();
   // Handlers driven over real localhost HTTP + WebSocket connections
   var wtt = helpers.withTestTimeout;
-  try {
+  await helpers.withDrain("mail-server-jmap", async function () {
     await wtt("session handler",   testSessionHandler);
     await wtt("discovery handler", testDiscoveryHandler);
     await wtt("api handler",       testApiHandler);
@@ -1775,9 +1777,7 @@ async function run() {
     await wtt("ws push lifecycle edges", testWebSocketPushLifecycleEdges);
     await wtt("ws push non-fn unsubscribe", testWebSocketPushSubscribeNonFunction);
     await wtt("ws push reject non-error", testWebSocketPushSubscribeRejectNonError);
-  } finally {
-    await _drainOpenHandles();
-  }
+  }, _teardown);
 }
 
 function _makeESHandler(overrides) {

@@ -463,8 +463,7 @@ async function _runTests() {
 }
 
 async function run() {
-  try { await _runTests(); }
-  finally { await helpers.drainOpenHandles("oauth-callback"); }
+  await helpers.withDrain("oauth-callback", _runTests);
 }
 
 // PAR carrying a signed request object: the form body MUST hold `request=`

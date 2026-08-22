@@ -118,11 +118,7 @@ function testHandshakeByteCapFailsClosed() {
 }
 
 async function run() {
-  try {
-    await testHandshakeByteCapFailsClosed();
-  } finally {
-    await helpers.drainOpenHandles("network-nts-handshake-byte-cap");
-  }
+  await helpers.withDrain("network-nts-handshake-byte-cap", testHandshakeByteCapFailsClosed);
 }
 
 module.exports = { run: run };

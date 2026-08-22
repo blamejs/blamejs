@@ -52,8 +52,7 @@ function _client(port) {
 }
 
 async function run() {
-  try { await _runTests(); }
-  finally { await helpers.drainOpenHandles("azure-blob-key-encoding"); }
+  await helpers.withDrain("azure-blob-key-encoding", _runTests);
 }
 
 async function _runTests() {

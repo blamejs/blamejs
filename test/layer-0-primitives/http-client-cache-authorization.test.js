@@ -316,7 +316,7 @@ async function testPrivateCacheCachesAuthedResponse() {
 // ---- Run ----------------------------------------------------------------
 
 async function run() {
-  try {
+  await helpers.withDrain("http-client-cache-authorization", async function () {
     await testAuthNotSharedAcrossUsersSharedCache();
     await testAuthOptInDroppedOn304EvictsNotShares();
     await testLegacyEntryWithoutAuthFlagFailsClosedOn304();
@@ -324,9 +324,7 @@ async function run() {
     await testPublicPermitsSharedAuthReuse();
     await testSmaxagePermitsSharedAuthReuse();
     await testPrivateCacheCachesAuthedResponse();
-  } finally {
-    await helpers.drainOpenHandles("http-client-cache-authorization");
-  }
+  });
 }
 
 module.exports = { run: run };
