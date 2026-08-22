@@ -23,9 +23,14 @@ function testSurface() {
 }
 
 function testRfc9905SHA1Family() {
-  // Per RFC 9905 §3 — DNSKEY algorithms 5, 7, 10 use SHA-1 and are
-  // deprecated. Algorithm 6 (DSA-NSEC3-SHA1) also uses SHA-1 + DSA;
-  // both reasons apply.
+  // Per RFC 9905 §3 — the SHA-1 DNSKEY algorithms are 5 (RSASHA1), 6
+  // (DSA-NSEC3-SHA1) and 7 (RSASHA1-NSEC3-SHA1). Algorithm 6 carries DSA as
+  // well, so both reasons apply to it.
+  //
+  // This comment used to list 10 among them. Algorithm 10 is RSASHA512 and
+  // uses SHA-512; it is not SHA-1-based and is not deprecated for that
+  // reason. The table was right and the comment was wrong, which is the
+  // dangerous direction — it invites someone to "fix" the table to match.
   var a5  = b.network.dns.classifyDnskeyAlgorithm(5);
   check("algo 5 RSASHA1 deprecated",         a5.deprecated === true);
   check("algo 5 name",                       a5.name === "RSASHA1");
@@ -34,6 +39,22 @@ function testRfc9905SHA1Family() {
   check("algo 6 DSA-NSEC3-SHA1 deprecated",  a6.deprecated === true);
   var a7  = b.network.dns.classifyDnskeyAlgorithm(7);
   check("algo 7 RSASHA1-NSEC3-SHA1 deprecated", a7.deprecated === true);
+}
+
+function testRsaSha512CarriesItsSigningLevel() {
+  // RFC 9904 (which obsoletes RFC 8624) Table 2 reads RSASHA512 as
+  // NOT RECOMMENDED for signing and MUST for validation. `deprecated` stays
+  // false because validation is still mandatory — a caller using this to
+  // decide whether to ACCEPT a zone must keep accepting it — but reporting
+  // it as plainly "current" tells an operator choosing a signing algorithm
+  // the opposite of what the current RFC says.
+  var a10 = b.network.dns.classifyDnskeyAlgorithm(10);
+  check("algo 10 RSASHA512 still validates",  a10.deprecated === false);
+  check("algo 10 name",                       a10.name === "RSASHA512");
+  check("algo 10 names its signing level",    /NOT RECOMMENDED/.test(a10.reason));
+  check("algo 10 cites the current RFC",      /RFC 9904/.test(a10.reason));
+  check("algo 10 does not read as plainly current",
+        !/^current\b/.test(a10.reason));
 }
 
 function testCurrentAlgorithms() {
@@ -150,6 +171,7 @@ function testDsDigestTypeClassifier() {
 function run() {
   testSurface();
   testRfc9905SHA1Family();
+  testRsaSha512CarriesItsSigningLevel();
   testCurrentAlgorithms();
   testOtherDeprecated();
   testReservedAndPrivateUseAlgorithms();

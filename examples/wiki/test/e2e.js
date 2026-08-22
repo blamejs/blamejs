@@ -50,8 +50,30 @@ var siteCoverageValidator = require("./validate-site-coverage");
 // the same disk path. Container invocations set BLAMEJS_E2E_DATA_DIR=
 // /tmp/data-e2e (a path inside the container's overlay FS, not the
 // host-mounted source tree).
+//
+// The override MUST be absolute, and this refuses it otherwise instead of
+// resolving it against cwd. A relative value defeats the only thing the
+// variable is for: it lands inside the host-mounted source tree, which is
+// the very collision the flag exists to prevent, and it does so silently.
+//
+// This is not hypothetical. Git Bash rewrites a POSIX-looking argument into
+// a Windows path before Docker sees it, so `-e BLAMEJS_E2E_DATA_DIR=/tmp/
+// data-e2e` reaches the Linux container as `C:/Users/...`, which is relative
+// there — and every run wrote its database into examples/wiki/C:/Users/...
+// A .gitignore rule was added to hide the debris rather than fail the run.
+// Pass the value inside the container's own `sh -c`, or set
+// MSYS_NO_PATHCONV=1, so the path arrives intact.
 var DATA_DIR = process.env.BLAMEJS_E2E_DATA_DIR ||
                path.join(__dirname, "..", "data-e2e");
+if (process.env.BLAMEJS_E2E_DATA_DIR && !path.isAbsolute(DATA_DIR)) {
+  throw new Error(
+    "BLAMEJS_E2E_DATA_DIR must be an absolute path on this platform, got " +
+    JSON.stringify(DATA_DIR) + ". A relative value resolves against the wiki " +
+    "source tree, which is what the override exists to avoid. If this came " +
+    "from a Git Bash docker invocation, the shell rewrote the path: set it " +
+    "inside the container's own `sh -c`, or prefix the command with " +
+    "MSYS_NO_PATHCONV=1.");
+}
 var ADMIN_EMAIL = "admin-e2e@blamejs.com";
 var ADMIN_PASSWORD = "e2e-test-password-x9k2";
 

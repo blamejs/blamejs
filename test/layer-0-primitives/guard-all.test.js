@@ -331,6 +331,7 @@ async function run() {
   testGuardFamilySeverityAgreesWithPolicy();
   testGuardFamilyEveryStripPathRemovesTheSameClasses();
   testGuardFamilyValidateIsDeterministicAcrossCalls();
+  testCharacterPolicyVocabularyIsEnforced();
   testGuardFamilyDeclaresOnlyPerformableActions();
   testGuardFamilyRefusesAMalformedNumericCap();
   await testGuardFamilyGateAgreesWithValidateOnAnEmptyValue();
@@ -983,6 +984,67 @@ function testGuardFamilyRefusesAMalformedNumericCap() {
         gateAccepted.length === 0);
   check("the gate-construction sweep reached the family (" + gatesProbed + " guards)",
         gatesProbed >= 15);
+}
+
+// A policy opt is a CONFIG-TIME entry point, so a value outside its vocabulary
+// is a boot error, not a runtime surprise. `bidiPolicy: "rejct"` used to be
+// accepted by both doors — resolveOpts and gate — and then read leniently: the
+// scan runs (the value is not "allow"), an issue is raised, and
+// policyDisposition falls through to "refuse". Fail-closed, so not a hole, but
+// the operator asked for one disposition and silently got another with nothing
+// said at boot.
+//
+// guard-country already fixed this for its own three opts by declaring
+// `enumOpts`, and its comment records the same bug. The mechanism was applied
+// to one guard and the class left open across the other 259 policy opts; this
+// covers the character family, which shares one vocabulary.
+function testCharacterPolicyVocabularyIsEnforced() {
+  var CHAR_POLICY_KEYS = ["bidiPolicy", "nullBytePolicy", "controlPolicy",
+                          "zeroWidthPolicy", "tagsPolicy"];
+  var NONSENSE = "definitely-not-a-policy-value";
+  var acceptedNonsense = [];
+  var refusedLegal = [];
+  var probed = 0;
+
+  b.guardAll.allGuards().forEach(function (g) {
+    if (typeof g.resolveOpts !== "function") return;
+    var base;
+    try { base = g.resolveOpts({}); } catch (_e) { return; }
+    CHAR_POLICY_KEYS.forEach(function (key) {
+      if (typeof base[key] !== "string") return;
+      probed += 1;
+
+      var bad = {};
+      bad[key] = NONSENSE;
+      var refused = false;
+      try { g.resolveOpts(bad); } catch (_e2) { refused = true; }
+      if (!refused) acceptedNonsense.push(g.NAME + "." + key);
+
+      // And the legal vocabulary must still pass, or the enum is a regression
+      // wearing a fix. `strip` is legal only where the guard can perform it —
+      // the same rule the performable-actions invariant below asserts.
+      var legal = ["allow", "audit", "audit-only", "reject"];
+      if (typeof g.sanitize === "function" && g.KIND !== "entries") legal.push("strip");
+      legal.forEach(function (v) {
+        var ok = {};
+        ok[key] = v;
+        try { g.resolveOpts(ok); }
+        catch (_e3) { refusedLegal.push(g.NAME + "." + key + "=" + v); }
+      });
+    });
+  });
+
+  check("the character-policy sweep reached the family (" + probed + " cells)",
+        probed >= 40, "probed " + probed);
+  check("a character policy refuses a value outside its vocabulary" +
+        (acceptedNonsense.length
+          ? " (accepted on " + acceptedNonsense.length + ": " +
+            acceptedNonsense.slice(0, 6).join(", ") + ")"
+          : ""),
+        acceptedNonsense.length === 0);
+  check("and still accepts every legal value" +
+        (refusedLegal.length ? " (refused " + refusedLegal.slice(0, 6).join(", ") + ")" : ""),
+        refusedLegal.length === 0);
 }
 
 // A guard may only declare a policy it can carry out. `strip` is an instruction

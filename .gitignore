@@ -75,12 +75,17 @@ id_ed25519*
 # The example app's repo-tracked content is its source; data/ is local.
 examples/*/data/
 examples/*/data-e2e/
-# On Windows the wiki e2e's data-e2e path can land under a literal
-# `C:/` directory inside examples/wiki/ when an env var like
-# BLAMEJS_E2E_DATA_DIR holds a Windows-absolute path that Node joins
-# onto cwd. The colon is either ASCII `:` or NTFS's Unicode
-# substitute U+F03A — match both. Ignore the whole branch so it
-# never reaches staging.
+# A BACKSTOP, no longer the answer. The wiki e2e's data dir landed under a
+# literal `C:/` directory inside examples/wiki/ because Git Bash rewrites a
+# POSIX-looking `-e VAR=/tmp/...` into a Windows path before Docker sees it,
+# so the Linux container received `C:/Users/...` — relative there — and
+# resolved it against the bind-mounted source tree. Ignoring it hid 11 MB of
+# database per run and defeated the isolation the variable exists to provide.
+# examples/wiki/test/e2e.js now REFUSES a relative override, and the runbook
+# sets the variable inside the container's own `sh -c`. These rules stay only
+# so a future path-mangling variant cannot reach staging before someone reads
+# the failure. The colon is either ASCII `:` or NTFS's Unicode substitute
+# U+F03A — match both.
 examples/*/C\:/
 examples/wiki/C*/
 # Dev/example lockfiles ARE committed (root, examples/wiki, fuzz) so CI's
