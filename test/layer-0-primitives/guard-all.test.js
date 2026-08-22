@@ -338,6 +338,7 @@ async function run() {
   testDeclaredVocabularyMatchesTheOptsBlock();
   testPublishedVocabularyCannotBeEdited();
   testEveryPolicyIsCheckedAtEveryDoor();
+  testAuditOnlyMatchesAudit();
   testGuardFamilyDeclaresOnlyPerformableActions();
   testGuardFamilyRefusesAMalformedNumericCap();
   await testGuardFamilyGateAgreesWithValidateOnAnEmptyValue();
@@ -1101,6 +1102,50 @@ function testDeclaredCharacterRepairMatchesBehaviour() {
   check("a guard that can repair still accepts `strip`" +
         (wrongRefusal.length ? " (refused on " + wrongRefusal.join(", ") + ")" : ""),
         wrongRefusal.length === 0);
+}
+
+// `audit-only` is the family's documented synonym for `audit`, so a policy that
+// accepts both must not tell them apart. Several conditions test for the
+// literal — `opts.pkcePolicy !== "audit" && opts.pkcePolicy !== "allow"` — and a
+// vocabulary that advertises the synonym beside such a condition sends the two
+// spellings down different branches: one serves the request with a finding, the
+// other refuses it, and nothing in the option's name says which you picked.
+//
+// Driven with each guard's own hostile fixture, because a policy that never
+// fires cannot disagree with itself. Guards whose vocabulary deliberately omits
+// the synonym are out of scope by construction — they are not accepting both.
+function testAuditOnlyMatchesAudit() {
+  var diverged = [], probed = 0;
+  b.guardAll.allGuards().forEach(function (g) {
+    var vocabulary = g.POLICY_VOCABULARY;
+    var fixture = g.INTEGRATION_FIXTURES;
+    if (!vocabulary || !fixture || typeof g.validate !== "function") return;
+    var hostile = fixture.hostileBytes || fixture.hostileEntries;
+    if (hostile === undefined) return;
+
+    Object.keys(vocabulary).forEach(function (key) {
+      var values = vocabulary[key];
+      if (!Array.isArray(values)) return;
+      if (values.indexOf("audit") === -1 || values.indexOf("audit-only") === -1) return;
+      probed += 1;
+
+      function resultFor(value) {
+        var opts = {};
+        opts[key] = value;
+        try { return JSON.stringify(g.validate(hostile, opts)); }
+        catch (e) { return "threw:" + (e.code || e.name); }
+      }
+      if (resultFor("audit") !== resultFor("audit-only")) {
+        diverged.push(g.NAME + "." + key);
+      }
+    });
+  });
+
+  check("the audit-synonym sweep reached the family (" + probed + " policies)",
+        probed >= 100, "probed " + probed);
+  check("a policy accepting both spellings treats them the same" +
+        (diverged.length ? " (diverged: " + diverged.slice(0, 8).join(", ") + ")" : ""),
+        diverged.length === 0);
 }
 
 // The character-policy sweep above, widened to every policy a guard declares.

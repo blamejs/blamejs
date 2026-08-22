@@ -494,7 +494,10 @@ function testGuardJsonBadProfile() {
 // with a narrower copy.
 function testPolicyVocabularyIsEnforced() {
   var LEGAL = {
-    pollutionPolicy:        ["reject", "strip", "audit", "audit-only", "allow"],
+    // No `audit-only`: the parse path decides whether to keep a poison-named
+    // key by testing for the literal "audit", so the synonym would strip
+    // `__proto__` where "audit" keeps it.
+    pollutionPolicy:        ["reject", "strip", "audit", "allow"],
     duplicateKeyPolicy:     ["reject", "audit", "audit-only", "allow"],
     nanInfinityPolicy:      ["reject", "audit", "audit-only", "allow"],
     commentPolicy:          ["reject", "audit", "audit-only", "allow"],
