@@ -2484,6 +2484,42 @@ function testGuardAuthoringHelpers() {
         Array.isArray(repairing.tagsPolicy) && repairing.tagsPolicy.indexOf("reject") !== -1);
   check("charPolicyEnums: no zeroWidthPolicy means no inherited tagsPolicy",
         b.gateContract.charPolicyEnums({ bidiPolicy: "reject" }).tagsPolicy === undefined);
+
+  // A declaration has to be backed by something. `charRepair: true` with no
+  // sanitize and no sanitizeTransform puts `strip` in the vocabulary of a guard
+  // that cannot carry one out — accepted at boot, refused at runtime, which is
+  // the substitution the declaration was introduced to stop. Refused while the
+  // guard is assembled, which is the moment the author can still fix it.
+  var noRepairPath = null;
+  try {
+    b.gateContract.defineGuard({
+      name: "charrepairnopath", kind: "content", charRepair: true,
+      errorName: "CharRepairNoPathError",
+      profiles: { strict: { zeroWidthPolicy: "reject", maxBytes: 16 } },
+      detect: function () { return []; },
+      inputContract: "text",
+    });
+  } catch (e) { noRepairPath = e; }
+  check("defineGuard: charRepair without a repair path is refused",
+        noRepairPath !== null);
+  check("defineGuard: and the refusal names the missing path",
+        noRepairPath !== null && /sanitize/.test(noRepairPath.message));
+
+  // The same declaration IS accepted when a transform supplies the repair,
+  // since defineGuard builds the sanitize from it.
+  var withTransform = null;
+  try {
+    b.gateContract.defineGuard({
+      name: "charrepairviatransform", kind: "content", charRepair: true,
+      errorName: "CharRepairViaTransformError",
+      profiles: { strict: { zeroWidthPolicy: "reject", maxBytes: 16 } },
+      detect: function () { return []; },
+      inputContract: "text",
+      sanitizeTransform: function (subject) { return String(subject); },
+    });
+  } catch (e) { withTransform = e; }
+  check("defineGuard: charRepair backed by a sanitizeTransform is accepted",
+        withTransform === null);
   check("charPolicyEnums: a repairing guard may be told to strip",
         repairing.bidiPolicy.indexOf("strip") !== -1);
   check("charPolicyEnums: the base vocabulary is always present",
