@@ -6754,6 +6754,12 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-shell.js:_detectIssues",
         "lib/guard-svg.js:<top>",
         "lib/guard-svg.js:_gateDispositionFor",
+        // The registration header the four content guards share — fixture
+        // block through `defineGuard({ enumOpts, name, kind, errorClass,
+        // profiles })`. It attributes to the function that FOLLOWS it, which
+        // is `gate` in all four; html, json and xml were already listed here
+        // and svg fell outside the window until the header grew a line.
+        "lib/guard-svg.js:gate",
         "lib/guard-svg.js:sanitize",
         "lib/guard-text.js:<top>",
         "lib/guard-xml.js:<top>",
@@ -13871,6 +13877,40 @@ var KNOWN_ANTIPATTERNS = [
     regex: /\b(?:groups|curves|namedCurves)\s*[:=]\s*[^;\r\n]*(?:ecdhCurve|[Kk]eyShares|MLKEM|TLS_GROUP)/,
     allowlist: [],
     reason: "The TLS named-group preference must be assigned to `ecdhCurve` -- the only spelling node:tls reads. `groups` / `curves` / `namedCurves` are accepted and ignored by tls.connect and tls.createSecureContext, so a preference assigned to one of them never reaches the handshake while looking like it does: b.wsClient shipped a `curves` list that was inert for several releases, and network-tls.applyToContext filled `groups`, leaving every operator https.Server built through it negotiating on Node's defaults instead of the configured key shares. Assign the resolved list to `ecdhCurve` and emit nothing under a second name -- a duplicate key reads as a second handle on the preference that an operator can narrow to no effect. Matches only where the assigned value is visibly the group preference.",
+  },
+  {
+    id: "policy-compared-against-the-literal-audit",
+    primitive: "b.gateContract.policyVocabulary",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // `audit-only` is the family's documented synonym for `audit`. A condition
+    // that tests a policy against the literal spelling sends the two down
+    // different branches, and the divergence is invisible from the option name:
+    // guardOauth refused a flow under `pkcePolicy: "audit-only"` that plain
+    // "audit" served, guardJson stripped `__proto__` under one spelling and
+    // kept it under the other, and guardFilename failed a path-shaped name that
+    // "audit" accepted.
+    //
+    // Comparing literally is fine -- what is not fine is doing it while the
+    // guard's vocabulary advertises the synonym. So the detector matches the
+    // comparison and the allowlist carries the guards that have deliberately
+    // left `audit-only` out of the policy in question, each named with the
+    // policy it applies to. Adding a comparison means either using
+    // codepointClass.isAuditPolicy or narrowing that policy's vocabulary and
+    // saying so here.
+    regex: /\bopts\.\w+Policy\s*(?:!==|===)\s*"audit"/,
+    allowlist: [
+      // nestedArchivePolicy, trailingDotPolicy, tagPolicy, pathSeparatorsPolicy,
+      // pollutionPolicy and pkcePolicy each omit `audit-only` from their
+      // declared vocabulary, so no synonym can reach these comparisons.
+      "lib/guard-archive.js",
+      "lib/guard-domain.js",
+      "lib/guard-filename.js",
+      "lib/guard-json.js",
+      "lib/guard-oauth.js",
+      "lib/guard-yaml.js",
+    ],
+    reason: "A policy compared against the literal \"audit\" must not also advertise `audit-only`, which the family documents as the same setting. Where both are true the two spellings take different branches and the option's name says nothing about which you picked: `pkcePolicy: \"audit-only\"` refused every flow missing a PKCE challenge while `\"audit\"` served them with a finding, `pollutionPolicy: \"audit-only\"` removed `__proto__` from the parsed object while `\"audit\"` preserved it, and `pathSeparatorsPolicy: \"audit-only\"` failed a name that `\"audit\"` accepted. Either route the comparison through codepointClass.isAuditPolicy, which answers for both spellings, or leave `audit-only` out of that policy's vocabulary so the value is refused where the operator can still act on it. The files listed here take the second route and name the policy in a comment beside the vocabulary.",
   },
 ];
 

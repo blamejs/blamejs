@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.18.47",
-  "createdAt": "2026-08-22T10:34:59.631Z",
+  "frameworkVersion": "0.18.48",
+  "createdAt": "2026-08-22T15:33:37.541Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -18223,6 +18223,19 @@
           "type": "instance",
           "ctorName": "Array"
         },
+        "POLICY_VALUES": {
+          "type": "object",
+          "members": {
+            "rejectAuditAllow": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "rejectStripAuditAllow": {
+              "type": "instance",
+              "ctorName": "Array"
+            }
+          }
+        },
         "SAFE_URL_SCHEMES": {
           "type": "instance",
           "ctorName": "Array"
@@ -18354,6 +18367,10 @@
         "policyDisposition": {
           "type": "function",
           "arity": 1
+        },
+        "policyVocabulary": {
+          "type": "function",
+          "arity": 3
         },
         "resolveProfileAndPosture": {
           "type": "function",
@@ -19030,6 +19047,47 @@
           "type": "primitive",
           "valueType": "string"
         },
+        "POLICY_VOCABULARY": {
+          "type": "object",
+          "members": {
+            "absolutePathPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "caseInsensitiveCollisionPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "duplicateNamePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "encryptionPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "hardlinkPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "nestedArchivePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "sparseEntryPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "symlinkPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "traversalPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            }
+          }
+        },
         "PROFILES": {
           "type": "object",
           "members": {
@@ -19560,6 +19618,59 @@
           "type": "primitive",
           "valueType": "string"
         },
+        "POLICY_VOCABULARY": {
+          "type": "object",
+          "members": {
+            "bidiPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "codeReusePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "controlPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "issuerOnCallbackPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "nullBytePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "pkcePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "redirectUriPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "responseTypePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "scopeTamperingPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "statePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "tagsPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "zeroWidthPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            }
+          }
+        },
         "PROFILES": {
           "type": "object",
           "members": {
@@ -20024,6 +20135,47 @@
           "type": "primitive",
           "valueType": "string"
         },
+        "POLICY_VOCABULARY": {
+          "type": "object",
+          "members": {
+            "bidiPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "controlPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "ipv4MappedIpv6Policy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "networkAlignmentPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "nullBytePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "requireMaskPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "reservedRangesPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "tagsPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "zeroWidthPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            }
+          }
+        },
         "PROFILES": {
           "type": "object",
           "members": {
@@ -20487,6 +20639,43 @@
         "NAME": {
           "type": "primitive",
           "valueType": "string"
+        },
+        "POLICY_VOCABULARY": {
+          "type": "object",
+          "members": {
+            "bidiPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "controlPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "formerlyUsedPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "nullBytePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "reservedPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "tagsPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "userAssignedPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "zeroWidthPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            }
+          }
         },
         "PROFILES": {
           "type": "object",
@@ -21067,6 +21256,43 @@
         "NAME": {
           "type": "primitive",
           "valueType": "string"
+        },
+        "POLICY_VOCABULARY": {
+          "type": "object",
+          "members": {
+            "bidiCharPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "controlCharPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "dialectPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "formulaInjectionPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "homoglyphPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "numericPrecisionPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "piiPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "trailingWhitespacePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            }
+          }
         },
         "PROFILES": {
           "type": "object",
@@ -21832,6 +22058,71 @@
         "NAME": {
           "type": "primitive",
           "valueType": "string"
+        },
+        "POLICY_VOCABULARY": {
+          "type": "object",
+          "members": {
+            "bidiPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "controlPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "dgaPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "ipLiteralPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "ldhPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "mixedScriptPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "nullBytePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "punycodePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "singleLabelPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "specialUsePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "tagsPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "trailingDotPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "underscorePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "wildcardPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "zeroWidthPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            }
+          }
         },
         "PROFILES": {
           "type": "object",
@@ -22811,6 +23102,75 @@
         "NAME": {
           "type": "primitive",
           "valueType": "string"
+        },
+        "POLICY_VOCABULARY": {
+          "type": "object",
+          "members": {
+            "addressCommentPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "bareCrPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "bareLfPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "bidiPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "bomPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "controlPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "crlfHeaderInjectionPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "displayNameSpoofPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "ipLiteralPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "mixedScriptPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "multiAtPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "nullBytePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "punycodePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "smtpSmugglingPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "tagsPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "zeroWidthPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            }
+          }
         },
         "PROFILES": {
           "type": "object",
@@ -23850,6 +24210,63 @@
           "type": "primitive",
           "valueType": "string"
         },
+        "POLICY_VOCABULARY": {
+          "type": "object",
+          "members": {
+            "adsPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "bidiPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "controlPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "homoglyphPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "leadingTrailingPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "nullBytePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "pathSeparatorsPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "reservedCharPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "reservedNamePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "shellExecExtPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "tagsPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "traversalPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "zeroWidthPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            }
+          }
+        },
         "PROFILES": {
           "type": "object",
           "members": {
@@ -24604,6 +25021,59 @@
           "type": "primitive",
           "valueType": "string"
         },
+        "POLICY_VOCABULARY": {
+          "type": "object",
+          "members": {
+            "aliasBombPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "batchPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "bidiPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "controlPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "depthPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "introspectionPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "nullBytePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "operationNamePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "persistedQueryPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "tagsPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "variableShapePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "zeroWidthPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            }
+          }
+        },
         "PROFILES": {
           "type": "object",
           "members": {
@@ -25327,6 +25797,43 @@
         "PERMISSIVE_ALLOWED_TAGS": {
           "type": "instance",
           "ctorName": "Array"
+        },
+        "POLICY_VOCABULARY": {
+          "type": "object",
+          "members": {
+            "bidiPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "controlPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "cssPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "domClobberPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "mxssHintPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "nullBytePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "tagsPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "zeroWidthPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            }
+          }
         },
         "PROFILES": {
           "type": "object",
@@ -26411,6 +26918,39 @@
         "NAME": {
           "type": "primitive",
           "valueType": "string"
+        },
+        "POLICY_VOCABULARY": {
+          "type": "object",
+          "members": {
+            "dimensionsPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "framesPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "magicPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "mismatchPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "polyglotPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "svgRoutingPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "unknownMagicPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            }
+          }
         },
         "PROFILES": {
           "type": "object",
@@ -27607,6 +28147,63 @@
           "type": "primitive",
           "valueType": "string"
         },
+        "POLICY_VOCABULARY": {
+          "type": "object",
+          "members": {
+            "bidiPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "bomPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "commentPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "controlPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "duplicateKeyPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "json5SyntaxPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "nanInfinityPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "nullBytePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "numericPrecisionPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "pollutionPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "tagsPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "trailingCommaPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "zeroWidthPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            }
+          }
+        },
         "POLLUTION_KEYS": {
           "type": "instance",
           "ctorName": "Array"
@@ -28262,6 +28859,51 @@
         "NAME": {
           "type": "primitive",
           "valueType": "string"
+        },
+        "POLICY_VOCABULARY": {
+          "type": "object",
+          "members": {
+            "bidiPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "bracketNestingPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "controlPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "dynamicHintPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "filterExprPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "nullBytePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "recursiveDescentPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "scriptExprPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "tagsPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "zeroWidthPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            }
+          }
         },
         "PROFILES": {
           "type": "object",
@@ -29006,6 +29648,63 @@
         "NAME": {
           "type": "primitive",
           "valueType": "string"
+        },
+        "POLICY_VOCABULARY": {
+          "type": "object",
+          "members": {
+            "algAllowlistPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "algNonePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "bidiPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "controlPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "critUnknownPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "expSanityPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "iatSanityPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "kidTraversalPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "nbfSanityPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "nullBytePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "tagsPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "typConfusionPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "zeroWidthPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            }
+          }
         },
         "PROFILES": {
           "type": "object",
@@ -31202,6 +31901,79 @@
           "type": "primitive",
           "valueType": "string"
         },
+        "POLICY_VOCABULARY": {
+          "type": "object",
+          "members": {
+            "autolinkSchemePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "bidiPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "codeFenceLangPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "controlPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "dangerousSchemePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "dangerousTagPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "doctypePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "emphasisRunPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "filePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "frontMatterPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "htmlCommentPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "imageSchemePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "nullBytePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "rawHtmlPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "referenceLinkPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "tagsPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "zeroWidthPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            }
+          }
+        },
         "PROFILES": {
           "type": "object",
           "members": {
@@ -31976,6 +32748,55 @@
           "type": "primitive",
           "valueType": "string"
         },
+        "POLICY_VOCABULARY": {
+          "type": "object",
+          "members": {
+            "bidiPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "controlPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "nullBytePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "parameterPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "personalTreePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "riskyTypePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "tagsPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "unregisteredTreePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "vendorTreePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "wildcardPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "zeroWidthPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            }
+          }
+        },
         "PROFILES": {
           "type": "object",
           "members": {
@@ -32615,6 +33436,59 @@
           "type": "primitive",
           "valueType": "string"
         },
+        "POLICY_VOCABULARY": {
+          "type": "object",
+          "members": {
+            "bidiPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "codeReusePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "controlPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "issuerOnCallbackPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "nullBytePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "pkcePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "redirectUriPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "responseTypePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "scopeTamperingPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "statePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "tagsPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "zeroWidthPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            }
+          }
+        },
         "PROFILES": {
           "type": "object",
           "members": {
@@ -33240,6 +34114,47 @@
         "NAME": {
           "type": "primitive",
           "valueType": "string"
+        },
+        "POLICY_VOCABULARY": {
+          "type": "object",
+          "members": {
+            "embeddedFileCountPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "embeddedFilePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "encryptedPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "javascriptPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "launchActionPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "magicPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "openActionPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "pageCountPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "polyglotPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            }
+          }
         },
         "PROFILES": {
           "type": "object",
@@ -34199,6 +35114,59 @@
           "type": "primitive",
           "valueType": "string"
         },
+        "POLICY_VOCABULARY": {
+          "type": "object",
+          "members": {
+            "alternationQuantPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "bidiPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "boundedRepeatPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "consecutiveStarPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "controlPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "lookaroundQuantPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "nestedExtglobPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "nestedQuantPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "nullBytePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "tagsPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "unanchoredScanPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "zeroWidthPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            }
+          }
+        },
         "PROFILES": {
           "type": "object",
           "members": {
@@ -34896,6 +35864,59 @@
         "NAME": {
           "type": "primitive",
           "valueType": "string"
+        },
+        "POLICY_VOCABULARY": {
+          "type": "object",
+          "members": {
+            "argHyphenPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "backtickPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "bidiPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "cmdMetaPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "controlPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "dollarSubstPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "newlinePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "nullBytePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "posixMetaPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "processSubstPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "tagsPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "zeroWidthPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            }
+          }
         },
         "PROFILES": {
           "type": "object",
@@ -35795,6 +36816,10 @@
           "type": "primitive",
           "valueType": "string"
         },
+        "POLICY_VOCABULARY": {
+          "type": "object",
+          "members": {}
+        },
         "PROFILES": {
           "type": "object",
           "members": {
@@ -36661,6 +37686,51 @@
           "type": "instance",
           "ctorName": "Array"
         },
+        "POLICY_VOCABULARY": {
+          "type": "object",
+          "members": {
+            "bidiPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "cdataPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "controlPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "cssPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "doctypePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "nullBytePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "processingInstrPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "svgzPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "tagsPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "zeroWidthPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            }
+          }
+        },
         "PROFILES": {
           "type": "object",
           "members": {
@@ -37293,6 +38363,51 @@
           "type": "primitive",
           "valueType": "string"
         },
+        "POLICY_VOCABULARY": {
+          "type": "object",
+          "members": {
+            "bidiPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "controlPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "dollarBracePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "erbPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "jinjaPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "nullBytePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "pugPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "tagsPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "velocityDirectivePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "zeroWidthPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            }
+          }
+        },
         "PROFILES": {
           "type": "object",
           "members": {
@@ -37860,6 +38975,39 @@
           "type": "primitive",
           "valueType": "string"
         },
+        "POLICY_VOCABULARY": {
+          "type": "object",
+          "members": {
+            "bidiPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "confusablePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "controlPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "encodingPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "nullBytePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "tagsPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "zeroWidthPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            }
+          }
+        },
         "PROFILES": {
           "type": "object",
           "members": {
@@ -38407,6 +39555,55 @@
         "NAME": {
           "type": "primitive",
           "valueType": "string"
+        },
+        "POLICY_VOCABULARY": {
+          "type": "object",
+          "members": {
+            "bidiPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "controlPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "dateOnlyPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "fractionalDigitsPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "leapSecondPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "naiveDatetimePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "nonUtcOffsetPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "nullBytePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "tagsPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "timeOnlyPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "zeroWidthPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            }
+          }
         },
         "PROFILES": {
           "type": "object",
@@ -39118,6 +40315,59 @@
           "type": "primitive",
           "valueType": "string"
         },
+        "POLICY_VOCABULARY": {
+          "type": "object",
+          "members": {
+            "bidiPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "bracedPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "controlPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "formatPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "maxPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "nilPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "nullBytePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "tagsPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "urnPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "variantPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "versionPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "zeroWidthPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            }
+          }
+        },
         "PROFILES": {
           "type": "object",
           "members": {
@@ -39805,6 +41055,63 @@
         "NAME": {
           "type": "primitive",
           "valueType": "string"
+        },
+        "POLICY_VOCABULARY": {
+          "type": "object",
+          "members": {
+            "bidiPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "cdataPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "controlPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "doctypePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "entityPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "externalEntityPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "nullBytePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "processingInstrPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "schemaLocationPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "tagsPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "xincludePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "xmlDsigPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "zeroWidthPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            }
+          }
         },
         "PROFILES": {
           "type": "object",
@@ -40565,6 +41872,59 @@
         "NAME": {
           "type": "primitive",
           "valueType": "string"
+        },
+        "POLICY_VOCABULARY": {
+          "type": "object",
+          "members": {
+            "aliasPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "bidiPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "controlPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "duplicateKeyPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "leadingZeroPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "mergeKeyPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "multiDocPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "norwayPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "nullBytePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "tagPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "tagsPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "zeroWidthPolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            }
+          }
         },
         "PROFILES": {
           "type": "object",

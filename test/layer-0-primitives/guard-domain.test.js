@@ -477,6 +477,31 @@ function testLabelShapesAgreeWithThePatternsTheyReplaced() {
   check("a special-use name with a doubled trailing dot is still flagged", doubled);
 }
 
+// Each policy is a CONFIG-TIME entry point, so a value outside its vocabulary
+// is a boot error rather than a runtime surprise. Read leniently, a typo takes
+// whichever branch is not the strict one: `punycodePolicy: "rejct"` is not
+// "allow", so the check runs, and it is not "reject" either, so the finding
+// drops to a warning — the operator asked to refuse punycode and silently got
+// an audit.
+//
+// The vocabularies are the guard's OWN documented ones. Note that
+// trailingDotPolicy takes `normalize` rather than `allow`, and does NOT take
+// `audit-only`: its code compares `=== "audit"` exactly, so the synonym would
+// not be honoured there. Reading each opt is what surfaces that; a shared list
+// would have advertised it.
+function testPolicyVocabularyIsEnforced() {
+  var THREE_WAY = ["reject", "audit", "audit-only", "allow"];
+  var LEGAL = {
+    ldhPolicy:         THREE_WAY, punycodePolicy:    THREE_WAY,
+    mixedScriptPolicy: THREE_WAY, specialUsePolicy:  THREE_WAY,
+    ipLiteralPolicy:   THREE_WAY, wildcardPolicy:    THREE_WAY,
+    singleLabelPolicy: THREE_WAY, underscorePolicy:  THREE_WAY,
+    dgaPolicy:         THREE_WAY,
+    trailingDotPolicy: ["normalize", "audit", "reject"],
+  };
+  helpers.assertPolicyVocabulary(b.guardDomain, LEGAL, { label: "domain", sample: "example.com" });
+}
+
 async function run() {
   testLabelShapesAgreeWithThePatternsTheyReplaced();
   testSanitize();
@@ -492,6 +517,7 @@ async function run() {
   testDgaEntropy();
   testTrailingDotAudit();
   testCharThreatsAndBadInput();
+  testPolicyVocabularyIsEnforced();
   await testGateConsumerPath();
 }
 

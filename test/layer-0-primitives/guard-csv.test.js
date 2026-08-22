@@ -1590,6 +1590,34 @@ async function testGuardCsvGateSanitizeReserializesFormula() {
         d.sanitized && d.sanitized.toString("utf8").indexOf("\t=cmd") !== -1);
 }
 
+// Each policy is a CONFIG-TIME entry point, so a value outside its vocabulary
+// is a boot error rather than a runtime surprise. Read leniently, a typo takes
+// whichever branch is not the strict one: `formulaInjectionPolicy: "prefix-tabb"`
+// is neither "allow" nor "audit-only", so a mitigation is attempted, and it is
+// not a spelling the mitigation recognises — the operator asked for a tab
+// prefix and got something else without being told.
+//
+// The vocabularies are the UNION of what the code compares, what the guard
+// documents and what the shipped profiles select, because no one source is
+// complete here. This guard's own documentation disagreed with itself: one
+// opts block listed `allowlist` for formula injection and another listed
+// `audit-only` and `allow` instead, while the code compares all three. Both
+// blocks now carry the full set.
+function testPolicyVocabularyIsEnforced() {
+  var LEGAL = {
+    formulaInjectionPolicy: ["prefix-tab", "prefix-quote", "wrap-with-quotes-and-prefix",
+                             "reject", "allowlist", "audit-only", "allow"],
+    bidiCharPolicy:           ["reject", "strip", "audit", "allow"],
+    controlCharPolicy:        ["reject", "strip", "allow"],
+    homoglyphPolicy:          ["audit", "strip", "allow"],
+    trailingWhitespacePolicy: ["trim", "preserve", "reject"],
+    dialectPolicy:            ["strict", "permissive"],
+    numericPrecisionPolicy:   ["decimal-string-above-safe-int", "scientific", "reject-bigint"],
+    piiPolicy:                ["preserve", "redact"],
+  };
+  helpers.assertPolicyVocabulary(b.guardCsv, LEGAL, { label: "csv", sample: "a,b\r\n1,2\r\n" });
+}
+
 async function run() {
   // gateContract foundation
   testGateContractSurface();
@@ -1681,6 +1709,7 @@ async function run() {
   testGuardCsvSerializeTotalTooLarge();
   testGuardCsvDetectBranches();
   testGuardCsvGateDispositionDefault();
+  testPolicyVocabularyIsEnforced();
   await testGuardCsvGateOperatorRuleDefaultsAndCatch();
   await testGuardCsvGateSanitizeReserializesFormula();
   await testGuardCsvGateSanitizePreservesTheConfiguredDialect();

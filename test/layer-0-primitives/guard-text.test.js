@@ -381,7 +381,20 @@ async function testGateOperatorRule() {
   check("throwing operator rule does not crash gate", v2.action === "serve");
 }
 
+// Every policy is a config-time entry point, so a value outside its vocabulary
+// belongs at boot rather than at the first hostile input. Read leniently, a
+// typo takes whichever branch is not the strict one: `encodingPolicy: "rejct"`
+// is not "allow", so the check runs, and it is not "reject" either, so
+// malformed UTF-8 drops to a warning.
+function testPolicyVocabularyIsEnforced() {
+  helpers.assertPolicyVocabulary(b.guardText, {
+    confusablePolicy: ["reject", "audit", "audit-only", "allow"],
+    encodingPolicy:   ["reject", "audit", "audit-only", "allow"],
+  }, { label: "text", sample: "hello" });
+}
+
 async function run() {
+  testPolicyVocabularyIsEnforced();
   testSurface();
   testProfilesAndPostures();
   testRegisteredInGuardAll();

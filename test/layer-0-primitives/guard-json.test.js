@@ -482,6 +482,33 @@ function testGuardJsonBadProfile() {
         threw && /unknown profile/i.test(threw.message));
 }
 
+// Each policy is a CONFIG-TIME entry point, so a value outside its vocabulary
+// is a boot error rather than a runtime surprise. Read leniently, a typo takes
+// whichever branch is not the strict one: `duplicateKeyPolicy: "rejct"` is not
+// "allow", so the check runs, and it is not "reject" either, so the finding
+// drops to a warning — the operator asked to refuse a duplicate key and
+// silently got an audit.
+//
+// The character policies are deliberately absent: they are derived centrally
+// for the whole family, and listing them here would override that derivation
+// with a narrower copy.
+function testPolicyVocabularyIsEnforced() {
+  var LEGAL = {
+    // No `audit-only`: the parse path decides whether to keep a poison-named
+    // key by testing for the literal "audit", so the synonym would strip
+    // `__proto__` where "audit" keeps it.
+    pollutionPolicy:        ["reject", "strip", "audit", "allow"],
+    duplicateKeyPolicy:     ["reject", "audit", "audit-only", "allow"],
+    nanInfinityPolicy:      ["reject", "audit", "audit-only", "allow"],
+    commentPolicy:          ["reject", "audit", "audit-only", "allow"],
+    trailingCommaPolicy:    ["reject", "audit", "audit-only", "allow"],
+    json5SyntaxPolicy:      ["reject", "audit", "audit-only", "allow"],
+    bomPolicy:              ["reject", "strip", "allow"],
+    numericPrecisionPolicy: ["reject", "audit", "audit-only", "allow"],
+  };
+  helpers.assertPolicyVocabulary(b.guardJson, LEGAL, { label: "json", sample: '{"k":1}' });
+}
+
 async function run() {
   testGuardJsonSurface();
   testGuardJsonRegistryParity();
@@ -512,6 +539,7 @@ async function run() {
   await testGuardJsonGateSanitizeByPolicy();
   testByteCapBindsBeforeAnyStrip();
   testBomIsRepairedUnderItsOwnPolicy();
+  testPolicyVocabularyIsEnforced();
 }
 
 // The byte ceiling has to bind the input the CALLER sent. `parse` strips the

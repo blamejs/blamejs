@@ -2469,6 +2469,56 @@ function testGuardAuthoringHelpers() {
   check("capKeysOf: no defaults yields no caps",
         b.gateContract.capKeysOf(null).length === 0);
 
+  // policyVocabulary — the guard-side half of the same job. Most of a guard's
+  // policies answer one question (refuse the construct, record it, or let it
+  // through) and one or two do not, so the shared vocabulary is named once and
+  // the exceptions are spelled out. Written per option instead, a family of
+  // nine ends up with eight that accept `audit-only` and one that does not.
+  var VOCAB = b.gateContract.policyVocabulary(
+    ["doctypePolicy", "entityPolicy"],
+    b.gateContract.POLICY_VALUES.rejectAuditAllow,
+    { xmlDsigPolicy: ["audit", "allow"] });
+  check("policyVocabulary: every named option gets the shared vocabulary",
+        VOCAB.doctypePolicy.join(",") === "reject,audit,audit-only,allow" &&
+        VOCAB.entityPolicy === VOCAB.doctypePolicy);
+  check("policyVocabulary: an override names its own values",
+        VOCAB.xmlDsigPolicy.join(",") === "audit,allow");
+  check("policyVocabulary: an override can also replace a named option",
+        b.gateContract.policyVocabulary(["a Policy"], ["x"], { "a Policy": ["y"] })["a Policy"]
+          .join(",") === "y");
+  // Frozen a level down, and copied. A guard publishes this table as its
+  // POLICY_VOCABULARY while its resolver checks against the same arrays, so a
+  // caller that could push onto one would be editing the rule rather than
+  // reading it — and a caller's own array must not become the guard's.
+  var frozenAttempt = null;
+  try { VOCAB.doctypePolicy.push("anything"); }
+  catch (e) { frozenAttempt = e; }
+  check("policyVocabulary: a shared value list is frozen",
+        frozenAttempt !== null && VOCAB.doctypePolicy.length === 4);
+  var overrideAttempt = null;
+  try { VOCAB.xmlDsigPolicy.push("anything"); }
+  catch (e) { overrideAttempt = e; }
+  check("policyVocabulary: an override's value list is frozen too",
+        overrideAttempt !== null && VOCAB.xmlDsigPolicy.length === 2);
+  var callerArray = ["reject", "allow"];
+  var fromCaller = b.gateContract.policyVocabulary(["aPolicy"], callerArray);
+  callerArray.push("mutated");
+  check("policyVocabulary: the caller's array is copied, not adopted",
+        fromCaller.aPolicy.length === 2 && Object.isFrozen(fromCaller.aPolicy));
+  var badVocab = null;
+  try { b.gateContract.policyVocabulary(["aPolicy"], []); }
+  catch (e2) { badVocab = e2; }
+  check("policyVocabulary: an empty vocabulary is refused at the call",
+        badVocab !== null && /non-empty/.test(badVocab.message));
+  // A non-array override would be dropped by the resolver's own Array.isArray
+  // test, leaving the option declared and unconstrained — the exact state this
+  // mechanism exists to end, arrived at by declaring it.
+  var badOverride = null;
+  try { b.gateContract.policyVocabulary(["aPolicy"], ["x"], { bPolicy: "reject" }); }
+  catch (e3) { badOverride = e3; }
+  check("policyVocabulary: a non-array override is refused rather than dropped",
+        badOverride !== null && /non-empty array/.test(badOverride.message));
+
   // charPolicyEnums — the same shape of helper for the policy vocabulary, and
   // it exists for the same reason: a guard binding its own resolver omitted the
   // check and accepted `bidiPolicy: "rejct"` on gate() and validate() while the

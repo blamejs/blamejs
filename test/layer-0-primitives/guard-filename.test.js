@@ -574,15 +574,15 @@ async function testGuardFilenameGateSanitizeAction() {
   // and a strip-eligible high/critical issue is present. Drive it with an
   // all-policies-non-reject config and a leading-whitespace name (a "high"
   // leading-trailing issue that sanitize repairs to "report.txt").
+  // The floor classes carry no policy to turn off — traversal and NUL are
+  // pinned to reject, and ADS offers only reject or allow — so they are absent
+  // here rather than set to a value that never applied.
   var g = b.guardFilename.gate({
     profile:               "permissive",
     bidiPolicy:            "strip",
     controlPolicy:         "strip",
-    nullBytePolicy:        "allow",
-    traversalPolicy:       "audit",
     reservedCharPolicy:    "strip",
     reservedNamePolicy:    "audit",
-    adsPolicy:             "audit",
     pathSeparatorsPolicy:  "audit",
     leadingTrailingPolicy: "strip",
   });
@@ -901,12 +901,15 @@ function testShapeDetectorsAgreeWithThePatternsTheyReplaced() {
 // served the name unchanged. The classes are refused before any policy is
 // consulted.
 async function testGuardFilenameFloorIgnoresPolicyOverrides() {
+  // The overrides that remain expressible. `traversalPolicy` and
+  // `nullBytePolicy` no longer accept a non-reject value at all, and
+  // `adsPolicy` accepts only reject or allow — the floor is now visible in
+  // what the guard will take, not only in what it does with it. Each is
+  // asserted below.
   var override = {
     profile: "permissive",
-    traversalPolicy:      "audit",
     pathSeparatorsPolicy: "audit",
-    adsPolicy:            "audit",
-    nullBytePolicy:       "audit",
+    adsPolicy:            "allow",
     controlPolicy:        "audit",
   };
   var floor = [
@@ -917,9 +920,24 @@ async function testGuardFilenameFloorIgnoresPolicyOverrides() {
   ];
   for (var i = 0; i < floor.length; i += 1) {
     var d = await b.guardFilename.gate(override).check({ filename: floor[i][1] });
-    check("guardFilename floor: " + floor[i][0] + " refuses even with its policy set to audit",
+    check("guardFilename floor: " + floor[i][0] + " refuses under the most permissive " +
+          "configuration the guard accepts",
           d.action === "refuse", floor[i][0] + " -> " + d.action);
   }
+
+  // And the values that used to express "do not refuse this" are gone from the
+  // vocabulary, so the floor is no longer something an operator can believe
+  // they turned off. Each of these was accepted before and changed nothing.
+  [["traversalPolicy", "audit"], ["traversalPolicy", "allow"],
+   ["nullBytePolicy",  "audit"], ["nullBytePolicy",  "allow"],
+   ["adsPolicy",       "audit"]].forEach(function (pair) {
+    var bad = { profile: "permissive" };
+    bad[pair[0]] = pair[1];
+    var refused = false;
+    try { b.guardFilename.resolveOpts(bad); } catch (_e) { refused = true; }
+    check("guardFilename: " + pair[0] + ": " + JSON.stringify(pair[1]) +
+          " is refused rather than accepted and ignored", refused);
+  });
 
   // The repairable classes still repair, or the floor would just be a blanket
   // refusal wearing a policy map.

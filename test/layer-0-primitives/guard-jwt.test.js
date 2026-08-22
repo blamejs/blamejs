@@ -409,6 +409,47 @@ async function testGate() {
   }
 }
 
+// Every policy is a config-time entry point, so a value outside its vocabulary
+// belongs at boot rather than at the first hostile token. Read leniently, a
+// typo lands on whichever branch is not the strict one: `typConfusionPolicy:
+// "rejct"` is not "allow", so the check still runs, and it is not "reject"
+// either, so the finding drops from high to warn — the operator asked to refuse
+// a confused `typ` and silently got an audit line.
+//
+// `algNonePolicy` and `kidTraversalPolicy` take one value each because both
+// threats are documented as unconditional. alg=none is never consulted at all.
+// kid traversal was: an operator passing the undocumented `kidTraversalPolicy:
+// "allow"` turned off path-traversal detection on the header field that steers
+// key lookup, with nothing in the opts block offering that value.
+function testPolicyVocabularyIsEnforced() {
+  var LEGAL = {
+    algNonePolicy:      ["reject"],
+    kidTraversalPolicy: ["reject"],
+    algAllowlistPolicy: ["reject", "audit", "audit-only", "allow"],
+    typConfusionPolicy: ["reject", "audit", "audit-only", "allow"],
+    expSanityPolicy:    ["reject", "audit", "audit-only", "allow"],
+    nbfSanityPolicy:    ["reject", "audit", "audit-only", "allow"],
+    iatSanityPolicy:    ["reject", "audit", "audit-only", "allow"],
+    critUnknownPolicy:  ["reject", "audit", "audit-only", "allow"],
+  };
+  helpers.assertPolicyVocabulary(b.guardJwt, LEGAL, { label: "jwt", sample: BENIGN_JWT });
+
+  // The bypass this closes: `"allow"` is not in the documented vocabulary, but
+  // the check consulted it, so the value silently disabled a critical finding.
+  var kidAllowRefused = false;
+  try { b.guardJwt.resolveOpts({ kidTraversalPolicy: "allow" }); }
+  catch (_e3) { kidAllowRefused = true; }
+  var traversalTok = mkTok({ alg: "ES256", typ: "JWT", kid: "../../etc/passwd" }, OK_PAYLOAD);
+  var stillFlagged = b.guardJwt.validate(traversalTok, { profile: "permissive" });
+
+  check("kidTraversalPolicy refuses the undocumented `allow` that disabled the check",
+        kidAllowRefused);
+  check("kid traversal stays critical at the most permissive profile",
+        stillFlagged.ok === false && stillFlagged.issues.some(function (i) {
+          return i.ruleId === "jwt.kid-traversal" && i.severity === "critical";
+        }));
+}
+
 async function run() {
   testKidSafe();
   testSanitize();
@@ -426,6 +467,7 @@ async function run() {
   testValidateCharThreats();
   testValidateBadOpts();
   testCompliancePosture();
+  testPolicyVocabularyIsEnforced();
   await testGate();
 }
 
