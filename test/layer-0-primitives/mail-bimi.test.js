@@ -313,15 +313,28 @@ function _certPoliciesExtDer(oids) {
     build.sequence(oids.map(function (o) { return build.sequence([build.oid(o)]); })));
 }
 
+// DER length octets. Under 128 is one byte; 128 and above take the long form,
+// 0x80 | byteCount followed by the big-endian count. These fixtures used to
+// cap themselves below 128 so they could emit the short form unconditionally,
+// which quietly bounded what they could express — a real SVG is past 128 bytes
+// before it has drawn anything, so the shapes that most needed a fixture were
+// the ones that could not have one.
+function _derLen(n) {
+  if (n < 0x80) return Buffer.from([n]);
+  var bytes = [];
+  for (var v = n; v > 0; v = Math.floor(v / 256)) bytes.unshift(v % 256);
+  return Buffer.from([0x80 | bytes.length].concat(bytes));
+}
+
 // _logotypeExtension — a minimal RFC 3709 id-pe-logotype extension whose
 // value is `SEQUENCE { OCTET STRING <svg...> }`, exercising both the
 // constructed-recursion and primitive-match paths of the framework's
-// best-effort embedded-SVG scanner. The SVG stays < 128 bytes so every
-// DER length is single-byte. Returns a pre-encoded Extension DER Buffer.
+// best-effort embedded-SVG scanner. Returns a pre-encoded Extension DER
+// Buffer.
 function _logotypeExtension(svgText) {
   var svg = Buffer.from(svgText, "utf8");
-  var octet = Buffer.concat([Buffer.from([0x04, svg.length]), svg]);
-  var seq = Buffer.concat([Buffer.from([0x30, octet.length]), octet]);
+  var octet = Buffer.concat([Buffer.from([0x04]), _derLen(svg.length), svg]);
+  var seq = Buffer.concat([Buffer.from([0x30]), _derLen(octet.length), octet]);
   return _extDer(ID_PE_LOGOTYPE_OID, false, seq);
 }
 
@@ -337,10 +350,10 @@ function _logotypeExtensionRaw(innerDer) {
 var _OCTET_NON_SVG = Buffer.from([0x04, 0x04, 0x78, 0x78, 0x78, 0x78]);
 function _octetOf(text) {
   var b2 = Buffer.from(text, "utf8");
-  return Buffer.concat([Buffer.from([0x04, b2.length]), b2]);
+  return Buffer.concat([Buffer.from([0x04]), _derLen(b2.length), b2]);
 }
 function _derSequence(contentBuf) {
-  return Buffer.concat([Buffer.from([0x30, contentBuf.length]), contentBuf]);
+  return Buffer.concat([Buffer.from([0x30]), _derLen(contentBuf.length), contentBuf]);
 }
 
 // The leaf's extension set. Without a custom logotype the named-extension
@@ -1136,6 +1149,51 @@ async function testFetchAndVerifyMarkLogotypeSvg() {
         rv.mark.svg.indexOf("<svg") !== -1);
 }
 
+// A conformant SVG may carry an XML declaration and a DOCTYPE ahead of its
+// root element, which puts `<svg` 154 characters into the document. The
+// scanner decided from the first 64, so a logo written that way was signed
+// into the certificate, served, verified — and then not extracted. The
+// docstring's promise is that `mark` carries the SVG whenever the logotype
+// extension is present, so this is that promise going untested rather than a
+// new guarantee.
+async function testFetchAndVerifyMarkLogotypeSvgBehindPreamble() {
+  var svgStr = '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n' +
+               '<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" ' +
+               '"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\n' +
+               '<svg version="1.2" baseProfile="tiny-ps" viewBox="0 0 1 1"></svg>';
+  check("fetchAndVerifyMark: the fixture really does put <svg past the old " +
+        "64-character window", svgStr.indexOf("<svg") > 64,
+        "offset " + svgStr.indexOf("<svg"));
+
+  var chain = await _generateTestChain({ logoSvg: svgStr });
+  var rv = await b.mail.bimi.fetchAndVerifyMark({
+    domain:          "example.com",
+    vmcUrl:          "https://example.com/cert.pem",
+    trustAnchorsPem: chain.rootPem,
+    httpClient:      _stubHttpClient(chain.leafPem),
+  });
+  check("fetchAndVerifyMark: an SVG behind an XML declaration and a DOCTYPE is " +
+        "still extracted onto mark.svg",
+        rv.ok === true && typeof rv.mark.svg === "string" &&
+        rv.mark.svg.indexOf("<svg") !== -1,
+        rv.mark && typeof rv.mark.svg);
+}
+
+// The widened window must not turn every leaf into a logo. A document that
+// mentions `<svg` nowhere is still not one, however long it is.
+async function testFetchAndVerifyMarkLogotypeLongNonSvgStillNull() {
+  var seq = _derSequence(_octetOf("%PDF-1.7\n" + "% padding\n".repeat(64)));
+  var chain = await _generateTestChain({ logotypeExt: _logotypeExtensionRaw(seq) });
+  var rv = await b.mail.bimi.fetchAndVerifyMark({
+    domain:          "example.com",
+    vmcUrl:          "https://example.com/cert.pem",
+    trustAnchorsPem: chain.rootPem,
+    httpClient:      _stubHttpClient(chain.leafPem),
+  });
+  check("fetchAndVerifyMark: a long non-SVG payload still yields mark.svg === null",
+        rv.ok === true && rv.mark.svg === null, rv.mark && typeof rv.mark.svg);
+}
+
 async function testFetchAndVerifyMarkLogotypeNonSvgLeafThenSvg() {
   // A logotype SEQUENCE whose first leaf is not an SVG magic prefix — the
   // scanner skips it and keeps descending to the SVG leaf.
@@ -1530,7 +1588,77 @@ async function testFetchAndVerifyMarkChainDepthExceeded() {
         /chain depth exceeded 8/.test(threw.message));
 }
 
+// A BIMI logo is fetched from a URL named in the SENDER's own DNS record, so
+// the bytes parsed here are chosen by whoever controls that domain.
+//
+// The attribute parser's name pattern, `[A-Za-z_:][A-Za-z0-9:._-]*`, could
+// begin at every offset inside a long run of name characters, and at each one
+// it consumed the run before `\s*=\s*` failed.
+//
+// The size that matters is TINY_PS_MAX_BYTES, 32 KiB, which validateTinyPsSvg
+// enforces before it parses anything — NOT the 256 KiB fetch cap. Measured at
+// the parse's own cap: 409ms for the hostile shape against 0.6ms for a
+// well-formed SVG of the same size, so roughly 680x, all of it shape rather
+// than size. The threshold below is set well under the unfixed cost and well
+// over the fixed one.
+//
+// Three assertions: hostile input must be fast, a real SVG of the same size
+// must also be fast (or the fix is just a smaller input), and the parser must
+// still read attributes (or the fix is a parser that stopped parsing).
+function testTinyPsAttrParseDoesNotBacktrack() {
+  function ms(fn) {
+    var lo = Infinity;
+    for (var i = 0; i < 2; i += 1) {
+      var t0 = process.hrtime.bigint();
+      try { fn(); } catch (_e) { /* a refusal is fine; a hang is not */ }
+      var el = Number(process.hrtime.bigint() - t0) / 1e6;
+      if (el < lo) lo = el;
+    }
+    return lo;
+  }
+
+  var CAP = 32768;                                   // TINY_PS_MAX_BYTES
+  var head = '<svg xmlns="http://www.w3.org/2000/svg" ';
+  // A run of attribute-name characters that never reaches an `=`, filling the
+  // input to just under the cap so the parse actually runs.
+  var hostile = head + "a0".repeat(Math.floor((CAP - head.length - 2) / 2)) + "!>";
+  var benignBody = '<rect x="1" y="2" width="3" height="4"/>';
+  var benign = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" ' +
+               'baseProfile="tiny-ps" version="1.2">' +
+               benignBody.repeat(Math.floor(CAP / benignBody.length)) + "</svg>";
+
+  var hostileMs = ms(function () { b.mail.bimi.validateTinyPsSvg(hostile); });
+  var benignMs = ms(function () {
+    b.mail.bimi.validateTinyPsSvg(benign.slice(0, CAP - 10) + "</svg>");
+  });
+
+  check("mail.bimi: a hostile-shaped SVG at the Tiny-PS cap parses without " +
+        "backtracking (" + hostileMs.toFixed(0) + "ms)",
+        hostileMs < 50, hostileMs.toFixed(0) + "ms");
+  check("mail.bimi: a well-formed SVG of the same size is still fast (" +
+        benignMs.toFixed(1) + "ms) — the fix is not a smaller input",
+        benignMs < 50, benignMs.toFixed(1) + "ms");
+
+  // And the parser still reads attributes: a conformant tiny-ps SVG carries
+  // baseProfile="tiny-ps" and version="1.2", and validation turns on reading
+  // exactly those.
+  var conformant = '<svg xmlns="http://www.w3.org/2000/svg" baseProfile="tiny-ps" ' +
+                   'version="1.2" viewBox="0 0 64 64"><title>Example</title></svg>';
+  var rv = b.mail.bimi.validateTinyPsSvg(conformant);
+  check("mail.bimi: a conformant tiny-ps SVG still validates",
+        rv && rv.ok === true, JSON.stringify(rv && rv.violations));
+
+  // A missing baseProfile must still be caught, or the attribute read has gone
+  // silently blind rather than fast.
+  var noProfile = '<svg xmlns="http://www.w3.org/2000/svg" version="1.2" ' +
+                  'viewBox="0 0 64 64"><title>Example</title></svg>';
+  var bad = b.mail.bimi.validateTinyPsSvg(noProfile);
+  check("mail.bimi: a missing baseProfile is still a violation",
+        bad && bad.ok === false, JSON.stringify(bad && bad.violations));
+}
+
 async function run() {
+  testTinyPsAttrParseDoesNotBacktrack();
   testSurface();
   testRecordShape();
   testParseRecord();
@@ -1612,6 +1740,8 @@ async function run() {
   await testFetchAndVerifyMarkUriSanMalformed();
   await testFetchAndVerifyMarkNoSan();
   await testFetchAndVerifyMarkLogotypeSvg();
+  await testFetchAndVerifyMarkLogotypeSvgBehindPreamble();
+  await testFetchAndVerifyMarkLogotypeLongNonSvgStillNull();
   await testFetchAndVerifyMarkLogotypeNonSvgLeafThenSvg();
   await testFetchAndVerifyMarkLogotypeNoSvg();
   await testFetchAndVerifyMarkLogotypeTruncatedSequence();
