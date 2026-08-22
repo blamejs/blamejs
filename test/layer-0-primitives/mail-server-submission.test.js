@@ -1180,6 +1180,70 @@ async function testPipeliningRace(tls) {
   } finally { sock2.destroy(); await s.srv.close({ timeoutMs: b.constants.TIME.seconds(2) }); }
 }
 
+// A DKIM-Signature header is unfolded before its tags are read, so the value
+// handed to the tag scan is bounded by `maxMessageBytes` (50 MiB by default),
+// not by `maxLineBytes`. The client writes the header, and nothing obliges it
+// to put a `;` anywhere, so one tag can be as long as the message allows.
+//
+// That matters because the tag was trimmed with `/^\s+|\s+$/g`, which is the
+// classic quadratic trim: the `\s+$` alternative is retried from every start
+// position when the run does not reach the end. Measured on the operation
+// alone: 109ms at 20k characters, 698ms at 50k, 2850ms at 100k, against
+// 0.00ms for a native trim of the same strings.
+//
+// Driven over the real listener rather than against the private function,
+// because the bound that makes it reachable is upstream of it: a test that
+// called the trim directly would prove the arithmetic and miss the unfolding.
+async function testFoldedDkimTagDoesNotBacktrack(tls) {
+  var s = await _mk(tls, {
+    profile:         "permissive",
+    identityBinding: "permissive",
+    requireDkim:     true,
+    dkimRequireMode: "self",
+    auth: {
+      mechanisms: ["PLAIN"],
+      verify: function (mech, creds) {
+        var parts = Buffer.from(creds.clientResponse || "", "base64").toString("utf8").split(NUL);
+        return Promise.resolve({ ok: true, actor: { id: parts[1] + "@example.com" } });
+      },
+    },
+  });
+  var sock = await _connect(s.port);
+  try {
+    await _readReply(sock);
+    await _send(sock, "EHLO client.example.com");
+    await _send(sock, "AUTH PLAIN " + _saslPlain("u", "x"));
+    await _send(sock, "MAIL FROM:<u@example.com>");
+    await _send(sock, "RCPT TO:<b@example.com>");
+
+    // One tag, no semicolons, and a long run of whitespace that does not reach
+    // the end — which is the shape `\s+$` has to retry from every position.
+    //
+    // Getting that run past the unfolder takes care. It strips the LEADING
+    // whitespace of each continuation line, so a line of 120 spaces collapses
+    // to nothing and contributes only the single space the join adds. What it
+    // cannot collapse is the join itself: every EMPTY continuation line adds
+    // exactly one space to the run, so the attacker's lever is the line COUNT,
+    // not the line length. 40,000 empty continuation lines is a 120 KB message,
+    // trivially inside the 50 MiB cap, and yields a 40,000-character run.
+    //
+    // A first version of this test used 600 fat lines and passed against the
+    // unfixed code, which is what a green test with no control looks like.
+    var hostile = "DKIM-Signature: v=1 x" + "\r\n ".repeat(40000) + "y\r\n" +
+                  "From: u@example.com\r\n\r\nx";
+
+    var started = process.hrtime.bigint();
+    var reply = await _dataDot(sock, hostile);
+    var ms = Number(process.hrtime.bigint() - started) / 1e6;
+
+    // The verdict is not the point — no d= tag means it is refused either way.
+    // What is asserted is that deciding it did not cost seconds of CPU.
+    check("submission: a folded DKIM-Signature tag is scanned without " +
+          "backtracking (" + ms.toFixed(0) + "ms)",
+          ms < 400, ms.toFixed(0) + "ms, reply " + String(reply).slice(0, 12));
+  } finally { sock.destroy(); await s.srv.close({ timeoutMs: b.constants.TIME.seconds(2) }); }
+}
+
 // ---- DKIM self mode with an authenticated actor (id-domain fallback) +
 //      d-less signature + folded signature ----
 
@@ -1247,6 +1311,7 @@ async function run() {
   await testBdatMore(tls);
   await testPipeliningRace(tls);
   await testDkimSelfActor(tls);
+  await testFoldedDkimTagDoesNotBacktrack(tls);
   await testCleartextAuthAndIdentity(tls);
   await testAuthFailuresAndMultiStep(tls);
   await testAuthRateLimit(tls);
