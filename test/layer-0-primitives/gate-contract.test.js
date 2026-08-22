@@ -1468,7 +1468,10 @@ function guardDetect(input) {
 
 async function testDefineGuard() {
   var guard = GC.defineGuard({
-    name: "gccov", kind: "content", errorName: "GcCoverageContentError",
+    // Declares character repair because its sanitizeTransform below genuinely
+    // rewrites the subject, and its profiles select `strip`. A guard that asks
+    // for strip without declaring it can carry one out is refused now.
+    name: "gccov", kind: "content", charRepair: true, errorName: "GcCoverageContentError",
     profiles: GUARD_PROFILES, base: 64,
     mimeTypes: ["text/gccov"], extensions: [".gccov"],
     integrationFixtures: { kind: "content", benignBytes: Buffer.from("ok") },

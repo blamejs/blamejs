@@ -331,6 +331,8 @@ async function run() {
   testGuardFamilySeverityAgreesWithPolicy();
   testGuardFamilyEveryStripPathRemovesTheSameClasses();
   testGuardFamilyValidateIsDeterministicAcrossCalls();
+  testAuditOnlyIsTheSynonymItClaimsToBe();
+  testDeclaredCharacterRepairMatchesBehaviour();
   testCharacterPolicyVocabularyIsEnforced();
   testGuardFamilyDeclaresOnlyPerformableActions();
   testGuardFamilyRefusesAMalformedNumericCap();
@@ -1008,6 +1010,95 @@ function _sampleInputFor(g) {
   return "abc";
 }
 
+// `audit-only` is the framework's own documented synonym for `audit` —
+// policyDisposition maps both to the same disposition. The severity calculation
+// recognised only the literal "audit", so the two spellings of one setting
+// disagreed on the public validation path: `audit` returned ok with a warning,
+// `audit-only` returned not-ok with a high-severity issue. Advertising a value
+// as legal while it behaves differently from its synonym is the same silent
+// substitution the vocabulary check exists to stop.
+function testAuditOnlyIsTheSynonymItClaimsToBe() {
+  var ZW = String.fromCharCode(0x200B);
+  var probed = 0;
+  var disagreed = [];
+  b.guardAll.allGuards().forEach(function (g) {
+    if (typeof g.validate !== "function" || typeof g.resolveOpts !== "function") return;
+    var base;
+    try { base = g.resolveOpts({}); } catch (_e) { return; }
+    if (typeof base.zeroWidthPolicy !== "string") return;
+    if (g.KIND === "entries" || g.KIND === "filename") return;   // different input shape
+
+    var input = "a" + ZW + "b";
+    var a, b2;
+    try { a  = g.validate(input, { zeroWidthPolicy: "audit" }); } catch (_e2) { return; }
+    try { b2 = g.validate(input, { zeroWidthPolicy: "audit-only" }); } catch (_e3) {
+      disagreed.push(g.NAME + " (audit-only threw where audit did not)");
+      return;
+    }
+    probed += 1;
+    if (a.ok !== b2.ok) disagreed.push(g.NAME + " ok: audit=" + a.ok + " audit-only=" + b2.ok);
+  });
+  check("the audit/audit-only sweep reached guards (" + probed + ")", probed >= 3);
+  check("audit-only reaches the same verdict as audit" +
+        (disagreed.length ? " (differs on " + disagreed.slice(0, 5).join("; ") + ")" : ""),
+        disagreed.length === 0);
+}
+
+// `strip` is an instruction to repair, and exporting a `sanitize` is not the
+// same as being able to perform one: an identifier guard's sanitize validates
+// and throws — there is nothing to repair, the value either is a UUID or is not.
+// Inferring the capability from the function's existence let guardRegex,
+// guardJwt, guardShell and guardTemplate accept `zeroWidthPolicy: "strip"` at
+// construction and then refuse at runtime, which is the silent disposition
+// substitution the vocabulary check exists to stop.
+//
+// So the capability is DECLARED, and this holds the declaration to the
+// behaviour: a guard that claims it must actually remove the character, and one
+// that does not claim it must not accept the instruction.
+function testDeclaredCharacterRepairMatchesBehaviour() {
+  var ZW = String.fromCharCode(0x200B);
+  var wrongClaim = [], wrongRefusal = [], acceptedButCannot = [];
+  var claimed = 0;
+  b.guardAll.allGuards().forEach(function (g) {
+    if (typeof g.resolveOpts !== "function") return;
+    var base;
+    try { base = g.resolveOpts({}); } catch (_e) { return; }
+    if (typeof base.zeroWidthPolicy !== "string") return;
+
+    var declares = g.CHAR_REPAIR === true;
+    if (declares) claimed += 1;
+
+    // Does gate() accept the instruction?
+    var accepted = true;
+    try { g.gate({ zeroWidthPolicy: "strip" }); } catch (_e2) { accepted = false; }
+    if (accepted !== declares) {
+      (accepted ? acceptedButCannot : wrongRefusal).push(g.NAME);
+    }
+
+    // And can it actually perform it?
+    if (!declares || g.KIND === "entries") return;
+    var input = g.KIND === "filename" ? "a" + ZW + "b.txt"
+              : g.NAME === "json"     ? '{"k":"a' + ZW + 'b"}'
+              : "a" + ZW + "b";
+    var out;
+    try { out = g.sanitize(input, { zeroWidthPolicy: "strip" }); }
+    catch (_e3) { wrongClaim.push(g.NAME + " (sanitize threw)"); return; }
+    var text = typeof out === "string" ? out : JSON.stringify(out);
+    if (text.indexOf(ZW) !== -1) wrongClaim.push(g.NAME + " (character survived)");
+  });
+
+  check("guards declaring character repair (" + claimed + ")", claimed >= 5);
+  check("a guard declaring character repair actually removes the character" +
+        (wrongClaim.length ? " (claimed but did not: " + wrongClaim.join(", ") + ")" : ""),
+        wrongClaim.length === 0);
+  check("a guard that cannot repair does not accept `strip`" +
+        (acceptedButCannot.length ? " (accepted on " + acceptedButCannot.join(", ") + ")" : ""),
+        acceptedButCannot.length === 0);
+  check("a guard that can repair still accepts `strip`" +
+        (wrongRefusal.length ? " (refused on " + wrongRefusal.join(", ") + ")" : ""),
+        wrongRefusal.length === 0);
+}
+
 function testCharacterPolicyVocabularyIsEnforced() {
   var CHAR_POLICY_KEYS = ["bidiPolicy", "nullBytePolicy", "controlPolicy",
                           "zeroWidthPolicy", "tagsPolicy"];
@@ -1046,10 +1137,11 @@ function testCharacterPolicyVocabularyIsEnforced() {
       });
 
       // And the legal vocabulary must still pass, or the enum is a regression
-      // wearing a fix. `strip` is legal only where the guard can perform it —
-      // the same rule the performable-actions invariant below asserts.
+      // wearing a fix. `strip` is legal only where the guard DECLARES it can
+      // repair a character — not where it merely exports a sanitize, which an
+      // identifier guard does while having nothing to repair.
       var legal = ["allow", "audit", "audit-only", "reject"];
-      if (typeof g.sanitize === "function" && g.KIND !== "entries") legal.push("strip");
+      if (g.CHAR_REPAIR === true) legal.push("strip");
       legal.forEach(function (v) {
         var ok = {};
         ok[key] = v;

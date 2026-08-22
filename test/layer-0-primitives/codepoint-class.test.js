@@ -175,6 +175,28 @@ function testResolveTagsPolicy() {
         codepointClass.resolveTagsPolicy(null) === undefined);
 }
 
+// `audit-only` is the framework's documented synonym for `audit` —
+// policyDisposition has always mapped both to the same disposition. The
+// severity calculation recognised only the literal `audit`, so the two
+// spellings of one setting disagreed on the public path: `audit` returned a
+// warning and a pass, `audit-only` a high-severity issue and a failure. One
+// predicate decides it now, which is what stops them drifting apart again.
+function testIsAuditPolicy() {
+  check("audit is an audit policy",
+        codepointClass.isAuditPolicy("audit") === true);
+  check("audit-only is the same answer, not a different one",
+        codepointClass.isAuditPolicy("audit-only") === true);
+  check("reject is not an audit policy",
+        codepointClass.isAuditPolicy("reject") === false);
+  check("strip is not an audit policy",
+        codepointClass.isAuditPolicy("strip") === false);
+  check("allow is not an audit policy",
+        codepointClass.isAuditPolicy("allow") === false);
+  check("a missing or misspelled value is not an audit policy",
+        codepointClass.isAuditPolicy(undefined) === false &&
+        codepointClass.isAuditPolicy("audit_only") === false);
+}
+
 function testCharThreatCeilingOrdering() {
   var factory = function (code, msg) { var e = new Error(msg); e.code = code; return e; };
   var oversized = "a".repeat(4096) + codepointClass.fromCp(0x202E);
@@ -786,6 +808,7 @@ async function run() {
   testTokenAndSplitPrimitives();
   testEntityDecodersMatchARegexReference();
   testResolveTagsPolicy();
+  testIsAuditPolicy();
   testCharThreatCeilingOrdering();
   testFoldedSearchAndRangeRuns();
   testRangeTablesAgreeWithTheirPredicates();

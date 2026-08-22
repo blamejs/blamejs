@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.18.47",
-  "createdAt": "2026-08-22T09:45:30.123Z",
+  "createdAt": "2026-08-22T10:34:59.631Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -7118,6 +7118,10 @@
           "arity": 1
         },
         "isAsciiLetter": {
+          "type": "function",
+          "arity": 1
+        },
+        "isAuditPolicy": {
           "type": "function",
           "arity": 1
         },
@@ -19287,6 +19291,10 @@
     "guardAuth": {
       "type": "object",
       "members": {
+        "CHAR_REPAIR": {
+          "type": "primitive",
+          "valueType": "boolean"
+        },
         "COMPLIANCE_POSTURES": {
           "type": "object",
           "members": {
@@ -19701,6 +19709,10 @@
     "guardCidr": {
       "type": "object",
       "members": {
+        "CHAR_REPAIR": {
+          "type": "primitive",
+          "valueType": "boolean"
+        },
         "COMPLIANCE_POSTURES": {
           "type": "object",
           "members": {
@@ -20201,6 +20213,10 @@
           "type": "instance",
           "ctorName": "Array"
         },
+        "CHAR_REPAIR": {
+          "type": "primitive",
+          "valueType": "boolean"
+        },
         "COMPLIANCE_POSTURES": {
           "type": "object",
           "members": {
@@ -20637,6 +20653,10 @@
     "guardCsv": {
       "type": "object",
       "members": {
+        "CHAR_REPAIR": {
+          "type": "primitive",
+          "valueType": "boolean"
+        },
         "COMPLIANCE_POSTURES": {
           "type": "object",
           "members": {
@@ -21298,6 +21318,10 @@
     "guardDomain": {
       "type": "object",
       "members": {
+        "CHAR_REPAIR": {
+          "type": "primitive",
+          "valueType": "boolean"
+        },
         "COMPLIANCE_POSTURES": {
           "type": "object",
           "members": {
@@ -22241,6 +22265,10 @@
     "guardEmail": {
       "type": "object",
       "members": {
+        "CHAR_REPAIR": {
+          "type": "primitive",
+          "valueType": "boolean"
+        },
         "COMPLIANCE_POSTURES": {
           "type": "object",
           "members": {
@@ -23371,6 +23399,10 @@
     "guardFilename": {
       "type": "object",
       "members": {
+        "CHAR_REPAIR": {
+          "type": "primitive",
+          "valueType": "boolean"
+        },
         "COMPLIANCE_POSTURES": {
           "type": "object",
           "members": {
@@ -24099,6 +24131,10 @@
     "guardGraphql": {
       "type": "object",
       "members": {
+        "CHAR_REPAIR": {
+          "type": "primitive",
+          "valueType": "boolean"
+        },
         "COMPLIANCE_POSTURES": {
           "type": "object",
           "members": {
@@ -24840,6 +24876,10 @@
         "BALANCED_ALLOWED_TAGS": {
           "type": "instance",
           "ctorName": "Array"
+        },
+        "CHAR_REPAIR": {
+          "type": "primitive",
+          "valueType": "boolean"
         },
         "CLOBBER_GLOBALS": {
           "type": "instance",
@@ -26027,6 +26067,10 @@
     "guardImage": {
       "type": "object",
       "members": {
+        "CHAR_REPAIR": {
+          "type": "primitive",
+          "valueType": "boolean"
+        },
         "COMPLIANCE_POSTURES": {
           "type": "object",
           "members": {
@@ -27056,6 +27100,10 @@
     "guardJson": {
       "type": "object",
       "members": {
+        "CHAR_REPAIR": {
+          "type": "primitive",
+          "valueType": "boolean"
+        },
         "COMPLIANCE_POSTURES": {
           "type": "object",
           "members": {
@@ -27860,6 +27908,10 @@
     "guardJsonpath": {
       "type": "object",
       "members": {
+        "CHAR_REPAIR": {
+          "type": "primitive",
+          "valueType": "boolean"
+        },
         "COMPLIANCE_POSTURES": {
           "type": "object",
           "members": {
@@ -28420,6 +28472,10 @@
     "guardJwt": {
       "type": "object",
       "members": {
+        "CHAR_REPAIR": {
+          "type": "primitive",
+          "valueType": "boolean"
+        },
         "COMPLIANCE_POSTURES": {
           "type": "object",
           "members": {
@@ -30559,6 +30615,10 @@
     "guardMarkdown": {
       "type": "object",
       "members": {
+        "CHAR_REPAIR": {
+          "type": "primitive",
+          "valueType": "boolean"
+        },
         "COMPLIANCE_POSTURES": {
           "type": "object",
           "members": {
@@ -31581,6 +31641,10 @@
     "guardMime": {
       "type": "object",
       "members": {
+        "CHAR_REPAIR": {
+          "type": "primitive",
+          "valueType": "boolean"
+        },
         "COMPLIANCE_POSTURES": {
           "type": "object",
           "members": {
@@ -32109,6 +32173,10 @@
     "guardOauth": {
       "type": "object",
       "members": {
+        "CHAR_REPAIR": {
+          "type": "primitive",
+          "valueType": "boolean"
+        },
         "COMPLIANCE_POSTURES": {
           "type": "object",
           "members": {
@@ -32780,6 +32848,10 @@
     "guardPdf": {
       "type": "object",
       "members": {
+        "CHAR_REPAIR": {
+          "type": "primitive",
+          "valueType": "boolean"
+        },
         "COMPLIANCE_POSTURES": {
           "type": "object",
           "members": {
@@ -33696,6 +33768,10 @@
     "guardRegex": {
       "type": "object",
       "members": {
+        "CHAR_REPAIR": {
+          "type": "primitive",
+          "valueType": "boolean"
+        },
         "COMPLIANCE_POSTURES": {
           "type": "object",
           "members": {
@@ -34466,6 +34542,10 @@
     "guardShell": {
       "type": "object",
       "members": {
+        "CHAR_REPAIR": {
+          "type": "primitive",
+          "valueType": "boolean"
+        },
         "COMPLIANCE_POSTURES": {
           "type": "object",
           "members": {
@@ -35348,6 +35428,10 @@
     "guardSql": {
       "type": "object",
       "members": {
+        "CHAR_REPAIR": {
+          "type": "primitive",
+          "valueType": "boolean"
+        },
         "COMPLIANCE_POSTURES": {
           "type": "object",
           "members": {
@@ -36033,6 +36117,10 @@
         "BALANCED_ALLOWED_TAGS": {
           "type": "instance",
           "ctorName": "Array"
+        },
+        "CHAR_REPAIR": {
+          "type": "primitive",
+          "valueType": "boolean"
         },
         "COMPLIANCE_POSTURES": {
           "type": "object",
@@ -36890,6 +36978,10 @@
     "guardTemplate": {
       "type": "object",
       "members": {
+        "CHAR_REPAIR": {
+          "type": "primitive",
+          "valueType": "boolean"
+        },
         "COMPLIANCE_POSTURES": {
           "type": "object",
           "members": {
@@ -37481,6 +37573,10 @@
     "guardText": {
       "type": "object",
       "members": {
+        "CHAR_REPAIR": {
+          "type": "primitive",
+          "valueType": "boolean"
+        },
         "COMPLIANCE_POSTURES": {
           "type": "object",
           "members": {
@@ -37917,6 +38013,10 @@
     "guardTime": {
       "type": "object",
       "members": {
+        "CHAR_REPAIR": {
+          "type": "primitive",
+          "valueType": "boolean"
+        },
         "COMPLIANCE_POSTURES": {
           "type": "object",
           "members": {
@@ -38643,6 +38743,10 @@
     "guardUuid": {
       "type": "object",
       "members": {
+        "CHAR_REPAIR": {
+          "type": "primitive",
+          "valueType": "boolean"
+        },
         "COMPLIANCE_POSTURES": {
           "type": "object",
           "members": {
@@ -39235,6 +39339,10 @@
     "guardXml": {
       "type": "object",
       "members": {
+        "CHAR_REPAIR": {
+          "type": "primitive",
+          "valueType": "boolean"
+        },
         "COMPLIANCE_POSTURES": {
           "type": "object",
           "members": {
@@ -39967,6 +40075,10 @@
     "guardYaml": {
       "type": "object",
       "members": {
+        "CHAR_REPAIR": {
+          "type": "primitive",
+          "valueType": "boolean"
+        },
         "COMPLIANCE_POSTURES": {
           "type": "object",
           "members": {
