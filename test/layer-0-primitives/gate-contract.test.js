@@ -2466,6 +2466,27 @@ function testGuardAuthoringHelpers() {
   check("capKeysOf: no defaults yields no caps",
         b.gateContract.capKeysOf(null).length === 0);
 
+  // charPolicyEnums — the same shape of helper for the policy vocabulary, and
+  // it exists for the same reason: a guard binding its own resolver omitted the
+  // check and accepted `bidiPolicy: "rejct"` on gate() and validate() while the
+  // generated path refused it.
+  var CHAR_DEFAULTS = { bidiPolicy: "reject", zeroWidthPolicy: "strip", maxBytes: 8 };
+  var repairing = b.gateContract.charPolicyEnums(CHAR_DEFAULTS, { canRepair: true });
+  check("charPolicyEnums: covers the char policies present, and nothing else",
+        Object.keys(repairing).sort().join(",") === "bidiPolicy,zeroWidthPolicy");
+  check("charPolicyEnums: a repairing guard may be told to strip",
+        repairing.bidiPolicy.indexOf("strip") !== -1);
+  check("charPolicyEnums: the base vocabulary is always present",
+        ["allow", "audit", "audit-only", "reject"].every(function (v) {
+          return repairing.bidiPolicy.indexOf(v) !== -1;
+        }));
+  var plain = b.gateContract.charPolicyEnums(CHAR_DEFAULTS, { canRepair: false });
+  check("charPolicyEnums: a guard with nothing to repair with may not be told to strip",
+        plain.bidiPolicy.indexOf("strip") === -1);
+  check("charPolicyEnums: defaults carrying no char policy yield nothing to check",
+        b.gateContract.charPolicyEnums({ maxBytes: 8 }) === null &&
+        b.gateContract.charPolicyEnums(null) === null);
+
   var bundle = { alg: "none", state: "x" };
   check("identitySanitize: returns its input unchanged, by identity",
         b.gateContract.identitySanitize(bundle) === bundle);

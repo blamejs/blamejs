@@ -998,6 +998,16 @@ function testGuardFamilyRefusesAMalformedNumericCap() {
 // `enumOpts`, and its comment records the same bug. The mechanism was applied
 // to one guard and the class left open across the other 259 policy opts; this
 // covers the character family, which shares one vocabulary.
+// A benign input each KIND will at least attempt to parse. The value does not
+// need to pass — the opts are refused before the content is read — it only has
+// to be the right SHAPE, so validate() reaches the option check rather than
+// throwing on the argument type first.
+function _sampleInputFor(g) {
+  if (g.KIND === "entries") return [{ name: "a.txt", size: 1 }];
+  if (g.KIND === "filename") return "a.txt";
+  return "abc";
+}
+
 function testCharacterPolicyVocabularyIsEnforced() {
   var CHAR_POLICY_KEYS = ["bidiPolicy", "nullBytePolicy", "controlPolicy",
                           "zeroWidthPolicy", "tagsPolicy"];
@@ -1016,9 +1026,24 @@ function testCharacterPolicyVocabularyIsEnforced() {
 
       var bad = {};
       bad[key] = NONSENSE;
-      var refused = false;
-      try { g.resolveOpts(bad); } catch (_e2) { refused = true; }
-      if (!refused) acceptedNonsense.push(g.NAME + "." + key);
+
+      // Every public door, not just resolveOpts. Several guards bind their own
+      // resolver inside a hand-written gate() or validate() instead of going
+      // through the generated one — the same blind spot that let a malformed
+      // CAP through those paths while a resolveOpts-only sweep reported clean.
+      // A check written against one door answers for one door.
+      var doors = [["resolveOpts", function () { g.resolveOpts(bad); }]];
+      if (typeof g.gate === "function") {
+        doors.push(["gate", function () { g.gate(bad); }]);
+      }
+      if (typeof g.validate === "function") {
+        doors.push(["validate", function () { g.validate(_sampleInputFor(g), bad); }]);
+      }
+      doors.forEach(function (d) {
+        var refused = false;
+        try { d[1](); } catch (_e2) { refused = true; }
+        if (!refused) acceptedNonsense.push(g.NAME + "." + key + " via " + d[0]);
+      });
 
       // And the legal vocabulary must still pass, or the enum is a regression
       // wearing a fix. `strip` is legal only where the guard can perform it —
