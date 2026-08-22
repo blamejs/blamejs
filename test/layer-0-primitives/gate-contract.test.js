@@ -2476,7 +2476,14 @@ function testGuardAuthoringHelpers() {
   var CHAR_DEFAULTS = { bidiPolicy: "reject", zeroWidthPolicy: "strip", maxBytes: 8 };
   var repairing = b.gateContract.charPolicyEnums(CHAR_DEFAULTS, { canRepair: true });
   check("charPolicyEnums: covers the char policies present, and nothing else",
-        Object.keys(repairing).sort().join(",") === "bidiPolicy,zeroWidthPolicy");
+        Object.keys(repairing).sort().join(",") === "bidiPolicy,tagsPolicy,zeroWidthPolicy");
+  // tagsPolicy is covered although it is ABSENT from the defaults: it inherits
+  // from zeroWidthPolicy and stays a supported inline override, so a typo in it
+  // has to be refused on a guard that never lists it.
+  check("charPolicyEnums: tagsPolicy rides along with zeroWidthPolicy",
+        Array.isArray(repairing.tagsPolicy) && repairing.tagsPolicy.indexOf("reject") !== -1);
+  check("charPolicyEnums: no zeroWidthPolicy means no inherited tagsPolicy",
+        b.gateContract.charPolicyEnums({ bidiPolicy: "reject" }).tagsPolicy === undefined);
   check("charPolicyEnums: a repairing guard may be told to strip",
         repairing.bidiPolicy.indexOf("strip") !== -1);
   check("charPolicyEnums: the base vocabulary is always present",

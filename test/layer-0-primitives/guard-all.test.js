@@ -1112,7 +1112,14 @@ function testCharacterPolicyVocabularyIsEnforced() {
     var base;
     try { base = g.resolveOpts({}); } catch (_e) { return; }
     CHAR_POLICY_KEYS.forEach(function (key) {
-      if (typeof base[key] !== "string") return;
+      // `tagsPolicy` is usually ABSENT from the defaults because it inherits
+      // from zeroWidthPolicy — but it remains a supported inline override, so
+      // a guard exposing the inherited behaviour must hold a typo in it to the
+      // same vocabulary. Skipping every absent key left it unchecked on
+      // guardFilename, guardJson, guardMarkdown and the rest.
+      var present = typeof base[key] === "string" ||
+                    (key === "tagsPolicy" && typeof base.zeroWidthPolicy === "string");
+      if (!present) return;
       probed += 1;
 
       var bad = {};
