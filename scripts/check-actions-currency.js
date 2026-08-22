@@ -358,6 +358,21 @@ async function main() {
       errored.length + " api-error(s). Bump the pinned SHA + version comment to the latest release.\n");
     process.exit(1);
   }
+  // Say what was CHECKED, not what was assumed. An unauthenticated run hits the
+  // 60/hour per-IP limit and every lookup comes back 403 — nothing is compared,
+  // and "every pinned action matches the latest upstream release" is then a
+  // claim about a comparison that never ran. The exit code stays 0 because a
+  // transient rate limit is not a stale action (BLAMEJS_ACTIONS_CURRENCY_STRICT
+  // turns it into one), but a passing gate must not report a currency it did
+  // not establish.
+  if (errored.length > 0) {
+    process.stdout.write("[actions-currency] OK for what could be checked — " +
+      (results.length - errored.length) + " of " + results.length +
+      " pinned action(s) match the latest upstream release; " + errored.length +
+      " could not be reached, so their currency is UNKNOWN. Re-run with " +
+      "GITHUB_TOKEN set for the authenticated rate limit.\n");
+    process.exit(0);
+  }
   process.stdout.write("[actions-currency] OK — every pinned action matches the latest upstream release\n");
   process.exit(0);
 }
