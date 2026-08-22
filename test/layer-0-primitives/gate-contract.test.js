@@ -1468,7 +1468,10 @@ function guardDetect(input) {
 
 async function testDefineGuard() {
   var guard = GC.defineGuard({
-    name: "gccov", kind: "content", errorName: "GcCoverageContentError",
+    // Declares character repair because its sanitizeTransform below genuinely
+    // rewrites the subject, and its profiles select `strip`. A guard that asks
+    // for strip without declaring it can carry one out is refused now.
+    name: "gccov", kind: "content", charRepair: true, errorName: "GcCoverageContentError",
     profiles: GUARD_PROFILES, base: 64,
     mimeTypes: ["text/gccov"], extensions: [".gccov"],
     integrationFixtures: { kind: "content", benignBytes: Buffer.from("ok") },
@@ -2465,6 +2468,70 @@ function testGuardAuthoringHelpers() {
         unioned.filter(function (k) { return k === "maxBytes"; }).length === 1);
   check("capKeysOf: no defaults yields no caps",
         b.gateContract.capKeysOf(null).length === 0);
+
+  // charPolicyEnums — the same shape of helper for the policy vocabulary, and
+  // it exists for the same reason: a guard binding its own resolver omitted the
+  // check and accepted `bidiPolicy: "rejct"` on gate() and validate() while the
+  // generated path refused it.
+  var CHAR_DEFAULTS = { bidiPolicy: "reject", zeroWidthPolicy: "strip", maxBytes: 8 };
+  var repairing = b.gateContract.charPolicyEnums(CHAR_DEFAULTS, { canRepair: true });
+  check("charPolicyEnums: covers the char policies present, and nothing else",
+        Object.keys(repairing).sort().join(",") === "bidiPolicy,tagsPolicy,zeroWidthPolicy");
+  // tagsPolicy is covered although it is ABSENT from the defaults: it inherits
+  // from zeroWidthPolicy and stays a supported inline override, so a typo in it
+  // has to be refused on a guard that never lists it.
+  check("charPolicyEnums: tagsPolicy rides along with zeroWidthPolicy",
+        Array.isArray(repairing.tagsPolicy) && repairing.tagsPolicy.indexOf("reject") !== -1);
+  check("charPolicyEnums: no zeroWidthPolicy means no inherited tagsPolicy",
+        b.gateContract.charPolicyEnums({ bidiPolicy: "reject" }).tagsPolicy === undefined);
+
+  // A declaration has to be backed by something. `charRepair: true` with no
+  // sanitize and no sanitizeTransform puts `strip` in the vocabulary of a guard
+  // that cannot carry one out — accepted at boot, refused at runtime, which is
+  // the substitution the declaration was introduced to stop. Refused while the
+  // guard is assembled, which is the moment the author can still fix it.
+  var noRepairPath = null;
+  try {
+    b.gateContract.defineGuard({
+      name: "charrepairnopath", kind: "content", charRepair: true,
+      errorName: "CharRepairNoPathError",
+      profiles: { strict: { zeroWidthPolicy: "reject", maxBytes: 16 } },
+      detect: function () { return []; },
+      inputContract: "text",
+    });
+  } catch (e) { noRepairPath = e; }
+  check("defineGuard: charRepair without a repair path is refused",
+        noRepairPath !== null);
+  check("defineGuard: and the refusal names the missing path",
+        noRepairPath !== null && /sanitize/.test(noRepairPath.message));
+
+  // The same declaration IS accepted when a transform supplies the repair,
+  // since defineGuard builds the sanitize from it.
+  var withTransform = null;
+  try {
+    b.gateContract.defineGuard({
+      name: "charrepairviatransform", kind: "content", charRepair: true,
+      errorName: "CharRepairViaTransformError",
+      profiles: { strict: { zeroWidthPolicy: "reject", maxBytes: 16 } },
+      detect: function () { return []; },
+      inputContract: "text",
+      sanitizeTransform: function (subject) { return String(subject); },
+    });
+  } catch (e) { withTransform = e; }
+  check("defineGuard: charRepair backed by a sanitizeTransform is accepted",
+        withTransform === null);
+  check("charPolicyEnums: a repairing guard may be told to strip",
+        repairing.bidiPolicy.indexOf("strip") !== -1);
+  check("charPolicyEnums: the base vocabulary is always present",
+        ["allow", "audit", "audit-only", "reject"].every(function (v) {
+          return repairing.bidiPolicy.indexOf(v) !== -1;
+        }));
+  var plain = b.gateContract.charPolicyEnums(CHAR_DEFAULTS, { canRepair: false });
+  check("charPolicyEnums: a guard with nothing to repair with may not be told to strip",
+        plain.bidiPolicy.indexOf("strip") === -1);
+  check("charPolicyEnums: defaults carrying no char policy yield nothing to check",
+        b.gateContract.charPolicyEnums({ maxBytes: 8 }) === null &&
+        b.gateContract.charPolicyEnums(null) === null);
 
   var bundle = { alg: "none", state: "x" };
   check("identitySanitize: returns its input unchanged, by identity",
