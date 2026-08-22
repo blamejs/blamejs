@@ -17,6 +17,31 @@ var check   = helpers.check;
 var CANON = "550e8400-e29b-41d4-a716-446655440000";
 function _code(fn) { try { fn(); return null; } catch (e) { return e && e.code; } }
 
+// Each of this guard's three policies is a CONFIG-TIME entry point, so a value
+// outside its vocabulary is a boot error rather than a runtime surprise. Read
+// leniently, a misspelling takes whichever branch is not the strict one:
+// `versionPolicy: "reject-unassinged"` is not "allow", so the check runs, and
+// it is not the reject spelling either, so the finding drops to a warning —
+// the operator asked to refuse an unassigned version and silently got an audit.
+//
+// The vocabularies come from the guard itself: written inline beside each
+// profile entry, and confirmed against what the code compares. `audit-only` is
+// accepted alongside `audit` because it behaves identically here and the
+// framework treats the two as synonyms everywhere else — refusing it here
+// while accepting it elsewhere would be a fresh inconsistency.
+function testPolicyVocabularyIsEnforced() {
+  var LEGAL = {
+    formatPolicy:  ["hyphenated", "hyphenless", "braced", "urn", "hyphenated-only", "any"],
+    versionPolicy: ["reject-unassigned", "audit", "audit-only", "allow"],
+    variantPolicy: ["reject-non-rfc", "audit", "audit-only", "allow"],
+    nilPolicy:     ["reject", "audit", "audit-only", "allow"],
+    maxPolicy:     ["reject", "audit", "audit-only", "allow"],
+    urnPolicy:     ["reject", "audit", "audit-only", "allow"],
+    bracedPolicy:  ["reject", "audit", "audit-only", "allow"],
+  };
+  helpers.assertPolicyVocabulary(b.guardUuid, LEGAL, { label: "uuid", sample: CANON });
+}
+
 function testGuardUuidSurface() {
   check("guardUuid is an object",           typeof b.guardUuid === "object");
   check("guardUuid.NAME === 'uuid'",        b.guardUuid.NAME === "uuid");
@@ -116,6 +141,7 @@ function testFormClassifierAgreesWithThePatternsItReplaced() {
 function run() {
   testFormClassifierAgreesWithThePatternsItReplaced();
   testGuardUuidSurface();
+  testPolicyVocabularyIsEnforced();
   testSanitizeCanonicalPassthrough();
   testSanitizeNormalizesUrnPrefix();
   testSanitizeNormalizesBraces();

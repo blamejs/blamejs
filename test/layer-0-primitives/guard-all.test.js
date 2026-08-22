@@ -334,6 +334,9 @@ async function run() {
   testAuditOnlyIsTheSynonymItClaimsToBe();
   testDeclaredCharacterRepairMatchesBehaviour();
   testCharacterPolicyVocabularyIsEnforced();
+  testUnknownPolicyKeyIsRefused();
+  testDeclaredVocabularyMatchesTheOptsBlock();
+  testPublishedVocabularyCannotBeEdited();
   testGuardFamilyDeclaresOnlyPerformableActions();
   testGuardFamilyRefusesAMalformedNumericCap();
   await testGuardFamilyGateAgreesWithValidateOnAnEmptyValue();
@@ -1099,6 +1102,181 @@ function testDeclaredCharacterRepairMatchesBehaviour() {
         wrongRefusal.length === 0);
 }
 
+// A guard publishes POLICY_VOCABULARY while its resolver checks against the
+// same table, so a caller that could push onto one of those arrays would be
+// editing the rule rather than reading it. guardArchive exported its table
+// directly — `POLICY_VOCABULARY.symlinkPolicy.push("bogus")` and the guard
+// accepted "bogus" — because it builds its own exports instead of going
+// through defineGuard, which had been freezing a copy all along.
+function testPublishedVocabularyCannotBeEdited() {
+  var editable = [], probed = 0;
+  b.guardAll.allGuards().forEach(function (g) {
+    var vocabulary = g.POLICY_VOCABULARY;
+    if (!vocabulary) return;
+    if (!Object.isFrozen(vocabulary)) editable.push(g.NAME + ": the table itself");
+    Object.keys(vocabulary).forEach(function (key) {
+      var values = vocabulary[key];
+      if (!Array.isArray(values) || !values.length) return;
+      probed += 1;
+      if (!Object.isFrozen(values)) {
+        editable.push(g.NAME + "." + key + ": the value list");
+        return;
+      }
+      // Frozen is the mechanism; what matters is that the resolver does not
+      // change its mind, so ask it.
+      var bogus = {};
+      bogus[key] = "definitely-not-a-policy-value";
+      try { values.push("definitely-not-a-policy-value"); } catch (_frozen) { /* expected */ }
+      var stillRefused = false;
+      try { g.resolveOpts(bogus); } catch (_e) { stillRefused = true; }
+      if (!stillRefused) editable.push(g.NAME + "." + key + ": the resolver followed it");
+    });
+  });
+  check("the published-vocabulary sweep reached the family (" + probed + " policies)",
+        probed >= 200, "probed " + probed);
+  check("a published vocabulary cannot be edited into the guard's rules" +
+        (editable.length ? " (" + editable.slice(0, 6).join("; ") + ")" : ""),
+        editable.length === 0);
+}
+
+// What each guard PROMISES a policy takes, read out of its own opts block, and
+// what it actually accepts. These are two independent statements about the same
+// option and nothing had been comparing them, so they drifted: guardMime's opts
+// block named `riskyTypesPolicy` while the code read `riskyTypePolicy`, and an
+// operator who set the documented name kept the balanced profile's "audit"
+// while believing risky types were refused.
+//
+// Only lines that spell a union out are compared. A guard that types an option
+// as `string` has made no promise to hold it to.
+var _POLICY_DOC_LINE =
+  /^\s*\*\s+(\w+Policy):\s*("[^"]+"(?:\s*\|\s*"[^"]+")*)\s*,/;
+var _CHAR_POLICIES = ["bidiPolicy", "controlPolicy", "nullBytePolicy",
+                      "zeroWidthPolicy", "tagsPolicy"];
+
+function _documentedVocabularies(source) {
+  var out = Object.create(null);
+  source.split("\n").forEach(function (line) {
+    var m = _POLICY_DOC_LINE.exec(line);
+    if (!m) return;
+    var values = m[2].split("|").map(function (v) {
+      return v.trim().replace(/^"|"$/g, "");
+    });
+    // A policy documented in more than one opts block (validate and sanitize,
+    // say) is the union of what those blocks offer.
+    var seen = out[m[1]] || (out[m[1]] = []);
+    values.forEach(function (v) { if (seen.indexOf(v) === -1) seen.push(v); });
+  });
+  return out;
+}
+
+function testDeclaredVocabularyMatchesTheOptsBlock() {
+  var fs = helpers.fs;
+  var path = helpers.path;
+  var libDir = path.join(__dirname, "..", "..", "lib");
+  var undocumented = [], overDeclared = [], compared = 0;
+
+  b.guardAll.allGuards().forEach(function (g) {
+    var file = path.join(libDir, "guard-" + g.NAME + ".js");
+    if (!fs.existsSync(file)) return;
+    var documented = _documentedVocabularies(fs.readFileSync(file, "utf8"));
+    var declared = g.POLICY_VOCABULARY || {};
+
+    Object.keys(documented).forEach(function (key) {
+      if (!Array.isArray(declared[key])) {
+        // Either the name is wrong or the option was never wired. Both read to
+        // an operator as a setting that exists.
+        undocumented.push(g.NAME + "." + key + " is documented but not an option");
+        return;
+      }
+      compared += 1;
+      documented[key].forEach(function (value) {
+        if (declared[key].indexOf(value) === -1) {
+          undocumented.push(g.NAME + "." + key + " documents " + JSON.stringify(value) +
+                            " but does not accept it");
+        }
+      });
+      // The other direction — a value accepted but not offered — is checked
+      // only for a guard's OWN policies. A character policy's vocabulary is not
+      // the guard's to state: it is derived for the whole family from the
+      // profile defaults, and the per-guard opts line is a summary of it. What
+      // still binds there is the direction above, because a guard must not
+      // advertise a value the family's derivation will refuse.
+      if (_CHAR_POLICIES.indexOf(key) !== -1) return;
+      declared[key].forEach(function (value) {
+        // `audit-only` is the family's documented synonym for `audit`, so a
+        // guard may accept it without every opts block spelling it out.
+        if (value === "audit-only" && declared[key].indexOf("audit") !== -1) return;
+        if (documented[key].indexOf(value) === -1) {
+          overDeclared.push(g.NAME + "." + key + " accepts " + JSON.stringify(value) +
+                            " but its opts block does not offer it");
+        }
+      });
+    });
+  });
+
+  check("the opts-block comparison reached the family (" + compared + " policies)",
+        compared >= 90, "compared " + compared);
+  check("every documented policy value is one the guard accepts" +
+        (undocumented.length ? " (" + undocumented.slice(0, 6).join("; ") + ")" : ""),
+        undocumented.length === 0);
+  check("and every value a guard accepts is one its opts block offers" +
+        (overDeclared.length ? " (" + overDeclared.slice(0, 6).join("; ") + ")" : ""),
+        overDeclared.length === 0);
+}
+
+// The sibling of the vocabulary check: a policy NAME the guard does not have.
+// It fails the same way and more quietly, because there is no value to inspect
+// — the merge keeps the key, nothing reads it, and the profile default stays
+// in force. `riskyTypesPolicy: "reject"` on a guard whose option is
+// `riskyTypePolicy` leaves risky types on the balanced profile's "audit", and
+// the only place the mistake was visible was the opts block that had the name
+// wrong to begin with.
+//
+// A guard's policy set is fully described by its profiles, postures and
+// defaults, so the near-miss is decidable. The rest of the opts surface is open
+// by design (callbacks, caches, host wiring) and is not probed here.
+function testUnknownPolicyKeyIsRefused() {
+  var accepted = [], probed = 0;
+  b.guardAll.allGuards().forEach(function (g) {
+    if (typeof g.resolveOpts !== "function") return;
+    var base;
+    try { base = g.resolveOpts({}); } catch (_e) { return; }
+    var real = Object.keys(base).filter(function (k) { return /Policy$/.test(k); });
+    if (!real.length) return;
+    probed += 1;
+
+    // Two shapes an operator actually produces: a plural of a real option, and
+    // a policy for a threat this guard has no say over.
+    //
+    // The family's character policies are excluded by name rather than by
+    // presence: `tagsPolicy` is inherited from `zeroWidthPolicy` and so is a
+    // real option on guards whose defaults never mention it — and it is what
+    // guardYaml's `tagPolicy` pluralizes to.
+    var INHERITED = ["bidiPolicy", "nullBytePolicy", "controlPolicy",
+                     "zeroWidthPolicy", "tagsPolicy"];
+    [real[0].replace(/Policy$/, "sPolicy"), "totallyMadeUpPolicy"].forEach(function (key) {
+      if (Object.prototype.hasOwnProperty.call(base, key)) return;
+      if (INHERITED.indexOf(key) !== -1) return;
+      var bad = {};
+      bad[key] = "reject";
+      var doors = [["resolveOpts", function () { g.resolveOpts(bad); }]];
+      if (typeof g.gate === "function") doors.push(["gate", function () { g.gate(bad); }]);
+      doors.forEach(function (d) {
+        var refused = false;
+        try { d[1](); } catch (_e2) { refused = true; }
+        if (!refused) accepted.push(g.NAME + "." + key + " via " + d[0]);
+      });
+    });
+  });
+
+  check("the unknown-policy-key sweep reached the family (" + probed + " guards)",
+        probed >= 15, "probed " + probed);
+  check("a policy name the guard does not have is refused rather than ignored" +
+        (accepted.length ? " (accepted " + accepted.length + ": " +
+          accepted.slice(0, 6).join(", ") + ")" : ""),
+        accepted.length === 0);
+}
+
 function testCharacterPolicyVocabularyIsEnforced() {
   var CHAR_POLICY_KEYS = ["bidiPolicy", "nullBytePolicy", "controlPolicy",
                           "zeroWidthPolicy", "tagsPolicy"];
@@ -1144,11 +1322,22 @@ function testCharacterPolicyVocabularyIsEnforced() {
       });
 
       // And the legal vocabulary must still pass, or the enum is a regression
-      // wearing a fix. `strip` is legal only where the guard DECLARES it can
-      // repair a character — not where it merely exports a sanitize, which an
-      // identifier guard does while having nothing to repair.
-      var legal = ["allow", "audit", "audit-only", "reject"];
-      if (g.CHAR_REPAIR === true) legal.push("strip");
+      // wearing a fix. Ask the guard rather than assuming one vocabulary for
+      // the family: guardFilename pins nullBytePolicy to "reject" because a
+      // NUL truncates the name at whichever consumer reads it first, and a
+      // sweep that assumed the usual four would read that pinning as a
+      // regression. Where a guard declares nothing, the family default applies
+      // — `strip` only where the guard DECLARES it can repair a character, not
+      // where it merely exports a sanitize, which an identifier guard does
+      // while having nothing to repair.
+      var declared = g.POLICY_VOCABULARY && g.POLICY_VOCABULARY[key];
+      var legal;
+      if (Array.isArray(declared)) {
+        legal = declared.slice();
+      } else {
+        legal = ["allow", "audit", "audit-only", "reject"];
+        if (g.CHAR_REPAIR === true) legal.push("strip");
+      }
       legal.forEach(function (v) {
         var ok = {};
         ok[key] = v;

@@ -6754,6 +6754,12 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-shell.js:_detectIssues",
         "lib/guard-svg.js:<top>",
         "lib/guard-svg.js:_gateDispositionFor",
+        // The registration header the four content guards share — fixture
+        // block through `defineGuard({ enumOpts, name, kind, errorClass,
+        // profiles })`. It attributes to the function that FOLLOWS it, which
+        // is `gate` in all four; html, json and xml were already listed here
+        // and svg fell outside the window until the header grew a line.
+        "lib/guard-svg.js:gate",
         "lib/guard-svg.js:sanitize",
         "lib/guard-text.js:<top>",
         "lib/guard-xml.js:<top>",

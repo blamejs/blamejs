@@ -334,7 +334,37 @@ function testYamlScreensAgreeWithThePatternsTheyReplaced() {
         diffs.slice(0, 4).join(" | "));
 }
 
+// Every policy is a config-time entry point, so a value outside its vocabulary
+// belongs at boot rather than at the first hostile document. Read leniently, a
+// typo takes whichever branch is not the strict one: `aliasPolicy: "rejct"` is
+// not "allow", so the check runs, and it is not "reject" either, so a
+// billion-laughs alias chain drops to a warning.
+//
+// `audit-only` is not in the vocabulary here, unlike most of the family:
+// tagPolicy tests for "audit" exactly, and the synonym would fall past both
+// branches.
+function testPolicyVocabularyIsEnforced() {
+  var LEGAL = {
+    tagPolicy:          ["reject", "audit", "allow"],
+    aliasPolicy:        ["reject", "audit", "allow"],
+    multiDocPolicy:     ["reject", "audit", "allow"],
+    norwayPolicy:       ["reject", "audit", "allow"],
+    leadingZeroPolicy:  ["reject", "audit", "allow"],
+    duplicateKeyPolicy: ["reject", "audit", "allow"],
+    mergeKeyPolicy:     ["reject", "audit", "allow"],
+  };
+  helpers.assertPolicyVocabulary(b.guardYaml, LEGAL, { label: "yaml", sample: "a: 1\n" });
+
+  // `parse` binds its own resolver rather than the generated one, so it is its
+  // own door and has to refuse the same values.
+  var parseRefused = false;
+  try { b.guardYaml.parse("a: 1\n", { aliasPolicy: "definitely-not-a-policy-value" }); }
+  catch (_e) { parseRefused = true; }
+  check("yaml: parse refuses a policy value outside the vocabulary too", parseRefused);
+}
+
 async function run() {
+  testPolicyVocabularyIsEnforced();
   testYamlScreensAgreeWithThePatternsTheyReplaced();
   testGuardYamlSurface();
   testGuardYamlRegistryParity();

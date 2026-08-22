@@ -843,6 +843,39 @@ async function testGuardSvgGateDispositions() {
   check("gate: non-Buffer bytes (bad-input) → refuse", rvBad.action === "refuse");
 }
 
+// Every policy is a config-time entry point, so a value outside its vocabulary
+// belongs at boot rather than at the first hostile request. Read leniently, a
+// typo lands on whichever branch is not the strict one: `cdataPolicy: "rejct"`
+// is not "allow", so the check still runs, and it is not "reject" either, so
+// the finding drops from critical to warn — the operator asked to refuse a
+// CDATA section and silently got an audit line.
+//
+// `svgzPolicy` takes one value because a gzipped payload is refused
+// unconditionally: the byte signature is caught before any parse and sanitize
+// throws on it outright. An operator who writes `svgzPolicy: "allow"` today
+// gets a silent no-op; the single-value vocabulary tells them instead.
+//
+// The character policies are absent on purpose — they are derived for the
+// whole family, and an entry here would shadow that derivation.
+function testSvgPolicyVocabularyIsEnforced() {
+  var LEGAL = {
+    cssPolicy:             ["allow", "audit", "audit-only", "strip", "reject"],
+    doctypePolicy:         ["allow", "audit", "audit-only", "strip", "reject"],
+    cdataPolicy:           ["allow", "audit", "audit-only", "strip", "reject"],
+    processingInstrPolicy: ["allow", "audit", "audit-only", "strip", "reject"],
+    svgzPolicy:            ["reject"],
+  };
+  helpers.assertPolicyVocabulary(b.guardSvg, LEGAL, { label: "svg", sample: "<svg/>" });
+
+  // The one value svgzPolicy does NOT take, precisely because accepting it
+  // would read as "SVGZ now passes" while the refusal stayed unconditional.
+  var svgzAllowRefused = false;
+  try { b.guardSvg.resolveOpts({ svgzPolicy: "allow" }); }
+  catch (_e3) { svgzAllowRefused = true; }
+  check("svgzPolicy refuses `allow` rather than accepting it as a no-op",
+        svgzAllowRefused);
+}
+
 async function run() {
   testGuardSvgSurface();
   testGuardSvgRegistryParity();
@@ -880,6 +913,7 @@ async function run() {
   await testGuardSvgGate();
   await testGuardSvgGateFailOpen();
   await testGuardSvgGateDispositions();
+  testSvgPolicyVocabularyIsEnforced();
 }
 
 if (require.main === module) {

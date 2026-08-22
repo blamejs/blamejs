@@ -138,10 +138,31 @@ function testIpv6ReservedNibbleMisaligned() {
   });
 }
 
+// Each policy is a CONFIG-TIME entry point, so a value outside its vocabulary
+// is a boot error rather than a runtime surprise. Read leniently, a typo takes
+// whichever branch is not the strict one: `reservedRangesPolicy: "rejct"` is
+// not "allow", so the check runs, and it is not "reject" either, so the finding
+// drops to a warning — the operator asked to refuse a reserved range and
+// silently got an audit instead.
+//
+// The vocabularies are the ones the code compares against, confirmed against
+// what the shipped profiles select. requireMaskPolicy carries its own spelling
+// set because the answer is about the mask, not a threat disposition.
+function testPolicyVocabularyIsEnforced() {
+  var LEGAL = {
+    networkAlignmentPolicy: ["allow", "audit", "audit-only", "reject"],
+    reservedRangesPolicy:   ["allow", "audit", "audit-only", "reject"],
+    ipv4MappedIpv6Policy:   ["allow", "audit", "audit-only", "reject"],
+    requireMaskPolicy:      ["allow-bare-ip", "audit-bare-ip", "reject-bare-ip"],
+  };
+  helpers.assertPolicyVocabulary(b.guardCidr, LEGAL, { label: "cidr", sample: "8.8.8.0/24" });
+}
+
 async function run() {
   testValidate();
   testSanitize();
   testIpv6ReservedNibbleMisaligned();
+  testPolicyVocabularyIsEnforced();
 }
 
 module.exports = { run: run };

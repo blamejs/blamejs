@@ -36,6 +36,7 @@ var _tls      = require("./tls");
 var _ocsp     = require("./ocsp");
 var _merkle   = require("./merkle");
 var _webauthn = require("./webauthn");
+var _policyVocab = require("./policy-vocabulary");
 
 module.exports = {
   // Framework binding + Node stdlib re-exports for ergonomics.
@@ -123,4 +124,7 @@ module.exports = {
   backdateFile:       _fsWatch.backdateFile,
   waitForWatcher:     _fsWatch.waitForWatcher,
   withTestTimeout:    _wait.withTestTimeout,
+
+  // Guard policy-vocabulary assertion (see helpers/policy-vocabulary.js).
+  assertPolicyVocabulary: _policyVocab.assertPolicyVocabulary,
 };

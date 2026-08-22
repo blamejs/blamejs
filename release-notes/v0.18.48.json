@@ -1,0 +1,40 @@
+{
+  "$schema": "./schema.json",
+  "version": "0.18.48",
+  "date": "2026-08-22",
+  "headline": "A guard option you set and a guard option that exists were not the same set",
+  "summary": "Every `*Policy` option across the guard family now names the values it takes, and refuses everything else where options are resolved rather than at the first request that trips the scan. Holding the options to their vocabularies surfaced four places where what a guard advertised and what it did had come apart: an option documented under a name nothing read, a value that disabled a critical check without appearing in any opts block, two policies whose settings the gate's floor overrode anyway, and one declared in all three profiles and read nowhere.",
+  "sections": [
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "A guard policy refuses a value outside its vocabulary",
+          "body": "The two hundred and sixty-two `*Policy` options across the guard family each declare the values they accept, checked where options are resolved — boot, not the first hostile input — and on every entry point, including the `gate()` and `validate()` of guards that bind their own resolver.\n\nThe failure it ends is quiet, because policies are read leniently. `duplicateKeyPolicy: \"rejct\"` is not `allow`, so the check still runs; it is not `reject` either, so the finding drops from critical to a warning. The operator asked to refuse a duplicate key and silently got an audit line. Nothing was let through that a stricter reading would have caught, so this was never a hole — but a setting that means something other than what it says is worth a restart to learn about.\n\n`b.gateContract.policyVocabulary(names, values, overrides?)` builds these tables: most of a guard's policies answer the same question — refuse the construct, record it, or let it through — and one or two do not. Written out per option instead, a family of nine ends up with eight that accept `audit-only` and one that does not. Each guard also exports its `POLICY_VOCABULARY`, so a caller can ask what an option takes instead of reading the source."
+        },
+        {
+          "title": "An option name the guard does not have is refused rather than ignored",
+          "body": "A `*Policy` key that no guard option matches was kept by the option merge, read by nothing, and left the profile default in force. `b.guardMime` had shipped that way: its opts block named `riskyTypesPolicy` while the code reads `riskyTypePolicy`, so an operator following the documentation and setting it to `reject` kept the balanced profile's `audit` and had risky content types reported rather than refused, with nothing to see but the documentation that was wrong to begin with.\n\nA guard's policy set is fully described by its profiles, postures and defaults, so a near-miss is decidable and now refused by name. The rest of the option surface stays open — callbacks, caches and host wiring are not enumerable in advance.\n\nThe two statements a guard makes about an option — the vocabulary it enforces and the opts block an operator reads — are now compared to each other, which is what surfaced this one."
+        },
+        {
+          "title": "`kidTraversalPolicy: \"allow\"` turned off JWT key-path traversal detection",
+          "body": "`b.guardJwt` documents the `kid` traversal check as unconditional, and the header field it inspects is the one that steers key lookup — a `kid` of `../../etc/passwd` reaching a file-backed resolver is the point of the check. The code consulted `kidTraversalPolicy` for an `allow` its opts block never offered, and that value skipped the check entirely.\n\nThe check no longer reads a policy, and the option accepts `reject` alone. `algNonePolicy` is likewise fixed at `reject`: `alg=none` was already refused unconditionally and the option had never been read.",
+          "compliance": ["soc2"]
+        },
+        {
+          "title": "Two guardFilename policies were settings the floor already overrode",
+          "body": "`traversalPolicy` and `nullBytePolicy` accepted `allow` and `audit`, and both were overridden by the refusal floor the gate applies to a leaf filename. An operator setting either believed they had turned a class of finding down; the refusal stood regardless, and the two disagreed in the audit record rather than in the verdict. Both now accept `reject` alone, so the floor is visible in what the guard will take rather than only in what it does.\n\n`adsPolicy` keeps `allow` for the one place that honours it — `verifyExtractionPath`, for an operator deliberately extracting stream-suffixed names — and no longer accepts an `audit` that did nothing.",
+          "compliance": ["soc2"]
+        },
+        {
+          "title": "`svgzPolicy` was declared in every profile and read nowhere",
+          "body": "A gzip-compressed SVG is refused on its byte signature before any parse, and `b.guardSvg.sanitize` throws on one outright. `svgzPolicy` sat in all three profiles without being consulted, so an operator writing `svgzPolicy: \"allow\"` got a silent no-op and a reasonable belief that SVGZ now passed. The option takes `reject` alone, which is what the guard has always done."
+        },
+        {
+          "title": "Twenty opts-block lines offered a repair the guard cannot perform",
+          "body": "`b.guardUuid`, `b.guardCountry`, `b.guardTime`, `b.guardMime`, `b.guardShell`, `b.guardRegex`, `b.guardJsonpath` and `b.guardTemplate` documented `strip` on their character policies. None of them repairs a character — a UUID with a zero-width character in it is not a UUID with the character removed, it is a different identifier — so the value was refused at construction while the documentation offered it. The lines now name what the guards accept."
+        }
+      ]
+    }
+  ]
+}
