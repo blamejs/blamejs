@@ -280,6 +280,39 @@ async function testClamavInfectedVerdict() {
   check("clamav infected emits mail.scan.infected", seen.indexOf("mail.scan.infected") !== -1);
 }
 
+// The reply is trimmed of trailing CR / LF / NUL before it is classified, and
+// the trim was `/[\r\n\0]+$/g` — anchored at the end, which is exactly the
+// shape that is retried from every start position when the tail does not match.
+// Anchoring at `$` does not bound the scan; it is what makes it quadratic.
+//
+// The reply is capped, but by `maxResponseBytes`, which is 50 MiB on the strict
+// profile and 300 MiB on permissive, so the cap is not what saves this. A
+// scanner that returns a long run of newlines followed by anything else costs
+// the caller O(n^2): measured on the pattern alone, 135ms at 20k characters,
+// 538ms at 40k, 2207ms at 80k.
+//
+// The daemon is usually local and trusted, which is why this is a hardening
+// fix rather than a hole — but `b.mail.scan` dials a host and port, a scanning
+// service can be remote, and a reply parser is the wrong place to assume the
+// peer is well behaved.
+async function testClamavTrailingTrimDoesNotBacktrack() {
+  var audit = _fakeAudit();
+  var h = _clamHandle(audit);
+  // A long run of newlines that does NOT reach the end: `[\r\n\0]+$` fails from
+  // every start. A reply ending in the run would match immediately and measure
+  // nothing.
+  var hostile = "\n".repeat(60000) + "stream: OK";
+  var sock = _fakeSocket(Buffer.from(hostile, "ascii"));
+  var started = process.hrtime.bigint();
+  var rv = await h.scan(Buffer.from("body"), { _socket: sock });
+  var ms = Number(process.hrtime.bigint() - started) / 1e6;
+  check("clamav: a reply with a long interior newline run is trimmed without " +
+        "backtracking (" + ms.toFixed(0) + "ms)",
+        ms < 300, ms.toFixed(0) + "ms, verdict " + rv.verdict);
+  // And the verdict still lands, so the trim did not eat the reply it guards.
+  check("clamav: the trailing-run reply still classifies", typeof rv.verdict === "string");
+}
+
 async function testClamavErrorReplyVerdict() {
   var audit = _fakeAudit();
   var h = _clamHandle(audit);
@@ -400,6 +433,7 @@ function run(cb) {
     .then(testClamavErrorReplyVerdict)
     .then(testClamavUnrecognizedReplyFailsClosed)
     .then(testClamavCoalescedReplyDoesNotFailOpen)
+    .then(testClamavTrailingTrimDoesNotBacktrack)
     .then(testIcapErrorStatusVerdict)
     .then(testIcapBlockedStatusInfected)
     .then(testIcapMalformedResponseFailsToError)

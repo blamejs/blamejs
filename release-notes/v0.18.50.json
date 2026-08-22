@@ -1,0 +1,38 @@
+{
+  "$schema": "./schema.json",
+  "version": "0.18.50",
+  "date": "2026-08-22",
+  "headline": "Five places let someone else choose how much CPU your server spends on one match",
+  "summary": "A Sieve `:matches` wildcard, a JSONPath `match()` filter and a JSON Schema `pattern` each took a pattern from outside the framework and ran it on a backtracking engine. A Sieve rule with five wildcards spent 452ms on a 60-character Subject; a JSONPath filter spent 7 seconds on a 29-character value; a schema pattern spent 1.5 seconds on 28 characters and doubled with every two more. Two more were the same cost from the other direction, a fixed pattern against attacker-shaped input: a DKIM tag scan and a scanner-reply trim, both quadratic. All five now refuse the shape or match without backtracking.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "`b.mail.sieve` matches `:matches` wildcards without a regular expression",
+          "body": "RFC 5228 `:matches` uses `*` for any sequence and `?` for one character. Translating that into a regular expression turns each `*` into `.*`, and a backtracking engine facing several of them tries every way of dividing the subject between them. The cost is polynomial in the subject length with degree equal to the number of wildcards.\n\nMeasured on the shipped path, `b.mail.sieve.runScript` with `if header :matches \"Subject\" ...` and a subject that never supplies the pattern's trailing literal: three wildcards grew by a factor of 7.7 for each doubling of the subject, and ten wildcards — which a script author can type without meaning anything by it — did not finish on a 64-character Subject.\n\nThe `maxGas` budget did not bound it. Gas counts operations, and one match is one operation however long the engine spends inside it: five wildcards cost 452ms for three gas units.\n\nThis matters because of who writes the script. Sieve is a user-level filtering language, so in most deployments the pattern comes from the mailbox owner rather than from you. The wildcard is now matched directly against the value, walking both strings with a single remembered wildcard position, so the work is bounded by their lengths rather than by how the pattern is shaped. Every pattern decides exactly as it did before, checked across 42,976 pattern/subject/case combinations against the previous implementation.\n\nOne deliberate change of behaviour comes with it. `:comparator \"i;ascii-casemap\"` now folds US-ASCII `A-Z` only, which is what RFC 4790 §9.2 defines it as; the regular expression it replaced carried JavaScript's `i` flag and folded the whole of Unicode. The narrower fold is also the only one that preserves length: `\"İ\".toLowerCase()` is two UTF-16 units, so folding a subject up front shifts every position after it and leaves `?`, which matches exactly one character, facing two. A script relying on non-ASCII case folding under `i;ascii-casemap` was relying on something the comparator does not promise.",
+          "compliance": ["soc2"]
+        },
+        {
+          "title": "`b.jsonPath` refuses a catastrophic `match()` or `search()` pattern",
+          "body": "The second argument of an RFC 9535 `match()` or `search()` filter is an I-Regexp (RFC 9485), which is a general regular-expression language: a filter can carry `(a+)+$` as easily as `a+`. `$[?match(@.name, \"(a+)+$\")]` against a 29-character value that fails the match took 7 seconds.\n\nThe node ceilings on descendant walks and running nodelists never saw it, because the whole cost is inside one match on one node.\n\nThe pattern is now screened with `b.guardRegex.assertSafe` before it can run, which is what the framework already does wherever else it compiles a caller-supplied pattern — `b.flag` targeting conditions and MCP tool schemas both go through the same screen. A refusal raises `json-path/unsafe-pattern` rather than being folded into a false test result: a malformed I-Regexp yields false per RFC 9535 §2.4.6, and a refused one must not wear those clothes, or the caller is left with a filter that silently matches nothing.",
+          "compliance": ["soc2"]
+        },
+        {
+          "title": "A folded DKIM-Signature header made the submission listener spend its CPU on a trim",
+          "body": "`b.mail.server.submission` reads the `d=` tag out of each DKIM-Signature header, and trimmed each tag with `/^\\s+|\\s+$/`. That is the quadratic trim: the `\\s+$` alternative is retried from every start position when the whitespace run does not reach the end of the string.\n\nThe tag was believed to be bounded by the line cap. It is not, because the header is unfolded first. Every empty continuation line contributes one space to the joined value, so the lever is the number of folded lines rather than the length of any one of them, and the real bound is `maxMessageBytes` — 50 MiB by default. An authenticated client sending 40,000 empty continuation lines, a 120 KB message, produced a 40,000-character run and 446ms of backtracking on one header. Three megabytes would have bought minutes.\n\nThe trim is now `String.prototype.trim`, which decides identically (the same WhiteSpace and LineTerminator set as `\\s`) and does not backtrack.",
+          "compliance": ["soc2"]
+        },
+        {
+          "title": "A virus-scanner reply with a long newline run cost the same shape",
+          "body": "The ClamAV INSTREAM reply is trimmed of trailing CR / LF / NUL before it is classified, and the trim was `/[\\r\\n\\0]+$/`. Anchoring at `$` does not stop the engine retrying from every start position; it is what makes the scan quadratic. A reply carrying a long interior run of newlines took 1.2 seconds through the real scan path.\n\nThe reply is capped, but by `maxResponseBytes`, which is 50 MiB on the strict profile and 300 MiB on permissive, so the cap was not what stood between a reply and the cost. The trim now walks backwards from the end.\n\nA local daemon is normally trusted, which makes this hardening rather than a hole — but `b.mail.scan` dials a host and a port, a scanning service can be remote, and a reply parser is the wrong place to assume the peer is well behaved."
+        },
+        {
+          "title": "`b.jsonSchema` screens `pattern` and `patternProperties` when the schema compiles",
+          "body": "A `pattern` keyword is compiled and then run against the instance, so the schema author decides what each validation costs. `(a+)+$` against a 28-character string that fails took 1.5 seconds, doubling with every two characters added.\n\nThe reasoning that left this unscreened was that a schema is operator-supplied and therefore trusted. The framework does not hold that assumption elsewhere: `b.mcp` already screens the `pattern` in a tool schema for exactly this shape before matching it against request input. A schema arrives from a registry, a tool manifest, an upload or a config file as readily as from your own source.\n\nEvery pattern in a schema is now screened, and screened at `b.jsonSchema.compile` rather than on the first instance that reaches it — a bad schema should be refused while you are still looking at the schema, not on a request, through a validator you have already been handed and have no reason to doubt.\n\nThe screen reads the compiled expression rather than the pattern text, which is what `b.safeJson` does with the same keyword and for the reason recorded there: the flags decide what the source means, so a text-only screen reads `(a|A)+` as two disjoint branches where the engine sees one branch twice.",
+          "compliance": ["soc2"]
+        }
+      ]
+    }
+  ]
+}

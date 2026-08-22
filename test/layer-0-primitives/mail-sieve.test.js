@@ -433,7 +433,98 @@ function testCreateAuditThrowDropSilent() {
     rv.actions[0].kind === "keep");
 }
 
+// A Sieve script is written by the mailbox owner, not the operator: RFC 5228 is
+// a user-level filtering language, so `:matches` carries a pattern the server
+// did not author and runs it against every message that arrives.
+//
+// `*` means "any sequence", and translating it to a regex `.*` hands a
+// backtracking engine one `.*` per star. Every additional star multiplies the
+// number of ways the run can be divided, so the cost is polynomial in the
+// subject length with degree equal to the star count — on a subject that never
+// supplies the final literal, so the engine has to try all of them.
+//
+// The gas budget does not bound this: gas counts operations, and one match is
+// one operation however long the engine spends inside it.
+//
+// Measured as GROWTH, because the claim is about the shape of the curve and a
+// wall-clock budget is a claim about the machine. The one-star control is
+// linear and shows the harness can tell the two apart.
+function testWildcardMatchDoesNotBacktrack() {
+  function best(fn) {
+    var lowest = Infinity;
+    for (var i = 0; i < 3; i += 1) {
+      var t0 = process.hrtime.bigint();
+      try { fn(); } catch (_e) { /* a refusal is a fine answer; a hang is not */ }
+      var ms = Number(process.hrtime.bigint() - t0) / 1e6;
+      if (ms < lowest) lowest = ms;
+    }
+    return lowest;
+  }
+  function runMatch(pattern, subjectLen) {
+    var script = 'require ["fileinto"];\n' +
+                 'if header :matches "Subject" "' + pattern + '" { fileinto "X"; }';
+    var env = { headers: [{ name: "Subject", value: "a".repeat(subjectLen) }] };
+    return best(function () { b.mail.sieve.runScript(script, env); });
+  }
+
+  // Control: one star cannot be superlinear, so this reads as a sanity check on
+  // the measurement rather than as an assertion about the code. It carries the
+  // same noise floor as the real check below — a one-star match on 4000
+  // characters finishes in well under a millisecond, and a ratio taken between
+  // two sub-millisecond readings is jitter, not growth. Under a parallel run it
+  // read x3.9 on a matcher that cannot backtrack at all.
+  var controlLarge = runMatch("*b", 4000);
+  var control = controlLarge / Math.max(runMatch("*b", 2000), 0.05);
+
+  // Three stars against a subject with no trailing `b`. A backtracking
+  // translation is cubic here, so doubling the subject costs about eight times
+  // as much; a matcher that does not backtrack stays near two.
+  var small = runMatch("*a*a*b", 400);
+  var large = runMatch("*a*a*b", 800);
+  var ratio = large / Math.max(small, 0.05);
+
+  check("sieve :matches — the one-star control scales linearly (x" +
+        control.toFixed(1) + " at " + controlLarge.toFixed(2) + "ms)",
+        controlLarge < 2 || control < 3,
+        "control x" + control.toFixed(1) + " at " + controlLarge.toFixed(2) + "ms");
+  check("sieve :matches — doubling the subject does not more than double the " +
+        "work at three stars (x" + ratio.toFixed(1) + ", " + large.toFixed(1) + "ms)",
+        large < 2 || ratio < 3, "x" + ratio.toFixed(1) + " at " + large.toFixed(1) + "ms");
+
+  // `?` matches exactly one character, and folding must not change how many
+  // there are. `"İ".toLowerCase()` is two UTF-16 units, so a fold applied
+  // to the whole subject would leave a one-character Subject looking like two
+  // and `?` failing to match it. `i;ascii-casemap` folds only US-ASCII A-Z
+  // (RFC 4790 §9.2), which is length-preserving by construction.
+  var dotted = "İ";
+  var oneChar = b.mail.sieve.runScript(
+    'require ["fileinto"];\nif header :matches :comparator "i;ascii-casemap" "Subject" "?" { fileinto "X"; }',
+    { headers: [{ name: "Subject", value: dotted }] });
+  check("sieve :matches — `?` still matches a single character whose lowercase " +
+        "form is longer than it is",
+        oneChar.actions[0].kind === "fileinto", oneChar.actions[0].kind);
+
+  // And the shape an author can type without trying: ten stars on a short
+  // subject. Under a backtracking translation this does not return.
+  var ten = runMatch("*a*a*a*a*a*a*a*a*a*b", 64);
+  check("sieve :matches — ten stars on a 64-character subject stays bounded (" +
+        ten.toFixed(1) + "ms)", ten < 250, ten.toFixed(1) + "ms");
+
+  // The property that actually changed: cost no longer tracks the WILDCARD
+  // COUNT. The translation was polynomial with degree equal to that count, so
+  // each extra `*` multiplied the work by the subject length again. Adding
+  // twenty more wildcards to the same pattern should now cost about the same.
+  var three = runMatch("*a*a*b", 512);
+  var twenty = runMatch("*a".repeat(20) + "*b", 512);
+  var byCount = twenty / Math.max(three, 0.05);
+  check("sieve :matches — cost does not track the number of wildcards (x" +
+        byCount.toFixed(1) + " for 20 versus 3)",
+        twenty < 25 || byCount < 8, "x" + byCount.toFixed(1) +
+        " (" + three.toFixed(1) + "ms -> " + twenty.toFixed(1) + "ms)");
+}
+
 function run() {
+  testWildcardMatchDoesNotBacktrack();
   testSurface();
   testImplicitKeep();
   testFileinto();

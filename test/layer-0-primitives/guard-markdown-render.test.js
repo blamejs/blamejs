@@ -366,9 +366,17 @@ function testHostileInputIsBoundedNotFatal() {
   var slow = shapes.filter(function (s) {
     var small = _millis(function () { render(s.build(s.n)); });
     var large = _millis(function () { render(s.build(s.n * 2)); });
-    // Below a millisecond the clock is coarser than the difference, and the
-    // ratio stops meaning anything; a scan that fast is not the attack.
-    if (large < 2) return false;
+    // Finishing well inside the floor IS the answer, and is the usual path: a
+    // quadratic delimiter scan at these sizes takes seconds, so 25ms at 20-50k
+    // delimiters already rules it out. Measured standalone the four shapes run
+    // 0.6ms to 3.4ms at their largest size.
+    //
+    // The ratio below is the fallback for a machine slow or loaded enough to
+    // cross that floor, where an absolute number stops meaning anything and the
+    // growth between two sizes still does. Taking the ratio unconditionally is
+    // what flaked: under SMOKE_PARALLEL=64 a run gets preempted between the two
+    // samples and reads superlinear on an implementation that is not.
+    if (large < 25) return false;
     return large / Math.max(small, 0.05) > 3;
   }).map(function (s) { return s.label; });
   check("render: doubling a repeated-delimiter input does not more than double the work" +

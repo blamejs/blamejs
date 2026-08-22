@@ -363,7 +363,68 @@ function testFunctionArgLiterals() {
   check("malformed number literal ('-' with no digit) rejected", threw);
 }
 
+// `match()` and `search()` take an I-Regexp (RFC 9485) argument, which is a
+// general regular-expression language: a caller can write `(a+)+$` in a filter
+// as easily as `a+`. Translating it and running it on a backtracking engine
+// puts the cost of that choice on the server, exponentially — and the node
+// caps above do not see it, because the whole blow-up happens inside one
+// `.test()` on one node.
+//
+// The framework already screens for this shape in the two other places it
+// compiles a caller-supplied pattern, `b.flag` targeting conditions and MCP
+// tool schemas, both through `b.guardRegex.assertSafe`. This holds JSONPath to
+// the same rule.
+//
+// Driven with a subject that FAILS the match: `(a+)+$` against a run of `a`
+// that ends in something else. A subject that matches returns on the first
+// path through and hides the bug entirely.
+function testFilterRegexIsScreenedForRedos() {
+  var doc = [{ name: "a".repeat(28) + "!" }];
+  var refused = null;
+  var started = process.hrtime.bigint();
+  try { b.jsonPath.query(doc, '$[?match(@.name, "(a+)+$")]'); }
+  catch (e) { refused = e; }
+  var ms = Number(process.hrtime.bigint() - started) / 1e6;
+
+  check("jsonPath: a catastrophic filter pattern is refused rather than run" +
+        (refused ? "" : " (ran for " + ms.toFixed(0) + "ms)"),
+        refused !== null, refused ? String(refused.code) : ms.toFixed(0) + "ms");
+
+  // The refusal has to be the screen, not an accident of parsing: an ordinary
+  // pattern must still work, or this check would pass on a guard that refuses
+  // every filter.
+  var ok = b.jsonPath.query([{ name: "abc" }], '$[?match(@.name, "a.*")]');
+  check("jsonPath: an ordinary filter pattern still matches",
+        Array.isArray(ok) && ok.length === 1);
+  var searchOk = b.jsonPath.query([{ name: "xabcx" }], '$[?search(@.name, "abc")]');
+  check("jsonPath: search() still matches", Array.isArray(searchOk) && searchOk.length === 1);
+
+  // search() compiles through the same translator, so it needs the same screen.
+  var searchRefused = null;
+  try { b.jsonPath.query(doc, '$[?search(@.name, "(a+)+$")]'); }
+  catch (e2) { searchRefused = e2; }
+  check("jsonPath: search() is screened too", searchRefused !== null);
+
+  // The screen's verdict is cached per pattern so a filter over a long nodelist
+  // does not re-analyse the same literal for every candidate. A cached REFUSAL
+  // has to stay a refusal — caching only the acceptances would let the second
+  // call through.
+  var again = null;
+  try { b.jsonPath.query(doc, '$[?match(@.name, "(a+)+$")]'); }
+  catch (e3) { again = e3; }
+  check("jsonPath: the refusal holds on a repeat query, not just the first",
+        again !== null && again.code === "json-path/unsafe-pattern",
+        again ? String(again.code) : "accepted");
+
+  // And an accepted pattern still matches on a repeat, so the cache is not
+  // handing back something stale or empty.
+  var repeat = b.jsonPath.query([{ name: "abc" }], '$[?match(@.name, "a.*")]');
+  check("jsonPath: an accepted pattern still matches on a repeat query",
+        Array.isArray(repeat) && repeat.length === 1);
+}
+
 async function run() {
+  testFilterRegexIsScreenedForRedos();
   testSurface();
   testCts();
   testFeatures();

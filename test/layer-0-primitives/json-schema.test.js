@@ -342,7 +342,79 @@ function testFormatAssertions() {
   check("unknown format is annotation-valid", b.jsonSchema.isValid({ format: "totally-unknown" }, "x", af));
 }
 
+// A `pattern` keyword is compiled and then run against the instance, so the
+// schema author picks how much CPU each validation costs. `(a+)+$` against a
+// run of `a` that ends in anything else measured 1.5 seconds at 28 characters,
+// doubling with every two more.
+//
+// The marker on the compile site used to read "the JSON Schema pattern is part
+// of the (operator-trusted) schema, not instance data". The framework does not
+// actually hold that assumption elsewhere: b.mcp screens the pattern in a tool
+// schema for exactly this shape before matching it against request input. A
+// schema arrives from a registry, a tool manifest, an upload or a config file
+// as readily as from the operator's own source.
+//
+// Driven with a subject that FAILS: one that matches returns on the first path
+// through and hides the blow-up entirely.
+function testPatternIsScreenedForRedos() {
+  // Control first — the `pattern` keyword has to be deciding something, or a
+  // guard that refused every schema would pass this test.
+  var plain = { type: "string", pattern: "^abc$" };
+  check("jsonSchema: control — pattern accepts its match",
+        b.jsonSchema.isValid(plain, "abc") === true);
+  check("jsonSchema: control — pattern rejects a non-match",
+        b.jsonSchema.isValid(plain, "zzz") === false);
+
+  var hostile = { type: "string", pattern: "(a+)+$" };
+  var subject = "a".repeat(28) + "!";
+  var refused = null;
+  var started = process.hrtime.bigint();
+  try { b.jsonSchema.isValid(hostile, subject); }
+  catch (e) { refused = e; }
+  var ms = Number(process.hrtime.bigint() - started) / 1e6;
+
+  check("jsonSchema: a catastrophic pattern is refused rather than run" +
+        (refused ? "" : " (ran for " + ms.toFixed(0) + "ms)"),
+        refused !== null, refused ? String(refused.code) : ms.toFixed(0) + "ms");
+
+  // compile() is the other door into the same cache and must refuse there too,
+  // where the author is still looking, rather than on the first instance.
+  var compileRefused = null;
+  try { b.jsonSchema.compile({ type: "string", pattern: "(b+)+$" }); }
+  catch (e2) { compileRefused = e2; }
+  check("jsonSchema: compile() refuses it as well", compileRefused !== null);
+
+  // A schema also carries DATA. `const`, `enum`, `default` and `examples` hold
+  // instance values, so a `pattern` key inside one of them is a data key that
+  // happens to be spelled like a keyword — refusing the schema for the shape of
+  // its own example data would break a legal schema for no gain.
+  var dataNotSchema = {
+    type: "object",
+    properties: {
+      cfg: { const: { pattern: "(a+)+$" } },
+      alt: { enum: [{ patternProperties: { "(b+)+$": true } }] },
+      dflt: { type: "object", default: { pattern: "(c+)+$" } },
+    },
+  };
+  var falseRefusal = null;
+  try { b.jsonSchema.compile(dataNotSchema); }
+  catch (e3) { falseRefusal = e3; }
+  check("jsonSchema: a `pattern` inside const / enum / default is data, not a keyword" +
+        (falseRefusal ? " (refused: " + falseRefusal.code + ")" : ""),
+        falseRefusal === null);
+
+  // And a pattern in a real subschema position is still reached, or the
+  // narrowing above would have discharged the finding by looking away.
+  var nested = { type: "object", properties: { inner: { type: "string", pattern: "(d+)+$" } } };
+  var nestedRefused = null;
+  try { b.jsonSchema.compile(nested); }
+  catch (e4) { nestedRefused = e4; }
+  check("jsonSchema: a pattern nested under `properties` is still screened",
+        nestedRefused !== null);
+}
+
 async function run() {
+  testPatternIsScreenedForRedos();
   testSurface();
   testAssertions();
   testArrays();
