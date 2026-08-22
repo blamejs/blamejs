@@ -1179,6 +1179,34 @@ async function testFetchAndVerifyMarkLogotypeSvgBehindPreamble() {
         rv.mark && typeof rv.mark.svg);
 }
 
+// The window is counted in CHARACTERS, so it has to be applied to decoded text
+// rather than to the buffer. Slicing the buffer first counts bytes, and a
+// preamble carrying non-ASCII text reaches the limit sooner than its character
+// count suggests: the comment below is 310 characters but 610 bytes, which puts
+// `<svg` comfortably inside a 512-character window and outside a 512-byte one.
+// An XML comment is free text, so this is a shape a real logo can have.
+async function testFetchAndVerifyMarkLogotypeSvgBehindMultibytePreamble() {
+  var comment = "<!-- " + "é".repeat(300) + " -->\n";
+  var svgStr = '<?xml version="1.0" encoding="UTF-8"?>\n' + comment +
+               '<svg version="1.2" baseProfile="tiny-ps" viewBox="0 0 1 1"></svg>';
+  var at = svgStr.indexOf("<svg");
+  var atByte = Buffer.byteLength(svgStr.slice(0, at), "utf8");
+  check("fetchAndVerifyMark: the fixture puts <svg inside the character window " +
+        "but outside the byte window (char " + at + ", byte " + atByte + ")",
+        at < 512 && atByte > 512, "char " + at + ", byte " + atByte);
+
+  var chain = await _generateTestChain({ logoSvg: svgStr });
+  var rv = await b.mail.bimi.fetchAndVerifyMark({
+    domain:          "example.com",
+    vmcUrl:          "https://example.com/cert.pem",
+    trustAnchorsPem: chain.rootPem,
+    httpClient:      _stubHttpClient(chain.leafPem),
+  });
+  check("fetchAndVerifyMark: an SVG behind a multibyte preamble is still extracted",
+        rv.ok === true && typeof rv.mark.svg === "string" &&
+        rv.mark.svg.indexOf("<svg") !== -1, rv.mark && typeof rv.mark.svg);
+}
+
 // The widened window must not turn every leaf into a logo. A document that
 // mentions `<svg` nowhere is still not one, however long it is.
 async function testFetchAndVerifyMarkLogotypeLongNonSvgStillNull() {
@@ -1741,6 +1769,7 @@ async function run() {
   await testFetchAndVerifyMarkNoSan();
   await testFetchAndVerifyMarkLogotypeSvg();
   await testFetchAndVerifyMarkLogotypeSvgBehindPreamble();
+  await testFetchAndVerifyMarkLogotypeSvgBehindMultibytePreamble();
   await testFetchAndVerifyMarkLogotypeLongNonSvgStillNull();
   await testFetchAndVerifyMarkLogotypeNonSvgLeafThenSvg();
   await testFetchAndVerifyMarkLogotypeNoSvg();
