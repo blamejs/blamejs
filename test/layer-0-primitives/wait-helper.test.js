@@ -50,35 +50,47 @@ async function testAFalsyThrowIsStillAThrow() {
     msg !== null && /last predicate threw/.test(msg));
 }
 
-async function testAThrowThatStoppedIsNotReportedAsTheReason() {
-  // Threw throughout the polling loop, then answered cleanly. Reporting the old
-  // exception as "last predicate threw" sends the reader after something the
-  // predicate has stopped doing.
+async function testAThrowDuringPollingIsNotTheReason() {
+  // Threw while polling, answered when asked at the deadline. Reporting the
+  // old exception sends the reader after something the predicate has stopped
+  // doing.
   //
-  // Timed rather than counted, deliberately: it has to be the FINAL attempt
-  // after the deadline that answers, because the loop already clears the state
-  // on every answer and a count-based fixture only ever exercises that path —
-  // it passes whether or not the final attempt clears anything.
-  var start = Date.now();
+  // Deterministic by construction rather than by timing: the LAST call answers,
+  // whenever that happens to be. An earlier version keyed the switch on elapsed
+  // time so the clean answer would land specifically after the deadline, which
+  // is not something a wall clock can be made to promise — under preemption the
+  // switch could fall inside the loop instead, and the case would pass without
+  // exercising what it names. What actually has to hold is simpler: a throw
+  // that is not the last thing the predicate did must not be reported.
   var calls = 0;
-  var answeredAfterDeadline = false;
   var msg = await timeoutMessageOf(function () {
     calls += 1;
-    if (Date.now() < start + 60) throw new Error("a transient blow-up");
-    answeredAfterDeadline = true;
+    if (calls === 1) throw new Error("a transient blow-up");
     return false;
   });
-  check("the predicate threw during the loop and answered after it",
-    calls > 1 && answeredAfterDeadline === true);
-  check("a throw that stopped is not reported as the reason for the timeout",
+  check("the predicate was polled more than once", calls > 1);
+  check("a throw that is not the last thing the predicate did is not reported",
     msg !== null && !/a transient blow-up/.test(msg));
+}
+
+async function testAThrowAtTheDeadlineIsTheReason() {
+  // The other side of the same rule, and the one that keeps the case above from
+  // passing for the wrong reason: a predicate still throwing when the wait gives
+  // up IS reported. Without this, a helper that simply never mentioned an
+  // exception would satisfy the test above.
+  var msg = await timeoutMessageOf(function () {
+    throw new Error("still broken at the deadline");
+  });
+  check("a predicate still throwing at the deadline is named",
+    msg !== null && /still broken at the deadline/.test(msg));
 }
 
 async function run() {
   await testPlainTimeoutSaysNothingAboutThrowing();
   await testAThrowIsNamed();
   await testAFalsyThrowIsStillAThrow();
-  await testAThrowThatStoppedIsNotReportedAsTheReason();
+  await testAThrowDuringPollingIsNotTheReason();
+  await testAThrowAtTheDeadlineIsTheReason();
 
   if (failed > 0) {
     console.error("\n" + failed + " check(s) FAILED, " + passed + " passed");

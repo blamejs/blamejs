@@ -70,30 +70,33 @@ async function waitUntil(predicate, opts) {
   var intervalMs = typeof opts.intervalMs === "number" ? opts.intervalMs : DEFAULT_INTERVAL_MS;
   var label = opts.label || "condition";
   var deadline = Date.now() + timeoutMs;
-  // Tracked as a flag, not by the truthiness of what was thrown: a predicate
-  // that throws null or "" has still thrown, and naming it in the timeout is
-  // the difference between "the condition never came true" and "the condition
-  // could not be evaluated".
-  var threw = false;
-  var lastError = null;
+  // A throw DURING polling is not the verdict. The predicate is being asked
+  // repeatedly precisely because the thing it looks at is still settling, and
+  // one that raises early and answers later has not failed — reporting that
+  // exception as the reason for the timeout sends the reader after something
+  // the predicate has stopped doing. So the loop swallows a throw as "not yet"
+  // and keeps nothing from it.
   while (Date.now() < deadline) {
     var rv;
-    try { rv = await predicate(); threw = false; lastError = null; }
-    catch (e) { threw = true; lastError = e; rv = false; }
+    try { rv = await predicate(); }
+    catch (_notYet) { rv = false; }
     if (rv) return rv;
     await new Promise(function (r) { setTimeout(r, intervalMs); });
   }
-  // One last try right at the deadline — gives a final shot to a
-  // predicate whose latency-to-truthy is exactly timeoutMs.
+  // One last try right at the deadline — gives a final shot to a predicate
+  // whose latency-to-truthy is exactly timeoutMs, and this is the attempt the
+  // diagnostic speaks for: whether the predicate was STILL failing to evaluate
+  // when the wait gave up.
+  //
+  // Tracked as a flag, not by the truthiness of what was thrown: a predicate
+  // that throws null or "" has still thrown, and naming it is the difference
+  // between "the condition never came true" and "the condition could not be
+  // evaluated".
+  var threw = false;
+  var lastError = null;
   try {
     var finalRv = await predicate();
     if (finalRv) return finalRv;
-    // It answered. Whatever a previous attempt threw is no longer what
-    // happened last, and the timeout must not report a stale throw as the
-    // reason — that sends the reader after an exception the predicate has
-    // since stopped raising. The loop clears it on every answer; so does this.
-    threw = false;
-    lastError = null;
   } catch (e) { threw = true; lastError = e; }
   var msg = "waitUntil timeout: " + label + " (after " + timeoutMs + "ms)";
   if (threw) msg += " — last predicate threw: " + ((lastError && lastError.message) || String(lastError));
