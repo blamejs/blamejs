@@ -531,6 +531,109 @@ async function testDomainDefinitionAgreesAcrossPrimitives() {
         "admitted: " + mailAdmitted.map(function (h) { return JSON.stringify(h); }).join(", "));
 }
 
+// A name this function returns has to be a name that can exist.
+//
+// `canonicalDomain` enforced the 253-octet TOTAL bound and not the 63-octet
+// per-LABEL bound, though RFC 1035 §2.3.4 states both and the rest of the
+// framework — guardDomain, guardEmail, mailAuth — enforces both. So
+// `organizationalDomain` handed back a 64-character label: a name that cannot
+// be put on the wire, indistinguishable to the caller from one that can. That
+// is the same failure the 253 check was added for, which its own comment
+// describes as handing the caller "a name that cannot be put on the wire, and a
+// caller cannot tell".
+//
+// Measured on the CONVERTED form, like the 253 bound, because an
+// internationalized label grows into its `xn--` form: a 30-character label of
+// non-ASCII is well under 63 going in and can be over it coming out.
+function testLabelsAreBoundedLikeTheWholeName() {
+  var L63 = new Array(64).join("a");    // 63
+  var L64 = new Array(65).join("a");    // 64
+
+  check("canonicalDomain: a 63-octet label is accepted",
+        b.publicSuffix.canonicalDomain(L63 + ".com") === L63 + ".com");
+  check("canonicalDomain: a 64-octet label is refused",
+        b.publicSuffix.canonicalDomain(L64 + ".com") === "");
+
+  // The consumers must not hand one back either. They REFUSE rather than
+  // returning "", which is how the existing 253-octet bound already surfaces
+  // through them — canonicalDomain swallows and answers "", the lookups throw
+  // `public-suffix/invalid-domain`. The label bound joins that contract rather
+  // than inventing a second one.
+  function _codeOf(fn) {
+    try { fn(); return null; } catch (e) { return e.code || e.name; }
+  }
+  check("organizationalDomain: an over-long label is refused",
+        _codeOf(function () { b.publicSuffix.organizationalDomain(L64 + ".com"); }) ===
+          "public-suffix/invalid-domain");
+  check("publicSuffix: an over-long label is refused",
+        _codeOf(function () { b.publicSuffix.publicSuffix(L64 + ".com"); }) ===
+          "public-suffix/invalid-domain");
+  // ...and the same shape one octet shorter is not, so the bound is the label
+  // length and not the lookup refusing long names generally.
+  check("organizationalDomain: a 63-octet label is still looked up",
+        _codeOf(function () { b.publicSuffix.organizationalDomain(L63 + ".com"); }) === null);
+
+  // A label that is legal going IN and over the bound once converted to its
+  // A-label form must be refused on what it becomes, not on what was typed.
+  var wide = "";
+  for (var i = 0; i < 30; i += 1) wide += String.fromCharCode(0x00FC);   // "ü" x30
+  var converted = b.publicSuffix.canonicalDomain(wide + ".com");
+  check("canonicalDomain: an internationalized label is measured after conversion" +
+        (converted ? " (" + converted.split(".")[0].length + " octets)" : " (refused)"),
+        converted === "" || converted.split(".")[0].length <= 63);
+
+  // The control: an ordinary name still resolves, so this is not a function
+  // that started refusing everything.
+  check("canonicalDomain: an ordinary name is unaffected",
+        b.publicSuffix.canonicalDomain("www.example.co.uk") === "www.example.co.uk");
+}
+
+// A canonical DOMAIN is letters, digits, hyphens and dots — plus underscore,
+// which DNS service labels use.
+//
+// `domainToASCII` is a UTS #46 mapper, not a hostname validator: it passes
+// through 17 of the 31 non-LDH characters tested, so `ex*ample.com`,
+// `ex(ample.com` and `ex"ample.com` came back as canonical domains. A caller
+// then compares that against a cookie domain, an SPF record or a residency
+// table, and the answer is a name no resolver will ever return.
+//
+// Underscore is deliberately still accepted. `_dmarc`, `_domainkey`,
+// `_acme-challenge` and `_sip._tcp` are real DNS names, and the framework
+// already treats the underscore as a POLICY question — guardDomain's
+// `underscorePolicy` rejects it at strict and allows it at permissive. This
+// function normalizes; it does not judge.
+function testANonLdhCharacterIsNotADomain() {
+  var REFUSED = ["*", "!", "$", "&", "'", "(", ")", "+", ",", ";", "=",
+                 "~", "`", "{", "}", '"', "%", "|", "^", "[", "]"];
+  var accepted = REFUSED.filter(function (c) {
+    return b.publicSuffix.canonicalDomain("ex" + c + "ample.com") !== "";
+  });
+  check("canonicalDomain: a non-LDH character is not a domain" +
+        (accepted.length ? " (accepted " + JSON.stringify(accepted) + ")" : ""),
+        accepted.length === 0);
+
+  // Underscore stays, because a DNS service label is a real name.
+  check("canonicalDomain: an underscore service label is still a domain",
+        b.publicSuffix.canonicalDomain("_dmarc.example.com") === "_dmarc.example.com");
+  check("canonicalDomain: a multi-part service label is still a domain",
+        b.publicSuffix.canonicalDomain("_sip._tcp.example.com") === "_sip._tcp.example.com");
+
+  // The controls: every LDH shape a real name uses must still resolve, or this
+  // passes for a function that refuses more than it should.
+  var KEEP = ["example.com", "a-b.example.com", "xn--mnchen-3ya.example",
+              "123.example.com", "a.b.c.d.example.com", "EXAMPLE.COM"];
+  var dropped = KEEP.filter(function (d) { return b.publicSuffix.canonicalDomain(d) === ""; });
+  check("canonicalDomain: ordinary LDH names still resolve" +
+        (dropped.length ? " (dropped " + JSON.stringify(dropped) + ")" : ""),
+        dropped.length === 0);
+
+  // And an internationalized name still converts rather than being refused for
+  // the non-ASCII it started with.
+  var muc = "m" + String.fromCharCode(0x00FC) + "nchen.example";
+  check("canonicalDomain: an internationalized name still converts",
+        b.publicSuffix.canonicalDomain(muc) === "xn--mnchen-3ya.example");
+}
+
 async function run() {
   testExactMatch();
   testInputItselfIsPublicSuffix();
@@ -548,6 +651,8 @@ async function run() {
   testCaseInsensitive();
   testCanonicalDomain();
   testCanonicalDomainMeasuresTheConvertedForm();
+  testLabelsAreBoundedLikeTheWholeName();
+  testANonLdhCharacterIsNotADomain();
   await testDomainDefinitionAgreesAcrossPrimitives();
 }
 
