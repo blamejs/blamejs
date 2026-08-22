@@ -523,7 +523,7 @@ async function testPutStringAndNonBufferBodies() {
 }
 
 async function run() {
-  try {
+  await helpers.withDrain("sigv4-list-response-shapes", async function () {
     await testListPaginationParamsReachTheWire();
     await testListMissingRootElementIsEmptyNotThrow();
     await testListEntryOptionalFieldsOmitted();
@@ -539,9 +539,7 @@ async function run() {
     await testGetResponseNon304StillRejects();
     await testGetStreamDeliversBytesAndSurfacesErrors();
     await testPutStringAndNonBufferBodies();
-  } finally {
-    await helpers.drainOpenHandles("sigv4-list-response-shapes");
-  }
+  });
 }
 
 module.exports = { run: run };

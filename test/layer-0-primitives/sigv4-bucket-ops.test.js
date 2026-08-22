@@ -2164,7 +2164,7 @@ async function testSigv4KeyNullByteViaConsumerPath() {
 }
 
 async function run() {
-  try {
+  await helpers.withDrain("sigv4-bucket-ops", async function () {
     testSurface();
     testCanonicalPathSingleEncodeForS3();
     testFactoryValidation();
@@ -2226,9 +2226,7 @@ async function run() {
     testSigv4PostPolicy();
     testSigv4PostPolicySessionContentTypeAndMaxBytes();
     await testSigv4KeyNullByteViaConsumerPath();
-  } finally {
-    await helpers.drainOpenHandles("sigv4-bucket-ops");
-  }
+  });
 }
 
 module.exports = { run: run };

@@ -95,8 +95,7 @@ function _push(idToken, bodyAuthReqId) {
 }
 
 async function run() {
-  try { await _runTests(); }
-  finally { await helpers.drainOpenHandles("ciba-authreqid-binding"); }
+  await helpers.withDrain("ciba-authreqid-binding", _runTests);
 }
 
 // pollToken drives the poll delivery mode against a scripted /token

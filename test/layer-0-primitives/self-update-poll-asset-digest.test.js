@@ -78,12 +78,10 @@ async function testPollDigestNullWhenAbsent() {
 }
 
 async function run() {
-  try {
+  await helpers.withDrain("self-update-poll-asset-digest", async function () {
     await testPollExposesAssetDigest();
     await testPollDigestNullWhenAbsent();
-  } finally {
-    await helpers.drainOpenHandles("self-update-poll-asset-digest");
-  }
+  });
 }
 
 module.exports = { run: run };

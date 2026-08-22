@@ -1600,7 +1600,7 @@ async function run() {
   await testBranchExtras();
 
   var wtt = helpers.withTestTimeout;
-  try {
+  await helpers.withDrain("mail-dav", async function () {
     testCreateOpts();
     await wtt("actor resolution",   testActorResolution);
     await wtt("caldav dispatch",    testCaldavDispatch);
@@ -1615,9 +1615,7 @@ async function run() {
     await wtt("carddav dispatch",   testCarddavDispatch);
     await wtt("carddav writes",     testCarddavWrites);
     await wtt("discovery",          testDiscovery);
-  } finally {
-    await helpers.drainOpenHandles("mail-dav");
-  }
+  });
 }
 
 module.exports = { run: run };

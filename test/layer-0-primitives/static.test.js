@@ -2012,13 +2012,14 @@ async function testBandwidthChargeFailureSwallowed() {
   }
 }
 
-async function _drainOpenHandles() {
+// The file's own cleanup, handed to withDrain so it runs inside the structure
+// that keeps the body's error rather than in a `finally` that would replace it.
+function _teardown() {
   http.globalAgent.destroy();
-  await helpers.drainOpenHandles("static");
 }
 
 async function run() {
-  try {
+  await helpers.withDrain("static", async function () {
     await testConditionalEntityTagPrecedence();
     await testForceAttachmentDefaultOff();
     await testForceAttachmentOnHtml();
@@ -2106,9 +2107,7 @@ async function run() {
     await testBlankHeadersServes();
     await testIdleTimeoutTearsDownStalledStream();
     await testBandwidthChargeFailureSwallowed();
-  } finally {
-    await _drainOpenHandles();
-  }
+  }, _teardown);
 }
 
 module.exports = { run: run };

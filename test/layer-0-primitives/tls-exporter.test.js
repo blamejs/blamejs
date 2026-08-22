@@ -158,23 +158,20 @@ function testLiveHandshake() {
   });
 }
 
-async function _drainOpenHandles(handles) {
-  if (handles) {
-    if (handles.client) { try { handles.client.destroy(); } catch (_e) { /* already torn down */ } }
-    if (handles.server) { try { handles.server.close(); } catch (_e) { /* already closed */ } }
-  }
-  await helpers.drainOpenHandles("tls-exporter");
-}
-
 async function run() {
+  // `handles` is assigned by the body and read by the teardown, so the teardown
+  // closes over it rather than taking it as a parameter — the body may throw
+  // before the assignment, which is exactly when the teardown still has to run.
   var handles = null;
-  try {
+  await helpers.withDrain("tls-exporter", async function () {
     testSurface();
     testValidationPaths();
     handles = await testLiveHandshake();
-  } finally {
-    await _drainOpenHandles(handles);
-  }
+  }, function () {
+    if (!handles) return;
+    if (handles.client) { try { handles.client.destroy(); } catch (_e) { /* already torn down */ } }
+    if (handles.server) { try { handles.server.close(); } catch (_e) { /* already closed */ } }
+  });
 }
 
 module.exports = { run: run };

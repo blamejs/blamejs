@@ -2419,7 +2419,7 @@ async function run() {
   await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
   var base = "http://127.0.0.1:" + server.address().port;
   installDiscoveryDoc(base, routes);
-  try {
+  await helpers.withDrain("auth-oauth", async function () {
     await scenarioVerifyIdToken(base, routes);
     await scenarioTokenFlows(base, routes);
     await scenarioUserinfoRevokeIntrospect(base, routes);
@@ -2435,10 +2435,7 @@ async function run() {
     await scenarioBranchFillLoopback(base, routes);
     await scenarioInjectedHttpClient(base, routes);
     await scenarioHttpAllowedHosts(base, routes);
-  } finally {
-    server.close();
-    await helpers.drainOpenHandles("auth-oauth");
-  }
+  }, function () { server.close(); });
   console.log("auth-oauth loopback checks passed");
 }
 

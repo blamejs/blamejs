@@ -468,7 +468,7 @@ async function testThrottleTransformValidation() {
 }
 
 async function run() {
-  try {
+  await helpers.withDrain("http-client-stream", async function () {
     testSurface();
     await testBandwidthThrottle();
     await testDownloadTransformInterpose();
@@ -483,9 +483,7 @@ async function run() {
     await testUploadHappyPath();
     await testUploadMissingFile();
     await testUploadBadOpts();
-  } finally {
-    await helpers.drainOpenHandles("http-client-stream");
-  }
+  });
 }
 
 module.exports = { run: run };

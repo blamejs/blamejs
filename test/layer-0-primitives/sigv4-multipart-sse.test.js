@@ -785,7 +785,7 @@ async function testSseMismatchRejectsPut() {
 }
 
 async function run() {
-  try {
+  await helpers.withDrain("sigv4-multipart-sse", async function () {
     await testSinglePutRemainsBufferAtThreshold();
     await testMultipartAutoDetectAboveThreshold();
     await testMultipartFromReadableStream();
@@ -807,9 +807,7 @@ async function run() {
     await testCompleteBareErrorBodyStillFails();
     await testCompleteEtagFallsBackToResponseHeader();
     await testSseMismatchRejectsPut();
-  } finally {
-    await helpers.drainOpenHandles("sigv4-multipart-sse");
-  }
+  });
 }
 
 module.exports = { run: run };

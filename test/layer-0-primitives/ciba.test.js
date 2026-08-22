@@ -1006,8 +1006,7 @@ async function _runTests() {
 }
 
 async function run() {
-  try { await _runTests(); }
-  finally { await helpers.drainOpenHandles("ciba"); }
+  await helpers.withDrain("ciba", _runTests);
 }
 
 module.exports = { run: run };

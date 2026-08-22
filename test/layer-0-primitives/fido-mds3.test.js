@@ -1272,7 +1272,7 @@ function testVerifyAuthenticatorEntryWithoutStatusReports() {
 // ---- run ----
 
 async function run() {
-  try {
+  await helpers.withDrain("fido-mds3", async function () {
     testSurface();
     testLookupAaguid();
     testVerifyAuthenticatorClean();
@@ -1322,9 +1322,7 @@ async function run() {
     testLookupAaguidSkipsMalformedEntries();
     testCertifiedLevelSkipsMalformedReports();
     testVerifyAuthenticatorEntryWithoutStatusReports();
-  } finally {
-    await helpers.drainOpenHandles("fido-mds3");
-  }
+  });
 }
 
 module.exports = { run: run };

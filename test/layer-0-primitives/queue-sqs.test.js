@@ -327,7 +327,7 @@ async function testNumericConfigValidation() {
 }
 
 async function run() {
-  try {
+  await helpers.withDrain("queue-sqs", async function () {
     await testFactoryValidation();
     await testNumericConfigValidation();
     await testEnqueueWireShape();
@@ -339,9 +339,7 @@ async function run() {
     await testSizeAndPurge();
     await testCustomQueueUrlResolver();
     await testSessionTokenHeader();
-  } finally {
-    await helpers.drainOpenHandles("queue-sqs");
-  }
+  });
 }
 
 module.exports = { run: run };
