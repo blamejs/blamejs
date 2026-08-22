@@ -337,6 +337,7 @@ async function run() {
   testUnknownPolicyKeyIsRefused();
   testDeclaredVocabularyMatchesTheOptsBlock();
   testPublishedVocabularyCannotBeEdited();
+  testEveryPolicyIsCheckedAtEveryDoor();
   testGuardFamilyDeclaresOnlyPerformableActions();
   testGuardFamilyRefusesAMalformedNumericCap();
   await testGuardFamilyGateAgreesWithValidateOnAnEmptyValue();
@@ -1100,6 +1101,46 @@ function testDeclaredCharacterRepairMatchesBehaviour() {
   check("a guard that can repair still accepts `strip`" +
         (wrongRefusal.length ? " (refused on " + wrongRefusal.join(", ") + ")" : ""),
         wrongRefusal.length === 0);
+}
+
+// The character-policy sweep above, widened to every policy a guard declares.
+// It exists because the narrower one could not see this: several guards bind
+// their own resolver inside `gate()` rather than calling the generated one, and
+// a table given to the generated path alone leaves that door open. A bad value
+// then survives gate construction and surfaces as a refusal on the first
+// request — a deployment that boots clean and then refuses every request to the
+// route, which is the opposite of what checking at construction is for.
+//
+// A check written against one door answers for one door, so this asks all of
+// them, for every policy, on every guard.
+function testEveryPolicyIsCheckedAtEveryDoor() {
+  var accepted = [], probed = 0;
+  b.guardAll.allGuards().forEach(function (g) {
+    var vocabulary = g.POLICY_VOCABULARY;
+    if (!vocabulary || typeof g.resolveOpts !== "function") return;
+    Object.keys(vocabulary).forEach(function (key) {
+      if (!Array.isArray(vocabulary[key]) || !vocabulary[key].length) return;
+      probed += 1;
+      var bad = {};
+      bad[key] = "definitely-not-a-policy-value";
+      var doors = [["resolveOpts", function () { g.resolveOpts(bad); }]];
+      if (typeof g.gate === "function") doors.push(["gate", function () { g.gate(bad); }]);
+      if (typeof g.validate === "function") {
+        doors.push(["validate", function () { g.validate(_sampleInputFor(g), bad); }]);
+      }
+      doors.forEach(function (d) {
+        var refused = false;
+        try { d[1](); } catch (_e) { refused = true; }
+        if (!refused) accepted.push(g.NAME + "." + key + " via " + d[0]);
+      });
+    });
+  });
+  check("the all-policy sweep reached the family (" + probed + " policies)",
+        probed >= 200, "probed " + probed);
+  check("every policy refuses a value outside its vocabulary at every door" +
+        (accepted.length ? " (accepted " + accepted.length + ": " +
+          accepted.slice(0, 6).join(", ") + ")" : ""),
+        accepted.length === 0);
 }
 
 // A guard publishes POLICY_VOCABULARY while its resolver checks against the

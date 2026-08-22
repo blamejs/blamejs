@@ -337,19 +337,42 @@ function testHostileInputIsBoundedNotFatal() {
 
   // Delimiter scanning must not be quadratic: an input of one repeated
   // character is the cheapest possible attack to send.
+  //
+  // Measured as growth rather than against a wall-clock budget, because the
+  // claim is about the shape of the curve and a fixed budget is a claim about
+  // the machine. Doubling the input doubles a linear scan and quadruples a
+  // quadratic one, so the ratio separates them by a wide margin while a
+  // contended runner moves both measurements together. A fixed 250ms ceiling
+  // here failed on a machine running this suite 64-way alongside a container
+  // build — no quadratic behaviour, just a slower quarter-second.
+  function _millis(fn) {
+    // Best of three: contention adds time, it never subtracts, so the minimum
+    // is the closest reading to the work actually done.
+    var best = Infinity;
+    for (var i = 0; i < 3; i += 1) {
+      var t0 = process.hrtime.bigint();
+      try { fn(); } catch (_e) { /* a refusal is a fine answer; a hang is not */ }
+      var ms = Number(process.hrtime.bigint() - t0) / 1e6;
+      if (ms < best) best = ms;
+    }
+    return best;
+  }
   var shapes = [
-    { label: "brackets", src: "[".repeat(50000) + "x" },
-    { label: "emphasis", src: "*".repeat(20000) + "x" + "*".repeat(20000) },
-    { label: "backticks", src: "`".repeat(20000) },
-    { label: "parens", src: "[x](".repeat(20000) },
+    { label: "brackets",  build: function (n) { return "[".repeat(n) + "x"; },              n: 25000 },
+    { label: "emphasis",  build: function (n) { return "*".repeat(n) + "x" + "*".repeat(n); }, n: 10000 },
+    { label: "backticks", build: function (n) { return "`".repeat(n); },                    n: 10000 },
+    { label: "parens",    build: function (n) { return "[x](".repeat(n); },                 n: 10000 },
   ];
   var slow = shapes.filter(function (s) {
-    var t0 = process.hrtime.bigint();
-    try { render(s.src); } catch (_e) { /* a refusal is a fine answer; a hang is not */ }
-    return Number(process.hrtime.bigint() - t0) / 1e6 > 250;
+    var small = _millis(function () { render(s.build(s.n)); });
+    var large = _millis(function () { render(s.build(s.n * 2)); });
+    // Below a millisecond the clock is coarser than the difference, and the
+    // ratio stops meaning anything; a scan that fast is not the attack.
+    if (large < 2) return false;
+    return large / Math.max(small, 0.05) > 3;
   }).map(function (s) { return s.label; });
-  check("render: repeated-delimiter input stays linear" +
-    (slow.length ? " (slow: " + slow.join(",") + ")" : ""),
+  check("render: doubling a repeated-delimiter input does not more than double the work" +
+    (slow.length ? " (superlinear: " + slow.join(",") + ")" : ""),
     slow.length === 0);
 }
 
