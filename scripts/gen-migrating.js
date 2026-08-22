@@ -316,7 +316,7 @@ function _appendOutOfBand(lines) {
   // Semver-aware sort — `v0.9.10` must sort newer than `v0.9.9` (a naive
   // lexicographic compare would order the digit `1` before `9` and mis-
   // place them). Strip the leading `v`, split on `.`, compare each
-  // numeric component. Per Codex P2 on PR #48.
+  // numeric component.
   function _semverCmp(a, b) {
     var as = String(a).replace(/^v/, "").split(".").map(Number);
     var bs = String(b).replace(/^v/, "").split(".").map(Number);
