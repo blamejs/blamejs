@@ -595,6 +595,36 @@ if (touched) {
 }
 " "$PKG" "$INSTALLED_VER" || { echo "ERROR: NOTICE version update failed for $PKG"; }
 
+# The README vendored-dependency table is the third copy of the same inventory,
+# and it went stale for the reason NOTICE did: the bundler wrote two of the three
+# and left the last one to be noticed. Rewrite only the package's OWN version --
+# the leading semver token of the version cell -- because a cell may also name the
+# versions the bundle embeds, and an operator checking whether an advisory applies
+# reads those from here. A cell with no semver to replace (a dated snapshot entry,
+# refreshed through --refresh-data instead) is reported and left alone.
+node -e "
+var fs = require('fs');
+var pkg = process.argv[1], ver = process.argv[2];
+var lines = fs.readFileSync('README.md', 'utf8').split('\n');
+var head = '| [\`' + pkg + '\`]';
+for (var i = 0; i < lines.length; i++) {
+  if (lines[i].indexOf(head) !== 0) continue;
+  var cells = lines[i].split('|');
+  if (cells.length < 3) continue;
+  if (!/[0-9]+\.[0-9]+\.[0-9]+/.test(cells[2])) {
+    console.log('  README.md: ' + pkg + ' version cell is not a semver — left as written');
+    break;
+  }
+  var next = cells[2].replace(/[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?/, ver);
+  if (next === cells[2]) break;
+  cells[2] = next;
+  lines[i] = cells.join('|');
+  fs.writeFileSync('README.md', lines.join('\n'));
+  console.log('  README.md: ' + pkg + ' version -> ' + ver);
+  break;
+}
+" "$PKG" "$INSTALLED_VER" || { echo "ERROR: README version update failed for $PKG"; }
+
 # Clean up node_modules
 npm uninstall "$PKG" --no-save 2>/dev/null || true
 

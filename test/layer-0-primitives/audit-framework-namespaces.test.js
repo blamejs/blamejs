@@ -61,14 +61,18 @@ function _allJsFiles(root) {
   return out;
 }
 
-// Strip /* ... */ block comments (covers JSDoc) and // line comments
-// from JS source so action-name extraction doesn't pick up tokens
-// from operator-facing @example blocks (e.g. `orders.shipped`).
-function _stripComments(src) {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/\/\/[^\n]*/g, "");
-}
+// Strip block comments (covers JSDoc) and line comments from JS source so
+// action-name extraction doesn't pick up tokens from operator-facing @example
+// blocks (e.g. `orders.shipped`).
+//
+// Shared with the codebase-patterns gate rather than re-derived here. Two
+// blind replaces cannot tell a comment from the same characters inside a
+// string or a regex, and this is a COMPLETENESS check, so whatever they
+// delete is a namespace that goes unregistered with nothing reporting it: an
+// `Accept: */*` header contains `/*`, which opened a block comment running to
+// the next `*/` and deleted the emission at lib/auth/fido-mds3.js:508 from
+// this scan.
+var _stripComments = require("../helpers/_shape-match").stripComments;
 
 function _extractEmittedActions(filePath) {
   var src = _stripComments(fs.readFileSync(filePath, "utf8"));
@@ -178,9 +182,54 @@ function testGatedReasonEmitter() {
   }
 }
 
+// The scan can only report on what it can SEE, and comment stripping decides
+// that. This is a completeness check, so anything the stripper deletes is a
+// namespace that goes unregistered with no gate noticing — the silent
+// direction, and the reason the stripper is worth a test of its own.
+//
+// The cases below are drawn from lib/, not invented: an `Accept` header of
+// `*/*` contains the two characters `/*`, which opens a block comment that
+// runs to the next `*/` anywhere in the file. That deleted the emission at
+// lib/auth/fido-mds3.js:508 from this gate's view.
+function testCommentStrippingKeepsEmissionsVisible() {
+  var cases = [
+    ["a */* media type does not open a block comment",
+     'var h = { "Accept": "application/jwt, */*" };\n' +
+     'audit().safeEmit({ action: "auth.fido_mds3.fetch.network" });',
+     "auth.fido_mds3.fetch.network"],
+    ["a // inside a string does not comment out the rest of the line",
+     'var u = "https://example.test/x"; audit().safeEmit({ action: "system.probe.done" });',
+     "system.probe.done"],
+    ["a regex holding an escaped slash does not eat the line",
+     'var re = /a\\/\\/b/; audit().safeEmit({ action: "system.probe.done" });',
+     "system.probe.done"],
+    ["a real comment is still removed",
+     '// audit().safeEmit({ action: "system.ghost.event" });\n' +
+     'audit().safeEmit({ action: "system.probe.done" });',
+     "system.probe.done", "system.ghost.event"],
+  ];
+
+  cases.forEach(function (c) {
+    var stripped = _stripComments(c[1]);
+    var found = [];
+    for (var p = 0; p < EMIT_PATTERNS.length; p++) {
+      EMIT_PATTERNS[p].lastIndex = 0;
+      var matches = stripped.matchAll(EMIT_PATTERNS[p]);
+      for (var m of matches) found.push(m[1]);
+    }
+    check("comment strip keeps the emission visible: " + c[0],
+      found.indexOf(c[2]) !== -1);
+    if (c[3] !== undefined) {
+      check("comment strip drops the commented-out emission: " + c[0],
+        found.indexOf(c[3]) === -1);
+    }
+  });
+}
+
 async function run() {
   testFrameworkNamespacesShape();
   testEveryEmittedNamespaceIsRegistered();
+  testCommentStrippingKeepsEmissionsVisible();
   testGatedReasonEmitter();
 }
 
