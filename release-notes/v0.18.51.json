@@ -25,6 +25,15 @@
       ]
     },
     {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "Vendored `@blamejs/pki` refreshed to 0.5.26",
+          "body": "The bundle behind `b.mtlsCa` and `b.auth.passkey`. 0.5.26 adds the RFC 9483 revocation and support-message exchanges to its CMP session, alongside checks binding each response to the request that asked for it. Nothing in this framework's surface changes; `lib/vendor/MANIFEST.json` carries the new version and hash."
+        }
+      ]
+    },
+    {
       "heading": "Fixed",
       "items": [
         {
