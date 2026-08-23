@@ -192,6 +192,23 @@ function testEveryUsesIsEitherCheckedOrNamed() {
         (emptyIdents.actions["owner/wellformed"] || {}).version === "1.2.3-rc.1",
         JSON.stringify(emptyIdents.actions));
 
+  // Semver forbids a leading zero on a NUMERIC prerelease identifier, because it
+  // makes two spellings of one number and the ordering is then undefined. Build
+  // identifiers carry no such rule — they are not ordered at all.
+  var leadingZero = withFixture({
+    "leadzero.yml": stepsDoc(
+      "      - uses: owner/prezero@v1.2.3-rc.007\n" +
+      "      - uses: owner/buildzero@v1.2.3+007\n"),
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: a leading-zero prerelease identifier is refused",
+        !Object.prototype.hasOwnProperty.call(leadingZero.actions, "owner/prezero") &&
+        leadingZero.unparsed.length === 1,
+        JSON.stringify(leadingZero));
+  check("actions-currency: while a leading-zero BUILD identifier is fine, since " +
+        "build metadata is unordered",
+        (leadingZero.actions["owner/buildzero"] || {}).version === "1.2.3+007",
+        JSON.stringify(leadingZero.actions));
+
   // A version that does not END at a boundary is malformed, and reading its
   // prefix is worse than refusing it: `# v2.1.0rc.1` would become `2.1.0` and
   // compare EQUAL to the final release, so a pin that really is a release

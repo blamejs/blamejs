@@ -159,36 +159,51 @@ async function _releaseChangelog(ownerRepo, oldSha, newTag, newSha) {
   return out;
 }
 
-async function _latestVersion(ownerRepo) {
+async function _latestVersion(ownerRepo, pinnedIsPrerelease) {
   // Prefer the published "latest" release tag; fall back to the
   // highest semver tag for actions that ship tags without GitHub
   // Releases (e.g. ludeeus/action-shellcheck). Returns { tag, sha }
   // so the report can hand back a ready-to-paste pin line.
   var tag = null;
+  // GitHub's "latest release" is by definition never a prerelease, so a pin
+  // that IS one could only ever be compared against stable releases — and a
+  // newer release candidate would report as current. The tag scan below sees
+  // every tag, including prereleases, so a prerelease pin goes straight there.
+  if (pinnedIsPrerelease) return _latestFromTags(ownerRepo);
   try {
     var rel = await _githubGet("/repos/" + ownerRepo + "/releases/latest");
     // Only trust the release tag when it is semver-shaped. Some repos
     // (github/codeql-action) publish a non-semver bundle tag as their
     // "latest release" (codeql-bundle-vX.Y.Z) while the ACTION is
     // versioned on separate vN.N.N tags — fall through to tags then.
-    if (rel && typeof rel.tag_name === "string" && _semverParse(rel.tag_name)) tag = rel.tag_name;
+    if (rel && typeof rel.tag_name === "string" && _TAG_RE.test(rel.tag_name)) tag = rel.tag_name;
   } catch (_e) { /* fall through to tags */ }
-  if (!tag) {
-    var tags = await _githubGet("/repos/" + ownerRepo + "/tags?per_page=100");
-    if (!Array.isArray(tags) || tags.length === 0) {
-      throw new Error("no releases or tags for " + ownerRepo);
-    }
-    var best = null;
-    for (var i = 0; i < tags.length; i++) {
-      var p = _semverParse(tags[i].name);
-      if (p && (!best || _semverCompare(p, best.parsed) > 0)) {
-        best = { name: tags[i].name, parsed: p };
-      }
-    }
-    if (!best) throw new Error("no semver-shaped tag for " + ownerRepo);
-    tag = best.name;
-  }
+  if (!tag) return _latestFromTags(ownerRepo);
   return { tag: tag, sha: await _resolveSha(ownerRepo, tag) };
+}
+
+// The highest semver-shaped TAG, which unlike the releases endpoint includes
+// prereleases. Used for actions that ship tags without GitHub Releases, and for
+// any pin that is itself a prerelease.
+async function _latestFromTags(ownerRepo) {
+  var tags = await _githubGet("/repos/" + ownerRepo + "/tags?per_page=100");
+  if (!Array.isArray(tags) || tags.length === 0) {
+    throw new Error("no releases or tags for " + ownerRepo);
+  }
+  var best = null;
+  for (var i = 0; i < tags.length; i++) {
+    // The SAME grammar the local collector holds a pin to. `_semverParse` reads
+    // a numeric PREFIX and would happily rank `v999-invalid!` or a leading-zero
+    // `v2.0.0-rc.007` as the highest version, then offer it as the replacement.
+    // A remote tag has to clear the bar a local one clears.
+    if (!_TAG_RE.test(tags[i].name)) continue;
+    var p = _semverParse(tags[i].name);
+    if (p && (!best || _semverCompare(p, best.parsed) > 0)) {
+      best = { name: tags[i].name, parsed: p };
+    }
+  }
+  if (!best) throw new Error("no semver-shaped tag for " + ownerRepo);
+  return { tag: best.name, sha: await _resolveSha(ownerRepo, best.name) };
 }
 
 function _semverParse(v) {
@@ -736,9 +751,16 @@ function _scanLine(line, state, eof) {
 // not merely look odd: the comparison ranks it above a numeric one, so
 // `v1.2.3-rc.` reported current against a real `v1.2.3-rc.1`. The identifier
 // class excludes the dot, so the alternation cannot backtrack ambiguously.
+// A PRERELEASE identifier is either `0`, a number without a leading zero, or
+// something containing a non-digit — semver forbids `rc.007`, because a leading
+// zero makes two spellings of one number and the comparison cannot then be
+// well-defined. BUILD identifiers carry no such rule; they are not ordered at
+// all, so `+007` is fine.
+var _PRE_IDENT   = "(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*)";
+var _BUILD_IDENT = "[0-9A-Za-z-]+";
 var _VER_SRC = "\\d+(?:\\.\\d+){0,2}" +
-               "(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?" +
-               "(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?";
+               "(?:-" + _PRE_IDENT   + "(?:\\." + _PRE_IDENT   + ")*)?" +
+               "(?:\\+" + _BUILD_IDENT + "(?:\\." + _BUILD_IDENT + ")*)?";
 
 var _TAG_RE = new RegExp("^v?" + _VER_SRC + "$");
 var _SHA_RE = /^[0-9a-f]{40}$/;
@@ -965,7 +987,7 @@ async function _checkOne(ownerRepo, entry) {
   }
   var pinned = _semverParse(entry.version);
   try {
-    var info = await _latestVersion(ownerRepo);
+    var info = await _latestVersion(ownerRepo, !!(pinned && pinned.pre));
     var latest = _semverParse(info.tag);
     var cmp = _semverCompare(pinned, latest);
     var status = cmp >= 0 ? "current" : "stale";
