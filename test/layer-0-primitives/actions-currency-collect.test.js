@@ -374,6 +374,81 @@ function testBlockScalarTextIsNotReadAsAKey() {
         anchoredStep.unparsed.length === 0,
         JSON.stringify(anchoredStep));
 
+  // The explicit-key form: `? uses` on one line, `: value` on the next. Reading
+  // `?` as an ordinary scalar clears the key position and the reference is then
+  // neither checked nor named — silence, the one outcome this must not have.
+  var explicitKey = withFixture({
+    "explicit.yml": stepsDoc(
+      "      - ? uses\n" +
+      "        : owner/explicit@v3.1.0\n" +
+      // The `:` may equally follow on the SAME line.
+      "      - ? uses : owner/sameline@v3.2.0\n" +
+      "      - uses: actions/cache@v4.2.0\n"),
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: an explicit mapping key is read, not stepped over",
+        (explicitKey.actions["owner/explicit"] || {}).version === "3.1.0" &&
+        explicitKey.unparsed.length === 0,
+        JSON.stringify(explicitKey));
+  check("actions-currency: including the same-line form of it",
+        (explicitKey.actions["owner/sameline"] || {}).version === "3.2.0",
+        JSON.stringify(explicitKey.actions));
+  check("actions-currency: and the ordinary step after it is unaffected",
+        Object.prototype.hasOwnProperty.call(explicitKey.actions, "actions/cache"),
+        Object.keys(explicitKey.actions).join(", "));
+
+  // An explicit key nests like any other. `- ? with` / `: { uses: ... }` puts
+  // that data under `with`, not at the step's own position.
+  var explicitNest = withFixture({
+    "explicitnest.yml": stepsDoc(
+      "      - ? with\n" +
+      "        : { uses: owner/explicitdata@main }\n" +
+      "      - uses: actions/cache@v4.2.0\n"),
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: an explicit key other than `uses` still supplies the " +
+        "enclosing path for what nests under it",
+        !Object.prototype.hasOwnProperty.call(explicitNest.actions, "owner/explicitdata") &&
+        explicitNest.unparsed.length === 0,
+        JSON.stringify(explicitNest));
+
+  // And one whose `:` never arrives is a malformed reference, exactly as an
+  // ordinary `uses:` with no value is. Leaving it pending forever would put the
+  // silence back in the shape that had just been closed.
+  var explicitNoValue = withFixture({
+    "explicitnovalue.yml": stepsDoc(
+      "      - ? uses\n" +
+      "        name: no value ever arrives\n"),
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: an explicit `uses` key with no value is named",
+        explicitNoValue.unparsed.length === 1,
+        JSON.stringify(explicitNoValue));
+
+  var explicitAtEof = withFixture({
+    "expliciteof.yml": stepsDoc("      - ? uses\n"),
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: and one still waiting at end of file is named too",
+        explicitAtEof.unparsed.length === 1,
+        JSON.stringify(explicitAtEof));
+
+  // Node properties may prefix any node, so all FOUR places that read one skip
+  // them: an ordinary value, a mapping, an explicit key, and an explicit key's
+  // value. Written inline the skip reached two of the four.
+  var explicitProps = withFixture({
+    "explicitprops.yml": stepsDoc(
+      "      - ? &key uses\n" +
+      "        : &val owner/bothprops@v6.0.0\n" +
+      "      - ? uses\n" +
+      "        : !!str owner/tagvalue@v7.0.0\n"),
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: an anchor on the explicit KEY does not become the " +
+        "key name",
+        (explicitProps.actions["owner/bothprops"] || {}).version === "6.0.0",
+        JSON.stringify(explicitProps));
+  check("actions-currency: and a property on its VALUE does not become the " +
+        "reference",
+        (explicitProps.actions["owner/tagvalue"] || {}).version === "7.0.0" &&
+        explicitProps.unparsed.length === 0,
+        JSON.stringify(explicitProps));
+
   // A workflow parser resolves double-quote escapes before it ever sees a
   // reference, so handing back the raw text refuses valid YAML.
   var escaped = withFixture({

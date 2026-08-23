@@ -59,6 +59,23 @@ var TIMEOUT_MS = 10000;
 var _out = process.stdout.write.bind(process.stdout);
 function say(s) { if (!JSON_OUT) _out(s); }
 
+// `--fix` REWRITES pinned SHAs, and everything it prints to justify that — the
+// compare URL, the commits between the two SHAs, the changed files, the diff,
+// the release notes — goes through `say`. Under `--json` all of it is silent
+// while the rewrite still happens, so the one combination that mutates
+// supply-chain pins would be the one that shows nothing about what it pulled
+// in. The JSON document is also written BEFORE the rewrite and says nothing
+// about its outcome. Refusing is the honest answer: `--fix` is a review tool
+// for a person, `--json` is for a machine, and neither wants the other's
+// behaviour.
+if (DO_FIX && JSON_OUT) {
+  process.stderr.write("[actions-currency] --fix and --json cannot be combined: " +
+    "--fix prints the changelog and diff a SHA rewrite has to be reviewed " +
+    "against, and --json suppresses it. Run --json to inspect, then --fix to " +
+    "rewrite.\n");
+  process.exit(2);
+}
+
 // Per-action overrides. Keyed by "owner/repo".
 //   { type: "hold-major", major: N, reason: "..." } — only flag stale
 //        WITHIN the pinned major; a newer major is an intentional hold.
@@ -381,6 +398,23 @@ function _readScalar(line, i, inFlow) {
   return { value: line.slice(i, k), end: k };
 }
 
+// Steps over YAML node properties — an anchor (`&name`) or an explicit tag
+// (`!type`) — and the whitespace after them, returning where the node itself
+// begins. They may prefix a value, a mapping, a key, or an explicit key's
+// value, which is exactly why this is one function: written inline it went into
+// two of those four places and the other two kept reading the property AS the
+// node.
+function _skipNodeProperties(line, at, inFlow) {
+  var j = at;
+  while (j < line.length && (line.charAt(j) === "&" || line.charAt(j) === "!")) {
+    var prop = _readScalar(line, j, inFlow);
+    if (prop.end === j) break;
+    j = prop.end;
+    while (j < line.length && (line.charAt(j) === " " || line.charAt(j) === "\t")) j++;
+  }
+  return j;
+}
+
 // Every `uses:` key on one line, with whatever follows each value.
 //
 // `atKeyStart` is the whole of the structural judgement: a key can begin the
@@ -423,7 +457,7 @@ function _isActionRefPosition(path) {
   return false;
 }
 
-function _scanLine(line, state) {
+function _scanLine(line, state, eof) {
   var out = [];
   var comment = null;                    // the line's trailing comment, if any
   var opensBlock = null;                 // { indent, key } when the line opens one
@@ -442,11 +476,17 @@ function _scanLine(line, state) {
   // then inherits the step's position and reads as an action reference.
   var pendingFlowKey = state && state.pendingFlowKey !== undefined
     ? state.pendingFlowKey : null;
+  // An explicit key waiting for its `:` value line, which is always a later one.
+  var explicitKey = state && state.explicitKey !== undefined
+    ? state.explicitKey : null;
   // A new line in block context closes every mapping indented at or past its
   // first token, whatever kind of node follows. Doing this only when a
   // block-style KEY is met left the previous step's `uses` on the stack while a
   // flow-style step was scanned, so the flow step read as its child.
-  if (flowDepth === 0 && !_isBlank(line)) {
+  // Not while an explicit key is pending: its `:` value line sits at the SAME
+  // column as its `?`, so popping here would remove the very key the line
+  // belongs to, and whatever nests under it would inherit the step's position.
+  if (flowDepth === 0 && !_isBlank(line) && !explicitKey) {
     var lineIndent = _indentOf(line);
     while (stack.length && stack[stack.length - 1].indent >= lineIndent) stack.pop();
   }
@@ -454,6 +494,18 @@ function _scanLine(line, state) {
   // stack; a flow collection contributes the key that opened it, and null where
   // one was opened by a sequence dash rather than a key (`- { uses: ... }`),
   // whose enclosing key is already the last block entry.
+  // An explicit `? uses` whose `:` never arrives is a malformed reference, and
+  // an ordinary `uses:` with no value is already reported as one. Leaving this
+  // form pending forever would put the silence back in the one shape that had
+  // just been closed.
+  function flushExplicit() {
+    if (explicitKey && explicitKey.name === "uses" &&
+        _isActionRefPosition(explicitKey.enclosing)) {
+      out.push({ value: "", after: "" });
+    }
+    explicitKey = null;
+  }
+
   function keyPath() {
     var p = [];
     for (var s = 0; s < stack.length; s++) p.push(stack[s].key);
@@ -493,13 +545,65 @@ function _scanLine(line, state) {
       atKeyStart = true; i++; continue;
     }
 
+    // An EXPLICIT mapping key: `? uses` on one line, `: owner/repo@v1` on the
+    // next. Reading `?` as an ordinary scalar clears the key position and the
+    // reference is then neither checked nor named — silence, which is the one
+    // outcome this collector must not have.
+    if (atKeyStart && c === "?" &&
+        (i + 1 >= line.length || " \t".indexOf(line.charAt(i + 1)) !== -1)) {
+      flushExplicit();                    // one that never got its `:` is named
+      var qk = i + 1;
+      while (qk < line.length && (line.charAt(qk) === " " || line.charAt(qk) === "\t")) qk++;
+      qk = _skipNodeProperties(line, qk, flowDepth > 0);
+      var qName = _readScalar(line, qk, flowDepth > 0);
+      // It nests like any other key, or `- ? with` / `: { uses: X }` would scan
+      // that data with the step's own path and call it an action reference.
+      if (flowDepth === 0) {
+        while (stack.length && stack[stack.length - 1].indent >= i) stack.pop();
+      }
+      explicitKey = { name: qName.value, enclosing: keyPath() };
+      if (flowDepth === 0) stack.push({ indent: i, key: qName.value });
+      i = qName.end;
+      // The key position SURVIVES, because the `:` may follow on this very line
+      // (`- ? uses : owner/repo@v1`) as readily as on the next. Clearing it here
+      // skipped the same-line form entirely.
+      atKeyStart = true;
+      continue;
+    }
+    // The value half of one. It arrives at the start of a line as `: <value>`.
+    if (atKeyStart && c === ":" && explicitKey &&
+        (i + 1 >= line.length || " \t".indexOf(line.charAt(i + 1)) !== -1)) {
+      var ev = i + 1;
+      while (ev < line.length && (line.charAt(ev) === " " || line.charAt(ev) === "\t")) ev++;
+      ev = _skipNodeProperties(line, ev, flowDepth > 0);
+      // The value may itself be a collection, and it nests under this key.
+      if (ev < line.length && (line.charAt(ev) === "{" || line.charAt(ev) === "[")) {
+        pendingFlowKey = flowDepth === 0 ? null : explicitKey.name;
+        explicitKey = null;
+        i = ev; atKeyStart = false; continue;
+      }
+      if (explicitKey.name === "uses" && _isActionRefPosition(explicitKey.enclosing)) {
+        if (ev >= line.length || line.charAt(ev) === "#") {
+          out.push({ value: "", after: line.slice(ev) });
+        } else {
+          var evVal = _readScalar(line, ev, flowDepth > 0);
+          out.push({ value: evVal.value, after: line.slice(evVal.end) });
+          ev = evVal.end;
+        }
+      }
+      explicitKey = null;
+      i = ev;
+      atKeyStart = false;
+      continue;
+    }
+
     // A node property may prefix the MAPPING as well as a value — `- &checkout
     // uses: owner/repo@v1` anchors the step, and the key follows. Consuming the
     // anchor as an ordinary scalar clears the key position, and the `uses` after
     // it then reads as text: neither checked nor named.
     if (atKeyStart && (c === "&" || c === "!")) {
-      var prefix = _readScalar(line, i, flowDepth > 0);
-      if (prefix.end > i) { i = prefix.end; continue; }    // atKeyStart survives
+      var afterProps = _skipNodeProperties(line, i, flowDepth > 0);
+      if (afterProps > i) { i = afterProps; continue; }    // atKeyStart survives
     }
 
     var scalar = _readScalar(line, i, flowDepth > 0);
@@ -522,6 +626,7 @@ function _scanLine(line, state) {
                  flowDepth > 0);
 
     if (atKeyStart && isKey) {
+      flushExplicit();                    // an ordinary key ends any pending one
       var keyName = scalar.value;
       // Close any sibling or outer mappings this key ends BEFORE reading the
       // path, or the previous key at the same column is still on the stack and
@@ -534,16 +639,7 @@ function _scanLine(line, state) {
       if (flowDepth === 0) stack.push({ indent: i, key: keyName });
       var v = p + 1;
       while (v < line.length && (line.charAt(v) === " " || line.charAt(v) === "\t")) v++;
-      // YAML node properties may prefix the value — an anchor (`&name`) or an
-      // explicit tag (`!type`). They are not the scalar, so reading one as the
-      // value refuses `uses: &checkout actions/checkout@v5.0.1`, which is a
-      // valid workflow naming an ordinary action.
-      while (v < line.length && (line.charAt(v) === "&" || line.charAt(v) === "!")) {
-        var prop = _readScalar(line, v, flowDepth > 0);
-        if (prop.end === v) break;
-        v = prop.end;
-        while (v < line.length && (line.charAt(v) === " " || line.charAt(v) === "\t")) v++;
-      }
+      v = _skipNodeProperties(line, v, flowDepth > 0);
       // A key's value may itself be a flow collection (`with: { n: 1 }`). That
       // is not a scalar, so it is handed back to the loop, which tracks the
       // nesting and reads the keys inside it. Consuming it as a scalar swallowed
@@ -606,10 +702,12 @@ function _scanLine(line, state) {
     i = afterScalar;
     atKeyStart = false;
   }
+  // At the end of the document an explicit key can wait no longer.
+  if (eof) flushExplicit();
   return { uses: out, opensBlock: opensBlock, comment: comment,
            state: { flowDepth: flowDepth, atKeyStart: atKeyStart,
                     stack: stack, flowKeys: flowKeys,
-                    pendingFlowKey: pendingFlowKey } };
+                    pendingFlowKey: pendingFlowKey, explicitKey: explicitKey } };
 }
 
 // A tag naming a version, including the prerelease and build-metadata forms
@@ -766,7 +864,16 @@ function _collectPinnedActions(dir) {
     var blockIndent = -1;
     var scanState = { flowDepth: 0, atKeyStart: true };
     var pending   = [];
-    for (var L = 0; L < lines.length; L++) {
+    // One more pass than there are lines: the last carries an empty line, which
+    // closes any explicit key still waiting for a `:` that never came.
+    for (var L = 0; L <= lines.length; L++) {
+      if (L === lines.length) {
+        var tail = _scanLine("", scanState, true);
+        for (var tu = 0; tu < tail.uses.length; tu++) {
+          _classifyUses(tail.uses[tu], rel, lines.length, "", null, out, unparsed);
+        }
+        break;
+      }
       if (blockIndent >= 0) {
         if (_isBlockScalarBody(lines[L], blockIndent)) continue;
         blockIndent = -1;                                  // the block ended here
