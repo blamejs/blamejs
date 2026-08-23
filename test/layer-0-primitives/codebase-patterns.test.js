@@ -8063,10 +8063,14 @@ var KNOWN_ANTIPATTERNS = [
     // comment-parser differential). markupTokenizer.htmlCommentEnd owns the
     // correct scan; guard-html / guard-svg / mail-bimi / html-balance route
     // through it. XML comment scanners (safe-xml, xml-c14n) legitimately use
-    // "-->" because XML has neither "--!>" nor abrupt-close forms.
+    // "-->" because XML has neither "--!>" nor abrupt-close forms — and an XML
+    // scanner that reaches for htmlCommentEnd has the differential the other
+    // way round, ending a comment XML says is still open. markupTokenizer names
+    // BOTH grammars (xmlCommentEnd / htmlCommentEnd) as it already does for tag
+    // names; a caller picks the one its document is written in.
     regex: /\.indexOf\("-->"/,
     allowlist: ["lib/markup-tokenizer.js", "lib/parsers/safe-xml.js", "lib/xml-c14n.js"],
-    reason: "HTML/SVG-in-HTML comment scanning must use markupTokenizer.htmlCommentEnd (covers --!> + abrupt <!-->/<!--->), not a bare indexOf('-->'). XML scanners are exempt (XML has no such forms); markup-tokenizer.js is the primitive's home.",
+    reason: "Comment scanning must go through markupTokenizer, which owns both grammars: htmlCommentEnd for HTML / SVG-in-HTML (covers --!> + abrupt <!-->/<!--->) and xmlCommentEnd for XML (only -->). A bare indexOf('-->') trips this; so does using the HTML reader on an XML document, which is not lexically detectable and is why the two are named separately. mail-bimi carries one of each — the Tiny-PS validator reads SVG-in-HTML, the certificate prologue scanner reads XML. markup-tokenizer.js is the primitives' home; safe-xml and xml-c14n predate xmlCommentEnd and are exempt by path.",
   },
   {
     id: "x509-issuer-check-must-enforce-ca",
@@ -10017,7 +10021,7 @@ var KNOWN_ANTIPATTERNS = [
     regex: /\.slice\s*\([^\n]{0,120}(?:_CHARS|Chars)\b[^\n]{0,40}\)\s*\.toString\s*\(/,
     skipCommentLines: true,
     allowlist: [],
-    reason: "b.mail.bimi's embedded-SVG scanner read `node.value.slice(0, Math.min(node.value.length, SVG_PREFIX_SCAN_CHARS)).toString(\"utf8\")` — the constant is named CHARS and the code counted bytes, because the slice ran on the Buffer and the decode came after. A conformant SVG may carry an XML declaration, a DOCTYPE and a comment ahead of its root element, and an XML comment is free text: 300 accented characters is 600 bytes, which puts `<svg` well inside a 512-character window and outside a 512-byte one, so a verified VMC logo came back as `mark.svg === null`. The source comment asserted the opposite of what the code did (\"Characters, not bytes\"), which is what makes this worth a detector rather than a note — the declaration and the behaviour disagreed and the declaration was the thing being read. Fixed by decoding the leaf once and comparing `text.indexOf(\"<svg\")` against the bound. Allowlist is empty: no legitimate site applies a character-named cap to undecoded bytes.",
+    reason: "b.mail.bimi's embedded-SVG scanner read `node.value.slice(0, Math.min(node.value.length, SVG_PREFIX_SCAN_CHARS)).toString(\"utf8\")` — the constant is named CHARS and the code counted bytes, because the slice ran on the Buffer and the decode came after. A conformant SVG may carry an XML declaration, a DOCTYPE and a comment ahead of its root element, and an XML comment is free text: 300 accented characters is 600 bytes, which puts `<svg` well inside a 512-character window and outside a 512-byte one, so a verified VMC logo came back as `mark.svg === null`. The source comment asserted the opposite of what the code did (\"Characters, not bytes\"), which is what makes this worth a detector rather than a note — the declaration and the behaviour disagreed and the declaration was the thing being read. That site no longer has a character window at all: it decodes the leaf once and steps over the XML prologue, because a prologue has no length limit and any fixed window is a boundary a legal document can cross. The detector remains as the class guard — a character-named bound applied to undecoded bytes is wrong wherever it appears. Allowlist is empty: no legitimate site applies a character-named cap to a Buffer and decodes afterwards.",
   },
   {
     id: "compliance-postures-hand-rolled-forensic-map",

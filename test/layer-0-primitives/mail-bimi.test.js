@@ -1207,6 +1207,146 @@ async function testFetchAndVerifyMarkLogotypeSvgBehindMultibytePreamble() {
         rv.mark.svg.indexOf("<svg") !== -1, rv.mark && typeof rv.mark.svg);
 }
 
+// An XML preamble has no length limit, so no fixed window is the right answer:
+// whatever the number, a legal document can put its root past it. What XML does
+// bound is the KIND of thing that may precede the root — whitespace, the
+// declaration, comments, processing instructions and a DOCTYPE — so the scanner
+// skips those and asks what comes next.
+async function testFetchAndVerifyMarkLogotypeSvgBehindLongPrologue() {
+  var svgStr = '<?xml version="1.0" encoding="UTF-8"?>\n' +
+               "<!-- " + "a licence notice. ".repeat(60) + " -->\n" +
+               "<!-- and a second comment -->\n" +
+               '<svg version="1.2" baseProfile="tiny-ps" viewBox="0 0 1 1"></svg>';
+  check("fetchAndVerifyMark: the fixture puts <svg well past any fixed window " +
+        "(character " + svgStr.indexOf("<svg") + ")",
+        svgStr.indexOf("<svg") > 1024, "at " + svgStr.indexOf("<svg"));
+
+  var chain = await _generateTestChain({ logoSvg: svgStr });
+  var rv = await b.mail.bimi.fetchAndVerifyMark({
+    domain:          "example.com",
+    vmcUrl:          "https://example.com/cert.pem",
+    trustAnchorsPem: chain.rootPem,
+    httpClient:      _stubHttpClient(chain.leafPem),
+  });
+  check("fetchAndVerifyMark: an SVG behind a long legal prologue is still extracted",
+        rv.ok === true && typeof rv.mark.svg === "string" &&
+        rv.mark.svg.indexOf("<svg") !== -1, rv.mark && typeof rv.mark.svg);
+}
+
+// Skipping the prologue is also stricter than a prefix search: `<svg` mentioned
+// inside a comment is not a root element, and a leaf whose first element is
+// something else is not a logo. A prefix search called both of these SVG.
+async function testFetchAndVerifyMarkLogotypeSvgOnlyInsideCommentIsNotALogo() {
+  var seq = _derSequence(_octetOf(
+    '<?xml version="1.0"?>\n<!-- this mentions <svg but is not one -->\n<html></html>'));
+  var chain = await _generateTestChain({ logotypeExt: _logotypeExtensionRaw(seq) });
+  var rv = await b.mail.bimi.fetchAndVerifyMark({
+    domain:          "example.com",
+    vmcUrl:          "https://example.com/cert.pem",
+    trustAnchorsPem: chain.rootPem,
+    httpClient:      _stubHttpClient(chain.leafPem),
+  });
+  check("fetchAndVerifyMark: `<svg` inside a comment is not treated as a logo",
+        rv.ok === true && rv.mark.svg === null, rv.mark && typeof rv.mark.svg);
+}
+
+// Every delimiter a DOCTYPE declaration ends on — `>`, `[`, `]` — is a
+// character that may also appear INSIDE one, in a quoted external identifier,
+// a quoted entity value, or a comment. Searching for the next occurrence of any
+// of them therefore stops in the wrong place, and the whole document reads as
+// unparseable. These are one defect with several spellings, so they are tested
+// as one family rather than one at a time.
+async function testFetchAndVerifyMarkLogotypeDoctypeDelimitersInsideLiterals() {
+  var DOCTYPES = [
+    ["a plain external identifier",
+     '<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/svg11.dtd">'],
+    ["`>` inside a SYSTEM literal",
+     '<!DOCTYPE svg SYSTEM "urn:logo>v1">'],
+    ["`[` inside a SYSTEM literal",
+     '<!DOCTYPE svg SYSTEM "urn:logo[v1">'],
+    ["`]` inside a quoted entity value",
+     '<!DOCTYPE svg [ <!ENTITY placeholder "a]b"> ]>'],
+    ["`>` inside a quoted entity value",
+     '<!DOCTYPE svg [ <!ENTITY placeholder "a>b"> ]>'],
+    ["a comment inside the internal subset carrying `]`",
+     '<!DOCTYPE svg [ <!-- a ] bracket --> <!ENTITY e "x"> ]>'],
+    ["a processing instruction inside the internal subset carrying `]`",
+     "<!DOCTYPE svg [<?meta value]?>]>"],
+    ["a processing instruction inside the internal subset carrying `>`",
+     "<!DOCTYPE svg [<?meta a>b?> <!ENTITY e \"x\"> ]>"],
+    ["a processing instruction in the declaration itself",
+     "<!DOCTYPE svg [<?meta plain?>]>"],
+    ["single-quoted literals",
+     "<!DOCTYPE svg SYSTEM 'urn:logo>v1'>"],
+    ["no DOCTYPE at all",
+     ""],
+  ];
+
+  for (var i = 0; i < DOCTYPES.length; i += 1) {
+    var svgStr = '<?xml version="1.0"?>\n' + DOCTYPES[i][1] + "\n" +
+                 '<svg version="1.2" baseProfile="tiny-ps" viewBox="0 0 1 1"></svg>';
+    var chain = await _generateTestChain({ logoSvg: svgStr });
+    var rv = await b.mail.bimi.fetchAndVerifyMark({
+      domain:          "example.com",
+      vmcUrl:          "https://example.com/cert.pem",
+      trustAnchorsPem: chain.rootPem,
+      httpClient:      _stubHttpClient(chain.leafPem),
+    });
+    check("fetchAndVerifyMark: SVG extracted behind a DOCTYPE with " + DOCTYPES[i][0],
+          rv.ok === true && typeof rv.mark.svg === "string" &&
+          rv.mark.svg.indexOf("<svg") !== -1, rv.mark && typeof rv.mark.svg);
+  }
+}
+
+// A comment in an XML document closes on `-->` and on nothing else. HTML also
+// closes one at `--!>` and abruptly at `<!-->`, so a scanner using HTML rules
+// on XML disagrees with an XML parser about where the document even begins.
+// Both directions matter: the HTML reading ends a comment early and takes the
+// text after it for a root, and it ends one that XML says is still open.
+async function testFetchAndVerifyMarkPrologueUsesXmlCommentRules() {
+  var ROOT = '<svg version="1.2" baseProfile="tiny-ps" viewBox="0 0 1 1"></svg>';
+  var CASES = [
+    ["an abrupt `<!-->` close",            "<!-->" + ROOT,               false],
+    ["an HTML-only `--!>` close",          "<!-- x --!>" + ROOT,         false],
+    ["`--!>` inside a comment XML keeps open",
+     "<!-- a --!> still comment -->" + ROOT,                             true],
+    ["an ordinary comment",                "<!-- plain -->" + ROOT,      true],
+  ];
+
+  for (var i = 0; i < CASES.length; i += 1) {
+    var seq = _derSequence(_octetOf(CASES[i][1]));
+    var chain = await _generateTestChain({ logotypeExt: _logotypeExtensionRaw(seq) });
+    var rv = await b.mail.bimi.fetchAndVerifyMark({
+      domain:          "example.com",
+      vmcUrl:          "https://example.com/cert.pem",
+      trustAnchorsPem: chain.rootPem,
+      httpClient:      _stubHttpClient(chain.leafPem),
+    });
+    var extracted = typeof rv.mark.svg === "string";
+    check("fetchAndVerifyMark: " + CASES[i][0] + " — extracted=" + extracted +
+          " (XML rules say " + CASES[i][2] + ")",
+          rv.ok === true && extracted === CASES[i][2], String(rv.mark && rv.mark.svg));
+  }
+}
+
+// `.` is a legal XML name character, so `<svg.foo>` is one element and not the
+// `svg` root followed by something. A boundary check built from a list of
+// name characters misses whichever ones the list omits; the reliable question
+// is what may FOLLOW a finished tag name, which is only whitespace, `/` or `>`.
+async function testFetchAndVerifyMarkLogotypeSvgPrefixedRootIsNotALogo() {
+  var seq = _derSequence(_octetOf(
+    '<?xml version="1.0"?>\n<svg.foo version="1.2" viewBox="0 0 1 1"></svg.foo>'));
+  var chain = await _generateTestChain({ logotypeExt: _logotypeExtensionRaw(seq) });
+  var rv = await b.mail.bimi.fetchAndVerifyMark({
+    domain:          "example.com",
+    vmcUrl:          "https://example.com/cert.pem",
+    trustAnchorsPem: chain.rootPem,
+    httpClient:      _stubHttpClient(chain.leafPem),
+  });
+  check("fetchAndVerifyMark: a root named `svg.foo` is not exposed as an SVG logo",
+        rv.ok === true && rv.mark.svg === null, rv.mark && typeof rv.mark.svg);
+}
+
 // The widened window must not turn every leaf into a logo. A document that
 // mentions `<svg` nowhere is still not one, however long it is.
 async function testFetchAndVerifyMarkLogotypeLongNonSvgStillNull() {
@@ -1258,7 +1398,13 @@ async function testFetchAndVerifyMarkLogotypeTruncatedSequence() {
   // Logotype value where the outer SEQUENCE fails a full sequence-decode
   // (trailing incomplete TLV) but the first complete TLV still decodes to
   // the SVG — exercises the readNode fallback in the scanner.
-  var inner = Buffer.from([0x30, 0x07, 0x04, 0x04, 0x3C, 0x73, 0x76, 0x67, 0xFF]);
+  //
+  // The payload is `<svg>` rather than a bare `<svg`: a tag name has to be
+  // followed by whitespace, `/` or `>` to have ended, and a leaf that stops
+  // mid-name is a truncated document rather than a logo. The declared SEQUENCE
+  // length still overruns the octets that follow it, which is what makes the
+  // full sequence-decode fail and the fallback run — the point of this test.
+  var inner = Buffer.from([0x30, 0x08, 0x04, 0x05, 0x3C, 0x73, 0x76, 0x67, 0x3E, 0xFF]);
   var chain = await _generateTestChain({ logotypeExt: _logotypeExtensionRaw(inner) });
   var rv = await b.mail.bimi.fetchAndVerifyMark({
     domain:          "example.com",
@@ -1770,6 +1916,11 @@ async function run() {
   await testFetchAndVerifyMarkLogotypeSvg();
   await testFetchAndVerifyMarkLogotypeSvgBehindPreamble();
   await testFetchAndVerifyMarkLogotypeSvgBehindMultibytePreamble();
+  await testFetchAndVerifyMarkLogotypeSvgBehindLongPrologue();
+  await testFetchAndVerifyMarkLogotypeSvgOnlyInsideCommentIsNotALogo();
+  await testFetchAndVerifyMarkLogotypeDoctypeDelimitersInsideLiterals();
+  await testFetchAndVerifyMarkLogotypeSvgPrefixedRootIsNotALogo();
+  await testFetchAndVerifyMarkPrologueUsesXmlCommentRules();
   await testFetchAndVerifyMarkLogotypeLongNonSvgStillNull();
   await testFetchAndVerifyMarkLogotypeNonSvgLeafThenSvg();
   await testFetchAndVerifyMarkLogotypeNoSvg();
