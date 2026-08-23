@@ -758,7 +758,11 @@ function _scanLine(line, state, eof) {
 // all, so `+007` is fine.
 var _PRE_IDENT   = "(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*)";
 var _BUILD_IDENT = "[0-9A-Za-z-]+";
-var _VER_SRC = "\\d+(?:\\.\\d+){0,2}" +
+// The core components take no leading zero either — `v01.2.3` is not a semver
+// version, and admitting it would give one release two spellings here just as a
+// leading-zero prerelease identifier would.
+var _CORE_NUM = "(?:0|[1-9]\\d*)";
+var _VER_SRC = _CORE_NUM + "(?:\\." + _CORE_NUM + "){0,2}" +
                "(?:-" + _PRE_IDENT   + "(?:\\." + _PRE_IDENT   + ")*)?" +
                "(?:\\+" + _BUILD_IDENT + "(?:\\." + _BUILD_IDENT + ")*)?";
 

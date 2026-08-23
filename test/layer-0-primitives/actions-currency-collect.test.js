@@ -209,6 +209,19 @@ function testEveryUsesIsEitherCheckedOrNamed() {
         (leadingZero.actions["owner/buildzero"] || {}).version === "1.2.3+007",
         JSON.stringify(leadingZero.actions));
 
+  var coreZero = withFixture({
+    "corezero.yml": stepsDoc(
+      "      - uses: owner/corezero@v01.2.3\n" +
+      "      - uses: owner/zeroalone@v0.36.0\n"),
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: a leading zero in the core version is refused too",
+        !Object.prototype.hasOwnProperty.call(coreZero.actions, "owner/corezero") &&
+        coreZero.unparsed.length === 1,
+        JSON.stringify(coreZero));
+  check("actions-currency: while a bare zero component is ordinary",
+        (coreZero.actions["owner/zeroalone"] || {}).version === "0.36.0",
+        JSON.stringify(coreZero.actions));
+
   // A version that does not END at a boundary is malformed, and reading its
   // prefix is worse than refusing it: `# v2.1.0rc.1` would become `2.1.0` and
   // compare EQUAL to the final release, so a pin that really is a release
