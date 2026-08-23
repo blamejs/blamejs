@@ -1329,6 +1329,63 @@ async function testFetchAndVerifyMarkPrologueUsesXmlCommentRules() {
   }
 }
 
+// An SVG may bind its own namespace to a prefix and write the root as
+// `<svg:svg>`, so the root is identified by its LOCAL name rather than by the
+// raw text after `<`. Tightening the boundary without this rejects a
+// serialization the original substring search accepted.
+async function testFetchAndVerifyMarkLogotypeNamespacedRoots() {
+  var ROOTS = [
+    ["unprefixed",              '<svg xmlns="http://www.w3.org/2000/svg" version="1.2"></svg>',                    true],
+    ["prefixed `svg:svg`",      '<svg:svg xmlns:svg="http://www.w3.org/2000/svg" version="1.2"></svg:svg>',        true],
+    ["prefixed `ns0:svg`",      '<ns0:svg xmlns:ns0="http://www.w3.org/2000/svg" version="1.2"></ns0:svg>',        true],
+    ["longer name `svgfoo`",    '<svgfoo xmlns="http://www.w3.org/2000/svg"></svgfoo>',                            false],
+    ["dotted name `svg.foo`",   '<svg.foo xmlns="http://www.w3.org/2000/svg"></svg.foo>',                          false],
+    ["prefix but no local",     '<svg: xmlns="http://www.w3.org/2000/svg"></svg:>',                                false],
+    ["empty prefix `<:svg`",    '<:svg xmlns="http://www.w3.org/2000/svg"></:svg>',                                false],
+    // A qualified name has ONE colon and two non-empty parts. Reading the local
+    // part as "whatever follows the last colon" calls each of these an SVG.
+    ["two colons `a::svg`",     '<a::svg xmlns="http://www.w3.org/2000/svg"></a::svg>',                            false],
+    ["three parts `a:b:svg`",   '<a:b:svg xmlns="http://www.w3.org/2000/svg"></a:b:svg>',                          false],
+    ["`<` inside the prefix",   '<a<:svg xmlns="http://www.w3.org/2000/svg"></a<:svg>',                            false],
+    ["quote inside the prefix", '<a":svg xmlns="http://www.w3.org/2000/svg"></a":svg>',                            false],
+    // A digit cannot start an XML name. Declared or not, `0ns` is not a prefix
+    // — and the declaration is present here so this fails on the name rather
+    // than on a missing binding.
+    ["prefix starting a digit", '<0ns:svg xmlns:0ns="http://www.w3.org/2000/svg"></0ns:svg>',                      false],
+    ["prefix of only a dash",   '<-:svg xmlns:-="http://www.w3.org/2000/svg"></-:svg>',                            false],
+    ["prefix with dot and dash",'<a.b-c:svg xmlns:a.b-c="http://www.w3.org/2000/svg"></a.b-c:svg>',                true],
+    // A prefix means nothing until it is bound. `<x:svg>` where `x` is another
+    // vocabulary is not an SVG, and a prefix declared nowhere names nothing.
+    ["prefix bound elsewhere",  '<x:svg xmlns:x="http://example.com/other"></x:svg>',                              false],
+    ["prefix never declared",   '<x:svg version="1.2"></x:svg>',                                                   false],
+    ["prefix bound, single quotes", "<x:svg xmlns:x='http://www.w3.org/2000/svg'></x:svg>",                        true],
+    // A namespace URI is compared for what it denotes. These three spell the
+    // SVG namespace differently and mean the same thing to an XML processor.
+    ["hex character reference",  '<x:svg xmlns:x="http://www.w3.org/2000/&#x73;vg"></x:svg>',                      true],
+    ["decimal character reference", '<x:svg xmlns:x="http://www.w3.org/2000/&#115;vg"></x:svg>',                   true],
+    ["predefined entity in the URI", '<x:svg xmlns:x="http://www.w3.org/2000/svg&amp;"></x:svg>',                  false],
+    ["undeclared entity left as written", '<x:svg xmlns:x="http://www.w3.org/2000/&foo;svg"></x:svg>',             false],
+    // The unprefixed root stays tolerant of a missing xmlns: logos omit it and
+    // the previous scanner accepted them.
+    ["unprefixed, no xmlns",    '<svg version="1.2" viewBox="0 0 1 1"></svg>',                                     true],
+  ];
+
+  for (var i = 0; i < ROOTS.length; i += 1) {
+    var seq = _derSequence(_octetOf('<?xml version="1.0"?>\n' + ROOTS[i][1]));
+    var chain = await _generateTestChain({ logotypeExt: _logotypeExtensionRaw(seq) });
+    var rv = await b.mail.bimi.fetchAndVerifyMark({
+      domain:          "example.com",
+      vmcUrl:          "https://example.com/cert.pem",
+      trustAnchorsPem: chain.rootPem,
+      httpClient:      _stubHttpClient(chain.leafPem),
+    });
+    var extracted = typeof rv.mark.svg === "string";
+    check("fetchAndVerifyMark: root " + ROOTS[i][0] + " — extracted=" + extracted +
+          " (expected " + ROOTS[i][2] + ")",
+          rv.ok === true && extracted === ROOTS[i][2], String(rv.mark && rv.mark.svg));
+  }
+}
+
 // `.` is a legal XML name character, so `<svg.foo>` is one element and not the
 // `svg` root followed by something. A boundary check built from a list of
 // name characters misses whichever ones the list omits; the reliable question
@@ -1921,6 +1978,7 @@ async function run() {
   await testFetchAndVerifyMarkLogotypeDoctypeDelimitersInsideLiterals();
   await testFetchAndVerifyMarkLogotypeSvgPrefixedRootIsNotALogo();
   await testFetchAndVerifyMarkPrologueUsesXmlCommentRules();
+  await testFetchAndVerifyMarkLogotypeNamespacedRoots();
   await testFetchAndVerifyMarkLogotypeLongNonSvgStillNull();
   await testFetchAndVerifyMarkLogotypeNonSvgLeafThenSvg();
   await testFetchAndVerifyMarkLogotypeNoSvg();
