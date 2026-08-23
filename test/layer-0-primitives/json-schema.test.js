@@ -524,6 +524,59 @@ function testSharedSchemaGraphIsWalkedOncePerObject() {
         (missed.length ? " (missed at wraps " + missed.join(", ") + ")" : ""),
         missed.length === 0);
 
+  // Nesting far past anything anyone authors must be REFUSED, and refused with
+  // this validator's own error rather than the engine's. Recursion that simply
+  // runs out of stack reports `RangeError: Maximum call stack size exceeded`,
+  // which tells the caller nothing about their schema and is not catchable as a
+  // JsonSchemaError.
+  //
+  // The cap has to THROW rather than stop walking. Silently returning at the
+  // ceiling is what opened the screening bypass above: a node whose descendants
+  // were skipped looks identical to one that was fully examined.
+  var tooDeep = { type: "string" };
+  for (var d3 = 0; d3 < 5000; d3 += 1) {
+    tooDeep = { type: "object", properties: { n: tooDeep } };
+  }
+  var tooDeepErr = null;
+  try { b.jsonSchema.compile(tooDeep); } catch (e7) { tooDeepErr = e7; }
+  check("jsonSchema: nesting past the ceiling is refused with a typed error, " +
+        "not a stack overflow",
+        tooDeepErr !== null && !(tooDeepErr instanceof RangeError) &&
+        typeof tooDeepErr.code === "string",
+        String(tooDeepErr && (tooDeepErr.code || tooDeepErr.name)));
+
+  // The legacy tuple form of `items` is an ARRAY of subschemas. The index
+  // treated `items` as a single schema, so an array-valued one fell out at the
+  // object test and was never walked — its subschemas were unregistered and
+  // uncounted, on a branch the pattern screen does walk.
+  //
+  // This asserts the POINTER resolves, not that tuple items are validated:
+  // `_validate` implements the 2020-12 single-schema `items` and not the
+  // draft-07 tuple form, so the `$ref` is used from `properties`, which is a
+  // position the validator does evaluate.
+  var tupleRef = b.jsonSchema.compile({
+    type: "object",
+    properties: { a: { $ref: "#/$defs/tuple/items/0" } },
+    $defs: { tuple: { items: [{ type: "string" }] } },
+  });
+  check("jsonSchema: a $ref naming a subschema inside a legacy tuple `items` " +
+        "resolves",
+        tupleRef.isValid({ a: "x" }) === true &&
+        tupleRef.isValid({ a: 5 }) === false);
+
+  // And a tuple nested deeply is bounded by the same ceiling rather than
+  // running off the stack through a branch the index does not walk.
+  var deepTuple = { type: "string" };
+  for (var d4 = 0; d4 < 5000; d4 += 1) {
+    deepTuple = { type: "array", items: [deepTuple] };
+  }
+  var deepTupleErr = null;
+  try { b.jsonSchema.compile(deepTuple); } catch (e8) { deepTupleErr = e8; }
+  check("jsonSchema: deep tuple-style `items` is refused with a typed error too",
+        deepTupleErr !== null && !(deepTupleErr instanceof RangeError) &&
+        typeof deepTupleErr.code === "string",
+        String(deepTupleErr && (deepTupleErr.code || deepTupleErr.name)));
+
   // The screen must still SCREEN. Identity tracking that skipped real work would
   // pass every timing assertion above.
   var sharedBad = { type: "string", pattern: "(a+)+$" };
