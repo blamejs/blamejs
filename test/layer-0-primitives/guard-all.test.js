@@ -335,6 +335,7 @@ async function run() {
   testDeclaredCharacterRepairMatchesBehaviour();
   testCharacterPolicyVocabularyIsEnforced();
   testUnknownPolicyKeyIsRefused();
+  testASinglePolicyValueIsNamedAsFixed();
   testDeclaredVocabularyMatchesTheOptsBlock();
   testPublishedVocabularyCannotBeEdited();
   testEveryPolicyIsCheckedAtEveryDoor();
@@ -1361,6 +1362,68 @@ function testUnknownPolicyKeyIsRefused() {
         (accepted.length ? " (accepted " + accepted.length + ": " +
           accepted.slice(0, 6).join(", ") + ")" : ""),
         accepted.length === 0);
+}
+
+// An option that accepts exactly one value is not an option: writing the only
+// legal value is indistinguishable from omitting the key. Five of them exist —
+// guardFilename's traversalPolicy and nullBytePolicy, guardJwt's algNonePolicy
+// and kidTraversalPolicy, guardSvg's svgzPolicy — and they are all checks where
+// any disposition other than refusing is a hole, which is exactly why the
+// vocabulary collapsed to one member. They are invariants, not policies.
+//
+// The refusal must SAY that. Rendered as "must be one of reject" it reads like
+// a vocabulary that lost its other members, which is how it was reported: the
+// operator could not tell a deliberate lock from a derivation bug, and went
+// looking for the missing values. Naming it as fixed answers the question in
+// the message instead.
+//
+// The value stays refused either way — this changes what the operator is told,
+// never what is enforced.
+function testASinglePolicyValueIsNamedAsFixed() {
+  var probed = 0, vague = [], accepted = [];
+
+  b.guardAll.allGuards().forEach(function (g) {
+    var vocab = g.POLICY_VOCABULARY;
+    if (!vocab || typeof g.resolveOpts !== "function") return;
+
+    Object.keys(vocab).forEach(function (key) {
+      var allowed = vocab[key];
+      if (!Array.isArray(allowed) || allowed.length !== 1) return;
+      probed += 1;
+
+      // The one legal value still resolves, so an existing caller that spells
+      // it out is not broken by any of this.
+      var ok = {};
+      ok[key] = allowed[0];
+      var legalRefused = null;
+      try { g.resolveOpts(ok); } catch (e) { legalRefused = e; }
+      if (legalRefused) accepted.push(g.NAME + "." + key + " refused its own only value");
+
+      var bad = {};
+      bad[key] = "definitely-not-a-policy";
+      var msg = null;
+      try { g.resolveOpts(bad); } catch (e2) { msg = String(e2 && e2.message); }
+      if (msg === null) {
+        accepted.push(g.NAME + "." + key + " accepted a value outside its vocabulary");
+        return;
+      }
+      // "must be one of <the single value>" is the phrasing that reads as a
+      // derivation bug. The message has to name the option as fixed.
+      if (/must be one of/.test(msg) || !/fixed at/.test(msg)) {
+        vague.push(g.NAME + "." + key + ": " + msg.slice(0, 90));
+      }
+    });
+  });
+
+  check("the fixed-policy sweep found the single-value options (" + probed + ")",
+        probed >= 5, "probed " + probed);
+  check("a single-value policy still refuses a value outside it, and still " +
+        "accepts its own" + (accepted.length ? " (" + accepted.join("; ") + ")" : ""),
+        accepted.length === 0);
+  check("a single-value policy is refused as FIXED rather than as a one-member " +
+        "vocabulary" + (vague.length ? " (" + vague.length + ": " +
+          vague.slice(0, 3).join(" | ") + ")" : ""),
+        vague.length === 0);
 }
 
 function testCharacterPolicyVocabularyIsEnforced() {

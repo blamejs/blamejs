@@ -283,6 +283,37 @@ async function run() {
     b.db.runSql("UPDATE\"residents\"SET name='qw-ok' WHERE _id='raw-eu'");
     check("in-region quoted-abut update still persists (gate does not over-reject)",
       (b.db.from("residents").where({ _id: "raw-eu" }).first() || {}).name === "qw-ok");
+
+    // RAW PATH 10: the gate has to PARSE the statement before it can judge it,
+    // and the body patterns ended `([\s\S]+?)\s*;?\s*$` — a lazy run and two
+    // whitespace runs all able to absorb the same trailing spaces, with an
+    // optional `;` between two of them. Every division of that run is a
+    // distinct path and the lazy group retried all of them at every length it
+    // took. Measured cubic: 117ms at 1 KB, 6.8 seconds at 4 KB, and the gate
+    // accepts 100,000 characters, so the ceiling meant to bound the parse is
+    // what made it catastrophic rather than what saved it.
+    //
+    // Refused or allowed, the gate must DECIDE promptly. The budget is far
+    // above the post-fix cost and far below the pre-fix one, so a busy box
+    // cannot turn it either way.
+    var padded = "UPDATE residents SET dataRegion='us-east-1'" + " ".repeat(4096) + "!";
+    var t0 = process.hrtime.bigint();
+    var paddedCode = codeOf(function () { b.db.runSql(padded); });
+    var paddedMs = Number(process.hrtime.bigint() - t0) / 1e6;
+    check("a padded raw UPDATE to a residency table is decided promptly (" +
+          paddedMs.toFixed(0) + "ms), not parsed in cubic time",
+          paddedMs < 1000, paddedMs.toFixed(0) + "ms");
+    check("the padded raw UPDATE is still refused, so the speed is not a skipped gate",
+          typeof paddedCode === "string" &&
+          paddedCode.indexOf("db-query/row-residency") === 0, String(paddedCode));
+    check("the padded raw UPDATE did not move the row cross-border",
+      (b.db.from("residents").where({ _id: "raw-eu" }).first() || {}).dataRegion === "eu-west-1");
+
+    // The same padding on an in-region write must still persist: the parse has
+    // to stay correct at length, not merely fast.
+    b.db.runSql("UPDATE residents SET name='pad-ok'" + " ".repeat(4096) + " ;  ");
+    check("an in-region padded update still persists (length does not break the parse)",
+      (b.db.from("residents").where({ _id: "raw-eu" }).first() || {}).name === "pad-ok");
   } finally {
     b.compliance.clear();
     b.cryptoField.clearResidencyForTest();

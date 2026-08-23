@@ -313,15 +313,28 @@ function _certPoliciesExtDer(oids) {
     build.sequence(oids.map(function (o) { return build.sequence([build.oid(o)]); })));
 }
 
+// DER length octets. Under 128 is one byte; 128 and above take the long form,
+// 0x80 | byteCount followed by the big-endian count. These fixtures used to
+// cap themselves below 128 so they could emit the short form unconditionally,
+// which quietly bounded what they could express — a real SVG is past 128 bytes
+// before it has drawn anything, so the shapes that most needed a fixture were
+// the ones that could not have one.
+function _derLen(n) {
+  if (n < 0x80) return Buffer.from([n]);
+  var bytes = [];
+  for (var v = n; v > 0; v = Math.floor(v / 256)) bytes.unshift(v % 256);
+  return Buffer.from([0x80 | bytes.length].concat(bytes));
+}
+
 // _logotypeExtension — a minimal RFC 3709 id-pe-logotype extension whose
 // value is `SEQUENCE { OCTET STRING <svg...> }`, exercising both the
 // constructed-recursion and primitive-match paths of the framework's
-// best-effort embedded-SVG scanner. The SVG stays < 128 bytes so every
-// DER length is single-byte. Returns a pre-encoded Extension DER Buffer.
+// best-effort embedded-SVG scanner. Returns a pre-encoded Extension DER
+// Buffer.
 function _logotypeExtension(svgText) {
   var svg = Buffer.from(svgText, "utf8");
-  var octet = Buffer.concat([Buffer.from([0x04, svg.length]), svg]);
-  var seq = Buffer.concat([Buffer.from([0x30, octet.length]), octet]);
+  var octet = Buffer.concat([Buffer.from([0x04]), _derLen(svg.length), svg]);
+  var seq = Buffer.concat([Buffer.from([0x30]), _derLen(octet.length), octet]);
   return _extDer(ID_PE_LOGOTYPE_OID, false, seq);
 }
 
@@ -337,10 +350,10 @@ function _logotypeExtensionRaw(innerDer) {
 var _OCTET_NON_SVG = Buffer.from([0x04, 0x04, 0x78, 0x78, 0x78, 0x78]);
 function _octetOf(text) {
   var b2 = Buffer.from(text, "utf8");
-  return Buffer.concat([Buffer.from([0x04, b2.length]), b2]);
+  return Buffer.concat([Buffer.from([0x04]), _derLen(b2.length), b2]);
 }
 function _derSequence(contentBuf) {
-  return Buffer.concat([Buffer.from([0x30, contentBuf.length]), contentBuf]);
+  return Buffer.concat([Buffer.from([0x30]), _derLen(contentBuf.length), contentBuf]);
 }
 
 // The leaf's extension set. Without a custom logotype the named-extension
@@ -1136,6 +1149,335 @@ async function testFetchAndVerifyMarkLogotypeSvg() {
         rv.mark.svg.indexOf("<svg") !== -1);
 }
 
+// A conformant SVG may carry an XML declaration and a DOCTYPE ahead of its
+// root element, which puts `<svg` 154 characters into the document. The
+// scanner decided from the first 64, so a logo written that way was signed
+// into the certificate, served, verified — and then not extracted. The
+// docstring's promise is that `mark` carries the SVG whenever the logotype
+// extension is present, so this is that promise going untested rather than a
+// new guarantee.
+async function testFetchAndVerifyMarkLogotypeSvgBehindPreamble() {
+  var svgStr = '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n' +
+               '<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" ' +
+               '"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\n' +
+               '<svg version="1.2" baseProfile="tiny-ps" viewBox="0 0 1 1"></svg>';
+  check("fetchAndVerifyMark: the fixture really does put <svg past the old " +
+        "64-character window", svgStr.indexOf("<svg") > 64,
+        "offset " + svgStr.indexOf("<svg"));
+
+  var chain = await _generateTestChain({ logoSvg: svgStr });
+  var rv = await b.mail.bimi.fetchAndVerifyMark({
+    domain:          "example.com",
+    vmcUrl:          "https://example.com/cert.pem",
+    trustAnchorsPem: chain.rootPem,
+    httpClient:      _stubHttpClient(chain.leafPem),
+  });
+  check("fetchAndVerifyMark: an SVG behind an XML declaration and a DOCTYPE is " +
+        "still extracted onto mark.svg",
+        rv.ok === true && typeof rv.mark.svg === "string" &&
+        rv.mark.svg.indexOf("<svg") !== -1,
+        rv.mark && typeof rv.mark.svg);
+}
+
+// The window is counted in CHARACTERS, so it has to be applied to decoded text
+// rather than to the buffer. Slicing the buffer first counts bytes, and a
+// preamble carrying non-ASCII text reaches the limit sooner than its character
+// count suggests: the comment below is 310 characters but 610 bytes, which puts
+// `<svg` comfortably inside a 512-character window and outside a 512-byte one.
+// An XML comment is free text, so this is a shape a real logo can have.
+async function testFetchAndVerifyMarkLogotypeSvgBehindMultibytePreamble() {
+  var comment = "<!-- " + "é".repeat(300) + " -->\n";
+  var svgStr = '<?xml version="1.0" encoding="UTF-8"?>\n' + comment +
+               '<svg version="1.2" baseProfile="tiny-ps" viewBox="0 0 1 1"></svg>';
+  var at = svgStr.indexOf("<svg");
+  var atByte = Buffer.byteLength(svgStr.slice(0, at), "utf8");
+  check("fetchAndVerifyMark: the fixture puts <svg inside the character window " +
+        "but outside the byte window (char " + at + ", byte " + atByte + ")",
+        at < 512 && atByte > 512, "char " + at + ", byte " + atByte);
+
+  var chain = await _generateTestChain({ logoSvg: svgStr });
+  var rv = await b.mail.bimi.fetchAndVerifyMark({
+    domain:          "example.com",
+    vmcUrl:          "https://example.com/cert.pem",
+    trustAnchorsPem: chain.rootPem,
+    httpClient:      _stubHttpClient(chain.leafPem),
+  });
+  check("fetchAndVerifyMark: an SVG behind a multibyte preamble is still extracted",
+        rv.ok === true && typeof rv.mark.svg === "string" &&
+        rv.mark.svg.indexOf("<svg") !== -1, rv.mark && typeof rv.mark.svg);
+}
+
+// An XML preamble has no length limit, so no fixed window is the right answer:
+// whatever the number, a legal document can put its root past it. What XML does
+// bound is the KIND of thing that may precede the root — whitespace, the
+// declaration, comments, processing instructions and a DOCTYPE — so the scanner
+// skips those and asks what comes next.
+async function testFetchAndVerifyMarkLogotypeSvgBehindLongPrologue() {
+  var svgStr = '<?xml version="1.0" encoding="UTF-8"?>\n' +
+               "<!-- " + "a licence notice. ".repeat(60) + " -->\n" +
+               "<!-- and a second comment -->\n" +
+               '<svg version="1.2" baseProfile="tiny-ps" viewBox="0 0 1 1"></svg>';
+  check("fetchAndVerifyMark: the fixture puts <svg well past any fixed window " +
+        "(character " + svgStr.indexOf("<svg") + ")",
+        svgStr.indexOf("<svg") > 1024, "at " + svgStr.indexOf("<svg"));
+
+  var chain = await _generateTestChain({ logoSvg: svgStr });
+  var rv = await b.mail.bimi.fetchAndVerifyMark({
+    domain:          "example.com",
+    vmcUrl:          "https://example.com/cert.pem",
+    trustAnchorsPem: chain.rootPem,
+    httpClient:      _stubHttpClient(chain.leafPem),
+  });
+  check("fetchAndVerifyMark: an SVG behind a long legal prologue is still extracted",
+        rv.ok === true && typeof rv.mark.svg === "string" &&
+        rv.mark.svg.indexOf("<svg") !== -1, rv.mark && typeof rv.mark.svg);
+}
+
+// Skipping the prologue is also stricter than a prefix search: `<svg` mentioned
+// inside a comment is not a root element, and a leaf whose first element is
+// something else is not a logo. A prefix search called both of these SVG.
+async function testFetchAndVerifyMarkLogotypeSvgOnlyInsideCommentIsNotALogo() {
+  var seq = _derSequence(_octetOf(
+    '<?xml version="1.0"?>\n<!-- this mentions <svg but is not one -->\n<html></html>'));
+  var chain = await _generateTestChain({ logotypeExt: _logotypeExtensionRaw(seq) });
+  var rv = await b.mail.bimi.fetchAndVerifyMark({
+    domain:          "example.com",
+    vmcUrl:          "https://example.com/cert.pem",
+    trustAnchorsPem: chain.rootPem,
+    httpClient:      _stubHttpClient(chain.leafPem),
+  });
+  check("fetchAndVerifyMark: `<svg` inside a comment is not treated as a logo",
+        rv.ok === true && rv.mark.svg === null, rv.mark && typeof rv.mark.svg);
+}
+
+// Every delimiter a DOCTYPE declaration ends on — `>`, `[`, `]` — is a
+// character that may also appear INSIDE one, in a quoted external identifier,
+// a quoted entity value, or a comment. Searching for the next occurrence of any
+// of them therefore stops in the wrong place, and the whole document reads as
+// unparseable. These are one defect with several spellings, so they are tested
+// as one family rather than one at a time.
+async function testFetchAndVerifyMarkLogotypeDoctypeDelimitersInsideLiterals() {
+  var DOCTYPES = [
+    ["a plain external identifier",
+     '<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/svg11.dtd">'],
+    ["`>` inside a SYSTEM literal",
+     '<!DOCTYPE svg SYSTEM "urn:logo>v1">'],
+    ["`[` inside a SYSTEM literal",
+     '<!DOCTYPE svg SYSTEM "urn:logo[v1">'],
+    ["`]` inside a quoted entity value",
+     '<!DOCTYPE svg [ <!ENTITY placeholder "a]b"> ]>'],
+    ["`>` inside a quoted entity value",
+     '<!DOCTYPE svg [ <!ENTITY placeholder "a>b"> ]>'],
+    ["a comment inside the internal subset carrying `]`",
+     '<!DOCTYPE svg [ <!-- a ] bracket --> <!ENTITY e "x"> ]>'],
+    ["a processing instruction inside the internal subset carrying `]`",
+     "<!DOCTYPE svg [<?meta value]?>]>"],
+    ["a processing instruction inside the internal subset carrying `>`",
+     "<!DOCTYPE svg [<?meta a>b?> <!ENTITY e \"x\"> ]>"],
+    ["a processing instruction in the declaration itself",
+     "<!DOCTYPE svg [<?meta plain?>]>"],
+    ["single-quoted literals",
+     "<!DOCTYPE svg SYSTEM 'urn:logo>v1'>"],
+    ["no DOCTYPE at all",
+     ""],
+  ];
+
+  for (var i = 0; i < DOCTYPES.length; i += 1) {
+    var svgStr = '<?xml version="1.0"?>\n' + DOCTYPES[i][1] + "\n" +
+                 '<svg version="1.2" baseProfile="tiny-ps" viewBox="0 0 1 1"></svg>';
+    var chain = await _generateTestChain({ logoSvg: svgStr });
+    var rv = await b.mail.bimi.fetchAndVerifyMark({
+      domain:          "example.com",
+      vmcUrl:          "https://example.com/cert.pem",
+      trustAnchorsPem: chain.rootPem,
+      httpClient:      _stubHttpClient(chain.leafPem),
+    });
+    check("fetchAndVerifyMark: SVG extracted behind a DOCTYPE with " + DOCTYPES[i][0],
+          rv.ok === true && typeof rv.mark.svg === "string" &&
+          rv.mark.svg.indexOf("<svg") !== -1, rv.mark && typeof rv.mark.svg);
+  }
+}
+
+// A comment in an XML document closes on `-->` and on nothing else. HTML also
+// closes one at `--!>` and abruptly at `<!-->`, so a scanner using HTML rules
+// on XML disagrees with an XML parser about where the document even begins.
+// Both directions matter: the HTML reading ends a comment early and takes the
+// text after it for a root, and it ends one that XML says is still open.
+async function testFetchAndVerifyMarkPrologueUsesXmlCommentRules() {
+  var ROOT = '<svg version="1.2" baseProfile="tiny-ps" viewBox="0 0 1 1"></svg>';
+  var CASES = [
+    ["an abrupt `<!-->` close",            "<!-->" + ROOT,               false],
+    ["an HTML-only `--!>` close",          "<!-- x --!>" + ROOT,         false],
+    ["`--!>` inside a comment XML keeps open",
+     "<!-- a --!> still comment -->" + ROOT,                             true],
+    ["an ordinary comment",                "<!-- plain -->" + ROOT,      true],
+  ];
+
+  for (var i = 0; i < CASES.length; i += 1) {
+    var seq = _derSequence(_octetOf(CASES[i][1]));
+    var chain = await _generateTestChain({ logotypeExt: _logotypeExtensionRaw(seq) });
+    var rv = await b.mail.bimi.fetchAndVerifyMark({
+      domain:          "example.com",
+      vmcUrl:          "https://example.com/cert.pem",
+      trustAnchorsPem: chain.rootPem,
+      httpClient:      _stubHttpClient(chain.leafPem),
+    });
+    var extracted = typeof rv.mark.svg === "string";
+    check("fetchAndVerifyMark: " + CASES[i][0] + " — extracted=" + extracted +
+          " (XML rules say " + CASES[i][2] + ")",
+          rv.ok === true && extracted === CASES[i][2], String(rv.mark && rv.mark.svg));
+  }
+}
+
+// An SVG may bind its own namespace to a prefix and write the root as
+// `<svg:svg>`, so the root is identified by its LOCAL name rather than by the
+// raw text after `<`. Tightening the boundary without this rejects a
+// serialization the original substring search accepted.
+async function testFetchAndVerifyMarkLogotypeNamespacedRoots() {
+  var ROOTS = [
+    ["unprefixed",              '<svg xmlns="http://www.w3.org/2000/svg" version="1.2"></svg>',                    true],
+    ["prefixed `svg:svg`",      '<svg:svg xmlns:svg="http://www.w3.org/2000/svg" version="1.2"></svg:svg>',        true],
+    ["prefixed `ns0:svg`",      '<ns0:svg xmlns:ns0="http://www.w3.org/2000/svg" version="1.2"></ns0:svg>',        true],
+    ["longer name `svgfoo`",    '<svgfoo xmlns="http://www.w3.org/2000/svg"></svgfoo>',                            false],
+    ["dotted name `svg.foo`",   '<svg.foo xmlns="http://www.w3.org/2000/svg"></svg.foo>',                          false],
+    ["prefix but no local",     '<svg: xmlns="http://www.w3.org/2000/svg"></svg:>',                                false],
+    ["empty prefix `<:svg`",    '<:svg xmlns="http://www.w3.org/2000/svg"></:svg>',                                false],
+    // A qualified name has ONE colon and two non-empty parts. Reading the local
+    // part as "whatever follows the last colon" calls each of these an SVG.
+    ["two colons `a::svg`",     '<a::svg xmlns="http://www.w3.org/2000/svg"></a::svg>',                            false],
+    ["three parts `a:b:svg`",   '<a:b:svg xmlns="http://www.w3.org/2000/svg"></a:b:svg>',                          false],
+    ["`<` inside the prefix",   '<a<:svg xmlns="http://www.w3.org/2000/svg"></a<:svg>',                            false],
+    ["quote inside the prefix", '<a":svg xmlns="http://www.w3.org/2000/svg"></a":svg>',                            false],
+    // A digit cannot start an XML name. Declared or not, `0ns` is not a prefix
+    // — and the declaration is present here so this fails on the name rather
+    // than on a missing binding.
+    ["prefix starting a digit", '<0ns:svg xmlns:0ns="http://www.w3.org/2000/svg"></0ns:svg>',                      false],
+    ["prefix of only a dash",   '<-:svg xmlns:-="http://www.w3.org/2000/svg"></-:svg>',                            false],
+    ["prefix with dot and dash",'<a.b-c:svg xmlns:a.b-c="http://www.w3.org/2000/svg"></a.b-c:svg>',                true],
+    // A prefix means nothing until it is bound. `<x:svg>` where `x` is another
+    // vocabulary is not an SVG, and a prefix declared nowhere names nothing.
+    ["prefix bound elsewhere",  '<x:svg xmlns:x="http://example.com/other"></x:svg>',                              false],
+    ["prefix never declared",   '<x:svg version="1.2"></x:svg>',                                                   false],
+    ["prefix bound, single quotes", "<x:svg xmlns:x='http://www.w3.org/2000/svg'></x:svg>",                        true],
+    // A namespace URI is compared for what it denotes. These three spell the
+    // SVG namespace differently and mean the same thing to an XML processor.
+    ["hex character reference",  '<x:svg xmlns:x="http://www.w3.org/2000/&#x73;vg"></x:svg>',                      true],
+    ["decimal character reference", '<x:svg xmlns:x="http://www.w3.org/2000/&#115;vg"></x:svg>',                   true],
+    // XML puts no limit on leading zeros, so bounding the lexical digit run
+    // would refuse a reference an XML processor resolves normally.
+    ["leading zeros, decimal",   '<x:svg xmlns:x="&#0000000104;ttp://www.w3.org/2000/svg"></x:svg>',               true],
+    ["leading zeros, hex",       '<x:svg xmlns:x="&#x00000068;ttp://www.w3.org/2000/svg"></x:svg>',                true],
+    ["all zeros is not a character", '<x:svg xmlns:x="&#0000;http://www.w3.org/2000/svg"></x:svg>',                false],
+    ["predefined entity in the URI", '<x:svg xmlns:x="http://www.w3.org/2000/svg&amp;"></x:svg>',                  false],
+    ["undeclared entity left as written", '<x:svg xmlns:x="http://www.w3.org/2000/&foo;svg"></x:svg>',             false],
+    // The unprefixed root stays tolerant of a missing xmlns: logos omit it and
+    // the previous scanner accepted them.
+    ["unprefixed, no xmlns",    '<svg version="1.2" viewBox="0 0 1 1"></svg>',                                     true],
+    // A start tag that never closes is a truncated document, not a logo. The
+    // name ends at the whitespace before the attributes, so a check that stops
+    // at the name accepts these; the tag has to be terminated too. Both spellings
+    // matter — the prefixed one reaches the namespace lookup and finds a
+    // perfectly good binding in bytes that end mid-tag.
+    // Non-ASCII is not a licence. XML's NameStartChar covers a lot of Unicode
+    // but excludes the C1 controls, most punctuation and the surrogate block,
+    // so a prefix built from those is not a name however faithfully the
+    // document then declares it. Written with fromCharCode so this file stays
+    // free of invisible characters.
+    ["C1 control as the prefix",
+     "<" + String.fromCharCode(0x80) + ':svg xmlns:' + String.fromCharCode(0x80) +
+     '="http://www.w3.org/2000/svg"></' + String.fromCharCode(0x80) + ":svg>",     false],
+    // U+00D7, the multiplication sign, is the classic carve-out: NameStartChar
+    // runs [#xC0-#xD6] then [#xD8-#xF6], stepping over exactly this character.
+    // Picked deliberately over a punctuation mark that merely LOOKS wrong —
+    // XML's ranges are broad, and [#x2C00-#x2FEF] swallows Supplemental
+    // Punctuation whole, so an inverted interrobang really is a legal name
+    // start and asserting otherwise would be testing a spec that does not exist.
+    ["a character XML carves out (multiplication sign)",
+     "<" + String.fromCharCode(0xD7) + ':svg xmlns:' + String.fromCharCode(0xD7) +
+     '="http://www.w3.org/2000/svg"></' + String.fromCharCode(0xD7) + ":svg>",     false],
+    // A lone surrogate is deliberately NOT tested here: it cannot reach the
+    // scanner through this path. The payload is encoded with Buffer.from(...,
+    // "utf8"), which replaces an unpaired surrogate with U+FFFD — and U+FFFD is
+    // a legal name start, since NameStartChar ends its last range on exactly
+    // that character. Asserting a refusal here would be asserting against the
+    // transport rather than against the check.
+    // A legal non-ASCII prefix still works — the point is the grammar, not ASCII.
+    ["Greek letter as the prefix",
+     "<" + String.fromCharCode(0x3B1) + ':svg xmlns:' + String.fromCharCode(0x3B1) +
+     '="http://www.w3.org/2000/svg"></' + String.fromCharCode(0x3B1) + ":svg>",    true],
+    // A `/` inside a start tag is legal in exactly one place: immediately
+    // before the `>`, closing an empty element. Anywhere else the text is not a
+    // start tag, however good the namespace declaration before it looks.
+    ["slash mid-tag, then garbage",
+     '<x:svg xmlns:x="http://www.w3.org/2000/svg"/garbage></x:svg>',                                               false],
+    ["slash mid-tag, unprefixed",
+     '<svg xmlns="http://www.w3.org/2000/svg"/garbage></svg>',                                                     false],
+    // The legitimate empty-element form still reads.
+    ["empty element, prefixed",
+     '<x:svg xmlns:x="http://www.w3.org/2000/svg"/>',                                                              true],
+    ["empty element with trailing space",
+     '<x:svg xmlns:x="http://www.w3.org/2000/svg" />',                                                             true],
+    // XML's EmptyElemTag is `S? '/>'` — the space may precede the slash and not
+    // follow it, so the slash is adjacent to the bracket or the text is not a
+    // start tag.
+    ["space between the slash and the bracket",
+     '<x:svg xmlns:x="http://www.w3.org/2000/svg"/ >',                                                             false],
+    // And a `/` inside a quoted value is data, not the tag closing.
+    ["slash inside the quoted URI",
+     '<x:svg xmlns:x="http://www.w3.org/2000/svg" data-a="a/b"></x:svg>',                                          true],
+    ["prefixed, tag never closes", '<x:svg xmlns:x="http://www.w3.org/2000/svg"',                                  false],
+    ["unprefixed, tag never closes", '<svg version="1.2" viewBox="0 0 1 1"',                                       false],
+  ];
+
+  for (var i = 0; i < ROOTS.length; i += 1) {
+    var seq = _derSequence(_octetOf('<?xml version="1.0"?>\n' + ROOTS[i][1]));
+    var chain = await _generateTestChain({ logotypeExt: _logotypeExtensionRaw(seq) });
+    var rv = await b.mail.bimi.fetchAndVerifyMark({
+      domain:          "example.com",
+      vmcUrl:          "https://example.com/cert.pem",
+      trustAnchorsPem: chain.rootPem,
+      httpClient:      _stubHttpClient(chain.leafPem),
+    });
+    var extracted = typeof rv.mark.svg === "string";
+    check("fetchAndVerifyMark: root " + ROOTS[i][0] + " — extracted=" + extracted +
+          " (expected " + ROOTS[i][2] + ")",
+          rv.ok === true && extracted === ROOTS[i][2], String(rv.mark && rv.mark.svg));
+  }
+}
+
+// `.` is a legal XML name character, so `<svg.foo>` is one element and not the
+// `svg` root followed by something. A boundary check built from a list of
+// name characters misses whichever ones the list omits; the reliable question
+// is what may FOLLOW a finished tag name, which is only whitespace, `/` or `>`.
+async function testFetchAndVerifyMarkLogotypeSvgPrefixedRootIsNotALogo() {
+  var seq = _derSequence(_octetOf(
+    '<?xml version="1.0"?>\n<svg.foo version="1.2" viewBox="0 0 1 1"></svg.foo>'));
+  var chain = await _generateTestChain({ logotypeExt: _logotypeExtensionRaw(seq) });
+  var rv = await b.mail.bimi.fetchAndVerifyMark({
+    domain:          "example.com",
+    vmcUrl:          "https://example.com/cert.pem",
+    trustAnchorsPem: chain.rootPem,
+    httpClient:      _stubHttpClient(chain.leafPem),
+  });
+  check("fetchAndVerifyMark: a root named `svg.foo` is not exposed as an SVG logo",
+        rv.ok === true && rv.mark.svg === null, rv.mark && typeof rv.mark.svg);
+}
+
+// The widened window must not turn every leaf into a logo. A document that
+// mentions `<svg` nowhere is still not one, however long it is.
+async function testFetchAndVerifyMarkLogotypeLongNonSvgStillNull() {
+  var seq = _derSequence(_octetOf("%PDF-1.7\n" + "% padding\n".repeat(64)));
+  var chain = await _generateTestChain({ logotypeExt: _logotypeExtensionRaw(seq) });
+  var rv = await b.mail.bimi.fetchAndVerifyMark({
+    domain:          "example.com",
+    vmcUrl:          "https://example.com/cert.pem",
+    trustAnchorsPem: chain.rootPem,
+    httpClient:      _stubHttpClient(chain.leafPem),
+  });
+  check("fetchAndVerifyMark: a long non-SVG payload still yields mark.svg === null",
+        rv.ok === true && rv.mark.svg === null, rv.mark && typeof rv.mark.svg);
+}
+
 async function testFetchAndVerifyMarkLogotypeNonSvgLeafThenSvg() {
   // A logotype SEQUENCE whose first leaf is not an SVG magic prefix — the
   // scanner skips it and keeps descending to the SVG leaf.
@@ -1172,7 +1514,13 @@ async function testFetchAndVerifyMarkLogotypeTruncatedSequence() {
   // Logotype value where the outer SEQUENCE fails a full sequence-decode
   // (trailing incomplete TLV) but the first complete TLV still decodes to
   // the SVG — exercises the readNode fallback in the scanner.
-  var inner = Buffer.from([0x30, 0x07, 0x04, 0x04, 0x3C, 0x73, 0x76, 0x67, 0xFF]);
+  //
+  // The payload is `<svg>` rather than a bare `<svg`: a tag name has to be
+  // followed by whitespace, `/` or `>` to have ended, and a leaf that stops
+  // mid-name is a truncated document rather than a logo. The declared SEQUENCE
+  // length still overruns the octets that follow it, which is what makes the
+  // full sequence-decode fail and the fallback run — the point of this test.
+  var inner = Buffer.from([0x30, 0x08, 0x04, 0x05, 0x3C, 0x73, 0x76, 0x67, 0x3E, 0xFF]);
   var chain = await _generateTestChain({ logotypeExt: _logotypeExtensionRaw(inner) });
   var rv = await b.mail.bimi.fetchAndVerifyMark({
     domain:          "example.com",
@@ -1530,7 +1878,77 @@ async function testFetchAndVerifyMarkChainDepthExceeded() {
         /chain depth exceeded 8/.test(threw.message));
 }
 
+// A BIMI logo is fetched from a URL named in the SENDER's own DNS record, so
+// the bytes parsed here are chosen by whoever controls that domain.
+//
+// The attribute parser's name pattern, `[A-Za-z_:][A-Za-z0-9:._-]*`, could
+// begin at every offset inside a long run of name characters, and at each one
+// it consumed the run before `\s*=\s*` failed.
+//
+// The size that matters is TINY_PS_MAX_BYTES, 32 KiB, which validateTinyPsSvg
+// enforces before it parses anything — NOT the 256 KiB fetch cap. Measured at
+// the parse's own cap: 409ms for the hostile shape against 0.6ms for a
+// well-formed SVG of the same size, so roughly 680x, all of it shape rather
+// than size. The threshold below is set well under the unfixed cost and well
+// over the fixed one.
+//
+// Three assertions: hostile input must be fast, a real SVG of the same size
+// must also be fast (or the fix is just a smaller input), and the parser must
+// still read attributes (or the fix is a parser that stopped parsing).
+function testTinyPsAttrParseDoesNotBacktrack() {
+  function ms(fn) {
+    var lo = Infinity;
+    for (var i = 0; i < 2; i += 1) {
+      var t0 = process.hrtime.bigint();
+      try { fn(); } catch (_e) { /* a refusal is fine; a hang is not */ }
+      var el = Number(process.hrtime.bigint() - t0) / 1e6;
+      if (el < lo) lo = el;
+    }
+    return lo;
+  }
+
+  var CAP = 32768;                                   // TINY_PS_MAX_BYTES
+  var head = '<svg xmlns="http://www.w3.org/2000/svg" ';
+  // A run of attribute-name characters that never reaches an `=`, filling the
+  // input to just under the cap so the parse actually runs.
+  var hostile = head + "a0".repeat(Math.floor((CAP - head.length - 2) / 2)) + "!>";
+  var benignBody = '<rect x="1" y="2" width="3" height="4"/>';
+  var benign = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" ' +
+               'baseProfile="tiny-ps" version="1.2">' +
+               benignBody.repeat(Math.floor(CAP / benignBody.length)) + "</svg>";
+
+  var hostileMs = ms(function () { b.mail.bimi.validateTinyPsSvg(hostile); });
+  var benignMs = ms(function () {
+    b.mail.bimi.validateTinyPsSvg(benign.slice(0, CAP - 10) + "</svg>");
+  });
+
+  check("mail.bimi: a hostile-shaped SVG at the Tiny-PS cap parses without " +
+        "backtracking (" + hostileMs.toFixed(0) + "ms)",
+        hostileMs < 50, hostileMs.toFixed(0) + "ms");
+  check("mail.bimi: a well-formed SVG of the same size is still fast (" +
+        benignMs.toFixed(1) + "ms) — the fix is not a smaller input",
+        benignMs < 50, benignMs.toFixed(1) + "ms");
+
+  // And the parser still reads attributes: a conformant tiny-ps SVG carries
+  // baseProfile="tiny-ps" and version="1.2", and validation turns on reading
+  // exactly those.
+  var conformant = '<svg xmlns="http://www.w3.org/2000/svg" baseProfile="tiny-ps" ' +
+                   'version="1.2" viewBox="0 0 64 64"><title>Example</title></svg>';
+  var rv = b.mail.bimi.validateTinyPsSvg(conformant);
+  check("mail.bimi: a conformant tiny-ps SVG still validates",
+        rv && rv.ok === true, JSON.stringify(rv && rv.violations));
+
+  // A missing baseProfile must still be caught, or the attribute read has gone
+  // silently blind rather than fast.
+  var noProfile = '<svg xmlns="http://www.w3.org/2000/svg" version="1.2" ' +
+                  'viewBox="0 0 64 64"><title>Example</title></svg>';
+  var bad = b.mail.bimi.validateTinyPsSvg(noProfile);
+  check("mail.bimi: a missing baseProfile is still a violation",
+        bad && bad.ok === false, JSON.stringify(bad && bad.violations));
+}
+
 async function run() {
+  testTinyPsAttrParseDoesNotBacktrack();
   testSurface();
   testRecordShape();
   testParseRecord();
@@ -1612,6 +2030,15 @@ async function run() {
   await testFetchAndVerifyMarkUriSanMalformed();
   await testFetchAndVerifyMarkNoSan();
   await testFetchAndVerifyMarkLogotypeSvg();
+  await testFetchAndVerifyMarkLogotypeSvgBehindPreamble();
+  await testFetchAndVerifyMarkLogotypeSvgBehindMultibytePreamble();
+  await testFetchAndVerifyMarkLogotypeSvgBehindLongPrologue();
+  await testFetchAndVerifyMarkLogotypeSvgOnlyInsideCommentIsNotALogo();
+  await testFetchAndVerifyMarkLogotypeDoctypeDelimitersInsideLiterals();
+  await testFetchAndVerifyMarkLogotypeSvgPrefixedRootIsNotALogo();
+  await testFetchAndVerifyMarkPrologueUsesXmlCommentRules();
+  await testFetchAndVerifyMarkLogotypeNamespacedRoots();
+  await testFetchAndVerifyMarkLogotypeLongNonSvgStillNull();
   await testFetchAndVerifyMarkLogotypeNonSvgLeafThenSvg();
   await testFetchAndVerifyMarkLogotypeNoSvg();
   await testFetchAndVerifyMarkLogotypeTruncatedSequence();

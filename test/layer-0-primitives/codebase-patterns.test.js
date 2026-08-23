@@ -8063,10 +8063,14 @@ var KNOWN_ANTIPATTERNS = [
     // comment-parser differential). markupTokenizer.htmlCommentEnd owns the
     // correct scan; guard-html / guard-svg / mail-bimi / html-balance route
     // through it. XML comment scanners (safe-xml, xml-c14n) legitimately use
-    // "-->" because XML has neither "--!>" nor abrupt-close forms.
+    // "-->" because XML has neither "--!>" nor abrupt-close forms — and an XML
+    // scanner that reaches for htmlCommentEnd has the differential the other
+    // way round, ending a comment XML says is still open. markupTokenizer names
+    // BOTH grammars (xmlCommentEnd / htmlCommentEnd) as it already does for tag
+    // names; a caller picks the one its document is written in.
     regex: /\.indexOf\("-->"/,
     allowlist: ["lib/markup-tokenizer.js", "lib/parsers/safe-xml.js", "lib/xml-c14n.js"],
-    reason: "HTML/SVG-in-HTML comment scanning must use markupTokenizer.htmlCommentEnd (covers --!> + abrupt <!-->/<!--->), not a bare indexOf('-->'). XML scanners are exempt (XML has no such forms); markup-tokenizer.js is the primitive's home.",
+    reason: "Comment scanning must go through markupTokenizer, which owns both grammars: htmlCommentEnd for HTML / SVG-in-HTML (covers --!> + abrupt <!-->/<!--->) and xmlCommentEnd for XML (only -->). A bare indexOf('-->') trips this; so does using the HTML reader on an XML document, which is not lexically detectable and is why the two are named separately. mail-bimi carries one of each — the Tiny-PS validator reads SVG-in-HTML, the certificate prologue scanner reads XML. markup-tokenizer.js is the primitives' home; safe-xml and xml-c14n predate xmlCommentEnd and are exempt by path.",
   },
   {
     id: "x509-issuer-check-must-enforce-ca",
@@ -9998,6 +10002,26 @@ var KNOWN_ANTIPATTERNS = [
     skipCommentLines: true,
     allowlist: ["lib/safe-buffer.js", "lib/static.js"],
     reason: "A byte-named cap compared against a STRING's `.length` (UTF-16 code units) under-enforces the byte limit on multibyte input: a 2-4-byte character counts as 1, so the real byte ceiling is up to ~4x the configured limit (a looser DoS bound than the operator set), and the error mislabels the char count as 'N bytes'. The original detector only matched `opts.<...>Bytes`, so a family of `caps.maxLineBytes` / bare-`maxBytes` string comparisons slipped through (imap/managesieve/pop3 command-line caps, pop3 USER/PASS caps, mail-arf / dmarc-ruf report caps, mail-store body cap, inbox metadata cap, safe-jsonpath key/expression caps, sandbox input + result caps). Fixed framework-wide by routing every string byte-cap comparison through safeBuffer.byteLengthOf and keeping a behavioral test per consumer path (the primary guard; this detector is the secondary tripwire). Buffer/byte-array sites were routed through the same primitive (parity — a Buffer's `.length` IS bytes). Allowlist is STRUCTURAL and minimal: lib/safe-buffer.js is the primitive's own home (its toBuffer / boundedChunkCollector cap a freshly-built Buffer), and lib/static.js compares a parsed Range descriptor's numeric `.length` (a precomputed byte count, not a String/Buffer length). A re-introduced `value.length > someBytesCap` trips this — use safeBuffer.byteLengthOf(value).",
+  },
+  {
+    id: "char-cap-applied-before-decoding",
+    primitive: "Decode first, then apply a character-named window: `buf.toString(\"utf8\")` and THEN `.slice(0, N_CHARS)` / an index comparison against it. Slicing the Buffer first and decoding the slice makes a cap whose name says CHARACTERS enforce BYTES, which is the mirror of `byte-cap-measured-with-char-length` above and wrong in the opposite direction — it under-reads multibyte input instead of under-enforcing on it.",
+    // The mirror of the byte-cap detector. That one catches a *Bytes cap
+    // measured with a string's `.length`; this one catches a *CHARS cap applied
+    // to a Buffer before the decode. Anchored on the two tokens that make the
+    // shape wrong — a CHARS-named bound, and a `.toString(` applied to the
+    // result of the call that used it — with a single-line temper so the match
+    // cannot wander into an unrelated statement. The {0,120}/{0,40} bounds are
+    // ReDoS backstops far above any real call, never the precision mechanism.
+    //
+    // `Error(n.toString())` and similar do not trip it: the `.toString(` has to
+    // follow a CLOSING paren, so a bare receiver inside a call does not match.
+    // The corrected shape — decode into a variable, then compare an index
+    // against the CHARS bound — has no `)` immediately before `.toString(`.
+    regex: /\.slice\s*\([^\n]{0,120}(?:_CHARS|Chars)\b[^\n]{0,40}\)\s*\.toString\s*\(/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "b.mail.bimi's embedded-SVG scanner read `node.value.slice(0, Math.min(node.value.length, SVG_PREFIX_SCAN_CHARS)).toString(\"utf8\")` — the constant is named CHARS and the code counted bytes, because the slice ran on the Buffer and the decode came after. A conformant SVG may carry an XML declaration, a DOCTYPE and a comment ahead of its root element, and an XML comment is free text: 300 accented characters is 600 bytes, which puts `<svg` well inside a 512-character window and outside a 512-byte one, so a verified VMC logo came back as `mark.svg === null`. The source comment asserted the opposite of what the code did (\"Characters, not bytes\"), which is what makes this worth a detector rather than a note — the declaration and the behaviour disagreed and the declaration was the thing being read. That site no longer has a character window at all: it decodes the leaf once and steps over the XML prologue, because a prologue has no length limit and any fixed window is a boundary a legal document can cross. The detector remains as the class guard — a character-named bound applied to undecoded bytes is wrong wherever it appears. Allowlist is empty: no legitimate site applies a character-named cap to a Buffer and decodes afterwards.",
   },
   {
     id: "compliance-postures-hand-rolled-forensic-map",
