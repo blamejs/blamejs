@@ -486,9 +486,14 @@ function _scanLine(line, state, eof) {
   // Not while an explicit key is pending: its `:` value line sits at the SAME
   // column as its `?`, so popping here would remove the very key the line
   // belongs to, and whatever nests under it would inherit the step's position.
-  if (flowDepth === 0 && !_isBlank(line) && !explicitKey) {
-    var lineIndent = _indentOf(line);
-    while (stack.length && stack[stack.length - 1].indent >= lineIndent) stack.pop();
+  // A comment-only line carries no node, and YAML nesting does not notice it —
+  // so a column-zero comment sitting between `jobs.build` and its `steps` must
+  // not close them. Popping on it gave the `uses` below the wrong path, and a
+  // wrong path means neither collected nor named.
+  var firstCol = _indentOf(line);
+  var commentOnly = !_isBlank(line) && line.charAt(firstCol) === "#";
+  if (flowDepth === 0 && !_isBlank(line) && !commentOnly && !explicitKey) {
+    while (stack.length && stack[stack.length - 1].indent >= firstCol) stack.pop();
   }
   // The enclosing keys, outermost first. Block nesting comes from the column
   // stack; a flow collection contributes the key that opened it, and null where
@@ -1223,17 +1228,31 @@ async function main() {
         seenFiles[rel2] = true;
         var abs = path.join(__dirname, "..", rel2);
         if (!(abs in byFile)) byFile[abs] = fs.readFileSync(abs, "utf8");
-        var before = byFile[abs];
-        byFile[abs] = before.replace(re2, "$1" + fr.latestSha + "$2" + tag);
-        // Never report a rewrite that did not happen. Whatever shape turns up
-        // next, the failure has to be loud here rather than an exit 0 over an
-        // unchanged file.
-        if (byFile[abs] === before) {
-          notRewritten.push({ action: fr.action, file: rel2, line: fr.refs[rj].line });
-        }
+        byFile[abs] = byFile[abs].replace(re2, "$1" + fr.latestSha + "$2" + tag);
       }
     }
     Object.keys(byFile).forEach(function (abs) { fs.writeFileSync(abs, byFile[abs]); });
+
+    // Verify by RE-COLLECTING, with the same scanner that found the references
+    // in the first place. "The file changed" was too weak — one occurrence
+    // matching is enough to change it, so a second the replacement could not
+    // reach stayed stale while the run reported success — and matching raw text
+    // was too strong, since `owner/repo@<sha>` inside a comment or a matrix
+    // value is not a pin at all. Asking the collector is the only check that is
+    // neither: it sees exactly what the gate calls a reference.
+    var after = _collectPinnedActions();
+    for (var vf = 0; vf < fixable.length; vf++) {
+      var want = fixable[vf];
+      var got  = after.actions[want.action];
+      var left = !got ? [] : (got.refs || []).filter(function (r) {
+        return !r.tagPinned && r.sha !== want.latestSha;
+      });
+      for (var lf = 0; lf < left.length; lf++) {
+        notRewritten.push({ action: want.action, file: left[lf].file,
+                            line: left[lf].line });
+      }
+    }
+
     var failedActions = {};
     notRewritten.forEach(function (n) { failedActions[n.action] = true; });
     say("\n[actions-currency] --fix: rewrote " +

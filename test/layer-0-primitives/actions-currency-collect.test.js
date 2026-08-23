@@ -208,6 +208,24 @@ function testEveryUsesIsEitherCheckedOrNamed() {
       "jobs:\r\n  build:\r\n    steps:\r\n" +
       "      - uses: owner/crlf@" + SHA + "  # v5.0.1\r\n",
   }, function (dir) { return currency._collectPinnedActions(dir); });
+  // YAML nesting does not notice comments, so one at column zero between a job
+  // and its `steps` must not close them. Popping on it gave the `uses` below
+  // the wrong path, and a wrong path means neither collected nor named.
+  var interleaved = withFixture({
+    "comments.yml":
+      "jobs:\n" +
+      "  build:\n" +
+      "# a column-zero note about the steps below\n" +
+      "    steps:\n" +
+      "# another one, between the steps key and its first entry\n" +
+      "      - uses: owner/aftercomment@" + SHA + "  # v5.0.1\n",
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: a comment at a lower indent does not close the " +
+        "nesting around it",
+        (interleaved.actions["owner/aftercomment"] || {}).version === "5.0.1" &&
+        interleaved.unparsed.length === 0,
+        JSON.stringify(interleaved));
+
   check("actions-currency: a version comment on a CRLF line is read",
         (crlf.actions["owner/crlf"] || {}).version === "5.0.1" &&
         crlf.unparsed.length === 0,
@@ -849,6 +867,28 @@ function testTheFixReplacementReachesThroughAQuote() {
         "so a second pass would correctly find nothing and must not be run",
         (once.match(new RegExp(NEW, "g")) || []).length === 2 &&
         once.indexOf(OLD) === -1, once);
+
+  // `--fix` verifies by RE-COLLECTING with this same scanner, rather than by
+  // asking whether the file changed (too weak — one occurrence matching is
+  // enough) or by matching raw text (too strong — `owner/repo@<sha>` in a
+  // comment or a matrix value is not a pin). The property it relies on is
+  // asserted here: the collector reports each reference's own SHA, so a file
+  // that is only partly rewritten still shows the stale one.
+  var partly = withFixture({
+    "partly.yml": stepsDoc(
+      "      - uses: actions/checkout@" + NEW + "  # v6.0.0\n" +
+      '      - uses: "actions/checkout@' + OLD + '"  # v5.0.1\n' +
+      "      - run: echo 'actions/checkout@" + OLD + " is only text here'\n"),
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  var shas = ((partly.actions["actions/checkout"] || {}).refs || [])
+    .map(function (r) { return r.sha; });
+  check("actions-currency: the collector reports each reference's own SHA, so " +
+        "a half-rewritten file still shows the stale one",
+        shas.length === 2 && shas.indexOf(NEW) !== -1 && shas.indexOf(OLD) !== -1,
+        JSON.stringify(shas));
+  check("actions-currency: and the same text inside a script is not counted, " +
+        "so a finished rewrite is not reported as failed",
+        shas.length === 2, JSON.stringify(partly.actions));
 }
 
 // An action can be pinned by SHA in one workflow and by tag in another, and
