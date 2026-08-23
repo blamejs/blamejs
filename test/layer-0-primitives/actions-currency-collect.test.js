@@ -42,6 +42,11 @@ function withFixture(files, fn) {
   }
 }
 
+// The collector returns { actions, unparsed }. Most assertions below only care
+// about the map, so this names that half; the tests that are ABOUT the other
+// half reach for the whole thing.
+function collectActions(dir) { return currency._collectPinnedActions(dir).actions; }
+
 function testTagPinnedReusableWorkflowIsCollected() {
   var SHA = "11bd71901bbe5b1630ceea73d27597364c9af683";
   var collected = withFixture({
@@ -57,7 +62,7 @@ function testTagPinnedReusableWorkflowIsCollected() {
       // nothing here, which is the same blind spot one level down.
       "    uses: slsa-framework/slsa-github-generator/.github/workflows/gen.yml@v2.1.0" +
       "  # zizmor: ignore[unpinned-uses] allow:not-sha-pinned\n",
-  }, function (dir) { return currency._collectPinnedActions(dir); });
+  }, collectActions);
 
   check("actions-currency: the SHA-pinned action is still collected",
         Object.prototype.hasOwnProperty.call(collected, "actions/checkout"),
@@ -84,18 +89,244 @@ function testTagPinnedReusableWorkflowIsCollected() {
 }
 
 // A 40-hex SHA begins with digits often enough that a version pattern will
-// happily read the leading run as one. Only requiring the number to END where
-// it does keeps `@11bd7190...` from being collected as version "11".
+// happily read the leading run as one, so `@11bd7190...` must never be
+// collected as version "11". But not-collecting is only half an answer: a SHA
+// states no version of its own, so without the trailing `# vX.Y.Z` there is
+// nothing to compare upstream against, and silently dropping the line is the
+// same blind spot this whole gate exists to close. It has to be NAMED.
 function testAShaIsNeverReadAsAVersion() {
-  var collected = withFixture({
-    // Deliberately missing the `# vX.Y.Z` comment, so the SHA pattern does not
-    // match either — this line must produce NOTHING rather than a bogus version.
+  var out = withFixture({
     "bare.yml": "      - uses: actions/setup-node@11bd71901bbe5b1630ceea73d27597364c9af683\n",
   }, function (dir) { return currency._collectPinnedActions(dir); });
 
   check("actions-currency: an uncommented SHA pin is not collected as a tag pin",
-        !Object.prototype.hasOwnProperty.call(collected, "actions/setup-node"),
-        JSON.stringify(collected));
+        !Object.prototype.hasOwnProperty.call(out.actions, "actions/setup-node"),
+        JSON.stringify(out.actions));
+  check("actions-currency: an uncommented SHA pin is reported as unreadable " +
+        "rather than dropped",
+        out.unparsed.length === 1 &&
+        out.unparsed[0].line === 1 &&
+        out.unparsed[0].reason.indexOf("version comment") !== -1,
+        JSON.stringify(out.unparsed));
+}
+
+// The three shapes Codex named on PR #624, plus the claim that makes chasing
+// shapes unnecessary. The pattern had already been widened twice — once for a
+// trailing comment, once to stop a SHA reading as a version — and each time the
+// next shape along landed back in the same silence. So the assertion here is not
+// only "these three parse"; it is that ANYTHING the gate cannot read is
+// reported, which is a promise the gate can keep whatever turns up next.
+function testEveryUsesIsEitherCheckedOrNamed() {
+  var SHA = "11bd71901bbe5b1630ceea73d27597364c9af683";
+  var out = withFixture({
+    "shapes.yml":
+      // Quoted YAML scalars — ordinary YAML, invisible to a pattern that
+      // expected the owner immediately after the whitespace.
+      '      - uses: "actions/checkout@' + SHA + '"  # v5.0.1\n' +
+      "      - uses: 'actions/cache@v4.2.0'\n" +
+      // A prerelease tag is a valid version tag; refusing the suffix put it
+      // back in the dark.
+      "      - uses: owner/prerelease@v2.1.0-rc.1\n" +
+      "      - uses: owner/build-meta@v1.2.3+20260823\n" +
+      // Legitimately uncheckable: no upstream release exists for either.
+      "      - uses: ./.github/actions/local-thing\n" +
+      "      - uses: docker://alpine:3.22\n" +
+      // Not a pin at all — a branch. Neither immutable nor a version.
+      "      - uses: owner/floating@main\n",
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+
+  var a = out.actions;
+  check("actions-currency: a double-quoted SHA pin is collected",
+        (a["actions/checkout"] || {}).sha === SHA, JSON.stringify(a["actions/checkout"]));
+  check("actions-currency: a single-quoted tag pin is collected",
+        (a["actions/cache"] || {}).version === "4.2.0" &&
+        a["actions/cache"].tagPinned === true, JSON.stringify(a["actions/cache"]));
+  check("actions-currency: a prerelease tag is a tag pin, not a near-miss",
+        (a["owner/prerelease"] || {}).tagPinned === true &&
+        a["owner/prerelease"].version === "2.1.0-rc.1",
+        JSON.stringify(a["owner/prerelease"]));
+  check("actions-currency: a build-metadata tag is a tag pin too",
+        (a["owner/build-meta"] || {}).tagPinned === true,
+        JSON.stringify(a["owner/build-meta"]));
+
+  check("actions-currency: a local action and a docker ref are skipped as a " +
+        "decision, not flagged as unreadable",
+        out.unparsed.filter(function (u) {
+          return u.value.indexOf("./") === 0 || u.value.indexOf("docker://") === 0;
+        }).length === 0, JSON.stringify(out.unparsed));
+
+  var floating = out.unparsed.filter(function (u) { return u.value.indexOf("floating") !== -1; });
+  check("actions-currency: a branch ref is NAMED as uncheckable rather than " +
+        "quietly counting as clean",
+        floating.length === 1 && floating[0].line === 7,
+        JSON.stringify(out.unparsed));
+}
+
+// Making an unreadable reference fail the run is only right if the set of
+// things counted as references is right. Inside a `run: |` the lines are shell,
+// not YAML, so a script line beginning `uses:` is prose — and refusing a
+// perfectly good workflow over it costs an operator a red gate on a file with
+// nothing wrong in it. The over-refusal side of the same change.
+function testBlockScalarTextIsNotReadAsAKey() {
+  var SHA = "11bd71901bbe5b1630ceea73d27597364c9af683";
+  var out = withFixture({
+    "blocks.yml":
+      "jobs:\n" +
+      "  a:\n" +
+      "    steps:\n" +
+      "      - uses: actions/checkout@" + SHA + "  # v5.0.1\n" +
+      "      - run: |\n" +
+      "          echo 'this step uses: temporary credentials'\n" +
+      "          uses: not a workflow key at all\n" +
+      "\n" +
+      "          uses: neither is this, after a blank line\n" +
+      "      - run: >-\n" +
+      "          uses: folded scalars hide it too\n" +
+      // Back out to step level — this one IS a key again, and must be seen.
+      "      - uses: actions/cache@v4.2.0\n",
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+
+  check("actions-currency: script text inside a literal block is not a `uses:` key",
+        out.unparsed.length === 0, JSON.stringify(out.unparsed));
+  check("actions-currency: a folded block hides it too",
+        Object.keys(out.actions).indexOf("folded") === -1,
+        Object.keys(out.actions).join(", "));
+  check("actions-currency: the real pins on either side of the blocks are " +
+        "still collected, so the skip ends where the block does",
+        Object.prototype.hasOwnProperty.call(out.actions, "actions/checkout") &&
+        Object.prototype.hasOwnProperty.call(out.actions, "actions/cache"),
+        Object.keys(out.actions).join(", "));
+
+  // The control. "Zero unparsed" above is only evidence if the very same line
+  // WOULD be reported when it is not inside a block — otherwise the assertion
+  // passes for any reason at all, including the walker never looking. Same
+  // text, no `run: |` above it.
+  var control = withFixture({
+    "control.yml": "      - uses: not a workflow key at all\n",
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: control — the identical line OUTSIDE a block is " +
+        "reported, so the block test is excluding something real",
+        control.unparsed.length === 1, JSON.stringify(control.unparsed));
+
+  // Skipping is right for a block BODY and wrong for a `uses:` that opens one.
+  // An action reference is a single scalar, so `uses: |` is malformed — and a
+  // skip that swallowed it would put the silence straight back, one shape over.
+  var opener = withFixture({
+    "opener.yml":
+      "      - uses: |\n" +
+      "          actions/checkout@v5.0.1\n" +
+      "      - uses: actions/cache@v4.2.0\n",
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: a `uses:` that opens a block scalar is reported, " +
+        "not stepped over",
+        opener.unparsed.length === 1 && opener.unparsed[0].line === 1,
+        JSON.stringify(opener.unparsed));
+  check("actions-currency: its body is still treated as body, so the pin " +
+        "inside it is not collected as a real reference",
+        !Object.prototype.hasOwnProperty.call(opener.actions, "actions/checkout"),
+        Object.keys(opener.actions).join(", "));
+  check("actions-currency: and the next real key after the block is collected",
+        Object.prototype.hasOwnProperty.call(opener.actions, "actions/cache"),
+        Object.keys(opener.actions).join(", "));
+
+  // YAML takes the indentation and chomping indicators in EITHER order, so
+  // `|2-` and `|-2` are both valid headers. Missing a form does not merely skip
+  // a block — it scans that block's shell body as YAML, and a script line
+  // reading `uses:` then fails a workflow with nothing wrong in it.
+  ["|", "|-", "|+", "|2", "|2-", "|-2", ">", ">-", ">2+", ">+2"].forEach(function (ind) {
+    var got = withFixture({
+      "ind.yml":
+        "      - run: " + ind + "\n" +
+        "          uses: this is shell, not a key\n" +
+        "      - uses: actions/cache@v4.2.0\n",
+    }, function (dir) { return currency._collectPinnedActions(dir); });
+    check("actions-currency: `run: " + ind + "` opens a block, so its body is " +
+          "not read as YAML",
+          got.unparsed.length === 0, ind + " -> " + JSON.stringify(got.unparsed));
+    check("actions-currency: `run: " + ind + "` still ends at the next key",
+          Object.prototype.hasOwnProperty.call(got.actions, "actions/cache"),
+          ind + " -> " + Object.keys(got.actions).join(", "));
+  });
+}
+
+// Accepting prerelease tags is only useful if they COMPARE correctly. Reading
+// `2.1.0-rc.1` as the triple 2.1.0 makes a release candidate that upstream has
+// long since superseded compare EQUAL to the final release, so the gate reports
+// current — the same "unchecked reads as fine" failure the rest of this file is
+// about, one layer down in the comparison rather than the collection.
+function testAPrereleaseRanksBelowItsRelease() {
+  var cmp = currency._semverCompare;
+  var p   = currency._semverParse;
+
+  check("actions-currency: a release candidate is older than its release",
+        cmp(p("2.1.0-rc.1"), p("2.1.0")) === -1,
+        JSON.stringify([p("2.1.0-rc.1"), p("2.1.0")]));
+  check("actions-currency: a release is newer than its own candidate",
+        cmp(p("v2.1.0"), p("v2.1.0-rc.1")) === 1, "");
+  check("actions-currency: two identical releases still compare equal",
+        cmp(p("v2.1.0"), p("2.1.0")) === 0, "");
+  check("actions-currency: build metadata carries no precedence, so it is not " +
+        "mistaken for a prerelease",
+        cmp(p("1.2.3+20260823"), p("1.2.3")) === 0, JSON.stringify(p("1.2.3+20260823")));
+  check("actions-currency: the numeric triple still dominates the suffix",
+        cmp(p("2.2.0-rc.1"), p("2.1.0")) === 1, "");
+
+  // Collapsing the prerelease to a boolean gets the release comparison right
+  // and every comparison BETWEEN prereleases wrong, which is the case a project
+  // shipping release candidates actually lives in.
+  check("actions-currency: rc.1 is older than rc.2 of the same version",
+        cmp(p("2.1.0-rc.1"), p("2.1.0-rc.2")) === -1, "");
+  check("actions-currency: prerelease identifiers compare as NUMBERS, so rc.9 " +
+        "is older than rc.10 rather than newer by ASCII",
+        cmp(p("2.1.0-rc.9"), p("2.1.0-rc.10")) === -1, "");
+  check("actions-currency: alpha sorts below beta",
+        cmp(p("1.0.0-alpha"), p("1.0.0-beta")) === -1, "");
+  check("actions-currency: a numeric identifier ranks below an alphanumeric one",
+        cmp(p("1.0.0-1"), p("1.0.0-alpha")) === -1, "");
+  check("actions-currency: more identifiers outrank fewer when the shared ones match",
+        cmp(p("1.0.0-alpha"), p("1.0.0-alpha.1")) === -1, "");
+}
+
+// Widening what the collector ACCEPTS without widening what `--fix` can rewrite
+// turns a blind spot into something worse: the run reports the action fixed and
+// exits 0 over a file it never changed. The replacement has to reach through
+// the closing quote and put it back.
+function testTheFixReplacementReachesThroughAQuote() {
+  var OLD = "1111111111111111111111111111111111111111";
+  var NEW = "2222222222222222222222222222222222222222";
+  // The fixer's OWN pattern, not a copy of it — a copy passes happily while the
+  // thing it stands in for rots.
+  var re2 = currency._fixReplacementRe("actions/checkout");
+
+  [
+    ['      - uses: actions/checkout@' + OLD + "  # v5.0.1", "unquoted"],
+    ['      - uses: "actions/checkout@' + OLD + '"  # v5.0.1', "double-quoted"],
+    ["      - uses: 'actions/checkout@" + OLD + "'  # v5.0.1", "single-quoted"],
+  ].forEach(function (pair) {
+    var out = pair[0].replace(re2, "$1" + NEW + "$2" + "v6.0.0");
+    check("actions-currency: a " + pair[1] + " SHA pin is actually rewritten",
+          out.indexOf(NEW) !== -1 && out.indexOf(OLD) === -1, out);
+    check("actions-currency: rewriting a " + pair[1] + " pin leaves the YAML " +
+          "scalar intact",
+          (out.match(/"/g) || []).length === (pair[0].match(/"/g) || []).length &&
+          (out.match(/'/g) || []).length === (pair[0].match(/'/g) || []).length,
+          out);
+  });
+
+  // The pattern is global, so ONE pass over a file rewrites every occurrence in
+  // it. That is what makes running it a second time for a second reference to
+  // the same action wrong: the second pass finds nothing left to change, and
+  // reading that as a failed rewrite turns an ordinary duplicate into a false
+  // failure. This repository has such a duplicate — cosign-installer appears
+  // twice in one workflow — so the fixer walks distinct FILES, not references.
+  var twice = "      - uses: actions/checkout@" + OLD + "  # v5.0.1\n" +
+              "      - uses: actions/checkout@" + OLD + "  # v5.0.1\n";
+  var once  = twice.replace(currency._fixReplacementRe("actions/checkout"),
+                            "$1" + NEW + "$2" + "v6.0.0");
+  check("actions-currency: a single pass rewrites BOTH occurrences in a file, " +
+        "so a second pass would correctly find nothing and must not be run",
+        (once.match(new RegExp(NEW, "g")) || []).length === 2 &&
+        once.indexOf(OLD) === -1, once);
 }
 
 // An action can be pinned by SHA in one workflow and by tag in another, and
@@ -112,7 +343,7 @@ function testMixedPinsDoNotDependOnFileOrder() {
 
   function collect(first, second) {
     return withFixture({ "a-first.yml": first, "b-second.yml": second },
-      function (dir) { return currency._collectPinnedActions(dir); });
+      collectActions);
   }
 
   var shaFirst = collect(shaLine, tagLine)["actions/checkout"];
@@ -197,6 +428,10 @@ function testStaleHintsNeverOfferAShaForATagReference() {
 async function run() {
   testTagPinnedReusableWorkflowIsCollected();
   testAShaIsNeverReadAsAVersion();
+  testEveryUsesIsEitherCheckedOrNamed();
+  testBlockScalarTextIsNotReadAsAKey();
+  testAPrereleaseRanksBelowItsRelease();
+  testTheFixReplacementReachesThroughAQuote();
   testMixedPinsDoNotDependOnFileOrder();
   testStaleHintsNeverOfferAShaForATagReference();
   console.log("OK — actions-currency pin collection");
