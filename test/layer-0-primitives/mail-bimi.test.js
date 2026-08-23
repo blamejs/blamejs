@@ -1373,6 +1373,13 @@ async function testFetchAndVerifyMarkLogotypeNamespacedRoots() {
     // The unprefixed root stays tolerant of a missing xmlns: logos omit it and
     // the previous scanner accepted them.
     ["unprefixed, no xmlns",    '<svg version="1.2" viewBox="0 0 1 1"></svg>',                                     true],
+    // A start tag that never closes is a truncated document, not a logo. The
+    // name ends at the whitespace before the attributes, so a check that stops
+    // at the name accepts these; the tag has to be terminated too. Both spellings
+    // matter — the prefixed one reaches the namespace lookup and finds a
+    // perfectly good binding in bytes that end mid-tag.
+    ["prefixed, tag never closes", '<x:svg xmlns:x="http://www.w3.org/2000/svg"',                                  false],
+    ["unprefixed, tag never closes", '<svg version="1.2" viewBox="0 0 1 1"',                                       false],
   ];
 
   for (var i = 0; i < ROOTS.length; i += 1) {
