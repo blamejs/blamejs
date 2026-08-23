@@ -723,6 +723,16 @@ function testAPrereleaseRanksBelowItsRelease() {
         cmp(p("1.0.0-9"), p("1.0.0-10")) === -1, "");
   check("actions-currency: and leading zeros do not change the value",
         cmp(p("1.0.0-007"), p("1.0.0-7")) === 0, "");
+
+  // Build metadata is explicitly UNORDERED in semver, so two builds of one
+  // version rank equally and ordering them would invent a rule the spec
+  // forbids. They can still name different code, which is why the gate says so
+  // in its report rather than pretending one is newer.
+  check("actions-currency: two builds of one version rank equally, as semver " +
+        "requires",
+        cmp(p("1.2.3+20260823"), p("1.2.3+20260824")) === 0, "");
+  check("actions-currency: and build metadata never outranks the plain version",
+        cmp(p("1.2.3+build"), p("1.2.3")) === 0, "");
 }
 
 // Widening what the collector ACCEPTS without widening what `--fix` can rewrite

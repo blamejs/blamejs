@@ -952,6 +952,28 @@ async function _checkOne(ownerRepo, entry) {
       // older major — only flag stale WITHIN the held major.
       status = "current";
     }
+    // Build metadata carries no precedence — semver is explicit that
+    // `1.2.3+a` and `1.2.3+b` rank equally — so ordering them would be
+    // inventing a rule the spec forbids. But two builds of one version can name
+    // different code, and a gate that prints "current" without mentioning it is
+    // reporting more confidence than it has. So it is SAID rather than ranked.
+    var buildNote = null;
+    if (status === "current" && cmp === 0) {
+      var pinTag = String(entry.version).replace(/^v/, "");
+      var latTag = String(info.tag).replace(/^v/, "");
+      // Only when the BUILD METADATA is what differs. Equal precedence can also
+      // come from forms the comparison deliberately normalises — `1` against
+      // `1.0.0`, `rc.007` against `rc.7` — and those are the same release said
+      // two ways, not two builds. Naming them as build differences would be
+      // exactly the kind of statement that is not established.
+      if (pinTag !== latTag &&
+          pinTag.split("+")[0] === latTag.split("+")[0] &&
+          (pinTag.indexOf("+") !== -1 || latTag.indexOf("+") !== -1)) {
+        buildNote = "same precedence, different build metadata (pinned " +
+                    pinTag + ", latest " + latTag + ") — semver does not order " +
+                    "build metadata; confirm by hand that it is the same code";
+      }
+    }
     return {
       action:    ownerRepo,
       pinned:    entry.version,
@@ -959,6 +981,7 @@ async function _checkOne(ownerRepo, entry) {
       latest:    info.tag,
       latestSha: info.sha,
       status:    status,
+      reason:    buildNote || undefined,
       // Carried through so the reader and `--fix` can both tell the two kinds
       // apart: a tag pin has no SHA to rewrite, so it is reported and left for
       // a person rather than edited.
