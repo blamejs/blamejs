@@ -222,6 +222,46 @@ function testEveryUsesIsEitherCheckedOrNamed() {
         (coreZero.actions["owner/zeroalone"] || {}).version === "0.36.0",
         JSON.stringify(coreZero.actions));
 
+  // A pin names all three components. `@v4` is a floating major that upstream
+  // repoints whenever it likes, so its currency cannot be established — the same
+  // thing a branch ref is, and it gets the same answer.
+  var partialTags = withFixture({
+    "floating.yml": stepsDoc(
+      "      - uses: owner/floatmajor@v4\n" +
+      "      - uses: owner/floatminor@v4.1\n" +
+      "      - uses: owner/full@v4.1.0\n"),
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: a floating major or minor tag is named, not counted " +
+        "as a version pin",
+        !Object.prototype.hasOwnProperty.call(partialTags.actions, "owner/floatmajor") &&
+        !Object.prototype.hasOwnProperty.call(partialTags.actions, "owner/floatminor") &&
+        partialTags.unparsed.length === 2,
+        JSON.stringify(partialTags));
+  check("actions-currency: while a full version tag is a pin",
+        (partialTags.actions["owner/full"] || {}).version === "4.1.0",
+        JSON.stringify(partialTags.actions));
+
+  // Upstream may publish `v4` as a release. A repair that copied that verbatim
+  // would write `# v4`, which the tightened pin grammar refuses on the very next
+  // run — a fix that breaks the thing it fixed. The seam between the two
+  // grammars is here, and it normalises.
+  check("actions-currency: a partial upstream tag is written as a full version",
+        currency._fullVersion("v4") === "4.0.0" &&
+        currency._fullVersion("4.1") === "4.1.0",
+        currency._fullVersion("v4") + " / " + currency._fullVersion("4.1"));
+  check("actions-currency: and a suffix rides along unchanged",
+        currency._fullVersion("v2-rc.1") === "2.0.0-rc.1" &&
+        currency._fullVersion("v1.2.3+b") === "1.2.3+b",
+        currency._fullVersion("v2-rc.1") + " / " + currency._fullVersion("v1.2.3+b"));
+  check("actions-currency: what --fix writes is what the collector accepts",
+        currency._collectPinnedActions !== undefined &&
+        /^v/.test("v" + currency._fullVersion("v4")) &&
+        withFixture({
+          "roundtrip.yml": stepsDoc("      - uses: owner/rt@v" +
+                                    currency._fullVersion("v4") + "\n"),
+        }, function (dir) { return currency._collectPinnedActions(dir); }).unparsed.length === 0,
+        "v" + currency._fullVersion("v4"));
+
   // A version that does not END at a boundary is malformed, and reading its
   // prefix is worse than refusing it: `# v2.1.0rc.1` would become `2.1.0` and
   // compare EQUAL to the final release, so a pin that really is a release
@@ -857,6 +897,18 @@ function testAPrereleaseRanksBelowItsRelease() {
         cmp(p("1.2.3+20260823"), p("1.2.3+20260824")) === 0, "");
   check("actions-currency: and build metadata never outranks the plain version",
         cmp(p("1.2.3+build"), p("1.2.3")) === 0, "");
+
+  // The core components are unbounded too, and past the safe-integer range two
+  // different majors round to the same double — the same precision trap the
+  // prerelease identifiers had, one field over.
+  check("actions-currency: core components beyond the safe-integer range order " +
+        "correctly",
+        cmp(p("9007199254740992.0.0"), p("9007199254740993.0.0")) === -1,
+        JSON.stringify([p("9007199254740992.0.0").coreStr,
+                        p("9007199254740993.0.0").coreStr]));
+  check("actions-currency: and an ordinary comparison is unchanged by it",
+        cmp(p("1.2.3"), p("1.10.0")) === -1 && cmp(p("2.0.0"), p("1.99.99")) === 1,
+        "");
 }
 
 // Widening what the collector ACCEPTS without widening what `--fix` can rewrite

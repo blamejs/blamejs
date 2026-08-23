@@ -176,7 +176,7 @@ async function _latestVersion(ownerRepo, pinnedIsPrerelease) {
     // (github/codeql-action) publish a non-semver bundle tag as their
     // "latest release" (codeql-bundle-vX.Y.Z) while the ACTION is
     // versioned on separate vN.N.N tags — fall through to tags then.
-    if (rel && typeof rel.tag_name === "string" && _TAG_RE.test(rel.tag_name)) tag = rel.tag_name;
+    if (rel && typeof rel.tag_name === "string" && _REMOTE_TAG_RE.test(rel.tag_name)) tag = rel.tag_name;
   } catch (_e) { /* fall through to tags */ }
   if (!tag) return _latestFromTags(ownerRepo);
   return { tag: tag, sha: await _resolveSha(ownerRepo, tag) };
@@ -185,25 +185,71 @@ async function _latestVersion(ownerRepo, pinnedIsPrerelease) {
 // The highest semver-shaped TAG, which unlike the releases endpoint includes
 // prereleases. Used for actions that ship tags without GitHub Releases, and for
 // any pin that is itself a prerelease.
+var TAG_PAGE_SIZE  = 100;
+var TAG_PAGE_LIMIT = 5;      // pages, not tags — a bound on API spend, not a filter
+
 async function _latestFromTags(ownerRepo) {
-  var tags = await _githubGet("/repos/" + ownerRepo + "/tags?per_page=100");
-  if (!Array.isArray(tags) || tags.length === 0) {
-    throw new Error("no releases or tags for " + ownerRepo);
-  }
-  var best = null;
-  for (var i = 0; i < tags.length; i++) {
-    // The SAME grammar the local collector holds a pin to. `_semverParse` reads
-    // a numeric PREFIX and would happily rank `v999-invalid!` or a leading-zero
-    // `v2.0.0-rc.007` as the highest version, then offer it as the replacement.
-    // A remote tag has to clear the bar a local one clears.
-    if (!_TAG_RE.test(tags[i].name)) continue;
-    var p = _semverParse(tags[i].name);
-    if (p && (!best || _semverCompare(p, best.parsed) > 0)) {
-      best = { name: tags[i].name, parsed: p };
+  var best  = null;
+  var seen  = 0;
+  var complete = false;      // did the walk actually reach the end of the tags?
+  for (var page = 1; page <= TAG_PAGE_LIMIT; page++) {
+    var tags = await _githubGet("/repos/" + ownerRepo + "/tags?per_page=" +
+                                TAG_PAGE_SIZE + "&page=" + page);
+    if (!Array.isArray(tags)) break;
+    seen += tags.length;
+    for (var i = 0; i < tags.length; i++) {
+      // The SAME grammar the local collector holds a pin to. `_semverParse`
+      // reads a numeric PREFIX and would happily rank `v999-invalid!` or a
+      // leading-zero `v2.0.0-rc.007` as the highest version, then offer it as
+      // the replacement. A remote tag has to clear the bar a local one clears.
+      if (!_REMOTE_TAG_RE.test(tags[i].name)) continue;
+      var p = _semverParse(tags[i].name);
+      if (p && (!best || _semverCompare(p, best.parsed) > 0)) {
+        best = { name: tags[i].name, parsed: p };
+      }
     }
+    // A short page is the end of the list; a full one means there may be more.
+    if (tags.length < TAG_PAGE_SIZE) { complete = true; break; }
   }
-  if (!best) throw new Error("no semver-shaped tag for " + ownerRepo);
+  if (seen === 0) throw new Error("no releases or tags for " + ownerRepo);
+  if (!best) {
+    // "No version exists" is a claim about the WHOLE tag list, and one page
+    // cannot support it — that is the gate's own blind spot arriving from the
+    // remote side. It is only made when the walk reached the end; a truncated
+    // search stays advisory and says how far it looked, rather than failing a
+    // repository on evidence it never gathered.
+    var noVer = new Error(complete
+      ? "no full-version tag for " + ownerRepo + " — upstream publishes only " +
+        "floating aliases, so this pin's currency cannot be established"
+      : "no full-version tag among the first " + seen + " tags of " + ownerRepo +
+        " (search truncated at " + TAG_PAGE_LIMIT + " pages; there may be more)");
+    if (complete) noVer.code = "no-comparable-version";
+    throw noVer;
+  }
   return { tag: best.name, sha: await _resolveSha(ownerRepo, best.name) };
+}
+
+// A digit run with leading zeros trimmed, so two spellings of one number
+// compare equal. Used for every numeric comparison here, core and prerelease
+// alike, because both are unbounded and neither survives a double.
+function _digits(s) { return String(s).replace(/^0+(?=\d)/, ""); }
+
+// A version written with all three core components, whatever shape it arrived
+// in. Upstream may publish `v4`; a pin here names `4.0.0`. Any prerelease or
+// build suffix rides along unchanged.
+function _fullVersion(v) {
+  var p = _semverParse(v);
+  if (!p) return String(v).replace(/^v/, "");
+  var s = String(v).replace(/^v/, "");
+  var suffix = s.slice(s.search(/[-+]/) === -1 ? s.length : s.search(/[-+]/));
+  return p.coreStr.join(".") + suffix;
+}
+
+// Compares two digit runs: longer is larger, then lexicographic.
+function _cmpDigits(x, y) {
+  if (x.length !== y.length) return x.length > y.length ? 1 : -1;
+  if (x !== y) return x > y ? 1 : -1;
+  return 0;
 }
 
 function _semverParse(v) {
@@ -212,6 +258,12 @@ function _semverParse(v) {
   var m = s.match(/^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
   if (!m) return null;
   var out = [parseInt(m[1], 10), parseInt(m[2] || "0", 10), parseInt(m[3] || "0", 10)];
+  // The core components are ALSO kept as digit strings, and the comparison uses
+  // those. A version number has no upper bound, and past Number.MAX_SAFE_INTEGER
+  // two different majors round to the same double and compare equal — the same
+  // precision trap the prerelease identifiers had. The numbers stay because the
+  // hold-major check reads out[0] as one.
+  out.coreStr = [_digits(m[1]), _digits(m[2] || "0"), _digits(m[3] || "0")];
   // The prerelease identifiers are KEPT, not collapsed to a flag. A flag makes
   // every prerelease of one version equal, so `rc.1` reads as current against
   // `rc.2` — the gate's own failure mode, something unchecked reported as fine,
@@ -230,9 +282,14 @@ function _semverParse(v) {
 // longer run of identifiers above a shorter one when all the shared ones match.
 function _semverCompare(a, b) {
   if (!a || !b) return 0;
+  var ac = a.coreStr, bc = b.coreStr;
   for (var i = 0; i < 3; i++) {
-    if (a[i] > b[i]) return  1;
-    if (a[i] < b[i]) return -1;
+    // Digit strings, for the same reason the prerelease identifiers are: a
+    // version number is unbounded and two different ones can round to the same
+    // double. The numeric fallback is for a parse that predates coreStr.
+    var cc = (ac && bc) ? _cmpDigits(ac[i], bc[i])
+                        : (a[i] > b[i] ? 1 : a[i] < b[i] ? -1 : 0);
+    if (cc !== 0) return cc;
   }
   var ap = a.pre, bp = b.pre;
   if (!ap && !bp) return 0;
@@ -248,9 +305,8 @@ function _semverCompare(a, b) {
       // upper bound, and past Number.MAX_SAFE_INTEGER two different ones round
       // to the same double and compare equal — which reports a stale pin as
       // current, the failure this whole comparison exists to catch.
-      var xs = x.replace(/^0+(?=\d)/, ""), ys = y.replace(/^0+(?=\d)/, "");
-      if (xs.length !== ys.length) return xs.length > ys.length ? 1 : -1;
-      if (xs !== ys) return xs > ys ? 1 : -1;
+      var dc = _cmpDigits(_digits(x), _digits(y));
+      if (dc !== 0) return dc;
     } else if (xn !== yn) {
       return xn ? -1 : 1;                     // numeric ranks below alphanumeric
     } else if (x !== y) {
@@ -762,11 +818,27 @@ var _BUILD_IDENT = "[0-9A-Za-z-]+";
 // version, and admitting it would give one release two spellings here just as a
 // leading-zero prerelease identifier would.
 var _CORE_NUM = "(?:0|[1-9]\\d*)";
-var _VER_SRC = _CORE_NUM + "(?:\\." + _CORE_NUM + "){0,2}" +
+// A PIN names all three components. `@v4` is a floating major — upstream
+// repoints it at new code whenever it likes — so its currency cannot be
+// established at all, which is the same thing a branch ref is and gets the same
+// answer: named, not quietly accepted as a version.
+var _VER_SRC = _CORE_NUM + "\\." + _CORE_NUM + "\\." + _CORE_NUM +
                "(?:-" + _PRE_IDENT   + "(?:\\." + _PRE_IDENT   + ")*)?" +
                "(?:\\+" + _BUILD_IDENT + "(?:\\." + _BUILD_IDENT + ")*)?";
 
 var _TAG_RE = new RegExp("^v?" + _VER_SRC + "$");
+
+// ONE grammar, remote and local alike.
+//
+// A looser remote test looked reasonable — plenty of actions publish `v4` as a
+// release — and was wrong in a way that mattered: `v4` is an ALIAS that upstream
+// repoints, and reading it as the concrete version 4.0.0 would report a 4.1.0
+// pin as current, then write `# v4.0.0` beside a SHA that came from a moving
+// reference. Zero-filling an alias invents a version nobody published.
+//
+// A floating release tag therefore fails this test and the lookup falls through
+// to the tag scan, which is what finds the concrete `v4.2.0` underneath it.
+var _REMOTE_TAG_RE = _TAG_RE;
 var _SHA_RE = /^[0-9a-f]{40}$/;
 
 // `uses:` values that name no upstream release, so there is no currency to
@@ -1041,7 +1113,13 @@ async function _checkOne(ownerRepo, entry) {
     return {
       action: ownerRepo,
       pinned: entry.version,
-      status: "api-error",
+      // "The network failed" and "upstream publishes nothing comparable" are
+      // different answers and must not share a status. An api-error is advisory
+      // because a rate limit is not a stale action; an upstream with only
+      // floating tags is a pin whose currency can never be established here, and
+      // filing it as advisory would let the gate pass without ever checking it —
+      // this release's whole subject, arriving from the remote side.
+      status: e && e.code === "no-comparable-version" ? "no-version" : "api-error",
       error:  (e && e.message) || String(e),
       // Carried on every branch, not only the one that reached the API: a
       // reader filtering for tag pins is asking which pins cannot be verified
@@ -1089,7 +1167,10 @@ function _staleHints(r) {
   var lines = [];
   var anySha = refs.some(function (x) { return !x.tagPinned; });
   if (r.latestSha && r.latest && anySha) {
-    lines.push("        pin:  " + r.action + "@" + r.latestSha + "  # " + r.latest);
+    // The same full-version form `--fix` writes, so a paste-ready line is one
+    // the next run will actually accept.
+    lines.push("        pin:  " + r.action + "@" + r.latestSha +
+               "  # v" + _fullVersion(r.latest));
   }
   for (var i = 0; i < refs.length; i++) {
     lines.push("        used: " + refs[i].file + ":" + refs[i].line +
@@ -1127,6 +1208,7 @@ async function main() {
       var r = results[j];
       var label = r.status === "current"   ? "OK"
                 : r.status === "stale"     ? "STALE"
+                : r.status === "no-version" ? "NO-VER"
                 : r.status === "api-error" ? "ERR"
                 : r.status === "skipped"   ? "skip"
                 :                            r.status;
@@ -1156,6 +1238,9 @@ async function main() {
 
   var stale   = results.filter(function (r) { return r.status === "stale"; });
   var errored = results.filter(function (r) { return r.status === "api-error"; });
+  // Structural, not transient: upstream has nothing this pin can be compared
+  // against. Grouped with `unparsed` rather than with the advisory api-errors.
+  var noVersion = results.filter(function (r) { return r.status === "no-version"; });
 
   // Before any mode gets to declare success. An unreadable reference is a line
   // in this repository the gate cannot check, not a transient the network owns,
@@ -1165,10 +1250,19 @@ async function main() {
   // is the same "green while silent" shape the unparsed list exists to end.
   //
   // `--warn` keeps its documented contract of never failing, and says so.
-  if (unparsed.length > 0 && !WARN_ONLY) {
-    say("[actions-currency] FAIL — " + unparsed.length + " `uses:` reference(s) " +
-      "could not be read as a pin (listed above). A reference the gate cannot " +
-      "read is a reference it cannot check.\n");
+  if ((unparsed.length > 0 || noVersion.length > 0) && !WARN_ONLY) {
+    if (unparsed.length) {
+      say("[actions-currency] FAIL — " + unparsed.length + " `uses:` reference(s) " +
+        "could not be read as a pin (listed above). A reference the gate cannot " +
+        "read is a reference it cannot check.\n");
+    }
+    if (noVersion.length) {
+      say("[actions-currency] FAIL — " + noVersion.length + " action(s) have no " +
+        "full-version tag upstream, so their currency cannot be established:\n");
+      for (var nv = 0; nv < noVersion.length; nv++) {
+        say("  " + noVersion[nv].action + "  pinned " + noVersion[nv].pinned + "\n");
+      }
+    }
     process.exit(1);
   }
 
@@ -1208,7 +1302,12 @@ async function main() {
     }
     for (var fx = 0; fx < fixable.length; fx++) {
       var fr = fixable[fx];
-      var tag = /^v/.test(fr.latest) ? fr.latest : "v" + fr.latest;
+      // Written as a FULL version, whatever shape upstream published. Upstream
+      // may tag a release `v4`; the collector holds a pin to `vX.Y.Z`, so
+      // copying the tag verbatim would write a comment the very next run
+      // refuses — a repair that breaks the thing it repaired. The two grammars
+      // differ on purpose, and this is the seam between them.
+      var tag = "v" + _fullVersion(fr.latest);
       // Supply-chain review material — printed BEFORE applying so the change
       // between the pinned SHA and the new SHA (the actual commits + authors)
       // and the release notes can be validated. A compromised release shows
@@ -1317,10 +1416,10 @@ async function main() {
   }
 
   if (WARN_ONLY) {
-    if (stale.length || errored.length || unparsed.length) {
+    if (stale.length || errored.length || unparsed.length || noVersion.length) {
       say("[actions-currency] --warn: " + stale.length + " stale, " +
-        errored.length + " errored, " + unparsed.length +
-        " unreadable — exit 0 anyway\n");
+        errored.length + " errored, " + unparsed.length + " unreadable, " +
+        noVersion.length + " with no upstream version — exit 0 anyway\n");
     }
     process.exit(0);
   }
@@ -1359,6 +1458,7 @@ module.exports = {
   _collectPinnedActions: _collectPinnedActions,
   _staleHints: _staleHints,
   _fixReplacementRe: _fixReplacementRe,
+  _fullVersion: _fullVersion,
   SCOPE_NOTE: SCOPE_NOTE,
   _semverParse: _semverParse,
   _semverCompare: _semverCompare,
