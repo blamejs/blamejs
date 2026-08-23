@@ -1363,6 +1363,11 @@ async function testFetchAndVerifyMarkLogotypeNamespacedRoots() {
     // SVG namespace differently and mean the same thing to an XML processor.
     ["hex character reference",  '<x:svg xmlns:x="http://www.w3.org/2000/&#x73;vg"></x:svg>',                      true],
     ["decimal character reference", '<x:svg xmlns:x="http://www.w3.org/2000/&#115;vg"></x:svg>',                   true],
+    // XML puts no limit on leading zeros, so bounding the lexical digit run
+    // would refuse a reference an XML processor resolves normally.
+    ["leading zeros, decimal",   '<x:svg xmlns:x="&#0000000104;ttp://www.w3.org/2000/svg"></x:svg>',               true],
+    ["leading zeros, hex",       '<x:svg xmlns:x="&#x00000068;ttp://www.w3.org/2000/svg"></x:svg>',                true],
+    ["all zeros is not a character", '<x:svg xmlns:x="&#0000;http://www.w3.org/2000/svg"></x:svg>',                false],
     ["predefined entity in the URI", '<x:svg xmlns:x="http://www.w3.org/2000/svg&amp;"></x:svg>',                  false],
     ["undeclared entity left as written", '<x:svg xmlns:x="http://www.w3.org/2000/&foo;svg"></x:svg>',             false],
     // The unprefixed root stays tolerant of a missing xmlns: logos omit it and
