@@ -20,6 +20,8 @@ The pin that fell through is the one least able to look after itself. A commit S
 
 Tag pins are now collected, version-checked like any other, and reported as tag pins. `--fix` deliberately leaves them alone and says so: there is no old SHA to compare against and none to write, and the review material `--fix` prints is a diff between two SHAs, which is exactly what a tag cannot give.
 
+An action can also be pinned by SHA in one workflow and by tag in another, and the two need different answers in different places. The pin type is therefore tracked per reference: the ready-to-paste replacement line is printed only where a SHA reference can take it, each tag reference is marked as one, and `--fix` skips such an action entirely rather than bumping the references that were already current and leaving the stale one behind.
+
 The cause of the gap is worth naming because it repeated one level down: the first pattern written to catch these anchored the version at end-of-line, and the line in question carries a trailing comment explaining why it is not SHA-pinned. It matched nothing either. · *`check-actions-currency.js --json` emits only the JSON document* — The JSON branch wrote the document and then fell through into the summary blocks, which wrote to the same stream regardless of the flag. Every `--json` run therefore ended with a `[actions-currency] …` line after the closing brace, and `JSON.parse` on the stream failed with "Unexpected non-whitespace character after JSON". `--fix --json` was the same shape with more trailing text.
 
 Every human-readable line now goes through a writer that is silent under `--json`. Exit codes are unchanged: a machine reader still gets a non-zero exit when something is stale.

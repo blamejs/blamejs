@@ -328,6 +328,31 @@ async function _checkOne(ownerRepo, entry) {
   }
 }
 
+// The follow-up lines under a stale action: where it is used, and what to put
+// there. Which of the two an action gets is decided per REFERENCE, not per
+// action, because an action pinned by SHA in one workflow and by tag in another
+// needs a different answer in each place. A SHA reference can be replaced
+// verbatim, so the ready-to-paste pin line is worth printing; pasting that same
+// line over a tag reference breaks it, and the SLSA generator refuses to run
+// from a SHA at all. Deciding this once, off `ref.tagPinned`, is what keeps the
+// printed advice and `--fix`'s behaviour from drifting apart: the report used to
+// read the flag off the action and offered a SHA for every reference under it.
+function _staleHints(r) {
+  var refs  = r.refs || [];
+  var lines = [];
+  var anySha = refs.some(function (x) { return !x.tagPinned; });
+  if (r.latestSha && r.latest && anySha) {
+    lines.push("        pin:  " + r.action + "@" + r.latestSha + "  # " + r.latest);
+  }
+  for (var i = 0; i < refs.length; i++) {
+    lines.push("        used: " + refs[i].file + ":" + refs[i].line +
+               (refs[i].tagPinned
+                 ? "  (tag pin — raise the tag by hand; a SHA does not belong here)"
+                 : ""));
+  }
+  return lines;
+}
+
 async function main() {
   var pinned = _collectPinnedActions();
   var actions = Object.keys(pinned).sort();
@@ -360,19 +385,9 @@ async function main() {
       else if (r.mixedPins) line += "  (pinned by SHA in some workflows and by " +
         "tag in others; --fix rewrites only the SHA ones)";
       say(line + "\n");
-      // For stale entries, print a ready-to-paste pin line + every
-      // file:line that needs the bump, so updating is copy-paste. A tag pin
-      // has no SHA, so it gets the file:line list without the pin line.
-      if (r.status === "stale" && r.tagPinned) {
-        for (var tf = 0; tf < (r.refs || []).length; tf++) {
-          say("        used: " + r.refs[tf].file + ":" + r.refs[tf].line + "\n");
-        }
-      }
-      if (r.status === "stale" && r.latestSha && !r.tagPinned) {
-        say("        pin:  " + r.action + "@" + r.latestSha + "  # " + r.latest + "\n");
-        for (var rf = 0; rf < (r.refs || []).length; rf++) {
-          say("        used: " + r.refs[rf].file + ":" + r.refs[rf].line + "\n");
-        }
+      if (r.status === "stale") {
+        var hints = _staleHints(r);
+        for (var hf = 0; hf < hints.length; hf++) say(hints[hf] + "\n");
       }
     }
   }
@@ -509,6 +524,7 @@ async function main() {
 // collector never returned.
 module.exports = {
   _collectPinnedActions: _collectPinnedActions,
+  _staleHints: _staleHints,
   _semverParse: _semverParse,
   _semverCompare: _semverCompare,
 };

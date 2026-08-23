@@ -137,10 +137,68 @@ function testMixedPinsDoNotDependOnFileOrder() {
         JSON.stringify(shaFirst.refs.map(function (r) { return r.tagPinned; })));
 }
 
+// `--fix` and the printed advice answer the same question and have to answer it
+// the same way. `--fix` decides per reference and skips a mixed action entirely;
+// the report decided per ACTION, so a mixed one printed one SHA and then listed
+// every place it was "used", the tag reference among them. Pasting the offered
+// line there is the failure: the SLSA generator will not run from a SHA, so the
+// advice breaks the one workflow that most needs to keep its tag, and the gate
+// that printed it exits 0 either way.
+function testStaleHintsNeverOfferAShaForATagReference() {
+  var SHA = "11bd71901bbe5b1630ceea73d27597364c9af683";
+  function hintsFor(refs, extra) {
+    var r = {
+      action: "slsa-framework/slsa-github-generator", status: "stale",
+      pinned: "2.1.0", latest: "2.2.0", latestSha: SHA, refs: refs,
+    };
+    Object.keys(extra || {}).forEach(function (k) { r[k] = extra[k]; });
+    return currency._staleHints(r);
+  }
+  function pinLines(lines) {
+    return lines.filter(function (l) { return l.indexOf("pin:") !== -1; });
+  }
+
+  var tagOnly = hintsFor([{ file: "a.yml", line: 3, tagPinned: true }],
+                         { tagPinned: true });
+  check("actions-currency: a tag-only action is never handed a SHA to paste",
+        pinLines(tagOnly).length === 0, JSON.stringify(tagOnly));
+  check("actions-currency: a tag-only action still says where it is used",
+        tagOnly.length === 1 && tagOnly[0].indexOf("a.yml:3") !== -1,
+        JSON.stringify(tagOnly));
+
+  var mixed = hintsFor([
+    { file: "sha.yml", line: 7,  tagPinned: false },
+    { file: "tag.yml", line: 11, tagPinned: true  },
+  ], { tagPinned: false, mixedPins: true });
+
+  // The pin line is still worth printing — one of the two references CAN take
+  // it. What must not happen is the tag reference sitting under it unmarked.
+  check("actions-currency: a mixed action still gets the pin line its SHA " +
+        "reference can use",
+        pinLines(mixed).length === 1 && pinLines(mixed)[0].indexOf(SHA) !== -1,
+        JSON.stringify(mixed));
+
+  var tagLine = mixed.filter(function (l) { return l.indexOf("tag.yml:11") !== -1; })[0];
+  var shaLine = mixed.filter(function (l) { return l.indexOf("sha.yml:7") !== -1; })[0];
+  check("actions-currency: the tag reference under a mixed action is marked as " +
+        "one, so the SHA above it is not read as applying to it",
+        tagLine !== undefined && tagLine.indexOf("tag pin") !== -1, String(tagLine));
+  check("actions-currency: the SHA reference carries no such warning",
+        shaLine !== undefined && shaLine.indexOf("tag pin") === -1, String(shaLine));
+
+  var shaOnly = hintsFor([{ file: "s.yml", line: 2, tagPinned: false }]);
+  check("actions-currency: an ordinary SHA-pinned action is unchanged — pin " +
+        "line plus a bare file:line",
+        pinLines(shaOnly).length === 1 && shaOnly.length === 2 &&
+        shaOnly[1].indexOf("tag pin") === -1,
+        JSON.stringify(shaOnly));
+}
+
 async function run() {
   testTagPinnedReusableWorkflowIsCollected();
   testAShaIsNeverReadAsAVersion();
   testMixedPinsDoNotDependOnFileOrder();
+  testStaleHintsNeverOfferAShaForATagReference();
   console.log("OK — actions-currency pin collection");
 }
 
