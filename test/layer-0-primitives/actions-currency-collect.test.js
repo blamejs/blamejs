@@ -170,6 +170,28 @@ function testEveryUsesIsEitherCheckedOrNamed() {
         (pre.actions["owner/rc"] || {}).version === "2.1.0-rc.1",
         JSON.stringify(pre.actions["owner/rc"]));
 
+  // Semver identifiers are dot-separated and NON-EMPTY. A loose character class
+  // also accepted `rc.` and `build..oops`, and an empty prerelease identifier
+  // is not merely odd: the comparison ranks it above a numeric one, so
+  // `v1.2.3-rc.` reported current against a real `v1.2.3-rc.1`.
+  var emptyIdents = withFixture({
+    "emptyident.yml": stepsDoc(
+      "      - uses: owner/trailingdot@v1.2.3-rc.\n" +
+      "      - uses: owner/doubledot@v1.2.3+build..oops\n" +
+      "      - uses: owner/wellformed@v1.2.3-rc.1\n"),
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: a trailing-dot prerelease is not a version tag",
+        !Object.prototype.hasOwnProperty.call(emptyIdents.actions, "owner/trailingdot"),
+        JSON.stringify(emptyIdents.actions));
+  check("actions-currency: nor is an empty build identifier",
+        !Object.prototype.hasOwnProperty.call(emptyIdents.actions, "owner/doubledot"),
+        JSON.stringify(emptyIdents.actions));
+  check("actions-currency: both are NAMED rather than passed over",
+        emptyIdents.unparsed.length === 2, JSON.stringify(emptyIdents.unparsed));
+  check("actions-currency: while a well-formed prerelease is still a tag pin",
+        (emptyIdents.actions["owner/wellformed"] || {}).version === "1.2.3-rc.1",
+        JSON.stringify(emptyIdents.actions));
+
   // A version that does not END at a boundary is malformed, and reading its
   // prefix is worse than refusing it: `# v2.1.0rc.1` would become `2.1.0` and
   // compare EQUAL to the final release, so a pin that really is a release

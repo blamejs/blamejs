@@ -730,7 +730,15 @@ function _scanLine(line, state, eof) {
 // `v2.2.0-rc.1` and exited 0 on a version that never existed. What the
 // collector accepts and what the fixer can rewrite have to be the same thing by
 // construction.
-var _VER_SRC = "\\d+(?:\\.\\d+){0,2}(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\\+[0-9A-Za-z][0-9A-Za-z.-]*)?";
+// Each suffix is a run of dot-separated NON-EMPTY identifiers, as semver
+// defines them. Written as a loose character class it also accepted `rc.` and
+// `build..oops`, which are malformed — and an empty prerelease identifier does
+// not merely look odd: the comparison ranks it above a numeric one, so
+// `v1.2.3-rc.` reported current against a real `v1.2.3-rc.1`. The identifier
+// class excludes the dot, so the alternation cannot backtrack ambiguously.
+var _VER_SRC = "\\d+(?:\\.\\d+){0,2}" +
+               "(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?" +
+               "(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?";
 
 var _TAG_RE = new RegExp("^v?" + _VER_SRC + "$");
 var _SHA_RE = /^[0-9a-f]{40}$/;
