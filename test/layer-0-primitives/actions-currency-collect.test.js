@@ -47,6 +47,15 @@ function withFixture(files, fn) {
 // half reach for the whole thing.
 function collectActions(dir) { return currency._collectPinnedActions(dir).actions; }
 
+// Wraps step lines in the job structure a real workflow has. It matters: a
+// `uses` is an action reference because of WHERE it sits (under `steps`, or as a
+// job's own key), not because of how its value looks — so a fixture that is a
+// bare list of `- uses:` lines is not testing the thing the collector decides.
+// `body` lines are indented to step level by the caller.
+function stepsDoc(body) {
+  return "jobs:\n  build:\n    steps:\n" + body;
+}
+
 function testTagPinnedReusableWorkflowIsCollected() {
   var SHA = "11bd71901bbe5b1630ceea73d27597364c9af683";
   var collected = withFixture({
@@ -96,7 +105,8 @@ function testTagPinnedReusableWorkflowIsCollected() {
 // same blind spot this whole gate exists to close. It has to be NAMED.
 function testAShaIsNeverReadAsAVersion() {
   var out = withFixture({
-    "bare.yml": "      - uses: actions/setup-node@11bd71901bbe5b1630ceea73d27597364c9af683\n",
+    "bare.yml": stepsDoc(
+      "      - uses: actions/setup-node@11bd71901bbe5b1630ceea73d27597364c9af683\n"),
   }, function (dir) { return currency._collectPinnedActions(dir); });
 
   check("actions-currency: an uncommented SHA pin is not collected as a tag pin",
@@ -105,7 +115,7 @@ function testAShaIsNeverReadAsAVersion() {
   check("actions-currency: an uncommented SHA pin is reported as unreadable " +
         "rather than dropped",
         out.unparsed.length === 1 &&
-        out.unparsed[0].line === 1 &&
+        out.unparsed[0].line === 4 &&
         out.unparsed[0].reason.indexOf("version comment") !== -1,
         JSON.stringify(out.unparsed));
 }
@@ -119,7 +129,7 @@ function testAShaIsNeverReadAsAVersion() {
 function testEveryUsesIsEitherCheckedOrNamed() {
   var SHA = "11bd71901bbe5b1630ceea73d27597364c9af683";
   var out = withFixture({
-    "shapes.yml":
+    "shapes.yml": stepsDoc(
       // Quoted YAML scalars — ordinary YAML, invisible to a pattern that
       // expected the owner immediately after the whitespace.
       '      - uses: "actions/checkout@' + SHA + '"  # v5.0.1\n' +
@@ -132,7 +142,7 @@ function testEveryUsesIsEitherCheckedOrNamed() {
       "      - uses: ./.github/actions/local-thing\n" +
       "      - uses: docker://alpine:3.22\n" +
       // Not a pin at all — a branch. Neither immutable nor a version.
-      "      - uses: owner/floating@main\n",
+      "      - uses: owner/floating@main\n"),
   }, function (dir) { return currency._collectPinnedActions(dir); });
 
   var a = out.actions;
@@ -149,6 +159,29 @@ function testEveryUsesIsEitherCheckedOrNamed() {
         (a["owner/build-meta"] || {}).tagPinned === true,
         JSON.stringify(a["owner/build-meta"]));
 
+  // The two paths have to describe a version the same way. A SHA carries none
+  // of its own, so its trailing comment is the whole statement — and stopping
+  // that comment at the numeric triple makes `# v2.1.0-rc.1` read as the final
+  // 2.1.0, which reports a superseded candidate as current.
+  var pre = withFixture({
+    "pre.yml": stepsDoc("      - uses: owner/rc@" + SHA + "  # v2.1.0-rc.1\n"),
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: a SHA pin's version comment keeps its prerelease",
+        (pre.actions["owner/rc"] || {}).version === "2.1.0-rc.1",
+        JSON.stringify(pre.actions["owner/rc"]));
+
+  // A trailing comment may say more than the version, including things with
+  // braces in them. The version is the FIRST thing in the comment and reading
+  // it must not depend on what follows.
+  var chatty = withFixture({
+    "chatty.yml": stepsDoc(
+      "      - uses: owner/chatty@" + SHA + "  # v5.0.1 pinned for ${{ github.ref }}\n"),
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: a version comment followed by braces is still read",
+        (chatty.actions["owner/chatty"] || {}).version === "5.0.1" &&
+        chatty.unparsed.length === 0,
+        JSON.stringify({ a: chatty.actions, u: chatty.unparsed }));
+
   check("actions-currency: a local action and a docker ref are skipped as a " +
         "decision, not flagged as unreadable",
         out.unparsed.filter(function (u) {
@@ -158,7 +191,7 @@ function testEveryUsesIsEitherCheckedOrNamed() {
   var floating = out.unparsed.filter(function (u) { return u.value.indexOf("floating") !== -1; });
   check("actions-currency: a branch ref is NAMED as uncheckable rather than " +
         "quietly counting as clean",
-        floating.length === 1 && floating[0].line === 7,
+        floating.length === 1 && floating[0].line === 10,
         JSON.stringify(out.unparsed));
 }
 
@@ -176,12 +209,12 @@ function testBlockScalarTextIsNotReadAsAKey() {
       "    steps:\n" +
       "      - uses: actions/checkout@" + SHA + "  # v5.0.1\n" +
       "      - run: |\n" +
-      "          echo 'this step uses: temporary credentials'\n" +
-      "          uses: not a workflow key at all\n" +
+      // Text that WOULD be reported at step level, so the block is doing work.
+      "          uses: owner/repo@some-branch\n" +
       "\n" +
-      "          uses: neither is this, after a blank line\n" +
+      "          uses: owner/other@another-branch\n" +
       "      - run: >-\n" +
-      "          uses: folded scalars hide it too\n" +
+      "          uses: owner/folded@yet-another\n" +
       // Back out to step level — this one IS a key again, and must be seen.
       "      - uses: actions/cache@v4.2.0\n",
   }, function (dir) { return currency._collectPinnedActions(dir); });
@@ -189,7 +222,7 @@ function testBlockScalarTextIsNotReadAsAKey() {
   check("actions-currency: script text inside a literal block is not a `uses:` key",
         out.unparsed.length === 0, JSON.stringify(out.unparsed));
   check("actions-currency: a folded block hides it too",
-        Object.keys(out.actions).indexOf("folded") === -1,
+        Object.keys(out.actions).indexOf("owner/folded") === -1,
         Object.keys(out.actions).join(", "));
   check("actions-currency: the real pins on either side of the blocks are " +
         "still collected, so the skip ends where the block does",
@@ -202,24 +235,311 @@ function testBlockScalarTextIsNotReadAsAKey() {
   // passes for any reason at all, including the walker never looking. Same
   // text, no `run: |` above it.
   var control = withFixture({
-    "control.yml": "      - uses: not a workflow key at all\n",
+    "control.yml": stepsDoc("      - uses: owner/repo@some-branch\n"),
   }, function (dir) { return currency._collectPinnedActions(dir); });
   check("actions-currency: control — the identical line OUTSIDE a block is " +
         "reported, so the block test is excluding something real",
         control.unparsed.length === 1, JSON.stringify(control.unparsed));
 
+  // `uses` is not reserved in YAML. Under `env` or `with` it is an ordinary
+  // field that happens to share the name, and its value may look EXACTLY like a
+  // reference — `owner/repo@main` is a perfectly normal string to hand an
+  // action. Value shape therefore cannot decide it; only the enclosing key can,
+  // which is what the scanner tracks and a pattern had nowhere to put.
+  var notRefs = withFixture({
+    "notrefs.yml":
+      "jobs:\n" +
+      "  a:\n" +
+      "    steps:\n" +
+      "      - uses: actions/checkout@" + SHA + "  # v5.0.1\n" +
+      "        env:\n" +
+      "          uses: owner/inenv@main\n" +
+      "        with:\n" +
+      "          uses: owner/inwith@main\n",
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: a `uses` under env or with is a field, not an " +
+        "action reference, even when its value is shaped like one",
+        !Object.prototype.hasOwnProperty.call(notRefs.actions, "owner/inenv") &&
+        !Object.prototype.hasOwnProperty.call(notRefs.actions, "owner/inwith") &&
+        notRefs.unparsed.length === 0,
+        JSON.stringify(notRefs));
+  check("actions-currency: and the step's own uses is still collected, so the " +
+        "context test excludes the right thing",
+        (notRefs.actions["actions/checkout"] || {}).sha === SHA,
+        JSON.stringify(notRefs.actions));
+
+  // The enclosing key must survive a collection that OPENS on the next line,
+  // or the nested `uses` inherits the step's position and reads as an action.
+  var lateOpen = withFixture({
+    "lateopen.yml": stepsDoc(
+      "      - { name: X, with:\n" +
+      "          { uses: owner/latedata@main } }\n" +
+      "      - uses: actions/cache@v4.2.0\n"),
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: a nested collection opening on the NEXT line keeps " +
+        "its enclosing key, so its `uses` stays data",
+        !Object.prototype.hasOwnProperty.call(lateOpen.actions, "owner/latedata") &&
+        lateOpen.unparsed.length === 0,
+        JSON.stringify(lateOpen));
+  check("actions-currency: and the step after it is read normally",
+        Object.prototype.hasOwnProperty.call(lateOpen.actions, "actions/cache"),
+        Object.keys(lateOpen.actions).join(", "));
+
+  // There is exactly ONE `steps` that means steps, and it is three keys from
+  // the root. Matrix data an operator happens to name `steps` is not it, and
+  // matching only the last key would fail the gate on a sound workflow.
+  var matrixSteps = withFixture({
+    "matrix.yml":
+      "jobs:\n" +
+      "  build:\n" +
+      "    strategy:\n" +
+      "      matrix:\n" +
+      "        steps:\n" +
+      "          - uses: owner/matrixdata@main\n" +
+      "        include:\n" +
+      "          - uses: owner/includedata@main\n" +
+      "    steps:\n" +
+      "      - uses: actions/checkout@" + SHA + "  # v5.0.1\n",
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: matrix data named `steps` is not a steps list",
+        !Object.prototype.hasOwnProperty.call(matrixSteps.actions, "owner/matrixdata") &&
+        !Object.prototype.hasOwnProperty.call(matrixSteps.actions, "owner/includedata") &&
+        matrixSteps.unparsed.length === 0,
+        JSON.stringify(matrixSteps));
+  check("actions-currency: while the job's real steps list still is",
+        (matrixSteps.actions["actions/checkout"] || {}).sha === SHA,
+        JSON.stringify(matrixSteps.actions));
+
+  // Flow style allows a delimiter straight after the colon, so `uses:,` and
+  // `uses:}` are keys with an EMPTY value. Treating the delimiter as proof it
+  // was not a key made a malformed-but-present reference absent again.
+  var empties = withFixture({
+    "empty.yml": stepsDoc(
+      "      - { uses:, name: broken }\n" +
+      "      - { uses:}\n" +
+      "      - uses: actions/cache@v4.2.0\n"),
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: a flow `uses` with an empty value is named, not " +
+        "skipped for lacking one",
+        empties.unparsed.length === 2, JSON.stringify(empties.unparsed));
+  check("actions-currency: and the following step is unaffected",
+        Object.prototype.hasOwnProperty.call(empties.actions, "actions/cache"),
+        Object.keys(empties.actions).join(", "));
+
+  // YAML 1.2 lets a colon follow a JSON-like QUOTED key directly, but a plain
+  // scalar key needs separation after it — so `{ uses:owner/repo@main }` is one
+  // scalar and names no key at all. That falls out of the scalar reader rather
+  // than needing a rule: it breaks on a colon only when whitespace or a flow
+  // delimiter follows, so the colon here is simply part of the value.
+  var adjacent = withFixture({
+    "adjacent.yml": stepsDoc(
+      "      - { uses:owner/plain@main }\n" +
+      '      - { "uses":owner/quoted@v1.0.0 }\n'),
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: a plain scalar with an adjacent colon is not a key, " +
+        "so no reference is invented from it",
+        !Object.prototype.hasOwnProperty.call(adjacent.actions, "owner/plain") &&
+        adjacent.unparsed.length === 0,
+        JSON.stringify(adjacent));
+  check("actions-currency: while a quoted key may be followed directly, and is " +
+        "read",
+        (adjacent.actions["owner/quoted"] || {}).version === "1.0.0",
+        JSON.stringify(adjacent.actions));
+
+  // A YAML node property — an anchor or an explicit tag — may prefix the value.
+  // It is not the scalar, so reading it AS the scalar refuses a valid workflow.
+  var props = withFixture({
+    "props.yml": stepsDoc(
+      "      - uses: &checkout actions/checkout@v5.0.1\n" +
+      "      - uses: !!str owner/tagged@v2.0.0\n"),
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: an anchor before the value is skipped, not read as it",
+        (props.actions["actions/checkout"] || {}).version === "5.0.1",
+        JSON.stringify(props));
+  check("actions-currency: and so is an explicit tag",
+        (props.actions["owner/tagged"] || {}).version === "2.0.0" &&
+        props.unparsed.length === 0,
+        JSON.stringify(props));
+
+  // A workflow parser resolves double-quote escapes before it ever sees a
+  // reference, so handing back the raw text refuses valid YAML.
+  var escaped = withFixture({
+    "escaped.yml": stepsDoc(
+      '      - uses: "actions\\u002fcheckout@v5.0.1"\n' +
+      '      - "uses": "owner\\x2fhex@v2.0.0"\n' +
+      "      - uses: 'owner/single\\u002fnot-an-escape@v3.0.0'\n"),
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: a \\u escape in a double-quoted reference is decoded",
+        (escaped.actions["actions/checkout"] || {}).version === "5.0.1",
+        JSON.stringify(escaped));
+  check("actions-currency: and a \\x escape, including in the key",
+        (escaped.actions["owner/hex"] || {}).version === "2.0.0",
+        JSON.stringify(escaped.actions));
+  check("actions-currency: a SINGLE-quoted scalar takes no escapes, so the " +
+        "backslash stays literal and the reference is named, not invented",
+        !Object.prototype.hasOwnProperty.call(escaped.actions, "owner/single/not-an-escape") &&
+        escaped.unparsed.length === 1,
+        JSON.stringify(escaped));
+
+  // A SHA states no version of its own, so its trailing comment is the whole
+  // claim — and in a flow mapping the rest of the mapping sits between the two,
+  // sometimes onto another line. Reading the comment from the text after the
+  // VALUE could not see past those fields; the scanner knows where the comment
+  // began, so it hands it over and the occurrence waits for its mapping to
+  // close.
+  var trailing = withFixture({
+    "trailing.yml": stepsDoc(
+      "      - { uses: owner/sameline@" + SHA + ", name: A }  # v1.2.3\n" +
+      "      - { uses: owner/nextline@" + SHA + ",\n" +
+      "          name: B }  # v4.5.6\n"),
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: a version comment after later flow fields is found",
+        (trailing.actions["owner/sameline"] || {}).version === "1.2.3",
+        JSON.stringify({ a: trailing.actions, u: trailing.unparsed }));
+  check("actions-currency: and one on the line where the mapping CLOSES",
+        (trailing.actions["owner/nextline"] || {}).version === "4.5.6" &&
+        trailing.unparsed.length === 0,
+        JSON.stringify({ a: trailing.actions, u: trailing.unparsed }));
+
+  // A pin's own line may carry the comment while its mapping closes much later,
+  // and a collection may hold more than one pin. Taking the closing line's
+  // comment for all of them loses the first version and gives every pin the
+  // last, so each occurrence keeps its own and only falls back.
+  var perLine = withFixture({
+    "perline.yml":
+      "jobs:\n" +
+      "  build:\n" +
+      "    steps: [\n" +
+      "      { uses: owner/first@" + SHA + " },  # v1.0.0\n" +
+      "      { uses: owner/second@" + SHA + " },  # v2.0.0\n" +
+      "    ]\n",
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: each pin in a multi-line collection keeps the " +
+        "version from its OWN line",
+        JSON.stringify([(perLine.actions["owner/first"] || {}).version,
+                        (perLine.actions["owner/second"] || {}).version]) ===
+        JSON.stringify(["1.0.0", "2.0.0"]),
+        JSON.stringify({ a: perLine.actions, u: perLine.unparsed }));
+
+  // The other side of that line: `owner/repo` with no ref at all IS an action
+  // reference, and a floating one is exactly the pin whose currency nothing can
+  // establish. Passing over it by shape would be the original bug again.
+  var unpinned = withFixture({
+    "unpinned.yml": stepsDoc("      - uses: actions/checkout\n"),
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: an entirely unpinned action reference is reported",
+        unpinned.unparsed.length === 1 &&
+        unpinned.unparsed[0].reason.indexOf("not a pinned action reference") !== -1,
+        JSON.stringify(unpinned.unparsed));
+
+  // Anything sitting in an action-reference position IS one, whatever it looks
+  // like. Filtering by shape here would drop an alias or a typo in silence —
+  // the exact failure the unparsed list exists to end — and it was only ever
+  // needed while POSITION was unknown and shape was the only signal available.
+  var odd = withFixture({
+    "odd.yml": stepsDoc(
+      "      - uses: *checkout-anchor\n" +
+      "      - uses: not-even-close\n"),
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: a YAML alias in a uses position is named, not dropped",
+        odd.unparsed.filter(function (u) {
+          return u.value.indexOf("*checkout-anchor") !== -1;
+        }).length === 1, JSON.stringify(odd.unparsed));
+  check("actions-currency: and so is a value that resembles no reference at all",
+        odd.unparsed.length === 2 && Object.keys(odd.actions).length === 0,
+        JSON.stringify(odd));
+
+  // Whether a `uses` token is a KEY is a question about YAML structure, and no
+  // pattern answers it. Ten review rounds each produced a shape the previous
+  // pattern could not see or saw wrongly, in BOTH directions: real references
+  // missed, and quoted script text read as a reference that does not exist.
+  //
+  // The collector scans instead — walking characters and tracking quoting,
+  // comments and flow depth — so all of it falls out at once. Every shape from
+  // those rounds is asserted here, both the ones that must be FOUND and the
+  // ones that must be TEXT.
+  var scanned = withFixture({
+    "scan.yml":
+      "jobs:\n" +
+      "  a:\n" +
+      "    steps:\n" +
+      // Found: block, flow-first-key, flow-late-key, quoted key, quoted value.
+      "      - uses: actions/checkout@" + SHA + "  # v5.0.1\n" +
+      "      - { uses: owner/flowfirst@v1.0.0 }\n" +
+      "      - { name: X, with: { n: 1 }, uses: owner/flowlate@v2.0.0 }\n" +
+      '      - { "uses": owner/quotedkey@v3.0.0 }\n' +
+      "      - uses: 'owner/quotedval@v4.0.0'\n" +
+      // Text: inside quotes, inside a comment, inside a block-scalar body.
+      '      - run: echo "a, uses: owner/inquotes@main"\n' +
+      '      - { run: "echo a, uses: owner/inflowquotes@main" }\n' +
+      "      - name: N  # uses: owner/incomment@main\n" +
+      "      - run: |\n" +
+      "          uses: owner/inblock@main\n" +
+      "          { uses: owner/inblockflow@main }\n",
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+
+  var got = Object.keys(scanned.actions).sort().join(",");
+  check("actions-currency: every real key is found — block, flow first, flow " +
+        "late, quoted key, quoted value",
+        got === "actions/checkout,owner/flowfirst,owner/flowlate," +
+                "owner/quotedkey,owner/quotedval",
+        got + "  unparsed=" + JSON.stringify(scanned.unparsed));
+  check("actions-currency: and nothing inside quotes, a comment or a block " +
+        "body is mistaken for one",
+        got.indexOf("inquotes") === -1 && got.indexOf("inflowquotes") === -1 &&
+        got.indexOf("incomment") === -1 && got.indexOf("inblock") === -1,
+        got);
+  check("actions-currency: so a workflow of ordinary shapes produces no " +
+        "unreadable references at all",
+        scanned.unparsed.length === 0, JSON.stringify(scanned.unparsed));
+
+  // The values must survive the scan intact — a flow scalar stopping at the
+  // comma rather than swallowing it, a quoted one losing its quotes.
+  check("actions-currency: a flow-mapping value ends at the comma",
+        (scanned.actions["owner/flowlate"] || {}).version === "2.0.0",
+        JSON.stringify(scanned.actions["owner/flowlate"]));
+  check("actions-currency: a quoted value is unwrapped",
+        (scanned.actions["owner/quotedval"] || {}).version === "4.0.0",
+        JSON.stringify(scanned.actions["owner/quotedval"]));
+
+  // A flow collection may span lines. Structural state carried between them is
+  // the thing a pattern has nowhere to put; resetting it per line reads the
+  // continuation as block context, so the comma closing the value is swallowed
+  // into the ref and a valid entry fails.
+  var multiline = withFixture({
+    "multi.yml": stepsDoc(
+      "      - { name: Checkout,\n" +
+      "          uses: owner/spanning@v1.2.3,\n" +
+      "          id: c }\n" +
+      "      - uses: actions/cache@v4.2.0\n"),
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: a flow mapping spanning lines is read, with the " +
+        "value ending at the comma rather than absorbing it",
+        (multiline.actions["owner/spanning"] || {}).version === "1.2.3" &&
+        multiline.unparsed.length === 0,
+        JSON.stringify({ a: multiline.actions, u: multiline.unparsed }));
+  check("actions-currency: and block context resumes after the mapping closes",
+        Object.prototype.hasOwnProperty.call(multiline.actions, "actions/cache"),
+        Object.keys(multiline.actions).join(", "));
+
+  check("actions-currency: the scope is stated rather than inferred, so a " +
+        "reader is told what was looked at",
+        typeof currency.SCOPE_NOTE === "string" &&
+        currency.SCOPE_NOTE.indexOf("scanned") !== -1,
+        String(currency.SCOPE_NOTE));
+
   // Skipping is right for a block BODY and wrong for a `uses:` that opens one.
   // An action reference is a single scalar, so `uses: |` is malformed — and a
   // skip that swallowed it would put the silence straight back, one shape over.
   var opener = withFixture({
-    "opener.yml":
+    "opener.yml": stepsDoc(
       "      - uses: |\n" +
       "          actions/checkout@v5.0.1\n" +
-      "      - uses: actions/cache@v4.2.0\n",
+      "      - uses: actions/cache@v4.2.0\n"),
   }, function (dir) { return currency._collectPinnedActions(dir); });
   check("actions-currency: a `uses:` that opens a block scalar is reported, " +
         "not stepped over",
-        opener.unparsed.length === 1 && opener.unparsed[0].line === 1,
+        opener.unparsed.length === 1 && opener.unparsed[0].line === 4,
         JSON.stringify(opener.unparsed));
   check("actions-currency: its body is still treated as body, so the pin " +
         "inside it is not collected as a real reference",
@@ -229,16 +549,32 @@ function testBlockScalarTextIsNotReadAsAKey() {
         Object.prototype.hasOwnProperty.call(opener.actions, "actions/cache"),
         Object.keys(opener.actions).join(", "));
 
+  // The position decision travels with the block-scalar case too. A data field
+  // named `uses` under `with` may hold a block scalar quite legitimately.
+  var dataBlock = withFixture({
+    "datablock.yml": stepsDoc(
+      "      - uses: actions/checkout@" + SHA + "  # v5.0.1\n" +
+      "        with:\n" +
+      "          uses: |\n" +
+      "            some multi-line value\n"),
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: a data `uses` opening a block scalar is not " +
+        "reported — position decides here as everywhere else",
+        dataBlock.unparsed.length === 0, JSON.stringify(dataBlock.unparsed));
+  check("actions-currency: and the step's real pin is untouched by it",
+        (dataBlock.actions["actions/checkout"] || {}).sha === SHA,
+        JSON.stringify(dataBlock.actions));
+
   // YAML takes the indentation and chomping indicators in EITHER order, so
   // `|2-` and `|-2` are both valid headers. Missing a form does not merely skip
   // a block — it scans that block's shell body as YAML, and a script line
   // reading `uses:` then fails a workflow with nothing wrong in it.
   ["|", "|-", "|+", "|2", "|2-", "|-2", ">", ">-", ">2+", ">+2"].forEach(function (ind) {
     var got = withFixture({
-      "ind.yml":
+      "ind.yml": stepsDoc(
         "      - run: " + ind + "\n" +
-        "          uses: this is shell, not a key\n" +
-        "      - uses: actions/cache@v4.2.0\n",
+        "          uses: owner/repo@some-branch\n" +
+        "      - uses: actions/cache@v4.2.0\n"),
     }, function (dir) { return currency._collectPinnedActions(dir); });
     check("actions-currency: `run: " + ind + "` opens a block, so its body is " +
           "not read as YAML",
@@ -313,6 +649,26 @@ function testTheFixReplacementReachesThroughAQuote() {
           out);
   });
 
+  // A prerelease comment must be replaced WHOLE. The collector reads
+  // `# v2.1.0-rc.1` as that entire version, so a fixer stopping at the numeric
+  // triple leaves `-rc.1` glued to the new tag and exits 0 having written a
+  // version that never existed. Collected and rewritable have to be the same
+  // set, which is why the grammar is defined once and shared.
+  var preLine = "      - uses: actions/checkout@" + OLD + "  # v2.1.0-rc.1";
+  var preOut  = preLine.replace(currency._fixReplacementRe("actions/checkout"),
+                                "$1" + NEW + "$2" + "v2.2.0");
+  check("actions-currency: --fix replaces a prerelease version comment whole, " +
+        "leaving no suffix behind",
+        preOut.indexOf("v2.2.0") !== -1 && preOut.indexOf("rc.1") === -1,
+        preOut);
+
+  var buildLine = "      - uses: actions/checkout@" + OLD + "  # v1.2.3+20260823";
+  var buildOut  = buildLine.replace(currency._fixReplacementRe("actions/checkout"),
+                                    "$1" + NEW + "$2" + "v1.3.0");
+  check("actions-currency: and a build-metadata comment likewise",
+        buildOut.indexOf("v1.3.0") !== -1 && buildOut.indexOf("20260823") === -1,
+        buildOut);
+
   // The pattern is global, so ONE pass over a file rewrites every occurrence in
   // it. That is what makes running it a second time for a second reference to
   // the same action wrong: the second pass finds nothing left to change, and
@@ -338,8 +694,9 @@ function testTheFixReplacementReachesThroughAQuote() {
 // first-one-wins bug shows up as a failure rather than as a coin toss.
 function testMixedPinsDoNotDependOnFileOrder() {
   var SHA = "11bd71901bbe5b1630ceea73d27597364c9af683";
-  var shaLine = "      - uses: actions/checkout@" + SHA + "  # v5.0.1\n";
-  var tagLine = "    uses: actions/checkout/.github/workflows/reusable.yml@v5.0.1  # tag\n";
+  var shaLine = stepsDoc("      - uses: actions/checkout@" + SHA + "  # v5.0.1\n");
+  var tagLine = "jobs:\n  a:\n" +
+                "    uses: actions/checkout/.github/workflows/reusable.yml@v5.0.1  # tag\n";
 
   function collect(first, second) {
     return withFixture({ "a-first.yml": first, "b-second.yml": second },
