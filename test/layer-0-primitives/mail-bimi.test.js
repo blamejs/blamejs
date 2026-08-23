@@ -1405,6 +1405,26 @@ async function testFetchAndVerifyMarkLogotypeNamespacedRoots() {
     ["Greek letter as the prefix",
      "<" + String.fromCharCode(0x3B1) + ':svg xmlns:' + String.fromCharCode(0x3B1) +
      '="http://www.w3.org/2000/svg"></' + String.fromCharCode(0x3B1) + ":svg>",    true],
+    // A `/` inside a start tag is legal in exactly one place: immediately
+    // before the `>`, closing an empty element. Anywhere else the text is not a
+    // start tag, however good the namespace declaration before it looks.
+    ["slash mid-tag, then garbage",
+     '<x:svg xmlns:x="http://www.w3.org/2000/svg"/garbage></x:svg>',                                               false],
+    ["slash mid-tag, unprefixed",
+     '<svg xmlns="http://www.w3.org/2000/svg"/garbage></svg>',                                                     false],
+    // The legitimate empty-element form still reads.
+    ["empty element, prefixed",
+     '<x:svg xmlns:x="http://www.w3.org/2000/svg"/>',                                                              true],
+    ["empty element with trailing space",
+     '<x:svg xmlns:x="http://www.w3.org/2000/svg" />',                                                             true],
+    // XML's EmptyElemTag is `S? '/>'` — the space may precede the slash and not
+    // follow it, so the slash is adjacent to the bracket or the text is not a
+    // start tag.
+    ["space between the slash and the bracket",
+     '<x:svg xmlns:x="http://www.w3.org/2000/svg"/ >',                                                             false],
+    // And a `/` inside a quoted value is data, not the tag closing.
+    ["slash inside the quoted URI",
+     '<x:svg xmlns:x="http://www.w3.org/2000/svg" data-a="a/b"></x:svg>',                                          true],
     ["prefixed, tag never closes", '<x:svg xmlns:x="http://www.w3.org/2000/svg"',                                  false],
     ["unprefixed, tag never closes", '<svg version="1.2" viewBox="0 0 1 1"',                                       false],
   ];
