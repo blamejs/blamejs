@@ -47,6 +47,18 @@ var JSON_OUT   = process.argv.indexOf("--json") !== -1;
 var DO_FIX     = process.argv.indexOf("--fix") !== -1;
 var TIMEOUT_MS = 10000;
 
+// Every human-readable line goes through here, and under `--json` it writes
+// nothing. The JSON document is then the only thing on stdout, which is what a
+// consumer piping this into a parser is entitled to assume.
+//
+// Writing the document and then continuing into the summary blocks put a
+// trailing `[actions-currency] OK — …` line after the closing brace, so
+// `JSON.parse` failed on the stream with "Unexpected non-whitespace character
+// after JSON". The exit code is unchanged: a machine reader still wants a
+// non-zero exit on stale.
+var _out = process.stdout.write.bind(process.stdout);
+function say(s) { if (!JSON_OUT) _out(s); }
+
 // Per-action overrides. Keyed by "owner/repo".
 //   { type: "hold-major", major: N, reason: "..." } — only flag stale
 //        WITHIN the pinned major; a newer major is an intentional hold.
@@ -180,25 +192,71 @@ function _semverCompare(a, b) {
 
 // Collect distinct SHA-pinned actions across every workflow file.
 // Returns { "owner/repo": { version, refs: [{ file, line, subpath }] } }.
-function _collectPinnedActions() {
+function _collectPinnedActions(dir) {
   var out = {};
-  var files = fs.readdirSync(WORKFLOWS_DIR).filter(function (f) {
+  var root = dir || WORKFLOWS_DIR;
+  var files = fs.readdirSync(root).filter(function (f) {
     return f.endsWith(".yml") || f.endsWith(".yaml");
   });
   // `uses: owner/repo[/subpath]@<40-hex-sha>  # vX.Y[.Z]`
   var re = /uses:\s*([A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)(\/[^@\s]+)?@([0-9a-f]{40})\s*#\s*v?(\d+(?:\.\d+){0,2})/;
+  // The same line pinned to anything that is NOT a 40-hex SHA — a tag, most
+  // often. The pattern above cannot match one, so such a pin was collected by
+  // nothing and reported as neither current nor stale: absent from the run
+  // entirely, while the summary counted only what it had looked at and read as
+  // a clean bill.
+  //
+  // That is the pin most able to move underneath us, not least. A SHA is
+  // immutable, so a stale SHA pin is visible the moment upstream releases; a
+  // tag can be repointed at new code with no diff here at all. This repository
+  // carries exactly one, and by necessity: the SLSA generator refuses to run
+  // from a commit SHA, so `generator_generic_slsa3.yml` is pinned to a tag and
+  // is the sole exception to the pinact discipline — which made it the one
+  // thing the currency gate never checked.
+  // The version is closed with a lookahead rather than an end-of-line anchor:
+  // the one line this exists to catch carries a trailing `# zizmor: ignore[…]`
+  // comment explaining why it is not SHA-pinned, so anchoring at `$` matched
+  // nothing and the pin stayed invisible — the same blind spot one level down.
+  // The lookahead also keeps a SHA from being read as a version: `@11bd7190…`
+  // starts with digits, and only the requirement that the number END there
+  // rejects it.
+  var tagRe = /uses:\s*([A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)(\/[^@\s]+)?@(v?\d+(?:\.\d+){0,2})(?=\s|$)/;
   for (var f = 0; f < files.length; f++) {
     var rel = ".github/workflows/" + files[f];
-    var lines = fs.readFileSync(path.join(WORKFLOWS_DIR, files[f]), "utf8").split("\n");
+    var lines = fs.readFileSync(path.join(root, files[f]), "utf8").split("\n");
     for (var L = 0; L < lines.length; L++) {
       var m = lines[L].match(re);
-      if (!m) continue;
+      if (!m) {
+        // Not SHA-pinned. A tag pin still names a version, so its currency is
+        // checkable the same way; what it cannot carry is a SHA to rewrite, so
+        // it is marked and `--fix` leaves it alone.
+        var t = lines[L].match(tagRe);
+        if (!t) continue;
+        var tagRepo = t[1];
+        var tagVer  = t[3].replace(/^v/, "");
+        if (!out[tagRepo]) out[tagRepo] = { version: tagVer, sha: null, refs: [] };
+        out[tagRepo].refs.push({
+          file: rel, line: L + 1, subpath: t[2] || "", tagPinned: true, sha: null,
+        });
+        if (_semverCompare(_semverParse(tagVer), _semverParse(out[tagRepo].version)) < 0) {
+          out[tagRepo].version = tagVer;
+        }
+        continue;
+      }
       var ownerRepo = m[1];
       var subpath   = m[2] || "";
       var sha       = m[3];
       var version   = m[4];
-      if (!out[ownerRepo]) out[ownerRepo] = { version: version, sha: sha, refs: [] };
-      out[ownerRepo].refs.push({ file: rel, line: L + 1, subpath: subpath });
+      if (!out[ownerRepo]) out[ownerRepo] = { version: version, sha: null, refs: [] };
+      // The entry's SHA is whichever SHA-pinned reference came first, and it is
+      // only ever set from one: an action can be tag-pinned in one workflow and
+      // SHA-pinned in another, and reading the entry's pin type off whichever
+      // line the walk happened to reach first made both the report and `--fix`
+      // depend on file iteration order.
+      if (out[ownerRepo].sha === null) out[ownerRepo].sha = sha;
+      out[ownerRepo].refs.push({
+        file: rel, line: L + 1, subpath: subpath, tagPinned: false, sha: sha,
+      });
       // If the same repo is pinned at two different versions across
       // files, record the lowest so a partial bump still flags.
       if (_semverCompare(_semverParse(version), _semverParse(out[ownerRepo].version)) < 0) {
@@ -206,13 +264,28 @@ function _collectPinnedActions() {
       }
     }
   }
+  // Derived once every file has been read, so the answer does not depend on
+  // which one was walked first. `tagPinned` means there is NOTHING here for
+  // `--fix` to rewrite; an action pinned both ways still has SHA references
+  // worth bumping, and is reported as mixed so the tag one is not lost in the
+  // rewrite of its siblings.
+  Object.keys(out).forEach(function (name) {
+    var refs = out[name].refs;
+    var tags = refs.filter(function (r) { return r.tagPinned; }).length;
+    out[name].tagPinned = tags === refs.length;
+    out[name].mixedPins = tags > 0 && tags < refs.length;
+  });
   return out;
 }
 
 async function _checkOne(ownerRepo, entry) {
   var special = SPECIAL_MAP[ownerRepo];
   if (special && special.type === "skip") {
-    return { action: ownerRepo, status: "skipped", reason: special.reason, pinned: entry.version };
+    return {
+      action: ownerRepo, status: "skipped", reason: special.reason,
+      pinned: entry.version, tagPinned: entry.tagPinned === true,
+      mixedPins: entry.mixedPins === true,
+    };
   }
   var pinned = _semverParse(entry.version);
   try {
@@ -232,6 +305,11 @@ async function _checkOne(ownerRepo, entry) {
       latest:    info.tag,
       latestSha: info.sha,
       status:    status,
+      // Carried through so the reader and `--fix` can both tell the two kinds
+      // apart: a tag pin has no SHA to rewrite, so it is reported and left for
+      // a person rather than edited.
+      tagPinned: entry.tagPinned === true,
+      mixedPins: entry.mixedPins === true,
       refs:      entry.refs,
     };
   } catch (e) {
@@ -240,6 +318,11 @@ async function _checkOne(ownerRepo, entry) {
       pinned: entry.version,
       status: "api-error",
       error:  (e && e.message) || String(e),
+      // Carried on every branch, not only the one that reached the API: a
+      // reader filtering for tag pins is asking which pins cannot be verified
+      // by SHA, and an unreachable one is still one of them.
+      tagPinned: entry.tagPinned === true,
+      mixedPins: entry.mixedPins === true,
       refs:   entry.refs,
     };
   }
@@ -256,9 +339,12 @@ async function main() {
   }
 
   if (JSON_OUT) {
-    process.stdout.write(JSON.stringify({ results: results }, null, 2) + "\n");
+    _out(JSON.stringify({ results: results }, null, 2) + "\n");
   } else {
-    process.stdout.write("[actions-currency] " + actions.length + " SHA-pinned action(s) inspected:\n");
+    var tagCount = results.filter(function (r) { return r.tagPinned; }).length;
+    say("[actions-currency] " + actions.length + " pinned action(s) inspected" +
+        (tagCount ? " (" + tagCount + " pinned to a tag rather than a SHA)" : "") +
+        ":\n");
     for (var j = 0; j < results.length; j++) {
       var r = results[j];
       var label = r.status === "current"   ? "OK"
@@ -270,13 +356,22 @@ async function main() {
       if (r.latest) line += " -> " + r.latest;
       if (r.reason) line += "  (" + r.reason + ")";
       if (r.error)  line += "  (api: " + r.error + ")";
-      process.stdout.write(line + "\n");
+      if (r.tagPinned) line += "  (tag pin — no SHA to rewrite; bump by hand)";
+      else if (r.mixedPins) line += "  (pinned by SHA in some workflows and by " +
+        "tag in others; --fix rewrites only the SHA ones)";
+      say(line + "\n");
       // For stale entries, print a ready-to-paste pin line + every
-      // file:line that needs the bump, so updating is copy-paste.
-      if (r.status === "stale" && r.latestSha) {
-        process.stdout.write("        pin:  " + r.action + "@" + r.latestSha + "  # " + r.latest + "\n");
+      // file:line that needs the bump, so updating is copy-paste. A tag pin
+      // has no SHA, so it gets the file:line list without the pin line.
+      if (r.status === "stale" && r.tagPinned) {
+        for (var tf = 0; tf < (r.refs || []).length; tf++) {
+          say("        used: " + r.refs[tf].file + ":" + r.refs[tf].line + "\n");
+        }
+      }
+      if (r.status === "stale" && r.latestSha && !r.tagPinned) {
+        say("        pin:  " + r.action + "@" + r.latestSha + "  # " + r.latest + "\n");
         for (var rf = 0; rf < (r.refs || []).length; rf++) {
-          process.stdout.write("        used: " + r.refs[rf].file + ":" + r.refs[rf].line + "\n");
+          say("        used: " + r.refs[rf].file + ":" + r.refs[rf].line + "\n");
         }
       }
     }
@@ -287,7 +382,37 @@ async function main() {
 
   if (DO_FIX) {
     var byFile = {};
-    var fixable = stale.filter(function (r) { return r.latestSha && r.latest; });
+    // Tag-only AND mixed entries are both excluded. For a tag-only one there is
+    // no old SHA to rewrite, and the review material below is a diff BETWEEN
+    // two SHAs, which is exactly the check a tag cannot give.
+    //
+    // A mixed one is excluded for a sharper reason. The entry's version is the
+    // LOWEST across its references, so when the stale reference is the tag, the
+    // entry reads stale while its SHA references are already current — and
+    // rewriting is then actively wrong: it bumps the references that were
+    // right, leaves the one that was stale, and exits 0 on a tree the next run
+    // still fails. Rewriting per reference would need per-reference currency,
+    // which is a larger change than this gate needs today; until then a mixed
+    // entry is a person's decision and the report names every file and line.
+    var fixable = stale.filter(function (r) {
+      return r.latestSha && r.latest && !r.tagPinned && !r.mixedPins;
+    });
+    var handOnly = stale.filter(function (r) { return r.tagPinned || r.mixedPins; });
+    for (var ho = 0; ho < handOnly.length; ho++) {
+      var he = handOnly[ho];
+      say("\n=== " + he.action + "  " + he.pinned + " -> " + he.latest + " ===\n");
+      say(he.tagPinned
+        ? "  pinned to a tag, so --fix leaves it alone: there is no SHA to " +
+          "compare against and none to write. Update it by hand.\n"
+        : "  pinned by SHA in some workflows and by tag in others, so --fix " +
+          "leaves it alone: the version reported is the lowest across those " +
+          "references, and rewriting the SHA ones could bump what was already " +
+          "current while the stale tag stayed put. Update it by hand.\n");
+      for (var hr = 0; hr < (he.refs || []).length; hr++) {
+        say("        used: " + he.refs[hr].file + ":" + he.refs[hr].line +
+            (he.refs[hr].tagPinned ? "  (tag)" : "  (sha)") + "\n");
+      }
+    }
     for (var fx = 0; fx < fixable.length; fx++) {
       var fr = fixable[fx];
       var tag = /^v/.test(fr.latest) ? fr.latest : "v" + fr.latest;
@@ -296,39 +421,39 @@ async function main() {
       // and the release notes can be validated. A compromised release shows
       // up here as an unexpected commit / author / change.
       var cl = await _releaseChangelog(fr.action, fr.oldSha, tag, fr.latestSha);
-      process.stdout.write("\n=== " + fr.action + "  " + fr.pinned + " -> " + fr.latest + " ===\n");
-      process.stdout.write("  old sha: " + fr.oldSha + "\n  new sha: " + fr.latestSha + "\n");
-      process.stdout.write("  compare: " + cl.compareUrl + "\n");
+      say("\n=== " + fr.action + "  " + fr.pinned + " -> " + fr.latest + " ===\n");
+      say("  old sha: " + fr.oldSha + "\n  new sha: " + fr.latestSha + "\n");
+      say("  compare: " + cl.compareUrl + "\n");
       if (cl.commits.length) {
-        process.stdout.write("  commits between the two SHAs (" + cl.commits.length + ") [sha  author  subject]:\n");
-        for (var ci = 0; ci < cl.commits.length; ci++) process.stdout.write("    " + cl.commits[ci] + "\n");
+        say("  commits between the two SHAs (" + cl.commits.length + ") [sha  author  subject]:\n");
+        for (var ci = 0; ci < cl.commits.length; ci++) say("    " + cl.commits[ci] + "\n");
       } else if (cl.compareError) {
-        process.stdout.write("  commits: (compare unavailable: " + cl.compareError + ")\n");
+        say("  commits: (compare unavailable: " + cl.compareError + ")\n");
       }
       if (cl.files.length) {
-        process.stdout.write("  changed files (" + cl.files.length + "):\n");
+        say("  changed files (" + cl.files.length + "):\n");
         for (var sfi = 0; sfi < cl.files.length; sfi++) {
           var sf = cl.files[sfi];
-          process.stdout.write("    [" + sf.status + " +" + sf.add + "/-" + sf.del + "] " + sf.name + "\n");
+          say("    [" + sf.status + " +" + sf.add + "/-" + sf.del + "] " + sf.name + "\n");
         }
-        process.stdout.write("  code diff (per file, capped at 200 lines):\n");
+        say("  code diff (per file, capped at 200 lines):\n");
         for (var dfi = 0; dfi < cl.files.length; dfi++) {
           var df = cl.files[dfi];
-          process.stdout.write("    ----- " + df.name + " -----\n");
+          say("    ----- " + df.name + " -----\n");
           if (df.patch === null) {
-            process.stdout.write("      (patch omitted by GitHub — file too large / binary; inspect via the compare URL above)\n");
+            say("      (patch omitted by GitHub — file too large / binary; inspect via the compare URL above)\n");
           } else {
             var dl = df.patch.split("\n");
-            for (var dk = 0; dk < Math.min(dl.length, 200); dk++) process.stdout.write("      " + dl[dk] + "\n");
-            if (dl.length > 200) process.stdout.write("      ... (" + (dl.length - 200) + " more diff line(s) — see compare URL)\n");
+            for (var dk = 0; dk < Math.min(dl.length, 200); dk++) say("      " + dl[dk] + "\n");
+            if (dl.length > 200) say("      ... (" + (dl.length - 200) + " more diff line(s) — see compare URL)\n");
           }
         }
       }
       if (cl.body) {
-        process.stdout.write("  release notes for " + tag + ":\n");
+        say("  release notes for " + tag + ":\n");
         var bl = cl.body.split("\n");
-        for (var bi = 0; bi < Math.min(bl.length, 40); bi++) process.stdout.write("    " + bl[bi] + "\n");
-        if (bl.length > 40) process.stdout.write("    ... (" + (bl.length - 40) + " more line(s))\n");
+        for (var bi = 0; bi < Math.min(bl.length, 40); bi++) say("    " + bl[bi] + "\n");
+        if (bl.length > 40) say("    ... (" + (bl.length - 40) + " more line(s))\n");
       }
       var esc = fr.action.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       var re2 = new RegExp("(" + esc + "(?:/[^@\\s]+)?@)[0-9a-f]{40}(\\s*#\\s*)v?\\d+(?:\\.\\d+){0,2}", "g");
@@ -339,14 +464,14 @@ async function main() {
       }
     }
     Object.keys(byFile).forEach(function (abs) { fs.writeFileSync(abs, byFile[abs]); });
-    process.stdout.write("\n[actions-currency] --fix: rewrote " + fixable.length + " stale action(s) across " +
+    say("\n[actions-currency] --fix: rewrote " + fixable.length + " stale action(s) across " +
       Object.keys(byFile).length + " workflow file(s). REVIEW the changelogs above for supply-chain integrity before committing; re-run without --fix to verify.\n");
     process.exit(0);
   }
 
   if (WARN_ONLY) {
     if (stale.length || errored.length) {
-      process.stdout.write("[actions-currency] --warn: " + stale.length + " stale, " +
+      say("[actions-currency] --warn: " + stale.length + " stale, " +
         errored.length + " errored — exit 0 anyway\n");
     }
     process.exit(0);
@@ -354,7 +479,7 @@ async function main() {
 
   var strictErrors = process.env.BLAMEJS_ACTIONS_CURRENCY_STRICT === "1";
   if (stale.length > 0 || (strictErrors && errored.length > 0)) {
-    process.stdout.write("[actions-currency] FAIL — " + stale.length + " stale, " +
+    say("[actions-currency] FAIL — " + stale.length + " stale, " +
       errored.length + " api-error(s). Bump the pinned SHA + version comment to the latest release.\n");
     process.exit(1);
   }
@@ -366,18 +491,31 @@ async function main() {
   // turns it into one), but a passing gate must not report a currency it did
   // not establish.
   if (errored.length > 0) {
-    process.stdout.write("[actions-currency] OK for what could be checked — " +
+    say("[actions-currency] OK for what could be checked — " +
       (results.length - errored.length) + " of " + results.length +
       " pinned action(s) match the latest upstream release; " + errored.length +
       " could not be reached, so their currency is UNKNOWN. Re-run with " +
       "GITHUB_TOKEN set for the authenticated rate limit.\n");
     process.exit(0);
   }
-  process.stdout.write("[actions-currency] OK — every pinned action matches the latest upstream release\n");
+  say("[actions-currency] OK — every pinned action matches the latest upstream release\n");
   process.exit(0);
 }
 
-main().catch(function (e) {
-  process.stderr.write("[actions-currency] script crashed: " + (e && e.stack || e) + "\n");
-  process.exit(2);
-});
+// Exported for the tests, which drive the collector over a fixture directory
+// rather than over this repository's own workflows — a gate whose coverage is
+// asserted against the very files it ships with can only ever confirm today's
+// contents, and the defect being pinned here was a whole KIND of pin the
+// collector never returned.
+module.exports = {
+  _collectPinnedActions: _collectPinnedActions,
+  _semverParse: _semverParse,
+  _semverCompare: _semverCompare,
+};
+
+if (require.main === module) {
+  main().catch(function (e) {
+    process.stderr.write("[actions-currency] script crashed: " + (e && e.stack || e) + "\n");
+    process.exit(2);
+  });
+}

@@ -1,0 +1,26 @@
+{
+  "$schema": "./schema.json",
+  "version": "0.18.52",
+  "date": "2026-08-23",
+  "headline": "A refusal that would not say why, and a currency gate that skipped the one pin able to move underneath it",
+  "summary": "`b.guardFilename` refuses a filename carrying NTFS alternate-data-stream syntax whatever `adsPolicy` says, which is correct and was documented, but the refusal never mentioned the option — so a caller who set `\"allow\"` was left comparing their code against a message that said nothing about the setting they had changed. Separately, the pinned-actions currency gate could only see a `uses:` pinned to a commit SHA, so the one workflow reference pinned to a tag was absent from every run rather than reported, and its `--json` output had a human summary line after the document, so nothing could parse it.",
+  "sections": [
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "The NTFS-ADS refusal now says where `adsPolicy: \"allow\"` applies",
+          "body": "A filename carrying alternate-data-stream syntax (`report.txt:stream`) is refused by `b.guardFilename.sanitize`, `validate` and `gate` regardless of `adsPolicy`. That is deliberate: on Windows the write lands on a hidden stream of the base file rather than on a file anyone can see, so it is one of the shapes a filename guard always refuses. `adsPolicy` still takes `\"allow\"` because `verifyExtractionPath` honours it, for an operator deliberately extracting stream-suffixed entries into a root they chose.\n\nWhat was missing is that none of this was visible from the call site. The refusal said only that the name contained stream syntax, so setting `\"allow\"` and watching nothing change read as the option being broken rather than as it being scoped. The message now names the boundary, and the split is pinned by tests at all four entry points.\n\nOne thing worth knowing if you go looking: a colon is also a Windows reserved character, so `reservedCharPolicy` refuses such a name before the ADS check is reached. Setting `adsPolicy` alone never changes the outcome for a name like `12:30 notes.txt` — `reservedCharPolicy` is the one governing it, and `\"strip\"` there yields `12_30 notes.txt`.\n\nThis also records a change that shipped in 0.18.48 without being written down: before it, `sanitize` honoured `adsPolicy: \"reject\"` and so could be opted out of. It no longer can be, and there is no replacement value, because a stream-suffixed name has no safe repair."
+        },
+        {
+          "title": "The pinned-actions currency gate could not see a tag-pinned workflow",
+          "body": "`check-actions-currency.js` matched a `uses:` line only when it was pinned to a 40-character commit SHA. A reference pinned to anything else matched nothing, was collected by nothing, and appeared in the run as neither current nor stale — absent, while the summary counted what it had looked at and read as a clean result.\n\nThe pin that fell through is the one least able to look after itself. A commit SHA is immutable, so a stale SHA pin becomes visible as soon as upstream cuts a release; a tag can be repointed at new code with no local diff at all. The single reference here pinned to a tag is pinned that way by necessity, because the SLSA provenance generator refuses to run from a commit SHA — so the one exception to the pinning discipline was also the one thing never checked.\n\nTag pins are now collected, version-checked like any other, and reported as tag pins. `--fix` deliberately leaves them alone and says so: there is no old SHA to compare against and none to write, and the review material `--fix` prints is a diff between two SHAs, which is exactly what a tag cannot give.\n\nThe cause of the gap is worth naming because it repeated one level down: the first pattern written to catch these anchored the version at end-of-line, and the line in question carries a trailing comment explaining why it is not SHA-pinned. It matched nothing either."
+        },
+        {
+          "title": "`check-actions-currency.js --json` emits only the JSON document",
+          "body": "The JSON branch wrote the document and then fell through into the summary blocks, which wrote to the same stream regardless of the flag. Every `--json` run therefore ended with a `[actions-currency] …` line after the closing brace, and `JSON.parse` on the stream failed with \"Unexpected non-whitespace character after JSON\". `--fix --json` was the same shape with more trailing text.\n\nEvery human-readable line now goes through a writer that is silent under `--json`. Exit codes are unchanged: a machine reader still gets a non-zero exit when something is stale."
+        }
+      ]
+    }
+  ]
+}
