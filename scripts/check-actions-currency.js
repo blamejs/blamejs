@@ -743,7 +743,16 @@ function _isUncheckableUses(value) {
 // what it is pinned TO. The suffixes are kept for the same reason the tag path
 // keeps them: stopping at the numeric triple makes `# v2.1.0-rc.1` read as the
 // final 2.1.0, so a candidate long since superseded reports current.
-var _VER_COMMENT_RE = new RegExp("^[ \\t]*#[ \\t]*v?(" + _VER_SRC + ")");
+// The version must not be a PREFIX of something longer. Without that, a
+// mistyped or non-semver `# v2.1.0rc.1` matches its `2.1.0` and the rest is
+// discarded in silence, so a pin that really is a release candidate compares
+// equal to the final release and reports current. Refusing to read it makes the
+// gate say "no version comment", which is loud and true.
+//
+// The boundary rejects only what could CONTINUE a version, rather than
+// demanding whitespace: `# v5.0.1, pinned for compatibility` and
+// `# v5.0.1 (temporary)` are ordinary annotations and stay readable.
+var _VER_COMMENT_RE = new RegExp("^[ \\t]*#[ \\t]*v?(" + _VER_SRC + ")(?![0-9A-Za-z.+-])");
 // owner/repo, optional subpath, then the ref.
 var _REF_RE = /^([A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)(\/[^@\s]+)?@(.+)$/;
 
@@ -1028,8 +1037,12 @@ async function _checkOne(ownerRepo, entry) {
 // drift.
 function _fixReplacementRe(action) {
   var esc = String(action).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // Same end boundary as the comment matcher: without it a malformed
+  // `# v2.1.0rc.1` would have its `2.1.0` prefix rewritten and the `rc.1` left
+  // dangling on the new version. The collector refuses to read such a comment
+  // at all, so the fixer must not half-rewrite one either.
   return new RegExp("(" + esc + "(?:/[^@\\s\"']+)?@)[0-9a-f]{40}([\"']?\\s*#\\s*)v?" +
-                    _VER_SRC, "g");
+                    _VER_SRC + "(?![0-9A-Za-z.+-])", "g");
 }
 
 function _staleHints(r) {

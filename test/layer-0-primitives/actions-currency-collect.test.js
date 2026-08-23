@@ -170,6 +170,60 @@ function testEveryUsesIsEitherCheckedOrNamed() {
         (pre.actions["owner/rc"] || {}).version === "2.1.0-rc.1",
         JSON.stringify(pre.actions["owner/rc"]));
 
+  // A version that does not END at a boundary is malformed, and reading its
+  // prefix is worse than refusing it: `# v2.1.0rc.1` would become `2.1.0` and
+  // compare EQUAL to the final release, so a pin that really is a release
+  // candidate reports current. Refusing to read it says so out loud.
+  var mistyped = withFixture({
+    "mistyped.yml": stepsDoc(
+      "      - uses: owner/mistyped@" + SHA + "  # v2.1.0rc.1\n"),
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: a version comment that does not end at a boundary " +
+        "is refused, not truncated to its prefix",
+        !Object.prototype.hasOwnProperty.call(mistyped.actions, "owner/mistyped") &&
+        mistyped.unparsed.length === 1 &&
+        mistyped.unparsed[0].reason.indexOf("version comment") !== -1,
+        JSON.stringify(mistyped));
+
+  // The boundary rejects only what could CONTINUE a version. Demanding
+  // whitespace instead would refuse ordinary annotations.
+  var annotated = withFixture({
+    "annotated.yml": stepsDoc(
+      "      - uses: owner/comma@" + SHA + "  # v5.0.1, pinned for compatibility\n" +
+      "      - uses: owner/paren@" + SHA + "  # v6.0.1 (temporary)\n"),
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: punctuation may follow the version",
+        (annotated.actions["owner/comma"] || {}).version === "5.0.1" &&
+        (annotated.actions["owner/paren"] || {}).version === "6.0.1" &&
+        annotated.unparsed.length === 0,
+        JSON.stringify(annotated));
+
+  // CRLF. Lines are split on "\n", so each keeps a trailing "\r" — and a
+  // boundary written as `$` alone does not match before it, which silently
+  // dropped every version comment in the repository the moment the boundary
+  // was added. Its own workflows are CRLF, so this is the common case, not an
+  // edge one.
+  var crlf = withFixture({
+    "crlf.yml":
+      "jobs:\r\n  build:\r\n    steps:\r\n" +
+      "      - uses: owner/crlf@" + SHA + "  # v5.0.1\r\n",
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: a version comment on a CRLF line is read",
+        (crlf.actions["owner/crlf"] || {}).version === "5.0.1" &&
+        crlf.unparsed.length === 0,
+        JSON.stringify(crlf));
+
+  // And the fixer refuses it for the same reason: rewriting the `2.1.0` prefix
+  // would leave `rc.1` dangling on a version that never existed.
+  var oldSha = "1111111111111111111111111111111111111111";
+  var newSha = "2222222222222222222222222222222222222222";
+  var mistypedFix = ("      - uses: actions/checkout@" + oldSha + "  # v2.1.0rc.1")
+    .replace(currency._fixReplacementRe("actions/checkout"), "$1" + newSha + "$2v3.0.0");
+  check("actions-currency: --fix leaves a malformed version comment alone " +
+        "rather than half-rewriting it",
+        mistypedFix.indexOf(oldSha) !== -1 && mistypedFix.indexOf("v2.1.0rc.1") !== -1,
+        mistypedFix);
+
   // A trailing comment may say more than the version, including things with
   // braces in them. The version is the FIRST thing in the comment and reading
   // it must not depend on what follows.
