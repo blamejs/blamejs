@@ -413,8 +413,130 @@ function testPatternIsScreenedForRedos() {
         nestedRefused !== null);
 }
 
+// The screen exists so a pattern cannot make the validator hang, and SECURITY.md
+// promises a screen "costs the length of the input, never a function of its
+// shape". The walk that keeps that promise was itself a function of shape: it
+// was bounded only by depth and kept no record of the objects it had visited, so
+// a graph reaching one object through a branching position was walked once per
+// PATH rather than once per object.
+//
+// The reproducer is a SHARED, acyclic graph — every level's `anyOf` holds two
+// references to the SAME next-level object, so N levels are N+1 objects. A walk
+// that tracks identity is O(N); one bounded only by depth performs 2^N visits.
+// Measured before the fix: 21 objects took 2,659ms, doubling per added level,
+// and the depth cap allows 256.
+//
+// A depth bound cannot substitute for identity tracking — it limits how far one
+// path runs and says nothing about how many paths there are.
+function testSharedSchemaGraphIsWalkedOncePerObject() {
+  function buildShared(depth) {
+    var node = { type: "string", pattern: "^a$" };
+    for (var i = 0; i < depth; i += 1) {
+      var next = node;
+      node = { anyOf: [next, next] };            // two references to ONE object
+    }
+    return node;
+  }
+
+  function ms(depth) {
+    var schema = buildShared(depth);
+    var t0 = process.hrtime.bigint();
+    try { b.jsonSchema.compile(schema); } catch (_e) { /* a refusal is fine; a hang is not */ }
+    return Number(process.hrtime.bigint() - t0) / 1e6;
+  }
+
+  // Anchored to a shallow reading rather than a wall-clock budget: 24 levels is
+  // 25 objects, and identity tracking makes that indistinguishable from 12. The
+  // pre-fix walk is 2^12 times the work of the shallow one.
+  var shallow = ms(12);
+  var deep = ms(24);
+  var ceiling = Math.max(25, shallow * 50);
+  check("jsonSchema: a shared subschema graph is walked once per object, not " +
+        "once per path (" + deep.toFixed(1) + "ms at 25 objects against " +
+        shallow.toFixed(1) + "ms at 13)",
+        deep < ceiling, deep.toFixed(1) + "ms, ceiling " + ceiling.toFixed(1) + "ms");
+
+  // A cyclic schema did not return at all before the fix.
+  var cyclic = { type: "object" };
+  cyclic.anyOf = [cyclic, cyclic];
+  var cyclicMs = (function () {
+    var t0 = process.hrtime.bigint();
+    try { b.jsonSchema.compile(cyclic); } catch (_e) { /* refusal is fine */ }
+    return Number(process.hrtime.bigint() - t0) / 1e6;
+  }());
+  check("jsonSchema: a cyclic schema terminates (" + cyclicMs.toFixed(1) + "ms)",
+        cyclicMs < 1000, cyclicMs.toFixed(1) + "ms");
+
+  // A cycle with ONE reference per level does not branch, so it never reaches a
+  // ceiling counted in nodes — it just recurses until the JavaScript stack is
+  // gone. That surfaces as a RangeError from the engine rather than as the
+  // refusal this validator documents, which is the difference between a schema
+  // the caller is told to fix and a crash they have to guess at. The branching
+  // cycle above cannot catch it: it reaches the node ceiling almost at once.
+  var linearCycle = {};
+  linearCycle.anyOf = [linearCycle];
+  var linearErr = null;
+  try { b.jsonSchema.compile(linearCycle); } catch (e) { linearErr = e; }
+  check("jsonSchema: a non-branching cyclic schema is refused with a typed " +
+        "error rather than a stack overflow",
+        linearErr !== null && linearErr instanceof Error &&
+        !(linearErr instanceof RangeError) && typeof linearErr.code === "string",
+        String(linearErr && (linearErr.code || linearErr.name)));
+
+  // Deep is not the same as cyclic, and refusing the first to catch the second
+  // would break schemas that compile today. This one nests well past the
+  // reference-depth ceiling and has no cycle and no $ref, so it must still
+  // compile — a cycle check that is really a depth cap fails here.
+  var deepAcyclic = { type: "string" };
+  for (var d2 = 0; d2 < 400; d2 += 1) {
+    deepAcyclic = { type: "object", properties: { nested: deepAcyclic } };
+  }
+  var deepErr = null;
+  try { b.jsonSchema.compile(deepAcyclic); } catch (e5) { deepErr = e5; }
+  check("jsonSchema: a deeply nested ACYCLIC schema still compiles (400 levels, " +
+        "no $ref)", deepErr === null, String(deepErr && (deepErr.code || deepErr.name)));
+
+  // Visiting each object once is only safe if the first visit was COMPLETE. A
+  // depth ceiling on the screen makes some visits partial: the node itself is
+  // examined and its descendants are skipped. Marking such a node as done means
+  // a later, shallower path — where those descendants would have been reachable
+  // — skips it, and a catastrophic pattern below it is never screened. The
+  // shared node is what carries the bypass from the deep path to the shallow
+  // one, so this cannot be caught without sharing.
+  //
+  // The wrap count is swept rather than guessed, because the bypass only opens
+  // when the first visit lands exactly at the ceiling.
+  var missed = [];
+  [250, 254, 255, 256, 257, 260].forEach(function (wraps) {
+    var bad = { type: "string", pattern: "(a+)+$" };
+    var shared = { type: "object", properties: { deep: bad } };
+    var chain = shared;
+    for (var w = 0; w < wraps; w += 1) {
+      chain = { type: "object", properties: { n: chain } };
+    }
+    var refusedHere = null;
+    try { b.jsonSchema.compile({ allOf: [chain, shared] }); }
+    catch (e6) { refusedHere = e6; }
+    if (refusedHere === null) missed.push(wraps);
+  });
+  check("jsonSchema: a catastrophic pattern under a shared node is screened " +
+        "however deep the first path to that node was" +
+        (missed.length ? " (missed at wraps " + missed.join(", ") + ")" : ""),
+        missed.length === 0);
+
+  // The screen must still SCREEN. Identity tracking that skipped real work would
+  // pass every timing assertion above.
+  var sharedBad = { type: "string", pattern: "(a+)+$" };
+  var reachedThroughSharing = { anyOf: [{ anyOf: [sharedBad, sharedBad] }, sharedBad] };
+  var refused = null;
+  try { b.jsonSchema.compile(reachedThroughSharing); } catch (e) { refused = e; }
+  check("jsonSchema: a catastrophic pattern reached only through a shared node " +
+        "is still refused", refused !== null, String(refused && refused.code));
+}
+
 async function run() {
   testPatternIsScreenedForRedos();
+  testSharedSchemaGraphIsWalkedOncePerObject();
   testSurface();
   testAssertions();
   testArrays();
