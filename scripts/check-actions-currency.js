@@ -212,8 +212,13 @@ function _semverCompare(a, b) {
     var x = ap[j], y = bp[j];
     var xn = /^\d+$/.test(x), yn = /^\d+$/.test(y);
     if (xn && yn) {
-      var xi = parseInt(x, 10), yi = parseInt(y, 10);
-      if (xi !== yi) return xi > yi ? 1 : -1;
+      // Compared as digit STRINGS, not numbers. A prerelease identifier has no
+      // upper bound, and past Number.MAX_SAFE_INTEGER two different ones round
+      // to the same double and compare equal — which reports a stale pin as
+      // current, the failure this whole comparison exists to catch.
+      var xs = x.replace(/^0+(?=\d)/, ""), ys = y.replace(/^0+(?=\d)/, "");
+      if (xs.length !== ys.length) return xs.length > ys.length ? 1 : -1;
+      if (xs !== ys) return xs > ys ? 1 : -1;
     } else if (xn !== yn) {
       return xn ? -1 : 1;                     // numeric ranks below alphanumeric
     } else if (x !== y) {
@@ -486,6 +491,15 @@ function _scanLine(line, state) {
     // first key follows on the same line.
     if (c === "-" && (line.charAt(i + 1) === " " || line.charAt(i + 1) === "\t")) {
       atKeyStart = true; i++; continue;
+    }
+
+    // A node property may prefix the MAPPING as well as a value — `- &checkout
+    // uses: owner/repo@v1` anchors the step, and the key follows. Consuming the
+    // anchor as an ordinary scalar clears the key position, and the `uses` after
+    // it then reads as text: neither checked nor named.
+    if (atKeyStart && (c === "&" || c === "!")) {
+      var prefix = _readScalar(line, i, flowDepth > 0);
+      if (prefix.end > i) { i = prefix.end; continue; }    // atKeyStart survives
     }
 
     var scalar = _readScalar(line, i, flowDepth > 0);

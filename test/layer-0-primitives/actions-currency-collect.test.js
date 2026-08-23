@@ -361,6 +361,19 @@ function testBlockScalarTextIsNotReadAsAKey() {
         props.unparsed.length === 0,
         JSON.stringify(props));
 
+  // A property may prefix the MAPPING as well as a value. Consuming the anchor
+  // as an ordinary scalar clears the key position, and the `uses` after it then
+  // reads as text — neither checked nor named, which is the silence again.
+  var anchoredStep = withFixture({
+    "anchorstep.yml": stepsDoc(
+      "      - &checkout uses: owner/anchored@v1.2.3\n"),
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: an anchor prefixing the STEP still leaves its `uses` " +
+        "at a key position",
+        (anchoredStep.actions["owner/anchored"] || {}).version === "1.2.3" &&
+        anchoredStep.unparsed.length === 0,
+        JSON.stringify(anchoredStep));
+
   // A workflow parser resolves double-quote escapes before it ever sees a
   // reference, so handing back the raw text refuses valid YAML.
   var escaped = withFixture({
@@ -621,6 +634,20 @@ function testAPrereleaseRanksBelowItsRelease() {
         cmp(p("1.0.0-1"), p("1.0.0-alpha")) === -1, "");
   check("actions-currency: more identifiers outrank fewer when the shared ones match",
         cmp(p("1.0.0-alpha"), p("1.0.0-alpha.1")) === -1, "");
+
+  // A prerelease identifier has no upper bound. Past Number.MAX_SAFE_INTEGER two
+  // different ones round to the same double, so comparing them as numbers
+  // reports a stale pin as current — the failure this comparison exists to
+  // catch, reappearing at the far end of the range.
+  check("actions-currency: numeric identifiers beyond the safe-integer range " +
+        "still order correctly",
+        cmp(p("1.0.0-9007199254740992"), p("1.0.0-9007199254740993")) === -1,
+        JSON.stringify([p("1.0.0-9007199254740992").pre,
+                        p("1.0.0-9007199254740993").pre]));
+  check("actions-currency: a longer digit run is the larger identifier",
+        cmp(p("1.0.0-9"), p("1.0.0-10")) === -1, "");
+  check("actions-currency: and leading zeros do not change the value",
+        cmp(p("1.0.0-007"), p("1.0.0-7")) === 0, "");
 }
 
 // Widening what the collector ACCEPTS without widening what `--fix` can rewrite
