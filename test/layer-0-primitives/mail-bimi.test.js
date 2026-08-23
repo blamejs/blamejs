@@ -1378,6 +1378,33 @@ async function testFetchAndVerifyMarkLogotypeNamespacedRoots() {
     // at the name accepts these; the tag has to be terminated too. Both spellings
     // matter — the prefixed one reaches the namespace lookup and finds a
     // perfectly good binding in bytes that end mid-tag.
+    // Non-ASCII is not a licence. XML's NameStartChar covers a lot of Unicode
+    // but excludes the C1 controls, most punctuation and the surrogate block,
+    // so a prefix built from those is not a name however faithfully the
+    // document then declares it. Written with fromCharCode so this file stays
+    // free of invisible characters.
+    ["C1 control as the prefix",
+     "<" + String.fromCharCode(0x80) + ':svg xmlns:' + String.fromCharCode(0x80) +
+     '="http://www.w3.org/2000/svg"></' + String.fromCharCode(0x80) + ":svg>",     false],
+    // U+00D7, the multiplication sign, is the classic carve-out: NameStartChar
+    // runs [#xC0-#xD6] then [#xD8-#xF6], stepping over exactly this character.
+    // Picked deliberately over a punctuation mark that merely LOOKS wrong —
+    // XML's ranges are broad, and [#x2C00-#x2FEF] swallows Supplemental
+    // Punctuation whole, so an inverted interrobang really is a legal name
+    // start and asserting otherwise would be testing a spec that does not exist.
+    ["a character XML carves out (multiplication sign)",
+     "<" + String.fromCharCode(0xD7) + ':svg xmlns:' + String.fromCharCode(0xD7) +
+     '="http://www.w3.org/2000/svg"></' + String.fromCharCode(0xD7) + ":svg>",     false],
+    // A lone surrogate is deliberately NOT tested here: it cannot reach the
+    // scanner through this path. The payload is encoded with Buffer.from(...,
+    // "utf8"), which replaces an unpaired surrogate with U+FFFD — and U+FFFD is
+    // a legal name start, since NameStartChar ends its last range on exactly
+    // that character. Asserting a refusal here would be asserting against the
+    // transport rather than against the check.
+    // A legal non-ASCII prefix still works — the point is the grammar, not ASCII.
+    ["Greek letter as the prefix",
+     "<" + String.fromCharCode(0x3B1) + ':svg xmlns:' + String.fromCharCode(0x3B1) +
+     '="http://www.w3.org/2000/svg"></' + String.fromCharCode(0x3B1) + ":svg>",    true],
     ["prefixed, tag never closes", '<x:svg xmlns:x="http://www.w3.org/2000/svg"',                                  false],
     ["unprefixed, tag never closes", '<svg version="1.2" viewBox="0 0 1 1"',                                       false],
   ];
