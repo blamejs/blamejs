@@ -1048,15 +1048,34 @@ function testAdsPolicyIsScopedToExtractionAndSaysSo() {
           }), JSON.stringify(res.issues.map(function (i) { return i.ruleId; })));
   });
 
-  // And the refusal explains why the option did not apply, so a caller who set
-  // it is not left comparing their code against a message that never mentions
-  // the setting they changed.
+  // And EVERY refusing door explains why the option did not apply. A caller who
+  // set it can arrive at any of them, so fixing the wording on one leaves the
+  // rest saying nothing about the setting they changed — which is what the
+  // first attempt here did: the default sanitize path only, while strip mode
+  // and the validate/gate finding kept the old text.
   var scoped = null;
   try { b.guardFilename.sanitize(ADS, withAds("allow")); } catch (e3) { scoped = e3; }
-  check("guardFilename: the ADS refusal names verifyExtractionPath as where " +
-        "adsPolicy \"allow\" applies",
+  check("guardFilename: the default sanitize refusal names verifyExtractionPath",
         scoped !== null && /verifyExtractionPath/.test(String(scoped.message)),
         String(scoped && scoped.message));
+
+  var stripMode = null;
+  try {
+    b.guardFilename.sanitize(ADS, {
+      mode: "strip", adsPolicy: "allow", reservedCharPolicy: "allow",
+    });
+  } catch (e4) { stripMode = e4; }
+  check("guardFilename: strip mode refuses an ADS name and names " +
+        "verifyExtractionPath too",
+        stripMode !== null && stripMode.code === "filename.ntfs-ads" &&
+        /verifyExtractionPath/.test(String(stripMode.message)),
+        String(stripMode && stripMode.message));
+
+  var finding = b.guardFilename.validate(ADS, withAds("allow")).issues
+    .filter(function (i) { return i.ruleId === "filename.ntfs-ads"; })[0];
+  check("guardFilename: the validate/gate finding names verifyExtractionPath",
+        finding !== undefined && /verifyExtractionPath/.test(String(finding.snippet)),
+        JSON.stringify(finding));
 
   // The other side of the split: the extraction path honours it, which is the
   // whole reason the option has two values.
