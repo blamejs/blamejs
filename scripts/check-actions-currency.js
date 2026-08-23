@@ -1250,6 +1250,16 @@ async function main() {
       }
       process.exit(1);
     }
+    // A stale action `--fix` deliberately left alone — tag-only, or mixed — is
+    // still stale when this exits. Exiting 0 tells a wrapper the pins were
+    // updated; scripts/pin-all.js `fixActions()` reads exactly that, and would
+    // report success over a tree whose next currency check still fails. The
+    // rewrite that DID happen stands; the status says the job is not finished.
+    if (handOnly.length) {
+      say("[actions-currency] --fix: " + handOnly.length + " stale action(s) " +
+        "still need a person (listed above) — the tree is not current.\n");
+      process.exit(1);
+    }
     process.exit(0);
   }
 
