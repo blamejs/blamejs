@@ -1115,6 +1115,19 @@ function _collectPinnedActions(dir) {
       // `},  # v1.2.3`. So the fallback is taken the moment this pin's nesting
       // unwinds, and belongs to that pin alone.
       for (var pc = 0; pc < pending.length; pc++) {
+        // The boundary is this pin's OWN mapping. Its version comment is on its
+        // line, or on the line that mapping closes, and nowhere else — the
+        // fallback is taken at the first depth drop whether or not that line
+        // carries one.
+        //
+        // Searching further is what looks helpful and is not: the next comment
+        // outward may belong to a sibling, to the entry after it, or to the
+        // collection as a whole, and nothing in the text distinguishes those.
+        // `[{ uses: A@sha }, # v9.9.9 for the next one` would give A a version
+        // that was never about it, and a wrong version is worse than none —
+        // `--fix` acts on it. A pin whose comment sits further out is reported
+        // as having none, which is loud, true, and fixed by moving the comment
+        // onto the pin.
         if (pending[pc].comment === null && pending[pc].fallback === undefined &&
             scanState.flowDepth < pending[pc].depth) {
           pending[pc].fallback = scan.comment;
@@ -1125,8 +1138,31 @@ function _collectPinnedActions(dir) {
         }
       }
       if (scanState.flowDepth === 0 && pending.length) {
+        // A comment can be the version for AT MOST ONE reference. Where a single
+        // one would serve several — `[{ uses: A@sha }, { uses: B@sha }] # v2` —
+        // it identifies none of them, and handing it to all would let a pin
+        // report current under a version that was never about it. Nobody claims
+        // an ambiguous comment; they are reported as having none, which is what
+        // is actually true.
+        // Only a pin that HOLDS a comment can be in contention for one, so the
+        // tally counts those alone. Keying the comment-less on their `-1:-1`
+        // would have them collide with each other and take the disowning branch
+        // over a comment none of them has — which reads as ambiguity and is
+        // absence, and would move `fallback` off `undefined` for a reason
+        // unrelated to the question being asked.
+        var claims = {};
+        for (var cx = 0; cx < pending.length; cx++) {
+          if (pending[cx].commentStart < 0) continue;
+          var ck = pending[cx].commentLine + ":" + pending[cx].commentStart;
+          claims[ck] = (claims[ck] || 0) + 1;
+        }
         for (var pd = 0; pd < pending.length; pd++) {
           var pe = pending[pd];
+          if (pe.commentStart >= 0 &&
+              claims[pe.commentLine + ":" + pe.commentStart] > 1) {
+            pe.comment = null; pe.fallback = null;
+            pe.commentLine = -1; pe.commentStart = -1;
+          }
           var useComment = pe.comment !== null ? pe.comment
                          : pe.fallback !== undefined ? pe.fallback
                          : scan.comment;
@@ -1280,9 +1316,14 @@ async function _checkOne(ownerRepo, entry) {
 // the text, and every attempt to bound where it looked (whole file, then one
 // line) still matched script text that resembled a pin and silently rewrote it.
 // The scanner already knows where each reference is; the fixer is told.
-function _rewriteRef(lines, ref, oldSha, newSha, tag) {
+function _rewriteRef(lines, ref, newSha, tag) {
   var vIdx = ref.line - 1;
   if (vIdx < 0 || vIdx >= lines.length) return false;
+  // THIS reference's SHA, not the entry's. An action pinned at two different
+  // SHAs across a repository has an entry carrying only the first, so rewriting
+  // by that one silently skips the other and leaves it stale.
+  var oldSha = ref.sha;
+  if (!oldSha) return false;
   var vLine = lines[vIdx];
   var vSpan = vLine.slice(ref.valueStart, ref.valueEnd);
   if (vSpan.indexOf(oldSha) === -1) return false;
@@ -1290,6 +1331,9 @@ function _rewriteRef(lines, ref, oldSha, newSha, tag) {
                 vSpan.replace(oldSha, newSha) +
                 vLine.slice(ref.valueEnd);
 
+  // No dedup needed: the collector gives a comment to at most one reference, and
+  // refuses to attribute an ambiguous one at all — so a span reached here is
+  // this reference's alone.
   var cIdx = (ref.commentLine || 0) - 1;
   if (cIdx >= 0 && cIdx < lines.length && ref.commentStart >= 0) {
     var cLine = lines[cIdx];
@@ -1503,7 +1547,7 @@ async function main() {
         var ref2 = fr.refs[rj];
         var abs  = path.join(__dirname, "..", ref2.file);
         if (!(abs in byFile)) byFile[abs] = fs.readFileSync(abs, "utf8").split("\n");
-        _rewriteRef(byFile[abs], ref2, fr.oldSha, fr.latestSha, tag);
+        _rewriteRef(byFile[abs], ref2, fr.latestSha, tag);
       }
     }
     Object.keys(byFile).forEach(function (abs) {

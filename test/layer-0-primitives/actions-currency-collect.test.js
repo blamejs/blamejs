@@ -1072,7 +1072,7 @@ function testTheFixReplacementReachesThroughAQuote() {
       var got   = currency._collectPinnedActions(dir);
       var lines = fs.readFileSync(path.join(dir, "fix.yml"), "utf8").split("\n");
       ((got.actions[action] || {}).refs || []).forEach(function (r) {
-        currency._rewriteRef(lines, r, OLD, NEW, tag);
+        currency._rewriteRef(lines, r, NEW, tag);
       });
       return lines.join("\n");
     });
@@ -1149,6 +1149,97 @@ function testTheFixReplacementReachesThroughAQuote() {
         explicitOut.indexOf(NEW) !== -1 && explicitOut.indexOf(OLD) === -1 &&
         explicitOut.indexOf("v6.0.0") !== -1,
         explicitOut);
+
+  // Each reference carries its OWN sha. An action pinned at two different SHAs
+  // has an entry holding only the first, so rewriting by the entry's value
+  // leaves the other stale — and the run reports the action fixed.
+  var OTHER = "3333333333333333333333333333333333333333";
+  var twoShas = rewriteAll(
+    "      - uses: actions/checkout@" + OLD + "  # v5.0.1\n" +
+    "      - uses: actions/checkout@" + OTHER + "  # v5.0.0\n",
+    "actions/checkout", "v6.0.0");
+  check("actions-currency: both references are rewritten even when they were " +
+        "pinned at different SHAs",
+        twoShas.indexOf(OLD) === -1 && twoShas.indexOf(OTHER) === -1 &&
+        (twoShas.match(new RegExp(NEW, "g")) || []).length === 2,
+        twoShas);
+
+  // A comment belongs to at most ONE reference. Where a single one could serve
+  // several it identifies none of them: giving it to both would let a pin
+  // report current under a version that was never about it, and `--fix` would
+  // write one action's tag over another's. Neither claims it, and both are
+  // reported as having no version comment — which is what is actually true.
+  var shared = withFixture({
+    "shared.yml":
+      "jobs:\n  build:\n    steps: [\n" +
+      "      { uses: actions/checkout@" + OLD + " },\n" +
+      "      { uses: actions/cache@" + OLD + " },\n" +
+      "    ]  # v5.0.1\n",
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: a comment that could serve two references is given " +
+        "to neither, and both are reported",
+        shared.unparsed.length === 2 &&
+        shared.unparsed.every(function (u) {
+          return u.reason.indexOf("version comment") !== -1;
+        }),
+        JSON.stringify(shared.unparsed));
+
+  // The fixture above is suppressed by the BOUNDARY rule before contention is
+  // ever reached — its pins sit on lines the comment is not on. So it does not
+  // exercise the rule it names, and passes whether or not that rule exists.
+  // These two do: they differ only in whether a second pin contends for the
+  // same comment, so the one that is read is the control for the pair that is
+  // not.
+  var contendFor = function (steps) {
+    return withFixture({
+      "contend.yml": "jobs:\n  build:\n    steps: " + steps + "\n",
+    }, function (dir) { return currency._collectPinnedActions(dir); });
+  };
+  var sole = contendFor("[{ uses: actions/checkout@" + OLD + " }]  # v5.0.1");
+  check("actions-currency: a pin alone on the comment's own line reads it",
+        (sole.actions["actions/checkout"] || {}).version === "5.0.1" &&
+        sole.unparsed.length === 0,
+        JSON.stringify(sole.unparsed));
+  var contended = contendFor("[{ uses: actions/checkout@" + OLD +
+                             " }, { uses: actions/cache@" + OLD + " }]  # v5.0.1");
+  check("actions-currency: add a second pin contending for that same comment " +
+        "and neither takes it — both are reported instead",
+        contended.unparsed.length === 2 &&
+        Object.keys(contended.actions).length === 0 &&
+        contended.unparsed.every(function (u) {
+          return u.reason.indexOf("version comment") !== -1;
+        }),
+        JSON.stringify(contended.unparsed) +
+        " actions=" + JSON.stringify(Object.keys(contended.actions)));
+
+  // The boundary is the pin's OWN mapping, and the search stops there. A comment
+  // further out may belong to a sibling, to the next entry, or to the collection
+  // as a whole, and nothing in the text tells them apart — so a pin whose
+  // comment sits outside its mapping is reported as having none. Loud and true,
+  // and fixed by moving the comment onto the pin; the alternative is a wrong
+  // version, which `--fix` would then act on.
+  var outerOnly = withFixture({
+    "outeronly.yml":
+      "jobs:\n  build:\n    steps: [\n" +
+      "      { uses: actions/checkout@" + OLD + " },\n" +
+      "    ]  # v5.0.1\n",
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: a comment outside the pin's own mapping is not " +
+        "claimed, and the pin is reported",
+        outerOnly.unparsed.length === 1 &&
+        outerOnly.unparsed[0].reason.indexOf("version comment") !== -1,
+        JSON.stringify(outerOnly));
+  check("actions-currency: while the same pin WITH the comment on its own " +
+        "closing line is read",
+        (withFixture({
+          "own.yml":
+            "jobs:\n  build:\n    steps: [\n" +
+            "      { uses: actions/checkout@" + OLD + "\n" +
+            "      },  # v5.0.1\n" +
+            "    ]\n",
+        }, function (dir) { return currency._collectPinnedActions(dir); })
+          .actions["actions/checkout"] || {}).version === "5.0.1",
+        "");
 
   // `--fix` verifies by RE-COLLECTING with this same scanner, rather than by
   // asking whether the file changed (too weak — one occurrence matching is
