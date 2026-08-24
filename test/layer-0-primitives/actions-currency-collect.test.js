@@ -554,6 +554,36 @@ function testBlockScalarTextIsNotReadAsAKey() {
         anchoredStep.unparsed.length === 0,
         JSON.stringify(anchoredStep));
 
+  // A step supplied as an ALIAS has no literal `uses` key to read, and its
+  // anchored mapping may be defined anywhere — including outside the two
+  // action-reference positions. Scanning finds nothing, so the gate would pass
+  // having checked nothing at all. Resolving the alias means holding the whole
+  // document; naming it is the answer a scanner can give, and it is the loud one.
+  var aliasStep = withFixture({
+    "aliasstep.yml":
+      "jobs:\n" +
+      "  build:\n" +
+      "    strategy:\n" +
+      "      matrix:\n" +
+      "        include:\n" +
+      "          - &checkout { uses: actions/checkout@v5.0.1 }\n" +
+      "    steps:\n" +
+      "      - *checkout\n" +
+      "      - uses: actions/cache@v4.2.0\n",
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: an aliased step is named, so the gate cannot pass " +
+        "having checked nothing",
+        aliasStep.unparsed.length === 1 &&
+        aliasStep.unparsed[0].reason.indexOf("*checkout") !== -1,
+        JSON.stringify(aliasStep.unparsed));
+  check("actions-currency: the anchored definition under matrix data is still " +
+        "not counted as a reference",
+        !Object.prototype.hasOwnProperty.call(aliasStep.actions, "actions/checkout"),
+        Object.keys(aliasStep.actions).join(", "));
+  check("actions-currency: and the ordinary step beside it is read",
+        Object.prototype.hasOwnProperty.call(aliasStep.actions, "actions/cache"),
+        Object.keys(aliasStep.actions).join(", "));
+
   // The explicit-key form: `? uses` on one line, `: value` on the next. Reading
   // `?` as an ordinary scalar clears the key position and the reference is then
   // neither checked nor named — silence, the one outcome this must not have.

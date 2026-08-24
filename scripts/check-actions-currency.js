@@ -186,7 +186,12 @@ async function _latestVersion(ownerRepo, pinnedIsPrerelease) {
 // prereleases. Used for actions that ship tags without GitHub Releases, and for
 // any pin that is itself a prerelease.
 var TAG_PAGE_SIZE  = 100;
-var TAG_PAGE_LIMIT = 5;      // pages, not tags — a bound on API spend, not a filter
+// Pages, not tags — a bound on API spend, and deliberately far above what real
+// repositories need. The tags endpoint is not version-ordered, so a partial scan
+// cannot name the highest version and the walk refuses to guess from one; that
+// makes the bound a thing that must not be hit in practice rather than a filter.
+// github/codeql-action, the deepest here, holds ~900 tags across 9 pages.
+var TAG_PAGE_LIMIT = 40;
 
 async function _latestFromTags(ownerRepo) {
   var best  = null;
@@ -212,6 +217,17 @@ async function _latestFromTags(ownerRepo) {
     if (tags.length < TAG_PAGE_SIZE) { complete = true; break; }
   }
   if (seen === 0) throw new Error("no releases or tags for " + ownerRepo);
+  // A truncated scan cannot name the highest version. The tags endpoint is not
+  // ordered by version, so a higher one may sit on a page never fetched, and
+  // returning the best of what was seen would report a stale pin as current or
+  // send `--fix` to the wrong release. Inconclusive is the honest answer, and it
+  // says how far it looked.
+  if (!complete) {
+    throw new Error("tag scan for " + ownerRepo + " truncated at " + seen +
+      " tags (" + TAG_PAGE_LIMIT + " pages) — the tags endpoint is not " +
+      "version-ordered, so the highest version cannot be established from a " +
+      "partial scan");
+  }
   if (!best) {
     // "No version exists" is a claim about the WHOLE tag list, and one page
     // cannot support it — that is the gate's own blind spot arriving from the
@@ -621,6 +637,22 @@ function _scanLine(line, state, eof) {
       atKeyStart = true; i++; continue;
     }
 
+    // A step supplied as an ALIAS — `- *checkout`, whose anchored mapping is
+    // defined elsewhere, possibly outside the two action-reference positions.
+    // The step has no literal `uses` key to read, so scanning finds nothing and
+    // the gate would pass having checked nothing. Resolving the alias means
+    // holding the whole document, which is parsing; naming it is the answer this
+    // scanner can give, and it is the loud one.
+    if (atKeyStart && c === "*" && _isActionRefPosition(keyPath())) {
+      var alias = _readScalar(line, i, flowDepth > 0);
+      if (alias.end > i) {
+        out.push({ value: null, after: "", depth: flowDepth, alias: alias.value });
+        i = alias.end;
+        atKeyStart = false;
+        continue;
+      }
+    }
+
     // An EXPLICIT mapping key: `? uses` on one line, `: owner/repo@v1` on the
     // next. Reading `?` as an ordinary scalar clears the key position and the
     // reference is then neither checked nor named — silence, which is the one
@@ -881,6 +913,13 @@ var _REF_RE = /^([A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)(\/[^@\s]+)?@(.+)$/;
 // absent read as clean.
 function _classifyUses(parts, rel, lineNo, rawLine, comment, out, unparsed) {
   if (parts.value === null) {
+    if (parts.alias) {
+      unparsed.push({ file: rel, line: lineNo, value: rawLine.trim(),
+                      reason: "step supplied as the YAML alias " + parts.alias +
+                              " — the reference it resolves to cannot be read " +
+                              "here; write the step out, or pin it in place" });
+      return;
+    }
     // Either genuinely unterminated, or a quoted scalar continued onto the next
     // line — which YAML permits and an action reference never needs, since it
     // is one token with no spaces in it. Both are named rather than guessed at,
