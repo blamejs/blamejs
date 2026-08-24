@@ -41,10 +41,6 @@
           "body": "`b.mail.smtpTransport` decided whether a message could be sent, and how it would be framed, from the capabilities advertised on the cleartext leg. The pre-upgrade extension list was also never discarded, so the set in force after the handshake was the union of both legs.\n\nRFC 3207 §4.2 requires the opposite: a client MUST discard every service extension learned before the upgrade, because the cleartext leg is exactly what a network attacker can rewrite. An injected extension line steered decisions made under TLS — a `SIZE` cap that refuses every message, a `CHUNKING` that selects a framing the real peer never offered.\n\nIt read as an over-refusal too. Servers commonly advertise `CHUNKING` and `BINARYMIME` only once TLS is up, so a binary message was refused before `STARTTLS` was even sent, naming an extension the peer does advertise.\n\nEvery capability-dependent decision now runs on the post-upgrade EHLO alone: the SMTPUTF8 and BINARYMIME requirement checks, the `SIZE` pre-check, and the BDAT-versus-DATA choice. Implicit-TLS transports are unaffected, since their first EHLO is already inside TLS."
         },
         {
-          "title": "`b.codepointClass.hasPairWhere`",
-          "body": "The scan for a two-character construct — a path traversal opening on `..`, a regex inline-flag group on `(?`, a YAML merge key on `<<` — was written out by hand in each screen that needed one. The literals and the follow-on tests differ, the scan does not, and three copies of a scan are three places for an off-by-one to live.\n\n`hasPairWhere(text, first, second, accept)` calls `accept(i)` at every position where `first` is followed by `second`, and answers whether any of them counted. It reads the string one character at a time, which is what a guard needs: asking the question with a pattern would be a screen running the construct it screens over hostile text.\n\n`b.guardFilename`, `b.guardRegex` and `b.guardYaml` now route through it."
-        },
-        {
           "title": "A deferred recipient names the receiver that refused (#643)",
           "body": "`b.mail.send.deliver` returned deferred recipients with a reason and a retry budget and no `mxHost`, while delivered ones carried it. A queue view therefore read \"deferred, retry in 15 minutes\" with no peer attached, and a domain with several MX hosts gives an operator no way to tell which one refused — which is what decides whether to wait, to contact that receiver, or to look at their own transport security against that host.\n\nDeferred recipients now carry `mxHost`. It is `null`, rather than absent, when the deferral happened before any host was reached (an MX lookup that failed), so a consumer can tell \"no peer was reached\" from \"the peer was not recorded\"."
         },
@@ -132,6 +128,15 @@
         {
           "title": "Sample tokens and key placeholders no longer look like secrets to a default scanner",
           "body": "A default-ruleset secret scan of `lib/` reported eleven findings, all inside comment blocks or documentation fixtures, none of them key material. The cost landed on anyone vendoring the tree: either a blanket allowlist over the whole library, which then hides a real finding, or a hand-triage repeated on every refresh.\n\nSample JWTs are now built from their header and claims rather than pasted as literals, which also shows a reader what the token says instead of an opaque blob; the PEM placeholder is written without the `BEGIN` framing; and the two-key recipient shape is named in prose. CI now also scans `lib/` with the default ruleset and no configuration, which is the scan a consumer actually runs."
+        }
+      ]
+    },
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "`b.codepointClass.hasPairWhere`",
+          "body": "The scan for a two-character construct — a path traversal opening on `..`, a regex inline-flag group on `(?`, a YAML merge key on `<<` — was written out by hand in each screen that needed one. The literals and the follow-on tests differ, the scan does not, and three copies of a scan are three places for an off-by-one to live.\n\n`hasPairWhere(text, first, second, accept)` calls `accept(i)` at every position where `first` is followed by `second`, and answers whether any of them counted. It reads the string one character at a time, which is what a guard needs: asking the question with a pattern would be a screen running the construct it screens over hostile text.\n\n`b.guardFilename`, `b.guardRegex` and `b.guardYaml` now route through it."
         },
         {
           "title": "`b.codepointClass.firstLineInjectionCharOffset`",
