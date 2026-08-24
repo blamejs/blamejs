@@ -293,16 +293,65 @@ async function run() {
     // accepts 100,000 characters, so the ceiling meant to bound the parse is
     // what made it catastrophic rather than what saved it.
     //
-    // Refused or allowed, the gate must DECIDE promptly. The budget is far
-    // above the post-fix cost and far below the pre-fix one, so a busy box
-    // cannot turn it either way.
-    var padded = "UPDATE residents SET dataRegion='us-east-1'" + " ".repeat(4096) + "!";
-    var t0 = process.hrtime.bigint();
-    var paddedCode = codeOf(function () { b.db.runSql(padded); });
-    var paddedMs = Number(process.hrtime.bigint() - t0) / 1e6;
-    check("a padded raw UPDATE to a residency table is decided promptly (" +
-          paddedMs.toFixed(0) + "ms), not parsed in cubic time",
-          paddedMs < 1000, paddedMs.toFixed(0) + "ms");
+    // What is measured is a whole `runSql` — encrypted database, residency
+    // lookup, audit emission — and on a loaded runner that is over a second
+    // before any parsing happens. So the assertion is the PADDING's cost, not
+    // the call's: the same statement without the padding pays every one of
+    // those fixed costs and none of the parse, so the two are compared against
+    // each other. A wall-clock budget here measured the runner and failed at
+    // 1330ms in CI on a tree where the parse itself takes 0.04ms.
+    // Both statements are REFUSED, so neither changes state and both can be run
+    // repeatedly. They are interleaved and the FASTEST of each is kept: a
+    // single pair lets one unlucky sample decide the answer in either
+    // direction, and a baseline inflated by a scheduler pause would subtract
+    // away a real regression just as surely as a slow padded sample would
+    // invent one. A minimum cannot be inflated by noise, only by real cost.
+    function timeRunSql(sql, rounds) {
+      var lo = Infinity, code = null;
+      for (var i = 0; i < rounds; i += 1) {
+        var t = process.hrtime.bigint();
+        code = codeOf(function () { b.db.runSql(sql); });
+        var ms = Number(process.hrtime.bigint() - t) / 1e6;
+        if (ms < lo) lo = ms;
+      }
+      return { ms: lo, code: code };
+    }
+
+    var PLAIN_SQL  = "UPDATE residents SET dataRegion='us-east-1' WHERE _id='raw-eu'";
+    var PADDED_SQL = "UPDATE residents SET dataRegion='us-east-1'" + " ".repeat(4096) + "!";
+    var plain = { ms: Infinity, code: null }, padded = { ms: Infinity, code: null };
+    for (var round = 0; round < 3; round += 1) {
+      var p = timeRunSql(PLAIN_SQL, 1);
+      var q = timeRunSql(PADDED_SQL, 1);
+      if (p.ms < plain.ms) plain = p;
+      if (q.ms < padded.ms) padded = q;
+    }
+    var paddedCode = padded.code;
+    // The allowance is ADDITIVE, and that matters more than it looks. A
+    // multiplicative one grows with the fixed cost it is meant to cancel: at
+    // `plain * 20`, an unpadded call of 372ms already permits the 7,071ms
+    // regression this exists to catch, and the comment above says CI fixed
+    // costs run past a second — so exactly on the loaded runners where the
+    // check is worth having, it would stop being a check at all.
+    //
+    // What the padding costs is the thing under test, so that is what is
+    // bounded: 4 KB of trailing spaces cost 7,071ms before and 0.04ms after,
+    // and half a second sits far above scheduler noise and far below the
+    // defect at any fixed overhead.
+    // Two bounds, because each covers what the other cannot. The additive one
+    // is what stays meaningful when the fixed cost is large; the absolute one
+    // is what still fails if the baseline itself is somehow enormous, since a
+    // difference can always be cancelled by inflating both sides. The
+    // regression was 7,071ms, so 3s refuses it with room to spare while
+    // sitting well above the ~1.3s a loaded CI runner spends on the fixed work.
+    var added = padded.ms - plain.ms;
+    check("padding a raw UPDATE adds no measurable parse cost (" +
+          added.toFixed(0) + "ms added; " + padded.ms.toFixed(0) +
+          "ms padded against " + plain.ms.toFixed(0) + "ms plain)",
+          added < 500, added.toFixed(0) + "ms added, allowance 500ms");
+    check("the padded raw UPDATE is decided in bounded time whatever the " +
+          "baseline did (" + padded.ms.toFixed(0) + "ms)",
+          padded.ms < 3000, padded.ms.toFixed(0) + "ms, ceiling 3000ms");
     check("the padded raw UPDATE is still refused, so the speed is not a skipped gate",
           typeof paddedCode === "string" &&
           paddedCode.indexOf("db-query/row-residency") === 0, String(paddedCode));

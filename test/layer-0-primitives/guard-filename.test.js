@@ -1001,7 +1001,100 @@ async function testGuardFilenameDoubleExtensionFollowsItsPolicy() {
         strict.action === "refuse", "action=" + strict.action);
 }
 
+// `adsPolicy` means different things at different doors, and that split is
+// deliberate: an NTFS alternate-data-stream suffix is one of the shapes a
+// filename guard must always refuse, while `verifyExtractionPath` serves an
+// operator deliberately extracting stream-suffixed entries. The opts block has
+// said so since the option gained its second value — "reject here; allow is
+// honoured only by verifyExtractionPath".
+//
+// What it did NOT do is say that to a caller who sets `allow` and watches
+// nothing happen. Three doors accept the value and ignore it, and the refusal
+// they raise says only that the name carries stream syntax, so the option reads
+// as broken rather than as scoped. The message now names the boundary.
+//
+// The colon is why this is easy to misdiagnose: it is also a Windows reserved
+// character, so `reservedCharPolicy` refuses it BEFORE the ADS check is
+// reached. Every case here sets that policy to "allow" so the ADS check is
+// actually the one under test — without it these pass for the wrong reason.
+function testAdsPolicyIsScopedToExtractionAndSaysSo() {
+  var ADS = "report.txt:stream";
+  var base = { reservedCharPolicy: "allow" };
+  function withAds(v) { return { reservedCharPolicy: "allow", adsPolicy: v }; }
+
+  // Control: the sample really does reach the ADS check rather than being
+  // refused earlier as a reserved character.
+  var earlier = null;
+  try { b.guardFilename.sanitize(ADS, {}); } catch (e) { earlier = e; }
+  check("guardFilename: without reservedCharPolicy the colon is refused as a " +
+        "reserved character, before ADS is reached",
+        earlier !== null && earlier.code === "filename.reserved-char",
+        String(earlier && earlier.code));
+
+  // The three judging doors refuse regardless of the policy.
+  [undefined, "reject", "allow"].forEach(function (v) {
+    var opts = v === undefined ? base : withAds(v);
+    var err = null;
+    try { b.guardFilename.sanitize(ADS, opts); } catch (e2) { err = e2; }
+    check("guardFilename: sanitize refuses an ADS name with adsPolicy=" +
+          String(v), err !== null && err.code === "filename.ntfs-ads",
+          String(err && err.code));
+
+    var res = b.guardFilename.validate(ADS, opts);
+    check("guardFilename: validate refuses an ADS name with adsPolicy=" +
+          String(v),
+          res.ok === false && res.issues.some(function (i) {
+            return i.ruleId === "filename.ntfs-ads";
+          }), JSON.stringify(res.issues.map(function (i) { return i.ruleId; })));
+  });
+
+  // And EVERY refusing door explains why the option did not apply. A caller who
+  // set it can arrive at any of them, so fixing the wording on one leaves the
+  // rest saying nothing about the setting they changed — which is what the
+  // first attempt here did: the default sanitize path only, while strip mode
+  // and the validate/gate finding kept the old text.
+  var scoped = null;
+  try { b.guardFilename.sanitize(ADS, withAds("allow")); } catch (e3) { scoped = e3; }
+  check("guardFilename: the default sanitize refusal names verifyExtractionPath",
+        scoped !== null && /verifyExtractionPath/.test(String(scoped.message)),
+        String(scoped && scoped.message));
+
+  var stripMode = null;
+  try {
+    b.guardFilename.sanitize(ADS, {
+      mode: "strip", adsPolicy: "allow", reservedCharPolicy: "allow",
+    });
+  } catch (e4) { stripMode = e4; }
+  check("guardFilename: strip mode refuses an ADS name and names " +
+        "verifyExtractionPath too",
+        stripMode !== null && stripMode.code === "filename.ntfs-ads" &&
+        /verifyExtractionPath/.test(String(stripMode.message)),
+        String(stripMode && stripMode.message));
+
+  var finding = b.guardFilename.validate(ADS, withAds("allow")).issues
+    .filter(function (i) { return i.ruleId === "filename.ntfs-ads"; })[0];
+  check("guardFilename: the validate/gate finding names verifyExtractionPath",
+        finding !== undefined && /verifyExtractionPath/.test(String(finding.snippet)),
+        JSON.stringify(finding));
+
+  // The other side of the split: the extraction path honours it, which is the
+  // whole reason the option has two values.
+  var root = helpers.path.join(helpers.os.tmpdir(), "blamejs-ads-scope");
+  var allowed = null, refused = null;
+  try { allowed = b.guardFilename.verifyExtractionPath(ADS, root, { adsPolicy: "allow" }); }
+  catch (e4) { allowed = e4; }
+  try { b.guardFilename.verifyExtractionPath(ADS, root, { adsPolicy: "reject" }); }
+  catch (e5) { refused = e5; }
+  check("guardFilename: verifyExtractionPath honours adsPolicy \"allow\"",
+        typeof allowed === "string" && allowed.indexOf(":stream") !== -1,
+        String(allowed && (allowed.code || allowed)));
+  check("guardFilename: verifyExtractionPath still refuses under \"reject\"",
+        refused !== null && refused.code === "filename.extraction-ntfs-ads",
+        String(refused && refused.code));
+}
+
 async function run() {
+  testAdsPolicyIsScopedToExtractionAndSaysSo();
   await testGuardFilenameDoubleExtensionFollowsItsPolicy();
   await testGuardFilenameFloorIgnoresPolicyOverrides();
   testOverLongNameIsRefusedUnderThisGuardsOwnRule();
