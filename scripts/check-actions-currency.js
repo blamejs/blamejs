@@ -980,7 +980,13 @@ function _collectPinnedActions(dir) {
   // and fails the run instead of thinning the list it reports on.
   for (var f = 0; f < files.length; f++) {
     var rel = ".github/workflows/" + files[f];
-    var lines = fs.readFileSync(path.join(root, files[f]), "utf8").split("\n");
+    // A leading BOM sits in front of the first key, so it is neither a space
+    // nor a name — the first line's indent reads wrong and its `uses` becomes
+    // invisible, which is this gate's original failure in miniature. Editors on
+    // Windows write one without asking.
+    var text = fs.readFileSync(path.join(root, files[f]), "utf8");
+    if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+    var lines = text.split("\n");
     var blockIndent = -1;
     var scanState = { flowDepth: 0, atKeyStart: true };
     var pending   = [];

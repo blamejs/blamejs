@@ -318,6 +318,22 @@ function testEveryUsesIsEitherCheckedOrNamed() {
         interleaved.unparsed.length === 0,
         JSON.stringify(interleaved));
 
+  // A BOM sits in front of the first key, so it is neither indentation nor part
+  // of the name — the first line reads wrong and its `uses` goes missing, which
+  // is this gate's original failure in miniature. Windows editors write one
+  // without asking.
+  var bom = withFixture({
+    "bom.yml":
+      // Built from its code point, never typed: a literal BOM here would be an
+      // invisible byte in the source of the very test that exists to catch one.
+      String.fromCharCode(0xFEFF) + "jobs:\n  build:\n    steps:\n" +
+      "      - uses: owner/afterbom@" + SHA + "  # v5.0.1\n",
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: a leading BOM does not hide the document's keys",
+        (bom.actions["owner/afterbom"] || {}).version === "5.0.1" &&
+        bom.unparsed.length === 0,
+        JSON.stringify(bom));
+
   check("actions-currency: a version comment on a CRLF line is read",
         (crlf.actions["owner/crlf"] || {}).version === "5.0.1" &&
         crlf.unparsed.length === 0,
