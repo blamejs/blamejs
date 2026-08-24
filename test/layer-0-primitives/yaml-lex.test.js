@@ -140,6 +140,82 @@ function testASigilSurvivesOnlyWhereItIsReal() {
         survivorsOf("- |\n  body\n- !tag v\n", "!").length === 1,
         JSON.stringify(yamlLex.maskNonStructural("- |\n  body\n- !tag v\n")));
 
+  // Extra spacing after a dash pushes the key's column out to where the block
+  // body also sits, so measuring the body from that column masks nothing. The
+  // item's mapping column is the canonical one-space position — the same
+  // reading the duplicate-key scope takes, for the same reason: spacing after
+  // the indicator is presentation.
+  // A block owned by a mapping entry is bounded by that ENTRY, so extra spacing
+  // after the dash moves the bound with the key. A body written at the key's
+  // own column is therefore not content — by YAML's indentation rule that
+  // document is malformed — and its next line is read as structure. That is
+  // the deliberate choice: where a shape is ambiguous, the reading that keeps a
+  // sibling VISIBLE is the one to take, because the other hides real tags.
+  check("a body at the padded key's own column is NOT swallowed, so whatever " +
+        "it says is still seen",
+        survivorsOf("-   key: |\n    !boom\n", "!").length === 1,
+        JSON.stringify(yamlLex.maskNonStructural("-   key: |\n    !boom\n")));
+  check("an empty block followed straight by a sibling shows the sibling's tag",
+        survivorsOf("- key: |\n  evil: !tag x\n", "!").length === 1,
+        JSON.stringify(yamlLex.maskNonStructural("- key: |\n  evil: !tag x\n")));
+  check("CONTROL — while a properly indented body IS masked",
+        masksAway("- key: |\n    !boom\n", "!"),
+        JSON.stringify(yamlLex.maskNonStructural("- key: |\n    !boom\n")));
+  check("CONTROL — and a sibling key written BETWEEN those columns still " +
+        "shows its tag",
+        survivorsOf("-   key: |\n     body\n    evil: !tag x\n", "!").length === 1,
+        JSON.stringify(yamlLex.maskNonStructural(
+          "-   key: |\n     body\n    evil: !tag x\n")));
+  check("CONTROL — and so does one written back at the item's column",
+        survivorsOf("-   key: |\n    body\n  evil: !tag x\n", "!").length === 1,
+        JSON.stringify(yamlLex.maskNonStructural(
+          "-   key: |\n    body\n  evil: !tag x\n")));
+  check("CONTROL — a blank line inside a block does not end it",
+        masksAway("x: |\n  a\n\n  !no\ny: 1\n", "!"),
+        JSON.stringify(yamlLex.maskNonStructural("x: |\n  a\n\n  !no\ny: 1\n")));
+
+  // An indentation INDICATOR declares the body's column instead of leaving it
+  // to be detected, and the difference shows when the first content line is
+  // indented further than the indicator says: a later line back at the declared
+  // column is still body, and detecting from the first line ends the block
+  // early and hands the rest of the scalar to the structural scan.
+  [
+    ["a declared indicator",           "x: |2\n    first\n  !tag is text\ny: 1\n"],
+    ["one with a chomping indicator",  "x: |2-\n    a\n  !no\ny: 1\n"],
+    ["the indicators in either order", "x: |-2\n    a\n  !no\ny: 1\n"],
+  ].forEach(function (pair) {
+    check("masked: a body line at the column named by " + pair[0],
+          masksAway(pair[1], "!"),
+          JSON.stringify(yamlLex.maskNonStructural(pair[1])));
+  });
+  check("CONTROL — a declared block still ENDS at the parent's column",
+        survivorsOf("x: |2\n  body\ny: !tag 1\n", "!").length === 1,
+        JSON.stringify(yamlLex.maskNonStructural("x: |2\n  body\ny: !tag 1\n")));
+  // The indicator counts from the node that OWNS the block. For `- key: |2`
+  // that is the mapping entry, not the dash — counting from the dash puts the
+  // body two columns too far left and swallows the entry's siblings.
+  check("CONTROL — a declared block in an inline mapping still shows its " +
+        "sibling's tag",
+        survivorsOf("- key: |2\n    body\n  evil: !tag x\n", "!").length === 1,
+        JSON.stringify(yamlLex.maskNonStructural(
+          "- key: |2\n    body\n  evil: !tag x\n")));
+  check("while its own body stays masked",
+        masksAway("- key: |2\n    !boom\n", "!"),
+        JSON.stringify(yamlLex.maskNonStructural("- key: |2\n    !boom\n")));
+  check("and a declared block that IS the item's node counts from the dash",
+        masksAway("- |2\n  !hello\n", "!"),
+        JSON.stringify(yamlLex.maskNonStructural("- |2\n  !hello\n")));
+
+  // A dash earlier on the line does not make the scalar the ITEM's. In
+  // `- key: hello` the scalar belongs to `key`, so the next line at the
+  // mapping's column is a sibling entry rather than a continuation — and
+  // reading it as one masked a real tag on that sibling.
+  check("CONTROL — a tag on the sibling key after an inline mapping's scalar " +
+        "is seen",
+        survivorsOf("- key: hello\n  !danger other: value\n", "!").length === 1,
+        JSON.stringify(yamlLex.maskNonStructural(
+          "- key: hello\n  !danger other: value\n")));
+
   // What follows a continued quoted scalar's CLOSING quote is structure again.
   // Blanking the rest of that line was the tidy-looking simplification, and it
   // failed in the dangerous direction: the comma and the tag after the scalar
@@ -175,6 +251,26 @@ function testASigilSurvivesOnlyWhereItIsReal() {
   check("a continuation running over several lines stays content throughout",
         survivorsOf("x: a\n  b\n  !c\nz: !real 1\n", "!").length === 1,
         JSON.stringify(yamlLex.maskNonStructural("x: a\n  b\n  !c\nz: !real 1\n")));
+
+  // A scalar that IS a sequence item has its continuation ALIGNED with the
+  // item's content column rather than indented past it, because there is no key
+  // to be deeper than. Requiring strictly-deeper read the second line of
+  // `- hello` / `  !world` as a fresh node.
+  [
+    ["a bang", "- hello\n  !world\n"],
+    ["an ampersand", "- fish\n  &chips\n"],
+    ["a star", "- a\n  *star\n"],
+  ].forEach(function (pair) {
+    check("masked: " + pair[0] + " continuing a sequence item's own scalar",
+          masksAway(pair[1], pair[1].indexOf("&") !== -1 ? "&"
+                    : pair[1].indexOf("*") !== -1 ? "*" : "!"),
+          JSON.stringify(yamlLex.maskNonStructural(pair[1])));
+  });
+  check("CONTROL — the NEXT item is structure again",
+        survivorsOf("- hello\n  !world\n- !tag v\n", "!").length === 1,
+        JSON.stringify(yamlLex.maskNonStructural("- hello\n  !world\n- !tag v\n")));
+  check("CONTROL — a tag opening a sequence item is still a tag",
+        survivorsOf("- !tag v\n", "!").length === 1, "");
 
   // The controls that keep this from swallowing structure. Over-masking is the
   // dangerous direction, so each shape that is NOT a continuation is asserted.
@@ -238,6 +334,38 @@ function testStructureTheCallersStillNeedIsNeverMasked() {
   check("and the directive it follows still survives",
         yamlLex.maskNonStructural("%YAML 1.2 # c\n---\nx: 1\n").indexOf("%YAML 1.2") === 0,
         "");
+
+  // A document marker ends the document, so every piece of state carried across
+  // lines ends with it. Resetting only the flow depth left a scalar open across
+  // the boundary, and the new document's first line was then read as a
+  // continuation of the old document's last one — masking a real tag.
+  [
+    ["a plain scalar",          "- hello\n---\n  !tag v\n"],
+    ["a block scalar",          "x: |\n  body\n---\n  !tag v\n"],
+    ["an unclosed flow",        "x: [a\n---\n!tag v\n"],
+    ["an end-of-document marker", "- hello\n...\n  !tag v\n"],
+  ].forEach(function (pair) {
+    check("a tag in the next document is seen, after " + pair[0],
+          survivorsOf(pair[1], "!").length === 1,
+          JSON.stringify(yamlLex.maskNonStructural(pair[1])));
+  });
+  check("and an anchor likewise",
+        survivorsOf("- hello\n---\n  &anch v\n", "&").length === 1,
+        JSON.stringify(yamlLex.maskNonStructural("- hello\n---\n  &anch v\n")));
+  // A marker is one only at COLUMN ZERO. Indented, it is scalar content, and
+  // ending the document there threw away the scalar state and left the
+  // continuation to be read as structure.
+  [
+    ["a start marker", "- hello\n  ---\n  !world\n"],
+    ["an end marker",  "- hello\n  ...\n  !world\n"],
+  ].forEach(function (pair) {
+    check("masked: an INDENTED " + pair[0] + " is scalar content, not a boundary",
+          masksAway(pair[1], "!"),
+          JSON.stringify(yamlLex.maskNonStructural(pair[1])));
+  });
+  check("CONTROL — a multi-document stream still splits at column zero",
+        survivorsOf("---\na: !t 1\n---\nb: !u 2\n", "!").length === 2,
+        JSON.stringify(yamlLex.maskNonStructural("---\na: !t 1\n---\nb: !u 2\n")));
 
   // A directive-looking line INSIDE a quoted scalar is content, not structure,
   // and this is the case that needs the carried quote state to get right.
