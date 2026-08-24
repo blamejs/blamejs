@@ -197,6 +197,30 @@ var TAG_PAGE_SIZE  = 100;
 // github/codeql-action, the deepest here, holds ~900 tags across 9 pages.
 var TAG_PAGE_LIMIT = 40;
 
+// One reading of a workflow file, for everything that reads one.
+//
+// A leading BOM sits in front of the first key, so it is neither a space nor a
+// name: the first line's indent reads wrong and its `uses` becomes invisible,
+// which is this gate's original failure in miniature. Editors on Windows write
+// one without asking, so it is stripped before anything looks at the text.
+//
+// The reason this is a function rather than two lines at the one call site: the
+// collector stripped it and `--fix` did not, so the two disagreed by one
+// character about where every span on the first line began. The collector
+// recorded a reference, the fixer sliced one character off, the slice no longer
+// contained the SHA, and the rewrite silently declined — on a file the collector
+// had explicitly gone to the trouble of supporting. Two readings of one file
+// that normalise differently is the whole defect, and one reader is the fix.
+//
+// `bom` rides back so a rewrite can put it where it found it. Stripping a byte
+// out of an operator's file is not this gate's business.
+function _readWorkflow(abs) {
+  var text = fs.readFileSync(abs, "utf8");
+  var bom  = text.charCodeAt(0) === 0xFEFF;
+  if (bom) text = text.slice(1);
+  return { lines: text.split("\n"), bom: bom };
+}
+
 // The highest acceptable tag among `names`, carrying `best` forward so a walk
 // can fold one page at a time. Returns `{ name, parsed }` or null.
 //
@@ -741,19 +765,55 @@ function _scanLine(line, state, eof) {
         explicitKey = null;
         i = ev; atKeyStart = false; continue;
       }
+      // An alias standing in for a whole job or a whole steps list hides every
+      // reference inside it, and an explicit key reaches its value through THIS
+      // branch rather than the ordinary key-position one — so the check added
+      // there for `steps: *the_steps` never ran for `? steps` / `: *the_steps`,
+      // and the anchored definitions stayed off-path in both directions: absent
+      // from `actions` and absent from `unparsed`.
+      //
+      // The two spellings are one shape, so they get one answer. Reading the
+      // value first, since the alias check needs it either way.
+      var evScalar = (ev < line.length && line.charAt(ev) !== "#")
+        ? _readScalar(line, ev, flowDepth > 0) : null;
+      // A block-scalar header, by the same rule as on the ordinary key path:
+      // everything below belongs to the scalar rather than to YAML.
+      //
+      // Symmetry rather than a reachable fix, and worth saying so plainly. I
+      // could not construct a workflow whose behaviour this changes, because an
+      // explicit key pushes its OWN name onto the path, so anything nested
+      // under it sits one level deeper than any action-reference position and
+      // is already ignored — and a body at the key's own indent is not a block
+      // body at all. It is kept because the asymmetry is the trap: the two
+      // spellings of a mapping key reach their value through different branches
+      // here, and every check that lives on only one of them is a check that is
+      // simply not made for the other spelling. The alias case immediately
+      // below is the same asymmetry, and that one WAS reachable.
+      if (evScalar && flowDepth === 0 && _isBlockScalarIndicator(evScalar.value)) {
+        var evRest = line.slice(evScalar.end).replace(/^[ \t\r]*/, "");
+        if (evRest === "" || evRest.charAt(0) === "#") {
+          opensBlock = { indent: _indentOf(line), key: explicitKey.name,
+                         actionPosition: _isActionRefPosition(explicitKey.enclosing) };
+          explicitKey = null;     // its value is the block, and it has been read
+          break;
+        }
+      }
+      if (evScalar && evScalar.value && evScalar.value.charAt(0) === "*" &&
+          _isAliasHidingActions(explicitKey.enclosing, explicitKey.name)) {
+        out.push({ value: null, after: "", depth: flowDepth, alias: evScalar.value });
+      }
       if (explicitKey.name === "uses" && _isActionRefPosition(explicitKey.enclosing)) {
         // Spans here too. Every branch that emits an occurrence owes them, or
         // `--fix` silently declines to rewrite a reference the collector
         // reported — and the verification then fails the run over a pin that
         // was never touched.
-        if (ev >= line.length || line.charAt(ev) === "#") {
+        if (!evScalar) {
           out.push({ value: "", after: line.slice(ev), depth: flowDepth,
                      valueStart: ev, valueEnd: ev });
         } else {
-          var evVal = _readScalar(line, ev, flowDepth > 0);
-          out.push({ value: evVal.value, after: line.slice(evVal.end),
-                     depth: flowDepth, valueStart: ev, valueEnd: evVal.end });
-          ev = evVal.end;
+          out.push({ value: evScalar.value, after: line.slice(evScalar.end),
+                     depth: flowDepth, valueStart: ev, valueEnd: evScalar.end });
+          ev = evScalar.end;
         }
       }
       explicitKey = null;
@@ -1124,13 +1184,7 @@ function _collectPinnedActions(dir) {
   // and fails the run instead of thinning the list it reports on.
   for (var f = 0; f < files.length; f++) {
     var rel = ".github/workflows/" + files[f];
-    // A leading BOM sits in front of the first key, so it is neither a space
-    // nor a name — the first line's indent reads wrong and its `uses` becomes
-    // invisible, which is this gate's original failure in miniature. Editors on
-    // Windows write one without asking.
-    var text = fs.readFileSync(path.join(root, files[f]), "utf8");
-    if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
-    var lines = text.split("\n");
+    var lines = _readWorkflow(path.join(root, files[f])).lines;
     var blockIndent = -1;
     var scanState = { flowDepth: 0, atKeyStart: true };
     var pending   = [];
@@ -1838,12 +1892,18 @@ async function main() {
       for (var rj = 0; rj < (fr.refs || []).length; rj++) {
         var ref2 = fr.refs[rj];
         var abs  = path.join(__dirname, "..", ref2.file);
-        if (!(abs in byFile)) byFile[abs] = fs.readFileSync(abs, "utf8").split("\n");
-        _rewriteRef(byFile[abs], ref2, fr.latestSha, tag);
+        // Through the SAME reader the collector used. The spans the scanner
+        // recorded are offsets into the text it saw, so a second reading that
+        // normalises differently makes every one of them point a character off.
+        if (!(abs in byFile)) byFile[abs] = _readWorkflow(abs);
+        _rewriteRef(byFile[abs].lines, ref2, fr.latestSha, tag);
       }
     }
     Object.keys(byFile).forEach(function (abs) {
-      fs.writeFileSync(abs, byFile[abs].join("\n"));
+      // The BOM goes back where it was found. `--fix` is here to change a pin,
+      // not to re-encode an operator's file.
+      fs.writeFileSync(abs, (byFile[abs].bom ? String.fromCharCode(0xFEFF) : "") +
+                            byFile[abs].lines.join("\n"));
     });
 
     // Verify by RE-COLLECTING, with the same scanner that found the references
@@ -1942,6 +2002,7 @@ module.exports = {
   _buildMetadataNote: _buildMetadataNote,
   _staleRefs: _staleRefs,
   _highestTag: _highestTag,
+  _readWorkflow: _readWorkflow,
   _fullVersion: _fullVersion,
   SCOPE_NOTE: SCOPE_NOTE,
   _semverParse: _semverParse,

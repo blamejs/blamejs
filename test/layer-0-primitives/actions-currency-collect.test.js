@@ -334,6 +334,47 @@ function testEveryUsesIsEitherCheckedOrNamed() {
         bom.unparsed.length === 0,
         JSON.stringify(bom));
 
+  // Recording spans against a BOM-stripped text and then rewriting against the
+  // raw bytes puts every first-line offset one character out, so the slice no
+  // longer holds the SHA and `--fix` declines without saying anything — on a
+  // file the collector went to the trouble of supporting. One reader for both
+  // is the fix, and this drives it end to end on a reference that IS on line
+  // one, which is the only line a BOM can shift.
+  var BOM_NEW = "2222222222222222222222222222222222222222";
+  var bomFix = withFixture({
+    "bomfix.yml":
+      String.fromCharCode(0xFEFF) +
+      "jobs: { build: { steps: [ { uses: owner/online1@" + SHA +
+      " } ] } }  # v5.0.1\n",
+  }, function (dir) {
+    var got  = currency._collectPinnedActions(dir);
+    var file = path.join(dir, "bomfix.yml");
+    var read = currency._readWorkflow(file);
+    var refs = (got.actions["owner/online1"] || {}).refs || [];
+    var okThrough = refs.length === 1 &&
+      currency._rewriteRef(read.lines, refs[0], BOM_NEW, "v6.0.0");
+    // The control: the same rewrite against a reading that keeps the BOM. It
+    // must FAIL, or the check above passes whether or not the readers agree.
+    var raw = fs.readFileSync(file, "utf8").split("\n");
+    var okRaw = refs.length === 1 &&
+      currency._rewriteRef(raw, refs[0], BOM_NEW, "v6.0.0");
+    return { okThrough: okThrough, okRaw: okRaw, bom: read.bom,
+             first: read.lines[0].slice(0, 5),
+             out: read.lines.join("\n") };
+  });
+  check("actions-currency: a first-line pin in a BOM-prefixed workflow is " +
+        "rewritten, because the fixer reads the file the collector read",
+        bomFix.okThrough === true && bomFix.out.indexOf(BOM_NEW) !== -1 &&
+        bomFix.out.indexOf(SHA) === -1,
+        JSON.stringify(bomFix));
+  check("actions-currency: CONTROL — the same rewrite against a reading that " +
+        "keeps the BOM does not land, which is the divergence itself",
+        bomFix.okRaw === false, JSON.stringify(bomFix));
+  check("actions-currency: and the BOM is reported so a rewrite can put it " +
+        "back rather than re-encoding an operator's file",
+        bomFix.bom === true && bomFix.first === "jobs:",
+        JSON.stringify({ bom: bomFix.bom, first: bomFix.first }));
+
   check("actions-currency: a version comment on a CRLF line is read",
         (crlf.actions["owner/crlf"] || {}).version === "5.0.1" &&
         crlf.unparsed.length === 0,
@@ -1360,6 +1401,53 @@ function testTheFixReplacementReachesThroughAQuote() {
         wholeKey.unparsed.length === 0,
         JSON.stringify(wholeKey.unparsed) +
         " actions=" + JSON.stringify(Object.keys(wholeKey.actions)));
+
+  // The explicit-key spelling reaches its value through its OWN branch, so
+  // every check the ordinary `key: value` path makes has to be made there too
+  // or it is simply not made. Two were missing, and both let content off-path
+  // in the direction that reads as clean.
+  //
+  // First: an alias standing in for a whole steps list. The anchored steps are
+  // defined somewhere the collector has no path to, so replacing the list with
+  // an alias hides every reference in it.
+  var aliasExplicit = withFixture({
+    "aliasexp.yml":
+      "jobs:\n" +
+      "  seed:\n" +
+      "    steps: &the_steps\n" +
+      "      - uses: actions/checkout@v1.2.3\n" +
+      "  build:\n" +
+      "    ? steps\n" +
+      "    : *the_steps\n",
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: an alias standing in for a steps list is NAMED " +
+        "when the key is written in the explicit form too",
+        aliasExplicit.unparsed.some(function (u) {
+          return u.reason.indexOf("alias") !== -1;
+        }),
+        JSON.stringify(aliasExplicit.unparsed));
+  // Second: a block scalar body reached through an explicit key names no
+  // action. The scanner also carries the block-scalar guard on this branch, but
+  // NOT because it changes this outcome — an explicit key pushes its own name
+  // onto the path, so anything under it is a level deeper than any
+  // action-reference position and is ignored either way. This asserts the
+  // outcome an operator depends on rather than the guard, because a check that
+  // passes with the guard removed is not evidence about the guard.
+  var blockExplicit = withFixture({
+    "blockexp.yml":
+      "jobs:\n  build:\n    steps:\n" +
+      "      - ? run\n" +
+      "        : |\n" +
+      "          uses: owner/inblock@v9.9.9\n" +
+      "      - uses: actions/checkout@v1.2.3\n",
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: a block body under an explicit key names no action, " +
+        "and the real step beside it is still read",
+        blockExplicit.actions["owner/inblock"] === undefined &&
+        (blockExplicit.actions["actions/checkout"] || {}).version === "1.2.3" &&
+        blockExplicit.unparsed.length === 0,
+        JSON.stringify(Object.keys(blockExplicit.actions)) +
+        " unparsed=" + JSON.stringify(blockExplicit.unparsed));
 
   // A stable reference and a prerelease one do not share an upstream latest:
   // `/releases/latest` skips prereleases by design. Deciding which track to scan
