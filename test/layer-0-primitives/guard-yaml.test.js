@@ -139,6 +139,162 @@ function testGuardYamlDuplicateKeys() {
   var rvNotDup = b.guardYaml.validate("x:\n  a: 1\ny:\n  a: 2\n", { profile: "strict" });
   check("same key at different scopes NOT flagged",
         !rvNotDup.issues.some(function (issue) { return issue.kind === "duplicate-key"; }));
+
+  // Each item of a sequence is its OWN mapping, so the same key appearing once
+  // per item is not a duplicate — it is the ordinary shape of every list of
+  // records there is. The scope was keyed on indent alone and a sequence-item
+  // line never reset it, so the second item's keys landed in the first item's
+  // scope and the second occurrence of every key after the first read as a
+  // duplicate.
+  function dupKeys(src) {
+    return b.guardYaml.validate(src, { profile: "strict" }).issues
+      .filter(function (issue) { return issue.kind === "duplicate-key"; })
+      .map(function (issue) { return issue.snippet; });
+  }
+  check("a sequence of two-key mappings is not a duplicate",
+        dupKeys("steps:\n  - p: 1\n    q: 2\n  - p: 3\n    q: 4\n").length === 0,
+        JSON.stringify(dupKeys("steps:\n  - p: 1\n    q: 2\n  - p: 3\n    q: 4\n")));
+  check("nor is a sequence of three-key mappings",
+        dupKeys("s:\n  - a: 1\n    b: 2\n    c: 3\n  - a: 4\n    b: 5\n    c: 6\n")
+          .length === 0,
+        JSON.stringify(dupKeys(
+          "s:\n  - a: 1\n    b: 2\n    c: 3\n  - a: 4\n    b: 5\n    c: 6\n")));
+  // The control the fix must not break: a key repeated WITHIN one item is a
+  // real duplicate, and the reset must not swallow it. Without this the check
+  // above is satisfied by never reporting anything at all.
+  check("CONTROL — a key repeated inside ONE sequence item is still a duplicate",
+        dupKeys("steps:\n  - p: 1\n    p: 2\n").length === 1,
+        JSON.stringify(dupKeys("steps:\n  - p: 1\n    p: 2\n")));
+  check("CONTROL — a duplicate in a plain mapping is still a duplicate",
+        dupKeys("steps:\n  uses: a\n  uses: b\n").length === 1,
+        JSON.stringify(dupKeys("steps:\n  uses: a\n  uses: b\n")));
+  // The key written INLINE with the dash belongs to the item's mapping, so a
+  // repeat of it is a duplicate too — that key was being skipped entirely.
+  check("the key inline with the dash is tracked, so repeating it is caught",
+        dupKeys("steps:\n  - p: 1\n    q: 2\n    p: 3\n").length === 1,
+        JSON.stringify(dupKeys("steps:\n  - p: 1\n    q: 2\n    p: 3\n")));
+  // An item may write NO key beside its dash, and that line then carries no
+  // `key: value` at all. A reset that waited for one never ran for this layout,
+  // so the same document was accepted written one way and refused written the
+  // other. The boundary is the dash; where the first key sits is layout.
+  check("a sequence whose items put no key beside the dash is not a duplicate",
+        dupKeys("steps:\n  -\n    p: 1\n  -\n    p: 2\n").length === 0,
+        JSON.stringify(dupKeys("steps:\n  -\n    p: 1\n  -\n    p: 2\n")));
+  check("CONTROL — and a repeat WITHIN one such item is still caught",
+        dupKeys("steps:\n  -\n    p: 1\n    p: 2\n").length === 1,
+        JSON.stringify(dupKeys("steps:\n  -\n    p: 1\n    p: 2\n")));
+  // A dash that is not a sequence indicator must not reset anything: `-quux`
+  // and `-1` are scalars, and treating them as item boundaries would drop a
+  // scope and hide a real duplicate.
+  check("CONTROL — a leading dash that is part of a scalar is not an item " +
+        "boundary",
+        dupKeys("a: -1\np: 1\np: 2\n").length === 1,
+        JSON.stringify(dupKeys("a: -1\np: 1\np: 2\n")));
+  // An item's mapping is ONE mapping however its keys are laid out, so the
+  // scope must not depend on how many spaces follow the dash. Keying on the raw
+  // column filed `-   a: 1` (column 4) and the `a: 2` under it (column 2)
+  // separately and reported no duplicate — and this is the smuggling shape the
+  // detector exists for, since one parser reads two keys here and another reads
+  // one.
+  check("a key repeated across an item's lines is a duplicate whatever the " +
+        "spacing after the dash",
+        dupKeys("-   a: 1\n  a: 2\n").length === 1,
+        JSON.stringify(dupKeys("-   a: 1\n  a: 2\n")));
+  check("CONTROL — and a key reused in a mapping NESTED inside that item is " +
+        "still not one",
+        dupKeys("- a: 1\n  b:\n    a: 2\n").length === 0,
+        JSON.stringify(dupKeys("- a: 1\n  b:\n    a: 2\n")));
+  check("CONTROL — nor when the nesting hangs off the key beside the dash",
+        dupKeys("- a:\n    x: 1\n    a: 2\n").length === 0,
+        JSON.stringify(dupKeys("- a:\n    x: 1\n    a: 2\n")));
+  check("CONTROL — nor with extra spacing and a nested reuse together",
+        dupKeys("-   a: 1\n  b:\n    a: 2\n").length === 0,
+        JSON.stringify(dupKeys("-   a: 1\n  b:\n    a: 2\n")));
+
+  // Sequences NEST, so the item being tracked is a stack rather than a slot.
+  // Holding only the innermost let a nested sequence take its parent's scope
+  // and never give it back, so a key repeated in the OUTER item after the
+  // nested one closed was filed elsewhere and went unreported.
+  check("a key repeated in the outer item AFTER a nested sequence is still a " +
+        "duplicate",
+        dupKeys("- a: 1\n  inner:\n    - x: 1\n  a: 2\n").length === 1,
+        JSON.stringify(dupKeys("- a: 1\n  inner:\n    - x: 1\n  a: 2\n")));
+  check("and the same when the outer item writes no key beside its dash",
+        dupKeys("-\n  a: 1\n  children:\n    - x: 1\n  a: 2\n").length === 1,
+        JSON.stringify(dupKeys("-\n  a: 1\n  children:\n    - x: 1\n  a: 2\n")));
+  check("CONTROL — a nested sequence with no outer repeat is still clean",
+        dupKeys("- a: 1\n  inner:\n    - x: 1\n  b: 2\n").length === 0,
+        JSON.stringify(dupKeys("- a: 1\n  inner:\n    - x: 1\n  b: 2\n")));
+  check("CONTROL — two items of a NESTED sequence may each use the same key",
+        dupKeys("- a: 1\n  inner:\n    - x: 1\n    - x: 2\n").length === 0,
+        JSON.stringify(dupKeys("- a: 1\n  inner:\n    - x: 1\n    - x: 2\n")));
+  check("CONTROL — a duplicate INSIDE one nested item is still caught",
+        dupKeys("- a: 1\n  inner:\n    - x: 1\n      x: 2\n").length === 1,
+        JSON.stringify(dupKeys("- a: 1\n  inner:\n    - x: 1\n      x: 2\n")));
+}
+
+// YAML's JSON compatibility lets a QUOTED key take its colon with no space
+// after it, so the character in front of a sigil written that way is `:`. Every
+// screen decided position by looking at that character, and so reported nothing
+// for this form — including for a deserialization tag, which is the single most
+// dangerous thing the tag screen exists to surface.
+function testGuardYamlCompactFlowSigils() {
+  function kinds(src) {
+    return b.guardYaml.validate(src, { profile: "strict" }).issues
+      .map(function (issue) { return issue.kind; });
+  }
+  check("a deserialization tag written in the compact flow form is reported",
+        kinds('{"a":!!python/object x}').indexOf("dangerous-tag") !== -1,
+        JSON.stringify(kinds('{"a":!!python/object x}')));
+  check("a custom tag in the compact flow form is reported",
+        kinds('{"a":!mytag x}').indexOf("custom-tag") !== -1,
+        JSON.stringify(kinds('{"a":!mytag x}')));
+  check("an anchor in the compact flow form is reported",
+        kinds('{"a":&anch x}').indexOf("alias-disabled") !== -1,
+        JSON.stringify(kinds('{"a":&anch x}')));
+  check("an alias in the compact flow form is reported",
+        kinds('{"a":*anch}').indexOf("alias-disabled") !== -1,
+        JSON.stringify(kinds('{"a":*anch}')));
+  // YAML permits separation between a JSON-style key and its adjacent value, so
+  // the same shape with a space before the colon is equally valid — and one
+  // space was enough to reopen the bypass while the unspaced form was closed.
+  check("and with separation before the colon, which YAML also allows",
+        kinds('{"a" :!!python/object x}').indexOf("dangerous-tag") !== -1,
+        JSON.stringify(kinds('{"a" :!!python/object x}')));
+  check("however much separation there is",
+        kinds('{"a"  :&anch x}').indexOf("alias-disabled") !== -1,
+        JSON.stringify(kinds('{"a"  :&anch x}')));
+  // There are TWO kinds of JSON-like key, and both take an adjacent value: a
+  // quoted scalar and a flow COLLECTION. Closing one production left the other
+  // open, which is the same bypass reached by the other route.
+  [
+    ["a mapping key",           '{{a: b}:!!python/object x}'],
+    ["a mapping key, spaced",   '{{a: b} :!!python/object x}'],
+    ["a sequence key",          '{[a]:!!python/object x}'],
+  ].forEach(function (pair) {
+    check("a dangerous tag after " + pair[0] + " is reported",
+          kinds(pair[1]).indexOf("dangerous-tag") !== -1,
+          JSON.stringify(kinds(pair[1])));
+  });
+  check("and an anchor after a collection key is reported",
+        kinds('{{a: b}:&anch x}').indexOf("alias-disabled") !== -1,
+        JSON.stringify(kinds('{{a: b}:&anch x}')));
+  check("CONTROL — an ordinary nested flow mapping is still reported as nothing",
+        kinds("{a: {b: 1}, c: 2}").length === 0,
+        JSON.stringify(kinds("{a: {b: 1}, c: 2}")));
+  // CONTROLS. Dropping the preceding-character test is only safe because the
+  // mask decides position, so the shapes it must still stay quiet about are
+  // asserted in the same breath.
+  [
+    ["a bang in prose",            "x: hello !world\n"],
+    ["a bang in a comment",        "x: 1 # note !bang\n"],
+    ["an ampersand in prose",      "text: this &notanchor\n"],
+    ["a bang in a quoted scalar",  'x: "hello !world"\n'],
+    ["a bang in a block body",     "x: |\n  echo !boom\n"],
+  ].forEach(function (pair) {
+    check("CONTROL — " + pair[0] + " is still reported as nothing",
+          kinds(pair[1]).length === 0, JSON.stringify(kinds(pair[1])));
+  });
 }
 
 function testGuardYamlBidiNull() {
@@ -319,7 +475,32 @@ function testYamlScreensAgreeWithThePatternsTheyReplaced() {
     }
     var anchors = (doc.match(ANCHOR_DECL_RE) || []).length;
     var aliases = (doc.match(ALIAS_REF_RE) || []).length;
-    compare("alias", anchors > 0 || aliases > 0, has("alias-disabled"));
+    // The anchor/alias screen is deliberately NO LONGER the pattern's equal, and
+    // these are the documents where they part company. In each one the pattern
+    // matched a sigil sitting inside a plain scalar, where it declares nothing:
+    // an anchor and an alias are separate tokens, so `&` and `*` in the middle
+    // of a value are ordinary characters. The pattern could not tell, because it
+    // looked only at the character before.
+    //
+    // This is not a relaxed guard. The screen exists to stop alias
+    // AMPLIFICATION, which needs a real anchor to bind a name and a real alias
+    // to expand it; a sigil inside a scalar binds nothing, so no expansion can
+    // reach it. And `use:\n  <<:*d` is still refused — the merge-key screen
+    // catches it, as the comparison below asserts.
+    //
+    // Each entry is named rather than counted, so adding one is a decision
+    // somebody has to write down.
+    var PLAIN_SCALAR_SIGILS = {
+      "x: -&a":                1,   // the value is the plain scalar `-&a`
+      "x:&a":                  1,   // a colon needs a space to separate a key
+      "text: this &notanchor": 1,   // prose, and the reason operators hit this
+      "use:\n  <<:*d":         1,   // scalar `<<:*d`; merge-key still refuses it
+    };
+    if (!Object.prototype.hasOwnProperty.call(PLAIN_SCALAR_SIGILS, doc)) {
+      compare("alias", anchors > 0 || aliases > 0, has("alias-disabled"));
+    } else {
+      compare("alias(plain-scalar sigil)", false, has("alias-disabled"));
+    }
     NORWAY_BOOL_QUIRK_RE.lastIndex = 0;
     compare("norway", NORWAY_BOOL_QUIRK_RE.test(doc), has("norway-implicit-bool"));
     compare("octal", LEADING_ZERO_OCTAL_RE.test(doc), has("leading-zero-octal"));
@@ -332,6 +513,33 @@ function testYamlScreensAgreeWithThePatternsTheyReplaced() {
   check("every YAML screen agrees with the pattern it replaced (" +
         DOCS.length + " documents)", diffs.length === 0,
         diffs.slice(0, 4).join(" | "));
+
+  // The exception list above says four documents should NOT be flagged. On its
+  // own that is satisfied by a screen which flags nothing at all, so the real
+  // constructs are asserted here in the same breath. A declaration and a
+  // reference, in each of the positions they are actually written.
+  function flags(doc) {
+    return b.guardYaml.validate(doc, { profile: "strict" }).issues
+      .some(function (i) { return i.kind === "alias-disabled"; });
+  }
+  [
+    ["an anchor declaration",        "a: &x 1\n"],
+    ["an alias reference",           "b: *x\n"],
+    ["an alias inside a flow seq",   "list: [*a, *b]\n"],
+    ["an alias inside a flow map",   "map: {k: *a}\n"],
+    ["an anchor on a sequence item", "s:\n  - &x 1\n"],
+    ["a merge key's alias",          "use:\n  <<: *d\n"],
+  ].forEach(function (pair) {
+    check("the anchor/alias screen still catches " + pair[0],
+          flags(pair[1]), JSON.stringify(pair[1]));
+  });
+  // And the document the exception list excuses is still REFUSED, by the screen
+  // that owns it — the sigil is not an alias, but the merge key is a merge key.
+  check("a merge key written without spaces is still refused, by the merge-key " +
+        "screen rather than the alias one",
+        b.guardYaml.validate("use:\n  <<:*d", { profile: "strict" }).issues
+          .some(function (i) { return i.kind === "merge-key"; }),
+        "");
 }
 
 // Every policy is a config-time entry point, so a value outside its vocabulary
@@ -377,6 +585,7 @@ async function run() {
   testGuardYamlLeadingZeroOctal();
   testGuardYamlMergeKey();
   testGuardYamlDuplicateKeys();
+  testGuardYamlCompactFlowSigils();
   testGuardYamlBidiNull();
   testGuardYamlByteCap();
   testGuardYamlClean();
