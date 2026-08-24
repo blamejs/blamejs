@@ -529,6 +529,15 @@ function _skipNodeProperties(line, at, inFlow) {
 // so `include: [{ uses: owner/repo@main }]` is a perfectly legal matrix value
 // and no list of known-bad parents can predict the next one. Naming the two
 // good positions is finite; naming every bad one is not.
+// Whether an alias used as the VALUE of `key` at `path` conceals something the
+// gate is meant to check. A job and a steps list are both containers of action
+// references, so replacing either with an alias hides every reference inside it.
+function _isAliasHidingActions(path, key) {
+  if (path.length === 1 && path[0] === "jobs") return true;          // a whole job
+  if (path.length === 2 && path[0] === "jobs" && key === "steps") return true;
+  return false;
+}
+
 function _isActionRefPosition(path) {
   // The WHOLE path, anchored at the document root. Matching only the last key
   // would read `strategy.matrix.steps: [{ uses: ... }]` — user-named matrix
@@ -543,6 +552,7 @@ function _isActionRefPosition(path) {
 function _scanLine(line, state, eof) {
   var out = [];
   var comment = null;                    // the line's trailing comment, if any
+  var commentStart = -1;                 // and where it begins, for a precise fix
   var opensBlock = null;                 // { indent, key } when the line opens one
   var i = 0;
   var flowDepth = state ? state.flowDepth : 0;
@@ -614,7 +624,7 @@ function _scanLine(line, state, eof) {
     // the one thing that knows where the comment really begins, so it hands the
     // text on rather than leaving the classifier to find it again — which it
     // could only do by guessing past whatever flow fields follow the value.
-    if (c === "#") { comment = line.slice(i); break; }
+    if (c === "#") { comment = line.slice(i); commentStart = i; break; }
 
     if (c === "{" || c === "[") {
       flowDepth++;
@@ -687,12 +697,17 @@ function _scanLine(line, state, eof) {
         i = ev; atKeyStart = false; continue;
       }
       if (explicitKey.name === "uses" && _isActionRefPosition(explicitKey.enclosing)) {
+        // Spans here too. Every branch that emits an occurrence owes them, or
+        // `--fix` silently declines to rewrite a reference the collector
+        // reported — and the verification then fails the run over a pin that
+        // was never touched.
         if (ev >= line.length || line.charAt(ev) === "#") {
-          out.push({ value: "", after: line.slice(ev), depth: flowDepth });
+          out.push({ value: "", after: line.slice(ev), depth: flowDepth,
+                     valueStart: ev, valueEnd: ev });
         } else {
           var evVal = _readScalar(line, ev, flowDepth > 0);
           out.push({ value: evVal.value, after: line.slice(evVal.end),
-                     depth: flowDepth });
+                     depth: flowDepth, valueStart: ev, valueEnd: evVal.end });
           ev = evVal.end;
         }
       }
@@ -788,12 +803,16 @@ function _scanLine(line, state, eof) {
       // Only a `uses` in an action-reference POSITION. Elsewhere it is an
       // ordinary field that happens to share the name, and its value may
       // legitimately look exactly like a reference.
-      // A JOB supplied as an alias — `jobs.call: *call` — hides whatever the
-      // anchor holds, including a reusable-workflow `uses`. The alias arrives
-      // here as the job key's VALUE, not at a key position, so the branch above
-      // never sees it and nothing would be reported at all.
+      // An alias VALUE anywhere an action reference could have been. The anchor
+      // it names is defined elsewhere — often in data that is not an action
+      // position at all — so its contents are invisible here and the job or
+      // step it stands for would go unchecked entirely.
+      //
+      // Two shapes reach this branch rather than the key-position one above:
+      //   jobs.call: *call             a whole job          enclosing = [jobs]
+      //   jobs.<id>.steps: *the_steps  a whole steps list   enclosing = [jobs, <id>]
       if (val && val.value && val.value.charAt(0) === "*" &&
-          enclosing.length === 1 && enclosing[0] === "jobs") {
+          _isAliasHidingActions(enclosing, keyName)) {
         out.push({ value: null, after: "", depth: flowDepth, alias: val.value });
       }
       if (keyName === "uses" && _isActionRefPosition(enclosing)) {
@@ -803,9 +822,15 @@ function _scanLine(line, state, eof) {
         // `with` look like the pin's own mapping closing — so the pin takes that
         // line's comment (usually none) and the real version further down is
         // never seen.
+        // The value's exact span rides along. `--fix` rewrites inside it and
+        // nowhere else: a line can carry script text that looks like a
+        // reference beside the real one, and a replacement scoped to the LINE
+        // still edits both.
         out.push(val === null
-          ? { value: "", after: line.slice(v), depth: flowDepth }  // key with no value
-          : { value: val.value, after: line.slice(val.end), depth: flowDepth });
+          ? { value: "", after: line.slice(v), depth: flowDepth,
+              valueStart: v, valueEnd: v }                        // key with no value
+          : { value: val.value, after: line.slice(val.end), depth: flowDepth,
+              valueStart: v, valueEnd: val.end });
       }
       // A key with no value on this line may be introducing a collection that
       // opens on the next one. Remember which key, so the `{` there records the
@@ -823,7 +848,8 @@ function _scanLine(line, state, eof) {
   }
   // At the end of the document an explicit key can wait no longer.
   if (eof) flushExplicit();
-  return { uses: out, opensBlock: opensBlock, comment: comment,
+  return { uses: out, opensBlock: opensBlock,
+           comment: comment, commentStart: commentStart,
            state: { flowDepth: flowDepth, atKeyStart: atKeyStart,
                     stack: stack, flowKeys: flowKeys,
                     pendingFlowKey: pendingFlowKey, explicitKey: explicitKey } };
@@ -915,7 +941,7 @@ var _REF_RE = /^([A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)(\/[^@\s]+)?@(.+)$/;
 // There is no fifth outcome where it quietly disappears, which is the whole
 // point — a reference that matches nothing used to be absent from the run, and
 // absent read as clean.
-function _classifyUses(parts, rel, lineNo, rawLine, comment, out, unparsed) {
+function _classifyUses(parts, rel, lineNo, rawLine, comment, out, unparsed, at) {
   if (parts.value === null) {
     if (parts.alias) {
       unparsed.push({ file: rel, line: lineNo, value: rawLine.trim(),
@@ -971,6 +997,12 @@ function _classifyUses(parts, rel, lineNo, rawLine, comment, out, unparsed) {
     if (out[ownerRepo].sha === null) out[ownerRepo].sha = ref;
     out[ownerRepo].refs.push({
       file: rel, line: lineNo, subpath: subpath, tagPinned: false, sha: ref,
+      // Exactly where the value and its version comment sit, so `--fix` edits
+      // those spans and nothing else on the line.
+      valueStart:   parts.valueStart,
+      valueEnd:     parts.valueEnd,
+      commentLine:  at ? at.commentLine  : lineNo,
+      commentStart: at ? at.commentStart : -1,
     });
     // If the same repo is pinned at two different versions across files, record
     // the lowest so a partial bump still flags.
@@ -1063,6 +1095,8 @@ function _collectPinnedActions(dir) {
         // all of them would lose the first version and give every pin the last.
         pending.push({ parts: scan.uses[oc], line: L + 1, raw: lines[L],
                        comment: scan.comment,
+                       commentLine: scan.comment !== null ? L + 1 : -1,
+                       commentStart: scan.commentStart,
                        // The nesting this pin sits in. Its own mapping has
                        // closed once the depth drops below this, which is when
                        // its fallback comment is taken — a shared "most recent"
@@ -1084,6 +1118,10 @@ function _collectPinnedActions(dir) {
         if (pending[pc].comment === null && pending[pc].fallback === undefined &&
             scanState.flowDepth < pending[pc].depth) {
           pending[pc].fallback = scan.comment;
+          if (scan.comment !== null) {
+            pending[pc].commentLine  = L + 1;
+            pending[pc].commentStart = scan.commentStart;
+          }
         }
       }
       if (scanState.flowDepth === 0 && pending.length) {
@@ -1092,7 +1130,12 @@ function _collectPinnedActions(dir) {
           var useComment = pe.comment !== null ? pe.comment
                          : pe.fallback !== undefined ? pe.fallback
                          : scan.comment;
-          _classifyUses(pe.parts, rel, pe.line, pe.raw, useComment, out, unparsed);
+          if (pe.comment === null && pe.fallback === undefined &&
+              scan.comment !== null) {
+            pe.commentLine = L + 1; pe.commentStart = scan.commentStart;
+          }
+          _classifyUses(pe.parts, rel, pe.line, pe.raw, useComment, out, unparsed,
+                        { commentLine: pe.commentLine, commentStart: pe.commentStart });
         }
         pending.length = 0;
       }
@@ -1227,14 +1270,36 @@ async function _checkOne(ownerRepo, entry) {
 // It lives here, rather than inline at the one call site, so the test asserts
 // against the pattern the fixer actually uses instead of a copy of it that can
 // drift.
-function _fixReplacementRe(action) {
-  var esc = String(action).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  // Same end boundary as the comment matcher: without it a malformed
-  // `# v2.1.0rc.1` would have its `2.1.0` prefix rewritten and the `rc.1` left
-  // dangling on the new version. The collector refuses to read such a comment
-  // at all, so the fixer must not half-rewrite one either.
-  return new RegExp("(" + esc + "(?:/[^@\\s\"']+)?@)[0-9a-f]{40}([\"']?\\s*#\\s*)v?" +
-                    _VER_SRC + "(?![0-9A-Za-z.+-])", "g");
+// Rewrite ONE collected reference in `lines`, in place. Returns true when the
+// SHA was found where the scanner said it would be.
+//
+// It edits two spans and nothing else: the SHA inside the value the scanner
+// read, and the version inside the comment the scanner attributed to it — which
+// may be on another line when the mapping spans several. No searching, because
+// searching is what kept going wrong. A pattern has to re-find the reference in
+// the text, and every attempt to bound where it looked (whole file, then one
+// line) still matched script text that resembled a pin and silently rewrote it.
+// The scanner already knows where each reference is; the fixer is told.
+function _rewriteRef(lines, ref, oldSha, newSha, tag) {
+  var vIdx = ref.line - 1;
+  if (vIdx < 0 || vIdx >= lines.length) return false;
+  var vLine = lines[vIdx];
+  var vSpan = vLine.slice(ref.valueStart, ref.valueEnd);
+  if (vSpan.indexOf(oldSha) === -1) return false;
+  lines[vIdx] = vLine.slice(0, ref.valueStart) +
+                vSpan.replace(oldSha, newSha) +
+                vLine.slice(ref.valueEnd);
+
+  var cIdx = (ref.commentLine || 0) - 1;
+  if (cIdx >= 0 && cIdx < lines.length && ref.commentStart >= 0) {
+    var cLine = lines[cIdx];
+    lines[cIdx] = cLine.slice(0, ref.commentStart) +
+      cLine.slice(ref.commentStart).replace(_VER_COMMENT_RE, function (m0, ver) {
+        // Keep the comment's own `#` and spacing; swap only the version.
+        return m0.slice(0, m0.lastIndexOf(ver)).replace(/v$/, "") + tag;
+      });
+  }
+  return true;
 }
 
 function _staleHints(r) {
@@ -1427,24 +1492,23 @@ async function main() {
         for (var bi = 0; bi < Math.min(bl.length, 40); bi++) say("    " + bl[bi] + "\n");
         if (bl.length > 40) say("    ... (" + (bl.length - 40) + " more line(s))\n");
       }
-      var re2 = _fixReplacementRe(fr.action);
-      // Once per FILE, not once per reference. The pattern is global, so the
-      // first pass over a file already rewrites every occurrence in it; running
-      // it again for a second reference to the same action in the same file
-      // finds nothing left to change, and reading that as a failed rewrite
-      // turns an ordinary duplicate into a false exit 1. This repository has
-      // one: cosign-installer appears twice in the same workflow.
-      var seenFiles = {};
+      // Once per REFERENCE now, at the spans the scanner recorded. The old
+      // pattern-based rewrite is gone: a pattern has to re-find the reference in
+      // the text, and every attempt to bound where it looked — whole file, then
+      // one line — still matched script text that resembled a pin. The scanner
+      // already knows where each reference is, so the fixer is told rather than
+      // made to search. Two occurrences of one action in a file are no longer a
+      // special case either; each has its own span.
       for (var rj = 0; rj < (fr.refs || []).length; rj++) {
-        var rel2 = fr.refs[rj].file;
-        if (seenFiles[rel2]) continue;
-        seenFiles[rel2] = true;
-        var abs = path.join(__dirname, "..", rel2);
-        if (!(abs in byFile)) byFile[abs] = fs.readFileSync(abs, "utf8");
-        byFile[abs] = byFile[abs].replace(re2, "$1" + fr.latestSha + "$2" + tag);
+        var ref2 = fr.refs[rj];
+        var abs  = path.join(__dirname, "..", ref2.file);
+        if (!(abs in byFile)) byFile[abs] = fs.readFileSync(abs, "utf8").split("\n");
+        _rewriteRef(byFile[abs], ref2, fr.oldSha, fr.latestSha, tag);
       }
     }
-    Object.keys(byFile).forEach(function (abs) { fs.writeFileSync(abs, byFile[abs]); });
+    Object.keys(byFile).forEach(function (abs) {
+      fs.writeFileSync(abs, byFile[abs].join("\n"));
+    });
 
     // Verify by RE-COLLECTING, with the same scanner that found the references
     // in the first place. "The file changed" was too weak — one occurrence
@@ -1537,7 +1601,7 @@ async function main() {
 module.exports = {
   _collectPinnedActions: _collectPinnedActions,
   _staleHints: _staleHints,
-  _fixReplacementRe: _fixReplacementRe,
+  _rewriteRef: _rewriteRef,
   _fullVersion: _fullVersion,
   SCOPE_NOTE: SCOPE_NOTE,
   _semverParse: _semverParse,

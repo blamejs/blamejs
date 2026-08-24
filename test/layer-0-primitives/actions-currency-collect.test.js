@@ -339,16 +339,13 @@ function testEveryUsesIsEitherCheckedOrNamed() {
         crlf.unparsed.length === 0,
         JSON.stringify(crlf));
 
-  // And the fixer refuses it for the same reason: rewriting the `2.1.0` prefix
-  // would leave `rc.1` dangling on a version that never existed.
-  var oldSha = "1111111111111111111111111111111111111111";
-  var newSha = "2222222222222222222222222222222222222222";
-  var mistypedFix = ("      - uses: actions/checkout@" + oldSha + "  # v2.1.0rc.1")
-    .replace(currency._fixReplacementRe("actions/checkout"), "$1" + newSha + "$2v3.0.0");
-  check("actions-currency: --fix leaves a malformed version comment alone " +
-        "rather than half-rewriting it",
-        mistypedFix.indexOf(oldSha) !== -1 && mistypedFix.indexOf("v2.1.0rc.1") !== -1,
-        mistypedFix);
+  // And the fixer never sees it, because the collector refused to read it: a
+  // reference that is not collected has no recorded span, so there is nothing
+  // for `--fix` to rewrite and no way to half-rewrite it.
+  check("actions-currency: a malformed version comment yields no reference for " +
+        "--fix to act on",
+        ((mistyped.actions["owner/mistyped"] || {}).refs || []).length === 0,
+        JSON.stringify(mistyped.actions));
 
   // A trailing comment may say more than the version, including things with
   // braces in them. The version is the FIRST thing in the comment and reading
@@ -601,6 +598,27 @@ function testBlockScalarTextIsNotReadAsAKey() {
         aliasJob.unparsed.length === 1 &&
         aliasJob.unparsed[0].reason.indexOf("*call") !== -1,
         JSON.stringify(aliasJob));
+
+  // So can a whole STEPS list, which hides every step inside it at once.
+  var aliasSteps = withFixture({
+    "aliassteps.yml":
+      "jobs:\n" +
+      "  setup:\n" +
+      "    strategy:\n" +
+      "      matrix:\n" +
+      "        include:\n" +
+      "          - &the_steps [ { uses: actions/checkout@v5.0.1 } ]\n" +
+      "  build:\n" +
+      "    steps: *the_steps\n",
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: an alias supplying the whole steps list is named",
+        aliasSteps.unparsed.length === 1 &&
+        aliasSteps.unparsed[0].reason.indexOf("*the_steps") !== -1,
+        JSON.stringify(aliasSteps));
+  check("actions-currency: and the anchor's off-path uses is still not counted " +
+        "as a reference",
+        Object.keys(aliasSteps.actions).length === 0,
+        Object.keys(aliasSteps.actions).join(", "));
 
   // The explicit-key form: `? uses` on one line, `: value` on the next. Reading
   // `?` as an ordinary scalar clears the key position and the reference is then
@@ -1043,16 +1061,29 @@ function testAPrereleaseRanksBelowItsRelease() {
 function testTheFixReplacementReachesThroughAQuote() {
   var OLD = "1111111111111111111111111111111111111111";
   var NEW = "2222222222222222222222222222222222222222";
-  // The fixer's OWN pattern, not a copy of it — a copy passes happily while the
-  // thing it stands in for rots.
-  var re2 = currency._fixReplacementRe("actions/checkout");
+
+  // The fixer is driven through the COLLECTOR, so what is rewritten is exactly
+  // what was collected. That is the whole design: a pattern has to re-find the
+  // reference in the text, and every attempt to bound where it looked — the
+  // file, then one line — still matched script text that resembled a pin and
+  // rewrote it. The scanner records each reference's span; the fixer is told.
+  function rewriteAll(body, action, tag) {
+    return withFixture({ "fix.yml": stepsDoc(body) }, function (dir) {
+      var got   = currency._collectPinnedActions(dir);
+      var lines = fs.readFileSync(path.join(dir, "fix.yml"), "utf8").split("\n");
+      ((got.actions[action] || {}).refs || []).forEach(function (r) {
+        currency._rewriteRef(lines, r, OLD, NEW, tag);
+      });
+      return lines.join("\n");
+    });
+  }
 
   [
-    ['      - uses: actions/checkout@' + OLD + "  # v5.0.1", "unquoted"],
+    ["      - uses: actions/checkout@" + OLD + "  # v5.0.1", "unquoted"],
     ['      - uses: "actions/checkout@' + OLD + '"  # v5.0.1', "double-quoted"],
     ["      - uses: 'actions/checkout@" + OLD + "'  # v5.0.1", "single-quoted"],
   ].forEach(function (pair) {
-    var out = pair[0].replace(re2, "$1" + NEW + "$2" + "v6.0.0");
+    var out = rewriteAll(pair[0] + "\n", "actions/checkout", "v6.0.0");
     check("actions-currency: a " + pair[1] + " SHA pin is actually rewritten",
           out.indexOf(NEW) !== -1 && out.indexOf(OLD) === -1, out);
     check("actions-currency: rewriting a " + pair[1] + " pin leaves the YAML " +
@@ -1060,42 +1091,64 @@ function testTheFixReplacementReachesThroughAQuote() {
           (out.match(/"/g) || []).length === (pair[0].match(/"/g) || []).length &&
           (out.match(/'/g) || []).length === (pair[0].match(/'/g) || []).length,
           out);
+    check("actions-currency: and the version comment is updated with it",
+          out.indexOf("v6.0.0") !== -1 && out.indexOf("v5.0.1") === -1, out);
   });
 
-  // A prerelease comment must be replaced WHOLE. The collector reads
-  // `# v2.1.0-rc.1` as that entire version, so a fixer stopping at the numeric
-  // triple leaves `-rc.1` glued to the new tag and exits 0 having written a
-  // version that never existed. Collected and rewritable have to be the same
-  // set, which is why the grammar is defined once and shared.
-  var preLine = "      - uses: actions/checkout@" + OLD + "  # v2.1.0-rc.1";
-  var preOut  = preLine.replace(currency._fixReplacementRe("actions/checkout"),
-                                "$1" + NEW + "$2" + "v2.2.0");
+  // A prerelease comment is replaced WHOLE. The collector reads `# v2.1.0-rc.1`
+  // as that entire version, so a fixer stopping at the numeric triple would
+  // leave `-rc.1` glued to the new tag and exit 0 having written a version that
+  // never existed.
+  var preOut = rewriteAll(
+    "      - uses: actions/checkout@" + OLD + "  # v2.1.0-rc.1\n",
+    "actions/checkout", "v2.2.0");
   check("actions-currency: --fix replaces a prerelease version comment whole, " +
         "leaving no suffix behind",
-        preOut.indexOf("v2.2.0") !== -1 && preOut.indexOf("rc.1") === -1,
-        preOut);
+        preOut.indexOf("v2.2.0") !== -1 && preOut.indexOf("rc.1") === -1, preOut);
 
-  var buildLine = "      - uses: actions/checkout@" + OLD + "  # v1.2.3+20260823";
-  var buildOut  = buildLine.replace(currency._fixReplacementRe("actions/checkout"),
-                                    "$1" + NEW + "$2" + "v1.3.0");
+  var buildOut = rewriteAll(
+    "      - uses: actions/checkout@" + OLD + "  # v1.2.3+20260823\n",
+    "actions/checkout", "v1.3.0");
   check("actions-currency: and a build-metadata comment likewise",
         buildOut.indexOf("v1.3.0") !== -1 && buildOut.indexOf("20260823") === -1,
         buildOut);
 
-  // The pattern is global, so ONE pass over a file rewrites every occurrence in
-  // it. That is what makes running it a second time for a second reference to
-  // the same action wrong: the second pass finds nothing left to change, and
-  // reading that as a failed rewrite turns an ordinary duplicate into a false
-  // failure. This repository has such a duplicate — cosign-installer appears
-  // twice in one workflow — so the fixer walks distinct FILES, not references.
-  var twice = "      - uses: actions/checkout@" + OLD + "  # v5.0.1\n" +
-              "      - uses: actions/checkout@" + OLD + "  # v5.0.1\n";
-  var once  = twice.replace(currency._fixReplacementRe("actions/checkout"),
-                            "$1" + NEW + "$2" + "v6.0.0");
-  check("actions-currency: a single pass rewrites BOTH occurrences in a file, " +
-        "so a second pass would correctly find nothing and must not be run",
+  // Two references to one action in one file each have their own span, so both
+  // are rewritten and neither is a special case.
+  var once = rewriteAll(
+    "      - uses: actions/checkout@" + OLD + "  # v5.0.1\n" +
+    "      - uses: actions/checkout@" + OLD + "  # v5.0.1\n",
+    "actions/checkout", "v6.0.0");
+  check("actions-currency: both occurrences in a file are rewritten, each at " +
+        "its own recorded span",
         (once.match(new RegExp(NEW, "g")) || []).length === 2 &&
         once.indexOf(OLD) === -1, once);
+
+  // The finding this design answers: script text that looks like a pin, on the
+  // SAME LINE as a real one. Neither a whole-file nor a whole-line replacement
+  // can tell them apart; a span can.
+  var beside = rewriteAll(
+    '      - { run: "echo actions/checkout@' + OLD + ' # v5.0.1", ' +
+    "uses: actions/checkout@" + OLD + " }  # v5.0.1\n",
+    "actions/checkout", "v6.0.0");
+  check("actions-currency: the reference is rewritten and the script text " +
+        "beside it is left exactly as it was",
+        beside.indexOf(NEW) !== -1 &&
+        beside.indexOf('echo actions/checkout@' + OLD) !== -1,
+        beside);
+
+  // Every branch that emits an occurrence owes a span. The explicit-key form is
+  // collected, so it must also be fixable — otherwise `--fix` declines to
+  // rewrite a reference the report named, and the verification then fails the
+  // run over a pin nothing touched.
+  var explicitOut = rewriteAll(
+    "      - ? uses\n" +
+    "        : actions/checkout@" + OLD + "  # v5.0.1\n",
+    "actions/checkout", "v6.0.0");
+  check("actions-currency: an explicit-key pin is rewritable too",
+        explicitOut.indexOf(NEW) !== -1 && explicitOut.indexOf(OLD) === -1 &&
+        explicitOut.indexOf("v6.0.0") !== -1,
+        explicitOut);
 
   // `--fix` verifies by RE-COLLECTING with this same scanner, rather than by
   // asking whether the file changed (too weak — one occurrence matching is
