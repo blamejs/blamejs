@@ -997,6 +997,13 @@ function _classifyUses(parts, rel, lineNo, rawLine, comment, out, unparsed, at) 
     if (out[ownerRepo].sha === null) out[ownerRepo].sha = ref;
     out[ownerRepo].refs.push({
       file: rel, line: lineNo, subpath: subpath, tagPinned: false, sha: ref,
+      // The version THIS reference claims, alongside the SHA it is pinned at.
+      // The entry keeps only the lowest across references, and build metadata
+      // carries no precedence, so `1.2.3+a` and `1.2.3+b` compare equal and the
+      // aggregate silently keeps whichever was collected first. Anything asked
+      // of the aggregate alone cannot see the other build identity, which is
+      // the reference most likely to name different code.
+      version: vm[1],
       // Exactly where the value and its version comment sit, so `--fix` edits
       // those spans and nothing else on the line.
       valueStart:   parts.valueStart,
@@ -1020,6 +1027,7 @@ function _classifyUses(parts, rel, lineNo, rawLine, comment, out, unparsed, at) 
     if (!out[ownerRepo]) out[ownerRepo] = { version: tagVer, sha: null, refs: [] };
     out[ownerRepo].refs.push({
       file: rel, line: lineNo, subpath: subpath, tagPinned: true, sha: null,
+      version: tagVer,
     });
     if (_semverCompare(_semverParse(tagVer), _semverParse(out[ownerRepo].version)) < 0) {
       out[ownerRepo].version = tagVer;
@@ -1231,23 +1239,9 @@ async function _checkOne(ownerRepo, entry) {
     // inventing a rule the spec forbids. But two builds of one version can name
     // different code, and a gate that prints "current" without mentioning it is
     // reporting more confidence than it has. So it is SAID rather than ranked.
-    var buildNote = null;
-    if (status === "current" && cmp === 0) {
-      var pinTag = String(entry.version).replace(/^v/, "");
-      var latTag = String(info.tag).replace(/^v/, "");
-      // Only when the BUILD METADATA is what differs. Equal precedence can also
-      // come from forms the comparison deliberately normalises — `1` against
-      // `1.0.0`, `rc.007` against `rc.7` — and those are the same release said
-      // two ways, not two builds. Naming them as build differences would be
-      // exactly the kind of statement that is not established.
-      if (pinTag !== latTag &&
-          pinTag.split("+")[0] === latTag.split("+")[0] &&
-          (pinTag.indexOf("+") !== -1 || latTag.indexOf("+") !== -1)) {
-        buildNote = "same precedence, different build metadata (pinned " +
-                    pinTag + ", latest " + latTag + ") — semver does not order " +
-                    "build metadata; confirm by hand that it is the same code";
-      }
-    }
+    var buildNote = status === "current" && cmp === 0
+      ? _buildMetadataNote(entry.refs, info.tag)
+      : null;
     return {
       action:    ownerRepo,
       pinned:    entry.version,
@@ -1324,6 +1318,48 @@ async function _checkOne(ownerRepo, entry) {
 // line) still matched script text that resembled a pin and silently rewrote it.
 // The scanner already knows where each reference is; the fixer is told.
 
+// The warning for references whose build metadata differs from the latest tag,
+// or null when none does.
+//
+// Build metadata carries no precedence — semver is explicit that `1.2.3+a` and
+// `1.2.3+b` rank equally — so ordering them would invent a rule the spec
+// forbids. But two builds of one version can name different code, and a gate
+// that prints "current" without mentioning it reports more confidence than it
+// has. So it is SAID rather than ranked.
+//
+// Asked of every REFERENCE, never of the entry. The entry keeps the LOWEST
+// version across references, and because these compare equal it keeps whichever
+// was collected first — so an action pinned `1.2.3+new` in one workflow and
+// `1.2.3+old` in another looks, from the entry alone, like a single reference
+// that matches the latest exactly. The reference that goes unmentioned is the
+// one whose build identity does not match, which is the entire reason the
+// warning exists.
+function _buildMetadataNote(refs, latestTag) {
+  var latTag  = String(latestTag).replace(/^v/, "");
+  var pinTags = [], seen = {};
+  for (var i = 0; i < (refs || []).length; i++) {
+    var r = refs[i];
+    if (!r || typeof r.version !== "string") continue;
+    var pinTag = r.version.replace(/^v/, "");
+    if (Object.prototype.hasOwnProperty.call(seen, pinTag)) continue;
+    seen[pinTag] = true;
+    // Only when the BUILD METADATA is what differs. Equal precedence can also
+    // come from forms the comparison deliberately normalises — `1` against
+    // `1.0.0`, `rc.007` against `rc.7` — and those are the same release said two
+    // ways, not two builds. Naming them as build differences would be exactly
+    // the kind of statement that is not established.
+    if (pinTag !== latTag &&
+        pinTag.split("+")[0] === latTag.split("+")[0] &&
+        (pinTag.indexOf("+") !== -1 || latTag.indexOf("+") !== -1)) {
+      pinTags.push(pinTag);
+    }
+  }
+  if (!pinTags.length) return null;
+  return "same precedence, different build metadata (pinned " +
+         pinTags.join(", ") + ", latest " + latTag + ") — semver does not " +
+         "order build metadata; confirm by hand that it is the same code";
+}
+
 // The distinct SHAs a set of references is pinned at, in the order they were
 // collected, and which file and line holds each.
 //
@@ -1392,7 +1428,13 @@ function _staleHints(r) {
                "  # v" + _fullVersion(r.latest));
   }
   for (var i = 0; i < refs.length; i++) {
-    lines.push("        used: " + refs[i].file + ":" + refs[i].line +
+    // The version THIS reference claims. `pinned` on the action is the lowest
+    // across all of them, so where they disagree the report named a version
+    // that belongs to one line and then listed several, leaving a reader to
+    // open each file to find which is actually behind. Saying it per line is
+    // the difference between naming the problem and naming its neighbourhood.
+    var at = typeof refs[i].version === "string" ? "  @" + refs[i].version : "";
+    lines.push("        used: " + refs[i].file + ":" + refs[i].line + at +
                (refs[i].tagPinned
                  ? "  (tag pin — raise the tag by hand; a SHA does not belong here)"
                  : ""));
@@ -1515,7 +1557,14 @@ async function main() {
           "references, and rewriting the SHA ones could bump what was already " +
           "current while the stale tag stayed put. Update it by hand.\n");
       for (var hr = 0; hr < (he.refs || []).length; hr++) {
-        say("        used: " + he.refs[hr].file + ":" + he.refs[hr].line +
+        // This is the case where the per-reference version matters most: the
+        // action is left for a person precisely BECAUSE its references disagree,
+        // and the version printed above is the lowest of them. Without it here,
+        // the operator is told to update by hand and not told which line is
+        // behind.
+        var hv = typeof he.refs[hr].version === "string"
+          ? "  @" + he.refs[hr].version : "";
+        say("        used: " + he.refs[hr].file + ":" + he.refs[hr].line + hv +
             (he.refs[hr].tagPinned ? "  (tag)" : "  (sha)") + "\n");
       }
     }
@@ -1705,6 +1754,7 @@ module.exports = {
   _staleHints: _staleHints,
   _rewriteRef: _rewriteRef,
   _distinctOldShas: _distinctOldShas,
+  _buildMetadataNote: _buildMetadataNote,
   _fullVersion: _fullVersion,
   SCOPE_NOTE: SCOPE_NOTE,
   _semverParse: _semverParse,

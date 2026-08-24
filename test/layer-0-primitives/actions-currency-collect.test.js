@@ -1280,6 +1280,50 @@ function testTheFixReplacementReachesThroughAQuote() {
         groups.where[OLD][0].indexOf("partly.yml:") !== -1 &&
         groups.where[NEW][0] !== groups.where[OLD][0],
         JSON.stringify(groups.where));
+  // Build metadata carries no precedence, so `1.2.3+a` and `1.2.3+b` compare
+  // equal and the entry keeps whichever reference was collected first. Anything
+  // asked of the entry alone therefore cannot see the other build identity —
+  // and that is the reference most likely to name different code. Each one
+  // carries its own version for exactly this reason.
+  var builds = withFixture({
+    "builds.yml": stepsDoc(
+      "      - uses: actions/checkout@" + NEW + "  # v1.2.3+new\n" +
+      "      - uses: actions/checkout@" + OLD + "  # v1.2.3+old\n"),
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  var buildRefs = (builds.actions["actions/checkout"] || {}).refs || [];
+  check("actions-currency: each reference records the version IT claims, not " +
+        "the one the entry settled on",
+        buildRefs.length === 2 &&
+        buildRefs.map(function (r) { return r.version; }).join(",") ===
+          "1.2.3+new,1.2.3+old",
+        JSON.stringify(buildRefs.map(function (r) { return r.version; })));
+  // The case the entry hides: the FIRST reference matches the latest tag
+  // exactly, so an aggregate check finds nothing to say while a second
+  // reference sits on a different build of the same version.
+  check("actions-currency: a differing build is named even when another " +
+        "reference matches the latest exactly",
+        (currency._buildMetadataNote(buildRefs, "v1.2.3+new") || "")
+          .indexOf("1.2.3+old") !== -1,
+        String(currency._buildMetadataNote(buildRefs, "v1.2.3+new")));
+  check("actions-currency: and the matching reference is not named alongside it",
+        (currency._buildMetadataNote(buildRefs, "v1.2.3+new") || "")
+          .indexOf("1.2.3+new,") === -1,
+        String(currency._buildMetadataNote(buildRefs, "v1.2.3+new")));
+  check("actions-currency: every reference on the latest build says nothing",
+        currency._buildMetadataNote(
+          [{ version: "1.2.3+new" }, { version: "v1.2.3+new" }],
+          "v1.2.3+new") === null,
+        "");
+  // Equal precedence also comes from forms the comparison normalises. Those are
+  // one release said two ways, not two builds, and calling them a build
+  // difference would state something that was never established.
+  check("actions-currency: a normalised-equal form is not reported as a build " +
+        "difference",
+        currency._buildMetadataNote([{ version: "1" }], "v1.0.0") === null &&
+        currency._buildMetadataNote([{ version: "1.0.0-rc.007" }],
+                                    "v1.0.0-rc.7") === null,
+        "");
+
   // Two references at the SAME SHA are one comparison, not two: the material
   // would be byte-identical, and printing it twice reads as two separate bumps.
   var sameSha = currency._distinctOldShas([
@@ -1392,6 +1436,26 @@ function testStaleHintsNeverOfferAShaForATagReference() {
         pinLines(shaOnly).length === 1 && shaOnly.length === 2 &&
         shaOnly[1].indexOf("tag pin") === -1,
         JSON.stringify(shaOnly));
+
+  // `pinned` on the action is the LOWEST version across its references, so where
+  // they disagree the header names one line's version and the list below it
+  // names several. Each line carries the version it is actually pinned at, or
+  // the reader has to open every file to find which one is behind.
+  var disagree = hintsFor([
+    { file: "old.yml", line: 4, tagPinned: false, version: "2.1.0" },
+    { file: "new.yml", line: 9, tagPinned: false, version: "2.2.0" },
+  ]);
+  var oldLine = disagree.filter(function (l) { return l.indexOf("old.yml:4") !== -1; })[0];
+  var newLine = disagree.filter(function (l) { return l.indexOf("new.yml:9") !== -1; })[0];
+  check("actions-currency: each 'used' line names the version THAT reference " +
+        "is pinned at, so the one that is behind is visible",
+        oldLine !== undefined && newLine !== undefined &&
+        oldLine.indexOf("@2.1.0") !== -1 && newLine.indexOf("@2.2.0") !== -1,
+        JSON.stringify([oldLine, newLine]));
+  check("actions-currency: a reference with no recorded version still lists " +
+        "cleanly rather than saying 'undefined'",
+        shaOnly[1].indexOf("undefined") === -1 && shaOnly[1].indexOf("@") === -1,
+        String(shaOnly[1]));
 }
 
 async function run() {
