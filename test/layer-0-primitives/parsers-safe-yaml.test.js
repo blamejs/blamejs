@@ -453,6 +453,26 @@ function testTagsBanned() {
   check("CONTROL — a tag on a key that follows a block scalar in a sequence " +
         "entry is still refused",
         _code("- key: |\n    body\n  evil: !tag x\n") === "yaml/tags-banned");
+
+  // YAML's JSON compatibility lets a QUOTED key take its colon with no space
+  // after it, so the character in front of the sigil is `:` rather than a
+  // space. Every screen here decided position by looking at that character, so
+  // this form went unreported — including a deserialization tag, which is the
+  // single thing the ban exists for.
+  check("a deserialization tag in the compact flow form is refused",
+        _code('{"a":!!python/object x}') === "yaml/tags-banned");
+  check("a custom tag in the compact flow form is refused",
+        _code('{"a":!mytag x}') === "yaml/tags-banned");
+  check("an anchor in the compact flow form is refused",
+        _code('{"a":&anch x}') === "yaml/anchors-banned");
+  check("an alias in the compact flow form is refused",
+        _code('{"a":*anch}') === "yaml/aliases-banned");
+  // YAML permits separation between a JSON-style key and its adjacent value, so
+  // one space before the colon must not reopen what the unspaced form closed.
+  check("and the same with separation before the colon",
+        _code('{"a" :!!python/object x}') === "yaml/tags-banned");
+  check("however much separation there is",
+        _code('{"a"  :&anch x}') === "yaml/anchors-banned");
 }
 
 function run() {

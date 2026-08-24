@@ -204,6 +204,12 @@ function testGuardYamlDuplicateKeys() {
         "still not one",
         dupKeys("- a: 1\n  b:\n    a: 2\n").length === 0,
         JSON.stringify(dupKeys("- a: 1\n  b:\n    a: 2\n")));
+  check("CONTROL — nor when the nesting hangs off the key beside the dash",
+        dupKeys("- a:\n    x: 1\n    a: 2\n").length === 0,
+        JSON.stringify(dupKeys("- a:\n    x: 1\n    a: 2\n")));
+  check("CONTROL — nor with extra spacing and a nested reuse together",
+        dupKeys("-   a: 1\n  b:\n    a: 2\n").length === 0,
+        JSON.stringify(dupKeys("-   a: 1\n  b:\n    a: 2\n")));
 
   // Sequences NEST, so the item being tracked is a stack rather than a slot.
   // Holding only the innermost let a nested sequence take its parent's scope
@@ -225,6 +231,52 @@ function testGuardYamlDuplicateKeys() {
   check("CONTROL — a duplicate INSIDE one nested item is still caught",
         dupKeys("- a: 1\n  inner:\n    - x: 1\n      x: 2\n").length === 1,
         JSON.stringify(dupKeys("- a: 1\n  inner:\n    - x: 1\n      x: 2\n")));
+}
+
+// YAML's JSON compatibility lets a QUOTED key take its colon with no space
+// after it, so the character in front of a sigil written that way is `:`. Every
+// screen decided position by looking at that character, and so reported nothing
+// for this form — including for a deserialization tag, which is the single most
+// dangerous thing the tag screen exists to surface.
+function testGuardYamlCompactFlowSigils() {
+  function kinds(src) {
+    return b.guardYaml.validate(src, { profile: "strict" }).issues
+      .map(function (issue) { return issue.kind; });
+  }
+  check("a deserialization tag written in the compact flow form is reported",
+        kinds('{"a":!!python/object x}').indexOf("dangerous-tag") !== -1,
+        JSON.stringify(kinds('{"a":!!python/object x}')));
+  check("a custom tag in the compact flow form is reported",
+        kinds('{"a":!mytag x}').indexOf("custom-tag") !== -1,
+        JSON.stringify(kinds('{"a":!mytag x}')));
+  check("an anchor in the compact flow form is reported",
+        kinds('{"a":&anch x}').indexOf("alias-disabled") !== -1,
+        JSON.stringify(kinds('{"a":&anch x}')));
+  check("an alias in the compact flow form is reported",
+        kinds('{"a":*anch}').indexOf("alias-disabled") !== -1,
+        JSON.stringify(kinds('{"a":*anch}')));
+  // YAML permits separation between a JSON-style key and its adjacent value, so
+  // the same shape with a space before the colon is equally valid — and one
+  // space was enough to reopen the bypass while the unspaced form was closed.
+  check("and with separation before the colon, which YAML also allows",
+        kinds('{"a" :!!python/object x}').indexOf("dangerous-tag") !== -1,
+        JSON.stringify(kinds('{"a" :!!python/object x}')));
+  check("however much separation there is",
+        kinds('{"a"  :&anch x}').indexOf("alias-disabled") !== -1,
+        JSON.stringify(kinds('{"a"  :&anch x}')));
+  // CONTROLS. Dropping the preceding-character test is only safe because the
+  // mask decides position, so the shapes it must still stay quiet about are
+  // asserted in the same breath.
+  [
+    ["a bang in prose",            "x: hello !world\n"],
+    ["a bang in a comment",        "x: 1 # note !bang\n"],
+    ["an ampersand in prose",      "text: this &notanchor\n"],
+    ["a bang in a quoted scalar",  'x: "hello !world"\n'],
+    ["a bang in a block body",     "x: |\n  echo !boom\n"],
+  ].forEach(function (pair) {
+    check("CONTROL — " + pair[0] + " is still reported as nothing",
+          kinds(pair[1]).length === 0, JSON.stringify(kinds(pair[1])));
+  });
 }
 
 function testGuardYamlBidiNull() {
@@ -515,6 +567,7 @@ async function run() {
   testGuardYamlLeadingZeroOctal();
   testGuardYamlMergeKey();
   testGuardYamlDuplicateKeys();
+  testGuardYamlCompactFlowSigils();
   testGuardYamlBidiNull();
   testGuardYamlByteCap();
   testGuardYamlClean();
