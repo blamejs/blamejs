@@ -682,6 +682,67 @@ function testBlockScalarTextIsNotReadAsAKey() {
       "      { uses: owner/second@" + SHA + " },  # v2.0.0\n" +
       "    ]\n",
   }, function (dir) { return currency._collectPinnedActions(dir); });
+  // A pin's version may sit on the line its OWN mapping closes, several lines
+  // before the surrounding sequence does. Taking only the outer closing line's
+  // comment threw it away and reported the pin as having none.
+  var innerClose = withFixture({
+    "innerclose.yml":
+      "jobs:\n" +
+      "  build:\n" +
+      "    steps: [\n" +
+      "      { uses: owner/innerclose@" + SHA + "\n" +
+      "      },  # v3.4.5\n" +
+      "    ]\n",
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: a version comment on the line the pin's OWN mapping " +
+        "closes is kept",
+        (innerClose.actions["owner/innerclose"] || {}).version === "3.4.5" &&
+        innerClose.unparsed.length === 0,
+        JSON.stringify(innerClose));
+
+  // And it belongs to that pin ALONE. A shared "most recent comment" gives every
+  // pending pin the LAST version seen, so two mappings closing `# v1.0.0` and
+  // `# v2.0.0` would both read as 2.0.0 — a wrong version is worse than none,
+  // because `--fix` would act on it.
+  var twoInner = withFixture({
+    "twoinner.yml":
+      "jobs:\n" +
+      "  build:\n" +
+      "    steps: [\n" +
+      "      { uses: owner/firstinner@" + SHA + "\n" +
+      "      },  # v1.0.0\n" +
+      "      { uses: owner/secondinner@" + SHA + "\n" +
+      "      },  # v2.0.0\n" +
+      "    ]\n",
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  // The depth belongs to the OCCURRENCE, not to wherever the line ends up. A
+  // line that opens a nested collection after `uses` finishes deeper than the
+  // pin sits, so the `}` closing that nested collection would look like the
+  // pin's own mapping closing — and the pin would take that line's comment
+  // (none) while the real version further down went unseen.
+  var opensAfter = withFixture({
+    "opensafter.yml":
+      "jobs:\n" +
+      "  build:\n" +
+      "    steps: [\n" +
+      "      { uses: owner/opensafter@" + SHA + ", with: {\n" +
+      "          a: 1 },\n" +
+      "      },  # v7.8.9\n" +
+      "    ]\n",
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: a nested collection opened AFTER the pin does not " +
+        "steal its closing comment",
+        (opensAfter.actions["owner/opensafter"] || {}).version === "7.8.9" &&
+        opensAfter.unparsed.length === 0,
+        JSON.stringify(opensAfter));
+
+  check("actions-currency: each inner mapping keeps the version from its own " +
+        "closing line, not the last one in the collection",
+        JSON.stringify([(twoInner.actions["owner/firstinner"] || {}).version,
+                        (twoInner.actions["owner/secondinner"] || {}).version]) ===
+        JSON.stringify(["1.0.0", "2.0.0"]),
+        JSON.stringify({ a: twoInner.actions, u: twoInner.unparsed }));
+
   check("actions-currency: each pin in a multi-line collection keeps the " +
         "version from its OWN line",
         JSON.stringify([(perLine.actions["owner/first"] || {}).version,

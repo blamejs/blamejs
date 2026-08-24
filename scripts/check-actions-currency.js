@@ -577,7 +577,7 @@ function _scanLine(line, state, eof) {
   function flushExplicit() {
     if (explicitKey && explicitKey.name === "uses" &&
         _isActionRefPosition(explicitKey.enclosing)) {
-      out.push({ value: "", after: "" });
+      out.push({ value: "", after: "", depth: flowDepth });
     }
     explicitKey = null;
   }
@@ -660,10 +660,11 @@ function _scanLine(line, state, eof) {
       }
       if (explicitKey.name === "uses" && _isActionRefPosition(explicitKey.enclosing)) {
         if (ev >= line.length || line.charAt(ev) === "#") {
-          out.push({ value: "", after: line.slice(ev) });
+          out.push({ value: "", after: line.slice(ev), depth: flowDepth });
         } else {
           var evVal = _readScalar(line, ev, flowDepth > 0);
-          out.push({ value: evVal.value, after: line.slice(evVal.end) });
+          out.push({ value: evVal.value, after: line.slice(evVal.end),
+                     depth: flowDepth });
           ev = evVal.end;
         }
       }
@@ -728,7 +729,7 @@ function _scanLine(line, state, eof) {
         // reference is a single scalar — so it is NAMED before descending,
         // rather than disappearing into the branch below.
         if (keyName === "uses" && _isActionRefPosition(enclosing)) {
-          out.push({ value: null, after: "" });
+          out.push({ value: null, after: "", depth: flowDepth });
         }
         // At block level the key is already the last entry in `stack`, so the
         // flow it opens contributes nothing further to the path.
@@ -760,9 +761,15 @@ function _scanLine(line, state, eof) {
       // ordinary field that happens to share the name, and its value may
       // legitimately look exactly like a reference.
       if (keyName === "uses" && _isActionRefPosition(enclosing)) {
+        // The depth AT THIS OCCURRENCE, not wherever the line ends up. A line
+        // like `{ uses: owner/a@sha, with: {` finishes deeper than the `uses`
+        // sits, and using the line's final depth makes a later `}` closing
+        // `with` look like the pin's own mapping closing — so the pin takes that
+        // line's comment (usually none) and the real version further down is
+        // never seen.
         out.push(val === null
-          ? { value: "", after: line.slice(v) }                    // key with no value
-          : { value: val.value, after: line.slice(val.end) });
+          ? { value: "", after: line.slice(v), depth: flowDepth }  // key with no value
+          : { value: val.value, after: line.slice(val.end), depth: flowDepth });
       }
       // A key with no value on this line may be introducing a collection that
       // opens on the next one. Remember which key, so the `{` there records the
@@ -1012,18 +1019,37 @@ function _collectPinnedActions(dir) {
         // it can hold more than one pin; taking the closing line's comment for
         // all of them would lose the first version and give every pin the last.
         pending.push({ parts: scan.uses[oc], line: L + 1, raw: lines[L],
-                       comment: scan.comment });
+                       comment: scan.comment,
+                       // The nesting this pin sits in. Its own mapping has
+                       // closed once the depth drops below this, which is when
+                       // its fallback comment is taken — a shared "most recent"
+                       // one gives every pin in a collection the LAST version
+                       // seen, so two mappings closing `# v1.0.0` and `# v2.0.0`
+                       // would both be read as 2.0.0.
+                       depth: scan.uses[oc].depth, fallback: undefined });
       }
       // A SHA pin's version lives in a trailing comment, and inside a flow
       // mapping that comment may sit after the REST of the mapping, on a later
       // line. So an occurrence waits until its mapping closes and falls back to
       // the comment there only if its own line had none. A block-style one
       // closes on its own line, so the two are the same.
+      // A pin's version may sit on the line its OWN mapping closes, several
+      // lines before the surrounding collection does — `steps: [ { uses: …` then
+      // `},  # v1.2.3`. So the fallback is taken the moment this pin's nesting
+      // unwinds, and belongs to that pin alone.
+      for (var pc = 0; pc < pending.length; pc++) {
+        if (pending[pc].comment === null && pending[pc].fallback === undefined &&
+            scanState.flowDepth < pending[pc].depth) {
+          pending[pc].fallback = scan.comment;
+        }
+      }
       if (scanState.flowDepth === 0 && pending.length) {
         for (var pd = 0; pd < pending.length; pd++) {
-          _classifyUses(pending[pd].parts, rel, pending[pd].line, pending[pd].raw,
-                        pending[pd].comment !== null ? pending[pd].comment : scan.comment,
-                        out, unparsed);
+          var pe = pending[pd];
+          var useComment = pe.comment !== null ? pe.comment
+                         : pe.fallback !== undefined ? pe.fallback
+                         : scan.comment;
+          _classifyUses(pe.parts, rel, pe.line, pe.raw, useComment, out, unparsed);
         }
         pending.length = 0;
       }
@@ -1318,7 +1344,12 @@ async function main() {
       // between the pinned SHA and the new SHA (the actual commits + authors)
       // and the release notes can be validated. A compromised release shows
       // up here as an unexpected commit / author / change.
-      var cl = await _releaseChangelog(fr.action, fr.oldSha, tag, fr.latestSha);
+      // The EXACT upstream tag, not the normalised one. `_fullVersion` exists to
+      // make the version COMMENT match the pin grammar; asking GitHub for a
+      // release by a tag it never published 404s, and the 404 is swallowed — so
+      // `--fix` would quietly omit the release notes a person is meant to review
+      // the bump against. Normalise what is written, ask with what exists.
+      var cl = await _releaseChangelog(fr.action, fr.oldSha, fr.latest, fr.latestSha);
       say("\n=== " + fr.action + "  " + fr.pinned + " -> " + fr.latest + " ===\n");
       say("  old sha: " + fr.oldSha + "\n  new sha: " + fr.latestSha + "\n");
       say("  compare: " + cl.compareUrl + "\n");
