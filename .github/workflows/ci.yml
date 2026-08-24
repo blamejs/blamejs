@@ -297,6 +297,24 @@ jobs:
         run: |
           gitleaks git --config=.gitleaks.toml --redact --verbose --exit-code=1
 
+      - name: Run gitleaks over lib/ with the DEFAULT ruleset
+        # The scan above uses the framework's own configuration. This one uses
+        # no configuration at all, which is what a consumer vendoring lib/ into
+        # their tree actually runs.
+        #
+        # A finding here is usually not a secret: it is a sample token or a key
+        # placeholder in a comment. It still costs every such consumer either a
+        # blanket allowlist over the whole library, which then hides a real
+        # finding, or a hand-triage that has to be redone on every refresh. So
+        # documentation is written to avoid the shapes: build sample tokens from
+        # their claims rather than pasting a literal, and write key placeholders
+        # without the PEM framing.
+        #
+        # Scoped to lib/ because that is what ships. No --config, deliberately:
+        # pointing this at .gitleaks.toml would answer the wrong question.
+        run: |
+          gitleaks detect --source=lib --no-git --redact --verbose --exit-code=1
+
   osv-scan:
     name: OSV-Scanner (vendored-dep known CVEs)
     runs-on: ubuntu-latest

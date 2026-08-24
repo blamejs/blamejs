@@ -70,6 +70,37 @@ function testFirstControlCharOffset() {
   check("firstControlCharOffset: CR found when only allowLf", g("a\rb", { allowLf: true }) === 1);
 }
 
+// The narrow sibling: the three bytes that end a line-oriented protocol record,
+// and nothing else. Four call sites hand-rolled this loop before it was named
+// (Cookie header, response-header value, SMTP/POP3/IMAP/ManageSieve SASL
+// challenge), which is how one of them could go without it entirely.
+function testFirstLineInjectionCharOffset() {
+  check("b.codepointClass.firstLineInjectionCharOffset is on the public surface",
+        typeof helpers.b.codepointClass.firstLineInjectionCharOffset === "function");
+  check("public surface finds the CR that would split a protocol line",
+        helpers.b.codepointClass.firstLineInjectionCharOffset("abc\r\nOK") === 3);
+
+  var g = codepointClass.firstLineInjectionCharOffset;
+  check("lineInjection: clean string → -1",     g("bm9uY2UtNDI=") === -1);
+  check("lineInjection: empty → -1",            g("") === -1);
+  check("lineInjection: CR at 3",               g("abc\rdef") === 3);
+  check("lineInjection: LF at 3",               g("abc\ndef") === 3);
+  check("lineInjection: CRLF finds the CR",     g("abc\r\nOK") === 3);
+  check("lineInjection: NUL at 1",              g("a\x00b") === 1);
+  check("lineInjection: terminator at the end still found", g("abc\r\n") === 3);
+  check("lineInjection: a non-string is not scanned", g(undefined) === -1 && g(42) === -1);
+
+  // Deliberately NARROWER than firstControlCharOffset: it must not start
+  // refusing the other C0 controls, or the four call sites adopting it would
+  // silently begin rejecting values they used to accept.
+  check("lineInjection: TAB is not a line terminator", g("a\tb") === -1);
+  check("lineInjection: DEL is not a line terminator", g("a\x7fb") === -1);
+  check("lineInjection: other C0 is not a line terminator", g("a\x01\x02b") === -1);
+  check("lineInjection: and firstControlCharOffset DOES refuse those",
+        codepointClass.firstControlCharOffset("a\x01b") === 1 &&
+        codepointClass.firstControlCharOffset("a\x7fb") === 1);
+}
+
 // #332 — the catalog is now exported on the public b. surface so a consumer
 // can build a custom free-text screen without reaching into the internal
 // module path or re-rolling the bidi / control / zero-width regexes.
@@ -678,6 +709,50 @@ function testTokenAndSplitPrimitives() {
         CP.splitLines(null).length === 0 && CP.splitOnWhitespace(null).length === 0);
 }
 
+// hasPairWhere is the scan three two-character construct screens were writing
+// out by hand. Stated a second time here as a regex over generated input, the
+// way the split helpers above are: the walk and the reference share no code, so
+// a disagreement is a real defect rather than a typo they both inherited.
+function testHasPairWhereMatchesAReferenceScan() {
+  var CP = codepointClass;
+  function reference(s, a, b) {
+    return s.indexOf(a + b) !== -1;
+  }
+  var alphabet = ["a", ".", "<", "(", "?", ":", "*", "-"];
+  var diffs = [];
+  for (var n = 0; n < 400; n += 1) {
+    var s = "";
+    for (var k = 0; k < (n % 7) + 1; k += 1) s += alphabet[(n * 7 + k * 3) % alphabet.length];
+    [[".", "."], ["<", "<"], ["(", "?"]].forEach(function (pair) {
+      var got  = CP.hasPairWhere(s, pair[0], pair[1], function () { return true; });
+      var want = reference(s, pair[0], pair[1]);
+      if (got !== want) diffs.push(JSON.stringify(s) + " " + pair.join(""));
+    });
+  }
+  check("hasPairWhere with an always-accepting predicate is indexOf",
+        diffs.length === 0, diffs.slice(0, 5).join(" | "));
+
+  // The predicate decides alone, and gets the index of the FIRST character.
+  var seen = [];
+  CP.hasPairWhere("..a..", ".", ".", function (i) { seen.push(i); return false; });
+  check("hasPairWhere offers every overlapping opener, in order",
+        JSON.stringify(seen) === JSON.stringify([0, 3]), JSON.stringify(seen));
+  check("hasPairWhere returns false when the predicate never accepts",
+        CP.hasPairWhere("....", ".", ".", function () { return false; }) === false);
+  check("hasPairWhere stops at the first acceptance",
+        CP.hasPairWhere("....", ".", ".", function (i) { return i === 0; }) === true);
+
+  // A pair at the very end has no third character, and the predicate is still
+  // offered it — reading past the end yields "" rather than throwing, which is
+  // what lets a caller test the follow-on character without a length check.
+  var tail = [];
+  CP.hasPairWhere("x<<", "<", "<", function (i) { tail.push(i); return false; });
+  check("hasPairWhere offers a pair that ends the string",
+        JSON.stringify(tail) === JSON.stringify([1]), JSON.stringify(tail));
+  check("hasPairWhere returns false for a non-string",
+        CP.hasPairWhere(null, ".", ".", function () { return true; }) === false);
+}
+
 // The entity decoders are character walks too. This states the grammar a
 // SECOND time as a regex and compares the two over generated input: the walk
 // and the reference share no code, so a disagreement is a real defect in one
@@ -801,11 +876,13 @@ function testEntityDecodersMatchARegexReference() {
 async function run() {
   testIsForbiddenControlChar();
   testFirstControlCharOffset();
+  testFirstLineInjectionCharOffset();
   testPublicSurface();
   testCharClassHandlesAstralCodepoints();
   testRangeScannersMatchARegexReference();
   testCharSetScanners();
   testTokenAndSplitPrimitives();
+  testHasPairWhereMatchesAReferenceScan();
   testEntityDecodersMatchARegexReference();
   testResolveTagsPolicy();
   testIsAuditPolicy();

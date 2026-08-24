@@ -83,6 +83,17 @@ function _nxResponse(name) {
   ]);
 }
 
+// Any other non-zero RCODE, in the same shape. RFC 1035 §4.1.1 puts the code in
+// the low nibble of the flags word, so SERVFAIL (2) is 0x8182 where NXDOMAIN
+// (3) is 0x8183 — one bit apart on the wire, and two entirely different
+// answers: "this name does not exist" against "I could not tell you".
+function _rcodeResponse(name, rcode) {
+  return Buffer.concat([
+    _hdr(0, 0x8180 | (rcode & 0x000f), 1, 0, 0, 0),
+    _q(name, 1),
+  ]);
+}
+
 // ---- Fake transport ----
 
 function _fakeTransport(map) {
@@ -356,7 +367,26 @@ async function testNxdomainRefused() {
   var threw = null;
   try { await r.queryA("nx.example.com"); }
   catch (e) { threw = e; }
-  check("NXDOMAIN surfaces as error",  threw && threw.code === "resolver/nxdomain-or-error");
+  check("NXDOMAIN surfaces under its own code",
+        threw && threw.code === "resolver/nxdomain", String(threw && threw.code));
+
+  // NXDOMAIN and SERVFAIL are different answers and no longer share a code.
+  // One name for both forced every caller to pick a reading, and both callers
+  // picked absence: `safeResolveTxt` could not match it so the commonest form
+  // of absence threw, and `b.mail.rbl` matched it and called a failed lookup
+  // "not listed". Reading a failure as absence is the direction an attacker
+  // wants — break the query and the policy that would have refused them is
+  // gone — so the two are separated at the source.
+  var servfail = _fakeTransport({
+    "sf.example.com|1": _rcodeResponse("sf.example.com", 2),   // SERVFAIL
+  });
+  var r2 = b.network.dns.resolver.create({ transport: servfail });
+  var threw2 = null;
+  try { await r2.queryA("sf.example.com"); }
+  catch (e) { threw2 = e; }
+  check("a non-NXDOMAIN RCODE surfaces as a query FAILURE, not as absence",
+        threw2 && threw2.code === "resolver/query-failed",
+        String(threw2 && threw2.code));
 }
 
 async function testBadInput() {
@@ -496,6 +526,47 @@ async function run() {
   await testClearCache();
   await testTtlCapping();
   await testTtlFloor();
+  await testSafeResolveTxtTreatsAbsenceAsAbsence();
+}
+
+// `safeResolveTxt` documents itself as the policy-fetch convention where
+// absence is not an error, and for the commonest form of absence it threw. Its
+// guard listed ENOTFOUND and ENODATA — the codes node's stub resolver uses — so
+// the convention held for an operator-supplied `dnsLookup` and not for the
+// resolver the module ships with, whose NXDOMAIN carries its own code.
+async function testSafeResolveTxtTreatsAbsenceAsAbsence() {
+  var absent = _fakeTransport({ "none.example.com|16": _nxResponse("none.example.com") });
+  var r = b.network.dns.resolver.create({ transport: absent });
+  var threw = null, out;
+  try {
+    out = await b.network.dns.resolver.safeResolveTxt("none.example.com", {
+      dnsLookup: function (n) { return r.queryTxt(n).then(function () { return []; }); },
+    });
+  } catch (e) { threw = e; }
+  // Driven through the shipped resolver rather than a stub, because the whole
+  // defect was that the two report absence differently.
+  var direct = null, directThrew = null;
+  try { direct = await b.network.dns.resolver.safeResolveTxt("none.example.com", {
+    dnsLookup: function (n) { return r.queryTxt(n); },
+  }); } catch (e) { directThrew = e; }
+  check("safeResolveTxt returns null when the name does not exist",
+        direct === null && directThrew === null,
+        String(directThrew && directThrew.code));
+
+  // CONTROL: a lookup that FAILED is not a record that is absent, and must
+  // still throw — returning null there would let anyone who can break the query
+  // delete the policy that would have refused them.
+  var broken = _fakeTransport({ "sf2.example.com|16": _rcodeResponse("sf2.example.com", 2) });
+  var r2 = b.network.dns.resolver.create({ transport: broken });
+  var failThrew = null;
+  try {
+    await b.network.dns.resolver.safeResolveTxt("sf2.example.com", {
+      dnsLookup: function (n) { return r2.queryTxt(n); },
+    });
+  } catch (e) { failThrew = e; }
+  check("CONTROL — but a SERVFAIL still throws rather than reading as absence",
+        failThrew !== null, String(failThrew && failThrew.code));
+  void threw; void out;
 }
 
 module.exports = { run: run };

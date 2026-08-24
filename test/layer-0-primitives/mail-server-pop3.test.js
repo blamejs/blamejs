@@ -214,6 +214,156 @@ async function testAuthPlainMechanism() {
   } finally { tls.destroy(); sock.destroy(); await s.srv.close(); }
 }
 
+// The real rate limiter, with noteAuthFailure counted. Wrapping the shipped
+// handle rather than hand-rolling one keeps every other method's behaviour
+// exactly as the listener will meet it in production.
+function _countingRateLimit(onFailure) {
+  var real = b.mail.server.rateLimit.create({});
+  var wrapper = {};
+  Object.keys(real).forEach(function (k) {
+    wrapper[k] = typeof real[k] === "function"
+      ? function () { return real[k].apply(real, arguments); }
+      : real[k];
+  });
+  wrapper.noteAuthFailure = function (ip) { onFailure(); return real.noteAuthFailure(ip); };
+  return wrapper;
+}
+
+// ---- multi-step SASL: a challenge is a round trip, not a failure ----
+//
+// The verifier contract lets an operator mechanism ask for another round trip
+// by returning { pending: true, challenge }. IMAP and submission honour it;
+// POP3 called verify once, passed no `step`, and dropped a pending verdict
+// into the failure branch — which also SPENT the client's authentication
+// failure budget, the thing that exists to slow down credential guessing.
+async function testAuthMultiStepChallenge() {
+  var calls = [];
+  var failures = 0;
+  var s = await _makeServer({
+    auth: {
+      mechanisms: ["CRAM-STYLE"],
+      verify: async function (mech, creds) {
+        calls.push({ mech: mech, step: creds.step, clientResponse: creds.clientResponse });
+        if (calls.length === 1) {
+          return { pending: true, challenge: Buffer.from("nonce-42").toString("base64") };
+        }
+        return creds.clientResponse === "cmVzcG9uc2U="                                 // base64("response")
+          ? { ok: true, actor: { username: "alice", tenantId: "t1" } }
+          : { ok: false };
+      },
+    },
+    rateLimit: _countingRateLimit(function () { failures += 1; }),
+  });
+  var sock = nodeNet.connect(s.port, "127.0.0.1");
+  sock.on("error", function () {});
+  await _readReply(sock);
+  await _send(sock, "STLS");
+  var tls = nodeTls.connect({ socket: sock, ca: s.caPem, servername: "localhost" });
+  tls.on("error", function () {});
+  await new Promise(function (r, j) { tls.once("secureConnect", r); tls.once("error", j); });
+  try {
+    var challenge = await _send(tls, "AUTH CRAM-STYLE");
+    check("pop3: a pending verdict writes a continuation, not -ERR",
+          /^\+ /.test(challenge), JSON.stringify(challenge));
+    check("pop3: the continuation carries the verifier's challenge",
+          challenge.indexOf(Buffer.from("nonce-42").toString("base64")) !== -1,
+          JSON.stringify(challenge));
+
+    var done = await _send(tls, "cmVzcG9uc2U=");
+    check("pop3: the client's reply completes the exchange",
+          /^\+OK/.test(done), JSON.stringify(done));
+    check("pop3: verify saw two steps, numbered",
+          calls.length === 2 && calls[0].step === 0 && calls[1].step === 1,
+          JSON.stringify(calls));
+    check("pop3: the client's base64 reply reached the verifier, not the verb table",
+          calls[1].clientResponse === "cmVzcG9uc2U=", JSON.stringify(calls[1]));
+    check("pop3: a challenge round trip costs no auth-failure budget",
+          failures === 0, String(failures));
+    check("pop3: authenticated after the exchange", /^\+OK/.test(await _send(tls, "STAT")));
+  } finally { tls.destroy(); sock.destroy(); await s.srv.close(); }
+}
+
+// The control for the check above: a genuinely failed multi-step exchange must
+// still spend the budget, or "no failure counted" would just mean the counter
+// is dead.
+async function testAuthMultiStepFailureStillCounts() {
+  var failures = 0;
+  var s = await _makeServer({
+    auth: {
+      mechanisms: ["CRAM-STYLE"],
+      verify: async function (mech, creds) {
+        if (creds.step === 0) return { pending: true, challenge: "" };
+        return { ok: false };
+      },
+    },
+    rateLimit: _countingRateLimit(function () { failures += 1; }),
+  });
+  var sock = nodeNet.connect(s.port, "127.0.0.1");
+  sock.on("error", function () {});
+  await _readReply(sock);
+  await _send(sock, "STLS");
+  var tls = nodeTls.connect({ socket: sock, ca: s.caPem, servername: "localhost" });
+  tls.on("error", function () {});
+  await new Promise(function (r, j) { tls.once("secureConnect", r); tls.once("error", j); });
+  try {
+    await _send(tls, "AUTH CRAM-STYLE");
+    var bad = await _send(tls, "d3Jvbmc=");                                             // base64("wrong")
+    check("pop3: a wrong response to the challenge is -ERR", /^-ERR/.test(bad), JSON.stringify(bad));
+    check("pop3: and it DOES spend the auth-failure budget", failures === 1, String(failures));
+  } finally { tls.destroy(); sock.destroy(); await s.srv.close(); }
+}
+
+// The shared check itself, exercised directly. It now guards the SASL
+// continuation on three listeners (imap / pop3 / submission), so its own
+// boundary is worth pinning rather than inferring from one caller.
+function testSaslChallengeGuard() {
+  var mailServerNet = require("../../lib/mail-server-net.js");
+  var g = mailServerNet.saslChallengeOrNull;
+  check("sasl guard: an ordinary base64 challenge passes through",
+        g("bm9uY2UtNDI=") === "bm9uY2UtNDI=");
+  check("sasl guard: an empty challenge is valid (RFC 4422 §3)", g("") === "");
+  check("sasl guard: CR is refused",   g("abc\rdef") === null);
+  check("sasl guard: LF is refused",   g("abc\ndef") === null);
+  check("sasl guard: CRLF is refused", g("abc\r\n+OK") === null);
+  check("sasl guard: NUL is refused",  g("abc" + NUL + "def") === null);
+  check("sasl guard: a terminator at the very end is still refused",
+        g("abc\r\n") === null);
+  check("sasl guard: a non-string is refused", g(undefined) === null && g(42) === null);
+}
+
+// A SASL challenge is written straight to the wire, and it is not always the
+// operator's own text: SCRAM and CRAM compose theirs from the client's nonce,
+// so client bytes reach that line. A CR or LF in it ends the reply early and
+// the rest is read as a second server response.
+async function testAuthChallengeCannotInjectALine() {
+  var s = await _makeServer({
+    auth: {
+      mechanisms: ["EVIL"],
+      verify: async function () {
+        return { pending: true, challenge: "abc\r\n+OK Logged in" };
+      },
+    },
+  });
+  var sock = nodeNet.connect(s.port, "127.0.0.1");
+  sock.on("error", function () {});
+  await _readReply(sock);
+  await _send(sock, "STLS");
+  var tls = nodeTls.connect({ socket: sock, ca: s.caPem, servername: "localhost" });
+  tls.on("error", function () {});
+  await new Promise(function (r, j) { tls.once("secureConnect", r); tls.once("error", j); });
+  try {
+    var reply = await _send(tls, "AUTH EVIL");
+    check("pop3: a challenge carrying CRLF is refused, not written",
+          /^-ERR/.test(reply), JSON.stringify(reply));
+    check("pop3: the smuggled +OK never reaches the client",
+          reply.indexOf("+OK") === -1, JSON.stringify(reply));
+    // And the connection is not left mid-exchange: the next line must be
+    // parsed as a verb again, not swallowed as a SASL response.
+    check("pop3: the failed exchange releases the connection",
+          /^-ERR/.test(await _send(tls, "STAT")));
+  } finally { tls.destroy(); sock.destroy(); await s.srv.close(); }
+}
+
 // ---- error / enumeration / malformed-argument branches ----
 async function testEdgeCases() {
   var s = await _makeServer({ maxLineBytes: b.constants.BYTES.bytes(64) });
@@ -891,6 +1041,10 @@ async function run() {
   await testPlaintextDispatch();
   await testAuthenticatedTransaction();
   await testAuthPlainMechanism();
+  await testAuthMultiStepChallenge();
+  await testAuthMultiStepFailureStillCounts();
+  testSaslChallengeGuard();
+  await testAuthChallengeCannotInjectALine();
   await testEdgeCases();
   await testTenantScopeEnforcement();
   await testCapaAdvertisesSasl();

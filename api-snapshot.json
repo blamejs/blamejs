@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.18.53",
-  "createdAt": "2026-08-24T08:11:25.754Z",
+  "frameworkVersion": "0.18.54",
+  "createdAt": "2026-08-24T23:05:44.356Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -7085,9 +7085,17 @@
           "type": "function",
           "arity": 3
         },
+        "firstLineInjectionCharOffset": {
+          "type": "function",
+          "arity": 1
+        },
         "fromCp": {
           "type": "function",
           "arity": 1
+        },
+        "hasPairWhere": {
+          "type": "function",
+          "arity": 4
         },
         "hex4": {
           "type": "function",
@@ -31188,6 +31196,10 @@
             }
           }
         },
+        "MAX_SASL_TOKEN_BYTES": {
+          "type": "primitive",
+          "valueType": "number"
+        },
         "PROFILES": {
           "type": "object",
           "members": {
@@ -31302,6 +31314,10 @@
           }
         },
         "compliancePosture": {
+          "type": "function",
+          "arity": 1
+        },
+        "parseQuotedString": {
           "type": "function",
           "arity": 1
         },
@@ -47757,6 +47773,10 @@
             "DnsError": {
               "type": "function",
               "arity": 4
+            },
+            "activeDohEndpoint": {
+              "type": "function",
+              "arity": 0
             },
             "classifyDnskeyAlgorithm": {
               "type": "function",

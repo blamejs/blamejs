@@ -169,6 +169,87 @@ function testDkimRsaSignProducesHeader() {
   void _splitSignedRfc822;
 }
 
+// RFC 6376 §3.4 signs a canonicalized OCTET stream. A JavaScript string cannot
+// hold one: every sequence that is not valid UTF-8 becomes U+FFFD on the way in,
+// and no string re-encodes back to it. Signing a message with ordinary 8-bit
+// content therefore hashed `utf8(decode_utf8(original))`, which equals the
+// original only when the original was already valid UTF-8 — 128 of the 256
+// single-octet values do not survive that round trip.
+//
+// Worse than a failed signature: `sign()` returns the message with the signature
+// prepended, so a caller relaying the return value relayed corrupted bytes
+// carrying a signature that verifies. The corruption arrived authenticated.
+//
+// Same root as the transport's raw-body handling: a message's octets held in a
+// UTF-8-decoded string.
+function testDkimSignsTheOctetsItWasGiven() {
+  var kp = _rsaKeypair();
+  var signer = b.mail.dkim.create({
+    domain: "example.com", selector: "s1", privateKey: kp.privateKey,
+  });
+  // An ISO-8859-1 body followed by two Shift_JIS kana: ordinary 8-bit mail,
+  // and not valid UTF-8 in either half.
+  var body = Buffer.from([
+    0x43, 0x61, 0x66, 0xE9, 0x20, 0x6E, 0x61, 0xEF, 0x76, 0x65, 0x0D, 0x0A,
+    0x82, 0xA0, 0x82, 0xA2, 0x0D, 0x0A,
+  ]);
+  var headers = Buffer.from([
+    "From: alice@example.com",
+    "To: bob@example.org",
+    "Subject: Hello",
+    "Date: Tue, 30 Apr 2026 12:00:00 +0000",
+    "Message-ID: <abc@example.com>",
+    "", "",
+  ].join("\r\n"), "latin1");
+  var rfc822 = Buffer.concat([headers, body]);
+
+  var signed = signer.sign(rfc822);
+  var signedBuf = Buffer.isBuffer(signed) ? signed : Buffer.from(signed, "latin1");
+
+  check("dkim sign: a Buffer message is returned as a Buffer",
+        Buffer.isBuffer(signed), typeof signed);
+  // The signature is PREPENDED, so the message's own octets must appear
+  // unaltered at the end of what comes back.
+  check("dkim sign: the message's octets come back unaltered",
+        signedBuf.subarray(signedBuf.length - rfc822.length).equals(rfc822),
+        signedBuf.subarray(signedBuf.length - rfc822.length).toString("hex") +
+        " vs " + rfc822.toString("hex"));
+
+  // And the body hash in the emitted signature must be the hash of the body's
+  // OWN octets, canonicalized. Computed here independently: simple-body
+  // canonicalization of this body strips nothing, so it is the body as given.
+  var emitted = /bh=([A-Za-z0-9+/=]+)/.exec(signedBuf.toString("latin1"));
+  var simpleSigner = b.mail.dkim.create({
+    domain: "example.com", selector: "s1", privateKey: kp.privateKey,
+    canonicalization: "simple/simple",
+  });
+  var simpleSigned = simpleSigner.sign(rfc822);
+  var simpleBh = /bh=([A-Za-z0-9+/=]+)/.exec(
+    (Buffer.isBuffer(simpleSigned) ? simpleSigned : Buffer.from(simpleSigned, "latin1"))
+      .toString("latin1"));
+  var ownOctets = nodeCrypto.createHash("sha256").update(body).digest("base64");
+  check("dkim sign: bh is the hash of the body's own octets",
+        simpleBh && simpleBh[1] === ownOctets,
+        (simpleBh && simpleBh[1]) + " vs " + ownOctets);
+  check("dkim sign: a bh was emitted at all", !!emitted);
+
+  // A STRING message keeps its present meaning — the octets are that string's
+  // UTF-8 encoding — so existing callers are unaffected.
+  var asText = "From: a@example.com\r\nTo: b@example.org\r\nSubject: t\r\n" +
+               "Date: Tue, 30 Apr 2026 12:00:00 +0000\r\n\r\nnaive\r\n";
+  var signedText = signer.sign(asText);
+  check("dkim sign: a string message is returned as a string",
+        typeof signedText === "string", typeof signedText);
+  var textBh = /bh=([A-Za-z0-9+/=]+)/.exec(signedText);
+  var textSimple = simpleSigner.sign(asText);
+  var textSimpleBh = /bh=([A-Za-z0-9+/=]+)/.exec(textSimple);
+  check("dkim sign: a string body hashes its UTF-8 encoding",
+        textSimpleBh && textSimpleBh[1] === nodeCrypto.createHash("sha256")
+          .update(Buffer.from("naive\r\n", "utf8")).digest("base64"),
+        textSimpleBh && textSimpleBh[1]);
+  check("dkim sign: the string path still emits a bh", !!textBh);
+}
+
 function testDkimEd25519Sign() {
   var kp = _ed25519Keypair();
   var signer = b.mail.dkim.create({
@@ -351,6 +432,79 @@ async function testDkimVerifyHappyPath() {
   check("verify: result is array", Array.isArray(rv));
   check("verify: pass on valid signature", rv[0] && rv[0].result === "pass");
   check("verify: warnings array on pass", Array.isArray(rv[0].warnings));
+}
+
+// The end-to-end claim: a message whose octets are not valid UTF-8 signs and
+// verifies, and the signature covers the octets the sender actually wrote.
+//
+// Signing alone cannot show this. A signer that corrupts the message and then
+// signs the corruption produces a signature that verifies perfectly — against
+// bytes that are not the message's own. Only a round trip that starts from the
+// original octets, and verifies the original octets, says anything.
+async function testDkimRoundTripsNonUtf8Octets() {
+  var kp = _rsaKeypair();
+  // A selector of its own. verify() caches the public key under
+  // `<selector>._domainkey.<domain>` for five minutes, so a second test reusing
+  // `s1` with a fresh keypair verifies against the FIRST test's key and fails
+  // for a reason that has nothing to do with what it is testing.
+  var signer = b.mail.dkim.create({
+    domain: "example.com", selector: "octets1", privateKey: kp.privateKey,
+  });
+  var original = Buffer.concat([
+    Buffer.from([
+      "From: alice@example.com",
+      "To: bob@example.org",
+      "Subject: Hello",
+      "Date: Tue, 30 Apr 2026 12:00:00 +0000",
+      "", "",
+    ].join("\r\n"), "latin1"),
+    // ISO-8859-1 then two Shift_JIS kana: not valid UTF-8 in either half.
+    Buffer.from([0x43, 0x61, 0x66, 0xE9, 0x0D, 0x0A, 0x82, 0xA0, 0x82, 0xA2, 0x0D, 0x0A]),
+  ]);
+  var signed = signer.sign(original);
+  var b64 = _spkiPemToB64(kp.publicKey);
+  var dnsLookup = async function () { return [["v=DKIM1; k=rsa; p=" + b64]]; };
+
+  var rv = await b.mail.dkim.verify(signed, { dnsLookup: dnsLookup });
+  check("verify: a non-UTF-8 message verifies pass",
+        rv[0] && rv[0].result === "pass",
+        rv[0] && (rv[0].result + " " + JSON.stringify(rv[0].errors || [])));
+
+  // And the signature is over the ORIGINAL octets, not over a repaired copy:
+  // flipping one high byte in the body must break it. Without that, a signer
+  // that replaced every high byte with U+FFFD would still pass the check above,
+  // because both sides would agree on the same corruption.
+  var tampered = Buffer.from(signed);
+  tampered[tampered.length - 5] ^= 0x01;
+  var rvBad = await b.mail.dkim.verify(tampered, { dnsLookup: dnsLookup });
+  check("verify: altering one high octet of the body breaks the signature",
+        rvBad[0] && rvBad[0].result === "fail",
+        rvBad[0] && rvBad[0].result);
+
+  // A STRING caller must get their own string back. Returning the latin1 wire
+  // form instead handed back a mojibake string that no longer re-encoded to the
+  // bytes just signed, so a UTF-8 message failed its own verify — and every
+  // ASCII test in this file passed straight through it, because ASCII is the
+  // one input where the two representations coincide.
+  var kp2 = _rsaKeypair();
+  var signer2 = b.mail.dkim.create({
+    domain: "example.com", selector: "octets2", privateKey: kp2.privateKey,
+  });
+  var text = "From: alice@example.com\r\nTo: bob@example.org\r\n" +
+             "Subject: café\r\nDate: Tue, 30 Apr 2026 12:00:00 +0000\r\n" +
+             "\r\ncafé über\r\n";
+  var signedText = signer2.sign(text);
+  check("sign: a string round-trips its own characters",
+        typeof signedText === "string" && signedText.endsWith(text),
+        JSON.stringify(signedText.slice(-24)));
+  var rvText = await b.mail.dkim.verify(signedText, {
+    dnsLookup: async function () {
+      return [["v=DKIM1; k=rsa; p=" + _spkiPemToB64(kp2.publicKey)]];
+    },
+  });
+  check("verify: a UTF-8 string message verifies its own signature",
+        rvText[0] && rvText[0].result === "pass",
+        rvText[0] && (rvText[0].result + " " + JSON.stringify(rvText[0].errors || [])));
 }
 
 async function testDkimVerifyBareLfMessage() {
@@ -1595,10 +1749,12 @@ async function run() {
   testDkimCanonicalization();
   testDkimHeaderParserGolden();
   testDkimRsaSignProducesHeader();
+  testDkimSignsTheOctetsItWasGiven();
   testDkimEd25519Sign();
   testDkimSignerRejectsBadInput();
   testDkimRejectsLTagBodyLength();
   await testDkimVerifyHappyPath();
+  await testDkimRoundTripsNonUtf8Octets();
   await testDkimVerifyEd25519RawKeyRfc8463();
   await testDkimEd25519KFamilyConfusionRefused();
   testDkimBootstrapEd25519PublishesRawKey();

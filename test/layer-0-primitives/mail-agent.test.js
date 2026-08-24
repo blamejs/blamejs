@@ -137,6 +137,46 @@ async function testFlagMoveDelete() {
   } finally { _teardown(fx); }
 }
 
+// The retention floor is the only thing standing between an expunge request
+// and a permanent delete, and it was resolved by indexing the floor table with
+// a fallback to zero. Everything the table did not contain — a misspelling, a
+// capitalisation, a posture the table simply does not carry — became "no
+// floor" silently, on the one call in this module that destroys mail.
+async function testExpungeRefusesAPostureItCannotResolve() {
+  var fx = await _setup("expunge-posture");
+  try {
+    var agent = b.mail.agent.create({ store: fx.store });
+    var m = fx.store.appendMessage("INBOX", _msg([
+      "From: a@x", "To: b@y", "Subject: floor-test", "Message-Id: <mp@x>",
+      "Date: Wed, 14 May 2026 12:00:00 +0000",
+    ], "x"));
+    fx.store.moveMessages("INBOX", "Trash", [m.objectid]);
+
+    // A misspelling and a capitalisation of a posture the framework DOES
+    // support. Both used to resolve to a zero floor and delete.
+    var bad = ["sock2", "HIPAA", "constructor"];
+    for (var i = 0; i < bad.length; i += 1) {
+      var threw = null;
+      try {
+        await agent.expunge({ actor: { id: "u1" }, folder: "Trash",
+                              objectIds: [m.objectid], posture: bad[i] });
+      } catch (e) { threw = e; }
+      check("expunge: posture '" + bad[i] + "' is refused, not read as no floor",
+            threw && threw.code === "mail-agent/unknown-posture",
+            String(threw && (threw.code || threw.message)));
+    }
+    check("expunge: the message survived every unresolvable posture",
+          fx.store.fetchByObjectId("Trash", m.objectid) !== null);
+
+    // The control. Without it, "refused" above could mean expunge refuses
+    // everything — a posture the framework knows must still work, and a
+    // request with no posture at all is a legitimate zero-floor delete.
+    var ok = await agent.expunge({ actor: { id: "u1" }, folder: "Trash",
+                                   objectIds: [m.objectid] });
+    check("expunge control: no posture still deletes", ok.deleted.length === 1);
+  } finally { _teardown(fx); }
+}
+
 async function testExpungeHardDelete() {
   // Hard expunge — composes legal-hold + retention-floor refusal
   // gates before the destructive SQL runs.
@@ -829,6 +869,7 @@ async function run() {
   await testFoldersFetch();
   await testSearchThread();
   await testFlagMoveDelete();
+  await testExpungeRefusesAPostureItCannotResolve();
   await testExpungeHardDelete();
   await testExpungeRetentionFloor();
   await testNotImplemented();

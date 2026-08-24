@@ -129,6 +129,55 @@ function testGuardYamlMergeKey() {
                                 { profile: "strict" });
   check("merge-key with anchor reference detected",
         rv.issues.some(function (issue) { return issue.kind === "merge-key"; }));
+
+  // A merge key is a mapping key, so it is structure — and `<<: *base` written
+  // inside a block scalar is a line of somebody's shell script. Found by
+  // sweeping #642's root rather than reported: the duplicate-key screen was one
+  // structural rule reading raw source, and this was the other.
+  function mergeKinds(src) {
+    return b.guardYaml.validate(src, { profile: "strict" }).issues
+      .filter(function (issue) { return issue.kind === "merge-key"; }).length;
+  }
+  check("a merge key inside a block scalar is not a merge key",
+        mergeKinds("script: |\n  <<: *base\n  echo hi\n") === 0,
+        String(mergeKinds("script: |\n  <<: *base\n  echo hi\n")));
+  check("a merge key inside a quoted value is not a merge key",
+        mergeKinds("note: \"<<: *base\"\n") === 0,
+        String(mergeKinds("note: \"<<: *base\"\n")));
+  // Every OTHER region that is literal text, because listing two of them was
+  // the first attempt at this fix and it left six more open. The screen asks
+  // the lexer whether a node can begin at the `<<` instead, and a node begins
+  // in none of these.
+  var literalRegions = [
+    ["a comment after a value",             "a: 1 # <<: *base\n"],
+    ["a comment on its own line",           "# <<: *base\na: 1\n"],
+    ["a comment after a document marker",   "--- # <<: *base\na: 1\n"],
+    ["a plain scalar's continuation line",  "note: this is prose\n  <<: *base\n"],
+    ["a quoted scalar's continuation line", "s: \"one\n  <<: *base\"\n"],
+    ["a single-quoted value",               "s: '<<: *base'\n"],
+    ["a folded block scalar's body",        "s: >\n  <<: *base\n"],
+  ];
+  literalRegions.forEach(function (pair) {
+    check("a merge key in " + pair[0] + " is not a merge key",
+          mergeKinds(pair[1]) === 0, String(mergeKinds(pair[1])));
+  });
+  // Controls: the real ones are still found, so this is reading structure
+  // rather than having stopped looking. The second is the smuggling shape —
+  // not a well-formed mapping entry, and refused anyway, which is why the
+  // question is "could a node begin here" and not "is this valid structure".
+  check("control: a real merge key is still detected",
+        mergeKinds("base: &b\n  x: 1\nuser:\n  <<: *b\n") === 1,
+        String(mergeKinds("base: &b\n  x: 1\nuser:\n  <<: *b\n")));
+  check("control: the no-space shape is still refused",
+        mergeKinds("use:\n  <<:*d\n") === 1, String(mergeKinds("use:\n  <<:*d\n")));
+  check("control: a merge key in a flow mapping is still detected",
+        mergeKinds("x: { <<: *b }\n") === 1, String(mergeKinds("x: { <<: *b }\n")));
+  // An apostrophe inside a quoted body must not desynchronise the reading of a
+  // LATER merge key. A first version counted quote characters to decide what
+  // was inside a string, which is the lexer's job re-derived badly.
+  check("control: an apostrophe in a quoted value does not hide a later merge key",
+        mergeKinds("k: \"it's\"\nx:\n  <<: *b\n") === 1,
+        String(mergeKinds("k: \"it's\"\nx:\n  <<: *b\n")));
 }
 
 function testGuardYamlDuplicateKeys() {
@@ -139,6 +188,63 @@ function testGuardYamlDuplicateKeys() {
   var rvNotDup = b.guardYaml.validate("x:\n  a: 1\ny:\n  a: 2\n", { profile: "strict" });
   check("same key at different scopes NOT flagged",
         !rvNotDup.issues.some(function (issue) { return issue.kind === "duplicate-key"; }));
+
+  // A block scalar's body is text, not structure. Two lines inside one that
+  // merely LOOK like `key: value` are not two mapping entries, and there is no
+  // mapping at any indent inside a block scalar for them to collide in. This is
+  // the same root as #631/#632 — a screen deciding structure by reading the raw
+  // source — and it survived that fix because only the sigil scans were moved
+  // onto the lexer's mask (#642).
+  function dupsIn(src) {
+    return b.guardYaml.validate(src, { profile: "strict" }).issues
+      .filter(function (issue) { return issue.kind === "duplicate-key"; })
+      .map(function (issue) { return issue.snippet; });
+  }
+  var script =
+    "with:\n" +
+    "  script: |\n" +
+    "    a({\n" +
+    "      owner: ctx.owner,\n" +
+    "    });\n" +
+    "    b({\n" +
+    "      owner: ctx.owner,\n" +
+    "    });\n";
+  check("#642: key-shaped lines inside a block scalar are not duplicate keys",
+        dupsIn(script).length === 0, JSON.stringify(dupsIn(script)));
+
+  var folded =
+    "run: >\n" +
+    "  owner: one\n" +
+    "  owner: two\n";
+  check("#642: a folded block scalar behaves the same",
+        dupsIn(folded).length === 0, JSON.stringify(dupsIn(folded)));
+
+  // The controls. A real duplicate OUTSIDE the scalar must still be reported,
+  // and so must one in the mapping that owns the scalar — otherwise the fix
+  // would be "stop looking" rather than "look at the structure".
+  var realDup =
+    "with:\n" +
+    "  script: |\n" +
+    "    owner: inside\n" +
+    "  env: a\n" +
+    "  env: b\n";
+  check("#642 control: a duplicate beside the block scalar is still reported",
+        dupsIn(realDup).length === 1 && /"env"/.test(dupsIn(realDup)[0]),
+        JSON.stringify(dupsIn(realDup)));
+
+  var afterScalar =
+    "script: |\n" +
+    "  owner: inside\n" +
+    "top: 1\n" +
+    "top: 2\n";
+  check("#642 control: a duplicate after the scalar ends is still reported",
+        dupsIn(afterScalar).length === 1 && /"top"/.test(dupsIn(afterScalar)[0]),
+        JSON.stringify(dupsIn(afterScalar)));
+
+  // And a quoted scalar carrying a colon is not a mapping entry either.
+  check("#642: a colon inside a quoted value is not a second key",
+        dupsIn("a: \"x: 1\"\nb: \"x: 2\"\n").length === 0,
+        JSON.stringify(dupsIn("a: \"x: 1\"\nb: \"x: 2\"\n")));
 
   // Each item of a sequence is its OWN mapping, so the same key appearing once
   // per item is not a duplicate — it is the ordinary shape of every list of

@@ -21,7 +21,7 @@ function _fakeResolver(map) {
       if (typeof map[key] === "function") return Promise.resolve(map[key]());
       if (map[key] === "__nxdomain__") {
         var e = new Error("nx");
-        e.code = "resolver/nxdomain-or-error";
+        e.code = "resolver/nxdomain";
         return Promise.reject(e);
       }
       if (map[key] === "__throw__") return Promise.reject(new Error("upstream-down"));
@@ -35,7 +35,7 @@ function _fakeResolver(map) {
 
 function _mkNxd() {
   var e = new Error("NXDOMAIN");
-  e.code = "resolver/nxdomain-or-error";
+  e.code = "resolver/nxdomain";
   return e;
 }
 

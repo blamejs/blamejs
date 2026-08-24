@@ -375,12 +375,25 @@ async function _testAuditRecordAndChain(liveQueryAll) {
       metadata: { region: "eu" } },
     { action: "system.shutdown",    outcome: "success" },
   ];
+  // The table was dropped and recreated at the top of run(), so the first row
+  // must be counter 1. Anything else means rows survived the drop or something
+  // wrote ahead of us, and the counters themselves say which — so report them,
+  // and the surviving row count, rather than failing on a bare boolean. This
+  // check went red once in a full 50-file run and passed on every targeted
+  // re-run, which is exactly the case a value-free assertion cannot explain.
   var appended = [];
   for (var i = 0; i < events.length; i++) {
     appended.push(await b.audit.record(events[i]));
   }
+  var counters = appended.map(function (a) { return a && a.monotonicCounter; });
+  var strictlyRising = counters.every(function (c, idx) {
+    return idx === 0 || (typeof c === "number" && c === counters[idx - 1] + 1);
+  });
   check("audit.record returned a monotonic counter per row (1..4)",
-        appended[0].monotonicCounter === 1 && appended[3].monotonicCounter === 4);
+        counters[0] === 1 && counters[3] === 4 && strictlyRising,
+        "counters=" + JSON.stringify(counters) +
+        " rowsNow=" + _psql("SELECT count(*) AS n FROM _blamejs_audit_log;").trim() +
+        " (a first counter above 1 means the pre-test DROP did not take effect)");
 
   var count = _psql("SELECT count(*) AS n FROM _blamejs_audit_log;");
   check("audit.record landed 4 rows in _blamejs_audit_log on real Postgres",

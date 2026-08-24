@@ -273,6 +273,371 @@ async function testPlaintextNoAuth() {
 }
 
 // ==========================================================================
+// ==========================================================================
+// Multi-step SASL — a challenge is a round trip, not an authentication failure
+// ==========================================================================
+//
+// The verifier contract lets an operator mechanism ask for another round trip
+// with { pending: true, challenge }. ManageSieve called verify once, passed no
+// `step`, and dropped a pending verdict into the failure branch — which also
+// SPENT the client's authentication-failure budget for a normal round trip.
+//
+// The `overrides` hook was not an escape either: an operator AUTHENTICATE
+// handler that wrote its own challenge never saw the client's reply, because
+// _handleLine ran the wire guard before dispatch and rejected the base64 line
+// as an unknown verb.
+async function testAuthenticateMultiStepChallenge() {
+  var calls = [];
+  var failures = 0;
+  var tls = await _makeTestTlsContext();
+  var srv = b.mail.server.managesieve.create({
+    tlsContext: tls.ctx, profile: "permissive", mailStore: _richStore(),
+    rateLimit: _countingRateLimit(function () { failures += 1; }),
+    auth: {
+      mechanisms: ["CRAM-STYLE"],
+      verify: async function (mech, creds) {
+        calls.push({ mech: mech, step: creds.step, clientResponse: creds.clientResponse });
+        if (calls.length === 1) return { pending: true, challenge: _b64("nonce-42") };
+        return creds.clientResponse === _b64("response")
+          ? { ok: true, actor: { username: "alice", tenantId: "t1" } }
+          : { ok: false };
+      },
+    },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var sock = _connect(info.port);
+  try {
+    await _read(sock);                                                             // greeting
+    var challenge = await _cmdChallenge(sock, 'AUTHENTICATE "CRAM-STYLE"');
+    check("managesieve: a pending verdict writes a challenge, not NO",
+          !/^NO /.test(challenge), JSON.stringify(challenge));
+    check("managesieve: the challenge is the verifier's, as an RFC 5804 literal",
+          challenge.indexOf(_b64("nonce-42")) !== -1, JSON.stringify(challenge));
+
+    var done = await _cmd(sock, '"' + _b64("response") + '"');
+    check("managesieve: the client's reply completes the exchange",
+          /OK "Authenticated"/.test(done), JSON.stringify(done));
+    check("managesieve: verify saw two steps, numbered",
+          calls.length === 2 && calls[0].step === 0 && calls[1].step === 1,
+          JSON.stringify(calls));
+    check("managesieve: the client's base64 reply reached the verifier",
+          calls[1].clientResponse === _b64("response"), JSON.stringify(calls[1]));
+    check("managesieve: a challenge round trip costs no auth-failure budget",
+          failures === 0, String(failures));
+    check("managesieve: authenticated after the exchange",
+          /OK "Have space"/.test(await _cmd(sock, 'HAVESPACE "s" 100')));
+  } finally { sock.destroy(); await srv.close(); }
+}
+
+// RFC 5804 §1.2 — a "string" is a quoted string OR a literal (`{N}` / `{N+}`
+// followed by N bytes). The initial AUTHENTICATE response accepted both; the
+// continuation response accepted only the quoted form, so a client answering a
+// challenge with a literal had `{N+}` itself read as the response and its bytes
+// read as another one. SASL responses are base64 and can be long, which is
+// exactly when a client reaches for the literal form.
+async function testAuthenticateContinuationAcceptsALiteralResponse() {
+  var calls = [];
+  var tls = await _makeTestTlsContext();
+  var srv = b.mail.server.managesieve.create({
+    tlsContext: tls.ctx, profile: "permissive", mailStore: _richStore(),
+    auth: {
+      mechanisms: ["CRAM-STYLE"],
+      verify: async function (mech, creds) {
+        calls.push(creds.clientResponse);
+        if (creds.step === 0) return { pending: true, challenge: _b64("nonce") };
+        // The round takes time, as a real verifier does (a directory lookup, a
+        // KDF). Without it the response round resolves in a microtask before
+        // the literal's terminating CRLF is even delivered, so the terminator
+        // is handled AFTER the exchange ended rather than during it — which is
+        // why this passed on one machine and failed on another.
+        await helpers.passiveObserve(120, "managesieve: literal response round in flight");
+        return creds.clientResponse === _b64("response")
+          ? { ok: true, actor: { username: "alice", tenantId: "t1" } }
+          : { ok: false };
+      },
+    },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var sock = _connect(info.port);
+  try {
+    await _read(sock);                                                             // greeting
+    await _cmdChallenge(sock, 'AUTHENTICATE "CRAM-STYLE"');
+
+    // Non-synchronizing literal, with the marker and the payload arriving as
+    // SEPARATE segments. Writing them back to back lets the kernel coalesce
+    // them, and coalesced they took a different path through the drain loop —
+    // the container run failed on exactly this while the host run passed. A
+    // pause between the writes pins the split arrival rather than leaving it to
+    // whichever buffering the machine happens to do.
+    var resp = _b64("response");
+    var p = _read(sock);
+    sock.write("{" + Buffer.byteLength(resp, "utf8") + "+}\r\n");
+    await helpers.passiveObserve(60, "managesieve: literal marker arrives alone");
+    sock.write(resp);
+    // The CRLF that ends the literal's line, in its own segment. This is the
+    // arrival the container hit and the host did not: the terminator reaches
+    // the drain loop as a line of its own, while the verifier round it belongs
+    // to is still in flight. Read as a second response it fails the exchange.
+    await helpers.passiveObserve(60, "managesieve: literal terminator arrives alone");
+    sock.write("\r\n");
+    var done = await p;
+    check("managesieve: a LITERAL+ continuation response completes the exchange",
+          /OK "Authenticated"/.test(done), JSON.stringify(done));
+    check("managesieve: the verifier got the response, not the literal marker",
+          calls[1] === resp, JSON.stringify(calls));
+  } finally { sock.destroy(); await srv.close(); }
+}
+
+// A continuation literal declares its own size, and the client declaring it is
+// unauthenticated. Without a bound, `{999999999+}` makes the listener collect
+// attacker bytes toward a gigabyte per connection. The quoted form of the same
+// response is already bound by maxLineBytes, so the literal form is bound by
+// the same number: which representation the client picks must not change what
+// it may cost.
+async function testAuthenticateContinuationLiteralIsBounded() {
+  var tls = await _makeTestTlsContext();
+  var srv = b.mail.server.managesieve.create({
+    tlsContext: tls.ctx, profile: "permissive", mailStore: _richStore(),
+    maxLineBytes: 4096,
+    auth: {
+      mechanisms: ["CRAM-STYLE"],
+      verify: async function (mech, creds) {
+        if (creds.step === 0) return { pending: true, challenge: _b64("nonce") };
+        return { ok: false };
+      },
+    },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var sock = _connect(info.port);
+  try {
+    await _read(sock);
+    await _cmdChallenge(sock, 'AUTHENTICATE "CRAM-STYLE"');
+    var refused = await _cmd(sock, "{999999999+}");
+    check("managesieve: an oversize continuation literal is refused",
+          /^NO /.test(refused), JSON.stringify(refused));
+    check("managesieve: the refusal names the cap",
+          /cap|too long/i.test(refused), JSON.stringify(refused));
+    // One exchange, one bound: the continuation uses the same SASL-token cap
+    // the guard applies to the initial response, not a second number.
+    check("managesieve: the cap is the guard's SASL-token cap",
+          refused.indexOf(String(
+            require("../../lib/guard-managesieve-command.js").MAX_SASL_TOKEN_BYTES)) !== -1,
+          JSON.stringify(refused));
+  } finally { sock.destroy(); await srv.close(); }
+
+  // Control: a literal within the cap still works, so the bound is a bound and
+  // not a refusal of the literal form altogether.
+  var srv2 = b.mail.server.managesieve.create({
+    tlsContext: tls.ctx, profile: "permissive", mailStore: _richStore(),
+    maxLineBytes: 4096,
+    auth: {
+      mechanisms: ["CRAM-STYLE"],
+      verify: async function (mech, creds) {
+        if (creds.step === 0) return { pending: true, challenge: _b64("nonce") };
+        return creds.clientResponse === _b64("response")
+          ? { ok: true, actor: { username: "alice" } } : { ok: false };
+      },
+    },
+  });
+  var info2 = await srv2.listen({ port: 0, address: "127.0.0.1" });
+  var sock2 = _connect(info2.port);
+  try {
+    await _read(sock2);
+    await _cmdChallenge(sock2, 'AUTHENTICATE "CRAM-STYLE"');
+    var resp = _b64("response");
+    var p = _read(sock2);
+    sock2.write("{" + Buffer.byteLength(resp, "utf8") + "+}\r\n");
+    sock2.write(resp + "\r\n");
+    check("managesieve control: a literal within the cap still authenticates",
+          /OK "Authenticated"/.test(await p));
+  } finally { sock2.destroy(); await srv2.close(); }
+}
+
+// A client can put several lines in one TCP segment. The drain loop dispatches
+// them one after another without awaiting, so two SASL responses arriving
+// together each started a verifier call at the SAME step: concurrent rounds,
+// out-of-order results, and a later response able to complete authentication
+// before the challenge for it had been issued.
+async function testPipelinedSaslResponsesAreRefusedNotRaced() {
+  var concurrent = 0;
+  var maxConcurrent = 0;
+  var steps = [];
+  var tls = await _makeTestTlsContext();
+  var srv = b.mail.server.managesieve.create({
+    tlsContext: tls.ctx, profile: "permissive", mailStore: _richStore(),
+    auth: {
+      mechanisms: ["CRAM-STYLE"],
+      verify: async function (mech, creds) {
+        steps.push(creds.step);
+        concurrent += 1;
+        if (concurrent > maxConcurrent) maxConcurrent = concurrent;
+        // A verifier that takes time, as a real one does (a directory lookup, a
+        // KDF). The race only exists while a round is in flight, so the delay
+        // is the condition under test rather than a wait for one.
+        await helpers.passiveObserve(40, "managesieve: SASL verifier round in flight");
+        concurrent -= 1;
+        if (creds.step === 0) return { pending: true, challenge: _b64("nonce") };
+        return { ok: true, actor: { username: "alice" } };
+      },
+    },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var sock = _connect(info.port);
+  try {
+    await _read(sock);
+    await _cmdChallenge(sock, 'AUTHENTICATE "CRAM-STYLE"');
+
+    // Both responses in one write: the listener sees them in one chunk.
+    var p = _read(sock);
+    sock.write('"' + _b64("first") + '"\r\n"' + _b64("second") + '"\r\n');
+    await p;
+    await helpers.passiveObserve(200, "managesieve: pipelined SASL settles");
+
+    check("managesieve: no two verifier rounds run at once",
+          maxConcurrent === 1, "peak concurrency " + maxConcurrent);
+    check("managesieve: no two rounds share a step number",
+          steps.length === new Set(steps).size, JSON.stringify(steps));
+  } finally { sock.destroy(); await srv.close(); }
+}
+
+// And the synchronizing form, where the server must invite the bytes first.
+async function testAuthenticateContinuationAcceptsASynchronizingLiteral() {
+  var calls = [];
+  var tls = await _makeTestTlsContext();
+  var srv = b.mail.server.managesieve.create({
+    tlsContext: tls.ctx, profile: "permissive", mailStore: _richStore(),
+    auth: {
+      mechanisms: ["CRAM-STYLE"],
+      verify: async function (mech, creds) {
+        calls.push(creds.clientResponse);
+        if (creds.step === 0) return { pending: true, challenge: _b64("nonce") };
+        return creds.clientResponse === _b64("response")
+          ? { ok: true, actor: { username: "alice", tenantId: "t1" } }
+          : { ok: false };
+      },
+    },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var sock = _connect(info.port);
+  try {
+    await _read(sock);
+    await _cmdChallenge(sock, 'AUTHENTICATE "CRAM-STYLE"');
+
+    var resp = _b64("response");
+    var pCont = _read(sock);
+    sock.write("{" + Buffer.byteLength(resp, "utf8") + "}\r\n");
+    check("managesieve: a synchronizing continuation literal is invited with OK",
+          /^OK\r\n$/.test(await pCont), JSON.stringify(await pCont));
+    var pDone = _read(sock);
+    sock.write(resp + "\r\n");
+    var done = await pDone;
+    check("managesieve: the invited bytes complete the exchange",
+          /OK "Authenticated"/.test(done), JSON.stringify(done));
+    check("managesieve: the verifier got the response bytes",
+          calls[1] === resp, JSON.stringify(calls));
+  } finally { sock.destroy(); await srv.close(); }
+}
+
+// The control: a genuinely failed multi-step exchange must still spend the
+// budget, or "no failure counted" above would only mean the counter is dead.
+async function testAuthenticateMultiStepFailureStillCounts() {
+  var failures = 0;
+  var tls = await _makeTestTlsContext();
+  var srv = b.mail.server.managesieve.create({
+    tlsContext: tls.ctx, profile: "permissive", mailStore: _richStore(),
+    rateLimit: _countingRateLimit(function () { failures += 1; }),
+    auth: {
+      mechanisms: ["CRAM-STYLE"],
+      verify: async function (mech, creds) {
+        if (creds.step === 0) return { pending: true, challenge: "" };
+        return { ok: false };
+      },
+    },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var sock = _connect(info.port);
+  try {
+    await _read(sock);
+    await _cmdChallenge(sock, 'AUTHENTICATE "CRAM-STYLE"');
+    var bad = await _cmd(sock, '"' + _b64("wrong") + '"');
+    check("managesieve: a wrong response to the challenge is NO",
+          /NO "Authentication failed"/.test(bad), JSON.stringify(bad));
+    check("managesieve: and it DOES spend the auth-failure budget",
+          failures === 1, String(failures));
+  } finally { sock.destroy(); await srv.close(); }
+}
+
+// A challenge composed from client input (as SCRAM and CRAM do with the
+// client's nonce) must not be able to end the line it is written on.
+async function testAuthenticateChallengeCannotInjectALine() {
+  var tls = await _makeTestTlsContext();
+  var srv = b.mail.server.managesieve.create({
+    tlsContext: tls.ctx, profile: "permissive", mailStore: _richStore(),
+    auth: {
+      mechanisms: ["EVIL"],
+      verify: async function () {
+        return { pending: true, challenge: 'abc\r\nOK "Authenticated"' };
+      },
+    },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var sock = _connect(info.port);
+  try {
+    await _read(sock);
+    var reply = await _cmd(sock, 'AUTHENTICATE "EVIL"');
+    check("managesieve: a challenge carrying CRLF is refused, not written",
+          /^NO /.test(reply), JSON.stringify(reply));
+    check("managesieve: the smuggled OK never reaches the client",
+          reply.indexOf('OK "Authenticated"') === -1, JSON.stringify(reply));
+    check("managesieve: the failed exchange releases the connection",
+          /NO "AUTHENTICATE first"/.test(await _cmd(sock, 'HAVESPACE "s" 100')));
+  } finally { sock.destroy(); await srv.close(); }
+}
+
+// _read resolves on an OK / NO / BYE line, and an RFC 5804 SASL challenge is
+// neither: it is a literal, `{N}\r\n<N bytes>\r\n`. This reader resolves once
+// that literal is complete, so a test can await the challenge itself.
+function _readChallenge(sock) {
+  return new Promise(function (resolve) {
+    var buf = "";
+    function complete() {
+      var m = /^\{(\d+)\}\r\n/.exec(buf);                                          // allow:regex-no-length-cap — anchored count prefix on test-fixture input
+      if (!m) return /^NO /.test(buf) && /\r\n$/.test(buf);                        // a refusal is also a complete answer
+      return Buffer.byteLength(buf, "utf8") >= m[0].length + Number(m[1]) + 2;
+    }
+    function onData(chunk) { buf += chunk.toString("utf8"); if (complete()) done(); }
+    function done() {
+      sock.removeListener("data", onData);
+      sock.removeListener("close", done);
+      sock.removeListener("error", done);
+      resolve(buf);
+    }
+    sock.on("data", onData);
+    sock.once("close", done);
+    sock.once("error", done);
+  });
+}
+function _cmdChallenge(sock, line) {
+  var p = _readChallenge(sock);
+  sock.write(line + "\r\n");
+  return p;
+}
+
+// The real rate limiter with noteAuthFailure counted — wrapping the shipped
+// handle keeps every other method exactly as the listener meets it.
+function _countingRateLimit(onFailure) {
+  var real = b.mail.server.rateLimit.create({});
+  var wrapper = {};
+  Object.keys(real).forEach(function (k) {
+    wrapper[k] = typeof real[k] === "function"
+      ? function () { return real[k].apply(real, arguments); }
+      : real[k];
+  });
+  wrapper.noteAuthFailure = function (ip) { onFailure(); return real.noteAuthFailure(ip); };
+  return wrapper;
+}
+
+// ==========================================================================
 // 2. STARTTLS upgrade + AUTHENTICATE state machine over TLS (strict)
 // ==========================================================================
 async function testStartTlsAndAuth() {
@@ -587,6 +952,13 @@ async function run() {
   testCreateValidation();
   await testPlaintextNoAuth();
   await testStartTlsAndAuth();
+  await testAuthenticateMultiStepChallenge();
+  await testAuthenticateContinuationAcceptsALiteralResponse();
+  await testAuthenticateContinuationAcceptsASynchronizingLiteral();
+  await testAuthenticateContinuationLiteralIsBounded();
+  await testPipelinedSaslResponsesAreRefusedNotRaced();
+  await testAuthenticateMultiStepFailureStillCounts();
+  await testAuthenticateChallengeCannotInjectALine();
   await testStartTlsHandshakeFailure();
   await testAuthenticatedHandlers();
   await testBackendFailures();

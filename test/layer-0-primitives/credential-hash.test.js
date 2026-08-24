@@ -72,6 +72,33 @@ async function testShake256ConfigurableLength() {
   // digest must NOT be rehashed down to a 128-byte target.
   check("#111 a longer (192) digest is NOT rehashed down to a smaller target (128)",
         ch.needsRehash(env192, { params: { length: 128 } }) === false);
+
+  // `algo` pins the comparison target, and hash() refuses a name it does not
+  // know. needsRehash read the same table with a fallback to the framework
+  // default, so a typo silently asked a different question than the operator
+  // did — on a credential-rotation decision, where the answer is whether a
+  // stored secret must be re-derived.
+  var typo = null;
+  try { ch.needsRehash(env64, { algo: "argon2" }); } catch (e) { typo = e; }
+  check("needsRehash refuses an algo name it does not know, as hash() does",
+        typo !== null, "silently compared against the default instead");
+
+  var typoOnHash = null;
+  try { await ch.hash("x", { algo: "argon2" }); } catch (e) { typoOnHash = e; }
+  check("hash and needsRehash agree about the same bad algo name",
+        typo !== null && typoOnHash !== null && typo.code === typoOnHash.code,
+        String(typo && typo.code) + " vs " + String(typoOnHash && typoOnHash.code));
+
+  // A prototype member is not an algorithm. Read through, it returned a
+  // function, which compares unequal to every real algorithm id.
+  var proto = null;
+  try { ch.needsRehash(env64, { algo: "constructor" }); } catch (e) { proto = e; }
+  check("needsRehash refuses a prototype member as an algo name", proto !== null);
+
+  // Control: the two names that ARE valid keep working, so the refusals above
+  // cannot be a needsRehash that now rejects everything.
+  check("needsRehash still answers for a valid pinned algo",
+        ch.needsRehash(env64, { algo: "shake256" }) === true);
 }
 
 async function testShake256BufferSecret() {
