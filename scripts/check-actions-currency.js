@@ -229,17 +229,13 @@ async function _latestFromTags(ownerRepo) {
       "partial scan");
   }
   if (!best) {
-    // "No version exists" is a claim about the WHOLE tag list, and one page
-    // cannot support it — that is the gate's own blind spot arriving from the
-    // remote side. It is only made when the walk reached the end; a truncated
-    // search stays advisory and says how far it looked, rather than failing a
-    // repository on evidence it never gathered.
-    var noVer = new Error(complete
-      ? "no full-version tag for " + ownerRepo + " — upstream publishes only " +
-        "floating aliases, so this pin's currency cannot be established"
-      : "no full-version tag among the first " + seen + " tags of " + ownerRepo +
-        " (search truncated at " + TAG_PAGE_LIMIT + " pages; there may be more)");
-    if (complete) noVer.code = "no-comparable-version";
+    // Reached only when the walk saw the END of the tag list — a truncated scan
+    // threw above — so this really is a claim about the whole of it, which is
+    // what makes it a hard failure rather than an advisory one.
+    var noVer = new Error("no full-version tag for " + ownerRepo +
+      " — upstream publishes only floating aliases, so this pin's currency " +
+      "cannot be established");
+    noVer.code = "no-comparable-version";
     throw noVer;
   }
   return { tag: best.name, sha: await _resolveSha(ownerRepo, best.name) };
@@ -792,6 +788,14 @@ function _scanLine(line, state, eof) {
       // Only a `uses` in an action-reference POSITION. Elsewhere it is an
       // ordinary field that happens to share the name, and its value may
       // legitimately look exactly like a reference.
+      // A JOB supplied as an alias — `jobs.call: *call` — hides whatever the
+      // anchor holds, including a reusable-workflow `uses`. The alias arrives
+      // here as the job key's VALUE, not at a key position, so the branch above
+      // never sees it and nothing would be reported at all.
+      if (val && val.value && val.value.charAt(0) === "*" &&
+          enclosing.length === 1 && enclosing[0] === "jobs") {
+        out.push({ value: null, after: "", depth: flowDepth, alias: val.value });
+      }
       if (keyName === "uses" && _isActionRefPosition(enclosing)) {
         // The depth AT THIS OCCURRENCE, not wherever the line ends up. A line
         // like `{ uses: owner/a@sha, with: {` finishes deeper than the `uses`

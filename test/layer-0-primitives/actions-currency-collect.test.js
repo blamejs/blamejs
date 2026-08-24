@@ -584,6 +584,24 @@ function testBlockScalarTextIsNotReadAsAKey() {
         Object.prototype.hasOwnProperty.call(aliasStep.actions, "actions/cache"),
         Object.keys(aliasStep.actions).join(", "));
 
+  // A JOB may be an alias too, and that one arrives as the job key's VALUE
+  // rather than at a key position — a different branch entirely, so it needs
+  // naming separately or the whole job goes unchecked.
+  var aliasJob = withFixture({
+    "aliasjob.yml":
+      "jobs:\n" +
+      "  setup:\n" +
+      "    strategy:\n" +
+      "      matrix:\n" +
+      "        include:\n" +
+      "          - &call { uses: owner/repo/.github/workflows/build.yml@v1.2.3 }\n" +
+      "  call: *call\n",
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: a job supplied as an alias is named, not skipped",
+        aliasJob.unparsed.length === 1 &&
+        aliasJob.unparsed[0].reason.indexOf("*call") !== -1,
+        JSON.stringify(aliasJob));
+
   // The explicit-key form: `? uses` on one line, `: value` on the next. Reading
   // `?` as an ordinary scalar clears the key position and the reference is then
   // neither checked nor named — silence, the one outcome this must not have.
