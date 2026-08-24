@@ -408,6 +408,51 @@ function testTagsBanned() {
         _code("a: !!str hi") === "yaml/tags-banned");
   check("verbatim tag '!<uri>' → tags-banned",
         _code("a: !<tag:x> v") === "yaml/tags-banned");
+
+  // A tag is a NODE PROPERTY, so it can only sit where a node begins. The
+  // screen used to look at the character before the `!` and nothing else, and
+  // an exclamation mark is ordinary punctuation everywhere else in a document:
+  // these five were all refused as tags. The masking step promised in its own
+  // header that comments and block-scalar bodies were handled, and neither was.
+  check("a bang in a comment is not a tag",
+        _code("a: 1 # note !bang") === "NO-THROW");
+  check("a bang in a block-scalar body is not a tag",
+        _code("a: |\n  echo !boom\n") === "NO-THROW");
+  check("a bang in the middle of a plain scalar is not a tag",
+        _code("a: hello !world") === "NO-THROW");
+  check("a bang in a double-quoted scalar is not a tag",
+        _code('a: "hello !world"') === "NO-THROW");
+  check("a bang in a single-quoted scalar is not a tag",
+        _code("a: 'hello !world'") === "NO-THROW");
+
+  // The same rule governs the sibling sigils, and it had the same hole: an
+  // ampersand or a star in prose declared nothing and was refused anyway.
+  check("an ampersand in prose is not an anchor",
+        _code("text: this &notanchor") === "NO-THROW");
+  check("a star in a plain scalar is not an alias",
+        _code("t: a*b") === "NO-THROW");
+  check("a percent that is not in column zero is not a directive",
+        _code("a: 50%\nb: 2") === "NO-THROW");
+
+  // CONTROLS. Without these the checks above are satisfied by a screen that
+  // refuses nothing at all, which is the failure mode that matters here.
+  check("CONTROL — a real anchor is still refused",
+        _code("a: &x 1") === "yaml/anchors-banned");
+  check("CONTROL — a real alias is still refused",
+        _code("a: *x") === "yaml/aliases-banned");
+  check("CONTROL — a real directive is still refused",
+        _code("%YAML 1.2\n---\na: 1") === "yaml/directives-banned");
+  check("CONTROL — a tag on a sequence item is still refused",
+        _code("s:\n  - !t v\n") === "yaml/tags-banned");
+  check("CONTROL — a tag inside a flow mapping is still refused",
+        _code("s: { a: !t 1 }") === "yaml/tags-banned");
+  // A block scalar written beside a sequence dash ends where the ENTRY's keys
+  // resume, not where the dash sits. Measuring it from the dash swallows the
+  // sibling key into the body and hides a real tag behind an innocent-looking
+  // block — the one direction of this change that would have been dangerous.
+  check("CONTROL — a tag on a key that follows a block scalar in a sequence " +
+        "entry is still refused",
+        _code("- key: |\n    body\n  evil: !tag x\n") === "yaml/tags-banned");
 }
 
 function run() {

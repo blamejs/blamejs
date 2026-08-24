@@ -8,6 +8,41 @@ upgrading across more than a few patches at a time.
 
 ## v0.18.x
 
+- v0.18.53 (2026-08-24) — **The YAML screens refused ordinary documents: a list of records, and an exclamation mark in a sentence.** `b.guardYaml.parse` refused any sequence whose items carry more than one key, which is the shape of nearly every list of records anyone writes. Separately, both `b.guardYaml` and `b.parsers.yaml` decided whether a `!`, `&` or `*` opened a tag, anchor or alias by looking at the character in front of it, so they reported one inside a quoted string, inside a block scalar's shell script, in the middle of a value, and inside a comment. `x: 1 # note !bang` was refused. Both screens now read the document's structure, through one scanner shared by the two modules. **Fixed:** *`b.guardYaml` no longer reports a duplicate key for a list of records* — Key uniqueness was tracked per indentation level, and a sequence-item line never reset that tracking. The second item's keys were therefore checked against the first item's, so every key except the one written inline with the dash was reported as a duplicate:
+
+```yaml
+steps:
+  - name: build
+    run: make
+  - name: test
+    run: make check
+```
+
+That document was refused with `duplicate key "run"`, and it has no duplicate key in it. Under `duplicateKeyPolicy: "reject"` — the strict profile's default — the parse threw.
+
+Each item of a sequence is now its own mapping, so a key may appear once per item. Two things that were already true stay true, and both are pinned by tests: a key repeated *within* one item is still a duplicate, and so is a key repeated in an ordinary mapping.
+
+The key written inline with the dash was being skipped entirely rather than tracked, so `- name: a` followed by `name: b` inside the same item went unreported. It is now tracked with the rest of its mapping. · *A tag, anchor or alias is recognised where it can actually appear* — `!`, `&` and `*` introduce a tag, an anchor and an alias only at a node start. Both YAML screens decided the question by looking at the preceding character — whitespace meant a sigil, anything else meant not — and that rule cannot tell a node start from the middle of a scalar. Every one of these was refused:
+
+```yaml
+x: "hello !world"      # a bang in a quoted string
+x: hello !world        # a bang in the middle of a value
+x: 1 # note !bang      # a bang in a comment
+x: |
+  echo !boom           # a bang in a shell script
+text: fish &chips      # an ampersand in prose
+```
+
+The two modules had separate implementations of the check and separate gaps. `b.parsers.yaml` masked quoted strings but copied comment text through verbatim and had no block-scalar handling, despite a note in it saying both were covered; `b.guardYaml` had none of the three. So a document refused by one was sometimes accepted by the other.
+
+Both now use one scanner that tracks where each character sits: inside a quoted scalar, a comment, a block-scalar body, a plain scalar, or in the structure. A sigil is reported only where it opens a node. Scalars that run across several lines are followed rather than read afresh, so neither the continuation of a quoted string nor of an unquoted value is mistaken for structure, and a `!` after the closing quote or the ending comma still is one.
+
+**What this changes for a document you already have:** a sigil inside a plain scalar is no longer reported. `text: this &notanchor` and `x: -&a` used to raise an anchor finding and no longer do. Neither declares an anchor — an anchor is a separate token — so nothing can reference it, and the amplification these findings exist to stop has no path through them. A merge key written without spaces, `<<:*d`, is still refused, by the merge-key screen rather than the alias one.
+
+`b.parsers.yaml` continues to refuse every real tag, anchor, alias and directive, and the strict profile of `b.guardYaml` continues to report them. · *The residency gate's raw-SQL timing check no longer depends on how busy the machine is* — The check that a padded raw `UPDATE` costs no extra parse time compared the padded call against an unpadded one and allowed 500ms between them. A difference of two timings carries the noise of both, and on a loaded runner the padded sample alone drifted past that allowance while the statement itself parses in a fraction of a millisecond.
+
+It now bounds the padded call on its own, and takes the fastest of fifteen samples rather than three. The defect it guards cost roughly seven seconds against 0.04ms once fixed, so the ceiling sits between the two behaviours with several orders of magnitude to spare rather than tracking the machine. The unpadded baseline is still measured and still printed, because a reader looking at a failure needs to know whether the box was slow or the parse was.
+
 - v0.18.52 (2026-08-23) — **A refusal that would not say why, and a currency gate that skipped the one pin able to move underneath it.** `b.guardFilename` refuses a filename carrying NTFS alternate-data-stream syntax whatever `adsPolicy` says, which is correct and was documented, but the refusal never mentioned the option — so a caller who set `"allow"` was left comparing their code against a message that said nothing about the setting they had changed. Separately, the pinned-actions currency gate could only see a `uses:` pinned to a commit SHA, so the one workflow reference pinned to a tag was absent from every run rather than reported, and its `--json` output had a human summary line after the document, so nothing could parse it. **Fixed:** *The NTFS-ADS refusal now says where `adsPolicy: "allow"` applies* — A filename carrying alternate-data-stream syntax (`report.txt:stream`) is refused by `b.guardFilename.sanitize`, `validate` and `gate` regardless of `adsPolicy`. That is deliberate: on Windows the write lands on a hidden stream of the base file rather than on a file anyone can see, so it is one of the shapes a filename guard always refuses. `adsPolicy` still takes `"allow"` because `verifyExtractionPath` honours it, for an operator deliberately extracting stream-suffixed entries into a root they chose.
 
 What was missing is that none of this was visible from the call site. The refusal said only that the name contained stream syntax, so setting `"allow"` and watching nothing change read as the option being broken rather than as it being scoped. The message now names the boundary, and the split is pinned by tests at all four entry points.
