@@ -264,6 +264,24 @@ function testGuardYamlCompactFlowSigils() {
   check("however much separation there is",
         kinds('{"a"  :&anch x}').indexOf("alias-disabled") !== -1,
         JSON.stringify(kinds('{"a"  :&anch x}')));
+  // There are TWO kinds of JSON-like key, and both take an adjacent value: a
+  // quoted scalar and a flow COLLECTION. Closing one production left the other
+  // open, which is the same bypass reached by the other route.
+  [
+    ["a mapping key",           '{{a: b}:!!python/object x}'],
+    ["a mapping key, spaced",   '{{a: b} :!!python/object x}'],
+    ["a sequence key",          '{[a]:!!python/object x}'],
+  ].forEach(function (pair) {
+    check("a dangerous tag after " + pair[0] + " is reported",
+          kinds(pair[1]).indexOf("dangerous-tag") !== -1,
+          JSON.stringify(kinds(pair[1])));
+  });
+  check("and an anchor after a collection key is reported",
+        kinds('{{a: b}:&anch x}').indexOf("alias-disabled") !== -1,
+        JSON.stringify(kinds('{{a: b}:&anch x}')));
+  check("CONTROL — an ordinary nested flow mapping is still reported as nothing",
+        kinds("{a: {b: 1}, c: 2}").length === 0,
+        JSON.stringify(kinds("{a: {b: 1}, c: 2}")));
   // CONTROLS. Dropping the preceding-character test is only safe because the
   // mask decides position, so the shapes it must still stay quiet about are
   // asserted in the same breath.

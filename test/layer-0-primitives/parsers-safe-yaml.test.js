@@ -473,6 +473,16 @@ function testTagsBanned() {
         _code('{"a" :!!python/object x}') === "yaml/tags-banned");
   check("however much separation there is",
         _code('{"a"  :&anch x}') === "yaml/anchors-banned");
+  // A flow COLLECTION is the other kind of JSON-like key, and it takes an
+  // adjacent value too. Closing only the quoted form left this route open.
+  check("a tag after a flow-mapping key is refused",
+        _code('{{a: b}:!!python/object x}') === "yaml/tags-banned");
+  check("a tag after a flow-sequence key is refused",
+        _code('{[a]:!!python/object x}') === "yaml/tags-banned");
+  check("an anchor after a flow-mapping key is refused",
+        _code('{{a: b}:&anch x}') === "yaml/anchors-banned");
+  check("CONTROL — an ordinary nested flow mapping still parses",
+        _code("{a: {b: 1}, c: 2}") === "NO-THROW");
 }
 
 function run() {
