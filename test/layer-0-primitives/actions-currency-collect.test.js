@@ -1259,6 +1259,39 @@ function testTheFixReplacementReachesThroughAQuote() {
         "a half-rewritten file still shows the stale one",
         shas.length === 2 && shas.indexOf(NEW) !== -1 && shas.indexOf(OLD) !== -1,
         JSON.stringify(shas));
+
+  // `--fix` rewrites every reference from its own SHA, so the supply-chain
+  // review material it prints first has to cover every SHA it is about to
+  // replace. This fixture is the case that makes it matter: one reference is
+  // already at the latest SHA and one is stale. Comparing against the first
+  // alone gives a latest-to-latest diff showing no commits, and the stale
+  // sibling is then rewritten with nothing shown for it — which is the opposite
+  // of what printing a bump for review is for.
+  var groups = currency._distinctOldShas(
+    (partly.actions["actions/checkout"] || {}).refs);
+  check("actions-currency: a bump groups its references by distinct old SHA, " +
+        "so review material covers every SHA being replaced",
+        groups.shas.length === 2 &&
+        groups.shas.indexOf(NEW) !== -1 && groups.shas.indexOf(OLD) !== -1,
+        JSON.stringify(groups.shas));
+  check("actions-currency: and each group names the file and line pinned there",
+        groups.where[OLD].length === 1 &&
+        groups.where[NEW].length === 1 &&
+        groups.where[OLD][0].indexOf("partly.yml:") !== -1 &&
+        groups.where[NEW][0] !== groups.where[OLD][0],
+        JSON.stringify(groups.where));
+  // Two references at the SAME SHA are one comparison, not two: the material
+  // would be byte-identical, and printing it twice reads as two separate bumps.
+  var sameSha = currency._distinctOldShas([
+    { sha: OLD, file: "a.yml", line: 3 },
+    { sha: OLD, file: "b.yml", line: 9 },
+    { sha: null, file: "c.yml", line: 4 },   // a tag pin has no SHA to compare
+  ]);
+  check("actions-currency: references sharing a SHA are compared once and both " +
+        "named, and a tag pin contributes no comparison",
+        sameSha.shas.length === 1 && sameSha.shas[0] === OLD &&
+        sameSha.where[OLD].join(",") === "a.yml:3,b.yml:9",
+        JSON.stringify(sameSha));
   check("actions-currency: and the same text inside a script is not counted, " +
         "so a finished rewrite is not reported as failed",
         shas.length === 2, JSON.stringify(partly.actions));

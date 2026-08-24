@@ -1251,7 +1251,14 @@ async function _checkOne(ownerRepo, entry) {
     return {
       action:    ownerRepo,
       pinned:    entry.version,
-      oldSha:    entry.sha,
+      // No entry-level old SHA. There is no such single thing once an action is
+      // pinned more than once: `pinned` is the LOWEST version across the
+      // references and the entry's SHA is the FIRST one collected, so the two
+      // can describe different references, and a reader pairing them gets a
+      // version from one and a SHA from another. Every reference carries its
+      // own `sha` in `refs`, which is the whole truth; naming one of them as
+      // though it were the action's is what made a single comparison look
+      // sufficient for a bump that rewrites several.
       latest:    info.tag,
       latestSha: info.sha,
       status:    status,
@@ -1316,6 +1323,34 @@ async function _checkOne(ownerRepo, entry) {
 // the text, and every attempt to bound where it looked (whole file, then one
 // line) still matched script text that resembled a pin and silently rewrote it.
 // The scanner already knows where each reference is; the fixer is told.
+
+// The distinct SHAs a set of references is pinned at, in the order they were
+// collected, and which file and line holds each.
+//
+// `--fix` rewrites every reference from its own SHA, so the review material it
+// prints beforehand has to cover every SHA it is about to replace. Comparing
+// against one of them describes one reference and silently omits the rest — and
+// where that one is already current, the comparison is latest-to-latest and
+// shows no commits at all while a stale sibling is rewritten unreviewed. The
+// point of printing a bump for review is that a compromised release shows up in
+// it, so a comparison that covers only part of the change is worse than none.
+//
+// Tag pins are skipped: there is no SHA to compare against. A fixable action has
+// none of them, so this is a guard rather than a case.
+function _distinctOldShas(refs) {
+  var shas = [], where = {};
+  for (var i = 0; i < (refs || []).length; i++) {
+    var r = refs[i];
+    if (!r || !r.sha) continue;
+    if (!Object.prototype.hasOwnProperty.call(where, r.sha)) {
+      where[r.sha] = [];
+      shas.push(r.sha);
+    }
+    where[r.sha].push(r.file + ":" + r.line);
+  }
+  return { shas: shas, where: where };
+}
+
 function _rewriteRef(lines, ref, newSha, tag) {
   var vIdx = ref.line - 1;
   if (vIdx < 0 || vIdx >= lines.length) return false;
@@ -1492,47 +1527,70 @@ async function main() {
       // refuses — a repair that breaks the thing it repaired. The two grammars
       // differ on purpose, and this is the seam between them.
       var tag = "v" + _fullVersion(fr.latest);
-      // Supply-chain review material — printed BEFORE applying so the change
-      // between the pinned SHA and the new SHA (the actual commits + authors)
-      // and the release notes can be validated. A compromised release shows
-      // up here as an unexpected commit / author / change.
-      // The EXACT upstream tag, not the normalised one. `_fullVersion` exists to
-      // make the version COMMENT match the pin grammar; asking GitHub for a
-      // release by a tag it never published 404s, and the 404 is swallowed — so
-      // `--fix` would quietly omit the release notes a person is meant to review
-      // the bump against. Normalise what is written, ask with what exists.
-      var cl = await _releaseChangelog(fr.action, fr.oldSha, fr.latest, fr.latestSha);
+      // Supply-chain review material — printed BEFORE applying, so the commits,
+      // the authors and the release notes behind a bump can be read first. A
+      // compromised release shows up here as an unexpected commit or author.
+      //
+      // Grouped by distinct old SHA, one comparison each, because the loop below
+      // rewrites every reference from its own; `_distinctOldShas` carries the
+      // reasoning. GitHub is asked with `fr.latest`, the EXACT tag upstream
+      // published, not the normalised `tag` written into the comment: a release
+      // fetched by a tag that never existed 404s, the 404 is swallowed, and the
+      // notes a person is meant to review the bump against go quietly missing.
+      // Normalise what is written; ask with what exists.
+      var grouped  = _distinctOldShas(fr.refs);
+      var oldShas  = grouped.shas;
+      var shaWhere = grouped.where;
       say("\n=== " + fr.action + "  " + fr.pinned + " -> " + fr.latest + " ===\n");
-      say("  old sha: " + fr.oldSha + "\n  new sha: " + fr.latestSha + "\n");
-      say("  compare: " + cl.compareUrl + "\n");
-      if (cl.commits.length) {
-        say("  commits between the two SHAs (" + cl.commits.length + ") [sha  author  subject]:\n");
-        for (var ci = 0; ci < cl.commits.length; ci++) say("    " + cl.commits[ci] + "\n");
-      } else if (cl.compareError) {
-        say("  commits: (compare unavailable: " + cl.compareError + ")\n");
-      }
-      if (cl.files.length) {
-        say("  changed files (" + cl.files.length + "):\n");
-        for (var sfi = 0; sfi < cl.files.length; sfi++) {
-          var sf = cl.files[sfi];
-          say("    [" + sf.status + " +" + sf.add + "/-" + sf.del + "] " + sf.name + "\n");
+      var notesBody = "";
+      for (var oi = 0; oi < oldShas.length; oi++) {
+        var oldSha = oldShas[oi];
+        if (oldShas.length > 1) {
+          say("  --- pinned at " + oldSha.slice(0, 10) + " by " +
+              shaWhere[oldSha].join(", ") + " ---\n");
         }
-        say("  code diff (per file, capped at 200 lines):\n");
-        for (var dfi = 0; dfi < cl.files.length; dfi++) {
-          var df = cl.files[dfi];
-          say("    ----- " + df.name + " -----\n");
-          if (df.patch === null) {
-            say("      (patch omitted by GitHub — file too large / binary; inspect via the compare URL above)\n");
-          } else {
-            var dl = df.patch.split("\n");
-            for (var dk = 0; dk < Math.min(dl.length, 200); dk++) say("      " + dl[dk] + "\n");
-            if (dl.length > 200) say("      ... (" + (dl.length - 200) + " more diff line(s) — see compare URL)\n");
+        say("  old sha: " + oldSha + "\n  new sha: " + fr.latestSha + "\n");
+        if (oldSha === fr.latestSha) {
+          // Nothing to review: this reference already points at the SHA being
+          // written. Saying so beats printing an empty comparison, which reads
+          // as "upstream changed nothing" rather than "this one was current".
+          say("  already at the latest SHA — only its version comment changes\n");
+          continue;
+        }
+        var cl = await _releaseChangelog(fr.action, oldSha, fr.latest, fr.latestSha);
+        say("  compare: " + cl.compareUrl + "\n");
+        if (cl.commits.length) {
+          say("  commits between the two SHAs (" + cl.commits.length + ") [sha  author  subject]:\n");
+          for (var ci = 0; ci < cl.commits.length; ci++) say("    " + cl.commits[ci] + "\n");
+        } else if (cl.compareError) {
+          say("  commits: (compare unavailable: " + cl.compareError + ")\n");
+        }
+        if (cl.files.length) {
+          say("  changed files (" + cl.files.length + "):\n");
+          for (var sfi = 0; sfi < cl.files.length; sfi++) {
+            var sf = cl.files[sfi];
+            say("    [" + sf.status + " +" + sf.add + "/-" + sf.del + "] " + sf.name + "\n");
+          }
+          say("  code diff (per file, capped at 200 lines):\n");
+          for (var dfi = 0; dfi < cl.files.length; dfi++) {
+            var df = cl.files[dfi];
+            say("    ----- " + df.name + " -----\n");
+            if (df.patch === null) {
+              say("      (patch omitted by GitHub — file too large / binary; inspect via the compare URL above)\n");
+            } else {
+              var dl = df.patch.split("\n");
+              for (var dk = 0; dk < Math.min(dl.length, 200); dk++) say("      " + dl[dk] + "\n");
+              if (dl.length > 200) say("      ... (" + (dl.length - 200) + " more diff line(s) — see compare URL)\n");
+            }
           }
         }
+        // The notes belong to the TAG, so they are the same whichever SHA was
+        // compared against and are printed once below rather than per SHA.
+        if (!notesBody && cl.body) notesBody = cl.body;
       }
-      if (cl.body) {
+      if (notesBody) {
         say("  release notes for " + tag + ":\n");
-        var bl = cl.body.split("\n");
+        var bl = notesBody.split("\n");
         for (var bi = 0; bi < Math.min(bl.length, 40); bi++) say("    " + bl[bi] + "\n");
         if (bl.length > 40) say("    ... (" + (bl.length - 40) + " more line(s))\n");
       }
@@ -1646,6 +1704,7 @@ module.exports = {
   _collectPinnedActions: _collectPinnedActions,
   _staleHints: _staleHints,
   _rewriteRef: _rewriteRef,
+  _distinctOldShas: _distinctOldShas,
   _fullVersion: _fullVersion,
   SCOPE_NOTE: SCOPE_NOTE,
   _semverParse: _semverParse,
