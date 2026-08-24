@@ -169,7 +169,7 @@ async function _latestVersion(ownerRepo, pinnedIsPrerelease) {
   // that IS one could only ever be compared against stable releases — and a
   // newer release candidate would report as current. The tag scan below sees
   // every tag, including prereleases, so a prerelease pin goes straight there.
-  if (pinnedIsPrerelease) return _latestFromTags(ownerRepo);
+  if (pinnedIsPrerelease) return _latestFromTags(ownerRepo, false);
   try {
     var rel = await _githubGet("/repos/" + ownerRepo + "/releases/latest");
     // Only trust the release tag when it is semver-shaped. Some repos
@@ -178,7 +178,11 @@ async function _latestVersion(ownerRepo, pinnedIsPrerelease) {
     // versioned on separate vN.N.N tags — fall through to tags then.
     if (rel && typeof rel.tag_name === "string" && _REMOTE_TAG_RE.test(rel.tag_name)) tag = rel.tag_name;
   } catch (_e) { /* fall through to tags */ }
-  if (!tag) return _latestFromTags(ownerRepo);
+  // Stable-only on the fall-through. `/releases/latest` is never a prerelease by
+  // definition, so a repository WITH releases already gives a stable answer; one
+  // without them would otherwise have its highest tag taken whatever that is,
+  // and a stable pin measured against a release candidate.
+  if (!tag) return _latestFromTags(ownerRepo, true);
   return { tag: tag, sha: await _resolveSha(ownerRepo, tag) };
 }
 
@@ -193,7 +197,41 @@ var TAG_PAGE_SIZE  = 100;
 // github/codeql-action, the deepest here, holds ~900 tags across 9 pages.
 var TAG_PAGE_LIMIT = 40;
 
-async function _latestFromTags(ownerRepo) {
+// The highest acceptable tag among `names`, carrying `best` forward so a walk
+// can fold one page at a time. Returns `{ name, parsed }` or null.
+//
+// Pulled out of the page walk so the selection can be tested without the
+// network: which tag wins, and which are refused, is the whole substance of the
+// currency answer, and behind an HTTP call it could only be exercised live.
+function _highestTag(names, stableOnly, best) {
+  for (var i = 0; i < (names || []).length; i++) {
+    var name = names[i];
+    if (typeof name !== "string") continue;
+    // The SAME grammar the local collector holds a pin to. `_semverParse` reads
+    // a numeric PREFIX and would happily rank `v999-invalid!` or a leading-zero
+    // `v2.0.0-rc.007` as the highest version, then offer it as the replacement.
+    // A remote tag has to clear the bar a local one clears.
+    if (!_REMOTE_TAG_RE.test(name)) continue;
+    var p = _semverParse(name);
+    if (!p) continue;
+    if (stableOnly && p.pre && p.pre.length) continue;
+    if (!best || _semverCompare(p, best.parsed) > 0) best = { name: name, parsed: p };
+  }
+  return best || null;
+}
+
+// `stableOnly` refuses prerelease tags as candidates. A STABLE pin must never be
+// measured against a release candidate, or told to move to one: the operator
+// pinned a stable release and the gate would be spending a guarantee they chose.
+// It matters here rather than only in `_latestVersion`, because that function
+// falls through to this walk whenever a repository publishes no semver-shaped
+// GitHub Release — and for such a repository the highest tag may well be an rc.
+//
+// The opposite direction is deliberately NOT filtered. A prerelease pin ranks
+// against every tag, stable ones included, so a pin left on the newest rc of a
+// series that has since shipped, or been overtaken, is reported stale rather
+// than current forever against an abandoned line.
+async function _latestFromTags(ownerRepo, stableOnly) {
   var best  = null;
   var seen  = 0;
   var complete = false;      // did the walk actually reach the end of the tags?
@@ -202,17 +240,8 @@ async function _latestFromTags(ownerRepo) {
                                 TAG_PAGE_SIZE + "&page=" + page);
     if (!Array.isArray(tags)) break;
     seen += tags.length;
-    for (var i = 0; i < tags.length; i++) {
-      // The SAME grammar the local collector holds a pin to. `_semverParse`
-      // reads a numeric PREFIX and would happily rank `v999-invalid!` or a
-      // leading-zero `v2.0.0-rc.007` as the highest version, then offer it as
-      // the replacement. A remote tag has to clear the bar a local one clears.
-      if (!_REMOTE_TAG_RE.test(tags[i].name)) continue;
-      var p = _semverParse(tags[i].name);
-      if (p && (!best || _semverCompare(p, best.parsed) > 0)) {
-        best = { name: tags[i].name, parsed: p };
-      }
-    }
+    best = _highestTag(tags.map(function (t) { return t && t.name; }),
+                       stableOnly, best);
     // A short page is the end of the list; a full one means there may be more.
     if (tags.length < TAG_PAGE_SIZE) { complete = true; break; }
   }
@@ -675,7 +704,23 @@ function _scanLine(line, state, eof) {
       if (flowDepth === 0) {
         while (stack.length && stack[stack.length - 1].indent >= i) stack.pop();
       }
-      explicitKey = { name: qName.value, enclosing: keyPath() };
+      var qEnclosing = keyPath();
+      // A key whose scalar cannot be read on this line is not a key that can be
+      // dismissed. YAML permits a quoted key to carry an escaped line
+      // continuation, so `? "us\` followed by `es"` resolves to `uses` — and
+      // storing the null quietly would let the reference on the next line evade
+      // the gate entirely, present in neither `actions` nor `unparsed`.
+      //
+      // This is the opposite case to a continued quoted VALUE, which stays
+      // unreadable on purpose: a reference is one token with no spaces, so a
+      // continuation can never hold a valid one. A KEY has no such property.
+      // `uses` is four ordinary characters and a continuation can spell it, so
+      // the only safe reading of an unreadable key sitting where a reference
+      // could live is that it might be one.
+      if (qName.value === null && _isActionRefPosition(qEnclosing)) {
+        out.push({ value: null, after: "", depth: flowDepth, unreadableKey: true });
+      }
+      explicitKey = { name: qName.value, enclosing: qEnclosing };
       if (flowDepth === 0) stack.push({ indent: i, key: qName.value });
       i = qName.end;
       // The key position SURVIVES, because the `:` may follow on this very line
@@ -943,6 +988,15 @@ var _REF_RE = /^([A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)(\/[^@\s]+)?@(.+)$/;
 // absent read as clean.
 function _classifyUses(parts, rel, lineNo, rawLine, comment, out, unparsed, at) {
   if (parts.value === null) {
+    if (parts.unreadableKey) {
+      unparsed.push({ file: rel, line: lineNo, value: rawLine.trim(),
+                      reason: "explicit mapping key could not be read on this " +
+                              "line — a quoted key continued onto the next one " +
+                              "can resolve to `uses`, and the reference under it " +
+                              "would then go unchecked; write the key as a " +
+                              "single scalar" });
+      return;
+    }
     if (parts.alias) {
       unparsed.push({ file: rel, line: lineNo, value: rawLine.trim(),
                       reason: "step supplied as the YAML alias " + parts.alias +
@@ -1206,6 +1260,26 @@ function _collectPinnedActions(dir) {
     var tags = refs.filter(function (r) { return r.tagPinned; }).length;
     out[name].tagPinned = tags === refs.length;
     out[name].mixedPins = tags > 0 && tags < refs.length;
+    // The same question asked of the release TRACK. A prerelease reference and a
+    // stable one do not have the same upstream latest — `/releases/latest` skips
+    // prereleases by design — so an action pinned `v1.0.0` in one workflow and
+    // `v2.0.0-rc.1` in another has two different right answers and no single
+    // `latest` can carry both. Whether to scan prerelease tags was being decided
+    // from the aggregate, which keeps the LOWEST version: the stable pin won,
+    // the prerelease track was never scanned, and the reference on it was
+    // reported current against a latest that was never its own.
+    //
+    // Reported and left for a person, exactly as a mixed SHA/tag action is.
+    // Rewriting either way is wrong rather than merely incomplete: bumping the
+    // stable reference onto a release candidate trades a stability guarantee the
+    // operator chose, and bumping the prerelease one needs a latest that is not
+    // the action's.
+    var pre = refs.filter(function (r) {
+      var p = typeof r.version === "string" ? _semverParse(r.version) : null;
+      return !!(p && p.pre && p.pre.length);
+    }).length;
+    out[name].anyPrerelease   = pre > 0;
+    out[name].mixedPrerelease = pre > 0 && pre < refs.length;
   });
   // `unparsed` rides along rather than being dropped. Returning only the map
   // is what let an unrecognised reference vanish: the caller had no way to ask
@@ -1225,10 +1299,27 @@ async function _checkOne(ownerRepo, entry) {
   }
   var pinned = _semverParse(entry.version);
   try {
-    var info = await _latestVersion(ownerRepo, !!(pinned && pinned.pre));
+    // Asked of every REFERENCE. `entry.version` is the LOWEST across them, so an
+    // action pinned at stable `v1.0.0` and prerelease `v2.0.0-rc.1` presents the
+    // stable one here, the prerelease tags are never scanned, and the reference
+    // on that track is measured against a latest that excludes it by design.
+    var wantPre = entry.anyPrerelease === true || !!(pinned && pinned.pre);
+    // Where the references sit on BOTH tracks, one latest cannot answer for
+    // them, so both are fetched and each reference is measured against its own
+    // (`_staleRefs` carries the two ways a single comparison goes wrong). The
+    // extra request is spent only on actions that are actually split, which in
+    // practice is none of them.
+    var mixedTracks = entry.mixedPrerelease === true;
+    var info    = await _latestVersion(ownerRepo, mixedTracks ? false : wantPre);
+    var preInfo = mixedTracks ? await _latestVersion(ownerRepo, true) : null;
     var latest = _semverParse(info.tag);
     var cmp = _semverCompare(pinned, latest);
-    var status = cmp >= 0 ? "current" : "stale";
+    var behind = mixedTracks
+      ? _staleRefs(entry.refs, info.tag, preInfo && preInfo.tag)
+      : null;
+    var status = mixedTracks ? (behind.length ? "stale" : "current")
+               : cmp >= 0    ? "current"
+               :               "stale";
     if (special && special.type === "hold-major" && latest && latest[0] > special.major) {
       // A newer major exists but the repo intentionally holds an
       // older major — only flag stale WITHIN the held major.
@@ -1239,7 +1330,12 @@ async function _checkOne(ownerRepo, entry) {
     // inventing a rule the spec forbids. But two builds of one version can name
     // different code, and a gate that prints "current" without mentioning it is
     // reporting more confidence than it has. So it is SAID rather than ranked.
-    var buildNote = status === "current" && cmp === 0
+    // Not for a split action: `cmp` is the aggregate comparison, and the
+    // references it does not describe would be measured against the other
+    // track's tag. A split action already carries both latests and every
+    // reference's version, which is the stronger statement, so nothing is lost
+    // by declining to add a weaker one on top.
+    var buildNote = !mixedTracks && status === "current" && cmp === 0
       ? _buildMetadataNote(entry.refs, info.tag)
       : null;
     return {
@@ -1255,6 +1351,22 @@ async function _checkOne(ownerRepo, entry) {
       // sufficient for a bump that rewrites several.
       latest:    info.tag,
       latestSha: info.sha,
+      // What the PRERELEASE references are measured against, present only when
+      // the references are split across both tracks. `latest` above answers for
+      // the stable ones and says nothing about the others.
+      //
+      // Deliberately not called a prerelease latest, because it need not be one.
+      // A prerelease pin ranks against every tag, stable included: an operator
+      // sitting on the newest rc of a series that has since shipped, or been
+      // overtaken by a later stable, is behind, and filtering stable tags out of
+      // this lookup would report that pin current forever against a line nobody
+      // publishes to any more. So the value here is whichever tag is highest,
+      // and it is named for the role it plays rather than for its shape.
+      latestForPrereleases: preInfo ? preInfo.tag : undefined,
+      // Which references are behind, and on which track. For a split action the
+      // single `status` is a summary of two answers, so the detail is carried
+      // rather than left for the reader to work out from two latests.
+      behind:    behind && behind.length ? behind : undefined,
       status:    status,
       reason:    buildNote || undefined,
       // Carried through so the reader and `--fix` can both tell the two kinds
@@ -1262,6 +1374,11 @@ async function _checkOne(ownerRepo, entry) {
       // a person rather than edited.
       tagPinned: entry.tagPinned === true,
       mixedPins: entry.mixedPins === true,
+      // A stable reference and a prerelease one do not share an upstream latest,
+      // so the single `latest` above is right for one track and not the other.
+      // Named, and left for a person, for the same reason a mixed SHA/tag action
+      // is: there is no rewrite that is correct for both.
+      mixedPrerelease: entry.mixedPrerelease === true,
       refs:      entry.refs,
     };
   } catch (e) {
@@ -1281,6 +1398,7 @@ async function _checkOne(ownerRepo, entry) {
       // by SHA, and an unreachable one is still one of them.
       tagPinned: entry.tagPinned === true,
       mixedPins: entry.mixedPins === true,
+      mixedPrerelease: entry.mixedPrerelease === true,
       refs:   entry.refs,
     };
   }
@@ -1317,6 +1435,45 @@ async function _checkOne(ownerRepo, entry) {
 // the text, and every attempt to bound where it looked (whole file, then one
 // line) still matched script text that resembled a pin and silently rewrote it.
 // The scanner already knows where each reference is; the fixer is told.
+
+// The references that are behind, each measured against the latest on ITS OWN
+// release track.
+//
+// A stable reference and a prerelease one do not share an upstream latest:
+// GitHub's `/releases/latest` never names a prerelease, while a tag scan sees
+// every tag. Measuring both against one of those is wrong in both directions,
+// and which way it goes is decided by whichever version happened to be lowest:
+//
+//   stable v2.0.0 + prerelease v3.0.0-rc.2, both current on their own tracks
+//     -> aggregate lowest is 2.0.0, tag scan returns 3.0.0-rc.2, action reads
+//        STALE and the gate fails over two references that are both fine.
+//   stable v4.0.0 + prerelease v3.1.0-rc.1, with rc.2 published
+//     -> aggregate compares 3.1.0-rc.1 against 4.0.0 and reads CURRENT, so a
+//        genuinely stale release candidate goes unreported.
+//
+// So each reference is compared against the latest for the track it is on, and
+// the action is stale when any of them is. A reference with no recorded version
+// cannot be measured and is not counted here; it has already been named in
+// `unparsed` by the collector.
+function _staleRefs(refs, stableTag, prereleaseTag) {
+  var behind = [];
+  var stable = _semverParse(stableTag);
+  var pre    = prereleaseTag ? _semverParse(prereleaseTag) : null;
+  for (var i = 0; i < (refs || []).length; i++) {
+    var r = refs[i];
+    if (!r || typeof r.version !== "string") continue;
+    var v  = _semverParse(r.version);
+    if (!v) continue;
+    var isPre  = !!(v.pre && v.pre.length);
+    var target = isPre ? (pre || stable) : stable;
+    if (!target) continue;
+    if (_semverCompare(v, target) < 0) {
+      behind.push({ file: r.file, line: r.line, version: r.version,
+                    track: isPre ? "prerelease" : "stable" });
+    }
+  }
+  return behind;
+}
 
 // The warning for references whose build metadata differs from the latest tag,
 // or null when none does.
@@ -1421,7 +1578,12 @@ function _staleHints(r) {
   var refs  = r.refs || [];
   var lines = [];
   var anySha = refs.some(function (x) { return !x.tagPinned; });
-  if (r.latestSha && r.latest && anySha) {
+  // No paste line for an action split across release tracks. `r.latest` answers
+  // for the stable references only, so a single line offered under a list that
+  // includes prerelease ones is advice that is right for some of them and a
+  // downgrade for the rest — the same failure as offering a SHA under a tag
+  // reference, which is why that case is excluded here too.
+  if (r.latestSha && r.latest && anySha && !r.mixedPrerelease) {
     // The same full-version form `--fix` writes, so a paste-ready line is one
     // the next run will actually accept.
     lines.push("        pin:  " + r.action + "@" + r.latestSha +
@@ -1480,6 +1642,14 @@ async function main() {
       if (r.tagPinned) line += "  (tag pin — no SHA to rewrite; bump by hand)";
       else if (r.mixedPins) line += "  (pinned by SHA in some workflows and by " +
         "tag in others; --fix skips it entirely — update by hand)";
+      // Said even when the action reads current, which is the case that needs
+      // it most: the stable references may well be current while a prerelease
+      // sibling is behind, and one status covers both.
+      if (r.mixedPrerelease) line += "  (pinned to a prerelease in some " +
+        "workflows and a stable release in others; the prerelease references " +
+        "were checked against " + (r.latestForPrereleases || "unknown") +
+        " and the stable ones against " + (r.latest || "unknown") +
+        " — --fix skips it entirely)";
       say(line + "\n");
       if (r.status === "stale") {
         var hints = _staleHints(r);
@@ -1542,20 +1712,35 @@ async function main() {
     // still fails. Rewriting per reference would need per-reference currency,
     // which is a larger change than this gate needs today; until then a mixed
     // entry is a person's decision and the report names every file and line.
+    //
+    // A mixed RELEASE TRACK is excluded on the same reasoning. A stable
+    // reference and a prerelease one have different upstream latests, so the
+    // single one fetched above is right for one of them and wrong for the other,
+    // and there is no rewrite that serves both: bumping the stable reference
+    // onto a release candidate spends a stability guarantee the operator chose.
     var fixable = stale.filter(function (r) {
-      return r.latestSha && r.latest && !r.tagPinned && !r.mixedPins;
+      return r.latestSha && r.latest && !r.tagPinned && !r.mixedPins &&
+             !r.mixedPrerelease;
     });
-    var handOnly = stale.filter(function (r) { return r.tagPinned || r.mixedPins; });
+    var handOnly = stale.filter(function (r) {
+      return r.tagPinned || r.mixedPins || r.mixedPrerelease;
+    });
     for (var ho = 0; ho < handOnly.length; ho++) {
       var he = handOnly[ho];
       say("\n=== " + he.action + "  " + he.pinned + " -> " + he.latest + " ===\n");
       say(he.tagPinned
         ? "  pinned to a tag, so --fix leaves it alone: there is no SHA to " +
           "compare against and none to write. Update it by hand.\n"
-        : "  pinned by SHA in some workflows and by tag in others, so --fix " +
+        : he.mixedPins
+        ? "  pinned by SHA in some workflows and by tag in others, so --fix " +
           "leaves it alone: the version reported is the lowest across those " +
           "references, and rewriting the SHA ones could bump what was already " +
-          "current while the stale tag stayed put. Update it by hand.\n");
+          "current while the stale tag stayed put. Update it by hand.\n"
+        : "  pinned to a prerelease in some workflows and to a stable release " +
+          "in others, so --fix leaves it alone: the two tracks do not share an " +
+          "upstream latest, and bumping the stable references onto a release " +
+          "candidate would spend a guarantee they were pinned for. Update it " +
+          "by hand; the versions below say which reference is on which track.\n");
       for (var hr = 0; hr < (he.refs || []).length; hr++) {
         // This is the case where the per-reference version matters most: the
         // action is left for a person precisely BECAUSE its references disagree,
@@ -1755,6 +1940,8 @@ module.exports = {
   _rewriteRef: _rewriteRef,
   _distinctOldShas: _distinctOldShas,
   _buildMetadataNote: _buildMetadataNote,
+  _staleRefs: _staleRefs,
+  _highestTag: _highestTag,
   _fullVersion: _fullVersion,
   SCOPE_NOTE: SCOPE_NOTE,
   _semverParse: _semverParse,

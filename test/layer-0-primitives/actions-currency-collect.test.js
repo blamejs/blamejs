@@ -1324,6 +1324,161 @@ function testTheFixReplacementReachesThroughAQuote() {
                                     "v1.0.0-rc.7") === null,
         "");
 
+  // An explicit key whose scalar does not close on its line. YAML lets a quoted
+  // key carry an escaped continuation, so `? "us\` / `es"` resolves to `uses`
+  // and the value under it is a real reference. Reading the key as null and
+  // moving on put that reference in neither list — silence, which is the one
+  // outcome this collector must not have. It is the opposite case to a
+  // continued quoted VALUE, which stays unreadable on purpose because a
+  // reference is one token and a continuation can never hold a valid one.
+  var splitKey = withFixture({
+    "splitkey.yml":
+      "jobs:\n  build:\n    steps:\n" +
+      '      - ? "us\\\n' +
+      '        es"\n' +
+      "        : actions/checkout@v1.2.3\n",
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: an explicit key that does not close on its line is " +
+        "NAMED rather than read as absent",
+        splitKey.unparsed.length >= 1 &&
+        splitKey.unparsed.some(function (u) {
+          return u.reason.indexOf("explicit mapping key") !== -1;
+        }),
+        JSON.stringify(splitKey.unparsed) +
+        " actions=" + JSON.stringify(Object.keys(splitKey.actions)));
+  // The control for it: the same key written as one scalar IS read, so the
+  // check above is about the continuation and not about explicit keys at all.
+  var wholeKey = withFixture({
+    "wholekey.yml":
+      "jobs:\n  build:\n    steps:\n" +
+      '      - ? "uses"\n' +
+      "        : actions/checkout@v1.2.3\n",
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: while the same key written as one scalar is read " +
+        "normally",
+        (wholeKey.actions["actions/checkout"] || {}).version === "1.2.3" &&
+        wholeKey.unparsed.length === 0,
+        JSON.stringify(wholeKey.unparsed) +
+        " actions=" + JSON.stringify(Object.keys(wholeKey.actions)));
+
+  // A stable reference and a prerelease one do not share an upstream latest:
+  // `/releases/latest` skips prereleases by design. Deciding which track to scan
+  // from the aggregate picks the LOWEST version, so the stable pin wins, the
+  // prerelease tags are never looked at, and the reference on that track is
+  // measured against a latest that excludes it.
+  var tracks = withFixture({
+    "tracks.yml": stepsDoc(
+      "      - uses: actions/checkout@v1.0.0\n" +
+      "      - uses: actions/checkout@v2.0.0-rc.1\n"),
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  var tEntry = tracks.actions["actions/checkout"] || {};
+  check("actions-currency: an action with a prerelease reference anywhere is " +
+        "marked as having one, whatever the aggregate settled on",
+        tEntry.anyPrerelease === true && tEntry.version === "1.0.0",
+        JSON.stringify({ any: tEntry.anyPrerelease, v: tEntry.version }));
+  check("actions-currency: and one pinned across both tracks is marked mixed, " +
+        "so --fix leaves it for a person",
+        tEntry.mixedPrerelease === true,
+        JSON.stringify({ mixed: tEntry.mixedPrerelease }));
+  var oneTrack = withFixture({
+    "onetrack.yml": stepsDoc(
+      "      - uses: actions/checkout@v2.0.0-rc.1\n" +
+      "      - uses: actions/checkout@v2.0.0-rc.2\n"),
+  }, function (dir) { return currency._collectPinnedActions(dir); });
+  check("actions-currency: references all on the prerelease track are not " +
+        "mixed — the flag is about disagreement, not about prereleases",
+        (oneTrack.actions["actions/checkout"] || {}).anyPrerelease === true &&
+        (oneTrack.actions["actions/checkout"] || {}).mixedPrerelease === false,
+        JSON.stringify(oneTrack.actions["actions/checkout"]));
+
+  // Scanning the right track is only half of it — the COMPARISON has to be per
+  // track too. One aggregate comparison against one latest is wrong in both
+  // directions, and which way it goes depends on which version happened to be
+  // lowest. Both directions are pinned here.
+  var splitRefs = [
+    { file: "s.yml", line: 3, version: "2.0.0" },
+    { file: "p.yml", line: 4, version: "3.0.0-rc.2" },
+  ];
+  check("actions-currency: two references each current on their own track are " +
+        "not reported behind, though the prerelease tag outranks the stable one",
+        currency._staleRefs(splitRefs, "2.0.0", "3.0.0-rc.2").length === 0,
+        JSON.stringify(currency._staleRefs(splitRefs, "2.0.0", "3.0.0-rc.2")));
+  // The release candidate must sit ABOVE the stable latest for this to reach
+  // the failure it is about. With `3.1.0-rc.1` under a stable `4.0.0`, a
+  // stable-only comparison reports it behind for the wrong reason and the check
+  // passes without ever exercising the prerelease track. `4.1.0-rc.1` outranks
+  // `4.0.0`, so only a comparison against the PRERELEASE latest can see that
+  // `4.1.0-rc.2` has left it behind.
+  var staleRc = [
+    { file: "s.yml", line: 3, version: "4.0.0" },
+    { file: "p.yml", line: 4, version: "4.1.0-rc.1" },
+  ];
+  var rcBehind = currency._staleRefs(staleRc, "4.0.0", "4.1.0-rc.2");
+  check("actions-currency: and a stale release candidate that OUTRANKS the " +
+        "stable latest is still reported behind, on its own track",
+        rcBehind.length === 1 && rcBehind[0].version === "4.1.0-rc.1" &&
+        rcBehind[0].track === "prerelease" && rcBehind[0].line === 4,
+        JSON.stringify(rcBehind));
+  check("actions-currency: a stale stable reference is still reported behind, " +
+        "on its own track",
+        (function () {
+          var b = currency._staleRefs(
+            [{ file: "s.yml", line: 3, version: "1.0.0" }], "2.0.0", "3.0.0-rc.1");
+          return b.length === 1 && b[0].track === "stable";
+        })(),
+        "");
+  check("actions-currency: a reference with no readable version is not " +
+        "measured here — the collector has already named it",
+        currency._staleRefs([{ file: "s.yml", line: 3 }], "2.0.0", null).length === 0,
+        "");
+  // A prerelease reference is measured against whichever tag is highest, stable
+  // ones included, and that is the intended reading rather than an oversight.
+  // An operator sitting on the newest release candidate of a series that has
+  // since been overtaken by a stable release IS behind; excluding stable tags
+  // from that comparison would report the pin current forever against a line
+  // nobody publishes to any more. Pinned as behaviour so the decision is a test
+  // rather than a paragraph.
+  var superseded = currency._staleRefs(
+    [{ file: "p.yml", line: 5, version: "4.1.0-rc.2" }], "5.0.0", "5.0.0");
+  check("actions-currency: a release candidate overtaken by a later stable " +
+        "release is behind, not current on an abandoned line",
+        superseded.length === 1 && superseded[0].track === "prerelease",
+        JSON.stringify(superseded));
+  // And the mirror, which IS a defect the other way: a stable reference must
+  // never be measured against a release candidate, or it would be told to trade
+  // the guarantee it was pinned for.
+  check("actions-currency: a stable reference is never reported behind a " +
+        "release candidate",
+        currency._staleRefs(
+          [{ file: "s.yml", line: 6, version: "4.0.0" }],
+          "4.0.0", "5.0.0-rc.1").length === 0,
+        "");
+
+  // The other half of that guarantee lives in the tag walk. A repository that
+  // publishes no semver-shaped GitHub Release falls through to ranking its tags,
+  // and for such a repository the highest tag may well be a release candidate —
+  // so a stable pin would be measured against one, and `--fix` would offer it.
+  var mixedTags = ["v4.0.0", "v5.0.0-rc.1", "v3.9.0", "not-a-version", "v5.0.0-rc.2"];
+  check("actions-currency: the stable-track tag walk refuses release " +
+        "candidates, whatever their rank",
+        (currency._highestTag(mixedTags, true, null) || {}).name === "v4.0.0",
+        JSON.stringify(currency._highestTag(mixedTags, true, null)));
+  check("actions-currency: while the prerelease-track walk ranks every tag, so " +
+        "a candidate overtaken by a stable release is still seen",
+        (currency._highestTag(mixedTags, false, null) || {}).name === "v5.0.0-rc.2",
+        JSON.stringify(currency._highestTag(mixedTags, false, null)));
+  check("actions-currency: a tag that is not the version grammar a local pin " +
+        "must clear is never the answer",
+        currency._highestTag(["not-a-version", "v2.0.0-rc.007", "latest"],
+                             false, null) === null,
+        JSON.stringify(currency._highestTag(
+          ["not-a-version", "v2.0.0-rc.007", "latest"], false, null)));
+  check("actions-currency: a page fold carries the running best forward rather " +
+        "than restarting from it",
+        (currency._highestTag(["v1.0.0"], false,
+          currency._highestTag(["v9.0.0"], false, null)) || {}).name === "v9.0.0",
+        "");
+
   // Two references at the SAME SHA are one comparison, not two: the material
   // would be byte-identical, and printing it twice reads as two separate bumps.
   var sameSha = currency._distinctOldShas([
