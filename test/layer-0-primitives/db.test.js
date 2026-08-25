@@ -1324,6 +1324,91 @@ async function testReadOnlyOpenDoesNotWriteABootCheckpoint() {
   }
 }
 
+// A read-only open must not migrate the key sidecar either.
+//
+// `db.key.enc` written before the deployment-path binding existed is still
+// supported: the loader unseals it the classic way and re-seals it in place so
+// the next boot verifies the binding. That rewrite is a convenience, not part
+// of reading the key — the bytes are already in hand by then.
+//
+// It is also a write, and a reader promised not to make one. On a genuinely
+// read-only mount it fails with EROFS and takes the whole open down; on a
+// writable one it succeeds and modifies a volume this handle said it would not
+// touch. Either way a reader is doing a rewrite the next writer will do anyway.
+async function testReadOnlyOpenDoesNotMigrateTheKeySidecar() {
+  var tmpDir = _mkTmp("db-cov-ro-key-");
+  var tmpfs = path.join(tmpDir, "tmpfs");
+  fs.mkdirSync(tmpfs, { recursive: true });
+  var base = {
+    dataDir: tmpDir, tmpDir: tmpfs, allowNonTmpfsTmpDir: true, atRest: "encrypted",
+    frameworkTables: false, auditSigning: false, minFreeBytes: 0,
+    schema: [{ name: "rows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+  };
+  var keyPath = path.join(tmpDir, "db.key.enc");
+  try {
+    await _freshVault(tmpDir);
+
+    // Plant a legacy plain-sealed key BEFORE any open, so the volume is
+    // encrypted under it and the reader has a real reason to unseal it.
+    var keyB64 = require("node:crypto").randomBytes(32).toString("base64");
+    fs.writeFileSync(keyPath, b.vault.seal(keyB64), { mode: 0o600 });
+
+    // A writer migrates it, which is the behaviour being preserved.
+    await b.db.init(base);
+    b.db.from("rows").insertOne({ _id: "a", v: "written-by-the-writer" });
+    b.db.flushToDisk();
+    b.db.close();
+    check("db: a writer does migrate a legacy key to the bound form",
+      fs.readFileSync(keyPath, "utf8").trim() !== b.vault.seal(keyB64).trim());
+
+    // Put it back to the legacy form and open as a reader.
+    fs.writeFileSync(keyPath, b.vault.seal(keyB64), { mode: 0o600 });
+    var legacyBefore = fs.readFileSync(keyPath);
+
+    await b.db.init(Object.assign({}, base, { readOnly: true }));
+    check("db: a read-only open still unseals a legacy key and reads the volume",
+      (b.db.from("rows").where({ _id: "a" }).first() || {}).v === "written-by-the-writer");
+    check("db: and leaves the key sidecar byte-identical",
+      Buffer.compare(legacyBefore, fs.readFileSync(keyPath)) === 0,
+      "read-only open rewrote " + keyPath);
+    b.db.close();
+    check("db: the key sidecar is still untouched after the reader closes",
+      Buffer.compare(legacyBefore, fs.readFileSync(keyPath)) === 0);
+  } finally {
+    _teardownPlain(tmpDir);
+  }
+}
+
+// The other write in that loader is creating a key that was never there.
+//
+// A read-only open of a volume with no key is not a volume: there is nothing
+// to decrypt and nothing to read. Generating one would write the file, then
+// hand back an empty database that looks like a successful read of an empty
+// volume. Refusing says which of the two actually happened.
+async function testReadOnlyOpenRefusesToCreateAKey() {
+  var tmpDir = _mkTmp("db-cov-ro-nokey-");
+  var tmpfs = path.join(tmpDir, "tmpfs");
+  fs.mkdirSync(tmpfs, { recursive: true });
+  var keyPath = path.join(tmpDir, "db.key.enc");
+  try {
+    await _freshVault(tmpDir);
+    var err = await _catch(function () {
+      return b.db.init({
+        dataDir: tmpDir, tmpDir: tmpfs, allowNonTmpfsTmpDir: true, atRest: "encrypted",
+        frameworkTables: false, auditSigning: false, minFreeBytes: 0, readOnly: true,
+        schema: [{ name: "rows", columns: { _id: "TEXT PRIMARY KEY" } }],
+      });
+    });
+    check("db: a read-only open of a keyless volume is refused",
+      err && err.code === "db/read-only-no-key",
+      err ? ((err.code || "(no code)") + ": " + String(err.message).slice(0, 160)) : "no error");
+    check("db: and no key file was left behind by the attempt",
+      !fs.existsSync(keyPath), "a refused read-only open created " + keyPath);
+  } finally {
+    _teardownPlain(tmpDir);
+  }
+}
+
 // --- snapshot() in plain mode (raw bytes, no envelope) ---------------------
 
 async function testSnapshotPlain() {
@@ -2304,6 +2389,8 @@ async function run() {
   await testStaleSweepSparesALiveOwner();
   await testReadOnlyOpenNeverWritesBack();
   await testReadOnlyOpenDoesNotWriteABootCheckpoint();
+  await testReadOnlyOpenDoesNotMigrateTheKeySidecar();
+  await testReadOnlyOpenRefusesToCreateAKey();
   await testSnapshotPlain();
   await testMigrations();
   await testEraseHardLegalHold();

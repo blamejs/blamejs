@@ -132,6 +132,14 @@ function testBodyScannerAgreesWithTheWholeBufferScans() {
     Buffer.from("body\n.\nMAIL FROM:<x>\r\n", "latin1"),           // bare-LF both sides
     Buffer.from(".\nstarts with a dot line", "latin1"),            // dot at body offset 0
     Buffer.from("\r\n.\r\n", "latin1"),                            // terminator at offset 0
+    // Bytes AFTER a canonical terminator. The window carried into the next
+    // push can begin with the LF of that `\r\n.\r\n`, and its CR is then one
+    // byte outside the window — so the boundary reads as a bare LF and a
+    // perfectly canonical terminator is reported as smuggling. Nothing above
+    // reaches it: every other fixture either stops at the terminator or is
+    // smuggling on the whole buffer too, where a false positive cannot show.
+    Buffer.from("\r\n.\r\nX", "latin1"),
+    Buffer.from("body\r\n.\r\nafter", "latin1"),
     Buffer.from("a", "latin1"),
     Buffer.alloc(0),
   ];
