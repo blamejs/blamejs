@@ -1149,6 +1149,51 @@ async function testLimitsAndSmuggling(tls) {
 // A limiter whose floor is unreachable in a fast test is substituted so the
 // branch is reached without spending the ten-second grace window; the number
 // itself is pinned in mail-server-rate-limit.test.js.
+// The same floor on the OTHER body path. This listener advertises CHUNKING, so
+// a body can arrive by BDAT instead of DATA, and a defence applied to one path
+// is a defence a client opts out of by using the other — which is exactly what
+// happened to the bare-LF smuggling screen earlier in this release. Applying a
+// body-phase check to DATA alone is the mistake this file has now made twice.
+async function testBodyRateFloorAppliesToBdatToo(tls) {
+  var asked = [];
+  var real = b.mail.server.rateLimit.create({});
+  var starving = {};
+  Object.keys(real).forEach(function (k) {
+    starving[k] = typeof real[k] === "function"
+      ? function () { return real[k].apply(real, arguments); }
+      : real[k];
+  });
+  starving.bodyRateStarved = function (bytes, elapsedMs) {
+    asked.push({ bytes: bytes, elapsedMs: elapsedMs });
+    return true;
+  };
+
+  var s = await _mk(tls, { profile: "permissive", rateLimit: starving });
+  var sock = await _connect(s.port);
+  try {
+    await _readReply(sock);
+    await _send(sock, "EHLO client.example.com");
+    await _send(sock, "MAIL FROM:<a@example.com>");
+    await _send(sock, "RCPT TO:<b@example.com>");
+
+    var body = "Subject: chunked\r\n\r\nx";
+    var reply = await _send(sock,
+      "BDAT " + Buffer.byteLength(body, "utf8") + " LAST\r\n" + body);
+    check("submission: a BDAT body below the rate floor is refused 421",
+      /^421 /.test(reply), JSON.stringify(reply));
+    check("submission: the BDAT refusal is transient, not permanent",
+      /4\.7\.0/.test(reply), JSON.stringify(reply));
+    check("submission: the listener asked the limiter on the BDAT path too",
+      asked.length >= 1, String(asked.length));
+    check("submission: the BDAT bytes reported include the chunk under judgement",
+      asked.length >= 1 && asked[0].bytes > 0,
+      asked.length ? String(asked[0].bytes) : "never asked");
+  } finally {
+    sock.destroy();
+    await s.srv.close({ timeoutMs: b.constants.TIME.seconds(2) });
+  }
+}
+
 async function testBodyRateFloorIsAskedDuringData(tls) {
   var asked = [];
   var real = b.mail.server.rateLimit.create({});
@@ -1464,6 +1509,7 @@ async function run() {
   await testConnRateLimit(tls);
   await testLimitsAndSmuggling(tls);
   await testBodyRateFloorIsAskedDuringData(tls);
+  await testBodyRateFloorAppliesToBdatToo(tls);
   await testAuthNotConfigured(tls);
   await testIdleTimeout(tls);
   await testCloseDrain(tls);
