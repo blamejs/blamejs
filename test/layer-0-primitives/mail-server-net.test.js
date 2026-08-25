@@ -16,6 +16,7 @@
 
 var helpers = require("../helpers");
 var check   = helpers.check;
+var b       = helpers.b;
 
 var mailServerNet = require("../../lib/mail-server-net");
 
@@ -210,7 +211,94 @@ async function testListenerCeilingRefusesBeyondMaxConnections() {
   }
 }
 
+// The body-rate floor was measured as a LIFETIME average from the DATA prompt,
+// so an early burst subsidised an arbitrarily slow tail. At the default 100 B/s
+// an 8 MiB burst buys about a day of credit and 50 MiB buys six, which a peer
+// spends holding a connection and its slot in the per-address cap while sending
+// a byte at a time — on the MX listener, unauthenticated. The floor was
+// enforced and still bypassable.
+//
+// Measuring over bounded windows removes the credit: each window has to meet
+// the floor on its own, so nothing a peer sent earlier pays for what it sends
+// now. The clock is a parameter here rather than Date.now(), which is what lets
+// this drive days of simulated time without waiting for them.
+function testBodyRateWindowGivesNoCreditForAnEarlyBurst() {
+  var rl = b.mail.server.rateLimit.create({ minBytesPerSecond: 100 });
+  var grace = b.mail.server.rateLimit.BODY_RATE_GRACE_MS;
+  check("net: the grace window is exposed so a caller can reason about it",
+        typeof grace === "number" && grace > 0, String(grace));
+
+  // A peer that front-loads 8 MiB and then trickles one byte per window.
+  var w = mailServerNet.createBodyRateWindow(rl);
+  var t = 0;
+  w.start(t);
+  var seen = 8 * 1024 * 1024;
+  t += grace;
+  check("net: the burst itself is not starved",
+        w.starved(seen, t) === false);
+
+  // Now the trickle. Under a lifetime average this stays admitted for days;
+  // over bounded windows the very next full window is below the floor.
+  t += grace;
+  seen += 1;
+  check("net: a trickle AFTER a burst is starved on the next window",
+        w.starved(seen, t) === true,
+        "seen=" + seen + " t=" + t);
+
+  // A sender that keeps meeting the floor is never cut off, however long it
+  // runs — the windows roll forward rather than accumulating against it.
+  var ok = mailServerNet.createBodyRateWindow(rl);
+  var t2 = 0, bytes = 0, everStarved = false;
+  ok.start(t2);
+  for (var i = 0; i < 50; i += 1) {
+    t2 += grace;
+    bytes += Math.ceil((grace / 1000) * 100) + 1;         // just over the floor
+    if (ok.starved(bytes, t2)) { everStarved = true; break; }
+  }
+  check("net: a sender that keeps meeting the floor is never cut off",
+        everStarved === false);
+
+  // Inside the first grace window nothing is judged: a sender pausing to read
+  // from its own spool must not be cut off for the pause.
+  var early = mailServerNet.createBodyRateWindow(rl);
+  early.start(0);
+  check("net: nothing is judged inside the grace window",
+        early.starved(1, Math.floor(grace / 2)) === false);
+
+  // The window rolls on the LIMITER's interval, not on the built-in's. A custom
+  // limiter that judges over a longer stretch would otherwise be asked only
+  // before it can answer — every call returning "too early", the window
+  // resetting underneath it at the built-in's ten seconds, and its rate
+  // protection silently disabled while appearing to be wired.
+  var judged = [];
+  var slow = {};
+  Object.keys(rl).forEach(function (k) { slow[k] = rl[k]; });
+  slow.bodyRateWindowMs = function () { return grace * 6; };
+  slow.bodyRateStarved = function (bytes, elapsedMs) {
+    judged.push({ bytes: bytes, elapsedMs: elapsedMs });
+    if (elapsedMs < grace * 6) return false;             // its own, longer grace
+    return (bytes / (elapsedMs / 1000)) < 100;
+  };
+
+  var sw = mailServerNet.createBodyRateWindow(slow);
+  var st = 0;
+  sw.start(st);
+  // Trickle one byte per built-in grace period, well past where the built-in
+  // would have rolled the window.
+  var cut = false;
+  for (var k = 1; k <= 6; k += 1) {
+    st += grace;
+    if (sw.starved(k, st)) { cut = true; break; }
+  }
+  check("net: a custom limiter is asked at ITS window, and its verdict lands",
+        cut === true, JSON.stringify(judged));
+  check("net: it was eventually asked with an elapsed reaching its own interval",
+        judged.some(function (j) { return j.elapsedMs >= grace * 6; }),
+        JSON.stringify(judged.map(function (j) { return j.elapsedMs; })));
+}
+
 async function run() {
+  testBodyRateWindowGivesNoCreditForAnEarlyBurst();
   await testListenerCeilingRefusesBeyondMaxConnections();
   await testPipelinedSaslResponseAbandonsTheRoundInFlight();
   await testAbandonedRoundSwallowsAVerifierThrow();

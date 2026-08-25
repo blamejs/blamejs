@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.18.55",
-  "createdAt": "2026-08-25T06:24:11.905Z",
+  "createdAt": "2026-08-25T07:43:00.540Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -45294,6 +45294,10 @@
             "rateLimit": {
               "type": "object",
               "members": {
+                "BODY_RATE_GRACE_MS": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
                 "DEFAULTS": {
                   "type": "object",
                   "members": {

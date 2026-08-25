@@ -34,9 +34,14 @@ function bestMs(fn, reps) {
 /**
  * Does the work grow faster than `threshold` between two input sizes?
  *
- *   run          function (size) — do the work once at that size
- *   opts.small   the smaller input size
- *   opts.large   the larger one (conventionally 2x small)
+ *   run          function (x) — do the work once at that point on the varying
+ *                dimension. Usually an input SIZE, but the dimension is
+ *                whatever the claim is about: a wildcard COUNT, a nesting
+ *                DEPTH, or which of two inputs to classify. The arithmetic is
+ *                the same and so is the reason for re-measuring.
+ *   opts.small   the baseline point
+ *   opts.large   the point being judged (conventionally 2x small when it is a
+ *                size, but nothing requires that)
  *   opts.threshold   ratio above which growth counts as superlinear (default 3
  *                    — linear doubles, quadratic quadruples, so 3 separates
  *                    them with room on both sides)

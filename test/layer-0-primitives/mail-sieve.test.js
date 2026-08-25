@@ -530,10 +530,18 @@ function testWildcardMatchDoesNotBacktrack() {
   var byCountSuperlinear = helpers.looksSuperlinear(function (stars) {
     matchOnce("*a".repeat(stars) + "*b", 512);
   }, { small: 3, large: 20, threshold: 8, floorMs: 2 });
+  // BOTH terms, because they catch different things at different scales. The
+  // absolute bound is what actually fires against the regression this guards:
+  // with the fix a 20-star match runs in hundredths of a millisecond, and a
+  // return to degree-per-wildcard would run to seconds, so 25ms is a ~2000x
+  // margin. The re-measured ratio adds nothing at that speed — it declines to
+  // judge below its noise floor — but it is what catches a subtler curve if
+  // this ever gets slow enough to take a ratio of.
   check("sieve :matches — cost does not track the number of wildcards (" +
         twenty.toFixed(1) + "ms at 20)",
-        !byCountSuperlinear,
-        "re-measured superlinear in wildcard count at " + twenty.toFixed(1) + "ms");
+        twenty < 25 && !byCountSuperlinear,
+        twenty.toFixed(1) + "ms" +
+        (byCountSuperlinear ? " and re-measured superlinear in wildcard count" : ""));
 }
 
 function run() {

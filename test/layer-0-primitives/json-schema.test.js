@@ -446,15 +446,22 @@ function testSharedSchemaGraphIsWalkedOncePerObject() {
   }
 
   // Anchored to a shallow reading rather than a wall-clock budget: 24 levels is
-  // 25 objects, and identity tracking makes that indistinguishable from 12. The
-  // pre-fix walk is 2^12 times the work of the shallow one.
-  var shallow = ms(12);
-  var deep = ms(24);
-  var ceiling = Math.max(25, shallow * 50);
+  // 25 objects, and identity tracking keeps that within a small factor of 12.
+  // The pre-fix walk is 2^12 times the work of the shallow one, so the two are
+  // separated by an enormous margin and the threshold does not have to be tight.
+  //
+  // Re-measured before it fails anything. A single reading on each side is what
+  // a contended runner moves: this failed a 64-way container run at x52 against
+  // a x50 ceiling, four percent over, while the shape itself is nowhere near
+  // exponential — measured best-of-5, depth 30 costs 19x depth 12, where the
+  // pre-fix walk would have cost 2^18 times as much.
+  var deep = helpers.bestMs(function () { ms(24); }, 3);
+  var walkedPerPath = helpers.looksSuperlinear(ms, {
+    small: 12, large: 24, threshold: 50, floorMs: 2,
+  });
   check("jsonSchema: a shared subschema graph is walked once per object, not " +
-        "once per path (" + deep.toFixed(1) + "ms at 25 objects against " +
-        shallow.toFixed(1) + "ms at 13)",
-        deep < ceiling, deep.toFixed(1) + "ms, ceiling " + ceiling.toFixed(1) + "ms");
+        "once per path (" + deep.toFixed(1) + "ms at 25 objects)",
+        !walkedPerPath, deep.toFixed(1) + "ms re-measured as walked per path");
 
   // A cyclic schema did not return at all before the fix.
   var cyclic = { type: "object" };
