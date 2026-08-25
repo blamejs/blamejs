@@ -609,6 +609,61 @@ async function testArcSealsTheOctetsItWasGiven() {
         rvText.chainStatus + " ams=" + (rvText.hops[0] || {}).amsResult);
 }
 
+// `arc.evaluate` answers the same question as `arc.verify` plus a trust
+// decision, so the two must never disagree about whether the chain passes.
+// They did: evaluate resolved the message to the wire form and then handed that
+// wire STRING to verify, which resolved it again — the second pass read
+// latin1 code units as text and re-encoded them as UTF-8, so the octets
+// checked were not the octets signed. Only a message with a non-ASCII
+// character shows it; every ASCII test agreed.
+async function testArcEvaluateAgreesWithVerify() {
+  var nodeCrypto = require("crypto");
+  var kp = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var pem = kp.privateKey.export({ format: "pem", type: "pkcs8" });
+  var spkiB64 = kp.publicKey.export({ type: "spki", format: "der" }).toString("base64");
+  var dns = _arcKeyRoundtripDns("relay-agree.example", [["v=DKIM1; k=rsa; p=" + spkiB64]]);
+
+  var text = "From: alice@example.com\r\nTo: bob@example.com\r\nSubject: café\r\n" +
+             "Date: Wed, 06 May 2026 12:00:00 +0000\r\n" +
+             "Message-ID: <agree@example.com>\r\n\r\ncafé über\r\n";
+  var hop = b.mail.arc.sign({
+    rfc822: text, instance: 1, authservId: "relay-agree.example",
+    domain: "relay-agree.example", selector: "arc", privateKey: pem,
+    algorithm: "rsa-sha256", cv: "none", authResults: "spf=pass",
+    headersToSign: ["From", "To", "Subject", "Date", "Message-ID"],
+  });
+
+  var verified = await b.mail.arc.verify(hop.rfc822, { dnsLookup: dns });
+  var evaluated = await b.mail.arc.evaluate(hop.rfc822, {
+    dnsLookup: dns, trustedSealers: ["relay-agree.example"],
+  });
+  check("arc: verify passes a UTF-8 message's chain",
+        verified.chainStatus === "pass", verified.chainStatus);
+  check("arc: evaluate reports the SAME chainStatus as verify",
+        evaluated.chainStatus === verified.chainStatus,
+        evaluated.chainStatus + " vs " + verified.chainStatus);
+  check("arc: a trusted sealer is recognised on that chain",
+        evaluated.trusted === true && evaluated.trustedDomain === "relay-agree.example",
+        JSON.stringify({ t: evaluated.trusted, d: evaluated.trustedDomain }));
+
+  // Same for a Buffer message, which is the shape a receiver actually holds.
+  var buf = Buffer.from(text, "utf8");
+  var hopBuf = b.mail.arc.sign({
+    rfc822: buf, instance: 1, authservId: "relay-agree2.example",
+    domain: "relay-agree2.example", selector: "arc", privateKey: pem,
+    algorithm: "rsa-sha256", cv: "none", authResults: "spf=pass",
+    headersToSign: ["From", "To", "Subject", "Date", "Message-ID"],
+  });
+  var dns2 = _arcKeyRoundtripDns("relay-agree2.example", [["v=DKIM1; k=rsa; p=" + spkiB64]]);
+  var vBuf = await b.mail.arc.verify(hopBuf.rfc822, { dnsLookup: dns2 });
+  var eBuf = await b.mail.arc.evaluate(hopBuf.rfc822, {
+    dnsLookup: dns2, trustedSealers: ["relay-agree2.example"],
+  });
+  check("arc: verify and evaluate agree on a Buffer message too",
+        vBuf.chainStatus === "pass" && eBuf.chainStatus === vBuf.chainStatus,
+        vBuf.chainStatus + " vs " + eBuf.chainStatus);
+}
+
 async function testArcVerifyBadSignatures() {
   // All 3 ARC headers present but the b= values are dummy — signature
   // verification fails per-hop. Per the security-no-defer rule this
@@ -4599,6 +4654,7 @@ async function run() {
   await testArcVerifyMissing();
   await testArcVerifyNone();
   await testArcSealsTheOctetsItWasGiven();
+  await testArcEvaluateAgreesWithVerify();
   await testArcVerifyBadSignatures();
   await testArcInfinityClockSkewDoesNotDisableExpiry();
   await testArcVerifyDuplicateInstance();

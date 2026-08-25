@@ -450,21 +450,16 @@ function testCreateAuditThrowDropSilent() {
 // wall-clock budget is a claim about the machine. The one-star control is
 // linear and shows the harness can tell the two apart.
 function testWildcardMatchDoesNotBacktrack() {
-  function best(fn) {
-    var lowest = Infinity;
-    for (var i = 0; i < 3; i += 1) {
-      var t0 = process.hrtime.bigint();
-      try { fn(); } catch (_e) { /* a refusal is a fine answer; a hang is not */ }
-      var ms = Number(process.hrtime.bigint() - t0) / 1e6;
-      if (ms < lowest) lowest = ms;
-    }
-    return lowest;
-  }
-  function runMatch(pattern, subjectLen) {
+  function matchOnce(pattern, subjectLen) {
     var script = 'require ["fileinto"];\n' +
                  'if header :matches "Subject" "' + pattern + '" { fileinto "X"; }';
     var env = { headers: [{ name: "Subject", value: "a".repeat(subjectLen) }] };
-    return best(function () { b.mail.sieve.runScript(script, env); });
+    b.mail.sieve.runScript(script, env);
+  }
+  // Shared with the other suites that assert growth, so the reps and the noise
+  // floor cannot drift apart between hand-rolled copies.
+  function runMatch(pattern, subjectLen) {
+    return helpers.bestMs(function () { matchOnce(pattern, subjectLen); }, 3);
   }
 
   // Control: one star cannot be superlinear, so this reads as a sanity check on
@@ -482,6 +477,12 @@ function testWildcardMatchDoesNotBacktrack() {
   var small = runMatch("*a*a*b", 400);
   var large = runMatch("*a*a*b", 800);
   var ratio = large / Math.max(small, 0.05);
+  // A superlinear-looking ratio is re-measured before it fails anything: a
+  // contended runner preempted between two samples reads superlinear on a
+  // matcher that cannot backtrack, while a real cubic reproduces every time.
+  var reallySuperlinear = helpers.looksSuperlinear(function (n) {
+    matchOnce("*a*a*b", n);
+  }, { small: 400, large: 800, floorMs: 2 });
 
   check("sieve :matches — the one-star control scales linearly (x" +
         control.toFixed(1) + " at " + controlLarge.toFixed(2) + "ms)",
@@ -489,7 +490,7 @@ function testWildcardMatchDoesNotBacktrack() {
         "control x" + control.toFixed(1) + " at " + controlLarge.toFixed(2) + "ms");
   check("sieve :matches — doubling the subject does not more than double the " +
         "work at three stars (x" + ratio.toFixed(1) + ", " + large.toFixed(1) + "ms)",
-        large < 2 || ratio < 3, "x" + ratio.toFixed(1) + " at " + large.toFixed(1) + "ms");
+        !reallySuperlinear, "x" + ratio.toFixed(1) + " at " + large.toFixed(1) + "ms");
 
   // `?` matches exactly one character, and folding must not change how many
   // there are. `"İ".toLowerCase()` is two UTF-16 units, so a fold applied

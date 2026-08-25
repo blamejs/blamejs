@@ -555,6 +555,15 @@ async function _testAuditToolsBundleAndPurge(tmpDir) {
   // archive needs a covering checkpoint (we wrote one at counter 5) and a
   // `before` boundary newer than every row. recordedAt is Date.now()-based,
   // so a `before` of now+1h covers all rows.
+  //
+  // KNOWN FLAKE, tracked separately: in a full integration run this has failed
+  // with "no signed checkpoint covers counter=15" while passing standalone —
+  // phases between the checkpoint and here emit their own audit rows, and once
+  // the chain moves past counter 5 that anchor no longer covers the tip. Taking
+  // a fresh checkpoint here does NOT work: the fencing phase above deliberately
+  // UPSERTs a higher fencingToken to prove a lower one is refused, so any later
+  // checkpoint is fenced out by design. The fix has to reorder the phases or
+  // give this one its own scope, not add a call.
   var arDir = path.join(tmpDir, "archive-bundle");
   var ar = await b.auditTools.archive({
     out:        arDir,

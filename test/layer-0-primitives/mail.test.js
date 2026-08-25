@@ -1583,6 +1583,59 @@ async function testSmtpCapabilitiesComeOnlyFromThePostTlsEhlo(certPair) {
   } finally { await closeServer(st3); }
 }
 
+// RFC 6152: a body carrying octets with the high bit set needs 8BITMIME. If the
+// peer does not advertise it, the message cannot go as-is — but the mode
+// selection fell through to `7BIT` and wrote the raw high octets anyway. The
+// transaction then declares 7-bit and sends 8-bit, which the peer may reject
+// outright or strip the eighth bit from, silently corrupting the message.
+//
+// The BINARYMIME sibling of this already refused. Marking a body as needing an
+// extension and then shipping it without one is the same defect either way, and
+// only one of the two was closed.
+async function testRaw8BitRefusedWhenPeerHasNo8BitMime(certPair) {
+  var st = startTlsSmtp(certPair, { ext: ["SIZE 1048576"] });                                           // allow:raw-byte-literal — no 8BITMIME advertised
+  await listen(st);
+  try {
+    var t = tlsTransport(certPair, st.port);
+    var e = await _sendErr(t, {
+      from: "s@a.test", to: "r@b.test", subject: "eight bit",
+      // ISO-8859-1 in the body, no NUL — 8BITMIME territory, not BINARYMIME.
+      raw: Buffer.from([
+        0x53, 0x75, 0x62, 0x6A, 0x65, 0x63, 0x74, 0x3A, 0x20, 0x74, 0x0D, 0x0A, 0x0D, 0x0A,
+        0x43, 0x61, 0x66, 0xE9, 0x0D, 0x0A,
+      ]),
+    });
+    check("8bit: a raw 8-bit body is refused when the peer omits 8BITMIME",
+          e && e.code === "mail/8bitmime-not-advertised",
+          e && (e.code + " / " + e.message));
+    // `lastDataRaw` is only assigned when a DATA body completes, so it is
+    // absent — not null — when the refusal landed before the body was written.
+    check("8bit: nothing was written into a DATA or BDAT frame",
+          !st.lastDataRaw && st.bdatChunks.length === 0,
+          JSON.stringify({ data: st.lastDataRaw === undefined ? "absent" : st.lastDataRaw,
+                           bdat: st.bdatChunks.length }));
+  } finally { await closeServer(st); }
+
+  // Control: the same body IS sent when the peer advertises 8BITMIME, so this
+  // refuses an un-negotiated send rather than refusing 8-bit mail.
+  var st2 = startTlsSmtp(certPair, { ext: ["8BITMIME"] });
+  await listen(st2);
+  try {
+    var t2 = tlsTransport(certPair, st2.port);
+    var r2 = await t2.send({
+      from: "s@a.test", to: "r@b.test", subject: "eight bit",
+      raw: Buffer.from([
+        0x53, 0x75, 0x62, 0x6A, 0x65, 0x63, 0x74, 0x3A, 0x20, 0x74, 0x0D, 0x0A, 0x0D, 0x0A,
+        0x43, 0x61, 0x66, 0xE9, 0x0D, 0x0A,
+      ]),
+    });
+    check("control: an 8BITMIME peer accepts the same body", r2.code === 250);
+    check("control: and it was declared BODY=8BITMIME",
+          st2.mailFromLine !== null && /BODY=8BITMIME/i.test(st2.mailFromLine),
+          st2.mailFromLine);
+  } finally { await closeServer(st2); }
+}
+
 async function testSmtpStarttlsRejected(certPair) {
   var st = startStarttlsSmtp(certPair, { starttls: "reject" });
   await listen(st);
@@ -3258,6 +3311,7 @@ async function run() {
   await testSmtpSocketTimeout(certPair);
   await testSmtpStarttlsHappyPath(certPair);
   await testSmtpCapabilitiesComeOnlyFromThePostTlsEhlo(certPair);
+  await testRaw8BitRefusedWhenPeerHasNo8BitMime(certPair);
   await testSmtpStarttlsRejected(certPair);
   await testSmtpBinaryMimeFromNulBuffer(certPair);
   await testSmtpParsePeerSizeNoCapAndJunk(certPair);
