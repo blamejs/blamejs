@@ -134,6 +134,41 @@ function testResolveOptsBuildLimiter() {
   check("resolve(opts): not disabled", rl.isDisabled() === false);
 }
 
+// resolve() accepted any object carrying `admitConnection` and handed it
+// straight to a listener that calls eight methods on it. A limiter missing one
+// did not fail at boot — it failed on the request that first reached the call,
+// as a TypeError from inside the connection handler, which for the DATA-body
+// floor means every message dies mid-transaction.
+//
+// The sniff was already too weak before the floor existed: `releaseConnection`
+// has been called unconditionally on every socket close for as long as the
+// listeners have tracked connections, so a limiter with only `admitConnection`
+// was already breaking, just later and more quietly. Checking the whole
+// interface at resolve() turns all of that into one boot error that names what
+// is missing.
+function testResolveRefusesAnIncompleteCustomLimiter() {
+  var threw = null;
+  try { b.mail.server.rateLimit.resolve({ admitConnection: function () { return { ok: true }; } }); }
+  catch (e) { threw = e; }
+  check("resolve: a custom limiter missing the rest of the interface is refused at config time",
+        threw !== null, threw && threw.message);
+  check("resolve: the refusal names the missing methods",
+        threw && /bodyRateStarved/.test(threw.message) &&
+        /releaseConnection/.test(threw.message),
+        threw && threw.message);
+  check("resolve: the refusal carries a typed code",
+        threw && (threw.code || "").indexOf("mail-server-rate-limit/") === 0,
+        threw && threw.code);
+
+  // A complete custom limiter still passes through untouched — the point is to
+  // name the contract, not to force operators onto the built-in.
+  var complete = {};
+  var real = b.mail.server.rateLimit.create({});
+  Object.keys(real).forEach(function (k) { complete[k] = real[k]; });
+  check("resolve: a COMPLETE custom limiter is still returned unchanged",
+        b.mail.server.rateLimit.resolve(complete) === complete);
+}
+
 function testResolveUndefinedUsesDefaults() {
   // resolve() / resolve(null) → create({}) with defaults: a working,
   // non-disabled limiter that admits within the default cap.
@@ -202,6 +237,7 @@ function run() {
   testResolvePassesThroughExistingLimiter();
   testResolveOptsBuildLimiter();
   testResolveUndefinedUsesDefaults();
+  testResolveRefusesAnIncompleteCustomLimiter();
 }
 
 module.exports = { run: run };
