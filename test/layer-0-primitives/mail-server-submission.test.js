@@ -1185,13 +1185,113 @@ async function testBodyRateFloorAppliesToBdatToo(tls) {
       /4\.7\.0/.test(reply), JSON.stringify(reply));
     check("submission: the listener asked the limiter on the BDAT path too",
       asked.length >= 1, String(asked.length));
-    check("submission: the BDAT bytes reported include the chunk under judgement",
-      asked.length >= 1 && asked[0].bytes > 0,
-      asked.length ? String(asked[0].bytes) : "never asked");
+    // The count is measured from where the window opened, so the first reading
+    // after opening is legitimately zero — nothing has arrived since. What must
+    // never happen is a count larger than the bytes actually sent, which is
+    // what crediting a byte twice looks like; the monotonicity test below bounds
+    // it against the real wire total.
+    check("submission: the BDAT reading is measured from the window, never negative",
+      asked.every(function (a) { return a.bytes >= 0; }),
+      JSON.stringify(asked.map(function (a) { return a.bytes; })));
   } finally {
     sock.destroy();
     await s.srv.close({ timeoutMs: b.constants.TIME.seconds(2) });
   }
+
+  // A sequence of ZERO-LENGTH chunks carries no bytes, so a window keyed on the
+  // byte count restarts on every command and the zero-length path returns before
+  // reaching any measurement. One `BDAT 0` before each idle timeout then holds
+  // the connection forever without ever meeting the floor — the same slow-loris,
+  // wearing a different command.
+  var zeroAsked = [];
+  var zeroReal = b.mail.server.rateLimit.create({});
+  var zeroStarving = {};
+  Object.keys(zeroReal).forEach(function (k) {
+    zeroStarving[k] = typeof zeroReal[k] === "function"
+      ? function () { return zeroReal[k].apply(zeroReal, arguments); }
+      : zeroReal[k];
+  });
+  zeroStarving.bodyRateStarved = function (bytes, elapsedMs) {
+    zeroAsked.push({ bytes: bytes, elapsedMs: elapsedMs });
+    return true;
+  };
+
+  var z = await _mk(tls, { profile: "permissive", rateLimit: zeroStarving });
+  var zsock = await _connect(z.port);
+  try {
+    await _readReply(zsock);
+    await _send(zsock, "EHLO client.example.com");
+    await _send(zsock, "MAIL FROM:<a@example.com>");
+    await _send(zsock, "RCPT TO:<b@example.com>");
+    // The first BDAT opens the window; the second is judged against it.
+    await _send(zsock, "BDAT 0");
+    var second = await _send(zsock, "BDAT 0");
+    check("submission: a repeated zero-length BDAT is judged, not waved through",
+      /^421 /.test(second), JSON.stringify(second));
+    check("submission: the zero-length path reaches the limiter",
+      zeroAsked.length >= 1, String(zeroAsked.length));
+  } finally {
+    zsock.destroy();
+    await z.srv.close({ timeoutMs: b.constants.TIME.seconds(2) });
+  }
+
+  // The count handed to the limiter must be CUMULATIVE for the transfer. The
+  // window subtracts the previous window's baseline from it, so a count that
+  // goes flat or backwards across a roll reads as no progress and refuses a
+  // client that is in fact sending steadily — an over-refusal, which is the
+  // direction that costs a working sender rather than an attacker.
+  //
+  // Counting only BDAT payload bytes did exactly that: command bytes never
+  // landed in the total, so a sequence carrying `BDAT 0` and interleaved NOOP
+  // reported the same number every time.
+  var counts = [];
+  var monoReal = b.mail.server.rateLimit.create({});
+  var monoLimiter = {};
+  Object.keys(monoReal).forEach(function (k) {
+    monoLimiter[k] = typeof monoReal[k] === "function"
+      ? function () { return monoReal[k].apply(monoReal, arguments); }
+      : monoReal[k];
+  });
+  monoLimiter.bodyRateStarved = function (bytes) { counts.push(bytes); return false; };
+
+  var m = await _mk(tls, { profile: "permissive", rateLimit: monoLimiter });
+  var msock = await _connect(m.port);
+  try {
+    await _readReply(msock);
+    await _send(msock, "EHLO client.example.com");
+    await _send(msock, "MAIL FROM:<a@example.com>");
+    await _send(msock, "RCPT TO:<b@example.com>");
+    // Count the bytes the client actually puts on the wire from the moment the
+    // BDAT sequence opens, so the readings can be bounded against reality.
+    var sentSinceOpen = 0;
+    function sendCounted(line) {
+      sentSinceOpen += Buffer.byteLength(line + "\r\n", "utf8");
+      return _send(msock, line);
+    }
+    await _send(msock, "BDAT 0");          // opens the window; its own bytes are the baseline
+    await sendCounted("NOOP");
+    await sendCounted("NOOP");
+    var payload = "Subject: c\r\n\r\nbody";
+    await sendCounted("BDAT " + Buffer.byteLength(payload, "utf8") + "\r\n" + payload);
+
+    check("submission: the limiter is given a count for every inbound chunk",
+      counts.length >= 3, String(counts.length));
+    var monotonic = counts.every(function (n, i) { return i === 0 || n >= counts[i - 1]; });
+    check("submission: that count never goes backwards across the transfer",
+      monotonic, JSON.stringify(counts));
+    check("submission: and it grows as bytes arrive, rather than repeating",
+      counts[counts.length - 1] > counts[0], JSON.stringify(counts));
+    // The bound that catches double-crediting: re-feeding a chunk's tail
+    // through the parser must not let a byte be counted twice, which would show
+    // up here as a reading larger than everything the client actually sent.
+    check("submission: no byte is credited twice",
+      counts[counts.length - 1] <= sentSinceOpen,
+      "counted " + counts[counts.length - 1] + " against " + sentSinceOpen + " sent");
+  } finally {
+    msock.destroy();
+    await m.srv.close({ timeoutMs: b.constants.TIME.seconds(2) });
+  }
+
 }
 
 async function testBodyRateFloorIsAskedDuringData(tls) {
