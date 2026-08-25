@@ -564,6 +564,35 @@ async function testAuditOverride() {
       seen.length === 1 && seen[0].action === "mail.agent.folders.success" &&
       seen[0].outcome === "success" && seen[0].actor.id === "u1");
 
+    // The row has to be ATTRIBUTABLE, not merely present. `audit.record` reads
+    // `actor.userId` (its documented 5W shape), and the agent was emitting only
+    // `{ id, roles }` — so actorUserId landed null on every agent-emitted row
+    // even though the consumer passed an identity, and an audit trail that
+    // cannot say who did something is the one thing an audit trail is for.
+    check("audit-override: the actor carries userId, which is what audit reads",
+      seen[0].actor.userId === "u1", JSON.stringify(seen[0].actor));
+    check("audit-override: roles survive alongside it",
+      Array.isArray(seen[0].actor.roles) && seen[0].actor.roles[0] === "clinician",
+      JSON.stringify(seen[0].actor));
+
+    // The other 5W fields reach the row too when the consumer supplies them —
+    // audit documents actor as { userId, ip, userAgent, sessionId }, and
+    // dropping them silently is the same defect in a quieter form.
+    var wideSeen = [];
+    var wideAgent = b.mail.agent.create({
+      store: fx.store,
+      audit: { safeEmit: function (rec) { wideSeen.push(rec); } },
+    });
+    await wideAgent.folders({ actor: {
+      id: "u2", roles: ["admin"], ip: "203.0.113.7",
+      userAgent: "probe/1.0", sessionId: "sess-9",
+    } });
+    check("audit-override: ip, userAgent and sessionId reach the audit row",
+      wideSeen.length === 1 && wideSeen[0].actor.ip === "203.0.113.7" &&
+      wideSeen[0].actor.userAgent === "probe/1.0" &&
+      wideSeen[0].actor.sessionId === "sess-9",
+      JSON.stringify(wideSeen[0] && wideSeen[0].actor));
+
     await expectRejection("audit-override: not-implemented rejects",
       agent.compose({ actor: actor }), "mail-agent/not-implemented");
     var last = seen[seen.length - 1];

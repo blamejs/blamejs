@@ -1435,7 +1435,12 @@ async function testSelectedCommands() {
     check("EXPUNGE → OK", /^a8 OK EXPUNGE completed/m.test(ex));
     check("UID FETCH → OK", /^a9 OK FETCH completed/m.test(await _cmd(sock, "a9", "UID FETCH 1 (FLAGS)")));
     check("UID STORE → OK", /^b1 OK STORE completed/m.test(await _cmd(sock, "b1", "UID STORE 1 +FLAGS (\\Seen)")));
-    check("UID COPY → BAD not implemented", /^b2 BAD UID COPY is not yet implemented/m.test(await _cmd(sock, "b2", "UID COPY 1 INBOX")));
+    // UID COPY reaches the same registry entry as COPY, so with no COPY
+    // supplied it answers that entry's default. NO, not BAD: the command is
+    // understood and this server has no handler for it, which is a service
+    // condition rather than a protocol error.
+    check("UID COPY → NO not configured, from the COPY entry",
+      /^b2 NO COPY not configured/m.test(await _cmd(sock, "b2", "UID COPY 1 INBOX")));
     check("UID no sub-command → BAD expects sub-command", /^b3 BAD UID expects a sub-command/m.test(await _cmd(sock, "b3", "UID")));
     // last-store call carries useUid true
     check("UID STORE threaded useUid to backend", s.mailStoreLast || true);
@@ -2069,6 +2074,140 @@ async function testMiscBranchGaps() {
   } finally { cl.destroy(); await s3.srv.close(); }
 }
 
+// A peer that opens a connection, takes the greeting and drops TCP was never
+// removed from the listener's live-connection set: the set was added to on
+// accept and emptied only on the paths where the SERVER ends a session. The
+// rate-limit slot WAS released on the socket's close, so the same peer could
+// reconnect immediately, and each cycle left an entry behind. The two transfer
+// listeners and the other two store listeners all release the slot and drop the
+// entry together; this one released the slot alone.
+//
+// Both halves belong to the same event, so the test drives the event the peer
+// controls — a client-side disconnect, with no command issued and no
+// authentication.
+async function testClientDisconnectReleasesTheConnectionSlot() {
+  var s = await _makeServer({});
+  try {
+    check("imap: the listener reports a live-connection count",
+      typeof s.srv.connectionCount === "function");
+    if (typeof s.srv.connectionCount !== "function") return;
+
+    check("imap: starts with no connections", s.srv.connectionCount() === 0,
+      String(s.srv.connectionCount()));
+
+    var socks = [];
+    for (var i = 0; i < 4; i += 1) socks.push(await _connect(s.port));
+    await helpers.waitUntil(function () { return s.srv.connectionCount() === 4; }, {
+      timeoutMs: 5000,
+      label:     "imap connection-accounting: four accepted connections counted",
+    });
+
+    // The peer drops TCP. Nothing on the server decided to end these.
+    socks.forEach(function (sk) { sk.destroy(); });
+    await helpers.waitUntil(function () { return s.srv.connectionCount() === 0; }, {
+      timeoutMs: 5000,
+      label:     "imap connection-accounting: client-initiated disconnects release their slots",
+    });
+    check("imap: a client-initiated disconnect leaves no entry behind",
+      s.srv.connectionCount() === 0, String(s.srv.connectionCount()));
+  } finally { await s.srv.close(); }
+}
+
+// The listener ships no SEARCH of its own — the registry carries a "not
+// configured" default and a consumer supplies the real one through
+// `overrides`. That seam worked for `SEARCH` and not for `UID SEARCH`, because
+// the UID verb dispatched its own sub-commands and never went back through the
+// registry. A consumer therefore got one of the two forms answered by the
+// handler they wrote and the other refused BAD, with no way to supply it short
+// of replacing the whole UID verb — which would take UID FETCH and UID STORE
+// down with it.
+//
+// RFC 9051 §6.4.9 is the form a client with a cross-session cache asks for,
+// because a sequence number is only meaningful within the session that issued
+// it. So the client doing the durable thing was the one being refused.
+async function testUidRoutesThroughTheRegistrySeam() {
+  var seen = [];
+  var s = await _makeServer({
+    overrides: {
+      SEARCH: {
+        fn: function (_state, socket, parsed) {
+          seen.push({ args: parsed.args, useUid: parsed.useUid === true });
+          socket.write("* SEARCH 7 9\r\n");
+          socket.write(parsed.tag + " OK SEARCH completed\r\n");
+        },
+        maxHandlerBytes: 4096,
+        maxHandlerMs:    5000,
+      },
+    },
+  });
+  var sock = await _authConn(s);
+  try {
+    var plain = await _cmd(sock, "S1", "SEARCH UNSEEN");
+    check("imap: a supplied SEARCH answers the sequence form",
+      /^S1 OK/m.test(plain), JSON.stringify(plain));
+
+    var uid = await _cmd(sock, "S2", "UID SEARCH UNSEEN");
+    check("imap: the SAME supplied handler answers the UID form",
+      /^S2 OK/m.test(uid), JSON.stringify(uid));
+    check("imap: the UID form reached the handler exactly once more",
+      seen.length === 2, String(seen.length));
+    // Without this the handler cannot tell the two forms apart, and RFC 9051
+    // §6.4.9 requires the response to carry UIDs rather than sequence numbers.
+    check("imap: the sequence form is not marked as a UID request",
+      seen[0] && seen[0].useUid === false, JSON.stringify(seen[0]));
+    check("imap: the UID form tells the handler to answer in UIDs",
+      seen[1] && seen[1].useUid === true, JSON.stringify(seen[1]));
+    check("imap: the sub-command's own arguments are passed through intact",
+      seen[1] && seen[1].args === "UNSEEN", JSON.stringify(seen[1]));
+
+    // Routing by "is it in the registry" would dispatch real handlers that
+    // know nothing about UIDs. SELECT would select a mailbox; UID would
+    // recurse into itself.
+    var sel = await _cmd(sock, "S3", "UID SELECT INBOX");
+    check("imap: UID does not forward a verb that takes no uid-set",
+      /^S3 BAD/m.test(sel), JSON.stringify(sel));
+    var recur = await _cmd(sock, "S4", "UID UID FETCH 1 (FLAGS)");
+    check("imap: UID does not recurse into itself",
+      /^S4 BAD/m.test(recur), JSON.stringify(recur));
+
+    // RFC 4315 §2.1: UID EXPUNGE expunges ONLY the named UIDs. The shipped
+    // EXPUNGE takes no set and expunges everything flagged \Deleted, so
+    // forwarding to it would delete messages the client did not name.
+    // Refusing is the answer that cannot lose mail.
+    var expunge = await _cmd(sock, "S5", "UID EXPUNGE 1:3");
+    check("imap: UID EXPUNGE is refused rather than exceeding the named set",
+      /^S5 NO/m.test(expunge), JSON.stringify(expunge));
+  } finally { sock.destroy(); await s.srv.close(); }
+}
+
+// The other half of the EXPUNGE rule: a consumer who supplies a uid-set-aware
+// handler DOES get UID EXPUNGE served. The refusal above is about the shipped
+// default's inability to honour a set, not about the command.
+async function testUidExpungeReachesAConsumerSuppliedHandler() {
+  var got = [];
+  var s = await _makeServer({
+    overrides: {
+      EXPUNGE: {
+        fn: function (_state, socket, parsed) {
+          got.push({ args: parsed.args, useUid: parsed.useUid === true });
+          socket.write(parsed.tag + " OK EXPUNGE completed\r\n");
+        },
+        maxHandlerBytes: 4096,
+        maxHandlerMs:    5000,
+      },
+    },
+  });
+  var sock = await _authConn(s);
+  try {
+    var reply = await _cmd(sock, "E1", "UID EXPUNGE 1:3");
+    check("imap: a supplied EXPUNGE serves the UID form",
+      /^E1 OK/m.test(reply), JSON.stringify(reply));
+    check("imap: it receives the uid-set and the UID marker",
+      got.length === 1 && got[0].args === "1:3" && got[0].useUid === true,
+      JSON.stringify(got));
+  } finally { sock.destroy(); await s.srv.close(); }
+}
+
 async function run() {
   var wtt = helpers.withTestTimeout;
   await helpers.withDrain("mail-server-imap", async function () {
@@ -2109,6 +2248,9 @@ async function run() {
     await wtt("idle",                   testIdle);
     await wtt("dispatch errors",        testDispatchErrors);
     await wtt("connection rate-limit",  testConnectionRateLimit);
+    await wtt("client disconnect frees", testClientDisconnectReleasesTheConnectionSlot);
+    await wtt("uid routes via registry",  testUidRoutesThroughTheRegistrySeam);
+    await wtt("uid expunge via override", testUidExpungeReachesAConsumerSuppliedHandler);
     await wtt("line too long",          testLineTooLong);
     await wtt("literal smuggling",      testLiteralSmuggling);
     await wtt("metadata/notify",        testMetadataNotifyBranches);

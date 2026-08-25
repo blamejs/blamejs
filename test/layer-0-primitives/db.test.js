@@ -962,8 +962,12 @@ async function testEncryptedRoundTrip() {
   var tmpfs = path.join(tmpDir, "tmpfs");
   fs.mkdirSync(tmpfs, { recursive: true });
   // Seed a stale plaintext working copy from a "previous crashed process" so
-  // init's cleanStaleTmpDbs sweep has an orphan to reclaim.
+  // init's cleanStaleTmpDbs sweep has an orphan to reclaim. A crashed process
+  // leaves its ownership record behind with it, and that record naming a
+  // process that no longer exists is what makes the file reclaimable — the
+  // sweep no longer reads the filename as proof the owner is gone.
   fs.writeFileSync(path.join(tmpfs, "blamejs-staleorphan.db"), "orphan");
+  fs.writeFileSync(path.join(tmpfs, "blamejs-staleorphan.db.owner"), "2147483645");
   var encOpts = {
     dataDir: tmpDir, tmpDir: tmpfs, allowNonTmpfsTmpDir: true, atRest: "encrypted",
     frameworkTables: false, auditSigning: false, minFreeBytes: 0,
@@ -993,6 +997,191 @@ async function testEncryptedRoundTrip() {
     var row = b.db.from("vaultrows").where({ _id: "a" }).first();
     check("encrypted round-trip recovers the row through decryptToTmp",
       row && row.v === "persisted");
+  } finally {
+    _teardownPlain(tmpDir);
+  }
+}
+
+// Opening an encrypted volume in a second process destroyed the first
+// process's data, silently, and did it on the way IN.
+//
+// The sweep that reclaims working copies from crashed processes used the
+// filename as its only evidence: every `blamejs-*.db` in the temporary
+// directory that was not this process's own was unlinked. Nothing asked
+// whether the owner was still running. On Linux the unlink succeeds against a
+// file another process holds open, so the first process kept a valid
+// descriptor and carried on reading and writing with nothing to see. Its
+// flushes then found no source path and returned as though they had written,
+// so nothing reached db.enc again for the life of that process — losing every
+// write back to its last flush, not merely those during the overlap.
+//
+// It reproduces on Linux and in any container, every time, and does NOT
+// reproduce on Windows, where unlinking an open file fails and the error was
+// swallowed. So the platform most likely to be developed on is the one that
+// cannot see it.
+//
+// These assertions are about the DECISION rather than the operating system's
+// unlink semantics, so they hold on every platform: a working copy whose owner
+// is alive must survive the sweep, one whose owner is gone must not, and a
+// flush whose source has vanished must say so instead of reporting success.
+async function testStaleSweepSparesALiveOwner() {
+  var tmpDir = _mkTmp("db-cov-sweep-");
+  var tmpfs = path.join(tmpDir, "tmpfs");
+  fs.mkdirSync(tmpfs, { recursive: true });
+
+  // Three working copies that are not ours: one owned by a process that is
+  // still running (this one), one owned by a process id that cannot exist, and
+  // one with no ownership record at all.
+  var live = path.join(tmpfs, "blamejs-liveowner.db");
+  var dead = path.join(tmpfs, "blamejs-deadowner.db");
+  var mute = path.join(tmpfs, "blamejs-noowner.db");
+  fs.writeFileSync(live, "live");
+  fs.writeFileSync(dead, "dead");
+  fs.writeFileSync(mute, "unknown");
+  fs.writeFileSync(live + ".owner", String(process.pid));
+  // 0 is never a real process id to signal, so it can only read as absent.
+  fs.writeFileSync(dead + ".owner", "2147483646");
+
+  var encOpts = {
+    dataDir: tmpDir, tmpDir: tmpfs, allowNonTmpfsTmpDir: true, atRest: "encrypted",
+    frameworkTables: false, auditSigning: false, minFreeBytes: 0,
+    schema: [{ name: "vaultrows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+  };
+  try {
+    await _freshVault(tmpDir);
+    await b.db.init(encOpts);
+
+    check("db: a working copy whose owner is still running survives the sweep",
+      fs.existsSync(live));
+    check("db: its ownership record survives with it",
+      fs.existsSync(live + ".owner"));
+    check("db: a working copy whose owner is gone is reclaimed",
+      !fs.existsSync(dead));
+    check("db: and its ownership record is reclaimed too",
+      !fs.existsSync(dead + ".owner"));
+    // No record means the owner cannot be established. Deleting on a guess is
+    // what caused the data loss, so the unprovable case keeps the file.
+    check("db: a working copy with no ownership record is left alone",
+      fs.existsSync(mute));
+
+    // This process records its own ownership, so a peer booting next runs the
+    // check above against a real answer rather than a missing one.
+    var ours = fs.readdirSync(tmpfs).filter(function (n) {
+      return n.startsWith("blamejs-") && n.endsWith(".db") &&
+             n !== "blamejs-liveowner.db" && n !== "blamejs-noowner.db";
+    });
+    check("db: the live process records its own ownership",
+      ours.length === 1 && fs.existsSync(path.join(tmpfs, ours[0] + ".owner")),
+      JSON.stringify(ours));
+
+    b.db.from("vaultrows").insertOne({ _id: "a", v: "persisted" });
+    b.db.flushToDisk();
+
+    // A flush whose working copy has vanished used to return as though it had
+    // written. Every symptom above would have surfaced at once from one error
+    // here.
+    //
+    // Removing a file another handle holds open is exactly what Windows
+    // refuses and Linux allows, which is why the defect reaches production
+    // from a Windows desktop unseen. Where the platform refuses, say so:
+    // reporting a pass for an assertion that never ran is the same silence
+    // this whole test exists to remove.
+    var working = path.join(tmpfs, ours[0]);
+    var unlinked = null;
+    try { fs.unlinkSync(working); } catch (e) { unlinked = e; }
+    if (unlinked === null) {
+      var threw = null;
+      try { b.db.flushToDisk(); } catch (e) { threw = e; }
+      check("db: a flush with no working copy fails loudly instead of reporting success",
+        threw !== null, threw && threw.message);
+      check("db: and the error names the missing working copy",
+        threw && String(threw.message).indexOf(working) !== -1,
+        threw && threw.message);
+    } else {
+      check("db: (vanished-working-copy flush not exercised — this platform refuses " +
+            "to unlink an open file: " + (unlinked.code || unlinked.message) + ")", true);
+    }
+  } finally {
+    try { b.db.close(); } catch (_e) { /* already torn down by the throw above */ }
+    _teardownPlain(tmpDir);
+  }
+}
+
+// The milder half of the same problem, and the one a lock is a workaround for.
+// Two processes sharing an encrypted volume each decrypt their OWN working
+// copy at open time and flush it back, so whatever the first wrote after the
+// second opened is overwritten. A reader has no business taking part in that:
+// it wants the snapshot, not to become the newest writer.
+//
+// `readOnly` is that promise, kept in the one place that writes db.enc — the
+// periodic flush, close() and the exit handler all arrive there — plus in
+// SQLite itself, so a write fails where it is issued rather than succeeding
+// into a working copy nobody will persist.
+async function testReadOnlyOpenNeverWritesBack() {
+  var tmpDir = _mkTmp("db-cov-ro-");
+  var tmpfs = path.join(tmpDir, "tmpfs");
+  fs.mkdirSync(tmpfs, { recursive: true });
+  var base = {
+    dataDir: tmpDir, tmpDir: tmpfs, allowNonTmpfsTmpDir: true, atRest: "encrypted",
+    frameworkTables: false, auditSigning: false, minFreeBytes: 0,
+    schema: [{ name: "rows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+  };
+  try {
+    await _freshVault(tmpDir);
+    await b.db.init(base);
+    b.db.from("rows").insertOne({ _id: "a", v: "written-by-the-writer" });
+    b.db.flushToDisk();
+    b.db.close();
+
+    var encPath = path.join(tmpDir, "db.enc");
+    var before = fs.readFileSync(encPath);
+
+    // A typo must not read as "true" — an operator who meant to open a reader
+    // and opened a writer is back in the overwrite this option avoids.
+    var badOpt = null;
+    try { await b.db.init(Object.assign({}, base, { readOnly: "yes" })); }
+    catch (e) { badOpt = e; }
+    check("db: readOnly refuses a non-boolean at config time",
+      badOpt && badOpt.code === "db/bad-read-only", badOpt && badOpt.message);
+
+    await b.db.init(Object.assign({}, base, { readOnly: true }));
+    var row = b.db.from("rows").where({ _id: "a" }).first();
+    check("db: a read-only open reads what the writer persisted",
+      row && row.v === "written-by-the-writer", JSON.stringify(row));
+
+    var wrote = null;
+    try { b.db.from("rows").insertOne({ _id: "b", v: "from-the-reader" }); }
+    catch (e) { wrote = e; }
+    check("db: a write through a read-only open is refused where it is issued",
+      wrote !== null, wrote && wrote.message);
+
+    // The flush paths must all decline. close() runs the one that matters:
+    // it is the flush that would land on top of a peer's newer writes.
+    b.db.flushToDisk();
+    b.db.close();
+    var after = fs.readFileSync(encPath);
+    check("db: a read-only open leaves db.enc byte-identical",
+      before.equals(after),
+      "before=" + before.length + " after=" + after.length);
+
+    // And the volume still opens for writing afterwards — read-only is a
+    // property of the open, not something it leaves behind on the volume.
+    await b.db.init(base);
+    b.db.from("rows").insertOne({ _id: "c", v: "after-the-reader" });
+    b.db.flushToDisk();
+    check("db: the volume is still writable after a read-only open",
+      b.db.from("rows").where({ _id: "c" }).first() !== null);
+
+    // The ownership record goes when the copy it describes goes. A record left
+    // behind on every clean close would accumulate one file per cycle forever,
+    // and the sweep could never reclaim it: that walk enumerates `.db` names,
+    // so a record whose working copy is gone is invisible to it.
+    b.db.close();
+    var leftovers = fs.readdirSync(tmpfs).filter(function (n) {
+      return n.indexOf(".owner") !== -1;
+    });
+    check("db: a clean close leaves no ownership record behind",
+      leftovers.length === 0, JSON.stringify(leftovers));
   } finally {
     _teardownPlain(tmpDir);
   }
@@ -1975,6 +2164,8 @@ async function run() {
   await testTmpfsResolution();
   await testTablePrefixAndResidency();
   await testEncryptedRoundTrip();
+  await testStaleSweepSparesALiveOwner();
+  await testReadOnlyOpenNeverWritesBack();
   await testSnapshotPlain();
   await testMigrations();
   await testEraseHardLegalHold();

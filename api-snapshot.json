@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.18.54",
-  "createdAt": "2026-08-25T00:14:32.327Z",
+  "frameworkVersion": "0.18.55",
+  "createdAt": "2026-08-25T06:09:07.629Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -36360,7 +36360,7 @@
         },
         "detectBodySmuggling": {
           "type": "function",
-          "arity": 1
+          "arity": 2
         },
         "gate": {
           "type": "function",
@@ -48599,6 +48599,10 @@
               "type": "function",
               "arity": 0
             },
+            "keyAgreementGroups": {
+              "type": "function",
+              "arity": 2
+            },
             "ocsp": {
               "type": "object",
               "members": {
@@ -54189,6 +54193,10 @@
         "SafeSmtpError": {
           "type": "function",
           "arity": 4
+        },
+        "createBodyScanner": {
+          "type": "function",
+          "arity": 0
         },
         "dotStuff": {
           "type": "function",

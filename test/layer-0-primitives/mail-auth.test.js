@@ -616,6 +616,59 @@ async function testArcSealsTheOctetsItWasGiven() {
 // latin1 code units as text and re-encoded them as UTF-8, so the octets
 // checked were not the octets signed. Only a message with a non-ASCII
 // character shows it; every ASCII test agreed.
+// `chainStatus: "fail"` covered two conditions that are not the same thing: a
+// seal that did not verify, and a key that could not be looked up. The first
+// says something about the sender; the second says the resolver was busy. The
+// reason string said "signature-verification-failed" for both, so a consumer
+// reading it was told a forgery had been detected when a DNS query had timed
+// out.
+//
+// Under a reporting-only posture that costs nothing, which is where a careful
+// consumer sits today. It stops being harmless the moment the chain influences
+// a disposition, and by then somebody has built on the flattened form.
+async function testArcSeparatesATransientLookupFromABadSeal() {
+  var nodeCrypto = require("crypto");
+  var kp = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var pem = kp.privateKey.export({ format: "pem", type: "pkcs8" });
+  var spkiB64 = kp.publicKey.export({ type: "spki", format: "der" }).toString("base64");
+
+  var hop = _arcSignOneHop("relay-temp.example", pem, "rsa-sha256");
+  var good = _arcKeyRoundtripDns("relay-temp.example", [["v=DKIM1; k=rsa; p=" + spkiB64]]);
+
+  var pass = await b.mail.arc.verify(hop.rfc822, { dnsLookup: good });
+  check("arc: the control chain verifies", pass.chainStatus === "pass",
+        pass.chainStatus + " " + (pass.reason || ""));
+
+  // Same message, same seal, resolver unavailable.
+  var temp = await b.mail.arc.verify(hop.rfc822, { dnsLookup: _arcDnsUnavailable() });
+  check("arc: an unreachable resolver does not report a verification failure",
+        temp.reason !== "signature-verification-failed",
+        temp.chainStatus + " " + (temp.reason || ""));
+  check("arc: it names the lookup as the cause",
+        temp.reason === "key-lookup-unavailable",
+        temp.chainStatus + " " + (temp.reason || ""));
+  check("arc: and marks the verdict transient, so a consumer can retry rather than judge",
+        temp.transient === true, JSON.stringify({ s: temp.chainStatus, t: temp.transient }));
+
+  // A genuinely broken seal is NOT transient — the distinction has to cut both
+  // ways or it only moves the conflation.
+  var tampered = Buffer.from(hop.rfc822, "latin1");
+  tampered[tampered.length - 5] ^= 0x01;
+  var bad = await b.mail.arc.verify(tampered, { dnsLookup: good });
+  check("arc: a seal that did not verify still reports a verification failure",
+        bad.chainStatus === "fail" && bad.reason === "signature-verification-failed",
+        bad.chainStatus + " " + (bad.reason || ""));
+  check("arc: a broken seal is not marked transient",
+        bad.transient !== true, JSON.stringify({ s: bad.chainStatus, t: bad.transient }));
+
+  // The wire token stays inside the vocabulary RFC 8617 §5.2 defines for the
+  // chain: none, pass, fail. The distinction lives in the structured verdict,
+  // which is where a consumer reads it — inventing a new Authentication-Results
+  // token would put a word on the wire that receivers have no rule for.
+  check("arc: chainStatus stays within none / pass / fail",
+        ["none", "pass", "fail"].indexOf(temp.chainStatus) !== -1, temp.chainStatus);
+}
+
 async function testArcEvaluateAgreesWithVerify() {
   var nodeCrypto = require("crypto");
   var kp = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -4654,6 +4707,7 @@ async function run() {
   await testArcVerifyMissing();
   await testArcVerifyNone();
   await testArcSealsTheOctetsItWasGiven();
+  await testArcSeparatesATransientLookupFromABadSeal();
   await testArcEvaluateAgreesWithVerify();
   await testArcVerifyBadSignatures();
   await testArcInfinityClockSkewDoesNotDisableExpiry();
@@ -5342,6 +5396,14 @@ function _arcKeyRoundtripDns(selectorHost, keyRecords) {
   return async function (qname) {
     if (qname === "arc._domainkey." + selectorHost) return keyRecords;
     var err = new Error("ENOTFOUND"); err.code = "ENOTFOUND"; throw err;
+  };
+}
+
+// A resolver that is UP but cannot answer right now — SERVFAIL, the transient
+// condition. Distinct from the ENOTFOUND above, which is an answer.
+function _arcDnsUnavailable() {
+  return async function () {
+    var err = new Error("queryTxt ETIMEOUT"); err.code = "ETIMEOUT"; throw err;
   };
 }
 

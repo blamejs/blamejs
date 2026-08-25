@@ -219,6 +219,98 @@ async function testBdatSingleLastChunk() {
   } finally { await srv.close({ timeoutMs: 1000 }); }                                                  // allow:raw-time-literal — test-only short drain
 }
 
+// The DATA branch refuses a body carrying the CVE-2023-51764 smuggling shape
+// (a dot-line whose boundary is anything other than canonical CRLF). The BDAT
+// branch ran no such screen, so the SAME body that DATA answers 554 to was
+// accepted 250 when it arrived in chunks, and handed to the agent for storage
+// and relay.
+//
+// Why the screen belongs on a length-framed path at all: BDAT counts its
+// octets, so a dot-line cannot terminate THAT transfer early. It matters
+// because the body is RELAYED onward and the next hop is usually DATA — the
+// screen is about what the body CONTAINS, not how it arrived. Framing changes
+// downstream; content does not.
+async function testBdatRefusesSmuggledBody() {
+  var bundle = await _makePermissiveServer();
+  if (!bundle) { check("BDAT smuggling screen (skipped)", true); return; }
+  var srv = bundle.srv;
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  try {
+    // A bare-LF dot-line: `\n.\r\n`. A lenient receiver downstream ends the
+    // message there and reads what follows as fresh SMTP commands.
+    var smuggled = Buffer.concat([
+      Buffer.from("From: sender@example.com\r\nTo: recipient@example.com\r\n" +
+                  "Subject: BDAT smuggle\r\n\r\nbody", "latin1"),
+      Buffer.from([0x0A, 0x2E, 0x0D, 0x0A]),                                                            // "\n.\r\n"
+      Buffer.from("MAIL FROM:<attacker@evil.example>\r\n", "latin1"),
+    ]);
+
+    var socket = nodeNet.connect(info.port, "127.0.0.1");
+    await new Promise(function (r) { socket.once("connect", r); });
+    await _readGreeting(socket);
+    await _sendCommand(socket, "EHLO client.example.com");
+    await _sendCommand(socket, "MAIL FROM:<sender@example.com>");
+    await _sendCommand(socket, "RCPT TO:<recipient@example.com>");
+    var reply = await _sendBdat(socket, smuggled, true);
+    check("BDAT: a smuggled dot-line body is refused 554",
+          /^554 /m.test(reply), JSON.stringify(reply));
+    check("BDAT: the refusal names the smuggling class",
+          /5\.7\.0/.test(reply), JSON.stringify(reply));
+    check("BDAT: the smuggled body never reached the agent",
+          bundle.handoffs.length === 0, String(bundle.handoffs.length));
+    socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                  // allow:raw-time-literal — test-only short drain
+
+  // The OTHER BDAT exit: send the smuggled body as a non-final chunk and
+  // terminate with `BDAT 0 LAST`. That path takes the same accumulated
+  // collector and reaches the agent too, so screening only the sized-LAST
+  // chunk would leave this open — which is the shape of the original bug one
+  // level down.
+  var zeroBundle = await _makePermissiveServer();
+  if (zeroBundle) {
+    var zInfo = await zeroBundle.srv.listen({ port: 0, address: "127.0.0.1" });
+    try {
+      var zBody = Buffer.concat([
+        Buffer.from("From: sender@example.com\r\nTo: recipient@example.com\r\n\r\nbody", "latin1"),
+        Buffer.from([0x0A, 0x2E, 0x0D, 0x0A]),                                                          // "\n.\r\n"
+      ]);
+      var z = nodeNet.connect(zInfo.port, "127.0.0.1");
+      await new Promise(function (r) { z.once("connect", r); });
+      await _readGreeting(z);
+      await _sendCommand(z, "EHLO client.example.com");
+      await _sendCommand(z, "MAIL FROM:<sender@example.com>");
+      await _sendCommand(z, "RCPT TO:<recipient@example.com>");
+      await _sendBdat(z, zBody, false);                       // non-final chunk carries the payload
+      var zReply = await _sendBdat(z, Buffer.alloc(0), true); // zero-length LAST terminates it
+      check("BDAT: a smuggled body terminated by a zero-length LAST is refused",
+            /^554 /m.test(zReply), JSON.stringify(zReply));
+      check("BDAT: and it never reached the agent either",
+            zeroBundle.handoffs.length === 0, String(zeroBundle.handoffs.length));
+      z.destroy();
+    } finally { await zeroBundle.srv.close({ timeoutMs: 1000 }); }                                      // allow:raw-time-literal — test-only short drain
+  }
+
+  // Control: an ordinary body still goes through on the same path, so the
+  // screen refuses a smuggling shape rather than refusing BDAT.
+  var ok = await _makePermissiveServer();
+  if (!ok) return;
+  var okInfo = await ok.srv.listen({ port: 0, address: "127.0.0.1" });
+  try {
+    var s2 = nodeNet.connect(okInfo.port, "127.0.0.1");
+    await new Promise(function (r) { s2.once("connect", r); });
+    await _readGreeting(s2);
+    await _sendCommand(s2, "EHLO client.example.com");
+    await _sendCommand(s2, "MAIL FROM:<sender@example.com>");
+    await _sendCommand(s2, "RCPT TO:<recipient@example.com>");
+    var clean = "From: sender@example.com\r\nTo: recipient@example.com\r\n\r\nordinary body\r\n";
+    var okReply = await _sendBdat(s2, clean, true);
+    check("BDAT control: an ordinary body is still accepted",
+          /^250 /m.test(okReply), JSON.stringify(okReply));
+    check("BDAT control: and still reaches the agent", ok.handoffs.length === 1);
+    s2.destroy();
+  } finally { await ok.srv.close({ timeoutMs: 1000 }); }                                                // allow:raw-time-literal — test-only short drain
+}
+
 async function testBdatMultipleChunksThenLast() {
   var bundle = await _makePermissiveServer();
   if (!bundle) { check("BDAT multiple chunks (skipped)", true); return; }
@@ -1050,6 +1142,54 @@ async function testLimitsAndSmuggling(tls) {
   } finally { ssock.destroy(); await sSm.srv.close({ timeoutMs: b.constants.TIME.seconds(2) }); }
 }
 
+// The slow-loris floor, on the sibling listener. mx has the same test; a floor
+// enforced on one listener and not the other is exactly the shape that left
+// `minBytesPerSecond` unenforced on BOTH of them for as long as it existed.
+//
+// A limiter whose floor is unreachable in a fast test is substituted so the
+// branch is reached without spending the ten-second grace window; the number
+// itself is pinned in mail-server-rate-limit.test.js.
+async function testBodyRateFloorIsAskedDuringData(tls) {
+  var asked = [];
+  var real = b.mail.server.rateLimit.create({});
+  var starving = {};
+  Object.keys(real).forEach(function (k) {
+    starving[k] = typeof real[k] === "function"
+      ? function () { return real[k].apply(real, arguments); }
+      : real[k];
+  });
+  starving.bodyRateStarved = function (bytes, elapsedMs) {
+    asked.push({ bytes: bytes, elapsedMs: elapsedMs });
+    return true;
+  };
+
+  var s = await _mk(tls, { profile: "permissive", rateLimit: starving });
+  var sock = await _connect(s.port);
+  try {
+    await _readReply(sock);
+    await _send(sock, "EHLO client.example.com");
+    await _send(sock, "MAIL FROM:<a@example.com>");
+    await _send(sock, "RCPT TO:<b@example.com>");
+    // A COMPLETE body: the rate check runs before the scanner looks for the
+    // terminator, so a starved verdict still refuses — and without the
+    // terminator a listener that never asks would hang this read instead of
+    // failing it, which is a test that cannot go red.
+    var reply = await _dataDot(sock, "Subject: trickle\r\n\r\nx");
+    check("submission: a body below the rate floor is refused 421",
+      /^421 /.test(reply), JSON.stringify(reply));
+    check("submission: the refusal is transient, not permanent",
+      /4\.7\.0/.test(reply), JSON.stringify(reply));
+    check("submission: the listener asked the limiter about the body rate",
+      asked.length >= 1, String(asked.length));
+    check("submission: the bytes reported include the chunk under judgement",
+      asked.length >= 1 && asked[0].bytes > 0,
+      asked.length ? String(asked[0].bytes) : "never asked");
+  } finally {
+    sock.destroy();
+    await s.srv.close({ timeoutMs: b.constants.TIME.seconds(2) });
+  }
+}
+
 // ---- AUTH not configured (permissive, no auth) ----
 
 async function testAuthNotConfigured(tls) {
@@ -1290,6 +1430,7 @@ async function run() {
   testBadBoundsRefused();
   await testEhloAdvertisesChunking();
   await testBdatSingleLastChunk();
+  await testBdatRefusesSmuggledBody();
   await testBdatMultipleChunksThenLast();
   await testBdatZeroByteLast();
   await testBdatOutsideTransaction();
@@ -1322,6 +1463,7 @@ async function run() {
   await testRecipientPolicy(tls);
   await testConnRateLimit(tls);
   await testLimitsAndSmuggling(tls);
+  await testBodyRateFloorIsAskedDuringData(tls);
   await testAuthNotConfigured(tls);
   await testIdleTimeout(tls);
   await testCloseDrain(tls);

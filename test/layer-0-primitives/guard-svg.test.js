@@ -876,7 +876,26 @@ function testSvgPolicyVocabularyIsEnforced() {
         svgzAllowRefused);
 }
 
+// An EMPTY tag allowlist permits NOTHING — the guard-html sibling of this
+// carries the same reasoning. Omitting `allowedTags` is how "use the profile's
+// set" is spelled (balanced supplies 54), so an empty one is a caller asking
+// that no tag survive, and reading it as "every tag is fine" is the inverse.
+function testEmptySvgTagAllowlistPermitsNothing() {
+  var empty = b.guardSvg.validate("<svg><g/></svg>", { profile: "balanced", allowedTags: [] });
+  check("guard-svg: an EMPTY allowedTags refuses every tag",
+        empty.issues.some(function (i) { return i.kind === "non-allowlisted-tag"; }),
+        JSON.stringify(empty.issues.map(function (i) { return i.kind; })));
+
+  // Control: absent still uses the profile's set, so an ordinary element the
+  // profile permits is not flagged.
+  var absent = b.guardSvg.validate("<svg><g/></svg>", { profile: "balanced" });
+  check("guard-svg control: an absent allowedTags uses the profile's set",
+        !absent.issues.some(function (i) { return i.kind === "non-allowlisted-tag"; }),
+        JSON.stringify(absent.issues.map(function (i) { return i.kind; })));
+}
+
 async function run() {
+  testEmptySvgTagAllowlistPermitsNothing();
   testGuardSvgSurface();
   testGuardSvgRegistryParity();
   testGuardSvgDangerousTags();

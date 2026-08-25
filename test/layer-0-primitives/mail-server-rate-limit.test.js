@@ -148,7 +148,50 @@ function testResolveUndefinedUsesDefaults() {
     typeof rlNull.admitConnection === "function" && rlNull.isDisabled() === false);
 }
 
+// `minBytesPerSecond` was documented as a slow-loris floor on DATA from the day
+// this module shipped: validated, defaulted to 100, and exposed as a getter that
+// NO listener ever called. `idleTimeoutMs` cuts a fully stalled connection, but
+// a peer trickling a few bytes at a time resets that timer forever and holds a
+// connection — and its slot in the per-address cap — for as long as it likes.
+//
+// The policy lives here with the number so both listeners ask the same question.
+function testBodyRateFloorIsEnforceable() {
+  var rl = b.mail.server.rateLimit.create({ minBytesPerSecond: 100 });
+
+  // Below the grace window nothing is judged: the first chunk arrives with
+  // almost no elapsed time, so a rate computed from it is noise, and a sender
+  // pausing to read from its own spool would be cut off for it.
+  check("body rate: nothing is judged inside the grace window",
+        rl.bodyRateStarved(1, 500) === false);
+
+  // Past the window, a trickle is starved and an ordinary sender is not.
+  check("body rate: a trickle past the window is starved",
+        rl.bodyRateStarved(60, 30000) === true);          // 2 B/s against a 100 floor
+  check("body rate: a normal sender is not starved",
+        rl.bodyRateStarved(500000, 30000) === false);     // ~16 KB/s
+
+  // Exactly at the floor is not below it — a boundary that refuses a
+  // conforming sender is a worse failure than one that admits a marginal one.
+  check("body rate: exactly at the floor is admitted",
+        rl.bodyRateStarved(1000, 10000) === false);       // exactly 100 B/s
+  check("body rate: a hair under the floor is starved",
+        rl.bodyRateStarved(999, 10000) === true);
+
+  // `disabled` is the ONE spelling for "do not apply this". A zero floor is
+  // refused at construction rather than accepted as a second way to say off —
+  // two spellings for the same thing is how one of them ends up unenforced.
+  var off = b.mail.server.rateLimit.create({ disabled: true });
+  check("body rate: a disabled limiter never starves",
+        off.bodyRateStarved(1, 60000) === false);
+  var zeroThrew = null;
+  try { b.mail.server.rateLimit.create({ minBytesPerSecond: 0 }); }
+  catch (e) { zeroThrew = e; }
+  check("body rate: a zero floor is refused at construction, not read as off",
+        zeroThrew !== null, zeroThrew && zeroThrew.message);
+}
+
 function run() {
+  testBodyRateFloorIsEnforceable();
   testSurface();
   testBadOptsRefused();
   testConcurrentCap();

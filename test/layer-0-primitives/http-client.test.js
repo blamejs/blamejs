@@ -355,6 +355,24 @@ async function testAllowedHosts() {
       url: base + "/", allowedHosts: [".127.0.0.1"], allowedProtocols: ALLOW, allowInternal: true });
     check("allowedHosts: dotted-exact (.127.0.0.1) matches via slice", r5.statusCode === 200);
 
+    // An EMPTY allowlist permits nothing. Omitting the option is how "no
+    // egress pin" is spelled; an operator who builds the list from config and
+    // gets an empty one is saying this process may talk to nothing, and
+    // treating that as "no pin" inverts the request exactly. An allowlist that
+    // disappears when empty is a firewall rule set that opens when the last
+    // rule is deleted.
+    await _expectReject("allowedHosts: an EMPTY allowlist denies every host",
+      b.httpClient.request({
+        url: base + "/", allowedHosts: [],
+        allowedProtocols: ALLOW, allowInternal: true }), "HOST_DISALLOWED");
+
+    // Control: omitting it entirely is still unpinned, which is why the empty
+    // case has to be distinguishable from it.
+    var rUnpinned = await b.httpClient.request({
+      url: base + "/", allowedProtocols: ALLOW, allowInternal: true });
+    check("allowedHosts control: omitting the option is still unpinned",
+          rUnpinned.statusCode === 200);
+
     // Caller-supplied agent bypasses the transport cache (h1 override path).
     var customAgent = new http.Agent({ keepAlive: false });
     try {
@@ -2107,17 +2125,20 @@ async function test301302Coercion() {
 
 // ---- allowedHosts edge branches ------------------------------------
 //
-// The empty allowedHosts array is a no-op (gate skipped); an empty-string
-// entry is skipped (continue); an object entry with no `methods` allows any
-// method. All three are branch arms the happy-path allow tests don't reach.
+// The empty allowedHosts array permits NOTHING; an empty-string entry is
+// skipped (continue); an object entry with no `methods` allows any method. All
+// three are branch arms the happy-path allow tests don't reach.
 
 async function testAllowedHostsEdges() {
   await _withServer(function (req, res) { res.writeHead(200); res.end("ok"); },
     async function (base) {
-      // Empty array → gate not applied at all (length > 0 false).
-      var r0 = await b.httpClient.request({ url: base + "/", allowedHosts: [],
-        allowedProtocols: ALLOW, allowInternal: true });
-      check("allowedHosts: empty array is a no-op (request allowed)", r0.statusCode === 200);
+      // Empty array → a pin that permits nothing. This assertion used to
+      // require the opposite ("a no-op"), which is the inversion itself: an
+      // operator who builds the list from config and gets an empty one is
+      // saying this process may reach nothing.
+      await _expectReject("allowedHosts: an empty array permits nothing",
+        b.httpClient.request({ url: base + "/", allowedHosts: [],
+          allowedProtocols: ALLOW, allowInternal: true }), "HOST_DISALLOWED");
 
       // An empty-string entry is skipped; a later valid entry still matches.
       var r1 = await b.httpClient.request({ url: base + "/",
@@ -3354,18 +3375,31 @@ async function testPinnedClient() {
   // No pin still means a wrapper. The caller validated one url before handing
   // the client over; a redirect it follows internally is a hop that validation
   // never reached, so redirect control does not depend on a pin being named.
-  var noPinCases = [["an empty pin", []], ["an absent pin", undefined]];
-  for (var npi = 0; npi < noPinCases.length; npi += 1) {
-    var label = noPinCases[npi][0];
-    var unpinnedOpts = null;
-    var unpinnedRec = { request: function (o) { unpinnedOpts = o; return Promise.resolve({ statusCode: 200 }); } };
-    var wrapped = b.httpClient.pinnedClient(unpinnedRec, noPinCases[npi][1]);
-    check("pinnedClient: " + label + " still returns a wrapper", wrapped !== unpinnedRec);
-    await wrapped.request({ url: "https://anywhere.example/x", followRedirects: true });
-    check("pinnedClient: " + label + " still disables redirect following",
-          unpinnedOpts.maxRedirects === 0 && unpinnedOpts.followRedirects === false &&
-          unpinnedOpts.redirect === "manual");
-  }
+  var unpinnedOpts = null;
+  var unpinnedRec = { request: function (o) { unpinnedOpts = o; return Promise.resolve({ statusCode: 200 }); } };
+  var wrapped = b.httpClient.pinnedClient(unpinnedRec, undefined);
+  check("pinnedClient: an absent pin still returns a wrapper", wrapped !== unpinnedRec);
+  await wrapped.request({ url: "https://anywhere.example/x", followRedirects: true });
+  check("pinnedClient: an absent pin still disables redirect following",
+        unpinnedOpts.maxRedirects === 0 && unpinnedOpts.followRedirects === false &&
+        unpinnedOpts.redirect === "manual");
+
+  // An EMPTY pin is not an absent one: it is a pin that permits nothing, so the
+  // request never reaches the inner client. This block used to treat [] and
+  // undefined as the same "no pin" case, which is the conflation itself — an
+  // operator who computes a pin from config and gets an empty list is saying
+  // this client may reach nothing.
+  var emptyPinOpts = null;
+  var emptyPinRec = { request: function (o) { emptyPinOpts = o; return Promise.resolve({ statusCode: 200 }); } };
+  var emptyWrapped = b.httpClient.pinnedClient(emptyPinRec, []);
+  check("pinnedClient: an empty pin still returns a wrapper", emptyWrapped !== emptyPinRec);
+  var emptyPinErr = null;
+  try { await emptyWrapped.request({ url: "https://anywhere.example/x" }); }
+  catch (e) { emptyPinErr = e; }
+  check("pinnedClient: an empty pin refuses every host",
+        emptyPinErr !== null, emptyPinErr && emptyPinErr.message);
+  check("pinnedClient: an empty pin never reaches the wrapped client",
+        emptyPinOpts === null, JSON.stringify(emptyPinOpts));
   // The SSRF gate came free while b.httpClient was the only dialer. What is
   // enforceable for a transport this does not own is the textual half, and it
   // applies with or without a pin.

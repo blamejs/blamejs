@@ -5778,6 +5778,15 @@ async function testNoDuplicateCodeBlocks() {
       // DID hide here — mx/submission's identical _validateDomainHardened — is
       // extracted to mailServerNet.validateDomainHardened (its own inverse
       // detector); no other two bodies are byte-identical.
+      //
+      // The budget-refusal spine — ask the limiter, emit a "<...>_rate_limit_
+      // refused" audit, answer, close — recurs across _handleAuthenticate,
+      // _handleAuth and _handleRcptTo. What differs is not decoration: three
+      // separate budgets (auth failures vs recipient failures), three protocol
+      // answers on the wire, and one of them (RCPT) deliberately closes to make
+      // the mailbox-existence oracle expensive rather than merely refused. The
+      // accept-side spine, which had no such divergence, IS extracted —
+      // mailServerNet.acceptConnection.
       mode:  "family-subset",
       files: [
         "lib/mail-server-imap.js:<top>",
@@ -5793,6 +5802,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/mail-server-mx.js:<top>",
         "lib/mail-server-mx.js:create",
         "lib/mail-server-mx.js:_isRelayAllowed",
+        "lib/mail-server-mx.js:_handleRcptTo",
         "lib/mail-server-mx.js:_validateDomainHardened",
         "lib/mail-server-submission.js:_validateDomainHardened",
         "lib/mail-server-pop3.js:<top>",
@@ -6118,10 +6128,14 @@ async function testNoDuplicateCodeBlocks() {
       files: ["lib/hal.js:_normaliseLinks", "lib/mail-auth.js:authResultsEmit", "lib/template.js:create"],
     },
     {
-      // fp:37504a27507f — DKIM merge / MDN boundary-gen / watcher auto-mode detect:
-      // unrelated (run = 0).
+      // fp:37504a27507f — DKIM merge / MDN boundary-gen / watcher auto-mode
+      // detect / mail-TLS context options: unrelated (run = 0). Four small
+      // module-scope builders that assemble a plain object and return it; the
+      // shingle is the assemble-and-return spine, and the objects have nothing
+      // in common.
       mode: "family-subset",
-      files: ["lib/mail-dkim.js:_merge", "lib/mail-mdn.js:_generateBoundary", "lib/watcher.js:_detectAutoMode"],
+      files: ["lib/mail-dkim.js:_merge", "lib/mail-mdn.js:_generateBoundary",
+              "lib/mail-server-tls.js:_contextOptions", "lib/watcher.js:_detectAutoMode"],
     },
     {
       // fp:f663cba2cf0e — importmap build / JMAP emailSubmission/set / security-
@@ -7636,6 +7650,24 @@ function testVendorComponentsAttributedInNotice() {
 
 // ---- Pattern 48b: outbound TLS constructions merge the shared posture ----
 
+// Given the region immediately around a createSecureContext call, decide
+// whether the options it passes were assembled by a named builder in the same
+// file that DOES set certificateCompression. Returns false whenever the chain
+// cannot be followed exactly, so an unreadable shape is reported rather than
+// assumed compliant.
+function _certCompressionSetByLocalBuilder(content, region) {
+  // The identifier passed to the call, e.g. `createSecureContext(ctxOpts)`.
+  var callArg = /createSecureContext\s*\(\s*([A-Za-z_$][\w$]*)\s*\)/.exec(region);
+  if (!callArg) return false;
+  // Its assignment, e.g. `var ctxOpts = _contextOptions(opts, cert, key);`
+  var assign = new RegExp("\\b" + callArg[1] + "\\s*=\\s*([A-Za-z_$][\\w$]*)\\s*\\(").exec(content);
+  if (!assign) return false;
+  // The builder's own body.
+  var bodyAt = content.indexOf("function " + assign[1] + "(");
+  if (bodyAt === -1) return false;
+  return /certificateCompression/.test(content.slice(bodyAt, bodyAt + 1200));
+}
+
 function testSecureContextsAdvertiseCertificateCompression() {
   // class: secure-context-cert-compression
   //
@@ -7669,6 +7701,13 @@ function testSecureContextsAdvertiseCertificateCompression() {
       var from = content.lastIndexOf("\n", content.lastIndexOf("\n", m.index) - 1);
       var region = content.slice(from === -1 ? 0 : from, m.index + 600);
       if (/certificateCompression/.test(region)) continue;
+      // Follow one hop. When the options are assembled by a named builder in
+      // the same file — the shape a listener reaches for so the live build and
+      // its test hook cannot diverge — the setting is real but lives outside
+      // the window above. Resolve the identifier to its assignment, and the
+      // assignment to the local function it calls, and read THAT body. One hop
+      // only: past that this stops checking the code and starts guessing at it.
+      if (_certCompressionSetByLocalBuilder(content, region)) continue;
       bad.push({ file: rel, line: lineNum,
         content: "createSecureContext does not set certificateCompression — a " +
                  "context built here replaces the server's, so handshakes using " +
@@ -11044,6 +11083,8 @@ var KNOWN_ANTIPATTERNS = [
   { id: "breach-clock-composes-incident-clock", primitive: "b.breach.deadline.createClock must compose b.incident.report.createDeadlineClock (one underlying timer) — it must NOT re-roll its own setInterval tick loop; the breach clock delegates the timer lifecycle to incident-report so there is a single tick source to drive + stop", scanScope: "lib", skipCommentLines: true, regex: /setInterval[\s\S]{0,8000}?breach\.deadline\.createClock|breach\.deadline\.createClock[\s\S]{0,8000}?setInterval/, allowlist: [], reason: "breach-deadline.createDeadlineClock wraps incidentReport().createDeadlineClock and forwards trackReport / acknowledgeSubmission / cancel / stop onto that inner clock; it owns no timer of its own. A setInterval inside breach-deadline.js means the tick loop was re-rolled instead of delegated — two independent timers drifting, and a stop() that no longer tears the real one down. File-scoped via co-occurrence of setInterval with the breach.deadline.createClock token unique to breach-deadline.js (incident-report.js owns the legitimate setInterval but never names breach.deadline.createClock, so it is not flagged). Empty allowlist — a timer here is the miswire." },
 
   { id: "daemon-stop-sentinel-must-poll-not-watch", primitive: "lib/daemon.js's Windows cooperative-stop sentinel (_installStopSentinelWatcher) must detect the <pidFile>.stop sentinel with a synchronous existsSync poll on an unref'd interval — never a filesystem watch: fs.watch aborts libuv on an 8.3 short-name temp path (uncatchable), and fs.watchFile's StatWatcher stats via the libuv threadpool, starving under concurrent-fs load and missing the graceful-stop budget", scanScope: "lib", skipCommentLines: true, regex: /function _installStopSentinelWatcher[\s\S]{0,3000}?nodeFs\.watch(?:File)?\(/, allowlist: [], reason: "The daemon's win32 stop channel died in windows-CI as a libuv abort (src/win/fs-event.c '!_wcsnicmp(filename, dir, dirlen)') because it fs.watch'd the sentinel's DIRECTORY, whose CI-runner temp path (C:\\Users\\RUNNER~1\\...\\Temp) is an 8.3 short name — GetFinalPathNameByHandle returns the long form and the prefix assertion aborts the whole process, uncatchable, so the smoke worker vanished with no result line. Switching to fs.watchFile then regressed under parallel test load (StatWatcher's threadpool stat delayed detection past the stop budget). The channel now polls a synchronous nodeFs.existsSync on an unref'd setInterval (STOP_SENTINEL_POLL_MS) — main-thread, no fs-event.c handle, no threadpool. This is a STRUCTURAL guard precisely because the failure is environment-specific (an 8.3 short-name path a local host with 8.3 generation disabled cannot reproduce), so no behavioral test can assert it. Anchored on the _installStopSentinelWatcher function unique to daemon.js; any nodeFs.watch/watchFile reintroduced in its body co-occurs and trips. Empty allowlist — a filesystem watch on this sentinel is the regression." },
+
+  { id: "empty-allowlist-must-not-widen-to-a-default", primitive: "an allow-ish list (allowedX / permittedX / fingerprintAllowList / pinnedX / trustedX) must be gated on WHETHER IT WAS SUPPLIED — `Array.isArray(x) ? x : DEFAULT` / `if (x)` — never on `x.length > 0`. An explicitly EMPTY list is a caller asking that NOTHING be permitted; testing its length reads that as \"no restriction\" and widens it to the permissive default, inverting the request", scanScope: "lib", skipCommentLines: true, regex: /(?:Array\.isArray\(\s*[\w$.]*(?:llow|ermit|inned|rusted|hitelist)[\w$.]*\s*\)\s*&&\s*)?\b(?!\w*(?:[Dd]isallow|[Nn]otAllow|[Uu]npermit))[\w$.]*(?:llow|ermit|inned|rusted|hitelist)[\w$.]*\.length\s*>\s*0\s*(?:\?|&&|\))/, allowlist: ["lib/file-upload.js", "lib/middleware/require-bound-key.js", "lib/static.js"], reason: "0.18.55 — #652 fixed ONE instance (b.mail.server.mx's localDomains) and the sweep was declared framework-wide, but a re-sweep found SIX more live and no detector had been added, which is why it regressed silently. Each read an explicitly-empty allowlist as \"no restriction\" and fell back to something MORE permissive: b.middleware.requireMtls admitted EVERY client certificate when fingerprintAllowList computed to empty (its own derivation already spelled null-vs-[] apart; only the gate re-collapsed them); b.mcp.toolResult.sanitize permitted every URL in an attacker-influenced tool result; b.safeUrl.parse widened [] back to [\"https:\"] and canonicalize widened it to all four of http/https/ws/wss (both MEASURED accepting a URL under an empty list); b.selfUpdate.poll and b.mcp's elicitation schema-type gate did the same against their documented defaults — and a documented \"default X\" is the value for the OMITTED case, not for a list the caller built and got nothing back from. An allowlist that disappears when empty is a firewall rule set that opens when the last rule is deleted. ALLOWLISTED, both because their declaration and behaviour AGREE rather than disagree: lib/file-upload.js documents \"allowedFileTypes default empty (no whitelist; operator opts in)\", so [] IS its spelling for unrestricted; lib/middleware/require-bound-key.js's peerCertFingerprints is a per-record optional binding returned by an operator resolver and documented \"(when set)\", not an operator-supplied policy list. lib/static.js's hit is a CONFIG-VALIDATION test, not a policy gate — it throws when allowedFileTypes is set but the fileType primitive is not wired, and with an empty list there is no sniffing to demand a primitive for; it also shares file-upload's opt-in contract for the same option. The negative lookahead excludes disallowed / notAllowed / unpermitted, which are RESULT lists (guard-email's mixed-script detector collects into `disallowed` and returning it on a non-empty count is the correct reading). Name-scoped rather than universal so an ordinary non-policy length test does not trip it (precision over coverage). Two further hits it surfaced were fixed rather than allowlisted: b.wsClient normalised an SSRF probe's empty ips array into \"no pin\" and handed the connect back to the ordinary resolver, re-opening the DNS-rebinding window the pin closes; b.auth.passkey's topOrigin admit-condition carried a redundant length test ([].indexOf is already -1) that made correct code read like this bug." },
 
   { id: "pid-liveness-probe-must-compose-pidProbe", primitive: "a signal-0 liveness probe (process.kill(pid, 0)) in lib/ must compose b.pidProbe.isLivePid (lib/pid-probe.js) — the shared EPERM-means-alive / ESRCH-means-dead classifier — not re-roll process.kill(pid, 0) inline", scanScope: "lib", skipCommentLines: true, regex: /process\.kill\([^,)]+,\s*0\s*\)/, allowlist: ["lib/pid-probe.js"], reason: "b.daemon and b.appShutdown.pidLock carried byte-identical signal-0 liveness probes (process.kill(pid, 0) → alive; EPERM → alive-but-unowned; ESRCH → dead) that were extracted to lib/pid-probe.js (isLivePid) so there is ONE classifier. A re-rolled inline process.kill(pid, 0) risks drifting the EPERM/ESRCH interpretation — e.g. treating EPERM (a running daemon owned by another uid) as dead, so it is misread as reap-able and its pidfile stolen. pid-probe.js owns the primitive and is allowlisted; any other lib file sending signal 0 must route through pidProbe.isLivePid. Extract-then-register per feedback_extract_then_register_catalog. Empty-but-for-the-owner allowlist — an inline signal-0 probe elsewhere is the re-duplication." },
 

@@ -388,6 +388,98 @@ async function testAuthenticateContinuationAcceptsALiteralResponse() {
   } finally { sock.destroy(); await srv.close(); }
 }
 
+// The same terminator, on the other path that reads a literal. The SASL path
+// consumes the CRLF that ends the line the literal sat on; PUTSCRIPT did not,
+// so the next pass read it as an EMPTY line and refused it — after the script
+// had already been accepted. Two replies to one command, and a client that
+// reads one reply per command spends the rest of the session one reply behind,
+// attributing every answer to the command before it.
+//
+// Both arrivals are driven: the terminator coalesced with the payload, and the
+// terminator alone in a later segment. Which one happens is a property of the
+// network, so a fix that handles only the buffered case leaves the other live.
+//
+// RFC 5804 §2.1 also allows the initial response inline. The listener took the
+// literal form and silently discarded the quoted one, answering a conforming
+// client as though it had said nothing.
+async function testPutscriptLiteralAnswersExactlyOnce() {
+  var seen = [];
+  var tls = await _makeTestTlsContext();
+  var srv = b.mail.server.managesieve.create({
+    tlsContext: tls.ctx, profile: "permissive", mailStore: _richStore(),
+    auth: {
+      mechanisms: ["PLAIN"],
+      // The shared PLAIN verifier, recorded rather than replaced. One that
+      // accepted anything could not tell a delivered initial response from a
+      // discarded one, and which of those happened is the whole question.
+      verify: function (mech, creds) {
+        seen.push(creds.clientResponse);
+        return _verify(mech, creds);
+      },
+    },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var sock = _connect(info.port);
+  // Every byte the server sends, so a SECOND reply to one command is visible.
+  // Reading until the first terminal line cannot see it: the extra reply is
+  // still in flight and gets attributed to whatever is read next, which is
+  // exactly the damage.
+  var all = "";
+  sock.on("data", function (c) { all += c.toString("utf8"); });
+  function repliesSince(mark) {
+    return all.slice(mark).split("\r\n")
+      .filter(function (l) { return /^(OK|NO|BYE)\b/.test(l); }).length;
+  }
+  try {
+    await _read(sock);                                                              // greeting
+    var ir = _b64(NUL + "alice" + NUL + "good");
+    var authed = await _cmd(sock, 'AUTHENTICATE "PLAIN" "' + ir + '"');
+    check("managesieve: a QUOTED initial response authenticates",
+          /OK "Authenticated"/.test(authed), JSON.stringify(authed));
+    check("managesieve: the quoted initial response reached the verifier",
+          seen.length === 1 && seen[0] === ir, JSON.stringify(seen));
+
+    // The declared size counts the PAYLOAD only. The CRLF that follows ends
+    // the line the literal sat on and is outside the count (RFC 5804 §4) —
+    // declaring a size that includes it makes the listener consume the
+    // terminator as payload and wait for more, which is a test that can never
+    // see the defect it was written for.
+    var body = "keep;";
+    // Coalesced arrival: marker, payload and terminator in one write.
+    var mark = all.length;
+    var one = await _cmd(sock,
+      'PUTSCRIPT "one" {' + Buffer.byteLength(body, "utf8") + '+}\r\n' + body);
+    check("managesieve: PUTSCRIPT with a coalesced literal is accepted",
+          /OK "PUTSCRIPT completed"/.test(one), JSON.stringify(one));
+    await helpers.passiveObserve(150, "managesieve: no second reply to a coalesced PUTSCRIPT");
+    check("managesieve: a coalesced PUTSCRIPT draws exactly one reply",
+          repliesSince(mark) === 1, JSON.stringify(all.slice(mark)));
+
+    // Split arrival: the terminator in its own segment.
+    mark = all.length;
+    var p = _read(sock);
+    sock.write('PUTSCRIPT "two" {' + Buffer.byteLength(body, "utf8") + '+}\r\n');
+    await helpers.passiveObserve(60, "managesieve: putscript literal marker arrives alone");
+    sock.write(body);
+    await helpers.passiveObserve(60, "managesieve: putscript literal terminator arrives alone");
+    sock.write("\r\n");
+    var two = await p;
+    check("managesieve: PUTSCRIPT with a split literal is accepted",
+          /OK "PUTSCRIPT completed"/.test(two), JSON.stringify(two));
+    await helpers.passiveObserve(150, "managesieve: no second reply to a split PUTSCRIPT");
+    check("managesieve: a split PUTSCRIPT draws exactly one reply",
+          repliesSince(mark) === 1, JSON.stringify(all.slice(mark)));
+
+    // The session is still aligned: a following command draws its own single
+    // answer, which is the property an extra reply destroys.
+    mark = all.length;
+    await _cmd(sock, 'HAVESPACE "three" 10');
+    await helpers.passiveObserve(150, "managesieve: the next command is answered once");
+    check("managesieve: the session stays aligned for the next command",
+          repliesSince(mark) === 1, JSON.stringify(all.slice(mark)));
+  } finally { sock.destroy(); await srv.close(); }
+}
+
 // A continuation literal declares its own size, and the client declaring it is
 // unauthenticated. Without a bound, `{999999999+}` makes the listener collect
 // attacker bytes toward a gigabyte per connection. The quoted form of the same
@@ -956,6 +1048,7 @@ async function run() {
   await testAuthenticateContinuationAcceptsALiteralResponse();
   await testAuthenticateContinuationAcceptsASynchronizingLiteral();
   await testAuthenticateContinuationLiteralIsBounded();
+  await testPutscriptLiteralAnswersExactlyOnce();
   await testPipelinedSaslResponsesAreRefusedNotRaced();
   await testAuthenticateMultiStepFailureStillCounts();
   await testAuthenticateChallengeCannotInjectALine();

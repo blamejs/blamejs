@@ -158,7 +158,60 @@ async function testAnOrdinaryExchangeStillCompletes() {
         JSON.stringify(rec.calls.success));
 }
 
+// Every listener capped connections PER SOURCE ADDRESS and nowhere else, so the
+// process-wide ceiling was whatever the per-address cap happened to be times
+// however many addresses the peer could speak from. A botnet, a NAT pool or a
+// v6 /64 makes that number large, and each accepted socket costs a file
+// descriptor and a parser state machine before any authentication.
+//
+// `maxConnections` is the listener's own ceiling, and it belongs on the factory
+// every listener shares rather than in five copies.
+async function testListenerCeilingRefusesBeyondMaxConnections() {
+  var nodeNet = require("node:net");
+  var accepted = [];
+  var listener = mailServerNet.createTcpListener(nodeNet, {
+    defaultPort:      0,
+    maxConnections:   2,
+    handleConnection: function (sock) { accepted.push(sock); sock.write("* OK ready\r\n"); },
+    errorFactory:     function (code, message) { return new Error(code + ": " + message); },
+    emit:             function () {},
+    listeningEvent:   "test.listening",
+  });
+  var info = await listener.listen({ port: 0, address: "127.0.0.1" });
+
+  var clients = [];
+  function dial() {
+    return new Promise(function (resolve) {
+      var c = nodeNet.connect(info.port, "127.0.0.1");
+      clients.push(c);
+      var settled = false;
+      function done(how) { if (!settled) { settled = true; resolve(how); } }
+      c.on("data",  function () { done("greeted"); });
+      c.on("close", function () { done("closed"); });
+      c.on("error", function () { done("closed"); });
+    });
+  }
+
+  try {
+    check("net: the first connection is served",  (await dial()) === "greeted");
+    check("net: the second connection is served", (await dial()) === "greeted");
+    // Node enforces the ceiling by closing the excess socket without ever
+    // handing it to the connection handler, so the peer gets a close and the
+    // listener spends nothing on it.
+    check("net: the third connection is refused at the ceiling",
+      (await dial()) === "closed");
+    check("net: the refused connection never reached the handler",
+      accepted.length === 2, String(accepted.length));
+  } finally {
+    clients.forEach(function (c) { c.destroy(); });
+    await listener.closeSimple({
+      connections: new Set(accepted), emit: function () {}, closedEvent: "test.closed",
+    });
+  }
+}
+
 async function run() {
+  await testListenerCeilingRefusesBeyondMaxConnections();
   await testPipelinedSaslResponseAbandonsTheRoundInFlight();
   await testAbandonedRoundSwallowsAVerifierThrow();
   await testAnOrdinaryExchangeStillCompletes();
