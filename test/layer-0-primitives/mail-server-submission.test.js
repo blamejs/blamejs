@@ -1292,6 +1292,62 @@ async function testBodyRateFloorAppliesToBdatToo(tls) {
     await m.srv.close({ timeoutMs: b.constants.TIME.seconds(2) });
   }
 
+  // The same accounting, over STARTTLS — which is how submission is actually
+  // deployed, and the one configuration the checks above cannot speak for.
+  //
+  // Upgrading removes the plaintext `data` listener and delivers decrypted
+  // chunks to a separate callback. Counting on the listener alone therefore
+  // stops counting the moment the connection becomes the one operators use:
+  // the reading handed to the limiter freezes, and once the grace period
+  // elapses a client sending well above the floor is judged to have sent
+  // nothing and gets 421. That is an over-refusal on the ordinary path, which
+  // costs a working sender rather than an attacker.
+  var tlsCounts = [];
+  var tlsReal = b.mail.server.rateLimit.create({});
+  var tlsLimiter = {};
+  Object.keys(tlsReal).forEach(function (k) {
+    tlsLimiter[k] = typeof tlsReal[k] === "function"
+      ? function () { return tlsReal[k].apply(tlsReal, arguments); }
+      : tlsReal[k];
+  });
+  tlsLimiter.bodyRateStarved = function (bytes) { tlsCounts.push(bytes); return false; };
+
+  var t = await _mk(tls, { profile: "permissive", rateLimit: tlsLimiter });
+  var traw = await _connect(t.port);
+  var tsk = null;
+  try {
+    await _readReply(traw);
+    await _send(traw, "EHLO client.example.com");
+    await _send(traw, "STARTTLS");
+    tsk = await _tlsUpgrade(traw, t.caPem);
+    await _send(tsk, "EHLO client.example.com");
+    await _send(tsk, "MAIL FROM:<a@example.com>");
+    await _send(tsk, "RCPT TO:<b@example.com>");
+
+    var tlsSent = 0;
+    function sendTlsCounted(line) {
+      tlsSent += Buffer.byteLength(line + "\r\n", "utf8");
+      return _send(tsk, line);
+    }
+    await _send(tsk, "BDAT 0");            // opens the window
+    await sendTlsCounted("NOOP");
+    var tlsPayload = "Subject: c\r\n\r\nbody";
+    await sendTlsCounted("BDAT " + Buffer.byteLength(tlsPayload, "utf8") + "\r\n" + tlsPayload);
+
+    check("submission: the limiter is asked over TLS too",
+      tlsCounts.length >= 2, String(tlsCounts.length));
+    check("submission: and the reading grows as encrypted bytes arrive",
+      tlsCounts[tlsCounts.length - 1] > tlsCounts[0], JSON.stringify(tlsCounts));
+    // Same double-credit bound as the plaintext path: routing both transports
+    // through one counter must not make a byte count twice.
+    check("submission: no encrypted byte is credited twice",
+      tlsCounts[tlsCounts.length - 1] <= tlsSent,
+      "counted " + tlsCounts[tlsCounts.length - 1] + " against " + tlsSent + " sent");
+  } finally {
+    if (tsk) tsk.destroy();
+    traw.destroy();
+    await t.srv.close({ timeoutMs: b.constants.TIME.seconds(2) });
+  }
 }
 
 async function testBodyRateFloorIsAskedDuringData(tls) {

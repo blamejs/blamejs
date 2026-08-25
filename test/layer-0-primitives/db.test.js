@@ -1409,6 +1409,59 @@ async function testReadOnlyOpenRefusesToCreateAKey() {
   }
 }
 
+// The no-write contract has to hold for what init CALLS, not only for what it
+// does itself.
+//
+// Signing bootstrap is the case: on a volume with no `audit-sign.key` — one
+// written before signing was enabled, or with `auditSigning: false` — a boot
+// generates a keypair, writes it under `dataDir`, and sweeps orphaned temp
+// files on the way. Every one of those is a write, and a reader was still
+// making them. On a read-only mount the open fails outright; on a writable one
+// it silently adds a key to a volume it promised not to touch, and the next
+// writer inherits a keypair a reader chose.
+async function testReadOnlyOpenDoesNotBootstrapASigningKey() {
+  var tmpDir = _mkTmp("db-cov-ro-sign-");
+  var tmpfs = path.join(tmpDir, "tmpfs");
+  fs.mkdirSync(tmpfs, { recursive: true });
+  var base = {
+    dataDir: tmpDir, tmpDir: tmpfs, allowNonTmpfsTmpDir: true, atRest: "encrypted",
+    minFreeBytes: 0,
+    schema: [{ name: "rows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+  };
+  var keyPath = path.join(tmpDir, "audit-sign.key");
+  try {
+    await _freshVault(tmpDir);
+    // A volume with framework tables but no signing key.
+    await b.db.init(Object.assign({}, base, { auditSigning: false }));
+    b.db.from("rows").insertOne({ _id: "a", v: "written-unsigned" });
+    b.db.flushToDisk();
+    b.db.close();
+    check("db: the unsigned volume really has no signing key to load",
+      !fs.existsSync(keyPath));
+
+    var opened = null;
+    try {
+      await b.db.init(Object.assign({}, base, {
+        readOnly: true, auditSigning: { mode: "plaintext" },
+      }));
+    } catch (e) { opened = e; }
+
+    check("db: a read-only open of an unsigned volume still opens",
+      opened === null, opened && ((opened.code || "") + " " + (opened.message || "")).slice(0, 160));
+    check("db: and generates no signing key for it",
+      !fs.existsSync(keyPath), "a read-only open wrote " + keyPath);
+    if (opened === null) {
+      check("db: the reader can still read what the writer persisted",
+        (b.db.from("rows").where({ _id: "a" }).first() || {}).v === "written-unsigned");
+      b.db.close();
+    }
+    check("db: still no signing key after the reader closes",
+      !fs.existsSync(keyPath));
+  } finally {
+    _teardownPlain(tmpDir);
+  }
+}
+
 // --- snapshot() in plain mode (raw bytes, no envelope) ---------------------
 
 async function testSnapshotPlain() {
@@ -2391,6 +2444,7 @@ async function run() {
   await testReadOnlyOpenDoesNotWriteABootCheckpoint();
   await testReadOnlyOpenDoesNotMigrateTheKeySidecar();
   await testReadOnlyOpenRefusesToCreateAKey();
+  await testReadOnlyOpenDoesNotBootstrapASigningKey();
   await testSnapshotPlain();
   await testMigrations();
   await testEraseHardLegalHold();
