@@ -313,7 +313,45 @@ function testProfilePrototypeKeyRefused() {
     threwLit && threwLit.code === "guard-managesieve-command/bad-profile");
 }
 
+// The RFC 5804 §1.2 "string" production, exposed because a string also arrives
+// outside a command: the client's reply to a SASL challenge is one, and that
+// line never reaches validate(). A second hand-rolled unquoting there would be
+// free to lose the escape handling and the control-byte refusal this has, which
+// is why b.mail.server.managesieve reads its SASL responses through it.
+function testParseQuotedString() {
+  check("parseQuotedString is on the guard surface",
+        typeof guardManageSieveCommand.parseQuotedString === "function");
+  check("b.guardManageSieveCommand.parseQuotedString splits a quoted mechanism",
+        guardManageSieveCommand.parseQuotedString('"PLAIN"').value === "PLAIN");
+
+  var p = guardManageSieveCommand.parseQuotedString;
+  var rv = p('"PLAIN" {12+}');
+  check("parseQuotedString: value and rest split at the closing quote",
+        rv && rv.value === "PLAIN" && rv.rest === "{12+}", JSON.stringify(rv));
+  check("parseQuotedString: an unquoted token is not a string",
+        p("PLAIN") === null);
+  check("parseQuotedString: an unterminated quote is refused",
+        p('"PLAIN') === null);
+  check("parseQuotedString: empty input is refused", p("") === null);
+
+  // Escapes are honoured rather than passed through raw.
+  var esc = p('"a\\"b" tail');
+  check("parseQuotedString: an escaped quote stays inside the value",
+        esc && esc.value === 'a"b' && esc.rest === "tail", JSON.stringify(esc));
+  var back = p('"a\\\\" tail');
+  check("parseQuotedString: an escaped backslash decodes to one",
+        back && back.value === "a\\", JSON.stringify(back));
+
+  // The line terminators are refused inside the quotes: a string carrying one
+  // would split the protocol record it appears in.
+  check("parseQuotedString: CR inside the quotes is refused", p('"a\rb"') === null);
+  check("parseQuotedString: LF inside the quotes is refused", p('"a\nb"') === null);
+  check("parseQuotedString: NUL inside the quotes is refused",
+        p('"a' + String.fromCharCode(0) + 'b"') === null);
+}
+
 function run() {
+  testParseQuotedString();
   testByteCapMultibyte();
   testBSurface();
   testSurface();

@@ -213,8 +213,14 @@ function testOutcomeClassifier() {
   // Policy-class errors → permanent.
   check("mta-sts-mx-mismatch → permanent",
     deliver.classifyOutcome({ code: "deliver/mta-sts-mx-mismatch", message: "" }, null) === "permanent");
-  check("dane-fetch-failed (enforce) → permanent",
-    deliver.classifyOutcome({ code: "deliver/dane-fetch-failed", message: "" }, null) === "permanent");
+  // A DANE failure is NOT in that class. The TLSA lookup failing, or the
+  // certificate not matching, says this host could not be authenticated — most
+  // often a rollover mid-propagation or a DNS blip, both of which resolve
+  // themselves. Bouncing the recipient turns recoverable mail into a DSN, and
+  // as a permanent verdict it also skipped every remaining MX. Deferred, the
+  // sender retries and the other hosts get their turn (RFC 7672 §2.2).
+  check("dane-fetch-failed (enforce) → transient",
+    deliver.classifyOutcome({ code: "deliver/dane-fetch-failed", message: "" }, null) === "transient");
 }
 
 // ---- DSN composer (RFC 3464 multipart/report) ----
@@ -318,6 +324,153 @@ function testDsnRejectsCrlfHeaderInjection() {
   });
   check("DSN: NUL in originalFrom throws deliver/bad-dsn-field",
     e5 && e5.code === "deliver/bad-dsn-field");
+}
+
+// ---- The null reverse path ----
+
+// RFC 5321 §4.5.5 requires `MAIL FROM:<>` for a delivery status notification,
+// and `b.mail.transports.smtp` already turns `""` into exactly that. `deliver`
+// refused it as "non-empty required", so the one composer whose job is sending
+// a DSN could not send the one message shape the spec reserves a syntax for —
+// and its own documented DSN example put a real address in the reverse path,
+// which is how a bounce that fails bounces back to the bounce's sender.
+async function testNullReversePathIsAValueNotAnAbsence() {
+  var sent = [];
+  var fakeResolver = { queryMx: async function (d) {
+    return [{ exchange: "mx1." + d, priority: 10 }]; } };
+  var okTransport = function () {
+    return { send: async function (msg) { sent.push(msg); return { ok: true, code: 250 }; } };
+  };
+  var deliver = b.mail.send.deliver({
+    hostname: "mta1.example.com", resolver: fakeResolver,
+    policy: { mtaSts: "off", dane: "off" },
+    transportFactory: okTransport, audit: false,
+  });
+  var res = await deliver({
+    from:   "",
+    to:     ["alice@recipient.com"],
+    rfc822: Buffer.from("From: MAILER-DAEMON\r\nTo: alice@recipient.com\r\n\r\nbounce"),
+  });
+  check("an empty reverse path is accepted and delivered", res.delivered.length === 1,
+        JSON.stringify(res));
+  check("and it reaches the transport as the empty string, which is what the " +
+        "wire layer turns into MAIL FROM:<>",
+        sent.length === 1 && sent[0].from === "", JSON.stringify(sent[0] || {}));
+
+  // CONTROL: a non-string is still refused, so accepting "" did not turn the
+  // check off. `null` and `undefined` are absences; "" is a value.
+  var codes = [];
+  [null, undefined, 42, {}].forEach(function (bad) {
+    try {
+      var d2 = b.mail.send.deliver({
+        hostname: "m.example", resolver: fakeResolver,
+        policy: { mtaSts: "off", dane: "off" },
+        transportFactory: okTransport, audit: false,
+      });
+      d2({ from: bad, to: ["a@b.com"], rfc822: Buffer.from("x") })
+        .then(function () { codes.push("NO-THROW"); },
+              function (e) { codes.push((e && e.code) || "?"); });
+    } catch (e) { codes.push((e && e.code) || "?"); }
+  });
+  await new Promise(function (r) { setImmediate(r); });
+  check("CONTROL — a non-string reverse path is still refused",
+        codes.length === 4 && codes.every(function (c) {
+          return c === "deliver/bad-envelope-from";
+        }), JSON.stringify(codes));
+}
+
+// A message sent with the null reverse path must generate NO bounce. RFC 5321
+// §4.5.5, and the reason is the loop: the DSN is addressed to the original
+// `from`, so bouncing a bounce addresses it to nobody — or, with a less careful
+// peer, back to itself. Accepting "" above is what makes this reachable.
+async function testNullReversePathGeneratesNoDsn() {
+  var fakeResolver = { queryMx: async function (d) {
+    return [{ exchange: "mx1." + d, priority: 10 }]; } };
+  // A permanent failure is a THROW carrying an SMTP response, which is how the
+  // wire layer reports one — not a returned `{ ok: false }`. Getting that wrong
+  // is what the control below caught: both cases sent no DSN, so the assertion
+  // above would have passed for a fixture that never reached the DSN path.
+  var hardFail = function () {
+    return { send: async function () {
+      var err = new Error("550 5.1.1 no such user");
+      err.smtpResponse = { code: 550 };
+      throw err;
+    } };
+  };
+  var dsnCalls = [];
+  function deliverWith(from) {
+    var d = b.mail.send.deliver({
+      hostname: "mta1.example.com", resolver: fakeResolver,
+      policy: { mtaSts: "off", dane: "off" },
+      transportFactory: hardFail, audit: false,
+      dsn: {
+        from: "postmaster@example.com",
+        onPermanentFailure: async function (env, res, msg) {
+          dsnCalls.push({ from: env.from, msg: String(msg).slice(0, 40) });
+        },
+      },
+    });
+    return d({ from: from, to: ["alice@recipient.com"],
+               rfc822: Buffer.from("From: x\r\nTo: y\r\n\r\nb") });
+  }
+
+  await deliverWith("");
+  check("a permanent failure on a null-reverse-path message sends no DSN",
+        dsnCalls.length === 0, JSON.stringify(dsnCalls));
+  // CONTROL: the same failure on an ordinary message DOES send one, so the
+  // check above is about the reverse path and not about DSN being switched off.
+  await deliverWith("ops@example.com");
+  check("CONTROL — the same failure on an ordinary message still sends one",
+        dsnCalls.length === 1 && dsnCalls[0].from === "ops@example.com",
+        JSON.stringify(dsnCalls));
+}
+
+// ---- The DEFAULT transport ----
+
+// Every other test in this file supplies `transportFactory`, which is why the
+// default was undefined for as long as it was: the option is documented as an
+// override, so the path an operator actually takes was the one path never
+// driven. The factory resolved `mailModule().smtpTransport`, `lib/mail.js`
+// exports that transport as `transports.smtp`, and calling `undefined` threw a
+// TypeError which the outcome classifier read as a transient peer problem — so
+// every recipient deferred 4.4.4 forever and no socket was ever opened.
+//
+// This drives the composer with NO transportFactory, against a port nothing is
+// listening on, and asserts the failure is about the connection rather than
+// about the framework. The assertion is on the reason TEXT because that is what
+// distinguishes the two: both outcomes are a deferral.
+async function testDefaultTransportIsTheRealOne() {
+  var fakeResolver = {
+    queryMx: async function (domain) {
+      // Port 1 on the loopback: reserved, unbound, and refuses fast.
+      return [{ exchange: "127.0.0.1", priority: 10 }];
+    },
+  };
+  var deliver = b.mail.send.deliver({
+    hostname: "mta1.example.com",
+    resolver: fakeResolver,
+    policy:   { mtaSts: "off", dane: "off" },
+    port:     1,
+    timeouts: { perHostMs: 2000 },
+    audit:    false,
+  });
+  var result = await deliver({
+    from:   "ops@example.com",
+    to:     ["alice@recipient.com"],
+    rfc822: Buffer.from("From: ops@example.com\r\nTo: alice@recipient.com\r\n" +
+                        "Subject: hi\r\n\r\nbody"),
+  });
+  var outcome = (result.deferred[0] || result.failed[0] || {});
+  var reason  = String(outcome.reason || "");
+  check("default transport: the run does not fail on the framework's own " +
+        "wiring (" + JSON.stringify(reason.slice(0, 60)) + ")",
+        reason.indexOf("is not a function") === -1, JSON.stringify(outcome));
+  // The control: it DID try. Without this the check above passes for a run that
+  // never attempted delivery at all.
+  check("default transport: and it did attempt the host, so the absence of a " +
+        "TypeError is not the absence of an attempt",
+        result.delivered.length + result.deferred.length + result.failed.length === 1,
+        JSON.stringify(result));
 }
 
 // ---- Delivery happy-path (stubbed MX + transport) ----
@@ -581,6 +734,332 @@ async function testMxFailover() {
   check("failover: 0 deferred + 0 failed",       result.deferred.length === 0 && result.failed.length === 0);
   check("failover: tried mx1 first, then mx2",   transportCalls[0] === "mx1.example.com" && transportCalls[1] === "mx2.example.com");
   check("failover: delivered via mx2",            result.delivered[0].mxHost === "mx2.example.com");
+}
+
+// ---- DANE: the peer that publishes TLSA must be the one that benefits ----
+
+// A stub with the SHIPPED daneTlsa's contract, not a convenient one: RFC 7672
+// §1.3 forbids using records that were not DNSSEC-validated, so the real
+// function throws unless the caller asserts its resolver validated them, and
+// returns [] for a peer that publishes nothing (which never reaches the gate).
+//
+// Getting that contract right is the whole test. A stub that just returned
+// records would pass against the broken code, because the defect is that
+// `deliver` never supplies the third argument at all.
+function _daneStub(recordsByHost) {
+  var calls = [];
+  return {
+    calls: calls,
+    dane: {
+      tlsa: async function (host, port, opts) {
+        calls.push({ host: host, port: port, opts: opts || null });
+        var recs = recordsByHost[host];
+        if (!recs) return [];                       // nothing published: never reaches the DNSSEC gate
+        if (!opts || opts.dnssecValidated !== true) {
+          var e = new Error("dane.tlsa: TLSA records must be DNSSEC-validated before use " +
+                            "(RFC 7672 §1.3); pass opts.dnssecValidated: true");
+          e.code = "smtp/dane-no-dnssec";
+          throw e;
+        }
+        return recs;
+      },
+    },
+  };
+}
+
+// DANE-EE / SPKI / SHA-256 — the common shape, 64 hex digits of digest.
+var _TLSA_REC = { usage: 3, selector: 1, mtype: 1,
+                  dataHex: "0123456789abcdef0123456789abcdef" +
+                           "fedcba9876543210fedcba9876543210" };
+
+async function testDanePublishingPeerIsDeliverableUnderEnforce() {
+  // The inversion this test exists for: under `dane: "enforce"`, the peer that
+  // did the work of publishing TLSA was the one refused, and the peer that
+  // published nothing was delivered to normally. The DNSSEC assertion had no
+  // route through `deliver`'s options, so enforce had no reachable success case.
+  var stub = _daneStub({ "mx.published.com": [_TLSA_REC] });
+  var hosts = [];
+  var daneSeen = [];
+  var transport = function (o) {
+    hosts.push(o.host);
+    daneSeen.push(o.dane || null);
+    return { send: async function () { return { ok: true, code: 250 }; } };
+  };
+  await withSmtpPolicyStub({ dane: stub.dane }, async function () {
+    var deliver = b.mail.send.deliver({
+      hostname:         "mta1.example.com",
+      resolver:         okResolver(function (d) { return [{ exchange: "mx." + d, priority: 10 }]; }),
+      policy:           { mtaSts: "off", dane: "enforce", dnssecValidated: true },
+      transportFactory: transport,
+      audit:            false,
+    });
+    var published = await deliver({
+      from: "ops@example.com", to: ["alice@published.com"], rfc822: Buffer.from("hi"),
+    });
+    check("dane enforce: the TLSA-publishing peer is delivered to, not refused",
+          published.delivered.length === 1 && published.failed.length === 0,
+          JSON.stringify({ d: published.delivered.length, f: published.failed.length,
+                           df: published.deferred.length }));
+
+    // The control. Without it, "delivered" above could mean the enforce path
+    // was skipped altogether rather than satisfied — a peer publishing nothing
+    // was ALWAYS delivered to, so it cannot distinguish a fix from a bypass.
+    var silent = await deliver({
+      from: "ops@example.com", to: ["bob@silent.com"], rfc822: Buffer.from("hi"),
+    });
+    check("dane enforce control: a peer publishing no TLSA is still delivered to",
+          silent.delivered.length === 1);
+    check("dane enforce: the DNSSEC assertion reached dane.tlsa",
+          stub.calls.length === 2 && stub.calls[0].opts &&
+          stub.calls[0].opts.dnssecValidated === true,
+          JSON.stringify(stub.calls.map(function (c) { return c.opts; })));
+  });
+
+  // And the records must reach the transport, or nothing can be authenticated
+  // against them: the lookup would be discovery wearing enforcement's name.
+  var pubIdx = hosts.indexOf("mx.published.com");
+  check("dane enforce: the fetched TLSA records are handed to the transport",
+        pubIdx !== -1 && Array.isArray(daneSeen[pubIdx]) && daneSeen[pubIdx].length === 1,
+        JSON.stringify(daneSeen));
+  var silIdx = hosts.indexOf("mx.silent.com");
+  check("dane enforce: a peer with no records hands the transport none",
+        silIdx !== -1 && !daneSeen[silIdx], JSON.stringify(daneSeen[silIdx]));
+}
+
+// `dnssecValidated` is an assertion about the operator's OWN resolver, so the
+// TLSA records have to come from that resolver. Fetching them through node:dns
+// instead would mean the assertion described one resolver while the records
+// arrived from another, and a non-validating system resolver could hand over
+// spoofed TLSA data that DANE then treats as authenticated.
+async function testDaneRecordsComeFromTheAssertedResolver() {
+  var smtpPolicy = require("../../lib/network-smtp-policy.js");
+  var asked = [];
+  var resolver = {
+    queryMx: async function (d) { return [{ exchange: "mx." + d, priority: 10 }]; },
+    queryTlsa: async function (name) {
+      asked.push(name);
+      return { rrs: [{ type: 52, typeName: "TLSA", decoded: {
+        usage: 3, selector: 1, matchingType: 1,
+        certData: Buffer.from("0123456789abcdef0123456789abcdef", "hex"),
+      } }] };
+    },
+  };
+  var daneSeen = [];
+  var deliver = b.mail.send.deliver({
+    hostname:         "mta1.example.com",
+    resolver:         resolver,
+    policy:           { mtaSts: "off", dane: "enforce", dnssecValidated: true },
+    transportFactory: function (o) {
+      daneSeen.push(o.dane || null);
+      return { send: async function () { return { ok: true, code: 250 }; } };
+    },
+    audit:            false,
+  });
+  var r = await deliver({
+    from: "ops@example.com", to: ["alice@published.com"], rfc822: Buffer.from("hi"),
+  });
+  check("dane: the TLSA lookup went to the operator's resolver",
+        asked.length === 1 && asked[0] === "_25._tcp.mx.published.com",
+        JSON.stringify(asked));
+  check("dane: delivered with the records that resolver returned",
+        r.delivered.length === 1 && daneSeen[0] && daneSeen[0].length === 1,
+        JSON.stringify(daneSeen));
+  check("dane: the record decoded into the shape verifyChain reads",
+        daneSeen[0][0].usage === 3 && daneSeen[0][0].selector === 1 &&
+        daneSeen[0][0].mtype === 1 && typeof daneSeen[0][0].dataHex === "string",
+        JSON.stringify(daneSeen[0][0]));
+
+  // A supplied resolver that cannot answer TLSA is refused rather than quietly
+  // bypassed: falling back to node:dns would break the very link between the
+  // assertion and the records that makes the assertion mean anything.
+  var noTlsa = null;
+  try {
+    await smtpPolicy.dane.tlsa("mx.example.com", 25, {
+      dnssecValidated: true,
+      resolver: { queryA: async function () { return { rrs: [] }; } },
+    });
+  } catch (e) { noTlsa = e; }
+  check("dane: a resolver without queryTlsa is refused, not bypassed",
+        noTlsa && noTlsa.code === "smtp/dane-resolver-no-tlsa",
+        String(noTlsa && (noTlsa.code || noTlsa.message)));
+}
+
+// A DANE authentication failure says "this HOST could not be authenticated",
+// not "this recipient does not exist". Classified permanent, it skipped every
+// remaining MX and bounced immediately, so a certificate rollover part-way
+// through DNS propagation — the ordinary way TLSA records change — turned
+// deliverable mail into a DSN. RFC 7672 §2.2 has the sender try the other MX
+// hosts and defer if none authenticates.
+async function testDaneFailureFailsOverAndDefersRatherThanBouncing() {
+  var hosts = [];
+  var deliver = b.mail.send.deliver({
+    hostname: "mta1.example.com",
+    resolver: { queryMx: async function (d) {
+      return [{ exchange: "mx1." + d, priority: 10 },
+              { exchange: "mx2." + d, priority: 20 }];
+    } },
+    policy: { mtaSts: "off", dane: "off" },
+    transportFactory: function (o) {
+      hosts.push(o.host);
+      return { send: async function () {
+        if (o.host === "mx1.example.com") {
+          // The shape the transport raises on a TLSA mismatch.
+          throw new Error("dane: peer certificate chain matches none of the 1 " +
+                          "TLSA record(s) published for it (RFC 7672 §2.2)");
+        }
+        return { ok: true, code: 250 };
+      } };
+    },
+    audit: false,
+  });
+  var r = await deliver({
+    from: "ops@example.com", to: ["alice@example.com"], rfc822: Buffer.from("hi"),
+  });
+  check("dane failure: the next MX is tried rather than bouncing",
+        hosts.length === 2 && hosts[1] === "mx2.example.com", JSON.stringify(hosts));
+  check("dane failure: delivered via the MX that authenticated",
+        r.delivered.length === 1 && r.failed.length === 0,
+        JSON.stringify({ d: r.delivered.length, f: r.failed.length }));
+
+  // And when NO host authenticates, the recipient is deferred rather than
+  // bounced: a rollover resolves itself, and a DSN does not.
+  var deliver2 = b.mail.send.deliver({
+    hostname: "mta1.example.com",
+    resolver: okResolver(function (d) { return [{ exchange: "mx." + d, priority: 10 }]; }),
+    policy: { mtaSts: "off", dane: "off" },
+    transportFactory: function () {
+      return { send: async function () {
+        throw new Error("dane: peer certificate chain matches none of the 1 TLSA record(s)");
+      } };
+    },
+    audit: false,
+  });
+  var r2 = await deliver2({
+    from: "ops@example.com", to: ["alice@example.com"], rfc822: Buffer.from("hi"),
+  });
+  check("dane failure: every MX failing defers, it does not bounce",
+        r2.deferred.length === 1 && r2.failed.length === 0,
+        JSON.stringify({ df: r2.deferred.length, f: r2.failed.length }));
+
+  // The control. A genuine policy refusal that IS permanent must stay
+  // permanent, or this would have turned every refusal into an endless retry.
+  check("classifyOutcome: an MTA-STS refusal is still permanent",
+        deliver.classifyOutcome({ code: "", message: "mta-sts: no matching MX" }, null) === "permanent");
+  check("classifyOutcome: a REQUIRETLS refusal is still permanent",
+        deliver.classifyOutcome({ code: "", message: "REQUIRETLS was not offered" }, null) === "permanent");
+  check("classifyOutcome: a DANE failure is transient",
+        deliver.classifyOutcome({ code: "", message: "dane: chain matches none" }, null) === "transient");
+}
+
+function testDaneEnforceWithoutDnssecAssertionIsRefusedAtCreate() {
+  // Where the refusal belongs. Un-asserted DNSSEC makes every TLSA-publishing
+  // peer undeliverable-to, so it is a misconfiguration of the sender, not a
+  // property of any recipient: it is caught once at boot rather than surfacing
+  // per-peer as a delivery failure attributed to the recipient's domain.
+  var e = threw(function () {
+    b.mail.send.deliver({ hostname: "m.example", policy: { dane: "enforce" } });
+  });
+  check("dane enforce without dnssecValidated → refused at create",
+        e && e.code === "deliver/dane-no-dnssec", String(e && (e.code || e.message)));
+
+  var ok = threw(function () {
+    b.mail.send.deliver({ hostname: "m.example", policy: { dane: "enforce", dnssecValidated: true } });
+  });
+  check("dane enforce WITH dnssecValidated → accepted", ok === null,
+        String(ok && ok.message));
+
+  // Opportunistic is the default and must stay usable without the assertion:
+  // it cannot use the records, so it must not demand a claim about them.
+  var opp = threw(function () {
+    b.mail.send.deliver({ hostname: "m.example", policy: { dane: "opportunistic" } });
+  });
+  check("dane opportunistic without dnssecValidated → still accepted", opp === null,
+        String(opp && opp.message));
+
+  var bad = threw(function () {
+    b.mail.send.deliver({ hostname: "m.example", policy: { dane: "off", dnssecValidated: "yes" } });
+  });
+  check("dnssecValidated non-boolean → deliver/bad-policy-dnssec",
+        bad && bad.code === "deliver/bad-policy-dnssec", String(bad && bad.code));
+}
+
+async function testDaneOpportunisticWithoutAssertionDoesNotQuery() {
+  // Under opportunistic with no assertion the records are unusable by RFC 7672
+  // §1.3, so querying for them buys nothing and costs a DNS round trip per MX
+  // plus a warn on every delivery. Deciding not to ask is the honest posture.
+  var stub = _daneStub({ "mx.published.com": [_TLSA_REC] });
+  await withSmtpPolicyStub({ dane: stub.dane }, async function () {
+    var deliver = b.mail.send.deliver({
+      hostname:         "mta1.example.com",
+      resolver:         okResolver(function (d) { return [{ exchange: "mx." + d, priority: 10 }]; }),
+      policy:           { mtaSts: "off", dane: "opportunistic" },
+      transportFactory: okTransport(),
+      audit:            false,
+    });
+    var r = await deliver({
+      from: "ops@example.com", to: ["alice@published.com"], rfc822: Buffer.from("hi"),
+    });
+    check("dane opportunistic unasserted: delivered", r.delivered.length === 1);
+    check("dane opportunistic unasserted: no TLSA query issued",
+          stub.calls.length === 0, JSON.stringify(stub.calls));
+  });
+}
+
+// A deferred recipient says a delivery did not happen; a queue an operator runs
+// on a bad day has to say WHICH receiver refused. A domain with several MX hosts
+// defers on one of them, and the next question is always which — it decides
+// whether to wait, to contact that receiver, or to look at one's own transport
+// security against that host. Delivered recipients carried `mxHost` and deferred
+// ones did not, so the queue view read "deferred, retry in 15 minutes" with no
+// peer attached (#643).
+async function testDeferredRecipientsCarryTheHostThatRefused() {
+  var deliver = b.mail.send.deliver({
+    hostname: "mta1.example.com",
+    resolver: okResolver(function (d) {
+      return [{ exchange: "mx1." + d, priority: 10 },
+              { exchange: "mx2." + d, priority: 20 }];
+    }),
+    policy: { mtaSts: "off", dane: "off" },
+    transportFactory: function () {
+      return { send: async function () {
+        var e = new Error("connection refused");
+        e.code = "ECONNREFUSED";
+        throw e;
+      } };
+    },
+    audit: false,
+  });
+  var r = await deliver({
+    from: "ops@example.com", to: ["alice@example.com"], rfc822: Buffer.from("hi"),
+  });
+  check("deferred: one recipient deferred", r.deferred.length === 1,
+        JSON.stringify({ d: r.delivered.length, df: r.deferred.length, f: r.failed.length }));
+  check("deferred: the recipient carries the host that was tried last",
+        r.deferred[0].mxHost === "mx2.example.com",
+        JSON.stringify(r.deferred[0]));
+  check("deferred: the fields it already carried are unchanged",
+        r.deferred[0].recipient === "alice@example.com" &&
+        typeof r.deferred[0].reason === "string" &&
+        typeof r.deferred[0].retryAfterMs === "number",
+        JSON.stringify(r.deferred[0]));
+
+  // A recipient deferred BEFORE any host was reached — an MX lookup failure —
+  // has no host to name, and must say so with null rather than by omitting the
+  // field, so a consumer can tell "no peer was reached" from "we forgot".
+  var noMx = b.mail.send.deliver({
+    hostname: "mta1.example.com",
+    resolver: { queryMx: async function () { throw new Error("SERVFAIL"); } },
+    policy: { mtaSts: "off", dane: "off" },
+    transportFactory: okTransport(),
+    audit: false,
+  });
+  var r2 = await noMx({
+    from: "ops@example.com", to: ["bob@example.com"], rfc822: Buffer.from("hi"),
+  });
+  check("deferred: a lookup failure defers with mxHost null, not absent",
+        r2.deferred.length === 1 && "mxHost" in r2.deferred[0] &&
+        r2.deferred[0].mxHost === null,
+        JSON.stringify(r2.deferred[0]));
 }
 
 // ---- local test utilities ----
@@ -1003,7 +1482,12 @@ async function runDaneScenario(sc) {
     var deliver = b.mail.send.deliver({
       hostname:         "mta1.example.com",
       resolver:         okResolver(function (d) { return [{ exchange: "mx1." + d, priority: 10 }]; }),
-      policy:           { mtaSts: "off", dane: sc.policyDane },
+      // The DNSSEC assertion is on by default here so each scenario reaches
+      // the lookup it is about. Without it the records are unusable under RFC
+      // 7672 §1.3 and no query is issued, which would make several of these
+      // pass by never running the code they name.
+      policy:           { mtaSts: "off", dane: sc.policyDane,
+                          dnssecValidated: sc.dnssecValidated !== false },
       transportFactory: okTransport(),
       audit:            false,
     });
@@ -1066,7 +1550,7 @@ async function testDaneEnforceBatchSurvivesSiblingFailure() {
     var deliver = b.mail.send.deliver({
       hostname:         "mta1.example.com",
       resolver:         okResolver(function (d) { return [{ exchange: "mx1." + d, priority: 10 }]; }),
-      policy:           { mtaSts: "off", dane: "enforce" },
+      policy:           { mtaSts: "off", dane: "enforce", dnssecValidated: true },
       transportFactory: okTransport(),
       audit:            false,
     });
@@ -1248,11 +1732,20 @@ async function run() {
   testOutcomeClassifier();
   testDsnComposer();
   testDsnRejectsCrlfHeaderInjection();
+  await testNullReversePathIsAValueNotAnAbsence();
+  await testNullReversePathGeneratesNoDsn();
+  await testDefaultTransportIsTheRealOne();
   await testDeliveryHappyPathStubbed();
   await testMultiAtRecipientRefused();
   await testTransientDefersPermanentFails();
   await testNullMx();
   await testMxFailover();
+  await testDanePublishingPeerIsDeliverableUnderEnforce();
+  await testDaneRecordsComeFromTheAssertedResolver();
+  await testDaneFailureFailsOverAndDefersRatherThanBouncing();
+  await testDeferredRecipientsCarryTheHostThatRefused();
+  testDaneEnforceWithoutDnssecAssertionIsRefusedAtCreate();
+  await testDaneOpportunisticWithoutAssertionDoesNotQuery();
   await testPortReachesTransport();
   await testMaxAttemptsFlowsThrough();
   testClassifierFallthroughs();

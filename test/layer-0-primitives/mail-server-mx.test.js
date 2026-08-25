@@ -208,6 +208,205 @@ async function _connectTo(info) {
   return socket;
 }
 
+// An unknown mailbox on a local domain had no reachable refusal. The listener
+// decided recipients from localDomains alone, so every local part was accepted
+// at RCPT, and the application first learned the recipient at agent.handoff —
+// after 354 and after the whole message. From there the only answers were 250
+// (tell the peer it arrived, then owe a DSN) or 451 (tell a peer holding a
+// permanent condition to keep retrying). The correct answer, 550 5.1.1 at
+// RCPT, was not expressible.
+//
+// The submission listener already had `recipientPolicy`. MX, where an unknown
+// mailbox actually arrives, did not.
+async function testRecipientPolicyRefusesUnknownMailbox() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("mx recipientPolicy (skipped — cert fixture unavailable)", true); return; }
+
+  var seen = [];
+  var srv = b.mail.server.mx.create({
+    tlsContext: ctx, profile: "permissive", localDomains: ["example.com"],
+    recipientPolicy: function (rcptCtx) {
+      seen.push(rcptCtx);
+      return rcptCtx.rcptTo === "alice@example.com"
+        ? { ok: true }
+        : { ok: false, reason: "No such user here" };
+    },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var socket = await _connectTo(info);
+  try {
+    await _sendCommand(socket, "EHLO sender.example.com");
+    await _sendCommand(socket, "MAIL FROM:<peer@sender.example.com>");
+
+    var unknown = await _sendCommand(socket, "RCPT TO:<nobody@example.com>");
+    check("mx: an unknown mailbox is refused 550 at RCPT, before DATA",
+          /^550 /.test(unknown), JSON.stringify(unknown));
+    check("mx: the refusal carries the RFC 3463 mailbox-unavailable code",
+          /5\.1\.1/.test(unknown), JSON.stringify(unknown));
+    check("mx: the policy's reason reaches the peer",
+          unknown.indexOf("No such user here") !== -1, JSON.stringify(unknown));
+
+    // The control: a recipient the policy accepts must still be accepted, or
+    // "refused" above would just mean the hook rejects everything.
+    var known = await _sendCommand(socket, "RCPT TO:<alice@example.com>");
+    check("mx control: an accepted recipient still gets 250",
+          /^250 /.test(known), JSON.stringify(known));
+
+    check("mx: the hook saw both recipients with the envelope context",
+          seen.length === 2 && seen[0].rcptTo === "nobody@example.com" &&
+          seen[0].mailFrom === "peer@sender.example.com" &&
+          typeof seen[0].remoteAddress === "string",
+          JSON.stringify(seen));
+
+    // DATA must proceed on the surviving recipient — a refused RCPT does not
+    // poison the transaction.
+    check("mx: DATA proceeds for the accepted recipient",
+          /^354 /.test(await _sendCommand(socket, "DATA")));
+  } finally { socket.destroy(); await srv.close(); }
+}
+
+// The reason is written into a line-oriented SMTP reply, and a directory-derived
+// reason routinely quotes the address that was looked up — which the peer chose.
+// A CR or LF in it ends the 550 line early and the remainder is read by the peer
+// as a second, forged server reply.
+async function testRecipientPolicyReasonCannotForgeAReplyLine() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("mx recipientPolicy reason injection (skipped — cert fixture)", true); return; }
+
+  var srv = b.mail.server.mx.create({
+    tlsContext: ctx, profile: "permissive", localDomains: ["example.com"],
+    recipientPolicy: function (rcptCtx) {
+      // The shape a directory wrapper produces: the looked-up address, echoed.
+      return { ok: false, reason: "No such user: " + rcptCtx.rcptTo };
+    },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var socket = await _connectTo(info);
+  try {
+    await _sendCommand(socket, "EHLO sender.example.com");
+    await _sendCommand(socket, "MAIL FROM:<peer@sender.example.com>");
+    // The local part carries the injection. RCPT TO is where the peer speaks.
+    var reply = await _sendCommand(socket,
+      "RCPT TO:<evil\r\n250 Accepted@example.com>");
+    check("mx: a reason carrying CRLF does not emit a second reply line",
+          reply.indexOf("250 Accepted") === -1, JSON.stringify(reply));
+    check("mx: the recipient is still refused", /^5\d\d /.test(reply), JSON.stringify(reply));
+  } finally { socket.destroy(); await srv.close(); }
+
+  // And directly: a policy that simply returns a terminator-bearing reason must
+  // not be able to write it, whatever the recipient looked like.
+  var srv2 = b.mail.server.mx.create({
+    tlsContext: ctx, profile: "permissive", localDomains: ["example.com"],
+    recipientPolicy: function () {
+      return { ok: false, reason: "gone\r\n250 Accepted" };
+    },
+  });
+  var info2 = await srv2.listen({ port: 0, address: "127.0.0.1" });
+  var socket2 = await _connectTo(info2);
+  try {
+    await _sendCommand(socket2, "EHLO sender.example.com");
+    await _sendCommand(socket2, "MAIL FROM:<peer@sender.example.com>");
+    var reply2 = await _sendCommand(socket2, "RCPT TO:<nobody@example.com>");
+    check("mx: an unsafe reason is replaced, not written",
+          reply2.indexOf("250 Accepted") === -1, JSON.stringify(reply2));
+    check("mx: the refusal still carries the 5.1.1 code",
+          /5\.1\.1/.test(reply2), JSON.stringify(reply2));
+
+  } finally { socket2.destroy(); await srv2.close(); }
+
+  // Control: a clean reason still reaches the peer, so the guard is replacing
+  // only what it must rather than discarding every reason.
+  var srv3 = b.mail.server.mx.create({
+    tlsContext: ctx, profile: "permissive", localDomains: ["example.com"],
+    recipientPolicy: function () { return { ok: false, reason: "No such user here" }; },
+  });
+  var info3 = await srv3.listen({ port: 0, address: "127.0.0.1" });
+  var socket3 = await _connectTo(info3);
+  try {
+    await _sendCommand(socket3, "EHLO sender.example.com");
+    await _sendCommand(socket3, "MAIL FROM:<peer@sender.example.com>");
+    var reply3 = await _sendCommand(socket3, "RCPT TO:<nobody@example.com>");
+    check("mx control: a clean reason still reaches the peer",
+          reply3.indexOf("No such user here") !== -1, JSON.stringify(reply3));
+  } finally { socket3.destroy(); await srv3.close(); }
+
+  // The shared helper itself, since two listeners now depend on it.
+  var mailServerNet = require("../../lib/mail-server-net.js");
+  check("replyTextOrFallback: clean text passes through",
+        mailServerNet.replyTextOrFallback("No such user", "fb") === "No such user");
+  check("replyTextOrFallback: CR falls back",
+        mailServerNet.replyTextOrFallback("a\r\n250 ok", "fb") === "fb");
+  check("replyTextOrFallback: LF falls back",
+        mailServerNet.replyTextOrFallback("a\nb", "fb") === "fb");
+  check("replyTextOrFallback: NUL falls back",
+        mailServerNet.replyTextOrFallback("a" + String.fromCharCode(0), "fb") === "fb");
+  check("replyTextOrFallback: empty and non-string fall back",
+        mailServerNet.replyTextOrFallback("", "fb") === "fb" &&
+        mailServerNet.replyTextOrFallback(undefined, "fb") === "fb" &&
+        mailServerNet.replyTextOrFallback(42, "fb") === "fb");
+}
+
+// A 550 at RCPT is a mailbox-existence oracle: the difference between 250 and
+// 550 tells a scanner which local parts exist. The relay-denied refusal already
+// charges the per-IP recipient-failure budget for exactly this reason, and a
+// policy refusal has to charge it too — otherwise adding the hook hands
+// scanners a free enumeration channel the listener previously did not have.
+async function testRecipientPolicyRefusalCostsTheScannerBudget() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("mx recipientPolicy budget (skipped — cert fixture)", true); return; }
+
+  var noted = 0;
+  var real = b.mail.server.rateLimit.create({});
+  var counting = {};
+  Object.keys(real).forEach(function (k) {
+    counting[k] = typeof real[k] === "function"
+      ? function () { return real[k].apply(real, arguments); }
+      : real[k];
+  });
+  counting.noteRcptFailure = function (ip) { noted += 1; return real.noteRcptFailure(ip); };
+
+  var srv = b.mail.server.mx.create({
+    tlsContext: ctx, profile: "permissive", localDomains: ["example.com"],
+    rateLimit: counting,
+    recipientPolicy: function () { return { ok: false, reason: "No such user" }; },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var socket = await _connectTo(info);
+  try {
+    await _sendCommand(socket, "EHLO sender.example.com");
+    await _sendCommand(socket, "MAIL FROM:<peer@sender.example.com>");
+    await _sendCommand(socket, "RCPT TO:<nobody@example.com>");
+    check("mx: a policy refusal charges the per-IP recipient-failure budget",
+          noted === 1, String(noted));
+  } finally { socket.destroy(); await srv.close(); }
+}
+
+// A hook that throws is the operator's policy engine being unavailable, not a
+// verdict about this mailbox. Answering 550 there would permanently reject mail
+// for a legitimate recipient because a lookup failed.
+async function testRecipientPolicyThrowIsTransient() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("mx recipientPolicy throw (skipped — cert fixture)", true); return; }
+
+  var srv = b.mail.server.mx.create({
+    tlsContext: ctx, profile: "permissive", localDomains: ["example.com"],
+    recipientPolicy: function () { throw new Error("directory unreachable"); },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var socket = await _connectTo(info);
+  try {
+    await _sendCommand(socket, "EHLO sender.example.com");
+    await _sendCommand(socket, "MAIL FROM:<peer@sender.example.com>");
+    var reply = await _sendCommand(socket, "RCPT TO:<alice@example.com>");
+    check("mx: a throwing recipient policy defers 451, never refuses 550",
+          /^451 /.test(reply), JSON.stringify(reply));
+  } finally { socket.destroy(); await srv.close(); }
+}
+
 async function testEhloFlow() {
   // Boot the server with a permissive profile so plaintext EHLO works
   // (operator-acknowledged downgrade for staging). Skip if the test
@@ -1395,6 +1594,10 @@ async function run() {
   testFindDotTerminator();
   testDotUnstuff();
   await testEhloFlow();
+  await testRecipientPolicyRefusesUnknownMailbox();
+  await testRecipientPolicyReasonCannotForgeAReplyLine();
+  await testRecipientPolicyRefusalCostsTheScannerBudget();
+  await testRecipientPolicyThrowIsTransient();
   await testRelayRefused();
   await testStrictProfileRequiresStartTls();
   await testConnectionGates();

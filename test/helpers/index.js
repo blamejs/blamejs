@@ -31,6 +31,7 @@ var _cluster  = require("./cluster");
 var _http     = require("./http");
 var _otel     = require("./otel");
 var _wait     = require("./wait");
+var _growth   = require("./growth");
 var _fsWatch  = require("./fs-watch");
 var _tls      = require("./tls");
 var _ocsp     = require("./ocsp");
@@ -119,6 +120,11 @@ module.exports = {
   // Real-time passive observation budget — for verifying ABSENCE of
   // an event over a window. Distinct from waitUntil's poll-until-true.
   passiveObserve:     _wait.passiveObserve,
+
+  // Superlinear-growth measurement (shared so the flake threshold cannot drift
+  // between the suites that assert it).
+  bestMs:             _growth.bestMs,
+  looksSuperlinear:   _growth.looksSuperlinear,
 
   // fs.watch / fs.watchFile test primitives
   backdateFile:       _fsWatch.backdateFile,

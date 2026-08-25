@@ -48,6 +48,12 @@ function _seedTable(table, n, opts) {
   }
 }
 
+// Return value or thrown error, so a failing check reports WHICH it was
+// rather than just "false".
+function _call(fn) {
+  try { return fn(); } catch (e) { return "threw " + (e && (e.code || e.message)); }
+}
+
 function _expectThrow(label, fn, matcher) {
   var threw = null;
   try { fn(); } catch (e) { threw = e; }
@@ -535,6 +541,33 @@ function testPostureHelpers() {
     // Unknown posture / bad posture type.
     _expectThrow("complianceFloor(unknown) throws unknown-posture",
       function () { r.complianceFloor("not-a-posture", 1000); }, /unknown-posture/);
+
+    // "Sets no retention minimum" and "is not a posture" are different facts,
+    // and the floor table only ever answered the first. GDPR Art. 5(1)(e) sets
+    // no fixed minimum, which the table's own comment says — and then omits the
+    // key, so the primitive reported a posture the framework's own cascade
+    // accepts as a typo. An operator who ran b.compliance.set("gdpr") could not
+    // compute a TTL at all.
+    var gdprFloor = _call(function () { return r.complianceFloor("gdpr"); });
+    check("complianceFloor(a posture with no minimum) returns zero, not a throw",
+          gdprFloor === 0, String(gdprFloor));
+    check("complianceFloor(no-minimum posture, candidate) keeps the candidate",
+          _call(function () { return r.complianceFloor("gdpr", b.constants.TIME.days(30)); }) ===
+            b.constants.TIME.days(30));
+    check("applyPosture and complianceFloor agree about a no-minimum posture",
+          r.applyPosture("gdpr").floorMs === null && gdprFloor === 0);
+
+    // The sweep. Every posture b.compliance.set accepts must reach a floor
+    // rather than an unknown-posture throw, or the next posture added to the
+    // cascade silently becomes a typo at every retention call site.
+    var known = require("../../lib/compliance.js").KNOWN_POSTURES;
+    var rejected = known.filter(function (p) {
+      try { r.complianceFloor(p); return false; } catch (_e) { return true; }
+    });
+    check("every compliance posture resolves to a retention floor",
+          rejected.length === 0, rejected.slice(0, 8).join(", ") +
+          (rejected.length > 8 ? " (+" + (rejected.length - 8) + " more)" : ""));
+    check("the sweep had postures to sweep", known.length > 100, String(known.length));
 
     // applyPosture records active state; complianceFloor inherits it.
     r.applyPosture(null);

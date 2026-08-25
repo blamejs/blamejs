@@ -7988,6 +7988,19 @@ function testStateStampScanningDeferred() {
 //      patterns split across lines still match.
 var KNOWN_ANTIPATTERNS = [
   {
+    id: "mail-reply-must-not-interpolate-an-unguarded-reason",
+    primitive: "b.mail.server",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // An enhanced-status-code prefix concatenated with a `.reason` / `.message`
+    // read. The safe form routes that read through replyTextOrFallback, so the
+    // guarded call does not match: the helper name sits between the `+` and the
+    // property read.
+    regex: /"[45]\.\d\.\d\s*"\s*\+\s*\(?\s*[A-Za-z_$][\w$]*\s*&&\s*[A-Za-z_$][\w$.]*\.(reason|message)\b/,
+    allowlist: [],
+    reason: "An SMTP reply is one line, and a refusal reason is rarely the operator's own words: a directory wrapper answers \"No such user: <address>\" and the address came from the peer. Concatenated straight into the reply, a CR or LF in it ends the line early and everything after is read by the peer as a second server response, so a 550 refusal delivers a forged 250 acceptance. Both recipient-refusal sites had this shape — the MX listener's new recipientPolicy and the submission listener's existing one — which is why the empty allowlist is deliberate. Route the reason through mailServerNet.replyTextOrFallback(text, fallback): it returns the text when it cannot split a line and the caller's fallback when it can, so the refusal is still delivered and only the prose is replaced. A SASL challenge uses saslChallengeOrNull instead, because there the right answer is to fail the exchange rather than substitute.",
+  },
+  {
     id: "set-cookie-must-compose-b-cookies",
     primitive: "b.cookies.serialize",
     scanScope: "lib",
@@ -8192,6 +8205,29 @@ var KNOWN_ANTIPATTERNS = [
     requires: /plainSocket\.removeAllListeners\("timeout"\)/,
     allowlist: [],
     reason: "The shared server upgradeSocket must strip the plain socket's \"timeout\" listeners alongside \"data\" on a STARTTLS upgrade — else the pre-upgrade PLAINTEXT idle-timeout handler survives and injects cleartext into the encrypted channel on idle (plaintext-into-TLS). Stripping only \"data\" re-opens the class for every STARTTLS line-protocol server (pop3/imap/managesieve/mx/submission).",
+  },
+  {
+    id: "protocol-client-tls-upgrade-discards-pre-tls-capabilities",
+    primitive: "b.mail.smtpTransport",
+    scanScope: "lib",
+    // RFC 3207 §4.2 (and RFC 2595 §3 for IMAP/POP3, RFC 5804 §2.2 for
+    // ManageSieve) — a client MUST discard every service extension learned
+    // before a STARTTLS upgrade. The cleartext leg is what a network attacker
+    // rewrites, so a capability list carried across the upgrade lets an
+    // injected extension line steer decisions made under TLS: a SIZE cap that
+    // refuses every message, a CHUNKING that picks a framing the peer never
+    // offered.
+    //
+    // Anchored on the CLIENT-side upgrade — a tls connect that wraps an
+    // existing socket — and on the re-greeting that follows it, because that
+    // pairing is what makes a capability accumulator reusable. Any protocol
+    // client added later matches the same shape, which is the point: this
+    // fires on the instances not yet written, not only on the one that had
+    // the bug.
+    regex: /nodeTls\(\)\.connect\((?:(?!\n\})[\s\S]){0,2000}send\("EHLO /,
+    requires: /ehloLines\.length\s*=\s*0/,
+    allowlist: [],
+    reason: "A protocol client that upgrades an existing socket to TLS must clear its capability accumulator before re-issuing the greeting (RFC 3207 §4.2). The extension lines accumulate as they arrive, so leaving the cleartext ones in place makes the post-upgrade set the UNION of both legs, and an extension the real peer never advertised inside TLS is still believed. Reading capabilities from the pre-TLS leg also refuses messages the peer would accept, because CHUNKING and BINARYMIME are commonly advertised only after the upgrade.",
   },
   {
     id: "mail-server-tls-upgrade-arms-idle-timer-before-handshake",

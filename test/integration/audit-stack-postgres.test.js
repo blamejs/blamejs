@@ -375,12 +375,25 @@ async function _testAuditRecordAndChain(liveQueryAll) {
       metadata: { region: "eu" } },
     { action: "system.shutdown",    outcome: "success" },
   ];
+  // The table was dropped and recreated at the top of run(), so the first row
+  // must be counter 1. Anything else means rows survived the drop or something
+  // wrote ahead of us, and the counters themselves say which — so report them,
+  // and the surviving row count, rather than failing on a bare boolean. This
+  // check went red once in a full 50-file run and passed on every targeted
+  // re-run, which is exactly the case a value-free assertion cannot explain.
   var appended = [];
   for (var i = 0; i < events.length; i++) {
     appended.push(await b.audit.record(events[i]));
   }
+  var counters = appended.map(function (a) { return a && a.monotonicCounter; });
+  var strictlyRising = counters.every(function (c, idx) {
+    return idx === 0 || (typeof c === "number" && c === counters[idx - 1] + 1);
+  });
   check("audit.record returned a monotonic counter per row (1..4)",
-        appended[0].monotonicCounter === 1 && appended[3].monotonicCounter === 4);
+        counters[0] === 1 && counters[3] === 4 && strictlyRising,
+        "counters=" + JSON.stringify(counters) +
+        " rowsNow=" + _psql("SELECT count(*) AS n FROM _blamejs_audit_log;").trim() +
+        " (a first counter above 1 means the pre-test DROP did not take effect)");
 
   var count = _psql("SELECT count(*) AS n FROM _blamejs_audit_log;");
   check("audit.record landed 4 rows in _blamejs_audit_log on real Postgres",
@@ -542,6 +555,15 @@ async function _testAuditToolsBundleAndPurge(tmpDir) {
   // archive needs a covering checkpoint (we wrote one at counter 5) and a
   // `before` boundary newer than every row. recordedAt is Date.now()-based,
   // so a `before` of now+1h covers all rows.
+  //
+  // KNOWN FLAKE, tracked separately: in a full integration run this has failed
+  // with "no signed checkpoint covers counter=15" while passing standalone —
+  // phases between the checkpoint and here emit their own audit rows, and once
+  // the chain moves past counter 5 that anchor no longer covers the tip. Taking
+  // a fresh checkpoint here does NOT work: the fencing phase above deliberately
+  // UPSERTs a higher fencingToken to prove a lower one is refused, so any later
+  // checkpoint is fenced out by design. The fix has to reorder the phases or
+  // give this one its own scope, not add a call.
   var arDir = path.join(tmpDir, "archive-bundle");
   var ar = await b.auditTools.archive({
     out:        arDir,

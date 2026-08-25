@@ -941,6 +941,50 @@ async function testSessionHandler() {
       sessw.urlEndpointResolution && sessw.urlEndpointResolution.useEndpoint === "/jmap/ws");
   } finally { await _stop(sWs.server); }
 
+  // 1d-ii. A consumer that has NOT wired the WebSocket upgrade must be able to
+  // stop advertising it. The `hasOperatorWsCap` check read as an opt-out and
+  // was not one: omit the key and the default adds it; supply the key and the
+  // default steps aside while Object.assign merges the supplied value straight
+  // back in. Every value advertised it except `undefined`, which only worked
+  // because JSON.stringify drops such keys — an accident of serialization, not
+  // a supported answer. Advertising an endpoint that does not exist sends
+  // conforming clients to a URL that cannot upgrade.
+  var jmapNoWs = b.mail.server.jmap.create({
+    mailStore: { appendMessage: function () {} },
+    accountsFor: DEFAULT_ACCOUNTS,
+    methods: {},
+    webSocket: false,
+  });
+  var sNo = await _startHttp(jmapNoWs, {});
+  try {
+    var rNoWs = await _req(sNo.port, { path: "/jmap/session" });
+    var sessn = JSON.parse(rNoWs.body);
+    check("webSocket:false removes the websocket capability",
+      !sessn.capabilities["urn:ietf:params:jmap:websocket"],
+      JSON.stringify(sessn.capabilities));
+    check("webSocket:false removes the top-level webSocketUrl alias",
+      sessn.webSocketUrl === undefined, JSON.stringify(sessn.webSocketUrl));
+    check("webSocket:false leaves the core capability alone",
+      !!sessn.capabilities["urn:ietf:params:jmap:core"]);
+    // Control: the rest of the session is unaffected, so the removal cannot be
+    // a handler that failed and returned a stub.
+    check("webSocket:false control: accounts still echoed",
+      sessn.accounts.A1 && sessn.accounts.A1.name === "tenant-a");
+    check("webSocket:false control: apiUrl still present", sessn.apiUrl === "/jmap/api");
+  } finally { await _stop(sNo.server); }
+
+  // And the option is validated: a value that is neither true nor false is a
+  // misconfiguration, not a silent default back to advertising.
+  var badWs = null;
+  try {
+    b.mail.server.jmap.create({
+      mailStore: { appendMessage: function () {} },
+      accountsFor: DEFAULT_ACCOUNTS, methods: {}, webSocket: "no",
+    });
+  } catch (e) { badWs = e; }
+  check("webSocket non-boolean → refused at create",
+    badWs !== null, String(badWs && badWs.message));
+
   // 1e. accountsFor returns null → defaults; and accountsFor rejects → 500
   var jmapNull = b.mail.server.jmap.create({
     mailStore: { appendMessage: function () {} },

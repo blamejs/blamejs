@@ -902,10 +902,17 @@ function testShapeDetectorsAgreeWithThePatternsTheyReplaced() {
 // consulted.
 async function testGuardFilenameFloorIgnoresPolicyOverrides() {
   // The overrides that remain expressible. `traversalPolicy` and
-  // `nullBytePolicy` no longer accept a non-reject value at all, and
-  // `adsPolicy` accepts only reject or allow — the floor is now visible in
-  // what the guard will take, not only in what it does with it. Each is
-  // asserted below.
+  // `nullBytePolicy` no longer accept a non-reject value at all — the floor is
+  // visible in what the guard will take, not only in what it does with it.
+  //
+  // The floor is what NO filesystem makes safe: a NUL cannot appear in a name
+  // anywhere, `..` traverses everywhere, and a UNC prefix names a remote share
+  // rather than a local file. NTFS ADS used to sit in this list and does not
+  // belong: the shape it detects is a colon, and a colon is an ordinary
+  // filename character on every target except Windows. It belongs with
+  // `reservedCharPolicy` and `reservedNamePolicy`, the other Windows-specific
+  // rules — all three default-on with an operator opt-out, asserted in
+  // testAdsPolicyIsScopedToExtractionAndSaysSo.
   var override = {
     profile: "permissive",
     pathSeparatorsPolicy: "audit",
@@ -915,7 +922,6 @@ async function testGuardFilenameFloorIgnoresPolicyOverrides() {
   var floor = [
     ["UNC path",       "\\\\server\\share\\f.txt"],
     ["traversal",      "../etc/passwd"],
-    ["NTFS ADS",       "f.txt:stream"],
     ["null byte",      "f\u0000.txt"],
   ];
   for (var i = 0; i < floor.length; i += 1) {
@@ -1019,11 +1025,12 @@ async function testGuardFilenameDoubleExtensionFollowsItsPolicy() {
 // actually the one under test — without it these pass for the wrong reason.
 function testAdsPolicyIsScopedToExtractionAndSaysSo() {
   var ADS = "report.txt:stream";
-  var base = { reservedCharPolicy: "allow" };
   function withAds(v) { return { reservedCharPolicy: "allow", adsPolicy: v }; }
 
   // Control: the sample really does reach the ADS check rather than being
-  // refused earlier as a reserved character.
+  // refused earlier as a reserved character. Every case here sets
+  // reservedCharPolicy so the ADS rule is the one under test — without it these
+  // pass for the wrong reason.
   var earlier = null;
   try { b.guardFilename.sanitize(ADS, {}); } catch (e) { earlier = e; }
   check("guardFilename: without reservedCharPolicy the colon is refused as a " +
@@ -1031,63 +1038,72 @@ function testAdsPolicyIsScopedToExtractionAndSaysSo() {
         earlier !== null && earlier.code === "filename.reserved-char",
         String(earlier && earlier.code));
 
-  // The three judging doors refuse regardless of the policy.
-  [undefined, "reject", "allow"].forEach(function (v) {
-    var opts = v === undefined ? base : withAds(v);
+  // The default refuses, in every profile: this is a security default and it
+  // stays on for an operator who configures nothing.
+  ["strict", "balanced", "permissive"].forEach(function (p) {
     var err = null;
-    try { b.guardFilename.sanitize(ADS, opts); } catch (e2) { err = e2; }
-    check("guardFilename: sanitize refuses an ADS name with adsPolicy=" +
-          String(v), err !== null && err.code === "filename.ntfs-ads",
-          String(err && err.code));
-
-    var res = b.guardFilename.validate(ADS, opts);
-    check("guardFilename: validate refuses an ADS name with adsPolicy=" +
-          String(v),
-          res.ok === false && res.issues.some(function (i) {
-            return i.ruleId === "filename.ntfs-ads";
-          }), JSON.stringify(res.issues.map(function (i) { return i.ruleId; })));
+    try {
+      b.guardFilename.sanitize(ADS, { profile: p, reservedCharPolicy: "allow" });
+    } catch (e2) { err = e2; }
+    check("guardFilename: profile " + p + " refuses an ADS name by default",
+          err !== null && err.code === "filename.ntfs-ads", String(err && err.code));
   });
 
-  // And EVERY refusing door explains why the option did not apply. A caller who
-  // set it can arrive at any of them, so fixing the wording on one leaves the
-  // rest saying nothing about the setting they changed — which is what the
-  // first attempt here did: the default sanitize path only, while strip mode
-  // and the validate/gate finding kept the old text.
-  var scoped = null;
-  try { b.guardFilename.sanitize(ADS, withAds("allow")); } catch (e3) { scoped = e3; }
-  check("guardFilename: the default sanitize refusal names verifyExtractionPath",
-        scoped !== null && /verifyExtractionPath/.test(String(scoped.message)),
-        String(scoped && scoped.message));
+  var explicit = null;
+  try { b.guardFilename.sanitize(ADS, withAds("reject")); } catch (e3) { explicit = e3; }
+  check("guardFilename: adsPolicy \"reject\" refuses",
+        explicit !== null && explicit.code === "filename.ntfs-ads",
+        String(explicit && explicit.code));
 
+  // And "allow" is honoured, which is the whole point of the value existing.
+  // The previous shape of this test asserted the opposite: it accepted the
+  // value, ignored it, and explained in the refusal message why the option did
+  // not apply. That reads as a considered scope until you meet a filename like
+  // the one below — a colon is ordinary on the Linux target these opt-outs
+  // exist for, and the lexical check cannot tell a timestamp from an attack.
+  var allowed = null;
+  try { allowed = b.guardFilename.sanitize(ADS, withAds("allow")); }
+  catch (e4) { allowed = e4; }
+  check("guardFilename: adsPolicy \"allow\" is honoured by sanitize",
+        allowed === ADS, String(allowed && (allowed.code || allowed)));
+
+  var vAllowed = b.guardFilename.validate(ADS, withAds("allow"));
+  check("guardFilename: adsPolicy \"allow\" is honoured by validate",
+        vAllowed.ok === true,
+        JSON.stringify(vAllowed.issues.map(function (i) { return i.ruleId; })));
+
+  // #623's own case. Not an attack — a timestamped note — and refused with both
+  // documented opt-outs set, which is what reopened the issue.
+  var real = null;
+  try {
+    real = b.guardFilename.sanitize("12:30 notes.txt",
+      { reservedCharPolicy: "allow", adsPolicy: "allow" });
+  } catch (e5) { real = e5; }
+  check("guardFilename: #623 — a timestamped filename passes with both opt-outs",
+        real === "12:30 notes.txt", String(real && (real.code || real)));
+
+  // Strip mode honours it too. Fixing one door and leaving the others is how
+  // the first attempt at this went wrong.
   var stripMode = null;
   try {
-    b.guardFilename.sanitize(ADS, {
+    stripMode = b.guardFilename.sanitize(ADS, {
       mode: "strip", adsPolicy: "allow", reservedCharPolicy: "allow",
     });
-  } catch (e4) { stripMode = e4; }
-  check("guardFilename: strip mode refuses an ADS name and names " +
-        "verifyExtractionPath too",
-        stripMode !== null && stripMode.code === "filename.ntfs-ads" &&
-        /verifyExtractionPath/.test(String(stripMode.message)),
-        String(stripMode && stripMode.message));
-
-  var finding = b.guardFilename.validate(ADS, withAds("allow")).issues
-    .filter(function (i) { return i.ruleId === "filename.ntfs-ads"; })[0];
-  check("guardFilename: the validate/gate finding names verifyExtractionPath",
-        finding !== undefined && /verifyExtractionPath/.test(String(finding.snippet)),
-        JSON.stringify(finding));
+  } catch (e6) { stripMode = e6; }
+  check("guardFilename: strip mode honours adsPolicy \"allow\" as well",
+        stripMode === ADS, String(stripMode && (stripMode.code || stripMode)));
 
   // The other side of the split: the extraction path honours it, which is the
   // whole reason the option has two values.
   var root = helpers.path.join(helpers.os.tmpdir(), "blamejs-ads-scope");
-  var allowed = null, refused = null;
-  try { allowed = b.guardFilename.verifyExtractionPath(ADS, root, { adsPolicy: "allow" }); }
-  catch (e4) { allowed = e4; }
+  var vepAllowed = null, refused = null;
+  try { vepAllowed = b.guardFilename.verifyExtractionPath(ADS, root, { adsPolicy: "allow" }); }
+  catch (e4) { vepAllowed = e4; }
   try { b.guardFilename.verifyExtractionPath(ADS, root, { adsPolicy: "reject" }); }
   catch (e5) { refused = e5; }
   check("guardFilename: verifyExtractionPath honours adsPolicy \"allow\"",
-        typeof allowed === "string" && allowed.indexOf(":stream") !== -1,
-        String(allowed && (allowed.code || allowed)));
+        typeof vepAllowed === "string" && vepAllowed.indexOf(":stream") !== -1,
+        String(vepAllowed && (vepAllowed.code || vepAllowed)));
   check("guardFilename: verifyExtractionPath still refuses under \"reject\"",
         refused !== null && refused.code === "filename.extraction-ntfs-ads",
         String(refused && refused.code));

@@ -260,6 +260,73 @@ function testRfc822BuilderProducesParseable() {
         wire.indexOf("Hello world") !== -1);
 }
 
+// ---- Raw RFC 822 bytes ----
+
+// `b.mail.send.deliver` requires its caller to supply raw bytes, validates
+// them, and hands them to the transport under `raw`. Every reader on the send
+// path ignored that and composed from `from` / `to` / `subject` / `text`
+// instead, which a raw message does not carry — so the wire body was an empty
+// multipart/alternative and the peer accepted it with a 250. Silent, and it
+// looked like delivery.
+function testRawRfc822ReachesTheWireVerbatim() {
+  var raw = "From: ops@example.com\r\n" +
+            "To: alice@recipient.com\r\n" +
+            "Subject: the real subject\r\n" +
+            "\r\n" +
+            "THE REAL BODY\r\n";
+  var wire = b.mail._buildRfc822ForTest({
+    from: "ops@example.com", to: ["alice@recipient.com"], raw: Buffer.from(raw),
+  });
+  check("raw bytes reach the wire verbatim, byte for byte", wire === raw,
+        JSON.stringify(wire.slice(0, 120)));
+  check("and the composed empty body is nowhere in them",
+        wire.indexOf("multipart/alternative") === -1, JSON.stringify(wire.slice(0, 120)));
+  check("a raw string is accepted as well as a Buffer",
+        b.mail._buildRfc822ForTest({ from: "a@b.c", to: ["d@e.f"], raw: raw }) === raw);
+  // CONTROL: without `raw` the composer is untouched, so this is about which
+  // form the message took rather than about the builder having stopped working.
+  var composed = b.mail._buildRfc822ForTest({
+    from: "From <from@example.com>", to: "to@example.com",
+    subject: "Test", text: "Hello world",
+  });
+  check("CONTROL — a fields message is still composed as before",
+        composed.indexOf("Hello world") !== -1 && /^Subject:/m.test(composed));
+}
+
+// The body is only half of what goes on the wire. SMTPUTF8, 8BITMIME and
+// BINARYMIME are decided from the same message, and each detector read the
+// fields too — so a raw message would have been sent with all three
+// un-negotiated. That is worse than the empty body it replaces: the content is
+// there, and a peer that needed the hint mangles it, which looks like success.
+function testRawMessageStillNegotiatesTheWireCapabilities() {
+  function msg(raw) { return { from: "ops@example.com", to: ["a@b.com"], raw: raw }; }
+  var ascii  = "From: ops@example.com\r\nTo: a@b.com\r\n\r\nplain\r\n";
+  var utf8Hd = "From: öps@example.com\r\nTo: a@b.com\r\n\r\nplain\r\n";
+  var utf8Bd = "From: ops@example.com\r\nTo: a@b.com\r\n\r\nnaïve\r\n";
+
+  check("a raw message with a non-ASCII ADDRESS asks for SMTPUTF8",
+        b.mail._requiresSmtpUtf8ForTest(msg(Buffer.from(utf8Hd))) === true);
+  check("CONTROL — one that is all ASCII does not",
+        b.mail._requiresSmtpUtf8ForTest(msg(Buffer.from(ascii))) === false);
+  check("CONTROL — nor does a non-ASCII BODY, which is 8BITMIME's business",
+        b.mail._requiresSmtpUtf8ForTest(msg(Buffer.from(utf8Bd))) === false);
+
+  check("a raw message with a non-ASCII body asks for 8BITMIME",
+        b.mail._requires8BitMimeForTest(msg(Buffer.from(utf8Bd))) === true);
+  check("CONTROL — an all-ASCII one does not",
+        b.mail._requires8BitMimeForTest(msg(Buffer.from(ascii))) === false);
+
+  // Built from the code point, never typed: a literal NUL in this file would be
+  // an invisible byte in the test that exists to find one.
+  var withNul = Buffer.concat([Buffer.from(ascii), Buffer.from([0]), Buffer.from("x")]);
+  check("raw bytes carrying a NUL ask for BINARYMIME",
+        b.mail._requiresBinaryMimeForTest(msg(withNul)) === true);
+  check("CONTROL — raw text without one does not",
+        b.mail._requiresBinaryMimeForTest(msg(Buffer.from(ascii))) === false);
+  check("and the string form is read the same way",
+        b.mail._requiresBinaryMimeForTest(msg(ascii + String.fromCharCode(0))) === true);
+}
+
 // ---- B9 — message binary-detection helper (proxied via transport) ----
 
 function testMessageWithBinaryAttachment() {
@@ -569,7 +636,16 @@ function startStarttlsSmtp(certPair, script) {
         state.lines.push(line);
         var u = line.toUpperCase();
         if (u.indexOf("EHLO") === 0) {
-          raw.write("250-mock\r\n250 STARTTLS\r\n");
+          // The CLEARTEXT leg's extensions, which are a separate set from
+          // `script.ext` on purpose. RFC 3207 §4.2 has the client discard
+          // everything learned here once TLS is up, and a server that
+          // advertises the same list on both legs cannot tell whether it did.
+          var pre = (script.cleartextExt || []).concat(["STARTTLS"]);
+          var preResp = "250-mock\r\n";
+          for (var pi = 0; pi < pre.length; pi += 1) {
+            preResp += ((pi === pre.length - 1) ? "250 " : "250-") + pre[pi] + "\r\n";
+          }
+          raw.write(preResp);
         } else if (u.indexOf("STARTTLS") === 0) {
           if (script.starttls === "reject") { raw.write("502 no starttls\r\n"); continue; }
           raw.write("220 go ahead\r\n");
@@ -1439,6 +1515,125 @@ async function testSmtpStarttlsHappyPath(certPair) {
     check("smtp-starttls: issued STARTTLS then re-EHLO",
       st.lines.filter(function (l) { return /^EHLO/i.test(l); }).length >= 2);
   } finally { await closeServer(st); }
+}
+
+// RFC 3207 §4.2 — "The client MUST discard any knowledge obtained from the
+// server, such as the list of SMTP service extensions, which was not obtained
+// from the TLS negotiation itself."
+//
+// Every capability-dependent decision in the transaction rests on that: whether
+// the message needs SMTPUTF8, whether BINARYMIME is available, whether the peer
+// has a SIZE cap, and whether the body travels under BDAT or DATA. Reading them
+// from the cleartext EHLO is wrong twice over. It refuses messages a peer would
+// have accepted, because servers commonly advertise CHUNKING and BINARYMIME
+// only once TLS is up. And it believes an attacker: the cleartext leg is
+// exactly what a network attacker can rewrite, so an injected extension line
+// survives an upgrade that was supposed to invalidate it.
+async function testSmtpCapabilitiesComeOnlyFromThePostTlsEhlo(certPair) {
+  // The peer advertises the real set only after the upgrade — the common
+  // production shape, and the one that was being refused.
+  var st = startStarttlsSmtp(certPair, {
+    cleartextExt: [],
+    ext:          ["8BITMIME", "BINARYMIME", "CHUNKING"],
+  });
+  await listen(st);
+  try {
+    var t = starttlsTransport(certPair, st.port);
+    var r = await t.send({
+      from: "s@a.test", to: "r@b.test", subject: "binary",
+      raw: "Content-Type: application/octet-stream\r\n" +
+           "Content-Transfer-Encoding: binary\r\n\r\n ",
+    });
+    check("smtp-starttls: a binary message is accepted when BINARYMIME is " +
+          "advertised only AFTER the upgrade", r.code === 250);
+    check("smtp-starttls: and it travelled under BDAT", st.bdatChunks.length > 0,
+          JSON.stringify(st.bdatChunks));
+  } finally { await closeServer(st); }
+
+  // The other direction, which is the security half: a capability advertised
+  // ONLY in cleartext is not carried across. A network attacker who can rewrite
+  // the pre-TLS EHLO cannot make the client choose a framing the real peer
+  // never offered.
+  var st2 = startStarttlsSmtp(certPair, {
+    cleartextExt: ["CHUNKING", "BINARYMIME", "8BITMIME"],
+    ext:          [],
+  });
+  await listen(st2);
+  try {
+    var t2 = starttlsTransport(certPair, st2.port);
+    var r2 = await t2.send({ from: "s@a.test", to: "r@b.test", subject: "hi", text: "hello" });
+    check("smtp-starttls: delivered when cleartext over-advertised", r2.code === 250);
+    check("smtp-starttls: a CHUNKING advertised only in cleartext is NOT used",
+          st2.bdatChunks.length === 0, JSON.stringify(st2.bdatChunks));
+  } finally { await closeServer(st2); }
+
+  // Same root, third decision: a SIZE cap injected on the cleartext leg would
+  // otherwise refuse every message permanently, which costs the sender nothing
+  // to inject and denies delivery outright.
+  var st3 = startStarttlsSmtp(certPair, {
+    cleartextExt: ["SIZE 10"],                                                   // allow:raw-byte-literal — a cap below any real message
+    ext:          ["SIZE 1048576"],                                              // allow:raw-byte-literal — the peer's real cap
+  });
+  await listen(st3);
+  try {
+    var t3 = starttlsTransport(certPair, st3.port);
+    var r3 = await t3.send({ from: "s@a.test", to: "r@b.test", subject: "hi", text: "hello" });
+    check("smtp-starttls: a SIZE cap seen only in cleartext does not refuse",
+          r3.code === 250);
+  } finally { await closeServer(st3); }
+}
+
+// RFC 6152: a body carrying octets with the high bit set needs 8BITMIME. If the
+// peer does not advertise it, the message cannot go as-is — but the mode
+// selection fell through to `7BIT` and wrote the raw high octets anyway. The
+// transaction then declares 7-bit and sends 8-bit, which the peer may reject
+// outright or strip the eighth bit from, silently corrupting the message.
+//
+// The BINARYMIME sibling of this already refused. Marking a body as needing an
+// extension and then shipping it without one is the same defect either way, and
+// only one of the two was closed.
+async function testRaw8BitRefusedWhenPeerHasNo8BitMime(certPair) {
+  var st = startTlsSmtp(certPair, { ext: ["SIZE 1048576"] });                                           // allow:raw-byte-literal — no 8BITMIME advertised
+  await listen(st);
+  try {
+    var t = tlsTransport(certPair, st.port);
+    var e = await _sendErr(t, {
+      from: "s@a.test", to: "r@b.test", subject: "eight bit",
+      // ISO-8859-1 in the body, no NUL — 8BITMIME territory, not BINARYMIME.
+      raw: Buffer.from([
+        0x53, 0x75, 0x62, 0x6A, 0x65, 0x63, 0x74, 0x3A, 0x20, 0x74, 0x0D, 0x0A, 0x0D, 0x0A,
+        0x43, 0x61, 0x66, 0xE9, 0x0D, 0x0A,
+      ]),
+    });
+    check("8bit: a raw 8-bit body is refused when the peer omits 8BITMIME",
+          e && e.code === "mail/8bitmime-not-advertised",
+          e && (e.code + " / " + e.message));
+    // `lastDataRaw` is only assigned when a DATA body completes, so it is
+    // absent — not null — when the refusal landed before the body was written.
+    check("8bit: nothing was written into a DATA or BDAT frame",
+          !st.lastDataRaw && st.bdatChunks.length === 0,
+          JSON.stringify({ data: st.lastDataRaw === undefined ? "absent" : st.lastDataRaw,
+                           bdat: st.bdatChunks.length }));
+  } finally { await closeServer(st); }
+
+  // Control: the same body IS sent when the peer advertises 8BITMIME, so this
+  // refuses an un-negotiated send rather than refusing 8-bit mail.
+  var st2 = startTlsSmtp(certPair, { ext: ["8BITMIME"] });
+  await listen(st2);
+  try {
+    var t2 = tlsTransport(certPair, st2.port);
+    var r2 = await t2.send({
+      from: "s@a.test", to: "r@b.test", subject: "eight bit",
+      raw: Buffer.from([
+        0x53, 0x75, 0x62, 0x6A, 0x65, 0x63, 0x74, 0x3A, 0x20, 0x74, 0x0D, 0x0A, 0x0D, 0x0A,
+        0x43, 0x61, 0x66, 0xE9, 0x0D, 0x0A,
+      ]),
+    });
+    check("control: an 8BITMIME peer accepts the same body", r2.code === 250);
+    check("control: and it was declared BODY=8BITMIME",
+          st2.mailFromLine !== null && /BODY=8BITMIME/i.test(st2.mailFromLine),
+          st2.mailFromLine);
+  } finally { await closeServer(st2); }
 }
 
 async function testSmtpStarttlsRejected(certPair) {
@@ -2684,15 +2879,329 @@ async function testSmtpAuthEmptyPassword(certPair) {
   }
 }
 
+// Raw bytes that are NOT valid UTF-8 must reach the wire unchanged. A utf8
+// decode replaces every invalid sequence with U+FFFD, which corrupts exactly
+// the BINARYMIME payloads this transport detects and negotiates for — and the
+// send still reports success, so the corruption is invisible to the sender.
+// A byte-exact SMTP mock. The shared _wireHandler calls setEncoding("utf8"),
+// so it decodes the wire before a test can look at it — which would destroy
+// the very bytes this test is about and report a pass. This one never decodes:
+// it scans the pending Buffer for CRLF, and copies BDAT payload bytes out
+// verbatim.
+function startByteExactSmtp(certPair, captured, script) {
+  script = script || {};
+  var state = { server: null, port: 0 };
+  state.server = tls.createServer({ key: certPair.key, cert: certPair.cert }, function (sock) {
+    var pending = Buffer.alloc(0);
+    var bdatRemaining = 0;
+    var inData = false;
+    function reply(line) { sock.write(line + "\r\n"); }
+    sock.on("error", function () {});
+    reply("220 byte-exact ESMTP");
+    sock.on("data", function (chunk) {
+      pending = Buffer.concat([pending, chunk]);                                 // chunk is a Buffer: no setEncoding above
+      while (true) {
+        if (inData) {
+          // RFC 5321 §4.1.1.4 — the body ends at CRLF "." CRLF. Everything
+          // before that terminator is the message, captured byte for byte.
+          var end = pending.indexOf("\r\n.\r\n");
+          if (end === -1) return;
+          captured.push(Buffer.from(pending.subarray(0, end + 2)));              // keep the body's own final CRLF
+          pending = pending.subarray(end + 5);
+          inData = false;
+          reply("250 body ok");
+          continue;
+        }
+        if (bdatRemaining > 0) {
+          if (pending.length === 0) return;
+          var take = Math.min(bdatRemaining, pending.length);
+          captured.push(Buffer.from(pending.subarray(0, take)));                 // copy, not a view into a reused buffer
+          pending = pending.subarray(take);
+          bdatRemaining -= take;
+          if (bdatRemaining === 0) reply("250 chunk ok");
+          continue;
+        }
+        var crlf = pending.indexOf("\r\n");
+        if (crlf === -1) return;
+        var line = pending.subarray(0, crlf).toString("latin1");                 // commands are ASCII; latin1 cannot mangle them
+        pending = pending.subarray(crlf + 2);
+        var upper = line.toUpperCase();
+        if (upper.indexOf("EHLO") === 0) {
+          reply("250-mock");
+          // Withholding CHUNKING forces the transport onto DATA framing, which
+          // is the path that appends the terminator.
+          if (!script.noChunking) {
+            reply("250-CHUNKING");
+            reply("250-BINARYMIME");
+          }
+          reply("250 8BITMIME");
+        } else if (upper.indexOf("DATA") === 0) {
+          inData = true;
+          reply("354 send it");
+        } else if (upper.indexOf("BDAT") === 0) {
+          var parts = line.split(" ");
+          bdatRemaining = Number(parts[1]) || 0;
+          if (bdatRemaining === 0) reply("250 empty ok");
+        } else if (upper.indexOf("QUIT") === 0) {
+          reply("221 bye");
+        } else {
+          reply("250 ok");
+        }
+      }
+    });
+  });
+  return state;
+}
+
+async function testRawBinaryBytesReachTheWireUnchanged(certPair) {
+  // A lone 0xFF / 0xFE / 0x80 run and a NUL: none of it is valid UTF-8, and
+  // all of it is ordinary content for a binary attachment.
+  var body = Buffer.from([0x00, 0xC3, 0x28, 0xFF, 0xFE, 0x80, 0x41]);
+  var raw = Buffer.concat([Buffer.from("Subject: bin\r\n\r\n", "utf8"), body]);
+
+  // Control first: prove the naive conversion really does destroy these bytes,
+  // so a pass below means the transport avoided it rather than the fixture
+  // being UTF-8-safe all along.
+  check("raw fixture: a utf8 round trip would corrupt it",
+        !Buffer.from(raw.toString("utf8"), "utf8").equals(raw));
+
+  // The DATA path, where the terminator is appended. A serialized RFC 822
+  // message normally already ends in CRLF, and appending "\r\n.\r\n" to that
+  // inserts a blank line into the body — so the bytes are not verbatim, and a
+  // DKIM signature over them no longer verifies. Exercised with CHUNKING
+  // withheld so the transport must use DATA rather than BDAT.
+  var dataCaptured = [];
+  var stData = startByteExactSmtp(certPair, dataCaptured, { noChunking: true });
+  await listen(stData);
+  try {
+    var textual = Buffer.from("Subject: t\r\n\r\nline one\r\nline two\r\n", "utf8");
+    var td = tlsTransport(certPair, stData.port);
+    var rd = await td.send({ from: "s@a.test", to: "r@b.test", raw: textual });
+    check("raw over DATA: delivered", rd.code === 250);
+    var got = Buffer.concat(dataCaptured);
+    check("raw over DATA: the trailing CRLF is not doubled",
+          got.equals(textual), JSON.stringify(got.toString("utf8")));
+  } finally { await closeServer(stData); }
+
+  var captured = [];
+  var st = startByteExactSmtp(certPair, captured);
+  await listen(st);
+  try {
+    var t = tlsTransport(certPair, st.port);
+    var r = await t.send({ from: "s@a.test", to: "r@b.test", raw: raw });
+    check("raw binary: delivered", r.code === 250);
+    var received = Buffer.concat(captured);
+    check("raw binary: the peer received the exact bytes",
+          received.length === raw.length && received.equals(raw),
+          "got " + received.length + " of " + raw.length + " bytes: " +
+          received.toString("hex"));
+  } finally { await closeServer(st); }
+}
+
+// ---- DANE: the transport authenticates the peer against its TLSA records ----
+
+// The record a peer with THIS certificate would publish: DANE-EE, whole cert,
+// SHA-256 (RFC 6698 §2.1). Computed from the cert the mock actually presents,
+// so a passing match means the transport really compared the two rather than
+// waving the option through.
+function _tlsaForCert(certPem, mtypeDigest) {
+  var body = String(certPem)
+    .replace("-----BEGIN CERTIFICATE-----", "")
+    .replace("-----END CERTIFICATE-----", "")
+    .replace(/\s+/g, "");                                                        // allow:regex-no-length-cap — whitespace strip on a local PEM fixture
+  var der = Buffer.from(body, "base64");
+  return {
+    usage: 3, selector: 0, mtype: 1,
+    dataHex: require("node:crypto").createHash(mtypeDigest || "sha256")
+      .update(der).digest("hex"),
+  };
+}
+
+async function testDaneMatchingRecordDelivers(certPair) {
+  var st = startTlsSmtp(certPair, {});
+  await listen(st);
+  try {
+    var t = tlsTransport(certPair, st.port, { dane: [_tlsaForCert(certPair.cert)] });
+    var r = await t.send({ from: "s@a.test", to: "r@b.test", subject: "s", text: "hi" });
+    check("dane: a chain matching the published TLSA record delivers", r.code === 250);
+  } finally { await closeServer(st); }
+}
+
+// The canonical DANE deployment: an MX presenting a self-signed certificate,
+// bound to its name by a DANE-EE (usage 3) record published under DNSSEC. RFC
+// 7672 §3.1.1 does not perform PKIX validation for usage 2 or 3 — the TLSA
+// record IS the trust anchor.
+//
+// With the WebPKI check left on, Node rejected such a peer during the handshake
+// before its certificate could be compared against the very records that
+// authenticate it, so every standards-compliant DANE-only MX was deferred while
+// matching its published records exactly.
+async function testDaneEeAuthenticatesASelfSignedPeer() {
+  var selfSigned = helpers.selfSignedPair();                                     // no CA: WebPKI cannot validate this
+  var st = startTlsSmtp(selfSigned, {});
+  await listen(st);
+  try {
+    // No `ca`, so the only thing that can authenticate this peer is DANE.
+    var t = b.mail.transports.smtp({
+      host: "127.0.0.1", port: st.port, implicitTls: true,
+      servername: "localhost", preferFamily: 4, timeoutMs: C.TIME.seconds(4),
+      dane: [_tlsaForCert(selfSigned.cert)],
+    });
+    var r = await t.send({ from: "s@a.test", to: "r@b.test", subject: "s", text: "hi" });
+    check("dane-ee: a self-signed peer matching its TLSA record is delivered to",
+          r.code === 250);
+  } finally { await closeServer(st); }
+
+  // The control, and the reason this is not simply "verification off": the same
+  // self-signed peer with a record it does NOT match must still be refused.
+  var st2 = startTlsSmtp(selfSigned, {});
+  await listen(st2);
+  var err = null;
+  try {
+    var wrong = _tlsaForCert(selfSigned.cert);
+    wrong.dataHex = (wrong.dataHex[0] === "a" ? "b" : "a") + wrong.dataHex.slice(1);
+    var t2 = b.mail.transports.smtp({
+      host: "127.0.0.1", port: st2.port, implicitTls: true,
+      servername: "localhost", preferFamily: 4, timeoutMs: C.TIME.seconds(4),
+      dane: [wrong],
+    });
+    await t2.send({ from: "s@a.test", to: "r@b.test", subject: "s", text: "hi" });
+  } catch (e) { err = e; } finally { await closeServer(st2); }
+  check("dane-ee control: a non-matching record still refuses the self-signed peer",
+        err !== null && /dane/i.test(err.message || ""), String(err && err.message));
+
+  // And PKIX usages do NOT get the WebPKI check turned off: usage 1 (PKIX-EE)
+  // requires path validation, so a self-signed peer must still be rejected.
+  var st3 = startTlsSmtp(selfSigned, {});
+  await listen(st3);
+  var pkixErr = null;
+  try {
+    var pkixRec = _tlsaForCert(selfSigned.cert);
+    pkixRec.usage = 1;                                                           // PKIX-EE
+    var t3 = b.mail.transports.smtp({
+      host: "127.0.0.1", port: st3.port, implicitTls: true,
+      servername: "localhost", preferFamily: 4, timeoutMs: C.TIME.seconds(4),
+      dane: [pkixRec], daneAllowPkixModes: true,
+    });
+    await t3.send({ from: "s@a.test", to: "r@b.test", subject: "s", text: "hi" });
+  } catch (e) { pkixErr = e; } finally { await closeServer(st3); }
+  check("dane: a PKIX-only record set keeps the WebPKI check on",
+        pkixErr !== null, "self-signed peer accepted under a PKIX-EE record");
+}
+
+// PKIX-TA (0) and PKIX-EE (1) mean "this is the certificate, AND it must also
+// pass PKIX path validation" (RFC 7672 §3.1.1). verifyChain refuses those usages
+// unless the caller confirms a PKIX validator ran — which is exactly the case
+// when the WebPKI check was left on, i.e. when the record set contains no
+// DANE-TA/DANE-EE that would have replaced it.
+//
+// Without that link, a peer publishing only PKIX records was refused despite a
+// valid certificate and a matching record: the handshake validated the chain
+// and then verifyChain threw the match away as `pkix-modes-not-allowed`.
+async function testDanePkixRecordDeliversWhenWebPkiValidated(certPair) {
+  var pkixRec = _tlsaForCert(certPair.cert);
+  pkixRec.usage = 1;                                                             // PKIX-EE
+  var st = startTlsSmtp(certPair, {});
+  await listen(st);
+  try {
+    // certPair is CA-signed and tlsTransport supplies the CA, so Node's PKIX
+    // validation succeeds — the precondition the usage-1 record carries.
+    var t = tlsTransport(certPair, st.port, { dane: [pkixRec] });
+    var r = await t.send({ from: "s@a.test", to: "r@b.test", subject: "s", text: "hi" });
+    check("dane: a PKIX-EE record delivers once the chain passed PKIX validation",
+          r.code === 250);
+  } finally { await closeServer(st); }
+
+  // Control: a PKIX-EE record that does NOT match the presented leaf must still
+  // refuse, so this is honouring the record rather than ignoring it.
+  var wrongPkix = _tlsaForCert(certPair.cert);
+  wrongPkix.usage = 1;
+  wrongPkix.dataHex = (wrongPkix.dataHex[0] === "a" ? "b" : "a") + wrongPkix.dataHex.slice(1);
+  var st2 = startTlsSmtp(certPair, {});
+  await listen(st2);
+  var err = null;
+  try {
+    var t2 = tlsTransport(certPair, st2.port, { dane: [wrongPkix] });
+    await t2.send({ from: "s@a.test", to: "r@b.test", subject: "s", text: "hi" });
+  } catch (e) { err = e; } finally { await closeServer(st2); }
+  check("dane control: a non-matching PKIX-EE record still refuses",
+        err !== null && /dane/i.test(err.message || ""), String(err && err.message));
+}
+
+async function testDaneMismatchedRecordRefusesTheSend(certPair) {
+  // The half that was missing entirely: `verifyChain` shipped and nothing
+  // called it, so a peer presenting a certificate unrelated to its published
+  // records was delivered to exactly like a matching one. Same peer, same
+  // handshake, one digit changed in the record.
+  var wrong = _tlsaForCert(certPair.cert);
+  wrong.dataHex = (wrong.dataHex[0] === "a" ? "b" : "a") + wrong.dataHex.slice(1);
+  var st = startTlsSmtp(certPair, {});
+  await listen(st);
+  var err = null;
+  try {
+    var t = tlsTransport(certPair, st.port, { dane: [wrong] });
+    await t.send({ from: "s@a.test", to: "r@b.test", subject: "s", text: "hi" });
+  } catch (e) { err = e; } finally { await closeServer(st); }
+  check("dane: a chain matching no published record refuses the send",
+        err !== null, "delivered anyway");
+  check("dane: the refusal names DANE, so it classifies permanent not transient",
+        err !== null && /dane/i.test(err.message || ""), String(err && err.message));
+}
+
+async function testDaneVerifiesOnTheStarttlsPathToo(certPair) {
+  // The upgrade path reaches TLS through a different call, and a check wired
+  // only into the implicit-TLS dial would leave port 25 — where MX delivery
+  // actually happens, and the only port DANE is defined for — unverified.
+  var wrong = _tlsaForCert(certPair.cert);
+  wrong.dataHex = (wrong.dataHex[0] === "a" ? "b" : "a") + wrong.dataHex.slice(1);
+  var st = startStarttlsSmtp(certPair, {});
+  await listen(st);
+  var err = null;
+  try {
+    var t = starttlsTransport(certPair, st.port, { dane: [wrong] });
+    await t.send({ from: "s@a.test", to: "r@b.test", subject: "s", text: "hi" });
+  } catch (e) { err = e; } finally { await closeServer(st); }
+  check("dane: STARTTLS upgrade is verified against the records too",
+        err !== null && /dane/i.test(err.message || ""), String(err && err.message));
+
+  // Control: the same path with the RIGHT record must deliver, or the check
+  // above would also pass on a transport that simply cannot do STARTTLS.
+  var st2 = startStarttlsSmtp(certPair, {});
+  await listen(st2);
+  try {
+    var t2 = starttlsTransport(certPair, st2.port, { dane: [_tlsaForCert(certPair.cert)] });
+    var r2 = await t2.send({ from: "s@a.test", to: "r@b.test", subject: "s", text: "hi" });
+    check("dane: STARTTLS control — the matching record still delivers", r2.code === 250);
+  } finally { await closeServer(st2); }
+}
+
+function testDaneOptionShapeIsRefusedEarly() {
+  var bad = null;
+  try { b.mail.transports.smtp({ host: "h", dane: "yes" }); } catch (e) { bad = e; }
+  check("dane: a non-array is refused at config time",
+        bad && bad.code === "mail/smtp-misconfigured", String(bad && bad.code));
+
+  // An empty array is the shape a caller lands on after fetching nothing, and
+  // it cannot authenticate anything. Accepting it would mean "DANE was on and
+  // the peer passed" for a peer that published no records at all.
+  var empty = null;
+  try { b.mail.transports.smtp({ host: "h", dane: [] }); } catch (e) { empty = e; }
+  check("dane: an empty record array is refused, not read as 'no DANE'",
+        empty && empty.code === "mail/smtp-misconfigured", String(empty && empty.code));
+}
+
 // ---------------------------------------------------------------------------
 
 async function run() {
   testSmtpTransportAcceptsChunkingOpts();
+  testDaneOptionShapeIsRefusedEarly();
   testSmtpTransportRefusesBadHost();
   await testReverseDnsBadIp();
   await testReverseDnsLoopback();
   testParsePeerSizeShape();
   testRfc822BuilderProducesParseable();
+  testRawRfc822ReachesTheWireVerbatim();
+  testRawMessageStillNegotiatesTheWireCapabilities();
   await testMessageWithBinaryAttachment();
   await testPeerSizeRefusalEndToEnd();
   await testGuardDomainDefaultRefusesBareIp();
@@ -2782,6 +3291,12 @@ async function run() {
   });
   var certPair = { key: leaf.key, cert: leaf.cert, caCertPem: ca.caCertPem };
 
+  await testRawBinaryBytesReachTheWireUnchanged(certPair);
+  await testDaneMatchingRecordDelivers(certPair);
+  await testDaneEeAuthenticatesASelfSignedPeer();
+  await testDanePkixRecordDeliversWhenWebPkiValidated(certPair);
+  await testDaneMismatchedRecordRefusesTheSend(certPair);
+  await testDaneVerifiesOnTheStarttlsPathToo(certPair);
   await testSmtpHappyPathData(certPair);
   await testSmtpAuthLogin(certPair);
   await testSmtpBdatChunking(certPair);
@@ -2795,6 +3310,8 @@ async function run() {
   await testSmtpTransactionTimeout(certPair);
   await testSmtpSocketTimeout(certPair);
   await testSmtpStarttlsHappyPath(certPair);
+  await testSmtpCapabilitiesComeOnlyFromThePostTlsEhlo(certPair);
+  await testRaw8BitRefusedWhenPeerHasNo8BitMime(certPair);
   await testSmtpStarttlsRejected(certPair);
   await testSmtpBinaryMimeFromNulBuffer(certPair);
   await testSmtpParsePeerSizeNoCapAndJunk(certPair);

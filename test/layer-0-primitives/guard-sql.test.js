@@ -327,19 +327,36 @@ function testCopyFileVersusStdStreams() {
   // before the whitespace is consumed keeps it flat. The budget is generous
   // enough not to flake on a loaded runner and still an order of magnitude
   // under the shape it guards against.
+  // Measured as the MINIMUM of several runs, in nanoseconds. One
+  // millisecond-resolution sample of a sub-millisecond operation is mostly
+  // timer granularity, and a single descheduled run then reads as growth: this
+  // assertion failed at "4000=1ms 16000=65ms" on a box running two other
+  // suites, where the same input measures flat once it gets the CPU.
+  // Contention can only ADD time, so the minimum is the sample closest to the
+  // work actually done, and a real quadratic still shows in it.
+  function _minNs(sql, reps) {
+    var best = Infinity;
+    for (var i = 0; i < reps; i += 1) {
+      var t0 = process.hrtime.bigint();
+      b.guardSql.validate(sql, opFloor);
+      var ns = Number(process.hrtime.bigint() - t0);
+      if (ns < best) best = ns;
+    }
+    return best;
+  }
   var runs = [4000, 16000].map(function (n) {
-    var sql = "COPY t TO " + " ".repeat(n) + "STDIN";
-    var started = Date.now();
-    b.guardSql.validate(sql, opFloor);
-    return { n: n, ms: Date.now() - started };
+    return { n: n, ns: _minNs("COPY t TO " + " ".repeat(n) + "STDIN", 7) };
   });
   runs.forEach(function (r) {
-    check("copy-file: a " + r.n + "-space run stays cheap (" + r.ms + "ms)", r.ms < 250);
+    check("copy-file: a " + r.n + "-space run stays cheap (" +
+          (r.ns / 1e6).toFixed(2) + "ms)", r.ns < 250 * 1e6);
   });
   // Quadratic growth would show as a ratio near 16 across a 4x length increase.
+  // The floor keeps a fast-and-flat pair from failing on the ratio alone.
   check("copy-file: cost does not grow quadratically with the whitespace run",
-        runs[1].ms <= Math.max(40, runs[0].ms * 6),
-        runs[0].n + "=" + runs[0].ms + "ms " + runs[1].n + "=" + runs[1].ms + "ms");
+        runs[1].ns <= Math.max(2 * 1e6, runs[0].ns * 6),
+        runs[0].n + "=" + (runs[0].ns / 1e6).toFixed(2) + "ms " +
+        runs[1].n + "=" + (runs[1].ns / 1e6).toFixed(2) + "ms");
 }
 
 // ---- PRAGMA trusted_schema: same verdicts, without the quadratic ----

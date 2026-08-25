@@ -94,6 +94,80 @@ async function testAppendFetchRoundtrip() {
   } finally { _teardown(fx); }
 }
 
+// `b.mailStore.create({ backend: b.db })` is the composition this module's own
+// `@example` documents, and it was the one shape never tested: every fixture
+// here hands over a bare `DatabaseSync`, which has no `transaction` at all, so
+// the store took its no-transaction fallback and neither calling convention was
+// ever driven.
+//
+// There are two, and `typeof db.transaction === "function"` is true of both.
+// `b.db.transaction(fn)` RUNS fn between BEGIN and COMMIT and returns its
+// result; better-sqlite3's returns a WRAPPER to call. The store was written for
+// the second, so against `b.db` it ran the work, committed it, and then threw a
+// TypeError calling the result — and a caller retrying on that throw appended a
+// second copy of a message that was already durably stored.
+async function testBothTransactionConventionsAreHonoured() {
+  // The two conventions, over the same real database, so what is under test is
+  // the calling convention and nothing else.
+  var CONVENTIONS = [
+    ["runs the callback (b.db's shape)", function (h) {
+      return function (fn) { h.exec("BEGIN"); var r = fn(); h.exec("COMMIT"); return r; };
+    }],
+    ["returns a wrapper (better-sqlite3's shape)", function (h) {
+      return function (fn) {
+        return function () { h.exec("BEGIN"); var r = fn(); h.exec("COMMIT"); return r; };
+      };
+    }],
+  ];
+
+  for (var i = 0; i < CONVENTIONS.length; i += 1) {
+    var label = CONVENTIONS[i][0];
+    var fx = await _setupStore("txn" + i);
+    try {
+      fx.db.transaction = CONVENTIONS[i][1](fx.db);
+      var store = b.mailStore.create({ backend: fx.db });
+      var threw = null;
+      var meta  = null;
+      try {
+        meta = store.appendMessage("INBOX",
+          _msg(["From: a@x", "To: b@x", "Subject: T", "Message-Id: <t@x>"], "body"));
+      } catch (e) { threw = e; }
+      check("appendMessage on a backend that " + label + " does not throw",
+            threw === null, String(threw && (threw.code || threw.message)));
+      check("appendMessage on a backend that " + label + " returns its metadata",
+            !!(meta && meta.objectid), JSON.stringify(meta));
+      // The consequence the throw actually had: a caller retrying on it stored
+      // the message twice. So the store is asked what it holds.
+      var rows = store.queryByModseq("INBOX", { sinceModseq: 0 });
+      check("and the message is stored exactly once (" + label + ")",
+            rows.length === 1, "rows=" + rows.length);
+    } finally { _teardown(fx); }
+  }
+}
+
+// A backend whose `transaction` does neither — it takes the callback, does not
+// run it, and hands back something uncallable — cannot make the write atomic.
+// Doing the work anyway would be the worse answer: a partial write is exactly
+// what the transaction is there to prevent, so it is refused and named.
+async function testUnusableTransactionIsRefusedNotIgnored() {
+  var fx = await _setupStore("txnbad");
+  try {
+    fx.db.transaction = function () { return 42; };
+    var store = b.mailStore.create({ backend: fx.db });
+    var threw = null;
+    try {
+      store.appendMessage("INBOX",
+        _msg(["From: a@x", "To: b@x", "Subject: B", "Message-Id: <b@x>"], "body"));
+    } catch (e) { threw = e; }
+    check("a backend whose transaction neither runs nor returns a runner is refused",
+          threw && threw.code === "mail-store/unusable-transaction",
+          String(threw && (threw.code || threw.message)));
+    var rows = store.queryByModseq("INBOX", { sinceModseq: 0 });
+    check("and nothing was written, so the refusal is not a partial write",
+          rows.length === 0, "rows=" + rows.length);
+  } finally { _teardown(fx); }
+}
+
 async function testCondstoreModseq() {
   var fx = await _setupStore("condstore");
   try {
@@ -621,6 +695,8 @@ async function testSearchFtsUnavailableFallback() {
 }
 
 async function run() {
+  await testBothTransactionConventionsAreHonoured();
+  await testUnusableTransactionIsRefusedNotIgnored();
   await testBadTablePrefix();
   await testBadHeaderIds();
   await testOversizeMessageDirect();

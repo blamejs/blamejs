@@ -224,6 +224,117 @@ async function testFetchChangedSinceParses() {
   } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
 }
 
+// RFC 9051 §4.3 makes a literal a counted sequence of OCTETS, and §6.4.5 makes
+// `BODY[]` the message. Assembling the response as a JavaScript string and
+// handing it to `socket.write` encodes it as UTF-8 on the way out, so a message
+// octet that is not valid UTF-8 cannot survive: the listener returns content
+// the backend does not hold, and a count that is not the count it announced.
+//
+// Two numbers in one response disagree, which is the part a client cannot work
+// around — the literal count is what tells it where the response ends.
+//
+// The same message over POP3 in the same tree arrives intact, so the protocol
+// an account holder happens to use decides whether they receive their own mail.
+async function testFetchWritesTheOctetsTheBackendReturned() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("FETCH octets (skipped)", true); return; }
+
+  // An ordinary 8-bit message: ISO-8859-1 e-acute, then a lone 0x82. Neither
+  // is valid UTF-8, and both are perfectly ordinary mail.
+  var raw = Buffer.from([
+    0x53, 0x75, 0x62, 0x6A, 0x65, 0x63, 0x74, 0x3A, 0x20, 0x74, 0x0D, 0x0A,   // "Subject: t\r\n"
+    0x0D, 0x0A,                                                               // header/body separator
+    0x43, 0x61, 0x66, 0xE9, 0x0D, 0x0A,                                       // "Caf" + 0xE9 + CRLF
+    0x82, 0xA0, 0x0D, 0x0A,                                                   // a Shift_JIS kana
+  ]);
+  // The payload the backend hands back, framed as RFC 9051 requires: the
+  // literal's octet count, then exactly that many octets.
+  var payload = Buffer.concat([
+    Buffer.from("BODY[] {" + raw.length + "}\r\n", "latin1"),
+    raw,
+  ]);
+  var store = _makeStubMailStore();
+  store.fetchRange = function () {
+    return Promise.resolve([{ seq: 1, payload: payload, modseq: 1 }]);
+  };
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: store, profile: "permissive",
+    auth: {
+      mechanisms: ["PLAIN", "LOGIN"],
+      verify: function () {
+        return Promise.resolve({ ok: true, actor: { id: "u1", mailboxes: ["INBOX"] } });
+      },
+    },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    await _sendCommand(c.socket, "a0", "LOGIN test test");
+    await _sendCommand(c.socket, "a1", "SELECT INBOX");
+
+    // Read the response as OCTETS. Decoding it as text before asserting would
+    // destroy exactly the bytes under test, and the assertion would pass on a
+    // listener that had already corrupted them.
+    var chunks = [];
+    var done = new Promise(function (resolve) {
+      function onData(d) {
+        chunks.push(Buffer.from(d));
+        if (/a2 (OK|NO|BAD) /.test(Buffer.concat(chunks).toString("latin1"))) {
+          c.socket.removeListener("data", onData);
+          resolve();
+        }
+      }
+      c.socket.on("data", onData);
+    });
+    c.socket.write("a2 FETCH 1 (BODY[])\r\n");
+    await done;
+    var wire = Buffer.concat(chunks);
+
+    check("FETCH: the message's octets reach the wire unaltered",
+          wire.indexOf(raw) !== -1,
+          wire.toString("hex").slice(0, 160));
+    // And the announced count is the count actually sent, which is what keeps
+    // the client in step for the NEXT response.
+    var text = wire.toString("latin1");
+    var announced = /\{(\d+)\}\r\n/.exec(text);
+    check("FETCH: the literal count is the stored octet count",
+          announced && Number(announced[1]) === raw.length,
+          announced && announced[1] + " vs " + raw.length);
+    var at = wire.indexOf(Buffer.from("}\r\n", "latin1"));
+    check("FETCH: exactly that many octets follow the literal header",
+          at !== -1 && wire.subarray(at + 3, at + 3 + raw.length).equals(raw),
+          at === -1 ? "no literal header" :
+            wire.subarray(at + 3, at + 3 + raw.length).toString("hex"));
+
+    // The other half of the same question. A response STRING is still UTF-8:
+    // RFC 9051 §5.1 has mailbox names in UTF-8 once the client enables
+    // UTF8=ACCEPT, and a first version of the octet fix encoded every string
+    // latin1, which keeps only the low byte of each character and corrupts
+    // every name outside Latin-1. That is the same defect moved, not fixed.
+    var cjk = "中文";                                                 // two CJK characters, three octets each in UTF-8
+    var noticed = [];
+    var sawNotice = new Promise(function (resolve) {
+      function onNotice(d) {
+        noticed.push(Buffer.from(d));
+        if (/a3 (OK|NO|BAD) /.test(Buffer.concat(noticed).toString("latin1"))) {
+          c.socket.removeListener("data", onNotice);
+          resolve();
+        }
+      }
+      c.socket.on("data", onNotice);
+    });
+    store.fetchRange = function () {
+      return Promise.resolve([{ seq: 1, payload: "FLAGS () \"" + cjk + "\"", modseq: 1 }]);
+    };
+    c.socket.write("a3 FETCH 1 (FLAGS)\r\n");
+    await sawNotice;
+    check("FETCH: a non-ASCII response string keeps its UTF-8 encoding",
+          Buffer.concat(noticed).indexOf(Buffer.from(cjk, "utf8")) !== -1,
+          Buffer.concat(noticed).toString("hex").slice(0, 120));
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
 async function testStoreUnchangedSinceConflict() {
   var ctx;
   try { ctx = await _makeTestTlsContext(); }
@@ -332,6 +443,30 @@ async function testNotifyNoneAndSet() {
     check("subscribeNotify hook called",            subscribeCalls.length === 1);
     check("backend got spec verbatim",
           subscribeCalls[0].spec === "(SELECTED (MessageNew FlagChange))");
+
+    // A pushed FETCH carries message content too, so it is the same octet
+    // question as the FETCH command — and it was a SECOND copy of the response
+    // builder, so fixing the command path alone left this one corrupting.
+    var raw = Buffer.from([0x43, 0x61, 0x66, 0xE9, 0x0D, 0x0A]);                                        // "Caf" + 0xE9 + CRLF
+    var pushed = [];
+    var sawPush = new Promise(function (resolve) {
+      function onPush(d) {
+        pushed.push(Buffer.from(d));
+        if (Buffer.concat(pushed).indexOf(Buffer.from(" FETCH (", "latin1")) !== -1) {
+          c.socket.removeListener("data", onPush);
+          resolve();
+        }
+      }
+      c.socket.on("data", onPush);
+    });
+    subscribeCalls[0].emitFn({
+      kind: "FETCH", seq: 7,
+      payload: Buffer.concat([Buffer.from("BODY[] {" + raw.length + "}\r\n", "latin1"), raw]),
+    });
+    await sawPush;
+    check("NOTIFY: a pushed FETCH writes the backend's octets unaltered",
+          Buffer.concat(pushed).indexOf(raw) !== -1,
+          Buffer.concat(pushed).toString("hex").slice(0, 120));
 
     var rNone = await _sendCommand(c.socket, "a2", "NOTIFY NONE");
     check("NOTIFY NONE → OK",                       /^a2 OK /m.test(rNone));
@@ -454,6 +589,72 @@ async function testCatenateBackendMissing() {
       "APPEND INBOX CATENATE (URL \"imap://x/INBOX;UID=1\")");
     check("APPEND CATENATE without backend → NO",  /^a1 NO /m.test(r));
     check("refusal mentions backend not configured", /backend not configured/i.test(r));
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+// RFC 9051 §7.5 — a synchronizing literal is answered with a command
+// continuation request, a line that BEGINS with `+`. The listener answered
+// with an untagged response whose text happened to start with a plus, so the
+// wire carried `* + Ready for literal data`. A conforming client waits for a
+// line starting with `+`, never sees one, and APPEND never completes.
+//
+// There was no way around it: the strict profile's guard refuses LITERAL+, and
+// CAPABILITY does not advertise it, so the non-synchronizing route is closed
+// too. The same file already used the right writer for the SASL challenge and
+// for IDLE — only the literal path reached for the untagged one.
+async function testAppendLiteralGetsARealContinuation() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("APPEND literal continuation (skipped)", true); return; }
+  var stub = _makeStubMailStore();
+  var appended = [];
+  // appendMessage(folder, bytes, opts) — the shape lib/mail-server-imap.js
+  // actually calls, not the actor-first one the sibling store methods take.
+  stub.appendMessage = function (folder, bytes) {
+    appended.push({ folder: folder, len: bytes && bytes.length });
+    return Promise.resolve({ uid: 42, uidValidity: 1 });
+  };
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: stub, profile: "permissive",
+    auth: { mechanisms: ["LOGIN"], verify: function () {
+      return Promise.resolve({ ok: true, actor: { id: "u1" } });
+    } },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    await _sendCommand(c.socket, "a0", "LOGIN test test");
+
+    var body = "Subject: hi\r\n\r\nhello\r\n";
+    var cont = await new Promise(function (resolve, reject) {
+      var buf = "";
+      function onData(chunk) {
+        buf += chunk.toString("utf8");
+        if (buf.indexOf("\r\n") !== -1) { c.socket.removeListener("data", onData); resolve(buf); }
+      }
+      c.socket.on("data", onData);
+      c.socket.once("error", reject);
+      c.socket.write("a1 APPEND INBOX {" + body.length + "}\r\n");
+    });
+    check("APPEND literal: the reply is a continuation request, not an untagged response",
+          cont.charAt(0) === "+", JSON.stringify(cont));
+    check("APPEND literal: nothing untagged precedes it",
+          cont.indexOf("* +") === -1, JSON.stringify(cont));
+
+    // And the command must actually complete once the client sends the bytes.
+    var done = await new Promise(function (resolve, reject) {
+      var buf = "";
+      function onData(chunk) {
+        buf += chunk.toString("utf8");
+        if (/^a1 /m.test(buf)) { c.socket.removeListener("data", onData); resolve(buf); }
+      }
+      c.socket.on("data", onData);
+      c.socket.once("error", reject);
+      c.socket.write(body);
+    });
+    check("APPEND literal: the command completes OK", /^a1 OK/m.test(done), JSON.stringify(done));
+    check("APPEND literal: the backend received the body",
+          appended.length === 1 && appended[0].len === body.length, JSON.stringify(appended));
     c.socket.destroy();
   } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
 }
@@ -1878,6 +2079,7 @@ async function run() {
     await testCapabilityAdvertisesCondstore();
     await testEnableCondstore();
     await testFetchChangedSinceParses();
+    await testFetchWritesTheOctetsTheBackendReturned();
     await testStoreUnchangedSinceConflict();
     await testFetchChangedSinceImpliesCondstore();
     await testStoreSilentEmitsModseqUnderCondstore();
@@ -1888,6 +2090,7 @@ async function run() {
     await testGetSetMetadata();
     await testMetadataBackendMissing();
     await testCatenateBackendMissing();
+    await testAppendLiteralGetsARealContinuation();
     await testCatenatePartOrderingAndValidation();
     // v0.11.33 — QRESYNC (RFC 7162 §3.2)
     await testCapabilityAdvertisesQresync();

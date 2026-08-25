@@ -66,6 +66,12 @@ function testSurface() {
   check("DlpError class exposed", typeof b.redact.DlpError === "function");
 }
 
+// A classifier spec is a `detect` predicate plus an action, matching the
+// shipped CLASSIFIER_PATTERNS entries.
+function _looksLikeToken(v) {
+  return typeof v === "string" && v.indexOf("tok_") === 0;
+}
+
 function testClassifierRejectsBadOpts() {
   var threw;
   threw = false;
@@ -79,6 +85,39 @@ function testClassifierRejectsBadOpts() {
   threw = false;
   try { b.redact.classifyDefaults({ patterns: [123] }); } catch (_e) { threw = true; }
   check("classifyDefaults rejects non-string pattern", threw);
+
+  // The unknown-pattern check reads `opts.extra[name]` through the prototype,
+  // so once an operator supplies ANY extra pattern, "constructor" / "toString"
+  // / "valueOf" resolve to inherited functions and pass as known names. The
+  // scanner then reaches a function where a pattern spec should be and throws
+  // an untyped error at scan time — a DLP classifier failing open at the
+  // moment it is asked to look, instead of refusing at boot.
+  var protoNames = ["constructor", "toString", "valueOf", "hasOwnProperty"];
+  for (var i = 0; i < protoNames.length; i += 1) {
+    var caught = null;
+    try {
+      b.redact.classifyDefaults({
+        patterns: [protoNames[i]],
+        extra: { "my-token": { detect: _looksLikeToken, action: "refuse" } },
+      });
+    } catch (e) { caught = e; }
+    check("classifyDefaults refuses the prototype name '" + protoNames[i] + "' at config time",
+          caught !== null && caught.code === "redact-dlp/unknown-pattern",
+          String(caught && (caught.code || caught.message)));
+  }
+
+  // Control: a real `extra` pattern must still be accepted by name, or the
+  // refusals above could be a check that rejects every extra.
+  var ok = null;
+  try {
+    var c = b.redact.classifyDefaults({
+      patterns: ["my-token"],
+      extra: { "my-token": { detect: _looksLikeToken, action: "refuse" } },
+    });
+    ok = c({ body: { note: "tok_abc" } });
+  } catch (e) { ok = e; }
+  check("classifyDefaults control: an operator-supplied extra pattern still works",
+        ok && ok.verdict === "refuse", JSON.stringify(ok && (ok.verdict || ok.message)));
 }
 
 function testClassifyPan() {

@@ -375,10 +375,100 @@ function testStructureTheCallersStillNeedIsNeverMasked() {
         qm.indexOf("%YAML") === -1, JSON.stringify(qm));
 }
 
+// `nodeStarts` answers what the mask cannot: the mask blanks a key's own text
+// along with a comment's, so a screen that reports shapes which are NOT
+// well-formed structure — the merge-key screen reports `<<:*d` — cannot use it
+// to tell a key from literal text. The offsets are ABSOLUTE into the source,
+// which is the property that goes wrong silently: a per-line offset read as an
+// absolute one lands on the wrong character and reports confidently.
+function testNodeStartsMarkWhereANodeCanBegin() {
+  function startsIn(src, needle) {
+    return yamlLex.lexLines(src).nodeStarts[src.indexOf(needle)] === 1;
+  }
+
+  // Absolute offsets, checked on a document whose lines sit at four different
+  // columns, so a per-line offset read as an absolute one lands on the wrong
+  // character rather than accidentally agreeing.
+  //
+  // Nesting is under a key with no value on its own line. `a: 1` followed by a
+  // deeper line is a multi-line plain SCALAR, not a nested mapping, so writing
+  // it that way tests the opposite of what it appears to.
+  var doc = "a:\n  b: 22\n  c:\n    d: 333\ne: 4\n";
+  ["a:", "b: 22", "22", "c:", "d: 333", "333", "e: 4", "4\n"].forEach(function (n) {
+    check("nodeStarts: absolute offset of `" + n.replace("\n", "") + "`",
+          startsIn(doc, n), String(doc.indexOf(n)));
+  });
+
+  // A node begins at a key, a value, and an item of a flow collection...
+  [
+    ["a mapping key",          "key: 1\n",          "key"],
+    ["a mapping value",        "key: value\n",      "value"],
+    ["a sequence item",        "- item\n",          "item"],
+    ["a flow-collection item", "k: [ one, two ]\n", "two"],
+    ["a key after a block",    "s: |\n  body\nk: 1\n", "k: 1"],
+  ].forEach(function (t) {
+    check("nodeStarts: a node begins at " + t[0], startsIn(t[1], t[2]),
+          JSON.stringify(t[1]));
+  });
+
+  // ...and at none of the regions that are literal text. Listing these was the
+  // first attempt at #642's merge-key half and it missed most of them, which is
+  // why the lexer answers it rather than the caller.
+  [
+    ["a comment's text",                  "a: 1 # note\n",            "note"],
+    ["a comment on its own line",         "# note\na: 1\n",           "note"],
+    ["a comment after a document marker", "--- # note\na: 1\n",       "note"],
+    ["a block scalar's body",             "s: |\n  body\n",           "body"],
+    ["a folded block scalar's body",      "s: >\n  body\n",           "body"],
+    ["a double-quoted body",              "s: \"body\"\n",            "body"],
+    ["a single-quoted body",              "s: 'body'\n",              "body"],
+    ["a quoted scalar's continuation",    "s: \"one\n  body\"\n",     "body"],
+    ["a plain scalar's continuation",     "s: one\n  body\n",         "body"],
+    ["the rest of a plain scalar",        "s: one body\n",            "body"],
+  ].forEach(function (t) {
+    check("nodeStarts: no node begins in " + t[0], !startsIn(t[1], t[2]),
+          JSON.stringify(t[1]));
+  });
+
+  // CRLF shifts every offset after the first line by one per line. Deriving the
+  // line base from the previous line's raw length keeps that right; measuring
+  // from the stripped line would put every later offset one short per line.
+  var crlf = "a: 1\r\nb: 2\r\nc: 3\r\n";
+  ["b: 2", "c: 3"].forEach(function (n) {
+    check("nodeStarts: CRLF does not shift the offset of `" + n + "`",
+          startsIn(crlf, n), String(crlf.indexOf(n)));
+  });
+
+  // maskNonStructural is the same pass, so the two can never disagree.
+  var both = yamlLex.lexLines(doc);
+  check("lexLines.masked is what maskNonStructural returns",
+        both.masked === yamlLex.maskNonStructural(doc));
+
+  // One byte per source character, whatever the document contains. The first
+  // version was a sparse array keyed by absolute offset, which V8 puts in
+  // dictionary mode: a file of short keys allocated ~200 bytes per node, and
+  // the attacker chooses how many nodes a given number of bytes carries. The
+  // cost has to be a property of the input's SIZE, not of its shape.
+  var dense = [];
+  for (var d = 0; d < 20000; d += 1) dense.push("k" + d + ": 1");
+  var denseDoc = dense.join("\n");
+  var sparseDoc = "note: " + new Array(denseDoc.length - 6).join("x");
+  var denseStarts  = yamlLex.lexLines(denseDoc).nodeStarts;
+  var sparseStarts = yamlLex.lexLines(sparseDoc).nodeStarts;
+  check("nodeStarts is one byte per source character",
+        denseStarts.length === denseDoc.length &&
+        denseStarts.BYTES_PER_ELEMENT === 1,
+        denseStarts.length + " vs " + denseDoc.length);
+  check("a node-dense document costs the same as a node-sparse one of equal size",
+        Math.abs(denseStarts.byteLength - sparseStarts.byteLength) <= 1,
+        denseStarts.byteLength + " vs " + sparseStarts.byteLength);
+}
+
 function run() {
   testMaskIsIndexAlignedWithItsSource();
   testASigilSurvivesOnlyWhereItIsReal();
   testStructureTheCallersStillNeedIsNeverMasked();
+  testNodeStartsMarkWhereANodeCanBegin();
 }
 
 module.exports = { run: run };

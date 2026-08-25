@@ -345,39 +345,24 @@ function testHostileInputIsBoundedNotFatal() {
   // contended runner moves both measurements together. A fixed 250ms ceiling
   // here failed on a machine running this suite 64-way alongside a container
   // build — no quadratic behaviour, just a slower quarter-second.
-  function _millis(fn) {
-    // Best of three: contention adds time, it never subtracts, so the minimum
-    // is the closest reading to the work actually done.
-    var best = Infinity;
-    for (var i = 0; i < 3; i += 1) {
-      var t0 = process.hrtime.bigint();
-      try { fn(); } catch (_e) { /* a refusal is a fine answer; a hang is not */ }
-      var ms = Number(process.hrtime.bigint() - t0) / 1e6;
-      if (ms < best) best = ms;
-    }
-    return best;
-  }
   var shapes = [
     { label: "brackets",  build: function (n) { return "[".repeat(n) + "x"; },              n: 25000 },
     { label: "emphasis",  build: function (n) { return "*".repeat(n) + "x" + "*".repeat(n); }, n: 10000 },
     { label: "backticks", build: function (n) { return "`".repeat(n); },                    n: 10000 },
     { label: "parens",    build: function (n) { return "[x](".repeat(n); },                 n: 10000 },
   ];
+  // Finishing well inside the noise floor IS the answer, and is the usual path:
+  // a quadratic delimiter scan at these sizes takes seconds, so 25ms at 20-50k
+  // delimiters already rules it out. Measured standalone the four shapes run
+  // 0.6ms to 3.4ms at their largest size. The ratio is the fallback for a
+  // machine loaded enough to cross that floor, and the shared helper re-measures
+  // a superlinear-looking verdict before letting it fail: contention preempts a
+  // run and reads superlinear on an implementation that is not, while a real
+  // curve reproduces. The container leg crossed the floor and flaked on
+  // `emphasis` this way.
   var slow = shapes.filter(function (s) {
-    var small = _millis(function () { render(s.build(s.n)); });
-    var large = _millis(function () { render(s.build(s.n * 2)); });
-    // Finishing well inside the floor IS the answer, and is the usual path: a
-    // quadratic delimiter scan at these sizes takes seconds, so 25ms at 20-50k
-    // delimiters already rules it out. Measured standalone the four shapes run
-    // 0.6ms to 3.4ms at their largest size.
-    //
-    // The ratio below is the fallback for a machine slow or loaded enough to
-    // cross that floor, where an absolute number stops meaning anything and the
-    // growth between two sizes still does. Taking the ratio unconditionally is
-    // what flaked: under SMOKE_PARALLEL=64 a run gets preempted between the two
-    // samples and reads superlinear on an implementation that is not.
-    if (large < 25) return false;
-    return large / Math.max(small, 0.05) > 3;
+    return helpers.looksSuperlinear(function (n) { render(s.build(n)); },
+      { small: s.n, large: s.n * 2 });
   }).map(function (s) { return s.label; });
   check("render: doubling a repeated-delimiter input does not more than double the work" +
     (slow.length ? " (superlinear: " + slow.join(",") + ")" : ""),

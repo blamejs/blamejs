@@ -17,7 +17,7 @@ function _fakeResolver(map) {
       var key = name + "|" + type;
       if (map[key] === "__nx__") {
         var e = new Error("NXDOMAIN");
-        e.code = "resolver/nxdomain-or-error";
+        e.code = "resolver/nxdomain";
         return Promise.reject(e);
       }
       return map[key] ? Promise.resolve(map[key]) : Promise.reject(_nx());
@@ -30,7 +30,7 @@ function _fakeResolver(map) {
 
 function _nx() {
   var e = new Error("NXDOMAIN");
-  e.code = "resolver/nxdomain-or-error";
+  e.code = "resolver/nxdomain";
   return e;
 }
 
@@ -295,8 +295,39 @@ async function testProfileAndPosture() {
   check("compliancePosture unknown", b.mail.helo.compliancePosture("foo") === null);
 }
 
+// The FCrDNS check calls `resolver.queryPtr`, and until now the only object
+// that had one was the stub in this file. The resolver the framework ships had
+// every other common type and not PTR, so the call returned `undefined`, the
+// TypeError landed in a catch written for NXDOMAIN, and the check reported a
+// clean "no reverse name" for every address it ever ran on.
+//
+// Every test here passed throughout, because the stub was MORE capable than the
+// real thing. So this one asks the real thing.
+async function testShippedResolverCanAnswerWhatFcrdnsAsks() {
+  var real = b.network.dns.resolver.create({});
+  check("the shipped resolver provides queryPtr, which fcrdns calls",
+        typeof real.queryPtr === "function", typeof real.queryPtr);
+
+  // And a resolver that cannot answer is refused rather than read as a clean
+  // miss: "no reverse name" and "I could not ask" are different findings, and
+  // only one of them may leave `passed` false without saying why.
+  var noPtr = { queryA: async function () { return { rrs: [] }; },
+                queryAaaa: async function () { return { rrs: [] }; } };
+  var threw = null;
+  try {
+    await b.mail.helo.evaluate({
+      claimedName: "mail.example.com", ip: "203.0.113.42",
+      profile: "strict", resolver: noPtr,
+    });
+  } catch (e) { threw = e; }
+  check("a resolver without queryPtr is named, not silently treated as a miss",
+        threw && threw.code === "mail-helo/resolver-missing-queryptr",
+        String(threw && (threw.code || threw.message)));
+}
+
 async function run() {
   testSurface();
+  await testShippedResolverCanAnswerWhatFcrdnsAsks();
   await testAcceptsValidFqdn();
   await testRejectsLocalhostClaim();
   await testPrototypeKeyClaimNotReservedName();

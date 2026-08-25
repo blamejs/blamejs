@@ -185,6 +185,121 @@ async function testInboundVerifyAlignedPass() {
         Array.isArray(v.dkim) && v.dkim[0] && v.dkim[0].result === "none");
 }
 
+// A message is TWO views and they are not interchangeable. DKIM and ARC verify
+// the octets on the wire, so the pipeline must not hand them a UTF-8 decode of
+// a message that is not valid UTF-8 — that hashes bytes which are not the
+// message's own. The From header is read as characters, so an RFC 6531 local
+// part written in UTF-8 has to be decoded before it can align against a DMARC
+// record; comparing it octet-per-code-unit compares mojibake.
+//
+// One message exercises both at once: a UTF-8 From over a body that is not
+// valid UTF-8. A pipeline that picks either decode for everything fails one
+// half of this.
+async function testInboundVerifyReadsOctetsAndTextSeparately() {
+  var nodeCrypto = require("crypto");
+  var kp = nodeCrypto.generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    publicKeyEncoding:  { type: "spki",  format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
+  var spkiB64 = kp.publicKey.replace(/-----(BEGIN|END) PUBLIC KEY-----/g, "")
+    .replace(/\s+/g, "");
+  var dnsLookup = _inboundDns({
+    "xn--tst-6la.example/TXT":        [["v=spf1 ip4:192.0.2.0/24 -all"]],
+    "_dmarc.xn--tst-6la.example/TXT": [["v=DMARC1; p=reject"]],
+    "ib._domainkey.xn--tst-6la.example/TXT": [["v=DKIM1; k=rsa; p=" + spkiB64]],
+  });
+  // A display name and a local part in UTF-8, then a body holding an
+  // ISO-8859-1 byte and a lone 0x82 — ordinary 8-bit mail, invalid UTF-8.
+  var headers = Buffer.from(
+    "From: Über <böb@xn--tst-6la.example>\r\nSubject: hi\r\n\r\n", "utf8");
+  var body = Buffer.from([0x43, 0x61, 0x66, 0xE9, 0x0D, 0x0A, 0x82, 0xA0, 0x0D, 0x0A]);
+  // Signed over its own octets, so the pipeline's DKIM hand-off is exercised
+  // end to end. Asserting only that a `dkim` array came back was not enough:
+  // the pipeline handed the verifier a STRING, which re-encoded the message as
+  // UTF-8 and hashed bytes it does not contain, and an unsigned message reports
+  // "none" either way — so the check passed over the defect it was aimed at.
+  var signer = b.mail.dkim.create({
+    domain: "xn--tst-6la.example", selector: "ib", privateKey: kp.privateKey,
+  });
+  var v = await b.mail.inbound.verify({
+    ip:         "192.0.2.5",
+    helo:       "mail.xn--tst-6la.example",
+    mailFrom:   "böb@xn--tst-6la.example",
+    message:    signer.sign(Buffer.concat([headers, body])),
+    dnsLookup:  dnsLookup,
+    authservId: "mx.local.test",
+  });
+  check("inbound.verify: a UTF-8 From is decoded as text, not as octets",
+        v.from.address === "böb@xn--tst-6la.example",
+        JSON.stringify(v.from));
+  check("inbound.verify: its domain still aligns for DMARC",
+        v.from.domain === "xn--tst-6la.example" && v.dmarc.result === "pass",
+        v.from.domain + " / " + v.dmarc.result);
+  check("inbound.verify: a signature over non-UTF-8 octets verifies pass",
+        Array.isArray(v.dkim) && v.dkim[0] && v.dkim[0].result === "pass",
+        JSON.stringify(v.dkim));
+}
+
+// The module header lists `b.mail.arc.verify` among the calls the receiver
+// pipeline composes, and the pipeline never made it. A consumer wiring
+// b.mail.server.mx as documented got SPF, DKIM and DMARC, no `arc` field, no
+// `arc=` method in Authentication-Results, and nothing at run time saying so.
+//
+// ARC's whole purpose is carrying a verdict across a forwarder: without it,
+// forwarded mail fails DMARC on the forwarder's identity with no way back to
+// the original result. Silence is the worst answer here, because it is
+// indistinguishable from a chain that was checked and found absent.
+async function testInboundVerifyEvaluatesArc() {
+  var dnsLookup = _inboundDns({
+    "example.com/TXT":        [["v=spf1 ip4:192.0.2.0/24 -all"]],
+    "_dmarc.example.com/TXT": [["v=DMARC1; p=reject"]],
+  });
+
+  // A message with no ARC headers at all. "none" is a real ARC verdict under
+  // RFC 8601 §2.7.6 and must be reported as one.
+  var plain = "From: Alice <alice@example.com>\r\nSubject: hi\r\n\r\nhello\r\n";
+  var v = await b.mail.inbound.verify({
+    ip: "192.0.2.5", helo: "mail.example.com", mailFrom: "alice@example.com",
+    message: plain, dnsLookup: dnsLookup, authservId: "mx.local.test",
+  });
+  check("inbound.verify: reports an arc verdict rather than omitting the field",
+        v.arc && typeof v.arc.chainStatus === "string", JSON.stringify(v.arc));
+  check("inbound.verify: a message with no ARC headers is arc none",
+        v.arc && v.arc.chainStatus === "none" && v.arc.hopCount === 0,
+        JSON.stringify(v.arc));
+  check("inbound.verify: the A-R header carries the arc method",
+        /arc=none/.test(v.authResults || ""), String(v.authResults));
+
+  // And a message that DOES carry a chain, so "none" above cannot be passing
+  // by never looking. This chain is structurally broken (its signatures are
+  // placeholder bytes), which is a fail — the point is that the verdict
+  // changes with the message rather than being a constant.
+  var sealed =
+    "ARC-Seal: i=1; a=rsa-sha256; cv=none; d=forwarder.example; s=arc; b=AAAA\r\n" +
+    "ARC-Message-Signature: i=1; a=rsa-sha256; d=forwarder.example; s=arc; " +
+    "h=from:subject; bh=AAAA; b=AAAA\r\n" +
+    "ARC-Authentication-Results: i=1; forwarder.example; spf=pass\r\n" +
+    plain;
+  var v2 = await b.mail.inbound.verify({
+    ip: "192.0.2.5", helo: "mail.example.com", mailFrom: "alice@example.com",
+    message: sealed, dnsLookup: dnsLookup, authservId: "mx.local.test",
+  });
+  check("inbound.verify: a message carrying an ARC chain does not report none",
+        v2.arc && v2.arc.chainStatus !== "none", JSON.stringify(v2.arc));
+  check("inbound.verify: the chain's hops are counted",
+        v2.arc && v2.arc.hopCount >= 1, JSON.stringify(v2.arc));
+  check("inbound.verify: the A-R header reports that chain's verdict",
+        (v2.authResults || "").indexOf("arc=" + v2.arc.chainStatus) !== -1,
+        String(v2.authResults));
+
+  // A broken chain is a verdict, not a refusal: ARC is advisory input to a
+  // local policy decision, and a receiver that threw on one would refuse mail
+  // for a defect in a forwarder's headers.
+  check("inbound.verify: a broken ARC chain still returns the DMARC verdict",
+        v2.dmarc && typeof v2.dmarc.result === "string", JSON.stringify(v2.dmarc));
+}
+
 async function testInboundVerifySpoofRejected() {
   var dnsLookup = _inboundDns({
     "spoofed.example/TXT":        [["v=spf1 -all"]],
@@ -418,6 +533,135 @@ async function testArcVerifyNone() {
   var rv = await b.mail.arc.verify(msg);
   check("arc.verify: no ARC headers → none",
         rv.chainStatus === "none" && rv.hopCount === 0);
+}
+
+// ARC seals a message the way DKIM signs one — over the octets on the wire —
+// so it carries the same defect and needs the same round trip. Signing alone
+// proves nothing here: a signer that corrupts the message and then seals the
+// corruption produces a seal that verifies against bytes that are not the
+// message's own.
+async function testArcSealsTheOctetsItWasGiven() {
+  var nodeCrypto = require("crypto");
+  var kp = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var pem = kp.privateKey.export({ format: "pem", type: "pkcs8" });
+  var spkiB64 = kp.publicKey.export({ type: "spki", format: "der" }).toString("base64");
+
+  var original = Buffer.concat([
+    Buffer.from(
+      "From: alice@example.com\r\nTo: bob@example.com\r\nSubject: hi\r\n" +
+      "Date: Wed, 06 May 2026 12:00:00 +0000\r\n" +
+      "Message-ID: <octets@example.com>\r\n\r\n", "latin1"),
+    // ISO-8859-1 then Shift_JIS kana — not valid UTF-8 in either half.
+    Buffer.from([0x43, 0x61, 0x66, 0xE9, 0x0D, 0x0A, 0x82, 0xA0, 0x82, 0xA2, 0x0D, 0x0A]),
+  ]);
+  var hop = b.mail.arc.sign({
+    rfc822: original, instance: 1, authservId: "relay-oct.example",
+    domain: "relay-oct.example", selector: "arc", privateKey: pem,
+    algorithm: "rsa-sha256", cv: "none", authResults: "spf=pass",
+    headersToSign: ["From", "To", "Subject", "Date", "Message-ID"],
+  });
+  check("arc.sign: a Buffer message is sealed and returned as a Buffer",
+        Buffer.isBuffer(hop.rfc822), typeof hop.rfc822);
+  check("arc.sign: the message's octets come back unaltered",
+        hop.rfc822.subarray(hop.rfc822.length - original.length).equals(original),
+        hop.rfc822.subarray(hop.rfc822.length - original.length).toString("hex"));
+
+  var rv = await b.mail.arc.verify(hop.rfc822,
+    { dnsLookup: _arcKeyRoundtripDns("relay-oct.example", [["v=DKIM1; k=rsa; p=" + spkiB64]]) });
+  check("arc.verify: a non-UTF-8 message's seal verifies",
+        rv.chainStatus === "pass" && rv.hops[0].asResult === "pass" &&
+        rv.hops[0].amsResult === "pass",
+        rv.chainStatus + " as=" + (rv.hops[0] || {}).asResult +
+        " ams=" + (rv.hops[0] || {}).amsResult);
+
+  // The seal must cover those octets rather than a repaired copy: flipping one
+  // high byte in the body has to break the message signature.
+  var tampered = Buffer.from(hop.rfc822);
+  tampered[tampered.length - 5] ^= 0x01;
+  var rvBad = await b.mail.arc.verify(tampered,
+    { dnsLookup: _arcKeyRoundtripDns("relay-oct.example", [["v=DKIM1; k=rsa; p=" + spkiB64]]) });
+  check("arc.verify: altering one high octet breaks the message signature",
+        rvBad.hops[0] && rvBad.hops[0].amsResult !== "pass",
+        rvBad.hops[0] && rvBad.hops[0].amsResult);
+
+  // A non-ASCII STRING message. The first version of this fix converted the
+  // Buffer branch and left the string branch untouched, so the hashing and
+  // signing paths — which read a string as latin1 octets — sealed the low byte
+  // of each code unit, and the returned message was corrupted on the way out.
+  // Every ASCII test passed straight through it, because ASCII is the one input
+  // where the two representations coincide.
+  var text = "From: alice@example.com\r\nTo: bob@example.com\r\nSubject: café\r\n" +
+             "Date: Wed, 06 May 2026 12:00:00 +0000\r\n" +
+             "Message-ID: <text@example.com>\r\n\r\ncafé über\r\n";
+  var hopText = b.mail.arc.sign({
+    rfc822: text, instance: 1, authservId: "relay-txt.example",
+    domain: "relay-txt.example", selector: "arc", privateKey: pem,
+    algorithm: "rsa-sha256", cv: "none", authResults: "spf=pass",
+    headersToSign: ["From", "To", "Subject", "Date", "Message-ID"],
+  });
+  check("arc.sign: a string message round-trips its own characters",
+        typeof hopText.rfc822 === "string" && hopText.rfc822.endsWith(text),
+        JSON.stringify(String(hopText.rfc822).slice(-24)));
+  var rvText = await b.mail.arc.verify(hopText.rfc822,
+    { dnsLookup: _arcKeyRoundtripDns("relay-txt.example", [["v=DKIM1; k=rsa; p=" + spkiB64]]) });
+  check("arc.verify: a UTF-8 string message's seal verifies",
+        rvText.chainStatus === "pass" && rvText.hops[0].amsResult === "pass",
+        rvText.chainStatus + " ams=" + (rvText.hops[0] || {}).amsResult);
+}
+
+// `arc.evaluate` answers the same question as `arc.verify` plus a trust
+// decision, so the two must never disagree about whether the chain passes.
+// They did: evaluate resolved the message to the wire form and then handed that
+// wire STRING to verify, which resolved it again — the second pass read
+// latin1 code units as text and re-encoded them as UTF-8, so the octets
+// checked were not the octets signed. Only a message with a non-ASCII
+// character shows it; every ASCII test agreed.
+async function testArcEvaluateAgreesWithVerify() {
+  var nodeCrypto = require("crypto");
+  var kp = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var pem = kp.privateKey.export({ format: "pem", type: "pkcs8" });
+  var spkiB64 = kp.publicKey.export({ type: "spki", format: "der" }).toString("base64");
+  var dns = _arcKeyRoundtripDns("relay-agree.example", [["v=DKIM1; k=rsa; p=" + spkiB64]]);
+
+  var text = "From: alice@example.com\r\nTo: bob@example.com\r\nSubject: café\r\n" +
+             "Date: Wed, 06 May 2026 12:00:00 +0000\r\n" +
+             "Message-ID: <agree@example.com>\r\n\r\ncafé über\r\n";
+  var hop = b.mail.arc.sign({
+    rfc822: text, instance: 1, authservId: "relay-agree.example",
+    domain: "relay-agree.example", selector: "arc", privateKey: pem,
+    algorithm: "rsa-sha256", cv: "none", authResults: "spf=pass",
+    headersToSign: ["From", "To", "Subject", "Date", "Message-ID"],
+  });
+
+  var verified = await b.mail.arc.verify(hop.rfc822, { dnsLookup: dns });
+  var evaluated = await b.mail.arc.evaluate(hop.rfc822, {
+    dnsLookup: dns, trustedSealers: ["relay-agree.example"],
+  });
+  check("arc: verify passes a UTF-8 message's chain",
+        verified.chainStatus === "pass", verified.chainStatus);
+  check("arc: evaluate reports the SAME chainStatus as verify",
+        evaluated.chainStatus === verified.chainStatus,
+        evaluated.chainStatus + " vs " + verified.chainStatus);
+  check("arc: a trusted sealer is recognised on that chain",
+        evaluated.trusted === true && evaluated.trustedDomain === "relay-agree.example",
+        JSON.stringify({ t: evaluated.trusted, d: evaluated.trustedDomain }));
+
+  // Same for a Buffer message, which is the shape a receiver actually holds.
+  var buf = Buffer.from(text, "utf8");
+  var hopBuf = b.mail.arc.sign({
+    rfc822: buf, instance: 1, authservId: "relay-agree2.example",
+    domain: "relay-agree2.example", selector: "arc", privateKey: pem,
+    algorithm: "rsa-sha256", cv: "none", authResults: "spf=pass",
+    headersToSign: ["From", "To", "Subject", "Date", "Message-ID"],
+  });
+  var dns2 = _arcKeyRoundtripDns("relay-agree2.example", [["v=DKIM1; k=rsa; p=" + spkiB64]]);
+  var vBuf = await b.mail.arc.verify(hopBuf.rfc822, { dnsLookup: dns2 });
+  var eBuf = await b.mail.arc.evaluate(hopBuf.rfc822, {
+    dnsLookup: dns2, trustedSealers: ["relay-agree2.example"],
+  });
+  check("arc: verify and evaluate agree on a Buffer message too",
+        vBuf.chainStatus === "pass" && eBuf.chainStatus === vBuf.chainStatus,
+        vBuf.chainStatus + " vs " + eBuf.chainStatus);
 }
 
 async function testArcVerifyBadSignatures() {
@@ -4399,6 +4643,8 @@ async function run() {
   await testDmarcEmptyLabelIsNotRepaired();
   await testDmarcEvaluateNpPolicy();
   await testInboundVerifyAlignedPass();
+  await testInboundVerifyReadsOctetsAndTextSeparately();
+  await testInboundVerifyEvaluatesArc();
   await testInboundVerifySpoofRejected();
   await testInboundVerifyMultiAtMailFromGatesNotThrows();
   await testInboundVerifyGroupSyntaxFromRejected();
@@ -4407,6 +4653,8 @@ async function run() {
   await testInboundVerifyValidation();
   await testArcVerifyMissing();
   await testArcVerifyNone();
+  await testArcSealsTheOctetsItWasGiven();
+  await testArcEvaluateAgreesWithVerify();
   await testArcVerifyBadSignatures();
   await testArcInfinityClockSkewDoesNotDisableExpiry();
   await testArcVerifyDuplicateInstance();
