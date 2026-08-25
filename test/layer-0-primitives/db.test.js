@@ -898,8 +898,13 @@ async function testTmpfsResolution() {
         frameworkTables: false, auditSigning: false, minFreeBytes: 0 });
     });
     if (noTmp) {
+      // Any error at all lands here, not only the one this asserts on, so the
+      // arriving code goes in the failure message. A sandbox denying the write
+      // fails this check identically to a genuine regression, and without the
+      // code there is nothing in the output to tell them apart.
       check("encrypted init with no resolvable tmpfs fail-closes db/no-tmpfs",
-        noTmp.code === "db/no-tmpfs");
+        noTmp.code === "db/no-tmpfs",
+        (noTmp.code || "(no code)") + ": " + String(noTmp.message || "").slice(0, 160));
     } else {
       check("encrypted init resolved a host tmpfs and booted",
         b.db.getMode() === "encrypted");
@@ -967,7 +972,8 @@ async function testEncryptedRoundTrip() {
   // process that no longer exists is what makes the file reclaimable — the
   // sweep no longer reads the filename as proof the owner is gone.
   fs.writeFileSync(path.join(tmpfs, "blamejs-staleorphan.db"), "orphan");
-  fs.writeFileSync(path.join(tmpfs, "blamejs-staleorphan.db.owner"), "2147483645");
+  fs.writeFileSync(path.join(tmpfs, "blamejs-staleorphan.db.owner"),
+    b.db._ownerNamespaceForTest() + " 2147483645");
   var encOpts = {
     dataDir: tmpDir, tmpDir: tmpfs, allowNonTmpfsTmpDir: true, atRest: "encrypted",
     frameworkTables: false, auditSigning: false, minFreeBytes: 0,
@@ -1035,12 +1041,20 @@ async function testStaleSweepSparesALiveOwner() {
   var live = path.join(tmpfs, "blamejs-liveowner.db");
   var dead = path.join(tmpfs, "blamejs-deadowner.db");
   var mute = path.join(tmpfs, "blamejs-noowner.db");
+  var foreign = path.join(tmpfs, "blamejs-foreignns.db");
   fs.writeFileSync(live, "live");
   fs.writeFileSync(dead, "dead");
   fs.writeFileSync(mute, "unknown");
-  fs.writeFileSync(live + ".owner", String(process.pid));
-  // 0 is never a real process id to signal, so it can only read as absent.
-  fs.writeFileSync(dead + ".owner", "2147483646");
+  fs.writeFileSync(foreign, "other-container");
+  // The record names the namespace that issued the pid, then the pid. Ours is
+  // read back from the module so this test cannot drift from the format.
+  var ns = b.db._ownerNamespaceForTest();
+  fs.writeFileSync(live + ".owner", ns + " " + process.pid);
+  // A pid that cannot exist, in OUR namespace: provably dead.
+  fs.writeFileSync(dead + ".owner", ns + " 2147483646");
+  // The same unreachable pid, but stamped by a different namespace — a second
+  // container's record. Not ours to judge.
+  fs.writeFileSync(foreign + ".owner", "pid:[4026531999] 2147483646");
 
   var encOpts = {
     dataDir: tmpDir, tmpDir: tmpfs, allowNonTmpfsTmpDir: true, atRest: "encrypted",
@@ -1064,11 +1078,61 @@ async function testStaleSweepSparesALiveOwner() {
     check("db: a working copy with no ownership record is left alone",
       fs.existsSync(mute));
 
+    // A process id is only meaningful inside the PID NAMESPACE that issued it.
+    // Two containers sharing a tmpDir each see their own pid 1, and a pid from
+    // the other's namespace either matches nothing (read as dead) or matches an
+    // unrelated local process (read as alive) — both answers are noise. Reading
+    // "no such process" as "dead owner" there deletes a live database, which is
+    // the whole bug this record exists to prevent, so a record from a namespace
+    // we cannot compare against is UNKNOWN and the file stays.
+    check("db: a record from another PID namespace is left alone",
+      fs.existsSync(foreign), "reclaimed a foreign-namespace record");
+    check("db: and so is its ownership record",
+      fs.existsSync(foreign + ".owner"));
+
+    // What the namespace token does when it CANNOT be read is the whole rule,
+    // and until this seam existed it could only be reached by unmounting /proc.
+    //
+    // Two different situations produce the same missing file. On a platform
+    // that has no PID namespaces there is nothing to read and every pid on the
+    // host is comparable, so one shared token is the right answer. On Linux the
+    // file is supposed to be there, so its absence means /proc is unmounted or
+    // restricted — namespaces may be in use and we cannot see which one we are
+    // in. Returning the shared token there would tell two containers sharing a
+    // tmpDir that each other's pids are comparable, and the sweep would unlink
+    // a live database: the original bug, restored by its own fix.
+    var noProc = function () { var e = new Error("ENOENT"); e.code = "ENOENT"; throw e; };
+    var noNamespaces = b.db._namespaceFromForTest("darwin", noProc);
+    check("db: where PID namespaces do not exist, ids are comparable host-wide",
+      noNamespaces === "host", noNamespaces);
+
+    var blind = b.db._namespaceFromForTest("linux", noProc);
+    check("db: an unreadable namespace on Linux is NOT reported as the host",
+      blind !== "host", blind);
+    check("db: it stays the same within a process, so our own record matches",
+      b.db._namespaceFromForTest("linux", noProc) === blind, blind);
+
+    // The property that actually protects the peer: no OTHER process can
+    // compute this token, so no record it wrote is ever judged comparable.
+    // Asserting only "not host" would pass on a shared constant like "unknown",
+    // which is the same bug wearing a different string.
+    var elsewhere = require("node:child_process").execFileSync(process.execPath, [
+      "-e",
+      "var d=require(process.argv[1]);" +
+      "process.stdout.write(d._namespaceFromForTest('linux',function(){throw new Error('x');}));",
+      path.resolve(__dirname, "../../lib/db.js"),
+    ], { encoding: "utf8", timeout: 30000 });
+    check("db: and no other process can produce it, so nothing foreign matches",
+      elsewhere !== blind && elsewhere !== "host" && elsewhere.length > 0,
+      JSON.stringify({ ours: blind, theirs: elsewhere }));
+
     // This process records its own ownership, so a peer booting next runs the
     // check above against a real answer rather than a missing one.
+    // Everything the fixtures planted is named for what it is; whatever else
+    // is here is the copy this process opened.
+    var planted = ["blamejs-liveowner.db", "blamejs-noowner.db", "blamejs-foreignns.db"];
     var ours = fs.readdirSync(tmpfs).filter(function (n) {
-      return n.startsWith("blamejs-") && n.endsWith(".db") &&
-             n !== "blamejs-liveowner.db" && n !== "blamejs-noowner.db";
+      return n.startsWith("blamejs-") && n.endsWith(".db") && planted.indexOf(n) === -1;
     });
     check("db: the live process records its own ownership",
       ours.length === 1 && fs.existsSync(path.join(tmpfs, ours[0] + ".owner")),
@@ -1182,6 +1246,79 @@ async function testReadOnlyOpenNeverWritesBack() {
     });
     check("db: a clean close leaves no ownership record behind",
       leftovers.length === 0, JSON.stringify(leftovers));
+  } finally {
+    _teardownPlain(tmpDir);
+  }
+}
+
+// A read-only open must not try to WRITE a boot checkpoint. `init` anchors a
+// fresh checkpoint whenever audit activity postdates the last one, and a
+// volume left by an ordinary writer shutdown or a crash is exactly that shape
+// — so the reader would be refused by its own read-only SQLite handle on
+// precisely the snapshots most worth inspecting. Existing checkpoints are
+// still verified; only creating a new one is skipped.
+async function testReadOnlyOpenDoesNotWriteABootCheckpoint() {
+  var tmpDir = _mkTmp("db-cov-ro-ckpt-");
+  var tmpfs = path.join(tmpDir, "tmpfs");
+  fs.mkdirSync(tmpfs, { recursive: true });
+  // Framework tables + audit signing ON: that is what brings the boot
+  // checkpoint into play at all.
+  var base = {
+    dataDir: tmpDir, tmpDir: tmpfs, allowNonTmpfsTmpDir: true, atRest: "encrypted",
+    minFreeBytes: 0, auditSigning: { mode: "plaintext" },
+    schema: [{ name: "rows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+  };
+  try {
+    await _freshVault(tmpDir);
+    b.audit.registerNamespace("dbrockpt");
+    await b.db.init(base);
+    b.db.from("rows").insertOne({ _id: "a", v: "written" });
+    // An audit row with NO checkpoint after it. close() anchors one, so the
+    // state that matters is the one a crash leaves — reached here by dropping
+    // the handle without running close()'s checkpoint.
+    await b.audit.record({
+      action: "dbrockpt.write", actor: { id: "u1" }, outcome: "success", metadata: {},
+    });
+    b.db.flushToDisk();
+    b.db._resetForTest();
+
+    var opened = null;
+    try { await b.db.init(Object.assign({}, base, { readOnly: true })); }
+    catch (e) { opened = e; }
+    check("db: a read-only open succeeds on a volume with post-checkpoint audit rows",
+      opened === null, opened && ((opened.code || "") + " " + (opened.message || "")).slice(0, 160));
+    if (opened === null) {
+      check("db: and it can read what the writer persisted",
+        (b.db.from("rows").where({ _id: "a" }).first() || {}).v === "written");
+
+      // Boot is not the only place a checkpoint gets anchored. `close()`
+      // anchors a final one so the audit.tip sidecar names the latest state,
+      // and gating the boot one alone left that second write live.
+      //
+      // The assertion is on whether the audit layer is ASKED, not on whether
+      // the write then fails. Whether it fails depends on how far the chain
+      // has moved and on SQLite refusing the insert, so a test written against
+      // the error message passes for reasons that have nothing to do with the
+      // contract. "Never writes back" is a promise about what this handle
+      // does, and issuing the request is the part it controls.
+      var asked = 0;
+      var origCheckpoint = b.audit.checkpoint;
+      b.audit.checkpoint = function () {
+        asked += 1;
+        return origCheckpoint.apply(b.audit, arguments);
+      };
+      try {
+        b.db.close();
+        // The close-time checkpoint is fire-and-forget, so the call would land
+        // a tick or two later. passiveObserve is the shape for proving an
+        // event does NOT arrive within a window.
+        await helpers.passiveObserve(400, "db read-only close: no checkpoint attempt");
+      } finally {
+        b.audit.checkpoint = origCheckpoint;
+      }
+      check("db: closing a read-only handle asks for no checkpoint either",
+        asked === 0, "audit.checkpoint called " + asked + " time(s)");
+    }
   } finally {
     _teardownPlain(tmpDir);
   }
@@ -2166,6 +2303,7 @@ async function run() {
   await testEncryptedRoundTrip();
   await testStaleSweepSparesALiveOwner();
   await testReadOnlyOpenNeverWritesBack();
+  await testReadOnlyOpenDoesNotWriteABootCheckpoint();
   await testSnapshotPlain();
   await testMigrations();
   await testEraseHardLegalHold();

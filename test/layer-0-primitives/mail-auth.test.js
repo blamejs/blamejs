@@ -667,6 +667,71 @@ async function testArcSeparatesATransientLookupFromABadSeal() {
   // token would put a word on the wire that receivers have no rule for.
   check("arc: chainStatus stays within none / pass / fail",
         ["none", "pass", "fail"].indexOf(temp.chainStatus) !== -1, temp.chainStatus);
+
+  // A TERMINAL failure is never transient, whatever else went wrong alongside
+  // it. RFC 8617 §5.2 makes a cv=fail unrecoverable: once a hop records that
+  // the chain was already broken when it arrived, no later hop can repair it,
+  // and no amount of retrying DNS turns it into a pass. Marking such a chain
+  // transient tells a consumer to defer and re-deliver mail that will never
+  // validate.
+  //
+  // The shape that reaches it: hop 1's key is unreachable (temperror, so
+  // "nothing hard failed") while hop 2 seals correctly and declares cv=fail.
+  // The upstream lookup being unavailable is real, but it is not why this
+  // chain is dead.
+  var kpB = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var pemB = kpB.privateKey.export({ format: "pem", type: "pkcs8" });
+  var spkiB = kpB.publicKey.export({ type: "spki", format: "der" }).toString("base64");
+
+  var hop1 = _arcSignOneHop("relay-up.example", pem, "rsa-sha256");
+  var hop2 = b.mail.arc.sign({
+    rfc822: hop1.rfc822, instance: 2, authservId: "relay-down.example",
+    domain: "relay-down.example", selector: "arc", privateKey: pemB,
+    algorithm: "rsa-sha256", cv: "fail", authResults: "spf=fail",
+    headersToSign: ["From", "To", "Subject", "Date", "Message-ID"],
+  });
+
+  // Only the DOWNSTREAM key resolves; the upstream one times out.
+  var splitDns = async function (qname) {
+    if (qname === "arc._domainkey.relay-down.example") {
+      return [["v=DKIM1; k=rsa; p=" + spkiB]];
+    }
+    var e = new Error("queryTxt ETIMEOUT"); e.code = "ETIMEOUT"; throw e;
+  };
+
+  var terminal = await b.mail.arc.verify(hop2.rfc822, { dnsLookup: splitDns });
+  check("arc: a chain a later hop sealed as cv=fail is reported failed",
+        terminal.chainStatus === "fail",
+        terminal.chainStatus + " " + (terminal.reason || ""));
+  check("arc: and it is NOT transient, however the upstream lookup went",
+        terminal.transient !== true,
+        JSON.stringify({ reason: terminal.reason, transient: terminal.transient }));
+
+  // The mirror, and the reason the rule above has to be narrow: cv=fail is a
+  // token in a header the SENDER wrote. What makes it that hop's claim rather
+  // than anyone's is the ARC-Seal covering it. Take the downstream key away —
+  // same message, same cv=fail, but now nothing proves relay-down sealed it —
+  // and the declaration is unauthenticated text.
+  //
+  // Honouring it anyway hands a permanent rejection to whoever can stall one
+  // DNS query: stamp cv=fail on a chain, make sure the key does not resolve,
+  // and a verdict that should have said "ask again later" says "never".
+  var unsealed = await b.mail.arc.verify(hop2.rfc822, { dnsLookup: _arcDnsUnavailable() });
+  check("arc: a cv=fail whose own seal could not be verified is not terminal",
+        unsealed.reason === "key-lookup-unavailable",
+        JSON.stringify({ reason: unsealed.reason, transient: unsealed.transient }));
+  check("arc: it stays transient, so the retry that could disprove it happens",
+        unsealed.transient === true,
+        JSON.stringify({ reason: unsealed.reason, transient: unsealed.transient }));
+
+  // The control that keeps the two apart: the ONLY difference between this and
+  // the terminal case above is whether relay-down's key resolved. If the seal
+  // gate were wired to something else — hop count, cv position, anyHardFail —
+  // both would land on the same verdict and one of these two checks would be
+  // asserting nothing.
+  check("arc: the seal is what separates them, not the cv= token",
+        terminal.reason === "last-as-cv=fail" && unsealed.reason !== terminal.reason,
+        JSON.stringify({ terminal: terminal.reason, unsealed: unsealed.reason }));
 }
 
 async function testArcEvaluateAgreesWithVerify() {

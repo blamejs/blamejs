@@ -858,6 +858,45 @@ async function run() {
   } finally {
     try { fs.rmSync(hdDir, { recursive: true, force: true }); } catch (_e) {}
   }
+
+  // Auto-mode when the kernel's mount table cannot be read.
+  //
+  // The probe asks /proc/self/mountinfo which filesystem carries the root, and
+  // on a restricted or /proc-less container that question has no answer. The
+  // two possible replies are not equally safe. Polling costs stat calls the
+  // operator can measure. fs.watch on a filesystem whose inotify chain does not
+  // reach the watcher drops events with no error and no signal, so a consumer
+  // waiting on a change waits forever and cannot tell why.
+  //
+  // So "I could not find out" resolves to poll. This used to answer fs, which
+  // handed the silent mode to precisely the environment the probe was written
+  // for.
+  var noEntries = function () { return null; };
+  var blindRead = b.watcher._detectAutoModeForTest("/srv/app", {
+    platform: "linux", readEntries: noEntries,
+  });
+  check("watcher: an unreadable mount table on Linux selects polling, not fs.watch",
+    blindRead.mode === "poll" && blindRead.reason === "no-mountinfo",
+    JSON.stringify(blindRead));
+
+  var noMatch = b.watcher._detectAutoModeForTest("/srv/app", {
+    platform: "linux", readEntries: function () { return []; },
+  });
+  check("watcher: an empty mount table is unknown too, so it also polls",
+    noMatch.mode === "poll", JSON.stringify(noMatch));
+
+  // A mount table that DOES describe the root, on a filesystem inotify serves,
+  // still picks fs.watch. Without this the two checks above would pass on a
+  // probe that had simply been hardcoded to poll, which would answer the
+  // correctness question by throwing the cheap mode away for everyone.
+  var known = b.watcher._detectAutoModeForTest("/srv/app", {
+    platform: "linux",
+    readEntries: function () {
+      return [{ mountPoint: "/", fstype: "ext4", root: "/" }];
+    },
+  });
+  check("watcher: a known local filesystem still takes the native backend",
+    known.mode === "fs" && known.fsType === "ext4", JSON.stringify(known));
 }
 
 module.exports = { run: run };
