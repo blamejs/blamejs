@@ -2020,12 +2020,27 @@ async function testNativeErrorWraps() {
   // dns/reverse-failed via the non-DnsError branch.
   dnsModule.useSystemResolver();
   dnsModule.setLookupTimeoutMs(5000);
+  // These two go through the SYSTEM resolver, so what the platform returns for
+  // a reserved address is not fully under this test's control. The error is
+  // captured rather than reduced to a boolean: this failed once under a 64-way
+  // host run and passed in isolation, on every other run, and in the container
+  // — and the log recorded only "expected dns/reverse-failed", with no way to
+  // tell a timeout from a different wrap. Whatever comes back next time is now
+  // in the failure line.
+  async function _reverseError(addr) {
+    try { await dnsModule.reverse(addr); return null; }
+    catch (e) { return e; }
+  }
+  var rev4 = await _reverseError("0.0.0.0");
   check("reverse: native c-ares error wraps as dns/reverse-failed (IPv4)",
-    await _throwsAsync(function () { return dnsModule.reverse("0.0.0.0"); }, "dns/reverse-failed"));
+    rev4 !== null && ((rev4.code || "") + " " + (rev4.message || "")).indexOf("dns/reverse-failed") !== -1,
+    rev4 === null ? "resolved instead of throwing" : (rev4.code || "") + " :: " + (rev4.message || ""));
   // An IPv6 literal exercises the family-6 branch of the reverse-requested
   // observability event.
+  var rev6 = await _reverseError("::");
   check("reverse: IPv6 literal native error wraps as dns/reverse-failed",
-    await _throwsAsync(function () { return dnsModule.reverse("::"); }, "dns/reverse-failed"));
+    rev6 !== null && ((rev6.code || "") + " " + (rev6.message || "")).indexOf("dns/reverse-failed") !== -1,
+    rev6 === null ? "resolved instead of throwing" : (rev6.code || "") + " :: " + (rev6.message || ""));
   _reset();
 }
 

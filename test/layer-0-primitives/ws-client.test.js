@@ -1171,6 +1171,49 @@ async function _testWssDialIpv6LiteralOmitsSni() {
       ssrfGuardMod.checkUrl = origCheckUrl;
     }
   }
+
+  // An SSRF gate that admits NO address is a pin that permits nothing. Treating
+  // it as "no pin" handed the connect back to the ordinary resolver and
+  // re-opened the DNS-rebinding window the pin exists to close; honouring it
+  // then had to fail SAFELY, because the lookup shim reads pinnedIps[0] and an
+  // empty pin makes that undefined — a TypeError thrown out of a lookup
+  // callback is a crash, not a refusal.
+  {
+    var ssrfEmptyMod = require("../../lib/ssrf-guard");
+    var origEmptyCheck = ssrfEmptyMod.checkUrl;
+    ssrfEmptyMod.checkUrl = async function () { return { ok: true, ips: [] }; };
+    try {
+      var threwHard = null;
+      var sawError = null;
+      // Held so it can be removed again: a `once` listener that never fires
+      // stays installed, and this worker runs many files afterwards — it would
+      // swallow the first genuine uncaught exception any of them raises.
+      var onHardThrow = function (e) { threwHard = e; };
+      process.on("uncaughtException", onHardThrow);
+      // A HOSTNAME, not an IP literal: node performs no DNS lookup for a
+      // literal, so the pin's lookup shim would never run and the test could
+      // not see the defect it was written for.
+      var cEmpty = _trackedConnect("ws://localhost:9/",
+        { reconnect: false, audit: false, allowInternal: true });
+      cEmpty.on("error", function (e) { sawError = e; });
+      await helpers.passiveObserve(400, "ws-client: empty SSRF pin fails through the error path");
+      check("wsClient: an empty SSRF pin refuses the dial instead of crashing",
+        threwHard === null, threwHard && threwHard.message);
+      check("wsClient: and the refusal arrives as a socket error the caller can see",
+        sawError !== null, "no error event");
+      // The property the crash actually violates is a LEAKED HANDLE: a lookup
+      // that throws leaves a TCP socket that is never connected and never torn
+      // down. That socket is not reachable from the client object, so the
+      // assertion which catches it is this file's `withDrain` wrapper — with
+      // the guard removed, the run fails there with "1 open handle(s)
+      // (TCPSocketWrap) still open". An extra check on `_socket` here passes
+      // either way and would only look like coverage.
+      cEmpty.close();
+    } finally {
+      process.removeListener("uncaughtException", onHardThrow);
+      ssrfEmptyMod.checkUrl = origEmptyCheck;
+    }
+  }
 }
 
 module.exports = { run: run };

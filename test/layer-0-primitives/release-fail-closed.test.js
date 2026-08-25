@@ -487,7 +487,14 @@ function testCodexWaitStillReportsAGenuineAbsence() {
 function testCodexWaitHonoursItsWallClockBudget() {
   var step = release.CODEX_WAIT.stepMs, budget = release.CODEX_WAIT.budgetMs;
   // A step far larger than the budget: one overrunning sleep is unmissable.
-  release.CODEX_WAIT.stepMs   = 400;
+  //
+  // The separation carries this, not the tolerance. At a 400ms step the correct
+  // path finished in ~60ms and the broken one in ~460ms, so a 260ms ceiling sat
+  // between two outcomes only 400ms apart — and a 64-way container run put the
+  // correct path at 377ms purely in scheduling overhead, failing it. A step of
+  // several seconds puts the two outcomes an order of magnitude apart, so
+  // contention has nowhere near enough room to cross the line.
+  release.CODEX_WAIT.stepMs   = 5000;
   release.CODEX_WAIT.budgetMs = 60;
   try {
     withQuietConsole(function () {
@@ -499,10 +506,13 @@ function testCodexWaitHonoursItsWallClockBudget() {
           var startedAt = Date.now();
           threw(function () { release._waitForCodexReview("588"); });
           var elapsed = Date.now() - startedAt;
-          // Generous ceiling — the point is that it cannot overshoot by a
-          // whole 400ms step, not that it lands on the millisecond.
+          // Half a step: the point is that it cannot overshoot by a whole
+          // step, not that it lands on the millisecond. A correct wait returns
+          // in tens of milliseconds plus whatever the scheduler adds; one that
+          // sleeps a final full step cannot come in under 5000.
           check("the wait stops within its advertised budget (elapsed " + elapsed + "ms)",
-            elapsed < release.CODEX_WAIT.budgetMs + 200);
+            elapsed < release.CODEX_WAIT.stepMs / 2,
+            elapsed + "ms against a " + release.CODEX_WAIT.stepMs + "ms step");
         });
       });
     });
