@@ -169,6 +169,59 @@ function testResolveRefusesAnIncompleteCustomLimiter() {
         b.mail.server.rateLimit.resolve(complete) === complete);
 }
 
+// The interface is stated twice: once as the list `resolve` enforces, and once
+// as prose in the `resolve` doc block that operators read to build a limiter.
+// Two statements of one fact drift, and this one drifts in the direction that
+// costs the operator everything: implement exactly what the prose names, and
+// the boot still refuses you for the method it forgot to mention.
+//
+// So the test compares them rather than restating either. Adding a method to
+// the enforced list without naming it in the prose fails here, which is the
+// moment it is cheap to fix.
+function testDocumentedLimiterInterfaceMatchesTheEnforcedOne() {
+  var fs = require("node:fs");
+  var path = require("node:path");
+  var src = fs.readFileSync(
+    path.resolve(__dirname, "../../lib/mail-server-rate-limit.js"), "utf8");
+
+  // The doc-block sentence that tells an operator what to implement.
+  var sentence = src.match(
+    /must implement the\s*\n?[\s\S]{0,80}?interface the listeners call —([\s\S]*?)— or resolve/);
+  check("rate-limit: the resolve doc block still names the required interface",
+        sentence !== null, "the sentence this test reads has moved or been reworded");
+  if (!sentence) return;
+
+  var documented = [];
+  var re = /`([A-Za-z]+)`/g;
+  var m;
+  while ((m = re.exec(sentence[1])) !== null) documented.push(m[1]);
+
+  // Read the enforced list from the source too, rather than from a hand-copied
+  // mirror here — a third statement of the same fact is the bug, not the fix.
+  var enforcedBlock = src.match(/var LIMITER_INTERFACE = Object\.freeze\(\[([\s\S]*?)\]\)/);
+  check("rate-limit: the enforced interface list is readable",
+        enforcedBlock !== null);
+  if (!enforcedBlock) return;
+  var enforced = [];
+  var re2 = /"([A-Za-z]+)"/g;
+  while ((m = re2.exec(enforcedBlock[1])) !== null) enforced.push(m[1]);
+
+  var missingFromDocs = enforced.filter(function (n) { return documented.indexOf(n) === -1; });
+  var extraInDocs = documented.filter(function (n) { return enforced.indexOf(n) === -1; });
+
+  check("rate-limit: every enforced method is named in the operator prose",
+        missingFromDocs.length === 0,
+        "enforced but undocumented: " + JSON.stringify(missingFromDocs));
+  check("rate-limit: the prose names nothing the boot does not require",
+        extraInDocs.length === 0,
+        "documented but not enforced: " + JSON.stringify(extraInDocs));
+  // Guards the comparison itself: if either extraction silently returned an
+  // empty list the two checks above would agree about nothing and pass.
+  check("rate-limit: both lists were actually extracted",
+        enforced.length >= 8 && documented.length === enforced.length,
+        JSON.stringify({ enforced: enforced.length, documented: documented.length }));
+}
+
 function testResolveUndefinedUsesDefaults() {
   // resolve() / resolve(null) → create({}) with defaults: a working,
   // non-disabled limiter that admits within the default cap.
@@ -238,6 +291,7 @@ function run() {
   testResolveOptsBuildLimiter();
   testResolveUndefinedUsesDefaults();
   testResolveRefusesAnIncompleteCustomLimiter();
+  testDocumentedLimiterInterfaceMatchesTheEnforcedOne();
 }
 
 module.exports = { run: run };
