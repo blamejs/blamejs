@@ -361,15 +361,34 @@ async function testCreateAppSecurityDefaultsWired() {
     });
     check("security defaults: cookieless POST skipped → 200", cookieless.statusCode === 200);
 
-    // Bearer-authenticated POST (even WITH a cookie) → token-auth, not
-    // CSRF-able → skipStateless skip (200).
+    // A cookie'd POST carrying an Authorization header is NOT skipped. The
+    // header is unvalidated — an attacker composing a cross-site request types
+    // their own — and the cookie is the ambient credential CSRF spends, so this
+    // is the shape the gate exists for. It used to pass on header presence
+    // alone, which meant adding one header to a forged request waived the
+    // check.
     var bearer = await b.httpClient.request({
       method: "POST", url: "http://127.0.0.1:" + addr.port + "/act",
       headers: { "Cookie": "csrf=" + token, "Authorization": "Bearer test.token.value" },
       body: Buffer.from(""), responseMode: "always-resolve",
       allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL, allowInternal: true,
     });
-    check("security defaults: bearer-auth POST skipped → 200", bearer.statusCode === 200);
+    check("security defaults: cookie'd POST with a bearer header and no token → 403",
+      bearer.statusCode === 403, "got " + bearer.statusCode);
+
+    // The same request WITH the token passes, so the refusal above is the
+    // missing token and not the header having become disqualifying.
+    var bearerWithTok = await b.httpClient.request({
+      method: "POST", url: "http://127.0.0.1:" + addr.port + "/act",
+      headers: {
+        "Cookie": "csrf=" + token, "X-CSRF-Token": token,
+        "Authorization": "Bearer test.token.value",
+      },
+      body: Buffer.from(""), responseMode: "always-resolve",
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL, allowInternal: true,
+    });
+    check("security defaults: bearer header + valid token → 200",
+      bearerWithTok.statusCode === 200, "got " + bearerWithTok.statusCode);
   } finally {
     await app.shutdown();
     fs.rmSync(dataDir, { recursive: true, force: true });

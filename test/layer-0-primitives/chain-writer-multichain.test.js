@@ -101,6 +101,48 @@ async function run() {
     // maxChains fails closed when the partition fan-out exceeds the cap.
     var capped = await b.auditChain.verifyChain(queryAll, "device_event_log", { chainKey: "deviceId", maxChains: 1 });
     check("verifyChain fails closed past maxChains", capped.ok === false && /too many chains/.test(capped.reason));
+
+    // withChainLock serializes against append on the same key. A checkpoint
+    // signs a statement about the tip, so it has to observe one that existed:
+    // reading unlocked can land between an append's insert and its counter
+    // advancing, pairing a counter with a hash that were never the tip
+    // together — and the signature over that pair is valid, self-consistent,
+    // and describes a state the chain was never in.
+    //
+    // Last, because it appends rows the row-count assertions above pin.
+    var order = [];
+    var releaseHold = null;
+    var held = new Promise(function (resolve) { releaseHold = resolve; });
+    var holding = w.withChainLock("dev-A", function () {
+      order.push("lock-enter");
+      return held.then(function () { order.push("lock-exit"); });
+    });
+    await helpers.passiveObserve(30, "chain-writer: lock taken before the racing append");
+    var racing = w.append({ deviceId: "dev-A", kind: "raced", payload: "3" })
+      .then(function (r) { order.push("append-done"); return r; });
+    await helpers.passiveObserve(60, "chain-writer: append must not proceed under a held lock");
+    check("chain-writer: an append waits while the chain lock is held",
+      order.indexOf("append-done") === -1, JSON.stringify(order));
+
+    releaseHold();
+    await holding;
+    await racing;
+    check("chain-writer: the append completes once the lock is released",
+      order.indexOf("append-done") > order.indexOf("lock-exit"), JSON.stringify(order));
+
+    // A different partition is a different lock, so it is never blocked by one
+    // held elsewhere — otherwise a checkpoint would serialize every chain in
+    // the process behind itself.
+    var releaseB = null;
+    var heldB = new Promise(function (resolve) { releaseB = resolve; });
+    var holdingB = w.withChainLock("dev-A", function () { return heldB; });
+    await helpers.passiveObserve(30, "chain-writer: dev-A lock held before the dev-B append");
+    var otherDone = false;
+    await w.append({ deviceId: "dev-B", kind: "unblocked", payload: "2" })
+      .then(function () { otherDone = true; });
+    check("chain-writer: an append on another key is not blocked", otherDone === true);
+    releaseB();
+    await holdingB;
   } finally {
     try { await teardownTestDb(tmpDir); } catch (_e) { /* best-effort */ }
   }

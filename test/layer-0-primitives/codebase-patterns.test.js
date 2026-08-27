@@ -6076,6 +6076,26 @@ async function testNoDuplicateCodeBlocks() {
     // cross-check — the same check that surfaced the genuine SQL toPositional
     // dup at run=16); the function names alone show the divergence.
     {
+      // fp:f672498374e7 / 7588f29d9b47 / b44015a885a9 — the five mail listeners'
+      // option-reading preambles. Each listener resolves its own opts near the
+      // top of create(), so the shingle catches `opts.x || DEFAULT_X` runs that
+      // are identical in SHAPE and unrelated in meaning: a TLS context, a
+      // hosted-domain set, a tenant assertion and a domain-hardening check are
+      // not one primitive wearing four names. The functions named diverge
+      // completely below their first few lines — _tlsContext returns a
+      // SecureContext, _resolveLocalDomains validates and filters a domain
+      // list, _assertTenantOrRefuse writes a protocol refusal.
+      //
+      // Grew when managesieve stopped capturing opts.tlsContext and mx stopped
+      // capturing localDomains: reading an option at the point of use is the
+      // fix for a rotation and a withdrawn domain not landing, and it is also
+      // what made these two look more like their siblings.
+      mode: "family-subset",
+      files: ["lib/mail-server-imap.js:create", "lib/mail-server-managesieve.js:_tlsContext",
+              "lib/mail-server-mx.js:_resolveLocalDomainsInner", "lib/mail-server-pop3.js:_assertTenantOrRefuse",
+              "lib/mail-server-pop3.js:create", "lib/mail-server-submission.js:_validateDomainHardened"],
+    },
+    {
       // fp:fe21be189e22 — set-union / EU-AI-Act classify / mail-store match:
       // zero meaningful shared lines (max run = 1).
       mode: "family-subset",
@@ -8026,6 +8046,28 @@ function testStateStampScanningDeferred() {
 //   4. The catalog scans whole-file content (multiline regex) so
 //      patterns split across lines still match.
 var KNOWN_ANTIPATTERNS = [
+  {
+    id: "purge-anchor-signed-before-the-delete",
+    primitive: "b.auditTools.purge",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // Tempered: walk from the function header to the destructive call, but only
+    // while `auditSign.sign` has NOT been seen. Sign first and the walk stops
+    // before it reaches purgeAuditChain, so the pattern stays silent. The
+    // quantifier is a ReDoS backstop set far above the real body, not the
+    // precision mechanism.
+    regex: /function\s+_defaultApplyPurge\b(?:(?!auditSign\.sign)[\s\S]){0,4000}?purgeAuditChain\s*\(/,
+    allowlist: [],
+    fixtures: {
+      fires: [
+        "async function _defaultApplyPurge(args) {\n  var del = await db().purgeAuditChain({ lastPurgedCounter: args.lastPurgedCounter });\n  var sig = auditSign.sign(payload);\n}",
+      ],
+      quiet: [
+        "async function _defaultApplyPurge(args) {\n  var sig = auditSign.sign(payload);\n  var del = await db().purgeAuditChain({ lastPurgedCounter: args.lastPurgedCounter });\n}",
+      ],
+    },
+    reason: "The purge anchor is signed BEFORE any row is deleted. Every field the signature covers comes from the caller's own arguments, so nothing about it needs the delete to have happened first — and signing afterwards means an uninitialized or unavailable audit-signing key fails only once the rows are permanently gone, leaving a chain gap with no anchor to explain it. That is strictly worse than refusing the purge: verification then reports an unexplained break on a volume whose operator did nothing wrong, and the rows it would have needed are unrecoverable. Refusing before the delete costs an operator one retry after fixing their key. This ordering is enforced structurally rather than by a test because reproducing it behaviourally needs a real archive bundle, a real volume and a deliberately broken signing key, while the invariant itself is one line of source order.",
+  },
   {
     id: "posix-absolute-path-needs-an-injected-reader",
     primitive: "b.db.init",
@@ -16377,6 +16419,75 @@ function testKeycloakRealmFitsItsColumns() {
         tooLong.length === 0);
 }
 
+// One table, declared twice: db.js carries the local (node:sqlite) schema and
+// framework-schema.js the DDL for an external Postgres / MySQL / SQLite
+// backend. They have to name the same columns, and nothing made them.
+//
+// The purge anchor is the case that showed why it matters. Adding `signature`
+// and `publicKeyFingerprint` to the local declaration alone would let a purge
+// against an external backend delete the audit rows and only then fail writing
+// the anchor that explains them — the columns are not there, and the DDL only
+// ever issues CREATE TABLE IF NOT EXISTS, so an existing table never gains
+// them. Two modules answering one structural question is how they drift; a
+// check that compares them is what stops it.
+function testPurgeAnchorColumnsAgreeAcrossDeclarations() {
+  var bad = [];
+  var dbSrc, fsSrc;
+  try {
+    dbSrc = fs.readFileSync("lib/db.js", "utf8");
+    fsSrc = fs.readFileSync("lib/framework-schema.js", "utf8");
+  } catch (_e) { return; }
+
+  // Local: the columns block of the `_blamejs_audit_purge_anchor` entry.
+  var localBlock = /name:\s*"_blamejs_audit_purge_anchor"[\s\S]{0,2400}?columns:\s*\{([\s\S]*?)\n\s{4}\}/.exec(dbSrc);
+  // External: the column list inside _auditPurgeAnchorDDL.
+  var extBlock = /function\s+_auditPurgeAnchorDDL[\s\S]{0,2400}?\[([\s\S]*?)\n\s{2}\],\s*\[\]\)/.exec(fsSrc);
+  if (!localBlock || !extBlock) {
+    bad.push({ file: "lib/framework-schema.js", line: 1,
+      content: "could not extract both purge-anchor column declarations — this check " +
+               "silently stops comparing if either shape moves, so the extraction is " +
+               "the thing to fix, not the check" });
+    _report("purge-anchor column declarations agree between db.js and framework-schema.js",
+      bad);
+    return;
+  }
+
+  // Keep the source flags — a rebuilt regex that drops `m` turns `^` into
+  // start-of-string and quietly matches nothing, which reads as agreement.
+  function _names(block, re) {
+    var out = [], m;
+    var rx = new RegExp(re.source, re.flags.indexOf("g") === -1 ? re.flags + "g" : re.flags);
+    while ((m = rx.exec(block)) !== null) out.push(m[1]);
+    return out.sort();
+  }
+  var localCols = _names(localBlock[1], /^\s*([A-Za-z_][\w$]*)\s*:/m);
+  var extCols   = _names(extBlock[1], /\{\s*col:\s*"([^"]+)"/);
+
+  localCols.forEach(function (c) {
+    if (extCols.indexOf(c) === -1) {
+      bad.push({ file: "lib/framework-schema.js", line: 1,
+        content: "_blamejs_audit_purge_anchor column `" + c + "` is declared in lib/db.js " +
+                 "but missing from _auditPurgeAnchorDDL — an external backend would " +
+                 "reject a write naming it" });
+    }
+  });
+  extCols.forEach(function (c) {
+    if (localCols.indexOf(c) === -1) {
+      bad.push({ file: "lib/db.js", line: 1,
+        content: "_blamejs_audit_purge_anchor column `" + c + "` is declared in " +
+                 "_auditPurgeAnchorDDL but missing from the local schema in lib/db.js" });
+    }
+  });
+  // The extraction has to have found something, or two empty sets would agree.
+  if (localCols.length < 5 || extCols.length < 5) {
+    bad.push({ file: "lib/db.js", line: 1,
+      content: "expected at least 5 purge-anchor columns on both sides, got local=" +
+               localCols.length + " external=" + extCols.length });
+  }
+  _report("purge-anchor column declarations agree between db.js and framework-schema.js",
+    bad);
+}
+
 function testWikiPortAgreesAcrossArtifacts() {
   var bad = [];
   var dockerfile;
@@ -19125,6 +19236,7 @@ async function run() {
   // WIKI_PORT default must match the release-container.yml smoke
   // step's port mapping + curl host.
   testKeycloakRealmFitsItsColumns();
+  testPurgeAnchorColumnsAgreeAcrossDeclarations();
   testWikiPortAgreesAcrossArtifacts();
   testReleasePushPathsRunLiveIntegration();
   testReleaseUnresolvedThreadsFailClosedAtPageCap();
