@@ -19,6 +19,7 @@ var check   = helpers.check;
 
 function _mockQuery(anchorRow, opts) {
   var refuseSignatureColumns = opts && opts.refuseSignatureColumns;
+  var chainRows = (opts && opts.chainRows) || null;
   return function (sql /*, params */) {
     if (typeof sql === "string" && sql.indexOf("purge_anchor") !== -1) {
       // A volume purged before the anchor was signed has no signature columns,
@@ -32,7 +33,7 @@ function _mockQuery(anchorRow, opts) {
     }
     // Chain-rows query — a single plausible row (never reached on a corrupt
     // anchor, but present so the non-corrupt branch could walk).
-    return Promise.resolve([]);
+    return Promise.resolve(chainRows || []);
   };
 }
 
@@ -42,10 +43,16 @@ async function _verify(anchorRow) {
 
 // Same, with a caller-supplied public-key resolver — the shape a verifier that
 // never initialized signing (the CLI, a downstream auditor) has to use.
-async function _verifyWith(anchorRow, resolvePublicKey) {
+async function _verifyWith(anchorRow, resolvePublicKey, extraOpts, mockOpts) {
   var threw = null, result = null;
   var opts = resolvePublicKey ? { resolvePublicKey: resolvePublicKey } : {};
-  try { result = await b.auditChain.verifyChain(_mockQuery(anchorRow), "audit_log", opts); }
+  if (extraOpts) {
+    Object.keys(extraOpts).forEach(function (k) { opts[k] = extraOpts[k]; });
+  }
+  try {
+    result = await b.auditChain.verifyChain(
+      _mockQuery(anchorRow, mockOpts), "audit_log", opts);
+  }
   catch (e) { threw = e; }
   return { threw: threw, result: result };
 }
@@ -166,6 +173,30 @@ async function testAnchorMustProveItWasWrittenWithTheSigningKey() {
     check("while a genuinely bad signature is NOT flagged unchecked",
       moved.result && moved.result.purgeAnchorUnchecked !== true,
       JSON.stringify(moved.result));
+
+    // The reported boundary is the ANCHOR's counter, not wherever the walk
+    // happened to start. An incremental verify raises its own skip point to the
+    // predecessor of the requested range, and reporting that would say an
+    // anchor authorizing a purge through 10 authorized one through 149 — so a
+    // caller would classify rows that are present, and merely outside the range
+    // asked for, as purged.
+    // A predecessor BELOW the requested range is what makes the incremental
+    // logic raise its skip point — without one in the row set the range is
+    // inert and this test would pass against the old code.
+    var predecessor = {
+      _id: "row-149", monotonicCounter: 149, rowHash: "c".repeat(128),
+      prevHash: "d".repeat(128), recordedAt: 1750000000000,
+    };
+    var ranged = await _verifyWith(
+      signedAnchor, function () { return pubPem; }, { from: 150 },
+      { chainRows: [predecessor] });
+    check("an incremental verify over a purged chain still verifies",
+      ranged.threw === null && ranged.result && ranged.result.ok === true,
+      JSON.stringify(ranged.result || String(ranged.threw)));
+    check("the reported purge boundary is the anchor's own counter, not the range start",
+      ranged.result && ranged.result.purgeAnchor &&
+      ranged.result.purgeAnchor.belowCounter === forged.lastPurgedCounter,
+      JSON.stringify(ranged.result && ranged.result.purgeAnchor));
 
     // A volume purged BEFORE anchors were signed has no signature columns, and
     // a verifier reading the file directly never runs the migration that adds
