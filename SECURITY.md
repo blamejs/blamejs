@@ -376,6 +376,7 @@ This is the minimum-viable security posture for a production deployment. The fra
 - [ ] After superseding a CA generation, `revokeGeneration(n)` to revoke every certificate issued under the older roots rather than waiting on lifetime expiry
 - [ ] Wire the CA into the gate — `b.middleware.requireMtls({ revocationSource: caHandle })` — so `revoke()` / `revokeGeneration()` are enforced per request (fingerprint-keyed, generation-independent, fail-closed) without mirroring the registry into `denyList`
 - [ ] Distribute the CA cert to clients via `blamejs mtls show-cert --data-dir ./data` rather than copying files around — reduces "wrong-cert-trusted" mistakes
+- [ ] If `fingerprintAllowList` is built from configuration rather than written as a literal, assert it is non-empty before boot. A list that computes to empty now admits NO peer, which is what an empty allowlist asks for; before v0.18.55 the same list admitted every peer, so a deployment that has been running on a silently-empty pin is relying on an inversion and will start refusing once it is fixed. Omitting the option remains the way to apply no fingerprint pin at all
 
 **Pipeline**
 - [ ] Configure a GitHub repository ruleset on `main` (Settings → Rules → Rulesets → New) that blocks deletion + force-push (`non_fast_forward`) + non-linear merges (`required_linear_history`); these are the supply-chain-baseline guardrails that prevent silent history rewrites under a compromised maintainer token
@@ -496,6 +497,13 @@ The framework's audit + consent chains are append-only at the application layer 
 - [ ] In single-node mode the same WORM invariant lives in the local SQLite via `_installAppendOnlyTriggers` — operators using `db.runSql` / `db.exec` can verify the triggers exist via `SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'no_%'`
 - [ ] `REVOKE SELECT ON pg_stat_statements FROM <app_role>` so operator-issued SQL with sensitive literals (audit reasons, sealed values pre-encryption) doesn't surface in the cluster's shared statement-text cache. Pair with `pg_stat_statements.track = none` for the framework role on multi-tenant clusters
 - [ ] On AWS RDS / Aurora / GCP Cloud SQL: extend `assertRoleHardening({ ignoreSystem: true })` with the cloud-specific service roles (`rdsadmin`, `cloudsqlsuperuser`, `azure_pg_admin`) — the default ignoreSystem list covers them but custom roles added by the cloud provider's vendor extensions need explicit declaration
+
+**Concurrent opens of an encrypted volume**
+
+- [ ] Run one writer per encrypted volume. Under `atRest: "encrypted"` each process decrypts its own plaintext working copy and flushes that copy back, so two writers on one volume means whichever flushes last overwrites what the other wrote since it opened. This is a property of the design rather than a race to be tuned around: a second WRITER is always the newest writer
+- [ ] Open every additional process with `readOnly: true`. It takes no part in the above — no periodic flush, no flush on `close()` or at exit, and SQLite refuses writes so a stray one fails where it is issued rather than succeeding into a copy nobody will persist. This is the supported way to inspect a volume a server process is holding
+- [ ] Give each process its own `tmpDir` when they must share a volume read-only. Working copies now carry the process that owns them and the boot sweep spares any owner still running, but a separate directory removes the question
+- [ ] Treat a `db/working-copy-missing` error as data loss in progress, not a transient. It means the working copy vanished under a live handle, so writes made since the last successful flush exist only in that process's open file. Capture `b.db.snapshot()` before restarting it
 
 **Residency & replication**
 

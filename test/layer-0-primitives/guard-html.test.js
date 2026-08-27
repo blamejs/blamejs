@@ -540,7 +540,36 @@ function testHtmlScreensAgreeWithThePatternsTheyReplaced() {
         cssDiffs.length === 0, cssDiffs.slice(0, 3).join(" | "));
 }
 
+// An EMPTY tag allowlist permits NOTHING. Omitting `allowedTags` is how "use
+// the profile's set" is spelled, so an operator who computes a set and gets an
+// empty one is saying no tag may survive — and reading that as "every tag is
+// fine" is the exact inverse. `allowedTags: ["i"]` correctly flags `<b>`; an
+// empty list used to flag nothing at all.
+//
+// The same shape sits in guard-svg, and both are checked here because the two
+// share the membership test's structure.
+function testEmptyTagAllowlistPermitsNothing() {
+  var empty = b.guardHtml.validate("<b>hi</b>", { profile: "balanced", allowedTags: [] });
+  check("guard-html: an EMPTY allowedTags refuses every tag",
+        empty.issues.some(function (i) { return i.kind === "non-allowlisted-tag"; }),
+        JSON.stringify(empty.issues.map(function (i) { return i.kind; })));
+
+  // Control: a non-empty allowlist still discriminates.
+  var some = b.guardHtml.validate("<b>hi</b>", { profile: "balanced", allowedTags: ["i"] });
+  check("guard-html control: a non-empty allowedTags still flags an unlisted tag",
+        some.issues.some(function (i) { return i.kind === "non-allowlisted-tag"; }),
+        JSON.stringify(some.issues.map(function (i) { return i.kind; })));
+
+  // Control: absent still means the profile's own set, so an ordinary tag the
+  // profile permits is not flagged — which is why empty must differ from absent.
+  var absent = b.guardHtml.validate("<b>hi</b>", { profile: "balanced" });
+  check("guard-html control: an absent allowedTags uses the profile's set",
+        !absent.issues.some(function (i) { return i.kind === "non-allowlisted-tag"; }),
+        JSON.stringify(absent.issues.map(function (i) { return i.kind; })));
+}
+
 async function run() {
+  testEmptyTagAllowlistPermitsNothing();
   testHtmlScreensAgreeWithThePatternsTheyReplaced();
   testGuardHtmlSurface();
   testGuardHtmlRegistryParity();

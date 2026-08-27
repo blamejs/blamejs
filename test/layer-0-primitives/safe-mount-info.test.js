@@ -160,8 +160,44 @@ function testAuditEmittedOnReadFailed() {
   }
 }
 
+// /proc/self/mountinfo is a Linux path. On Windows a leading slash is
+// drive-relative, so the default read lands on C:\proc\self\mountinfo, and the
+// default ACL on C:\ lets an unprivileged local user create it. Whoever writes
+// that file authors the entries bestMatch() and isBindMount() answer from — it
+// decides what the framework believes about which filesystem a path is on. So
+// off Linux there is no default path, and a caller who has a mountinfo file
+// somewhere still names it explicitly.
+function testNoDefaultPathOffLinux() {
+  var defaultPathFor = b.safeMountInfo._defaultPathForForTest;
+  check("linux keeps /proc/self/mountinfo as the default",
+        defaultPathFor("linux") === "/proc/self/mountinfo");
+  check("win32 has no default mountinfo path", defaultPathFor("win32") === null);
+  check("darwin has no default mountinfo path", defaultPathFor("darwin") === null);
+  check("nor does an unrecognized platform", defaultPathFor("aix") === null);
+
+  // An explicit path is still honored everywhere — the refusal is of the
+  // framework GUESSING a POSIX location, not of the operator naming one.
+  var captured = [];
+  var auditFake = { safeEmit: function (ev) { captured.push(ev); } };
+  var explicit = b.safeMountInfo.read({
+    path: "/no/such/mountinfo/exists", audit: auditFake, fallback: "used-fallback",
+  });
+  check("an explicitly named path is still read and its failure reported",
+        explicit === "used-fallback" && captured.length === 1 &&
+        captured[0].metadata.code === "safe-mount-info/read-failed",
+        JSON.stringify(captured.map(function (c) { return c.metadata.code; })));
+  // And the refusal names the file that was actually read. It used to say
+  // "/proc/self/mountinfo unreadable" whatever opts.path had asked for, which
+  // sends a caller debugging a read failure to a file nothing touched.
+  check("the refusal names the caller's path, not the default",
+        captured.length === 1 &&
+        captured[0].metadata.reason.indexOf("/no/such/mountinfo/exists") === 0,
+        captured.length ? String(captured[0].metadata.reason).slice(0, 120) : "no event");
+}
+
 async function run() {
   testSurface();
+  testNoDefaultPathOffLinux();
   testParseFixture();
   testIsBindMount();
   testBestMatchLongestPrefix();

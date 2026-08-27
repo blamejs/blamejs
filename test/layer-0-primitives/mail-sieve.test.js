@@ -463,13 +463,20 @@ function testWildcardMatchDoesNotBacktrack() {
   }
 
   // Control: one star cannot be superlinear, so this reads as a sanity check on
-  // the measurement rather than as an assertion about the code. It carries the
-  // same noise floor as the real check below — a one-star match on 4000
-  // characters finishes in well under a millisecond, and a ratio taken between
-  // two sub-millisecond readings is jitter, not growth. Under a parallel run it
-  // read x3.9 on a matcher that cannot backtrack at all.
+  // the measurement rather than as an assertion about the code.
+  //
+  // It goes through the SAME re-measuring helper as the real check below. A
+  // single ratio with a fixed noise floor was what it used before, and that is
+  // the shape the helper exists to replace: on a 64-way-parallel container run
+  // the 4000-character sample landed at 2.96ms — just past a 2ms floor — while
+  // the 2000-character one was preempted, and the control read x18.4 on a
+  // matcher that cannot backtrack at all. Raising the floor would only move the
+  // number at which the same jitter wins; re-measuring is what tells jitter and
+  // a curve apart, because contention does not reproduce and a curve does.
   var controlLarge = runMatch("*b", 4000);
-  var control = controlLarge / Math.max(runMatch("*b", 2000), 0.05);
+  var controlSuperlinear = helpers.looksSuperlinear(function (n) {
+    matchOnce("*b", n);
+  }, { small: 2000, large: 4000, floorMs: 2 });
 
   // Three stars against a subject with no trailing `b`. A backtracking
   // translation is cubic here, so doubling the subject costs about eight times
@@ -484,10 +491,10 @@ function testWildcardMatchDoesNotBacktrack() {
     matchOnce("*a*a*b", n);
   }, { small: 400, large: 800, floorMs: 2 });
 
-  check("sieve :matches — the one-star control scales linearly (x" +
-        control.toFixed(1) + " at " + controlLarge.toFixed(2) + "ms)",
-        controlLarge < 2 || control < 3,
-        "control x" + control.toFixed(1) + " at " + controlLarge.toFixed(2) + "ms");
+  check("sieve :matches — the one-star control scales linearly (" +
+        controlLarge.toFixed(2) + "ms at 4000)",
+        !controlSuperlinear,
+        "control re-measured superlinear at " + controlLarge.toFixed(2) + "ms");
   check("sieve :matches — doubling the subject does not more than double the " +
         "work at three stars (x" + ratio.toFixed(1) + ", " + large.toFixed(1) + "ms)",
         !reallySuperlinear, "x" + ratio.toFixed(1) + " at " + large.toFixed(1) + "ms");
@@ -515,13 +522,26 @@ function testWildcardMatchDoesNotBacktrack() {
   // COUNT. The translation was polynomial with degree equal to that count, so
   // each extra `*` multiplied the work by the subject length again. Adding
   // twenty more wildcards to the same pattern should now cost about the same.
-  var three = runMatch("*a*a*b", 512);
+  // Measured through the same re-measuring helper as the checks above, with
+  // the WILDCARD COUNT as the dimension that varies instead of the subject
+  // length. A single ratio between two samples is what reads superlinear on a
+  // contended runner; a real degree-per-wildcard curve reproduces.
   var twenty = runMatch("*a".repeat(20) + "*b", 512);
-  var byCount = twenty / Math.max(three, 0.05);
-  check("sieve :matches — cost does not track the number of wildcards (x" +
-        byCount.toFixed(1) + " for 20 versus 3)",
-        twenty < 25 || byCount < 8, "x" + byCount.toFixed(1) +
-        " (" + three.toFixed(1) + "ms -> " + twenty.toFixed(1) + "ms)");
+  var byCountSuperlinear = helpers.looksSuperlinear(function (stars) {
+    matchOnce("*a".repeat(stars) + "*b", 512);
+  }, { small: 3, large: 20, threshold: 8, floorMs: 2 });
+  // BOTH terms, because they catch different things at different scales. The
+  // absolute bound is what actually fires against the regression this guards:
+  // with the fix a 20-star match runs in hundredths of a millisecond, and a
+  // return to degree-per-wildcard would run to seconds, so 25ms is a ~2000x
+  // margin. The re-measured ratio adds nothing at that speed — it declines to
+  // judge below its noise floor — but it is what catches a subtler curve if
+  // this ever gets slow enough to take a ratio of.
+  check("sieve :matches — cost does not track the number of wildcards (" +
+        twenty.toFixed(1) + "ms at 20)",
+        twenty < 25 && !byCountSuperlinear,
+        twenty.toFixed(1) + "ms" +
+        (byCountSuperlinear ? " and re-measured superlinear in wildcard count" : ""));
 }
 
 function run() {

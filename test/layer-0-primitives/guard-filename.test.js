@@ -209,6 +209,26 @@ function testGuardFilenameExtensionAllowlist() {
   });
   check("ext allowlist: png accepted",
         !rv2.issues.some(function (issue) { return issue.kind === "ext-not-allowlisted"; }));
+
+  // An EMPTY allowlist means "permit nothing", never "no restriction". The
+  // profiles document `null` as "any single extension", so absent already has a
+  // spelling; an operator who computes the list at runtime and gets back an
+  // empty one is saying nothing is permitted, and silently allowing everything
+  // inverts that. An allowlist that disappears when empty is a firewall rule
+  // set that opens when the last rule is deleted.
+  var rvEmpty = b.guardFilename.validate("photo.png", {
+    profile: "balanced", extensionAllowlist: [],
+  });
+  check("ext allowlist: an EMPTY allowlist permits nothing",
+        rvEmpty.issues.some(function (issue) { return issue.kind === "ext-not-allowlisted"; }),
+        JSON.stringify(rvEmpty.issues.map(function (i) { return i.kind; })));
+
+  // Control: absent still means unrestricted, which is the documented default
+  // and the reason the empty case has to be distinguishable from it.
+  var rvNull = b.guardFilename.validate("photo.png", { profile: "balanced" });
+  check("ext allowlist control: an absent allowlist still permits any extension",
+        !rvNull.issues.some(function (issue) { return issue.kind === "ext-not-allowlisted"; }),
+        JSON.stringify(rvNull.issues.map(function (i) { return i.kind; })));
 }
 
 function testGuardFilenameShellExecExt() {

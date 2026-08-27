@@ -219,6 +219,98 @@ async function testBdatSingleLastChunk() {
   } finally { await srv.close({ timeoutMs: 1000 }); }                                                  // allow:raw-time-literal — test-only short drain
 }
 
+// The DATA branch refuses a body carrying the CVE-2023-51764 smuggling shape
+// (a dot-line whose boundary is anything other than canonical CRLF). The BDAT
+// branch ran no such screen, so the SAME body that DATA answers 554 to was
+// accepted 250 when it arrived in chunks, and handed to the agent for storage
+// and relay.
+//
+// Why the screen belongs on a length-framed path at all: BDAT counts its
+// octets, so a dot-line cannot terminate THAT transfer early. It matters
+// because the body is RELAYED onward and the next hop is usually DATA — the
+// screen is about what the body CONTAINS, not how it arrived. Framing changes
+// downstream; content does not.
+async function testBdatRefusesSmuggledBody() {
+  var bundle = await _makePermissiveServer();
+  if (!bundle) { check("BDAT smuggling screen (skipped)", true); return; }
+  var srv = bundle.srv;
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  try {
+    // A bare-LF dot-line: `\n.\r\n`. A lenient receiver downstream ends the
+    // message there and reads what follows as fresh SMTP commands.
+    var smuggled = Buffer.concat([
+      Buffer.from("From: sender@example.com\r\nTo: recipient@example.com\r\n" +
+                  "Subject: BDAT smuggle\r\n\r\nbody", "latin1"),
+      Buffer.from([0x0A, 0x2E, 0x0D, 0x0A]),                                                            // "\n.\r\n"
+      Buffer.from("MAIL FROM:<attacker@evil.example>\r\n", "latin1"),
+    ]);
+
+    var socket = nodeNet.connect(info.port, "127.0.0.1");
+    await new Promise(function (r) { socket.once("connect", r); });
+    await _readGreeting(socket);
+    await _sendCommand(socket, "EHLO client.example.com");
+    await _sendCommand(socket, "MAIL FROM:<sender@example.com>");
+    await _sendCommand(socket, "RCPT TO:<recipient@example.com>");
+    var reply = await _sendBdat(socket, smuggled, true);
+    check("BDAT: a smuggled dot-line body is refused 554",
+          /^554 /m.test(reply), JSON.stringify(reply));
+    check("BDAT: the refusal names the smuggling class",
+          /5\.7\.0/.test(reply), JSON.stringify(reply));
+    check("BDAT: the smuggled body never reached the agent",
+          bundle.handoffs.length === 0, String(bundle.handoffs.length));
+    socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                  // allow:raw-time-literal — test-only short drain
+
+  // The OTHER BDAT exit: send the smuggled body as a non-final chunk and
+  // terminate with `BDAT 0 LAST`. That path takes the same accumulated
+  // collector and reaches the agent too, so screening only the sized-LAST
+  // chunk would leave this open — which is the shape of the original bug one
+  // level down.
+  var zeroBundle = await _makePermissiveServer();
+  if (zeroBundle) {
+    var zInfo = await zeroBundle.srv.listen({ port: 0, address: "127.0.0.1" });
+    try {
+      var zBody = Buffer.concat([
+        Buffer.from("From: sender@example.com\r\nTo: recipient@example.com\r\n\r\nbody", "latin1"),
+        Buffer.from([0x0A, 0x2E, 0x0D, 0x0A]),                                                          // "\n.\r\n"
+      ]);
+      var z = nodeNet.connect(zInfo.port, "127.0.0.1");
+      await new Promise(function (r) { z.once("connect", r); });
+      await _readGreeting(z);
+      await _sendCommand(z, "EHLO client.example.com");
+      await _sendCommand(z, "MAIL FROM:<sender@example.com>");
+      await _sendCommand(z, "RCPT TO:<recipient@example.com>");
+      await _sendBdat(z, zBody, false);                       // non-final chunk carries the payload
+      var zReply = await _sendBdat(z, Buffer.alloc(0), true); // zero-length LAST terminates it
+      check("BDAT: a smuggled body terminated by a zero-length LAST is refused",
+            /^554 /m.test(zReply), JSON.stringify(zReply));
+      check("BDAT: and it never reached the agent either",
+            zeroBundle.handoffs.length === 0, String(zeroBundle.handoffs.length));
+      z.destroy();
+    } finally { await zeroBundle.srv.close({ timeoutMs: 1000 }); }                                      // allow:raw-time-literal — test-only short drain
+  }
+
+  // Control: an ordinary body still goes through on the same path, so the
+  // screen refuses a smuggling shape rather than refusing BDAT.
+  var ok = await _makePermissiveServer();
+  if (!ok) return;
+  var okInfo = await ok.srv.listen({ port: 0, address: "127.0.0.1" });
+  try {
+    var s2 = nodeNet.connect(okInfo.port, "127.0.0.1");
+    await new Promise(function (r) { s2.once("connect", r); });
+    await _readGreeting(s2);
+    await _sendCommand(s2, "EHLO client.example.com");
+    await _sendCommand(s2, "MAIL FROM:<sender@example.com>");
+    await _sendCommand(s2, "RCPT TO:<recipient@example.com>");
+    var clean = "From: sender@example.com\r\nTo: recipient@example.com\r\n\r\nordinary body\r\n";
+    var okReply = await _sendBdat(s2, clean, true);
+    check("BDAT control: an ordinary body is still accepted",
+          /^250 /m.test(okReply), JSON.stringify(okReply));
+    check("BDAT control: and still reaches the agent", ok.handoffs.length === 1);
+    s2.destroy();
+  } finally { await ok.srv.close({ timeoutMs: 1000 }); }                                                // allow:raw-time-literal — test-only short drain
+}
+
 async function testBdatMultipleChunksThenLast() {
   var bundle = await _makePermissiveServer();
   if (!bundle) { check("BDAT multiple chunks (skipped)", true); return; }
@@ -1050,6 +1142,255 @@ async function testLimitsAndSmuggling(tls) {
   } finally { ssock.destroy(); await sSm.srv.close({ timeoutMs: b.constants.TIME.seconds(2) }); }
 }
 
+// The slow-loris floor, on the sibling listener. mx has the same test; a floor
+// enforced on one listener and not the other is exactly the shape that left
+// `minBytesPerSecond` unenforced on BOTH of them for as long as it existed.
+//
+// A limiter whose floor is unreachable in a fast test is substituted so the
+// branch is reached without spending the ten-second grace window; the number
+// itself is pinned in mail-server-rate-limit.test.js.
+// The same floor on the OTHER body path. This listener advertises CHUNKING, so
+// a body can arrive by BDAT instead of DATA, and a defence applied to one path
+// is a defence a client opts out of by using the other — which is exactly what
+// happened to the bare-LF smuggling screen earlier in this release. Applying a
+// body-phase check to DATA alone is the mistake this file has now made twice.
+async function testBodyRateFloorAppliesToBdatToo(tls) {
+  var asked = [];
+  var real = b.mail.server.rateLimit.create({});
+  var starving = {};
+  Object.keys(real).forEach(function (k) {
+    starving[k] = typeof real[k] === "function"
+      ? function () { return real[k].apply(real, arguments); }
+      : real[k];
+  });
+  starving.bodyRateStarved = function (bytes, elapsedMs) {
+    asked.push({ bytes: bytes, elapsedMs: elapsedMs });
+    return true;
+  };
+
+  var s = await _mk(tls, { profile: "permissive", rateLimit: starving });
+  var sock = await _connect(s.port);
+  try {
+    await _readReply(sock);
+    await _send(sock, "EHLO client.example.com");
+    await _send(sock, "MAIL FROM:<a@example.com>");
+    await _send(sock, "RCPT TO:<b@example.com>");
+
+    var body = "Subject: chunked\r\n\r\nx";
+    var reply = await _send(sock,
+      "BDAT " + Buffer.byteLength(body, "utf8") + " LAST\r\n" + body);
+    check("submission: a BDAT body below the rate floor is refused 421",
+      /^421 /.test(reply), JSON.stringify(reply));
+    check("submission: the BDAT refusal is transient, not permanent",
+      /4\.7\.0/.test(reply), JSON.stringify(reply));
+    check("submission: the listener asked the limiter on the BDAT path too",
+      asked.length >= 1, String(asked.length));
+    // The count is measured from where the window opened, so the first reading
+    // after opening is legitimately zero — nothing has arrived since. What must
+    // never happen is a count larger than the bytes actually sent, which is
+    // what crediting a byte twice looks like; the monotonicity test below bounds
+    // it against the real wire total.
+    check("submission: the BDAT reading is measured from the window, never negative",
+      asked.every(function (a) { return a.bytes >= 0; }),
+      JSON.stringify(asked.map(function (a) { return a.bytes; })));
+  } finally {
+    sock.destroy();
+    await s.srv.close({ timeoutMs: b.constants.TIME.seconds(2) });
+  }
+
+  // A sequence of ZERO-LENGTH chunks carries no bytes, so a window keyed on the
+  // byte count restarts on every command and the zero-length path returns before
+  // reaching any measurement. One `BDAT 0` before each idle timeout then holds
+  // the connection forever without ever meeting the floor — the same slow-loris,
+  // wearing a different command.
+  var zeroAsked = [];
+  var zeroReal = b.mail.server.rateLimit.create({});
+  var zeroStarving = {};
+  Object.keys(zeroReal).forEach(function (k) {
+    zeroStarving[k] = typeof zeroReal[k] === "function"
+      ? function () { return zeroReal[k].apply(zeroReal, arguments); }
+      : zeroReal[k];
+  });
+  zeroStarving.bodyRateStarved = function (bytes, elapsedMs) {
+    zeroAsked.push({ bytes: bytes, elapsedMs: elapsedMs });
+    return true;
+  };
+
+  var z = await _mk(tls, { profile: "permissive", rateLimit: zeroStarving });
+  var zsock = await _connect(z.port);
+  try {
+    await _readReply(zsock);
+    await _send(zsock, "EHLO client.example.com");
+    await _send(zsock, "MAIL FROM:<a@example.com>");
+    await _send(zsock, "RCPT TO:<b@example.com>");
+    // The first BDAT opens the window; the second is judged against it.
+    await _send(zsock, "BDAT 0");
+    var second = await _send(zsock, "BDAT 0");
+    check("submission: a repeated zero-length BDAT is judged, not waved through",
+      /^421 /.test(second), JSON.stringify(second));
+    check("submission: the zero-length path reaches the limiter",
+      zeroAsked.length >= 1, String(zeroAsked.length));
+  } finally {
+    zsock.destroy();
+    await z.srv.close({ timeoutMs: b.constants.TIME.seconds(2) });
+  }
+
+  // The count handed to the limiter must be CUMULATIVE for the transfer. The
+  // window subtracts the previous window's baseline from it, so a count that
+  // goes flat or backwards across a roll reads as no progress and refuses a
+  // client that is in fact sending steadily — an over-refusal, which is the
+  // direction that costs a working sender rather than an attacker.
+  //
+  // Counting only BDAT payload bytes did exactly that: command bytes never
+  // landed in the total, so a sequence carrying `BDAT 0` and interleaved NOOP
+  // reported the same number every time.
+  var counts = [];
+  var monoReal = b.mail.server.rateLimit.create({});
+  var monoLimiter = {};
+  Object.keys(monoReal).forEach(function (k) {
+    monoLimiter[k] = typeof monoReal[k] === "function"
+      ? function () { return monoReal[k].apply(monoReal, arguments); }
+      : monoReal[k];
+  });
+  monoLimiter.bodyRateStarved = function (bytes) { counts.push(bytes); return false; };
+
+  var m = await _mk(tls, { profile: "permissive", rateLimit: monoLimiter });
+  var msock = await _connect(m.port);
+  try {
+    await _readReply(msock);
+    await _send(msock, "EHLO client.example.com");
+    await _send(msock, "MAIL FROM:<a@example.com>");
+    await _send(msock, "RCPT TO:<b@example.com>");
+    // Count the bytes the client actually puts on the wire from the moment the
+    // BDAT sequence opens, so the readings can be bounded against reality.
+    var sentSinceOpen = 0;
+    function sendCounted(line) {
+      sentSinceOpen += Buffer.byteLength(line + "\r\n", "utf8");
+      return _send(msock, line);
+    }
+    await _send(msock, "BDAT 0");          // opens the window; its own bytes are the baseline
+    await sendCounted("NOOP");
+    await sendCounted("NOOP");
+    var payload = "Subject: c\r\n\r\nbody";
+    await sendCounted("BDAT " + Buffer.byteLength(payload, "utf8") + "\r\n" + payload);
+
+    check("submission: the limiter is given a count for every inbound chunk",
+      counts.length >= 3, String(counts.length));
+    var monotonic = counts.every(function (n, i) { return i === 0 || n >= counts[i - 1]; });
+    check("submission: that count never goes backwards across the transfer",
+      monotonic, JSON.stringify(counts));
+    check("submission: and it grows as bytes arrive, rather than repeating",
+      counts[counts.length - 1] > counts[0], JSON.stringify(counts));
+    // The bound that catches double-crediting: re-feeding a chunk's tail
+    // through the parser must not let a byte be counted twice, which would show
+    // up here as a reading larger than everything the client actually sent.
+    check("submission: no byte is credited twice",
+      counts[counts.length - 1] <= sentSinceOpen,
+      "counted " + counts[counts.length - 1] + " against " + sentSinceOpen + " sent");
+  } finally {
+    msock.destroy();
+    await m.srv.close({ timeoutMs: b.constants.TIME.seconds(2) });
+  }
+
+  // The same accounting, over STARTTLS — which is how submission is actually
+  // deployed, and the one configuration the checks above cannot speak for.
+  //
+  // Upgrading removes the plaintext `data` listener and delivers decrypted
+  // chunks to a separate callback. Counting on the listener alone therefore
+  // stops counting the moment the connection becomes the one operators use:
+  // the reading handed to the limiter freezes, and once the grace period
+  // elapses a client sending well above the floor is judged to have sent
+  // nothing and gets 421. That is an over-refusal on the ordinary path, which
+  // costs a working sender rather than an attacker.
+  var tlsCounts = [];
+  var tlsReal = b.mail.server.rateLimit.create({});
+  var tlsLimiter = {};
+  Object.keys(tlsReal).forEach(function (k) {
+    tlsLimiter[k] = typeof tlsReal[k] === "function"
+      ? function () { return tlsReal[k].apply(tlsReal, arguments); }
+      : tlsReal[k];
+  });
+  tlsLimiter.bodyRateStarved = function (bytes) { tlsCounts.push(bytes); return false; };
+
+  var t = await _mk(tls, { profile: "permissive", rateLimit: tlsLimiter });
+  var traw = await _connect(t.port);
+  var tsk = null;
+  try {
+    await _readReply(traw);
+    await _send(traw, "EHLO client.example.com");
+    await _send(traw, "STARTTLS");
+    tsk = await _tlsUpgrade(traw, t.caPem);
+    await _send(tsk, "EHLO client.example.com");
+    await _send(tsk, "MAIL FROM:<a@example.com>");
+    await _send(tsk, "RCPT TO:<b@example.com>");
+
+    var tlsSent = 0;
+    function sendTlsCounted(line) {
+      tlsSent += Buffer.byteLength(line + "\r\n", "utf8");
+      return _send(tsk, line);
+    }
+    await _send(tsk, "BDAT 0");            // opens the window
+    await sendTlsCounted("NOOP");
+    var tlsPayload = "Subject: c\r\n\r\nbody";
+    await sendTlsCounted("BDAT " + Buffer.byteLength(tlsPayload, "utf8") + "\r\n" + tlsPayload);
+
+    check("submission: the limiter is asked over TLS too",
+      tlsCounts.length >= 2, String(tlsCounts.length));
+    check("submission: and the reading grows as encrypted bytes arrive",
+      tlsCounts[tlsCounts.length - 1] > tlsCounts[0], JSON.stringify(tlsCounts));
+    // Same double-credit bound as the plaintext path: routing both transports
+    // through one counter must not make a byte count twice.
+    check("submission: no encrypted byte is credited twice",
+      tlsCounts[tlsCounts.length - 1] <= tlsSent,
+      "counted " + tlsCounts[tlsCounts.length - 1] + " against " + tlsSent + " sent");
+  } finally {
+    if (tsk) tsk.destroy();
+    traw.destroy();
+    await t.srv.close({ timeoutMs: b.constants.TIME.seconds(2) });
+  }
+}
+
+async function testBodyRateFloorIsAskedDuringData(tls) {
+  var asked = [];
+  var real = b.mail.server.rateLimit.create({});
+  var starving = {};
+  Object.keys(real).forEach(function (k) {
+    starving[k] = typeof real[k] === "function"
+      ? function () { return real[k].apply(real, arguments); }
+      : real[k];
+  });
+  starving.bodyRateStarved = function (bytes, elapsedMs) {
+    asked.push({ bytes: bytes, elapsedMs: elapsedMs });
+    return true;
+  };
+
+  var s = await _mk(tls, { profile: "permissive", rateLimit: starving });
+  var sock = await _connect(s.port);
+  try {
+    await _readReply(sock);
+    await _send(sock, "EHLO client.example.com");
+    await _send(sock, "MAIL FROM:<a@example.com>");
+    await _send(sock, "RCPT TO:<b@example.com>");
+    // A COMPLETE body: the rate check runs before the scanner looks for the
+    // terminator, so a starved verdict still refuses — and without the
+    // terminator a listener that never asks would hang this read instead of
+    // failing it, which is a test that cannot go red.
+    var reply = await _dataDot(sock, "Subject: trickle\r\n\r\nx");
+    check("submission: a body below the rate floor is refused 421",
+      /^421 /.test(reply), JSON.stringify(reply));
+    check("submission: the refusal is transient, not permanent",
+      /4\.7\.0/.test(reply), JSON.stringify(reply));
+    check("submission: the listener asked the limiter about the body rate",
+      asked.length >= 1, String(asked.length));
+    check("submission: the bytes reported include the chunk under judgement",
+      asked.length >= 1 && asked[0].bytes > 0,
+      asked.length ? String(asked[0].bytes) : "never asked");
+  } finally {
+    sock.destroy();
+    await s.srv.close({ timeoutMs: b.constants.TIME.seconds(2) });
+  }
+}
+
 // ---- AUTH not configured (permissive, no auth) ----
 
 async function testAuthNotConfigured(tls) {
@@ -1290,6 +1631,7 @@ async function run() {
   testBadBoundsRefused();
   await testEhloAdvertisesChunking();
   await testBdatSingleLastChunk();
+  await testBdatRefusesSmuggledBody();
   await testBdatMultipleChunksThenLast();
   await testBdatZeroByteLast();
   await testBdatOutsideTransaction();
@@ -1322,6 +1664,8 @@ async function run() {
   await testRecipientPolicy(tls);
   await testConnRateLimit(tls);
   await testLimitsAndSmuggling(tls);
+  await testBodyRateFloorIsAskedDuringData(tls);
+  await testBodyRateFloorAppliesToBdatToo(tls);
   await testAuthNotConfigured(tls);
   await testIdleTimeout(tls);
   await testCloseDrain(tls);

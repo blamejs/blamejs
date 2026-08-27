@@ -188,7 +188,41 @@ function testOversizeUriRefused() {
   check("oversize URI reason",        v.reason.indexOf("maxUriBytes") !== -1);
 }
 
+// `allowedHosts` pins which hosts a one-click unsubscribe may be auto-fetched
+// from — an SSRF defence, since the URI comes from the message. An EMPTY
+// allowlist permits nothing; omitting the option is how "any host" is spelled.
+// It used to be gated on the list being non-empty, so an operator who built the
+// list from config and got an empty one silently permitted every host — the
+// exact inverse of what they asked for. An allowlist that disappears when empty
+// is a firewall rule set that opens when the last rule is deleted.
+function testEmptyAllowedHostsPermitsNothing() {
+  var headers = {
+    listUnsubscribe:     "<https://mail.partner.example/u/abc>",
+    listUnsubscribePost: "List-Unsubscribe=One-Click",
+  };
+
+  var empty = b.guardListUnsubscribe.validate(headers, { allowedHosts: [] });
+  check("allowedHosts: an EMPTY allowlist refuses every host",
+        empty.action === "refuse", empty.action + " / " + (empty.reason || ""));
+  check("allowedHosts: and says the host is not on the allowlist",
+        (empty.reason || "").indexOf("not-on-allowlist") !== -1, empty.reason);
+
+  // Control: absent still means any host, which is why the empty case has to be
+  // distinguishable from it.
+  var absent = b.guardListUnsubscribe.validate(headers);
+  check("allowedHosts control: an absent allowlist still permits the host",
+        absent.action !== "refuse", absent.action + " / " + (absent.reason || ""));
+
+  // Control: a listed host is still permitted, so the refusal above is about
+  // membership rather than the option refusing everything it sees.
+  var listed = b.guardListUnsubscribe.validate(headers,
+    { allowedHosts: ["mail.partner.example"] });
+  check("allowedHosts control: a listed host is still permitted",
+        listed.action !== "refuse", listed.action + " / " + (listed.reason || ""));
+}
+
 function run() {
+  testEmptyAllowedHostsPermitsNothing();
   testSurface();
   testAcceptCompliantHeaders();
   testRefuseWithoutHttpsUnderStrict();

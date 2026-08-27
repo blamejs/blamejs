@@ -858,6 +858,90 @@ async function run() {
   } finally {
     try { fs.rmSync(hdDir, { recursive: true, force: true }); } catch (_e) {}
   }
+
+  // Auto-mode when the kernel's mount table cannot be read.
+  //
+  // The probe asks /proc/self/mountinfo which filesystem carries the root, and
+  // on a restricted or /proc-less container that question has no answer. The
+  // two possible replies are not equally safe. Polling costs stat calls the
+  // operator can measure. fs.watch on a filesystem whose inotify chain does not
+  // reach the watcher drops events with no error and no signal, so a consumer
+  // waiting on a change waits forever and cannot tell why.
+  //
+  // So "I could not find out" resolves to poll. This used to answer fs, which
+  // handed the silent mode to precisely the environment the probe was written
+  // for.
+  var noEntries = function () { return null; };
+  var blindRead = b.watcher._detectAutoModeForTest("/srv/app", {
+    platform: "linux", readEntries: noEntries,
+  });
+  check("watcher: an unreadable mount table on Linux selects polling, not fs.watch",
+    blindRead.mode === "poll" && blindRead.reason === "no-mountinfo",
+    JSON.stringify(blindRead));
+
+  var noMatch = b.watcher._detectAutoModeForTest("/srv/app", {
+    platform: "linux", readEntries: function () { return []; },
+  });
+  check("watcher: an empty mount table is unknown too, so it also polls",
+    noMatch.mode === "poll", JSON.stringify(noMatch));
+
+  // A mount table that DOES describe the root, on a filesystem inotify serves,
+  // still picks fs.watch. Without this the two checks above would pass on a
+  // probe that had simply been hardcoded to poll, which would answer the
+  // correctness question by throwing the cheap mode away for everyone.
+  var known = b.watcher._detectAutoModeForTest("/srv/app", {
+    platform: "linux",
+    readEntries: function () {
+      return [{ mountPoint: "/", fstype: "ext4", root: "/" }];
+    },
+  });
+  check("watcher: a known local filesystem still takes the native backend",
+    known.mode === "fs" && known.fsType === "ext4", JSON.stringify(known));
+
+  // The container probe reads "/.dockerenv", which is a path only Linux can
+  // answer: on Windows a leading slash is drive-relative, so a direct read
+  // there asks whether C:\.dockerenv exists. It is reached below the non-Linux
+  // return, and it goes through the injected reader anyway — the ordering
+  // should not be the only thing holding it up.
+  // A bind mount inside a container is the case the marker decides: inotify
+  // chains across the host/guest boundary unreliably, so it polls. The same
+  // bind mount outside a container keeps the native backend, which is what
+  // makes the marker — and therefore the reader that answers it — load-bearing.
+  var bindEntries = function () {
+    return [{ mountPoint: "/srv", fstype: "ext4", root: "/exported/app" }];
+  };
+  var containerProbes = [];
+  var inContainer = b.watcher._detectAutoModeForTest("/srv/app", {
+    platform: "linux",
+    exists: function (p) { containerProbes.push(p); return true; },
+    readEntries: bindEntries,
+  });
+  check("watcher: the container marker is read through the injected reader",
+    containerProbes.length === 1 && containerProbes[0] === "/.dockerenv",
+    JSON.stringify(containerProbes));
+  check("watcher: a bind mount inside a container polls rather than trusting inotify",
+    inContainer.inContainer === true && inContainer.mode === "poll" &&
+    inContainer.reason === "container-bind-mount", JSON.stringify(inContainer));
+
+  // Control: the identical mount table with the marker absent keeps fs.watch,
+  // so the check above turns on the probe's answer and not on the mount shape.
+  var notContainer = b.watcher._detectAutoModeForTest("/srv/app", {
+    platform: "linux",
+    exists: function () { return false; },
+    readEntries: bindEntries,
+  });
+  check("watcher: the same bind mount outside a container keeps the native backend",
+    notContainer.inContainer === false && notContainer.mode === "fs",
+    JSON.stringify(notContainer));
+
+  // A non-Linux host never reaches the probe at all.
+  var win = b.watcher._detectAutoModeForTest("C:\\srv\\app", {
+    platform: "win32",
+    exists: function () { throw new Error("the container marker was probed on win32"); },
+    readEntries: function () { throw new Error("mountinfo was read on win32"); },
+  });
+  check("watcher: win32 answers from the platform alone, probing nothing",
+    win.mode === "fs" && win.reason === "non-linux-host", JSON.stringify(win));
 }
 
 module.exports = { run: run };

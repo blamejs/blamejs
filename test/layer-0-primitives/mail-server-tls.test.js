@@ -84,6 +84,37 @@ async function run() {
     check("context: onReload is fn",      typeof tlsCtx.onReload === "function");
     check("context: stop is fn",          typeof tlsCtx.stop === "function");
     tlsCtx.stop();
+
+    // The mail listener's TLS context has to carry the framework's PQC-first
+    // key-agreement preference, the same as the HTTP listener does. It set no
+    // group list at all, so the one place the framework's hybrid-KEM policy
+    // most obviously belongs — the server that speaks STARTTLS to the public
+    // internet — negotiated whatever the runtime happened to default to.
+    var applied = b.mail.server.tls._contextOptionsForTest(
+      { certFile: certFile, keyFile: keyFile });
+    check("context: the framework's key-agreement groups reach the context",
+          typeof applied.ecdhCurve === "string" && applied.ecdhCurve.length > 0,
+          JSON.stringify(applied.ecdhCurve));
+
+    // And an operator's own preference is HONOURED, not silently dropped. A
+    // failed attempt to set a group policy has to be distinguishable from
+    // success: the option used to be accepted and ignored, so a consumer
+    // pinning a curve got no policy and no error.
+    var pinned = b.mail.server.tls._contextOptionsForTest(
+      { certFile: certFile, keyFile: keyFile, ecdhCurve: "X25519" });
+    check("context: an operator-supplied ecdhCurve is honoured",
+          pinned.ecdhCurve === "X25519", JSON.stringify(pinned.ecdhCurve));
+
+    // A malformed one is REFUSED rather than replaced with the default —
+    // quietly substituting would start a listener on groups the operator did
+    // not choose, with nothing said.
+    var badThrew = null;
+    try {
+      b.mail.server.tls._contextOptionsForTest(
+        { certFile: certFile, keyFile: keyFile, ecdhCurve: 42 });
+    } catch (e) { badThrew = e; }
+    check("context: a malformed ecdhCurve is refused, not replaced",
+          badThrew !== null, badThrew && badThrew.message);
   } finally {
     fs.rmSync(tmp1, { recursive: true, force: true });
   }

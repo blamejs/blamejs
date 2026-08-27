@@ -315,6 +315,26 @@ async function runErrorBranches() {
           b.mcp.toolResult.sanitize({ content: [{ type: "image", url: "https://evil.example/x.png" }] }, { allowedHosts: ["cdn.ok.example"] });
         }) === "mcp/tool-output-refused");
 
+  // An EMPTY host allowlist permits no URL, rather than every URL. The check
+  // was gated on `allowedHosts.length > 0`, and an omitted option was
+  // normalised to `[]` before that test — so the two became indistinguishable
+  // and a caller who computed the list and got nothing back had the check
+  // skipped entirely. A tool result is attacker-influenced content, and this
+  // allowlist is what stops one pointing at a host of the attacker's choosing.
+  check("toolResult.sanitize: an EMPTY host allowlist permits no URL, not every URL",
+        codeOf(function () {
+          b.mcp.toolResult.sanitize(
+            { content: [{ type: "image", url: "https://evil.example/x.png" }] },
+            { allowedHosts: [] });
+        }) === "mcp/tool-output-refused");
+
+  // Omitting the option is still how "no host pin" is spelled.
+  var unpinned = b.mcp.toolResult.sanitize(
+    { content: [{ type: "image", url: "https://anywhere.example/x.png" }] }, {});
+  check("toolResult.sanitize: omitting allowedHosts still applies no host pin",
+        unpinned.content.length === 1 && unpinned.issues.length === 0,
+        JSON.stringify(unpinned.issues));
+
   var dropped = b.mcp.toolResult.sanitize(
     { content: [{ type: "image", url: "https://evil.example/x.png" }, { type: "text", text: "ok" }] },
     { posture: "sanitize", allowedHosts: ["cdn.ok.example"] });

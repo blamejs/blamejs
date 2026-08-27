@@ -255,6 +255,34 @@ async function testGateControlFlowBranches() {
     check("allowList: a peer whose fingerprint is NOT on the allow-list is refused",
           allowR.next === false && notAllowedDenied && notAllowedDenied.reason === "fingerprint-not-allowed");
 
+    // An allowlist that computes to EMPTY admits nobody. It used to admit
+    // everybody: the gate read `allowList && allowList.length > 0`, so a list
+    // built from configuration that returned zero entries turned the pin off
+    // entirely and every client certificate was accepted. The derivation above
+    // already distinguishes "omitted" (null) from "supplied but empty" ([]) —
+    // only the gate collapsed them again.
+    //
+    // An allowlist that disappears when empty is a firewall rule set that opens
+    // when the last rule is deleted, and this is the instance where that opens
+    // the front door: mTLS admission.
+    var emptyPinDenied = null;
+    var emptyPinGate = b.middleware.requireMtls({
+      audit: false, fingerprintAllowList: [],
+      onDeny: function (req, res, info) { emptyPinDenied = info; },
+    });
+    var emptyPinR = drive(emptyPinGate, _mockReq({ authorized: true, peerCert: peerSubj }));
+    check("allowList: an EMPTY allow-list admits nobody, not everybody",
+          emptyPinR.next === false && emptyPinDenied &&
+          emptyPinDenied.reason === "fingerprint-not-allowed",
+          JSON.stringify({ next: emptyPinR.next, deny: emptyPinDenied }));
+
+    // Omitting the option is still how "no fingerprint pin" is spelled, so the
+    // stricter reading of [] must not also make the absent case refuse.
+    var noPinR = drive(b.middleware.requireMtls({ audit: false }),
+                       _mockReq({ authorized: true, peerCert: peerSubj }));
+    check("allowList: omitting the option still applies no fingerprint pin",
+          noPinR.next === true);
+
     // allowList match → admitted, and the parsed fingerprint is attached to req.
     var matchReq = _mockReq({ authorized: true, peerCert: peerSubj });
     var matchR = drive(b.middleware.requireMtls({ audit: false, fingerprintAllowList: [fp.colon] }), matchReq);

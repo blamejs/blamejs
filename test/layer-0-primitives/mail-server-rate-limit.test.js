@@ -134,6 +134,94 @@ function testResolveOptsBuildLimiter() {
   check("resolve(opts): not disabled", rl.isDisabled() === false);
 }
 
+// resolve() accepted any object carrying `admitConnection` and handed it
+// straight to a listener that calls eight methods on it. A limiter missing one
+// did not fail at boot — it failed on the request that first reached the call,
+// as a TypeError from inside the connection handler, which for the DATA-body
+// floor means every message dies mid-transaction.
+//
+// The sniff was already too weak before the floor existed: `releaseConnection`
+// has been called unconditionally on every socket close for as long as the
+// listeners have tracked connections, so a limiter with only `admitConnection`
+// was already breaking, just later and more quietly. Checking the whole
+// interface at resolve() turns all of that into one boot error that names what
+// is missing.
+function testResolveRefusesAnIncompleteCustomLimiter() {
+  var threw = null;
+  try { b.mail.server.rateLimit.resolve({ admitConnection: function () { return { ok: true }; } }); }
+  catch (e) { threw = e; }
+  check("resolve: a custom limiter missing the rest of the interface is refused at config time",
+        threw !== null, threw && threw.message);
+  check("resolve: the refusal names the missing methods",
+        threw && /bodyRateStarved/.test(threw.message) &&
+        /releaseConnection/.test(threw.message),
+        threw && threw.message);
+  check("resolve: the refusal carries a typed code",
+        threw && (threw.code || "").indexOf("mail-server-rate-limit/") === 0,
+        threw && threw.code);
+
+  // A complete custom limiter still passes through untouched — the point is to
+  // name the contract, not to force operators onto the built-in.
+  var complete = {};
+  var real = b.mail.server.rateLimit.create({});
+  Object.keys(real).forEach(function (k) { complete[k] = real[k]; });
+  check("resolve: a COMPLETE custom limiter is still returned unchanged",
+        b.mail.server.rateLimit.resolve(complete) === complete);
+}
+
+// The interface is stated twice: once as the list `resolve` enforces, and once
+// as prose in the `resolve` doc block that operators read to build a limiter.
+// Two statements of one fact drift, and this one drifts in the direction that
+// costs the operator everything: implement exactly what the prose names, and
+// the boot still refuses you for the method it forgot to mention.
+//
+// So the test compares them rather than restating either. Adding a method to
+// the enforced list without naming it in the prose fails here, which is the
+// moment it is cheap to fix.
+function testDocumentedLimiterInterfaceMatchesTheEnforcedOne() {
+  var fs = require("node:fs");
+  var path = require("node:path");
+  var src = fs.readFileSync(
+    path.resolve(__dirname, "../../lib/mail-server-rate-limit.js"), "utf8");
+
+  // The doc-block sentence that tells an operator what to implement.
+  var sentence = src.match(
+    /must implement the\s*\n?[\s\S]{0,80}?interface the listeners call —([\s\S]*?)— or resolve/);
+  check("rate-limit: the resolve doc block still names the required interface",
+        sentence !== null, "the sentence this test reads has moved or been reworded");
+  if (!sentence) return;
+
+  var documented = [];
+  var re = /`([A-Za-z]+)`/g;
+  var m;
+  while ((m = re.exec(sentence[1])) !== null) documented.push(m[1]);
+
+  // Read the enforced list from the source too, rather than from a hand-copied
+  // mirror here — a third statement of the same fact is the bug, not the fix.
+  var enforcedBlock = src.match(/var LIMITER_INTERFACE = Object\.freeze\(\[([\s\S]*?)\]\)/);
+  check("rate-limit: the enforced interface list is readable",
+        enforcedBlock !== null);
+  if (!enforcedBlock) return;
+  var enforced = [];
+  var re2 = /"([A-Za-z]+)"/g;
+  while ((m = re2.exec(enforcedBlock[1])) !== null) enforced.push(m[1]);
+
+  var missingFromDocs = enforced.filter(function (n) { return documented.indexOf(n) === -1; });
+  var extraInDocs = documented.filter(function (n) { return enforced.indexOf(n) === -1; });
+
+  check("rate-limit: every enforced method is named in the operator prose",
+        missingFromDocs.length === 0,
+        "enforced but undocumented: " + JSON.stringify(missingFromDocs));
+  check("rate-limit: the prose names nothing the boot does not require",
+        extraInDocs.length === 0,
+        "documented but not enforced: " + JSON.stringify(extraInDocs));
+  // Guards the comparison itself: if either extraction silently returned an
+  // empty list the two checks above would agree about nothing and pass.
+  check("rate-limit: both lists were actually extracted",
+        enforced.length >= 8 && documented.length === enforced.length,
+        JSON.stringify({ enforced: enforced.length, documented: documented.length }));
+}
+
 function testResolveUndefinedUsesDefaults() {
   // resolve() / resolve(null) → create({}) with defaults: a working,
   // non-disabled limiter that admits within the default cap.
@@ -148,7 +236,50 @@ function testResolveUndefinedUsesDefaults() {
     typeof rlNull.admitConnection === "function" && rlNull.isDisabled() === false);
 }
 
+// `minBytesPerSecond` was documented as a slow-loris floor on DATA from the day
+// this module shipped: validated, defaulted to 100, and exposed as a getter that
+// NO listener ever called. `idleTimeoutMs` cuts a fully stalled connection, but
+// a peer trickling a few bytes at a time resets that timer forever and holds a
+// connection — and its slot in the per-address cap — for as long as it likes.
+//
+// The policy lives here with the number so both listeners ask the same question.
+function testBodyRateFloorIsEnforceable() {
+  var rl = b.mail.server.rateLimit.create({ minBytesPerSecond: 100 });
+
+  // Below the grace window nothing is judged: the first chunk arrives with
+  // almost no elapsed time, so a rate computed from it is noise, and a sender
+  // pausing to read from its own spool would be cut off for it.
+  check("body rate: nothing is judged inside the grace window",
+        rl.bodyRateStarved(1, 500) === false);
+
+  // Past the window, a trickle is starved and an ordinary sender is not.
+  check("body rate: a trickle past the window is starved",
+        rl.bodyRateStarved(60, 30000) === true);          // 2 B/s against a 100 floor
+  check("body rate: a normal sender is not starved",
+        rl.bodyRateStarved(500000, 30000) === false);     // ~16 KB/s
+
+  // Exactly at the floor is not below it — a boundary that refuses a
+  // conforming sender is a worse failure than one that admits a marginal one.
+  check("body rate: exactly at the floor is admitted",
+        rl.bodyRateStarved(1000, 10000) === false);       // exactly 100 B/s
+  check("body rate: a hair under the floor is starved",
+        rl.bodyRateStarved(999, 10000) === true);
+
+  // `disabled` is the ONE spelling for "do not apply this". A zero floor is
+  // refused at construction rather than accepted as a second way to say off —
+  // two spellings for the same thing is how one of them ends up unenforced.
+  var off = b.mail.server.rateLimit.create({ disabled: true });
+  check("body rate: a disabled limiter never starves",
+        off.bodyRateStarved(1, 60000) === false);
+  var zeroThrew = null;
+  try { b.mail.server.rateLimit.create({ minBytesPerSecond: 0 }); }
+  catch (e) { zeroThrew = e; }
+  check("body rate: a zero floor is refused at construction, not read as off",
+        zeroThrew !== null, zeroThrew && zeroThrew.message);
+}
+
 function run() {
+  testBodyRateFloorIsEnforceable();
   testSurface();
   testBadOptsRefused();
   testConcurrentCap();
@@ -159,6 +290,8 @@ function run() {
   testResolvePassesThroughExistingLimiter();
   testResolveOptsBuildLimiter();
   testResolveUndefinedUsesDefaults();
+  testResolveRefusesAnIncompleteCustomLimiter();
+  testDocumentedLimiterInterfaceMatchesTheEnforcedOne();
 }
 
 module.exports = { run: run };

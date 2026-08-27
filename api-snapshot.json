@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.18.54",
-  "createdAt": "2026-08-25T00:14:32.327Z",
+  "frameworkVersion": "0.18.55",
+  "createdAt": "2026-08-27T06:28:07.355Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -36360,7 +36360,7 @@
         },
         "detectBodySmuggling": {
           "type": "function",
-          "arity": 1
+          "arity": 3
         },
         "gate": {
           "type": "function",
@@ -45294,6 +45294,10 @@
             "rateLimit": {
               "type": "object",
               "members": {
+                "BODY_RATE_GRACE_MS": {
+                  "type": "primitive",
+                  "valueType": "number"
+                },
                 "DEFAULTS": {
                   "type": "object",
                   "members": {
@@ -48598,6 +48602,10 @@
             "isSystemTrustEnabled": {
               "type": "function",
               "arity": 0
+            },
+            "keyAgreementGroups": {
+              "type": "function",
+              "arity": 2
             },
             "ocsp": {
               "type": "object",
@@ -54189,6 +54197,10 @@
         "SafeSmtpError": {
           "type": "function",
           "arity": 4
+        },
+        "createBodyScanner": {
+          "type": "function",
+          "arity": 0
         },
         "dotStuff": {
           "type": "function",

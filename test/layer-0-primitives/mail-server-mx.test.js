@@ -52,8 +52,17 @@ function testCreateRejectsBadBounds() {
     { tlsContext: {}, maxLineBytes: -1 });
   expectBad("non-array localDomains refused",
     { tlsContext: {}, localDomains: "example.com" });
-  expectBad("empty localDomains array refused",
-    { tlsContext: {}, localDomains: [] });
+  // An EMPTY localDomains is ACCEPTED and means "hosts no domains, refuses
+  // every recipient". This assertion used to require the opposite, which left
+  // the only constructible spelling the one that skipped the relay check
+  // entirely — see testEmptyLocalDomainsRefusesEveryRecipient for what that
+  // did on the wire.
+  var emptyThrew = null;
+  try { b.mail.server.mx.create({ tlsContext: {}, localDomains: [] }); }
+  catch (e) { emptyThrew = e; }
+  check("empty localDomains array is accepted (means: host nothing)",
+        emptyThrew === null || (emptyThrew.code || "").indexOf("mail-server-mx/bad-opts") !== 0,
+        emptyThrew && emptyThrew.message);
   expectBad("non-array relayAllowedFor refused",
     { tlsContext: {}, relayAllowedFor: "x" });
 }
@@ -218,6 +227,85 @@ async function _connectTo(info) {
 //
 // The submission listener already had `recipientPolicy`. MX, where an unknown
 // mailbox actually arrives, did not.
+// An empty allowlist means "permit nothing". It must never mean "no
+// restriction" — an allowlist that disappears when empty is a firewall rule set
+// that opens when the last rule is deleted.
+//
+// `mail.server.mx` had no spelling for "this server hosts no domains yet", and
+// the two available spellings failed in opposite directions: `localDomains: []`
+// was refused at construction, while omitting it constructed a listener whose
+// relay check was nested inside a non-empty test and therefore never ran. The
+// only spelling that started a server was the one that turned the check off,
+// and every RCPT TO was accepted.
+//
+// Delivery still failed later, so nothing was relayed. What a relay prober sees
+// is 250 at MAIL FROM and 250 at RCPT TO for a sender and recipient the server
+// has no relationship with, which is what a blocklist operator acts on; and the
+// eventual refusal is a transient 451 that arrives only after the peer has
+// transmitted the whole message, so it retries indefinitely.
+async function testEmptyLocalDomainsRefusesEveryRecipient() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("mx empty localDomains (skipped — cert fixture unavailable)", true); return; }
+
+  // The explicit spelling must construct: a server hosting nothing has to be
+  // able to bind and refuse politely, not be unable to start.
+  var srv = b.mail.server.mx.create({
+    tlsContext: ctx, profile: "permissive", localDomains: [],
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var socket = await _connectTo(info);
+  try {
+    await _sendCommand(socket, "EHLO scanner.example.net");
+    await _sendCommand(socket, "MAIL FROM:<attacker@evil.example.net>");
+    var rcpt = await _sendCommand(socket, "RCPT TO:<victim@unrelated.example.org>");
+    check("mx: with localDomains [] every recipient is refused at RCPT",
+          /^550 /.test(rcpt), JSON.stringify(rcpt));
+    check("mx: and the refusal says relaying denied, not a transient error",
+          /5\.7\.1/.test(rcpt), JSON.stringify(rcpt));
+  } finally {
+    try { socket.destroy(); } catch (_e) { /* already gone */ }
+    await srv.close({ timeoutMs: 1000 });                                                              // allow:raw-time-literal — test-only short drain
+  }
+
+  // Omitting the option entirely must behave the same way. This is the shape
+  // that shipped: absent normalised to an empty set, and the check was skipped.
+  var srv2 = b.mail.server.mx.create({ tlsContext: ctx, profile: "permissive" });
+  var info2 = await srv2.listen({ port: 0, address: "127.0.0.1" });
+  var socket2 = await _connectTo(info2);
+  try {
+    await _sendCommand(socket2, "EHLO scanner.example.net");
+    await _sendCommand(socket2, "MAIL FROM:<attacker@evil.example.net>");
+    var rcpt2 = await _sendCommand(socket2, "RCPT TO:<victim@unrelated.example.org>");
+    check("mx: an absent localDomains refuses every recipient too",
+          /^550 /.test(rcpt2), JSON.stringify(rcpt2));
+  } finally {
+    try { socket2.destroy(); } catch (_e) { /* already gone */ }
+    await srv2.close({ timeoutMs: 1000 });                                                             // allow:raw-time-literal — test-only short drain
+  }
+
+  // Control: a configured domain is still accepted, so the above is refusing a
+  // recipient the server does not host rather than refusing everything.
+  var srv3 = b.mail.server.mx.create({
+    tlsContext: ctx, profile: "permissive", localDomains: ["example.com"],
+  });
+  var info3 = await srv3.listen({ port: 0, address: "127.0.0.1" });
+  var socket3 = await _connectTo(info3);
+  try {
+    await _sendCommand(socket3, "EHLO sender.example.com");
+    await _sendCommand(socket3, "MAIL FROM:<peer@sender.example.com>");
+    var ok = await _sendCommand(socket3, "RCPT TO:<alice@example.com>");
+    check("mx control: a hosted domain is still accepted",
+          /^250 /.test(ok), JSON.stringify(ok));
+    var off = await _sendCommand(socket3, "RCPT TO:<victim@unrelated.example.org>");
+    check("mx control: an unhosted domain is still refused",
+          /^550 /.test(off), JSON.stringify(off));
+  } finally {
+    try { socket3.destroy(); } catch (_e) { /* already gone */ }
+    await srv3.close({ timeoutMs: 1000 });                                                             // allow:raw-time-literal — test-only short drain
+  }
+}
+
 async function testRecipientPolicyRefusesUnknownMailbox() {
   var ctx;
   try { ctx = await _makeTestTlsContext(); }
@@ -404,6 +492,68 @@ async function testRecipientPolicyThrowIsTransient() {
     var reply = await _sendCommand(socket, "RCPT TO:<alice@example.com>");
     check("mx: a throwing recipient policy defers 451, never refuses 550",
           /^451 /.test(reply), JSON.stringify(reply));
+  } finally { socket.destroy(); await srv.close(); }
+}
+
+// `minBytesPerSecond` was validated at construction, defaulted, and exposed as
+// a getter that no listener ever called. The policy test in
+// mail-server-rate-limit.test.js pins the number; this pins that the listener
+// ASKS. A limiter whose floor is unreachable in a fast test is substituted, so
+// the test does not have to spend the ten-second grace window to reach the
+// branch.
+async function testBodyRateFloorIsAskedDuringData() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("mx body-rate floor (skipped — cert fixture)", true); return; }
+
+  var asked = [];
+  var real = b.mail.server.rateLimit.create({});
+  var starving = {};
+  Object.keys(real).forEach(function (k) {
+    starving[k] = typeof real[k] === "function"
+      ? function () { return real[k].apply(real, arguments); }
+      : real[k];
+  });
+  starving.bodyRateStarved = function (bytes, elapsedMs) {
+    asked.push({ bytes: bytes, elapsedMs: elapsedMs });
+    return true;
+  };
+
+  var srv = b.mail.server.mx.create({
+    tlsContext: ctx, profile: "permissive", localDomains: ["example.com"],
+    rateLimit: starving,
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var socket = await _connectTo(info);
+  try {
+    await _sendCommand(socket, "EHLO sender.example.com");
+    await _sendCommand(socket, "MAIL FROM:<peer@sender.example.com>");
+    await _sendCommand(socket, "RCPT TO:<alice@example.com>");
+    check("mx: DATA opens", /^354 /.test(await _sendCommand(socket, "DATA")));
+
+    // A COMPLETE body, terminator included. The rate check runs before the
+    // scanner looks for the terminator, so a starved verdict still refuses —
+    // and without the terminator a listener that never asks would leave this
+    // read hanging instead of failing, which is a test that cannot go red.
+    var reply = await _sendCommand(socket, "Subject: trickle\r\n\r\nx\r\n.");
+    check("mx: a body below the rate floor is refused 421, not accepted",
+          /^421 /.test(reply), JSON.stringify(reply));
+    check("mx: the refusal names a transient condition, not a permanent one",
+          /4\.7\.0/.test(reply), JSON.stringify(reply));
+    check("mx: the listener asked the limiter about the body rate",
+          asked.length >= 1, String(asked.length));
+    // Elapsed is measured from 354, not from connect: a peer that idles before
+    // DATA has not yet sent a body, and charging it that time would cut off a
+    // sender that paused between RCPT and DATA.
+    check("mx: elapsed is measured from the DATA prompt",
+          asked.length >= 1 && asked[0].elapsedMs >= 0 && asked[0].elapsedMs < 30000,
+          asked.length ? String(asked[0].elapsedMs) : "never asked");
+    // The bytes reported must include the chunk being judged. Reporting only
+    // what was already banked understates the rate by exactly the newest
+    // chunk, which on a one-chunk body is the entire message.
+    check("mx: the bytes reported include the chunk under judgement",
+          asked.length >= 1 && asked[0].bytes > 0,
+          asked.length ? String(asked[0].bytes) : "never asked");
   } finally { socket.destroy(); await srv.close(); }
 }
 
@@ -771,6 +921,21 @@ async function testGuardEnvelopeGate() {
       handoffs[0].auth.spf.result === "pass" &&
       handoffs[0].auth.dmarc.result === "pass" &&
       handoffs[0].auth.quarantine === false);
+    // The ARC chain was evaluated, written into the Authentication-Results
+    // header and into the audit event, and then dropped before the handoff.
+    // A consumer wanting to act on it had to re-parse a header the pipeline
+    // had just produced — and the header cannot carry what the structured
+    // verdict does: `Authentication-Results` flattens every failure to
+    // `arc=fail`, losing the distinction between a chain that is
+    // structurally incomplete and one whose seal did not verify.
+    check("guardEnvelope: handoff carries the ARC verdict beside the other three",
+      handoffs.length === 1 && handoffs[0].auth &&
+      handoffs[0].auth.arc && typeof handoffs[0].auth.arc.chainStatus === "string",
+      handoffs.length === 1 ? JSON.stringify(handoffs[0].auth.arc) : "no handoff");
+    check("guardEnvelope: an unsealed message reports chainStatus none",
+      handoffs.length === 1 && handoffs[0].auth &&
+      handoffs[0].auth.arc && handoffs[0].auth.arc.chainStatus === "none",
+      handoffs.length === 1 ? JSON.stringify(handoffs[0].auth.arc) : "no handoff");
     var delivered = handoffs.length === 1 ? handoffs[0].body.toString("utf8") : "";
     check("guardEnvelope: A-R header prepended with the localDomains authserv-id",
       delivered.indexOf("Authentication-Results: example.com") === 0 &&
@@ -1594,10 +1759,12 @@ async function run() {
   testFindDotTerminator();
   testDotUnstuff();
   await testEhloFlow();
+  await testEmptyLocalDomainsRefusesEveryRecipient();
   await testRecipientPolicyRefusesUnknownMailbox();
   await testRecipientPolicyReasonCannotForgeAReplyLine();
   await testRecipientPolicyRefusalCostsTheScannerBudget();
   await testRecipientPolicyThrowIsTransient();
+  await testBodyRateFloorIsAskedDuringData();
   await testRelayRefused();
   await testStrictProfileRequiresStartTls();
   await testConnectionGates();

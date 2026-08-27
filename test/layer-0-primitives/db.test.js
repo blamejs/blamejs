@@ -898,8 +898,13 @@ async function testTmpfsResolution() {
         frameworkTables: false, auditSigning: false, minFreeBytes: 0 });
     });
     if (noTmp) {
+      // Any error at all lands here, not only the one this asserts on, so the
+      // arriving code goes in the failure message. A sandbox denying the write
+      // fails this check identically to a genuine regression, and without the
+      // code there is nothing in the output to tell them apart.
       check("encrypted init with no resolvable tmpfs fail-closes db/no-tmpfs",
-        noTmp.code === "db/no-tmpfs");
+        noTmp.code === "db/no-tmpfs",
+        (noTmp.code || "(no code)") + ": " + String(noTmp.message || "").slice(0, 160));
     } else {
       check("encrypted init resolved a host tmpfs and booted",
         b.db.getMode() === "encrypted");
@@ -920,6 +925,296 @@ async function testTmpfsResolution() {
   } finally {
     if (savedTmpEnv === undefined) delete process.env.BLAMEJS_TMPDIR;
     else process.env.BLAMEJS_TMPDIR = savedTmpEnv;
+    _teardownPlain(tmpDir);
+  }
+}
+
+// --- the working copy never lands on persistent storage --------------------
+//
+// Both rules below are platform rules, and the platform that gets them wrong
+// is not the one CI runs on. They are driven through the injected-platform
+// seam for that reason: a rule about Windows asserted only by running on
+// Windows is a rule nothing checks.
+
+async function testTmpfsResolverNeverProbesAPosixPathOffLinux() {
+  var probed = [];
+  function probe(p) { probed.push(p); return true; }
+  function refuseToRun() {
+    throw new Error("the /dev/shm probe ran on a platform where the path is not absolute");
+  }
+
+  // A leading-slash path on Windows is drive-relative, so the probe would be
+  // asking about C:\dev\shm — an ordinary NTFS directory that anyone can
+  // create, and that answering yes to puts the decrypted database on disk.
+  var win = null;
+  try { win = b.db._resolveTmpDirFromForTest(null, "win32", refuseToRun); }
+  catch (e) { win = "THREW: " + e.message; }
+  check("db: no tmpfs is resolved on win32, and the POSIX path is never probed",
+    win === null, "got " + JSON.stringify(win));
+
+  var mac = null;
+  try { mac = b.db._resolveTmpDirFromForTest(null, "darwin", refuseToRun); }
+  catch (e) { mac = "THREW: " + e.message; }
+  check("db: nor on darwin", mac === null, "got " + JSON.stringify(mac));
+
+  // Control. Without this the two checks above pass on a resolver that
+  // returns null unconditionally and never probes anywhere.
+  check("db: on linux the probe IS consulted and its answer is used",
+    b.db._resolveTmpDirFromForTest(null, "linux", probe) === "/dev/shm" &&
+    probed.length === 1 && probed[0] === "/dev/shm",
+    "probed " + JSON.stringify(probed));
+  check("db: and a linux host without /dev/shm resolves nothing",
+    b.db._resolveTmpDirFromForTest(null, "linux", function () { return false; }) === null);
+
+  // An operator who names the mount is answered on every platform — the
+  // refusal is of the framework GUESSING, not of the operator knowing.
+  check("db: an explicit tmpDir is honored on win32 without probing",
+    b.db._resolveTmpDirFromForTest("R:\\ramdisk", "win32", refuseToRun) === "R:\\ramdisk");
+  check("db: and on linux",
+    b.db._resolveTmpDirFromForTest("/mnt/ram", "linux", refuseToRun) === "/mnt/ram");
+}
+
+async function testTmpDirResidencyDistinguishesUnknownFromDiskBacked() {
+  function identity(p) { return p; }
+
+  check("db: a /dev/shm path is a recognized in-memory mount",
+    b.db._tmpDirResidencyIssueForTest("/dev/shm/work", "linux", identity) === null);
+  check("db: /tmp too — tmpfs on systemd defaults and most container images",
+    b.db._tmpDirResidencyIssueForTest("/tmp/work", "linux", identity) === null);
+  check("db: /run/user counts as well",
+    b.db._tmpDirResidencyIssueForTest("/run/user/1000/x", "linux", identity) === null);
+
+  // On Linux the mount table CAN be compared against, so a path outside those
+  // mounts is a positive finding that the copy lands on disk. That one is
+  // refused, which is what it has done since the fail-closed default landed.
+  var home = b.db._tmpDirResidencyIssueForTest("/home/op/work", "linux", identity);
+  check("db: a linux path outside those mounts is a determined finding",
+    home && home.determined === true && home.message.indexOf("not a") !== -1,
+    JSON.stringify(home));
+
+  // Off Linux nothing can be compared, so the finding is that it is unknown —
+  // reported, not determined. Collapsing the two would mean every macOS and
+  // Windows operator setting allowNonTmpfsTmpDir: true to boot, and that flag
+  // also switches off the Linux check, which is the one that works.
+  var win = b.db._tmpDirResidencyIssueForTest("C:\\ramdisk", "win32", identity);
+  check("db: a win32 path is reported as unknown rather than as disk-backed",
+    win && win.determined === false && win.message.indexOf("win32") !== -1,
+    JSON.stringify(win));
+  var mac = b.db._tmpDirResidencyIssueForTest("/Volumes/ram", "darwin", identity);
+  check("db: and a darwin path likewise",
+    mac && mac.determined === false && mac.message.indexOf("darwin") !== -1,
+    JSON.stringify(mac));
+
+  // A realpath that throws must not read as a pass — the path is unresolved,
+  // which is the definition of not shown to be in memory.
+  var broken = b.db._tmpDirResidencyIssueForTest("/dev/shm/gone", "linux", function () {
+    throw new Error("ENOENT");
+  });
+  check("db: an unresolvable path is reported rather than assumed fine",
+    broken && broken.determined === true, JSON.stringify(broken));
+}
+
+// Whether the database file carries every committed transaction is a question
+// with three answers, and two of them used to collapse into "yes".
+async function testWalDrainedIsDeterminedNotAssumed() {
+  var drained = b.db._walNotDrainedFromForTest;
+  function size(n) { return function () { return { size: n }; }; }
+  function statFails(code) {
+    return function () { var e = new Error(code); e.code = code; throw e; };
+  }
+  function never() { throw new Error("the checkpoint ran when it should not have"); }
+
+  check("db: no log at all means the database file is the whole database",
+    drained("/v/db", true, statFails("ENOENT"), never) === null);
+  check("db: a zero-length log carries nothing",
+    drained("/v/db", true, size(0), never) === null);
+
+  // An unreadable log is not an absent one. Reporting zero here would let the
+  // copy proceed on exactly the incomplete file this exists to catch.
+  var unreadable = drained("/v/db", true, statFails("EACCES"), never);
+  check("db: a log that cannot be read is unknown, not empty",
+    typeof unreadable === "string" && unreadable.indexOf("EACCES") !== -1,
+    String(unreadable));
+
+  // A handle that cannot checkpoint cannot answer the question either.
+  var cannotAsk = drained("/v/db", false, size(4096), never);
+  check("db: a handle that cannot checkpoint cannot establish the answer",
+    typeof cannotAsk === "string" && cannotAsk.indexOf("cannot checkpoint") !== -1,
+    String(cannotAsk));
+
+  // The size of the log is NOT the question. A passive or automatic checkpoint
+  // copies every frame into the database file and leaves the log allocated
+  // behind it; refusing on length alone would reject a complete snapshot.
+  var allMoved = drained("/v/db", true, size(65536), function () {
+    return { busy: 0, log: 12, checkpointed: 12 };
+  });
+  check("db: an allocated log whose frames all reached the file is complete",
+    allMoved === null, String(allMoved));
+
+  var someLeft = drained("/v/db", true, size(65536), function () {
+    return { busy: 0, log: 12, checkpointed: 5 };
+  });
+  check("db: frames the checkpoint did not move are reported, counted",
+    typeof someLeft === "string" && someLeft.indexOf("7 of 12") !== -1,
+    String(someLeft));
+
+  var busy = drained("/v/db", true, size(65536), function () {
+    return { busy: 1, log: 12, checkpointed: 12 };
+  });
+  check("db: a busy checkpoint did not run to completion, so it settles nothing",
+    typeof busy === "string" && busy.indexOf("busy") !== -1, String(busy));
+
+  var threw = drained("/v/db", true, size(65536), function () {
+    throw new Error("attempt to write a readonly database");
+  });
+  check("db: a checkpoint that throws is a reason, not a pass",
+    typeof threw === "string" && threw.indexOf("readonly") !== -1, String(threw));
+}
+
+// snapshot() copies the main database file, which is the whole database only
+// once the write-ahead log has been folded into it. It checkpointed first and
+// swallowed the failure, so on a read-only handle — which cannot checkpoint —
+// the copy went ahead and produced a backup missing exactly the rows the log
+// still held. It restored cleanly, so nothing downstream could tell.
+async function testSnapshotRefusesToCopyPastAPendingWal() {
+  var tmpDir = _mkTmp("db-cov-snapwal-");
+  var dbFile = path.join(tmpDir, "blamejs.db");
+  try {
+    await _plainInit(tmpDir, [{ name: "rows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+      { frameworkTables: false, auditSigning: false });
+    b.db.from("rows").insertOne({ _id: "a", v: "committed" });
+
+    // Control first: a writable handle checkpoints, so the log drains and the
+    // snapshot is the whole database. Without this the refusal below would
+    // pass on a build where snapshot() had simply stopped working.
+    var okSnap = null;
+    try { okSnap = b.db.snapshot(); } catch (e) { okSnap = e; }
+    check("db: a writable handle snapshots after draining the log",
+      Buffer.isBuffer(okSnap) && okSnap.length > 0,
+      okSnap && okSnap.code ? (okSnap.code + ": " + String(okSnap.message).slice(0, 140))
+                            : "not a buffer");
+    b.db.close();
+    b.db._resetForTest();
+
+    // A read-only handle cannot checkpoint. With bytes left in the log, the
+    // main file is short of them and copying it would be a silent partial.
+    fs.writeFileSync(dbFile + "-wal", Buffer.alloc(4096, 1));
+    await b.db.init({
+      dataDir: tmpDir, atRest: "plain", readOnly: true,
+      frameworkTables: false, auditSigning: false,
+      schema: [{ name: "rows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+    });
+    var refused = null;
+    try { b.db.snapshot(); } catch (e) { refused = e; }
+    check("db: a read-only snapshot over a pending write-ahead log is refused",
+      refused && refused.code === "db/snapshot-pending-wal",
+      refused ? (refused.code + ": " + String(refused.message).slice(0, 180))
+              : "snapshot returned bytes");
+    check("db: and the refusal says the handle cannot checkpoint",
+      refused && String(refused.message).indexOf("readOnly") !== -1,
+      refused ? String(refused.message).slice(0, 240) : "no error");
+    b.db.close();
+    b.db._resetForTest();
+    try { fs.unlinkSync(dbFile + "-wal"); } catch (_e) { /* may be gone */ }
+    try { fs.unlinkSync(dbFile + "-shm"); } catch (_e) { /* may not exist */ }
+  } finally {
+    _teardownPlain(tmpDir);
+  }
+}
+
+// b.db.fileLifecycle answers the same "where does the working copy live?"
+// question for a consumer holding its own SQLite handle. It reached the right
+// answer already — the probe was platform-guarded and the disk fallback was
+// opt-in — but by reading the POSIX path directly, so nothing could show the
+// Windows branch was right. Two modules answering one structural question is
+// how they drift; both now take the platform and the reader.
+async function testFileLifecycleResolvesTheSameWayAcrossPlatforms() {
+  var lifecycle = require("../../lib/db-file-lifecycle");
+  var resolve = lifecycle._resolveTmpDirFromForTest;
+  function refuseToRun() {
+    throw new Error("the /dev/shm probe ran off Linux");
+  }
+  function isDir() { return { isDirectory: function () { return true; } }; }
+
+  check("db.fileLifecycle: linux resolves /dev/shm when it is a directory",
+    resolve(null, false, "linux", isDir) === "/dev/shm");
+  check("db.fileLifecycle: a non-directory at that path is not a tmpfs mount",
+    _throws(function () {
+      resolve(null, false, "linux", function () {
+        return { isDirectory: function () { return false; } };
+      });
+    }, "db-file-lifecycle/no-tmpfs"));
+
+  // Off Linux the path is not probed at all, and with no disk fallback the
+  // refusal is the documented one rather than a silent os.tmpdir().
+  check("db.fileLifecycle: win32 refuses rather than probing a POSIX path",
+    _throws(function () { resolve(null, false, "win32", refuseToRun); },
+      "db-file-lifecycle/no-tmpfs"));
+  check("db.fileLifecycle: darwin likewise",
+    _throws(function () { resolve(null, false, "darwin", refuseToRun); },
+      "db-file-lifecycle/no-tmpfs"));
+
+  check("db.fileLifecycle: allowDiskFallback is what buys os.tmpdir(), on win32",
+    resolve(null, true, "win32", refuseToRun) === os.tmpdir());
+  check("db.fileLifecycle: an operator-named tmpDir wins everywhere",
+    resolve("R:\\ramdisk", false, "win32", refuseToRun) === "R:\\ramdisk");
+}
+
+function _throws(fn, code) {
+  try { fn(); } catch (e) { return e && e.code === code; }
+  return false;
+}
+
+// The consumer path, on whatever host this runs. A Linux runner whose temp dir
+// sits outside the tmpfs mounts is refused; everywhere else the operator's path
+// is taken with a warning, because there is nothing to classify it against.
+async function testEncryptedInitHandlesAnUnclassifiableTmpDir() {
+  var tmpDir = _mkTmp("db-cov-residency-");
+  try {
+    var onDisk = path.join(tmpDir, "not-a-ramdisk");
+    fs.mkdirSync(onDisk, { recursive: true });
+    await _freshVault(tmpDir);
+
+    var opened = await _catch(function () {
+      return b.db.init({ dataDir: tmpDir, atRest: "encrypted", tmpDir: onDisk,
+        schema: [], frameworkTables: false, auditSigning: false, minFreeBytes: 0 });
+    });
+    b.db._resetForTest();
+
+    var classifiable = process.platform === "linux";
+    var underTmpfs = classifiable && (
+      onDisk.indexOf("/dev/shm") === 0 || onDisk.indexOf("/run/shm") === 0 ||
+      onDisk.indexOf("/run/user/") === 0 || onDisk.indexOf("/tmp") === 0);
+
+    if (classifiable && !underTmpfs) {
+      check("db: a linux tmpDir shown to be disk-backed fails encrypted init closed",
+        opened && opened.code === "db/tmpdir-not-tmpfs",
+        opened ? (opened.code + ": " + String(opened.message).slice(0, 160)) : "init succeeded");
+      check("db: and the refusal names the opt-out the operator needs",
+        opened && String(opened.message).indexOf("allowNonTmpfsTmpDir") !== -1,
+        opened ? String(opened.message).slice(0, 200) : "no error");
+    } else {
+      // Either a recognized tmpfs mount, or a platform where the question
+      // cannot be answered. Both boot; the second one warns on the way.
+      check("db: an unclassifiable or in-memory tmpDir boots encrypted mode",
+        opened === null,
+        opened && (opened.code + ": " + String(opened.message).slice(0, 160)));
+      b.db._resetForTest();
+    }
+
+    // The opt-out works on every platform — otherwise the Linux refusal would
+    // be a wall rather than a default.
+    await _freshVault(tmpDir);
+    var allowed = await _catch(function () {
+      return b.db.init({ dataDir: tmpDir, atRest: "encrypted", tmpDir: onDisk,
+        allowNonTmpfsTmpDir: true, schema: [], frameworkTables: false,
+        auditSigning: false, minFreeBytes: 0 });
+    });
+    check("db: allowNonTmpfsTmpDir downgrades the refusal to a warning",
+      allowed === null,
+      allowed && (allowed.code + ": " + String(allowed.message).slice(0, 160)));
+    b.db._resetForTest();
+  } finally {
     _teardownPlain(tmpDir);
   }
 }
@@ -962,8 +1257,13 @@ async function testEncryptedRoundTrip() {
   var tmpfs = path.join(tmpDir, "tmpfs");
   fs.mkdirSync(tmpfs, { recursive: true });
   // Seed a stale plaintext working copy from a "previous crashed process" so
-  // init's cleanStaleTmpDbs sweep has an orphan to reclaim.
+  // init's cleanStaleTmpDbs sweep has an orphan to reclaim. A crashed process
+  // leaves its ownership record behind with it, and that record naming a
+  // process that no longer exists is what makes the file reclaimable — the
+  // sweep no longer reads the filename as proof the owner is gone.
   fs.writeFileSync(path.join(tmpfs, "blamejs-staleorphan.db"), "orphan");
+  fs.writeFileSync(path.join(tmpfs, "blamejs-staleorphan.db.owner"),
+    b.db._ownerNamespaceForTest() + " 2147483645");
   var encOpts = {
     dataDir: tmpDir, tmpDir: tmpfs, allowNonTmpfsTmpDir: true, atRest: "encrypted",
     frameworkTables: false, auditSigning: false, minFreeBytes: 0,
@@ -993,6 +1293,648 @@ async function testEncryptedRoundTrip() {
     var row = b.db.from("vaultrows").where({ _id: "a" }).first();
     check("encrypted round-trip recovers the row through decryptToTmp",
       row && row.v === "persisted");
+  } finally {
+    _teardownPlain(tmpDir);
+  }
+}
+
+// Opening an encrypted volume in a second process destroyed the first
+// process's data, silently, and did it on the way IN.
+//
+// The sweep that reclaims working copies from crashed processes used the
+// filename as its only evidence: every `blamejs-*.db` in the temporary
+// directory that was not this process's own was unlinked. Nothing asked
+// whether the owner was still running. On Linux the unlink succeeds against a
+// file another process holds open, so the first process kept a valid
+// descriptor and carried on reading and writing with nothing to see. Its
+// flushes then found no source path and returned as though they had written,
+// so nothing reached db.enc again for the life of that process — losing every
+// write back to its last flush, not merely those during the overlap.
+//
+// It reproduces on Linux and in any container, every time, and does NOT
+// reproduce on Windows, where unlinking an open file fails and the error was
+// swallowed. So the platform most likely to be developed on is the one that
+// cannot see it.
+//
+// These assertions are about the DECISION rather than the operating system's
+// unlink semantics, so they hold on every platform: a working copy whose owner
+// is alive must survive the sweep, one whose owner is gone must not, and a
+// flush whose source has vanished must say so instead of reporting success.
+async function testStaleSweepSparesALiveOwner() {
+  var tmpDir = _mkTmp("db-cov-sweep-");
+  var tmpfs = path.join(tmpDir, "tmpfs");
+  fs.mkdirSync(tmpfs, { recursive: true });
+
+  // Three working copies that are not ours: one owned by a process that is
+  // still running (this one), one owned by a process id that cannot exist, and
+  // one with no ownership record at all.
+  var live = path.join(tmpfs, "blamejs-liveowner.db");
+  var dead = path.join(tmpfs, "blamejs-deadowner.db");
+  var mute = path.join(tmpfs, "blamejs-noowner.db");
+  var foreign = path.join(tmpfs, "blamejs-foreignns.db");
+  fs.writeFileSync(live, "live");
+  fs.writeFileSync(dead, "dead");
+  fs.writeFileSync(mute, "unknown");
+  fs.writeFileSync(foreign, "other-container");
+  // The record names the namespace that issued the pid, then the pid. Ours is
+  // read back from the module so this test cannot drift from the format.
+  var ns = b.db._ownerNamespaceForTest();
+  fs.writeFileSync(live + ".owner", ns + " " + process.pid);
+  // A pid that cannot exist, in OUR namespace: provably dead.
+  fs.writeFileSync(dead + ".owner", ns + " 2147483646");
+  // The same unreachable pid, but stamped by a different namespace — a second
+  // container's record. Not ours to judge.
+  fs.writeFileSync(foreign + ".owner", "pid:[4026531999] 2147483646");
+
+  var encOpts = {
+    dataDir: tmpDir, tmpDir: tmpfs, allowNonTmpfsTmpDir: true, atRest: "encrypted",
+    frameworkTables: false, auditSigning: false, minFreeBytes: 0,
+    schema: [{ name: "vaultrows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+  };
+  try {
+    await _freshVault(tmpDir);
+    await b.db.init(encOpts);
+
+    check("db: a working copy whose owner is still running survives the sweep",
+      fs.existsSync(live));
+    check("db: its ownership record survives with it",
+      fs.existsSync(live + ".owner"));
+    check("db: a working copy whose owner is gone is reclaimed",
+      !fs.existsSync(dead));
+    check("db: and its ownership record is reclaimed too",
+      !fs.existsSync(dead + ".owner"));
+    // No record means the owner cannot be established. Deleting on a guess is
+    // what caused the data loss, so the unprovable case keeps the file.
+    check("db: a working copy with no ownership record is left alone",
+      fs.existsSync(mute));
+
+    // A process id is only meaningful inside the PID NAMESPACE that issued it.
+    // Two containers sharing a tmpDir each see their own pid 1, and a pid from
+    // the other's namespace either matches nothing (read as dead) or matches an
+    // unrelated local process (read as alive) — both answers are noise. Reading
+    // "no such process" as "dead owner" there deletes a live database, which is
+    // the whole bug this record exists to prevent, so a record from a namespace
+    // we cannot compare against is UNKNOWN and the file stays.
+    check("db: a record from another PID namespace is left alone",
+      fs.existsSync(foreign), "reclaimed a foreign-namespace record");
+    check("db: and so is its ownership record",
+      fs.existsSync(foreign + ".owner"));
+
+    // What the namespace token does when it CANNOT be read is the whole rule,
+    // and until this seam existed it could only be reached by unmounting /proc.
+    //
+    // Two different situations produce the same missing file. On a platform
+    // that has no PID namespaces there is nothing to read and every pid on the
+    // host is comparable, so one shared token is the right answer. On Linux the
+    // file is supposed to be there, so its absence means /proc is unmounted or
+    // restricted — namespaces may be in use and we cannot see which one we are
+    // in. Returning the shared token there would tell two containers sharing a
+    // tmpDir that each other's pids are comparable, and the sweep would unlink
+    // a live database: the original bug, restored by its own fix.
+    var noProc = function () { var e = new Error("ENOENT"); e.code = "ENOENT"; throw e; };
+    var noNamespaces = b.db._namespaceFromForTest("darwin", noProc);
+    check("db: where PID namespaces do not exist, ids are comparable host-wide",
+      noNamespaces === "host", noNamespaces);
+
+    // And the file is not consulted there at all. /proc/self/ns/pid is
+    // drive-relative on Windows, so it names C:\proc\self\ns\pid — a path an
+    // unprivileged local user can create. A planted answer would name this
+    // process's namespace, and a matching namespace is what authorizes
+    // unlinking a working copy another process is still using.
+    var plantedLink = function () { return "pid:[4026531836]"; };
+    check("db: a plantable path is not read on win32 — the platform answers",
+      b.db._namespaceFromForTest("win32", plantedLink) === "host",
+      b.db._namespaceFromForTest("win32", plantedLink));
+    check("db: nor on darwin",
+      b.db._namespaceFromForTest("darwin", plantedLink) === "host");
+    // Control: the same reader IS believed on Linux, where the path is real.
+    check("db: and on linux the namespace link is read and used",
+      b.db._namespaceFromForTest("linux", plantedLink) === "pid:[4026531836]",
+      b.db._namespaceFromForTest("linux", plantedLink));
+
+    var blind = b.db._namespaceFromForTest("linux", noProc);
+    check("db: an unreadable namespace on Linux is NOT reported as the host",
+      blind !== "host", blind);
+    check("db: it stays the same within a process, so our own record matches",
+      b.db._namespaceFromForTest("linux", noProc) === blind, blind);
+
+    // The property that actually protects the peer: no OTHER process can
+    // compute this token, so no record it wrote is ever judged comparable.
+    // Asserting only "not host" would pass on a shared constant like "unknown",
+    // which is the same bug wearing a different string.
+    var elsewhere = require("node:child_process").execFileSync(process.execPath, [
+      "-e",
+      "var d=require(process.argv[1]);" +
+      "process.stdout.write(d._namespaceFromForTest('linux',function(){throw new Error('x');}));",
+      path.resolve(__dirname, "../../lib/db.js"),
+    ], { encoding: "utf8", timeout: 30000 });
+    check("db: and no other process can produce it, so nothing foreign matches",
+      elsewhere !== blind && elsewhere !== "host" && elsewhere.length > 0,
+      JSON.stringify({ ours: blind, theirs: elsewhere }));
+
+    // This process records its own ownership, so a peer booting next runs the
+    // check above against a real answer rather than a missing one.
+    // Everything the fixtures planted is named for what it is; whatever else
+    // is here is the copy this process opened.
+    var planted = ["blamejs-liveowner.db", "blamejs-noowner.db", "blamejs-foreignns.db"];
+    var ours = fs.readdirSync(tmpfs).filter(function (n) {
+      return n.startsWith("blamejs-") && n.endsWith(".db") && planted.indexOf(n) === -1;
+    });
+    check("db: the live process records its own ownership",
+      ours.length === 1 && fs.existsSync(path.join(tmpfs, ours[0] + ".owner")),
+      JSON.stringify(ours));
+
+    b.db.from("vaultrows").insertOne({ _id: "a", v: "persisted" });
+    b.db.flushToDisk();
+
+    // A flush whose working copy has vanished used to return as though it had
+    // written. Every symptom above would have surfaced at once from one error
+    // here.
+    //
+    // Removing a file another handle holds open is exactly what Windows
+    // refuses and Linux allows, which is why the defect reaches production
+    // from a Windows desktop unseen. Where the platform refuses, say so:
+    // reporting a pass for an assertion that never ran is the same silence
+    // this whole test exists to remove.
+    var working = path.join(tmpfs, ours[0]);
+    var unlinked = null;
+    try { fs.unlinkSync(working); } catch (e) { unlinked = e; }
+    if (unlinked === null) {
+      var threw = null;
+      try { b.db.flushToDisk(); } catch (e) { threw = e; }
+      check("db: a flush with no working copy fails loudly instead of reporting success",
+        threw !== null, threw && threw.message);
+      check("db: and the error names the missing working copy",
+        threw && String(threw.message).indexOf(working) !== -1,
+        threw && threw.message);
+    } else {
+      check("db: (vanished-working-copy flush not exercised — this platform refuses " +
+            "to unlink an open file: " + (unlinked.code || unlinked.message) + ")", true);
+    }
+  } finally {
+    try { b.db.close(); } catch (_e) { /* already torn down by the throw above */ }
+    _teardownPlain(tmpDir);
+  }
+}
+
+// The milder half of the same problem, and the one a lock is a workaround for.
+// Two processes sharing an encrypted volume each decrypt their OWN working
+// copy at open time and flush it back, so whatever the first wrote after the
+// second opened is overwritten. A reader has no business taking part in that:
+// it wants the snapshot, not to become the newest writer.
+//
+// `readOnly` is that promise, kept in the one place that writes db.enc — the
+// periodic flush, close() and the exit handler all arrive there — plus in
+// SQLite itself, so a write fails where it is issued rather than succeeding
+// into a working copy nobody will persist.
+async function testReadOnlyOpenNeverWritesBack() {
+  var tmpDir = _mkTmp("db-cov-ro-");
+  var tmpfs = path.join(tmpDir, "tmpfs");
+  fs.mkdirSync(tmpfs, { recursive: true });
+  var base = {
+    dataDir: tmpDir, tmpDir: tmpfs, allowNonTmpfsTmpDir: true, atRest: "encrypted",
+    frameworkTables: false, auditSigning: false, minFreeBytes: 0,
+    schema: [{ name: "rows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+  };
+  try {
+    await _freshVault(tmpDir);
+    await b.db.init(base);
+    b.db.from("rows").insertOne({ _id: "a", v: "written-by-the-writer" });
+    b.db.flushToDisk();
+    b.db.close();
+
+    var encPath = path.join(tmpDir, "db.enc");
+    var before = fs.readFileSync(encPath);
+
+    // A typo must not read as "true" — an operator who meant to open a reader
+    // and opened a writer is back in the overwrite this option avoids.
+    var badOpt = null;
+    try { await b.db.init(Object.assign({}, base, { readOnly: "yes" })); }
+    catch (e) { badOpt = e; }
+    check("db: readOnly refuses a non-boolean at config time",
+      badOpt && badOpt.code === "db/bad-read-only", badOpt && badOpt.message);
+
+    await b.db.init(Object.assign({}, base, { readOnly: true }));
+    var row = b.db.from("rows").where({ _id: "a" }).first();
+    check("db: a read-only open reads what the writer persisted",
+      row && row.v === "written-by-the-writer", JSON.stringify(row));
+
+    var wrote = null;
+    try { b.db.from("rows").insertOne({ _id: "b", v: "from-the-reader" }); }
+    catch (e) { wrote = e; }
+    check("db: a write through a read-only open is refused where it is issued",
+      wrote !== null, wrote && wrote.message);
+
+    // The flush paths must all decline. close() runs the one that matters:
+    // it is the flush that would land on top of a peer's newer writes.
+    b.db.flushToDisk();
+    b.db.close();
+    var after = fs.readFileSync(encPath);
+    check("db: a read-only open leaves db.enc byte-identical",
+      before.equals(after),
+      "before=" + before.length + " after=" + after.length);
+
+    // And the volume still opens for writing afterwards — read-only is a
+    // property of the open, not something it leaves behind on the volume.
+    await b.db.init(base);
+    b.db.from("rows").insertOne({ _id: "c", v: "after-the-reader" });
+    b.db.flushToDisk();
+    check("db: the volume is still writable after a read-only open",
+      b.db.from("rows").where({ _id: "c" }).first() !== null);
+
+    // The ownership record goes when the copy it describes goes. A record left
+    // behind on every clean close would accumulate one file per cycle forever,
+    // and the sweep could never reclaim it: that walk enumerates `.db` names,
+    // so a record whose working copy is gone is invisible to it.
+    b.db.close();
+    var leftovers = fs.readdirSync(tmpfs).filter(function (n) {
+      return n.indexOf(".owner") !== -1;
+    });
+    check("db: a clean close leaves no ownership record behind",
+      leftovers.length === 0, JSON.stringify(leftovers));
+  } finally {
+    _teardownPlain(tmpDir);
+  }
+}
+
+// A read-only open must not try to WRITE a boot checkpoint. `init` anchors a
+// fresh checkpoint whenever audit activity postdates the last one, and a
+// volume left by an ordinary writer shutdown or a crash is exactly that shape
+// — so the reader would be refused by its own read-only SQLite handle on
+// precisely the snapshots most worth inspecting. Existing checkpoints are
+// still verified; only creating a new one is skipped.
+async function testReadOnlyOpenDoesNotWriteABootCheckpoint() {
+  var tmpDir = _mkTmp("db-cov-ro-ckpt-");
+  var tmpfs = path.join(tmpDir, "tmpfs");
+  fs.mkdirSync(tmpfs, { recursive: true });
+  // Framework tables + audit signing ON: that is what brings the boot
+  // checkpoint into play at all.
+  var base = {
+    dataDir: tmpDir, tmpDir: tmpfs, allowNonTmpfsTmpDir: true, atRest: "encrypted",
+    minFreeBytes: 0, auditSigning: { mode: "plaintext" },
+    schema: [{ name: "rows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+  };
+  try {
+    await _freshVault(tmpDir);
+    b.audit.registerNamespace("dbrockpt");
+    await b.db.init(base);
+    b.db.from("rows").insertOne({ _id: "a", v: "written" });
+    // An audit row with NO checkpoint after it. close() anchors one, so the
+    // state that matters is the one a crash leaves — reached here by dropping
+    // the handle without running close()'s checkpoint.
+    await b.audit.record({
+      action: "dbrockpt.write", actor: { id: "u1" }, outcome: "success", metadata: {},
+    });
+    b.db.flushToDisk();
+    b.db._resetForTest();
+
+    var opened = null;
+    try { await b.db.init(Object.assign({}, base, { readOnly: true })); }
+    catch (e) { opened = e; }
+    check("db: a read-only open succeeds on a volume with post-checkpoint audit rows",
+      opened === null, opened && ((opened.code || "") + " " + (opened.message || "")).slice(0, 160));
+    if (opened === null) {
+      check("db: and it can read what the writer persisted",
+        (b.db.from("rows").where({ _id: "a" }).first() || {}).v === "written");
+
+      // Boot is not the only place a checkpoint gets anchored. `close()`
+      // anchors a final one so the audit.tip sidecar names the latest state,
+      // and gating the boot one alone left that second write live.
+      //
+      // The assertion is on whether the audit layer is ASKED, not on whether
+      // the write then fails. Whether it fails depends on how far the chain
+      // has moved and on SQLite refusing the insert, so a test written against
+      // the error message passes for reasons that have nothing to do with the
+      // contract. "Never writes back" is a promise about what this handle
+      // does, and issuing the request is the part it controls.
+      var asked = 0;
+      var origCheckpoint = b.audit.checkpoint;
+      b.audit.checkpoint = function () {
+        asked += 1;
+        return origCheckpoint.apply(b.audit, arguments);
+      };
+      try {
+        b.db.close();
+        // The close-time checkpoint is fire-and-forget, so the call would land
+        // a tick or two later. passiveObserve is the shape for proving an
+        // event does NOT arrive within a window.
+        await helpers.passiveObserve(400, "db read-only close: no checkpoint attempt");
+      } finally {
+        b.audit.checkpoint = origCheckpoint;
+      }
+      check("db: closing a read-only handle asks for no checkpoint either",
+        asked === 0, "audit.checkpoint called " + asked + " time(s)");
+    }
+  } finally {
+    _teardownPlain(tmpDir);
+  }
+}
+
+// A read-only open must not migrate the key sidecar either.
+//
+// `db.key.enc` written before the deployment-path binding existed is still
+// supported: the loader unseals it the classic way and re-seals it in place so
+// the next boot verifies the binding. That rewrite is a convenience, not part
+// of reading the key — the bytes are already in hand by then.
+//
+// It is also a write, and a reader promised not to make one. On a genuinely
+// read-only mount it fails with EROFS and takes the whole open down; on a
+// writable one it succeeds and modifies a volume this handle said it would not
+// touch. Either way a reader is doing a rewrite the next writer will do anyway.
+async function testReadOnlyOpenDoesNotMigrateTheKeySidecar() {
+  var tmpDir = _mkTmp("db-cov-ro-key-");
+  var tmpfs = path.join(tmpDir, "tmpfs");
+  fs.mkdirSync(tmpfs, { recursive: true });
+  var base = {
+    dataDir: tmpDir, tmpDir: tmpfs, allowNonTmpfsTmpDir: true, atRest: "encrypted",
+    frameworkTables: false, auditSigning: false, minFreeBytes: 0,
+    schema: [{ name: "rows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+  };
+  var keyPath = path.join(tmpDir, "db.key.enc");
+  try {
+    await _freshVault(tmpDir);
+
+    // Plant a legacy plain-sealed key BEFORE any open, so the volume is
+    // encrypted under it and the reader has a real reason to unseal it.
+    var keyB64 = require("node:crypto").randomBytes(32).toString("base64");
+    fs.writeFileSync(keyPath, b.vault.seal(keyB64), { mode: 0o600 });
+
+    // A writer migrates it, which is the behaviour being preserved.
+    await b.db.init(base);
+    b.db.from("rows").insertOne({ _id: "a", v: "written-by-the-writer" });
+    b.db.flushToDisk();
+    b.db.close();
+    check("db: a writer does migrate a legacy key to the bound form",
+      fs.readFileSync(keyPath, "utf8").trim() !== b.vault.seal(keyB64).trim());
+
+    // Put it back to the legacy form and open as a reader.
+    fs.writeFileSync(keyPath, b.vault.seal(keyB64), { mode: 0o600 });
+    var legacyBefore = fs.readFileSync(keyPath);
+
+    await b.db.init(Object.assign({}, base, { readOnly: true }));
+    check("db: a read-only open still unseals a legacy key and reads the volume",
+      (b.db.from("rows").where({ _id: "a" }).first() || {}).v === "written-by-the-writer");
+    check("db: and leaves the key sidecar byte-identical",
+      Buffer.compare(legacyBefore, fs.readFileSync(keyPath)) === 0,
+      "read-only open rewrote " + keyPath);
+    b.db.close();
+    check("db: the key sidecar is still untouched after the reader closes",
+      Buffer.compare(legacyBefore, fs.readFileSync(keyPath)) === 0);
+  } finally {
+    _teardownPlain(tmpDir);
+  }
+}
+
+// The other write in that loader is creating a key that was never there.
+//
+// A read-only open of a volume with no key is not a volume: there is nothing
+// to decrypt and nothing to read. Generating one would write the file, then
+// hand back an empty database that looks like a successful read of an empty
+// volume. Refusing says which of the two actually happened.
+async function testReadOnlyOpenRefusesToCreateAKey() {
+  var tmpDir = _mkTmp("db-cov-ro-nokey-");
+  var tmpfs = path.join(tmpDir, "tmpfs");
+  fs.mkdirSync(tmpfs, { recursive: true });
+  var keyPath = path.join(tmpDir, "db.key.enc");
+  try {
+    await _freshVault(tmpDir);
+    var err = await _catch(function () {
+      return b.db.init({
+        dataDir: tmpDir, tmpDir: tmpfs, allowNonTmpfsTmpDir: true, atRest: "encrypted",
+        frameworkTables: false, auditSigning: false, minFreeBytes: 0, readOnly: true,
+        schema: [{ name: "rows", columns: { _id: "TEXT PRIMARY KEY" } }],
+      });
+    });
+    check("db: a read-only open of a keyless volume is refused",
+      err && err.code === "db/read-only-no-key",
+      err ? ((err.code || "(no code)") + ": " + String(err.message).slice(0, 160)) : "no error");
+    check("db: and no key file was left behind by the attempt",
+      !fs.existsSync(keyPath), "a refused read-only open created " + keyPath);
+  } finally {
+    _teardownPlain(tmpDir);
+  }
+}
+
+// The no-write contract has to hold for what init CALLS, not only for what it
+// does itself.
+//
+// Signing bootstrap is the case: on a volume with no `audit-sign.key` — one
+// written before signing was enabled, or with `auditSigning: false` — a boot
+// generates a keypair, writes it under `dataDir`, and sweeps orphaned temp
+// files on the way. Every one of those is a write, and a reader was still
+// making them. On a read-only mount the open fails outright; on a writable one
+// it silently adds a key to a volume it promised not to touch, and the next
+// writer inherits a keypair a reader chose.
+async function testReadOnlyOpenDoesNotBootstrapASigningKey() {
+  var tmpDir = _mkTmp("db-cov-ro-sign-");
+  var tmpfs = path.join(tmpDir, "tmpfs");
+  fs.mkdirSync(tmpfs, { recursive: true });
+  var base = {
+    dataDir: tmpDir, tmpDir: tmpfs, allowNonTmpfsTmpDir: true, atRest: "encrypted",
+    minFreeBytes: 0,
+    schema: [{ name: "rows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+  };
+  var keyPath = path.join(tmpDir, "audit-sign.key");
+  try {
+    await _freshVault(tmpDir);
+    // A volume with framework tables but no signing key.
+    await b.db.init(Object.assign({}, base, { auditSigning: false }));
+    b.db.from("rows").insertOne({ _id: "a", v: "written-unsigned" });
+    b.db.flushToDisk();
+    b.db.close();
+    check("db: the unsigned volume really has no signing key to load",
+      !fs.existsSync(keyPath));
+
+    var opened = null;
+    try {
+      await b.db.init(Object.assign({}, base, {
+        readOnly: true, auditSigning: { mode: "plaintext" },
+      }));
+    } catch (e) { opened = e; }
+
+    check("db: a read-only open of an unsigned volume still opens",
+      opened === null, opened && ((opened.code || "") + " " + (opened.message || "")).slice(0, 160));
+    check("db: and generates no signing key for it",
+      !fs.existsSync(keyPath), "a read-only open wrote " + keyPath);
+    if (opened === null) {
+      check("db: the reader can still read what the writer persisted",
+        (b.db.from("rows").where({ _id: "a" }).first() || {}).v === "written-unsigned");
+      b.db.close();
+    }
+    check("db: still no signing key after the reader closes",
+      !fs.existsSync(keyPath));
+  } finally {
+    _teardownPlain(tmpDir);
+  }
+}
+
+// Read-only in PLAIN mode, which is the configuration where the promise is
+// actually load-bearing.
+//
+// Under `atRest: "encrypted"` the handle is opened against a decrypted working
+// copy in tmpfs, so write-oriented setup succeeds whatever the volume is
+// mounted as, and the option looks fine. In plain mode the database file IS
+// the volume: the boot pragmas that establish WAL journalling, synchronous
+// mode, cache size and auto-vacuum all write to it, and `-wal` / `-shm`
+// sidecars get created beside it. Point that at a read-only mount and the open
+// fails outright, which means the mode a reader exists for is the one it could
+// not be used in.
+//
+// The assertions here work on any filesystem, because they are about what the
+// open TOUCHES rather than what a read-only mount refuses: no sidecars appear
+// and the file itself is unmodified.
+async function testReadOnlyOpenInPlainModeTouchesNothing() {
+  var tmpDir = _mkTmp("db-cov-ro-plain-");
+  var dbFile = path.join(tmpDir, "blamejs.db");
+  try {
+    await _plainInit(tmpDir, [{ name: "rows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+      { frameworkTables: false, auditSigning: false });
+    b.db.from("rows").insertOne({ _id: "a", v: "written-by-the-writer" });
+    b.db.close();
+    b.db._resetForTest();
+
+    check("db: the plain volume is a single file on disk", fs.existsSync(dbFile));
+    var before = fs.statSync(dbFile);
+
+    var opened = null;
+    try {
+      await b.db.init({
+        dataDir: tmpDir, atRest: "plain", readOnly: true,
+        frameworkTables: false, auditSigning: false,
+        schema: [{ name: "rows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+      });
+    } catch (e) { opened = e; }
+
+    check("db: a plain read-only open succeeds",
+      opened === null,
+      opened && ((opened.code || "") + ": " + String(opened.message || "")).slice(0, 200));
+    if (opened === null) {
+      check("db: and reads what the writer persisted",
+        (b.db.from("rows").where({ _id: "a" }).first() || {}).v === "written-by-the-writer");
+      check("db: the volume file itself is unmodified",
+        fs.statSync(dbFile).mtimeMs === before.mtimeMs &&
+        fs.statSync(dbFile).size === before.size,
+        "mtime/size moved under a read-only open");
+      b.db.close();
+      b.db._resetForTest();
+    }
+    // The default open still creates the sidecar pair, and that is not a
+    // defect: SQLite needs `-shm` to read a WAL-mode database, and the
+    // alternative is a promise the framework cannot make on the operator's
+    // behalf. Asserting it here keeps the two paths honestly distinguished —
+    // without this the immutable checks below could pass on a build that had
+    // simply stopped using WAL.
+    check("db: the default read-only open does create the WAL sidecars",
+      fs.existsSync(dbFile + "-shm"), "expected -shm from a plain read-only open");
+    try { fs.unlinkSync(dbFile + "-wal"); } catch (_e) { /* may not exist */ }
+    try { fs.unlinkSync(dbFile + "-shm"); } catch (_e) { /* may not exist */ }
+    var cleaned = fs.statSync(dbFile);
+
+    // `immutable` is the operator saying nothing writes this volume, which is
+    // what a read-only mount guarantees. Then there is nothing to create.
+    var immOpened = null;
+    try {
+      await b.db.init({
+        dataDir: tmpDir, atRest: "plain", readOnly: true, immutable: true,
+        frameworkTables: false, auditSigning: false,
+        schema: [{ name: "rows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+      });
+    } catch (e) { immOpened = e; }
+    check("db: an immutable read-only open succeeds",
+      immOpened === null,
+      immOpened && ((immOpened.code || "") + ": " + String(immOpened.message || "")).slice(0, 200));
+    if (immOpened === null) {
+      check("db: it reads the same rows",
+        (b.db.from("rows").where({ _id: "a" }).first() || {}).v === "written-by-the-writer");
+      check("db: and creates no WAL sidecar",
+        !fs.existsSync(dbFile + "-wal"), "immutable open created " + dbFile + "-wal");
+      check("db: nor a shared-memory one — the reason it works on a read-only mount",
+        !fs.existsSync(dbFile + "-shm"), "immutable open created " + dbFile + "-shm");
+      check("db: and leaves the volume byte-identical",
+        fs.statSync(dbFile).mtimeMs === cleaned.mtimeMs &&
+        fs.statSync(dbFile).size === cleaned.size);
+      b.db.close();
+      b.db._resetForTest();
+    }
+
+    // An immutable open does not consult the write-ahead log, so a volume
+    // holding committed transactions only there would be read without them —
+    // not the stale view the operator accepted, but a partial one missing its
+    // newest rows. A clean close removes the -wal, so one left behind with
+    // bytes in it is a writer that crashed or a volume captured mid-write.
+    fs.writeFileSync(dbFile + "-wal", Buffer.alloc(4096, 1));
+    var pendingWal = await _catch(function () {
+      return b.db.init({
+        dataDir: tmpDir, atRest: "plain", readOnly: true, immutable: true,
+        frameworkTables: false, auditSigning: false,
+        schema: [{ name: "rows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+      });
+    });
+    check("db: an immutable open over a non-empty write-ahead log is refused",
+      pendingWal && pendingWal.code === "db/immutable-pending-wal",
+      pendingWal ? (pendingWal.code + ": " + String(pendingWal.message).slice(0, 160))
+                 : "the open succeeded");
+    check("db: and the refusal says how to make the volume readable",
+      pendingWal && String(pendingWal.message).indexOf("checkpoint") !== -1,
+      pendingWal ? String(pendingWal.message).slice(0, 220) : "no error");
+    b.db._resetForTest();
+
+    // Control: the same volume opens read-only WITHOUT immutable, which is the
+    // remedy the refusal names. Without this the check above would pass on a
+    // build that had simply stopped opening this volume at all.
+    var walFallback = await _catch(function () {
+      return b.db.init({
+        dataDir: tmpDir, atRest: "plain", readOnly: true,
+        frameworkTables: false, auditSigning: false,
+        schema: [{ name: "rows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+      });
+    });
+    check("db: a plain read-only open of that same volume still works",
+      walFallback === null,
+      walFallback && (walFallback.code + ": " + String(walFallback.message).slice(0, 160)));
+    if (walFallback === null) { b.db.close(); b.db._resetForTest(); }
+    try { fs.unlinkSync(dbFile + "-wal"); } catch (_e) { /* may be gone */ }
+    try { fs.unlinkSync(dbFile + "-shm"); } catch (_e) { /* may not exist */ }
+
+    // An empty -wal is what SQLite leaves lying around and carries nothing, so
+    // it must not be mistaken for pending data.
+    fs.writeFileSync(dbFile + "-wal", Buffer.alloc(0));
+    var emptyWal = await _catch(function () {
+      return b.db.init({
+        dataDir: tmpDir, atRest: "plain", readOnly: true, immutable: true,
+        frameworkTables: false, auditSigning: false,
+        schema: [{ name: "rows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+      });
+    });
+    check("db: a zero-length write-ahead log carries nothing and is not refused",
+      emptyWal === null,
+      emptyWal && (emptyWal.code + ": " + String(emptyWal.message).slice(0, 160)));
+    if (emptyWal === null) { b.db.close(); b.db._resetForTest(); }
+    try { fs.unlinkSync(dbFile + "-wal"); } catch (_e) { /* may be gone */ }
+    try { fs.unlinkSync(dbFile + "-shm"); } catch (_e) { /* may not exist */ }
+
+    // The claim is about the VOLUME, so it is refused where it would describe
+    // something else, or where nothing has been promised about writers.
+    var noRo = await _catch(function () {
+      return b.db.init({
+        dataDir: tmpDir, atRest: "plain", immutable: true,
+        frameworkTables: false, auditSigning: false, schema: [],
+      });
+    });
+    check("db: immutable without readOnly is refused at config time",
+      noRo && noRo.code === "db/bad-immutable",
+      noRo ? (noRo.code + ": " + String(noRo.message).slice(0, 120)) : "no error");
+    b.db._resetForTest();
+
+    var encImm = await _catch(function () {
+      return b.db.init({
+        dataDir: tmpDir, atRest: "encrypted", readOnly: true, immutable: true,
+        frameworkTables: false, auditSigning: false, minFreeBytes: 0, schema: [],
+      });
+    });
+    check("db: immutable under encrypted at-rest is refused too",
+      encImm && encImm.code === "db/bad-immutable",
+      encImm ? (encImm.code + ": " + String(encImm.message).slice(0, 120)) : "no error");
   } finally {
     _teardownPlain(tmpDir);
   }
@@ -1973,8 +2915,21 @@ async function run() {
   await testAuditSigningExplicitOpts();
   await testDoubleInit();
   await testTmpfsResolution();
+  await testTmpfsResolverNeverProbesAPosixPathOffLinux();
+  await testTmpDirResidencyDistinguishesUnknownFromDiskBacked();
+  await testEncryptedInitHandlesAnUnclassifiableTmpDir();
+  await testWalDrainedIsDeterminedNotAssumed();
+  await testSnapshotRefusesToCopyPastAPendingWal();
+  await testFileLifecycleResolvesTheSameWayAcrossPlatforms();
   await testTablePrefixAndResidency();
   await testEncryptedRoundTrip();
+  await testStaleSweepSparesALiveOwner();
+  await testReadOnlyOpenNeverWritesBack();
+  await testReadOnlyOpenDoesNotWriteABootCheckpoint();
+  await testReadOnlyOpenDoesNotMigrateTheKeySidecar();
+  await testReadOnlyOpenRefusesToCreateAKey();
+  await testReadOnlyOpenDoesNotBootstrapASigningKey();
+  await testReadOnlyOpenInPlainModeTouchesNothing();
   await testSnapshotPlain();
   await testMigrations();
   await testEraseHardLegalHold();

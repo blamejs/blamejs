@@ -67,6 +67,17 @@ function testHostilePromptDoesNotBacktrack() {
     var benignMs = ms(function () {
       b.ai.input.classify(benignOf(shape.input.length), { audit: false });
     });
+
+    // The 25ms term is what carries this, not the ratio: all three shapes
+    // classify in well under a millisecond, so the ceiling is 25ms in practice
+    // and the assertion is a hang guard with a ~40x margin against work that
+    // would run to hundreds of milliseconds if it backtracked.
+    //
+    // Deliberately NOT routed through helpers.looksSuperlinear, which was tried
+    // and made this DEAD: that helper declines to judge below a noise floor, and
+    // sub-millisecond work is always below it, so every shape returned "not
+    // superlinear" without measuring anything. A generous absolute bound is the
+    // right instrument when the work is far too fast to take a ratio of.
     var ceiling = Math.max(25, benignMs * 50);
 
     check("ai.input: " + shape.id + " — a hostile-shaped prompt at the 64 KiB cap " +
