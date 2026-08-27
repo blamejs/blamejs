@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.18.56",
-  "createdAt": "2026-08-27T18:53:08.290Z",
+  "createdAt": "2026-08-27T20:27:13.616Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -2499,10 +2499,6 @@
         "getChainTip": {
           "type": "function",
           "arity": 3
-        },
-        "purgeAnchorPayload": {
-          "type": "function",
-          "arity": 1
         },
         "verifyChain": {
           "type": "function",
