@@ -1014,6 +1014,114 @@ async function testTmpDirResidencyDistinguishesUnknownFromDiskBacked() {
     broken && broken.determined === true, JSON.stringify(broken));
 }
 
+// Whether the database file carries every committed transaction is a question
+// with three answers, and two of them used to collapse into "yes".
+async function testWalDrainedIsDeterminedNotAssumed() {
+  var drained = b.db._walNotDrainedFromForTest;
+  function size(n) { return function () { return { size: n }; }; }
+  function statFails(code) {
+    return function () { var e = new Error(code); e.code = code; throw e; };
+  }
+  function never() { throw new Error("the checkpoint ran when it should not have"); }
+
+  check("db: no log at all means the database file is the whole database",
+    drained("/v/db", true, statFails("ENOENT"), never) === null);
+  check("db: a zero-length log carries nothing",
+    drained("/v/db", true, size(0), never) === null);
+
+  // An unreadable log is not an absent one. Reporting zero here would let the
+  // copy proceed on exactly the incomplete file this exists to catch.
+  var unreadable = drained("/v/db", true, statFails("EACCES"), never);
+  check("db: a log that cannot be read is unknown, not empty",
+    typeof unreadable === "string" && unreadable.indexOf("EACCES") !== -1,
+    String(unreadable));
+
+  // A handle that cannot checkpoint cannot answer the question either.
+  var cannotAsk = drained("/v/db", false, size(4096), never);
+  check("db: a handle that cannot checkpoint cannot establish the answer",
+    typeof cannotAsk === "string" && cannotAsk.indexOf("cannot checkpoint") !== -1,
+    String(cannotAsk));
+
+  // The size of the log is NOT the question. A passive or automatic checkpoint
+  // copies every frame into the database file and leaves the log allocated
+  // behind it; refusing on length alone would reject a complete snapshot.
+  var allMoved = drained("/v/db", true, size(65536), function () {
+    return { busy: 0, log: 12, checkpointed: 12 };
+  });
+  check("db: an allocated log whose frames all reached the file is complete",
+    allMoved === null, String(allMoved));
+
+  var someLeft = drained("/v/db", true, size(65536), function () {
+    return { busy: 0, log: 12, checkpointed: 5 };
+  });
+  check("db: frames the checkpoint did not move are reported, counted",
+    typeof someLeft === "string" && someLeft.indexOf("7 of 12") !== -1,
+    String(someLeft));
+
+  var busy = drained("/v/db", true, size(65536), function () {
+    return { busy: 1, log: 12, checkpointed: 12 };
+  });
+  check("db: a busy checkpoint did not run to completion, so it settles nothing",
+    typeof busy === "string" && busy.indexOf("busy") !== -1, String(busy));
+
+  var threw = drained("/v/db", true, size(65536), function () {
+    throw new Error("attempt to write a readonly database");
+  });
+  check("db: a checkpoint that throws is a reason, not a pass",
+    typeof threw === "string" && threw.indexOf("readonly") !== -1, String(threw));
+}
+
+// snapshot() copies the main database file, which is the whole database only
+// once the write-ahead log has been folded into it. It checkpointed first and
+// swallowed the failure, so on a read-only handle — which cannot checkpoint —
+// the copy went ahead and produced a backup missing exactly the rows the log
+// still held. It restored cleanly, so nothing downstream could tell.
+async function testSnapshotRefusesToCopyPastAPendingWal() {
+  var tmpDir = _mkTmp("db-cov-snapwal-");
+  var dbFile = path.join(tmpDir, "blamejs.db");
+  try {
+    await _plainInit(tmpDir, [{ name: "rows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+      { frameworkTables: false, auditSigning: false });
+    b.db.from("rows").insertOne({ _id: "a", v: "committed" });
+
+    // Control first: a writable handle checkpoints, so the log drains and the
+    // snapshot is the whole database. Without this the refusal below would
+    // pass on a build where snapshot() had simply stopped working.
+    var okSnap = null;
+    try { okSnap = b.db.snapshot(); } catch (e) { okSnap = e; }
+    check("db: a writable handle snapshots after draining the log",
+      Buffer.isBuffer(okSnap) && okSnap.length > 0,
+      okSnap && okSnap.code ? (okSnap.code + ": " + String(okSnap.message).slice(0, 140))
+                            : "not a buffer");
+    b.db.close();
+    b.db._resetForTest();
+
+    // A read-only handle cannot checkpoint. With bytes left in the log, the
+    // main file is short of them and copying it would be a silent partial.
+    fs.writeFileSync(dbFile + "-wal", Buffer.alloc(4096, 1));
+    await b.db.init({
+      dataDir: tmpDir, atRest: "plain", readOnly: true,
+      frameworkTables: false, auditSigning: false,
+      schema: [{ name: "rows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+    });
+    var refused = null;
+    try { b.db.snapshot(); } catch (e) { refused = e; }
+    check("db: a read-only snapshot over a pending write-ahead log is refused",
+      refused && refused.code === "db/snapshot-pending-wal",
+      refused ? (refused.code + ": " + String(refused.message).slice(0, 180))
+              : "snapshot returned bytes");
+    check("db: and the refusal says the handle cannot checkpoint",
+      refused && String(refused.message).indexOf("readOnly") !== -1,
+      refused ? String(refused.message).slice(0, 240) : "no error");
+    b.db.close();
+    b.db._resetForTest();
+    try { fs.unlinkSync(dbFile + "-wal"); } catch (_e) { /* may be gone */ }
+    try { fs.unlinkSync(dbFile + "-shm"); } catch (_e) { /* may not exist */ }
+  } finally {
+    _teardownPlain(tmpDir);
+  }
+}
+
 // b.db.fileLifecycle answers the same "where does the working copy live?"
 // question for a consumer holding its own SQLite handle. It reached the right
 // answer already — the probe was platform-guarded and the disk fallback was
@@ -2810,6 +2918,8 @@ async function run() {
   await testTmpfsResolverNeverProbesAPosixPathOffLinux();
   await testTmpDirResidencyDistinguishesUnknownFromDiskBacked();
   await testEncryptedInitHandlesAnUnclassifiableTmpDir();
+  await testWalDrainedIsDeterminedNotAssumed();
+  await testSnapshotRefusesToCopyPastAPendingWal();
   await testFileLifecycleResolvesTheSameWayAcrossPlatforms();
   await testTablePrefixAndResidency();
   await testEncryptedRoundTrip();
