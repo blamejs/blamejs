@@ -897,6 +897,51 @@ async function run() {
   });
   check("watcher: a known local filesystem still takes the native backend",
     known.mode === "fs" && known.fsType === "ext4", JSON.stringify(known));
+
+  // The container probe reads "/.dockerenv", which is a path only Linux can
+  // answer: on Windows a leading slash is drive-relative, so a direct read
+  // there asks whether C:\.dockerenv exists. It is reached below the non-Linux
+  // return, and it goes through the injected reader anyway — the ordering
+  // should not be the only thing holding it up.
+  // A bind mount inside a container is the case the marker decides: inotify
+  // chains across the host/guest boundary unreliably, so it polls. The same
+  // bind mount outside a container keeps the native backend, which is what
+  // makes the marker — and therefore the reader that answers it — load-bearing.
+  var bindEntries = function () {
+    return [{ mountPoint: "/srv", fstype: "ext4", root: "/exported/app" }];
+  };
+  var containerProbes = [];
+  var inContainer = b.watcher._detectAutoModeForTest("/srv/app", {
+    platform: "linux",
+    exists: function (p) { containerProbes.push(p); return true; },
+    readEntries: bindEntries,
+  });
+  check("watcher: the container marker is read through the injected reader",
+    containerProbes.length === 1 && containerProbes[0] === "/.dockerenv",
+    JSON.stringify(containerProbes));
+  check("watcher: a bind mount inside a container polls rather than trusting inotify",
+    inContainer.inContainer === true && inContainer.mode === "poll" &&
+    inContainer.reason === "container-bind-mount", JSON.stringify(inContainer));
+
+  // Control: the identical mount table with the marker absent keeps fs.watch,
+  // so the check above turns on the probe's answer and not on the mount shape.
+  var notContainer = b.watcher._detectAutoModeForTest("/srv/app", {
+    platform: "linux",
+    exists: function () { return false; },
+    readEntries: bindEntries,
+  });
+  check("watcher: the same bind mount outside a container keeps the native backend",
+    notContainer.inContainer === false && notContainer.mode === "fs",
+    JSON.stringify(notContainer));
+
+  // A non-Linux host never reaches the probe at all.
+  var win = b.watcher._detectAutoModeForTest("C:\\srv\\app", {
+    platform: "win32",
+    exists: function () { throw new Error("the container marker was probed on win32"); },
+    readEntries: function () { throw new Error("mountinfo was read on win32"); },
+  });
+  check("watcher: win32 answers from the platform alone, probing nothing",
+    win.mode === "fs" && win.reason === "non-linux-host", JSON.stringify(win));
 }
 
 module.exports = { run: run };

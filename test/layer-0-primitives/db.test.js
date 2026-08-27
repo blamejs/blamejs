@@ -929,6 +929,188 @@ async function testTmpfsResolution() {
   }
 }
 
+// --- the working copy never lands on persistent storage --------------------
+//
+// Both rules below are platform rules, and the platform that gets them wrong
+// is not the one CI runs on. They are driven through the injected-platform
+// seam for that reason: a rule about Windows asserted only by running on
+// Windows is a rule nothing checks.
+
+async function testTmpfsResolverNeverProbesAPosixPathOffLinux() {
+  var probed = [];
+  function probe(p) { probed.push(p); return true; }
+  function refuseToRun() {
+    throw new Error("the /dev/shm probe ran on a platform where the path is not absolute");
+  }
+
+  // A leading-slash path on Windows is drive-relative, so the probe would be
+  // asking about C:\dev\shm — an ordinary NTFS directory that anyone can
+  // create, and that answering yes to puts the decrypted database on disk.
+  var win = null;
+  try { win = b.db._resolveTmpDirFromForTest(null, "win32", refuseToRun); }
+  catch (e) { win = "THREW: " + e.message; }
+  check("db: no tmpfs is resolved on win32, and the POSIX path is never probed",
+    win === null, "got " + JSON.stringify(win));
+
+  var mac = null;
+  try { mac = b.db._resolveTmpDirFromForTest(null, "darwin", refuseToRun); }
+  catch (e) { mac = "THREW: " + e.message; }
+  check("db: nor on darwin", mac === null, "got " + JSON.stringify(mac));
+
+  // Control. Without this the two checks above pass on a resolver that
+  // returns null unconditionally and never probes anywhere.
+  check("db: on linux the probe IS consulted and its answer is used",
+    b.db._resolveTmpDirFromForTest(null, "linux", probe) === "/dev/shm" &&
+    probed.length === 1 && probed[0] === "/dev/shm",
+    "probed " + JSON.stringify(probed));
+  check("db: and a linux host without /dev/shm resolves nothing",
+    b.db._resolveTmpDirFromForTest(null, "linux", function () { return false; }) === null);
+
+  // An operator who names the mount is answered on every platform — the
+  // refusal is of the framework GUESSING, not of the operator knowing.
+  check("db: an explicit tmpDir is honored on win32 without probing",
+    b.db._resolveTmpDirFromForTest("R:\\ramdisk", "win32", refuseToRun) === "R:\\ramdisk");
+  check("db: and on linux",
+    b.db._resolveTmpDirFromForTest("/mnt/ram", "linux", refuseToRun) === "/mnt/ram");
+}
+
+async function testTmpDirResidencyDistinguishesUnknownFromDiskBacked() {
+  function identity(p) { return p; }
+
+  check("db: a /dev/shm path is a recognized in-memory mount",
+    b.db._tmpDirResidencyIssueForTest("/dev/shm/work", "linux", identity) === null);
+  check("db: /tmp too — tmpfs on systemd defaults and most container images",
+    b.db._tmpDirResidencyIssueForTest("/tmp/work", "linux", identity) === null);
+  check("db: /run/user counts as well",
+    b.db._tmpDirResidencyIssueForTest("/run/user/1000/x", "linux", identity) === null);
+
+  // On Linux the mount table CAN be compared against, so a path outside those
+  // mounts is a positive finding that the copy lands on disk. That one is
+  // refused, which is what it has done since the fail-closed default landed.
+  var home = b.db._tmpDirResidencyIssueForTest("/home/op/work", "linux", identity);
+  check("db: a linux path outside those mounts is a determined finding",
+    home && home.determined === true && home.message.indexOf("not a") !== -1,
+    JSON.stringify(home));
+
+  // Off Linux nothing can be compared, so the finding is that it is unknown —
+  // reported, not determined. Collapsing the two would mean every macOS and
+  // Windows operator setting allowNonTmpfsTmpDir: true to boot, and that flag
+  // also switches off the Linux check, which is the one that works.
+  var win = b.db._tmpDirResidencyIssueForTest("C:\\ramdisk", "win32", identity);
+  check("db: a win32 path is reported as unknown rather than as disk-backed",
+    win && win.determined === false && win.message.indexOf("win32") !== -1,
+    JSON.stringify(win));
+  var mac = b.db._tmpDirResidencyIssueForTest("/Volumes/ram", "darwin", identity);
+  check("db: and a darwin path likewise",
+    mac && mac.determined === false && mac.message.indexOf("darwin") !== -1,
+    JSON.stringify(mac));
+
+  // A realpath that throws must not read as a pass — the path is unresolved,
+  // which is the definition of not shown to be in memory.
+  var broken = b.db._tmpDirResidencyIssueForTest("/dev/shm/gone", "linux", function () {
+    throw new Error("ENOENT");
+  });
+  check("db: an unresolvable path is reported rather than assumed fine",
+    broken && broken.determined === true, JSON.stringify(broken));
+}
+
+// b.db.fileLifecycle answers the same "where does the working copy live?"
+// question for a consumer holding its own SQLite handle. It reached the right
+// answer already — the probe was platform-guarded and the disk fallback was
+// opt-in — but by reading the POSIX path directly, so nothing could show the
+// Windows branch was right. Two modules answering one structural question is
+// how they drift; both now take the platform and the reader.
+async function testFileLifecycleResolvesTheSameWayAcrossPlatforms() {
+  var lifecycle = require("../../lib/db-file-lifecycle");
+  var resolve = lifecycle._resolveTmpDirFromForTest;
+  function refuseToRun() {
+    throw new Error("the /dev/shm probe ran off Linux");
+  }
+  function isDir() { return { isDirectory: function () { return true; } }; }
+
+  check("db.fileLifecycle: linux resolves /dev/shm when it is a directory",
+    resolve(null, false, "linux", isDir) === "/dev/shm");
+  check("db.fileLifecycle: a non-directory at that path is not a tmpfs mount",
+    _throws(function () {
+      resolve(null, false, "linux", function () {
+        return { isDirectory: function () { return false; } };
+      });
+    }, "db-file-lifecycle/no-tmpfs"));
+
+  // Off Linux the path is not probed at all, and with no disk fallback the
+  // refusal is the documented one rather than a silent os.tmpdir().
+  check("db.fileLifecycle: win32 refuses rather than probing a POSIX path",
+    _throws(function () { resolve(null, false, "win32", refuseToRun); },
+      "db-file-lifecycle/no-tmpfs"));
+  check("db.fileLifecycle: darwin likewise",
+    _throws(function () { resolve(null, false, "darwin", refuseToRun); },
+      "db-file-lifecycle/no-tmpfs"));
+
+  check("db.fileLifecycle: allowDiskFallback is what buys os.tmpdir(), on win32",
+    resolve(null, true, "win32", refuseToRun) === os.tmpdir());
+  check("db.fileLifecycle: an operator-named tmpDir wins everywhere",
+    resolve("R:\\ramdisk", false, "win32", refuseToRun) === "R:\\ramdisk");
+}
+
+function _throws(fn, code) {
+  try { fn(); } catch (e) { return e && e.code === code; }
+  return false;
+}
+
+// The consumer path, on whatever host this runs. A Linux runner whose temp dir
+// sits outside the tmpfs mounts is refused; everywhere else the operator's path
+// is taken with a warning, because there is nothing to classify it against.
+async function testEncryptedInitHandlesAnUnclassifiableTmpDir() {
+  var tmpDir = _mkTmp("db-cov-residency-");
+  try {
+    var onDisk = path.join(tmpDir, "not-a-ramdisk");
+    fs.mkdirSync(onDisk, { recursive: true });
+    await _freshVault(tmpDir);
+
+    var opened = await _catch(function () {
+      return b.db.init({ dataDir: tmpDir, atRest: "encrypted", tmpDir: onDisk,
+        schema: [], frameworkTables: false, auditSigning: false, minFreeBytes: 0 });
+    });
+    b.db._resetForTest();
+
+    var classifiable = process.platform === "linux";
+    var underTmpfs = classifiable && (
+      onDisk.indexOf("/dev/shm") === 0 || onDisk.indexOf("/run/shm") === 0 ||
+      onDisk.indexOf("/run/user/") === 0 || onDisk.indexOf("/tmp") === 0);
+
+    if (classifiable && !underTmpfs) {
+      check("db: a linux tmpDir shown to be disk-backed fails encrypted init closed",
+        opened && opened.code === "db/tmpdir-not-tmpfs",
+        opened ? (opened.code + ": " + String(opened.message).slice(0, 160)) : "init succeeded");
+      check("db: and the refusal names the opt-out the operator needs",
+        opened && String(opened.message).indexOf("allowNonTmpfsTmpDir") !== -1,
+        opened ? String(opened.message).slice(0, 200) : "no error");
+    } else {
+      // Either a recognized tmpfs mount, or a platform where the question
+      // cannot be answered. Both boot; the second one warns on the way.
+      check("db: an unclassifiable or in-memory tmpDir boots encrypted mode",
+        opened === null,
+        opened && (opened.code + ": " + String(opened.message).slice(0, 160)));
+      b.db._resetForTest();
+    }
+
+    // The opt-out works on every platform — otherwise the Linux refusal would
+    // be a wall rather than a default.
+    await _freshVault(tmpDir);
+    var allowed = await _catch(function () {
+      return b.db.init({ dataDir: tmpDir, atRest: "encrypted", tmpDir: onDisk,
+        allowNonTmpfsTmpDir: true, schema: [], frameworkTables: false,
+        auditSigning: false, minFreeBytes: 0 });
+    });
+    check("db: allowNonTmpfsTmpDir downgrades the refusal to a warning",
+      allowed === null,
+      allowed && (allowed.code + ": " + String(allowed.message).slice(0, 160)));
+    b.db._resetForTest();
+  } finally {
+    _teardownPlain(tmpDir);
+  }
+}
+
 // --- tablePrefix passthrough + dataResidency accessor ----------------------
 
 async function testTablePrefixAndResidency() {
@@ -1105,6 +1287,22 @@ async function testStaleSweepSparesALiveOwner() {
     var noNamespaces = b.db._namespaceFromForTest("darwin", noProc);
     check("db: where PID namespaces do not exist, ids are comparable host-wide",
       noNamespaces === "host", noNamespaces);
+
+    // And the file is not consulted there at all. /proc/self/ns/pid is
+    // drive-relative on Windows, so it names C:\proc\self\ns\pid — a path an
+    // unprivileged local user can create. A planted answer would name this
+    // process's namespace, and a matching namespace is what authorizes
+    // unlinking a working copy another process is still using.
+    var plantedLink = function () { return "pid:[4026531836]"; };
+    check("db: a plantable path is not read on win32 — the platform answers",
+      b.db._namespaceFromForTest("win32", plantedLink) === "host",
+      b.db._namespaceFromForTest("win32", plantedLink));
+    check("db: nor on darwin",
+      b.db._namespaceFromForTest("darwin", plantedLink) === "host");
+    // Control: the same reader IS believed on Linux, where the path is real.
+    check("db: and on linux the namespace link is read and used",
+      b.db._namespaceFromForTest("linux", plantedLink) === "pid:[4026531836]",
+      b.db._namespaceFromForTest("linux", plantedLink));
 
     var blind = b.db._namespaceFromForTest("linux", noProc);
     check("db: an unreadable namespace on Linux is NOT reported as the host",
@@ -1457,6 +1655,178 @@ async function testReadOnlyOpenDoesNotBootstrapASigningKey() {
     }
     check("db: still no signing key after the reader closes",
       !fs.existsSync(keyPath));
+  } finally {
+    _teardownPlain(tmpDir);
+  }
+}
+
+// Read-only in PLAIN mode, which is the configuration where the promise is
+// actually load-bearing.
+//
+// Under `atRest: "encrypted"` the handle is opened against a decrypted working
+// copy in tmpfs, so write-oriented setup succeeds whatever the volume is
+// mounted as, and the option looks fine. In plain mode the database file IS
+// the volume: the boot pragmas that establish WAL journalling, synchronous
+// mode, cache size and auto-vacuum all write to it, and `-wal` / `-shm`
+// sidecars get created beside it. Point that at a read-only mount and the open
+// fails outright, which means the mode a reader exists for is the one it could
+// not be used in.
+//
+// The assertions here work on any filesystem, because they are about what the
+// open TOUCHES rather than what a read-only mount refuses: no sidecars appear
+// and the file itself is unmodified.
+async function testReadOnlyOpenInPlainModeTouchesNothing() {
+  var tmpDir = _mkTmp("db-cov-ro-plain-");
+  var dbFile = path.join(tmpDir, "blamejs.db");
+  try {
+    await _plainInit(tmpDir, [{ name: "rows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+      { frameworkTables: false, auditSigning: false });
+    b.db.from("rows").insertOne({ _id: "a", v: "written-by-the-writer" });
+    b.db.close();
+    b.db._resetForTest();
+
+    check("db: the plain volume is a single file on disk", fs.existsSync(dbFile));
+    var before = fs.statSync(dbFile);
+
+    var opened = null;
+    try {
+      await b.db.init({
+        dataDir: tmpDir, atRest: "plain", readOnly: true,
+        frameworkTables: false, auditSigning: false,
+        schema: [{ name: "rows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+      });
+    } catch (e) { opened = e; }
+
+    check("db: a plain read-only open succeeds",
+      opened === null,
+      opened && ((opened.code || "") + ": " + String(opened.message || "")).slice(0, 200));
+    if (opened === null) {
+      check("db: and reads what the writer persisted",
+        (b.db.from("rows").where({ _id: "a" }).first() || {}).v === "written-by-the-writer");
+      check("db: the volume file itself is unmodified",
+        fs.statSync(dbFile).mtimeMs === before.mtimeMs &&
+        fs.statSync(dbFile).size === before.size,
+        "mtime/size moved under a read-only open");
+      b.db.close();
+      b.db._resetForTest();
+    }
+    // The default open still creates the sidecar pair, and that is not a
+    // defect: SQLite needs `-shm` to read a WAL-mode database, and the
+    // alternative is a promise the framework cannot make on the operator's
+    // behalf. Asserting it here keeps the two paths honestly distinguished —
+    // without this the immutable checks below could pass on a build that had
+    // simply stopped using WAL.
+    check("db: the default read-only open does create the WAL sidecars",
+      fs.existsSync(dbFile + "-shm"), "expected -shm from a plain read-only open");
+    try { fs.unlinkSync(dbFile + "-wal"); } catch (_e) { /* may not exist */ }
+    try { fs.unlinkSync(dbFile + "-shm"); } catch (_e) { /* may not exist */ }
+    var cleaned = fs.statSync(dbFile);
+
+    // `immutable` is the operator saying nothing writes this volume, which is
+    // what a read-only mount guarantees. Then there is nothing to create.
+    var immOpened = null;
+    try {
+      await b.db.init({
+        dataDir: tmpDir, atRest: "plain", readOnly: true, immutable: true,
+        frameworkTables: false, auditSigning: false,
+        schema: [{ name: "rows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+      });
+    } catch (e) { immOpened = e; }
+    check("db: an immutable read-only open succeeds",
+      immOpened === null,
+      immOpened && ((immOpened.code || "") + ": " + String(immOpened.message || "")).slice(0, 200));
+    if (immOpened === null) {
+      check("db: it reads the same rows",
+        (b.db.from("rows").where({ _id: "a" }).first() || {}).v === "written-by-the-writer");
+      check("db: and creates no WAL sidecar",
+        !fs.existsSync(dbFile + "-wal"), "immutable open created " + dbFile + "-wal");
+      check("db: nor a shared-memory one — the reason it works on a read-only mount",
+        !fs.existsSync(dbFile + "-shm"), "immutable open created " + dbFile + "-shm");
+      check("db: and leaves the volume byte-identical",
+        fs.statSync(dbFile).mtimeMs === cleaned.mtimeMs &&
+        fs.statSync(dbFile).size === cleaned.size);
+      b.db.close();
+      b.db._resetForTest();
+    }
+
+    // An immutable open does not consult the write-ahead log, so a volume
+    // holding committed transactions only there would be read without them —
+    // not the stale view the operator accepted, but a partial one missing its
+    // newest rows. A clean close removes the -wal, so one left behind with
+    // bytes in it is a writer that crashed or a volume captured mid-write.
+    fs.writeFileSync(dbFile + "-wal", Buffer.alloc(4096, 1));
+    var pendingWal = await _catch(function () {
+      return b.db.init({
+        dataDir: tmpDir, atRest: "plain", readOnly: true, immutable: true,
+        frameworkTables: false, auditSigning: false,
+        schema: [{ name: "rows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+      });
+    });
+    check("db: an immutable open over a non-empty write-ahead log is refused",
+      pendingWal && pendingWal.code === "db/immutable-pending-wal",
+      pendingWal ? (pendingWal.code + ": " + String(pendingWal.message).slice(0, 160))
+                 : "the open succeeded");
+    check("db: and the refusal says how to make the volume readable",
+      pendingWal && String(pendingWal.message).indexOf("checkpoint") !== -1,
+      pendingWal ? String(pendingWal.message).slice(0, 220) : "no error");
+    b.db._resetForTest();
+
+    // Control: the same volume opens read-only WITHOUT immutable, which is the
+    // remedy the refusal names. Without this the check above would pass on a
+    // build that had simply stopped opening this volume at all.
+    var walFallback = await _catch(function () {
+      return b.db.init({
+        dataDir: tmpDir, atRest: "plain", readOnly: true,
+        frameworkTables: false, auditSigning: false,
+        schema: [{ name: "rows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+      });
+    });
+    check("db: a plain read-only open of that same volume still works",
+      walFallback === null,
+      walFallback && (walFallback.code + ": " + String(walFallback.message).slice(0, 160)));
+    if (walFallback === null) { b.db.close(); b.db._resetForTest(); }
+    try { fs.unlinkSync(dbFile + "-wal"); } catch (_e) { /* may be gone */ }
+    try { fs.unlinkSync(dbFile + "-shm"); } catch (_e) { /* may not exist */ }
+
+    // An empty -wal is what SQLite leaves lying around and carries nothing, so
+    // it must not be mistaken for pending data.
+    fs.writeFileSync(dbFile + "-wal", Buffer.alloc(0));
+    var emptyWal = await _catch(function () {
+      return b.db.init({
+        dataDir: tmpDir, atRest: "plain", readOnly: true, immutable: true,
+        frameworkTables: false, auditSigning: false,
+        schema: [{ name: "rows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+      });
+    });
+    check("db: a zero-length write-ahead log carries nothing and is not refused",
+      emptyWal === null,
+      emptyWal && (emptyWal.code + ": " + String(emptyWal.message).slice(0, 160)));
+    if (emptyWal === null) { b.db.close(); b.db._resetForTest(); }
+    try { fs.unlinkSync(dbFile + "-wal"); } catch (_e) { /* may be gone */ }
+    try { fs.unlinkSync(dbFile + "-shm"); } catch (_e) { /* may not exist */ }
+
+    // The claim is about the VOLUME, so it is refused where it would describe
+    // something else, or where nothing has been promised about writers.
+    var noRo = await _catch(function () {
+      return b.db.init({
+        dataDir: tmpDir, atRest: "plain", immutable: true,
+        frameworkTables: false, auditSigning: false, schema: [],
+      });
+    });
+    check("db: immutable without readOnly is refused at config time",
+      noRo && noRo.code === "db/bad-immutable",
+      noRo ? (noRo.code + ": " + String(noRo.message).slice(0, 120)) : "no error");
+    b.db._resetForTest();
+
+    var encImm = await _catch(function () {
+      return b.db.init({
+        dataDir: tmpDir, atRest: "encrypted", readOnly: true, immutable: true,
+        frameworkTables: false, auditSigning: false, minFreeBytes: 0, schema: [],
+      });
+    });
+    check("db: immutable under encrypted at-rest is refused too",
+      encImm && encImm.code === "db/bad-immutable",
+      encImm ? (encImm.code + ": " + String(encImm.message).slice(0, 120)) : "no error");
   } finally {
     _teardownPlain(tmpDir);
   }
@@ -2437,6 +2807,10 @@ async function run() {
   await testAuditSigningExplicitOpts();
   await testDoubleInit();
   await testTmpfsResolution();
+  await testTmpfsResolverNeverProbesAPosixPathOffLinux();
+  await testTmpDirResidencyDistinguishesUnknownFromDiskBacked();
+  await testEncryptedInitHandlesAnUnclassifiableTmpDir();
+  await testFileLifecycleResolvesTheSameWayAcrossPlatforms();
   await testTablePrefixAndResidency();
   await testEncryptedRoundTrip();
   await testStaleSweepSparesALiveOwner();
@@ -2445,6 +2819,7 @@ async function run() {
   await testReadOnlyOpenDoesNotMigrateTheKeySidecar();
   await testReadOnlyOpenRefusesToCreateAKey();
   await testReadOnlyOpenDoesNotBootstrapASigningKey();
+  await testReadOnlyOpenInPlainModeTouchesNothing();
   await testSnapshotPlain();
   await testMigrations();
   await testEraseHardLegalHold();

@@ -8027,6 +8027,36 @@ function testStateStampScanningDeferred() {
 //      patterns split across lines still match.
 var KNOWN_ANTIPATTERNS = [
   {
+    id: "posix-absolute-path-needs-an-injected-reader",
+    primitive: "b.db.init",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // The literal must be the FIRST argument of the fs call. A path built with
+    // path.join, or one held in a variable, is a different question and is not
+    // matched — this is only about a POSIX root hardcoded at the call site.
+    regex: /\b(?:nodeFs|fs|nodeFsp|fsp)\s*\.\s*(?:existsSync|statSync|lstatSync|realpathSync|readlinkSync|readFileSync|accessSync|openSync|opendirSync|readdirSync|createReadStream|createWriteStream)\s*\(\s*["']\//,
+    allowlist: [],
+    fixtures: {
+      fires: [
+        'if (nodeFs.existsSync("/dev/shm")) return "/dev/shm";',
+        'var st = nodeFs.statSync("/dev/shm");',
+        'inContainer = nodeFs.existsSync("/.dockerenv");',
+        'var realTmp = nodeFs.realpathSync("/proc/self/root");',
+        "var raw = fs.readFileSync('/etc/hosts', 'utf8');",
+      ],
+      quiet: [
+        'if (exists("/dev/shm")) return "/dev/shm";',
+        'var st = stat("/dev/shm");',
+        'return nodeFs.existsSync(p);',
+        'var realTmp = realpath(tmpDir);',
+        'if (realTmp.indexOf("/dev/shm") === 0) return null;',
+        'var raw = nodeFs.readFileSync(nodePath.join(dir, "x"), "utf8");',
+        'return String(readlink("/proc/self/ns/pid"));',
+      ],
+    },
+    reason: "A path beginning with '/' is absolute only on POSIX. On Windows it is DRIVE-relative, so nodeFs.existsSync(\"/dev/shm\") asks about C:\\dev\\shm — a directory any unprivileged user can create, and one that had 5855 files on a development host by the time this was found, including live decrypted SQLite working copies. db.init's tmpfs resolver probed it on every platform, so on Windows encrypted-at-rest silently resolved a persistent NTFS directory as its in-memory mount and wrote the plaintext database there; the residency check that exists to catch precisely that is a path comparison against Linux mount points and could not fire. The rule is not 'guard the probe with an if' — db-file-lifecycle and watcher both had the guard and were still untestable, so nothing could show the Windows branch was right. Take the platform and the reader as PARAMETERS (_resolveTmpDirFrom(optsTmpDir, platform, exists), _tmpDirResidencyIssue(tmpDir, platform, realpath), _namespaceFrom(platform, readlink), _detectAutoMode(root, probe)): the literal then sits behind an injected reader, every platform's branch is drivable from a Linux CI host, and the shape this refuses cannot reappear. A constructed path or one held in a variable is a different question and stays quiet. Empty allowlist: lib/ has no remaining call site that needs a hardcoded POSIX root, and the one that reintroduces it is the one to catch. What this deliberately does NOT cover: a POSIX root bound to a constant and used later (safe-mount-info's DEFAULT_PATH was exactly that shape, and is guarded instead by _defaultPathFor(platform) plus its own tests), and a literal handed to an injected reader, which is the fixed form and is in the quiet fixtures. Widening to every POSIX-looking literal would refuse legitimate path comparison — _tmpDirResidencyIssue compares against these same four strings — so the claim stays on the call site, where the bug was.",
+  },
+  {
     id: "mail-reply-must-not-interpolate-an-unguarded-reason",
     primitive: "b.mail.server",
     scanScope: "lib",
