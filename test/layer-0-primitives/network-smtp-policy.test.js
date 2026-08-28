@@ -499,6 +499,42 @@ async function testSubmitUnsupportedScheme() {
         e.ok === false && /unsupported rua URI scheme: ftp/.test(e.error || ""));
 }
 
+// The rua address is published by the RECEIVING domain in its own _smtp._tls
+// record, not typed by the operator running this sender. A peer spelling its
+// hostname absolutely is using the form RFC 1035 §3.1 defines, and a zone file
+// writes it that way routinely. Refusing it costs that peer the report it
+// asked for under RFC 8460 and costs this sender nothing — the entry simply
+// never becomes a report, with no signal that anything was dropped.
+async function testSubmitMailtoAcceptsTheDnsAbsoluteForm() {
+  var report = b.network.smtp.tlsRpt.recordShape({
+    organization: "example.com",
+    reportId:     "rpt-abs-1",
+    policies:     [{ type: "sts", domain: "example.com" }],
+  });
+  var rv = await b.network.smtp.tlsRpt.submit(report, { rua: ["mailto:tls@example.net."] });
+  var e = rv.results[0];
+  check("submit: a rua address in the DNS absolute form is accepted",
+        e.kind === "mailto" && e.ok === true,
+        JSON.stringify({ kind: e.kind, ok: e.ok, error: e.error }));
+  check("submit: and the trailing dot is folded off the address actually used",
+        e.ok === true && e.mailto && e.mailto.to === "tls@example.net",
+        JSON.stringify(e.mailto && e.mailto.to));
+  check("submit: while what the peer published is recorded beside it",
+        e.ok === true && e.mailto && e.mailto.published === "tls@example.net.",
+        JSON.stringify(e.mailto && e.mailto.published));
+
+  // Control: folding one trailing dot must not turn a genuinely malformed
+  // address into an accepted one.
+  var rv2 = await b.network.smtp.tlsRpt.submit(report, { rua: ["mailto:tls@example.net.."] });
+  check("submit: a doubled trailing dot is still refused",
+        rv2.results[0].ok !== true, JSON.stringify(rv2.results[0]));
+
+  // And an address with no dot at all is unchanged in behaviour.
+  var rv3 = await b.network.smtp.tlsRpt.submit(report, { rua: ["mailto:tls@example.net"] });
+  check("submit: the ordinary relative form still works",
+        rv3.results[0].ok === true && rv3.results[0].mailto.to === "tls@example.net");
+}
+
 async function testSubmitValidMailtoBody() {
   var report = b.network.smtp.tlsRpt.recordShape({
     organization: "example.com",
@@ -1154,6 +1190,7 @@ async function run() {
   await testSubmitHttpsThrowsNonError();
   await testSubmitInvalidMailtoAddr();
   await testSubmitUnsupportedScheme();
+  await testSubmitMailtoAcceptsTheDnsAbsoluteForm();
   await testSubmitValidMailtoBody();
   await testSubmitRuaGuard();
   await testSubmitMailtoSubjectFallbacks();

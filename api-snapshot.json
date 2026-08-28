@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.18.56",
-  "createdAt": "2026-08-28T06:02:44.799Z",
+  "frameworkVersion": "0.18.57",
+  "createdAt": "2026-08-28T07:55:19.015Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -14544,6 +14544,10 @@
           "valueType": "string"
         },
         "TLS_GROUP_PREFERENCE": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "TLS_SERVER_FALLBACK_CURVES": {
           "type": "instance",
           "ctorName": "Array"
         },
@@ -48715,6 +48719,10 @@
               "arity": 2
             },
             "removeCaByLabel": {
+              "type": "function",
+              "arity": 2
+            },
+            "serverKeyAgreementGroups": {
               "type": "function",
               "arity": 2
             },

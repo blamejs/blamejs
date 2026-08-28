@@ -5,6 +5,7 @@
 var fs = require("node:fs");
 var os = require("node:os");
 var path = require("node:path");
+var nodeTls = require("node:tls");
 var helpers = require("../helpers");
 var check = helpers.check;
 var b = helpers.b;
@@ -207,6 +208,7 @@ async function run() {
     threwNoTls && /b\.mail\.server\.tls\.context/.test(threwNoTls.message));
   check("MX no-tls-context error: points at b.acme for provisioning",
     threwNoTls && /b\.acme/.test(threwNoTls.message));
+  await testServerContextAcceptsEveryRegisteredEcdheCurve();
   await testStarttlsUpgradeCompressesTheCertificateChain();
 }
 
@@ -221,6 +223,90 @@ async function run() {
 // beside it. The test passed and the feature did not work. Bytes on the wire
 // cannot be fooled that way, so count them: a compressed chain is several
 // times smaller than an uncompressed one.
+// A listener's group list is an ACCEPT SET, not an offer order.
+//
+// The outbound preference is a flat colon-separated list, which is the right
+// shape for a client: node sends a key share for the first entry and takes the
+// first mutually-supported group. OpenSSL 3.5 reads that same flat string on a
+// SERVER as the set of groups it will accept at all, and only tuples separated
+// by `/` express order. Applying the client list to a listener therefore
+// refused every registered curve it did not name — including secp256r1, which
+// RFC 8446 §9.1 makes mandatory to implement — and on an SMTP listener a
+// refused handshake is mail that stays queued until it bounces.
+async function testServerContextAcceptsEveryRegisteredEcdheCurve() {
+  // The client verifies the chain against the same self-signed pair the server
+  // presents. Turning verification off would run this test with the
+  // interesting half of the handshake switched off, and what is being asserted
+  // — which group the two sides agree on — has to be reached under a verified
+  // chain to mean anything.
+  var pair = helpers.selfSignedPair();
+  var dir = _mkTmpDir("groups");
+  var certFile = _writeFile(path.join(dir, "cert.pem"), pair.cert);
+  var keyFile  = _writeFile(path.join(dir, "key.pem"),  pair.key);
+
+  // Wrapped the way the listeners wrap it — a net socket upgraded with the
+  // built context — rather than handed to tls.createServer, which takes its
+  // certificate from its own options and would not exercise the context this
+  // primitive produces at all.
+  var net = require("node:net");
+  var built = b.mail.server.tls.context({ certFile: certFile, keyFile: keyFile });
+  var srv = net.createServer(function (sock) {
+    var t = new nodeTls.TLSSocket(sock, {
+      isServer: true, secureContext: built.secureContext,
+    });
+    t.on("error", function () { /* client tears down after the handshake */ });
+    t.on("secure", function () { try { t.end(); } catch (_e) { /* closing */ } });
+  });
+  await new Promise(function (r) { srv.listen(0, "127.0.0.1", r); });
+  var port = srv.address().port;
+
+  function handshake(curve) {
+    return new Promise(function (resolve) {
+      var c = nodeTls.connect({
+        port: port, host: "127.0.0.1", servername: "localhost",
+        ca: [pair.cert], ecdhCurve: curve,
+      }, function () {
+        var info = null;
+        try { info = c.getEphemeralKeyInfo(); } catch (_e) { info = null; }
+        try { c.destroy(); } catch (_e) { /* closing */ }
+        resolve({ ok: true, group: (info && (info.name || info.type)) || null });
+      });
+      c.on("error", function (e) {
+        resolve({ ok: false, err: (e && (e.code || e.message)) || "error" });
+      });
+    });
+  }
+
+  try {
+    // Every curve RFC 8446 §4.2.7 registers for ECDHE. A listener that speaks
+    // to strangers has no business refusing any of them.
+    var registered = ["prime256v1", "secp384r1", "secp521r1", "X448", "X25519"];
+    for (var i = 0; i < registered.length; i += 1) {
+      var r = await handshake(registered[i]);
+      check("mail tls: a server context accepts " + registered[i],
+        r.ok === true, registered[i] + " -> " + JSON.stringify(r));
+    }
+
+    // And the PQC preference still wins where the peer offers one. Applying the
+    // flat list actively lost this: a peer offering both was served X25519,
+    // where a context with no list at all was pulled up to the hybrid by a
+    // HelloRetryRequest.
+    var hybrid = await handshake("X25519:X25519MLKEM768");
+    check("mail tls: a peer offering the hybrid still negotiates the hybrid",
+      hybrid.ok === true && /MLKEM/i.test(String(hybrid.group || "")),
+      JSON.stringify(hybrid));
+
+    // The hybrid the runtime's own server default refuses is still accepted,
+    // which is what applying a list at all is for.
+    var p256Hybrid = await handshake("SecP256r1MLKEM768");
+    check("mail tls: SecP256r1MLKEM768 is accepted, which the runtime default refuses",
+      p256Hybrid.ok === true, JSON.stringify(p256Hybrid));
+  } finally {
+    await new Promise(function (r) { srv.close(r); });
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+  }
+}
+
 async function testStarttlsUpgradeCompressesTheCertificateChain() {
   var nodeTls = require("node:tls");
   var net = require("node:net");
@@ -237,14 +323,24 @@ async function testStarttlsUpgradeCompressesTheCertificateChain() {
   // Measure the server->client handshake bytes through a counting relay, so
   // the number is read off a socket the test owns.
   async function handshakeBytes(ctx) {
+    // Every socket this opens is tracked and destroyed at the end. server.close()
+    // stops the listener ACCEPTING; it does not touch connections already
+    // established, so the relay's two sockets and the upgraded server socket
+    // outlived each measurement and kept the event loop alive — the file
+    // printed its OK line and then never exited.
+    var open = [];
     var srv = net.createServer(function (sock) {
+      open.push(sock);
       var t = new nodeTls.TLSSocket(sock, { isServer: true, secureContext: ctx });
+      open.push(t);
       t.on("error", function () { /* client tears down after the handshake */ });
     });
     await new Promise(function (r) { srv.listen(0, "127.0.0.1", r); });
     var seen = 0;
     var relay = net.createServer(function (down) {
+      open.push(down);
       var up = net.connect({ host: "127.0.0.1", port: srv.address().port });
+      open.push(up);
       up.on("data", function (c) { seen += c.length; down.write(c); });
       down.on("data", function (c) { up.write(c); });
       up.on("error", function () {}); down.on("error", function () {});
@@ -267,6 +363,7 @@ async function testStarttlsUpgradeCompressesTheCertificateChain() {
     await helpers.waitUntil(function () { return seen > 0; },
       { timeoutMs: 5000, label: "mail-server-tls: handshake bytes observed" });
     relay.close(); srv.close();
+    open.forEach(function (s) { try { s.destroy(); } catch (_e) { /* already gone */ } });
     if (!completed) {
       throw new Error("mail-server-tls: handshake did not complete, so its byte " +
                       "count means nothing" + (failure ? " (" + failure + ")" : ""));
