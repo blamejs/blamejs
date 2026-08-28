@@ -732,6 +732,64 @@ function _countingRateLimit(onFailure) {
 // ==========================================================================
 // 2. STARTTLS upgrade + AUTHENTICATE state machine over TLS (strict)
 // ==========================================================================
+// A certificate renews every 60 to 90 days on any automated CA. The four
+// sibling listeners read opts.tlsContext at the point they need it, so a
+// consumer installing an accessor gets the renewed context on the next
+// connection. This one captured it at create(), which called the accessor
+// exactly once and then served the boot certificate for the life of the
+// process — while the watcher fired and the context rebuilt, so every piece of
+// surrounding evidence said rotation was working.
+async function testTlsContextIsReadPerConnectionNotCaptured() {
+  var first  = await _makeTestTlsContext();
+  var second = await _makeTestTlsContext();
+  var current = first;
+  var reads = 0;
+
+  async function _starttlsAgainst(port, caPem) {
+    var sock = _connect(port);
+    await _read(sock);
+    await _cmd(sock, "STARTTLS");
+    var tsock = nodeTls.connect({ socket: sock, ca: caPem, servername: "localhost" });
+    tsock.on("error", function () {});
+    var ok = await new Promise(function (resolve) {
+      tsock.once("secureConnect", function () { resolve(true); });
+      tsock.once("error", function () { resolve(false); });
+    });
+    try { tsock.destroy(); } catch (_e) { /* closing */ }
+    try { sock.destroy(); } catch (_e) { /* closing */ }
+    return ok;
+  }
+
+  var srv = b.mail.server.managesieve.create({
+    get tlsContext() { reads += 1; return current.ctx; },
+    profile: "strict", mailStore: _richStore(),
+    auth: { mechanisms: ["PLAIN"], verify: async function (m, c) { return _verify(m, c); } },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  try {
+    check("managesieve: the boot certificate is served",
+      (await _starttlsAgainst(info.port, first.caPem)) === true);
+
+    // Rotate. Nothing is swapped on the listener and no reload hook runs — a
+    // renewal only changes what the accessor returns.
+    current = second;
+
+    check("managesieve: a rotated certificate reaches the next connection",
+      (await _starttlsAgainst(info.port, second.caPem)) === true);
+
+    // Control. Without this the check above would pass on a listener still
+    // serving the first certificate, since a client trusting the new CA and a
+    // client trusting the old one are only distinguishable by which one FAILS.
+    check("managesieve: and the superseded certificate is no longer accepted",
+      (await _starttlsAgainst(info.port, first.caPem)) === false);
+
+    check("managesieve: the context accessor is consulted per connection, not once",
+      reads > 1, "accessor read " + reads + " time(s)");
+  } finally {
+    await srv.close();
+  }
+}
+
 async function testStartTlsAndAuth() {
   var tls = await _makeTestTlsContext();
   var srv = b.mail.server.managesieve.create({
@@ -1043,6 +1101,7 @@ async function run() {
   testHandleSurface();
   testCreateValidation();
   await testPlaintextNoAuth();
+  await testTlsContextIsReadPerConnectionNotCaptured();
   await testStartTlsAndAuth();
   await testAuthenticateMultiStepChallenge();
   await testAuthenticateContinuationAcceptsALiteralResponse();

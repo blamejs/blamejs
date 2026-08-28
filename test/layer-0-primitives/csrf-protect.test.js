@@ -49,6 +49,103 @@ function _runCsrf(mwOpts, req) {
   });
 }
 
+// skipStateless exists because a request with no ambient credential cannot be
+// forged on a victim's behalf: CSRF spends a cookie the browser attaches by
+// itself. What it used to test for was an `Authorization` header, and presence
+// is not authenticity — an attacker composing a cross-site request writes their
+// own headers, so `Authorization: Bearer nonsense` met the condition by being
+// typed. Worse, the header says nothing about which credential actually
+// authenticated the request: b.middleware.attachUser with tokenFrom: "both"
+// reads the COOKIE first, so a request carrying both was authenticated by
+// exactly the ambient credential this gate protects, and skipped the gate
+// because of a header nobody read.
+async function testSkipStatelessTurnsOnTheAmbientCredential() {
+  var token = b.forms.generateCsrfToken();
+
+  // The bug: a session cookie present, no CSRF token, and a junk bearer header.
+  var forged = _mockReq({
+    method: "POST",
+    url: "/submit",
+    headers: {
+      host:          "example.com",
+      cookie:        "csrf=" + token + "; session=abc",
+      authorization: "Bearer not-a-real-token",
+    },
+  });
+  var r = await _runCsrf({ cookie: true, skipStateless: true }, forged);
+  check("csrf: an unvalidated Authorization header does not waive the token check",
+    r.outcome === "denied" && r.status === 403,
+    r.outcome + " " + (r.status || ""));
+
+  // What skipStateless is actually for, and it still works: no cookie at all,
+  // so there is no ambient credential to abuse.
+  var cookieless = _mockReq({
+    method: "POST",
+    url: "/submit",
+    headers: { host: "example.com", authorization: "Bearer whatever" },
+  });
+  var r2 = await _runCsrf({ cookie: true, skipStateless: true }, cookieless);
+  check("csrf: a cookieless request is still not CSRF-able, so it passes",
+    r2.outcome === "next", r2.outcome + " " + (r2.status || ""));
+
+  // And with no cookie AND no Authorization header — the header was never the
+  // thing that mattered.
+  var bare = _mockReq({
+    method: "POST", url: "/submit", headers: { host: "example.com" },
+  });
+  var r3 = await _runCsrf({ cookie: true, skipStateless: true }, bare);
+  check("csrf: a bare cookieless POST passes on the same reasoning",
+    r3.outcome === "next", r3.outcome + " " + (r3.status || ""));
+
+  // Control: without skipStateless the cookieless request IS validated, so the
+  // checks above are reading the option rather than a blanket pass.
+  var strict = _mockReq({
+    method: "POST", url: "/submit", headers: { host: "example.com" },
+  });
+  var r4 = await _runCsrf({ cookie: true }, strict);
+  check("csrf: the same request is refused when skipStateless is off",
+    r4.outcome === "denied" && r4.status === 403,
+    r4.outcome + " " + (r4.status || ""));
+}
+
+// A consumer that asked for checkOrigin asked for something the token compare
+// does not provide, and there is no reading of "stateless" under which a
+// cross-origin state change becomes acceptable. The skip used to run first, so
+// the option meant to be the second line of defence was waived by the branch
+// that waived the first.
+async function testSkipStatelessCannotWaiveTheOriginCheck() {
+  var crossOrigin = _mockReq({
+    method: "POST",
+    url: "/submit",
+    headers: {
+      host:          "example.com",
+      origin:        "https://attacker.example",
+      authorization: "Bearer not-a-real-token",
+    },
+  });
+  var r = await _runCsrf(
+    { cookie: true, skipStateless: true, checkOrigin: true }, crossOrigin);
+  check("csrf: a cross-origin stateless request is still refused on origin",
+    r.outcome === "denied" && r.status === 403,
+    r.outcome + " " + (r.status || ""));
+
+  // Control: same request, same-origin, still passes — the refusal above is
+  // the origin check firing and not skipStateless having stopped working.
+  var sameOrigin = _mockReq({
+    method: "POST",
+    url: "/submit",
+    headers: {
+      host:          "example.com",
+      origin:        "http://example.com",
+      authorization: "Bearer not-a-real-token",
+    },
+  });
+  var r2 = await _runCsrf(
+    { cookie: true, skipStateless: true, checkOrigin: true }, sameOrigin);
+  check("csrf: the same-origin stateless request still passes",
+    r2.outcome === "next", r2.outcome + " " + (r2.status || ""));
+}
+
 async function testSuccessPathDoubleSubmit() {
   // Valid 64-hex cookie + matching X-CSRF-Token header on a POST → next().
   var token = b.forms.generateCsrfToken();
@@ -328,6 +425,8 @@ async function run() {
   await testIssuedCookieShape();
   await testMismatchDenied();
   await testPoisonedCookieNamesDoNotPollute();
+  await testSkipStatelessTurnsOnTheAmbientCredential();
+  await testSkipStatelessCannotWaiveTheOriginCheck();
   await testFirstOccurrenceWinsForDuplicateCookie();
   await testRedundantMountIssuesSingleCookie();
   await testDistinctInstancesBothEnforce();

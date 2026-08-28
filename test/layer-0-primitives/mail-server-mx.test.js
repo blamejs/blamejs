@@ -306,6 +306,112 @@ async function testEmptyLocalDomainsRefusesEveryRecipient() {
   }
 }
 
+// Hosting a domain is administrative state, not configuration. Captured at
+// create(), a withdrawn domain kept drawing 250 at RCPT until the process
+// restarted — every management surface agreed it was gone, and nothing told the
+// operator mail was still arriving for it. The neighbouring recipientPolicy was
+// already answered per RCPT, so one question had two halves of different age.
+async function testLocalDomainsCanBeAnsweredPerRecipient() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("mx live localDomains (skipped — cert fixture unavailable)", true); return; }
+
+  // ONE array, mutated in place — the way an operator actually keeps this
+  // state. A resolver that cached on the array's identity would normalize this
+  // once and then answer from the frozen copy forever, which is the very bug
+  // the callback exists to fix.
+  var hosted = ["example.com"];
+  var srv = b.mail.server.mx.create({
+    tlsContext: ctx, profile: "permissive",
+    localDomains: function () { return hosted; },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var socket = await _connectTo(info);
+  try {
+    await _sendCommand(socket, "EHLO sender.example.com");
+    await _sendCommand(socket, "MAIL FROM:<peer@sender.example.com>");
+    check("mx: a hosted domain from the callback is accepted",
+      /^250 /.test(await _sendCommand(socket, "RCPT TO:<alice@example.com>")));
+    check("mx: one it does not name is refused",
+      /^550 /.test(await _sendCommand(socket, "RCPT TO:<bob@added.example.org>")));
+
+    // Add one, in place. A sender told 550 a moment ago is now accepted, with
+    // no restart and nothing swapped on the listener.
+    hosted.push("added.example.org");
+    check("mx: a domain added while the server runs is accepted",
+      /^250 /.test(await _sendCommand(socket, "RCPT TO:<bob@added.example.org>")));
+
+    // Withdraw one, in place. This is the direction that bit: it used to keep
+    // answering 250 for a domain the operator had stopped hosting.
+    hosted.splice(hosted.indexOf("example.com"), 1);
+    check("mx: a withdrawn domain stops being accepted",
+      /^550 /.test(await _sendCommand(socket, "RCPT TO:<alice@example.com>")));
+    check("mx: and the one still hosted keeps working",
+      /^250 /.test(await _sendCommand(socket, "RCPT TO:<bob@added.example.org>")));
+
+    // An entry the domain guard refuses is dropped, not thrown on — the
+    // connection that happened to arrive must not become an outage. An IP
+    // literal is one of the shapes the boot check already refuses.
+    hosted.push("192.0.2.1");
+    check("mx: a bad entry in a live set does not kill the connection",
+      /^250 /.test(await _sendCommand(socket, "RCPT TO:<bob@added.example.org>")));
+    var badEntryReply = await _sendCommand(socket, "RCPT TO:<eve@192.0.2.1>");
+    check("mx: and mail for that entry is refused",
+      /^5\d\d /.test(badEntryReply), JSON.stringify(badEntryReply));
+
+    // A set that cannot be read refuses rather than accepting, and the
+    // listener stays up to say so.
+    hosted = "example.com";                       // a string, not an array
+    check("mx: a set of the wrong shape refuses every recipient",
+      /^550 /.test(await _sendCommand(socket, "RCPT TO:<bob@added.example.org>")));
+
+    // A self-referencing array does not end the connection. The cycle coerces
+    // to a string the domain guard rejects, so that entry drops and the valid
+    // one beside it keeps serving — the same answer any other bad entry gets.
+    var circular = ["added.example.org"];
+    circular.push(circular);
+    hosted = circular;
+    check("mx: a self-referencing set drops the bad entry and keeps serving",
+      /^250 /.test(await _sendCommand(socket, "RCPT TO:<bob@added.example.org>")));
+
+    // Two DIFFERENT hosted sets must not share a cache key. Objects with
+    // different toString() results are indistinguishable to JSON.stringify —
+    // both serialize as {} — so keying the cache on the raw array answered the
+    // second set from the first one's cached result, and a withdrawn domain
+    // stayed accepted. The key is built from the coerced strings for that
+    // reason.
+    hosted = [{ toString: function () { return "first.example.org"; } }];
+    check("mx: a domain named by a coercible object is hosted",
+      /^250 /.test(await _sendCommand(socket, "RCPT TO:<a@first.example.org>")));
+    hosted = [{ toString: function () { return "second.example.org"; } }];
+    check("mx: swapping it for another object-named domain is seen",
+      /^250 /.test(await _sendCommand(socket, "RCPT TO:<a@second.example.org>")));
+    check("mx: and the one it replaced is no longer accepted",
+      /^550 /.test(await _sendCommand(socket, "RCPT TO:<a@first.example.org>")));
+
+    // An entry whose string coercion throws is dropped like any other bad one,
+    // and the entries around it keep serving. Guarding the serialization alone
+    // would not have caught this — the array stringifies fine and the throw
+    // happens per entry.
+    var hostile = Object.create(null);
+    Object.defineProperty(hostile, "toString", {
+      value: function () { throw new Error("no string for you"); },
+    });
+    hosted = ["added.example.org", hostile];
+    check("mx: an entry that cannot be coerced is dropped, not fatal",
+      /^250 /.test(await _sendCommand(socket, "RCPT TO:<bob@added.example.org>")));
+
+    // And the listener is still answering afterwards, which is the part that
+    // distinguishes "refused" from "the socket died".
+    hosted = ["added.example.org"];
+    check("mx: and the connection recovers once the set is readable again",
+      /^250 /.test(await _sendCommand(socket, "RCPT TO:<bob@added.example.org>")));
+  } finally {
+    try { socket.destroy(); } catch (_e) { /* already gone */ }
+    await srv.close({ timeoutMs: 1000 });                                                              // allow:raw-time-literal — test-only short drain
+  }
+}
+
 async function testRecipientPolicyRefusesUnknownMailbox() {
   var ctx;
   try { ctx = await _makeTestTlsContext(); }
@@ -1760,6 +1866,7 @@ async function run() {
   testDotUnstuff();
   await testEhloFlow();
   await testEmptyLocalDomainsRefusesEveryRecipient();
+  await testLocalDomainsCanBeAnsweredPerRecipient();
   await testRecipientPolicyRefusesUnknownMailbox();
   await testRecipientPolicyReasonCannotForgeAReplyLine();
   await testRecipientPolicyRefusalCostsTheScannerBudget();
