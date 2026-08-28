@@ -365,15 +365,29 @@ async function testLocalDomainsCanBeAnsweredPerRecipient() {
     check("mx: a set of the wrong shape refuses every recipient",
       /^550 /.test(await _sendCommand(socket, "RCPT TO:<bob@added.example.org>")));
 
-    // An array that cannot be serialized fails closed too. Everything else in
-    // the resolver refuses rather than throws, and this runs inside RCPT
-    // handling — a BigInt in an admin-supplied list must not end the
-    // connection that happened to arrive.
+    // A self-referencing array does not end the connection. The cycle coerces
+    // to a string the domain guard rejects, so that entry drops and the valid
+    // one beside it keeps serving — the same answer any other bad entry gets.
     var circular = ["added.example.org"];
     circular.push(circular);
     hosted = circular;
-    check("mx: an unserializable set refuses rather than killing the connection",
-      /^550 /.test(await _sendCommand(socket, "RCPT TO:<bob@added.example.org>")));
+    check("mx: a self-referencing set drops the bad entry and keeps serving",
+      /^250 /.test(await _sendCommand(socket, "RCPT TO:<bob@added.example.org>")));
+
+    // Two DIFFERENT hosted sets must not share a cache key. Objects with
+    // different toString() results are indistinguishable to JSON.stringify —
+    // both serialize as {} — so keying the cache on the raw array answered the
+    // second set from the first one's cached result, and a withdrawn domain
+    // stayed accepted. The key is built from the coerced strings for that
+    // reason.
+    hosted = [{ toString: function () { return "first.example.org"; } }];
+    check("mx: a domain named by a coercible object is hosted",
+      /^250 /.test(await _sendCommand(socket, "RCPT TO:<a@first.example.org>")));
+    hosted = [{ toString: function () { return "second.example.org"; } }];
+    check("mx: swapping it for another object-named domain is seen",
+      /^250 /.test(await _sendCommand(socket, "RCPT TO:<a@second.example.org>")));
+    check("mx: and the one it replaced is no longer accepted",
+      /^550 /.test(await _sendCommand(socket, "RCPT TO:<a@first.example.org>")));
 
     // An entry whose string coercion throws is dropped like any other bad one,
     // and the entries around it keep serving. Guarding the serialization alone

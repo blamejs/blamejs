@@ -7912,6 +7912,23 @@ function testReadmeVendorTableMatchesManifest() {
                  "' but lib/vendor/MANIFEST.json ships " + wanted.join(" + ") +
                  " (missing: " + absent.join(", ") + ")" });
     }
+
+    // The other direction, and the one that actually shipped stale: a version
+    // the cell names that is NOT shipped any more. Presence-only checking
+    // passes a bump that leaves the superseded number behind — `@noble/curves`
+    // read "2.4.0 (bundles @noble/hashes 2.3.0)" after hashes had moved to
+    // 2.4.0, and every wanted version was still present, so nothing fired. An
+    // operator checking a 2.3.0 advisory against that cell is told it ships.
+    var stray = (shown.match(/\d+\.\d+\.\d+/g) || []).filter(function (v) {
+      return wanted.indexOf(v) === -1;
+    });
+    if (stray.length > 0) {
+      bad.push({ file: "README.md", line: rowIdx + 1,
+        content: "README's version cell for " + key + " names version(s) " +
+                 stray.join(", ") + " that lib/vendor/MANIFEST.json does not ship " +
+                 "(it ships " + wanted.join(" + ") + ") — a superseded version left " +
+                 "in the cell reads as still shipped" });
+    }
   });
   _report("README vendored table states the shipped versions", bad);
 }
