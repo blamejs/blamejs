@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.18.56",
-  "createdAt": "2026-08-27T20:50:34.628Z",
+  "createdAt": "2026-08-28T04:52:56.185Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -50006,7 +50006,7 @@
             },
             "encapsulate": {
               "type": "function",
-              "arity": 1
+              "arity": 2
             },
             "getPublicKey": {
               "type": "function",
@@ -50023,7 +50023,7 @@
             },
             "keygen": {
               "type": "function",
-              "arity": 0
+              "arity": 1
             },
             "lengths": {
               "type": "object",
@@ -50553,7 +50553,7 @@
             },
             "encapsulate": {
               "type": "function",
-              "arity": 1
+              "arity": 2
             },
             "getPublicKey": {
               "type": "function",
@@ -50570,7 +50570,7 @@
             },
             "keygen": {
               "type": "function",
-              "arity": 0
+              "arity": 1
             },
             "lengths": {
               "type": "object",
@@ -50616,7 +50616,7 @@
             },
             "encapsulate": {
               "type": "function",
-              "arity": 1
+              "arity": 2
             },
             "getPublicKey": {
               "type": "function",
@@ -50633,7 +50633,7 @@
             },
             "keygen": {
               "type": "function",
-              "arity": 0
+              "arity": 1
             },
             "lengths": {
               "type": "object",
@@ -50679,7 +50679,7 @@
             },
             "encapsulate": {
               "type": "function",
-              "arity": 1
+              "arity": 2
             },
             "getPublicKey": {
               "type": "function",
@@ -50696,7 +50696,7 @@
             },
             "keygen": {
               "type": "function",
-              "arity": 0
+              "arity": 1
             },
             "lengths": {
               "type": "object",

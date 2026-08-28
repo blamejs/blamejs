@@ -15,6 +15,15 @@
       ]
     },
     {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "Vendored `@noble` cryptography refreshed",
+          "body": "`@noble/ciphers` and `@noble/curves` to 2.4.0, `@noble/post-quantum` to 0.7.1, `@noble/hashes` to 2.4.0. The four move together because 0.7.1 pins its siblings to exactly 2.4.0, which keeps the browser hash bundle and the copy inlined in the server's PQC bundle the same code.\n\nNo output bytes change on anything blamejs computes or has stored. ML-KEM, ML-DSA and SLH-DSA known-answer vectors are byte-identical across the bump, in both directions, and so are XChaCha20-Poly1305 ciphertexts; no constant, domain-separation string, nonce construction or serialization order moved. Nothing already encrypted, wrapped or signed needs re-doing.\n\nTwo behaviour changes are reachable only through the raw primitives `b.pqcSoftware` exposes, and are worth knowing if you call them directly. `prehash(shake256)` on the 128-bit parameter sets now throws rather than producing a non-conformant signature. And an options object with an unknown or misspelled key — or one that is a class instance rather than a plain object — is now refused instead of silently ignored."
+        }
+      ]
+    },
+    {
       "heading": "Fixed",
       "items": [
         {
