@@ -132,7 +132,7 @@ The framework bundles the surface a typical Node app reaches for. Every primitiv
   - CSP nonce — generated per request, merged into the CSP (`b.middleware.cspNonce`)
   - Fetch-metadata resource-isolation guard (`b.middleware.fetchMetadata`)
   - Body parser — JSON / urlencoded / text / multipart; multipart file parts stream to a tmp dir or buffer in memory (`storage: "memory"`) for read-only / serverless filesystems
-  - CSRF protection — double-submit cookie + Origin/Referer cross-check; auto-skips Authorization-header / cookieless requests, which are not CSRF-able (`b.middleware.csrfProtect`)
+  - CSRF protection — double-submit cookie + Origin/Referer cross-check; auto-skips cookieless requests, which carry no ambient credential to abuse and so are not CSRF-able. A request that sends a cookie is validated whatever else it carries, and the Origin check is never skipped (`b.middleware.csrfProtect`)
   - CORS (W3C Private Network Access preflight refusal default + `allowPrivateNetwork` opt) and rate-limit are wired when configured via `middleware.cors` / `middleware.rateLimit`
   - `Cache-Control: no-store` on every 401 from `requireAuth` / `requireAal` / `requireStepUp` per RFC 9111 §5.2.2.5
   - Every access-refusal layer takes a uniform `problemDetails: true` for an RFC 9457 `application/problem+json` body or `onDeny(req, res, info)` to render the refusal itself — so a service can standardize one error envelope across its API without working around hardcoded bodies (`b.problemDetails`)
