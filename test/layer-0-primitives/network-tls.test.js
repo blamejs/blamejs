@@ -1123,10 +1123,10 @@ function testPqcKeyShares() {
   // An operator who narrows the policy gets listeners that follow it.
   var srvNarrowed = nt.serverKeyAgreementGroups();
   check("the server form follows a narrowed key-share policy",
-    srvNarrowed.indexOf("X25519MLKEM768/X25519/") === 0, String(srvNarrowed));
-  check("and the dropped hybrids are not accepted through the fallback either",
+    srvNarrowed === "X25519MLKEM768/X25519", String(srvNarrowed));
+  check("and the dropped hybrids are not accepted through a fallback either",
     !/SecP256r1MLKEM768|SecP384r1MLKEM1024/.test(srvNarrowed), String(srvNarrowed));
-  check("a group already preferred is not repeated into the fallback tuple",
+  check("no group appears twice",
     srvNarrowed.split(/[:/]/).filter(function (g) { return g === "X25519"; }).length === 1,
     String(srvNarrowed));
 
@@ -1135,15 +1135,45 @@ function testPqcKeyShares() {
   nt.pqc.setKeyShares(["secp384r1", "X25519"]);
   var srvClassOrder = nt.serverKeyAgreementGroups();
   check("a classical preference order is preserved rank by rank",
-    srvClassOrder.indexOf("secp384r1/X25519/") === 0, String(srvClassOrder));
+    srvClassOrder.indexOf("secp384r1/X25519") === 0, String(srvClassOrder));
 
-  // Opting out of hybrids entirely must not leave hybrids preferred inbound.
+  // A NARROWED policy is taken as written. The interoperability curves widen
+  // the shipped default so a listener does not refuse a conforming peer out of
+  // the box; adding them to a list the operator cut down — the module's own
+  // FIPS example drops the X25519-based groups — would let a peer negotiate
+  // exactly what was excluded, with the restriction holding outbound and
+  // silently not holding inbound.
+  nt.pqc.setKeyShares(["SecP256r1MLKEM768", "SecP384r1MLKEM1024"]);
+  var srvFips = nt.serverKeyAgreementGroups();
+  check("a narrowed policy does not get the interoperability curves added back",
+    !/X25519|X448|secp256r1|secp521r1/.test(srvFips), String(srvFips));
+  check("and it is still emitted rank by rank",
+    srvFips === "SecP256r1MLKEM768/SecP384r1MLKEM1024", String(srvFips));
+
+  // The public reset restores the shipped default in every respect, including
+  // whether a listener widens it. Restoring the list alone would leave a reset
+  // process serving a different policy from a fresh one.
+  nt.pqc.resetKeyShares();
+  check("resetKeyShares restores the interoperability curves too",
+    /secp256r1/.test(nt.serverKeyAgreementGroups()),
+    String(nt.serverKeyAgreementGroups()));
+
+  // Control: the SHIPPED DEFAULT gets them, so the narrowed checks above are
+  // reading the configured flag rather than a fallback that stopped working.
+  nt._resetForTest();
+  check("while the shipped default still accepts the mandatory curve",
+    /secp256r1/.test(nt.serverKeyAgreementGroups()),
+    String(nt.serverKeyAgreementGroups()));
+
+  // Opting out of hybrids entirely must not leave hybrids preferred inbound,
+  // and must not be widened back either — a single-group policy means that one
+  // group, inbound as well as outbound.
   nt.pqc.setKeyShares(["X25519"]);
   var srvClassical = nt.serverKeyAgreementGroups();
   check("opting out of hybrids removes them from the listener's preference",
     !/MLKEM/i.test(srvClassical), String(srvClassical));
-  check("while the mandatory curve is still accepted",
-    /secp256r1/.test(srvClassical), String(srvClassical));
+  check("and a single-group policy stays a single group",
+    srvClassical === "X25519", String(srvClassical));
   nt.pqc.setKeyShares(["X25519MLKEM768", "X25519"]);
 
   var eArr = null;
