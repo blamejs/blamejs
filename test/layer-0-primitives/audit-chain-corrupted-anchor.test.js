@@ -17,22 +17,351 @@ var helpers = require("../helpers");
 var b       = helpers.b;
 var check   = helpers.check;
 
-function _mockQuery(anchorRow) {
+function _mockQuery(anchorRow, opts) {
+  var refuseSignatureColumns = opts && opts.refuseSignatureColumns;
+  var chainRows = (opts && opts.chainRows) || null;
   return function (sql /*, params */) {
     if (typeof sql === "string" && sql.indexOf("purge_anchor") !== -1) {
-      return Promise.resolve(anchorRow ? [anchorRow] : []);
+      // A volume purged before the anchor was signed has no signature columns,
+      // and a verifier reading the file directly never runs the migration that
+      // would add them. The database answers a SELECT naming them with an
+      // error, exactly as SQLite and Postgres do.
+      if (refuseSignatureColumns && /signature/i.test(sql)) {
+        // The wording differs per engine, and the difference matters: Postgres
+        // says a missing COLUMN and a missing TABLE almost identically, so a
+        // classifier that reads one as the other skips the fallback entirely.
+        return Promise.reject(new Error(
+          (opts && opts.pgWording)
+            ? 'error: column "signature" does not exist'
+            : 'no such column: "signature"'));
+      }
+      if (!anchorRow) return Promise.resolve([]);
+      // Return only the columns the query asked for, the way a database does.
+      // Handing back the whole row regardless would hide a projection that
+      // forgot a field the signature covers: the verifier would rebuild the
+      // payload from a value the real query never fetched.
+      var projected = {};
+      Object.keys(anchorRow).forEach(function (col) {
+        if (new RegExp('"' + col + '"|`' + col + '`|\\b' + col + '\\b').test(sql)) {
+          projected[col] = anchorRow[col];
+        }
+      });
+      return Promise.resolve([projected]);
     }
     // Chain-rows query — a single plausible row (never reached on a corrupt
     // anchor, but present so the non-corrupt branch could walk).
-    return Promise.resolve([]);
+    return Promise.resolve(chainRows || []);
   };
 }
 
 async function _verify(anchorRow) {
+  return _verifyWith(anchorRow, undefined);
+}
+
+// Same, with a caller-supplied public-key resolver — the shape a verifier that
+// never initialized signing (the CLI, a downstream auditor) has to use.
+async function _verifyWith(anchorRow, resolvePublicKey, extraOpts, mockOpts) {
   var threw = null, result = null;
-  try { result = await b.auditChain.verifyChain(_mockQuery(anchorRow), "audit_log", {}); }
-  catch (e) { threw = e; }
+  var opts = resolvePublicKey ? { resolvePublicKey: resolvePublicKey } : {};
+  if (extraOpts) {
+    Object.keys(extraOpts).forEach(function (k) { opts[k] = extraOpts[k]; });
+  }
+  try {
+    result = await b.auditChain.verifyChain(
+      _mockQuery(anchorRow, mockOpts), "audit_log", opts);
+  } catch (e) { threw = e; }
   return { threw: threw, result: result };
+}
+
+// The anchor says which rows are allowed to be missing, and verification
+// discards everything at or below the counter it names. Shape was the whole of
+// the old test — 128 hex characters and a finite number — and shape is exactly
+// what an attacker supplies. Three statements erased a trail and the volume
+// still verified clean: delete the rows, delete the checkpoints covering them,
+// insert an anchor naming any hash and counter. That is less work than the
+// relink-and-forge attack the chain already refuses and it erases more, so it
+// was a way around the defence rather than a weaker version of it.
+async function testAnchorMustProveItWasWrittenWithTheSigningKey() {
+  var os   = helpers.os;
+  var path = helpers.path;
+  var fs   = helpers.fs;
+  var dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "anchor-sig-"));
+
+  try {
+    // plaintext mode — this exercises the signature contract, not key sealing,
+    // which audit-sign.test.js already covers.
+    await b.auditSign.init({ dataDir: dataDir, mode: "plaintext", algorithm: "ml-dsa-65" });
+
+    var chosenHash = "a".repeat(128);
+    var forged = {
+      lastPurgedCounter: 10,
+      lastPurgedRowHash: chosenHash,
+      archiveBundleId:   "archive-under-test",
+      purgedAt:          1750000000000,
+    };
+
+    // The measured attack, exactly: shape-valid, unsigned.
+    var unsigned = await _verify(forged);
+    check("unsigned purge anchor does not throw", unsigned.threw === null);
+    check("unsigned purge anchor is refused, not adopted",
+      unsigned.result && unsigned.result.ok === false,
+      JSON.stringify(unsigned.result));
+    check("and the refusal says the anchor carried no signature",
+      unsigned.result && /no signature/i.test(unsigned.result.reason || ""),
+      String(unsigned.result && unsigned.result.reason));
+
+    // Properly signed → honored.
+    var signedAnchor = {
+      lastPurgedCounter: forged.lastPurgedCounter,
+      lastPurgedRowHash: forged.lastPurgedRowHash,
+      archiveBundleId:   forged.archiveBundleId,
+      purgedAt:          forged.purgedAt,
+      fencingToken:      7,
+    };
+    signedAnchor.signature = b.auditSign.sign(
+      b.auditChain.purgeAnchorPayload(signedAnchor));
+    signedAnchor.publicKeyFingerprint = b.auditSign.getPublicKeyFingerprint();
+
+    var honored = await _verify(signedAnchor);
+    check("a signed purge anchor is honored", honored.threw === null &&
+      honored.result && honored.result.ok === true, JSON.stringify(honored.result));
+
+    // Never state a verification that was not performed. The archive
+    // identifier is recorded, and by default never resolved — nothing in the
+    // framework knows where a consumer keeps bundles — so a caller must be
+    // able to tell "a counter was believed" from "an archive was verified".
+    check("the honored anchor reports that the archive was NOT resolved",
+      honored.result && honored.result.purgeAnchor &&
+      honored.result.purgeAnchor.honored === true &&
+      honored.result.purgeAnchor.signatureVerified === true &&
+      honored.result.purgeAnchor.archiveResolved === false,
+      JSON.stringify(honored.result && honored.result.purgeAnchor));
+    check("and names the archive it did not resolve, so a caller can go and look",
+      honored.result.purgeAnchor.archiveBundleId === forged.archiveBundleId,
+      String(honored.result.purgeAnchor.archiveBundleId));
+
+    // A signature proves this framework wrote the anchor. It says nothing
+    // about whether the archive still exists or holds the rows — and a
+    // boundary whose archive has gone is a gap nothing can ever show the
+    // contents of. The consumer supplies that check, because only they know
+    // where bundles live.
+    var askedFor = [];
+    var withArchive = await _verifyWith(signedAnchor, undefined, {
+      resolveArchive: function (id) { askedFor.push(id); return true; },
+    });
+    check("a caller-supplied archive check is asked about the recorded id",
+      askedFor.length === 1 && askedFor[0] === forged.archiveBundleId,
+      JSON.stringify(askedFor));
+    check("and a resolvable archive is reported as resolved",
+      withArchive.result && withArchive.result.ok === true &&
+      withArchive.result.purgeAnchor.archiveResolved === true,
+      JSON.stringify(withArchive.result && withArchive.result.purgeAnchor));
+
+    var missingArchive = await _verifyWith(signedAnchor, undefined, {
+      resolveArchive: function () { return false; },
+    });
+    check("an anchor whose archive cannot be produced stops the verify",
+      missingArchive.result && missingArchive.result.ok === false,
+      JSON.stringify(missingArchive.result));
+    check("and says which archive could not be produced",
+      missingArchive.result &&
+      missingArchive.result.reason.indexOf(forged.archiveBundleId) !== -1,
+      String(missingArchive.result && missingArchive.result.reason));
+
+    // A check that throws is not a check that passed.
+    var brokenArchive = await _verifyWith(signedAnchor, undefined, {
+      resolveArchive: function () { throw new Error("bundle store unreachable"); },
+    });
+    check("a throwing archive check refuses rather than falling through",
+      brokenArchive.result && brokenArchive.result.ok === false &&
+      /could not be resolved/.test(brokenArchive.result.reason || ""),
+      String(brokenArchive.result && brokenArchive.result.reason));
+
+    // Every field the anchor licenses is covered by the signature. The fencing
+    // token is one of them: a purge refuses when the stored token is above its
+    // own, so leaving it unsigned would let someone lower it and hand a
+    // superseded leader its turn back.
+    var fields = [
+      ["lastPurgedCounter", 9999],
+      ["lastPurgedRowHash", "b".repeat(128)],
+      ["archiveBundleId",   "somewhere-else"],
+      ["purgedAt",          1760000000000],
+      ["fencingToken",      0],
+    ];
+    for (var i = 0; i < fields.length; i += 1) {
+      var edited = Object.assign({}, signedAnchor);
+      edited[fields[i][0]] = fields[i][1];
+      var moved = await _verifyWith(edited, undefined);
+      check("editing " + fields[i][0] + " under a valid signature is refused",
+        moved.result && moved.result.ok === false, JSON.stringify(moved.result));
+      check("and that is reported as a forgery, not as unchecked",
+        moved.result && moved.result.purgeAnchorUnchecked !== true,
+        JSON.stringify(moved.result));
+    }
+
+    // Half a signature is not a legacy anchor. Nothing ever wrote a row with
+    // exactly one of the two fields, so the only way to reach that state is
+    // that something removed the other half — and treating it as
+    // pre-signing would route it onto the compatibility path, where an
+    // acknowledgement pins its boundary permanently.
+    var halves = [
+      ["signature", { signature: null }],
+      ["publicKeyFingerprint", { publicKeyFingerprint: null }],
+    ];
+    for (var h = 0; h < halves.length; h += 1) {
+      var half = Object.assign({}, signedAnchor, halves[h][1]);
+      var halfV = await _verifyWith(half, undefined, { allowUnsignedPurgeAnchor: true });
+      check("an anchor missing only " + halves[h][0] + " is refused even when unsigned is acknowledged",
+        halfV.result && halfV.result.ok === false, JSON.stringify(halfV.result));
+      check("and it is reported as corrupt, not as a legacy unsigned anchor",
+        halfV.result && /half of a signature/.test(halfV.result.reason || ""),
+        String(halfV.result && halfV.result.reason));
+    }
+
+    // The counter column is a BIGINT and the signed bytes carry it as
+    // String(Number(...)), so two distinct stored values above 2^53 render
+    // identically — one signature would cover both, and the boundary could be
+    // moved between them while verification stayed happy. Refusing that range
+    // is cheaper than giving the anchor its own numeric type.
+    var unsafeCounter = Object.assign({}, signedAnchor,
+      { lastPurgedCounter: Number.MAX_SAFE_INTEGER + 2 });
+    var unsafe = await _verifyWith(unsafeCounter, undefined,
+      { allowUnsignedPurgeAnchor: true });
+    check("a counter beyond the safe-integer range is refused",
+      unsafe.result && unsafe.result.ok === false, JSON.stringify(unsafe.result));
+    check("and is reported as corrupt rather than adopted",
+      unsafe.result && /below 2\^53/.test(unsafe.result.reason || ""),
+      String(unsafe.result && unsafe.result.reason));
+
+    var mintThrew = null;
+    try {
+      b.auditChain.purgeAnchorPayload(Object.assign({}, signedAnchor,
+        { lastPurgedCounter: Number.MAX_SAFE_INTEGER + 2 }));
+    } catch (e) { mintThrew = e; }
+    check("and no signature is minted over one either",
+      mintThrew !== null && /2\^53/.test(mintThrew.message || ""),
+      String(mintThrew && mintThrew.message));
+
+    // A signature under a key this volume has no record of is not a signature.
+    var wrongFp = Object.assign({}, signedAnchor, { publicKeyFingerprint: "0".repeat(64) });
+    var wrong = await _verify(wrongFp);
+    check("a fingerprint naming no key on record is refused",
+      wrong.result && wrong.result.ok === false, JSON.stringify(wrong.result));
+
+    // A verifier with no signing state of its own supplies the key. Without
+    // this, `blamejs audit verify-chain` — which opens a database file directly
+    // and never initializes signing — resolves nothing and reports every VALID
+    // anchor as unresolvable, a false alarm on a healthy volume.
+    var pubPem = b.auditSign.getPublicKey();
+    var supplied = await _verifyWith(signedAnchor, function () { return pubPem; });
+    check("a caller-supplied public key resolves the anchor",
+      supplied.result && supplied.result.ok === true, JSON.stringify(supplied.result));
+
+    var noKey = await _verifyWith(signedAnchor, function () {
+      throw new Error("audit-sign/not-initialized");
+    });
+    check("a verifier with no key reports the anchor as UNCHECKED",
+      noKey.result && noKey.result.ok === false &&
+      /could not be checked/.test(noKey.result.reason || ""),
+      String(noKey.result && noKey.result.reason));
+    check("and flags it so a caller can tell that from a forgery",
+      noKey.result && noKey.result.purgeAnchorUnchecked === true,
+      JSON.stringify(noKey.result));
+
+    // The reported boundary is the ANCHOR's counter, not wherever the walk
+    // started. An incremental verify raises its own skip point to the row
+    // before the requested range; reporting that would say an anchor
+    // authorizing a purge through 10 authorized one through 149.
+    var predecessor = {
+      _id: "row-149", monotonicCounter: 149, rowHash: "c".repeat(128),
+      prevHash: "d".repeat(128), recordedAt: 1750000000000,
+    };
+    var ranged = await _verifyWith(
+      signedAnchor, function () { return pubPem; }, { from: 150 },
+      { chainRows: [predecessor] });
+    check("an incremental verify over a purged chain still verifies",
+      ranged.threw === null && ranged.result && ranged.result.ok === true,
+      JSON.stringify(ranged.result || String(ranged.threw)));
+    check("the reported purge boundary is the anchor's own counter",
+      ranged.result && ranged.result.purgeAnchor &&
+      ranged.result.purgeAnchor.belowCounter === forged.lastPurgedCounter,
+      JSON.stringify(ranged.result && ranged.result.purgeAnchor));
+
+    // A volume purged BEFORE anchors were signed has no signature columns, and
+    // a verifier reading the file directly never runs the migration that adds
+    // them. Treating the resulting error as "no anchor" would verify a
+    // legitimately purged chain from ZERO_HASH and report it TAMPERED — the
+    // loudest possible wrong answer about a volume nobody touched.
+    var legacy = await _verifyWith(forged, undefined, undefined,
+      { refuseSignatureColumns: true });
+    check("a legacy anchor without signature columns does not throw",
+      legacy.threw === null, String(legacy.threw && legacy.threw.message));
+    check("it is refused as unsigned rather than read as an unpurged chain",
+      legacy.result && legacy.result.ok === false &&
+      /no signature/i.test(legacy.result.reason || ""),
+      JSON.stringify(legacy.result));
+
+    // Same volume, Postgres wording. A missing column and a missing table read
+    // almost identically there, and reading one as the other skips the
+    // fallback — the anchor goes unread and a fully purged legacy chain
+    // verifies from ZERO_HASH as though nothing had ever been removed.
+    var legacyPg = await _verifyWith(forged, undefined, undefined,
+      { refuseSignatureColumns: true, pgWording: true });
+    check("the legacy fallback is reached on Postgres wording too",
+      legacyPg.threw === null && legacyPg.result && legacyPg.result.ok === false &&
+      /no signature/i.test(legacyPg.result.reason || ""),
+      JSON.stringify(legacyPg.result || String(legacyPg.threw)));
+
+    // A read that FAILED is not a read that found nothing. A timeout or a
+    // dropped connection says nothing about whether an anchor exists, and
+    // answering it with "there is none" verifies a purged chain from ZERO_HASH
+    // and calls it clean — the exact outcome the signature exists to prevent,
+    // reached by a flaky network instead of an attacker.
+    var transientErr = null;
+    try {
+      await b.auditChain.verifyChain(function (sql) {
+        if (typeof sql === "string" && sql.indexOf("purge_anchor") !== -1) {
+          return Promise.reject(new Error("connection terminated unexpectedly"));
+        }
+        return Promise.resolve([]);
+      }, "audit_log", {});
+    } catch (e) { transientErr = e; }
+    check("a transient failure reading the anchor stops the verify",
+      transientErr !== null && /connection terminated/.test(transientErr.message || ""),
+      String(transientErr && transientErr.message));
+
+    // A table that is genuinely absent still reads as "nothing was purged" —
+    // that is what a deployment which has never purged looks like.
+    var noTable = await _verifyWith(forged, undefined, undefined, { refuseSignatureColumns: true });
+    void noTable;
+    var absent = null;
+    try {
+      absent = await b.auditChain.verifyChain(function (sql) {
+        if (typeof sql === "string" && sql.indexOf("purge_anchor") !== -1) {
+          return Promise.reject(new Error("no such table: _blamejs_audit_purge_anchor"));
+        }
+        return Promise.resolve([]);
+      }, "audit_log", {});
+    } catch (e) { absent = e; }
+    check("but a genuinely missing table still reads as nothing purged",
+      absent && absent.ok === true, JSON.stringify(absent && (absent.message || absent)));
+
+    // The one-time upgrade path: an operator who acknowledges the legacy
+    // boundary gets it adopted, and the result says plainly that it was
+    // trusted rather than verified.
+    var acked = await _verifyWith(forged, undefined,
+      { allowUnsignedPurgeAnchor: true });
+    check("an acknowledged unsigned anchor is adopted",
+      acked.result && acked.result.ok === true, JSON.stringify(acked.result));
+    check("and is reported as trusted, NOT as signature-verified",
+      acked.result && acked.result.purgeAnchor &&
+      acked.result.purgeAnchor.honored === true &&
+      acked.result.purgeAnchor.signatureVerified === false,
+      JSON.stringify(acked.result && acked.result.purgeAnchor));
+  } finally {
+    try { b.auditSign._resetForTest(); } catch (_e) { /* best-effort */ }
+    try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+  }
 }
 
 async function run() {
@@ -57,6 +386,9 @@ async function run() {
   // No anchor at all (never purged) → verifies the (empty) chain fine, ok:true.
   var none = await _verify(null);
   check("no purge anchor → verifies cleanly (ok:true)", none.threw === null && none.result && none.result.ok === true);
+  check("and reports no purge anchor at all", none.result && none.result.purgeAnchor === undefined);
+
+  await testAnchorMustProveItWasWrittenWithTheSigningKey();
 
   console.log("[audit-chain-corrupted-anchor] OK — " + helpers.getChecks() + " checks passed");
 }

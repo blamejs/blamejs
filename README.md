@@ -229,7 +229,7 @@ The framework bundles the surface a typical Node app reaches for. Every primitiv
 - **Outbound DLP** — interceptor-installed on httpClient + mail + webhook with built-in detectors for PAN (Luhn), SSN, EIN, IBAN (mod-97), api-key shapes, PEM, SSH private keys, JWTs, AWS access keys, PHI composite; refuse / redact / audit-only verdicts under pci-dss / hipaa / fapi2 / soc2 / gdpr presets (`b.redact.installOutboundDlp`)
 ### Observability
 
-- **Audit chain** — tamper-evident, SLH-DSA-signed checkpoints; CADF (DMTF DSP0262) envelope export for federated SIEM (`b.audit`, `b.audit.export({ format: "cadf" })`)
+- **Audit chain** — tamper-evident, SLH-DSA-signed checkpoints; a signed purge anchor, so the record that says which rows a retention purge legitimately removed can only be written with the signing key, and a chain that resumes after a purge continues from the boundary rather than restarting inside it; CADF (DMTF DSP0262) envelope export for federated SIEM (`b.audit`, `b.audit.export({ format: "cadf" })`)
 - **Metrics + tracing** — `b.metrics`, `b.tracing` (OTel pass-through); OTLP/HTTP-JSON exporter for traces + metrics (`b.otelExport`). Span / metric / resource attribute **values** are scrubbed through the telemetry redactor before egress (`b.observability.redactAttrs`, default composes `b.redact.redact`) so a secret or PII in an attribute value never reaches the collector verbatim (CWE-532); operators building a custom exporter apply the same gate
 - **Log-stream sinks** — local file rotation, generic webhook, OTLP/HTTP-JSON OR OTLP/gRPC, AWS CloudWatch Logs via SigV4 with optional autoCreate, RFC 5424 syslog over UDP/TCP/TLS (`b.logStream`)
 - **PII redaction** — `b.redact`

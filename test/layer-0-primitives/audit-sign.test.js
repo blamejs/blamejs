@@ -219,6 +219,46 @@ async function testWrappedModeAndErrors() {
     check("wrapped rotation wrote the history file to disk", fs.existsSync(rot.historyPath));
     check("wrapped rotation archived the rotated-out public key",
       as.getPublicKeyByFingerprint(beforeFp) === beforePub);
+
+    // The same lookup for a process that has NOT loaded signing, and should
+    // not: a deployment running `auditSigning: false` still has to verify a
+    // signature written while signing was on. Bootstrapping a keypair to read
+    // a public key would write to a volume opened without one.
+    as._resetForTest();
+    check("publicKeyFromHistory resolves a rotated-out key with signing unloaded",
+      b.auditSign.publicKeyFromHistory(dSeal, beforeFp) === beforePub);
+    check("publicKeyFromHistory returns null for a fingerprint it has no record of",
+      b.auditSign.publicKeyFromHistory(dSeal, "0".repeat(128)) === null);
+    check("publicKeyFromHistory returns null for a directory with no history",
+      b.auditSign.publicKeyFromHistory(dNoAlg, beforeFp) === null);
+    check("publicKeyFromHistory refuses a missing dataDir rather than throwing",
+      b.auditSign.publicKeyFromHistory("", beforeFp) === null &&
+      b.auditSign.publicKeyFromHistory(dSeal, "") === null);
+    check("publicKeyFromHistory did not initialize signing as a side effect",
+      as.getMode() === null, String(as.getMode()));
+
+    // A consumer anchor's counter goes into the signed bytes as text, so above
+    // 2^53 two distinct tips render identically and one signature would cover
+    // both — the anchor could be moved between them and still verify. Refused
+    // at both ends: no such signature is minted, and one presented is not
+    // believed.
+    process.env.BLAMEJS_AUDIT_SIGNING_PASSPHRASE = PASS;
+    await as.init({ dataDir: dSeal, mode: "wrapped" });
+    var unsafeTipErr = null;
+    try {
+      as.anchor({ counter: Number.MAX_SAFE_INTEGER + 2, tipHash: "a".repeat(128) });
+    } catch (e) { unsafeTipErr = e; }
+    check("anchor refuses a tip counter beyond the safe-integer range",
+      unsafeTipErr !== null && /2\^53/.test(unsafeTipErr.message || ""),
+      String(unsafeTipErr && unsafeTipErr.message));
+
+    var unsafeVerify = as.verifyAnchor({
+      counter: Number.MAX_SAFE_INTEGER + 2, tipHash: "a".repeat(128),
+      signature: "00", publicKeyFingerprint: "ab", createdAt: 1,
+    });
+    check("verifyAnchor refuses one too",
+      unsafeVerify.ok === false && /2\^53/.test(unsafeVerify.reason || ""),
+      JSON.stringify(unsafeVerify));
   } finally {
     as._resetForTest();
     delete process.env.BLAMEJS_AUDIT_SIGNING_PASSPHRASE;

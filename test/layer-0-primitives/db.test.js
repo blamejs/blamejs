@@ -1685,6 +1685,74 @@ async function testReadOnlyOpenDoesNotMigrateTheKeySidecar() {
   }
 }
 
+// A volume written by an earlier version is missing whatever columns that
+// version had not declared yet, and reconcile answers a missing column with
+// `ALTER TABLE ... ADD COLUMN`. On a read-only handle that write fails and
+// takes the open down with it — so the flag whose entire purpose is "inspect
+// this database without touching it" would work on every volume EXCEPT the
+// older ones an inspection is most likely to be about.
+async function testReadOnlyOpenOfAnOlderSchemaDoesNotMigrateIt() {
+  var tmpDir = _mkTmp("db-cov-ro-oldschema-");
+  var tmpfs = path.join(tmpDir, "tmpfs");
+  fs.mkdirSync(tmpfs, { recursive: true });
+  try {
+    await _freshVault(tmpDir);
+    var base = {
+      dataDir: tmpDir, tmpDir: tmpfs, atRest: "plain", allowNonTmpfsTmpDir: true,
+      frameworkTables: false, auditSigning: false, minFreeBytes: 0,
+      schema: [{ name: "rows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+    };
+    await b.db.init(base);
+    b.db.from("rows").insertOne({ _id: "a", v: "before" });
+    b.db.flushToDisk();
+    b.db.close();
+    b.db._resetForTest();
+
+    // Stand in for the older version: the declaration gains a column the
+    // stored volume does not have. A writer adds it; a reader must not try.
+    var widened = Object.assign({}, base, {
+      schema: [{ name: "rows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT", addedLater: "TEXT" } }],
+    });
+
+    var readerErr = null;
+    try { await b.db.init(Object.assign({}, widened, { readOnly: true })); }
+    catch (e) { readerErr = e; }
+    check("db: a read-only open of an older schema does not attempt the migration",
+      readerErr === null, String(readerErr && readerErr.message));
+    check("db: and still reads the rows that are there",
+      (b.db.from("rows").where({ _id: "a" }).first() || {}).v === "before");
+    b.db.close();
+    b.db._resetForTest();
+
+    // acceptUnsignedPurgeAnchor asks for the anchor to be SIGNED in place — a
+    // write. Combined with readOnly the two options ask for opposite things,
+    // and refusing is better than quietly skipping the repair: the operator
+    // would otherwise believe the boundary was pinned, remove the flag as the
+    // log tells them to, and meet the same refusal on the next writable boot.
+    var contradiction = null;
+    try {
+      await b.db.init(Object.assign({}, base, {
+        readOnly: true, acceptUnsignedPurgeAnchor: true,
+      }));
+    } catch (e) { contradiction = e; }
+    check("db: readOnly with acceptUnsignedPurgeAnchor is refused at config time",
+      contradiction !== null &&
+      contradiction.code === "db/bad-accept-unsigned-purge-anchor",
+      String(contradiction && (contradiction.code || contradiction.message)));
+    b.db._resetForTest();
+
+    // The writer still migrates, so skipping it for the reader costs nothing.
+    await b.db.init(widened);
+    var cols = b.db.prepare("PRAGMA table_info(rows)").all();
+    check("db: a writer opening the same volume does add the column",
+      cols.some(function (c) { return c.name === "addedLater"; }),
+      cols.map(function (c) { return c.name; }).join(","));
+    b.db.close();
+  } finally {
+    _teardownPlain(tmpDir);
+  }
+}
+
 // The other write in that loader is creating a key that was never there.
 //
 // A read-only open of a volume with no key is not a volume: there is nothing
@@ -2927,6 +2995,7 @@ async function run() {
   await testReadOnlyOpenNeverWritesBack();
   await testReadOnlyOpenDoesNotWriteABootCheckpoint();
   await testReadOnlyOpenDoesNotMigrateTheKeySidecar();
+  await testReadOnlyOpenOfAnOlderSchemaDoesNotMigrateIt();
   await testReadOnlyOpenRefusesToCreateAKey();
   await testReadOnlyOpenDoesNotBootstrapASigningKey();
   await testReadOnlyOpenInPlainModeTouchesNothing();

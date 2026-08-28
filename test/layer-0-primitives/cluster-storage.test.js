@@ -23,6 +23,14 @@ var setupTestDb    = helpers.setupTestDb;
 var teardownTestDb = helpers.teardownTestDb;
 
 var SCHEMA = [{ name: "cs_tx_t", columns: { k: "TEXT PRIMARY KEY", v: "INTEGER" } }];
+var FENCE_SCHEMA = [{
+  name: "cs_fence_t",
+  columns: {
+    scope:        "TEXT PRIMARY KEY",
+    v:            "INTEGER",
+    fencingToken: "INTEGER NOT NULL DEFAULT 0",
+  },
+}];
 
 function testSurface() {
   check("clusterStorage namespace",      typeof b.clusterStorage === "object");
@@ -143,6 +151,74 @@ async function testCteReadReturnsRows() {
   }
 }
 
+// A single-writer table stays single-writer across processes only because the
+// stored token says whose turn it is. A superseded leader still holds a
+// working handle and can still issue writes; nothing in this process knows it
+// has been replaced, so the refusal has to come from the database.
+async function testFencedUpsertRefusesAStaleToken() {
+  var tmp = fs.mkdtempSync(path.join(os.tmpdir(), "cs-fence-"));
+  try {
+    await setupTestDb(tmp, FENCE_SCHEMA);
+    var cs = b.clusterStorage;
+
+    var first = await cs.fencedUpsert({
+      table: "cs_fence_t", keyColumns: ["scope"], label: "test.fence",
+      values: { scope: "s", v: 1, fencingToken: 5 },
+    });
+    check("fencedUpsert: the first write is not fenced", first.fenced === false);
+    check("fencedUpsert: and it landed",
+      (await cs.executeOne("SELECT v FROM cs_fence_t WHERE scope = 's'")).v === 1);
+
+    var higher = await cs.fencedUpsert({
+      table: "cs_fence_t", keyColumns: ["scope"], label: "test.fence",
+      values: { scope: "s", v: 2, fencingToken: 6 },
+    });
+    check("fencedUpsert: a higher token proceeds", higher.fenced === false);
+    check("fencedUpsert: and replaces the row",
+      (await cs.executeOne("SELECT v FROM cs_fence_t WHERE scope = 's'")).v === 2);
+
+    var equal = await cs.fencedUpsert({
+      table: "cs_fence_t", keyColumns: ["scope"], label: "test.fence",
+      values: { scope: "s", v: 3, fencingToken: 6 },
+    });
+    check("fencedUpsert: an EQUAL token proceeds — the same leader writing twice",
+      equal.fenced === false);
+
+    var stale = await cs.fencedUpsert({
+      table: "cs_fence_t", keyColumns: ["scope"], label: "test.fence",
+      values: { scope: "s", v: 99, fencingToken: 4 },
+    });
+    check("fencedUpsert: a lower token is fenced", stale.fenced === true);
+    check("fencedUpsert: and changes nothing",
+      (await cs.executeOne("SELECT v FROM cs_fence_t WHERE scope = 's'")).v === 3,
+      "a fenced write must not be a partial write");
+
+    // More than one column can be fenced, and then ALL of them must be
+    // non-decreasing. A value that may only ever advance — a purge boundary, a
+    // high-water mark — is safest held that way by the database, rather than
+    // by whoever happens to write next holding the right token: a legitimate
+    // higher-token writer can still be proposing a lower boundary.
+    var advanced = await cs.fencedUpsert({
+      table: "cs_fence_t", keyColumns: ["scope"], label: "test.fence",
+      fenceColumns: ["fencingToken", "v"],
+      values: { scope: "s", v: 10, fencingToken: 6 },
+    });
+    check("fencedUpsert: advancing both fenced columns proceeds", advanced.fenced === false);
+
+    var backwards = await cs.fencedUpsert({
+      table: "cs_fence_t", keyColumns: ["scope"], label: "test.fence",
+      fenceColumns: ["fencingToken", "v"],
+      values: { scope: "s", v: 4, fencingToken: 99 },
+    });
+    check("fencedUpsert: a HIGHER token cannot move a fenced value backwards",
+      backwards.fenced === true, "a monotonic column is not the token's to lower");
+    check("fencedUpsert: and the stored value stands",
+      (await cs.executeOne("SELECT v FROM cs_fence_t WHERE scope = 's'")).v === 10);
+  } finally {
+    try { await helpers.teardownTestDb(tmp); } catch (_e) { /* best-effort */ }
+  }
+}
+
 async function run() {
   testSurface();
   await testTransactionCommits();
@@ -150,6 +226,7 @@ async function run() {
   await testTransactionSerializesExecute();
   await testTransactionRejectsBadArg();
   await testCteReadReturnsRows();
+  await testFencedUpsertRefusesAStaleToken();
 }
 
 module.exports = { run: run };

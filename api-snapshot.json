@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.18.57",
-  "createdAt": "2026-08-28T07:55:19.015Z",
+  "frameworkVersion": "0.18.58",
+  "createdAt": "2026-08-28T19:10:36.020Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -2447,6 +2447,14 @@
           "type": "function",
           "arity": 1
         },
+        "getPurgeAnchorPolicy": {
+          "type": "function",
+          "arity": 0
+        },
+        "invalidateChainOrigin": {
+          "type": "function",
+          "arity": 0
+        },
         "namespaced": {
           "type": "function",
           "arity": 2
@@ -2467,6 +2475,10 @@
           "type": "function",
           "arity": 1
         },
+        "setPurgeAnchorPolicy": {
+          "type": "function",
+          "arity": 1
+        },
         "useStore": {
           "type": "function",
           "arity": 1
@@ -2478,6 +2490,10 @@
         "verifyCheckpoints": {
           "type": "function",
           "arity": 0
+        },
+        "withChainLock": {
+          "type": "function",
+          "arity": 1
         }
       }
     },
@@ -2500,9 +2516,17 @@
           "type": "function",
           "arity": 3
         },
+        "purgeAnchorPayload": {
+          "type": "function",
+          "arity": 1
+        },
         "verifyChain": {
           "type": "function",
           "arity": 3
+        },
+        "verifyPurgeAnchor": {
+          "type": "function",
+          "arity": 2
         }
       }
     },
@@ -2590,6 +2614,10 @@
           "type": "function",
           "arity": 1
         },
+        "publicKeyFromHistory": {
+          "type": "function",
+          "arity": 2
+        },
         "reSignAll": {
           "type": "function",
           "arity": 2
@@ -2658,6 +2686,10 @@
         "purge": {
           "type": "function",
           "arity": 1
+        },
+        "signExistingPurgeAnchor": {
+          "type": "function",
+          "arity": 0
         },
         "verifyBundle": {
           "type": "function",
@@ -6667,6 +6699,10 @@
         "executeOne": {
           "type": "function",
           "arity": 2
+        },
+        "fencedUpsert": {
+          "type": "function",
+          "arity": 1
         },
         "placeholderize": {
           "type": "function",
@@ -17205,6 +17241,10 @@
           "arity": 4
         },
         "ArgParserError": {
+          "type": "function",
+          "arity": 4
+        },
+        "AuditChainOriginError": {
           "type": "function",
           "arity": 4
         },

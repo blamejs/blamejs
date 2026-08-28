@@ -1,0 +1,176 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) blamejs contributors
+"use strict";
+/**
+ * b.frameworkSchema.ensureSchema — the additive ADD COLUMN pass.
+ *
+ * `CREATE TABLE IF NOT EXISTS` is a no-op against a table that is already
+ * there, so a column added to a framework table's declaration reaches fresh
+ * deployments only. Every existing one keeps the old shape, its live schema
+ * drifts from the declaration, and the first write naming the new column fails
+ * at a customer rather than here.
+ *
+ * The purge anchor gained `signature`, `publicKeyFingerprint` and
+ * `fencingToken` in 0.18.58, and a cluster deployment gets them ONLY from this
+ * pass — the local-SQLite path goes through dbSchema.reconcile instead. So the
+ * migration running is the difference between an upgraded cluster being able
+ * to purge and its first purge failing.
+ *
+ * Drives the real external-db path with the shared sqlite driver rather than a
+ * rolled mock, so the DDL under test is the DDL an operator's backend gets.
+ */
+
+var helpers = require("../helpers");
+var b     = helpers.b;
+var check = helpers.check;
+var fs    = helpers.fs;
+var os    = helpers.os;
+var path  = helpers.path;
+
+// The purge anchor as a deployment that ran before 0.18.58 has it: no
+// signature, no key fingerprint, no fencing token.
+var PRE_0_18_58_ANCHOR =
+  'CREATE TABLE "_blamejs_audit_purge_anchor" (' +
+  '  "scope" TEXT PRIMARY KEY,' +
+  '  "lastPurgedCounter" INTEGER NOT NULL,' +
+  '  "lastPurgedRowHash" TEXT NOT NULL,' +
+  '  "archiveBundleId" TEXT NOT NULL,' +
+  '  "purgedAt" INTEGER NOT NULL' +
+  ')';
+
+// Read through `pragma_table_info` as a SELECT rather than a bare PRAGMA: the
+// driver returns rows only for statements it recognizes as reads, and a bare
+// PRAGMA comes back with none. That produced an empty column list, which made
+// the "these columns are absent" assertion below pass for the wrong reason —
+// an emptiness that says nothing is not the same as a table that lacks them.
+async function _columnsOf(driver, client, table) {
+  var res = await driver.query(client,
+    "SELECT name FROM pragma_table_info('" + table + "')", []);
+  var list = (res && res.rows) ? res.rows : res;
+  if (!list || list.length === 0) {
+    throw new Error("_columnsOf read no columns for " + table +
+      " — the table is missing, or this read is not returning rows");
+  }
+  return list.map(function (r) { return r.name; });
+}
+
+async function run() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-fs-migrate-"));
+  var driver = null;
+  try {
+    var driverObj = helpers._makeSqliteDriver(path.join(tmpDir, "ext.db"));
+    driver = driverObj;
+    var client = await driverObj.connect();
+
+    // A volume that predates the columns.
+    await driverObj.query(client, PRE_0_18_58_ANCHOR, []);
+    var before = await _columnsOf(driverObj, client, "_blamejs_audit_purge_anchor");
+    check("the pre-upgrade anchor has none of the new columns",
+      before.indexOf("signature") === -1 &&
+      before.indexOf("publicKeyFingerprint") === -1 &&
+      before.indexOf("fencingToken") === -1,
+      before.join(","));
+
+    b.externalDb.init({
+      backends: { ops: {
+        connect: driverObj.connect, query: driverObj.query, close: driverObj.close,
+      } },
+    });
+    await b.frameworkSchema.ensureSchema({ externalDbBackend: "ops", dialect: "sqlite" });
+
+    var after = await _columnsOf(driverObj, client, "_blamejs_audit_purge_anchor");
+    check("ensureSchema adds the signature column to the existing table",
+      after.indexOf("signature") !== -1, after.join(","));
+    check("ensureSchema adds the key fingerprint column",
+      after.indexOf("publicKeyFingerprint") !== -1, after.join(","));
+    check("ensureSchema adds the fencing token column",
+      after.indexOf("fencingToken") !== -1, after.join(","));
+
+    // The columns the table already had are untouched — the pass is additive,
+    // and a migration that rebuilt the table would take the rows with it.
+    check("and leaves the columns that were already there",
+      after.indexOf("lastPurgedCounter") !== -1 &&
+      after.indexOf("lastPurgedRowHash") !== -1 &&
+      after.indexOf("archiveBundleId") !== -1 &&
+      after.indexOf("purgedAt") !== -1,
+      after.join(","));
+
+    // Re-running is the normal case — every boot calls this. The engine
+    // answers a column that is already present with an error, and treating
+    // that as a failure would refuse the second start of every deployment.
+    var second = null;
+    try {
+      await b.frameworkSchema.ensureSchema({ externalDbBackend: "ops", dialect: "sqlite" });
+    } catch (e) { second = e; }
+    check("ensureSchema is idempotent — a second pass is not an error",
+      second === null, String(second && second.message));
+
+    var third = await _columnsOf(driverObj, client, "_blamejs_audit_purge_anchor");
+    check("and the column set is unchanged by it",
+      third.join(",") === after.join(","), third.join(","));
+
+    // A row written before the upgrade survives it, which is the whole point:
+    // the boundary it records is what the operator has to be able to keep.
+    await driverObj.query(client,
+      'INSERT INTO "_blamejs_audit_purge_anchor" ' +
+      '("scope", "lastPurgedCounter", "lastPurgedRowHash", "archiveBundleId", "purgedAt") ' +
+      "VALUES ('audit', 7, '" + "a".repeat(128) + "', 'legacy-archive', 1750000000000)", []);
+    var readBack = await driverObj.query(client,
+      'SELECT * FROM "_blamejs_audit_purge_anchor"', []);
+    var row = ((readBack && readBack.rows) ? readBack.rows : readBack)[0];
+    check("a pre-upgrade anchor row reads back with its boundary intact",
+      Number(row.lastPurgedCounter) === 7 && row.archiveBundleId === "legacy-archive",
+      JSON.stringify(row));
+    check("and its new columns are empty rather than invented",
+      row.signature == null && row.publicKeyFingerprint == null,
+      JSON.stringify(row));
+    check("with the fencing token defaulted, so the fence has something to compare",
+      Number(row.fencingToken) === 0, String(row.fencingToken));
+
+    // Only a column that is ALREADY THERE is swallowed. This loop is the last
+    // thing standing between a declared column and a table that silently never
+    // gets it, so a failure meaning anything else — no disk, no permission, a
+    // lock — has to stop the boot rather than leave the schema half-migrated
+    // and the first write to fail at a customer.
+    await b.externalDb.shutdown();
+    var refusals = 0;
+    b.externalDb.init({
+      backends: { ops: {
+        connect: driverObj.connect,
+        query: async function (client, sql, params) {
+          if (/ALTER TABLE/i.test(sql)) {
+            refusals += 1;
+            throw new Error("SQLITE_READONLY: attempt to write a readonly database");
+          }
+          return driverObj.query(client, sql, params);
+        },
+        close: driverObj.close,
+      } },
+    });
+    var propagated = null;
+    try {
+      await b.frameworkSchema.ensureSchema({ externalDbBackend: "ops", dialect: "sqlite" });
+    } catch (e) { propagated = e; }
+    check("an ALTER failure that is not a duplicate column stops ensureSchema",
+      propagated !== null && /readonly database/.test(propagated.message || ""),
+      String(propagated && propagated.message));
+    check("and it reached the alters at all",
+      refusals > 0, "refusals=" + refusals);
+  } finally {
+    try { await b.externalDb.shutdown(); } catch (_e) { /* best-effort */ }
+    try { if (driver && driver._close) driver._close(); } catch (_e) { /* best-effort */ }
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+  }
+}
+
+module.exports = { run: run };
+
+if (require.main === module) {
+  run().then(
+    function () {
+      console.log("[framework-schema-additive-migration] OK — " +
+        helpers.getChecks() + " checks passed");
+    },
+    function (e) { console.error("FAIL:", (e && e.stack) || e); process.exit(1); }
+  );
+}

@@ -42,6 +42,25 @@ function testHelperPredicate() {
   check("isNonNegativeFiniteInt(Infinity)",nb.isNonNegativeFiniteInt(Infinity) === false);
   check("isNonNegativeFiniteInt(NaN)",     nb.isNonNegativeFiniteInt(NaN) === false);
 
+  // isNonNegativeSafeInt — the same question with the range where a Number
+  // stops being able to tell two BIGINTs apart excluded. For a value that gets
+  // rendered into bytes that are signed or hashed, two inputs landing on one
+  // Number means two different statements sharing one signature.
+  check("isNonNegativeSafeInt(0)",  nb.isNonNegativeSafeInt(0) === true);
+  check("isNonNegativeSafeInt(-1)", nb.isNonNegativeSafeInt(-1) === false);
+  check("isNonNegativeSafeInt(MAX_SAFE_INTEGER)",
+    nb.isNonNegativeSafeInt(Number.MAX_SAFE_INTEGER) === true);
+  check("isNonNegativeSafeInt(MAX_SAFE_INTEGER + 2) — the aliasing range",
+    nb.isNonNegativeSafeInt(Number.MAX_SAFE_INTEGER + 2) === false);
+  check("isNonNegativeSafeInt(Infinity)", nb.isNonNegativeSafeInt(Infinity) === false);
+  check("isNonNegativeSafeInt(NaN)",      nb.isNonNegativeSafeInt(NaN) === false);
+  check("isNonNegativeSafeInt(1.5)",      nb.isNonNegativeSafeInt(1.5) === false);
+  check("isNonNegativeSafeInt(\"3\") — a numeric string is not a number",
+    nb.isNonNegativeSafeInt("3") === false);
+  // The distinction the two predicates exist to draw.
+  check("the finite predicate still accepts what the safe one refuses",
+    nb.isNonNegativeFiniteInt(Number.MAX_SAFE_INTEGER + 2) === true);
+
   // Shape format
   check("shape(Infinity)",   nb.shape(Infinity)   === "number Infinity");
   check("shape(NaN)",        nb.shape(NaN)        === "number NaN");
