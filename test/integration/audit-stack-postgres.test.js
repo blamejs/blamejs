@@ -347,6 +347,7 @@ async function run() {
     await _testBreakGlassConcurrentDoubleClaim(driver);
     await _testCryptoFieldKRowRoundTrip(liveQueryAll);
     await _testTamperDetection();
+    await _testClusterPurgeDeletionAgainstWormTriggers(liveQueryAll);
 
   } finally {
     try { if (driverClient) await driver.close(driverClient); } catch (_e) {}
@@ -624,6 +625,91 @@ async function _testAuditToolsBundleAndPurge(tmpDir) {
         "coerced lastPurgedCounter BIGINT→number",
         anchorReadBack && anchorReadBack.lastPurgedCounter === 5 &&
         anchorReadBack.lastPurgedRowHash === "anchor-hash");
+
+}
+
+// The REAL cluster deletion, with no injected apply. Runs LAST, because it
+// removes rows.
+//
+// Every purge assertion above uses a no-op apply so the chain survives for
+// the sections in between — which means the actual DELETE, and the
+// append-only BEFORE-DELETE trigger ensureSchema installs on these tables,
+// were never executed against this backend. That is the configuration in
+// which the bug cannot appear: the cluster branch deleted straight through a
+// trigger it did not know about, so a cluster purge failed AFTER the signed
+// boundary had been recorded, leaving rows present that verification skips.
+//
+// The counter has to match real rows. A DELETE that matches none never fires
+// a per-row trigger, so it passes whether or not the guard is suspended.
+async function _testClusterPurgeDeletionAgainstWormTriggers(liveQueryAll) {
+  // The tamper-detection section above drops both guards so it can edit a
+  // row, so put them back — this test is about what a purge does when the
+  // guard IS installed, and without that it would pass for the wrong reason.
+  await b.frameworkSchema.ensureSchema({ externalDbBackend: "ops", dialect: "postgres" });
+
+  var before = await liveQueryAll(
+    'SELECT "monotonicCounter" FROM _blamejs_audit_log ORDER BY "monotonicCounter" ASC');
+  check("there are rows for the purge deletion to act on", before.length > 0,
+        "rows=" + before.length);
+  var through = Number(before[0].monotonicCounter);
+
+  // Prove the guard is live before relying on it: an ordinary DELETE of the
+  // same rows must be refused. A test that skipped this would pass whether
+  // the trigger existed or not.
+  var guardLive = null;
+  try {
+    await b.clusterStorage.execute(
+      'DELETE FROM audit_log WHERE "monotonicCounter" <= ?', [through]);
+  } catch (e) { guardLive = e; }
+  check("the append-only guard refuses an ordinary DELETE of those rows",
+        guardLive !== null && /append-only/i.test(guardLive.message || ""),
+        String(guardLive && guardLive.message).slice(0, 160));
+
+  var refused = null;
+  try {
+    await b.db.purgeAuditChain({ lastPurgedCounter: through });
+  } catch (e) { refused = e; }
+  check("purgeAuditChain's cluster DELETE passes the live append-only trigger",
+        refused === null, String(refused && refused.message).slice(0, 200));
+
+  var after = await liveQueryAll(
+    'SELECT "monotonicCounter" FROM _blamejs_audit_log WHERE "monotonicCounter" <= $1',
+    [through]);
+  check("and the row it covered is actually gone", after.length === 0,
+        "remaining=" + after.length);
+
+  // The guard is never taken off. It stays installed and asks whether THIS
+  // connection was granted permission, so a purge cannot open a window in
+  // which some other connection may delete audit rows.
+  var perm = b.frameworkSchema.purgePermissionSql("postgres");
+  check("postgres grants purge permission per connection rather than dropping the guard",
+        perm && /SET LOCAL/.test(perm.grant), JSON.stringify(perm));
+
+  // Granted inside a transaction, the delete is allowed.
+  var grantedDelete = null;
+  try {
+    await b.clusterStorage.transaction(async function (tx) {
+      await tx.execute(perm.grant, []);
+      grantedDelete = await tx.execute(
+        'DELETE FROM audit_log WHERE "monotonicCounter" <= ?', [through + 1]);
+    });
+  } catch (e) { grantedDelete = e; }
+  check("a connection holding the permission may delete",
+        grantedDelete && !(grantedDelete instanceof Error),
+        String(grantedDelete && grantedDelete.message));
+
+  // And the permission does not leak: the very next statement, on a
+  // connection that never asked for it, is refused again. `SET LOCAL` ends
+  // with its transaction, so nothing has to remember to clean up.
+  var afterGrant = null;
+  try {
+    await b.clusterStorage.execute(
+      'DELETE FROM audit_log WHERE "monotonicCounter" <= ?', [through + 5]);
+  } catch (e) { afterGrant = e; }
+  check("and the permission does not outlive its transaction",
+        afterGrant !== null && /append-only/i.test(afterGrant.message || ""),
+        String(afterGrant && afterGrant.message).slice(0, 160));
+
 }
 
 // ====================================================================

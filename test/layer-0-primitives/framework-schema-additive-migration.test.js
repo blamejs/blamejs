@@ -156,6 +156,115 @@ async function run() {
       String(propagated && propagated.message));
     check("and it reached the alters at all",
       refusals > 0, "refusals=" + refusals);
+
+    // The append-only guard, and the one operation allowed to step around it.
+    //
+    // On SQLite a trigger cannot read session state, so the guard genuinely
+    // comes off for the deletion and goes back afterwards. What must not
+    // happen is it staying off — a failed purge that left the audit table
+    // writable would remove the protection the whole design rests on.
+    await b.externalDb.shutdown();
+    b.externalDb.init({
+      backends: { ops: {
+        connect: driverObj.connect, query: driverObj.query, close: driverObj.close,
+      } },
+    });
+    await b.frameworkSchema.ensureSchema({ externalDbBackend: "ops", dialect: "sqlite" });
+
+    var sawSuspended = false;
+    var bodyThrew = null;
+    try {
+      await b.frameworkSchema.withDeleteTriggersSuspended(
+        { externalDbBackend: "ops", dialect: "sqlite" },
+        async function () {
+          var trg = await driverObj.query(client,
+            "SELECT name FROM sqlite_master WHERE type = 'trigger' " +
+            "AND name = 'no_delete__blamejs_audit_log'", []);
+          var rows = (trg && trg.rows) ? trg.rows : trg;
+          sawSuspended = (rows || []).length === 0;
+          throw new Error("the purge failed after the guard came off");
+        });
+    } catch (e) { bodyThrew = e; }
+
+    check("withDeleteTriggersSuspended runs its body with the DELETE guard off",
+      sawSuspended === true);
+    check("and propagates the body's failure rather than swallowing it",
+      bodyThrew !== null && /purge failed/.test(bodyThrew.message || ""),
+      String(bodyThrew && bodyThrew.message));
+
+    var restored = await driverObj.query(client,
+      "SELECT name FROM sqlite_master WHERE type = 'trigger' " +
+      "AND name = 'no_delete__blamejs_audit_log'", []);
+    var restoredRows = (restored && restored.rows) ? restored.rows : restored;
+    check("and restores it even when the body threw",
+      (restoredRows || []).length === 1,
+      "a failed purge must not leave the audit table writable");
+
+    // The UPDATE guard is never touched: a purge removes rows, it never
+    // edits them, and taking off a protection the operation does not need
+    // would widen the window for nothing.
+    var updateGuard = await driverObj.query(client,
+      "SELECT name FROM sqlite_master WHERE type = 'trigger' " +
+      "AND name = 'no_update__blamejs_audit_log'", []);
+    var updateRows = (updateGuard && updateGuard.rows) ? updateGuard.rows : updateGuard;
+    check("and never touches the UPDATE guard", (updateRows || []).length === 1);
+
+    // Nor any guard on a table the purge does not touch. Restoring by
+    // re-running the full installer would drop and recreate every trigger on
+    // every WORM table, so putting one delete guard back would briefly remove
+    // consent_log's — a window this operation never needed.
+    var consentGuards = await driverObj.query(client,
+      "SELECT name FROM sqlite_master WHERE type = 'trigger' " +
+      "AND name LIKE '%_blamejs_consent_log'", []);
+    var consentRows = (consentGuards && consentGuards.rows)
+      ? consentGuards.rows : consentGuards;
+    check("and leaves the guards on tables the purge does not touch",
+      (consentRows || []).length === 2,
+      (consentRows || []).map(function (r) { return r.name; }).join(","));
+
+    // If restoring one guard fails, the rest are still attempted. Stopping at
+    // the first error would turn one unrestorable trigger into several tables
+    // left writable — the opposite of what restoring is for. The failure is
+    // reported, naming what could not be put back.
+    await b.externalDb.shutdown();
+    var failFor = null;
+    b.externalDb.init({
+      backends: { ops: {
+        connect: driverObj.connect,
+        query: async function (client2, sql, params) {
+          if (failFor && sql.indexOf(failFor) !== -1 && /CREATE TRIGGER/i.test(sql)) {
+            throw new Error("cannot recreate the guard on " + failFor);
+          }
+          return driverObj.query(client2, sql, params);
+        },
+        close: driverObj.close,
+      } },
+    });
+
+    failFor = "_blamejs_audit_log";
+    var restoreErr = null;
+    try {
+      await b.frameworkSchema.withDeleteTriggersSuspended(
+        { externalDbBackend: "ops", dialect: "sqlite" },
+        async function () { return "purged"; });
+    } catch (e) { restoreErr = e; }
+    failFor = null;
+
+    check("a guard that cannot be restored is reported, naming the table",
+      restoreErr !== null &&
+      restoreErr.code === "framework-schema/worm-guard-not-restored" &&
+      /_blamejs_audit_log/.test(restoreErr.message || ""),
+      String(restoreErr && (restoreErr.code || restoreErr.message)));
+
+    // The OTHER table's guard was still put back, which is the point.
+    var checkpointGuard = await driverObj.query(client,
+      "SELECT name FROM sqlite_master WHERE type = 'trigger' " +
+      "AND name = 'no_delete__blamejs_audit_checkpoints'", []);
+    var cpRows = (checkpointGuard && checkpointGuard.rows)
+      ? checkpointGuard.rows : checkpointGuard;
+    check("and the guards after it were restored anyway",
+      (cpRows || []).length === 1,
+      "one table that cannot be restored must not cost the others");
   } finally {
     try { await b.externalDb.shutdown(); } catch (_e) { /* best-effort */ }
     try { if (driver && driver._close) driver._close(); } catch (_e) { /* best-effort */ }

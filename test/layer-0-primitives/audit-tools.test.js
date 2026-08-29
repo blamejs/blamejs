@@ -673,6 +673,36 @@ async function runIntegrated(root) {
       Number(anchorAfterReplay.lastPurgedCounter) === Number(anchorBeforeReplay.lastPurgedCounter) &&
       anchorAfterReplay.lastPurgedRowHash === anchorBeforeReplay.lastPurgedRowHash);
 
+    // The retry allowance is for THIS archive's range, not for any archive
+    // that happens to end where it ended. One covering only the tail —
+    // ending at the same counter and row hash, starting later — would
+    // otherwise pass as a retry, delete everything through the boundary, and
+    // leave the rows before its own start with no retained copy anywhere.
+    // Properly SIGNED with the wider range, so the signature is not what
+    // refuses it — the retry comparison is.
+    var widerAnchor = {
+      scope:             "audit",
+      lastPurgedCounter: Number(anchorAfterReplay.lastPurgedCounter),
+      lastPurgedRowHash: String(anchorAfterReplay.lastPurgedRowHash),
+      archiveBundleId:   String(anchorAfterReplay.archiveBundleId),
+      purgedAt:          Number(anchorAfterReplay.purgedAt),
+      firstPurgedCounter: Number(anchorAfterReplay.firstPurgedCounter || 0) + 5,
+      fencingToken:      Number(anchorAfterReplay.fencingToken || 0),
+    };
+    widerAnchor.signature = b.auditSign.sign(
+      b.auditChain.purgeAnchorPayload(widerAnchor));
+    widerAnchor.publicKeyFingerprint = b.auditSign.getPublicKeyFingerprint();
+    check("purge: that anchor is itself valid, so the signature is not the refusal",
+      b.auditChain.verifyPurgeAnchor(widerAnchor).status === "valid");
+
+    check("purge: an archive ending at the boundary but starting later is not a retry",
+      await _expectCode(function () {
+        return b.auditTools.purge({
+          confirm: true, archive: archiveDir, passphrase: PASS,
+          readAnchor: function () { return Promise.resolve(widerAnchor); },
+        });
+      }, "audit-tools/non-monotonic-purge"));
+
     // A DIFFERENT range that does not continue from the boundary is still
     // refused — the retry allowance is for this archive, not for any archive.
     check("purge: a non-contiguous archive is still refused",
@@ -687,6 +717,33 @@ async function runIntegrated(root) {
         });
       }, "audit-tools/prior-anchor-not-verified"));
 
+    // An anchor written before the range start was recorded carries 0 there.
+    // Chain counters begin at 1, so no real range starts at 0 and the value
+    // means "unrecorded" rather than "started at zero" — holding it to the
+    // archive's start would turn away the retry that finishes an interrupted
+    // purge on such a volume, and the contiguity check refuses it too, since
+    // the anchor already ends where this archive ends. It gets the end-only
+    // match it was written under.
+    var noRangeAnchor = Object.assign({}, anchorAfterReplay, { firstPurgedCounter: 0 });
+    noRangeAnchor.signature = b.auditSign.sign(
+      b.auditChain.purgeAnchorPayload(noRangeAnchor));
+    noRangeAnchor.publicKeyFingerprint = b.auditSign.getPublicKeyFingerprint();
+    check("purge: an anchor with no recorded range start is itself valid",
+      b.auditChain.verifyPurgeAnchor(noRangeAnchor).status === "valid",
+      JSON.stringify(b.auditChain.verifyPurgeAnchor(noRangeAnchor)));
+    var legacyRetry = await b.auditTools.purge({
+      confirm: true, archive: archiveDir, passphrase: PASS,
+      readAnchor: function () { return Promise.resolve(noRangeAnchor); },
+    });
+    check("purge: replaying its archive against it is still a retry",
+      legacyRetry.purged === true && legacyRetry.rowsDeleted === 0,
+      JSON.stringify(legacyRetry));
+    var migratedAnchor = await b.clusterStorage.executeOne(
+      "SELECT * FROM _blamejs_audit_purge_anchor WHERE scope = 'audit'");
+    check("purge: and the anchor it rewrites records the range start",
+      Number(migratedAnchor.firstPurgedCounter) > 0 &&
+      b.auditChain.verifyPurgeAnchor(migratedAnchor).status === "valid",
+      "firstPurgedCounter=" + migratedAnchor.firstPurgedCounter);
 
     // ---- an append racing the purge lands on the right side of it ----
     // The delete and the anchor write are two writes. An append between them
@@ -761,6 +818,10 @@ async function runIntegrated(root) {
       lastPurgedRowHash: String(highAnchor.lastPurgedRowHash),
       archiveBundleId:   String(highAnchor.archiveBundleId),
       purgedAt:          Number(highAnchor.purgedAt),
+      // Every signed field has to be the row's own, including the range
+      // start — signing a different one produces a valid signature over an
+      // anchor nobody stored.
+      firstPurgedCounter: Number(highAnchor.firstPurgedCounter || 0),
       fencingToken:      9999,
     };
     var highSig = b.auditSign.sign(b.auditChain.purgeAnchorPayload(highSigned));
@@ -1022,15 +1083,15 @@ async function runIntegrated(root) {
     await b.clusterStorage.execute(
       "UPDATE _blamejs_audit_purge_anchor SET signature = NULL, " +
       "publicKeyFingerprint = NULL WHERE scope = 'audit'");
-    var legacyAnchor = await b.clusterStorage.executeOne(
+    var unsignedAnchor = await b.clusterStorage.executeOne(
       "SELECT * FROM _blamejs_audit_purge_anchor WHERE scope = 'audit'");
     check("upgrade: the pre-signing anchor is refused",
-      b.auditChain.verifyPurgeAnchor(legacyAnchor).status === "unsigned");
+      b.auditChain.verifyPurgeAnchor(unsignedAnchor).status === "unsigned");
 
     var pinned = await b.auditTools.signExistingPurgeAnchor();
     check("upgrade: signing it reports what it pinned",
       pinned.signed === true &&
-      pinned.lastPurgedCounter === Number(legacyAnchor.lastPurgedCounter),
+      pinned.lastPurgedCounter === Number(unsignedAnchor.lastPurgedCounter),
       JSON.stringify(pinned));
 
     var repaired = await b.clusterStorage.executeOne(
@@ -1038,8 +1099,8 @@ async function runIntegrated(root) {
     check("upgrade: the repaired anchor verifies",
       b.auditChain.verifyPurgeAnchor(repaired).status === "valid");
     check("upgrade: and still names the same boundary it always did",
-      Number(repaired.lastPurgedCounter) === Number(legacyAnchor.lastPurgedCounter) &&
-      repaired.lastPurgedRowHash === legacyAnchor.lastPurgedRowHash);
+      Number(repaired.lastPurgedCounter) === Number(unsignedAnchor.lastPurgedCounter) &&
+      repaired.lastPurgedRowHash === unsignedAnchor.lastPurgedRowHash);
 
     // Running it again is a no-op rather than a re-sign, so an operator who
     // leaves the flag set does not keep rewriting the row.

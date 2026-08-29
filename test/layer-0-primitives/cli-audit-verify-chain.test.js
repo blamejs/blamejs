@@ -10,6 +10,7 @@ var sqlite = require("node:sqlite");
 var helpers = require("../helpers");
 var check = helpers.check;
 var cli = require("../../lib/cli");
+var b = require("../../index.js");
 
 function _tmpDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix + "-"));
@@ -168,6 +169,7 @@ async function run() {
   check("verify-chain: and claims nothing about an archive when there is no anchor",
         ctxB.out().indexOf("archive") === -1, ctxB.out());
 
+
   // A flag written without its value parses as `true`. Ignoring it silently is
   // the worst reading: the operator asked for the anchor to be checked, the
   // command does not check it, and reports success — the flag exists to turn
@@ -187,10 +189,191 @@ async function run() {
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
-module.exports = { run: run };
+// The flag's whole job is to turn "the anchor names an archive" into "and the
+// archive is there", so every check above it — a directory with no bundles, a
+// chain with no anchor — leaves the answering half untested. This drives the
+// real path: rows recorded, archived, purged, then read back through the
+// command an operator runs, against a real bundle on disk.
+async function runArchiveResolution() {
+  var dir = _tmpDir("blamejs-cli-archive-dir");
+  var PASS = "cli-archive-dir-passphrase-not-secret";
+  process.env.BLAMEJS_SKIP_NTP_CHECK           = "1";
+  process.env.BLAMEJS_VAULT_PASSPHRASE         = PASS;
+  process.env.BLAMEJS_AUDIT_SIGNING_PASSPHRASE = PASS;
+  b.cluster._resetForTest();
+  b.audit._resetForTest();
+  b.vault._resetForTest();
+  b.db._resetForTest();
+  // Plain at-rest because the command opens a SQLite FILE: under the encrypted
+  // default the durable artifact is db.enc, which it cannot read, and the test
+  // would be checking a different volume than the one the purge wrote to.
+  await b.vault.init({ dataDir: dir, mode: "plaintext" });
+  await b.db.init({
+    dataDir: dir, atRest: "plain", allowNonTmpfsTmpDir: true,
+    schema: [{ name: "notes", columns: { _id: "TEXT PRIMARY KEY", body: "TEXT" } }],
+  });
+
+  b.audit.registerNamespace("cli");
+  for (var si = 0; si < 4; si += 1) {
+    await b.audit.record({ action: "cli.archive_dir.seed", outcome: "success" });
+  }
+  await b.audit.flush();
+  await b.audit.checkpoint();
+
+  var bundles = path.join(dir, "bundles");
+  fs.mkdirSync(bundles, { recursive: true });
+  var bundleOut = path.join(bundles, "slice-1");
+  await b.auditTools.archive({ out: bundleOut, passphrase: PASS, before: Date.now() + 1000 });
+  await b.auditTools.purge({ confirm: true, archive: bundleOut, passphrase: PASS });
+
+  var pubPath = path.join(dir, "audit-sign.pub.pem");
+  fs.writeFileSync(pubPath, b.auditSign.getPublicKey());
+  await b.db.close();
+
+  var dbFile = path.join(dir, "blamejs.db");
+  var baseArgs = ["audit", "verify-chain", "--db", dbFile,
+                  "--public-key", pubPath, "--archive-dir", bundles];
+
+  var ctxOk = _captureCtx();
+  var cOk = await cli.main(baseArgs, ctxOk);
+  check("verify-chain: a real bundle under --archive-dir resolves the anchor",
+        cOk === 0 && /archive .* found/.test(ctxOk.out()),
+        "exit=" + cOk + " out=" + ctxOk.out() + " err=" + ctxOk.err());
+
+  // A bundle directory is named by whoever ran `audit archive`; the anchor
+  // records the covering checkpoint's id. Reporting found means the manifests
+  // were read, not that a directory name happened to match.
+  check("verify-chain: and did so without the directory name matching the id",
+        ctxOk.out().indexOf("slice-1") === -1, ctxOk.out());
+
+  // An archive is refused without its covering checkpoint, so a bundle whose
+  // checkpoint.enc is gone cannot be verified or restored. Reporting it found
+  // is the false guarantee the flag exists to remove.
+  var ckptPath = path.join(bundleOut, "checkpoint.enc");
+  var ckptBytes = fs.readFileSync(ckptPath);
+  check("verify-chain: the bundle carries a checkpoint payload to remove",
+        ckptBytes.length > 0);
+  fs.writeFileSync(ckptPath, Buffer.alloc(0));
+
+  var ctxNoCkpt = _captureCtx();
+  var cNoCkpt = await cli.main(baseArgs, ctxNoCkpt);
+  check("verify-chain: an emptied checkpoint.enc is not a resolvable archive",
+        cNoCkpt === 1 && /could not be produced/.test(ctxNoCkpt.err()),
+        "exit=" + cNoCkpt + " out=" + ctxNoCkpt.out() + " err=" + ctxNoCkpt.err());
+
+  fs.writeFileSync(ckptPath, ckptBytes);
+  // The same removal on the row payload, so the check is not passing on the
+  // checkpoint alone: both members the reader demands are required.
+  var rowsPath = path.join(bundleOut, "rows.enc");
+  var rowsBytes = fs.readFileSync(rowsPath);
+  fs.writeFileSync(rowsPath, Buffer.alloc(0));
+  var ctxNoRows = _captureCtx();
+  var cNoRows = await cli.main(baseArgs, ctxNoRows);
+  check("verify-chain: an emptied rows.enc is not a resolvable archive either",
+        cNoRows === 1 && /could not be produced/.test(ctxNoRows.err()),
+        "exit=" + cNoRows + " err=" + ctxNoRows.err());
+
+  fs.writeFileSync(rowsPath, rowsBytes);
+  var ctxBack = _captureCtx();
+  check("verify-chain: and resolves again once both are back",
+        (await cli.main(baseArgs, ctxBack)) === 0, ctxBack.err());
+
+  // A directory reports a non-zero size on most filesystems, so a check on
+  // size alone accepts one standing where the payload should be — a bundle
+  // the reader cannot open, reported as producible.
+  fs.rmSync(rowsPath);
+  fs.mkdirSync(rowsPath);
+  var ctxDir = _captureCtx();
+  var cDir = await cli.main(baseArgs, ctxDir);
+  check("verify-chain: a directory in place of rows.enc is not a payload",
+        cDir === 1 && /could not be produced/.test(ctxDir.err()),
+        "exit=" + cDir + " err=" + ctxDir.err());
+  fs.rmSync(rowsPath, { recursive: true });
+  fs.writeFileSync(rowsPath, rowsBytes);
+
+  // Present and the right length is not the same as intact. A payload altered
+  // in place decrypts to nothing, so the rows it accounts for cannot be
+  // produced — the manifest records what the bytes should hash to, and that is
+  // checkable here without the passphrase.
+  var corrupted = Buffer.from(rowsBytes);
+  corrupted[corrupted.length - 1] = corrupted[corrupted.length - 1] ^ 0xff;
+  fs.writeFileSync(rowsPath, corrupted);
+  check("verify-chain: the corrupted payload is the same size as the original",
+        fs.statSync(rowsPath).size === rowsBytes.length);
+  var ctxCorrupt = _captureCtx();
+  var cCorrupt = await cli.main(baseArgs, ctxCorrupt);
+  check("verify-chain: a payload that does not match the manifest is not found",
+        cCorrupt === 1 && /could not be produced/.test(ctxCorrupt.err()),
+        "exit=" + cCorrupt + " out=" + ctxCorrupt.out() + " err=" + ctxCorrupt.err());
+  fs.writeFileSync(rowsPath, rowsBytes);
+
+  // An archive is identified by the checkpoint that covers it, and one
+  // checkpoint can cover several slices: archiving a subset older than the
+  // last checkpoint is a supported shape, so two bundles carry one identifier.
+  // Resolving on that alone reports the anchored slice as present because a
+  // DIFFERENT one still is — and that one holds none of the rows the anchor
+  // licensed away.
+  await b.db.init({
+    dataDir: dir, atRest: "plain", allowNonTmpfsTmpDir: true,
+    schema: [{ name: "notes", columns: { _id: "TEXT PRIMARY KEY", body: "TEXT" } }],
+  });
+  for (var s2 = 0; s2 < 4; s2 += 1) {
+    await b.audit.record({ action: "cli.archive_dir.seed", outcome: "success" });
+  }
+  await b.audit.flush();
+  // `before` selects by recorded time, so the two slices need distinct
+  // milliseconds to be separable at all.
+  var cut = Date.now() + 1;
+  await helpers.passiveObserve(25, "cli --archive-dir: separating two slices in time");
+  for (var s3 = 0; s3 < 4; s3 += 1) {
+    await b.audit.record({ action: "cli.archive_dir.seed", outcome: "success" });
+  }
+  await b.audit.flush();
+  // One checkpoint over both batches — what makes the two bundles share an id.
+  await b.audit.checkpoint();
+
+  var olderOut = path.join(bundles, "slice-older");
+  await b.auditTools.archive({ out: olderOut, passphrase: PASS, before: cut });
+  await b.auditTools.purge({ confirm: true, archive: olderOut, passphrase: PASS });
+  var newerOut = path.join(bundles, "slice-newer");
+  await b.auditTools.archive({ out: newerOut, passphrase: PASS, before: Date.now() + 1000 });
+  await b.auditTools.purge({ confirm: true, archive: newerOut, passphrase: PASS });
+  await b.db.close();
+
+  var olderManifest = JSON.parse(fs.readFileSync(path.join(olderOut, "manifest.json"), "utf8"));
+  var newerManifest = JSON.parse(fs.readFileSync(path.join(newerOut, "manifest.json"), "utf8"));
+  // The fixture's own control: without a shared identifier the removal below
+  // would be unfindable anyway and the check would pass for the wrong reason.
+  check("verify-chain: the two slices share one covering checkpoint id",
+        String(olderManifest.checkpoint.checkpointId) ===
+        String(newerManifest.checkpoint.checkpointId),
+        olderManifest.checkpoint.checkpointId + " vs " + newerManifest.checkpoint.checkpointId);
+  check("verify-chain: and cover different ranges under it",
+        Number(olderManifest.range.lastCounter) !== Number(newerManifest.range.lastCounter),
+        olderManifest.range.lastCounter + " vs " + newerManifest.range.lastCounter);
+
+  var ctxTwo = _captureCtx();
+  check("verify-chain: both bundles present resolves the anchored one",
+        (await cli.main(baseArgs, ctxTwo)) === 0, ctxTwo.err());
+
+  // Remove the slice the anchor names; its sibling stays, under the same id.
+  fs.rmSync(newerOut, { recursive: true, force: true });
+  var ctxSibling = _captureCtx();
+  var cSibling = await cli.main(baseArgs, ctxSibling);
+  check("verify-chain: a sibling under the same id is not the anchored archive",
+        cSibling === 1 && /could not be produced/.test(ctxSibling.err()),
+        "exit=" + cSibling + " out=" + ctxSibling.out() + " err=" + ctxSibling.err());
+
+  b.audit._resetForTest();
+  b.vault._resetForTest();
+  b.db._resetForTest();
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
+module.exports = { run: async function () { await run(); await runArchiveResolution(); } };
 
 if (require.main === module) {
-  run().then(
+  module.exports.run().then(
     function () { console.log("OK — " + helpers.getChecks() + " checks passed"); },
     function (e) { console.error("FAIL:", e.stack || e); process.exit(1); }
   );

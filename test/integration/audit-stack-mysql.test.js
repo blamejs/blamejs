@@ -303,6 +303,7 @@ async function run() {
     await _testCryptoFieldKRowRoundTrip();
     await _testDerivedHashDualRead();
     await _testTamperDetection();
+    await _testClusterPurgeDeletionAgainstWormTriggers();
 
   } finally {
     try { await b.cluster.shutdown(); } catch (_e) {}
@@ -718,6 +719,59 @@ async function _testTamperDetection() {
     "WHERE `monotonicCounter` = 2", DB_NAME);
   var v = await b.audit.verify({});
   check("audit.verify returns ok:false after a hashed column is tampered on MySQL", v.ok === false);
+}
+
+// The REAL cluster deletion on MySQL, with the append-only guard installed.
+//
+// MySQL's DELETE guard is unconditional — a conditional body needs an internal
+// semicolon and stops being a single sendable statement — so a purge here
+// suspends the guard rather than being granted permission through it, which is
+// the opposite of the Postgres path. Getting that routing wrong is invisible
+// until a purge actually runs: a permission the trigger never inspects leaves
+// every deletion refused, after the boundary has already advanced.
+async function _testClusterPurgeDeletionAgainstWormTriggers() {
+  // The tamper section above drops both guards; put them back, or this passes
+  // for the wrong reason.
+  await b.frameworkSchema.ensureSchema({ externalDbBackend: "ops", dialect: "mysql" });
+
+  var rows = _parseBatch(_mysqlRoot(
+    "SELECT `monotonicCounter` FROM `_blamejs_audit_log` " +
+    "ORDER BY `monotonicCounter` ASC LIMIT 1", DB_NAME)).rows;
+  check("there are rows for the purge deletion to act on", rows.length > 0,
+        "rows=" + rows.length);
+  var through = Number(rows[0].monotonicCounter);
+
+  // Prove the guard is live before relying on it.
+  var guardLive = null;
+  try {
+    await b.clusterStorage.execute(
+      "DELETE FROM audit_log WHERE `monotonicCounter` <= ?", [through]);
+  } catch (e) { guardLive = e; }
+  check("MySQL: the append-only guard refuses an ordinary DELETE",
+        guardLive !== null && /append-only/i.test(guardLive.message || ""),
+        String(guardLive && guardLive.message).slice(0, 160));
+
+  var refused = null;
+  try {
+    await b.db.purgeAuditChain({ lastPurgedCounter: through });
+  } catch (e) { refused = e; }
+  check("MySQL: purgeAuditChain's cluster DELETE passes the live guard",
+        refused === null, String(refused && refused.message).slice(0, 200));
+
+  var after = _parseBatch(_mysqlRoot(
+    "SELECT `monotonicCounter` FROM `_blamejs_audit_log` " +
+    "WHERE `monotonicCounter` <= " + through, DB_NAME)).rows;
+  check("MySQL: and the row it covered is gone", after.length === 0,
+        "remaining=" + after.length);
+
+  var stillGuarded = null;
+  try {
+    await b.clusterStorage.execute(
+      "DELETE FROM audit_log WHERE `monotonicCounter` <= ?", [through + 1]);
+  } catch (e) { stillGuarded = e; }
+  check("MySQL: and the guard is restored once the purge is done",
+        stillGuarded !== null,
+        "a purge must not leave the audit table writable");
 }
 
 module.exports = { run: run };

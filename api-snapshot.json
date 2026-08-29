@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.18.58",
-  "createdAt": "2026-08-28T19:10:36.020Z",
+  "createdAt": "2026-08-29T00:11:49.430Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -2518,7 +2518,7 @@
         },
         "purgeAnchorPayload": {
           "type": "function",
-          "arity": 1
+          "arity": 2
         },
         "verifyChain": {
           "type": "function",
@@ -17792,6 +17792,10 @@
               "type": "primitive",
               "valueType": "string"
             },
+            "firstPurgedCounter": {
+              "type": "primitive",
+              "valueType": "string"
+            },
             "flowChildName": {
               "type": "primitive",
               "valueType": "string"
@@ -18187,6 +18191,10 @@
           "type": "function",
           "arity": 0
         },
+        "purgePermissionSql": {
+          "type": "function",
+          "arity": 1
+        },
         "setTablePrefix": {
           "type": "function",
           "arity": 1
@@ -18194,6 +18202,10 @@
         "tableName": {
           "type": "function",
           "arity": 1
+        },
+        "withDeleteTriggersSuspended": {
+          "type": "function",
+          "arity": 2
         }
       }
     },

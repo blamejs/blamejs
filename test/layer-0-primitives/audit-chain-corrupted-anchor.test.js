@@ -26,6 +26,13 @@ function _mockQuery(anchorRow, opts) {
       // and a verifier reading the file directly never runs the migration that
       // would add them. The database answers a SELECT naming them with an
       // error, exactly as SQLite and Postgres do.
+      // A table that has the signature columns but not the newest one. The
+      // reader must narrow ONE step — to the projection without
+      // firstPurgedCounter — rather than dropping to the oldest shape, which
+      // omits `signature` and would read a signed anchor as unsigned.
+      if (opts && opts.refuseRangeColumn && /firstPurgedCounter/i.test(sql)) {
+        return Promise.reject(new Error('no such column: "firstPurgedCounter"'));
+      }
       if (refuseSignatureColumns && /signature/i.test(sql)) {
         // The wording differs per engine, and the difference matters: Postgres
         // says a missing COLUMN and a missing TABLE almost identically, so a
@@ -146,16 +153,53 @@ async function testAnchorMustProveItWasWrittenWithTheSigningKey() {
     // contents of. The consumer supplies that check, because only they know
     // where bundles live.
     var askedFor = [];
+    var askedRange = null;
     var withArchive = await _verifyWith(signedAnchor, undefined, {
-      resolveArchive: function (id) { askedFor.push(id); return true; },
+      resolveArchive: function (id, range) {
+        askedFor.push(id);
+        askedRange = range;
+        return true;
+      },
     });
     check("a caller-supplied archive check is asked about the recorded id",
       askedFor.length === 1 && askedFor[0] === forged.archiveBundleId,
       JSON.stringify(askedFor));
+    // The id does not name one bundle: slices archived under a single covering
+    // checkpoint all carry its id. A resolver holding only the id would accept
+    // a surviving sibling as proof the anchored slice is still there, so the
+    // range it has to match travels with it.
+    check("and is given the range the anchor covers, not the id alone",
+      askedRange !== null &&
+      Number(askedRange.lastCounter) === Number(signedAnchor.lastPurgedCounter) &&
+      String(askedRange.lastRowHash) === String(signedAnchor.lastPurgedRowHash) &&
+      Number(askedRange.firstCounter) === Number(signedAnchor.firstPurgedCounter || 0),
+      JSON.stringify(askedRange));
     check("and a resolvable archive is reported as resolved",
       withArchive.result && withArchive.result.ok === true &&
       withArchive.result.purgeAnchor.archiveResolved === true,
       JSON.stringify(withArchive.result && withArchive.result.purgeAnchor));
+
+    // Each purge REPLACES the anchor, so after several contiguous ones the
+    // boundary licenses everything below it while the row names only the
+    // newest bundle. Resolving that bundle says nothing about the earlier
+    // ones, and a report where `archiveResolved` stood for the whole licensed
+    // range would claim a recoverability nothing checked. So the report says
+    // which range the named archive actually covers.
+    var laterSlice = Object.assign({}, signedAnchor, { firstPurgedCounter: 6 });
+    laterSlice.signature = b.auditSign.sign(
+      b.auditChain.purgeAnchorPayload(laterSlice));
+    var sliceResult = await _verifyWith(laterSlice, undefined, {
+      resolveArchive: function () { return true; },
+    });
+    check("the report says which range the named archive covers",
+      sliceResult.result && sliceResult.result.purgeAnchor &&
+      sliceResult.result.purgeAnchor.archiveCoversFrom === 6 &&
+      sliceResult.result.purgeAnchor.archiveCoversTo === forged.lastPurgedCounter,
+      JSON.stringify(sliceResult.result && sliceResult.result.purgeAnchor));
+    check("which is narrower than the boundary it licenses",
+      sliceResult.result.purgeAnchor.archiveCoversFrom >
+      sliceResult.result.purgeAnchor.licensedFrom,
+      "an archive covering only the tail must not read as covering the whole range");
 
     var missingArchive = await _verifyWith(signedAnchor, undefined, {
       resolveArchive: function () { return false; },
@@ -300,6 +344,51 @@ async function testAnchorMustProveItWasWrittenWithTheSigningKey() {
       legacy.result && legacy.result.ok === false &&
       /no signature/i.test(legacy.result.reason || ""),
       JSON.stringify(legacy.result));
+
+    // An anchor written before the range start was covered by the signature.
+    // Its signature is over the shorter bytes, and the additive migration
+    // fills the column with 0 — so rebuilding the current layout gives
+    // different bytes and it would read as forged. Refusing it would strand a
+    // volume nobody touched.
+    var preRangeSigned = Object.assign({}, signedAnchor, { firstPurgedCounter: 0 });
+    preRangeSigned.signature = b.auditSign.sign(
+      b.auditChain.purgeAnchorPayload(preRangeSigned, { includeRange: false }));
+    var preRangeResult = await _verifyWith(preRangeSigned, undefined);
+    check("an anchor signed before the range start was covered still verifies",
+      preRangeResult.result && preRangeResult.result.ok === true,
+      JSON.stringify(preRangeResult.result));
+    check("and is reported as signature-verified, not merely tolerated",
+      preRangeResult.result.purgeAnchor &&
+      preRangeResult.result.purgeAnchor.signatureVerified === true,
+      JSON.stringify(preRangeResult.result.purgeAnchor));
+
+    // The retry is limited to a range start of ZERO — the only value such an
+    // anchor can carry, and the one place both layouts mean the same thing. An
+    // anchor claiming a NON-zero start gets no second chance, so this cannot
+    // become a way to drop the field from an anchor that has one.
+    var droppedRange = Object.assign({}, signedAnchor, { firstPurgedCounter: 6 });
+    droppedRange.signature = b.auditSign.sign(
+      b.auditChain.purgeAnchorPayload(droppedRange, { includeRange: false }));
+    var droppedResult = await _verifyWith(droppedRange, undefined);
+    check("but a non-zero range start gets no legacy retry",
+      droppedResult.result && droppedResult.result.ok === false,
+      JSON.stringify(droppedResult.result));
+
+    // A table carrying the signature columns but not the newest one. Dropping
+    // straight to the oldest projection would omit `signature` and report this
+    // signed anchor as unsigned — a weaker claim about a stronger record, and
+    // one a deployment that accepts unsigned anchors would then believe.
+    var preRange = Object.assign({}, signedAnchor, { firstPurgedCounter: 0 });
+    preRange.signature = b.auditSign.sign(b.auditChain.purgeAnchorPayload(preRange));
+    var narrowed = await _verifyWith(preRange, undefined, undefined,
+      { refuseRangeColumn: true });
+    check("a table without the newest column still reads its signature",
+      narrowed.threw === null && narrowed.result && narrowed.result.ok === true,
+      JSON.stringify(narrowed.result || String(narrowed.threw)));
+    check("and the anchor is honored as signature-verified, not as unsigned",
+      narrowed.result.purgeAnchor &&
+      narrowed.result.purgeAnchor.signatureVerified === true,
+      JSON.stringify(narrowed.result.purgeAnchor));
 
     // Same volume, Postgres wording. A missing column and a missing table read
     // almost identically there, and reading one as the other skips the
