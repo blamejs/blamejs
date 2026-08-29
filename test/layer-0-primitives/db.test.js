@@ -1283,6 +1283,22 @@ async function testEncryptedRoundTrip() {
   fs.writeFileSync(path.join(tmpfs, "blamejs-staleorphan.db"), "orphan");
   fs.writeFileSync(path.join(tmpfs, "blamejs-staleorphan.db.owner"),
     b.db._ownerNamespaceForTest() + " 2147483645");
+  // A record whose working copy is GONE — what an open that failed after
+  // claiming leaves behind. It does not end in `.db`, so a sweep enumerating
+  // that suffix never sees it, and one accumulates per failed open in the
+  // directory that holds decrypted databases.
+  fs.writeFileSync(path.join(tmpfs, "blamejs-lonerecord.db.owner"),
+    b.db._ownerNamespaceForTest() + " 2147483644");
+  // And one whose owner is STILL RUNNING with no copy beside it yet: the claim
+  // is written before the database exists, so this is what a peer looks like
+  // mid-open. Removing it would delete a live peer's claim.
+  fs.writeFileSync(path.join(tmpfs, "blamejs-liveclaim.db.owner"),
+    b.db._ownerNamespaceForTest() + " " + process.pid);
+  // A record too damaged to name an owner, with no working copy beside it.
+  // For an actual database "unprovable" means leave it — removing one costs
+  // data. For a record accounting for nothing, leaving it is how they pile up
+  // forever, which is the whole complaint.
+  fs.writeFileSync(path.join(tmpfs, "blamejs-unreadable.db.owner"), "garbage");
   var encOpts = {
     dataDir: tmpDir, tmpDir: tmpfs, allowNonTmpfsTmpDir: true, atRest: "encrypted",
     frameworkTables: false, auditSigning: false, minFreeBytes: 0,
@@ -1293,6 +1309,14 @@ async function testEncryptedRoundTrip() {
     await b.db.init(encOpts);
     check("stale tmpfs working copy is swept at encrypted boot",
       !fs.existsSync(path.join(tmpfs, "blamejs-staleorphan.db")));
+    check("and its ownership record goes with it",
+      !fs.existsSync(path.join(tmpfs, "blamejs-staleorphan.db.owner")));
+    check("an ownership record whose working copy is gone is reclaimed too",
+      !fs.existsSync(path.join(tmpfs, "blamejs-lonerecord.db.owner")));
+    check("but a live peer's claim is left alone, copy not yet created",
+      fs.existsSync(path.join(tmpfs, "blamejs-liveclaim.db.owner")));
+    check("and a record too damaged to name an owner, with no copy, is not kept forever",
+      !fs.existsSync(path.join(tmpfs, "blamejs-unreadable.db.owner")));
 
     b.db.from("vaultrows").insertOne({ _id: "a", v: "persisted" });
 
@@ -1313,6 +1337,113 @@ async function testEncryptedRoundTrip() {
     check("encrypted round-trip recovers the row through decryptToTmp",
       row && row.v === "persisted");
   } finally {
+    _teardownPlain(tmpDir);
+  }
+  await testFailedInitLeavesNoPlaintext();
+}
+
+// An init that throws AFTER it has claimed a working copy used to leave the
+// decrypted database in tmpDir: close() returned early on `initialized` being
+// false, and that flag says only that init did not FINISH — nothing about what
+// it took. A failed open is exactly the case nobody is watching, because the
+// caller saw a throw and moved on.
+async function testFailedInitLeavesNoPlaintext() {
+  var tmpDir = _mkTmp("db-cov-failinit-");
+  var tmpfs = path.join(tmpDir, "tmpfs");
+  fs.mkdirSync(tmpfs, { recursive: true });
+  var encOpts = {
+    dataDir: tmpDir, tmpDir: tmpfs, allowNonTmpfsTmpDir: true, atRest: "encrypted",
+    frameworkTables: false, auditSigning: false, minFreeBytes: 0,
+    schema: [{ name: "vaultrows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+  };
+  try {
+    await _freshVault(tmpDir);
+    // A first open creates db.enc, so the second has a real database to
+    // decrypt — the claim has to happen for this to test anything.
+    await b.db.init(encOpts);
+    b.db.from("vaultrows").insertOne({ _id: "a", v: "persisted" });
+    b.db.close();
+
+    var thrown = null;
+    try {
+      await b.db.init(Object.assign({}, encOpts, {
+        // Fails after the working copy is claimed and decrypted: schema
+        // application runs against the open database.
+        schema: [{ name: "bad", columns: { _id: "TEXT PRIMARY KEY", v: "NOT A TYPE(((" } }],
+      }));
+    } catch (e) { thrown = e; }
+    check("init that fails after claiming a working copy does throw",
+      thrown !== null, String(thrown && thrown.message).slice(0, 120));
+
+    var leftBehind = fs.readdirSync(tmpfs).filter(function (n) {
+      return n.startsWith("blamejs-") && n.endsWith(".db");
+    });
+    check("the decrypted working copy is not left in tmpDir",
+      leftBehind.length === 0, "left=" + JSON.stringify(leftBehind));
+
+    b.db.close();
+    var afterClose = fs.readdirSync(tmpfs).filter(function (n) {
+      return n.startsWith("blamejs-");
+    });
+    check("and close() after a failed init leaves neither copy nor record",
+      afterClose.length === 0, "left=" + JSON.stringify(afterClose));
+  } finally {
+    _teardownPlain(tmpDir);
+  }
+  await testFailedInitKeepsAPreservedRecoveryCopy();
+}
+
+// The authorization to delete a decrypted working copy must belong to the init
+// that claimed it, and to no other.
+//
+// A `close()` that cannot re-encrypt deliberately KEEPS its working copy: at
+// that moment it is the only carrier of writes since the last flush. If the
+// claim outlived that close, the very next init to fail — one that never
+// claimed anything, `db.init({})` failing its option validation — would delete
+// that copy on its way out, turning a recoverable state into data loss.
+async function testFailedInitKeepsAPreservedRecoveryCopy() {
+  var tmpDir = _mkTmp("db-cov-preserved-");
+  var tmpfs = path.join(tmpDir, "tmpfs");
+  fs.mkdirSync(tmpfs, { recursive: true });
+  var encOpts = {
+    dataDir: tmpDir, tmpDir: tmpfs, allowNonTmpfsTmpDir: true, atRest: "encrypted",
+    frameworkTables: false, auditSigning: false, minFreeBytes: 0,
+    schema: [{ name: "vaultrows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+  };
+  try {
+    await _freshVault(tmpDir);
+    await b.db.init(encOpts);
+    b.db.from("vaultrows").insertOne({ _id: "a", v: "first" });
+    b.db.close();
+
+    // Open again, write, then make re-encryption impossible by putting a
+    // DIRECTORY where db.enc has to be written. close() then keeps the
+    // working copy, which is the state this is about.
+    await b.db.init(encOpts);
+    b.db.from("vaultrows").insertOne({ _id: "b", v: "since last flush" });
+    var encFile = path.join(tmpDir, "db.enc");
+    fs.rmSync(encFile, { force: true });
+    fs.mkdirSync(encFile);
+    b.db.close();
+
+    var preserved = fs.readdirSync(tmpfs).filter(function (n) {
+      return n.startsWith("blamejs-") && n.endsWith(".db");
+    });
+    check("close() that cannot re-encrypt keeps the working copy",
+      preserved.length === 1, "left=" + JSON.stringify(preserved));
+
+    // An init that fails before claiming anything must not touch it.
+    var validationErr = null;
+    try { await b.db.init({}); } catch (e) { validationErr = e; }
+    check("a later init that fails its own validation does throw",
+      validationErr !== null, String(validationErr && validationErr.code));
+    var stillPreserved = fs.readdirSync(tmpfs).filter(function (n) {
+      return n.startsWith("blamejs-") && n.endsWith(".db");
+    });
+    check("and leaves the preserved recovery copy alone",
+      stillPreserved.length === 1, "left=" + JSON.stringify(stillPreserved));
+  } finally {
+    try { fs.rmSync(path.join(tmpDir, "db.enc"), { recursive: true, force: true }); } catch (_e) { /* best effort */ }
     _teardownPlain(tmpDir);
   }
 }
