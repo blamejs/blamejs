@@ -42,6 +42,7 @@ var path = require("node:path");
 var helpers  = require("../helpers");
 var check    = helpers.check;
 var services = require("../helpers/services");
+var drivers  = require("../helpers/drivers");
 var setupTestDb    = require("../helpers/db").setupTestDb;
 var teardownTestDb = require("../helpers/db").teardownTestDb;
 var b = require("../../");
@@ -109,7 +110,7 @@ function _exec(sql) {
     return execFileSync("docker",
       ["exec", "-i", CONTAINER, "mysql", "-uroot", "-pblamejs_test_root",
        "--batch", "--raw", DB_NAME],
-      { input: sql + "\n", stdio: ["pipe", "pipe", "pipe"] }).toString("utf8");
+      { input: drivers.mysqlDelimited(sql) + "\n", stdio: ["pipe", "pipe", "pipe"] }).toString("utf8");
   } catch (e) {
     var msg = e.stderr ? e.stderr.toString("utf8") : (e.message || String(e));
     var errLine = (msg.split(/\r?\n/).filter(function (l) { return /ERROR \d+/.test(l); })[0]) || msg.trim();
@@ -733,12 +734,14 @@ async function _testTamperDetection() {
 
 // The REAL cluster deletion on MySQL, with the append-only guard installed.
 //
-// MySQL's DELETE guard is unconditional — a conditional body needs an internal
-// semicolon and stops being a single sendable statement — so a purge here
-// suspends the guard rather than being granted permission through it, which is
-// the opposite of the Postgres path. Getting that routing wrong is invisible
-// until a purge actually runs: a permission the trigger never inspects leaves
-// every deletion refused, after the boundary has already advanced.
+// The guard is anchor-bounded here now, exactly as on Postgres: it stays
+// installed and permits a DELETE only for a row the purge anchor already
+// licenses. It used to be unconditional, with the purge dropping it for the
+// duration — a window in which any other session holding the framework role
+// could delete audit rows, and one a process death could leave open. The
+// condition needs a compound trigger body, which a protocol driver sends as
+// one message; only a CLI splits on the semicolons inside, which is what this
+// harness does and why the guard was shaped around it before.
 async function _testClusterPurgeDeletionAgainstWormTriggers() {
   // The tamper section above drops both guards; put them back, or this passes
   // for the wrong reason.
@@ -751,7 +754,9 @@ async function _testClusterPurgeDeletionAgainstWormTriggers() {
         "rows=" + rows.length);
   var through = Number(rows[0].monotonicCounter);
 
-  // Prove the guard is live before relying on it.
+  // Prove the guard is live before relying on it. Nothing has authorized a
+  // deletion at this point — no anchor names these rows — so every DELETE is
+  // refused, including one for rows the caller is about to purge legitimately.
   var guardLive = null;
   try {
     await b.clusterStorage.execute(
@@ -760,6 +765,34 @@ async function _testClusterPurgeDeletionAgainstWormTriggers() {
   check("MySQL: the append-only guard refuses an ordinary DELETE",
         guardLive !== null && /append-only/i.test(guardLive.message || ""),
         String(guardLive && guardLive.message).slice(0, 160));
+
+  // And it fails CLOSED on the volume that has never purged: with no anchor
+  // row the boundary comparison is NULL, and a guard that read that as "no
+  // restriction" would leave the never-purged volume the least protected one.
+  var noAnchorRows = _parseBatch(_mysqlRoot(
+    "SELECT COUNT(*) AS n FROM `_blamejs_audit_purge_anchor`", DB_NAME)).rows;
+  check("MySQL: and does so with no purge anchor present at all",
+        Number(noAnchorRows[0].n) === 0, "anchors=" + noAnchorRows[0].n);
+
+  // The purge writes the anchor BEFORE it deletes, so the guard permits
+  // exactly the rows the anchor names. Written here through the same primitive
+  // the purge uses, in the same order, so this drives the real sequence rather
+  // than arranging a state the framework never produces.
+  await b.auditTools.signExistingPurgeAnchor().catch(function () { /* none yet */ });
+  await b.clusterStorage.fencedUpsert({
+    table:      "_blamejs_audit_purge_anchor",
+    keyColumns: ["scope"],
+    label:      "test.mysqlPurgeAnchor",
+    fenceColumns: ["fencingToken", "lastPurgedCounter"],
+    values: {
+      scope: "audit", lastPurgedCounter: through,
+      lastPurgedRowHash: "0".repeat(128),
+      archiveBundleId: "manifest:" + through, purgedAt: Date.now(),
+      firstPurgedCounter: 0, archiveRowsDigest: "",
+      signature: null, publicKeyFingerprint: null,
+      fencingToken: b.cluster.fencingToken(),
+    },
+  });
 
   var refused = null;
   try {

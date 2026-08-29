@@ -30,6 +30,7 @@ var execFileSync = require("node:child_process").execFileSync;
 var helpers  = require("../helpers");
 var check    = helpers.check;
 var services = require("../helpers/services");
+var drivers  = require("../helpers/drivers");
 var b = require("../../");
 
 var CONTAINER = "blamejs-test-mysql";
@@ -55,7 +56,8 @@ function _mysqlExec(sql, opts) {
               "--batch", "--raw"].concat(dbArgs);
   try {
     var out = execFileSync("docker", args,
-      { input: sql + "\n", stdio: ["pipe", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
+      { input: drivers.mysqlDelimited(sql) + "\n", stdio: ["pipe", "pipe", "pipe"],
+        maxBuffer: 64 * 1024 * 1024 });
     return { ok: true, out: out.toString("utf8") };
   } catch (e) {
     var stderr = e.stderr ? e.stderr.toString("utf8") : "";
@@ -333,17 +335,46 @@ async function _roundTripBreakGlassGrants() {
 // The append-only WORM triggers must block DELETE + UPDATE on the audit
 // tables. ensureSchema installs them via SIGNAL SQLSTATE '45000'.
 async function _wormBlocks() {
+  // The guard is bounded by the purge anchor, and this suite seeded one at
+  // lastPurgedCounter=1 while round-tripping that table — so row `a-1`, whose
+  // counter is 1, is a row the anchor LICENSES to be missing. Refusing to
+  // delete it would protect nothing. What the guard is for is the rows nothing
+  // accounts for, so the refusal is asserted on one above the boundary.
+  await b.externalDb.query(
+    "INSERT INTO `_blamejs_audit_log` (`_id`,`recordedAt`,`monotonicCounter`,`action`," +
+    "`outcome`,`prevHash`,`rowHash`,`nonce`,`fencingToken`) VALUES (?,?,?,?,?,?,?,?,?)",
+    ["a-worm", BIG_MS, 999, "login", "success", "p0", "r2", NONCE, 0],
+    { backend: "ops", rowResidencyTag: "unrestricted" });
+
   var delBlocked = false;
   try {
-    await b.externalDb.query("DELETE FROM `_blamejs_audit_log` WHERE `_id` = ?", ["a-1"], { backend: "ops" });
+    await b.externalDb.query("DELETE FROM `_blamejs_audit_log` WHERE `_id` = ?", ["a-worm"], { backend: "ops" });
   } catch (_e) { delBlocked = true; }
-  soft("_blamejs_audit_log: WORM trigger blocks DELETE (append-only)", delBlocked);
+  soft("_blamejs_audit_log: WORM trigger blocks DELETE above the anchored boundary", delBlocked);
 
+  // And permits the row the anchor names, which is the other half of the rule:
+  // a guard that refused those would refuse the purge itself.
+  var licensedDeleted = false;
+  try {
+    await b.externalDb.query("DELETE FROM `_blamejs_audit_log` WHERE `_id` = ?", ["a-1"], { backend: "ops" });
+    licensedDeleted = true;
+  } catch (_e) { licensedDeleted = false; }
+  soft("_blamejs_audit_log: and permits one the purge anchor licenses", licensedDeleted);
+
+  // Targeted at `a-worm`, which is still there — the licensed delete above
+  // removed `a-1`, and an UPDATE matching no rows never fires a per-row
+  // trigger, so it would report blocked-by-nothing as success. The UPDATE
+  // guard is unconditional on every table: a purge removes rows, it never
+  // edits them, so no boundary licenses an edit.
   var updBlocked = false;
   try {
-    await b.externalDb.query("UPDATE `_blamejs_audit_log` SET `action` = ? WHERE `_id` = ?", ["tampered", "a-1"], { backend: "ops" });
+    await b.externalDb.query("UPDATE `_blamejs_audit_log` SET `action` = ? WHERE `_id` = ?", ["tampered", "a-worm"], { backend: "ops" });
   } catch (_e) { updBlocked = true; }
   soft("_blamejs_audit_log: WORM trigger blocks UPDATE (append-only)", updBlocked);
+  var stillThere = await b.externalDb.query(
+    "SELECT `action` AS a FROM `_blamejs_audit_log` WHERE `_id` = ?", ["a-worm"], { backend: "ops" });
+  soft("_blamejs_audit_log: and the row it tried to edit is unchanged",
+    stillThere && stillThere.rows && stillThere.rows[0] && stillThere.rows[0].a === "login");
 }
 
 module.exports = { run: run };

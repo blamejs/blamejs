@@ -169,7 +169,27 @@ async function run() {
         connect: driverObj.connect, query: driverObj.query, close: driverObj.close,
       } },
     });
+    // A volume upgraded from a build whose guard was unconditional already has
+    // a trigger by this name. `CREATE TRIGGER IF NOT EXISTS` would leave that
+    // old body in place, and since a purge no longer takes the guard off, the
+    // old body refuses every purge on an upgraded volume — a database that
+    // boots fine and can never purge again. Standing in for that here by
+    // installing the old shape first and requiring ensureSchema to replace it.
+    await driverObj.query(client,
+      'DROP TRIGGER IF EXISTS "no_delete__blamejs_audit_log"', []);
+    await driverObj.query(client,
+      'CREATE TRIGGER "no_delete__blamejs_audit_log" BEFORE DELETE ON ' +
+      '"_blamejs_audit_log" BEGIN SELECT RAISE(ABORT, ' +
+      "'_blamejs_audit_log is append-only'); END", []);
     await b.frameworkSchema.ensureSchema({ externalDbBackend: "ops", dialect: "sqlite" });
+    var upgraded = await driverObj.query(client,
+      "SELECT sql FROM sqlite_master WHERE type = 'trigger' " +
+      "AND name = 'no_delete__blamejs_audit_log'", []);
+    var upgradedRows = (upgraded && upgraded.rows) ? upgraded.rows : upgraded;
+    check("ensureSchema replaces an older unconditional delete guard",
+      (upgradedRows || []).length === 1 &&
+      /lastPurgedCounter/.test(String(upgradedRows[0].sql)),
+      String(upgradedRows && upgradedRows[0] && upgradedRows[0].sql).slice(0, 160));
 
     var sawSuspended = false;
     var bodyThrew = null;
@@ -196,6 +216,20 @@ async function run() {
       "SELECT name FROM sqlite_master WHERE type = 'trigger' " +
       "AND name = 'no_delete__blamejs_audit_log'", []);
     var restoredRows = (restored && restored.rows) ? restored.rows : restored;
+    // Restoring the NAME is not restoring the GUARD. The guard is bounded by
+    // the purge anchor, so a restore that rebuilt it without the boundary
+    // column would put back a different trigger wearing the same name — one
+    // that refuses the very deletion the anchor licenses.
+    var restoredSql = await driverObj.query(client,
+      "SELECT sql FROM sqlite_master WHERE type = 'trigger' " +
+      "AND name = 'no_delete__blamejs_audit_log'", []);
+    var restoredSqlRows = (restoredSql && restoredSql.rows) ? restoredSql.rows : restoredSql;
+    check("and restores the anchor-bounded guard, not a bare one",
+      (restoredSqlRows || []).length === 1 &&
+      /monotonicCounter/.test(String(restoredSqlRows[0].sql)) &&
+      /lastPurgedCounter/.test(String(restoredSqlRows[0].sql)),
+      String(restoredSqlRows && restoredSqlRows[0] && restoredSqlRows[0].sql).slice(0, 160));
+
     check("and restores it even when the body threw",
       (restoredRows || []).length === 1,
       "a failed purge must not leave the audit table writable");
