@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.18.58",
-  "createdAt": "2026-08-29T17:38:00.706Z",
+  "createdAt": "2026-08-29T19:53:54.414Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -52524,6 +52524,10 @@
           "type": "function",
           "arity": 2
         },
+        "containRejection": {
+          "type": "function",
+          "arity": 2
+        },
         "flushLoop": {
           "type": "function",
           "arity": 3
@@ -52561,6 +52565,10 @@
           "arity": 3
         },
         "repeating": {
+          "type": "function",
+          "arity": 3
+        },
+        "safeApply": {
           "type": "function",
           "arity": 3
         },

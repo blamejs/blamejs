@@ -234,6 +234,20 @@ async function runArchiveResolution() {
   var baseArgs = ["audit", "verify-chain", "--db", dbFile,
                   "--public-key", pubPath, "--archive-dir", bundles];
 
+  // Every path flag resolves against the CLI context's working directory, not
+  // the process's. --db already did; --archive-dir and --public-key read the
+  // flag verbatim, so a caller running the CLI with its own cwd got "archive
+  // missing" for an archive that was there — the one answer this command must
+  // not give wrongly.
+  var ctxRel = _captureCtx();
+  ctxRel.cwd = dir;
+  var cRel = await cli.main(["audit", "verify-chain", "--db", path.relative(dir, dbFile),
+    "--public-key", path.relative(dir, pubPath),
+    "--archive-dir", path.relative(dir, bundles)], ctxRel);
+  check("verify-chain: relative flags resolve against the context's cwd",
+        cRel === 0 && /archive .* found/.test(ctxRel.out()),
+        "exit=" + cRel + " out=" + ctxRel.out() + " err=" + ctxRel.err());
+
   var ctxOk = _captureCtx();
   var cOk = await cli.main(baseArgs, ctxOk);
   check("verify-chain: a real bundle under --archive-dir resolves the anchor",

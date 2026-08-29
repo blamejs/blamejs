@@ -1073,6 +1073,147 @@ async function run() {
   await testBackendMessagelessRejections();
   await testTenantRefuseNullFallbacks();
   await testAuthSuccessTenantless();
+  await testSessionLifecycleHooks();
+  await testLifecycleHooksThatThrow();
+  await testLifecycleHooksThatReject();
+}
+
+// RFC 1939 §3 gives a maildrop to one session at a time, so a store leases it
+// exclusively — and had no signal telling it when to let go. A client that
+// loses its link never sends QUIT, so the socket just goes away, and the lease
+// stays held until a timer the consumer guessed at expires. For that window the
+// account holder's own retries are refused, correctly, for a lease genuinely
+// still held.
+async function testSessionLifecycleHooks() {
+  var ended = [];
+  var activity = [];
+  var s = await _makeServer({
+    onSessionEnd: function (actor, sessionId) {
+      ended.push({ user: actor && actor.username, sessionId: sessionId });
+    },
+    onSessionActivity: function (actor, sessionId, verb) {
+      activity.push(verb);
+    },
+  });
+  var sock = nodeNet.connect(s.port, "127.0.0.1");
+  sock.on("error", function () {});
+  await _readReply(sock); // greeting
+  check("lifecycle: STLS begins negotiation", /^\+OK/.test(await _send(sock, "STLS")));
+  var tls = nodeTls.connect({ socket: sock, ca: s.caPem, servername: "localhost" });
+  tls.on("error", function () {});
+  await new Promise(function (r, j) { tls.once("secureConnect", r); tls.once("error", j); });
+  check("lifecycle: USER accepted", /^\+OK/.test(await _send(tls, "USER alice")));
+  check("lifecycle: PASS accepted", /^\+OK/.test(await _send(tls, "PASS good")));
+  // NOOP is what the protocol offers as a keepalive, and the listener answers
+  // it without touching the store — so a consumer ageing an idle lease never
+  // saw it and reaped the lease under a live connection.
+  check("lifecycle: NOOP answered", /^\+OK/.test(await _send(tls, "NOOP")));
+  check("lifecycle: the keepalive reaches the consumer",
+    activity.indexOf("NOOP") !== -1, JSON.stringify(activity));
+  check("lifecycle: and so does every other verb",
+    activity.indexOf("USER") !== -1 && activity.indexOf("PASS") !== -1,
+    JSON.stringify(activity));
+
+  // The case that locks a mailbox: the link drops mid-session. No QUIT, no
+  // commit — just a socket that goes away.
+  check("lifecycle: no session end reported while the session is open",
+    ended.length === 0, JSON.stringify(ended));
+  tls.destroy();
+  sock.destroy();
+  await helpers.waitUntil(function () { return ended.length > 0; },
+    { timeoutMs: 5000, label: "pop3 lifecycle: onSessionEnd after a dropped link" });
+  check("lifecycle: a dropped link ends the session",
+    ended.length === 1, JSON.stringify(ended));
+  check("lifecycle: and reports the actor the drop was opened with",
+    ended[0].user === "alice" && typeof ended[0].sessionId === "string",
+    JSON.stringify(ended[0]));
+
+  // Once only: a socket that errors AND closes emits both, and a consumer
+  // releasing by decrementing a holder count would corrupt its own accounting.
+  await helpers.passiveObserve(120, "pop3 lifecycle: no second session end");
+  check("lifecycle: the end is reported exactly once",
+    ended.length === 1, JSON.stringify(ended));
+  await s.srv.close();
+}
+
+// A consumer hook is a report, not a veto: by the time either one runs, the
+// thing it describes has already happened. So a hook that throws must not take
+// anything down with it — not the command it fired on, not the connection, and
+// least of all the process, since onSessionEnd runs inside the socket's own
+// close handler where an escaping throw has no caller left to catch it.
+async function testLifecycleHooksThatThrow() {
+  var ended = [];
+  var s = await _makeServer({
+    onSessionActivity: function () { throw new Error("consumer activity hook blew up"); },
+    onSessionEnd:      function (actor, sessionId) { ended.push(sessionId); },
+  });
+  var sock = nodeNet.connect(s.port, "127.0.0.1");
+  sock.on("error", function () {});
+  await _readReply(sock); // greeting
+  check("throwing hook: the command it fired on is still answered",
+    /STLS/.test(await _send(sock, "CAPA", true)));
+  check("throwing hook: and so is the next one",
+    /^\+OK/.test(await _send(sock, "STLS")));
+  sock.destroy();
+  await helpers.waitUntil(function () { return ended.length > 0; },
+    { timeoutMs: 5000, label: "pop3 lifecycle: session end after a throwing activity hook" });
+  check("throwing hook: the session still ends exactly once",
+    ended.length === 1, JSON.stringify(ended));
+  await s.srv.close();
+
+  // The end hook is the dangerous one: it runs from the close handler, so an
+  // escaping throw is an uncaught exception on an EventEmitter, not a rejected
+  // promise someone can observe.
+  var s2 = await _makeServer({
+    onSessionEnd: function () { throw new Error("consumer end hook blew up"); },
+  });
+  var sock2 = nodeNet.connect(s2.port, "127.0.0.1");
+  sock2.on("error", function () {});
+  await _readReply(sock2);
+  sock2.destroy();
+  await helpers.passiveObserve(150, "pop3 lifecycle: throwing end hook does not kill the listener");
+  var sock3 = nodeNet.connect(s2.port, "127.0.0.1");
+  sock3.on("error", function () {});
+  check("throwing end hook: the listener still serves the next connection",
+    /^\+OK/.test(await _readReply(sock3)));
+  sock3.destroy();
+  await s2.srv.close();
+}
+
+// A consumer hook is more likely to be async than not — releasing a lease is a
+// store call — and a rejected promise is the same failure as a throw, arriving
+// later. Unobserved it is an unhandled rejection, which under Node's default
+// takes the process down: exactly the outcome the synchronous catch prevents
+// for the synchronous shape.
+async function testLifecycleHooksThatReject() {
+  var unhandled   = [];
+  var onUnhandled = function (e) { unhandled.push(e); };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    var ended = [];
+    var s = await _makeServer({
+      onSessionActivity: async function () { throw new Error("async activity hook rejected"); },
+      onSessionEnd:      async function () {
+        ended.push(1);
+        throw new Error("async end hook rejected");
+      },
+    });
+    var sock = nodeNet.connect(s.port, "127.0.0.1");
+    sock.on("error", function () {});
+    await _readReply(sock); // greeting
+    check("rejecting hook: the command it fired on is still answered",
+      /STLS/.test(await _send(sock, "CAPA", true)));
+    sock.destroy();
+    await helpers.waitUntil(function () { return ended.length > 0; },
+      { timeoutMs: 5000, label: "pop3 lifecycle: async end hook ran" });
+    // The rejection surfaces a turn after the hook runs, so give it one.
+    await helpers.passiveObserve(200, "pop3 lifecycle: no unhandled rejection from a hook");
+    check("rejecting hook: no unhandled rejection reaches the process",
+      unhandled.length === 0, JSON.stringify(unhandled.map(String)));
+    await s.srv.close();
+  } finally {
+    process.removeListener("unhandledRejection", onUnhandled);
+  }
 }
 
 module.exports = { run: run };

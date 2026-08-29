@@ -5787,6 +5787,26 @@ async function testNoDuplicateCodeBlocks() {
       // the mailbox-existence oracle expensive rather than merely refused. The
       // accept-side spine, which had no such divergence, IS extracted —
       // mailServerNet.acceptConnection.
+      //
+      // The `_fail` closure each listener declares before handing control to
+      // mailServerNet.runSaslStep is the same spine seen from the other end:
+      // clear the pending exchange, charge the failure against the per-IP
+      // budget, record it, write the refusal. Three of those four steps are
+      // protocol-specific — the field holding the exchange (authPending vs
+      // saslExchange), the audit metadata (IMAP reports `mechanism` where the
+      // others report `mech`, and IMAP must capture the tag before clearing so
+      // the refusal answers the right command), and the wire line (`-ERR` vs
+      // `NO "…"` vs a tagged reply the caller chooses). Only the budget charge
+      // and the emit are common, and routing two statements through a helper
+      // whose call literal is identical at every site renames the duplication
+      // rather than removing it.
+      //
+      // Which of these bodies a cluster reports moves with unrelated edits:
+      // clusters are keyed by their file set, so an edit that breaks the
+      // create-scaffolding shingle in ONE listener re-forms the set around the
+      // SASL spine instead, and tuples that were never reported before surface
+      // at once. The membership below is therefore the union of both shapes,
+      // not the output of a single run.
       mode:  "family-subset",
       files: [
         "lib/mail-server-imap.js:<top>",
@@ -5810,6 +5830,10 @@ async function testNoDuplicateCodeBlocks() {
         "lib/mail-server-pop3.js:_assertTenantOrRefuse",
         "lib/mail-server-pop3.js:_close",
         "lib/mail-server-pop3.js:_handlePass",
+        "lib/mail-server-imap.js:_fail",
+        "lib/mail-server-managesieve.js:_fail",
+        "lib/mail-server-managesieve.js:_handleAuthenticate",
+        "lib/mail-server-pop3.js:_fail",
         "lib/mail-server-submission.js:<top>",
         "lib/mail-server-submission.js:create",
         "lib/mail-server-submission.js:_handleAuth",
@@ -8092,6 +8116,38 @@ var KNOWN_ANTIPATTERNS = [
       ],
     },
     reason: "A path beginning with '/' is absolute only on POSIX. On Windows it is DRIVE-relative, so nodeFs.existsSync(\"/dev/shm\") asks about C:\\dev\\shm — a directory any unprivileged user can create, and one that had 5855 files on a development host by the time this was found, including live decrypted SQLite working copies. db.init's tmpfs resolver probed it on every platform, so on Windows encrypted-at-rest silently resolved a persistent NTFS directory as its in-memory mount and wrote the plaintext database there; the residency check that exists to catch precisely that is a path comparison against Linux mount points and could not fire. The rule is not 'guard the probe with an if' — db-file-lifecycle and watcher both had the guard and were still untestable, so nothing could show the Windows branch was right. Take the platform and the reader as PARAMETERS (_resolveTmpDirFrom(optsTmpDir, platform, exists), _tmpDirResidencyIssue(tmpDir, platform, realpath), _namespaceFrom(platform, readlink), _detectAutoMode(root, probe)): the literal then sits behind an injected reader, every platform's branch is drivable from a Linux CI host, and the shape this refuses cannot reappear. A constructed path or one held in a variable is a different question and stays quiet. Empty allowlist: lib/ has no remaining call site that needs a hardcoded POSIX root, and the one that reintroduces it is the one to catch. What this deliberately does NOT cover: a POSIX root bound to a constant and used later (safe-mount-info's DEFAULT_PATH was exactly that shape, and is guarded instead by _defaultPathFor(platform) plus its own tests), and a literal handed to an injected reader, which is the fixed form and is in the quiet fixtures. Widening to every POSIX-looking literal would refuse legitimate path comparison — _tmpDirResidencyIssue compares against these same four strings — so the claim stays on the call site, where the bug was.",
+  },
+  {
+    id: "a-consumer-hook-needs-its-rejection-contained",
+    primitive: "b.safeAsync.safeInvoke",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // Anchored on the two tokens that together make the mistake: a `try` whose
+    // very first statement calls an `on<Name>` hook. That is the shape a
+    // synchronous catch cannot cover — anything between the two would be work
+    // the catch legitimately guards, so the match is deliberately adjacent.
+    // `opts.on<Name>` is matched as well because half the sites read the hook
+    // straight off opts rather than binding it first.
+    regex: /\btry\s*\{\s*(?:opts\s*\.\s*)?on[A-Z][A-Za-z0-9_$]*\s*\(/,
+    allowlist: [],
+    fixtures: {
+      fires: [
+        "try { onEvict(oldest, evictedVal); } catch (_e) { /* drop-silent */ }",
+        "try { opts.onError(e); } catch (_e2) { /* operator hook */ }",
+        "try { onProgress({ id: entry.id }); }\n        catch (_e) { /* drop-silent */ }",
+        "try { opts.onCorruption(issues); } catch (_e) { /* operator hook */ }",
+        "try {\n  onSessionEnd(state.actor, state.id);\n} catch (e) { emit(e); }",
+      ],
+      quiet: [
+        "safeAsync.safeInvoke(onEvict, { key: k });",
+        "safeAsync.safeApply(onMissingKey, [key, locale]);",
+        "safeAsync.containRejection(onDeny(req, res, info), ctx.onThrow);",
+        "try { await onFail(failure); } catch (oe) { audit(oe); }",
+        "try { runSqlOnHandle(db, \"ROLLBACK\"); } catch (e) { onRollbackFail(e); }",
+        "tlsSocket.on(\"timeout\", function () { safeAsync.safeInvoke(opts.onTimeout, tlsSocket); });",
+      ],
+    },
+    reason: "A synchronous try/catch around an operator hook covers only the hooks that happen not to be async. `async function onSessionEnd() { await store.releaseLease(id); }` is the ordinary way to write one — releasing a lease or ageing a timer is a store call — and its rejection arrives a turn after the catch has gone, so it becomes an unhandled rejection, which under Node's default ends the process. That is the opposite of what every one of these sites documents: 'drop-silent', 'best-effort', 'must not crash the request'. The mail POP3 session-end hook made it concrete — it runs inside the socket's own close handler, where an escaping rejection has no caller left to catch it — but the sweep found the same shape at 47 sites across 24 files, from bounded-map's onEvict to db's onCorruption to the TLS-report onRefuse chain, so the found one was a sample. All of them route through b.safeAsync.safeInvoke (one payload), b.safeAsync.safeApply (positional list), or b.safeAsync.containRejection (when the caller needs the hook's return value to decide what happens next, as denyResponse does). Each inspects the returned value and routes a rejection to the same onError a throw takes, so the drop-silent promise holds for both shapes. Empty allowlist: no lib/ site needs to call a hook without containment, and the one that reintroduces it is the one to catch. Deliberately NOT covered: a hook that is genuinely awaited (`try { await onFail(x); }` — the await makes the catch sufficient, and it is in the quiet fixtures), and a hook called from inside a catch block that is handling something else, which is a different question.",
   },
   {
     id: "a-key-selected-by-fingerprint-must-hash-to-it",
