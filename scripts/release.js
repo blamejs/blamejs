@@ -461,19 +461,31 @@ function _verifyCommitSignature(label) {
 var BACKEND_LIVE_MAP = [
   {
     backend:  "postgres",
+    // The audit stack belongs here because its SQL differs by dialect and
+    // nothing else proves that: framework-schema writes the append-only
+    // triggers and the permission grant one dialect at a time, db.js chooses
+    // how a cluster purge deletes, audit-tools drives that purge, and
+    // audit-chain classifies the "missing column" error text each server
+    // words differently. On sqlite alone every one of those reads clean.
     match:    ["lib/external-db", "lib/db-query", "lib/db-schema.js",
                "lib/db-declare", "lib/db-role-context", "lib/cluster-provider-db",
-               "lib/cluster-storage", "lib/safe-sql", "lib/db-collection.js"],
+               "lib/cluster-storage", "lib/safe-sql", "lib/db-collection.js",
+               "lib/framework-schema.js", "lib/audit-tools.js", "lib/audit-chain.js",
+               "lib/db.js"],
     services: ["postgres", "postgres-replica"],
+    filePattern: /(^|-)(pg|postgres)(-|$)/,
     tests:    ["external-db-postgres", "audit-chain-external-db",
-               "audit-actor-binding-pg", "distributed-scheduler-fencing-pg"],
+               "audit-actor-binding-pg", "distributed-scheduler-fencing-pg",
+               "audit-stack-postgres"],
   },
   {
     backend:  "mysql",
     match:    ["lib/external-db", "lib/cluster-provider-db", "lib/cluster-storage",
-               "lib/safe-sql"],
+               "lib/safe-sql", "lib/framework-schema.js", "lib/audit-tools.js",
+               "lib/audit-chain.js", "lib/db.js"],
     services: ["mysql"],
-    tests:    ["cluster-provider-mysql"],
+    filePattern: /(^|-)mysql(-|$)/,
+    tests:    ["cluster-provider-mysql", "audit-stack-mysql"],
   },
   {
     backend:  "redis",
@@ -559,6 +571,21 @@ var BACKEND_LIVE_MAP = [
     services: ["otel-collector"],
     tests:    ["log-stream-cloudwatch"],
   },
+  {
+    // Live tests that need nothing from docker-compose: each spawns its own
+    // server or works on local files. They are claimed here rather than left
+    // out because the live gate is the only thing that runs test/integration
+    // at all — smoke covers test/layer-5-integration, a different directory —
+    // so a file no entry names runs in no release. Six seconds buys the set.
+    // `lib/` matches any framework change, which is every release shipping
+    // code; no service is declared, so this alone never requires Docker.
+    backend:  "local-services-none",
+    match:    ["lib/"],
+    services: [],
+    tests:    ["mail-dane-authentication", "mtls-ca", "openid-federation-chain",
+               "pqc-pkcs8-forward-compat", "sql-fts5-catalog-sqlite",
+               "websocket-permessage-deflate", "ws-client-roundtrip"],
+  },
 ];
 
 // The whole set of changed files relevant to backend detection: both what
@@ -600,11 +627,58 @@ function _changedFilesForBackendDetection() {
   return Object.keys(seen);
 }
 
+// Every integration test file on disk, without the `.test.js` suffix.
+function _allIntegrationTestNames() {
+  var dir = path.join(ROOT, "test", "integration");
+  return fs.readdirSync(dir)
+    .filter(function (f) { return /\.test\.js$/.test(f); })
+    .map(function (f) { return f.replace(/\.test\.js$/, ""); })
+    .sort();
+}
+
+// A backend's live tests are the ones it names PLUS every file whose name
+// says it belongs to that backend. Hand-maintained lists rot in one
+// direction only — a new file is forgotten, the gate stays green, and the
+// release reports a backend proven that it never exercised. Twenty-one of
+// fifty-one files had drifted out of reach this way, including the audit
+// stack's own Postgres and MySQL suites. Deriving from the filename means
+// adding `foo-pg.test.js` is enough to have it run.
+function _testsForBackend(entry) {
+  var seen = {};
+  (entry.tests || []).forEach(function (n) { seen[n] = true; });
+  if (entry.filePattern) {
+    _allIntegrationTestNames().forEach(function (n) {
+      if (entry.filePattern.test(n)) seen[n] = true;
+    });
+  }
+  return Object.keys(seen).sort();
+}
+
+// A file no entry claims is run by nothing: the live gate is the only thing
+// that runs test/integration at all (smoke covers test/layer-5-integration,
+// a different directory). So an unclaimed file is not untidiness — it is a
+// test that cannot fail. Refuse rather than report.
+function _assertEveryIntegrationFileIsClaimed() {
+  var claimed = {};
+  BACKEND_LIVE_MAP.forEach(function (entry) {
+    _testsForBackend(entry).forEach(function (n) { claimed[n] = true; });
+  });
+  var orphans = _allIntegrationTestNames().filter(function (n) { return !claimed[n]; });
+  if (orphans.length > 0) {
+    throw new Error(
+      "release: " + orphans.length + " integration test file(s) belong to no backend " +
+      "entry, so no release ever runs them:\n  " + orphans.join("\n  ") + "\n" +
+      "Add each to a BACKEND_LIVE_MAP entry's `tests`, or give the owning entry a " +
+      "`filePattern` that covers it. A test nothing runs cannot fail.");
+  }
+}
+
 // Map the changed-file set onto the backends whose protocol surface was
 // touched. Returns a de-duplicated, deterministic list of
 // { backend, services, tests, matchedBy } entries.
 function _detectTouchedBackends(changedFiles) {
   var hits = [];
+  _assertEveryIntegrationFileIsClaimed();
   BACKEND_LIVE_MAP.forEach(function (entry) {
     var matchedBy = changedFiles.filter(function (f) {
       return entry.match.some(function (m) { return f.indexOf(m) !== -1; });
@@ -613,7 +687,7 @@ function _detectTouchedBackends(changedFiles) {
       hits.push({
         backend:   entry.backend,
         services:  entry.services,
-        tests:     entry.tests,
+        tests:     _testsForBackend(entry),
         matchedBy: matchedBy,
       });
     }
@@ -694,14 +768,26 @@ function cmdLiveIntegration(opts) {
     return;
   }
 
-  _bringUpDockerStack();
+  // Only bring the stack up when a touched backend actually declares
+  // services. Some live tests spawn their own server or work on local files
+  // and need nothing from docker-compose; requiring the daemon for those
+  // would make Docker a precondition for every release that ships code,
+  // which is not what the live gate is for.
+  var needsServices = touched.some(function (t) {
+    return (t.services || []).length > 0;
+  });
+  if (needsServices) _bringUpDockerStack();
+  else console.log("no touched backend declares a service — running the local live tests only");
 
-  // `--skip-service-check` is intentionally NOT passed: the readiness gate
-  // inside test-integration.js is a second proof that the stack the tests
-  // need is actually reachable (the `up --wait` healthchecks and the
-  // framework's own TCP/TLS probes can disagree). We want both.
+  // `--skip-service-check` is intentionally NOT passed when a service is in
+  // play: the readiness gate inside test-integration.js is a second proof
+  // that the stack the tests need is actually reachable (the `up --wait`
+  // healthchecks and the framework's own TCP/TLS probes can disagree). We
+  // want both. With no service declared there is nothing for it to probe.
   _section("run live integration tests");
-  _run("node", ["scripts/test-integration.js"].concat(testFiles));
+  _run("node", ["scripts/test-integration.js"]
+    .concat(needsServices ? [] : ["--no-docker"])
+    .concat(testFiles));
   _ok("live integration green for: " + touched.map(function (t) {
     return t.backend;
   }).join(", "));
