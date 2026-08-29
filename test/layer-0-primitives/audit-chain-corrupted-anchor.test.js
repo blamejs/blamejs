@@ -221,6 +221,26 @@ async function testAnchorMustProveItWasWrittenWithTheSigningKey() {
       /could not be resolved/.test(brokenArchive.result.reason || ""),
       String(brokenArchive.result && brokenArchive.result.reason));
 
+    // A resolver that cannot be CALLED is the quiet version of the same
+    // problem: both are consulted only when callable, so a typo or a config
+    // that failed to load removes the check and returns a clean verify — which
+    // reads as "the archive is there" and "the signature was checked" when
+    // neither happened.
+    var uncallable = [["resolveArchive", "yes"], ["resolveArchive", null],
+                      ["resolvePublicKey", 1], ["resolvePublicKey", {}]];
+    for (var ui = 0; ui < uncallable.length; ui += 1) {
+      var badOpts = {};
+      badOpts[uncallable[ui][0]] = uncallable[ui][1];
+      var attempt = await _verifyWith(signedAnchor, undefined, badOpts);
+      check("an uncallable " + uncallable[ui][0] + " (" +
+        (uncallable[ui][1] === null ? "null" : typeof uncallable[ui][1]) +
+        ") is refused, not ignored",
+        attempt.threw instanceof TypeError &&
+        attempt.threw.message.indexOf(uncallable[ui][0]) !== -1 &&
+        attempt.result === null,
+        String((attempt.threw && attempt.threw.message) || JSON.stringify(attempt.result)));
+    }
+
     // Every field the anchor licenses is covered by the signature. The fencing
     // token is one of them: a purge refuses when the stored token is above its
     // own, so leaving it unsigned would let someone lower it and hand a
@@ -285,6 +305,32 @@ async function testAnchorMustProveItWasWrittenWithTheSigningKey() {
     check("and no signature is minted over one either",
       mintThrew !== null && /2\^53/.test(mintThrew.message || ""),
       String(mintThrew && mintThrew.message));
+
+    // MAX_SAFE_INTEGER itself is the edge that reads as safe and is not: the
+    // chain resumes at the counter AFTER the boundary, and that one aliases.
+    // A boundary has to leave room for its own successor.
+    var atTheEdge = Object.assign({}, signedAnchor,
+      { lastPurgedCounter: Number.MAX_SAFE_INTEGER });
+    var edge = await _verifyWith(atTheEdge, undefined,
+      { allowUnsignedPurgeAnchor: true });
+    check("a boundary at MAX_SAFE_INTEGER is refused — its next counter is not safe",
+      edge.result && edge.result.ok === false, JSON.stringify(edge.result));
+    var edgeMint = null;
+    try {
+      b.auditChain.purgeAnchorPayload(Object.assign({}, signedAnchor,
+        { lastPurgedCounter: Number.MAX_SAFE_INTEGER }));
+    } catch (e) { edgeMint = e; }
+    check("and no signature is minted at that edge either",
+      edgeMint !== null, String(edgeMint && edgeMint.message));
+    // One below it still works, so the bound is exactly where it should be and
+    // not a blanket refusal of large counters.
+    var justUnder = Object.assign({}, signedAnchor,
+      { lastPurgedCounter: Number.MAX_SAFE_INTEGER - 1 });
+    var underMint = null;
+    try { b.auditChain.purgeAnchorPayload(justUnder); }
+    catch (e) { underMint = e; }
+    check("one below the edge is still accepted",
+      underMint === null, String(underMint && underMint.message));
 
     // A signature under a key this volume has no record of is not a signature.
     var wrongFp = Object.assign({}, signedAnchor, { publicKeyFingerprint: "0".repeat(64) });

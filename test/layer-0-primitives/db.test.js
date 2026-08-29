@@ -93,6 +93,25 @@ async function testInitArgValidation() {
     var e7 = await _catch(function () { return b.db.init({ dataDir: tmpDir, schema: [], atRest: "plain", columnGate: "bogus" }); });
     check("init bad columnGate throws db/bad-init", e7 && e7.code === "db/bad-init");
 
+    // Only a callable resolver is consulted, so a present-but-wrong one would
+    // remove the boot check that a purge boundary's archive still exists — and
+    // the volume would report itself healthy while licensing the gap. A typo
+    // and a config that failed to load both look exactly like this.
+    var uncallableResolvers = ["not-a-function", null, 42, {}];
+    for (var ri = 0; ri < uncallableResolvers.length; ri += 1) {
+      var badResolver = uncallableResolvers[ri];
+      var badResolverErr = await _catch(function () {
+        return b.db.init({
+          dataDir: tmpDir, schema: [], atRest: "plain",
+          resolvePurgeArchive: badResolver,
+        });
+      });
+      check("init uncallable resolvePurgeArchive (" +
+        (badResolver === null ? "null" : typeof badResolver) + ") is refused",
+        badResolverErr && badResolverErr.code === "db/bad-resolve-purge-archive",
+        String(badResolverErr && (badResolverErr.code || badResolverErr.message)));
+    }
+
     // db was never opened by any of these — still not initialized.
     var e8 = await _catch(function () { return b.db.from("x"); });
     check("after failed inits, from() reports not-initialized", e8 && e8.code === "db/not-initialized");

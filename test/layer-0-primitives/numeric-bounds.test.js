@@ -52,6 +52,22 @@ function testHelperPredicate() {
     nb.isNonNegativeSafeInt(Number.MAX_SAFE_INTEGER) === true);
   check("isNonNegativeSafeInt(MAX_SAFE_INTEGER + 2) — the aliasing range",
     nb.isNonNegativeSafeInt(Number.MAX_SAFE_INTEGER + 2) === false);
+
+  // isIncrementableSafeInt — for a value something will count PAST. The two
+  // differ at exactly one number, and that number is the whole point: it is a
+  // safe integer whose successor is not, so accepting it as a boundary hands
+  // the next row a counter that aliases another.
+  check("isIncrementableSafeInt(0)", nb.isIncrementableSafeInt(0) === true);
+  check("isIncrementableSafeInt(-1)", nb.isIncrementableSafeInt(-1) === false);
+  check("isIncrementableSafeInt(MAX_SAFE_INTEGER - 1) — its successor is still safe",
+    nb.isIncrementableSafeInt(Number.MAX_SAFE_INTEGER - 1) === true);
+  check("isIncrementableSafeInt(MAX_SAFE_INTEGER) — safe itself, successor is not",
+    nb.isIncrementableSafeInt(Number.MAX_SAFE_INTEGER) === false);
+  check("the two predicates disagree only at MAX_SAFE_INTEGER",
+    nb.isNonNegativeSafeInt(Number.MAX_SAFE_INTEGER) === true &&
+    nb.isIncrementableSafeInt(Number.MAX_SAFE_INTEGER) === false);
+  check("isIncrementableSafeInt(MAX_SAFE_INTEGER + 2) — the aliasing range",
+    nb.isIncrementableSafeInt(Number.MAX_SAFE_INTEGER + 2) === false);
   check("isNonNegativeSafeInt(Infinity)", nb.isNonNegativeSafeInt(Infinity) === false);
   check("isNonNegativeSafeInt(NaN)",      nb.isNonNegativeSafeInt(NaN) === false);
   check("isNonNegativeSafeInt(1.5)",      nb.isNonNegativeSafeInt(1.5) === false);

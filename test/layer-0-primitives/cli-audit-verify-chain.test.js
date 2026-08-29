@@ -278,6 +278,21 @@ async function runArchiveResolution() {
   check("verify-chain: and resolves again once both are back",
         (await cli.main(baseArgs, ctxBack)) === 0, ctxBack.err());
 
+  // Deleting the expectation is the cheapest way to defeat a comparison
+  // against it. Every bundle the archiver writes records a checksum for each
+  // member it includes, so a manifest without one did not come from here.
+  var manifestPath = path.join(bundleOut, "manifest.json");
+  var manifestBytes = fs.readFileSync(manifestPath);
+  var stripped = JSON.parse(manifestBytes.toString("utf8"));
+  delete stripped.checksum.rowsSha3_512;
+  fs.writeFileSync(manifestPath, JSON.stringify(stripped));
+  var ctxNoSum = _captureCtx();
+  var cNoSum = await cli.main(baseArgs, ctxNoSum);
+  check("verify-chain: a manifest with its checksum removed is not found",
+        cNoSum === 1 && /could not be produced/.test(ctxNoSum.err()),
+        "exit=" + cNoSum + " out=" + ctxNoSum.out() + " err=" + ctxNoSum.err());
+  fs.writeFileSync(manifestPath, manifestBytes);
+
   // A directory reports a non-zero size on most filesystems, so a check on
   // size alone accepts one standing where the payload should be — a bundle
   // the reader cannot open, reported as producible.
