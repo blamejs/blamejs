@@ -860,6 +860,239 @@ async function testBdatBranches(tls) {
   } finally { sock.destroy(); await s.srv.close({ timeoutMs: b.constants.TIME.seconds(2) }); }
 }
 
+// With the delimiter named, mail addressed to ok+tag@example.com is delivered
+// to ok@example.com by this same server — so refusing it as a SENDER makes one
+// identity give two answers, and the detail part is chosen by whoever writes
+// the address, so it can never be enumerated into the set in advance. An MUA
+// configured with a subaddress identity puts it in both From and MAIL FROM, so
+// the account cannot send at all.
+async function testSubaddressFoldingWhenConfigured(tls) {
+  var s = await _mk(tls, {
+    profile:             "permissive",
+    identityBinding:     "strict",
+    subaddressDelimiter: "+",
+    auth: {
+      mechanisms: ["PLAIN"],
+      verify: function (mech, creds) {
+        var parts = Buffer.from(creds.clientResponse || "", "base64").toString("utf8").split(NUL);
+        return Promise.resolve({ ok: true,
+          actor: { id: parts[1] + "@example.com", mailboxes: ["ok@example.com"] } });
+      },
+    },
+  });
+  var sock = await _connect(s.port);
+  try {
+    await _readReply(sock);
+    await _send(sock, "EHLO client.example.com");
+    await _send(sock, "AUTH PLAIN " + _saslPlain("ok", "pw"));
+    check("subaddress: a tag on a mailbox in the set → 250",
+      /^250 /.test(await _send(sock, "MAIL FROM:<ok+newsletter@example.com>")));
+    check("subaddress: RSET → 250", /^250 /.test(await _send(sock, "RSET")));
+    // The fold must not reach past the local part: a DIFFERENT mailbox whose
+    // name merely starts with an entry in the set is not that entry.
+    check("subaddress: a different mailbox is still refused",
+      /^553 /.test(await _send(sock, "MAIL FROM:<oktober@example.com>")));
+    check("subaddress: RSET again → 250", /^250 /.test(await _send(sock, "RSET")));
+    // Nor past the domain: same local part, someone else's domain.
+    check("subaddress: another domain is still refused",
+      /^553 /.test(await _send(sock, "MAIL FROM:<ok+tag@evil.example>")));
+    check("subaddress: RSET once more → 250", /^250 /.test(await _send(sock, "RSET")));
+    // A different delimiter is a literal character, not a separator.
+    check("subaddress: a qmail-style tag is not folded under a '+' delimiter",
+      /^553 /.test(await _send(sock, "MAIL FROM:<ok-newsletter@example.com>")));
+  } finally { sock.destroy(); await s.srv.close({ timeoutMs: b.constants.TIME.seconds(2) }); }
+}
+
+// The mailbox set is fixed at construction, so it cannot answer a question the
+// consumer resolves per request: an alias that lands in this account's mailbox
+// is an address it may legitimately speak for, and nothing in a frozen array
+// can say so. `senderPolicy` is asked only after the set has declined.
+async function testSenderPolicy(tls) {
+  var asked = [];
+  function _mkWithPolicy(policy) {
+    return _mk(tls, {
+      profile:         "permissive",
+      identityBinding: "strict",
+      senderPolicy:    policy,
+      auth: {
+        mechanisms: ["PLAIN"],
+        verify: function (mech, creds) {
+          var parts = Buffer.from(creds.clientResponse || "", "base64").toString("utf8").split(NUL);
+          return Promise.resolve({ ok: true,
+            actor: { id: parts[1] + "@example.com", mailboxes: ["ok@example.com"] } });
+        },
+      },
+    });
+  }
+  async function _mailFrom(srv, addr) {
+    var sock = await _connect(srv.port);
+    try {
+      await _readReply(sock);
+      await _send(sock, "EHLO client.example.com");
+      await _send(sock, "AUTH PLAIN " + _saslPlain("ok", "pw"));
+      return await _send(sock, "MAIL FROM:<" + addr + ">");
+    } finally { sock.destroy(); }
+  }
+
+  var sAllow = await _mkWithPolicy(function (ctx) {
+    asked.push(ctx);
+    return Promise.resolve({ ok: ctx.mailFrom === "alias@example.com" });
+  });
+  try {
+    check("senderPolicy: an alias it accepts is allowed",
+      /^250 /.test(await _mailFrom(sAllow, "alias@example.com")));
+    check("senderPolicy: and it was asked with the address and the actor",
+      asked.length === 1 && asked[0].mailFrom === "alias@example.com" &&
+      asked[0].actor && asked[0].actor.id === "ok@example.com" &&
+      asked[0].mailboxes.indexOf("ok@example.com") !== -1,
+      JSON.stringify(asked[0] && { mailFrom: asked[0].mailFrom, mailboxes: asked[0].mailboxes }));
+    check("senderPolicy: one it declines is still refused",
+      /^553 /.test(await _mailFrom(sAllow, "someone@example.com")));
+    // An address the set already covers must not reach it: a consumer that
+    // supplies a policy should not be consulted on every ordinary send.
+    var askedBefore = asked.length;
+    check("senderPolicy: an address in the set is accepted without asking",
+      /^250 /.test(await _mailFrom(sAllow, "ok@example.com")));
+    check("senderPolicy: and the policy was not consulted for it",
+      asked.length === askedBefore, String(asked.length - askedBefore));
+  } finally { await sAllow.srv.close({ timeoutMs: b.constants.TIME.seconds(2) }); }
+
+  // Fail-closed: this is the control that stops an authenticated account
+  // sending as someone else, and a policy that could not decide has not
+  // decided in the consumer's favour.
+  var sThrow = await _mkWithPolicy(function () { throw new Error("policy backend down"); });
+  try {
+    check("senderPolicy: a throwing policy refuses rather than admits",
+      /^553 /.test(await _mailFrom(sThrow, "alias@example.com")));
+  } finally { await sThrow.srv.close({ timeoutMs: b.constants.TIME.seconds(2) }); }
+
+  var sReject = await _mkWithPolicy(async function () { throw new Error("policy timed out"); });
+  try {
+    check("senderPolicy: a rejecting async policy refuses too",
+      /^553 /.test(await _mailFrom(sReject, "alias@example.com")));
+  } finally { await sReject.srv.close({ timeoutMs: b.constants.TIME.seconds(2) }); }
+
+  // A verdict that is not the documented shape is not an acceptance.
+  var sJunk = await _mkWithPolicy(function () { return Promise.resolve("yes"); });
+  try {
+    check("senderPolicy: a verdict that is not { ok: true } refuses",
+      /^553 /.test(await _mailFrom(sJunk, "alias@example.com")));
+  } finally { await sJunk.srv.close({ timeoutMs: b.constants.TIME.seconds(2) }); }
+
+  // RFC 2920 PIPELINING: the client is entitled to send MAIL and RCPT in one
+  // segment. While the policy is outstanding the listener must not answer past
+  // the command waiting on it — a RCPT dispatched first gets "MAIL FROM first"
+  // for a MAIL that is about to succeed, and the two replies arrive in the
+  // wrong order.
+  var release = null;
+  var sPipelined = await _mkWithPolicy(function () {
+    return new Promise(function (resolve) { release = function () { resolve({ ok: true }); }; });
+  });
+  var sockP = await _connect(sPipelined.port);
+  try {
+    await _readReply(sockP);
+    await _send(sockP, "EHLO client.example.com");
+    await _send(sockP, "AUTH PLAIN " + _saslPlain("ok", "pw"));
+    // Collected line-by-line rather than through _readReply, which accumulates
+    // until a terminal line and would swallow two replies arriving in one
+    // chunk — which is exactly what correct ordering produces here.
+    var pipelined = [];
+    sockP.on("data", function (d) {
+      String(d).split(/\r\n/).forEach(function (l) { if (l) pipelined.push(l); });
+    });
+    // Both commands in ONE write, so the second is already buffered when the
+    // first yields.
+    sockP.write("MAIL FROM:<alias@example.com>\r\nRCPT TO:<dest@example.com>\r\n");
+    await helpers.waitUntil(function () { return release !== null; },
+      { timeoutMs: 5000, label: "submission pipelining: senderPolicy was consulted" });
+    await helpers.passiveObserve(200, "submission pipelining: nothing answered while the policy runs");
+    check("pipelining: nothing is answered until the verdict lands",
+      pipelined.length === 0, JSON.stringify(pipelined));
+    release();
+    await helpers.waitUntil(function () { return pipelined.length >= 2; },
+      { timeoutMs: 5000, label: "submission pipelining: both replies" });
+    check("pipelining: the MAIL verdict is answered first",
+      /^250 2\.1\.0 /.test(pipelined[0]), JSON.stringify(pipelined));
+    check("pipelining: and the RCPT behind it sees the sender that was accepted",
+      /^250 2\.1\.5 /.test(pipelined[1]), JSON.stringify(pipelined));
+  } finally { sockP.destroy(); await sPipelined.srv.close({ timeoutMs: b.constants.TIME.seconds(2) }); }
+
+  // The same out-of-order answer by a different route: the client sends the
+  // next command in a LATER segment, while the verdict is still outstanding.
+  var release2 = null;
+  var sLater = await _mkWithPolicy(function () {
+    return new Promise(function (resolve) { release2 = function () { resolve({ ok: true }); }; });
+  });
+  var sockL = await _connect(sLater.port);
+  try {
+    await _readReply(sockL);
+    await _send(sockL, "EHLO client.example.com");
+    await _send(sockL, "AUTH PLAIN " + _saslPlain("ok", "pw"));
+    var later = [];
+    sockL.on("data", function (d) {
+      String(d).split(/\r\n/).forEach(function (l) { if (l) later.push(l); });
+    });
+    sockL.write("MAIL FROM:<alias@example.com>\r\n");
+    await helpers.waitUntil(function () { return release2 !== null; },
+      { timeoutMs: 5000, label: "submission later-segment: senderPolicy was consulted" });
+    sockL.write("RCPT TO:<dest@example.com>\r\n");   // a separate segment
+    await helpers.passiveObserve(250, "submission later-segment: nothing answered while pending");
+    check("later segment: nothing is answered until the verdict lands",
+      later.length === 0, JSON.stringify(later));
+    release2();
+    await helpers.waitUntil(function () { return later.length >= 2; },
+      { timeoutMs: 5000, label: "submission later-segment: both replies" });
+    check("later segment: the MAIL verdict is still answered first",
+      /^250 2\.1\.0 /.test(later[0]) && /^250 2\.1\.5 /.test(later[1]), JSON.stringify(later));
+  } finally { sockL.destroy(); await sLater.srv.close({ timeoutMs: b.constants.TIME.seconds(2) }); }
+  // Holding the pipeline must not turn the client's whole batch into one
+  // over-long "line". A MAIL plus a page of near-limit RCPTs is an ordinary
+  // PIPELINING client, and disconnecting it with 5.5.6 would be the hold
+  // breaking what it was added to protect.
+  var release3 = null;
+  var sBatch = await _mkWithPolicy(function () {
+    return new Promise(function (resolve) { release3 = function () { resolve({ ok: true }); }; });
+  });
+  var sockB = await _connect(sBatch.port);
+  try {
+    await _readReply(sockB);
+    await _send(sockB, "EHLO client.example.com");
+    await _send(sockB, "AUTH PLAIN " + _saslPlain("ok", "pw"));
+    var batch = [];
+    sockB.on("data", function (d) {
+      String(d).split(/\r\n/).forEach(function (l) { if (l) batch.push(l); });
+    });
+    // Long-but-legal recipients: 20 of them, each well under the per-line cap,
+    // together far past it.
+    var rcpts = "";
+    for (var ri = 0; ri < 20; ri += 1) {
+      rcpts += "RCPT TO:<" + ("r" + ri) + new Array(180).join("x") + "@example.com>\r\n";
+    }
+    sockB.write("MAIL FROM:<alias@example.com>\r\n" + rcpts);
+    await helpers.waitUntil(function () { return release3 !== null; },
+      { timeoutMs: 5000, label: "submission batch: senderPolicy was consulted" });
+    release3();
+    await helpers.waitUntil(function () { return batch.length >= 21; },
+      { timeoutMs: 5000, label: "submission batch: every reply" });
+    check("pipelined batch: the sender is accepted first",
+      /^250 2\.1\.0 /.test(batch[0]), JSON.stringify(batch.slice(0, 2)));
+    check("pipelined batch: no reply is a line-too-long disconnect",
+      batch.every(function (l) { return !/5\.5\.6/.test(l); }),
+      JSON.stringify(batch.filter(function (l) { return /5\.5\.6/.test(l); })));
+  } finally { sockB.destroy(); await sBatch.srv.close({ timeoutMs: b.constants.TIME.seconds(2) }); }
+
+  // Config-time: a non-callable senderPolicy is the operator asking for a
+  // check the listener would then never run.
+  var badOpts = null;
+  try {
+    b.mail.server.submission.create({ tlsContext: tls.ctx, profile: "permissive",
+      senderPolicy: "yes-please" });
+  } catch (e) { badOpts = e; }
+  check("senderPolicy: a non-callable one is refused at construction",
+    badOpts !== null && /senderPolicy/.test(badOpts.message || ""),
+    String(badOpts && badOpts.message));
+}
+
 // ---- cleartext AUTH accepted + identity binding (strict) ----
 
 async function testCleartextAuthAndIdentity(tls) {
@@ -895,7 +1128,17 @@ async function testCleartextAuthAndIdentity(tls) {
     // In set → 250.
     check("MAIL FROM in actor set → 250",
       /^250 /.test(await _send(sock, "MAIL FROM:<ok@example.com>")));
+    check("RSET after the accepted sender → 250", /^250 /.test(await _send(sock, "RSET")));
+    // Subaddressing is a DELIVERY convention this framework does not
+    // implement, so it cannot assume `ok+tag@` reaches `ok@` here. Unasked
+    // for, the fold does not happen — on a deployment that allocates
+    // plus-addresses as distinct mailboxes, folding would hand this account
+    // send-as authority over another's.
+    check("MAIL FROM as a subaddress is refused when no delimiter is configured",
+      /^553 /.test(await _send(sock, "MAIL FROM:<ok+newsletter@example.com>")));
   } finally { sock.destroy(); }
+
+  await testSubaddressFoldingWhenConfigured(tls);
 
   // Actor with NO mailboxes → every MAIL FROM refused.
   var sock2 = await _connect(s.port);
@@ -1721,6 +1964,7 @@ async function run() {
   await testDkimSelfActor(tls);
   await testFoldedDkimTagDoesNotBacktrack(tls);
   await testCleartextAuthAndIdentity(tls);
+  await testSenderPolicy(tls);
   await testAuthFailuresAndMultiStep(tls);
   await testAuthRateLimit(tls);
   await testCrossTenant(tls);

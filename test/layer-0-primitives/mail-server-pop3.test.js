@@ -1128,6 +1128,56 @@ async function testSessionEndWaitsForStoreWork() {
   check("store-work: and is reported once the lease it acquired exists",
     order.indexOf("open-finished") < order.indexOf("session-end"), JSON.stringify(order));
   await s.srv.close();
+
+  await testSessionEndWaitsForASlowCommit();
+}
+
+// A commit that outruns commitTimeoutMs is answered on the wire — the client
+// cannot be left hanging — but the write is still in progress: a timeout gives
+// up on the ANSWER, it does not stop the backend. Releasing the maildrop then
+// would hand the next session a mailbox that is still being mutated, which is
+// the same corruption the deferral exists to prevent, reached by the one path
+// that reports failure.
+async function testSessionEndWaitsForASlowCommit() {
+  var order = [];
+  var releaseCommit = null;
+  var store = _stubStore();
+  store.commitPop3Drop = function () {
+    order.push("commit-started");
+    return new Promise(function (resolve) {
+      releaseCommit = function () { order.push("commit-finished"); resolve({ deleted: 0 }); };
+    });
+  };
+  var s = await _makeServer({
+    mailStore:        store,
+    commitTimeoutMs:  200,
+    onSessionEnd:     function () { order.push("session-end"); },
+  });
+  var sock = nodeNet.connect(s.port, "127.0.0.1");
+  sock.on("error", function () {});
+  await _readReply(sock);
+  check("slow commit: STLS begins negotiation", /^\+OK/.test(await _send(sock, "STLS")));
+  var tls = nodeTls.connect({ socket: sock, ca: s.caPem, servername: "localhost" });
+  tls.on("error", function () {});
+  await new Promise(function (r, j) { tls.once("secureConnect", r); tls.once("error", j); });
+  await _send(tls, "USER alice");
+  check("slow commit: PASS accepted", /^\+OK/.test(await _send(tls, "PASS good")));
+  tls.write("QUIT\r\n");
+  await helpers.waitUntil(function () { return order.indexOf("commit-started") !== -1; },
+    { timeoutMs: 5000, label: "pop3 slow commit: the commit started" });
+
+  // Past the timeout: the client has been answered and the socket closed, but
+  // the write has not finished.
+  await helpers.passiveObserve(600, "pop3 slow commit: no session end while the commit runs");
+  check("slow commit: the session does not end while the write is still running",
+    order.indexOf("session-end") === -1, JSON.stringify(order));
+
+  releaseCommit();
+  await helpers.waitUntil(function () { return order.indexOf("session-end") !== -1; },
+    { timeoutMs: 5000, label: "pop3 slow commit: session end after the commit settled" });
+  check("slow commit: and is reported once the mailbox is no longer being written",
+    order.indexOf("commit-finished") < order.indexOf("session-end"), JSON.stringify(order));
+  await s.srv.close();
 }
 
 // RFC 1939 §3 gives a maildrop to one session at a time, so a store leases it

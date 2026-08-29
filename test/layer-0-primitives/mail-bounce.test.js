@@ -1255,6 +1255,61 @@ async function testDsnParseRecipientGuards() {
   ].join('\r\n');
   var e3 = _threw(function () { b.mailBounce.dsn.parse(noFinal); });
   check("dsn parse: missing Final-Recipient rejected", e3 && e3.code === "bounce/dsn-malformed");
+
+  // RFC 3464 §2.3 defines the per-recipient group as REPEATING because a
+  // report describes several recipients, and privileges none of them. A
+  // consumer handling the general case iterates every group — which is exactly
+  // the part that was reaching it unvalidated.
+  function multi(groups) {
+    var lines = [
+      'Content-Type: multipart/report; report-type=delivery-status; boundary="b"', '',
+      '--b', 'Content-Type: text/plain', '', 'human', '',
+      '--b', 'Content-Type: message/delivery-status', '', 'Reporting-MTA: dns; m', '',
+    ];
+    groups.forEach(function (g) { lines = lines.concat(g, ['']); });
+    return lines.concat(['--b--', '']).join('\r\n');
+  }
+
+  var goodFirst = ['Final-Recipient: rfc822; ok@example.com', 'Action: failed', 'Status: 5.1.1'];
+  var okTwo = b.mailBounce.dsn.parse(multi([goodFirst,
+    ['Final-Recipient: rfc822; two@example.com', 'Action: delayed', 'Status: 4.4.1']]));
+  check("dsn parse: a report whose every group is valid still parses",
+    okTwo && okTwo.raw && okTwo.raw.allRecipients.length === 2,
+    JSON.stringify(okTwo && okTwo.raw && okTwo.raw.allRecipients.length));
+
+  var eLater = _threw(function () {
+    b.mailBounce.dsn.parse(multi([goodFirst,
+      ['Final-Recipient: rfc822; two@example.com', 'Action: teleported', 'Status: 5.1.1']]));
+  });
+  check("dsn parse: an Action outside RFC 3464 §2.3.3 is refused in ANY group",
+    eLater && eLater.code === "bounce/dsn-malformed", String(eLater && eLater.message));
+
+  var eLaterNoRcpt = _threw(function () {
+    b.mailBounce.dsn.parse(multi([goodFirst, ['Action: failed', 'Status: 5.1.1']]));
+  });
+  check("dsn parse: a later group with no recipient is refused too",
+    eLaterNoRcpt && eLaterNoRcpt.code === "bounce/dsn-malformed",
+    String(eLaterNoRcpt && eLaterNoRcpt.message));
+
+  // RFC 3464 §2.3.3 makes Action mandatory. It is the field that says whether
+  // the message failed, was delayed, or was in fact DELIVERED — a report that
+  // claims nothing must not be indistinguishable from one that claims
+  // something the consumer then acts on.
+  var eNoAction = _threw(function () {
+    b.mailBounce.dsn.parse(multi([['Final-Recipient: rfc822; ok@example.com', 'Status: 5.1.1']]));
+  });
+  check("dsn parse: an absent Action is refused, not read as an empty verdict",
+    eNoAction && eNoAction.code === "bounce/dsn-malformed", String(eNoAction && eNoAction.message));
+
+  // Real reports do omit it, so the leniency exists — as something a consumer
+  // chooses knowingly, not as the default.
+  var lenient = b.mailBounce.dsn.parse(
+    multi([['Final-Recipient: rfc822; ok@example.com', 'Status: 5.1.1']]),
+    { requireAction: false });
+  check("dsn parse: requireAction:false accepts a report that states no verdict",
+    lenient && lenient.raw.allRecipients.length === 1 &&
+    lenient.raw.allRecipients[0].action === undefined,
+    JSON.stringify(lenient && lenient.raw.allRecipients[0]));
 }
 
 async function testDsnParseActionBranches() {
@@ -1272,9 +1327,17 @@ async function testDsnParseActionBranches() {
   check("dsn parse: relayed → delivery", evR.type === "delivery" && evR.subType === null);
   var evX = b.mailBounce.dsn.parse(dsn("expanded", "2.0.0"));
   check("dsn parse: expanded → delivery", evX.type === "delivery" && evX.subType === null);
-  // No Action field → bounce with subType unknown.
-  var evN = b.mailBounce.dsn.parse(dsn(null, "5.0.0"));
-  check("dsn parse: absent Action → bounce/unknown", evN.type === "bounce" && evN.subType === "unknown");
+  // No Action field. RFC 3464 §2.3.3 requires it, and it is the field that
+  // says whether the message failed, was delayed, or was DELIVERED — so by
+  // default the report is refused rather than normalized into a verdict it
+  // never stated. Under the explicit opt it still normalizes to
+  // bounce/unknown, which is what it did before the field was required.
+  var evNThrew = _threw(function () { b.mailBounce.dsn.parse(dsn(null, "5.0.0")); });
+  check("dsn parse: absent Action refused by default",
+    evNThrew && evNThrew.code === "bounce/dsn-malformed", String(evNThrew && evNThrew.message));
+  var evN = b.mailBounce.dsn.parse(dsn(null, "5.0.0"), { requireAction: false });
+  check("dsn parse: absent Action under requireAction:false → bounce/unknown",
+    evN.type === "bounce" && evN.subType === "unknown");
 }
 
 async function testDsnParseReasonAndSkipBranches() {

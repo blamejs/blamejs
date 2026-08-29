@@ -297,7 +297,58 @@ function testBodyRateWindowGivesNoCreditForAnEarlyBurst() {
         JSON.stringify(judged.map(function (j) { return j.elapsedMs; })));
 }
 
+// RFC 5233: the detail part after the delimiter is chosen by whoever writes
+// the address, so `alice+anything@example.com` is delivered to the mailbox
+// `alice@example.com` and can never be enumerated in advance. Folding is what
+// lets an identity check compare at the mailbox rather than the spelling.
+function testFoldSubaddress() {
+  var fold = function (a, d) { return mailServerNet.foldSubaddress(a, d === undefined ? "+" : d); };
+  check("foldSubaddress: the detail part is folded away",
+    fold("alice+newsletter@example.com") === "alice@example.com");
+  check("foldSubaddress: case folds with it",
+    fold("ALICE+Tag@Example.COM") === "alice@example.com");
+  check("foldSubaddress: an address with no tag is unchanged but lowercased",
+    fold("Alice@Example.com") === "alice@example.com");
+  check("foldSubaddress: only the FIRST delimiter separates",
+    fold("alice+a+b@example.com") === "alice@example.com");
+  // Whether a local part carries a detail part at all is a property of the
+  // DELIVERY side. A caller that has not said what its delimiter is gets its
+  // address back, rather than a fold this cannot know applies — on a server
+  // that allocates plus-addresses as distinct mailboxes, folding would hand
+  // one account authority over another's.
+  check("foldSubaddress: no delimiter named means no fold",
+    mailServerNet.foldSubaddress("alice+tag@example.com") === "alice+tag@example.com" &&
+    mailServerNet.foldSubaddress("alice+tag@example.com", "") === "alice+tag@example.com" &&
+    mailServerNet.foldSubaddress("ALICE+Tag@Example.com", null) === "alice+tag@example.com");
+  // A local part that BEGINS with the delimiter has no base to fold to —
+  // `+tag@example.com` is an address in its own right, and folding it to
+  // `@example.com` would make every such address collide.
+  check("foldSubaddress: a leading delimiter is not a separator",
+    fold("+tag@example.com") === "+tag@example.com");
+  // The delimiter is a LOCAL-part construct; one in the domain is just a
+  // character, and folding there would make a different domain match.
+  check("foldSubaddress: a delimiter in the domain is left alone",
+    fold("alice@ex+ample.com") === "alice@ex+ample.com");
+  check("foldSubaddress: the last @ separates, so an escaped one in the local part is kept",
+    fold("a+b@c@example.com") === "a@example.com");
+  check("foldSubaddress: an operator whose delivery splits on something else says so",
+    fold("alice-tag@example.com", "-") === "alice@example.com" &&
+    fold("alice-tag@example.com", "+") === "alice-tag@example.com");
+  check("foldSubaddress: a non-address is not invented into one",
+    fold("") === "" && fold(null) === "" && fold("not-an-address") === "not-an-address");
+  check("foldSubaddress: a local part that is only a tag keeps it",
+    fold("+@example.com") === "+@example.com");
+  // RFC 5321 §4.1.2 — inside a quoted local part the delimiter is literal
+  // mailbox data, so these are two different mailboxes. Folding would collapse
+  // them to one string and let either speak for the other.
+  check("foldSubaddress: a quoted local part is never folded",
+    fold('"alice+one"@example.com') === '"alice+one"@example.com' &&
+    fold('"alice+two"@example.com') === '"alice+two"@example.com' &&
+    fold('"alice+one"@example.com') !== fold('"alice+two"@example.com'));
+}
+
 async function run() {
+  testFoldSubaddress();
   testBodyRateWindowGivesNoCreditForAnEarlyBurst();
   await testListenerCeilingRefusesBeyondMaxConnections();
   await testPipelinedSaslResponseAbandonsTheRoundInFlight();
