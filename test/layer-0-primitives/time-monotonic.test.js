@@ -24,6 +24,7 @@
  */
 
 var helpers = require("../helpers");
+var C              = require("../../lib/constants");
 var b              = helpers.b;
 var check          = helpers.check;
 var fs             = helpers.fs;
@@ -672,6 +673,59 @@ async function run() {
   var root = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-tmono-out-"));
   await testAuditChainSurvivesABackwardsClockStep(root);
   await testCorruptTipRefusesTheAppend(root);
+  await testElapsedTimeIgnoresTheWallClock();
+}
+
+// Measuring an interval must not read a clock an operator can correct.
+//
+// `monotonicNow` is not that primitive despite the name: its guarantee is
+// ORDERING, and it is built over Date.now, so a forward correction carries
+// into the value and subtracting two of them measures the step as elapsed
+// time. Consumers reaching for the nearest-looking thing is how a lease got
+// reaped while its session held it and a rate window handed back a full
+// budget without any time passing.
+async function testElapsedTimeIgnoresTheWallClock() {
+  // Driven through monotonicClock's injectable source rather than by stubbing
+  // the global: the shared clock captures `Date.now` as a function reference
+  // when it is built, so replacing the global afterwards reaches nothing. The
+  // clock under test here is the same construction `monotonicNow` uses — a
+  // wall-clock source with ordering on top.
+  var wallMs = C.TIME.hours(9);
+  var orderingClock = b.time.monotonicClock({
+    label: "elapsed-vs-ordering",
+    source: function () { return wallMs; },
+  });
+
+  var sw = b.time.stopwatch();
+  var beforeStep = b.time.monotonicMs();
+  var orderingBefore = orderingClock.now();
+  wallMs += C.TIME.hours(1);            // the operator corrects the host forward
+  var afterStep = b.time.monotonicMs();
+  var orderingAfter = orderingClock.now();
+
+  check("stopwatch does not count a clock step as elapsed time",
+    sw.ms() < C.TIME.seconds(5), "elapsed=" + sw.ms());
+  check("monotonicMs does not move with the wall clock",
+    (afterStep - beforeStep) < C.TIME.seconds(5),
+    "delta=" + (afterStep - beforeStep));
+  // The control, and the reason the docstring now says what monotonicNow is
+  // NOT for: a clock built this way follows the correction, so subtracting two
+  // of its readings reports an hour of work that never happened.
+  check("a wall-clock-sourced monotonic clock carries the step — it orders, it does not measure",
+    (orderingAfter - orderingBefore) >= C.TIME.minutes(59),
+    "delta=" + (orderingAfter - orderingBefore));
+
+  // And it measures real elapsed time, not zero.
+  var sw2 = b.time.stopwatch();
+  await helpers.passiveObserve(40, "stopwatch: a real interval to measure");
+  check("stopwatch measures an interval that actually passed",
+    sw2.ms() >= 30, "elapsed=" + sw2.ms());
+  check("reset() starts it again", (function () {
+    sw2.reset();
+    return sw2.ms() < 25;
+  })(), "afterReset=" + sw2.ms());
+  check("monotonicMs is not a timestamp — it counts from an arbitrary point",
+    b.time.monotonicMs() < Date.now() / 2);
 }
 
 module.exports = { run: run };

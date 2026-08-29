@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.18.58",
-  "createdAt": "2026-08-29T15:57:53.952Z",
+  "createdAt": "2026-08-29T16:51:22.903Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -56019,6 +56019,10 @@
           "type": "function",
           "arity": 1
         },
+        "monotonicMs": {
+          "type": "function",
+          "arity": 0
+        },
         "monotonicNow": {
           "type": "function",
           "arity": 0
@@ -56042,6 +56046,10 @@
         "startOfDay": {
           "type": "function",
           "arity": 2
+        },
+        "stopwatch": {
+          "type": "function",
+          "arity": 0
         },
         "stripIsoMilliseconds": {
           "type": "function",
