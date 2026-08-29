@@ -57,6 +57,16 @@ function _mysqlRoot(sql, dbName) {
   return execFileSync("docker", args, { stdio: ["pipe", "pipe", "pipe"] }).toString("utf8");
 }
 
+// The same shim as a NAMED role rather than root, so a test can ask what a
+// least-privilege deployment is actually allowed to do.
+function _mysqlAs(user, password, sql, dbName) {
+  var args = ["exec", "-i", CONTAINER, "mysql", "-u" + user, "-p" + password,
+              "--batch", "--raw"];
+  if (dbName) args.push(dbName);
+  args.push("-e", sql);
+  return execFileSync("docker", args, { stdio: ["pipe", "pipe", "pipe"] }).toString("utf8");
+}
+
 // --batch output: tab-separated, header row, "NULL" sentinel. Every cell is
 // text (BIGINT included) — coerceRow's job on the framework readback.
 function _parseBatch(out) {
@@ -772,6 +782,74 @@ async function _testClusterPurgeDeletionAgainstWormTriggers() {
   check("MySQL: and the guard is restored once the purge is done",
         stillGuarded !== null,
         "a purge must not leave the audit table writable");
+
+  await _testTriggerPrivilegeIsExplained();
+}
+
+// The guard's installation needs a privilege this harness has and a
+// least-privilege deployment usually does not.
+//
+// Measured on this server: a role granted SELECT/INSERT/UPDATE/DELETE and
+// TRIGGER on the schema still cannot CREATE TRIGGER while binary logging is on
+// — MySQL wants SUPER, or the server set to log_bin_trust_function_creators=1
+// — and adding SET_ANY_DEFINER does not change that. The whole live suite
+// connects as root, which is the one configuration where this cannot appear,
+// so nothing here would otherwise notice that an operator following ordinary
+// practice fails at boot on a message about "the less safe
+// log_bin_trust_function_creators variable" with no mention of the audit guard
+// it was installing.
+//
+// The framework cannot grant itself the privilege. What it can do is say what
+// is missing instead of passing the raw driver error through — and never
+// install the guard silently, because a volume reported as append-only with no
+// guard on it is the worse outcome.
+async function _testTriggerPrivilegeIsExplained() {
+  var probeDb = "blamejs_trigger_priv_probe";
+  _mysqlRoot("DROP DATABASE IF EXISTS `" + probeDb + "`");
+  _mysqlRoot("CREATE DATABASE `" + probeDb + "`");
+  _mysqlRoot("CREATE TABLE `" + probeDb + "`.`_blamejs_audit_log` (id INT)");
+  _mysqlRoot("DROP USER IF EXISTS 'bj_lowpriv'@'%'");
+  _mysqlRoot("CREATE USER 'bj_lowpriv'@'%' IDENTIFIED BY 'p'");
+  _mysqlRoot("GRANT SELECT, INSERT, UPDATE, DELETE, TRIGGER ON `" +
+             probeDb + "`.* TO 'bj_lowpriv'@'%'");
+  try {
+    // The control: this role really can write the table, so a refusal below is
+    // about the trigger privilege and not about access to the schema.
+    var wrote = null;
+    try {
+      _mysqlAs("bj_lowpriv", "p", "INSERT INTO `_blamejs_audit_log` VALUES (1)", probeDb);
+    } catch (e) { wrote = e; }
+    check("MySQL: the low-privilege role can write the audit table",
+          wrote === null, String(wrote && wrote.message).slice(0, 120));
+
+    var raw = null;
+    try {
+      _mysqlAs("bj_lowpriv", "p",
+        "CREATE TRIGGER no_delete__blamejs_audit_log BEFORE DELETE ON " +
+        "`_blamejs_audit_log` FOR EACH ROW SET @x = 1", probeDb);
+    } catch (e) { raw = e; }
+    check("MySQL: and still cannot create the append-only trigger",
+          raw !== null && /1419|SUPER privilege/i.test(String(raw.message)),
+          String(raw && raw.message).slice(0, 140));
+
+    // That raw error is what the framework must not hand an operator as-is.
+    var translated = b.frameworkSchema._wrapMysqlTriggerPrivilegeErrorForTest(
+      raw, "_blamejs_audit_log");
+    check("MySQL: the framework translates it into a typed, actionable error",
+          translated && translated.code === "framework-schema/mysql-trigger-privilege",
+          String(translated && translated.code));
+    check("MySQL: naming the privilege and the server setting that lift it",
+          /SUPER/.test(translated.message) &&
+          /log_bin_trust_function_creators/.test(translated.message) &&
+          /TRIGGER privilege alone is not sufficient/.test(translated.message),
+          String(translated.message).slice(0, 200));
+    check("MySQL: and an unrelated error passes through untouched",
+          b.frameworkSchema._wrapMysqlTriggerPrivilegeErrorForTest(
+            new Error("table is full"), "_blamejs_audit_log").message === "table is full");
+  } finally {
+    try { _mysqlRoot("DROP USER IF EXISTS 'bj_lowpriv'@'%'"); } catch (_e) { /* best effort */ }
+    try { _mysqlRoot("DROP DATABASE IF EXISTS `" + probeDb + "`"); } catch (_e) { /* best effort */ }
+  }
 }
 
 module.exports = { run: run };

@@ -424,7 +424,7 @@ async function testAnchorMustProveItWasWrittenWithTheSigningKey() {
     // volume nobody touched.
     var preRangeSigned = Object.assign({}, signedAnchor, { firstPurgedCounter: 0 });
     preRangeSigned.signature = b.auditSign.sign(
-      b.auditChain.purgeAnchorPayload(preRangeSigned, { includeRange: false }));
+      b.auditChain.purgeAnchorPayload(preRangeSigned, { layout: "no-range" }));
     var preRangeResult = await _verifyWith(preRangeSigned, undefined);
     check("an anchor signed before the range start was covered still verifies",
       preRangeResult.result && preRangeResult.result.ok === true,
@@ -440,11 +440,41 @@ async function testAnchorMustProveItWasWrittenWithTheSigningKey() {
     // become a way to drop the field from an anchor that has one.
     var droppedRange = Object.assign({}, signedAnchor, { firstPurgedCounter: 6 });
     droppedRange.signature = b.auditSign.sign(
-      b.auditChain.purgeAnchorPayload(droppedRange, { includeRange: false }));
+      b.auditChain.purgeAnchorPayload(droppedRange, { layout: "no-range" }));
     var droppedResult = await _verifyWith(droppedRange, undefined);
     check("but a non-zero range start gets no legacy retry",
       droppedResult.result && droppedResult.result.ok === false,
       JSON.stringify(droppedResult.result));
+
+    // The layouts stack. An anchor that DOES record a range but predates the
+    // archive digest is the shape between the two, and it needs its own retry:
+    // the oldest layout drops the range as well, so it would not match either,
+    // and such a volume would read as forged with the repair behind the door
+    // the refusal shuts.
+    var preDigest = Object.assign({}, signedAnchor,
+      { firstPurgedCounter: 6, archiveRowsDigest: "" });
+    preDigest.signature = b.auditSign.sign(
+      b.auditChain.purgeAnchorPayload(preDigest, { layout: "no-digest" }));
+    var preDigestResult = await _verifyWith(preDigest, undefined);
+    check("an anchor with a range but no archive digest still verifies",
+      preDigestResult.result && preDigestResult.result.ok === true,
+      JSON.stringify(preDigestResult.result));
+    check("and is reported as signature-verified",
+      preDigestResult.result.purgeAnchor &&
+      preDigestResult.result.purgeAnchor.signatureVerified === true,
+      JSON.stringify(preDigestResult.result.purgeAnchor));
+
+    // And that retry is gated the same way: an anchor that RECORDS a digest
+    // gets no layout that omits one, so stripping the digest from an anchor
+    // that has one cannot be laundered into a valid signature.
+    var droppedDigest = Object.assign({}, signedAnchor,
+      { firstPurgedCounter: 6, archiveRowsDigest: "d".repeat(128) });
+    droppedDigest.signature = b.auditSign.sign(
+      b.auditChain.purgeAnchorPayload(droppedDigest, { layout: "no-digest" }));
+    var droppedDigestResult = await _verifyWith(droppedDigest, undefined);
+    check("but an anchor recording a digest gets no digest-less retry",
+      droppedDigestResult.result && droppedDigestResult.result.ok === false,
+      JSON.stringify(droppedDigestResult.result));
 
     // A table carrying the signature columns but not the newest one. Dropping
     // straight to the oldest projection would omit `signature` and report this

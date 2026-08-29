@@ -324,6 +324,40 @@ async function runArchiveResolution() {
     .run(priorFp);
   restoreFp.close();
 
+  // The checksum in a manifest travels with the bytes it describes, so an
+  // attacker who replaces rows.enc replaces that checksum too and the two
+  // still agree. Comparing them proves the bundle is consistent with itself,
+  // which is not the question. The anchor carries the digest under its
+  // signature, so what the archive must CONTAIN is a claim only the signing
+  // key could make — and a consistent replacement no longer passes.
+  var bundleManifestPath = path.join(bundleOut, "manifest.json");
+  var bundleManifestBytes = fs.readFileSync(bundleManifestPath);
+  var forgedRows = Buffer.concat([rowsBytes, Buffer.from("tampered")]);
+  var forgedManifest = JSON.parse(bundleManifestBytes.toString("utf8"));
+  var anchorDigestRow = new sqlite.DatabaseSync(dbFile);
+  var signedDigest = anchorDigestRow.prepare(
+    "SELECT archiveRowsDigest AS d FROM _blamejs_audit_purge_anchor WHERE scope = 'audit'").get().d;
+  anchorDigestRow.close();
+  check("verify-chain: the anchor records the archive's digest under its signature",
+        typeof signedDigest === "string" && signedDigest.length > 0 &&
+        signedDigest === forgedManifest.checksum.rowsSha3_512,
+        String(signedDigest).slice(0, 32));
+
+  forgedManifest.checksum.rowsSha3_512 =
+    nodeCrypto.createHash("sha3-512").update(forgedRows).digest("hex");
+  fs.writeFileSync(rowsPath, forgedRows);
+  fs.writeFileSync(bundleManifestPath, JSON.stringify(forgedManifest));
+  check("verify-chain: the forged bundle is internally consistent",
+        nodeCrypto.createHash("sha3-512").update(fs.readFileSync(rowsPath)).digest("hex") ===
+        JSON.parse(fs.readFileSync(bundleManifestPath, "utf8")).checksum.rowsSha3_512);
+  var ctxForged = _captureCtx();
+  var cForged = await cli.main(baseArgs, ctxForged);
+  check("verify-chain: but it is not the archive the anchor signed for",
+        cForged === 1 && /could not be produced/.test(ctxForged.err()),
+        "exit=" + cForged + " out=" + ctxForged.out() + " err=" + ctxForged.err());
+  fs.writeFileSync(rowsPath, rowsBytes);
+  fs.writeFileSync(bundleManifestPath, bundleManifestBytes);
+
   // Deleting the expectation is the cheapest way to defeat a comparison
   // against it. Every bundle the archiver writes records a checksum for each
   // member it includes, so a manifest without one did not come from here.

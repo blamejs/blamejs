@@ -823,6 +823,7 @@ async function runIntegrated(root) {
       // start — signing a different one produces a valid signature over an
       // anchor nobody stored.
       firstPurgedCounter: Number(highAnchor.firstPurgedCounter || 0),
+      archiveRowsDigest: highAnchor.archiveRowsDigest,
       fencingToken:      9999,
     };
     var highSig = b.auditSign.sign(b.auditChain.purgeAnchorPayload(highSigned));
