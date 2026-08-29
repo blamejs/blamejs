@@ -1631,6 +1631,51 @@ async function testAgentHandoffFailure() {
         "From: s@external.com\r\nSubject: hi\r\n\r\nhello\r\n.")));
     sock.destroy();
   } finally { await srv.close({ timeoutMs: 1000 }); }                                 // allow:raw-time-literal — test-only short drain
+
+  await testAgentRefusalChoosesItsReply(ctx);
+}
+
+// The receiving side has the same problem as submission: a refusal the agent
+// made on policy grounds is permanent, and answering 451 tells a conforming
+// sender to retry it until its queue lifetime expires.
+async function testAgentRefusalChoosesItsReply(ctx) {
+  async function _replyFor(fields) {
+    var srv = b.mail.server.mx.create({
+      tlsContext: ctx, profile: "permissive", localDomains: ["example.com"],
+      agent: { handoff: async function () {
+        var e = new Error("refused by policy");
+        Object.keys(fields).forEach(function (k) { e[k] = fields[k]; });
+        throw e;
+      } },
+    });
+    var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+    var sock;
+    try {
+      sock = await _connectTo(info);
+      await _sendCommand(sock, "EHLO sender.example.com");
+      await _sendCommand(sock, "MAIL FROM:<s@external.com>");
+      await _sendCommand(sock, "RCPT TO:<alice@example.com>");
+      await _sendCommand(sock, "DATA");
+      var reply = await _sendCommand(sock,
+        "From: s@external.com\r\nSubject: hi\r\n\r\nhello\r\n.");
+      sock.destroy();
+      return reply;
+    } finally { await srv.close({ timeoutMs: 1000 }); }                               // allow:raw-time-literal — test-only short drain
+  }
+
+  var permanent = await _replyFor({
+    smtpCode: "550", enhancedStatus: "5.7.1", replyText: "message refused by policy",
+  });
+  check("mx agent refusal: a permanent verdict answers 5yz",
+    /^550 5\.7\.1 message refused by policy/.test(permanent), permanent);
+
+  var bogus = await _replyFor({ smtpCode: "250" });
+  check("mx agent refusal: a non-failure code falls back to 451 4.3.0",
+    /^451 4\.3\.0 /.test(bogus), bogus);
+
+  var injected = await _replyFor({ smtpCode: "550", replyText: "no\r\n250 accepted" });
+  check("mx agent refusal: injected line terminators do not reach the wire",
+    /^550 5\.0\.0 /.test(injected) && injected.indexOf("250 accepted") === -1, injected);
 }
 
 // ---- A gate that throws is caught by the pump → 421 + connection close --

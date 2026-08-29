@@ -537,6 +537,90 @@ async function testAnchorMustProveItWasWrittenWithTheSigningKey() {
     check("but a genuinely missing table still reads as nothing purged",
       absent && absent.ok === true, JSON.stringify(absent && (absent.message || absent)));
 
+    // MySQL words it with a contraction and puts the real answer in the
+    // driver's own fields — "Table 'db.X' doesn't exist", errno 1146,
+    // SQLSTATE 42S02. A message test written against the SQLite and Postgres
+    // wordings matches none of that, so a MySQL schema that simply has no
+    // anchor table yet stopped the verify with a driver error instead of
+    // reading as "nothing was purged". The structured fields are what every
+    // caller checks first now.
+    // The signature question on its own, which the repair path asks directly:
+    // does this signature cover this anchor under this key? Narrower than
+    // verifyPurgeAnchor, which also decides whether the key was authorized and
+    // whether the archive is still producible.
+    var liveFp = b.auditSign.getPublicKeyFingerprint();
+    var livePem = b.auditSign.getPublicKey();
+    var sigAnchor = {
+      scope: "audit", lastPurgedCounter: 42, lastPurgedRowHash: "a".repeat(128),
+      archiveBundleId: "ckpt-sig-probe", purgedAt: 1730000000000, fencingToken: 0,
+      firstPurgedCounter: 1, archiveRowsDigest: "b".repeat(128),
+      archiveCheckpointDigest: "c".repeat(128), publicKeyFingerprint: liveFp,
+    };
+    var goodSig = b.auditSign.sign(b.auditChain.purgeAnchorPayload(sigAnchor));
+    check("purgeAnchorSignatureVerifies: the current layout verifies",
+      b.auditChain.purgeAnchorSignatureVerifies(sigAnchor, goodSig, livePem) === true);
+    check("purgeAnchorSignatureVerifies: an edited field no longer does",
+      b.auditChain.purgeAnchorSignatureVerifies(
+        Object.assign({}, sigAnchor, { lastPurgedCounter: 43 }), goodSig, livePem) === false);
+    // A signature over an older layout still verifies while the field that
+    // layout omits is empty — and stops the moment the anchor records one,
+    // which is what keeps the retry from being a way to strip a field.
+    var legacyAnchorProbe = Object.assign({}, sigAnchor,
+      { archiveCheckpointDigest: "", archiveRowsDigest: "", firstPurgedCounter: 0 });
+    var legacySig = b.auditSign.sign(
+      b.auditChain.purgeAnchorPayload(legacyAnchorProbe, { layout: "no-range" }));
+    check("purgeAnchorSignatureVerifies: an older layout verifies while its fields are empty",
+      b.auditChain.purgeAnchorSignatureVerifies(legacyAnchorProbe, legacySig, livePem) === true);
+    check("purgeAnchorSignatureVerifies: but not once the anchor records one",
+      b.auditChain.purgeAnchorSignatureVerifies(
+        Object.assign({}, legacyAnchorProbe, { archiveRowsDigest: "d".repeat(128) }),
+        legacySig, livePem) === false);
+
+    function _rejectAnchorWith(err) {
+      return function (sql) {
+        if (typeof sql === "string" && sql.indexOf("purge_anchor") !== -1) {
+          return Promise.reject(err);
+        }
+        return Promise.resolve([]);
+      };
+    }
+    var mysqlShapes = [
+      { label: "mysql2 (errno + code + sqlState)",
+        err: Object.assign(new Error("Table 'blamejs._blamejs_audit_purge_anchor' doesn't exist"),
+          { errno: 1146, code: "ER_NO_SUCH_TABLE", sqlState: "42S02" }) },
+      // The docker-exec shim and ANSI drivers carry the SQLSTATE alone, with
+      // a message that names nothing recognizable at all.
+      { label: "ANSI driver (SQLSTATE only)",
+        err: Object.assign(new Error("SQL execution failed"), { code: "42S02" }) },
+    ];
+    for (var mi = 0; mi < mysqlShapes.length; mi += 1) {
+      var shape = mysqlShapes[mi];
+      var mysqlAbsent = null;
+      try {
+        mysqlAbsent = await b.auditChain.verifyChain(_rejectAnchorWith(shape.err), "audit_log", {});
+      } catch (e) { mysqlAbsent = e; }
+      check("a missing anchor table reads as nothing purged — " + shape.label,
+        mysqlAbsent && mysqlAbsent.ok === true,
+        JSON.stringify(mysqlAbsent && (mysqlAbsent.message || mysqlAbsent)));
+    }
+
+    // The control: a permission error carries a structured code too, and must
+    // still stop the verify. Reading "the table is absent" from any driver
+    // error would license every purged row below the boundary.
+    var deniedErr = null;
+    try {
+      await b.auditChain.verifyChain(function (sql) {
+        if (typeof sql === "string" && sql.indexOf("purge_anchor") !== -1) {
+          return Promise.reject(Object.assign(new Error("SELECT command denied to user"),
+            { errno: 1142, code: "ER_TABLEACCESS_DENIED_ERROR", sqlState: "42000" }));
+        }
+        return Promise.resolve([]);
+      }, "audit_log", {});
+    } catch (e) { deniedErr = e; }
+    check("a permission error is not read as an absent table",
+      deniedErr !== null && /command denied/.test(deniedErr.message || ""),
+      String(deniedErr && deniedErr.message));
+
     // The one-time upgrade path: an operator who acknowledges the legacy
     // boundary gets it adopted, and the result says plainly that it was
     // trusted rather than verified.

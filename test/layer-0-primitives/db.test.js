@@ -61,6 +61,11 @@ async function _catch(thunk) {
   catch (e) { return e; }
 }
 
+function _catchSync(thunk) {
+  try { thunk(); return null; }
+  catch (e) { return e; }
+}
+
 // --- init() argument validation (no db opened) ----------------------------
 
 async function testInitArgValidation() {
@@ -2392,6 +2397,16 @@ async function testChainBreakDetection() {
     var auditBreak = await _catch(function () { return b.db.init(opts1); });
     check("boot refuses on a broken audit_log chain (db/audit-chain-break)",
       auditBreak && auditBreak.code === "db/audit-chain-break");
+    // The handle goes live before the chain verify so the verify can read
+    // through the public surface, and init throws from there — so the caller,
+    // who never received a handle, has nothing to close. A database this boot
+    // just refused must not stay reachable: leaving it open is a tamper
+    // refusal that still serves the tampered rows.
+    var afterRefusal = _catchSync(function () {
+      return b.db.prepare("SELECT 1 AS one").get();
+    });
+    check("a refused boot leaves no live handle behind",
+      afterRefusal !== null, JSON.stringify(afterRefusal));
     try { b.db.close(); } catch (_e) { /* partially-initialized */ }
   } finally {
     _teardownPlain(d1);

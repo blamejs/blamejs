@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.18.58",
-  "createdAt": "2026-08-29T19:53:54.414Z",
+  "createdAt": "2026-08-29T21:30:36.875Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -2519,6 +2519,10 @@
         "purgeAnchorPayload": {
           "type": "function",
           "arity": 2
+        },
+        "purgeAnchorSignatureVerifies": {
+          "type": "function",
+          "arity": 3
         },
         "verifyChain": {
           "type": "function",
@@ -6713,6 +6717,14 @@
           "arity": 2
         },
         "fencedUpsert": {
+          "type": "function",
+          "arity": 1
+        },
+        "missingColumnCode": {
+          "type": "function",
+          "arity": 1
+        },
+        "missingRelationCode": {
           "type": "function",
           "arity": 1
         },
@@ -17693,6 +17705,10 @@
               "valueType": "string"
             },
             "archiveBundleId": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "archiveCheckpointDigest": {
               "type": "primitive",
               "valueType": "string"
             },

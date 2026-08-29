@@ -227,6 +227,66 @@ async function run() {
   await testTransactionRejectsBadArg();
   await testCteReadReturnsRows();
   await testFencedUpsertRefusesAStaleToken();
+  testMissingRelationAndColumnCodes();
+}
+
+// Every reader that has to tell "the table is not there yet" from "the query
+// failed" was answering it from the error MESSAGE, and MySQL words a missing
+// table with a contraction — "Table 'db.X' doesn't exist" — that the SQLite
+// and Postgres wordings do not cover. The driver's own fields say it plainly
+// and in every locale, so they are what gets asked, through one predicate
+// rather than a spelling per caller.
+function testMissingRelationAndColumnCodes() {
+  var mysqlTable = Object.assign(new Error("Table 'blamejs.audit_log' doesn't exist"),
+    { errno: 1146, code: "ER_NO_SUCH_TABLE", sqlState: "42S02" });
+  var pgTable = Object.assign(new Error('relation "audit_log" does not exist'),
+    { code: "42P01" });
+  // The docker-exec shim and ANSI drivers carry the SQLSTATE alone, with a
+  // message that names nothing recognizable.
+  var ansiTable = Object.assign(new Error("SQL execution failed"), { sqlState: "42S02" });
+  check("missingRelationCode: mysql2's own fields",
+    b.clusterStorage.missingRelationCode(mysqlTable) === true);
+  check("missingRelationCode: postgres SQLSTATE",
+    b.clusterStorage.missingRelationCode(pgTable) === true);
+  check("missingRelationCode: a SQLSTATE with no recognizable message",
+    b.clusterStorage.missingRelationCode(ansiTable) === true);
+
+  var mysqlColumn = Object.assign(new Error("Unknown column 'signature' in 'field list'"),
+    { errno: 1054, code: "ER_BAD_FIELD_ERROR", sqlState: "42S22" });
+  var pgColumn = Object.assign(new Error('column "signature" does not exist'),
+    { code: "42703" });
+  check("missingColumnCode: mysql2's own fields",
+    b.clusterStorage.missingColumnCode(mysqlColumn) === true);
+  check("missingColumnCode: postgres SQLSTATE",
+    b.clusterStorage.missingColumnCode(pgColumn) === true);
+
+  // The two must not answer each other's question: a reader that ends the
+  // read on an absent table and falls back to an older projection on an
+  // absent column would do the wrong one either way round.
+  check("missingRelationCode: an absent COLUMN is not an absent table",
+    b.clusterStorage.missingRelationCode(pgColumn) === false &&
+    b.clusterStorage.missingRelationCode(mysqlColumn) === false);
+  check("missingColumnCode: an absent TABLE is not an absent column",
+    b.clusterStorage.missingColumnCode(pgTable) === false &&
+    b.clusterStorage.missingColumnCode(mysqlTable) === false);
+
+  // And the control the whole predicate exists for: a failure that says
+  // nothing about the schema must be neither. Reading "absent" from a timeout
+  // or a permission error is how a purged chain gets verified from ZERO_HASH
+  // and reported clean.
+  var denied = Object.assign(new Error("SELECT command denied to user 'app'"),
+    { errno: 1142, code: "ER_TABLEACCESS_DENIED_ERROR", sqlState: "42000" });
+  var timedOut = Object.assign(new Error("connection terminated unexpectedly"),
+    { code: "ETIMEDOUT" });
+  check("neither predicate reads a permission error as a missing schema object",
+    b.clusterStorage.missingRelationCode(denied) === false &&
+    b.clusterStorage.missingColumnCode(denied) === false);
+  check("neither reads a dropped connection as one",
+    b.clusterStorage.missingRelationCode(timedOut) === false &&
+    b.clusterStorage.missingColumnCode(timedOut) === false);
+  check("neither answers true for a missing error",
+    b.clusterStorage.missingRelationCode(null) === false &&
+    b.clusterStorage.missingColumnCode(undefined) === false);
 }
 
 module.exports = { run: run };

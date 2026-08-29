@@ -1076,6 +1076,58 @@ async function run() {
   await testSessionLifecycleHooks();
   await testLifecycleHooksThatThrow();
   await testLifecycleHooksThatReject();
+  await testSessionEndWaitsForStoreWork();
+}
+
+// A consumer releases the exclusive maildrop on onSessionEnd, so the end must
+// not be reported around store work that is still running. A link dropping
+// mid-open would otherwise report the end BEFORE the open acquired the lease —
+// stranding a lease whose end has already been announced — and one dropping
+// mid-commit would let the next session in while UPDATE is still writing.
+async function testSessionEndWaitsForStoreWork() {
+  var order = [];
+  var releaseOpen = null;
+  var store = _stubStore();
+  var baseOpen = store.openPop3Drop;
+  store.openPop3Drop = function (actor, opts) {
+    order.push("open-started");
+    return new Promise(function (resolve) {
+      releaseOpen = function () {
+        order.push("open-finished");
+        resolve(baseOpen.call(store, actor, opts));
+      };
+    });
+  };
+  var s = await _makeServer({
+    mailStore:    store,
+    onSessionEnd: function () { order.push("session-end"); },
+  });
+  var sock = nodeNet.connect(s.port, "127.0.0.1");
+  sock.on("error", function () {});
+  await _readReply(sock); // greeting
+  check("store-work: STLS begins negotiation", /^\+OK/.test(await _send(sock, "STLS")));
+  var tls = nodeTls.connect({ socket: sock, ca: s.caPem, servername: "localhost" });
+  tls.on("error", function () {});
+  await new Promise(function (r, j) { tls.once("secureConnect", r); tls.once("error", j); });
+  check("store-work: USER accepted", /^\+OK/.test(await _send(tls, "USER alice")));
+  // PASS opens the drop; the stub holds it open until released below.
+  tls.write("PASS good\r\n");
+  await helpers.waitUntil(function () { return order.indexOf("open-started") !== -1; },
+    { timeoutMs: 5000, label: "pop3 store-work: open started" });
+
+  // Drop the link with the open still in flight.
+  tls.destroy();
+  sock.destroy();
+  await helpers.passiveObserve(200, "pop3 store-work: no session end while the open is pending");
+  check("store-work: the end is not reported while the open is in flight",
+    order.indexOf("session-end") === -1, JSON.stringify(order));
+
+  releaseOpen();
+  await helpers.waitUntil(function () { return order.indexOf("session-end") !== -1; },
+    { timeoutMs: 5000, label: "pop3 store-work: session end after the open settled" });
+  check("store-work: and is reported once the lease it acquired exists",
+    order.indexOf("open-finished") < order.indexOf("session-end"), JSON.stringify(order));
+  await s.srv.close();
 }
 
 // RFC 1939 §3 gives a maildrop to one session at a time, so a store leases it

@@ -764,6 +764,72 @@ async function testDataPaths(tls) {
     await _send(sock3, "RCPT TO:<b@example.com>");
     check("agent handoff rejected → 451", /^451 /.test(await _dataDot(sock3, "From: a@example.com\r\n\r\nx")));
   } finally { sock3.destroy(); await s3.srv.close({ timeoutMs: b.constants.TIME.seconds(2) }); }
+
+  await testAgentRefusalChoosesItsReply(tls);
+}
+
+// A refusal on policy grounds is permanent, and RFC 5321 §4.2.1 makes 4yz mean
+// "retry" — so answering every rejection 451 tells a conforming MTA to retry a
+// message that will be refused identically until its queue lifetime expires.
+// The agent is the only party that knows which it is, so the rejection carries
+// the answer and the listener writes it.
+async function testAgentRefusalChoosesItsReply(tls) {
+  function _rejectingWith(fields) {
+    return { handoff: function () {
+      var e = new Error("refused by policy");
+      Object.keys(fields).forEach(function (k) { e[k] = fields[k]; });
+      return Promise.reject(e);
+    } };
+  }
+  async function _replyFor(fields) {
+    var s = await _mk(tls, { profile: "permissive", agent: _rejectingWith(fields) });
+    var sock = await _connect(s.port);
+    try {
+      await _readReply(sock);
+      await _send(sock, "EHLO client.example.com");
+      await _send(sock, "MAIL FROM:<a@example.com>");
+      await _send(sock, "RCPT TO:<b@example.com>");
+      return await _dataDot(sock, "From: a@example.com\r\n\r\nx");
+    } finally { sock.destroy(); await s.srv.close({ timeoutMs: b.constants.TIME.seconds(2) }); }
+  }
+
+  var permanent = await _replyFor({
+    smtpCode: "550", enhancedStatus: "5.7.1",
+    replyText: "sender not authorised for that From address",
+  });
+  check("agent refusal: a permanent verdict answers 5yz",
+    /^550 5\.7\.1 sender not authorised for that From address/.test(permanent), permanent);
+
+  var transient = await _replyFor({ smtpCode: "452", enhancedStatus: "4.2.2" });
+  check("agent refusal: a transient verdict keeps its own code",
+    /^452 4\.2\.2 /.test(transient), transient);
+
+  // A code outside 4yz/5yz is not a refusal a client can act on, and a 2yz
+  // would tell the peer the message was accepted by the very call that
+  // refused it.
+  var bogus = await _replyFor({ smtpCode: "250", enhancedStatus: "2.0.0" });
+  check("agent refusal: a non-failure code falls back to 451 4.3.0",
+    /^451 4\.3\.0 /.test(bogus), bogus);
+
+  // An enhanced status whose class contradicts the code is not usable either:
+  // a peer parsing one gets the opposite verdict from the peer parsing the
+  // other.
+  var mismatched = await _replyFor({ smtpCode: "550", enhancedStatus: "4.7.1" });
+  check("agent refusal: a contradictory enhanced status is replaced, code kept",
+    /^550 5\.\d+\.\d+ /.test(mismatched), mismatched);
+
+  // Operator prose reaches the wire, so a CR or LF in it would end the reply
+  // line early and everything after would be read as a second server response.
+  var injected = await _replyFor({
+    smtpCode: "550", enhancedStatus: "5.7.1",
+    replyText: "refused\r\n250 accepted",
+  });
+  check("agent refusal: injected line terminators do not reach the wire",
+    /^550 5\.7\.1 /.test(injected) && injected.indexOf("250 accepted") === -1, injected);
+
+  var bare = await _replyFor({});
+  check("agent refusal: a plain rejection still answers 451 4.3.0",
+    /^451 4\.3\.0 Local delivery error/.test(bare), bare);
 }
 
 // ---- BDAT extra branches (0-not-last ack, cumulative cap, DATA-before-RCPT) ----

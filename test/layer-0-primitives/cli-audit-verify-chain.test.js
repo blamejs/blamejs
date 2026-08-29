@@ -372,6 +372,38 @@ async function runArchiveResolution() {
   fs.writeFileSync(rowsPath, rowsBytes);
   fs.writeFileSync(bundleManifestPath, bundleManifestBytes);
 
+  // The same swap on the OTHER member. An archive is refused without its
+  // covering checkpoint, so a bundle whose checkpoint payload has been
+  // replaced cannot be verified or restored however well its rows still
+  // match — and binding only the rows leaves that member checked against the
+  // manifest, which the same hand rewrites. The result is the worst kind of
+  // answer: "the archive is still there" for one that cannot be opened.
+  var forgedCkpt = Buffer.concat([ckptBytes, Buffer.from("tampered")]);
+  var ckptManifest = JSON.parse(bundleManifestBytes.toString("utf8"));
+  var anchorCkptRow = new sqlite.DatabaseSync(dbFile);
+  var signedCkptDigest = anchorCkptRow.prepare(
+    "SELECT archiveCheckpointDigest AS d FROM _blamejs_audit_purge_anchor WHERE scope = 'audit'").get().d;
+  anchorCkptRow.close();
+  check("verify-chain: the anchor records the checkpoint's digest under its signature",
+        typeof signedCkptDigest === "string" && signedCkptDigest.length > 0 &&
+        signedCkptDigest === ckptManifest.checksum.checkpointSha3_512,
+        String(signedCkptDigest).slice(0, 32));
+
+  ckptManifest.checksum.checkpointSha3_512 =
+    nodeCrypto.createHash("sha3-512").update(forgedCkpt).digest("hex");
+  fs.writeFileSync(ckptPath, forgedCkpt);
+  fs.writeFileSync(bundleManifestPath, JSON.stringify(ckptManifest));
+  check("verify-chain: the checkpoint swap is internally consistent too",
+        nodeCrypto.createHash("sha3-512").update(fs.readFileSync(ckptPath)).digest("hex") ===
+        JSON.parse(fs.readFileSync(bundleManifestPath, "utf8")).checksum.checkpointSha3_512);
+  var ctxCkpt = _captureCtx();
+  var cCkpt = await cli.main(baseArgs, ctxCkpt);
+  check("verify-chain: a replaced checkpoint is not the archive the anchor signed for",
+        cCkpt === 1 && /could not be produced/.test(ctxCkpt.err()),
+        "exit=" + cCkpt + " out=" + ctxCkpt.out() + " err=" + ctxCkpt.err());
+  fs.writeFileSync(ckptPath, ckptBytes);
+  fs.writeFileSync(bundleManifestPath, bundleManifestBytes);
+
   // Deleting the expectation is the cheapest way to defeat a comparison
   // against it. Every bundle the archiver writes records a checksum for each
   // member it includes, so a manifest without one did not come from here.

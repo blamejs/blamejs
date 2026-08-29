@@ -419,6 +419,29 @@ async function runIntegrated(root) {
     var lrRes = await b.auditTools.verifyBundle({ in: lrDir, passphrase: PASS });
     check("verifyBundle: lastRowHash disagreement flagged", lrRes.ok === false && /lastRowHash/.test(lrRes.reason));
 
+    // ---- a range claiming to start before the rows it holds ----
+    // Every check above asks about the rows that ARE present, so a manifest
+    // rewritten to claim a wider range passes them all. What the claim then
+    // buys is a purge authorized from the claimed start: the rows between the
+    // claimed and actual start are deleted with no copy of them anywhere.
+    var fcDir = _copyBundle(archiveDir, _freshOut(root, "first-counter-widened"));
+    _editManifest(fcDir, function (m) {
+      m.range.firstCounter = Number(m.range.firstCounter) - 50;
+    });
+    var fcRes = await b.auditTools.verifyBundle({ in: fcDir, passphrase: PASS });
+    check("verifyBundle: a range wider than the archived rows is refused",
+      fcRes.ok === false && /firstCounter/.test(fcRes.reason), JSON.stringify(fcRes.reason));
+
+    // And the same claim from the other end: a lastCounter naming a row the
+    // bundle does not carry.
+    var lcDir = _copyBundle(archiveDir, _freshOut(root, "last-counter-absent"));
+    _editManifest(lcDir, function (m) {
+      m.range.lastCounter = Number(m.range.lastCounter) + 500;
+    });
+    var lcRes = await b.auditTools.verifyBundle({ in: lcDir, passphrase: PASS });
+    check("verifyBundle: a lastCounter naming no archived row is refused",
+      lcRes.ok === false && /lastCounter/.test(lcRes.reason), JSON.stringify(lcRes.reason));
+
     // ---- checkpoint atMonotonicCounter below the slice tip (build-time inject) ----
     if (realRows.length >= 2) {
       var lowDir = _freshOut(root, "ckpt-low");
@@ -824,6 +847,7 @@ async function runIntegrated(root) {
       // anchor nobody stored.
       firstPurgedCounter: Number(highAnchor.firstPurgedCounter || 0),
       archiveRowsDigest: highAnchor.archiveRowsDigest,
+      archiveCheckpointDigest: highAnchor.archiveCheckpointDigest,
       fencingToken:      9999,
     };
     var highSig = b.auditSign.sign(b.auditChain.purgeAnchorPayload(highSigned));
@@ -1267,6 +1291,47 @@ async function runIntegrated(root) {
     check("rotation: the boundary it names did not move",
       Number(reAnchored.lastPurgedCounter) === Number(anchorNow.lastPurgedCounter) &&
       reAnchored.lastPurgedRowHash === anchorNow.lastPurgedRowHash);
+
+    // An anchor written before a signed field joined the payload AND since
+    // rotated is the pair this repair exists for: the read path recognises the
+    // older layout, so if the repair recognised fewer it would refuse to fix
+    // the exact anchor the read path was written to rescue — leaving a volume
+    // that can neither boot nor be repaired. Re-created here by blanking the
+    // fields a pre-0.18.58 anchor did not carry and re-signing under the older
+    // layout, then rotating the key out from under it.
+    var legacySigner = b.auditSign.getPublicKeyFingerprint();
+    var legacyPayload = b.auditChain.purgeAnchorPayload(
+      { lastPurgedCounter: Number(reAnchored.lastPurgedCounter),
+        lastPurgedRowHash: reAnchored.lastPurgedRowHash,
+        archiveBundleId:   String(reAnchored.archiveBundleId),
+        purgedAt:          Number(reAnchored.purgedAt),
+        firstPurgedCounter: 0, archiveRowsDigest: "", archiveCheckpointDigest: "" },
+      { layout: "no-range" });
+    await b.clusterStorage.execute(
+      "UPDATE _blamejs_audit_purge_anchor SET firstPurgedCounter = 0, archiveRowsDigest = '', " +
+      "archiveCheckpointDigest = '', signature = ?, publicKeyFingerprint = ? WHERE scope = 'audit'",
+      [b.auditSign.sign(legacyPayload), legacySigner]);
+    var legacyRow = await b.clusterStorage.executeOne(
+      "SELECT * FROM _blamejs_audit_purge_anchor WHERE scope = 'audit'");
+    check("legacy layout: the older payload still verifies before rotation",
+      b.auditChain.verifyPurgeAnchor(legacyRow).status === "valid",
+      JSON.stringify(b.auditChain.verifyPurgeAnchor(legacyRow)));
+
+    process.env.BLAMEJS_AUDIT_SIGNING_PASSPHRASE = "blamejs-test-passphrase-not-secret";
+    var afterLegacyRot = await b.auditSign.rotateSigningKey();
+    check("legacy layout: rotating leaves it rotated-key, not forged",
+      b.auditChain.verifyPurgeAnchor(legacyRow).status === "rotated-key",
+      JSON.stringify(b.auditChain.verifyPurgeAnchor(legacyRow)));
+    var legacyRepair = await b.auditTools.signExistingPurgeAnchor();
+    check("legacy layout: and the repair re-signs it rather than calling it unsignable",
+      legacyRepair.signed === true, JSON.stringify(legacyRepair));
+    var legacyReAnchored = await b.clusterStorage.executeOne(
+      "SELECT * FROM _blamejs_audit_purge_anchor WHERE scope = 'audit'");
+    check("legacy layout: repaired under the live key, boundary unmoved",
+      b.auditChain.verifyPurgeAnchor(legacyReAnchored).status === "valid" &&
+      String(legacyReAnchored.publicKeyFingerprint) === afterLegacyRot.newFingerprint &&
+      Number(legacyReAnchored.lastPurgedCounter) === Number(reAnchored.lastPurgedCounter),
+      JSON.stringify(b.auditChain.verifyPurgeAnchor(legacyReAnchored)));
 
     // Rotating and re-signing are two calls, so a process can exit between
     // them — and the repair needs a booted database, which is exactly what the
