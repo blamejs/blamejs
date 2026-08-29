@@ -698,6 +698,29 @@ async function _testClusterPurgeDeletionAgainstWormTriggers(liveQueryAll) {
         grantedDelete && !(grantedDelete instanceof Error),
         String(grantedDelete && grantedDelete.message));
 
+  // A row read INSIDE a transaction has to come back in the same JS types as
+  // the identical read outside one. node-postgres returns BIGINT as a decimal
+  // string, so without the same coercion `execute` applies, a counter is a
+  // number on one path and a string on the other — arithmetic and strict
+  // comparison then diverge depending on whether a caller happened to be in a
+  // transaction. SQLite cannot show this: both are already numbers there.
+  var txTypedRow = null;
+  var plainTypedRow = await b.clusterStorage.executeOne(
+    'SELECT "monotonicCounter", "rowHash", nonce FROM audit_log ORDER BY "monotonicCounter" ASC LIMIT 1');
+  await b.clusterStorage.transaction(async function (tx) {
+    txTypedRow = await tx.executeOne(
+      'SELECT "monotonicCounter", "rowHash", nonce FROM audit_log ORDER BY "monotonicCounter" ASC LIMIT 1');
+  });
+  check("a transaction read returns the same counter type as a plain read",
+        txTypedRow !== null && plainTypedRow !== null &&
+        typeof txTypedRow.monotonicCounter === typeof plainTypedRow.monotonicCounter &&
+        typeof txTypedRow.monotonicCounter === "number",
+        "tx=" + typeof (txTypedRow && txTypedRow.monotonicCounter) +
+        " plain=" + typeof (plainTypedRow && plainTypedRow.monotonicCounter));
+  check("and the same counter value",
+        txTypedRow && plainTypedRow &&
+        Number(txTypedRow.monotonicCounter) === Number(plainTypedRow.monotonicCounter));
+
   // And the permission does not leak: the very next statement, on a
   // connection that never asked for it, is refused again. `SET LOCAL` ends
   // with its transaction, so nothing has to remember to clean up.

@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.18.58",
-  "createdAt": "2026-08-29T04:51:15.725Z",
+  "createdAt": "2026-08-29T07:03:14.138Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -2586,6 +2586,10 @@
           "type": "function",
           "arity": 2
         },
+        "canonicalPublicKeyPem": {
+          "type": "function",
+          "arity": 1
+        },
         "fingerprintOf": {
           "type": "function",
           "arity": 1
@@ -2614,9 +2618,17 @@
           "type": "function",
           "arity": 1
         },
+        "pinnedKeyResolver": {
+          "type": "function",
+          "arity": 1
+        },
         "publicKeyFromHistory": {
           "type": "function",
           "arity": 2
+        },
+        "publicKeyLicensingDeletion": {
+          "type": "function",
+          "arity": 1
         },
         "reSignAll": {
           "type": "function",
@@ -2689,7 +2701,7 @@
         },
         "signExistingPurgeAnchor": {
           "type": "function",
-          "arity": 0
+          "arity": 1
         },
         "verifyBundle": {
           "type": "function",

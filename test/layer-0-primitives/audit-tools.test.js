@@ -32,6 +32,7 @@ var path           = helpers.path;
 var setupTestDb    = helpers.setupTestDb;
 var teardownTestDb = helpers.teardownTestDb;
 var backupCrypto   = require("../../lib/backup/crypto");
+var nodeCrypto     = require("node:crypto");
 
 var PASS = Buffer.from("audit-tools-canonical-test-passphrase");
 var ZERO = "0".repeat(128);
@@ -1043,8 +1044,107 @@ async function runIntegrated(root) {
     check("boot: and an export still grounds itself on the same anchor",
       offSliceErr === null, String(offSliceErr && (offSliceErr.code || offSliceErr.message)));
 
-    // Back on, so the rest of the file runs against a signing deployment.
+    // The check above reports "not verified" only because a key that was never
+    // rotated is not in the history at all. Plant one and the old fallback had
+    // something to find — which is the actual hole: with signing off there is
+    // no loaded key, the history is UNSEALED so a passphrase-less reader can
+    // use it, and adding a self-consistent entry for a keypair you generated
+    // needs no secret. An attacker who can write the audit store can write
+    // that file too, so a key resolved from it licensing deleted rows is the
+    // attacker vouching for themselves.
     await helpers.reopenTestDb(dir);
+    var plantedPair = nodeCrypto.generateKeyPairSync("ml-dsa-65", {
+      publicKeyEncoding:  { type: "spki",  format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
+    var plantedFp = b.auditSign.fingerprintOf(plantedPair.publicKey);
+    var victimAnchor = await b.clusterStorage.executeOne(
+      "SELECT * FROM _blamejs_audit_purge_anchor WHERE scope = 'audit'");
+    var plantedSig = nodeCrypto.sign(null,
+      b.auditChain.purgeAnchorPayload(victimAnchor),
+      nodeCrypto.createPrivateKey(plantedPair.privateKey));
+    await b.clusterStorage.execute(
+      "UPDATE _blamejs_audit_purge_anchor SET publicKeyFingerprint = ?, signature = ? " +
+      "WHERE scope = 'audit'", [plantedFp, plantedSig]);
+    var histFile = path.join(dir, "audit-sign.pubkeys.json");
+    var priorHist = fs.existsSync(histFile) ? fs.readFileSync(histFile, "utf8") : null;
+    var plantedList = priorHist ? JSON.parse(priorHist) : [];
+    plantedList.push({ fingerprint: plantedFp, publicKey: plantedPair.publicKey });
+    fs.writeFileSync(histFile, JSON.stringify(plantedList));
+    await b.db.close();
+
+    await helpers.reopenTestDb(dir, undefined, { auditSigning: false });
+    // What makes the planted key dangerous, shown rather than asserted: a
+    // resolver that reads the history DOES accept it, because the entry is
+    // self-consistent and the signature is real. Nothing about the anchor can
+    // tell this from a legitimate one.
+    var historyResolver = function (fp) {
+      return b.auditSign.publicKeyFromHistory(dir, fp);
+    };
+    var wouldAccept = b.auditChain.verifyPurgeAnchor(
+      await b.clusterStorage.executeOne(
+        "SELECT * FROM _blamejs_audit_purge_anchor WHERE scope = 'audit'"),
+      { resolvePublicKey: historyResolver });
+    check("signing off: a history-reading resolver would accept the planted key",
+      wouldAccept.status === "valid", JSON.stringify(wouldAccept));
+
+    // So the deployment no longer installs one. With signing off and no key
+    // named by the operator, there is no resolver at all: the anchor reports
+    // as unchecked, which allowUnchecked permits, and nothing claims a proof
+    // that was never made.
+    var offPolicy = b.audit.getPurgeAnchorPolicy();
+    check("signing off: the deployment installs no history-reading resolver",
+      offPolicy.resolvePublicKey === undefined,
+      String(typeof offPolicy.resolvePublicKey));
+    check("signing off: and permits the unchecked verdict that follows",
+      offPolicy.allowUnchecked === true);
+    var planted = await b.audit.verify({ allowUncheckedPurgeAnchor: true });
+    check("signing off: a key planted in the unsealed history does not license the gap",
+      planted.purgeAnchor && planted.purgeAnchor.signatureVerified === false,
+      JSON.stringify(planted.purgeAnchor));
+
+    // The capability is not lost, only its false authority: an operator who
+    // wants the anchor genuinely verified in this posture names the key
+    // themselves. That is a trust root they chose rather than one the volume
+    // supplied, and it is still bound to the fingerprint the anchor names.
+    await b.db.close();
+    await helpers.reopenTestDb(dir, undefined, {
+      auditSigning: false, purgeAnchorPublicKey: plantedPair.publicKey,
+    });
+    var pinnedPolicy = b.audit.getPurgeAnchorPolicy();
+    check("signing off: a pinned key becomes the deployment's anchor resolver",
+      typeof pinnedPolicy.resolvePublicKey === "function");
+    check("signing off: and it answers for the fingerprint the anchor names",
+      pinnedPolicy.resolvePublicKey(plantedFp) ===
+        b.auditSign.canonicalPublicKeyPem(plantedPair.publicKey));
+    check("signing off: and for no other, so a pinned key cannot answer for one it is not",
+      pinnedPolicy.resolvePublicKey("0".repeat(128)) === null);
+    // A key an earlier version ingested as written was fingerprinted over that
+    // exact text, so pinning it must resolve the spelling the anchor names —
+    // canonicalizing alone would discard the only fingerprint that matches.
+    var crlfPinned = plantedPair.publicKey.replace(/\n/g, "\r\n");
+    var crlfFp = b.auditSign.fingerprintOf(crlfPinned);
+    var crlfResolver = b.auditSign.pinnedKeyResolver(crlfPinned);
+    check("signing off: pinning a CRLF-spelled key resolves the as-written fingerprint",
+      crlfFp !== plantedFp && crlfResolver(crlfFp) === crlfPinned,
+      "crlf=" + String(crlfResolver(crlfFp)).slice(0, 32));
+    check("signing off: and the canonical fingerprint of the same key too",
+      crlfResolver(plantedFp) === b.auditSign.canonicalPublicKeyPem(crlfPinned));
+    var pinnedVerify = await b.audit.verify({ resolvePublicKey: pinnedPolicy.resolvePublicKey });
+    check("signing off: a pinned key the operator supplies does verify it",
+      pinnedVerify.purgeAnchor && pinnedVerify.purgeAnchor.signatureVerified === true,
+      JSON.stringify(pinnedVerify.purgeAnchor));
+
+    // Put the anchor back under the volume's own key before the rest of the
+    // file runs against a signing deployment.
+    await b.db.close();
+    await helpers.reopenTestDb(dir, undefined, { acceptRotatedPurgeAnchorKey: true });
+    var reownedAnchor = await b.clusterStorage.executeOne(
+      "SELECT * FROM _blamejs_audit_purge_anchor WHERE scope = 'audit'");
+    check("signing off: the volume is repairable back to its own key",
+      b.auditChain.verifyPurgeAnchor(reownedAnchor).status === "valid",
+      JSON.stringify(b.auditChain.verifyPurgeAnchor(reownedAnchor)));
+    if (priorHist !== null) fs.writeFileSync(histFile, priorHist);
 
     // ---- boot refuses a boundary whose archive is gone ----
     // A signature proves the framework wrote the boundary; it says nothing
@@ -1120,6 +1220,104 @@ async function runIntegrated(root) {
     await b.clusterStorage.execute(
       "UPDATE _blamejs_audit_purge_anchor SET lastPurgedCounter = " +
       Number(repaired.lastPurgedCounter) + " WHERE scope = 'audit'");
+
+    // ---- a rotated-out key cannot license deleted rows ----
+    // The rotated-key history is UNSEALED, because a verifier holding no
+    // passphrase has to resolve the key that signed a checkpoint before a
+    // rotation. Making each entry hash to its own label stops one key being
+    // filed under another's name, but it cannot make the file authoritative:
+    // generating a keypair and adding a self-consistent entry for it needs no
+    // secret at all. So an attacker who can write the audit store — the very
+    // attacker the signature exists to stop — could mint a key, file it, and
+    // sign any boundary they liked. A key that has been rotated out is
+    // therefore no longer good enough for the one claim that erases rows.
+    var liveBefore = b.auditSign.getPublicKeyFingerprint();
+    var anchorNow = await b.clusterStorage.executeOne(
+      "SELECT * FROM _blamejs_audit_purge_anchor WHERE scope = 'audit'");
+    check("rotation: the anchor is valid under the key that signed it",
+      b.auditChain.verifyPurgeAnchor(anchorNow).status === "valid" &&
+      String(anchorNow.publicKeyFingerprint) === liveBefore);
+
+    process.env.BLAMEJS_AUDIT_SIGNING_PASSPHRASE = "blamejs-test-passphrase-not-secret";
+    var rotated = await b.auditSign.rotateSigningKey();
+    check("rotation: the live key changed", rotated.newFingerprint !== liveBefore);
+    check("rotation: and the old key is still resolvable from the history",
+      b.auditSign.getPublicKeyByFingerprint(liveBefore) !== null);
+
+    var afterRotation = b.auditChain.verifyPurgeAnchor(anchorNow);
+    check("rotation: the anchor no longer licenses the gap",
+      afterRotation.status === "rotated-key", JSON.stringify(afterRotation));
+    check("rotation: and is not called a forgery, because it is not one",
+      afterRotation.status !== "forged" &&
+      /rotated out/.test(afterRotation.reason || ""),
+      String(afterRotation.reason));
+
+    // Refusing it is only half an answer: rotating a key is a normal operation
+    // and every existing anchor names the old one, so the repair has to exist.
+    var reSigned = await b.auditTools.signExistingPurgeAnchor();
+    check("rotation: the anchor can be re-signed under the live key",
+      reSigned.signed === true, JSON.stringify(reSigned));
+    var reAnchored = await b.clusterStorage.executeOne(
+      "SELECT * FROM _blamejs_audit_purge_anchor WHERE scope = 'audit'");
+    check("rotation: and verifies again, under the new key",
+      b.auditChain.verifyPurgeAnchor(reAnchored).status === "valid" &&
+      String(reAnchored.publicKeyFingerprint) === rotated.newFingerprint,
+      JSON.stringify(b.auditChain.verifyPurgeAnchor(reAnchored)));
+    check("rotation: the boundary it names did not move",
+      Number(reAnchored.lastPurgedCounter) === Number(anchorNow.lastPurgedCounter) &&
+      reAnchored.lastPurgedRowHash === anchorNow.lastPurgedRowHash);
+
+    // Rotating and re-signing are two calls, so a process can exit between
+    // them — and the repair needs a booted database, which is exactly what the
+    // refused anchor prevents. Without a way in from boot itself the documented
+    // recovery sits behind the door it cannot open. Rotating again and NOT
+    // re-signing puts the volume in that state.
+    process.env.BLAMEJS_AUDIT_SIGNING_PASSPHRASE = "blamejs-test-passphrase-not-secret";
+    var secondRot = await b.auditSign.rotateSigningKey();
+    check("interrupted rotation: the live key moved again",
+      secondRot.newFingerprint !== rotated.newFingerprint);
+    await b.db.close();
+
+    var strandedErr = null;
+    try { await helpers.reopenTestDb(dir); }
+    catch (e) { strandedErr = e; }
+    check("interrupted rotation: a plain reopen refuses the volume",
+      strandedErr !== null, String(strandedErr && strandedErr.message).slice(0, 120));
+
+    // The flag is the operator saying they performed the rotation. It is not
+    // automatic, because the evidence that the anchor verifies under the old
+    // key comes from the unsealed history, and re-signing on that alone would
+    // launder a planted key into the live one.
+    var recovered = null;
+    try {
+      await helpers.reopenTestDb(dir, undefined, { acceptRotatedPurgeAnchorKey: true });
+      recovered = await b.clusterStorage.executeOne(
+        "SELECT * FROM _blamejs_audit_purge_anchor WHERE scope = 'audit'");
+    } catch (e) { recovered = e; }
+    check("interrupted rotation: the one-boot flag repairs it",
+      recovered !== null && !(recovered instanceof Error) &&
+      String(recovered.publicKeyFingerprint) === secondRot.newFingerprint,
+      String(recovered && (recovered.message || recovered.publicKeyFingerprint)));
+    check("interrupted rotation: and the boundary is unchanged",
+      recovered && Number(recovered.lastPurgedCounter) === Number(reAnchored.lastPurgedCounter));
+    check("interrupted rotation: the volume opens normally afterwards",
+      b.auditChain.verifyPurgeAnchor(recovered).status === "valid",
+      JSON.stringify(b.auditChain.verifyPurgeAnchor(recovered)));
+
+    // The re-sign is not a laundry either. An anchor that names a rotated key
+    // but does not verify under it has been tampered with, and pinning that
+    // under the live key would make a detectable problem permanent.
+    await b.clusterStorage.execute(
+      "UPDATE _blamejs_audit_purge_anchor SET publicKeyFingerprint = '" + liveBefore +
+      "', lastPurgedCounter = " + (Number(reAnchored.lastPurgedCounter) + 7) +
+      " WHERE scope = 'audit'");
+    check("rotation: a tampered anchor naming the rotated key is refused",
+      await _expectCode(function () { return b.auditTools.signExistingPurgeAnchor(); },
+        "audit-tools/anchor-not-signable"));
+    await b.clusterStorage.execute(
+      "UPDATE _blamejs_audit_purge_anchor SET publicKeyFingerprint = '" +
+      rotated.newFingerprint + "', lastPurgedCounter = " +
+      Number(reAnchored.lastPurgedCounter) + " WHERE scope = 'audit'");
 
     // ---- teardown, then verify without a live signer: default verifier
     // catches the un-initialized audit-sign keypair and reports not-ok. ----

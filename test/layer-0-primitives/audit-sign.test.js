@@ -277,6 +277,24 @@ async function testWrappedModeAndErrors() {
     check("and resolves again once the real key is put back",
       b.auditSign.publicKeyFromHistory(dSeal, beforeFp) === beforePub);
 
+    // The resolver used for the one claim that erases rows. It answers for the
+    // live key and nothing else — deliberately NOT the history, which is
+    // unsealed so a passphrase-less verifier can read it, and which therefore
+    // cannot say which key was ALLOWED to license a deletion, only which key
+    // signed something.
+    process.env.BLAMEJS_AUDIT_SIGNING_PASSPHRASE = PASS;
+    await as.init({ dataDir: dSeal, mode: "wrapped" });
+    var liveFp = as.getPublicKeyFingerprint();
+    check("publicKeyLicensingDeletion answers for the live key",
+      b.auditSign.publicKeyLicensingDeletion(liveFp) === as.getPublicKey());
+    check("publicKeyLicensingDeletion refuses a rotated-out key the history knows",
+      as.getPublicKeyByFingerprint(beforeFp) !== null &&
+      b.auditSign.publicKeyLicensingDeletion(beforeFp) === null,
+      String(b.auditSign.publicKeyLicensingDeletion(beforeFp)));
+    check("publicKeyLicensingDeletion refuses a fingerprint nothing knows",
+      b.auditSign.publicKeyLicensingDeletion("0".repeat(128)) === null);
+    as._resetForTest();
+
     // An operator may bring their own keypair — a hardware-backed signer, say
     // — and the PEM they hand over becomes the key's identity, because a
     // fingerprint is the hash of that text. Saved with CRLF line endings it
