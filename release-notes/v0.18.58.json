@@ -58,7 +58,11 @@
           "body": "Upsert a single row only if the caller's fencing token is at least the one already stored, and report whether it was refused. This is how a single-writer table stays single-writer across processes, and it is one primitive rather than a shape each caller re-derives because the three dialects disagree about it: Postgres and SQLite take a `WHERE` on the conflict clause and report the refusal by returning no rows, while MySQL's `ON DUPLICATE KEY UPDATE` has neither and its fence becomes a per-column `IF()` that changes nothing while still succeeding. Detection there has to read the token back afterwards.\n\n`fenceColumns` names several columns that must ALL be non-decreasing, for a value that may only ever advance — a boundary, a high-water mark. Holding that in the database rather than in whoever writes next is the difference between an invariant and a convention, and a writer with the right token can still be proposing the wrong direction."
         },
         {
-          "title": "`b.auditChain.verifyPurgeAnchor` and `b.auditChain.purgeAnchorPayload`",
+          "title": "`b.auditSign.pinnedKeyResolver`, `b.auditSign.canonicalPublicKeyPem` and `b.auditSign.publicKeyLicensingDeletion`",
+      "body": "Three small primitives for naming a key, extracted because the same rule was being restated at each place a key is supplied and drifting between them.\n\n`canonicalPublicKeyPem(pem)` re-exports a key through the parsed form, giving one spelling for one key. `pinnedKeyResolver(pem)` builds a `resolvePublicKey` for a single operator-supplied key that answers for either fingerprint that key can legitimately carry — the text as supplied and the re-export — and nothing else; `blamejs audit verify-chain --public-key` and `db.init({ purgeAnchorPublicKey })` both route through it, so a key saved with different line endings resolves the same either way. `publicKeyLicensingDeletion(fingerprint)` answers for the live signing key alone, which is what a purge anchor is verified against."
+    },
+    {
+      "title": "`b.auditChain.verifyPurgeAnchor` and `b.auditChain.purgeAnchorPayload`",
           "body": "The verification a caller needs when reading an audit database it did not open through `b.db.init` — a forensic check, a restore validation, a downstream auditor. `verifyPurgeAnchor(row, { resolvePublicKey })` takes the key from the caller when the process has none of its own; `purgeAnchorPayload(anchor)` builds the canonical signed bytes."
         },
         {
