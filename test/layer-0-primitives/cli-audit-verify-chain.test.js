@@ -278,6 +278,52 @@ async function runArchiveResolution() {
   check("verify-chain: and resolves again once both are back",
         (await cli.main(baseArgs, ctxBack)) === 0, ctxBack.err());
 
+  // A fingerprint is the hash of the PEM TEXT, so one key can answer to two of
+  // them. A key an operator supplied to rotateSigningKey before that call
+  // canonicalized what it ingested was fingerprinted exactly as written, CRLF
+  // and all, and the anchors signed under it carry that hash. Hashing only a
+  // re-export here would report those healthy volumes as signed by a key this
+  // deployment does not know — a tampering alarm raised by a line ending.
+  var crlfKeyPath = path.join(dir, "audit-sign.pub.crlf.pem");
+  fs.writeFileSync(crlfKeyPath, fs.readFileSync(pubPath, "utf8").replace(/\n/g, "\r\n"));
+  check("verify-chain: the CRLF spelling really is different text",
+        fs.readFileSync(crlfKeyPath, "utf8") !== fs.readFileSync(pubPath, "utf8"));
+  var ctxCrlf = _captureCtx();
+  var cCrlf = await cli.main(
+    ["audit", "verify-chain", "--db", dbFile,
+     "--public-key", crlfKeyPath, "--archive-dir", bundles], ctxCrlf);
+  check("verify-chain: a key saved with CRLF still verifies the anchor",
+        cCrlf === 0 && /signature-verified/.test(ctxCrlf.out()),
+        "exit=" + cCrlf + " out=" + ctxCrlf.out() + " err=" + ctxCrlf.err());
+
+  // The case above passes on the re-export alone, so it does not cover the
+  // volume that matters: one whose anchor records a fingerprint taken over
+  // NONCANONICAL text. Rotation now canonicalizes what it ingests, so that
+  // state can no longer be created through the API — it is what an earlier
+  // version left behind, and the fixture writes it directly. The signature
+  // does not cover the fingerprint field, so re-labelling the anchor leaves a
+  // genuinely valid signature under a differently-spelled name for its key.
+  var rawFp = b.auditSign.fingerprintOf(fs.readFileSync(crlfKeyPath, "utf8"));
+  var relabel = new sqlite.DatabaseSync(dbFile);
+  var priorFp = relabel.prepare(
+    "SELECT publicKeyFingerprint AS fp FROM _blamejs_audit_purge_anchor WHERE scope = 'audit'").get().fp;
+  relabel.prepare("UPDATE _blamejs_audit_purge_anchor SET publicKeyFingerprint = ? WHERE scope = 'audit'")
+    .run(rawFp);
+  relabel.close();
+  check("verify-chain: the legacy label differs from the canonical one",
+        rawFp !== priorFp);
+  var ctxLegacy = _captureCtx();
+  var cLegacy = await cli.main(
+    ["audit", "verify-chain", "--db", dbFile,
+     "--public-key", crlfKeyPath, "--archive-dir", bundles], ctxLegacy);
+  check("verify-chain: an anchor labelled with the as-written fingerprint verifies",
+        cLegacy === 0 && /signature-verified/.test(ctxLegacy.out()),
+        "exit=" + cLegacy + " out=" + ctxLegacy.out() + " err=" + ctxLegacy.err());
+  var restoreFp = new sqlite.DatabaseSync(dbFile);
+  restoreFp.prepare("UPDATE _blamejs_audit_purge_anchor SET publicKeyFingerprint = ? WHERE scope = 'audit'")
+    .run(priorFp);
+  restoreFp.close();
+
   // Deleting the expectation is the cheapest way to defeat a comparison
   // against it. Every bundle the archiver writes records a checksum for each
   // member it includes, so a manifest without one did not come from here.

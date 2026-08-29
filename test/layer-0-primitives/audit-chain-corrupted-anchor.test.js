@@ -13,6 +13,7 @@
  * chain-rows query, so the rows mock is irrelevant.
  */
 
+var nodeCrypto = require("node:crypto");
 var helpers = require("../helpers");
 var b       = helpers.b;
 var check   = helpers.check;
@@ -337,6 +338,31 @@ async function testAnchorMustProveItWasWrittenWithTheSigningKey() {
     var wrong = await _verify(wrongFp);
     check("a fingerprint naming no key on record is refused",
       wrong.result && wrong.result.ok === false, JSON.stringify(wrong.result));
+
+    // A resolver that hands back the WRONG key is the quiet version of that.
+    // `resolvePublicKey` is a documented extension point, so the anchor's
+    // binding to the key it names holds only as far as this function enforces
+    // it. Signing the real payload with a second keypair and resolving the
+    // anchor's fingerprint to THAT key produces a signature which verifies
+    // perfectly — under a key the anchor does not name. Nothing about the
+    // signature can tell the difference; only the fingerprint can.
+    var otherPair = nodeCrypto.generateKeyPairSync("ml-dsa-65", {
+      publicKeyEncoding:  { type: "spki",  format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
+    var anchorPayload = b.auditChain.purgeAnchorPayload(signedAnchor);
+    var otherSig = nodeCrypto.sign(null, anchorPayload,
+      nodeCrypto.createPrivateKey(otherPair.privateKey));
+    check("the substitute signature is genuinely valid under the substitute key",
+      b.auditSign.verify(anchorPayload, otherSig, otherPair.publicKey) === true);
+    var substituted = Object.assign({}, signedAnchor, { signature: otherSig });
+    var swapKey = await _verifyWith(substituted, function () { return otherPair.publicKey; });
+    check("a resolver returning a key the anchor does not name is refused",
+      swapKey.result && swapKey.result.ok === false,
+      JSON.stringify(swapKey.result));
+    check("and says the resolved key hashes to something else",
+      swapKey.result && /does not name/.test(swapKey.result.reason || ""),
+      String(swapKey.result && swapKey.result.reason));
 
     // A verifier with no signing state of its own supplies the key. Without
     // this, `blamejs audit verify-chain` — which opens a database file directly

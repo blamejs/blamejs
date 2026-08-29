@@ -8094,6 +8094,37 @@ var KNOWN_ANTIPATTERNS = [
     reason: "A path beginning with '/' is absolute only on POSIX. On Windows it is DRIVE-relative, so nodeFs.existsSync(\"/dev/shm\") asks about C:\\dev\\shm — a directory any unprivileged user can create, and one that had 5855 files on a development host by the time this was found, including live decrypted SQLite working copies. db.init's tmpfs resolver probed it on every platform, so on Windows encrypted-at-rest silently resolved a persistent NTFS directory as its in-memory mount and wrote the plaintext database there; the residency check that exists to catch precisely that is a path comparison against Linux mount points and could not fire. The rule is not 'guard the probe with an if' — db-file-lifecycle and watcher both had the guard and were still untestable, so nothing could show the Windows branch was right. Take the platform and the reader as PARAMETERS (_resolveTmpDirFrom(optsTmpDir, platform, exists), _tmpDirResidencyIssue(tmpDir, platform, realpath), _namespaceFrom(platform, readlink), _detectAutoMode(root, probe)): the literal then sits behind an injected reader, every platform's branch is drivable from a Linux CI host, and the shape this refuses cannot reappear. A constructed path or one held in a variable is a different question and stays quiet. Empty allowlist: lib/ has no remaining call site that needs a hardcoded POSIX root, and the one that reintroduces it is the one to catch. What this deliberately does NOT cover: a POSIX root bound to a constant and used later (safe-mount-info's DEFAULT_PATH was exactly that shape, and is guarded instead by _defaultPathFor(platform) plus its own tests), and a literal handed to an injected reader, which is the fixed form and is in the quiet fixtures. Widening to every POSIX-looking literal would refuse legitimate path comparison — _tmpDirResidencyIssue compares against these same four strings — so the claim stays on the call site, where the bug was.",
   },
   {
+    id: "a-key-selected-by-fingerprint-must-hash-to-it",
+    primitive: "b.auditSign.getPublicKeyByFingerprint",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // Anchored on the comparison and tempered so it cannot cross a function
+    // close at column 0: the claim is about ONE lookup returning key material
+    // it selected by label, not about a fingerprint compared anywhere in a
+    // file that also returns a public key somewhere else. The negative
+    // lookaheads are on the GOOD tokens, so any recompute between the two —
+    // whatever it is named — silences it, and a mutation that drops the
+    // recompute fires again. The quantifier is a ReDoS backstop, far above any
+    // real body, never the precision mechanism.
+    regex: /\.fingerprint\s*===(?:(?!\n\})(?!fingerprintOf\s*\()(?!_computeFingerprint\s*\()[\s\S]){0,600}?return\s+[\w$]+(?:\[[^\]]*\])?\.publicKey/,
+    allowlist: [],
+    fixtures: {
+      fires: [
+        'for (var i = 0; i < list.length; i += 1) {\n    if (list[i] && list[i].fingerprint === fp && typeof list[i].publicKey === "string") {\n      return list[i].publicKey;\n    }\n  }',
+        'if (entry.fingerprint === want) {\n    return entry.publicKey;\n  }',
+        "if (e.fingerprint === fp) return e.publicKey;",
+      ],
+      quiet: [
+        'if (entry.fingerprint !== fp) continue;\n    var actual;\n    try { actual = _computeFingerprint(entry.publicKey); }\n    catch (_e) { continue; }\n    if (actual !== fp) continue;\n    return entry.publicKey;',
+        "if (entry.fingerprint === fp) {\n    if (fingerprintOf(entry.publicKey) !== fp) continue;\n    return entry.publicKey;\n  }",
+        "if (r.fingerprint === fingerprint) { removed.push(r); return false; }",
+        "var match = a.fingerprint === b.fingerprint;",
+        "if (e.fingerprint === fp) { return e.label; }\n}\nfunction other() {\n  return list[0].publicKey;\n}",
+      ],
+    },
+    reason: "A fingerprint IS the hash of the key text, so an entry that hands back key material because its `fingerprint` field matched has proved nothing — the field is a label sitting next to the material, and whoever wrote the one wrote the other. `audit-sign.pubkeys.json` is the case that matters: it is deliberately UNSEALED, because resolving a rotated-out key has to work in a process with no passphrase (a verifier running `auditSigning: false`, or `blamejs audit verify-chain` against a database file). Anyone who can write that file can therefore file their own public key under the fingerprint an anchor names, sign a purge anchor with the matching private key, and have verification accept a boundary that erases rows — without ever touching the wrapped private key the whole mechanism protects. Both lookups over that file had this shape and one recompute now covers both. The framework already knew the rule elsewhere: lib/backup/manifest.js derives the fingerprint from the block's own publicKey and says in its comment that the self-asserted field is attacker-controlled — two modules answering one structural question, one of them hardened and the other not, which is what this detector exists to stop recurring. Empty allowlist: a lookup that selects key material by label owes the one hash that makes the label mean something, and there is no call site in lib/ that does not. A fingerprint compared for any other purpose — revoking a CA by fingerprint, comparing two records — never returns a public key from the branch and stays quiet.",
+  },
+  {
     id: "mail-reply-must-not-interpolate-an-unguarded-reason",
     primitive: "b.mail.server",
     scanScope: "lib",

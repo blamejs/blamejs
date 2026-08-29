@@ -237,6 +237,80 @@ async function testWrappedModeAndErrors() {
     check("publicKeyFromHistory did not initialize signing as a side effect",
       as.getMode() === null, String(as.getMode()));
 
+    // The history file is deliberately UNSEALED, which is what lets the two
+    // lookups above work without a passphrase — and it means anyone who can
+    // write it can put their own key under someone else's fingerprint. They
+    // would then sign a purge anchor with the matching private key and have
+    // verification accept the forged boundary, never touching the wrapped key
+    // the whole mechanism protects. The label has to prove itself: a
+    // fingerprint IS the hash of the key text.
+    var attacker = nodeCrypto.generateKeyPairSync("ed25519", {
+      publicKeyEncoding:  { type: "spki",  format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
+    var histRaw = JSON.parse(fs.readFileSync(_historyPath(dSeal), "utf8"));
+    var swapped = histRaw.map(function (e) {
+      return e && e.fingerprint === beforeFp
+        ? { fingerprint: e.fingerprint, publicKey: attacker.publicKey }
+        : e;
+    });
+    check("the swap kept the fingerprint label the attacker wants resolved",
+      swapped.some(function (e) { return e && e.fingerprint === beforeFp; }));
+    check("and put a different key under it",
+      swapped.some(function (e) {
+        return e && e.fingerprint === beforeFp && e.publicKey !== beforePub;
+      }));
+    fs.writeFileSync(_historyPath(dSeal), JSON.stringify(swapped));
+    check("publicKeyFromHistory refuses an entry whose key does not hash to its label",
+      b.auditSign.publicKeyFromHistory(dSeal, beforeFp) === null,
+      String(b.auditSign.publicKeyFromHistory(dSeal, beforeFp)));
+    // The same file, the same question, through the initialized lookup — two
+    // readers of one unsealed file is exactly where one gets hardened and the
+    // other does not.
+    process.env.BLAMEJS_AUDIT_SIGNING_PASSPHRASE = PASS;
+    await as.init({ dataDir: dSeal, mode: "wrapped" });
+    check("getPublicKeyByFingerprint refuses the same swapped entry",
+      as.getPublicKeyByFingerprint(beforeFp) === null,
+      String(as.getPublicKeyByFingerprint(beforeFp)));
+    as._resetForTest();
+    fs.writeFileSync(_historyPath(dSeal), JSON.stringify(histRaw));
+    check("and resolves again once the real key is put back",
+      b.auditSign.publicKeyFromHistory(dSeal, beforeFp) === beforePub);
+
+    // An operator may bring their own keypair — a hardware-backed signer, say
+    // — and the PEM they hand over becomes the key's identity, because a
+    // fingerprint is the hash of that text. Saved with CRLF line endings it
+    // would take a different fingerprint from the same key saved with LF, and
+    // any later reader that re-serializes before hashing would compute the
+    // other one and call a healthy chain unknown. One key gets one spelling.
+    var byo = _genPair("ml-dsa-65");
+    var crlfPub = byo.publicKey.replace(/\n/g, "\r\n");
+    check("the two spellings of the supplied key differ as text",
+      crlfPub !== byo.publicKey);
+    process.env.BLAMEJS_AUDIT_SIGNING_PASSPHRASE = PASS;
+    await as.init({ dataDir: dSeal, mode: "wrapped" });
+    process.env.BLAMEJS_AUDIT_SIGNING_PASSPHRASE = PASS;
+    var byoRot = await as.rotateSigningKey({
+      privateKeyPem: byo.privateKey, publicKeyPem: crlfPub, algorithm: "ml-dsa-65",
+    });
+    check("a CRLF-supplied key is stored in one canonical spelling",
+      as.getPublicKey() === byo.publicKey, JSON.stringify(as.getPublicKey()));
+    check("and its fingerprint is the one that spelling hashes to",
+      byoRot.newFingerprint === b.auditSign.fingerprintOf(byo.publicKey) &&
+      byoRot.newFingerprint !== b.auditSign.fingerprintOf(crlfPub),
+      byoRot.newFingerprint);
+    var byoBad = null;
+    try {
+      process.env.BLAMEJS_AUDIT_SIGNING_PASSPHRASE = PASS;
+      await as.rotateSigningKey({
+        privateKeyPem: byo.privateKey, publicKeyPem: "not a pem", algorithm: "ml-dsa-65",
+      });
+    } catch (e) { byoBad = e; }
+    check("an unreadable supplied public key is refused at rotation",
+      byoBad !== null && /not a readable PEM/.test(byoBad.message || ""),
+      String(byoBad && byoBad.message));
+    as._resetForTest();
+
     // A consumer anchor's counter goes into the signed bytes as text, so above
     // 2^53 two distinct tips render identically and one signature would cover
     // both — the anchor could be moved between them and still verify. Refused
