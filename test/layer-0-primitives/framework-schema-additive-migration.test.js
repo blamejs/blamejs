@@ -54,7 +54,55 @@ async function _columnsOf(driver, client, table) {
   return list.map(function (r) { return r.name; });
 }
 
+// Two statements of one fact drift apart silently. `wormGuardIsAnchorBounded`
+// says which dialects decide a DELETE against the purge anchor, and its own
+// `@example` block says the same thing a second time — where it went wrong: the
+// example claimed SQLite was unbounded while the function answered that it was,
+// and the operator reading the docs and the caller reading the return value
+// would have taken opposite paths. So the example is not read as prose here, it
+// is EXECUTED against the function it documents.
+function testWormGuardExampleAgreesWithTheFunction() {
+  var src = fs.readFileSync(path.join(__dirname, "..", "..", "lib", "framework-schema.js"), "utf8");
+  var block = src.split("@primitive b.frameworkSchema.wormGuardIsAnchorBounded")[1];
+  check("the predicate's comment block is findable", typeof block === "string" && block.length > 0);
+  var example = block.split("@example")[1].split("*/")[0];
+  // Each ` *   expr;  // → value` line is one claim to check.
+  var claims = example.split("\n")
+    .map(function (line) { return line.replace(/^\s*\*?\s?/, "").trim(); })
+    .filter(function (line) { return line.indexOf("wormGuardIsAnchorBounded(") !== -1; });
+  check("the example makes at least one claim", claims.length > 0, String(claims.length));
+  for (var i = 0; i < claims.length; i += 1) {
+    var m = /wormGuardIsAnchorBounded\(\s*"([a-z]+)"\s*\)\s*;?\s*\/\/\s*→\s*(true|false)/.exec(claims[i]);
+    check("claim " + i + " is in the documented shape", m !== null, claims[i]);
+    if (!m) continue;
+    var documented = m[2] === "true";
+    var actual = b.frameworkSchema.wormGuardIsAnchorBounded(m[1]);
+    check("the example's answer for " + m[1] + " is what the function returns",
+      actual === documented, "documented " + documented + ", returns " + actual);
+  }
+
+  // The answers themselves, grounded in what this module's own installer
+  // writes: Postgres and MySQL carry the condition in the trigger body, SQLite
+  // in a WHEN clause, and all three read the anchor's recorded boundary. An
+  // unknown dialect is not assumed to be bounded.
+  check("postgres is anchor-bounded",
+    b.frameworkSchema.wormGuardIsAnchorBounded("postgres") === true);
+  check("mysql is anchor-bounded",
+    b.frameworkSchema.wormGuardIsAnchorBounded("mysql") === true);
+  check("sqlite is anchor-bounded, through a WHEN clause rather than a body",
+    b.frameworkSchema.wormGuardIsAnchorBounded("sqlite") === true);
+  check("an unknown dialect is not claimed to be bounded",
+    b.frameworkSchema.wormGuardIsAnchorBounded("oracle") === false &&
+    b.frameworkSchema.wormGuardIsAnchorBounded("") === false &&
+    b.frameworkSchema.wormGuardIsAnchorBounded(undefined) === false);
+  // Grounding, so the three claims above are not just restating the function:
+  // this module's SQLite installer really does emit the anchor-reading WHEN.
+  check("the module's SQLite delete trigger reads the anchor in a WHEN clause",
+    /WHEN NOT COALESCE\(OLD\./.test(src) && /lastPurgedCounter/.test(src));
+}
+
 async function run() {
+  testWormGuardExampleAgreesWithTheFunction();
   var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-fs-migrate-"));
   var driver = null;
   try {

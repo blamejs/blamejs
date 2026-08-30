@@ -34,6 +34,21 @@ function _mockQuery(anchorRow, opts) {
       if (opts && opts.refuseRangeColumn && /firstPurgedCounter/i.test(sql)) {
         return Promise.reject(new Error('no such column: "firstPurgedCounter"'));
       }
+      // A table that has the rows digest but not the checkpoint digest — the
+      // shape a volume purged by the build between those two fields carries.
+      // Narrowing must drop ONLY the checkpoint digest: the anchor was signed
+      // under the no-checkpoint-digest layout, which covers the rows digest, so
+      // a projection that dropped both rebuilds the payload with an empty one
+      // and a legitimate signature reads as forged.
+      if (opts && opts.refuseCheckpointDigestColumn && /archiveCheckpointDigest/i.test(sql)) {
+        return Promise.reject(new Error('no such column: "archiveCheckpointDigest"'));
+      }
+      // A table older still: the range column exists, neither digest column
+      // does. Narrowing has to walk two rungs to reach it and stop there,
+      // keeping firstPurgedCounter.
+      if (opts && opts.refuseDigestColumns && /archiveRowsDigest|archiveCheckpointDigest/i.test(sql)) {
+        return Promise.reject(new Error('no such column: "archiveRowsDigest"'));
+      }
       if (refuseSignatureColumns && /signature/i.test(sql)) {
         // The wording differs per engine, and the difference matters: Postgres
         // says a missing COLUMN and a missing TABLE almost identically, so a
@@ -491,6 +506,46 @@ async function testAnchorMustProveItWasWrittenWithTheSigningKey() {
       narrowed.result.purgeAnchor &&
       narrowed.result.purgeAnchor.signatureVerified === true,
       JSON.stringify(narrowed.result.purgeAnchor));
+
+    // The rung between those two. A table carrying the rows digest but not the
+    // checkpoint digest holds an anchor signed under the no-checkpoint-digest
+    // layout — which COVERS the rows digest. Narrowing has to drop the
+    // checkpoint digest alone: a step that dropped both rebuilt the payload
+    // with an empty rows digest, so the signature no longer matched and an
+    // untouched volume was reported forged, with the repair path behind the
+    // refusal that reporting it raises.
+    var preCkpt = Object.assign({}, signedAnchor,
+      { firstPurgedCounter: 6, archiveRowsDigest: "e".repeat(128),
+        archiveCheckpointDigest: "" });
+    preCkpt.signature = b.auditSign.sign(
+      b.auditChain.purgeAnchorPayload(preCkpt, { layout: "no-checkpoint-digest" }));
+    var preCkptRead = await _verifyWith(preCkpt, undefined, undefined,
+      { refuseCheckpointDigestColumn: true });
+    check("a table without the checkpoint digest keeps the rows digest it has",
+      preCkptRead.threw === null && preCkptRead.result && preCkptRead.result.ok === true,
+      JSON.stringify(preCkptRead.result || String(preCkptRead.threw)));
+    check("and that anchor verifies rather than reading as forged",
+      preCkptRead.result.purgeAnchor &&
+      preCkptRead.result.purgeAnchor.signatureVerified === true,
+      JSON.stringify(preCkptRead.result.purgeAnchor));
+
+    // Two rungs down, and it must stop there rather than continuing: a table
+    // with the range column but neither digest column. The rung above is the
+    // one the digest-carrying volumes need, and walking past this one would
+    // drop firstPurgedCounter and read a ranged anchor as rangeless.
+    var preBothDigests = Object.assign({}, signedAnchor,
+      { firstPurgedCounter: 6, archiveRowsDigest: "", archiveCheckpointDigest: "" });
+    preBothDigests.signature = b.auditSign.sign(
+      b.auditChain.purgeAnchorPayload(preBothDigests, { layout: "no-digest" }));
+    var preBothRead = await _verifyWith(preBothDigests, undefined, undefined,
+      { refuseDigestColumns: true });
+    check("a table with neither digest column keeps the range it has",
+      preBothRead.threw === null && preBothRead.result && preBothRead.result.ok === true,
+      JSON.stringify(preBothRead.result || String(preBothRead.threw)));
+    check("and that anchor verifies under the digest-less layout",
+      preBothRead.result.purgeAnchor &&
+      preBothRead.result.purgeAnchor.signatureVerified === true,
+      JSON.stringify(preBothRead.result.purgeAnchor));
 
     // Same volume, Postgres wording. A missing column and a missing table read
     // almost identically there, and reading one as the other skips the

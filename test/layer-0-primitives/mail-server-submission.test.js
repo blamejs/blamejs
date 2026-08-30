@@ -1886,18 +1886,55 @@ async function testFoldedDkimTagDoesNotBacktrack(tls) {
     //
     // A first version of this test used 600 fat lines and passed against the
     // unfixed code, which is what a green test with no control looks like.
-    var hostile = "DKIM-Signature: v=1 x" + "\r\n ".repeat(40000) + "y\r\n" +
-                  "From: u@example.com\r\n\r\nx";
+    //
+    // Measured as GROWTH between two sizes rather than against a millisecond
+    // budget. A budget answers "is this machine fast right now" as much as it
+    // answers the question asked: at SMOKE_PARALLEL=64 this box put a linear
+    // scan at 420ms against a 400ms ceiling, which is a red gate saying nothing
+    // about backtracking.
+    //
+    // The size STEP has to be chosen for what it separates. Doubling the input
+    // costs a linear scan 2x and a quadratic one 4x — and a doubling measured
+    // 3.21x here under parallel load, squarely between the two hypotheses,
+    // because contention does not scale with input size. Quadrupling separates
+    // them properly: 4x against 16x, so even a load factor like that one lands
+    // far below the bound. That is the whole reason to assert a curve instead
+    // of a number — the two runs inflate together, and the ratio survives what
+    // a ceiling cannot.
+    async function _timeRun(lines) {
+      var hostile = "DKIM-Signature: v=1 x" + "\r\n ".repeat(lines) + "y\r\n" +
+                    "From: u@example.com\r\n\r\nx";
+      await _send(sock, "MAIL FROM:<u@example.com>");
+      await _send(sock, "RCPT TO:<b@example.com>");
+      var started = process.hrtime.bigint();
+      var reply = await _dataDot(sock, hostile);
+      return { ms: Number(process.hrtime.bigint() - started) / 1e6, reply: reply };
+    }
 
-    var started = process.hrtime.bigint();
-    var reply = await _dataDot(sock, hostile);
-    var ms = Number(process.hrtime.bigint() - started) / 1e6;
+    // Sized so both runs are well clear of timer noise. 40,000 lines — the
+    // size a millisecond budget was once put around — scans in about 3ms on an
+    // idle box, which is the other half of why that budget was measuring load
+    // rather than complexity: there was nothing else in the number.
+    var small = await _timeRun(100000);
+    var large = await _timeRun(400000);
+    var ratio = large.ms / Math.max(small.ms, 1);
+
+    // The control for a ratio: a measurement too small to mean anything would
+    // make any ratio look fine, so the smaller run has to be genuinely timed.
+    check("submission: the backtracking probe measures real work (" +
+          small.ms.toFixed(0) + "ms at 100k lines)",
+          small.ms >= 5, small.ms.toFixed(0) + "ms — too fast to compare against");
 
     // The verdict is not the point — no d= tag means it is refused either way.
-    // What is asserted is that deciding it did not cost seconds of CPU.
+    // What is asserted is the curve: four times the input costs a linear scan
+    // about four times the time and a backtracking one about sixteen. The bound
+    // sits between, with room for the load factor measured above on either side
+    // of it.
     check("submission: a folded DKIM-Signature tag is scanned without " +
-          "backtracking (" + ms.toFixed(0) + "ms)",
-          ms < 400, ms.toFixed(0) + "ms, reply " + String(reply).slice(0, 12));
+          "backtracking (x" + ratio.toFixed(2) + " for 4x the input)",
+          ratio < 9,
+          "100k=" + small.ms.toFixed(0) + "ms 400k=" + large.ms.toFixed(0) +
+          "ms ratio=" + ratio.toFixed(2) + ", reply " + String(large.reply).slice(0, 12));
   } finally { sock.destroy(); await s.srv.close({ timeoutMs: b.constants.TIME.seconds(2) }); }
 }
 
