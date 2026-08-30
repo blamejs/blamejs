@@ -1195,6 +1195,60 @@ async function testSessionEndWaitsForStoreWork() {
 
   await testSessionEndWaitsForASlowCommit();
   await testSessionEndWaitsForEveryStoreCall();
+  await testNoMaildropAfterTheSessionEnded();
+}
+
+// The peer can go while its credentials are still being verified. Nothing is
+// in flight against the store at that moment, so the end is reported at once —
+// and the verify then resolves and opens a maildrop. That lease is taken after
+// the only end notification the consumer will ever get, so nothing releases
+// it: the account is locked out of its own mailbox by a login that never
+// finished.
+async function testNoMaildropAfterTheSessionEnded() {
+  var ended = [];
+  var opened = 0;
+  var releaseVerify = null;
+  var store = _stubStore();
+  var baseOpen = store.openPop3Drop;
+  store.openPop3Drop = function (actor, opts) { opened += 1; return baseOpen.call(store, actor, opts); };
+  var s = await _makeServer({
+    mailStore: store,
+    auth: { verify: function () {
+      return new Promise(function (resolve) {
+        releaseVerify = function () {
+          resolve({ ok: true, actor: { username: "alice", tenantId: "t1" } });
+        };
+      });
+    } },
+    onSessionEnd: function () { ended.push(1); },
+  });
+  var sock = nodeNet.connect(s.port, "127.0.0.1");
+  sock.on("error", function () {});
+  await _readReply(sock);
+  await _send(sock, "STLS");
+  var tls = nodeTls.connect({ socket: sock, ca: s.caPem, servername: "localhost" });
+  tls.on("error", function () {});
+  await new Promise(function (r, j) { tls.once("secureConnect", r); tls.once("error", j); });
+  await _send(tls, "USER alice");
+  tls.write("PASS good\r\n");
+  await helpers.waitUntil(function () { return releaseVerify !== null; },
+    { timeoutMs: 5000, label: "pop3 late-auth: the verifier was called" });
+
+  // The link goes while the verifier is still deciding.
+  tls.destroy();
+  sock.destroy();
+  await helpers.waitUntil(function () { return ended.length > 0; },
+    { timeoutMs: 5000, label: "pop3 late-auth: the session ended" });
+  check("late auth: the session end is reported when the link drops",
+    ended.length === 1, JSON.stringify(ended));
+
+  releaseVerify();
+  await helpers.passiveObserve(300, "pop3 late-auth: no maildrop opened after the end");
+  check("late auth: a verdict that lands after the end opens no maildrop",
+    opened === 0, String(opened));
+  check("late auth: and no second end is reported for it",
+    ended.length === 1, JSON.stringify(ended));
+  await s.srv.close();
 }
 
 // A DELE mutates the maildrop exactly as an open or a commit does, and so does
