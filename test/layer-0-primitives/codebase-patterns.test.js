@@ -8150,6 +8150,35 @@ var KNOWN_ANTIPATTERNS = [
     reason: "A synchronous try/catch around an operator hook covers only the hooks that happen not to be async. `async function onSessionEnd() { await store.releaseLease(id); }` is the ordinary way to write one — releasing a lease or ageing a timer is a store call — and its rejection arrives a turn after the catch has gone, so it becomes an unhandled rejection, which under Node's default ends the process. That is the opposite of what every one of these sites documents: 'drop-silent', 'best-effort', 'must not crash the request'. The mail POP3 session-end hook made it concrete — it runs inside the socket's own close handler, where an escaping rejection has no caller left to catch it — but the sweep found the same shape at 47 sites across 24 files, from bounded-map's onEvict to db's onCorruption to the TLS-report onRefuse chain, so the found one was a sample. All of them route through b.safeAsync.safeInvoke (one payload), b.safeAsync.safeApply (positional list), or b.safeAsync.containRejection (when the caller needs the hook's return value to decide what happens next, as denyResponse does). Each inspects the returned value and routes a rejection to the same onError a throw takes, so the drop-silent promise holds for both shapes. Empty allowlist: no lib/ site needs to call a hook without containment, and the one that reintroduces it is the one to catch. Deliberately NOT covered: a hook that is genuinely awaited (`try { await onFail(x); }` — the await makes the catch sufficient, and it is in the quiet fixtures), and a hook called from inside a catch block that is handling something else, which is a different question.",
   },
   {
+    id: "a-thenable-needs-a-callable-fulfillment-handler",
+    primitive: "b.safeAsync.containRejection",
+    scanScope: "lib",
+    // Anchored on the whole mistake: a `.then(` whose FIRST argument is a
+    // non-callable placeholder. Deliberately NOT comment-stripped — this is a
+    // bad-shape check, so a hit inside a comment is a loud false positive that
+    // gets rewritten, whereas stripping risks hiding a live one.
+    regex: /\.\s*then\s*\(\s*(?:null|undefined|void\s+0)\s*,/,
+    allowlist: [],
+    fixtures: {
+      fires: [
+        "emitted.then(null, function () { /* drop-silent by contract */ });",
+        "result.then(undefined, function () { /* started, not completed */ });",
+        "promise . then ( null , reportLater );",
+        "settled.then(void 0, function (e) { route(onError, e); }).then(next);",
+        "var settled = promise.then(null,\n      function () { /* the call site reports it */ });",
+      ],
+      quiet: [
+        "settled.catch(function (e) { _routeCallbackError(onError, e); }).then(_schedule);",
+        "safeAsync.containRejection(result);",
+        "then.call(value, _noop, function (e) { _routeCallbackError(onError, e); });",
+        "p.then(function (v) { return v; }, function (e) { report(e); });",
+        "Promise.resolve(promise).catch(function () { /* reported elsewhere */ });",
+        "drain().catch(function (e) { onError(e, []); });",
+      ],
+    },
+    reason: "Attaching a rejection handler by passing a non-callable first argument is safe on a native promise and unsafe on every other thenable, which is exactly the wrong way round for code that accepts consumer objects. The promise spec substitutes an identity function for a non-callable onFulfilled, so `p.then(null, fn)` on a real promise does what it looks like. A hand-written thenable is not obliged to, and the ordinary way to write one is `then(resolve, reject) { ... resolve(v) }` — it CALLS what it was handed, so the null becomes a TypeError raised on a later turn, outside the try that was supposed to be containing failures, which under Node's default ends the process. A consumer's session store returning such an object from close() was the live instance; the same shape sat in the audit sink and the POP3 session-end barrier. b.safeAsync.containRejection is the primitive for a value whose thenable-ness was duck-typed: it reads the then-getter inside the guard (the getter itself can throw) and hands over a real no-op function. When the receiver is provably a native promise — the result of a Promise.resolve, or a chain built here — .catch(fn) says so and needs no placeholder at all. Empty allowlist: between those two there is no site that needs the placeholder form, and the one that reintroduces it is the one to catch. Deliberately NOT covered: `then.call(value, handler, ...)` with a callable first argument, which is how containRejection itself attaches to a foreign thenable.",
+  },
+  {
     id: "a-key-selected-by-fingerprint-must-hash-to-it",
     primitive: "b.auditSign.getPublicKeyByFingerprint",
     scanScope: "lib",

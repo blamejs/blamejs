@@ -385,6 +385,25 @@ async function run() {
     } catch (_e) { siGetterThrew = true; }
     check("safeInvoke / safeApply: a throwing then-getter is contained there too",
       siGetterThrew === false, "threw out of safeInvoke/safeApply");
+
+    // A hand-written thenable is `then(resolve, reject) { ... resolve(v) }`.
+    // A native promise ignores a non-callable fulfillment handler, but this
+    // one CALLS it — and `null(v)` is a TypeError thrown on a later turn,
+    // outside any try, which ends the process.
+    var resolvedWith = null;
+    var handWritten = {
+      then: function (resolve, _reject) {
+        // Asynchronously, as a real one would.
+        setTimeout(function () { resolve("value nobody wants"); }, 5);                                  // allow:raw-time-literal — test-only microdelay
+        resolvedWith = typeof resolve;
+      },
+    };
+    b.safeAsync.safeInvoke(function () { return handWritten; }, null, function () {});
+    check("containRejection: a thenable is given a CALLABLE fulfillment handler",
+      resolvedWith === "function", String(resolvedWith));
+    await helpers.passiveObserve(200, "safeInvoke: a hand-written thenable fulfils without crashing");
+    check("containRejection: and fulfilling it reaches nothing that throws",
+      siUnhandled.length === 0, JSON.stringify(siUnhandled.map(String)));
     // No onError at all: the rejection must still not reach the process.
     b.safeAsync.containRejection(Promise.reject(new Error("no-handler-supplied")));
     await helpers.passiveObserve(200, "containRejection: no unhandled rejection without an onError");
