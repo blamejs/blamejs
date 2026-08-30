@@ -280,6 +280,18 @@ async function testPeerRefusalIsAHardBounce() {
   // recipient the first host refused outright was offered to every other host.
   check("and it is not offered to the next MX",
     attempts.length === 1, JSON.stringify(attempts));
+  // RFC 3464 §2.3.4 — the DSN `Status:` field is an ENHANCED status, not the
+  // three-digit SMTP reply. The reply belongs in Diagnostic-Code, and it is
+  // already there inside the transport's reason. `Status: 550` is what a
+  // conforming parser rejects or misreads.
+  check("the reported code is an enhanced status, not the bare SMTP reply",
+    /^\d\.\d+\.\d+$/.test(String(hardRes.failed[0].reasonCode)),
+    JSON.stringify(hardRes.failed[0].reasonCode));
+  check("and it carries the reply's class",
+    String(hardRes.failed[0].reasonCode).charAt(0) === "5",
+    JSON.stringify(hardRes.failed[0].reasonCode));
+  check("while the peer's own reply is still in the reason the DSN quotes",
+    /550/.test(String(hardRes.failed[0].reason)), JSON.stringify(hardRes.failed[0].reason));
 
   attempts.length = 0;
   var soft = b.mail.send.deliver({
@@ -850,6 +862,23 @@ async function testMaxAttemptsFlowsThrough() {
   var r1 = await deliverBudget1(envelope);
   check("maxAttempts:1 exhausts budget on first transient → failed",
     r1.failed.length === 1 && r1.deferred.length === 0);
+  // RFC 3463 §3.1 makes class 4 a PERSISTENT TRANSIENT failure — "try again
+  // later" — and this result composes a DSN that says Action: failed. Leaving
+  // the status at 4.x.y tells the reader's parser the opposite of what the
+  // report is for, so the class converts when the outcome does.
+  check("an exhausted retry budget reports a class-5 status, not a class-4 one",
+    String(r1.failed[0].reasonCode).charAt(0) === "5",
+    JSON.stringify(r1.failed[0].reasonCode));
+  // CONTROL: while the budget remains, the deferral keeps its class-4 status —
+  // it really is "try again later" at that point.
+  var rStill = await (b.mail.send.deliver({
+    hostname: "mta1.example.com", resolver: fakeResolver,
+    policy: { mtaSts: "off", dane: "off" },
+    transportFactory: transientTransport, audit: false,
+  }))(envelope);
+  check("CONTROL — a deferral that may still be retried keeps its class-4 status",
+    String(rStill.deferred[0].reasonCode).charAt(0) === "4",
+    JSON.stringify(rStill.deferred[0].reasonCode));
 
   var deliverDefault = b.mail.send.deliver({
     hostname:         "mta1.example.com",
@@ -1553,8 +1582,15 @@ async function testAllHostsTransient() {
   var result = await deliver({ from: "ops@example.com", to: ["a@example.com"], rfc822: Buffer.from("hi") });
   check("all-MX-transient → deferred (no delivery, no permanent fail)",
     result.deferred.length === 1 && result.delivered.length === 0 && result.failed.length === 0);
-  check("all-MX-transient carries the last SMTP response code (4xx)",
-    result.deferred[0].reasonCode === 451);
+  // `reasonCode` becomes the DSN's `Status:` field, which RFC 3464 §2.3.4
+  // makes an ENHANCED status — the bare three-digit reply belongs in
+  // Diagnostic-Code, and is carried there inside the reason. It used to hold
+  // `451`, which is `Status: 451` on the wire: not a status a conforming
+  // parser accepts.
+  check("all-MX-transient reports the reply's CLASS as an enhanced status",
+    result.deferred[0].reasonCode === "4.0.0", JSON.stringify(result.deferred[0].reasonCode));
+  check("all-MX-transient still names the peer's own reply in the reason",
+    /451/.test(String(result.deferred[0].reason)), JSON.stringify(result.deferred[0].reason));
 }
 
 // ---- Permanent 5xx send failure records the MX host on the result ----
@@ -1575,8 +1611,12 @@ async function testPermanentFailKeepsMxHost() {
   var result = await deliver({ from: "ops@example.com", to: ["a@example.com"], rfc822: Buffer.from("hi") });
   check("permanent 5xx → failed with mxHost recorded",
     result.failed.length === 1 && result.failed[0].mxHost === "mx1.example.com");
-  check("permanent 5xx reasonCode is the SMTP code",
-    result.failed[0].reasonCode === 550);
+  // Enhanced status, not the bare reply — see the transient sibling above for
+  // why `Status: 550` is not a status.
+  check("permanent 5xx reasonCode is an enhanced status carrying the reply's class",
+    result.failed[0].reasonCode === "5.0.0", JSON.stringify(result.failed[0].reasonCode));
+  check("and the reply itself is still named in the reason",
+    /550/.test(String(result.failed[0].reason)), JSON.stringify(result.failed[0].reason));
 }
 
 // ---- MTA-STS policy matrix (fault-injected b.network.smtp.policy) ----

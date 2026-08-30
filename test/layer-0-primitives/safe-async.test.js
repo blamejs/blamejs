@@ -360,6 +360,31 @@ async function run() {
     check("containRejection: an awaiting caller still sees the rejection", crStillRejects === true);
     check("containRejection: a non-promise is returned untouched",
       b.safeAsync.containRejection(42, function () {}) === 42);
+    // Reading `then` is the callback's code too. On a custom thenable or a
+    // Proxy it is a GETTER, and one that throws would escape a guard placed
+    // after the read — out of here and into whatever path was told these
+    // helpers never throw.
+    var crGetterErr = null;
+    var hostileThenable = Object.defineProperty({}, "then", {
+      get: function () { throw new Error("then-getter blew up"); },
+    });
+    var crGetterThrew = false;
+    try {
+      b.safeAsync.containRejection(hostileThenable, function (e) { crGetterErr = e; });
+    } catch (_e) { crGetterThrew = true; }
+    check("containRejection: a throwing then-getter does not escape",
+      crGetterThrew === false, "threw out of containRejection");
+    check("containRejection: and its failure reaches onError",
+      crGetterErr instanceof Error && /then-getter/.test(crGetterErr.message),
+      String(crGetterErr && crGetterErr.message));
+    // Same through the callers that were told they never throw.
+    var siGetterThrew = false;
+    try {
+      b.safeAsync.safeInvoke(function () { return hostileThenable; }, null, function () {});
+      b.safeAsync.safeApply(function () { return hostileThenable; }, [], function () {});
+    } catch (_e) { siGetterThrew = true; }
+    check("safeInvoke / safeApply: a throwing then-getter is contained there too",
+      siGetterThrew === false, "threw out of safeInvoke/safeApply");
     // No onError at all: the rejection must still not reach the process.
     b.safeAsync.containRejection(Promise.reject(new Error("no-handler-supplied")));
     await helpers.passiveObserve(200, "containRejection: no unhandled rejection without an onError");
