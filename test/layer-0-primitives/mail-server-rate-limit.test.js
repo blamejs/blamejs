@@ -278,7 +278,47 @@ function testBodyRateFloorIsEnforceable() {
         zeroThrew !== null, zeroThrew && zeroThrew.message);
 }
 
+// The auth-failure window is a comparison against stored timestamps, not a
+// counter that decays, so whatever reading it takes decides when an address is
+// released. With only the wall clock available, a step forward — an NTP
+// correction, a VM resuming from a snapshot, an operator fixing a wrong clock —
+// retires every recorded failure at once and an address at the cap is admitted
+// again immediately. 27 sibling primitives take opts.clock, including the
+// auth.lockout and cache a caller pairs with this to build one coherent budget;
+// these two could not follow, and the seam has to be INSIDE the primitive
+// because the timestamps are both written and compared here.
+function testAuthBudgetFollowsTheSuppliedClock() {
+  var t = 1000000;
+  var rl = b.mail.server.rateLimit.create({
+    authFailuresPerIpPer15Min: 2,
+    clock: function () { return t; },
+  });
+  rl.noteAuthFailure("198.51.100.7");
+  rl.noteAuthFailure("198.51.100.7");
+  check("mail rateLimit: the cap is reached on the supplied clock",
+    rl.checkAuthAdmit("198.51.100.7").ok === false,
+    JSON.stringify(rl.checkAuthAdmit("198.51.100.7")));
+
+  // Still inside the window by the clock the caller owns. A wall-clock reading
+  // is irrelevant here — this is the whole point of supplying one.
+  t += 60 * 1000;                                                                                      // allow:raw-time-literal — one minute on the injected clock
+  check("mail rateLimit: a minute later on that clock, still refused",
+    rl.checkAuthAdmit("198.51.100.7").ok === false);
+
+  // Past the 15-minute window, so the recorded failures retire.
+  t += 15 * 60 * 1000;                                                                                 // allow:raw-time-literal — past the 15-minute window
+  check("mail rateLimit: past the window on that clock, admitted again",
+    rl.checkAuthAdmit("198.51.100.7").ok === true);
+
+  // And a caller that supplies nothing keeps the wall clock it always had.
+  var d = b.mail.server.rateLimit.create({ authFailuresPerIpPer15Min: 1 });
+  d.noteAuthFailure("203.0.113.9");
+  check("mail rateLimit: the default reading is unchanged when no clock is given",
+    d.checkAuthAdmit("203.0.113.9").ok === false);
+}
+
 function run() {
+  testAuthBudgetFollowsTheSuppliedClock();
   testBodyRateFloorIsEnforceable();
   testSurface();
   testBadOptsRefused();

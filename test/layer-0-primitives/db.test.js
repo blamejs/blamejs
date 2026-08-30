@@ -1345,6 +1345,114 @@ async function testEncryptedRoundTrip() {
     _teardownPlain(tmpDir);
   }
   await testFailedInitLeavesNoPlaintext();
+  await testRejectedInitKeepsItsWorkingCopyWhenResealFails();
+  testEveryWormPostureIsSettable();
+}
+
+// db.js names three postures that oblige an operator to declare row-level WORM,
+// and refuses to boot without one. compliance.set decides which postures an
+// operator can actually be IN. Two lists, one question — and they disagreed:
+// `sec-17a-4` and `finra-4511` were absent from the catalog, so
+// `b.compliance.set` refused them and `compliance.current()` could never return
+// them. The boot assertion was therefore unreachable for two of the three
+// regimes it names, and the refusal it would have raised — quoting SEC 17a-4(f)
+// and FINRA 4511 — could not fire on the volumes those rules govern. The
+// declareWorm docs offered `posture: "sec-17a-4"` as their example all the
+// while, because declareWorm takes any string.
+function testEveryWormPostureIsSettable() {
+  var src = fs.readFileSync(path.join(__dirname, "..", "..", "lib", "db.js"), "utf8");
+  var decl = /var WORM_POSTURES = Object\.freeze\(\[([^\]]*)\]\)/.exec(src);
+  check("db.js declares a WORM posture list", decl !== null);
+  if (!decl) return;
+  var postures = decl[1].split(",")
+    .map(function (s) { return s.trim().replace(/^"|"$/g, ""); })
+    .filter(function (s) { return s.length > 0; });
+  check("the WORM posture list is not empty", postures.length > 0, String(postures.length));
+  postures.forEach(function (p) {
+    var threw = null;
+    try { b.compliance.set(p); } catch (e) { threw = e; }
+    b.compliance.clear();
+    check("a posture db.js requires WORM under can actually be set: " + p,
+      threw === null, threw && String(threw.message).slice(0, 90));
+  });
+}
+
+// The sibling case, one branch over, and the one where the tempting fix is
+// wrong. The test above fails BEFORE `initialized`, so nothing has been written
+// and cleanup runs through removePlaintextFiles directly. A refusal that
+// arrives once the handle is live goes through a full shutdown instead — and
+// that shutdown KEEPS the decrypted working copy when its final encryptToDisk
+// throws.
+//
+// Reading that as an oversight and discarding the copy loses data. Migrations
+// and the schema reconcile commit BEFORE the verifications run, so on this path
+// the working copy can hold work db.enc does not, and removing it would take
+// committed migrations with it while leaving the stale encrypted volume behind
+// — the next boot re-running steps it has no record of having applied. The
+// leftover plaintext is the lesser cost, and it is bounded: the owner record
+// names a live pid, so a later boot reclaims it once this process is gone, and
+// the failed re-encryption is logged rather than passed over.
+//
+// Pinned as a test because the deletion reads as an obvious tidy-up.
+async function testRejectedInitKeepsItsWorkingCopyWhenResealFails() {
+  var tmpDir = _mkTmp("db-cov-reseal-fail-");
+  var tmpfs = path.join(tmpDir, "tmpfs");
+  fs.mkdirSync(tmpfs, { recursive: true });
+  // A regular FILE standing where the encrypted database's parent directory
+  // would be. decryptToTmp asks existsSync() and gets false, so the volume
+  // opens fresh and claims a working copy; the reseal on the way out has to
+  // stage a temp file in that same parent and cannot. Portable — no platform
+  // will treat a file as a directory — and it needs no permission games, which
+  // behave differently enough across platforms to be their own flake.
+  var blocked = path.join(tmpDir, "not-a-directory");
+  fs.writeFileSync(blocked, "x");
+  var encTarget = path.join(blocked, "db.enc");
+  try {
+    await _freshVault(tmpDir);
+    // A regulated posture with no WORM declaration refuses the boot from
+    // _assertWormUnderPosture, which runs after the handle goes live. No
+    // forged sidecar needed: the refusal is a property of the configuration.
+    b.compliance.set("fda-21cfr11");
+    var thrown = null;
+    try {
+      await b.db.init({
+        dataDir: tmpDir, tmpDir: tmpfs, allowNonTmpfsTmpDir: true,
+        atRest: "encrypted", encryptedDbPath: encTarget,
+        frameworkTables: true, auditSigning: false, minFreeBytes: 0,
+        schema: [{ name: "vaultrows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+      });
+    } catch (e) { thrown = e; }
+    check("a regulated posture with no WORM declaration refuses the boot",
+      thrown !== null, String(thrown && thrown.message).slice(0, 120));
+
+    // The control. Without this the test could pass for the wrong reason: if
+    // the reseal quietly succeeded, the ordinary shutdown would have removed
+    // the plaintext and the assertion below would say nothing about the branch
+    // it is aimed at.
+    check("the control: the reseal really did fail, so db.enc was never written",
+      fs.existsSync(encTarget) === false && fs.statSync(blocked).isFile(),
+      "encTarget exists=" + fs.existsSync(encTarget));
+
+    var leftBehind = fs.readdirSync(tmpfs).filter(function (n) {
+      return n.startsWith("blamejs-") && n.endsWith(".db");
+    });
+    check("a rejected init whose reseal failed KEEPS its working copy — it is " +
+          "the only carrier of migrations that committed before the refusal",
+      leftBehind.length === 1, "left=" + JSON.stringify(leftBehind));
+
+    // And the record that names it, or nothing could ever identify the copy as
+    // reclaimable: the sweep matches a working copy to its owner, and a
+    // database sitting there with no record beside it is the one shape it
+    // refuses to touch.
+    var records = fs.readdirSync(tmpfs).filter(function (n) {
+      return n.startsWith("blamejs-") && !n.endsWith(".db");
+    });
+    check("and keeps the ownership record, so a later boot can reclaim it",
+      records.length >= 1, "records=" + JSON.stringify(records));
+  } finally {
+    b.compliance.clear();
+    _teardownPlain(tmpDir);
+  }
 }
 
 // An init that throws AFTER it has claimed a working copy used to leave the

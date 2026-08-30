@@ -249,7 +249,7 @@ function testFactoryRefusesBadOpts() {
     "back\\slash",
     ".hidden",
     "has space",
-    "has null",
+    "has\x00null",
   ];
   pathTraversalShapes.forEach(function (badName) {
     var e = threw(function () {

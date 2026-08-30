@@ -1193,6 +1193,7 @@ async function testSessionEndWaitsForStoreWork() {
     order.indexOf("open-finished") < order.indexOf("session-end"), JSON.stringify(order));
   await s.srv.close();
 
+  await testCleartextRefusalChecksTheBudgetBeforeCounting();
   await testSessionEndWaitsForASlowCommit();
   await testSessionEndWaitsForEveryStoreCall();
   await testNoMaildropAfterTheSessionEnded();
@@ -1303,6 +1304,55 @@ async function testSessionEndWaitsForEveryStoreCall() {
 // would hand the next session a mailbox that is still being mutated, which is
 // the same corruption the deferral exists to prevent, reached by the one path
 // that reports failure.
+// A cleartext credential verb is refused under the balanced profile, and the
+// refusal is COUNTED against the per-IP auth-failure budget on purpose — a
+// scanner enumerating over plaintext should spend budget doing it. What it must
+// not do is count before asking whether the address is still admitted.
+//
+// The budget is a rolling window over stored timestamps, not a counter that
+// decays: `checkAuthAdmit` prunes entries older than the window and refuses once
+// enough remain. So an address already at the cap that keeps ADDING timestamps
+// holds the window populated and pushes the end of its own wait forward. Every
+// sibling listener closes the connection before anything is counted, so the
+// address serves the time it earned; these four branches counted first and
+// returned, and the refusals are free — no credential verified, no work done,
+// nothing closing the socket. A client looping USER over plaintext could hold
+// its own address, and anyone sharing it, out of the listener indefinitely
+// without ever presenting a password.
+async function testCleartextRefusalChecksTheBudgetBeforeCounting() {
+  var verbs = [
+    { label: "USER", lines: ["USER alice"] },
+    { label: "PASS", lines: ["USER alice", "PASS wrong"] },
+    { label: "APOP", lines: ["APOP alice nope"] },
+  ];
+  for (var i = 0; i < verbs.length; i += 1) {
+    var v = verbs[i];
+    // Cap of 1, so the SECOND arrival is already over budget. Balanced profile
+    // over a plaintext connection is the configuration that reaches these
+    // branches at all.
+    var s = await _makeFullServer({
+      profile: "balanced",
+      rateLimit: { authFailuresPerIpPer15Min: 1 },
+    });
+    var c = _conn(s.port);
+    try {
+      await c.waitFor(/ready\r\n/, v.label + ": greeting");
+      v.lines.forEach(function (ln) { c.send(ln); });
+      await c.waitFor(/refused over cleartext/, v.label + ": first cleartext refusal");
+
+      // Second attempt from the same address, now over the cap. It has to be
+      // closed rather than served another free refusal — and being served one
+      // is what extended the window.
+      v.lines.forEach(function (ln) { c.send(ln); });
+      await c.waitFor(/Too many AUTH failures/, v.label + ": budget refusal");
+      check("pop3 " + v.label + " over cleartext is closed once the address is " +
+            "at the per-IP cap, not served another counted refusal",
+        /Too many AUTH failures/.test(c.text()));
+      await c.waitClosed(v.label + ": rate-limit close");
+    } finally { c.destroy(); await s.srv.close(); }
+  }
+}
+
 async function testSessionEndWaitsForASlowCommit() {
   var order = [];
   var releaseCommit = null;

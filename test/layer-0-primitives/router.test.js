@@ -404,7 +404,7 @@ async function testServeStaticBypassBranches() {
   var nonGet = await _runStaticMw(mw, { method: "POST", url: "/x", pathname: "/x", headers: {} });
   check("serveStatic passes non-GET requests through (next)", nonGet.nexted === true);
 
-  var nul = await _runStaticMw(mw, { method: "GET", url: "/x", pathname: "/x y", headers: {} });
+  var nul = await _runStaticMw(mw, { method: "GET", url: "/x", pathname: "/x\x00y", headers: {} });
   check("serveStatic passes NUL-byte pathnames through (next)", nul.nexted === true);
 
   var traversal = await _runStaticMw(mw, { method: "GET", url: "/x", pathname: "/../../etc/passwd", headers: {} });

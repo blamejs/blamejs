@@ -916,9 +916,18 @@ function testNoStaleDefers() {
 // The Edit / Write tooling decodes JSON `\u0000` escape sequences into
 // literal NUL bytes when written to disk. Inside JS regex literals
 // this trips ESLint's `no-control-regex` rule on Linux CI but slips
-// past Windows local lint (encoding-related). Class-of-bug: any file
-// in lib/ containing a literal 0x00 byte should fail the gate at
+// past Windows local lint (encoding-related). Class-of-bug: any source
+// file containing a literal 0x00 byte should fail the gate at
 // authoring time, not on the npm-publish workflow at tag-push time.
+//
+// It walked lib/ alone, and the files that had the problem were all in
+// test/: 34 literal NULs across 16 files, which the gate reported zero
+// of because it never looked there. Nine of those git classified as
+// BINARY — it sniffs the first 8000 bytes, so whether a file went
+// unreadable came down to how early its first NUL sat — and a binary
+// file diffs whole-file and cannot be read by the local review at all.
+// Test files are where hostile-input fixtures live, so they are both
+// the likeliest place to type one and the worst place to lose review.
 // To embed NUL semantically, use the JS source escape `\u0000` (the
 // six-char sequence backslash + u + 0+0+0+0) — JS regex parses that
 // to a NUL char without ESLint complaining.
@@ -952,6 +961,8 @@ function testNoLiteralNulBytesInSource() {
     }
   }
   walk(path.resolve(__dirname, "..", "..", "lib"));
+  walk(path.resolve(__dirname, "..", "..", "test"));
+  walk(path.resolve(__dirname, "..", "..", "scripts"));
   _report("no literal NUL (0x00) bytes in source files (use \\u0000 escape; CI ESLint catches it but Windows local lint may not)",
     hits);
 }

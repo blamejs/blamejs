@@ -1671,7 +1671,7 @@ async function testSmtpCapabilitiesComeOnlyFromThePostTlsEhlo(certPair) {
     var r = await t.send({
       from: "s@a.test", to: "r@b.test", subject: "binary",
       raw: "Content-Type: application/octet-stream\r\n" +
-           "Content-Transfer-Encoding: binary\r\n\r\n ",
+           "Content-Transfer-Encoding: binary\r\n\r\n\x00",
     });
     check("smtp-starttls: a binary message is accepted when BINARYMIME is " +
           "advertised only AFTER the upgrade", r.code === 250);

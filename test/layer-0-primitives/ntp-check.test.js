@@ -45,6 +45,41 @@ function _startFakeNtpServer() {
   });
 }
 
+// The message an operator reads when no server answers has to name a setting
+// that exists. It named BLAMEJS_NTP_STRICT, which is consulted only on the
+// FATAL-drift branch and already defaults to on — so following the advice set a
+// variable to the value it already held, on a branch this result never reaches,
+// and a host with UDP/123 blocked went on booting with an unchecked clock while
+// being told it had a way to prevent that.
+//
+// Asserted against the ACTUAL env var name rather than a copy of the string, so
+// a message that drifts back to naming a setting nothing reads fails here.
+async function testUnreachableMessageNamesAReadableSetting() {
+  // Port 1 on loopback answers nothing, and the short timeout keeps it quick.
+  var result = await b.ntpCheck.bootCheck({
+    servers: ["127.0.0.1"], port: 1, timeoutMs: 250,                                                   // allow:raw-time-literal — test-only short probe
+  });
+  check("ntpCheck.bootCheck: an unanswered query is a warning, not a hard failure",
+    result.ok === true && result.severity === "warning" && result.driftMs === null,
+    JSON.stringify(result));
+
+  var named = /BLAMEJS_[A-Z_]+/.exec(result.message || "");
+  check("ntpCheck.bootCheck: the unreachable message names a setting",
+    named !== null, JSON.stringify(result.message));
+  if (!named) return;
+  // The one it names must be the one the boot path actually reads for THIS
+  // result. BLAMEJS_NTP_STRICT is not it: db.js consults that only where
+  // severity is "fatal".
+  check("ntpCheck.bootCheck: and names the setting that governs an unreachable " +
+        "server, not the one that governs excess drift",
+    named[0] === "BLAMEJS_NTP_REQUIRE_REACHABLE", named[0]);
+  check("ntpCheck.bootCheck: the named setting is read by the boot path",
+    require("node:fs").readFileSync(
+      require("node:path").join(__dirname, "..", "..", "lib", "db.js"), "utf8")
+      .indexOf('readVar("' + named[0] + '"') !== -1,
+    named[0] + " is not read anywhere in lib/db.js");
+}
+
 function testMonitorRejectsBadInterval() {
   var t1 = null;
   try { b.ntpCheck.monitor({ intervalMs: -1 }); } catch (e) { t1 = e; }
@@ -110,6 +145,7 @@ async function testMonitorFiresOnDriftAndAudits() {
 async function run() {
   testMonitorRejectsBadInterval();
   await testMonitorFiresOnDriftAndAudits();
+  await testUnreachableMessageNamesAReadableSetting();
 }
 
 module.exports = { run: run };

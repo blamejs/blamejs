@@ -2358,8 +2358,13 @@ async function testUidRoutesThroughTheRegistrySeam() {
   var s = await _makeServer({
     overrides: {
       SEARCH: {
-        fn: function (_state, socket, parsed) {
-          seen.push({ args: parsed.args, useUid: parsed.useUid === true });
+        // Four parameters, the signature a consumer writes when their search
+        // terms can arrive as literals.
+        fn: function (_state, socket, parsed, literalBody) {
+          seen.push({
+            args: parsed.args, useUid: parsed.useUid === true,
+            literal: literalBody == null ? null : String(literalBody),
+          });
           socket.write("* SEARCH 7 9\r\n");
           socket.write(parsed.tag + " OK SEARCH completed\r\n");
         },
@@ -2387,6 +2392,51 @@ async function testUidRoutesThroughTheRegistrySeam() {
       seen[1] && seen[1].useUid === true, JSON.stringify(seen[1]));
     check("imap: the sub-command's own arguments are passed through intact",
       seen[1] && seen[1].args === "UNSEEN", JSON.stringify(seen[1]));
+
+    // And the literal payload, which is how a real client sends any non-ASCII
+    // search term. It was dropped twice over on this path: the registry entry's
+    // closure declared three parameters while dispatch supplied four, so arity
+    // discarded it at the boundary, and _handleUid's own sub-dispatch passed no
+    // literal onward either. Repairing one leaves the other, so both are
+    // exercised here through the ONE command that has to cross both.
+    var lit = await _cmdT(sock, "S5", "UID SEARCH SUBJECT {5}", /\+ /);
+    check("imap: UID SEARCH with a literal gets a continuation request",
+      /\+ /.test(lit), JSON.stringify(lit));
+    var litDone = await _raw(sock, _tagTerm("S5"), "hello\r\n");
+    check("imap: and the UID form completes rather than failing BAD",
+      /^S5 OK/m.test(litDone), JSON.stringify(litDone));
+    check("imap: the literal payload reaches the supplied handler",
+      seen[2] && seen[2].literal === "hello",
+      JSON.stringify(seen[2] && seen[2].literal));
+
+    // The drop was a property of ARITY, not of UID, and the listener hands a
+    // literal to whatever verb arrived carrying one — so the same shape could
+    // bite any handler whose closure declares three parameters. LOGIN is the
+    // one that matters, because RFC 9051 lets a client send its password as a
+    // literal and the listener strips the opener from the line before the
+    // handler parses it. Asked rather than assumed.
+    var fresh = await _connect(s.port);
+    try {
+      var loginLit = await _cmdT(fresh, "S6", "LOGIN alice {4}", /\+ /);
+      check("imap: LOGIN with a literal password gets a continuation request",
+        /\+ /.test(loginLit), JSON.stringify(loginLit));
+      // `good` is alice's real password, so this must AUTHENTICATE. Accepting
+      // a NO here would pass just as happily with the literal dropped and the
+      // credential simply wrong, which is the thing being tested.
+      var loginDone = await _raw(fresh, _tagTerm("S6"), "good\r\n");
+      check("imap: and the literal password reaches auth, so the login succeeds",
+        /^S6 OK/m.test(loginDone), JSON.stringify(loginDone));
+
+      // The other astring a client commonly sends as a literal is a mailbox
+      // name, which is where a UTF-8 name has to go. Asked the same way, on the
+      // now-authenticated connection.
+      var selLit = await _cmdT(fresh, "S7", "SELECT {5}", /\+ /);
+      check("imap: SELECT with a literal mailbox gets a continuation request",
+        /\+ /.test(selLit), JSON.stringify(selLit));
+      var selDone = await _raw(fresh, _tagTerm("S7"), "INBOX\r\n");
+      check("imap: and the literal mailbox name reaches the handler",
+        /^S7 OK/m.test(selDone), JSON.stringify(selDone));
+    } finally { fresh.destroy(); }
 
     // Routing by "is it in the registry" would dispatch real handlers that
     // know nothing about UIDs. SELECT would select a mailbox; UID would

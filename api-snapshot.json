@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.18.58",
-  "createdAt": "2026-08-30T13:03:55.459Z",
+  "createdAt": "2026-08-30T17:10:18.987Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -11056,6 +11056,27 @@
                 }
               }
             },
+            "finra-4511": {
+              "type": "object",
+              "members": {
+                "citation": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "domain": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "jurisdiction": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
             "fl-fdbr": {
               "type": "object",
               "members": {
@@ -12737,6 +12758,27 @@
               }
             },
             "sec-1.05": {
+              "type": "object",
+              "members": {
+                "citation": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "domain": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "jurisdiction": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "name": {
+                  "type": "primitive",
+                  "valueType": "string"
+                }
+              }
+            },
+            "sec-17a-4": {
               "type": "object",
               "members": {
                 "citation": {
