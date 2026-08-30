@@ -772,19 +772,77 @@ async function runIntegrated(root) {
     check("purge: an anchor with no recorded range start is itself valid",
       b.auditChain.verifyPurgeAnchor(noRangeAnchor).status === "valid",
       JSON.stringify(b.auditChain.verifyPurgeAnchor(noRangeAnchor)));
-    var legacyRetry = await b.auditTools.purge({
-      confirm: true, archive: archiveDir, passphrase: PASS,
-      readAnchor: function () { return Promise.resolve(noRangeAnchor); },
+    // What "unrecorded" may NOT mean is "unchecked". An interrupted purge is
+    // one that wrote its boundary and did not delete, so the rows it failed to
+    // remove are still there and the lowest of them is where its archive has
+    // to start — the volume answers the question the anchor did not record.
+    // Here the rows ARE gone, so there is no interrupted purge to finish and
+    // nothing on the volume can say which range the anchor licensed. Accepting
+    // the replay would only re-point the anchor at whatever archive was
+    // presented.
+    check("purge: a legacy retry is refused once its rows are already gone",
+      await _expectCode(function () {
+        return b.auditTools.purge({
+          confirm: true, archive: archiveDir, passphrase: PASS,
+          readAnchor: function () { return Promise.resolve(noRangeAnchor); },
+        });
+      }, "audit-tools/non-monotonic-purge"));
+
+    // And the case the derivation exists for: an archive that merely ENDS in
+    // the right place. A smaller one — the tail of the licensed range — would
+    // pass an end-only match, and the delete that follows removes the WHOLE
+    // range through the boundary. The rows below its start would be gone with
+    // no copy anywhere.
+    var liveFloor = await b.clusterStorage.executeOne(
+      "SELECT MIN(monotonicCounter) AS lo FROM audit_log");
+    check("purge: rows below the legacy boundary are gone, so nothing derives a start",
+      liveFloor && (liveFloor.lo === null ||
+        Number(liveFloor.lo) > Number(noRangeAnchor.lastPurgedCounter)),
+      JSON.stringify(liveFloor));
+
+    // The interrupted-purge shape, where the derivation has something to work
+    // with: the boundary was written, the rows were NOT deleted, and a smaller
+    // archive covering only the TAIL is presented as the retry. Accepting it
+    // deletes the whole range through the boundary while retaining only its
+    // tail — the rows below its start would be gone with no copy anywhere.
+    //
+    // The tail bundle here is real: `archive`'s readRows shapes what goes INTO
+    // it, and the bundle is then held to its own manifest like any other. What
+    // is NOT injectable is the live floor the purge reads to decide, which is
+    // the value that authorizes the delete.
+    await _seedAuditRows(6);
+    await b.audit.flush();
+    await b.audit.checkpoint();
+    var liveRows = await b.clusterStorage.executeAll(
+      "SELECT * FROM audit_log ORDER BY monotonicCounter ASC");
+    check("purge: the fixture has rows below the tail slice",
+      liveRows.length >= 4, String(liveRows.length));
+    var tailRows = liveRows.slice(-2);
+    var tailOut = _freshOut(root, "tail-slice");
+    await b.auditTools.archive({
+      out: tailOut, passphrase: PASS, before: Date.now() + 1000,                                       // allow:raw-time-literal — test-only future cut
+      readRows: function () { return Promise.resolve(tailRows); },
     });
-    check("purge: replaying its archive against it is still a retry",
-      legacyRetry.purged === true && legacyRetry.rowsDeleted === 0,
-      JSON.stringify(legacyRetry));
-    var migratedAnchor = await b.clusterStorage.executeOne(
-      "SELECT * FROM _blamejs_audit_purge_anchor WHERE scope = 'audit'");
-    check("purge: and the anchor it rewrites records the range start",
-      Number(migratedAnchor.firstPurgedCounter) > 0 &&
-      b.auditChain.verifyPurgeAnchor(migratedAnchor).status === "valid",
-      "firstPurgedCounter=" + migratedAnchor.firstPurgedCounter);
+    var tailEnd = tailRows[tailRows.length - 1];
+    // A legacy anchor whose boundary is exactly where the tail slice ends.
+    var tailAnchor = {
+      scope: "audit", lastPurgedCounter: Number(tailEnd.monotonicCounter),
+      lastPurgedRowHash: String(tailEnd.rowHash), archiveBundleId: "legacy-tail",
+      purgedAt: 1750000000000, fencingToken: 0, firstPurgedCounter: 0,
+      archiveRowsDigest: "", archiveCheckpointDigest: "",
+    };
+    tailAnchor.signature = b.auditSign.sign(b.auditChain.purgeAnchorPayload(tailAnchor));
+    tailAnchor.publicKeyFingerprint = b.auditSign.getPublicKeyFingerprint();
+    check("purge: a tail-only archive is refused against a legacy anchor whose rows are live",
+      await _expectCode(function () {
+        return b.auditTools.purge({
+          confirm: true, archive: tailOut, passphrase: PASS,
+          readAnchor: function () { return Promise.resolve(tailAnchor); },
+        });
+      }, "audit-tools/non-monotonic-purge"));
+    check("purge: and the rows it would have deleted are all still there",
+      (await b.clusterStorage.executeAll(
+        "SELECT * FROM audit_log ORDER BY monotonicCounter ASC")).length === liveRows.length);
 
     // ---- an append racing the purge lands on the right side of it ----
     // The delete and the anchor write are two writes. An append between them

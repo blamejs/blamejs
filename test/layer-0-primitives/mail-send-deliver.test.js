@@ -203,6 +203,23 @@ function testOutcomeClassifier() {
   check("452 → transient",  deliver.classifyOutcome(null, { code: 452 }) === "transient");
   check("550 → permanent",  deliver.classifyOutcome(null, { code: 550 }) === "permanent");
   check("554 → permanent",  deliver.classifyOutcome(null, { code: 554 }) === "permanent");
+  // Those three pass a `response` the delivery path never had: it was read
+  // from `err.smtpResponse`, which nothing in the tree ever set. So the
+  // response branches were dead and every peer refusal — at any code, at any
+  // step — fell through to transient, burning the whole retry budget on a
+  // "User unknown" the receiver answered immediately. The classifier has to
+  // answer for the error the TRANSPORT actually constructs.
+  var rejected = new b.mail.MailError("mail/smtp-failed",
+    "SMTP send failed: rcpt-rejected (code 550)", true, 550);
+  check("the transport's own 5yz error → permanent",
+    deliver.classifyOutcome(rejected, rejected.statusCode == null ? null
+      : { code: rejected.statusCode }) === "permanent",
+    JSON.stringify({ statusCode: rejected.statusCode, permanent: rejected.permanent }));
+  var deferred = new b.mail.MailError("mail/smtp-failed",
+    "SMTP send failed: rcpt-rejected (code 451)", false, 451);
+  check("the transport's own 4yz error → transient",
+    deliver.classifyOutcome(deferred, deferred.statusCode == null ? null
+      : { code: deferred.statusCode }) === "transient");
   // Network errors → transient (allow MX-failover).
   check("ECONNREFUSED → transient",
     deliver.classifyOutcome({ code: "ECONNREFUSED" }, null) === "transient");
@@ -221,6 +238,56 @@ function testOutcomeClassifier() {
   // sender retries and the other hosts get their turn (RFC 7672 §2.2).
   check("dane-fetch-failed (enforce) → transient",
     deliver.classifyOutcome({ code: "deliver/dane-fetch-failed", message: "" }, null) === "transient");
+}
+
+// And the delivery path itself, which is where the reading happened. A peer
+// answering 550 has permanently refused the recipient (RFC 5321 §4.2.1); the
+// message belongs in `failed` with the receiver's own code, not in `deferred`
+// to be retried for hours against a mailbox that does not exist.
+async function testPeerRefusalIsAHardBounce() {
+  var fakeResolver = { queryMx: async function (d) {
+    return [{ exchange: "mx1." + d, priority: 10 }, { exchange: "mx2." + d, priority: 20 }]; } };
+  var attempts = [];
+  function _refusingTransport(code, permanent) {
+    return function (opts) {
+      return { send: async function () {
+        attempts.push(opts.host);
+        throw new b.mail.MailError("mail/smtp-failed",
+          "SMTP send failed: rcpt-rejected (code " + code + ")", permanent, code);
+      } };
+    };
+  }
+
+  var hard = b.mail.send.deliver({
+    hostname: "mta1.example.com", resolver: fakeResolver,
+    policy: { mtaSts: "off", dane: "off" },
+    transportFactory: _refusingTransport(550, true), audit: false,
+  });
+  var hardRes = await hard({
+    from: "s@a.test", to: ["nobody@recipient.com"],
+    rfc822: Buffer.from("From: s@a.test\r\nTo: nobody@recipient.com\r\n\r\nx"),
+  });
+  check("a 550 recipient refusal is a hard bounce, not a deferral",
+    hardRes.failed.length === 1 && hardRes.deferred.length === 0,
+    JSON.stringify({ failed: hardRes.failed.length, deferred: hardRes.deferred.length }));
+  // A permanent verdict is the only one that stops the MX failover loop, so a
+  // recipient the first host refused outright was offered to every other host.
+  check("and it is not offered to the next MX",
+    attempts.length === 1, JSON.stringify(attempts));
+
+  attempts.length = 0;
+  var soft = b.mail.send.deliver({
+    hostname: "mta1.example.com", resolver: fakeResolver,
+    policy: { mtaSts: "off", dane: "off" },
+    transportFactory: _refusingTransport(451, false), audit: false,
+  });
+  var softRes = await soft({
+    from: "s@a.test", to: ["busy@recipient.com"],
+    rfc822: Buffer.from("From: s@a.test\r\nTo: busy@recipient.com\r\n\r\nx"),
+  });
+  check("CONTROL — a 451 is still deferred, so 550 did not simply turn retries off",
+    softRes.deferred.length === 1 && softRes.failed.length === 0,
+    JSON.stringify({ failed: softRes.failed.length, deferred: softRes.deferred.length }));
 }
 
 // ---- DSN composer (RFC 3464 multipart/report) ----
@@ -386,15 +453,19 @@ async function testNullReversePathIsAValueNotAnAbsence() {
 async function testNullReversePathGeneratesNoDsn() {
   var fakeResolver = { queryMx: async function (d) {
     return [{ exchange: "mx1." + d, priority: 10 }]; } };
-  // A permanent failure is a THROW carrying an SMTP response, which is how the
+  // A permanent failure is a THROW carrying the peer's reply, which is how the
   // wire layer reports one — not a returned `{ ok: false }`. Getting that wrong
   // is what the control below caught: both cases sent no DSN, so the assertion
   // above would have passed for a fixture that never reached the DSN path.
+  //
+  // It carries the reply the way b.mail's transport does — `statusCode` on a
+  // MailError. The earlier fixture invented `err.smtpResponse`, a property the
+  // transport never set, so it exercised a branch production could not reach
+  // and the delivery path's real classification went untested.
   var hardFail = function () {
     return { send: async function () {
-      var err = new Error("550 5.1.1 no such user");
-      err.smtpResponse = { code: 550 };
-      throw err;
+      throw new b.mail.MailError("mail/smtp-failed",
+        "SMTP send failed: rcpt-rejected (code 550)", true, 550);
     } };
   };
   var dsnCalls = [];
@@ -569,15 +640,16 @@ async function testTransientDefersPermanentFails() {
     return {
       send: async function (msg) {
         var to = msg.to[0];
+        // Both carry the peer's reply the way b.mail's transport does —
+        // `statusCode` on a MailError — rather than an invented property the
+        // wire layer never set.
         if (to === "transient@example.com") {
-          var err = new Error("temporary failure");
-          err.smtpResponse = { code: 451 };
-          throw err;
+          throw new b.mail.MailError("mail/smtp-failed",
+            "SMTP send failed: rcpt-rejected (code 451)", false, 451);
         }
         if (to === "permanent@example.com") {
-          var err2 = new Error("550 5.1.1 user not found");
-          err2.smtpResponse = { code: 550 };
-          throw err2;
+          throw new b.mail.MailError("mail/smtp-failed",
+            "SMTP send failed: rcpt-rejected (code 550)", true, 550);
         }
         return { ok: true, code: 250 };
       },
@@ -632,9 +704,8 @@ async function testMaxAttemptsFlowsThrough() {
   var transientTransport = function () {
     return {
       send: async function () {
-        var err = new Error("temporary failure");
-        err.smtpResponse = { code: 451 };
-        throw err;
+        throw new b.mail.MailError("mail/smtp-failed",
+          "SMTP send failed: rcpt-rejected (code 451)", false, 451);
       },
     };
   };
@@ -1339,9 +1410,8 @@ async function testAllHostsTransient() {
     policy:   { mtaSts: "off", dane: "off" },
     transportFactory: function () {
       return { send: async function () {
-        var err = new Error("temporary failure");
-        err.smtpResponse = { code: 451 };
-        throw err;
+        throw new b.mail.MailError("mail/smtp-failed",
+          "SMTP send failed: rcpt-rejected (code 451)", false, 451);
       } };
     },
     audit:    false,
@@ -1362,9 +1432,8 @@ async function testPermanentFailKeepsMxHost() {
     policy:   { mtaSts: "off", dane: "off" },
     transportFactory: function () {
       return { send: async function () {
-        var err = new Error("550 5.1.1 no such user");
-        err.smtpResponse = { code: 550 };
-        throw err;
+        throw new b.mail.MailError("mail/smtp-failed",
+          "SMTP send failed: rcpt-rejected (code 550)", true, 550);
       } };
     },
     audit:    false,
@@ -1581,9 +1650,8 @@ async function testDsnCallbackFailure() {
     policy:   { mtaSts: "off", dane: "off" },
     transportFactory: function () {
       return { send: async function () {
-        var err = new Error("550 5.1.1 no such user");
-        err.smtpResponse = { code: 550 };
-        throw err;
+        throw new b.mail.MailError("mail/smtp-failed",
+          "SMTP send failed: rcpt-rejected (code 550)", true, 550);
       } };
     },
     dsn: {
@@ -1610,9 +1678,8 @@ async function testExtractHeaderBlockVariants() {
       policy:   { mtaSts: "off", dane: "off" },
       transportFactory: function () {
         return { send: async function () {
-          var err = new Error("550 5.1.1 no such user");
-          err.smtpResponse = { code: 550 };
-          throw err;
+          throw new b.mail.MailError("mail/smtp-failed",
+            "SMTP send failed: rcpt-rejected (code 550)", true, 550);
         } };
       },
       dsn: {
@@ -1647,9 +1714,8 @@ async function testRetryBudgetClamp() {
     retry:    { maxAttempts: 10, backoffMs: backoff },
     transportFactory: function () {
       return { send: async function () {
-        var err = new Error("temporary");
-        err.smtpResponse = { code: 451 };
-        throw err;
+        throw new b.mail.MailError("mail/smtp-failed",
+          "SMTP send failed: rcpt-rejected (code 451)", false, 451);
       } };
     },
     audit:    false,
@@ -1730,6 +1796,7 @@ async function run() {
   await testDeliverCreateDottedForm();
   await testEnvelopeValidation();
   testOutcomeClassifier();
+  await testPeerRefusalIsAHardBounce();
   testDsnComposer();
   testDsnRejectsCrlfHeaderInjection();
   await testNullReversePathIsAValueNotAnAbsence();

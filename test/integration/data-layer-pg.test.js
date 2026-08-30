@@ -530,40 +530,45 @@ async function _testRateLimitCluster() {
   var backend = rateLimitModule._clusterBackend({
     backend: "cluster", limit: 3, windowMs: b.constants.TIME.minutes(1),
   });
+  // Unique per run, for the reason the MySQL sibling carries: these assertions
+  // are about ABSOLUTE counts, and a fixed key makes them depend on nothing
+  // else in a shared live database having written to it in the same window.
+  var rateKey = "ratekey-" + process.pid + "-" + Date.now();
 
-  var v1 = await backend.take("ratekey-1", 1);
+  var v1 = await backend.take(rateKey, 1);
   softCheck("rate-limit(pg): first take() is allowed against real Postgres",
         v1 && v1.allowed === true);
   softCheck("rate-limit(pg): the take() verdict count math is numeric " +
         "(remaining is a finite number, not NaN from a string compare)",
         typeof v1.remaining === "number" && isFinite(v1.remaining) && v1.remaining === 2);
 
-  var rowAfter1 = _psql("SELECT \"count\" FROM _blamejs_rate_limit_counters WHERE \"key\" = 'ratekey-1';");
+  var rowAfter1 = _psql("SELECT \"count\" FROM _blamejs_rate_limit_counters WHERE \"key\" = '" + rateKey + "';");
   softCheck("rate-limit(pg): counter row landed with count=1", /\b1\b/.test(rowAfter1.trim()));
 
-  var v2 = await backend.take("ratekey-1", 1);
-  var v3 = await backend.take("ratekey-1", 1);
-  var v4 = await backend.take("ratekey-1", 1);
+  var v2 = await backend.take(rateKey, 1);
+  var v3 = await backend.take(rateKey, 1);
+  var v4 = await backend.take(rateKey, 1);
   softCheck("rate-limit(pg): 2nd + 3rd allowed, 4th over the limit refused",
         v2.allowed === true && v3.allowed === true && v4.allowed === false);
   softCheck("rate-limit(pg): the over-limit verdict carries a positive retryAfter",
         typeof v4.retryAfter === "number" && v4.retryAfter > 0);
-  var rowAfter4 = _psql("SELECT \"count\" FROM _blamejs_rate_limit_counters WHERE \"key\" = 'ratekey-1';");
+  var rowAfter4 = _psql("SELECT \"count\" FROM _blamejs_rate_limit_counters WHERE \"key\" = '" + rateKey + "';");
   softCheck("rate-limit(pg): counter incremented monotonically to 4",
         /\b4\b/.test(rowAfter4.trim()));
 
   // A window advance resets the count (the CASE conflict action's
   // window-rollover branch). Force a stale window then take() again.
-  _psql("UPDATE _blamejs_rate_limit_counters SET \"windowStart\" = 0 WHERE \"key\" = 'ratekey-1';");
-  var vReset = await backend.take("ratekey-1", 1);
+  _psql("UPDATE _blamejs_rate_limit_counters SET \"windowStart\" = 0 WHERE \"key\" = '" +
+    rateKey + "';");
+  var vReset = await backend.take(rateKey, 1);
   softCheck("rate-limit(pg): a fresh window resets the count (CASE rollover) — allowed again",
         vReset.allowed === true);
-  var rowAfterReset = _psql("SELECT \"count\" FROM _blamejs_rate_limit_counters WHERE \"key\" = 'ratekey-1';");
+  var rowAfterReset = _psql("SELECT \"count\" FROM _blamejs_rate_limit_counters WHERE \"key\" = '" + rateKey + "';");
   softCheck("rate-limit(pg): count reset to 1 on window advance",
         /\b1\b/.test(rowAfterReset.trim()));
 
   // A distinct key is tracked independently.
-  var other = await backend.take("ratekey-2", 1);
+  var other = await backend.take(rateKey + "-other", 1);
   softCheck("rate-limit(pg): a distinct key is counted independently",
         other.allowed === true && other.remaining === 2);
 

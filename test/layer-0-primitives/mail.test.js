@@ -1484,7 +1484,26 @@ async function testSmtpRejectionCodes(certPair) {
   try {
     var eR = await _sendErr(tlsTransport(certPair, stR.port), { from: "s@a.test", to: "r@b.test", text: "x" });
     check("smtp-reject: RCPT 550 → smtp-failed", eR && /rcpt-rejected/.test(eR.message));
+    // RFC 5321 §4.2.1 makes the leading digit the whole verdict: a 5yz reply
+    // means the client SHOULD NOT repeat the request. The code was formatted
+    // into the message and discarded, and `permanent` was hardcoded false — so
+    // a delivery layer classifying from it deferred every hard bounce and
+    // retried a "User unknown" on a schedule for hours.
+    check("smtp-reject: the peer's numeric reply travels on the error",
+      eR && eR.statusCode === 550, JSON.stringify(eR && eR.statusCode));
+    check("smtp-reject: and a 5yz refusal is marked permanent",
+      eR && eR.permanent === true, JSON.stringify(eR && eR.permanent));
   } finally { await closeServer(stR); }
+
+  // A 4yz refusal is the one RFC 5321 §4.5.4.1 sets a retry discipline for.
+  var stT = startTlsSmtp(certPair, { ext: ["8BITMIME"], rcptCode: 451 });
+  await listen(stT);
+  try {
+    var eT = await _sendErr(tlsTransport(certPair, stT.port), { from: "s@a.test", to: "r@b.test", text: "x" });
+    check("smtp-reject: a 4yz refusal carries its code and stays transient",
+      eT && eT.statusCode === 451 && eT.permanent === false,
+      JSON.stringify(eT && { statusCode: eT.statusCode, permanent: eT.permanent }));
+  } finally { await closeServer(stT); }
 
   // DATA rejected
   var stD = startTlsSmtp(certPair, { ext: ["8BITMIME"], dataCode: 503 });
@@ -1508,7 +1527,24 @@ async function testSmtpRejectionCodes(certPair) {
   try {
     var eBd = await _sendErr(tlsTransport(certPair, stBd.port), { from: "s@a.test", to: "r@b.test", text: "x" });
     check("smtp-reject: BDAT chunk 552 → mail/bdat-chunk-rejected", eBd && eBd.code === "mail/bdat-chunk-rejected");
+    // The chunked path builds its own reject rather than routing through
+    // fail(), which is how it kept a hardcoded transient verdict while the
+    // other eight steps were carrying the peer's code. A 552 is a refusal like
+    // any other 5yz.
+    check("smtp-reject: a rejected BDAT chunk carries its code and is permanent",
+      eBd && eBd.statusCode === 552 && eBd.permanent === true,
+      JSON.stringify(eBd && { statusCode: eBd.statusCode, permanent: eBd.permanent }));
   } finally { await closeServer(stBd); }
+
+  // And a 4yz on the same path stays retryable.
+  var stBt = startTlsSmtp(certPair, { ext: ["CHUNKING", "8BITMIME"], bdatCode: 451 });
+  await listen(stBt);
+  try {
+    var eBt = await _sendErr(tlsTransport(certPair, stBt.port), { from: "s@a.test", to: "r@b.test", text: "x" });
+    check("smtp-reject: a 4yz BDAT refusal carries its code and stays transient",
+      eBt && eBt.statusCode === 451 && eBt.permanent === false,
+      JSON.stringify(eBt && { statusCode: eBt.statusCode, permanent: eBt.permanent }));
+  } finally { await closeServer(stBt); }
 
   // AUTH final rejected
   var stA = startTlsSmtp(certPair, { ext: ["8BITMIME"], authFinalCode: 535 });

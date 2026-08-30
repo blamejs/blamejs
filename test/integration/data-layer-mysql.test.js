@@ -559,8 +559,16 @@ async function _testRateLimitCluster() {
   var backend = rateLimitModule._clusterBackend({
     backend: "cluster", limit: 3, windowMs: b.constants.TIME.minutes(1),
   });
+  // Unique per run. These assertions are about ABSOLUTE counts — first take
+  // allowed, fourth refused, row at exactly 4 — so any row this key already
+  // carries changes the answers. The table is dropped and recreated at the top
+  // of this file, but the suite shares one MySQL instance with every other
+  // live file, and a fixed key makes this test depend on nothing else having
+  // written to it in the same minute-long window. A key nobody else can name
+  // removes the dependency rather than hoping.
+  var rateKey = "ratekey-" + process.pid + "-" + Date.now();
 
-  var v1 = await backend.take("ratekey-1", 1);
+  var v1 = await backend.take(rateKey, 1);
   softCheck("rate-limit(mysql): first take() is allowed against real MySQL",
         v1 && v1.allowed === true);
   softCheck("rate-limit(mysql): the take() verdict count math is numeric " +
@@ -568,42 +576,44 @@ async function _testRateLimitCluster() {
         typeof v1.remaining === "number" && isFinite(v1.remaining) && v1.remaining === 2);
 
   var rowAfter1 = _selectDirect(
-    "SELECT `count` FROM `_blamejs_rate_limit_counters` WHERE `key` = 'ratekey-1';");
+    "SELECT `count` FROM `_blamejs_rate_limit_counters` WHERE `key` = '" + rateKey + "';");
   softCheck("rate-limit(mysql): counter row landed with count=1",
         rowAfter1.length === 1 && Number(rowAfter1[0].count) === 1);
 
-  var v2 = await backend.take("ratekey-1", 1);
-  var v3 = await backend.take("ratekey-1", 1);
-  var v4 = await backend.take("ratekey-1", 1);
+  var v2 = await backend.take(rateKey, 1);
+  var v3 = await backend.take(rateKey, 1);
+  var v4 = await backend.take(rateKey, 1);
   softCheck("rate-limit(mysql): 2nd + 3rd allowed, 4th over the limit refused",
         v2.allowed === true && v3.allowed === true && v4.allowed === false);
   softCheck("rate-limit(mysql): the over-limit verdict carries a positive retryAfter",
         typeof v4.retryAfter === "number" && v4.retryAfter > 0);
   var rowAfter4 = _selectDirect(
-    "SELECT `count` FROM `_blamejs_rate_limit_counters` WHERE `key` = 'ratekey-1';");
+    "SELECT `count` FROM `_blamejs_rate_limit_counters` WHERE `key` = '" + rateKey + "';");
   softCheck("rate-limit(mysql): counter incremented monotonically to 4 (same-window CASE branch)",
         rowAfter4.length === 1 && Number(rowAfter4[0].count) === 4);
 
   // A window advance resets the count (the CASE conflict action's
   // window-rollover branch). Force a stale window then take() again.
-  _execMysql("UPDATE `_blamejs_rate_limit_counters` SET `windowStart` = 0 WHERE `key` = 'ratekey-1';");
-  var vReset = await backend.take("ratekey-1", 1);
+  _execMysql("UPDATE `_blamejs_rate_limit_counters` SET `windowStart` = 0 WHERE `key` = '" +
+    rateKey + "';");
+  var vReset = await backend.take(rateKey, 1);
   softCheck("rate-limit(mysql): a fresh window resets the count (CASE rollover) — allowed again",
         vReset.allowed === true);
   var rowAfterReset = _selectDirect(
-    "SELECT `count` FROM `_blamejs_rate_limit_counters` WHERE `key` = 'ratekey-1';");
+    "SELECT `count` FROM `_blamejs_rate_limit_counters` WHERE `key` = '" + rateKey + "';");
   softCheck("rate-limit(mysql): count reset to 1 on window advance (proposed-window CASE branch)",
         rowAfterReset.length === 1 && Number(rowAfterReset[0].count) === 1);
 
   // A distinct key is tracked independently.
-  var other = await backend.take("ratekey-2", 1);
+  var other = await backend.take(rateKey + "-other", 1);
   softCheck("rate-limit(mysql): a distinct key is counted independently",
         other.allowed === true && other.remaining === 2);
 
   // reset(key) deletes the counter row.
-  await backend.reset("ratekey-1");
+  await backend.reset(rateKey);
   var afterReset = _selectDirect(
-    "SELECT COUNT(*) AS `n` FROM `_blamejs_rate_limit_counters` WHERE `key` = 'ratekey-1';");
+    "SELECT COUNT(*) AS `n` FROM `_blamejs_rate_limit_counters` WHERE `key` = '" +
+    rateKey + "';");
   softCheck("rate-limit(mysql): reset(key) deleted the counter row",
         afterReset.length === 1 && Number(afterReset[0].n) === 0);
 

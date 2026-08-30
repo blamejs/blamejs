@@ -582,6 +582,42 @@ async function testPublicHistoryEdges() {
   }
 }
 
+// The signature sizes the framework's comments quote when they tell an
+// operator what audit-checkpoint storage will cost. Four of them named the
+// wrong algorithm variant — the default was documented at 59% of its real
+// size, and one site was out by an order of magnitude — because prose is the
+// one place a wrong number survives every gate. Pinned here so the next drift
+// fails a test rather than shipping: if node:crypto's output changes, this is
+// what says the comments need revisiting.
+function testPqcSignatureSizes() {
+  var nodeCrypto = require("node:crypto");
+  var expected = {
+    "slh-dsa-shake-256f": 49856,                                                                        // allow:raw-byte-literal — FIPS 205 Table 2
+    "slh-dsa-shake-256s": 29792,                                                                        // allow:raw-byte-literal — FIPS 205 Table 2
+    "ml-dsa-87":           4627,                                                                        // allow:raw-byte-literal — FIPS 204 Table 2
+    "ml-dsa-65":           3309,                                                                        // allow:raw-byte-literal — FIPS 204 Table 2
+    "ml-dsa-44":           2420,                                                                        // allow:raw-byte-literal — FIPS 204 Table 2
+  };
+  Object.keys(expected).forEach(function (alg) {
+    var kp = nodeCrypto.generateKeyPairSync(alg);
+    var sig = nodeCrypto.sign(null, Buffer.from("size probe"), kp.privateKey);
+    check("signature size: " + alg + " is " + expected[alg] + " bytes",
+      sig.length === expected[alg], alg + " measured " + sig.length);
+  });
+  // The default (lib/audit-sign.js DEFAULT_SIGNING_ALG) is the FAST variant,
+  // which is what made the wrong figure expensive: it was documented at the
+  // slow variant's size, 40% under what an operator would actually store.
+  check("signature size: the two SLH-DSA variants are not interchangeable figures",
+    expected["slh-dsa-shake-256f"] > expected["slh-dsa-shake-256s"] * 1.6,
+    expected["slh-dsa-shake-256f"] + " vs " + expected["slh-dsa-shake-256s"]);
+  // The encodings b.webhook quotes for a header-cap budget.
+  var one = nodeCrypto.sign(null, Buffer.from("x"),
+    nodeCrypto.generateKeyPairSync("slh-dsa-shake-256f").privateKey);
+  check("signature size: base64url and hex encodings are what the header budget assumes",
+    one.toString("base64url").length === 66475 && one.toString("hex").length === 99712,             // allow:raw-byte-literal — encoded lengths quoted in lib/webhook.js
+    one.toString("base64url").length + " / " + one.toString("hex").length);
+}
+
 async function run() {
   b.auditSign._resetForTest();
   try {
@@ -594,6 +630,7 @@ async function run() {
     await testReSignAllEdges();
     await testAnchorInputEdges();
     await testPublicHistoryEdges();
+    testPqcSignatureSizes();
   } finally {
     try { b.auditSign._resetForTest(); } catch (_e) { /* best-effort */ }
     delete process.env.BLAMEJS_AUDIT_SIGNING_PASSPHRASE;
