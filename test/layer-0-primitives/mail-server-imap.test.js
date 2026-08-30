@@ -57,7 +57,11 @@ async function _makeTestTlsContext() {
     sans:         ["DNS:imap.test", "DNS:localhost", "IP:127.0.0.1"],
     validityDays: 1,
   });
-  return nodeTls.createSecureContext({ key: leaf.key, cert: leaf.cert });
+  var ctx = nodeTls.createSecureContext({ key: leaf.key, cert: leaf.cert });
+  // The CA travels with the context so a test connecting directly (implicit
+  // TLS) can VERIFY the chain rather than turning verification off.
+  ctx.testCaPem = ca.caCertPem;
+  return ctx;
 }
 
 async function _readGreeting(socket) {
@@ -138,6 +142,205 @@ async function _connectAndLogin(srv) {
   await new Promise(function (r) { socket.once("connect", r); });
   await _readGreeting(socket);
   return { socket: socket, port: info.port };
+}
+
+// The capability list is written in three places on one connection — the
+// greeting (RFC 9051 §7.1.5), the answer to CAPABILITY (§6.1.1), and the
+// response code completing AUTHENTICATE / LOGIN — and a consumer had no way to
+// reach any of them. Overriding the CAPABILITY verb through the dispatch
+// registry produces a server whose three answers disagree, so one of them is
+// false whichever way it is set: worse than the gap. The hook applies where
+// the list is COMPUTED, so all three stay identical by construction.
+async function testCapabilityHook() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("capability hook (skipped)", true); return; }
+  var seen = [];
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx,
+    mailStore:  _makeStubMailStore(),
+    profile:    "permissive",
+    capabilities: function (caps, state) {
+      seen.push({ caps: caps.slice(), tls: !!(state && state.tls) });
+      return caps.concat(["X-CONSUMER-EXT"]);
+    },
+    auth: {
+      mechanisms: ["PLAIN"],
+      verify: function () {
+        return Promise.resolve({ ok: true, actor: { id: "u1", mailboxes: ["INBOX"] } });
+      },
+    },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var socket = nodeNet.connect(info.port, "127.0.0.1");
+  await new Promise(function (r) { socket.once("connect", r); });
+  try {
+    var greeting = await _readGreeting(socket);
+    check("capability hook: the greeting carries what the hook returned",
+      /X-CONSUMER-EXT/.test(greeting), JSON.stringify(greeting));
+    var capReply = await _sendCommand(socket, "a1", "CAPABILITY");
+    check("capability hook: and so does the CAPABILITY answer",
+      /X-CONSUMER-EXT/.test(capReply), JSON.stringify(capReply));
+    var authReply = await _sendCommand(socket, "a2",
+      "AUTHENTICATE PLAIN " + Buffer.from("\0u1\0pw", "utf8").toString("base64"));
+    check("capability hook: and the code completing AUTHENTICATE",
+      /X-CONSUMER-EXT/.test(authReply), JSON.stringify(authReply));
+    check("capability hook: it was given the resolved list and the session",
+      seen.length >= 3 && seen[0].caps.indexOf("IMAP4rev2") !== -1 &&
+      seen[0].caps.indexOf("X-CONSUMER-EXT") === -1,
+      JSON.stringify(seen[0]));
+    socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+// RFC 9051 §6.1.1 requires IMAP4rev2 in the list. A hook that drops it would
+// leave the listener claiming a protocol it does not speak, so the refusal
+// stays with the listener rather than being delegated to the consumer.
+async function testCapabilityHookMustKeepImap4rev2() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("capability hook rev2 (skipped)", true); return; }
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx,
+    mailStore:  _makeStubMailStore(),
+    profile:    "permissive",
+    capabilities: function (caps) {
+      return caps.filter(function (c) { return c !== "IMAP4rev2"; });
+    },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var socket = nodeNet.connect(info.port, "127.0.0.1");
+  await new Promise(function (r) { socket.once("connect", r); });
+  try {
+    var greeting = await _readGreeting(socket);
+    check("capability hook: a list without IMAP4rev2 is not advertised",
+      /IMAP4rev2/.test(greeting), JSON.stringify(greeting));
+    socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+// Each capability is written into a space-separated protocol line, so a value
+// carrying a space is two capabilities and one carrying CRLF is a second
+// server response of the consumer's choosing. And the hook runs on the
+// greeting — before a client has sent anything — so a throw there would take
+// out a connection at the point where nothing has gone wrong yet.
+async function testCapabilityHookCannotInjectOrCrash() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("capability hook injection (skipped)", true); return; }
+
+  async function _greetingWith(hook) {
+    var srv = b.mail.server.imap.create({
+      tlsContext: ctx, mailStore: _makeStubMailStore(), profile: "permissive",
+      capabilities: hook,
+    });
+    var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+    var socket = nodeNet.connect(info.port, "127.0.0.1");
+    await new Promise(function (r) { socket.once("connect", r); });
+    try {
+      return await _readGreeting(socket);
+    } finally { socket.destroy(); await srv.close({ timeoutMs: 1000 }); }                               // allow:raw-time-literal — test-only short drain
+  }
+
+  var injected = await _greetingWith(function (caps) {
+    return caps.concat(["X-OK", "X-BAD\r\n* BYE injected", "X SPACED",
+      // Valid RFC 9051 atoms that a narrower allowlist would have refused:
+      // the grammar excludes specific characters, it does not enumerate the
+      // permitted ones.
+      "X-SEARCH/FOO", "X-VENDOR:EXT", "X-BANG!", "X-TILDE~",
+      // atom-specials, each of which would change how the line parses.
+      "X-PAREN(1)", "X-BRACE{2}", "X-WILD*", "X-PCT%", "X-RESP]", "X-QUOTE\""]);
+  });
+  check("capability hook: a value carrying CRLF is not advertised",
+    injected.indexOf("BYE injected") === -1, JSON.stringify(injected));
+  check("capability hook: nor one carrying a space",
+    injected.indexOf("X SPACED") === -1, JSON.stringify(injected));
+  check("capability hook: and the rest of the list still is",
+    /X-OK/.test(injected) && /IMAP4rev2/.test(injected), JSON.stringify(injected));
+  check("capability hook: a valid atom is advertised whatever punctuation it uses",
+    /X-SEARCH\/FOO/.test(injected) && /X-VENDOR:EXT/.test(injected) &&
+    /X-BANG!/.test(injected) && /X-TILDE~/.test(injected), JSON.stringify(injected));
+  check("capability hook: every atom-special is refused",
+    injected.indexOf("X-PAREN") === -1 && injected.indexOf("X-BRACE") === -1 &&
+    injected.indexOf("X-WILD") === -1 && injected.indexOf("X-PCT") === -1 &&
+    injected.indexOf("X-RESP") === -1 && injected.indexOf("X-QUOTE") === -1,
+    JSON.stringify(injected));
+
+  var afterThrow = await _greetingWith(function () { throw new Error("hook blew up"); });
+  check("capability hook: a throwing hook leaves the framework's own list",
+    /^\* OK \[CAPABILITY IMAP4rev2/.test(afterThrow), JSON.stringify(afterThrow));
+
+  // Reading a value is the consumer's code too: an entry whose toString throws
+  // fails in the same way as a hook that threw outright, and would escape a
+  // guard that covered only the call.
+  var afterHostileEntry = await _greetingWith(function (caps) {
+    return caps.concat([{ toString: function () { throw new Error("hostile entry"); } }]);
+  });
+  check("capability hook: an entry that throws while being read is contained too",
+    /^\* OK \[CAPABILITY IMAP4rev2/.test(afterHostileEntry), JSON.stringify(afterHostileEntry));
+}
+
+// A non-callable hook is the operator asking for a list the listener would
+// then never consult.
+async function testCapabilityHookRejectsNonFunction() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("capability hook non-callable (skipped)", true); return; }
+  var threw = null;
+  try {
+    b.mail.server.imap.create({ tlsContext: ctx, mailStore: _makeStubMailStore(),
+      profile: "permissive", capabilities: ["X-NOPE"] });
+  } catch (e) { threw = e; }
+  check("capability hook: a non-callable one is refused at construction",
+    threw !== null && /capabilities/.test(threw.message || ""), String(threw && threw.message));
+}
+
+// RFC 8314 §3 asks for implicit TLS on 993 rather than the in-band upgrade.
+// Without it the only arrangement available is a TLS terminator in front of
+// 143, and behind one the listener is handed a plaintext connection — so it
+// cannot see the TLS it is not part of, and every credential is refused. The
+// tell is on the wire: a greeting advertising STARTTLS inside an established
+// TLS session.
+async function testImplicitTls() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("imap implicit TLS (skipped)", true); return; }
+  var srv = b.mail.server.imap.create({
+    tlsContext:  ctx,
+    mailStore:   _makeStubMailStore(),
+    profile:     "strict",
+    implicitTls: true,
+    auth: {
+      mechanisms: ["PLAIN"],
+      verify: function () {
+        return Promise.resolve({ ok: true, actor: { id: "u1", mailboxes: ["INBOX"] } });
+      },
+    },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var socket = nodeTls.connect({ port: info.port, host: "127.0.0.1",
+    ca: ctx.testCaPem, servername: "localhost" });
+  socket.on("error", function () {});
+  await new Promise(function (r, j) { socket.once("secureConnect", r); socket.once("error", j); });
+  try {
+    var greeting = await _readGreeting(socket);
+    check("imap implicit TLS: the greeting arrives over TLS", /^\* OK/.test(greeting),
+      JSON.stringify(greeting));
+    check("imap implicit TLS: STARTTLS is not advertised on this port",
+      !/STARTTLS/.test(greeting), JSON.stringify(greeting));
+    var caps = await _sendCommand(socket, "a1", "CAPABILITY");
+    check("imap implicit TLS: nor in the CAPABILITY answer",
+      !/STARTTLS/.test(caps), JSON.stringify(caps));
+    check("imap implicit TLS: and the command is refused if sent (RFC 8314 §3.3)",
+      /^a2 BAD/m.test(await _sendCommand(socket, "a2", "STARTTLS")));
+    // The point of the mode: credentials are accepted under `strict`, which
+    // is what a terminator in front of 143 cannot achieve.
+    var auth = await _sendCommand(socket, "a3",
+      "AUTHENTICATE PLAIN " + Buffer.from(" u1 pw", "utf8").toString("base64"));
+    check("imap implicit TLS: AUTHENTICATE succeeds on the implicit session",
+      /^a3 OK/m.test(auth), JSON.stringify(auth));
+    socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
 }
 
 async function testCapabilityAdvertisesCondstore() {
@@ -2215,6 +2418,11 @@ async function run() {
     testRequiresTlsContext();
     testRequiresMailStore();
     testBadBoundsRefused();
+    await testImplicitTls();
+    await testCapabilityHook();
+    await testCapabilityHookMustKeepImap4rev2();
+    await testCapabilityHookCannotInjectOrCrash();
+    await testCapabilityHookRejectsNonFunction();
     await testCapabilityAdvertisesCondstore();
     await testEnableCondstore();
     await testFetchChangedSinceParses();

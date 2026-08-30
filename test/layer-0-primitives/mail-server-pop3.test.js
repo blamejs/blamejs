@@ -1077,6 +1077,70 @@ async function run() {
   await testLifecycleHooksThatThrow();
   await testLifecycleHooksThatReject();
   await testSessionEndWaitsForStoreWork();
+  await testImplicitTls();
+}
+
+// RFC 8314 §3 asks for implicit TLS on 995 rather than the in-band upgrade.
+// Without it the only arrangement available is a TLS terminator in front of
+// 110, and behind one the listener is handed a plaintext connection — so it
+// cannot see the TLS it is not part of, and every credential is refused. The
+// tell is visible on the wire: a greeting advertising STLS inside an
+// established TLS session.
+async function testImplicitTls() {
+  var s = await _makeServer({ implicitTls: true });
+  // No STLS step: TLS from the first byte.
+  var tls = nodeTls.connect({ port: s.port, host: "127.0.0.1", ca: s.caPem,
+    servername: "localhost" });
+  tls.on("error", function () {});
+  await new Promise(function (r, j) { tls.once("secureConnect", r); tls.once("error", j); });
+  try {
+    check("implicit TLS: the greeting arrives over TLS", /^\+OK/.test(await _readReply(tls)));
+    var capa = await _send(tls, "CAPA", true);
+    check("implicit TLS: STLS is not advertised on this port",
+      !/STLS/.test(capa), JSON.stringify(capa));
+    check("implicit TLS: and the verb is refused if sent anyway (RFC 8314 §3.3)",
+      /^-ERR/.test(await _send(tls, "STLS")));
+    // The point of the whole thing: credentials are accepted, because the
+    // listener knows the session is encrypted.
+    check("implicit TLS: USER accepted", /^\+OK/.test(await _send(tls, "USER alice")));
+    check("implicit TLS: PASS accepted over the implicit session",
+      /^\+OK/.test(await _send(tls, "PASS good")));
+  } finally { tls.destroy(); await s.srv.close(); }
+
+  await testImplicitTlsRefusalIsAClose();
+}
+
+// A rate-limit refusal is decided before the socket is wrapped, so writing the
+// protocol's refusal line there would put plaintext in front of a peer that is
+// mid-handshake: it reads as a handshake failure, the refusal itself is
+// unreadable, and the port's "TLS from the first byte" claim is broken by the
+// listener. Handshaking first so the line COULD be written would spend a full
+// key exchange on every rejected peer — the resource the limit protects.
+async function testImplicitTlsRefusalIsAClose() {
+  var s = await _makeServer({
+    implicitTls: true,
+    rateLimit: {
+      admitConnection:   function () { return { ok: false, reason: "too-many" }; },
+      releaseConnection: function () {},
+      checkAuthAdmit:    function () { return { ok: true }; },
+      noteAuthFailure:   function () {},
+      checkRcptAdmit:    function () { return { ok: true }; },
+      noteRcptFailure:   function () {},
+      minBytesPerSecond: function () { return 0; },
+      bodyRateStarved:   function () { return false; },
+      bodyRateWindowMs:  function () { return 1000; },                                                // allow:raw-time-literal — test-only stub window
+    },
+  });
+  var raw = nodeNet.connect(s.port, "127.0.0.1");
+  var bytes = Buffer.alloc(0);
+  raw.on("error", function () {});
+  raw.on("data", function (d) { bytes = Buffer.concat([bytes, d]); });
+  await new Promise(function (r) { raw.once("connect", r); });
+  await new Promise(function (r) { raw.once("close", r); });
+  check("implicit TLS: a refused connection is closed, not answered in plaintext",
+    bytes.length === 0, JSON.stringify(bytes.toString("utf8").slice(0, 80)));
+  raw.destroy();
+  await s.srv.close();
 }
 
 // A consumer releases the exclusive maildrop on onSessionEnd, so the end must

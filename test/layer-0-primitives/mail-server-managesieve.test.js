@@ -167,6 +167,58 @@ function _connect(port) {
 }
 function _b64(s) { return Buffer.from(s, "utf8").toString("base64"); }
 
+// RFC 8314 §3 asks for implicit TLS in preference to the in-band upgrade.
+// Without it the only arrangement available is a TLS terminator in front of
+// 4190, and behind one the listener is handed a plaintext connection — so it
+// cannot see the TLS it is not part of, and every mechanism is refused over
+// what it reads as cleartext.
+async function testImplicitTls() {
+  var tls = await _makeTestTlsContext();
+  var srv = b.mail.server.managesieve.create({
+    tlsContext: tls.ctx, profile: "strict", mailStore: _richStore(),
+    implicitTls: true,
+    auth: {
+      mechanisms: ["PLAIN"],
+      verify: async function () {
+        return { ok: true, actor: { username: "alice", tenantId: "t1" } };
+      },
+    },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var sock = nodeTls.connect({ port: info.port, host: "127.0.0.1",
+    ca: tls.caPem, servername: "localhost" });
+  sock.on("error", function () {});
+  await new Promise(function (r, j) { sock.once("secureConnect", r); sock.once("error", j); });
+  try {
+    var banner = await _read(sock);
+    check("managesieve implicit TLS: the banner arrives over TLS",
+      /"IMPLEMENTATION"/.test(banner), JSON.stringify(banner).slice(0, 200));
+    check("managesieve implicit TLS: STARTTLS is not advertised on this port",
+      !/"STARTTLS"/.test(banner), JSON.stringify(banner).slice(0, 200));
+    check("managesieve implicit TLS: and the command is refused (RFC 8314 §3.3)",
+      /^NO /.test(await _cmd(sock, "STARTTLS")));
+    // The point of the mode: a mechanism is accepted under `strict`, which a
+    // terminator in front of 4190 cannot achieve.
+    check("managesieve implicit TLS: AUTHENTICATE succeeds on the implicit session",
+      /OK "Authenticated"/.test(
+        await _cmd(sock, 'AUTHENTICATE "PLAIN" "' + _b64("\0alice\0pw") + '"')));
+  } finally { sock.destroy(); await srv.close(); }
+}
+
+// Asking for the mode without a context would serve plaintext on a port an
+// operator believes is encrypted, which is the failure the mode exists to
+// prevent, inverted.
+async function testImplicitTlsRequiresAContext() {
+  var threw = null;
+  try {
+    b.mail.server.managesieve.create({ profile: "permissive", mailStore: _richStore(),
+      implicitTls: true, allowPlaintext: true });
+  } catch (e) { threw = e; }
+  check("managesieve implicit TLS: refused at construction without a tlsContext",
+    threw !== null && /implicitTls requires tlsContext/.test(threw.message || ""),
+    String(threw && threw.message));
+}
+
 // ---- TLS + store fixtures ------------------------------------------------
 
 async function _makeTestTlsContext() {
@@ -1112,6 +1164,8 @@ async function run() {
   await testAuthenticateMultiStepFailureStillCounts();
   await testAuthenticateChallengeCannotInjectALine();
   await testStartTlsHandshakeFailure();
+  await testImplicitTls();
+  await testImplicitTlsRequiresAContext();
   await testAuthenticatedHandlers();
   await testBackendFailures();
   await testAuthFailureRateLimit();

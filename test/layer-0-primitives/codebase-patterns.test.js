@@ -12860,9 +12860,14 @@ var KNOWN_ANTIPATTERNS = [
     // matches `new nodeTls.TLSSocket(` without requiring lookbehind.
     regex: /new\s+nodeTls\.TLSSocket\s*\(\s*rawSocket\b/,
     allowlist: [
-      // Submission listener's implicit-TLS path (port 465) wraps the FIRST byte on the wire — no
-      // plaintext predecessor, so listener removal is moot.
-      "lib/mail-server-submission.js",
+      // The implicit-TLS wrapper wraps the FIRST byte on the wire — there is no plaintext
+      // predecessor, so there is no "data" listener to remove and nothing a peer could have
+      // pipelined before the handshake. It is written ONCE, in the module that owns TLS socket
+      // construction (mailServerTls.implicitTlsWrap), and the four listeners that offer the mode
+      // (submission 465, imap 993, pop3 995, managesieve 4190) compose it — so this stays a
+      // single-file exemption rather than one per listener, and a listener that hand-rolls the
+      // construction instead still trips.
+      "lib/mail-server-tls.js",
     ],
     reason: "STARTTLS / STLS upgrade — only the upgradeSocket helper is allowed to wrap a TLSSocket around a previously-attached plain socket. The implicit-TLS variant on port 465 wraps the rawSocket BEFORE any plain bytes are read (no listener to remove), so it stays allowlisted.",
   },

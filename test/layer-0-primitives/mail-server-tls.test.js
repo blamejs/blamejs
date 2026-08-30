@@ -34,6 +34,19 @@ async function run() {
   check("surface: upgradeSocket is fn",       typeof modSurface.upgradeSocket === "function");
   check("surface: upgradeLineProtocol is fn", typeof modSurface.upgradeLineProtocol === "function");
 
+  // ---- implicitTlsWrap: one option, not two code paths ----
+  // A listener passes the mode straight through, so the plaintext-upgrade port
+  // gets null and hands nothing to its accept path — rather than each listener
+  // writing `implicitTls ? function (raw) {...} : null` for itself, which is
+  // where a TLSSocket gets constructed with an inert compression option or
+  // without isServer.
+  check("implicitTlsWrap: off returns null, so a plaintext port wraps nothing",
+    b.mail.server.tls.implicitTlsWrap({}, false) === null &&
+    b.mail.server.tls.implicitTlsWrap({}, undefined) === null);
+  var wrapFn = b.mail.server.tls.implicitTlsWrap({}, true);
+  check("implicitTlsWrap: on returns the wrapper the accept path calls",
+    typeof wrapFn === "function" && wrapFn.length === 1);
+
   // ---- upgradeLineProtocol: config-time validation (§8 entry-point) ----
   var ulpBad = [];
   try { modSurface.upgradeLineProtocol(); }              catch (e) { ulpBad.push(e); }

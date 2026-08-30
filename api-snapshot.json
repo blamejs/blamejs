@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.18.58",
-  "createdAt": "2026-08-29T23:22:52.196Z",
+  "createdAt": "2026-08-30T00:48:30.457Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -45452,6 +45452,10 @@
                 "context": {
                   "type": "function",
                   "arity": 1
+                },
+                "implicitTlsWrap": {
+                  "type": "function",
+                  "arity": 2
                 },
                 "upgradeLineProtocol": {
                   "type": "function",
