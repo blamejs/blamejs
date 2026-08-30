@@ -341,6 +341,31 @@ async function testImplicitTls() {
       /^a3 OK/m.test(auth), JSON.stringify(auth));
     socket.destroy();
   } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+
+  // Whether STARTTLS is offered depends on the state of THIS connection, and
+  // on this port the listener refuses the command outright — so it is not the
+  // consumer's to advertise. A hook that puts it back would have a client
+  // select a capability the listener cannot honour.
+  var srv2 = b.mail.server.imap.create({
+    tlsContext:   ctx,
+    mailStore:    _makeStubMailStore(),
+    profile:      "permissive",
+    implicitTls:  true,
+    capabilities: function (caps) { return caps.concat(["STARTTLS", "X-KEPT"]); },
+  });
+  var info2 = await srv2.listen({ port: 0, address: "127.0.0.1" });
+  var socket2 = nodeTls.connect({ port: info2.port, host: "127.0.0.1",
+    ca: ctx.testCaPem, servername: "localhost" });
+  socket2.on("error", function () {});
+  await new Promise(function (r, j) { socket2.once("secureConnect", r); socket2.once("error", j); });
+  try {
+    var greeting2 = await _readGreeting(socket2);
+    check("imap implicit TLS: a hook cannot re-advertise STARTTLS on this port",
+      !/STARTTLS/.test(greeting2), JSON.stringify(greeting2));
+    check("imap implicit TLS: and the rest of its list is still advertised",
+      /X-KEPT/.test(greeting2), JSON.stringify(greeting2));
+    socket2.destroy();
+  } finally { await srv2.close({ timeoutMs: 1000 }); }                                                  // allow:raw-time-literal — test-only short drain
 }
 
 async function testCapabilityAdvertisesCondstore() {

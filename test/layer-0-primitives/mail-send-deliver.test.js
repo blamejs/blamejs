@@ -230,6 +230,12 @@ function testOutcomeClassifier() {
   // Policy-class errors → permanent.
   check("mta-sts-mx-mismatch → permanent",
     deliver.classifyOutcome({ code: "deliver/mta-sts-mx-mismatch", message: "" }, null) === "permanent");
+  // A peer not advertising REQUIRETLS is host-scoped, like a DANE mismatch: a
+  // backup MX may offer it, and failing over honours the flag rather than
+  // violating it. Bouncing here would refuse mail a willing host would carry.
+  check("requiretls-not-advertised → transient, so the next MX gets a turn",
+    deliver.classifyOutcome({ code: "mail/requiretls-not-advertised", message: "" }, null)
+      === "transient");
   // A DANE failure is NOT in that class. The TLSA lookup failing, or the
   // certificate not matching, says this host could not be authenticated — most
   // often a rollover mid-propagation or a DNS blip, both of which resolve
@@ -288,6 +294,124 @@ async function testPeerRefusalIsAHardBounce() {
   check("CONTROL — a 451 is still deferred, so 550 did not simply turn retries off",
     softRes.deferred.length === 1 && softRes.failed.length === 0,
     JSON.stringify({ failed: softRes.failed.length, deferred: softRes.deferred.length }));
+
+  // A 5xx is not a verdict on the recipient when it answered a SESSION-level
+  // command. The transport says so — it knows which command the peer replied
+  // to — and reading the digit instead would skip every remaining MX and
+  // bounce mail the backup host would have taken.
+  attempts.length = 0;
+  var sessionRefusal = b.mail.send.deliver({
+    hostname: "mta1.example.com", resolver: fakeResolver,
+    policy: { mtaSts: "off", dane: "off" }, audit: false,
+    transportFactory: function (opts) {
+      return { send: async function () {
+        attempts.push(opts.host);
+        // What the transport builds for `500 ehlo-rejected`: the code travels,
+        // the verdict does not reach the message.
+        throw new b.mail.MailError("mail/smtp-failed",
+          "SMTP send failed: ehlo-rejected (code 500)", false, 500);
+      } };
+    },
+  });
+  var sessionRes = await sessionRefusal({
+    from: "s@a.test", to: ["ok@recipient.com"],
+    rfc822: Buffer.from("From: s@a.test\r\nTo: ok@recipient.com\r\n\r\nx"),
+  });
+  check("a session-scoped 5xx tries the next MX rather than bouncing",
+    attempts.length === 2, JSON.stringify(attempts));
+  check("and the recipient is deferred, not failed",
+    sessionRes.deferred.length === 1 && sessionRes.failed.length === 0,
+    JSON.stringify({ failed: sessionRes.failed.length, deferred: sessionRes.deferred.length }));
+
+  // A REQUIRETLS refusal fails over while hosts remain — a backup MX may offer
+  // it — but once every host has been asked and none does, the answer is
+  // settled. RFC 8689 §4.1 makes the message undeliverable, and deferring it
+  // would rediscover the same fact on every schedule tick while the sender
+  // waits for a bounce that never arrives.
+  attempts.length = 0;
+  var noRequireTls = b.mail.send.deliver({
+    hostname: "mta1.example.com", resolver: fakeResolver,
+    policy: { mtaSts: "off", dane: "off" }, audit: false,
+    transportFactory: function (opts) {
+      return { send: async function () {
+        attempts.push(opts.host);
+        throw new b.mail.MailError("mail/requiretls-not-advertised",
+          "requireTls was asked for but the peer does not advertise REQUIRETLS", false);
+      } };
+    },
+  });
+  var rtRes = await noRequireTls({
+    from: "s@a.test", to: ["secure@recipient.com"],
+    rfc822: Buffer.from("From: s@a.test\r\nTo: secure@recipient.com\r\n\r\nx"),
+  });
+  check("REQUIRETLS: every MX is asked before the verdict",
+    attempts.length === 2, JSON.stringify(attempts));
+  check("REQUIRETLS: and once none offers it the message is undeliverable, not deferred",
+    rtRes.failed.length === 1 && rtRes.deferred.length === 0,
+    JSON.stringify({ failed: rtRes.failed.length, deferred: rtRes.deferred.length }));
+
+  // CONTROL: a host that merely failed for another reason has not answered the
+  // REQUIRETLS question, so a mixed run stays deferrable.
+  attempts.length = 0;
+  var mixed = b.mail.send.deliver({
+    hostname: "mta1.example.com", resolver: fakeResolver,
+    policy: { mtaSts: "off", dane: "off" }, audit: false,
+    transportFactory: function (opts) {
+      return { send: async function () {
+        attempts.push(opts.host);
+        if (attempts.length === 1) {
+          throw new b.mail.MailError("mail/smtp-failed", "SMTP send failed: timeout", false);
+        }
+        throw new b.mail.MailError("mail/requiretls-not-advertised",
+          "requireTls was asked for but the peer does not advertise REQUIRETLS", false);
+      } };
+    },
+  });
+  var mixedRes = await mixed({
+    from: "s@a.test", to: ["secure@recipient.com"],
+    rfc822: Buffer.from("From: s@a.test\r\nTo: secure@recipient.com\r\n\r\nx"),
+  });
+  check("CONTROL — a host that failed for another reason leaves the message deferrable",
+    mixedRes.deferred.length === 1 && mixedRes.failed.length === 0,
+    JSON.stringify({ failed: mixedRes.failed.length, deferred: mixedRes.deferred.length }));
+
+  // The same holds for a host SKIPPED before the send — a DANE lookup that
+  // failed mid-rollover. It was never asked about REQUIRETLS, so the run is
+  // not "every host refused it", and the skipped host may advertise it on the
+  // retry after its records settle.
+  attempts.length = 0;
+  var skipped = b.mail.send.deliver({
+    hostname: "mta1.example.com",
+    // The first host's TLSA lookup fails — mid-rollover — so it is skipped
+    // before the send; the second is queried normally and refuses for want of
+    // REQUIRETLS.
+    resolver: {
+      queryMx: fakeResolver.queryMx,
+      queryTlsa: async function (name) {
+        if (name.indexOf("mx1.") !== -1) throw new Error("dane: TLSA lookup failed");
+        return { rrs: [{ type: 52, typeName: "TLSA", decoded: {                                         // allow:raw-byte-literal — DNS TLSA rrtype
+          usage: 3, selector: 1, matchingType: 1,
+          certData: Buffer.from("0123456789abcdef0123456789abcdef", "hex"),
+        } }] };
+      },
+    },
+    policy: { mtaSts: "off", dane: "enforce", dnssecValidated: true }, audit: false,
+    transportFactory: function (opts) {
+      return { send: async function () {
+        attempts.push(opts.host);
+        throw new b.mail.MailError("mail/requiretls-not-advertised",
+          "requireTls was asked for but the peer does not advertise REQUIRETLS", false);
+      } };
+    },
+  });
+  var skippedRes = await skipped({
+    from: "s@a.test", to: ["secure@recipient.com"],
+    rfc822: Buffer.from("From: s@a.test\r\nTo: secure@recipient.com\r\n\r\nx"),
+  });
+  check("CONTROL — a host skipped before the send leaves the message deferrable",
+    skippedRes.deferred.length === 1 && skippedRes.failed.length === 0,
+    JSON.stringify({ failed: skippedRes.failed.length, deferred: skippedRes.deferred.length,
+                     attempts: attempts }));
 }
 
 // ---- DSN composer (RFC 3464 multipart/report) ----
@@ -1016,8 +1140,14 @@ async function testDaneFailureFailsOverAndDefersRatherThanBouncing() {
   // permanent, or this would have turned every refusal into an endless retry.
   check("classifyOutcome: an MTA-STS refusal is still permanent",
         deliver.classifyOutcome({ code: "", message: "mta-sts: no matching MX" }, null) === "permanent");
-  check("classifyOutcome: a REQUIRETLS refusal is still permanent",
-        deliver.classifyOutcome({ code: "", message: "REQUIRETLS was not offered" }, null) === "permanent");
+  // REQUIRETLS moved to the DANE side of this line, for the reason stated
+  // three lines above it: whether the extension is offered is a property of
+  // THIS HOST. A backup MX may advertise it, and failing over honours the flag
+  // rather than violating it — bouncing here refuses mail a willing host would
+  // have carried. If none of them offers it the message ends deferred, which
+  // is the honest answer to "nobody here can promise what you asked for".
+  check("classifyOutcome: a REQUIRETLS refusal is host-scoped, so the next MX gets a turn",
+        deliver.classifyOutcome({ code: "", message: "REQUIRETLS was not offered" }, null) === "transient");
   check("classifyOutcome: a DANE failure is transient",
         deliver.classifyOutcome({ code: "", message: "dane: chain matches none" }, null) === "transient");
 }
@@ -1188,10 +1318,14 @@ function testClassifierFallthroughs() {
   // Response present but no code → String("") matches nothing → transient.
   check("classify response w/o code → transient",
     deliver.classifyOutcome(null, {}) === "transient");
-  // Policy signal in the MESSAGE only (empty code) → the OR alternative
-  // of the policy-class regex must still classify permanent.
+  // Policy signal in the MESSAGE only (empty code) → the OR alternative of
+  // each policy-class regex still classifies, on the side that class sits on:
+  // MTA-STS is a domain policy this host cannot satisfy, REQUIRETLS is an
+  // extension THIS host does not offer and a backup MX might.
   check("classify policy-signal via message only → permanent",
-    deliver.classifyOutcome({ code: "", message: "REQUIRETLS was not offered" }, null) === "permanent");
+    deliver.classifyOutcome({ code: "", message: "mta-sts: no matching MX" }, null) === "permanent");
+  check("classify host-scoped policy signal via message only → transient",
+    deliver.classifyOutcome({ code: "", message: "REQUIRETLS was not offered" }, null) === "transient");
   // Generic error code that is neither a network code nor a policy
   // signal → transient (the err-branch fallthrough).
   check("classify generic err code → transient",

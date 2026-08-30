@@ -1468,7 +1468,26 @@ async function testSmtpRejectionCodes(certPair) {
   try {
     var eE = await _sendErr(tlsTransport(certPair, stE.port), { from: "s@a.test", to: "r@b.test", text: "x" });
     check("smtp-reject: EHLO 500 → smtp-failed", eE && /ehlo-rejected/.test(eE.message));
+    // The code travels, but the verdict does NOT reach the message. A 5yz on
+    // the greeting or EHLO refuses this SESSION with this HOST — the recipient
+    // has not been named yet, let alone judged — so a backup MX may take the
+    // message happily. Marking it permanent would end the failover loop and
+    // bounce deliverable mail because one host was unwilling.
+    check("smtp-reject: an EHLO refusal carries its code but stays failover-eligible",
+      eE && eE.statusCode === 500 && eE.permanent === false,
+      JSON.stringify(eE && { statusCode: eE.statusCode, permanent: eE.permanent }));
   } finally { await closeServer(stE); }
+
+  // Same for the greeting, which is even earlier in the session.
+  var stGreet = startTlsSmtp(certPair, { ext: ["8BITMIME"], greeting: "554 mock refuses this session" });
+  await listen(stGreet);
+  try {
+    var eGreet = await _sendErr(tlsTransport(certPair, stGreet.port),
+      { from: "s@a.test", to: "r@b.test", text: "x" });
+    check("smtp-reject: a greeting refusal stays failover-eligible too",
+      eGreet && eGreet.permanent === false,
+      JSON.stringify(eGreet && { code: eGreet.code, permanent: eGreet.permanent }));
+  } finally { await closeServer(stGreet); }
 
   // MAIL FROM rejected
   var stM = startTlsSmtp(certPair, { ext: ["8BITMIME"], mailFromCode: 550 });
@@ -1493,6 +1512,15 @@ async function testSmtpRejectionCodes(certPair) {
       eR && eR.statusCode === 550, JSON.stringify(eR && eR.statusCode));
     check("smtp-reject: and a 5yz refusal is marked permanent",
       eR && eR.permanent === true, JSON.stringify(eR && eR.permanent));
+    // ...but only when the envelope names ONE recipient. This transport aborts
+    // the transaction on the first refusal, so with several recipients a
+    // permanent verdict would bounce the ones never offered — a valid address
+    // discarded because a sibling was unknown.
+    var eMulti = await _sendErr(tlsTransport(certPair, stR.port),
+      { from: "s@a.test", to: ["r@b.test", "r2@b.test"], text: "x" });
+    check("smtp-reject: one RCPT refusal does not condemn a multi-recipient envelope",
+      eMulti && eMulti.statusCode === 550 && eMulti.permanent === false,
+      JSON.stringify(eMulti && { statusCode: eMulti.statusCode, permanent: eMulti.permanent }));
   } finally { await closeServer(stR); }
 
   // A 4yz refusal is the one RFC 5321 §4.5.4.1 sets a retry discipline for.
@@ -1552,7 +1580,26 @@ async function testSmtpRejectionCodes(certPair) {
   try {
     var eA = await _sendErr(tlsTransport(certPair, stA.port, { user: "u", pass: "p" }), { from: "s@a.test", to: "r@b.test", text: "x" });
     check("smtp-reject: AUTH final 535 → smtp-failed", eA && /auth-failed/.test(eA.message));
+    // AUTH is the exception among the session-scoped steps: a transport that
+    // authenticates is talking to ONE configured relay, not a set of MX
+    // records, so `535` on those credentials is a configuration error that
+    // retrying the same relay with the same credentials will never resolve.
+    check("smtp-reject: a 535 credential refusal is permanent, not deferred forever",
+      eA && eA.statusCode === 535 && eA.permanent === true,
+      JSON.stringify(eA && { statusCode: eA.statusCode, permanent: eA.permanent }));
   } finally { await closeServer(stA); }
+
+  // A 4yz there is the authenticator being busy, not the credentials being
+  // wrong — still worth retrying.
+  var stAt = startTlsSmtp(certPair, { ext: ["8BITMIME"], authFinalCode: 454 });
+  await listen(stAt);
+  try {
+    var eAt = await _sendErr(tlsTransport(certPair, stAt.port, { user: "u", pass: "p" }),
+      { from: "s@a.test", to: "r@b.test", text: "x" });
+    check("smtp-reject: a 454 AUTH refusal stays transient",
+      eAt && eAt.statusCode === 454 && eAt.permanent === false,
+      JSON.stringify(eAt && { statusCode: eAt.statusCode, permanent: eAt.permanent }));
+  } finally { await closeServer(stAt); }
 }
 
 async function testSmtpResponseTooLarge(certPair) {
