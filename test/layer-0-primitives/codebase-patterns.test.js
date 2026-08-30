@@ -8150,6 +8150,34 @@ var KNOWN_ANTIPATTERNS = [
     reason: "A synchronous try/catch around an operator hook covers only the hooks that happen not to be async. `async function onSessionEnd() { await store.releaseLease(id); }` is the ordinary way to write one — releasing a lease or ageing a timer is a store call — and its rejection arrives a turn after the catch has gone, so it becomes an unhandled rejection, which under Node's default ends the process. That is the opposite of what every one of these sites documents: 'drop-silent', 'best-effort', 'must not crash the request'. The mail POP3 session-end hook made it concrete — it runs inside the socket's own close handler, where an escaping rejection has no caller left to catch it — but the sweep found the same shape at 47 sites across 24 files, from bounded-map's onEvict to db's onCorruption to the TLS-report onRefuse chain, so the found one was a sample. All of them route through b.safeAsync.safeInvoke (one payload), b.safeAsync.safeApply (positional list), or b.safeAsync.containRejection (when the caller needs the hook's return value to decide what happens next, as denyResponse does). Each inspects the returned value and routes a rejection to the same onError a throw takes, so the drop-silent promise holds for both shapes. Empty allowlist: no lib/ site needs to call a hook without containment, and the one that reintroduces it is the one to catch. Deliberately NOT covered: a hook that is genuinely awaited (`try { await onFail(x); }` — the await makes the catch sufficient, and it is in the quiet fixtures), and a hook called from inside a catch block that is handling something else, which is a different question.",
   },
   {
+    id: "an-exist-message-test-matches-both-answers",
+    primitive: "b.clusterStorage.duplicateIndexCode",
+    scanScope: "lib",
+    // Anchored on a regex literal containing `exist` being tested against a
+    // `.message`. Narrow on purpose: the claim is not "never read a message",
+    // it is that this ONE word cannot discriminate, because it is a substring
+    // of both answers.
+    regex: /\/[^/\n]*\bexist[^/\n]*\/[a-z]*\s*\.\s*test\s*\([^;\n]*\.\s*message/,
+    allowlist: [],
+    fixtures: {
+      fires: [
+        "if (!/exist|duplicate/i.test((e && e.message) || \"\")) throw e;",
+        "if (!/duplicate|exist|1061/i.test((e && e.message) || \"\")) throw e;",
+        "if (/does not exist/.test(err.message)) return null;",
+        "var absent = /no such table|does not exist/i.test((e && e.message) || \"\");",
+      ],
+      quiet: [
+        "if (!clusterStorage.duplicateIndexCode(e)) throw e;",
+        "if (b.clusterStorage.missingRelationCode(e)) return null;",
+        "if (/NOT_FOUND|not found/i.test(e.message || \"\")) return null;",
+        "var isTimeout = e && (e.code === \"ETIMEDOUT\" || /timeout/i.test(e.message || \"\"));",
+        "if (/duplicate/i.test(e.message || \"\")) return true;",
+        "var msg = \"the row does not exist\";",
+      ],
+    },
+    reason: "`exist` is a substring of both answers a driver can give, so a message test built on it cannot tell them apart. MySQL words an already-present index \"Duplicate key name 'X'\" and a missing table \"Table 'db.X' doesn't exist\" — and the schema reconcilers, which re-issue CREATE INDEX because MySQL has no IF NOT EXISTS form, tested for /exist|duplicate/ to swallow the duplicate. A CREATE INDEX that failed because its table was absent matched too: the error was swallowed and the pass reported the schema reconciled with the index never created. The driver states it exactly and in every locale through its own fields, which is what b.clusterStorage.duplicateIndexCode reads (errno 1061 / ER_DUP_KEYNAME), alongside missingRelationCode and missingColumnCode for the other two. That predicate deliberately does not accept SQLSTATE 42000 on its own, because MySQL uses it as the catch-all for syntax and access errors and accepting it would swallow a malformed statement as an already-present index. Empty allowlist: no lib/ site needs this word to carry a decision. Deliberately NOT covered: a message test on any other word — `duplicate` alone is unambiguous and is in the quiet fixtures — and prose or a string literal that merely contains the word, since the match requires a regex literal reaching .test against a .message.",
+  },
+  {
     id: "a-thenable-needs-a-callable-fulfillment-handler",
     primitive: "b.safeAsync.containRejection",
     scanScope: "lib",

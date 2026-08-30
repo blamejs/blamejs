@@ -270,6 +270,28 @@ function testMissingRelationAndColumnCodes() {
     b.clusterStorage.missingColumnCode(pgTable) === false &&
     b.clusterStorage.missingColumnCode(mysqlTable) === false);
 
+  // The third of the family, for the reconcilers that re-issue CREATE INDEX on
+  // MySQL because it has no IF NOT EXISTS form. They swallow the duplicate so
+  // the pass is idempotent — and they were deciding it by testing the message
+  // for /exist/, which also matches "Table 'db.X' doesn't exist". A CREATE
+  // INDEX that failed because the TABLE is missing was swallowed and the
+  // schema reported as reconciled with the index never created.
+  var mysqlDupIndex = Object.assign(new Error("Duplicate key name 'idx_actor'"),
+    { errno: 1061, code: "ER_DUP_KEYNAME", sqlState: "42000" });
+  var ansiDupIndex = Object.assign(new Error("SQL execution failed"), { sqlState: "42000" });
+  check("duplicateIndexCode: mysql2's own fields",
+    b.clusterStorage.duplicateIndexCode(mysqlDupIndex) === true);
+  check("duplicateIndexCode: an absent TABLE is not a duplicate index",
+    b.clusterStorage.duplicateIndexCode(mysqlTable) === false);
+  check("duplicateIndexCode: an absent COLUMN is not a duplicate index",
+    b.clusterStorage.duplicateIndexCode(mysqlColumn) === false);
+  // 42000 is MySQL's catch-all syntax/access SQLSTATE — it covers far more than
+  // a duplicate key name, so unlike the two above it must NOT be accepted on
+  // the SQLSTATE alone, or every syntax error in a reconciler would be
+  // swallowed as an already-present index.
+  check("duplicateIndexCode: the catch-all SQLSTATE alone is not enough",
+    b.clusterStorage.duplicateIndexCode(ansiDupIndex) === false);
+
   // And the control the whole predicate exists for: a failure that says
   // nothing about the schema must be neither. Reading "absent" from a timeout
   // or a permission error is how a purged chain gets verified from ZERO_HASH

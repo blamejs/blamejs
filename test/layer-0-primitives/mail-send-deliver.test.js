@@ -352,8 +352,13 @@ async function testPeerRefusalIsAHardBounce() {
       } };
     },
   });
+  // `requireTls: true` on the envelope, because that is the only way production
+  // reaches this error at all — lib/mail.js raises it from the branch guarded by
+  // the flag. A fixture that throws it without asking for the extension models a
+  // state the framework cannot produce, and would keep passing if the promotion
+  // stopped consulting the flag.
   var rtRes = await noRequireTls({
-    from: "s@a.test", to: ["secure@recipient.com"],
+    from: "s@a.test", to: ["secure@recipient.com"], requireTls: true,
     rfc822: Buffer.from("From: s@a.test\r\nTo: secure@recipient.com\r\n\r\nx"),
   });
   check("REQUIRETLS: every MX is asked before the verdict",
@@ -380,12 +385,39 @@ async function testPeerRefusalIsAHardBounce() {
     },
   });
   var mixedRes = await mixed({
-    from: "s@a.test", to: ["secure@recipient.com"],
+    from: "s@a.test", to: ["secure@recipient.com"], requireTls: true,
     rfc822: Buffer.from("From: s@a.test\r\nTo: secure@recipient.com\r\n\r\nx"),
   });
   check("CONTROL — a host that failed for another reason leaves the message deferrable",
     mixedRes.deferred.length === 1 && mixedRes.failed.length === 0,
     JSON.stringify({ failed: mixedRes.failed.length, deferred: mixedRes.deferred.length }));
+
+  // A transient failure is entitled to MENTION REQUIRETLS without being read as
+  // the peer declining to offer it. "451 the REQUIRETLS policy service is
+  // temporarily unavailable" says the opposite of "this host does not support
+  // REQUIRETLS" — it is the extension's own machinery asking for a retry. Only
+  // the framework's own `mail/requiretls-not-advertised` settles that question,
+  // so the exhaustion promotion turns on the code and not on the wording.
+  attempts.length = 0;
+  var wordyTransient = b.mail.send.deliver({
+    hostname: "mta1.example.com", resolver: fakeResolver,
+    policy: { mtaSts: "off", dane: "off" }, audit: false,
+    transportFactory: function (opts) {
+      return { send: async function () {
+        attempts.push(opts.host);
+        throw new b.mail.MailError("mail/smtp-failed",
+          "451 4.7.0 REQUIRETLS policy service temporarily unavailable, try again later", false);
+      } };
+    },
+  });
+  var wordyRes = await wordyTransient({
+    from: "s@a.test", to: ["secure@recipient.com"],
+    rfc822: Buffer.from("From: s@a.test\r\nTo: secure@recipient.com\r\n\r\nx"),
+  });
+  check("a transient error that merely mentions REQUIRETLS is still deferred, not bounced",
+    wordyRes.deferred.length === 1 && wordyRes.failed.length === 0,
+    JSON.stringify({ failed: wordyRes.failed.length, deferred: wordyRes.deferred.length,
+                     reasonCode: (wordyRes.failed[0] || {}).reasonCode }));
 
   // The same holds for a host SKIPPED before the send — a DANE lookup that
   // failed mid-rollover. It was never asked about REQUIRETLS, so the run is
@@ -417,7 +449,7 @@ async function testPeerRefusalIsAHardBounce() {
     },
   });
   var skippedRes = await skipped({
-    from: "s@a.test", to: ["secure@recipient.com"],
+    from: "s@a.test", to: ["secure@recipient.com"], requireTls: true,
     rfc822: Buffer.from("From: s@a.test\r\nTo: secure@recipient.com\r\n\r\nx"),
   });
   check("CONTROL — a host skipped before the send leaves the message deferrable",
@@ -1167,8 +1199,10 @@ async function testDaneFailureFailsOverAndDefersRatherThanBouncing() {
 
   // The control. A genuine policy refusal that IS permanent must stay
   // permanent, or this would have turned every refusal into an endless retry.
+  // Keyed on the code the policy layer actually raises, not on wording.
   check("classifyOutcome: an MTA-STS refusal is still permanent",
-        deliver.classifyOutcome({ code: "", message: "mta-sts: no matching MX" }, null) === "permanent");
+        deliver.classifyOutcome({ code: "deliver/mta-sts-mx-mismatch",
+                                  message: "no matching MX" }, null) === "permanent");
   // REQUIRETLS moved to the DANE side of this line, for the reason stated
   // three lines above it: whether the extension is offered is a property of
   // THIS HOST. A backup MX may advertise it, and failing over honours the flag
@@ -1176,9 +1210,23 @@ async function testDaneFailureFailsOverAndDefersRatherThanBouncing() {
   // have carried. If none of them offers it the message ends deferred, which
   // is the honest answer to "nobody here can promise what you asked for".
   check("classifyOutcome: a REQUIRETLS refusal is host-scoped, so the next MX gets a turn",
-        deliver.classifyOutcome({ code: "", message: "REQUIRETLS was not offered" }, null) === "transient");
+        deliver.classifyOutcome({ code: "mail/requiretls-not-advertised",
+                                  message: "the peer does not advertise it" }, null) === "transient");
   check("classifyOutcome: a DANE failure is transient",
-        deliver.classifyOutcome({ code: "", message: "dane: chain matches none" }, null) === "transient");
+        deliver.classifyOutcome({ code: "deliver/dane-fetch-failed",
+                                  message: "chain matches none" }, null) === "transient");
+
+  // The classification comes from the code this framework assigned, never from
+  // the message — a message carries the PEER's reply text, so matching words in
+  // it hands a remote party the choice of verdict. The permanent arm is the one
+  // that matters: a transient refusal whose text happens to name the policy
+  // would otherwise bounce mail that a retry would have delivered.
+  check("classifyOutcome: policy wording in a message does not make a failure permanent",
+        deliver.classifyOutcome({ code: "mail/smtp-failed",
+                                  message: "451 4.7.0 mta-sts policy service unavailable" },
+                                null) === "transient");
+  check("classifyOutcome: nor does a bare message with no code at all",
+        deliver.classifyOutcome({ code: "", message: "mta-sts: no matching MX" }, null) === "transient");
 }
 
 function testDaneEnforceWithoutDnssecAssertionIsRefusedAtCreate() {
@@ -1347,14 +1395,23 @@ function testClassifierFallthroughs() {
   // Response present but no code → String("") matches nothing → transient.
   check("classify response w/o code → transient",
     deliver.classifyOutcome(null, {}) === "transient");
-  // Policy signal in the MESSAGE only (empty code) → the OR alternative of
-  // each policy-class regex still classifies, on the side that class sits on:
-  // MTA-STS is a domain policy this host cannot satisfy, REQUIRETLS is an
-  // extension THIS host does not offer and a backup MX might.
-  check("classify policy-signal via message only → permanent",
-    deliver.classifyOutcome({ code: "", message: "mta-sts: no matching MX" }, null) === "permanent");
+  // Policy signal in the MESSAGE only (empty code) → NOT a classification.
+  // Each policy class is recognised by the code this framework assigned when it
+  // detected the condition. The message is the peer's own reply text, so a
+  // remote party that words its refusal well could otherwise pick its verdict —
+  // and the MTA-STS side is permanent, so the peer's choice would be a bounce.
+  // Unclassified falls through to transient, which defers rather than bounces.
+  check("classify policy-signal via message only → transient, not permanent",
+    deliver.classifyOutcome({ code: "", message: "mta-sts: no matching MX" }, null) === "transient");
   check("classify host-scoped policy signal via message only → transient",
     deliver.classifyOutcome({ code: "", message: "REQUIRETLS was not offered" }, null) === "transient");
+  // And the codes themselves still classify, on the side each class sits on:
+  // MTA-STS is a domain policy this host cannot satisfy, REQUIRETLS is an
+  // extension THIS host does not offer and a backup MX might.
+  check("classify MTA-STS by code → permanent",
+    deliver.classifyOutcome({ code: "deliver/mta-sts-fetch-failed" }, null) === "permanent");
+  check("classify REQUIRETLS by code → transient",
+    deliver.classifyOutcome({ code: "mail/requiretls-not-advertised" }, null) === "transient");
   // Generic error code that is neither a network code nor a policy
   // signal → transient (the err-branch fallthrough).
   check("classify generic err code → transient",

@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.18.58",
-  "createdAt": "2026-08-30T10:47:20.916Z",
+  "createdAt": "2026-08-30T11:57:52.248Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -6703,6 +6703,10 @@
         "dialect": {
           "type": "function",
           "arity": 0
+        },
+        "duplicateIndexCode": {
+          "type": "function",
+          "arity": 1
         },
         "execute": {
           "type": "function",
