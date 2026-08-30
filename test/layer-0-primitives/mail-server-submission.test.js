@@ -900,6 +900,13 @@ async function testSubaddressFoldingWhenConfigured(tls) {
     // A different delimiter is a literal character, not a separator.
     check("subaddress: a qmail-style tag is not folded under a '+' delimiter",
       /^553 /.test(await _send(sock, "MAIL FROM:<ok-newsletter@example.com>")));
+    check("subaddress: RSET before the case check → 250", /^250 /.test(await _send(sock, "RSET")));
+    // The listener folds local-part case where it parses the address, which is
+    // its own deployment-shaped choice and not the subaddress fold's. Both
+    // halves still work together: a mixed-case subaddress of a mailbox in the
+    // set is accepted.
+    check("subaddress: a mixed-case subaddress of the same mailbox is accepted",
+      /^250 /.test(await _send(sock, "MAIL FROM:<OK+Newsletter@Example.COM>")));
   } finally { sock.destroy(); await s.srv.close({ timeoutMs: b.constants.TIME.seconds(2) }); }
 }
 

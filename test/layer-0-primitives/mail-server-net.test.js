@@ -305,10 +305,14 @@ function testFoldSubaddress() {
   var fold = function (a, d) { return mailServerNet.foldSubaddress(a, d === undefined ? "+" : d); };
   check("foldSubaddress: the detail part is folded away",
     fold("alice+newsletter@example.com") === "alice@example.com");
-  check("foldSubaddress: case folds with it",
-    fold("ALICE+Tag@Example.COM") === "alice@example.com");
-  check("foldSubaddress: an address with no tag is unchanged but lowercased",
-    fold("Alice@Example.com") === "alice@example.com");
+  // RFC 5321: the domain is case-insensitive (§2.3.4), the local part is not
+  // (§2.4). A listener that compares local parts case-insensitively is making
+  // a deployment-shaped choice at the point it parses the address; this
+  // function does not make it on its behalf.
+  check("foldSubaddress: the domain folds, the local part does not",
+    fold("ALICE+Tag@Example.COM") === "ALICE@example.com");
+  check("foldSubaddress: an address with no tag keeps its local part as given",
+    fold("Alice@Example.com") === "Alice@example.com");
   check("foldSubaddress: only the FIRST delimiter separates",
     fold("alice+a+b@example.com") === "alice@example.com");
   // Whether a local part carries a detail part at all is a property of the
@@ -319,7 +323,7 @@ function testFoldSubaddress() {
   check("foldSubaddress: no delimiter named means no fold",
     mailServerNet.foldSubaddress("alice+tag@example.com") === "alice+tag@example.com" &&
     mailServerNet.foldSubaddress("alice+tag@example.com", "") === "alice+tag@example.com" &&
-    mailServerNet.foldSubaddress("ALICE+Tag@Example.com", null) === "alice+tag@example.com");
+    mailServerNet.foldSubaddress("ALICE+Tag@Example.com", null) === "ALICE+Tag@example.com");
   // A local part that BEGINS with the delimiter has no base to fold to —
   // `+tag@example.com` is an address in its own right, and folding it to
   // `@example.com` would make every such address collide.

@@ -1194,6 +1194,53 @@ async function testSessionEndWaitsForStoreWork() {
   await s.srv.close();
 
   await testSessionEndWaitsForASlowCommit();
+  await testSessionEndWaitsForEveryStoreCall();
+}
+
+// A DELE mutates the maildrop exactly as an open or a commit does, and so does
+// an RSET clearing the marks. Tracking only the two operations that came to
+// mind would let a link dropping mid-DELE report the session ended, and the
+// consumer would release the exclusive lease and admit the next session while
+// the previous one is still writing.
+async function testSessionEndWaitsForEveryStoreCall() {
+  var order = [];
+  var releaseDelete = null;
+  var store = _stubStore();
+  store.markDelete = function () {
+    order.push("delete-started");
+    return new Promise(function (resolve) {
+      releaseDelete = function () { order.push("delete-finished"); resolve(); };
+    });
+  };
+  var s = await _makeServer({
+    mailStore:    store,
+    onSessionEnd: function () { order.push("session-end"); },
+  });
+  var sock = nodeNet.connect(s.port, "127.0.0.1");
+  sock.on("error", function () {});
+  await _readReply(sock);
+  await _send(sock, "STLS");
+  var tls = nodeTls.connect({ socket: sock, ca: s.caPem, servername: "localhost" });
+  tls.on("error", function () {});
+  await new Promise(function (r, j) { tls.once("secureConnect", r); tls.once("error", j); });
+  await _send(tls, "USER alice");
+  check("every store call: PASS accepted", /^\+OK/.test(await _send(tls, "PASS good")));
+  tls.write("DELE 1\r\n");
+  await helpers.waitUntil(function () { return order.indexOf("delete-started") !== -1; },
+    { timeoutMs: 5000, label: "pop3 store-calls: the delete started" });
+
+  tls.destroy();
+  sock.destroy();
+  await helpers.passiveObserve(250, "pop3 store-calls: no session end while the delete runs");
+  check("every store call: the session does not end while a DELE is in flight",
+    order.indexOf("session-end") === -1, JSON.stringify(order));
+
+  releaseDelete();
+  await helpers.waitUntil(function () { return order.indexOf("session-end") !== -1; },
+    { timeoutMs: 5000, label: "pop3 store-calls: session end after the delete settled" });
+  check("every store call: and is reported once the drop is no longer being written",
+    order.indexOf("delete-finished") < order.indexOf("session-end"), JSON.stringify(order));
+  await s.srv.close();
 }
 
 // A commit that outruns commitTimeoutMs is answered on the wire — the client

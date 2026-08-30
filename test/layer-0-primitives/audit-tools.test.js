@@ -586,6 +586,23 @@ async function runIntegrated(root) {
         });
       }, "audit-tools/prior-anchor-not-verified"));
 
+    // Removing a checksum is the cheapest way to defeat a comparison against
+    // it: the bundle reader skips a member it has no expectation for, the
+    // archive still verifies, and the anchor would sign an EMPTY digest. What
+    // that buys is the whole binding — a reader finding no signed digest falls
+    // back to the manifest's own checksum, which is the editable number the
+    // signature exists to replace. Refused before any row is deleted.
+    var digestFields = ["rowsSha3_512", "checkpointSha3_512"];
+    for (var dfi = 0; dfi < digestFields.length; dfi += 1) {
+      var field = digestFields[dfi];
+      var stripDir = _copyBundle(archiveDir, _freshOut(root, "no-" + field));
+      _editManifest(stripDir, function (m) { delete m.checksum[field]; });
+      check("purge: an archive whose manifest omits " + field + " is refused",
+        await _expectCode(function () {
+          return b.auditTools.purge({ confirm: true, archive: stripDir, passphrase: PASS });
+        }, "audit-tools/archive-digest-missing"));
+    }
+
     // ---- dual-control gate refusals + a consumed-grant success (injected apply) ----
     var gate = function () { return { m: 2, n: 3 }; };
     check("purge: dual control without a grant rejected",

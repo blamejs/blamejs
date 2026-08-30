@@ -1350,6 +1350,52 @@ async function testSmtpBinaryMimeBdat(certPair) {
   } finally { await closeServer(st); }
 }
 
+// RFC 8689 — the operator sets a documented flag saying every outbound
+// envelope asks for REQUIRETLS, and the parameter never reached the wire: the
+// transport was handed the option and had no reader for it. A receiver that
+// would have honoured it was never asked, and nothing reported a problem,
+// because from the consumer's side the flag was accepted and threaded exactly
+// as documented.
+async function testSmtpRequireTls(certPair) {
+  var st = startTlsSmtp(certPair, { ext: ["REQUIRETLS", "8BITMIME"] });
+  await listen(st);
+  try {
+    var t = tlsTransport(certPair, st.port, { requireTls: true });
+    var r = await t.send({ from: "s@a.test", to: "r@b.test", subject: "rt", text: "body" });
+    check("smtp-requiretls: delivered", r.code === 250);
+    check("smtp-requiretls: MAIL FROM carried the REQUIRETLS parameter",
+      / REQUIRETLS\b/.test(st.mailFromLine || ""), JSON.stringify(st.mailFromLine));
+  } finally { await closeServer(st); }
+
+  // RFC 8689 §4.1 — the sender fails rather than downgrading. Delivering
+  // without the parameter to a peer that never advertised it is the silent
+  // downgrade the flag exists to prevent, and it is indistinguishable from
+  // success to the consumer.
+  var stNo = startTlsSmtp(certPair, { ext: ["8BITMIME"] });
+  await listen(stNo);
+  try {
+    var t2 = tlsTransport(certPair, stNo.port, { requireTls: true });
+    var err = null;
+    try {
+      await t2.send({ from: "s@a.test", to: "r@b.test", subject: "rt", text: "body" });
+    } catch (e) { err = e; }
+    check("smtp-requiretls: a peer that does not advertise it is refused, not downgraded",
+      err !== null && /REQUIRETLS/i.test(err.message || ""), String(err && err.message));
+    check("smtp-requiretls: and nothing was sent to it",
+      stNo.mailFromLine === null, JSON.stringify(stNo.mailFromLine));
+  } finally { await closeServer(stNo); }
+
+  // Unset, the parameter is absent — an existing composition is unaffected.
+  var stOff = startTlsSmtp(certPair, { ext: ["REQUIRETLS", "8BITMIME"] });
+  await listen(stOff);
+  try {
+    var t3 = tlsTransport(certPair, stOff.port);
+    await t3.send({ from: "s@a.test", to: "r@b.test", subject: "rt", text: "body" });
+    check("smtp-requiretls: absent unless asked for",
+      !/REQUIRETLS/.test(stOff.mailFromLine || ""), JSON.stringify(stOff.mailFromLine));
+  } finally { await closeServer(stOff); }
+}
+
 async function testSmtpSmtpUtf8And8BitMime(certPair) {
   var st1 = startTlsSmtp(certPair, { ext: ["SMTPUTF8", "8BITMIME", "SIZE 1000000"] });
   await listen(st1);
@@ -3301,6 +3347,7 @@ async function run() {
   await testSmtpAuthLogin(certPair);
   await testSmtpBdatChunking(certPair);
   await testSmtpBinaryMimeBdat(certPair);
+  await testSmtpRequireTls(certPair);
   await testSmtpSmtpUtf8And8BitMime(certPair);
   await testSmtpSizeRefusal(certPair);
   await testSmtpEaiUnsupportedRefusal(certPair);
