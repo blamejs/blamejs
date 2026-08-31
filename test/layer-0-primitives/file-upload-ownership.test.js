@@ -88,7 +88,7 @@ async function run() {
     });
     // RED ON CURRENT TREE: B's finalize SUCCEEDS today → bErr === null → fails.
     check("ownership[finalize]: actor B cannot finalize A's upload",
-          bErr !== null && bErr.code === "OWNERSHIP_VIOLATION");
+          bErr !== null && bErr.code === "file-upload/ownership-violation");
 
     // Positive control — the owner CAN finalize.
     var aRv = await u.finalize({ uploadId: "u-own-1", manifest: manifest, actor: ACTOR_A });
@@ -110,7 +110,7 @@ async function run() {
     });
     // RED: B's cancel returns { ok:true } today (deletes A's staging) → cErr === null.
     check("ownership[cancel]: actor B cannot cancel A's upload",
-          cErr !== null && cErr.code === "OWNERSHIP_VIOLATION");
+          cErr !== null && cErr.code === "file-upload/ownership-violation");
 
     // Positive control — the upload still exists and the owner can cancel it.
     var aCancel = await u2.cancelUpload("u-own-2", { actor: ACTOR_A });
@@ -132,7 +132,7 @@ async function run() {
     });
     // RED: B's status returns A's metadata today → sErr === null.
     check("ownership[status]: actor B cannot read A's upload status",
-          sErr !== null && sErr.code === "OWNERSHIP_VIOLATION");
+          sErr !== null && sErr.code === "file-upload/ownership-violation");
 
     // Positive control — the owner reads status.
     var aStatus = u3.status("u-own-3", { actor: ACTOR_A });
@@ -156,7 +156,7 @@ async function run() {
     });
     // RED: B's acceptChunk writes a chunk into A's upload today → acErr === null.
     check("ownership[accept]: actor B cannot push a chunk to A's upload",
-          acErr !== null && acErr.code === "OWNERSHIP_VIOLATION");
+          acErr !== null && acErr.code === "file-upload/ownership-violation");
 
     // Positive control — the owner can push.
     var aAccept = await u4.acceptChunk({ uploadId: "u-own-4", index: 0, body: pieces[0],
@@ -200,7 +200,7 @@ async function run() {
       return u6.finalize({ uploadId: "u-own-6", manifest: manifest6, actor: ACTOR_B });
     });
     check("ownership[admin-gated]: allowCrossActor still requires the fileUpload.admin scope",
-          gateErr !== null && gateErr.code === "PERMISSION_DENIED");
+          gateErr !== null && gateErr.code === "file-upload/permission-denied");
   }
 }
 

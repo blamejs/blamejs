@@ -160,7 +160,7 @@ async function run() {
   try { await pA.renewLease(leaseShort); }
   catch (e) { threw = e; }
   check("real-mysql: old leader's renew throws LEASE_LOST",
-        threw && threw.code === "LEASE_LOST");
+        threw && threw.code === "cluster-provider-db/lease-lost");
 
   await pB.releaseLease(leaseTakeover);
   await b.externalDb.shutdown();

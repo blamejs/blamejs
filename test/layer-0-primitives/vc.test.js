@@ -454,7 +454,7 @@ async function testDefensiveRefusals() {
   check("verifyPresentation: missing key refused", e16 && e16.code === "vc/no-key");
   var e17 = null;
   try { await b.vc.verifyPresentation(vp, { algorithms: ["EdDSA"], publicKey: HOLDER.publicKey, verifyCredentials: true }); } catch (e) { e17 = e; }
-  check("verifyPresentation: verifyCredentials without credentialOpts refused", e17 && e17.code === "BAD_OPT");
+  check("verifyPresentation: verifyCredentials without credentialOpts refused", e17 && e17.code === "validate-opts/bad-object");
 
   // verifyPresentation: an entry that is not an EnvelopedVerifiableCredential
   // is refused when the enclosed credentials are verified.

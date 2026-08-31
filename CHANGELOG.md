@@ -8,6 +8,32 @@ upgrading across more than a few patches at a time.
 
 ## v0.18.x
 
+- v0.18.59 (2026-08-31) — **Every framework error code is namespace/code, and an empty CSP is refused rather than emitted.** An error code is the thing operators branch on, and the framework spelled it three ways. Most codes were `namespace/kebab-case`, 28 guards used a dot instead of a slash, and roughly 970 codes across 83 modules were bare `UPPER_SNAKE` with no namespace at all: `catch (e) { e.code === "BAD_OPT" }` matched a cache error, a queue error and a signing error alike, and told you nothing about which subsystem refused. Every framework error code is now `namespace/code`.
+
+`b.csp.build` returned an empty string for a directive set that emitted nothing, which sets a Content-Security-Policy header that constrains nothing while reading, at the call site, as a policy that was set. It refuses now, the way the sibling `b.cdnCacheControl.build` already refused an empty Cache-Control list. **Changed:** *Error codes are `namespace/code` everywhere* — **This changes error codes you may be matching on.** Every framework error now carries a namespaced, kebab-case code:
+
+- `BAD_OPT` from `b.cache` is now `cache/bad-opt`; from `b.queue`, `queue/bad-opt`
+- `NOT_FOUND` from an object-store backend is now `objectstore/not-found`
+- `html.bad-profile` is now `html/bad-profile`, and the same for archive, csv, cidr, domain, email, filename, graphql, image, json, jsonpath, jwt, markdown, mime, oauth, pdf, regex, shell, sql, svg, text, xml, yaml and the rest of the guard family
+- `auditDailyReview/...`, a camelCase namespace, is now `audit-daily-review/...`
+- `b.httpClient` spelled its own namespace two ways; every code is now `http-client/...`
+
+The same name previously meant different things in different modules, so a caller could not tell a cache refusal from a queue refusal without reading the message. Matching on the namespaced code is exact, and `e.code.split("/")[0]` gives the subsystem.
+
+**Rule ids are unchanged and stay dotted.** `filename.traversal`, `archive.absolute-path` and their siblings identify which rule fired on a piece of content, and a content refusal still carries that id as its error code. The separator is what tells the two apart: a dot names a rule, a slash names a framework error.
+
+**Codes that mirror an external vocabulary keep their spelling.** A timeout raised as `ETIMEDOUT` stays `ETIMEDOUT` so a generic errno classifier still recognizes it, and `CIRCUIT_OPEN` is held un-namespaced through the pre-1.0 line as previously documented.
+
+Refusals raised by the shared option validators now name the check that failed rather than a generic code: an option that must be an object reports `validate-opts/bad-object`, an unknown option `validate-opts/unknown-opt`, and a negative value where a non-negative one was required `validate-opts/bad-non-negative-finite`. **Fixed:** *An option refusal reported a different code depending on the error class* — The shared option validators resolve the code two ways: through the error class's factory when it has one, and through its constructor otherwise. Only the constructor path read the default code the calling module named, so the same failure surfaced as a bare `BAD_OPT` against a class with a factory and as the module's own code against a class without one.
+
+Both paths now resolve the code the same way, which means a validator refusal carries the code its caller specified. `b.vc.verifyPresentation` with a missing credential-options object, for one, reported `BAD_OPT` and now reports `validate-opts/bad-object`. **Security:** *An empty Content-Security-Policy is refused instead of emitted* — `b.csp.build` returned `""` when the directive set produced nothing to emit. Assigned to a header, that is a CSP that constrains nothing, and at the call site it reads as a policy that was configured. A directive set assembled conditionally, where every branch happened to be skipped, produced exactly that.
+
+Three inputs reached it: an empty object, an array (`typeof [] === "object"` passes an object check and `Object.keys([])` is empty), and a set whose every directive carries an empty value list. All three are now refused with `csp/empty`. A non-empty array was already refused, since its index `"0"` is not a directive name.
+
+The refusal lives where emptiness is decided, so it covers `build` and `mergeDirectives` alike. A merge that adds nothing to a non-empty base is still a no-op and still returns the base policy. **Detectors:** *The error-code check reads every construction the framework uses* — The in-repo check that holds error codes to `namespace/kebab-case` inspected `new SomeError("...")` and `SomeError.factory("...")`. It never inspected the `_err("...")` alias that seventy library files call, the code passed to a shared validator after the error class, a code set as a plain property, or a module's own error helper under a local name. Each of those carried codes the check could not see, which is how three spellings coexisted without anything going red.
+
+It now reads all of them, and it finds a module's error helper by looking at what the function does rather than matching a list of expected names.
+
 - v0.18.58 (2026-08-28) — **The audit purge anchor is signed — three statements could erase an audit trail and leave the chain verifying clean.** The purge anchor is the one thing in the audit chain that says rows are ALLOWED to be missing. Every other tamper check compares a stored hash against a recomputed one, so deleting rows leaves a gap that verification catches; the anchor closes that gap by declaration. It was accepted on shape alone — 128 hex characters and a whole number — which is exactly what an attacker with write access supplies. Delete the rows, delete the checkpoints covering them, insert an anchor naming any hash and counter, and `b.audit.verify` reported a clean chain. That is fewer steps than the relink-and-forge attack the chain already refuses, and it erases more.
 
 The anchor now carries a post-quantum signature over every field a reader acts on, and every place that reads it verifies it first: the chain walk, the contiguity guard on the next purge, the predecessor lookup that grounds the next archive's proof, and the append path itself, which needs the boundary to know where a purged chain resumes.

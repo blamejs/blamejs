@@ -1965,9 +1965,10 @@ async function testObjectStoreAdapterRethrowsUnexpectedErrors() {
       thrown === boom);
   }
 
-  // A client whose delete raises the framework's NOT_FOUND convention is
-  // treated as an idempotent no-op (the adapter delete contract).
-  var notFound = Object.assign(new Error("gone"), { code: "NOT_FOUND" });
+  // A client whose delete raises the missing-key code an object-store
+  // backend actually emits is treated as an idempotent no-op (the adapter
+  // delete contract).
+  var notFound = Object.assign(new Error("gone"), { code: "objectstore/not-found" });
   var nfClient = {
     put: async function () {}, get: async function () {}, head: async function () {},
     delete: async function () { throw notFound; }, list: async function () { return { items: [] }; },

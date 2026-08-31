@@ -225,7 +225,7 @@ async function testCreateOptValidation() {
     var label = cases[i][0], opts = cases[i][1];
     var err = (function (o) { try { b.fileUpload.create(o); return null; } catch (e) { return e; } })(opts);
     check("create-opt: " + label,
-          err !== null && err.code === "BAD_OPT" && err.name === "FileUploadError");
+          err !== null && err.code === "file-upload/bad-opt" && err.name === "FileUploadError");
   }
 }
 
@@ -281,7 +281,7 @@ async function testUploadIdValidation() {
       return u.init({ uploadId: id, actor: { id: "x" }, metadata: {} });
     });
     check("uploadId refused: " + JSON.stringify(id),
-          err !== null && err.code === "BAD_UPLOAD_ID");
+          err !== null && err.code === "file-upload/bad-upload-id");
   }
   // A well-formed id in the allowed char class is accepted.
   var okRv = await u.init({ uploadId: "OK.file-1_2", actor: { id: "x" }, metadata: {} });
@@ -293,28 +293,28 @@ async function testUploadIdValidation() {
 async function testInitBranches() {
   var u = _plainManager("init");
   check("init: null callerOpts throws BAD_OPT",
-        (await _expectThrows(function () { return u.init(null); })).code === "BAD_OPT");
+        (await _expectThrows(function () { return u.init(null); })).code === "validate-opts/bad-object");
 
   var arrErr = await _expectThrows(function () {
     return u.init({ uploadId: "u-meta-arr", actor: { id: "x" }, metadata: [1, 2, 3] });
   });
-  check("init: array metadata → BAD_METADATA", arrErr.code === "BAD_METADATA");
+  check("init: array metadata → BAD_METADATA", arrErr.code === "file-upload/bad-metadata");
   var strErr = await _expectThrows(function () {
     return u.init({ uploadId: "u-meta-str", actor: { id: "x" }, metadata: "not-an-object" });
   });
-  check("init: string metadata → BAD_METADATA", strErr.code === "BAD_METADATA");
+  check("init: string metadata → BAD_METADATA", strErr.code === "file-upload/bad-metadata");
 
   var bigErr = await _expectThrows(function () {
     return u.init({ uploadId: "u-meta-big", actor: { id: "x" },
                     metadata: { blob: "x".repeat(70000) } });
   });
-  check("init: oversized metadata → METADATA_TOO_LARGE", bigErr.code === "METADATA_TOO_LARGE");
+  check("init: oversized metadata → METADATA_TOO_LARGE", bigErr.code === "file-upload/metadata-too-large");
 
   await u.init({ uploadId: "u-dupe", actor: { id: "x" }, metadata: {} });
   var dupeErr = await _expectThrows(function () {
     return u.init({ uploadId: "u-dupe", actor: { id: "x" }, metadata: {} });
   });
-  check("init: re-init of an existing upload → UPLOAD_EXISTS", dupeErr.code === "UPLOAD_EXISTS");
+  check("init: re-init of an existing upload → UPLOAD_EXISTS", dupeErr.code === "file-upload/upload-exists");
 
   // Per-actor active-upload quota.
   var q = _plainManager("init-actorq", { maxActiveUploadsPerActor: 1 });
@@ -323,7 +323,7 @@ async function testInitBranches() {
     return q.init({ uploadId: "q-2", actor: { id: "heavy" }, metadata: {} });
   });
   check("init: exceeding maxActiveUploadsPerActor → ACTOR_QUOTA_EXCEEDED",
-        qErr.code === "ACTOR_QUOTA_EXCEEDED");
+        qErr.code === "file-upload/actor-quota-exceeded");
 
   // Total staging-bytes quota (a prior upload has accepted bytes).
   var s = _plainManager("init-stagingq", { maxStagingBytes: 1 });
@@ -332,7 +332,7 @@ async function testInitBranches() {
     return s.init({ uploadId: "s-2", actor: { id: "b" }, metadata: {} });
   });
   check("init: exceeding maxStagingBytes → STAGING_QUOTA_EXCEEDED",
-        sErr.code === "STAGING_QUOTA_EXCEEDED");
+        sErr.code === "file-upload/staging-quota-exceeded");
 }
 
 // ---- acceptChunk() branches ------------------------------------------------
@@ -343,13 +343,13 @@ async function testAcceptChunkBranches() {
   var good = Buffer.from("a valid chunk body", "utf8");
 
   check("acceptChunk: null callerOpts → BAD_OPT",
-        (await _expectThrows(function () { return u.acceptChunk(null); })).code === "BAD_OPT");
+        (await _expectThrows(function () { return u.acceptChunk(null); })).code === "validate-opts/bad-object");
 
   var unknownErr = await _expectThrows(function () {
     return u.acceptChunk({ uploadId: "never-init", index: 0, body: good,
                            sha3: _sha3(good), actor: { id: "x" } });
   });
-  check("acceptChunk: no init() → UNKNOWN_UPLOAD", unknownErr.code === "UNKNOWN_UPLOAD");
+  check("acceptChunk: no init() → UNKNOWN_UPLOAD", unknownErr.code === "file-upload/unknown-upload");
 
   var badIdx = [-1, 1.5, 0x40000000];
   for (var i = 0; i < badIdx.length; i++) {
@@ -359,20 +359,20 @@ async function testAcceptChunkBranches() {
                                sha3: _sha3(good), actor: { id: "x" } });
       });
     })(badIdx[i]);
-    check("acceptChunk: bad index " + badIdx[i] + " → BAD_INDEX", bErr.code === "BAD_INDEX");
+    check("acceptChunk: bad index " + badIdx[i] + " → BAD_INDEX", bErr.code === "file-upload/bad-index");
   }
 
   var notBufErr = await _expectThrows(function () {
     return u.acceptChunk({ uploadId: "u-ac", index: 0, body: "a string not a buffer",
                            sha3: _sha3(good), actor: { id: "x" } });
   });
-  check("acceptChunk: non-Buffer body → BAD_BODY", notBufErr.code === "BAD_BODY");
+  check("acceptChunk: non-Buffer body → BAD_BODY", notBufErr.code === "file-upload/bad-body");
 
   var emptyErr = await _expectThrows(function () {
     return u.acceptChunk({ uploadId: "u-ac", index: 0, body: Buffer.alloc(0),
                            sha3: _sha3(Buffer.alloc(0)), actor: { id: "x" } });
   });
-  check("acceptChunk: empty chunk → EMPTY_CHUNK", emptyErr.code === "EMPTY_CHUNK");
+  check("acceptChunk: empty chunk → EMPTY_CHUNK", emptyErr.code === "file-upload/empty-chunk");
 
   var big = _plainManager("accept-big", { maxChunkBytes: 4 });
   await big.init({ uploadId: "u-big", actor: { id: "x" }, metadata: {} });
@@ -381,18 +381,18 @@ async function testAcceptChunkBranches() {
     return big.acceptChunk({ uploadId: "u-big", index: 0, body: over,
                              sha3: _sha3(over), actor: { id: "x" } });
   });
-  check("acceptChunk: chunk over maxChunkBytes → CHUNK_TOO_LARGE", bigErr.code === "CHUNK_TOO_LARGE");
+  check("acceptChunk: chunk over maxChunkBytes → CHUNK_TOO_LARGE", bigErr.code === "file-upload/chunk-too-large");
 
   var notHexErr = await _expectThrows(function () {
     return u.acceptChunk({ uploadId: "u-ac", index: 0, body: good,
                            sha3: "zz-not-hex", actor: { id: "x" } });
   });
-  check("acceptChunk: non-hex sha3 → BAD_CHUNK_HASH", notHexErr.code === "BAD_CHUNK_HASH");
+  check("acceptChunk: non-hex sha3 → BAD_CHUNK_HASH", notHexErr.code === "file-upload/bad-chunk-hash");
   var shortHexErr = await _expectThrows(function () {
     return u.acceptChunk({ uploadId: "u-ac", index: 0, body: good,
                            sha3: "abcdef", actor: { id: "x" } });
   });
-  check("acceptChunk: wrong-length sha3 → BAD_CHUNK_HASH", shortHexErr.code === "BAD_CHUNK_HASH");
+  check("acceptChunk: wrong-length sha3 → BAD_CHUNK_HASH", shortHexErr.code === "file-upload/bad-chunk-hash");
 
   var wrongHash = _sha3(Buffer.from("a different body entirely", "utf8"));
   var mismatchErr = await _expectThrows(function () {
@@ -400,7 +400,7 @@ async function testAcceptChunkBranches() {
                            sha3: wrongHash, actor: { id: "x" } });
   });
   check("acceptChunk: supplied hash != computed → CHUNK_HASH_MISMATCH",
-        mismatchErr.code === "CHUNK_HASH_MISMATCH");
+        mismatchErr.code === "file-upload/chunk-hash-mismatch");
 
   // onChunk hook rejection propagates the operator's error verbatim.
   var hookMgr = _plainManager("accept-hook", {
@@ -422,7 +422,7 @@ async function testAcceptChunkBranches() {
                            sha3: _sha3(other), actor: { id: "x" } });
   });
   check("acceptChunk: same index, different body → CHUNK_REUSE_MISMATCH",
-        reuseErr.code === "CHUNK_REUSE_MISMATCH");
+        reuseErr.code === "file-upload/chunk-reuse-mismatch");
 
   // Cumulative file-size cap trips mid-stream and reclaims staging.
   var cap = _plainManager("accept-filecap", { maxFileBytes: 5 });
@@ -433,7 +433,7 @@ async function testAcceptChunkBranches() {
                              sha3: _sha3(tenBytes), actor: { id: "x" } });
   });
   check("acceptChunk: cumulative bytes over maxFileBytes → FILE_TOO_LARGE",
-        capErr.code === "FILE_TOO_LARGE");
+        capErr.code === "file-upload/file-too-large");
   check("acceptChunk: staging reclaimed after FILE_TOO_LARGE",
         cap.status("u-cap", { actor: { id: "x" } }) === null);
 
@@ -446,7 +446,7 @@ async function testAcceptChunkBranches() {
     return idle.acceptChunk({ uploadId: "u-idle", index: 0, body: good,
                               sha3: _sha3(good), actor: { id: "x" } });
   });
-  check("acceptChunk: idle past maxIdleMs → UPLOAD_IDLE_EXPIRED", idleErr.code === "UPLOAD_IDLE_EXPIRED");
+  check("acceptChunk: idle past maxIdleMs → UPLOAD_IDLE_EXPIRED", idleErr.code === "file-upload/upload-idle-expired");
 }
 
 // ---- finalize() manifest verification --------------------------------------
@@ -459,37 +459,37 @@ async function testFinalizeManifestBranches() {
   await _seedUpload(u, "u-man", [A], { id: "x" });
 
   check("finalize: null callerOpts → BAD_OPT",
-        (await _expectThrows(function () { return u.finalize(null); })).code === "BAD_OPT");
+        (await _expectThrows(function () { return u.finalize(null); })).code === "validate-opts/bad-object");
   check("finalize: unknown upload → UNKNOWN_UPLOAD",
         (await _expectThrows(function () {
           return u.finalize({ uploadId: "no-such", manifest: _manifestFor([A]), actor: { id: "x" } });
-        })).code === "UNKNOWN_UPLOAD");
+        })).code === "file-upload/unknown-upload");
   check("finalize: non-object manifest → BAD_OPT",
         (await _expectThrows(function () {
           return u.finalize({ uploadId: "u-man", manifest: 42, actor: { id: "x" } });
-        })).code === "BAD_OPT");
+        })).code === "validate-opts/bad-object");
   check("finalize: empty chunks array → BAD_MANIFEST",
         (await _expectThrows(function () {
           return u.finalize({ uploadId: "u-man",
             manifest: { chunks: [], totalBytes: 1, sha3: _sha3(A) }, actor: { id: "x" } });
-        })).code === "BAD_MANIFEST");
+        })).code === "file-upload/bad-manifest");
   check("finalize: non-array chunks → BAD_MANIFEST",
         (await _expectThrows(function () {
           return u.finalize({ uploadId: "u-man",
             manifest: { chunks: "nope", totalBytes: 1, sha3: _sha3(A) }, actor: { id: "x" } });
-        })).code === "BAD_MANIFEST");
+        })).code === "file-upload/bad-manifest");
   check("finalize: non-positive totalBytes → BAD_MANIFEST",
         (await _expectThrows(function () {
           return u.finalize({ uploadId: "u-man",
             manifest: { chunks: [{ index: 0, sha3: _sha3(A) }], totalBytes: 0, sha3: _sha3(A) },
             actor: { id: "x" } });
-        })).code === "BAD_MANIFEST");
+        })).code === "file-upload/bad-manifest");
   check("finalize: non-hex manifest.sha3 → BAD_MANIFEST",
         (await _expectThrows(function () {
           return u.finalize({ uploadId: "u-man",
             manifest: { chunks: [{ index: 0, sha3: _sha3(A) }], totalBytes: A.length, sha3: "nothex" },
             actor: { id: "x" } });
-        })).code === "BAD_MANIFEST");
+        })).code === "file-upload/bad-manifest");
 
   // manifest.totalBytes over maxFileBytes (checked before chunk verification,
   // so the seeded chunk just needs to fit the cap).
@@ -501,7 +501,7 @@ async function testFinalizeManifestBranches() {
           return capMgr.finalize({ uploadId: "u-fcap",
             manifest: { chunks: [{ index: 0, sha3: _sha3(tiny) }], totalBytes: 100, sha3: _sha3(tiny) },
             actor: { id: "x" } });
-        })).code === "FILE_TOO_LARGE");
+        })).code === "file-upload/file-too-large");
 
   // Too many declared chunks.
   var mcMgr = _plainManager("fin-maxchunks", { maxChunks: 1 });
@@ -512,7 +512,7 @@ async function testFinalizeManifestBranches() {
             manifest: { chunks: [{ index: 0, sha3: _sha3(A) }, { index: 1, sha3: _sha3(B) }],
                         totalBytes: A.length + B.length, sha3: _fullSha3([A, B]) },
             actor: { id: "x" } });
-        })).code === "TOO_MANY_CHUNKS");
+        })).code === "file-upload/too-many-chunks");
 
   // Non-contiguous manifest indices (0, 2 → gap at position 1).
   check("finalize: non-contiguous chunk index → MANIFEST_INDEX_GAP",
@@ -521,7 +521,7 @@ async function testFinalizeManifestBranches() {
             manifest: { chunks: [{ index: 0, sha3: _sha3(A) }, { index: 2, sha3: _sha3(B) }],
                         totalBytes: A.length + B.length, sha3: _fullSha3([A, B]) },
             actor: { id: "x" } });
-        })).code === "MANIFEST_INDEX_GAP");
+        })).code === "file-upload/manifest-index-gap");
 
   // A manifest chunk with a non-hex sha3.
   check("finalize: non-hex chunk.sha3 → BAD_MANIFEST",
@@ -530,7 +530,7 @@ async function testFinalizeManifestBranches() {
             manifest: { chunks: [{ index: 0, sha3: "not-hex-at-all" }],
                         totalBytes: A.length, sha3: _sha3(A) },
             actor: { id: "x" } });
-        })).code === "BAD_MANIFEST");
+        })).code === "file-upload/bad-manifest");
 
   // A chunk declared but never written to staging.
   check("finalize: chunk missing from staging → MISSING_CHUNK",
@@ -539,7 +539,7 @@ async function testFinalizeManifestBranches() {
             manifest: { chunks: [{ index: 0, sha3: _sha3(A) }, { index: 1, sha3: _sha3(B) }],
                         totalBytes: A.length + B.length, sha3: _fullSha3([A, B]) },
             actor: { id: "x" } });
-        })).code === "MISSING_CHUNK");
+        })).code === "file-upload/missing-chunk");
 
   // On-disk chunk hash disagrees with the manifest's per-chunk sha3.
   check("finalize: on-disk chunk hash != manifest → CHUNK_HASH_MISMATCH",
@@ -547,7 +547,7 @@ async function testFinalizeManifestBranches() {
           return u.finalize({ uploadId: "u-man",
             manifest: { chunks: [{ index: 0, sha3: _sha3(B) }], totalBytes: A.length, sha3: _sha3(A) },
             actor: { id: "x" } });
-        })).code === "CHUNK_HASH_MISMATCH");
+        })).code === "file-upload/chunk-hash-mismatch");
 
   // Reassembled size disagrees with manifest.totalBytes.
   check("finalize: reassembled size != manifest.totalBytes → MANIFEST_SIZE_MISMATCH",
@@ -556,7 +556,7 @@ async function testFinalizeManifestBranches() {
             manifest: { chunks: [{ index: 0, sha3: _sha3(A) }], totalBytes: A.length + 100,
                         sha3: _sha3(A) },
             actor: { id: "x" } });
-        })).code === "MANIFEST_SIZE_MISMATCH");
+        })).code === "file-upload/manifest-size-mismatch");
 
   // Reassembled total hash disagrees with manifest.sha3.
   check("finalize: reassembled total hash != manifest.sha3 → MANIFEST_HASH_MISMATCH",
@@ -565,7 +565,7 @@ async function testFinalizeManifestBranches() {
             manifest: { chunks: [{ index: 0, sha3: _sha3(A) }], totalBytes: A.length,
                         sha3: _sha3(B) },
             actor: { id: "x" } });
-        })).code === "MANIFEST_HASH_MISMATCH");
+        })).code === "file-upload/manifest-hash-mismatch");
 }
 
 // ---- MIME magic-byte allowlist + claim cross-check -------------------------
@@ -591,7 +591,7 @@ async function testMimeGate() {
   check("mime: detected type not in allowlist → MIME_NOT_ALLOWED",
         (await _expectThrows(function () {
           return deny.finalize({ uploadId: "m-deny", manifest: _manifestFor([PNG_BYTES]), actor: { id: "x" } });
-        })).code === "MIME_NOT_ALLOWED");
+        })).code === "file-upload/mime-not-allowed");
 
   // Unclassifiable bytes.
   var undet = _plainManager("mime-undet", { allowedFileTypes: ["image/png"], fileType: b.fileType });
@@ -600,7 +600,7 @@ async function testMimeGate() {
   check("mime: unclassifiable magic bytes → MIME_NOT_DETECTED",
         (await _expectThrows(function () {
           return undet.finalize({ uploadId: "m-undet", manifest: _manifestFor(plain), actor: { id: "x" } });
-        })).code === "MIME_NOT_DETECTED");
+        })).code === "file-upload/mime-not-detected");
 
   // Claimed Content-Type family disagrees with detected magic-byte family.
   var claim = _plainManager("mime-claim", { allowedFileTypes: ["application/pdf"], fileType: b.fileType });
@@ -609,7 +609,7 @@ async function testMimeGate() {
   check("mime: claimed family != detected family → MIME_CLAIM_MISMATCH",
         (await _expectThrows(function () {
           return claim.finalize({ uploadId: "m-claim", manifest: _manifestFor([PDF_BYTES]), actor: { id: "x" } });
-        })).code === "MIME_CLAIM_MISMATCH");
+        })).code === "file-upload/mime-claim-mismatch");
 
   // Same-family claim with a charset param + mixed case is accepted (synonym).
   var syn = _plainManager("mime-syn", { allowedFileTypes: ["image/png"], fileType: b.fileType });
@@ -630,7 +630,7 @@ async function testFilenameSafety() {
         (await _expectThrows(function () {
           return strict.finalize({ uploadId: "f-exe",
             manifest: _manifestFor([Buffer.from("MZ payload", "utf8")]), actor: { id: "x" } });
-        })).code === "FILENAME_SAFETY_REFUSED");
+        })).code === "file-upload/filename-safety-refused");
 
   var strict2 = b.fileUpload.create({ stagingDir: _tmpDir("fn-strict2"), contentSafety: null });
   await _seedUpload(strict2, "f-trav", [Buffer.from("body", "utf8")], { id: "x" },
@@ -639,7 +639,7 @@ async function testFilenameSafety() {
         (await _expectThrows(function () {
           return strict2.finalize({ uploadId: "f-trav",
             manifest: _manifestFor([Buffer.from("body", "utf8")]), actor: { id: "x" } });
-        })).code === "FILENAME_SAFETY_REFUSED");
+        })).code === "file-upload/filename-safety-refused");
 
   // A throwing filename gate surfaces as FILENAME_SAFETY_THREW.
   var thrower = _plainManager("fn-throw", {
@@ -652,7 +652,7 @@ async function testFilenameSafety() {
         (await _expectThrows(function () {
           return thrower.finalize({ uploadId: "f-throw",
             manifest: _manifestFor([Buffer.from("body", "utf8")]), actor: { id: "x" } });
-        })).code === "FILENAME_SAFETY_THREW");
+        })).code === "file-upload/filename-safety-threw");
 
   // A sanitize decision rewrites metadata.filename that onFinalize sees.
   var seen = null;
@@ -712,7 +712,7 @@ async function testContentSafety() {
   check("content: default strict guard refuses <script> HTML → CONTENT_SAFETY_REFUSED",
         (await _expectThrows(function () {
           return strict.finalize({ uploadId: "c-html", manifest: _manifestFor([evil]), actor: { id: "x" } });
-        })).code === "CONTENT_SAFETY_REFUSED");
+        })).code === "file-upload/content-safety-refused");
 
   // A throwing content gate surfaces as CONTENT_SAFETY_THREW.
   var body = Buffer.from("some text body", "utf8");
@@ -724,7 +724,7 @@ async function testContentSafety() {
   check("content: a throwing gate → CONTENT_SAFETY_THREW",
         (await _expectThrows(function () {
           return thrower.finalize({ uploadId: "c-throw", manifest: _manifestFor([body]), actor: { id: "x" } });
-        })).code === "CONTENT_SAFETY_THREW");
+        })).code === "file-upload/content-safety-threw");
 
   // A sanitize decision replaces the bytes onFinalize receives.
   var seen = null;
@@ -751,7 +751,7 @@ async function testContentSafety() {
   check("content: an explicit refuse decision → CONTENT_SAFETY_REFUSED",
         (await _expectThrows(function () {
           return refuser.finalize({ uploadId: "c-refuse", manifest: _manifestFor([body]), actor: { id: "x" } });
-        })).code === "CONTENT_SAFETY_REFUSED");
+        })).code === "file-upload/content-safety-refused");
 }
 
 // ---- streaming reassembly path + onFinalize throw --------------------------
@@ -815,7 +815,7 @@ async function testPermissionDenied() {
     var name = ops[i][0], fn = ops[i][1];
     var err = await _expectThrows(fn);
     check("permission: " + name + " denied → PERMISSION_DENIED",
-          err !== null && err.code === "PERMISSION_DENIED");
+          err !== null && err.code === "file-upload/permission-denied");
   }
   check("permission: denial emitted a permission_denied observability event",
         obsEvents.indexOf("fileUpload.permission_denied") !== -1);
@@ -829,7 +829,7 @@ async function testPermissionDenied() {
     return throwPerms.init({ uploadId: "p-2", actor: { id: "x" }, metadata: {} });
   });
   check("permission: a throwing check() fails closed → PERMISSION_DENIED",
-        tErr !== null && tErr.code === "PERMISSION_DENIED");
+        tErr !== null && tErr.code === "file-upload/permission-denied");
 }
 
 // ---- ownership (IDOR / cross-actor) + admin escape hatch -------------------
@@ -845,7 +845,7 @@ async function testOwnershipAndAdmin() {
   check("ownership: actor B cannot finalize A's upload → OWNERSHIP_VIOLATION",
         (await _expectThrows(function () {
           return u.finalize({ uploadId: "o-1", manifest: _manifestFor(pieces), actor: B });
-        })).code === "OWNERSHIP_VIOLATION");
+        })).code === "file-upload/ownership-violation");
   check("ownership: owner A finalizes successfully",
         (await u.finalize({ uploadId: "o-1", manifest: _manifestFor(pieces), actor: A })).ok === true);
 
@@ -863,7 +863,7 @@ async function testOwnershipAndAdmin() {
   check("ownership: allowCrossActor still requires the admin scope → PERMISSION_DENIED",
         (await _expectThrows(function () {
           return gated.finalize({ uploadId: "o-3", manifest: _manifestFor(pieces), actor: B });
-        })).code === "PERMISSION_DENIED");
+        })).code === "file-upload/permission-denied");
 
   // allowCrossActor with NO permissions instance (single-tenant) is allowed.
   var singleTenant = _plainManager("own-single", { allowCrossActor: true });
@@ -936,7 +936,7 @@ async function testCorruptSidecar() {
                            sha3: _sha3(body), actor: { id: "x" } });
   });
   check("corrupt-sidecar: unreadable _meta.json is treated as UNKNOWN_UPLOAD",
-        err !== null && err.code === "UNKNOWN_UPLOAD");
+        err !== null && err.code === "file-upload/unknown-upload");
 }
 
 // ---- mid-walk cumulative cap (defensive, inside _verifyChunksOnDisk) -------
@@ -962,7 +962,7 @@ async function testMidWalkFileCap() {
       actor: { id: "x" } });
   });
   check("mid-walk: reassembly exceeding maxFileBytes mid-walk → FILE_TOO_LARGE",
-        err.code === "FILE_TOO_LARGE");
+        err.code === "file-upload/file-too-large");
 }
 
 // ---- content-safety skip audits + sniffed-extension routing ---------------
@@ -1015,7 +1015,7 @@ async function testContentSafetySkipAndSniff() {
     return sniff.finalize({ uploadId: "s-sniff", manifest: _manifestFor([PDF_BYTES]), actor: { id: "x" } });
   });
   check("sniff: mislabeled PDF (.png) routes to the sniffed .pdf gate → CONTENT_SAFETY_REFUSED",
-        pdfGateRan === true && sniffErr.code === "CONTENT_SAFETY_REFUSED");
+        pdfGateRan === true && sniffErr.code === "file-upload/content-safety-refused");
 }
 
 // ---- actor-identity defaults + no-opts accessor arms -----------------------
@@ -1031,7 +1031,7 @@ async function testActorDefaultsAndAccessors() {
   var numHashErr = await _expectThrows(function () {
     return u.acceptChunk({ uploadId: "anon-1", index: 1, body: body, sha3: 12345 });
   });
-  check("accept: numeric (non-string) sha3 → BAD_CHUNK_HASH", numHashErr.code === "BAD_CHUNK_HASH");
+  check("accept: numeric (non-string) sha3 → BAD_CHUNK_HASH", numHashErr.code === "file-upload/bad-chunk-hash");
 
   // status / list with no opts object at all.
   var st = u.status("anon-1");
@@ -1081,7 +1081,7 @@ async function testAdminScopeCheckThrows() {
     return mgr.finalize({ uploadId: "oa-1", manifest: _manifestFor(pieces), actor: B });
   });
   check("ownership: a throwing admin-scope check fails closed → PERMISSION_DENIED",
-        err !== null && err.code === "PERMISSION_DENIED");
+        err !== null && err.code === "file-upload/permission-denied");
 }
 
 // ---- accessors on an in-progress (0-byte) upload + a few default arms ------
@@ -1125,7 +1125,7 @@ async function testInProgressAndDefaultArms() {
   check("content: refuse with no issues array still → CONTENT_SAFETY_REFUSED",
         (await _expectThrows(function () {
           return refuser.finalize({ uploadId: "ip-refuse", manifest: _manifestFor([body]), actor: { id: "x" } });
-        })).code === "CONTENT_SAFETY_REFUSED");
+        })).code === "file-upload/content-safety-refused");
 }
 
 async function run() {

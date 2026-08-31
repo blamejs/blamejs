@@ -79,7 +79,7 @@ function _makeStubProvider() {
     renewLease: async function (lease, opts) {
       if (ctl.renewMode === "lost") {
         var e = new Error("stub lease taken over");
-        e.code = "LEASE_LOST";
+        e.code = "cluster-provider-db/lease-lost";
         throw e;
       }
       if (ctl.renewMode === "transient") throw new Error("stub transient renew boom");
@@ -176,7 +176,7 @@ async function testExternalDbBackendAndOnTransition() {
     var badThrew = null;
     try { b.cluster.onTransition("not-a-fn"); } catch (e) { badThrew = e; }
     check("cluster.onTransition rejects a non-function handler",
-          badThrew && badThrew.code === "INVALID_HANDLER");
+          badThrew && badThrew.code === "cluster/invalid-handler");
 
     // Register two handlers BEFORE init; both must fire in registration order.
     b.cluster.onTransition(function (ev) { order.push("a"); events.push(ev); });
@@ -235,48 +235,48 @@ async function _expectInitThrow(label, opts, expectedCode) {
 
 async function testInitConfigValidation() {
   // Missing nodeId (explicit empty opts, and the no-argument form).
-  await _expectInitThrow("init without nodeId", {}, "INVALID_CONFIG");
-  await _expectInitThrow("init with no opts object", undefined, "INVALID_CONFIG");
+  await _expectInitThrow("init without nodeId", {}, "cluster/invalid-config");
+  await _expectInitThrow("init with no opts object", undefined, "cluster/invalid-config");
 
   // leaseTtl below the 10s floor.
   await _expectInitThrow("init leaseTtl below floor",
-    { nodeId: "n", leaseTtl: C.TIME.seconds(5), externalDbBackend: "x" }, "INVALID_TTL");
+    { nodeId: "n", leaseTtl: C.TIME.seconds(5), externalDbBackend: "x" }, "cluster/invalid-ttl");
 
   // heartbeat below the 1s floor.
   await _expectInitThrow("init heartbeat below floor",
-    { nodeId: "n", heartbeatInterval: 500, externalDbBackend: "x" }, "INVALID_HEARTBEAT");
+    { nodeId: "n", heartbeatInterval: 500, externalDbBackend: "x" }, "cluster/invalid-heartbeat");
 
   // heartbeat >= leaseTtl (must fit comfortably inside the lease).
   await _expectInitThrow("init heartbeat >= leaseTtl",
     { nodeId: "n", leaseTtl: C.TIME.seconds(10), heartbeatInterval: C.TIME.seconds(10),
-      externalDbBackend: "x" }, "INVALID_HEARTBEAT");
+      externalDbBackend: "x" }, "cluster/invalid-heartbeat");
 
   // Role outside leader/follower.
   await _expectInitThrow("init with unknown role",
-    { nodeId: "n", role: "observer", externalDbBackend: "x" }, "INVALID_ROLE");
+    { nodeId: "n", role: "observer", externalDbBackend: "x" }, "cluster/invalid-role");
 
   // Endpoint rejected — cleartext HTTP under the HTTPS-only default.
   await _expectInitThrow("init with non-TLS endpoint",
     { nodeId: "n", endpoint: "http://plain.internal:8080", externalDbBackend: "x" },
-    "INVALID_ENDPOINT");
+    "cluster/invalid-endpoint");
 
   // expectedVaultKeyFp that isn't a 128-char lowercase-hex fingerprint.
   await _expectInitThrow("init with malformed expectedVaultKeyFp",
     { nodeId: "n", acceptVaultKeyRotation: true, expectedVaultKeyFp: "not-a-fingerprint",
-      externalDbBackend: "x" }, "INVALID_CONFIG");
+      externalDbBackend: "x" }, "cluster/invalid-config");
 
   // expectedVaultKeyFp blessed but rotation acceptance never enabled.
   await _expectInitThrow("init blessing a fingerprint without acceptVaultKeyRotation",
     { nodeId: "n", expectedVaultKeyFp: _bogusFp("a"), externalDbBackend: "x" },
-    "INVALID_CONFIG");
+    "cluster/invalid-config");
 
   // Non-boolean acceptVaultKeyRotation.
   await _expectInitThrow("init with non-boolean acceptVaultKeyRotation",
-    { nodeId: "n", acceptVaultKeyRotation: "yes", externalDbBackend: "x" }, "INVALID_CONFIG");
+    { nodeId: "n", acceptVaultKeyRotation: "yes", externalDbBackend: "x" }, "cluster/invalid-config");
 
   // Neither a custom provider nor an externalDbBackend.
   await _expectInitThrow("init without provider or externalDbBackend",
-    { nodeId: "n" }, "INVALID_CONFIG");
+    { nodeId: "n" }, "cluster/invalid-config");
 
   // Double init — second call refused.
   b.cluster._resetForTest();
@@ -290,7 +290,7 @@ async function testInitConfigValidation() {
     try {
       await b.cluster.init({ nodeId: "double-node-2", provider: s.provider, role: "follower" });
     } catch (e) { doubleThrew = e; }
-    check("second cluster.init is refused", doubleThrew && doubleThrew.code === "ALREADY_INITIALIZED");
+    check("second cluster.init is refused", doubleThrew && doubleThrew.code === "cluster/already-initialized");
   } finally {
     try { await b.cluster.shutdown(); } catch (_e) { /* idempotent */ }
     b.cluster._resetForTest();
@@ -659,7 +659,7 @@ async function testChainTipRollback() {
     var s = _makeStubProvider();
     var threw = null;
     try { await _initFollowerAgainst("ops", s.provider); } catch (e) { threw = e; }
-    check("counter regression refuses boot", threw && threw.code === "ROLLBACK_DETECTED");
+    check("counter regression refuses boot", threw && threw.code === "cluster/rollback-detected");
     check("counter regression message names the audit chain",
           threw && /audit-log rollback/.test(threw.message));
   } finally {
@@ -679,7 +679,7 @@ async function testChainTipRollback() {
     var s2 = _makeStubProvider();
     var threw2 = null;
     try { await _initFollowerAgainst("ops", s2.provider); } catch (e) { threw2 = e; }
-    check("row-hash substitution refuses boot", threw2 && threw2.code === "ROLLBACK_DETECTED");
+    check("row-hash substitution refuses boot", threw2 && threw2.code === "cluster/rollback-detected");
     check("row-hash substitution message notes the mismatch",
           threw2 && /row-hash mismatch/.test(threw2.message));
   } finally {
@@ -761,7 +761,7 @@ async function testVaultKeyConsistency() {
     var s = _makeStubProvider();
     var threw = null;
     try { await _initFollowerAgainst("ops", s.provider); } catch (e) { threw = e; }
-    check("undeclared vault-key drift refuses boot", threw && threw.code === "VAULT_KEY_DRIFT");
+    check("undeclared vault-key drift refuses boot", threw && threw.code === "cluster/vault-key-drift");
   } finally {
     await fx1.teardown();
   }
@@ -786,7 +786,7 @@ async function testVaultKeyConsistency() {
       });
     } catch (e) { threw2 = e; }
     check("a blessed fingerprint the local key can't match refuses boot",
-          threw2 && threw2.code === "VAULT_KEY_ROTATION_MISMATCH");
+          threw2 && threw2.code === "cluster/vault-key-rotation-mismatch");
   } finally {
     await fx2.teardown();
   }
@@ -940,7 +940,7 @@ async function testVaultKeyFailClosedGuards() {
     Object.assign({ nodeId: "state-vanish", provider: _makeStubProvider().provider }, baseOpts));
   try {
     check("a vanished cluster-state row refuses boot",
-          r1.threw && r1.threw.code === "CLUSTER_STATE_MISSING");
+          r1.threw && r1.threw.code === "cluster/cluster-state-missing");
   } finally { await r1.teardown(); }
 
   // Concurrent peer advanced to a third key after we adopted → fail closed.
@@ -952,7 +952,7 @@ async function testVaultKeyFailClosedGuards() {
                     acceptVaultKeyRotation: true }, baseOpts));
   try {
     check("a concurrent divergent adoption refuses boot",
-          r2.threw && r2.threw.code === "VAULT_KEY_DRIFT" &&
+          r2.threw && r2.threw.code === "cluster/vault-key-drift" &&
           /after rotation-accept/.test(r2.threw.message));
   } finally { await r2.teardown(); }
 

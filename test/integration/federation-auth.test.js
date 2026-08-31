@@ -749,7 +749,7 @@ async function run() {
       var dccode = (eR && eR.code) || "";
       check("DCR registerClient: AS responded with deterministic outcome (" + dccode + ")",
         dccode.indexOf("auth-oauth/") === 0 ||
-        dccode === "HTTP_ERROR");
+        dccode === "http-client/http-error");
     }
     if (registered) {
       check("DCR registerClient: AS issued client_id",

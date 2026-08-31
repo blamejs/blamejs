@@ -61,7 +61,7 @@ async function run() {
   // Validation
   var threw = null;
   try { b.secCyber.eightKArtifact({}); } catch (e) { threw = e; }
-  check("refuses missing incidentId", threw && threw.code === "BAD_INCIDENT_ID");
+  check("refuses missing incidentId", threw && threw.code === "sec-cyber/bad-incident-id");
 
   threw = null;
   try { b.secCyber.eightKArtifact({
@@ -70,7 +70,7 @@ async function run() {
     materialityFinding: "material",
     materialityReasoning: "yes",
   }); } catch (e) { threw = e; }
-  check("refuses missing nature when material", threw && threw.code === "BAD_NATURE");
+  check("refuses missing nature when material", threw && threw.code === "sec-cyber/bad-nature");
 
   threw = null;
   try { b.secCyber.eightKArtifact({
@@ -81,7 +81,7 @@ async function run() {
     nature: "n", scope: "s", timing: "t", impact: "i",
     agDelayRequested: true,
   }); } catch (e) { threw = e; }
-  check("AG-delay requires justification", threw && threw.code === "BAD_AG_JUSTIFICATION");
+  check("AG-delay requires justification", threw && threw.code === "sec-cyber/bad-ag-justification");
 }
 
 module.exports = { run: run };

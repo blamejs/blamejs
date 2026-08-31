@@ -9,7 +9,7 @@
  * AWS credentials. SigV4 backends (S3, R2, MinIO, Wasabi, Tigris,
  * DO Spaces, IDrive e2, Linode, Storj) implement query-string SigV4
  * presigning; gcs implements POST policy via service-account RSA
- * signing; local + http-put + azure-blob throw PRESIGN_NOT_SUPPORTED
+ * signing; local + http-put + azure-blob throw objectstore/presign-not-supported
  * with guidance (azure SAS has no body-size cap, local + http-put
  * have no signing convention).
  *
@@ -155,7 +155,7 @@ async function testLocalBackendThrowsNotSupported() {
 
     var threw = null;
     try { b.storage.presignedUploadUrl("k.bin", {}); } catch (e) { threw = e; }
-    check("local backend rejects presigned",         threw && threw.code === "PRESIGN_NOT_SUPPORTED");
+    check("local backend rejects presigned",         threw && threw.code === "objectstore/presign-not-supported");
     check("error message mentions local + saveFile", threw && /local backend/i.test(threw.message) && /saveFile/i.test(threw.message));
   } finally {
     b.storage._resetForTest();
@@ -182,12 +182,12 @@ async function testHttpPutBackendThrowsNotSupported() {
 
     var threw = null;
     try { b.storage.presignedUploadUrl("k.bin", {}); } catch (e) { threw = e; }
-    check("http-put backend rejects presigned upload",      threw && threw.code === "PRESIGN_NOT_SUPPORTED");
+    check("http-put backend rejects presigned upload",      threw && threw.code === "objectstore/presign-not-supported");
     check("error message points to sigv4 alternative",      threw && /sigv4/i.test(threw.message));
 
     threw = null;
     try { b.storage.presignedDownloadUrl("k.bin", {}); } catch (e) { threw = e; }
-    check("http-put backend rejects presigned download",    threw && threw.code === "PRESIGN_NOT_SUPPORTED");
+    check("http-put backend rejects presigned download",    threw && threw.code === "objectstore/presign-not-supported");
   } finally {
     b.storage._resetForTest();
     await teardownTestDb(tmpDir);
@@ -316,7 +316,7 @@ async function testSigv4ResponseHeaderOverrides() {
         responseHeaders: { contentTipo: "x" },     // typo
       });
     } catch (e) {
-      threwUnknown = e && e.code === "INVALID_RESPONSE_HEADERS";
+      threwUnknown = e && e.code === "objectstore/invalid-response-headers";
     }
     check("unknown responseHeaders key refused at config-time", threwUnknown);
 
@@ -330,7 +330,7 @@ async function testSigv4ResponseHeaderOverrides() {
         responseHeaders: { contentDisposition: "attachment\r\nX-Evil: yes" },
       });
     } catch (e) {
-      threwInjection = e && e.code === "INVALID_RESPONSE_HEADERS";
+      threwInjection = e && e.code === "objectstore/invalid-response-headers";
     }
     check("CR/LF in responseHeaders value refused at config-time", threwInjection);
 
@@ -344,7 +344,7 @@ async function testSigv4ResponseHeaderOverrides() {
         responseHeaders: { contentType: 42 },
       });
     } catch (e) {
-      threwNonString = e && e.code === "INVALID_RESPONSE_HEADERS";
+      threwNonString = e && e.code === "objectstore/invalid-response-headers";
     }
     check("non-string responseHeaders value refused at config-time", threwNonString);
   } finally {
@@ -568,15 +568,15 @@ async function testPresignedUploadPolicyMaxBytesRequired() {
 
     var threw = null;
     try { b.storage.presignedUploadPolicy("k.bin", {}); } catch (e) { threw = e; }
-    check("policy: missing maxBytes rejected",   threw && threw.code === "INVALID_MAX_BYTES");
+    check("policy: missing maxBytes rejected",   threw && threw.code === "objectstore/invalid-max-bytes");
 
     threw = null;
     try { b.storage.presignedUploadPolicy("k.bin", { maxBytes: 0 }); } catch (e) { threw = e; }
-    check("policy: maxBytes = 0 rejected",       threw && threw.code === "INVALID_MAX_BYTES");
+    check("policy: maxBytes = 0 rejected",       threw && threw.code === "objectstore/invalid-max-bytes");
 
     threw = null;
     try { b.storage.presignedUploadPolicy("k.bin", { maxBytes: -1 }); } catch (e) { threw = e; }
-    check("policy: negative maxBytes rejected",  threw && threw.code === "INVALID_MAX_BYTES");
+    check("policy: negative maxBytes rejected",  threw && threw.code === "objectstore/invalid-max-bytes");
   } finally {
     b.storage._resetForTest();
     await teardownTestDb(tmpDir);
@@ -679,7 +679,7 @@ async function testPresignedUploadPolicyAzureClientOnly() {
       });
     } catch (e) { azureThrew = e; }
     check("azure policy: throws PRESIGN_NOT_SUPPORTED (Azure SAS has no body-size cap)",
-      azureThrew && azureThrew.code === "PRESIGN_NOT_SUPPORTED");
+      azureThrew && azureThrew.code === "objectstore/presign-not-supported");
     check("azure policy: error message names presignedUploadUrl as the alternative",
       azureThrew && /presignedUploadUrl/i.test(azureThrew.message));
   } finally {
@@ -698,7 +698,7 @@ async function testPresignedUploadPolicyLocalAndHttpPutThrow() {
 
     var threw = null;
     try { b.storage.presignedUploadPolicy("k.bin", { maxBytes: 1024 }); } catch (e) { threw = e; }
-    check("policy: local backend rejects",        threw && threw.code === "PRESIGN_NOT_SUPPORTED");
+    check("policy: local backend rejects",        threw && threw.code === "objectstore/presign-not-supported");
 
     b.storage._resetForTest();
     await b.vault.init({ dataDir: tmpDir, mode: "plaintext" });
@@ -714,7 +714,7 @@ async function testPresignedUploadPolicyLocalAndHttpPutThrow() {
     });
     threw = null;
     try { b.storage.presignedUploadPolicy("k.bin", { maxBytes: 1024 }); } catch (e) { threw = e; }
-    check("policy: http-put backend rejects",     threw && threw.code === "PRESIGN_NOT_SUPPORTED");
+    check("policy: http-put backend rejects",     threw && threw.code === "objectstore/presign-not-supported");
   } finally {
     b.storage._resetForTest();
     await teardownTestDb(tmpDir);

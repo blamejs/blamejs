@@ -403,7 +403,7 @@ async function testSessionRotateRequiresReqOnBound() {
     var err = null;
     try { await b.session.rotate(s.token); } catch (e) { err = e; }
     check("rotate on a bound session without req throws",
-      err && err.code === "ROTATE_FINGERPRINT_REQ_REQUIRED");
+      err && err.code === "session/rotate-fingerprint-req-required");
 
     // The throw happened before the UPDATE — the bound session is untouched.
     var still = await b.session.verify(s.token, { req: devA, requireFingerprintMatch: true });
@@ -434,11 +434,11 @@ async function testSessionAnonymousLifecycle() {
 
     var both = null;
     try { await b.session.create({ anonymous: true, userId: "u-x" }); } catch (e) { both = e; }
-    check("create rejects anonymous:true + userId together", both && both.code === "INVALID_ARG");
+    check("create rejects anonymous:true + userId together", both && both.code === "session/invalid-arg");
 
     var refuseAnon = null;
     try { await b.session.destroyAllForUser(info.userId); } catch (e) { refuseAnon = e; }
-    check("destroyAllForUser refuses an anon-prefix id", refuseAnon && refuseAnon.code === "INVALID_ARG");
+    check("destroyAllForUser refuses an anon-prefix id", refuseAnon && refuseAnon.code === "session/invalid-arg");
   } finally {
     await teardownTestDb(tmpDir);
   }

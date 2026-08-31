@@ -102,9 +102,9 @@ async function runErrorBranches() {
   check("serverGuard: allowDynamicRegister without allowlist refused",
         codeOf(function () { b.mcp.serverGuard({ requireBearer: false, allowDynamicRegister: true }); }) === "mcp/bad-opts");
   check("serverGuard: negative maxBodyBytes refused at construction",
-        codeOf(function () { b.mcp.serverGuard({ requireBearer: false, maxBodyBytes: -5 }); }) === "BAD_MAX_BYTES");
+        codeOf(function () { b.mcp.serverGuard({ requireBearer: false, maxBodyBytes: -5 }); }) === "mcp/bad-max-bytes");
   check("serverGuard: non-finite maxBodyBytes refused at construction",
-        codeOf(function () { b.mcp.serverGuard({ requireBearer: false, maxBodyBytes: Infinity }); }) === "BAD_MAX_BYTES");
+        codeOf(function () { b.mcp.serverGuard({ requireBearer: false, maxBodyBytes: Infinity }); }) === "mcp/bad-max-bytes");
 
   // ------------------------------------------------------------------
   // serverGuard — bearer-auth refusals

@@ -524,7 +524,7 @@ function _runVersionedListingOnEndpoint(label, endpoint, extraConfig) {
       check(P + "head of a never-written key should have thrown", false);
     } catch (e) { headThrew = e; }
     check(P + "head is the existence probe: NOT_FOUND for the never-written key",
-          headThrew && headThrew.code === "NOT_FOUND");
+          headThrew && headThrew.code === "objectstore/not-found");
 
     // ---- list() paged walk: max-keys + continuation-token ----
     var prefix = "page/";

@@ -395,7 +395,7 @@ async function testWaitForTimeoutFromSafeAsync() {
   try {
     await t.waitFor(function () { return false; }, { timeoutMs: 30, intervalMs: 5 });
   } catch (e) {
-    threw = e && /TIMEOUT/.test(e.code || "");
+    threw = e && e.code === "testing/timeout";
   }
   check("waitFor timeout maps async/timeout → TestingError TIMEOUT",
         threw);

@@ -125,7 +125,7 @@ async function testClusterNumericConfigValidation() {
         { backend: "cluster", cluster: nodeA }, overrides));
     } catch (e) { threw = e; }
     check("cluster-config: " + label,
-          threw && (threw.code === "BAD_OPT" || /BAD_OPT/.test(threw.code || "")));
+          threw && (threw.code === "pubsub/bad-opt" || threw.code === "pubsub-cluster/bad-opt"));
   }
 
   shouldThrow("rejects NaN-coercing pollIntervalMs", { pollIntervalMs: "30ms" });
@@ -216,13 +216,13 @@ async function testClosedRejectsPublishSubscribe() {
   try { ps.subscribe("c", function () {}); }
   catch (e) { threwSubscribe = e; }
   check("subscribe after close throws",
-        threwSubscribe && threwSubscribe.code === "CLOSED");
+        threwSubscribe && threwSubscribe.code === "pubsub/closed");
 
   var threwPublish = null;
   try { await ps.publish("c", null); }
   catch (e) { threwPublish = e; }
   check("publish after close throws",
-        threwPublish && threwPublish.code === "CLOSED");
+        threwPublish && threwPublish.code === "pubsub/closed");
 }
 
 async function testCacheInvalidationFanOut() {
@@ -332,22 +332,22 @@ async function testInputValidation() {
   function threw(fn) { try { fn(); return null; } catch (e) { return e; } }
 
   check("subscribe non-string channel throws BAD_OPT",
-        (threw(function () { ps.subscribe(42, function () {}); }) || {}).code === "BAD_OPT");
+        (threw(function () { ps.subscribe(42, function () {}); }) || {}).code === "pubsub/bad-opt");
   check("subscribe empty channel throws BAD_OPT",
-        (threw(function () { ps.subscribe("", function () {}); }) || {}).code === "BAD_OPT");
+        (threw(function () { ps.subscribe("", function () {}); }) || {}).code === "pubsub/bad-opt");
   check("subscribe non-function handler throws BAD_OPT",
-        (threw(function () { ps.subscribe("c", "nope"); }) || {}).code === "BAD_OPT");
+        (threw(function () { ps.subscribe("c", "nope"); }) || {}).code === "pubsub/bad-opt");
   check("subscribePattern empty pattern throws BAD_OPT",
-        (threw(function () { ps.subscribePattern("", function () {}); }) || {}).code === "BAD_OPT");
+        (threw(function () { ps.subscribePattern("", function () {}); }) || {}).code === "pubsub/bad-opt");
   check("subscribePattern non-function handler throws BAD_OPT",
-        (threw(function () { ps.subscribePattern("a.*", 7); }) || {}).code === "BAD_OPT");
+        (threw(function () { ps.subscribePattern("a.*", 7); }) || {}).code === "pubsub/bad-opt");
 
   var pubErr = null;
   try { await ps.publish(null, {}); } catch (e) { pubErr = e; }
-  check("publish non-string channel throws BAD_OPT", pubErr && pubErr.code === "BAD_OPT");
+  check("publish non-string channel throws BAD_OPT", pubErr && pubErr.code === "pubsub/bad-opt");
   var pubErr2 = null;
   try { await ps.publish("", {}); } catch (e) { pubErr2 = e; }
-  check("publish empty channel throws BAD_OPT", pubErr2 && pubErr2.code === "BAD_OPT");
+  check("publish empty channel throws BAD_OPT", pubErr2 && pubErr2.code === "pubsub/bad-opt");
   await ps.close();
 }
 
@@ -397,9 +397,9 @@ async function testUnsubscribeEdgeCases() {
 async function testBackendResolution() {
   function threw(fn) { try { fn(); return null; } catch (e) { return e; } }
   check("unknown backend string throws UNKNOWN_BACKEND",
-        (threw(function () { b.pubsub.create({ backend: "bogus" }); }) || {}).code === "UNKNOWN_BACKEND");
+        (threw(function () { b.pubsub.create({ backend: "bogus" }); }) || {}).code === "pubsub/unknown-backend");
   check("custom backend missing methods throws BAD_BACKEND",
-        (threw(function () { b.pubsub.create({ backend: { publishRemote: function () {} } }); }) || {}).code === "BAD_BACKEND");
+        (threw(function () { b.pubsub.create({ backend: { publishRemote: function () {} } }); }) || {}).code === "pubsub/bad-backend");
 
   var cap = makeCaptureBackend();
   var ps = b.pubsub.create({ backend: cap.backend });
@@ -536,10 +536,10 @@ async function testCloseIdempotentAndState() {
 
   var perr = null;
   try { await ps.publish("c1", null); } catch (e) { perr = e; }
-  check("publish after close throws CLOSED", perr && perr.code === "CLOSED");
+  check("publish after close throws CLOSED", perr && perr.code === "pubsub/closed");
   var serr = null;
   try { ps.subscribePattern("x.*", function () {}); } catch (e) { serr = e; }
-  check("subscribePattern after close throws CLOSED", serr && serr.code === "CLOSED");
+  check("subscribePattern after close throws CLOSED", serr && serr.code === "pubsub/closed");
 }
 
 async function run() {

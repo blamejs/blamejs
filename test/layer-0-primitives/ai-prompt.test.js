@@ -109,11 +109,11 @@ async function run() {
 
   threw = null;
   try { b.ai.prompt.template({ system: "s", user: "u" }, { maxBytes: Infinity, audit: false }); } catch (e) { threw = e; }
-  check("bad maxBytes throws", threw && threw.code === "BAD_MAX_BYTES");
+  check("bad maxBytes throws", threw && threw.code === "ai-prompt/bad-max-bytes");
 
   threw = null;
   try { b.ai.prompt.template({ system: "s", user: "u" }, { nonceBytes: -1, audit: false }); } catch (e) { threw = e; }
-  check("bad nonceBytes throws", threw && threw.code === "BAD_NONCE_BYTES");
+  check("bad nonceBytes throws", threw && threw.code === "ai-prompt/bad-nonce-bytes");
 
   // Oversized assembled prompt throws.
   threw = null;

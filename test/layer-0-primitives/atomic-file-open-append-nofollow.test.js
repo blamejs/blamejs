@@ -69,7 +69,7 @@ function run() {
         catch (e) { refusedCode = e && e.code; }
         if (sink) { try { sink.close(); } catch (_c) { /* ignore */ } }
         check("log-stream-local refuses to open a symlinked active log path",
-              refusedCode === "SYMLINK_REFUSED");
+              refusedCode === "log-stream-local/symlink-refused");
         check("log-stream-local never writes through the symlink to the victim",
               fs.readFileSync(logVictim, "utf8") === "VICTIM-LOG");
       }

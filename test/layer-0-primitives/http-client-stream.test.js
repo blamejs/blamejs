@@ -8,7 +8,7 @@
  *   - downloadStream success + hash returned even without expected
  *   - downloadStream hash-match path (atomic rename, dest written, tmp gone)
  *   - downloadStream hash-mismatch refuses, deletes tmp, throws
- *     httpclient/hash-mismatch, audits .refused
+ *     http-client/hash-mismatch, audits .refused
  *   - downloadStream HTTP error surfaces without dest write
  *   - downloadStream stages into an exclusive, no-follow temp file: the
  *     happy path round-trips and a symlink at the dest is replaced (not
@@ -130,7 +130,7 @@ async function testDownloadHashMismatch() {
       });
     } catch (e) { thrown = e; }
     check("downloadStream(hash mismatch): threw HttpClientError",
-          thrown != null && thrown.code === "httpclient/hash-mismatch");
+          thrown != null && thrown.code === "http-client/hash-mismatch");
     check("downloadStream(hash mismatch): dest NOT written",
           !fs.existsSync(dest));
     // No tmp file left behind anywhere in the parent dir
@@ -187,7 +187,7 @@ async function testStreamErrorBodyPreserved() {
         allowInternal:    true,
       });
     } catch (e) { thrown = e; }
-    check("stream non-2xx: threw HTTP_ERROR",       thrown != null && thrown.code === "HTTP_ERROR");
+    check("stream non-2xx: threw HTTP_ERROR",       thrown != null && thrown.code === "http-client/http-error");
     check("stream non-2xx: message names the status", thrown && /403/.test(thrown.message));
     check("stream non-2xx: err.body is a Buffer",   thrown && Buffer.isBuffer(thrown.body));
     check("stream non-2xx: err.body carries detail",
@@ -213,7 +213,7 @@ async function testStreamErrorBodyPreserved() {
       });
     } catch (e) { thrown = e; }
     check("stream large-error: threw HTTP_ERROR (did not hang)",
-          thrown != null && thrown.code === "HTTP_ERROR");
+          thrown != null && thrown.code === "http-client/http-error");
     check("stream large-error: body bounded well below sent size",
           thrown && thrown.body && thrown.body.length > 0 && thrown.body.length < BODY_LEN);
     check("stream large-error: tail beyond cap was dropped",
@@ -308,14 +308,14 @@ async function testDownloadBadOpts() {
     await b.httpClient.downloadStream({ url: "https://x.example", dest: "/tmp/x", hash: "md5" });
   } catch (e) { thrown = e; }
   check("downloadStream(bad hash alg): rejects at config time",
-        thrown != null && thrown.code === "httpclient/bad-opts");
+        thrown != null && thrown.code === "http-client/bad-opts");
 
   thrown = null;
   try {
     await b.httpClient.downloadStream({ url: "", dest: "/tmp/x" });
   } catch (e) { thrown = e; }
   check("downloadStream(empty url): rejects at config time",
-        thrown != null && thrown.code === "httpclient/bad-opts");
+        thrown != null && thrown.code === "http-client/bad-opts");
 }
 
 async function testUploadHappyPath() {
@@ -375,8 +375,8 @@ async function testUploadMissingFile() {
       allowInternal:    true,
     });
   } catch (e) { thrown = e; }
-  check("uploadMultipartStream(missing file): refuses with httpclient/missing-file",
-        thrown != null && thrown.code === "httpclient/missing-file");
+  check("uploadMultipartStream(missing file): refuses with http-client/missing-file",
+        thrown != null && thrown.code === "http-client/missing-file");
 }
 
 async function testUploadBadOpts() {
@@ -385,7 +385,7 @@ async function testUploadBadOpts() {
     await b.httpClient.uploadMultipartStream({ url: "https://x.example" });
   } catch (e) { thrown = e; }
   check("uploadMultipartStream(no file): rejects at config time",
-        thrown != null && thrown.code === "httpclient/bad-opts");
+        thrown != null && thrown.code === "http-client/bad-opts");
 }
 
 function testSurface() {

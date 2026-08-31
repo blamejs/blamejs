@@ -238,7 +238,7 @@ async function run() {
   // Bad maxSources opt throws
   threw = null;
   try { b.ai.input.classifyWithSources("hi", [], { maxSources: Infinity, audit: false }); } catch (e) { threw = e; }
-  check("cws rejects non-finite maxSources", threw && threw.code === "BAD_MAX_SOURCES");
+  check("cws rejects non-finite maxSources", threw && threw.code === "ai-input/bad-max-sources");
 }
 
 module.exports = { run: run };

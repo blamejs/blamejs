@@ -141,20 +141,20 @@ function testVerifyExtractionPathWindowsHazards() {
       e && (e.code || "").indexOf(code) !== -1);
   }
   // Windows reserved device names (bare + with extension + nested segment).
-  expectCode("CON", "filename.extraction-reserved-name");
-  expectCode("aux.txt", "filename.extraction-reserved-name");
-  expectCode("subdir/NUL", "filename.extraction-reserved-name");
-  expectCode("logs/COM1.log", "filename.extraction-reserved-name");
+  expectCode("CON", "filename/extraction-reserved-name");
+  expectCode("aux.txt", "filename/extraction-reserved-name");
+  expectCode("subdir/NUL", "filename/extraction-reserved-name");
+  expectCode("logs/COM1.log", "filename/extraction-reserved-name");
   // Superscript-digit COM/LPT spoof (U+00B9/B2/B3 — Windows folds to 1/2/3).
   // Built from codepoints so the test source stays pure-ASCII.
-  expectCode("COM" + String.fromCharCode(0xB9), "filename.extraction-reserved-name");
-  expectCode("sub/LPT" + String.fromCharCode(0xB3), "filename.extraction-reserved-name");
+  expectCode("COM" + String.fromCharCode(0xB9), "filename/extraction-reserved-name");
+  expectCode("sub/LPT" + String.fromCharCode(0xB3), "filename/extraction-reserved-name");
   // NTFS alternate data streams.
-  expectCode("file.txt:evil.exe", "filename.extraction-ntfs-ads");
-  expectCode("dir/data.bin:$DATA", "filename.extraction-ntfs-ads");
+  expectCode("file.txt:evil.exe", "filename/extraction-ntfs-ads");
+  expectCode("dir/data.bin:$DATA", "filename/extraction-ntfs-ads");
   // Trailing dot / leading-or-trailing whitespace (Windows strips → collision).
-  expectCode("secret.txt.", "filename.extraction-leading-trailing");
-  expectCode("name with trailing space ", "filename.extraction-leading-trailing");
+  expectCode("secret.txt.", "filename/extraction-leading-trailing");
+  expectCode("name with trailing space ", "filename/extraction-leading-trailing");
 
   // Opt-outs accept the name (then pass the realpath leg into a real root).
   function expectAccept(name, opts) {

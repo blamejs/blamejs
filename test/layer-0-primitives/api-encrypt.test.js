@@ -78,10 +78,10 @@ async function testNonceStoreMemoryRejectsBadInput() {
   var store = b.nonceStore.create({ backend: "memory" });
   var threw = null;
   try { await store.checkAndInsert("", Date.now() + 60_000); } catch (e) { threw = e; }
-  check("empty nonce rejected",                  threw && threw.code === "INVALID_NONCE");
+  check("empty nonce rejected",                  threw && threw.code === "nonce-store/invalid-nonce");
   threw = null;
   try { await store.checkAndInsert("x", "later"); } catch (e) { threw = e; }
-  check("non-number expireAt rejected",          threw && threw.code === "INVALID_EXPIRE");
+  check("non-number expireAt rejected",          threw && threw.code === "nonce-store/invalid-expire");
   store.close();
 }
 
@@ -184,7 +184,7 @@ async function testNonceStoreCustomBackend() {
 async function testNonceStoreUnknownBackend() {
   var threw = null;
   try { b.nonceStore.create({ backend: "memcached" }); } catch (e) { threw = e; }
-  check("unknown backend rejected",              threw && threw.code === "UNKNOWN_BACKEND");
+  check("unknown backend rejected",              threw && threw.code === "nonce-store/unknown-backend");
 }
 
 // ---- api-encrypt middleware ----
@@ -192,15 +192,15 @@ async function testNonceStoreUnknownBackend() {
 async function testApiEncryptKeypairValidated() {
   var threw = null;
   try { b.middleware.apiEncrypt({}); } catch (e) { threw = e; }
-  check("missing keypair rejected at create",   threw && threw.code === "INVALID_KEYPAIR");
+  check("missing keypair rejected at create",   threw && threw.code === "api-encrypt/invalid-keypair");
   threw = null;
   try {
     b.middleware.apiEncrypt({ keypair: { publicKey: "pem", privateKey: "pem" } });
   } catch (e) { threw = e; }
-  check("non-hybrid keypair rejected",           threw && threw.code === "INVALID_KEYPAIR");
+  check("non-hybrid keypair rejected",           threw && threw.code === "api-encrypt/invalid-keypair");
   threw = null;
   try { b.middleware.apiEncrypt({ keypairs: [] }); } catch (e) { threw = e; }
-  check("empty keypairs array rejected",         threw && threw.code === "INVALID_KEYPAIR");
+  check("empty keypairs array rejected",         threw && threw.code === "api-encrypt/invalid-keypair");
 }
 
 async function testApiEncryptMultiKeypairRotation() {
@@ -509,10 +509,10 @@ async function testApiEncryptAuditEmit() {
 async function testApiEncryptClientRejectsBadPubkey() {
   var threw = null;
   try { b.middleware.apiEncrypt.client({ pubkey: null }); } catch (e) { threw = e; }
-  check("client rejects null pubkey",             threw && threw.code === "CLIENT_INVALID_PUBKEY");
+  check("client rejects null pubkey",             threw && threw.code === "api-encrypt/client-invalid-pubkey");
   threw = null;
   try { b.middleware.apiEncrypt.client({ pubkey: { publicKey: "pem" } }); } catch (e) { threw = e; }
-  check("client rejects non-hybrid pubkey",       threw && threw.code === "CLIENT_INVALID_PUBKEY");
+  check("client rejects non-hybrid pubkey",       threw && threw.code === "api-encrypt/client-invalid-pubkey");
 }
 
 async function testApiEncryptContentTypeScoping() {
@@ -657,13 +657,13 @@ async function testApiEncryptHttpClientHelperShape() {
   var threw = null;
   try { await enc.request({ method: "POST", body: { x: 1 } }); }
   catch (e) { threw = e; }
-  check("rejects request without url or path",     threw && threw.code === "CLIENT_INVALID_URL");
+  check("rejects request without url or path",     threw && threw.code === "api-encrypt/client-invalid-url");
 
   // Reject path without baseUrl
   threw = null;
   try { await enc.request({ path: "/foo", body: { x: 1 } }); }
   catch (e) { threw = e; }
-  check("rejects path without baseUrl",            threw && threw.code === "CLIENT_INVALID_URL");
+  check("rejects path without baseUrl",            threw && threw.code === "api-encrypt/client-invalid-url");
 }
 
 async function testApiEncryptHttpClientRoundTrip() {
@@ -730,7 +730,7 @@ async function testApiEncryptClientRejectsBadResponse() {
   var call = clientCtx.encryptRequest({ x: 1 });
   var threw = null;
   try { call.decryptResponse({}); } catch (e) { threw = e; }
-  check("client rejects response missing _ct",    threw && threw.code === "CLIENT_RESPONSE_SHAPE");
+  check("client rejects response missing _ct",    threw && threw.code === "api-encrypt/client-response-shape");
 }
 
 async function testApiEncryptEncryptedErrorReadback() {
@@ -1098,7 +1098,7 @@ async function testApiEncryptPerSessionResponseCounterMonotonic() {
   threw = null;
   try { second.decryptResponse(resp1); } catch (e) { threw = e; }
   check("client rejects replayed response (counter not strictly increasing)",
-        threw && threw.code === "CLIENT_RESPONSE_REPLAY");
+        threw && threw.code === "api-encrypt/client-response-replay");
 }
 
 async function testApiEncryptPerSessionSessionInfo() {
@@ -1498,7 +1498,7 @@ async function testApiEncryptEnvelopeMetadataAadBound() {
   var threw = null;
   try { c1.decryptResponse(forged); } catch (e) { threw = e; }
   check("aad: response replay under a bumped _ctr refused typed",
-        threw !== null && threw.code === "CLIENT_RESPONSE_TAMPERED");
+        threw !== null && threw.code === "api-encrypt/client-response-tampered");
   // The refused forgery must NOT have advanced the monotonic counter —
   // the genuine response still decrypts after the attack attempt.
   var plain = c1.decryptResponse(resp1);
@@ -1540,28 +1540,28 @@ async function testApiEncryptKeypairNonObjectAndMissingFields() {
   // from the ecPublicKey guard the existing suite already trips.
   var threw = null;
   try { b.middleware.apiEncrypt({ keypairs: [null] }); } catch (e) { threw = e; }
-  check("keypairs entry that is null rejected", threw && threw.code === "INVALID_KEYPAIR");
+  check("keypairs entry that is null rejected", threw && threw.code === "api-encrypt/invalid-keypair");
   threw = null;
   try { b.middleware.apiEncrypt({ keypair: "not-an-object" }); } catch (e) { threw = e; }
-  check("keypair that is a string rejected", threw && threw.code === "INVALID_KEYPAIR");
+  check("keypair that is a string rejected", threw && threw.code === "api-encrypt/invalid-keypair");
   threw = null;
   try { b.middleware.apiEncrypt({ keypair: {} }); } catch (e) { threw = e; }
   check("keypair missing publicKey/privateKey rejected",
-        threw && threw.code === "INVALID_KEYPAIR" && /publicKey \+ \.privateKey/.test(threw.message));
+        threw && threw.code === "api-encrypt/invalid-keypair" && /publicKey \+ \.privateKey/.test(threw.message));
   // create() with no args at all — the `opts || {}` default plus the
   // no-keypair-provided throw.
   threw = null;
   try { b.middleware.apiEncrypt(); } catch (e) { threw = e; }
   check("apiEncrypt() with no args rejected (missing keypair)",
-        threw && threw.code === "INVALID_KEYPAIR");
+        threw && threw.code === "api-encrypt/invalid-keypair");
   // client()/httpClient() with no args — the `opts || {}` default plus
   // the missing-pubkey throw.
   threw = null;
   try { b.middleware.apiEncrypt.client(); } catch (e) { threw = e; }
-  check("apiEncrypt.client() with no args rejected", threw && threw.code === "CLIENT_INVALID_PUBKEY");
+  check("apiEncrypt.client() with no args rejected", threw && threw.code === "api-encrypt/client-invalid-pubkey");
   threw = null;
   try { b.httpClient.encrypted(); } catch (e) { threw = e; }
-  check("httpClient.encrypted() with no args rejected", threw && threw.code === "CLIENT_INVALID_PUBKEY");
+  check("httpClient.encrypted() with no args rejected", threw && threw.code === "api-encrypt/client-invalid-pubkey");
 }
 
 async function testApiEncryptCreateOptionDefaultsTaken() {
@@ -2154,7 +2154,7 @@ async function testApiEncryptClientRejectsBadKeying() {
   var threw = null;
   try { b.middleware.apiEncrypt.client({ pubkey: keypair, keying: "hourly" }); }
   catch (e) { threw = e; }
-  check("client rejects bogus keying value", threw && threw.code === "CLIENT_BAD_OPT");
+  check("client rejects bogus keying value", threw && threw.code === "api-encrypt/client-bad-opt");
 }
 
 async function testApiEncryptClientResponseShapeSidCtrGuards() {
@@ -2167,7 +2167,7 @@ async function testApiEncryptClientResponseShapeSidCtrGuards() {
   var threw = null;
   try { boot.decryptResponse({ _sid: sid, _ctr: 1 }); } catch (e) { threw = e; }  // no _ct
   check("client per-session response missing _ct: CLIENT_RESPONSE_SHAPE",
-        threw && threw.code === "CLIENT_RESPONSE_SHAPE");
+        threw && threw.code === "api-encrypt/client-response-shape");
 
   threw = null;
   try {
@@ -2175,14 +2175,14 @@ async function testApiEncryptClientResponseShapeSidCtrGuards() {
                            _sid: "00000000-0000-4000-8000-000000000000", _ctr: 1 });
   } catch (e) { threw = e; }
   check("client per-session response wrong _sid: CLIENT_RESPONSE_SID",
-        threw && threw.code === "CLIENT_RESPONSE_SID");
+        threw && threw.code === "api-encrypt/client-response-sid");
 
   threw = null;
   try {
     boot.decryptResponse({ _ct: Buffer.from("x").toString("base64"), _sid: sid, _ctr: "nope" });
   } catch (e) { threw = e; }
   check("client per-session response non-numeric _ctr: CLIENT_RESPONSE_REPLAY",
-        threw && threw.code === "CLIENT_RESPONSE_REPLAY");
+        threw && threw.code === "api-encrypt/client-response-replay");
 }
 
 async function testApiEncryptPerRequestClientRejectsTamperedResponse() {
@@ -2197,7 +2197,7 @@ async function testApiEncryptPerRequestClientRejectsTamperedResponse() {
     call.decryptResponse({ _ct: b.crypto.generateBytes(64).toString("base64") });
   } catch (e) { threw = e; }
   check("per-request client: garbage response ciphertext refused typed",
-        threw && threw.code === "CLIENT_RESPONSE_TAMPERED");
+        threw && threw.code === "api-encrypt/client-response-tampered");
 }
 
 async function testApiEncryptClientNullPayloadDefaults() {
@@ -2221,7 +2221,7 @@ async function testApiEncryptHttpClientOptionValidation() {
   var threw = null;
   try { b.httpClient.encrypted({ pubkey: keypair, responseMode: "swallow" }); }
   catch (e) { threw = e; }
-  check("httpClient.encrypted: bad responseMode default rejected", threw && threw.code === "CLIENT_BAD_OPT");
+  check("httpClient.encrypted: bad responseMode default rejected", threw && threw.code === "api-encrypt/client-bad-opt");
 
   // maxDecryptedBytes + keying overrides build cleanly (the non-default
   // ternary branches).
@@ -2236,14 +2236,14 @@ async function testApiEncryptHttpClientOptionValidation() {
   try { await enc.request({ url: "http://127.0.0.1:1/x", responseMode: "swallow" }); }
   catch (e) { threw = e; }
   check("httpClient.encrypted.request: bad per-call responseMode rejected",
-        threw && threw.code === "CLIENT_BAD_OPT");
+        threw && threw.code === "api-encrypt/client-bad-opt");
 
   // request() with no args at all resolves through `reqOpts || {}` into the
   // url-required throw.
   threw = null;
   try { await enc.request(); } catch (e) { threw = e; }
   check("httpClient.encrypted.request(): no args rejected (url required)",
-        threw && threw.code === "CLIENT_INVALID_URL");
+        threw && threw.code === "api-encrypt/client-invalid-url");
 }
 
 async function testApiEncryptHttpClientUrlFormsAndBodyless() {
@@ -2321,7 +2321,7 @@ async function testApiEncryptHttpClientEmptyAndNonJsonBodies() {
     try { await enc.request(Object.assign({ path: "/junk", body: { x: 1 } }, common)); }
     catch (e) { threw = e; }
     check("httpClient non-JSON body: CLIENT_RESPONSE_NOT_JSON",
-          threw && threw.code === "CLIENT_RESPONSE_NOT_JSON");
+          threw && threw.code === "api-encrypt/client-response-not-json");
   } finally {
     server.close();
   }

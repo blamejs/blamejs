@@ -392,7 +392,7 @@ async function run() {
         return b.externalDb.query(
           "WITH src AS (SELECT 'o-cte' AS id) INSERT INTO orders (id) SELECT id FROM src", []);
       },
-      "RESIDENCY_GATE_REQUIRED");
+      "external-db/residency-gate-required");
   });
   // The refused CTE write never reached Postgres.
   var cteCheck = _psql("SELECT count(*) AS n FROM orders WHERE id = 'o-cte';");
@@ -420,7 +420,7 @@ async function run() {
           ["o-us", "us", 1],
           { rowResidencyTag: "us" });
       },
-      "RESIDENCY_TAG_MISMATCH");
+      "external-db/residency-tag-mismatch");
   });
   var usCheck = _psql("SELECT count(*) AS n FROM orders WHERE id = 'o-us';");
   check("residency: refused cross-border write did NOT persist", /\b0\b/.test(usCheck.trim()));
@@ -442,7 +442,7 @@ async function run() {
         return b.externalDb.query(
           "INSERT INTO orders (id) VALUES ($1)", ["o-untagged"]);
       },
-      "RESIDENCY_GATE_REQUIRED");
+      "external-db/residency-gate-required");
   });
   var untaggedCheck = _psql("SELECT count(*) AS n FROM orders WHERE id = 'o-untagged';");
   check("residency: untagged-refused write did NOT persist", /\b0\b/.test(untaggedCheck.trim()));

@@ -134,7 +134,7 @@ async function testNoDeclarationStillRefuses() {
     try { await b.cluster.init(_initOpts("vk-undeclared")); }
     catch (e) { threw = e; }
     check("undeclared mismatch throws", threw !== null);
-    check("undeclared mismatch is VAULT_KEY_DRIFT", threw && threw.code === "VAULT_KEY_DRIFT");
+    check("undeclared mismatch is VAULT_KEY_DRIFT", threw && threw.code === "cluster/vault-key-drift");
     var post = await _readState();
     check("undeclared mismatch left the canonical row untouched", post.vaultKeyFp === BOGUS_FP);
   } finally { await ctx.teardown(); }
@@ -172,7 +172,7 @@ async function testExpectedFpMismatchRefuses() {
     } catch (e) { threw = e; }
     check("blessed-but-wrong key throws", threw !== null);
     check("blessed-but-wrong key is VAULT_KEY_ROTATION_MISMATCH",
-          threw && threw.code === "VAULT_KEY_ROTATION_MISMATCH");
+          threw && threw.code === "cluster/vault-key-rotation-mismatch");
     var post = await _readState();
     check("blessed-but-wrong key left the canonical row untouched", post.vaultKeyFp === BOGUS_FP);
   } finally { await ctx.teardown(); }
@@ -205,19 +205,19 @@ async function testConfigValidation() {
     var t1 = null;
     try { await b.cluster.init(_initOpts("vk-cfg1", { acceptVaultKeyRotation: "yes" })); }
     catch (e) { t1 = e; }
-    check("non-boolean acceptVaultKeyRotation throws", t1 && t1.code === "INVALID_CONFIG");
+    check("non-boolean acceptVaultKeyRotation throws", t1 && t1.code === "cluster/invalid-config");
 
     b.cluster._resetForTest();
     var t2 = null;
     try { await b.cluster.init(_initOpts("vk-cfg2", { expectedVaultKeyFp: "not-hex" })); }
     catch (e) { t2 = e; }
-    check("non-hex expectedVaultKeyFp throws", t2 && t2.code === "INVALID_CONFIG");
+    check("non-hex expectedVaultKeyFp throws", t2 && t2.code === "cluster/invalid-config");
 
     b.cluster._resetForTest();
     var t3 = null;
     try { await b.cluster.init(_initOpts("vk-cfg3", { expectedVaultKeyFp: BOGUS_FP })); }
     catch (e) { t3 = e; }
-    check("expectedVaultKeyFp without acceptVaultKeyRotation throws", t3 && t3.code === "INVALID_CONFIG");
+    check("expectedVaultKeyFp without acceptVaultKeyRotation throws", t3 && t3.code === "cluster/invalid-config");
   } finally { await ctx.teardown(); }
 }
 

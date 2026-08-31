@@ -173,7 +173,7 @@ function testValidateMaxBytesByteAccurate() {
 function testValidateMaxBytesInfinityThrows() {
   var threw = false;
   try { b.guardText.validate("x", { profile: "strict", maxBytes: Infinity }); }
-  catch (e) { threw = e && e.code === "text.bad-opt"; }
+  catch (e) { threw = e && e.code === "text/bad-opt"; }
   check("maxBytes Infinity throws config-time",  threw === true);
 }
 

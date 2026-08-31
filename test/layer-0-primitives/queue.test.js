@@ -26,12 +26,12 @@ function testBootFromEnvRejectsUnknownProtocol() {
   b.queue._resetForTest();
   var threw = null;
   try { b.queue.bootFromEnv({ env: { BLAMEJS_QUEUE_PROTOCOL: "wibble" } }); } catch (e) { threw = e; }
-  check("queue.bootFromEnv rejects an unknown protocol", threw && threw.code === "INVALID_CONFIG");
+  check("queue.bootFromEnv rejects an unknown protocol", threw && threw.code === "queue/invalid-config");
   // The failed boot left the queue uninitialized (the throw was pre-init).
   var listThrew = null;
   try { b.queue.listBackends(); } catch (e) { listThrew = e; }
   check("queue stays uninitialized after a rejected boot",
-        listThrew && listThrew.code === "NOT_INITIALIZED");
+        listThrew && listThrew.code === "queue/not-initialized");
 }
 
 function testBootFromEnvRedisRequiresUrl() {
@@ -39,7 +39,7 @@ function testBootFromEnvRedisRequiresUrl() {
   var threw = null;
   try { b.queue.bootFromEnv({ env: { BLAMEJS_QUEUE_PROTOCOL: "redis" } }); } catch (e) { threw = e; }
   check("queue.bootFromEnv redis without URL throws INVALID_CONFIG",
-        threw && threw.code === "INVALID_CONFIG");
+        threw && threw.code === "queue/invalid-config");
 }
 
 function testBootFromEnvLocalDefault() {
@@ -79,11 +79,11 @@ function testInitRequiresBackends() {
   b.queue._resetForTest();
   var threw = null;
   try { b.queue.init(); } catch (e) { threw = e; }
-  check("init() with no opts throws INVALID_CONFIG", threw && threw.code === "INVALID_CONFIG");
+  check("init() with no opts throws INVALID_CONFIG", threw && threw.code === "queue/invalid-config");
 
   threw = null;
   try { b.queue.init({}); } catch (e) { threw = e; }
-  check("init({}) without backends throws INVALID_CONFIG", threw && threw.code === "INVALID_CONFIG");
+  check("init({}) without backends throws INVALID_CONFIG", threw && threw.code === "queue/invalid-config");
   b.queue._resetForTest();
 }
 
@@ -280,21 +280,21 @@ async function testMutatingOpsValidation() {
 
     var threw = null;
     try { await b.queue.enqueue(); } catch (e) { threw = e; }
-    check("enqueue without queueName throws MISSING_QUEUE", threw && threw.code === "MISSING_QUEUE");
+    check("enqueue without queueName throws MISSING_QUEUE", threw && threw.code === "queue/missing-queue");
 
     threw = null;
     try { b.queue.enqueue("q", {}, { backend: "ghost" }); } catch (e) { threw = e; }
     check("enqueue with unknown backend throws UNKNOWN_BACKEND",
-          threw && threw.code === "UNKNOWN_BACKEND");
+          threw && threw.code === "queue/unknown-backend");
 
     threw = null;
     try { b.queue.consume(); } catch (e) { threw = e; }
-    check("consume without queueName throws MISSING_QUEUE", threw && threw.code === "MISSING_QUEUE");
+    check("consume without queueName throws MISSING_QUEUE", threw && threw.code === "queue/missing-queue");
 
     threw = null;
     try { b.queue.consume("q", "not-a-fn"); } catch (e) { threw = e; }
     check("consume with a non-function handler throws INVALID_HANDLER",
-          threw && threw.code === "INVALID_HANDLER");
+          threw && threw.code === "queue/invalid-handler");
   } finally {
     try { await b.queue.shutdown({ timeoutMs: 500 }); } catch (_e) {}
     await teardownTestDb(tmpDir);
@@ -392,7 +392,7 @@ async function testEnqueueFlowValidation() {
     async function code(label, spec, expectFragment) {
       var threw = null;
       try { await b.queue.enqueueFlow(spec); } catch (e) { threw = e; }
-      check(label, threw && threw.code === "BAD_FLOW" &&
+      check(label, threw && threw.code === "queue/bad-flow" &&
             (!expectFragment || threw.message.indexOf(expectFragment) !== -1));
     }
     await code("flow: rejects a non-object spec", "nope");
@@ -417,7 +417,7 @@ async function testEnqueueFlowValidation() {
         { name: "b", payload: {}, dependsOn: ["a"] },
       ]});
     } catch (e) { threw = e; }
-    check("flow: detects a cycle (FLOW_CYCLE)", threw && threw.code === "FLOW_CYCLE");
+    check("flow: detects a cycle (FLOW_CYCLE)", threw && threw.code === "queue/flow-cycle");
 
     threw = null;
     try {
@@ -426,7 +426,7 @@ async function testEnqueueFlowValidation() {
       ]});
     } catch (e) { threw = e; }
     check("flow: rejects an unknown dependency (FLOW_UNKNOWN_DEP)",
-          threw && threw.code === "FLOW_UNKNOWN_DEP");
+          threw && threw.code === "queue/flow-unknown-dep");
   } finally {
     try { await b.queue.shutdown({ timeoutMs: 500 }); } catch (_e) {}
     await teardownTestDb(tmpDir);
@@ -459,14 +459,14 @@ async function testSqsBackendUnsupportedSurfaces() {
       check(label, threw && threw.code === expectedCode);
     }
     await rejectsCode("sqs: dlqList rejects DLQ_UNSUPPORTED",
-                      b.queue.dlqList("q"), "DLQ_UNSUPPORTED");
+                      b.queue.dlqList("q"), "queue/dlq-unsupported");
     await rejectsCode("sqs: dlqRetry rejects DLQ_UNSUPPORTED",
-                      b.queue.dlqRetry("job-1"), "DLQ_UNSUPPORTED");
+                      b.queue.dlqRetry("job-1"), "queue/dlq-unsupported");
     await rejectsCode("sqs: dlqSize rejects DLQ_UNSUPPORTED",
-                      b.queue.dlqSize("q"), "DLQ_UNSUPPORTED");
+                      b.queue.dlqSize("q"), "queue/dlq-unsupported");
     await rejectsCode("sqs: enqueueFlow rejects FLOW_UNSUPPORTED",
                       b.queue.enqueueFlow({ queueName: "q", children: [{ name: "a", payload: {} }] }),
-                      "FLOW_UNSUPPORTED");
+                      "queue/flow-unsupported");
     // tick drives the framework-side lifecycle — lease by count, complete/fail
     // by jobId, framework backoff and DLQ. SQS completes by receiptHandle and
     // owns redelivery server-side, so tick would call complete/fail without the
@@ -474,7 +474,7 @@ async function testSqsBackendUnsupportedSurfaces() {
     // It refuses for the same reason consume does not drive sqs either.
     await rejectsCode("sqs: tick rejects TICK_UNSUPPORTED",
                       b.queue.tick({ queue: "q", handler: function () {} }),
-                      "TICK_UNSUPPORTED");
+                      "queue/tick-unsupported");
   } finally {
     b.queue._resetForTest();
   }
@@ -618,14 +618,14 @@ async function testInitCanRunWithoutASweepTimer() {
     b.queue.init({ backends: { primary: { protocol: "local" } }, sweepIntervalMs: -1 });
   } catch (e) { bad = e; }
   check("timerless init: a negative sweep interval is refused",
-    bad && bad.code === "INVALID_CONFIG");
+    bad && bad.code === "queue/invalid-config");
   b.queue._resetForTest();
   var frac = null;
   try {
     b.queue.init({ backends: { primary: { protocol: "local" } }, sweepIntervalMs: 1.5 });
   } catch (e) { frac = e; }
   check("timerless init: a fractional sweep interval is refused",
-    frac && frac.code === "INVALID_CONFIG");
+    frac && frac.code === "queue/invalid-config");
 
   // The refusal must leave NOTHING behind. `backends` and `defaultBackend` are
   // module-level and a later init does not clear them, so validating after
@@ -634,7 +634,7 @@ async function testInitCanRunWithoutASweepTimer() {
   var leaked = null;
   try { b.queue.listBackends(); } catch (e) { leaked = e; }
   check("timerless init: a refused init registered no backends",
-    leaked && leaked.code === "NOT_INITIALIZED");
+    leaked && leaked.code === "queue/not-initialized");
   b.queue._resetForTest();
 }
 
@@ -739,7 +739,7 @@ async function testTickValidation() {
   b.queue._resetForTest();
   var uninit = null;
   try { await b.queue.tick({ queue: "q", handler: function () {} }); } catch (e) { uninit = e; }
-  check("tick: refuses before init", uninit && uninit.code === "NOT_INITIALIZED");
+  check("tick: refuses before init", uninit && uninit.code === "queue/not-initialized");
 }
 
 async function testTickOptionRefusals() {
@@ -752,17 +752,17 @@ async function testTickOptionRefusals() {
       try { await b.queue.tick(opts); return null; } catch (e) { return e.code; }
     }
     check("tick: refuses a missing queue",
-      (await code({ handler: function () {} })) === "MISSING_QUEUE");
+      (await code({ handler: function () {} })) === "queue/missing-queue");
     check("tick: refuses a missing handler",
-      (await code({ queue: "q" })) === "INVALID_HANDLER");
+      (await code({ queue: "q" })) === "queue/invalid-handler");
     check("tick: refuses a non-integer max",
-      (await code({ queue: "q", handler: function () {}, max: 1.5 })) === "BAD_MAX");
+      (await code({ queue: "q", handler: function () {}, max: 1.5 })) === "queue/bad-max");
     check("tick: refuses a zero max",
-      (await code({ queue: "q", handler: function () {}, max: 0 })) === "BAD_MAX");
+      (await code({ queue: "q", handler: function () {}, max: 0 })) === "queue/bad-max");
     check("tick: refuses a negative leaseMs",
-      (await code({ queue: "q", handler: function () {}, leaseMs: -1 })) === "BAD_LEASE");
+      (await code({ queue: "q", handler: function () {}, leaseMs: -1 })) === "queue/bad-lease");
     check("tick: refuses a zero concurrency",
-      (await code({ queue: "q", handler: function () {}, concurrency: 0 })) === "BAD_CONCURRENCY");
+      (await code({ queue: "q", handler: function () {}, concurrency: 0 })) === "queue/bad-concurrency");
   } finally {
     await b.queue.shutdown({ timeoutMs: 2000 });
     await teardownTestDb(tmpDir);

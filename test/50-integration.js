@@ -150,7 +150,7 @@ async function testClusterGatesObjectStoreLocal() {
     try { await backend.get("nope"); }
     catch (e) { threwGet = e; }
     check("object-store-local.get not gated by cluster",
-          threwGet && threwGet.code === "NOT_FOUND");
+          threwGet && threwGet.code === "objectstore/not-found");
   } finally {
     await fx.teardown();
   }

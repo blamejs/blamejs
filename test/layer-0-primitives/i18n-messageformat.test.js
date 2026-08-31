@@ -126,11 +126,11 @@ async function testParseRejections() {
     check("parse rejects: " + label,
           threw && codeRe.test(threw.code || ""));
   }
-  shouldThrow("non-string input", 123, /BAD_TEMPLATE/);
-  shouldThrow("plural without other", "{n, plural, =1 {x}}", /BAD_TEMPLATE/);
-  shouldThrow("select without other", "{g, select, m {x}}", /BAD_TEMPLATE/);
-  shouldThrow("unsupported type", "{x, number, integer}", /BAD_TEMPLATE/);
-  shouldThrow("missing argument name", "{,plural,other {x}}", /BAD_TEMPLATE/);
+  shouldThrow("non-string input", 123, /i18n-messageformat\/bad-template/);
+  shouldThrow("plural without other", "{n, plural, =1 {x}}", /i18n-messageformat\/bad-template/);
+  shouldThrow("select without other", "{g, select, m {x}}", /i18n-messageformat\/bad-template/);
+  shouldThrow("unsupported type", "{x, number, integer}", /i18n-messageformat\/bad-template/);
+  shouldThrow("missing argument name", "{,plural,other {x}}", /i18n-messageformat\/bad-template/);
 }
 
 async function testFormatRejections() {
@@ -139,7 +139,7 @@ async function testFormatRejections() {
   try { mf.format("{n, plural, other {ok}}", { n: "not a number" }); }
   catch (e) { threw = e; }
   check("plural with non-numeric arg throws BAD_VAR",
-        threw && /BAD_VAR/.test(threw.code || ""));
+        threw && /i18n-messageformat\/bad-var/.test(threw.code || ""));
 }
 
 async function testLooksLikeMessageFormat() {
@@ -194,7 +194,7 @@ async function testDepthCap() {
   var threw = null;
   try { mf.parse(deepSelect(4000)); } catch (e) { threw = e; }
   check("parse rejects pathologically deep nesting with typed BAD_TEMPLATE (not RangeError)",
-        threw && /BAD_TEMPLATE/.test(threw.code || ""));
+        threw && /i18n-messageformat\/bad-template/.test(threw.code || ""));
   // A legitimately nested template (a select inside a plural) still renders.
   check("legit nested template still renders",
         mf.format("{count, plural, =0 {no {gender, select, female {girls} other {people}}} other {# items}}",

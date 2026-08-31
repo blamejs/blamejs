@@ -227,6 +227,31 @@ function run() {
     dryRun:      "optional-boolean",
     hook:        "optional-function",
   }, "svc", E, CODE) === opts);
+
+  // A caller that supplies no code gets the default its own call named. The
+  // two branches inside the validator answer that question separately: one
+  // routes through errorClass.factory, the other through the constructor,
+  // and only the constructor branch was reading the caller's default. A
+  // class with a factory therefore reported a different code than the same
+  // call against a class without one, for the same failure.
+  function ClassWithFactory(code, msg) { this.code = code; this.message = msg; }
+  ClassWithFactory.factory = function (code, msg) { return new ClassWithFactory(code, msg); };
+  function ClassNoFactory(code, msg) { this.code = code; this.message = msg; }
+
+  var viaFactory = null;
+  try { validateOpts.requireObject(null, "t.call", ClassWithFactory); }
+  catch (e) { viaFactory = e; }
+  var viaCtor = null;
+  try { validateOpts.requireObject(null, "t.call", ClassNoFactory); }
+  catch (e) { viaCtor = e; }
+
+  check("a missing-object refusal reports the same code with and without a factory",
+        viaFactory && viaCtor && viaFactory.code === viaCtor.code,
+        "factory=" + (viaFactory && viaFactory.code) +
+        " ctor=" + (viaCtor && viaCtor.code));
+  check("that code is the namespaced default the call named",
+        viaFactory && viaFactory.code === "validate-opts/bad-object",
+        String(viaFactory && viaFactory.code));
 }
 
 module.exports = { run: run };

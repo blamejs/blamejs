@@ -147,12 +147,12 @@ async function run() {
   var threwBadCache = null;
   try { b.dualControl.create({ namespace: "x", cache: {} }); }
   catch (e) { threwBadCache = e; }
-  check("create: rejects non-cache opts.cache", threwBadCache && /BAD_OPT/.test(threwBadCache.code || ""));
+  check("create: rejects non-cache opts.cache", threwBadCache && /dual-control\/bad-opt/.test(threwBadCache.code || ""));
 
   var threwBadMin = null;
   try { b.dualControl.create({ namespace: "x", cache: cache, minApprovers: 1 }); }
   catch (e) { threwBadMin = e; }
-  check("create: rejects minApprovers < 2",   threwBadMin && /BAD_OPT/.test(threwBadMin.code || ""));
+  check("create: rejects minApprovers < 2",   threwBadMin && /dual-control\/bad-opt/.test(threwBadMin.code || ""));
 
   // ---------------------------------------------------------------------------
   // Adversarial / error-branch coverage — every path must FAIL CLOSED.
@@ -161,21 +161,21 @@ async function run() {
   // ---- request(): argument validation (typed refusal, never a crash) ----
   var reqThrewNoArgs = null;
   try { await approvals.request(); } catch (e) { reqThrewNoArgs = e; }
-  check("request: no args → typed BAD_ARG", reqThrewNoArgs && /BAD_ARG/.test(reqThrewNoArgs.code || ""));
+  check("request: no args → typed BAD_ARG", reqThrewNoArgs && /dual-control\/bad-arg/.test(reqThrewNoArgs.code || ""));
 
   var reqThrewNoAction = null;
   try { await approvals.request({ requestedBy: { id: "alice" } }); } catch (e) { reqThrewNoAction = e; }
-  check("request: missing action → typed BAD_ARG", reqThrewNoAction && /BAD_ARG/.test(reqThrewNoAction.code || ""));
+  check("request: missing action → typed BAD_ARG", reqThrewNoAction && /dual-control\/bad-arg/.test(reqThrewNoAction.code || ""));
 
   var reqThrewNoActor = null;
   try { await approvals.request({ action: "x", requestedBy: {} }); } catch (e) { reqThrewNoActor = e; }
   check("request: requestedBy without stable id → typed BAD_ARG",
-        reqThrewNoActor && /BAD_ARG/.test(reqThrewNoActor.code || ""));
+        reqThrewNoActor && /dual-control\/bad-arg/.test(reqThrewNoActor.code || ""));
 
   var reqThrewNullActor = null;
   try { await approvals.request({ action: "x", requestedBy: null }); } catch (e) { reqThrewNullActor = e; }
   check("request: null requestedBy → typed BAD_ARG",
-        reqThrewNullActor && /BAD_ARG/.test(reqThrewNullActor.code || ""));
+        reqThrewNullActor && /dual-control\/bad-arg/.test(reqThrewNullActor.code || ""));
 
   // ---- _actorIdOf(): every id-resolution fallback drives a real request ----
   var reqUnderId = await approvals.request({ action: "<test>.uid", requestedBy: { _id: "svc-1" } });
@@ -194,13 +194,13 @@ async function run() {
   // ---- approve(): argument validation ----
   var apThrewNoArgs = null;
   try { await approvals.approve(); } catch (e) { apThrewNoArgs = e; }
-  check("approve: no args → typed BAD_ARG", apThrewNoArgs && /BAD_ARG/.test(apThrewNoArgs.code || ""));
+  check("approve: no args → typed BAD_ARG", apThrewNoArgs && /dual-control\/bad-arg/.test(apThrewNoArgs.code || ""));
 
   var apThrewNoApprover = null;
   try { await approvals.approve({ grantId: reqUserId.grantId, approver: {} }); }
   catch (e) { apThrewNoApprover = e; }
   check("approve: approver without stable id → typed BAD_ARG",
-        apThrewNoApprover && /BAD_ARG/.test(apThrewNoApprover.code || ""));
+        apThrewNoApprover && /dual-control\/bad-arg/.test(apThrewNoApprover.code || ""));
 
   // ---- approve() on a grant that does not exist → fail closed ----
   var apMissing = await approvals.approve({ grantId: "dc-doesnotexist", approver: { id: "bob" } });
@@ -210,7 +210,7 @@ async function run() {
   // ---- revoke(): argument validation + edge branches ----
   var rvThrewNoArgs = null;
   try { await approvals.revoke(); } catch (e) { rvThrewNoArgs = e; }
-  check("revoke: no args → typed BAD_ARG", rvThrewNoArgs && /BAD_ARG/.test(rvThrewNoArgs.code || ""));
+  check("revoke: no args → typed BAD_ARG", rvThrewNoArgs && /dual-control\/bad-arg/.test(rvThrewNoArgs.code || ""));
 
   var rvMissing = await approvals.revoke({ grantId: "dc-nope", revokedBy: { id: "admin" } });
   check("revoke: unknown grant → grant-not-found", rvMissing.error === "grant-not-found");
@@ -249,7 +249,7 @@ async function run() {
   // ---- cancel(): full lifecycle (was entirely untested) ----
   var cxThrewNoArgs = null;
   try { await approvals.cancel(); } catch (e) { cxThrewNoArgs = e; }
-  check("cancel: no args → typed BAD_ARG", cxThrewNoArgs && /BAD_ARG/.test(cxThrewNoArgs.code || ""));
+  check("cancel: no args → typed BAD_ARG", cxThrewNoArgs && /dual-control\/bad-arg/.test(cxThrewNoArgs.code || ""));
 
   var cxMissing = await approvals.cancel({ grantId: "dc-none", cancelledBy: { id: "alice" } });
   check("cancel: unknown grant → grant-not-found", cxMissing.error === "grant-not-found");
@@ -297,7 +297,7 @@ async function run() {
 
   var stThrew = null;
   try { await approvals.status(""); } catch (e) { stThrew = e; }
-  check("status: empty grantId → typed BAD_ARG", stThrew && /BAD_ARG/.test(stThrew.code || ""));
+  check("status: empty grantId → typed BAD_ARG", stThrew && /dual-control\/bad-arg/.test(stThrew.code || ""));
 
   var stRevoked = await approvals.status(reqCxRev.grantId);
   check("status: revoked state", stRevoked.status === "revoked");

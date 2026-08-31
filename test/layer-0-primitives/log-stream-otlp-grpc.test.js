@@ -184,7 +184,7 @@ async function testGrpcServerErrorTrailer() {
 async function testValidationRejectsBadUrl() {
   var threw = null;
   try { grpc.create({}); } catch (e) { threw = e; }
-  check("missing url throws",  threw && threw.code === "BAD_OPT");
+  check("missing url throws",  threw && threw.code === "log-stream-otlp-grpc/bad-opt");
 }
 
 // The insecure-TLS audit must only fire on an actual TLS session. An h2c

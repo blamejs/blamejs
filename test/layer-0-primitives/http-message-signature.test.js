@@ -284,19 +284,19 @@ function testValidation() {
   try {
     b.crypto.httpSig.sign(msg, { keyid: "k", alg: "rsa-pss-sha512", privateKey: keys.privateKey, covered: ["@method"] });
   } catch (e) { t1 = e; }
-  check("unsupported alg throws", t1 && t1.code === "BAD_OPT");
+  check("unsupported alg throws", t1 && t1.code === "http-message-signature/bad-opt");
 
   var t2 = null;
   try {
     b.crypto.httpSig.sign(msg, { alg: "ed25519", privateKey: keys.privateKey, covered: ["@method"] });
   } catch (e) { t2 = e; }
-  check("missing keyid throws", t2 && t2.code === "BAD_OPT");
+  check("missing keyid throws", t2 && t2.code === "http-message-signature/bad-opt");
 
   var t3 = null;
   try {
     b.crypto.httpSig.sign(msg, { keyid: "k", alg: "ed25519", privateKey: keys.privateKey, covered: [] });
   } catch (e) { t3 = e; }
-  check("empty covered throws", t3 && t3.code === "BAD_OPT");
+  check("empty covered throws", t3 && t3.code === "http-message-signature/bad-opt");
 }
 
 function testQueryParam() {
@@ -627,7 +627,7 @@ function testNonPrintableParamRejected() {
     });
   } catch (e) { err = e; }
   check("sign refuses a control byte in a signature parameter (BAD_PARAM)",
-        err && err.code === "BAD_PARAM");
+        err && err.code === "http-message-signature/bad-param");
 }
 
 // RFC 9421 §2.2 derived components — @scheme / @request-target / @path /
@@ -686,7 +686,7 @@ function testDerivedComponents() {
     });
   } catch (e) { statusErr = e; }
   check("@status without a numeric status throws MISSING_STATUS",
-        statusErr && statusErr.code === "MISSING_STATUS");
+        statusErr && statusErr.code === "http-message-signature/missing-status");
 
   // Unknown @-component → UNKNOWN_DERIVED.
   var derivedErr = null;
@@ -697,7 +697,7 @@ function testDerivedComponents() {
     });
   } catch (e) { derivedErr = e; }
   check("an unknown @-derived component throws UNKNOWN_DERIVED",
-        derivedErr && derivedErr.code === "UNKNOWN_DERIVED");
+        derivedErr && derivedErr.code === "http-message-signature/unknown-derived");
 }
 
 // RFC 9421 §2.3 signature parameters — nonce / tag / expires / explicit label
@@ -744,7 +744,7 @@ function testQueryParamSignFailures() {
     });
   } catch (e) { noQueryErr = e; }
   check("@query-param on a URL with no query throws MISSING_QUERY",
-        noQueryErr && noQueryErr.code === "MISSING_QUERY");
+        noQueryErr && noQueryErr.code === "http-message-signature/missing-query");
 
   var absentErr = null;
   try {
@@ -754,7 +754,7 @@ function testQueryParamSignFailures() {
     });
   } catch (e) { absentErr = e; }
   check("@query-param naming an absent param throws MISSING_QUERY_PARAM",
-        absentErr && absentErr.code === "MISSING_QUERY_PARAM");
+        absentErr && absentErr.code === "http-message-signature/missing-query-param");
 
   var bareErr = null;
   try {
@@ -764,7 +764,7 @@ function testQueryParamSignFailures() {
     });
   } catch (e) { bareErr = e; }
   check("a bare @query-param with no ;name parameter throws BAD_QUERY_PARAM",
-        bareErr && bareErr.code === "BAD_QUERY_PARAM");
+        bareErr && bareErr.code === "http-message-signature/bad-query-param");
 }
 
 // RFC 9421 §2.2.8 — a valueless query member (`?flag&ref=1`) resolves to the
@@ -795,7 +795,7 @@ function testMissingCoveredHeader() {
     });
   } catch (e) { err = e; }
   check("covering a header absent from the message throws MISSING_HEADER",
-        err && err.code === "MISSING_HEADER");
+        err && err.code === "http-message-signature/missing-header");
 }
 
 // RFC 9421 §2.1 — a multi-valued header (array) is obs-folded into one
@@ -824,7 +824,7 @@ function testContentDigestFunction() {
   var err = null;
   try { b.crypto.httpSig.contentDigest(12345); } catch (e) { err = e; }
   check("contentDigest of a non-string/Buffer body throws BAD_BODY",
-        err && err.code === "BAD_BODY");
+        err && err.code === "http-message-signature/bad-body");
 }
 
 // sign()-side option / message failures: a message with no headers, a covered
@@ -837,7 +837,7 @@ function testSignFailures() {
       keyid: "k1", alg: "ed25519", privateKey: keys.privateKey, covered: ["@method"],
     });
   } catch (e) { headersErr = e; }
-  check("a message with no headers throws BAD_OPT", headersErr && headersErr.code === "BAD_OPT");
+  check("a message with no headers throws BAD_OPT", headersErr && headersErr.code === "http-message-signature/bad-opt");
 
   var bodyErr = null;
   try {
@@ -847,7 +847,7 @@ function testSignFailures() {
     });
   } catch (e) { bodyErr = e; }
   check("covering content-digest with no body throws BAD_OPT",
-        bodyErr && bodyErr.code === "BAD_OPT");
+        bodyErr && bodyErr.code === "http-message-signature/bad-opt");
 
   var signErr = null;
   try {
@@ -856,7 +856,7 @@ function testSignFailures() {
       covered: ["@method", "@target-uri"],
     });
   } catch (e) { signErr = e; }
-  check("an unparseable private key throws SIGN_FAILED", signErr && signErr.code === "SIGN_FAILED");
+  check("an unparseable private key throws SIGN_FAILED", signErr && signErr.code === "http-message-signature/sign-failed");
 }
 
 // verify()-side option / presence gates that return a verdict (never throw,
@@ -869,14 +869,14 @@ function testVerifyPresenceGates() {
   });
   var resolverErr = null;
   try { b.crypto.httpSig.verify(_reqBase(), {}); } catch (e) { resolverErr = e; }
-  check("verify without a keyResolver throws BAD_OPT", resolverErr && resolverErr.code === "BAD_OPT");
+  check("verify without a keyResolver throws BAD_OPT", resolverErr && resolverErr.code === "http-message-signature/bad-opt");
 
   // verify with no opts argument at all defaults opts to {} then hits the same
   // keyResolver contract.
   var noOptsErr = null;
   try { b.crypto.httpSig.verify(_reqBase()); } catch (e) { noOptsErr = e; }
   check("verify with no opts argument throws BAD_OPT (opts defaults to {})",
-        noOptsErr && noOptsErr.code === "BAD_OPT");
+        noOptsErr && noOptsErr.code === "http-message-signature/bad-opt");
 
   var noInput = b.crypto.httpSig.verify(_reqBase(),
     { keyResolver: function () { return keys.publicKey; } });
@@ -1202,7 +1202,7 @@ function testAlgKeyBinding() {
   var signThrew = false;
   try {
     b.crypto.httpSig.sign(msg, { keyid: "k", alg: "ml-dsa-65", privateKey: e.privateKey, covered: cov });
-  } catch (err) { signThrew = (err && err.code === "BAD_OPT"); }
+  } catch (err) { signThrew = (err && err.code === "http-message-signature/bad-opt"); }
   check("httpSig.sign: ed25519 key declared alg=ml-dsa-65 refused (BAD_OPT)", signThrew);
 
   var signed = b.crypto.httpSig.sign(msg, { keyid: "k", alg: "ed25519", privateKey: e.privateKey, covered: cov });

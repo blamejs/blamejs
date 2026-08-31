@@ -138,7 +138,7 @@ async function run() {
       function () {
         return b.externalDb.query("DELETE FROM orders WHERE id = $1", ["o-1"]);
       },
-      "RESIDENCY_GATE_REQUIRED");
+      "external-db/residency-gate-required");
   });
   check("RESIDENCY_GATE_REQUIRED → wire NOT reached",
         gateDriver.seen.every(function (s) { return !/DELETE FROM orders/.test(s); }));
@@ -204,7 +204,7 @@ async function run() {
           ["o-3"],
           { rowResidencyTag: "us" });
       },
-      "RESIDENCY_TAG_MISMATCH");
+      "external-db/residency-tag-mismatch");
   });
   check("RESIDENCY_TAG_MISMATCH → wire NOT reached",
         mismatchDriver.seen.every(function (s) { return !/INSERT INTO orders/.test(s); }));
@@ -230,7 +230,7 @@ async function run() {
           ["o-4"],
           { rowResidencyTag: "" });
       },
-      "INVALID_OPT");
+      "external-db/invalid-opt");
   });
   check("INVALID_OPT → wire NOT reached",
         emptyDriver.seen.every(function (s) { return !/INSERT INTO orders/.test(s); }));
@@ -254,7 +254,7 @@ async function run() {
         return b.externalDb.query(
           "SELECT 1; INSERT INTO orders (id) VALUES ('o-x')", []);
       },
-      "MULTI_STATEMENT_REFUSED");
+      "external-db/multi-statement-refused");
   });
   check("MULTI_STATEMENT_REFUSED → wire NOT reached",
         multiDriver.seen.every(function (s) { return !/INSERT INTO orders/.test(s); }));
@@ -283,7 +283,7 @@ async function run() {
           await tx.query("INSERT INTO orders (id) VALUES ('o-tx')", []);
         }, { rowResidencyTag: "" });
       },
-      "INVALID_OPT");
+      "external-db/invalid-opt");
   });
   check("tx-level shape refusal → no BEGIN reached the backend",
         txShapeDriver.seen.every(function (s) { return !/BEGIN/i.test(s); }));
@@ -329,7 +329,7 @@ async function run() {
           await tx.query("INSERT INTO orders (id) VALUES ($1)", ["tx-1"]);
         }, { rowResidencyTag: "us" });
       },
-      "RESIDENCY_TAG_MISMATCH");
+      "external-db/residency-tag-mismatch");
   });
   check("transaction mismatch: BEGIN issued",
         _saw(txMismatchDriver, /^BEGIN\b/));
@@ -410,7 +410,7 @@ async function run() {
             { rowResidencyTag: "us" });
         }, { rowResidencyTag: "eu" });
       },
-      "RESIDENCY_TAG_MISMATCH");
+      "external-db/residency-tag-mismatch");
   });
   check("transaction per-call override 'us': COMMIT NOT reached",
         txOverrideBadDriver.seen.every(function (s) { return !/^COMMIT\b/i.test(s); }));
@@ -449,7 +449,7 @@ async function run() {
           ["o-1"],
           { rowResidencyTag: "eu" });
       },
-      "REPLICA_RESIDENCY_INCOMPATIBLE");
+      "external-db/replica-residency-incompatible");
   });
   check("REPLICA_RESIDENCY_INCOMPATIBLE → replica wire NOT reached",
         usReplica.seen.every(function (s) { return !/SELECT id FROM orders/.test(s); }));
@@ -517,7 +517,7 @@ async function run() {
       function () {
         return b.externalDb.read.query("SELECT id FROM orders WHERE id = $1", ["o-1"]);
       },
-      "REPLICA_RESIDENCY_TAG_REQUIRED");
+      "external-db/replica-residency-tag-required");
   });
   check("omitted-tag read → us-replica wire NOT reached (gate fail-closed)",
         usReplicaOmit.seen.every(function (s) { return !/SELECT id FROM orders/.test(s); }));
@@ -605,7 +605,7 @@ async function run() {
   // CTE-wrapped DML (the Codex P1 shape) — write, gated.
   await _refusedUntagged("WITH ... INSERT (CTE write) untagged",
     "WITH src AS (SELECT 1 AS id) INSERT INTO eu_users (id) SELECT id FROM src",
-    "RESIDENCY_GATE_REQUIRED");
+    "external-db/residency-gate-required");
   await _passesWithTag("WITH ... INSERT (CTE write) tag 'eu'",
     "WITH src AS (SELECT 1 AS id) INSERT INTO eu_users (id) SELECT id FROM src");
   // CTE-wrapped SELECT — read, passes untagged.
@@ -614,20 +614,20 @@ async function run() {
   // RECURSIVE + MATERIALIZED keywords before the main verb don't confuse it.
   await _refusedUntagged("WITH RECURSIVE ... UPDATE untagged",
     "WITH RECURSIVE t AS (SELECT 1) UPDATE eu_users SET id = 2 WHERE id IN (SELECT * FROM t)",
-    "RESIDENCY_GATE_REQUIRED");
+    "external-db/residency-gate-required");
 
   // COPY ... FROM loads rows (write); COPY ... TO exports (read).
   await _refusedUntagged("COPY ... FROM (bulk load) untagged",
-    "COPY eu_users (id) FROM STDIN", "RESIDENCY_GATE_REQUIRED");
+    "COPY eu_users (id) FROM STDIN", "external-db/residency-gate-required");
   await _passesUntagged("COPY (query) TO (export) untagged",
     "COPY (SELECT id FROM eu_users) TO STDOUT");
 
   // EXPLAIN ANALYZE EXECUTES the wrapped statement; plain EXPLAIN does not.
   await _refusedUntagged("EXPLAIN ANALYZE INSERT untagged",
-    "EXPLAIN ANALYZE INSERT INTO eu_users (id) VALUES (1)", "RESIDENCY_GATE_REQUIRED");
+    "EXPLAIN ANALYZE INSERT INTO eu_users (id) VALUES (1)", "external-db/residency-gate-required");
   await _refusedUntagged("EXPLAIN (ANALYZE, FORMAT JSON) UPDATE untagged",
     "EXPLAIN (ANALYZE, FORMAT JSON) UPDATE eu_users SET id = 2 WHERE id = 1",
-    "RESIDENCY_GATE_REQUIRED");
+    "external-db/residency-gate-required");
   await _passesUntagged("EXPLAIN (plan-only) INSERT untagged",
     "EXPLAIN INSERT INTO eu_users (id) VALUES (1)");
   await _passesUntagged("EXPLAIN SELECT untagged",
@@ -635,27 +635,27 @@ async function run() {
 
   // Opaque-write verbs — CALL / EXECUTE / DO — gated (fail-closed).
   await _refusedUntagged("CALL stored-proc untagged",
-    "CALL load_eu_rows('x')", "RESIDENCY_GATE_REQUIRED");
+    "CALL load_eu_rows('x')", "external-db/residency-gate-required");
   await _refusedUntagged("EXECUTE prepared untagged",
-    "EXECUTE ins_eu (1)", "RESIDENCY_GATE_REQUIRED");
+    "EXECUTE ins_eu (1)", "external-db/residency-gate-required");
   await _refusedUntagged("DO anonymous block untagged",
     "DO $$ BEGIN INSERT INTO eu_users (id) VALUES (1); END $$",
-    "RESIDENCY_GATE_REQUIRED");
+    "external-db/residency-gate-required");
 
   // REPLACE INTO (mysql/sqlite) — delete-then-insert, a write.
   await _refusedUntagged("REPLACE INTO untagged",
-    "REPLACE INTO eu_users (id) VALUES (1)", "RESIDENCY_GATE_REQUIRED");
+    "REPLACE INTO eu_users (id) VALUES (1)", "external-db/residency-gate-required");
 
   // A `;` inside a dollar-quoted body is DATA, not a statement
   // separator — must not false-positive as MULTI_STATEMENT_REFUSED; the
   // DO block is gated as the ROUTINE write it is.
   await _refusedUntagged("DO body with inner ; is one statement",
     "DO $$ BEGIN INSERT INTO eu_users (id) VALUES (1); INSERT INTO eu_users (id) VALUES (2); END $$",
-    "RESIDENCY_GATE_REQUIRED");
+    "external-db/residency-gate-required");
 
   // An unresolvable WITH (no main verb past the CTE list) fails closed.
   await _refusedUntagged("unresolvable WITH refused",
-    "WITH x AS (SELECT 1)", "STATEMENT_UNRESOLVED_REFUSED");
+    "WITH x AS (SELECT 1)", "external-db/statement-unresolved-refused");
 
   // ---- Final clean ----
   b.externalDb._resetForTest();

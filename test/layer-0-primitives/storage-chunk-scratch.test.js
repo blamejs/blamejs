@@ -70,7 +70,7 @@ async function testAssemblyIdGating() {
     async function expectThrow(label, fn) {
       var threw = null;
       try { await fn(); } catch (e) { threw = e; }
-      check(label, threw && threw.code === "INVALID_ARGUMENT");
+      check(label, threw && threw.code === "storage/invalid-argument");
     }
     await expectThrow("empty assemblyId refused",
       function () { return cs.saveChunk({ assemblyId: "", chunkIndex: 0, data: Buffer.from("x") }); });
@@ -109,7 +109,7 @@ async function testAssembleRefusesGap() {
       });
     } catch (e) { threw = e; }
     check("assemble refuses non-monotonic chunk set",
-      threw && threw.code === "INCOMPLETE_ASSEMBLY");
+      threw && threw.code === "storage/incomplete-assembly");
   } finally {
     await _teardown(h);
   }
@@ -129,7 +129,7 @@ async function testAssembleRefusesExpectedMismatch() {
       });
     } catch (e) { threw = e; }
     check("assemble refuses count mismatch with expectedTotal",
-      threw && threw.code === "INCOMPLETE_ASSEMBLY");
+      threw && threw.code === "storage/incomplete-assembly");
   } finally {
     await _teardown(h);
   }
@@ -158,7 +158,7 @@ async function testMaxChunkBytes() {
     try {
       await cs.saveChunk({ assemblyId: "cap", chunkIndex: 0, data: Buffer.alloc(64, 0x41) });
     } catch (e) { threw = e; }
-    check("saveChunk refuses oversize chunk", threw && threw.code === "INVALID_ARGUMENT");
+    check("saveChunk refuses oversize chunk", threw && threw.code === "storage/invalid-argument");
   } finally {
     await _teardown(h);
   }
@@ -170,7 +170,7 @@ async function testRequiresStorageInit() {
   var threw = null;
   try { b.storage.chunkScratch(); } catch (e) { threw = e; }
   check("chunkScratch refuses before storage.init",
-    threw && threw.code === "NOT_INITIALIZED");
+    threw && threw.code === "storage/not-initialized");
 }
 
 async function run() {

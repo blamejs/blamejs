@@ -100,7 +100,7 @@ async function run() {
     });
   } catch (e) { notFound = e; }
   check("404: surfaces as HTTP error (or response with 404)",
-        notFound ? /404|HTTP_ERROR/.test((notFound.code || "") + " " + notFound.message) : true);
+        notFound ? /404|httpclient\/http-error/.test((notFound.code || "") + " " + notFound.message) : true);
 
   // ---- SSRF unconditional cloud-metadata block — even with proxy +
   //      allowInternal:true the framework refuses 169.254.169.254 etc.

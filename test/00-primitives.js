@@ -13714,34 +13714,34 @@ async function testSchedulerScheduleValidation() {
   var threw;
 
   threw = null; try { sched.schedule(); } catch (e) { threw = e; }
-  check("schedule rejects missing spec",          threw && threw.code === "INVALID_SPEC");
+  check("schedule rejects missing spec",          threw && threw.code === "scheduler/invalid-spec");
 
   threw = null; try { sched.schedule({}); } catch (e) { threw = e; }
-  check("schedule rejects missing name",          threw && threw.code === "INVALID_NAME");
+  check("schedule rejects missing name",          threw && threw.code === "scheduler/invalid-name");
 
   threw = null;
   try { sched.schedule({ name: "x" }); } catch (e) { threw = e; }
-  check("schedule rejects missing cron+every",    threw && threw.code === "INVALID_SPEC");
+  check("schedule rejects missing cron+every",    threw && threw.code === "scheduler/invalid-spec");
 
   threw = null;
   try { sched.schedule({ name: "x", cron: "0 0 * * *", every: 60000, run: function () {} }); }
   catch (e) { threw = e; }
-  check("schedule rejects both cron and every",   threw && threw.code === "INVALID_SPEC");
+  check("schedule rejects both cron and every",   threw && threw.code === "scheduler/invalid-spec");
 
   threw = null;
   try { sched.schedule({ name: "x", every: 60000 }); } catch (e) { threw = e; }
-  check("schedule rejects missing job+run",       threw && threw.code === "INVALID_SPEC");
+  check("schedule rejects missing job+run",       threw && threw.code === "scheduler/invalid-spec");
 
   threw = null;
   try { sched.schedule({ name: "x", every: 500, run: function () {} }); }
   catch (e) { threw = e; }
-  check("schedule rejects every<1000ms",          threw && threw.code === "INVALID_SPEC");
+  check("schedule rejects every<1000ms",          threw && threw.code === "scheduler/invalid-spec");
 
   threw = null;
   try { sched.schedule({ name: "x", every: 60000, job: "needs-jobs" }); }
   catch (e) { threw = e; }
   check("schedule with job= rejects when jobs unwired",
-        threw && threw.code === "INVALID_SPEC" && /requires opts.jobs/.test(threw.message));
+        threw && threw.code === "scheduler/invalid-spec" && /requires opts.jobs/.test(threw.message));
 
   // Happy path — sets up a task
   sched.schedule({ name: "ok", every: 60000, run: function () {} });
@@ -13753,7 +13753,7 @@ async function testSchedulerScheduleValidation() {
   threw = null;
   try { sched.schedule({ name: "ok", every: 60000, run: function () {} }); }
   catch (e) { threw = e; }
-  check("schedule rejects duplicate name",        threw && threw.code === "DUPLICATE_NAME");
+  check("schedule rejects duplicate name",        threw && threw.code === "scheduler/duplicate-name");
 
   await sched.stop();
 }
@@ -14469,7 +14469,7 @@ async function testAtomicFile() {
     // Read missing file → ENOENT
     var missingRejected = false;
     try { await b.atomicFile.read(path.join(tmpDir, "nope")); }
-    catch (e) { missingRejected = e.code === "ENOENT" || e.code === "atomic-file/not-found"; }
+    catch (e) { missingRejected = e.code === "ENOENT" || e.code === "atomic-file/enoent"; }
     check("atomicFile read missing → ENOENT",         missingRejected);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -16568,7 +16568,7 @@ async function testHttpClientBeforeThrows() {
       before: [function () { throw new Error("oops"); }],
     });
   } catch (e) {
-    threw = e && (e.code === "BEFORE_THREW" || /BEFORE_THREW/.test(e.message));
+    threw = e && (e.code === "http-client/before-threw" || /BEFORE_THREW/.test(e.message));
   }
   check("before: thrown error surfaces as BEFORE_THREW",  threw);
 }
@@ -18420,7 +18420,7 @@ async function testFileUploadInitHappyPath() {
   // Refuse re-init of existing upload
   var threw = false;
   try { await u.init({ uploadId: "u-1", actor: { id: "alice" } }); }
-  catch (e) { threw = e.code === "UPLOAD_EXISTS"; }
+  catch (e) { threw = e.code === "file-upload/upload-exists"; }
   check("fileUpload.init refuses re-init of existing uploadId", threw);
 }
 
@@ -18434,7 +18434,7 @@ async function testFileUploadAcceptChunkRequiresInit() {
       uploadId: "u-no-init", index: 0, body: body,
       sha3: _fuChunkSha3(body), actor: { id: "alice" },
     });
-  } catch (e) { threw = e.code === "UNKNOWN_UPLOAD"; }
+  } catch (e) { threw = e.code === "file-upload/unknown-upload"; }
   check("fileUpload.acceptChunk requires init() first", threw);
 }
 
@@ -18472,7 +18472,7 @@ async function testFileUploadHashMismatch() {
     });
   } catch (e) { threw = true; threwCode = e.code; }
   check("fileUpload.acceptChunk rejects sha3 mismatch",
-        threw && threwCode === "CHUNK_HASH_MISMATCH");
+        threw && threwCode === "file-upload/chunk-hash-mismatch");
 }
 
 async function testFileUploadOversizedChunk() {
@@ -18485,7 +18485,7 @@ async function testFileUploadOversizedChunk() {
     await u.acceptChunk({
       uploadId: "u-1", index: 0, body: body, sha3: _fuChunkSha3(body), actor: { id: "u-1" },
     });
-  } catch (e) { threw = e.code === "CHUNK_TOO_LARGE"; }
+  } catch (e) { threw = e.code === "file-upload/chunk-too-large"; }
   check("fileUpload.acceptChunk rejects body > maxChunkBytes", threw);
 }
 
@@ -18503,7 +18503,7 @@ async function testFileUploadIdempotentChunkRePut() {
   var threw = false;
   try {
     await u.acceptChunk({ uploadId: "u-1", index: 0, body: body2, sha3: _fuChunkSha3(body2), actor: { id: "u-1" } });
-  } catch (e) { threw = e.code === "CHUNK_REUSE_MISMATCH"; }
+  } catch (e) { threw = e.code === "file-upload/chunk-reuse-mismatch"; }
   check("fileUpload.acceptChunk refuses re-put with different body for same index", threw);
 }
 
@@ -18554,7 +18554,7 @@ async function testFileUploadFinalizeMissingChunk() {
       },
       actor: { id: "u-1" },
     });
-  } catch (e) { threw = e.code === "MISSING_CHUNK"; }
+  } catch (e) { threw = e.code === "file-upload/missing-chunk"; }
   check("fileUpload.finalize rejects when manifest references missing chunk", threw);
 }
 
@@ -18580,7 +18580,7 @@ async function testFileUploadFinalizeIndexGap() {
       },
       actor: { id: "u-1" },
     });
-  } catch (e) { threw = e.code === "MANIFEST_INDEX_GAP"; }
+  } catch (e) { threw = e.code === "file-upload/manifest-index-gap"; }
   check("fileUpload.finalize rejects manifest with index gap", threw);
 }
 
@@ -18601,7 +18601,7 @@ async function testFileUploadFinalizeManifestSizeMismatch() {
       },
       actor: { id: "u-1" },
     });
-  } catch (e) { threw = e.code === "MANIFEST_SIZE_MISMATCH"; }
+  } catch (e) { threw = e.code === "file-upload/manifest-size-mismatch"; }
   check("fileUpload.finalize rejects mismatched manifest.totalBytes", threw);
 }
 
@@ -18622,7 +18622,7 @@ async function testFileUploadFinalizeManifestHashMismatch() {
       },
       actor: { id: "u-1" },
     });
-  } catch (e) { threw = e.code === "MANIFEST_HASH_MISMATCH"; }
+  } catch (e) { threw = e.code === "file-upload/manifest-hash-mismatch"; }
   check("fileUpload.finalize rejects mismatched manifest.sha3", threw);
 }
 
@@ -18640,7 +18640,7 @@ async function testFileUploadFinalizeFileTooLarge() {
   var threw = false;
   try {
     await u.acceptChunk({ uploadId: "u-1", index: 0, body: c0, sha3: _fuChunkSha3(c0), actor: { id: "u-1" } });
-  } catch (e) { threw = e.code === "FILE_TOO_LARGE"; }
+  } catch (e) { threw = e.code === "file-upload/file-too-large"; }
   check("fileUpload.acceptChunk rejects when cumulative > maxFileBytes", threw);
 }
 
@@ -18658,7 +18658,7 @@ async function testFileUploadPathTraversalRejected() {
   for (var i = 0; i < bad.length; i++) {
     var threw = false;
     try { await u.init({ uploadId: bad[i], actor: { id: "u-1" } }); }
-    catch (e) { threw = e.code === "BAD_UPLOAD_ID"; }
+    catch (e) { threw = e.code === "file-upload/bad-upload-id"; }
     if (!threw) allRejected = false;
   }
   check("fileUpload: hostile uploadIds (path traversal / null / glob / empty) all rejected",
@@ -18750,7 +18750,7 @@ async function testFileUploadMetadataStash() {
       uploadId: "u-2", actor: { id: "alice" },
       metadata: { huge: "x".repeat(70000) },
     });
-  } catch (e) { threw = e.code === "METADATA_TOO_LARGE"; }
+  } catch (e) { threw = e.code === "file-upload/metadata-too-large"; }
   check("fileUpload.init refuses metadata > METADATA_MAX_BYTES", threw);
 }
 
@@ -18764,7 +18764,7 @@ async function testFileUploadActorQuota() {
   await u.init({ uploadId: "u-2", actor: { id: "alice" } });
   var threw = false;
   try { await u.init({ uploadId: "u-3", actor: { id: "alice" } }); }
-  catch (e) { threw = e.code === "ACTOR_QUOTA_EXCEEDED"; }
+  catch (e) { threw = e.code === "file-upload/actor-quota-exceeded"; }
   check("fileUpload.init refuses when actor exceeds maxActiveUploadsPerActor", threw);
   // Different actor not blocked
   await u.init({ uploadId: "u-4", actor: { id: "bob" } });
@@ -18793,7 +18793,7 @@ async function testFileUploadStagingQuota() {
   // Now total = 160 bytes > 100 cap. Next init blocked.
   var threw = false;
   try { await u.init({ uploadId: "u-3", actor: { id: "alice" } }); }
-  catch (e) { threw = e.code === "STAGING_QUOTA_EXCEEDED"; }
+  catch (e) { threw = e.code === "file-upload/staging-quota-exceeded"; }
   check("fileUpload.init refuses when total staging > maxStagingBytes", threw);
 }
 
@@ -18857,7 +18857,7 @@ async function testFileUploadIdleTimeout() {
   try {
     await u.acceptChunk({ uploadId: "u-1", index: 1, body: c1,
                           sha3: _fuChunkSha3(c1), actor: { id: "alice" } });
-  } catch (e) { threw = e.code === "UPLOAD_IDLE_EXPIRED"; }
+  } catch (e) { threw = e.code === "file-upload/upload-idle-expired"; }
   check("fileUpload.acceptChunk refuses when upload exceeds maxIdleMs since last chunk", threw);
 }
 
@@ -18989,7 +18989,7 @@ async function testFileUploadPermissionsIntegration() {
   await u.init({ uploadId: "u-1", actor: { id: "alice" } });
   var threw = false;
   try { await u.init({ uploadId: "u-2", actor: { id: "mallory" } }); }
-  catch (e) { threw = e.code === "PERMISSION_DENIED"; }
+  catch (e) { threw = e.code === "file-upload/permission-denied"; }
   check("fileUpload.init: permission-denied actor refused with PERMISSION_DENIED",
         threw && calls.some(function (c) { return c.scope === "fileUpload.init"; }));
   // Even acceptChunk checks
@@ -18998,7 +18998,7 @@ async function testFileUploadPermissionsIntegration() {
   try {
     await u.acceptChunk({ uploadId: "u-1", index: 0, body: body,
                           sha3: _fuChunkSha3(body), actor: { id: "mallory" } });
-  } catch (e) { threwAccept = e.code === "PERMISSION_DENIED"; }
+  } catch (e) { threwAccept = e.code === "file-upload/permission-denied"; }
   check("fileUpload.acceptChunk: also permission-checked", threwAccept);
 }
 
@@ -19049,7 +19049,7 @@ async function testFileUploadMimeAllowlistRejected() {
       },
       actor: { id: "alice" },
     });
-  } catch (e) { threw = e.code === "MIME_NOT_ALLOWED" || e.code === "MIME_NOT_DETECTED"; }
+  } catch (e) { threw = e.code === "file-upload/mime-not-allowed" || e.code === "file-upload/mime-not-detected"; }
   check("fileUpload.finalize: non-image bytes rejected by image/* allowlist", threw);
 }
 

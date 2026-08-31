@@ -757,7 +757,7 @@ async function _proveRoleHardening() {
     });
   } catch (e) { threw = e; }
   check("role-hardening: mode:'throw' raises ROLE_HARDENING_FAIL on an unrecognized role",
-        threw !== null && threw.code === "ROLE_HARDENING_FAIL");
+        threw !== null && threw.code === "external-db/role-hardening-fail");
 
   _psql("DROP ROLE IF EXISTS blamejs_harden_probe;");
 }

@@ -32,7 +32,7 @@ async function run() {
   check("#325 release of a never-claimed nonce returns false", (await s.release("never-seen")) === false);
 
   var threwBad = false;
-  try { await s.release(""); } catch (e) { threwBad = /INVALID_NONCE/.test(e.code || ""); }
+  try { await s.release(""); } catch (e) { threwBad = /nonce-store\/invalid-nonce/.test(e.code || ""); }
   check("#325 release rejects an empty nonce", threwBad);
   s.close();
 
@@ -49,7 +49,7 @@ async function run() {
     checkAndInsert: function () { return Promise.resolve(true); },
   } });
   var threwNoRel = false;
-  try { await withoutRelease.release("x"); } catch (e) { threwNoRel = /BACKEND_NO_RELEASE/.test(e.code || ""); }
+  try { await withoutRelease.release("x"); } catch (e) { threwNoRel = /nonce-store\/backend-no-release/.test(e.code || ""); }
   check("#325 a custom backend without release() fails loudly (no silent dropped rollback)", threwNoRel);
 
   // ---- enforceReplay: first use passes; replay refused; store-throw fails closed ----

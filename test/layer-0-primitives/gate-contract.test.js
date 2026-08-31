@@ -328,7 +328,7 @@ function testResolveProfileAndPosture() {
   // bad-profile.
   threw = false;
   try { GC.resolveProfileAndPosture({ profile: "ghost" }, cfg); }
-  catch (e) { threw = e.code === "csv.bad-profile"; }
+  catch (e) { threw = e.code === "csv/bad-profile"; }
   check("resolveProfileAndPosture: unknown profile → bad-profile", threw);
 
   // Posture overlay.
@@ -338,13 +338,13 @@ function testResolveProfileAndPosture() {
   // bad-posture.
   threw = false;
   try { GC.resolveProfileAndPosture({ compliancePosture: "ghost" }, cfg); }
-  catch (e) { threw = e.code === "csv.bad-posture"; }
+  catch (e) { threw = e.code === "csv/bad-posture"; }
   check("resolveProfileAndPosture: unknown posture → bad-posture", threw);
 
   // Default errorClass + prefix branch (cfg without errorClass/errCodePrefix).
   threw = false;
   try { GC.resolveProfileAndPosture({ profile: "ghost" }, { profiles: RP }); }
-  catch (e) { threw = e instanceof GCE && e.code === "guard.bad-profile"; }
+  catch (e) { threw = e instanceof GCE && e.code === "guard/bad-profile"; }
   check("resolveProfileAndPosture: default errorClass/prefix on bad-profile", threw);
 }
 
@@ -403,13 +403,13 @@ function testLookupCompliancePosture() {
 
   var threw = false;
   try { GC.lookupCompliancePosture("ghost", POST, GCE.factory, "csv"); }
-  catch (e) { threw = e.code === "csv.bad-posture"; }
+  catch (e) { threw = e.code === "csv/bad-posture"; }
   check("lookupCompliancePosture: unknown name throws bad-posture", threw);
 
   // Prototype-key must not resolve to an inherited value.
   threw = false;
   try { GC.lookupCompliancePosture("constructor", POST, GCE.factory, "csv"); }
-  catch (e) { threw = e.code === "csv.bad-posture"; }
+  catch (e) { threw = e.code === "csv/bad-posture"; }
   check("lookupCompliancePosture: prototype key rejected", threw);
 }
 
@@ -744,7 +744,7 @@ function testMakeRulePackLoader() {
   try { packs.load(null); } catch (e) { threw = e instanceof GCE; }
   check("makeRulePackLoader: non-object pack throws", threw);
   threw = false;
-  try { packs.load({ rules: [] }); } catch (e) { threw = e.code === "csv.bad-opt"; }
+  try { packs.load({ rules: [] }); } catch (e) { threw = e.code === "csv/bad-opt"; }
   check("makeRulePackLoader: missing pack.id throws bad-opt", threw);
 }
 
@@ -1525,7 +1525,7 @@ async function testDefineGuard() {
     guard.compliancePosture("hipaa").forensicSnippetBytes === 64);
   threw = false;
   try { guard.compliancePosture("nope"); }
-  catch (e) { threw = e.code === "gccov.bad-posture"; }
+  catch (e) { threw = e.code === "gccov/bad-posture"; }
   check("defineGuard: compliancePosture unknown throws bad-posture", threw);
 
   // loadRulePack.
@@ -1827,13 +1827,13 @@ async function testDefineGuardSanitizeAmplification() {
   // Non-string input rejected by the ampCapField text contract.
   var threw = false;
   try { guard.sanitize(42, {}); }
-  catch (e) { threw = e.code === "gcamp.bad-input"; }
+  catch (e) { threw = e.code === "gcamp/bad-input"; }
   check("defineGuard(amp): non-string sanitize input → bad-input", threw);
 
   // A bad-input FINDING (on a string subject) refuses always.
   threw = false;
   try { guard.sanitize("BADINxyz", {}); }
-  catch (e) { threw = e.code === "gcamp.bad-input"; }
+  catch (e) { threw = e.code === "gcamp/bad-input"; }
   check("defineGuard(amp): bad-input finding refuses", threw);
 
   // A bad-input finding with no snippet uses the default message.
@@ -1852,7 +1852,7 @@ async function testDefineGuardSanitizeAmplification() {
   // Amplifying transform trips the growth cap.
   threw = false;
   try { guard.sanitize("GROWvalue", {}); }
-  catch (e) { threw = e.code === "gcamp.sanitize-amplified"; }
+  catch (e) { threw = e.code === "gcamp/sanitize-amplified"; }
   check("defineGuard(amp): output over growth cap → sanitize-amplified", threw);
 
   // Clean, non-amplifying input returns the transform output.

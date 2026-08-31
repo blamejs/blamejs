@@ -55,10 +55,10 @@ async function run() {
 
     // bump validates its inputs (config-time throw tier).
     var threwSubject = false;
-    try { await s.bump(""); } catch (e) { threwSubject = /INVALID_ARG/.test(e.code || ""); }
+    try { await s.bump(""); } catch (e) { threwSubject = /session\/invalid-arg/.test(e.code || ""); }
     check("bump rejects an empty subjectId", threwSubject);
     var threwEpoch = false;
-    try { await s.bump("user-1", { epochMs: -1 }); } catch (e) { threwEpoch = /INVALID_ARG/.test(e.code || ""); }
+    try { await s.bump("user-1", { epochMs: -1 }); } catch (e) { threwEpoch = /session\/invalid-arg/.test(e.code || ""); }
     check("bump rejects a negative epochMs", threwEpoch);
 
     // #17 integration: a "logout everywhere" via destroyAllForUser also raises

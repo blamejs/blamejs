@@ -79,7 +79,7 @@ function testResolveMissingProtocol() {
   var threw = null;
   try { d.resolve(); } catch (e) { threw = e; }
   check("resolve: missing protocol → MISSING_PROTOCOL",
-        threw && threw.code === "MISSING_PROTOCOL");
+        threw && threw.code === "protocol-dispatcher/missing-protocol");
   check("resolve: missing protocol — error names dispatcher",
         threw && /test backend/.test(threw.message));
 }
@@ -92,7 +92,7 @@ function testResolveUnknownProtocol() {
   var threw = null;
   try { d.resolve("baz"); } catch (e) { threw = e; }
   check("resolve: unknown → UNKNOWN_PROTOCOL",
-        threw && threw.code === "UNKNOWN_PROTOCOL");
+        threw && threw.code === "protocol-dispatcher/unknown-protocol");
   check("resolve: unknown — error lists known protocols",
         threw && /known: bar, foo/.test(threw.message));
 }
@@ -107,7 +107,7 @@ function testResolveDeferredProtocol() {
   var threw = null;
   try { d.resolve("redis"); } catch (e) { threw = e; }
   check("resolve: deferred → PROTOCOL_NOT_IMPLEMENTED",
-        threw && threw.code === "PROTOCOL_NOT_IMPLEMENTED");
+        threw && threw.code === "protocol-dispatcher/protocol-not-implemented");
   check("resolve: deferred error includes description",
         threw && /Redis Streams/.test(threw.message));
   check("resolve: deferred error includes since",

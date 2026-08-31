@@ -74,7 +74,7 @@ async function run() {
   // sanitize enforces byte cap.
   threw = null;
   try { b.ai.output.sanitize("x", { maxBytes: 0, audit: false }); } catch (e) { threw = e; }
-  check("sanitize rejects bad maxBytes", threw && threw.code === "BAD_MAX_BYTES");
+  check("sanitize rejects bad maxBytes", threw && threw.code === "ai-output/bad-max-bytes");
 
   // ---- redact ----
 

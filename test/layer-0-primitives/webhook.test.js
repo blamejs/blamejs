@@ -67,7 +67,7 @@ async function testHmacTampered() {
   var threw = null;
   try { await v.verify({ body: "hello WORLD", headers: signed.headers }); }
   catch (e) { threw = e; }
-  check("tampered body → BAD_SIGNATURE", threw && threw.code === "BAD_SIGNATURE");
+  check("tampered body → BAD_SIGNATURE", threw && threw.code === "webhook/bad-signature");
 }
 
 async function testHmacTamperedHeader() {
@@ -80,7 +80,7 @@ async function testHmacTamperedHeader() {
   var threw = null;
   try { await v.verify({ body: "hello world", headers: { "Webhook-Signature": flipped } }); }
   catch (e) { threw = e; }
-  check("tampered signature → BAD_SIGNATURE", threw && threw.code === "BAD_SIGNATURE");
+  check("tampered signature → BAD_SIGNATURE", threw && threw.code === "webhook/bad-signature");
 }
 
 // ---- Multi-key rotation ----
@@ -111,7 +111,7 @@ async function testHmacUnknownKid() {
   try { await verifier.verify({ body: "body", headers: signed.headers }); }
   catch (e) { threw = e; }
   check("unknown kid → UNKNOWN_KID",
-        threw && threw.code === "UNKNOWN_KID");
+        threw && threw.code === "webhook/unknown-kid");
 }
 
 // ---- Timestamp window ----
@@ -134,7 +134,7 @@ async function testTimestampExpired() {
   var threw = null;
   try { await v.verify({ body: "body", headers: signed.headers }); }
   catch (e) { threw = e; }
-  check("expired timestamp → EXPIRED", threw && threw.code === "EXPIRED");
+  check("expired timestamp → EXPIRED", threw && threw.code === "webhook/expired");
 }
 
 async function testTimestampFuture() {
@@ -155,7 +155,7 @@ async function testTimestampFuture() {
   var threw = null;
   try { await v.verify({ body: "body", headers: signed.headers }); }
   catch (e) { threw = e; }
-  check("future timestamp → FUTURE", threw && threw.code === "FUTURE");
+  check("future timestamp → FUTURE", threw && threw.code === "webhook/future");
 }
 
 // ---- Header format ----
@@ -165,8 +165,9 @@ async function testMissingHeader() {
   var threw = null;
   try { await v.verify({ body: "body", headers: {} }); }
   catch (e) { threw = e; }
-  check("no signature header → MISSING_HEADER",
-        threw && threw.code === "MISSING_HEADER");
+  check("no signature header is refused",
+        threw && threw.code === "webhook/missing-header",
+        String(threw && threw.code));
 }
 
 async function testBadHeaderFormat() {
@@ -176,7 +177,7 @@ async function testBadHeaderFormat() {
     await v.verify({ body: "body", headers: { "Webhook-Signature": "garbage-no-equals" } });
   } catch (e) { threw = e; }
   check("garbage header → BAD_HEADER_FORMAT",
-        threw && threw.code === "BAD_HEADER_FORMAT");
+        threw && threw.code === "webhook/bad-header-format");
 }
 
 async function testMissingFields() {
@@ -187,28 +188,28 @@ async function testMissingFields() {
     await v.verify({ body: "body",
       headers: { "Webhook-Signature": "id=abc,v1=ff" } });
   } catch (e) { threw = e; }
-  check("no t= → MISSING_TIMESTAMP", threw && threw.code === "MISSING_TIMESTAMP");
+  check("no t= → MISSING_TIMESTAMP", threw && threw.code === "webhook/missing-timestamp");
 
   threw = null;
   try {
     await v.verify({ body: "body",
       headers: { "Webhook-Signature": "t=abc,id=x,v1=ff" } });
   } catch (e) { threw = e; }
-  check("non-numeric t → BAD_TIMESTAMP", threw && threw.code === "BAD_TIMESTAMP");
+  check("non-numeric t → BAD_TIMESTAMP", threw && threw.code === "webhook/bad-timestamp");
 
   threw = null;
   try {
     await v.verify({ body: "body",
       headers: { "Webhook-Signature": "t=" + Math.floor(Date.now()/1000) + ",v1=ff" } });
   } catch (e) { threw = e; }
-  check("no id= → MISSING_ID", threw && threw.code === "MISSING_ID");
+  check("no id= → MISSING_ID", threw && threw.code === "webhook/missing-id");
 
   threw = null;
   try {
     await v.verify({ body: "body",
       headers: { "Webhook-Signature": "t=" + Math.floor(Date.now()/1000) + ",id=abc" } });
   } catch (e) { threw = e; }
-  check("no v<kid>= → MISSING_SIGNATURE", threw && threw.code === "MISSING_SIGNATURE");
+  check("no v<kid>= → MISSING_SIGNATURE", threw && threw.code === "webhook/missing-signature");
 }
 
 async function testHeaderCaseInsensitive() {
@@ -243,7 +244,7 @@ async function testNonceStoreReplay() {
   var threw = null;
   try { await v.verify({ body: "body", headers: signed.headers }); }
   catch (e) { threw = e; }
-  check("replay → REPLAY", threw && threw.code === "REPLAY");
+  check("replay → REPLAY", threw && threw.code === "webhook/replay");
 }
 
 async function testNonceStoreErrorPropagates() {
@@ -302,7 +303,7 @@ async function testSignerSendRefusesSsrf() {
   try { await s.send({ url: "https://169.254.169.254/hook", body: "{}", kid: "v1" }); }
   catch (e) { threw = e; }
   check("signer.send refuses cloud-metadata IP (SSRF)",
-        threw && (threw.code === "SSRF_REFUSED" ||
+        threw && (threw.code === "webhook/ssrf-refused" ||
                   /ssrf|metadata|blocked|internal|private/i.test((threw.code || "") + " " + (threw.message || ""))));
 }
 
@@ -361,7 +362,7 @@ async function testMiddlewareBadSignature() {
   check("middleware: 401 on bad sig",        res._endedStatus === 401);
   check("middleware: next() not called",     nextCalled === false);
   check("middleware: BAD_SIGNATURE in body",
-        /BAD_SIGNATURE/.test(res._captured || ""));
+        /webhook\/bad-signature/.test(res._captured || ""));
 }
 
 // ---- PQC-PEM roundtrip ----
@@ -393,7 +394,7 @@ async function testPqcPemTampered() {
   try { await v.verify({ body: "tampered", headers: signed.headers }); }
   catch (e) { threw = e; }
   check("PQC-PEM: tampered body → BAD_SIGNATURE",
-        threw && threw.code === "BAD_SIGNATURE");
+        threw && threw.code === "webhook/bad-signature");
 }
 
 async function testPqcPemMultipleVerifierKeys() {
@@ -469,44 +470,44 @@ function testRejectsBadOpts() {
 
   expectThrow("signer: bad algo",
     function () { b.webhook.signer({ algo: "rsa-sha1", keys: { v1: "s" } }); },
-    "BAD_OPT");
+    "webhook/bad-opt");
   expectThrow("signer: missing keys",
     function () { b.webhook.signer({ algo: "hmac-sha3-512" }); },
-    "BAD_OPT");
+    "webhook/bad-opt");
   expectThrow("signer: empty keys",
     function () { b.webhook.signer({ algo: "hmac-sha3-512", keys: {} }); },
-    "BAD_OPT");
+    "webhook/bad-opt");
   expectThrow("signer: bad kid (contains comma)",
     function () { b.webhook.signer({ algo: "hmac-sha3-512", keys: { "v,1": "s" } }); },
-    "BAD_OPT");
+    "webhook/bad-opt");
   expectThrow("signer: reserved kid 't'",
     function () { b.webhook.signer({ algo: "hmac-sha3-512", keys: { t: "s" } }); },
-    "BAD_OPT");
+    "webhook/bad-opt");
   expectThrow("signer: reserved kid 'id'",
     function () { b.webhook.signer({ algo: "hmac-sha3-512", keys: { id: "s" } }); },
-    "BAD_OPT");
+    "webhook/bad-opt");
   expectThrow("signer: defaultKid not in keys",
     function () { b.webhook.signer({ algo: "hmac-sha3-512", keys: { v1: "s" }, defaultKid: "v9" }); },
-    "BAD_OPT");
+    "webhook/bad-opt");
   expectThrow("signer: multiple keys without defaultKid",
     function () { b.webhook.signer({ algo: "hmac-sha3-512", keys: { v1: "s", v2: "t" } }); },
-    "BAD_OPT");
+    "webhook/bad-opt");
 
   expectThrow("verifier: bad toleranceMs",
     function () { b.webhook.verifier({ algo: "hmac-sha3-512", keys: { v1: "s" }, toleranceMs: -1 }); },
-    "BAD_OPT");
+    "validate-opts/bad-non-negative-finite");
   expectThrow("verifier: nonceStore without checkAndInsert",
     function () { b.webhook.verifier({ algo: "hmac-sha3-512", keys: { v1: "s" }, nonceStore: {} }); },
-    "BAD_OPT");
+    "webhook/bad-opt");
 
   // Body validation
   var s = b.webhook.signer({ algo: "hmac-sha3-512", keys: { v1: "s" } });
   expectThrow("sign(undefined) → BAD_BODY",
-    function () { s.sign(undefined); }, "BAD_BODY");
+    function () { s.sign(undefined); }, "webhook/bad-body");
   expectThrow("sign(42) → BAD_BODY",
-    function () { s.sign(42); }, "BAD_BODY");
+    function () { s.sign(42); }, "webhook/bad-body");
   expectThrow("sign({}) → BAD_BODY",
-    function () { s.sign({}); }, "BAD_BODY");
+    function () { s.sign({}); }, "webhook/bad-body");
 }
 
 async function testSendBadUrl() {
@@ -516,7 +517,7 @@ async function testSendBadUrl() {
   try { await s.send({ url: "http://example.com", body: "x" }); }
   catch (e) { threw = e; }
   check("send: rejects http:// when ALLOW_HTTP_TLS",
-        threw && (threw.code === "BAD_URL" || /protocol/i.test(threw.message)));
+        threw && (threw.code === "safe-url/protocol-disallowed" || /protocol/i.test(threw.message)));
 }
 
 // ---- Run ----
@@ -831,7 +832,7 @@ async function testTimestampNonCanonicalRejected() {
   for (var i = 0; i < forms.length; i++) {
     var code = await codeFor(forms[i][1]);
     check("non-canonical t (" + forms[i][0] + ") -> BAD_TIMESTAMP (got " + code + ")",
-          code === "BAD_TIMESTAMP");
+          code === "webhook/bad-timestamp");
   }
 }
 
@@ -844,7 +845,7 @@ async function testPqcAlgorithmPin() {
   var pair = b.crypto.generateSigningKeyPair("ml-dsa-87");
   function expectThrow(label, fn) {
     var threw = null; try { fn(); } catch (e) { threw = e; }
-    check(label, threw && threw.code === "BAD_OPT");
+    check(label, threw && threw.code === "webhook/bad-opt");
   }
   var sOk = b.webhook.signer({ algo: "pqc-pem",
     keys: { v1: { privateKey: pair.privateKey, publicKey: pair.publicKey } }, pqcAlgorithm: "ml-dsa-87" });
@@ -871,7 +872,7 @@ function testKeyShapeErrors() {
   var pair = b.crypto.generateSigningKeyPair("ml-dsa-87");
   function expectThrow(label, fn) {
     var threw = null; try { fn(); } catch (e) { threw = e; }
-    check(label, threw && threw.code === "BAD_OPT");
+    check(label, threw && threw.code === "webhook/bad-opt");
   }
   expectThrow("PQC verifier key as number -> BAD_OPT",
     function () { b.webhook.verifier({ algo: "pqc-pem", keys: { v1: 123 } }); });
@@ -892,7 +893,7 @@ function testKeyShapeErrors() {
 function testSignerCallSiteErrors() {
   function expectThrow(label, fn) {
     var threw = null; try { fn(); } catch (e) { threw = e; }
-    check(label, threw && threw.code === "BAD_OPT");
+    check(label, threw && threw.code === "webhook/bad-opt");
   }
   var s = b.webhook.signer({ algo: "hmac-sha3-512", keys: { v1: "s" } });
   expectThrow("sign unknown per-call kid -> BAD_OPT", function () { s.sign("body", { kid: "ghost" }); });
@@ -913,12 +914,12 @@ async function testVerifyInputShapes() {
     var t = null; try { await v.verify(input); } catch (e) { t = e; }
     check(label, t && t.code === code);
   }
-  await expectCode("verify(null) -> BAD_OPT", null, "BAD_OPT");
-  await expectCode("verify(non-object) -> BAD_OPT", "nope", "BAD_OPT");
-  await expectCode("verify headers not object -> BAD_OPT", { body: "b", headers: "x" }, "BAD_OPT");
-  await expectCode("verify missing headers -> BAD_OPT", { body: "b" }, "BAD_OPT");
+  await expectCode("verify(null) -> BAD_OPT", null, "webhook/bad-opt");
+  await expectCode("verify(non-object) -> BAD_OPT", "nope", "webhook/bad-opt");
+  await expectCode("verify headers not object -> BAD_OPT", { body: "b", headers: "x" }, "webhook/bad-opt");
+  await expectCode("verify missing headers -> BAD_OPT", { body: "b" }, "webhook/bad-opt");
   await expectCode("verify object body -> BAD_BODY",
-    { body: { a: 1 }, headers: { "Webhook-Signature": "t=1,id=2,v1=ff" } }, "BAD_BODY");
+    { body: { a: 1 }, headers: { "Webhook-Signature": "t=1,id=2,v1=ff" } }, "webhook/bad-body");
 }
 
 // Advertised: the PQC verifier accepts EITHER base64url (current) OR hex

@@ -97,7 +97,7 @@ async function _testCoreVerdicts() {
     check("plaintext vault: code mentions vault", /vault/.test(devThrew.failures[0].code));
     // The thrown error's operator-facing .message carries the full
     // multi-line diagnostic; .code is the short stable token.
-    check("aggregated throw: .code is ASSERT_FAILED", devThrew.code === "ASSERT_FAILED");
+    check("aggregated throw: .code is ASSERT_FAILED", devThrew.code === "security-assert/assert-failed");
     check("aggregated throw: .message carries the diagnostic",
           /production security policy failed/.test(devThrew.message));
     check("aggregated throw: .message lists the failing code",
@@ -554,7 +554,7 @@ async function _testExtraValidation() {
   try { await b.security.assertProduction(_cleanBase({ extra: "nope" })); }
   catch (e) { notArray = e; }
   check("extra not an array: throws SecurityAssertError", notArray instanceof b.security.SecurityAssertError);
-  check("extra not an array: BAD_OPT code", notArray && notArray.code === "BAD_OPT");
+  check("extra not an array: BAD_OPT code", notArray && notArray.code === "security-assert/bad-opt");
   check("extra not an array: message describes the fault",
         notArray && /opts\.extra must be an array/.test(notArray.message));
 
@@ -563,7 +563,7 @@ async function _testExtraValidation() {
   try { await b.security.assertProduction(_cleanBase({ extra: [123] })); }
   catch (e) { notFn = e; }
   check("extra[0] not a function: throws SecurityAssertError", notFn instanceof b.security.SecurityAssertError);
-  check("extra[0] not a function: BAD_OPT code", notFn && notFn.code === "BAD_OPT");
+  check("extra[0] not a function: BAD_OPT code", notFn && notFn.code === "security-assert/bad-opt");
   check("extra[0] not a function: message names index", notFn && /extra\[0\]/.test(notFn.message));
 
   // Extra that throws → aggregated as extra-threw (not a hard throw).

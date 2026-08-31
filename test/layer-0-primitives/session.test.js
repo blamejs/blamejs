@@ -102,22 +102,22 @@ async function testCreateInputValidation() {
     }
 
     var e1 = await throws(function () { return b.session.create({}); });
-    check("create({}) with no userId throws INVALID_ARG", e1 && e1.code === "INVALID_ARG");
+    check("create({}) with no userId throws INVALID_ARG", e1 && e1.code === "session/invalid-arg");
     var e2 = await throws(function () { return b.session.create(); });
-    check("create() with no opts throws INVALID_ARG", e2 && e2.code === "INVALID_ARG");
+    check("create() with no opts throws INVALID_ARG", e2 && e2.code === "session/invalid-arg");
 
     var eNeg = await throws(function () { return b.session.create({ userId: "u", ttlMs: -5 }); });
-    check("create ttlMs negative throws", eNeg && eNeg.code === "INVALID_ARG");
+    check("create ttlMs negative throws", eNeg && eNeg.code === "session/invalid-arg");
     var eZero = await throws(function () { return b.session.create({ userId: "u", ttlMs: 0 }); });
-    check("create ttlMs 0 throws", eZero && eZero.code === "INVALID_ARG");
+    check("create ttlMs 0 throws", eZero && eZero.code === "session/invalid-arg");
     var eInf = await throws(function () { return b.session.create({ userId: "u", ttlMs: Infinity }); });
-    check("create ttlMs Infinity throws (non-finite)", eInf && eInf.code === "INVALID_ARG");
+    check("create ttlMs Infinity throws (non-finite)", eInf && eInf.code === "session/invalid-arg");
     var eNaN = await throws(function () { return b.session.create({ userId: "u", ttlMs: NaN }); });
-    check("create ttlMs NaN throws", eNaN && eNaN.code === "INVALID_ARG");
+    check("create ttlMs NaN throws", eNaN && eNaN.code === "session/invalid-arg");
     var eStr = await throws(function () { return b.session.create({ userId: "u", ttlMs: "3600000" }); });
-    check("create ttlMs string throws (not a number)", eStr && eStr.code === "INVALID_ARG");
+    check("create ttlMs string throws (not a number)", eStr && eStr.code === "session/invalid-arg");
     var eMax = await throws(function () { return b.session.create({ userId: "u", ttlMs: TIME.days(4000) }); });
-    check("create ttlMs beyond ~10y ceiling throws", eMax && eMax.code === "INVALID_ARG" && /exceeds maximum/.test(eMax.message));
+    check("create ttlMs beyond ~10y ceiling throws", eMax && eMax.code === "session/invalid-arg" && /exceeds maximum/.test(eMax.message));
   } finally {
     await teardownTestDb(tmpDir);
   }
@@ -160,9 +160,9 @@ async function testDestroyAllForUserGuards() {
     await setupTestDb(tmpDir);
     async function throws(fn) { try { await fn(); return null; } catch (e) { return e; } }
     var e1 = await throws(function () { return b.session.destroyAllForUser(""); });
-    check("destroyAllForUser('') throws INVALID_ARG", e1 && e1.code === "INVALID_ARG");
+    check("destroyAllForUser('') throws INVALID_ARG", e1 && e1.code === "session/invalid-arg");
     var e2 = await throws(function () { return b.session.destroyAllForUser(null); });
-    check("destroyAllForUser(null) throws INVALID_ARG", e2 && e2.code === "INVALID_ARG");
+    check("destroyAllForUser(null) throws INVALID_ARG", e2 && e2.code === "session/invalid-arg");
 
     // Happy path: two sessions for one user, both revoked in one call.
     await b.session.create({ userId: "multi" });
@@ -212,7 +212,7 @@ async function testRotateVariants() {
     var s3 = await b.session.create({ userId: "u-rot3" });
     var eTtl = null;
     try { await b.session.rotate(s3.token, { ttlMs: -1 }); } catch (e) { eTtl = e; }
-    check("rotate rejects a negative ttlMs", eTtl && eTtl.code === "INVALID_ARG");
+    check("rotate rejects a negative ttlMs", eTtl && eTtl.code === "session/invalid-arg");
   } finally {
     await teardownTestDb(tmpDir);
   }
@@ -440,7 +440,7 @@ async function testTouchLifecycleAndFloor() {
     // touch rejects a bad extendBy (config-time throw).
     var eExt = null;
     try { await b.session.touch(s.token, { extendBy: -1 }); } catch (e) { eExt = e; }
-    check("touch rejects a negative extendBy", eExt && eExt.code === "INVALID_ARG");
+    check("touch rejects a negative extendBy", eExt && eExt.code === "session/invalid-arg");
 
     // touch on an idle-aged session refuses AND purges (floor breach).
     var s2 = await b.session.create({ userId: "u-touch-idle" });
@@ -773,10 +773,10 @@ async function testAnonymousSessions() {
     check("isAnonymous(plain userId) is false", b.session.isAnonymous("user-42") === false);
 
     var eBoth = await throws(function () { return b.session.create({ anonymous: true, userId: "u" }); });
-    check("create({anonymous:true, userId}) refuses both", eBoth && eBoth.code === "INVALID_ARG");
+    check("create({anonymous:true, userId}) refuses both", eBoth && eBoth.code === "session/invalid-arg");
 
     var eAnon = await throws(function () { return b.session.destroyAllForUser("anon:deadbeef"); });
-    check("destroyAllForUser refuses an anon:-prefixed id", eAnon && eAnon.code === "INVALID_ARG" && /per-session/.test(eAnon.message));
+    check("destroyAllForUser refuses an anon:-prefixed id", eAnon && eAnon.code === "session/invalid-arg" && /per-session/.test(eAnon.message));
   } finally {
     await teardownTestDb(tmpDir);
   }
@@ -919,7 +919,7 @@ async function testRotateBoundAndPayload() {
     var sb = await b.session.create({ userId: "u-rb", data: { keep: 1 }, req: req });
     var eReq = await throws(function () { return b.session.rotate(sb.token); });
     check("rotate on a bound session without req throws ROTATE_FINGERPRINT_REQ_REQUIRED",
-      eReq && eReq.code === "ROTATE_FINGERPRINT_REQ_REQUIRED");
+      eReq && eReq.code === "session/rotate-fingerprint-req-required");
 
     // Rotate WITH req, no opts.data → carry the payload forward and re-key the
     // binding to the new sid; the new token still matches the same device.
@@ -972,9 +972,9 @@ async function testUpdateDataBranches() {
 
     var s = await b.session.create({ userId: "u-upd", data: { keep: 1, nested: { x: 1 } } });
     var eStr = await throws(function () { return b.session.updateData(s.token, "not-an-object"); });
-    check("updateData rejects a non-object data", eStr && eStr.code === "INVALID_ARG");
+    check("updateData rejects a non-object data", eStr && eStr.code === "session/invalid-arg");
     var eArr = await throws(function () { return b.session.updateData(s.token, [1, 2]); });
-    check("updateData rejects an array data", eArr && eArr.code === "INVALID_ARG");
+    check("updateData rejects an array data", eArr && eArr.code === "session/invalid-arg");
 
     // merge:true — one-level deep merge into the existing payload.
     var merged = await b.session.updateData(s.token, { added: 2, nested: { y: 2 } }, { merge: true });
@@ -1058,11 +1058,11 @@ async function testBumpValidFromCheck() {
     async function throws(fn) { try { await fn(); return null; } catch (e) { return e; } }
 
     var eEmpty = await throws(function () { return b.session.bump(""); });
-    check("bump('') throws INVALID_ARG", eEmpty && eEmpty.code === "INVALID_ARG");
+    check("bump('') throws INVALID_ARG", eEmpty && eEmpty.code === "session/invalid-arg");
     var eNeg = await throws(function () { return b.session.bump("u-vf", { epochMs: -1 }); });
-    check("bump negative epochMs throws INVALID_ARG", eNeg && eNeg.code === "INVALID_ARG");
+    check("bump negative epochMs throws INVALID_ARG", eNeg && eNeg.code === "session/invalid-arg");
     var eNaN = await throws(function () { return b.session.bump("u-vf", { epochMs: NaN }); });
-    check("bump NaN epochMs throws INVALID_ARG", eNaN && eNaN.code === "INVALID_ARG");
+    check("bump NaN epochMs throws INVALID_ARG", eNaN && eNaN.code === "session/invalid-arg");
 
     var eff = await b.session.bump("u-vf", { epochMs: 5000 });
     check("bump with explicit epochMs returns that boundary", eff === 5000);

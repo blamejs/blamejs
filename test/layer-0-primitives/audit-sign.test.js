@@ -98,19 +98,19 @@ async function testConflictAndModeMismatch() {
     fs.writeFileSync(_sealedPath(d1), "placeholder");
     as._resetForTest();
     check("both key files present -> KEY_FILE_CONFLICT",
-      (await _codeOf(function () { return as.init({ dataDir: d1, mode: "plaintext" }); })) === "KEY_FILE_CONFLICT");
+      (await _codeOf(function () { return as.init({ dataDir: d1, mode: "plaintext" }); })) === "audit-sign/key-file-conflict");
 
     // A sealed file exists but the operator asked for plaintext.
     fs.writeFileSync(_sealedPath(d2), "placeholder");
     as._resetForTest();
     check("sealed on disk + mode:plaintext -> MODE_MISMATCH",
-      (await _codeOf(function () { return as.init({ dataDir: d2, mode: "plaintext" }); })) === "MODE_MISMATCH");
+      (await _codeOf(function () { return as.init({ dataDir: d2, mode: "plaintext" }); })) === "audit-sign/mode-mismatch");
 
     // A plaintext file exists but the operator asked for wrapped.
     fs.writeFileSync(_plaintextPath(d3), "placeholder");
     as._resetForTest();
     check("plaintext on disk + mode:wrapped -> MODE_MISMATCH",
-      (await _codeOf(function () { return as.init({ dataDir: d3, mode: "wrapped" }); })) === "MODE_MISMATCH");
+      (await _codeOf(function () { return as.init({ dataDir: d3, mode: "wrapped" }); })) === "audit-sign/mode-mismatch");
   } finally {
     as._resetForTest();
     _rm(d1); _rm(d2); _rm(d3);
@@ -139,7 +139,7 @@ async function testPlaintextLoadAndCorrupt() {
     fs.writeFileSync(_plaintextPath(dCorrupt), "{ this is not valid json");
     as._resetForTest();
     check("corrupt plaintext key file -> KEY_FILE_CORRUPT",
-      (await _codeOf(function () { return as.init({ dataDir: dCorrupt, mode: "plaintext" }); })) === "KEY_FILE_CORRUPT");
+      (await _codeOf(function () { return as.init({ dataDir: dCorrupt, mode: "plaintext" }); })) === "audit-sign/key-file-corrupt");
 
     // A schema-valid key file that omits the required `algorithm` field.
     var pair = _genPair(ALG);
@@ -147,7 +147,7 @@ async function testPlaintextLoadAndCorrupt() {
       JSON.stringify({ publicKey: pair.publicKey, privateKey: pair.privateKey }, null, 2));
     as._resetForTest();
     check("plaintext key missing algorithm -> KEY_FILE_MISSING_ALG",
-      (await _codeOf(function () { return as.init({ dataDir: dNoAlg, mode: "plaintext" }); })) === "KEY_FILE_MISSING_ALG");
+      (await _codeOf(function () { return as.init({ dataDir: dNoAlg, mode: "plaintext" }); })) === "audit-sign/key-file-missing-alg");
   } finally {
     as._resetForTest();
     _rm(dGood); _rm(dCorrupt); _rm(dNoAlg);
@@ -182,7 +182,7 @@ async function testWrappedModeAndErrors() {
     as._resetForTest();
     process.env.BLAMEJS_AUDIT_SIGNING_PASSPHRASE = "the-wrong-passphrase";
     check("wrapped unseal with a wrong passphrase -> PASSPHRASE_REJECTED",
-      (await _codeOf(function () { return as.init({ dataDir: dSeal, mode: "wrapped" }); })) === "PASSPHRASE_REJECTED");
+      (await _codeOf(function () { return as.init({ dataDir: dSeal, mode: "wrapped" }); })) === "audit-sign/passphrase-rejected");
 
     // A sealed blob whose plaintext is not a valid key object -> UNWRAPPED_INVALID.
     var badBlob = await vaultWrap.wrap("this-plaintext-is-not-json", Buffer.from(PASS));
@@ -190,7 +190,7 @@ async function testWrappedModeAndErrors() {
     as._resetForTest();
     process.env.BLAMEJS_AUDIT_SIGNING_PASSPHRASE = PASS;
     check("wrapped unseal of a non-key plaintext -> UNWRAPPED_INVALID",
-      (await _codeOf(function () { return as.init({ dataDir: dInvalid, mode: "wrapped" }); })) === "UNWRAPPED_INVALID");
+      (await _codeOf(function () { return as.init({ dataDir: dInvalid, mode: "wrapped" }); })) === "audit-sign/unwrapped-invalid");
 
     // A sealed blob that IS a schema-valid key object but omits `algorithm`.
     var pair = _genPair(ALG);
@@ -202,7 +202,7 @@ async function testWrappedModeAndErrors() {
     as._resetForTest();
     process.env.BLAMEJS_AUDIT_SIGNING_PASSPHRASE = PASS;
     check("wrapped unseal of a key missing algorithm -> UNWRAPPED_MISSING_ALG",
-      (await _codeOf(function () { return as.init({ dataDir: dNoAlg, mode: "wrapped" }); })) === "UNWRAPPED_MISSING_ALG");
+      (await _codeOf(function () { return as.init({ dataDir: dNoAlg, mode: "wrapped" }); })) === "audit-sign/unwrapped-missing-alg");
 
     // Wrapped rotation archives the OLD sealed file to the advertised history
     // path and records the rotated-out public key so it still resolves.
@@ -474,15 +474,15 @@ async function testAnchorInputEdges() {
     await as.init({ dataDir: dir, mode: "plaintext", algorithm: ALG });
 
     check("anchor(null) -> ANCHOR_BAD_TIP",
-      (await _codeOf(function () { return as.anchor(null); })) === "ANCHOR_BAD_TIP");
+      (await _codeOf(function () { return as.anchor(null); })) === "audit-sign/anchor-bad-tip");
     check("anchor(non-object) -> ANCHOR_BAD_TIP",
-      (await _codeOf(function () { return as.anchor("not-a-tip"); })) === "ANCHOR_BAD_TIP");
+      (await _codeOf(function () { return as.anchor("not-a-tip"); })) === "audit-sign/anchor-bad-tip");
     check("anchor negative counter -> ANCHOR_BAD_COUNTER",
-      (await _codeOf(function () { return as.anchor({ counter: -1, tipHash: "h" }); })) === "ANCHOR_BAD_COUNTER");
+      (await _codeOf(function () { return as.anchor({ counter: -1, tipHash: "h" }); })) === "audit-sign/anchor-bad-counter");
     check("anchor non-integer counter -> ANCHOR_BAD_COUNTER",
-      (await _codeOf(function () { return as.anchor({ counter: 1.5, tipHash: "h" }); })) === "ANCHOR_BAD_COUNTER");
+      (await _codeOf(function () { return as.anchor({ counter: 1.5, tipHash: "h" }); })) === "audit-sign/anchor-bad-counter");
     check("anchor non-string prevTipHash -> ANCHOR_BAD_PREV",
-      (await _codeOf(function () { return as.anchor({ counter: 1, tipHash: "h", prevTipHash: 123 }); })) === "ANCHOR_BAD_PREV");
+      (await _codeOf(function () { return as.anchor({ counter: 1, tipHash: "h", prevTipHash: 123 }); })) === "audit-sign/anchor-bad-prev");
 
     // An explicit finite createdAt is recorded verbatim; an empty format string
     // falls back to the default anchor magic.

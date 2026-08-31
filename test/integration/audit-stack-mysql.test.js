@@ -397,7 +397,7 @@ async function _testCheckpointAndFence() {
   var fencedErr = null;
   try { await b.audit.checkpoint({}); } catch (e) { fencedErr = e; }
   check("checkpoint at a lower fencing token is FENCED_OUT on MySQL (IF-fold + readback)",
-    fencedErr !== null && /FENCED_OUT/.test((fencedErr.code || "") + (fencedErr.message || "")));
+    fencedErr !== null && /audit\/fenced-out/.test((fencedErr.code || "") + (fencedErr.message || "")));
   check("the stored fencingToken stayed at the higher value (lower token did not overwrite)",
     Number(_scalar("SELECT `fencingToken` FROM `_blamejs_audit_tip` WHERE `scope`='audit'")) === highTok);
 

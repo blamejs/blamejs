@@ -1450,7 +1450,7 @@ function testGuardCsvSerializeRowsNotArray() {
   try { b.guardCsv.serialize("not-an-array"); }
   catch (e) { threw = e; }
   check("serialize: non-array rows throws csv.bad-input",
-        threw && threw.code === "csv.bad-input");
+        threw && threw.code === "csv/bad-input");
 }
 
 function testGuardCsvSerializeRedact() {
@@ -1500,7 +1500,7 @@ function testGuardCsvSerializeRowNotArrayOrObject() {
   try { b.guardCsv.serialize([42]); }
   catch (e) { threw = e; }
   check("serialize: row neither array nor plain object → csv.bad-input",
-        threw && threw.code === "csv.bad-input");
+        threw && threw.code === "csv/bad-input");
 }
 
 function testGuardCsvSerializeBomPrefix() {
