@@ -382,7 +382,7 @@ async function testMissingDependency() {
       var runner = b.seeders.create({ dir: tree.seedsDir });
       var threwMissing = false;
       try { await runner.run({ env: "dev" }); } catch (e) {
-        threwMissing = (e && /MISSING_DEP/.test(e.code || ""));
+        threwMissing = (e && /seeders\/missing-dep/.test(e.code || ""));
       }
       check("missing dep throws MISSING_DEP",    threwMissing);
     } finally {
@@ -407,7 +407,7 @@ async function testCycleDetection() {
       var runner = b.seeders.create({ dir: tree.seedsDir });
       var threwCycle = false;
       try { await runner.run({ env: "dev" }); } catch (e) {
-        threwCycle = (e && /CYCLE/.test(e.code || ""));
+        threwCycle = (e && e.code === "seeders/cycle");
       }
       check("dependency cycle throws CYCLE",     threwCycle);
     } finally {
@@ -434,7 +434,7 @@ async function testBadSeedShape() {
       var runner = b.seeders.create({ dir: tree.seedsDir });
       var threw = false;
       try { await runner.run({ env: "dev" }); } catch (e) {
-        threw = (e && /BAD_SEED/.test(e.code || ""));
+        threw = (e && /seeders\/bad-seed/.test(e.code || ""));
       }
       check("seed without run() throws BAD_SEED at load", threw);
     } finally {
@@ -476,7 +476,7 @@ async function testPerSeedTxnRollback() {
       var resultErr = null;
       try { await runner.run({ env: "dev" }); }
       catch (e) {
-        threwRunFailed = (e && /RUN_FAILED/.test(e.code || ""));
+        threwRunFailed = (e && /seeders\/run-failed/.test(e.code || ""));
         resultErr = e;
       }
       check("run throws RUN_FAILED when a seed errors", threwRunFailed);
@@ -522,7 +522,7 @@ async function testLockHeld() {
       var runner = b.seeders.create({ dir: tree.seedsDir });
       var threwLock = false;
       try { await runner.run({ env: "dev" }); }
-      catch (e) { threwLock = (e && /LOCK_HELD/.test(e.code || "")); }
+      catch (e) { threwLock = (e && /seeders\/lock-held/.test(e.code || "")); }
       check("concurrent run sees LOCK_HELD",     threwLock);
       // Cleanup
       b.db.prepare("DELETE FROM _blamejs_seeders_lock").run();

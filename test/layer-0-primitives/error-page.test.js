@@ -65,7 +65,7 @@ function testClassifyViaJson() {
   h(new Error("DB pwd hunter2"), jsonReq(), r);
   var p = jsonOf(r);
   check("plain Error → 500 status",            cap(r).status === 500);
-  check("plain Error → INTERNAL_ERROR code",   p.error.code === "INTERNAL_ERROR");
+  check("plain Error → INTERNAL_ERROR code",   p.error.code === "error-page/internal-error");
   check("plain Error → generic message",       p.error.message === "Internal Server Error");
   check("plain Error hides operator message",  bodyOf(r).indexOf("hunter2") === -1);
 
@@ -81,7 +81,7 @@ function testClassifyViaJson() {
   var r3 = _mockRes();
   h({ isAppError: true, statusCode: 404 }, jsonReq(), r3);
   var p3 = jsonOf(r3);
-  check("AppError no-code → APP_ERROR default", p3.error.code === "APP_ERROR");
+  check("AppError no-code → APP_ERROR default", p3.error.code === "error-page/app-error");
   check("AppError no-message → reason phrase",  p3.error.message === "Not Found");
 
   // isAppError with NO statusCode → 500 but classified (message shown).
@@ -96,7 +96,7 @@ function testClassifyViaJson() {
   h({ isAuthError: true }, jsonReq(), r5);
   var p5 = jsonOf(r5);
   check("isAuthError → 401",                    cap(r5).status === 401);
-  check("isAuthError default code AUTH_FAILED", p5.error.code === "AUTH_FAILED");
+  check("isAuthError default code AUTH_FAILED", p5.error.code === "error-page/auth-failed");
   check("isAuthError default message",          p5.error.message === "Unauthorized");
 
   // isAuthError with explicit code + message.
@@ -151,7 +151,7 @@ function testClassifyViaJson() {
   h({ statusCode: 403, message: "denied" }, jsonReq(), r10);
   var p10 = jsonOf(r10);
   check("bare statusCode 403 classified",       cap(r10).status === 403);
-  check("bare statusCode default code ERROR",   p10.error.code === "ERROR");
+  check("bare statusCode default code ERROR",   p10.error.code === "error-page/error");
   check("bare statusCode message preserved",    p10.error.message === "denied");
 
   // Unknown status (no reason-phrase, no message) → "Error" fallback.
@@ -194,7 +194,7 @@ function testClassifyDefaultMessages() {
   var r5 = _mockRes();
   h({ foo: 1 }, jsonReq(), r5);
   var p5 = jsonOf(r5);
-  check("unrecognized object → INTERNAL_ERROR", p5.error.code === "INTERNAL_ERROR");
+  check("unrecognized object → INTERNAL_ERROR", p5.error.code === "error-page/internal-error");
   check("unrecognized object → generic message", p5.error.message === "Internal Server Error");
 }
 
@@ -225,7 +225,7 @@ function testNonObjectErrors() {
   var rNull = _mockRes();
   h(null, jsonReq(), rNull);
   check("null err → 500",                       cap(rNull).status === 500);
-  check("null err → INTERNAL_ERROR",            jsonOf(rNull).error.code === "INTERNAL_ERROR");
+  check("null err → INTERNAL_ERROR",            jsonOf(rNull).error.code === "error-page/internal-error");
 
   var rStr = _mockRes();
   h("boom-string", jsonReq(), rStr);
@@ -765,7 +765,7 @@ function testAuditPath() {
   // The audit branch is best-effort and drop-silent — the classified
   // response is untouched by it.
   check("audit(trustProxy true, 500) status survives", cap(rA).status === 500);
-  check("audit(trustProxy true) envelope survives",    jsonOf(rA).error.code === "INTERNAL_ERROR");
+  check("audit(trustProxy true) envelope survives",    jsonOf(rA).error.code === "error-page/internal-error");
   check("audit(trustProxy numeric, 4xx) status survives", cap(rB).status === 403);
   check("audit(trustProxy numeric) message survives",     jsonOf(rB).error.message === "denied");
   check("audit(default trustProxy, 401) status survives", cap(rC).status === 401);

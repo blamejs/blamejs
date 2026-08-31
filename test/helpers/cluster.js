@@ -59,11 +59,11 @@ function _expectNotLeaderError(label, fn) {
       return maybePromise.then(function () {
         check(label + " — should have thrown", false);
       }, function (e) {
-        check(label + " — throws NotLeaderError", e && e.code === "NOT_LEADER");
+        check(label + " — throws NotLeaderError", e && e.code === "cluster/not-leader");
       });
     }
   } catch (e) { threw = e; }
-  check(label + " — throws NotLeaderError", threw && threw.code === "NOT_LEADER");
+  check(label + " — throws NotLeaderError", threw && threw.code === "cluster/not-leader");
 }
 
 module.exports = {

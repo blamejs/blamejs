@@ -80,19 +80,19 @@ function throwsCode(label, fn, code) {
 function testBadOptsThrow() {
   throwsCode("validate: unknown contextMode",
     function () { return b.guardSql.validate("x = 1", { contextMode: "nope" }); },
-    "sql.bad-opt");
+    "sql/bad-opt");
   throwsCode("validate: unknown profile",
     function () { return b.guardSql.validate("x = 1", { profile: "nope" }); },
-    "sql.bad-profile");
+    "sql/bad-profile");
   throwsCode("validate: unknown compliancePosture",
     function () { return b.guardSql.validate("x = 1", { compliancePosture: "nope" }); },
-    "sql.bad-posture");
+    "sql/bad-posture");
   throwsCode("sanitize: non-string / non-Buffer input",
     function () { return b.guardSql.sanitize(42); },
-    "sql.bad-input");
+    "sql/bad-input");
   throwsCode("compliancePosture: unknown posture",
     function () { return b.guardSql.compliancePosture("nope"); },
-    "sql.bad-posture");
+    "sql/bad-posture");
 }
 
 // ---- validate() bad input — returns a bad-input RESULT, never throws ----

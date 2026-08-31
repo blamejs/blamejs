@@ -329,7 +329,7 @@ async function testClusterProviderRenewalRace() {
     try { await pA.renewLease(leaseA); }
     catch (e) { threw = e; }
     check("old leader's renewLease throws",              threw !== null);
-    check("error code is LEASE_LOST",                    threw && threw.code === "LEASE_LOST");
+    check("error code is LEASE_LOST",                    threw && threw.code === "cluster-provider-db/lease-lost");
   } finally {
     try { await b.externalDb.shutdown(); } catch (_e) {}
     driver._close();
@@ -359,7 +359,7 @@ async function testClusterProviderMysqlDialect() {
     try { providerFactory.create({ externalDbBackend: "ops", dialect: "oracle" }); }
     catch (e) { threwBad = e; }
     check("mysql provider: rejects unsupported dialect 'oracle'",
-          threwBad && threwBad.code === "UNSUPPORTED_DIALECT");
+          threwBad && threwBad.code === "cluster-provider-db/unsupported-dialect");
 
     await pA.ensureSchema();
     var sqlSeen = driver._loggedSql();
@@ -410,7 +410,7 @@ async function testClusterProviderMysqlDialect() {
     try { await pA.renewLease(renewed); }
     catch (e) { threwRenew = e; }
     check("mysql provider: old leader's renewLease throws LEASE_LOST",
-          threwRenew && threwRenew.code === "LEASE_LOST");
+          threwRenew && threwRenew.code === "cluster-provider-db/lease-lost");
 
     // currentLeader sees B.
     var current = await pB.currentLeader();
@@ -464,7 +464,7 @@ async function testClusterInitAndRequireLeader() {
     try { b.cluster.requireLeader(); } catch (e) { threwOnFollower = e; }
     check("requireLeader throws when not leader",        threwOnFollower !== null);
     check("error is NotLeaderError",                     threwOnFollower &&
-                                                          threwOnFollower.code === "NOT_LEADER");
+                                                          threwOnFollower.code === "cluster/not-leader");
     check("error has 503 statusCode",                    threwOnFollower &&
                                                           threwOnFollower.statusCode === 503);
   } finally {

@@ -79,7 +79,7 @@ async function run() {
 
     // Malformed tip throws a typed config-time error.
     var threw = false;
-    try { as.anchor({ counter: 1 }); } catch (e) { threw = e.code === "ANCHOR_BAD_TIPHASH"; }
+    try { as.anchor({ counter: 1 }); } catch (e) { threw = e.code === "audit-sign/anchor-bad-tiphash"; }
     check("anchor throws a typed error on a malformed tip", threw);
 
     // ---- Signed-bytes canonicalization: the record delimiter must not be a
@@ -115,15 +115,15 @@ async function run() {
     // collision above can never be produced through the public API.
     var threwTipNL = false;
     try { as.anchor({ counter: 1, tipHash: "a\nb" }); }
-    catch (e) { threwTipNL = e.code === "ANCHOR_BAD_TIPHASH"; }
+    catch (e) { threwTipNL = e.code === "audit-sign/anchor-bad-tiphash"; }
     check("anchor refuses a tipHash carrying the record delimiter", threwTipNL);
     var threwPrevNL = false;
     try { as.anchor({ counter: 1, tipHash: "ok", prevTipHash: "a\nb" }); }
-    catch (e) { threwPrevNL = e.code === "ANCHOR_BAD_PREV"; }
+    catch (e) { threwPrevNL = e.code === "audit-sign/anchor-bad-prev"; }
     check("anchor refuses a prevTipHash carrying the record delimiter", threwPrevNL);
     var threwFmtNL = false;
     try { as.anchor({ counter: 1, tipHash: "ok" }, { format: "my\nledger" }); }
-    catch (e) { threwFmtNL = e.code === "ANCHOR_BAD_FORMAT"; }
+    catch (e) { threwFmtNL = e.code === "audit-sign/anchor-bad-format"; }
     check("anchor refuses a format carrying the record delimiter", threwFmtNL);
 
     // ---- verifyAnchor defensive-reader branches (never throw on adversarial
@@ -187,7 +187,7 @@ async function run() {
     // Negative rotations first (no state change): ROTATE_NOOP + ROTATE_BAD_ALG.
     var threwNoop = false;
     try { await as.rotateSigningKey({ publicKeyPem: as.getPublicKey(), privateKeyPem: "unused-for-noop-check" }); }
-    catch (e) { threwNoop = e.code === "ROTATE_NOOP"; }
+    catch (e) { threwNoop = e.code === "audit-sign/rotate-noop"; }
     check("rotateSigningKey refuses a no-op rotation (identical fingerprint)", threwNoop);
     var threwBadAlg = false;
     try {
@@ -195,7 +195,7 @@ async function run() {
         publicKeyPem: "-----BEGIN PUBLIC KEY-----\nQUJD\n-----END PUBLIC KEY-----",
         privateKeyPem: "unused", algorithm: "not-a-real-alg",
       });
-    } catch (e) { threwBadAlg = e.code === "ROTATE_BAD_ALG"; }
+    } catch (e) { threwBadAlg = e.code === "audit-sign/rotate-bad-alg"; }
     check("rotateSigningKey refuses an unsupported algorithm", threwBadAlg);
     check("failed rotations left the live key untouched", as.getPublicKeyFingerprint() === beforeFp);
 

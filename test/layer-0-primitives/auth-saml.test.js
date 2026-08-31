@@ -250,18 +250,18 @@ function testCreateRejectsBadOpts() {
   var unknown = null;
   try { b.auth.saml.sp.create(Object.assign({}, base, { bogusKey: 1 })); }
   catch (e) { unknown = e; }
-  check("create: unknown opt is refused",             unknown !== null && unknown.code === "BAD_OPT");
+  check("create: unknown opt is refused",             unknown !== null && unknown.code === "validate-opts/unknown-opt");
   check("create: unknown-opt message names the key",  unknown && /bogusKey/.test(unknown.message));
 
   // clockSkewSec must be a finite, non-negative number — a negative, Infinity,
   // or string value is refused at config time (an Infinity that slipped
   // through would disable the freshness windows downstream).
-  check("create: negative clockSkewSec refused", withOpt({ clockSkewSec: -1 }) === "BAD_OPT");
-  check("create: Infinity clockSkewSec refused", withOpt({ clockSkewSec: Infinity }) === "BAD_OPT");
-  check("create: string clockSkewSec refused",   withOpt({ clockSkewSec: "60" }) === "BAD_OPT");
+  check("create: negative clockSkewSec refused", withOpt({ clockSkewSec: -1 }) === "validate-opts/bad-non-negative-finite");
+  check("create: Infinity clockSkewSec refused", withOpt({ clockSkewSec: Infinity }) === "validate-opts/bad-non-negative-finite");
+  check("create: string clockSkewSec refused",   withOpt({ clockSkewSec: "60" }) === "validate-opts/bad-non-negative-finite");
 
-  check("create: non-object opts refused", _codeOf(function () { b.auth.saml.sp.create("nope"); }) === "BAD_OPT");
-  check("create: null opts refused",       _codeOf(function () { b.auth.saml.sp.create(null); }) === "BAD_OPT");
+  check("create: non-object opts refused", _codeOf(function () { b.auth.saml.sp.create("nope"); }) === "validate-opts/bad-object");
+  check("create: null opts refused",       _codeOf(function () { b.auth.saml.sp.create(null); }) === "validate-opts/bad-object");
 }
 
 // ---------------------------------------------------------------------------
@@ -642,7 +642,7 @@ async function testFetchMdqInputValidation() {
     try { await b.auth.saml.fetchMdq(o); return "NO-THROW"; }
     catch (e) { return e.code || e.message; }
   }
-  check("fetchMdq: non-object opts refused", (await mdqCode(null)) === "BAD_OPT");
+  check("fetchMdq: non-object opts refused", (await mdqCode(null)) === "validate-opts/bad-object");
   check("fetchMdq: missing baseUrl → no-mdq-base", (await mdqCode({ entityId: IDP_ENTITY_ID })) === "auth-saml/no-mdq-base");
   check("fetchMdq: missing entityId → no-mdq-entity", (await mdqCode({ baseUrl: "https://mdq.example" })) === "auth-saml/no-mdq-entity");
 

@@ -77,7 +77,7 @@ function testAadBinding() {
     });
   } catch (e) { threwAad = e; }
   check("AAD mismatch refuses decrypt",
-        threwAad && threwAad.code === "AEAD_DECRYPT_FAILED");
+        threwAad && threwAad.code === "crypto-hpke/aead-decrypt-failed");
 
   var threwInfo = null;
   try {
@@ -90,7 +90,7 @@ function testAadBinding() {
     });
   } catch (e) { threwInfo = e; }
   check("info-string mismatch refuses decrypt (suite_id binding)",
-        threwInfo && threwInfo.code === "AEAD_DECRYPT_FAILED");
+        threwInfo && threwInfo.code === "crypto-hpke/aead-decrypt-failed");
 }
 
 function testTamperedCiphertext() {
@@ -114,31 +114,31 @@ function testTamperedCiphertext() {
     });
   } catch (e) { threw = e; }
   check("tampered ciphertext refuses decrypt",
-        threw && threw.code === "AEAD_DECRYPT_FAILED");
+        threw && threw.code === "crypto-hpke/aead-decrypt-failed");
 }
 
 function testValidation() {
   var threwOpts = null;
   try { b.crypto.hpke.seal(null); } catch (e) { threwOpts = e; }
-  check("seal(null) throws", threwOpts && threwOpts.code === "BAD_OPT");
+  check("seal(null) throws", threwOpts && threwOpts.code === "validate-opts/bad-object");
 
   var threwPub = null;
   try { b.crypto.hpke.seal({ recipientPubKey: 123, plaintext: "x" }); }
   catch (e) { threwPub = e; }
   check("non-string recipientPubKey throws",
-        threwPub && threwPub.code === "BAD_OPT");
+        threwPub && threwPub.code === "crypto-hpke/bad-opt");
 
   var threwPt = null;
   try { b.crypto.hpke.seal({ recipientPubKey: "PEM", plaintext: 42 }); }
   catch (e) { threwPt = e; }
   check("non-string/Buffer plaintext throws",
-        threwPt && threwPt.code === "BAD_OPT");
+        threwPt && threwPt.code === "crypto-hpke/bad-opt");
 
   var threwOpenEnc = null;
   try { b.crypto.hpke.open({ privateKey: "x", enc: "not-a-buffer", ciphertext: Buffer.alloc(0) }); }
   catch (e) { threwOpenEnc = e; }
   check("open with non-Buffer enc throws",
-        threwOpenEnc && threwOpenEnc.code === "BAD_OPT");
+        threwOpenEnc && threwOpenEnc.code === "crypto-hpke/bad-opt");
 }
 
 async function run() {

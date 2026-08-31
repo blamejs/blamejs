@@ -163,9 +163,9 @@ function _mkOutbox(xdb, extra) {
 async function testCreateValidation() {
   var xdb = _sqliteExternalDb();
 
-  _expectThrow(function () { b.outbox.create(null); }, "BAD_OPT",
+  _expectThrow(function () { b.outbox.create(null); }, "validate-opts/bad-object",
     "create(null)");
-  _expectThrow(function () { b.outbox.create("nope"); }, "BAD_OPT",
+  _expectThrow(function () { b.outbox.create("nope"); }, "validate-opts/bad-object",
     "create(non-object)");
 
   // Unknown opt key is refused by the allowed-keys gate.

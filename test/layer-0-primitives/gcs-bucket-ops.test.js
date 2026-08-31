@@ -109,15 +109,15 @@ async function testFactoryValidation() {
     try { bucketOps.create(opts); } catch (e) { threw = e; }
     check("factory: " + label,  threw && codeRe.test(threw.code || ""));
   }
-  shouldThrow("rejects null opts",                 null, /BAD_OPT/);
-  shouldThrow("rejects missing serviceAccount",    {}, /BAD_OPT/);
+  shouldThrow("rejects null opts",                 null, /objectstore\/bad-opt/);
+  shouldThrow("rejects missing serviceAccount",    {}, /objectstore\/bad-opt/);
   shouldThrow("rejects partial serviceAccount",
-    { serviceAccount: { client_email: "x" } }, /BAD_OPT/);
+    { serviceAccount: { client_email: "x" } }, /objectstore\/bad-opt/);
 
   var sa = _fakeServiceAccount();
   delete sa.project_id;
   shouldThrow("rejects missing projectId when SA has no project_id",
-    { serviceAccount: sa }, /BAD_OPT/);
+    { serviceAccount: sa }, /objectstore\/bad-opt/);
 }
 
 async function testBucketNameValidation() {
@@ -128,7 +128,7 @@ async function testBucketNameValidation() {
     async function shouldRejectName(label, name) {
       var threw = null;
       try { await ops.create(name); } catch (e) { threw = e; }
-      check("rejects " + label, threw && /BUCKET_INVALID_NAME/.test(threw.code || ""));
+      check("rejects " + label, threw && /objectstore\/bucket-invalid-name/.test(threw.code || ""));
     }
     await shouldRejectName("UPPERCASE",       "MyBucket");
     await shouldRejectName("too short",       "ab");
@@ -180,7 +180,7 @@ async function testCreateBucketConflict() {
     var threw = null;
     try { await ops.create("existing"); } catch (e) { threw = e; }
     check("409 surfaces as BUCKET_ALREADY_OWNED",
-          threw && /BUCKET_ALREADY_OWNED/.test(threw.code || ""));
+          threw && /objectstore\/bucket-already-owned/.test(threw.code || ""));
   } finally { await l.close(); }
 }
 
@@ -250,7 +250,7 @@ async function testSetLifecycleValidationAndShape() {
       var threw = null;
       try { await ops.setLifecycle("my-bucket", rules); } catch (e) { threw = e; }
       check("setLifecycle rejects: " + label,
-            threw && /INVALID_LIFECYCLE/.test(threw.code || ""));
+            threw && /objectstore\/invalid-lifecycle/.test(threw.code || ""));
     }
     await shouldThrow("non-array",                          "x");
     await shouldThrow("rule with no action",                [{ condition: { age: 30 } }]);
@@ -297,7 +297,7 @@ async function testSetCorsRulesShape() {
     var threw = null;
     try { await ops.setCorsRules("my-bucket", "not-array"); } catch (e) { threw = e; }
     check("setCorsRules rejects non-array",
-          threw && /INVALID_CORS_RULE/.test(threw.code || ""));
+          threw && /objectstore\/invalid-cors-rule/.test(threw.code || ""));
   } finally { await l.close(); }
 }
 

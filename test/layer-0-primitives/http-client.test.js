@@ -212,7 +212,7 @@ async function testConfigurePool() {
   check("configurePool: unknown key throws",
     (function () { try { b.httpClient.configurePool({ nope: 1 }); return false; } catch (e) { return /unknown option/.test(e.message); } })());
   check("configurePool: non-positive maxSockets throws (bad-opts)",
-    (function () { try { b.httpClient.configurePool({ maxSockets: 0 }); return false; } catch (e) { return e.code === "httpclient/bad-opts" || /maxSockets/i.test(e.message); } })());
+    (function () { try { b.httpClient.configurePool({ maxSockets: 0 }); return false; } catch (e) { return e.code === "http-client/bad-opts" || /maxSockets/i.test(e.message); } })());
   check("configurePool: non-integer keepAliveMsecs throws",
     (function () { try { b.httpClient.configurePool({ keepAliveMsecs: 1.5 }); return false; } catch (_e) { return true; } })());
   check("configurePool: non-boolean keepAlive throws",
@@ -242,34 +242,34 @@ async function testConfigurePool() {
 // ---- request() argument validation (all reject, no network) --------
 
 async function testArgValidation() {
-  await _expectReject("request: no opts rejects", b.httpClient.request(), "BAD_ARG");
-  await _expectReject("request: no url rejects", b.httpClient.request({ method: "GET" }), "BAD_ARG");
+  await _expectReject("request: no opts rejects", b.httpClient.request(), "http-client/bad-arg");
+  await _expectReject("request: no url rejects", b.httpClient.request({ method: "GET" }), "http-client/bad-arg");
   await _expectReject("request: before not an array rejects",
-    b.httpClient.request({ url: "https://x.example/", before: "nope" }), "BAD_ARG");
+    b.httpClient.request({ url: "https://x.example/", before: "nope" }), "http-client/bad-arg");
   await _expectReject("request: before with non-function rejects",
-    b.httpClient.request({ url: "https://x.example/", before: [function () {}, 5] }), "BAD_ARG");
+    b.httpClient.request({ url: "https://x.example/", before: [function () {}, 5] }), "http-client/bad-arg");
   await _expectReject("request: after not an array rejects",
-    b.httpClient.request({ url: "https://x.example/", after: {} }), "BAD_ARG");
+    b.httpClient.request({ url: "https://x.example/", after: {} }), "http-client/bad-arg");
   await _expectReject("request: onUploadProgress non-function rejects",
-    b.httpClient.request({ url: "https://x.example/", onUploadProgress: 1 }), "BAD_ARG");
+    b.httpClient.request({ url: "https://x.example/", onUploadProgress: 1 }), "http-client/bad-arg");
   await _expectReject("request: onDownloadProgress non-function rejects",
-    b.httpClient.request({ url: "https://x.example/", onDownloadProgress: 1 }), "BAD_ARG");
+    b.httpClient.request({ url: "https://x.example/", onDownloadProgress: 1 }), "http-client/bad-arg");
   await _expectReject("request: onChunk non-function rejects",
-    b.httpClient.request({ url: "https://x.example/", onChunk: 1 }), "BAD_ARG");
+    b.httpClient.request({ url: "https://x.example/", onChunk: 1 }), "http-client/bad-arg");
   await _expectReject("request: bad jar shape rejects",
-    b.httpClient.request({ url: "https://x.example/", jar: { cookieHeaderFor: 1 } }), "BAD_ARG");
+    b.httpClient.request({ url: "https://x.example/", jar: { cookieHeaderFor: 1 } }), "http-client/bad-arg");
   await _expectReject("request: bad cache shape rejects",
-    b.httpClient.request({ url: "https://x.example/", cache: { _lookup: 1 } }), "BAD_ARG");
+    b.httpClient.request({ url: "https://x.example/", cache: { _lookup: 1 } }), "http-client/bad-arg");
   await _expectReject("request: negative maxRedirects rejects",
-    b.httpClient.request({ url: "https://x.example/", maxRedirects: -1 }), "BAD_ARG");
+    b.httpClient.request({ url: "https://x.example/", maxRedirects: -1 }), "http-client/bad-arg");
   await _expectReject("request: non-integer maxRedirects rejects",
-    b.httpClient.request({ url: "https://x.example/", maxRedirects: 2.5 }), "BAD_ARG");
+    b.httpClient.request({ url: "https://x.example/", maxRedirects: 2.5 }), "http-client/bad-arg");
   await _expectReject("request: multipart + body together rejects",
-    b.httpClient.request({ url: "https://x.example/", body: "x", multipart: { fields: {} } }), "BAD_ARG");
+    b.httpClient.request({ url: "https://x.example/", body: "x", multipart: { fields: {} } }), "http-client/bad-arg");
   await _expectReject("request: malformed multipart file entry rejects",
-    b.httpClient.request({ url: "https://x.example/", multipart: { files: [{ field: "f" }] } }), "BAD_ARG");
+    b.httpClient.request({ url: "https://x.example/", multipart: { files: [{ field: "f" }] } }), "http-client/bad-arg");
   await _expectReject("request: before hook that throws surfaces BEFORE_THREW",
-    b.httpClient.request({ url: "https://x.example/", before: [function () { throw new Error("bad pre"); }] }), "BEFORE_THREW");
+    b.httpClient.request({ url: "https://x.example/", before: [function () { throw new Error("bad pre"); }] }), "http-client/before-threw");
   // maxBytesPerSec + transform validation (branch also probed elsewhere).
   await _expectReject("request: maxBytesPerSec non-number rejects",
     b.httpClient.request({ url: "https://x.example/", maxBytesPerSec: "fast" }), /maxBytesPerSec/);
@@ -327,7 +327,7 @@ async function testAllowedHosts() {
       b.httpClient.request({
         url: base + "/", method: "POST", body: "x",
         allowedHosts: [{ host: "127.0.0.1", methods: ["GET"] }],
-        audit: audit, allowedProtocols: ALLOW, allowInternal: true }), "HOST_DISALLOWED");
+        audit: audit, allowedProtocols: ALLOW, allowInternal: true }), "http-client/host-disallowed");
     check("allowedHosts: deny emitted a host_denied audit event",
       audit.events.some(function (e) {
         return e.action === "system.httpclient.host_denied" && e.outcome === "denied";
@@ -338,7 +338,7 @@ async function testAllowedHosts() {
     await _expectReject("allowedHosts: unlisted host denied",
       b.httpClient.request({
         url: base + "/", allowedHosts: ["api.partner.example"],
-        allowedProtocols: ALLOW, allowInternal: true }), "HOST_DISALLOWED");
+        allowedProtocols: ALLOW, allowInternal: true }), "http-client/host-disallowed");
 
     // Suffix form (".0.0.1") — "127.0.0.1".endsWith(".0.0.1") matches.
     var r3 = await b.httpClient.request({
@@ -364,7 +364,7 @@ async function testAllowedHosts() {
     await _expectReject("allowedHosts: an EMPTY allowlist denies every host",
       b.httpClient.request({
         url: base + "/", allowedHosts: [],
-        allowedProtocols: ALLOW, allowInternal: true }), "HOST_DISALLOWED");
+        allowedProtocols: ALLOW, allowInternal: true }), "http-client/host-disallowed");
 
     // Control: omitting it entirely is still unpinned, which is why the empty
     // case has to be distinguishable from it.
@@ -399,7 +399,7 @@ async function testBufferedErrorBranches() {
     res.writeHead(404, { "Content-Type": "text/plain" }); res.end("nope");
   }, async function (base) {
     var err = await _expectReject("buffer 404: rejects HTTP_ERROR",
-      b.httpClient.request({ url: base + "/x", allowedProtocols: ALLOW, allowInternal: true }), "HTTP_ERROR");
+      b.httpClient.request({ url: base + "/x", allowedProtocols: ALLOW, allowInternal: true }), "http-client/http-error");
     check("buffer 404: message names the status", err && /404/.test(err.message));
   });
 
@@ -419,7 +419,7 @@ async function testBufferedErrorBranches() {
   }, async function (base) {
     await _expectReject("buffer over-cap: rejects RESPONSE_TOO_LARGE",
       b.httpClient.request({ url: base + "/big", maxResponseBytes: 100,
-        allowedProtocols: ALLOW, allowInternal: true }), "RESPONSE_TOO_LARGE");
+        allowedProtocols: ALLOW, allowInternal: true }), "http-client/response-too-large");
   });
 }
 
@@ -508,7 +508,7 @@ async function testRequestBodyStreamError() {
     });
     await _expectReject("upload body stream error: rejects REQ_BODY_ERROR",
       b.httpClient.request({ url: base + "/u", method: "POST", body: bad,
-        allowedProtocols: ALLOW, allowInternal: true }), "REQ_BODY_ERROR");
+        allowedProtocols: ALLOW, allowInternal: true }), "http-client/req-body-error");
   });
 }
 
@@ -569,25 +569,25 @@ function testCookieJarParseStore() {
 
   // ---- create() config-time validation (throws, no network) ----
   _cjExpectThrow("cj.create: invalid persist throws BAD_OPT",
-    function () { CJ.create({ persist: "redis" }); }, "BAD_OPT");
+    function () { CJ.create({ persist: "redis" }); }, "http-client-cookie-jar/bad-opt");
   _cjExpectThrow("cj.create: persist 'vault' without a vault throws BAD_OPT",
-    function () { CJ.create({ persist: "vault" }); }, "BAD_OPT");
+    function () { CJ.create({ persist: "vault" }); }, "http-client-cookie-jar/bad-opt");
   _cjExpectThrow("cj.create: persist 'vault' with a half-shaped vault throws BAD_OPT",
-    function () { CJ.create({ persist: "vault", vault: { seal: function () {} } }); }, "BAD_OPT");
+    function () { CJ.create({ persist: "vault", vault: { seal: function () {} } }); }, "http-client-cookie-jar/bad-opt");
   _cjExpectThrow("cj.create: persist 'file' without opts.file throws BAD_OPT",
-    function () { CJ.create({ persist: "file" }); }, "BAD_OPT");
+    function () { CJ.create({ persist: "file" }); }, "http-client-cookie-jar/bad-opt");
   _cjExpectThrow("cj.create: persist 'file' with a relative path throws BAD_OPT",
-    function () { CJ.create({ persist: "file", file: "rel/jar.json" }); }, "BAD_OPT");
+    function () { CJ.create({ persist: "file", file: "rel/jar.json" }); }, "http-client-cookie-jar/bad-opt");
   // A vault is optional for file mode, but a supplied half-shaped one is refused
   // up front (config-time), not silently at a later flush.
   _cjExpectThrow("cj.create: persist 'file' with a half-shaped vault (missing seal) throws BAD_OPT",
-    function () { CJ.create({ persist: "file", file: "/tmp/cj-badvault.json", vault: { unseal: function () {} } }); }, "BAD_OPT");
+    function () { CJ.create({ persist: "file", file: "/tmp/cj-badvault.json", vault: { unseal: function () {} } }); }, "http-client-cookie-jar/bad-opt");
   _cjExpectThrow("cj.create: flushDebounceMs negative throws BAD_OPT",
-    function () { CJ.create({ flushDebounceMs: -1 }); }, "BAD_OPT");
+    function () { CJ.create({ flushDebounceMs: -1 }); }, "http-client-cookie-jar/bad-opt");
   _cjExpectThrow("cj.create: flushDebounceMs non-integer throws BAD_OPT",
-    function () { CJ.create({ flushDebounceMs: 1.5 }); }, "BAD_OPT");
+    function () { CJ.create({ flushDebounceMs: 1.5 }); }, "http-client-cookie-jar/bad-opt");
   _cjExpectThrow("cj.create: flushDebounceMs non-number throws BAD_OPT",
-    function () { CJ.create({ flushDebounceMs: "soon" }); }, "BAD_OPT");
+    function () { CJ.create({ flushDebounceMs: "soon" }); }, "http-client-cookie-jar/bad-opt");
   check("cj.create: defaults to memory persist", CJ.create().persist === "memory");
 
   // ---- _parseSetCookie pure-null / edge branches ----
@@ -796,7 +796,7 @@ function testCookieJarParseStore() {
   clrJar.setFromResponse("http://example.com/x", "b=1; Path=/x");
   clrJar.setFromResponse("http://other.com/", "a=1");
   _cjExpectThrow("cj.clear: non-object filter throws BAD_OPT",
-    function () { clrJar.clear("everything"); }, "BAD_OPT");
+    function () { clrJar.clear("everything"); }, "http-client-cookie-jar/bad-opt");
   check("cj.clear: filter by domain removes only that domain",
     clrJar.clear({ domain: "other.com" }) === 1 && clrJar.size() === 2);
   check("cj.clear: filter by name + path removes the targeted row",
@@ -808,7 +808,7 @@ function testCookieJarParseStore() {
   // ---- setFromSerialized() branches ----
   var serJar = CJ.create({ clock: function () { return nowRef.t; } });
   _cjExpectThrow("cj.serialized: non-array throws BAD_OPT",
-    function () { serJar.setFromSerialized({ name: "x" }); }, "BAD_OPT");
+    function () { serJar.setFromSerialized({ name: "x" }); }, "http-client-cookie-jar/bad-opt");
   serJar.setFromSerialized([
     null,                                                        // skipped
     { name: "x" },                                               // missing domain/path → skipped
@@ -885,7 +885,7 @@ function testCookieJarFilePersist() {
     var corruptFile = path.join(dir, "corrupt.json");
     fs.writeFileSync(corruptFile, "{ this is not json", "utf8");
     var loadErr = _cjExpectThrow("cj.file: corrupt persist file → LOAD_FAILED",
-      function () { CJ.create({ persist: "file", file: corruptFile }); }, "LOAD_FAILED");
+      function () { CJ.create({ persist: "file", file: corruptFile }); }, "http-client-cookie-jar/load-failed");
     check("cj.file: LOAD_FAILED names the offending file",
       loadErr != null && loadErr.message.indexOf(corruptFile) !== -1);
 
@@ -903,7 +903,7 @@ function testCookieJarFilePersist() {
     jars.push(sj2);
     check("cj.file: vault-sealed file reloads with the same vault", sj2.size() === 1);
     _cjExpectThrow("cj.file: sealed file opened without a vault → LOAD_FAILED",
-      function () { CJ.create({ persist: "file", file: sealedFile }); }, "LOAD_FAILED");
+      function () { CJ.create({ persist: "file", file: sealedFile }); }, "http-client-cookie-jar/load-failed");
   } finally {
     for (var i = 0; i < jars.length; i++) { try { jars[i].close(); } catch (_e) {} }
     try { helpers.fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) {}
@@ -968,7 +968,7 @@ async function testRedirects() {
   }, async function (base) {
     await _expectReject("redirect: invalid Location rejects BAD_REDIRECT",
       b.httpClient.request({ url: base + "/bad", maxRedirects: 3,
-        allowedProtocols: ALLOW, allowInternal: true }), "BAD_REDIRECT");
+        allowedProtocols: ALLOW, allowInternal: true }), "http-client/bad-redirect");
   });
 
   // Redirect budget exhausted → last 3xx returned.
@@ -989,7 +989,7 @@ async function testRedirects() {
     await _expectReject("onRedirect: sync throw aborts with REDIRECT_ABORTED",
       b.httpClient.request({ url: base + "/a", maxRedirects: 3,
         onRedirect: function () { throw new Error("no thanks"); },
-        allowedProtocols: ALLOW, allowInternal: true }), "REDIRECT_ABORTED");
+        allowedProtocols: ALLOW, allowInternal: true }), "http-client/redirect-aborted");
   });
 
   // onRedirect async (returns a promise) proceeds.
@@ -1017,13 +1017,13 @@ async function testRedirects() {
     var e1 = await _expectReject("onRedirect: returned-rejected-Promise aborts with REDIRECT_ABORTED",
       b.httpClient.request({ url: base + "/a", maxRedirects: 3,
         onRedirect: function () { return Promise.reject(new Error("async no")); },
-        allowedProtocols: ALLOW, allowInternal: true }), "REDIRECT_ABORTED");
+        allowedProtocols: ALLOW, allowInternal: true }), "http-client/redirect-aborted");
     check("onRedirect: async-reject message names the hook refusal",
       e1 && /onRedirect hook refused redirect: async no/.test(e1.message));
     await _expectReject("onRedirect: async-function throw aborts with REDIRECT_ABORTED",
       b.httpClient.request({ url: base + "/a", maxRedirects: 3,
         onRedirect: async function () { throw new Error("awaited no"); },
-        allowedProtocols: ALLOW, allowInternal: true }), "REDIRECT_ABORTED");
+        allowedProtocols: ALLOW, allowInternal: true }), "http-client/redirect-aborted");
   });
 }
 
@@ -1121,7 +1121,7 @@ async function testH2cPaths() {
     // non-2xx → HTTP_ERROR
     await _expectReject("h2c: non-2xx rejects HTTP_ERROR",
       b.httpClient.request({ url: base + "/err", preferH2: true,
-        allowedProtocols: ALLOW, allowInternal: true }), "HTTP_ERROR");
+        allowedProtocols: ALLOW, allowInternal: true }), "http-client/http-error");
 
     // always-resolve returns the non-2xx structurally
     var ar = await b.httpClient.request({ url: base + "/err", preferH2: true,
@@ -1131,7 +1131,7 @@ async function testH2cPaths() {
     // oversized response → RESPONSE_TOO_LARGE
     await _expectReject("h2c: over-cap rejects RESPONSE_TOO_LARGE",
       b.httpClient.request({ url: base + "/big", preferH2: true, maxResponseBytes: 100,
-        allowedProtocols: ALLOW, allowInternal: true }), "RESPONSE_TOO_LARGE");
+        allowedProtocols: ALLOW, allowInternal: true }), "http-client/response-too-large");
 
     // POST body echoes back
     var echo = await b.httpClient.request({ url: base + "/echo", method: "POST", body: "h2-body",
@@ -1195,7 +1195,7 @@ async function testDownloadMaxBytes() {
       await _expectReject("downloadStream: over maxBytes rejects response-too-large",
         b.httpClient.downloadStream({
           url: base + "/big", dest: dest, maxBytes: 512,
-          allowedProtocols: ALLOW, allowInternal: true }), "httpclient/response-too-large");
+          allowedProtocols: ALLOW, allowInternal: true }), "http-client/response-too-large");
       check("downloadStream: over-cap left no dest file", !helpers.fs.existsSync(dest));
     } finally {
       dir.cleanup();
@@ -1227,7 +1227,7 @@ function testPinnedLookupContract() {
 async function testMultipartBuildBranches() {
   function mpReject(label, multipart) {
     return _expectReject(label,
-      b.httpClient.request({ url: "https://x.example/", multipart: multipart }), "BAD_ARG");
+      b.httpClient.request({ url: "https://x.example/", multipart: multipart }), "http-client/bad-arg");
   }
   await mpReject("multipart: CRLF in field name refused (header injection)",
     { fields: { "a\r\nInjected: 1": "v" } });
@@ -1364,7 +1364,7 @@ async function testStreamModeHttpError() {
   }, async function (base) {
     var err = await _expectReject("stream 404: rejects HTTP_ERROR",
       b.httpClient.request({ url: base + "/x", responseMode: "stream",
-        allowedProtocols: ALLOW, allowInternal: true }), "HTTP_ERROR");
+        allowedProtocols: ALLOW, allowInternal: true }), "http-client/http-error");
     check("stream 404: err.body carries the error payload prefix",
       err && Buffer.isBuffer(err.body) && /missing/.test(err.body.toString("utf8")));
   });
@@ -1377,7 +1377,7 @@ async function testStreamModeHttpError() {
   }, async function (base) {
     var err = await _expectReject("stream 413: oversized error body still rejects HTTP_ERROR",
       b.httpClient.request({ url: base + "/big", responseMode: "stream",
-        allowedProtocols: ALLOW, allowInternal: true }), "HTTP_ERROR");
+        allowedProtocols: ALLOW, allowInternal: true }), "http-client/http-error");
     check("stream 413: err.body prefix capped at 16 KiB",
       err && Buffer.isBuffer(err.body) && err.body.length <= 16384 && err.body.length > 0);
   });
@@ -1467,7 +1467,7 @@ async function testDownloadTransformErrorH1() {
           downloadTransform: function () {
             return new nodeStream.Transform({ transform: function (c, e, cb) { cb(new Error("xform boom")); } });
           },
-          allowedProtocols: ALLOW, allowInternal: true }), "RES_ERROR");
+          allowedProtocols: ALLOW, allowInternal: true }), "http-client/res-error");
     });
 }
 
@@ -1476,7 +1476,7 @@ async function testDownloadTransformErrorH1() {
 async function testDownloadStreamLifecycle() {
   // Config-time validation rejects (async — the opts shape is checked first).
   await _expectReject("downloadStream: non-object opts rejects bad-opts",
-    b.httpClient.downloadStream(1), "httpclient/bad-opts");
+    b.httpClient.downloadStream(1), "http-client/bad-opts");
   await _expectReject("downloadStream: unknown hash alg rejects",
     b.httpClient.downloadStream({ url: "https://x/", dest: "/x", hash: "md5" }), /hash must be one of/);
   await _expectReject("downloadStream: non-hex expected digest rejects",
@@ -1511,7 +1511,7 @@ async function testDownloadStreamLifecycle() {
       var audit = _mkAuditCapture();
       await _expectReject("downloadStream: wrong expected hash rejects hash-mismatch",
         b.httpClient.downloadStream({ url: base + "/f", dest: dest3, expected: "deadbeefcafe",
-          audit: audit, allowedProtocols: ALLOW, allowInternal: true }), "httpclient/hash-mismatch");
+          audit: audit, allowedProtocols: ALLOW, allowInternal: true }), "http-client/hash-mismatch");
       check("downloadStream: mismatch left no dest file", !helpers.fs.existsSync(dest3));
       check("downloadStream: mismatch emitted a refused audit event",
         audit.events.some(function (e) { return e.action === "system.httpclient.download_stream.refused"; }));
@@ -1520,7 +1520,7 @@ async function testDownloadStreamLifecycle() {
       var dest4 = helpers.path.join(dir.path, "d.bin");
       var err = await _expectReject("downloadStream: 3xx upstream rejects http-error",
         b.httpClient.downloadStream({ url: base + "/redir", dest: dest4,
-          allowedProtocols: ALLOW, allowInternal: true }), "httpclient/http-error");
+          allowedProtocols: ALLOW, allowInternal: true }), "http-client/http-error");
       check("downloadStream: http-error carries the upstream status", err && err.statusCode === 302);
 
       // Rename failure: point dest at an existing directory so the atomic
@@ -1530,7 +1530,7 @@ async function testDownloadStreamLifecycle() {
       var raudit = _mkAuditCapture();
       await _expectReject("downloadStream: rename onto a directory rejects rename-failed",
         b.httpClient.downloadStream({ url: base + "/f", dest: destDir, audit: raudit,
-          allowedProtocols: ALLOW, allowInternal: true }), "httpclient/rename-failed");
+          allowedProtocols: ALLOW, allowInternal: true }), "http-client/rename-failed");
       check("downloadStream: rename failure emitted a refused audit event",
         raudit.events.some(function (e) {
           return e.action === "system.httpclient.download_stream.refused" && e.metadata.reason === "rename-failed";
@@ -1565,7 +1565,7 @@ async function testDownloadStreamLifecycle() {
 async function testUploadMultipartStreamLifecycle() {
   // Config-time validation rejects (async — the opts shape is checked first).
   await _expectReject("uploadMultipartStream: non-object opts rejects bad-opts",
-    b.httpClient.uploadMultipartStream(1), "httpclient/bad-opts");
+    b.httpClient.uploadMultipartStream(1), "http-client/bad-opts");
   await _expectReject("uploadMultipartStream: missing file object rejects",
     b.httpClient.uploadMultipartStream({ url: "https://x/" }), /file must be an object/);
   await _expectReject("uploadMultipartStream: non-object fields rejects",
@@ -1600,13 +1600,13 @@ async function testUploadMultipartStreamLifecycle() {
     await _expectReject("uploadMultipartStream: missing file rejects missing-file",
       b.httpClient.uploadMultipartStream({ url: "https://x.example/up",
         file: { path: helpers.path.join(dir.path, "nope.txt"), fieldName: "f" },
-        allowedProtocols: ALLOW, allowInternal: true }), "httpclient/missing-file");
+        allowedProtocols: ALLOW, allowInternal: true }), "http-client/missing-file");
 
     // A directory path (not a regular file) → missing-file.
     await _expectReject("uploadMultipartStream: directory path rejects missing-file",
       b.httpClient.uploadMultipartStream({ url: "https://x.example/up",
         file: { path: dir.path, fieldName: "f" },
-        allowedProtocols: ALLOW, allowInternal: true }), "httpclient/missing-file");
+        allowedProtocols: ALLOW, allowInternal: true }), "http-client/missing-file");
 
     // Request failure (connection refused) → refused audit + rethrow.
     var audit2 = _mkAuditCapture();
@@ -1823,7 +1823,7 @@ async function testH2cExtended() {
     // Stream-mode non-2xx over h2 → HTTP_ERROR with bounded err.body.
     var se = await _expectReject("h2c stream 500: rejects HTTP_ERROR",
       b.httpClient.request({ url: base + "/err500", preferH2: true, responseMode: "stream",
-        allowedProtocols: ALLOW, allowInternal: true }), "HTTP_ERROR");
+        allowedProtocols: ALLOW, allowInternal: true }), "http-client/http-error");
     check("h2c stream 500: err.body carries the error payload",
       se && Buffer.isBuffer(se.body) && /boom/.test(se.body.toString()));
 
@@ -1838,13 +1838,13 @@ async function testH2cExtended() {
         downloadTransform: function () {
           return new nodeStream.Transform({ transform: function (c, e, cb) { cb(new Error("xform boom")); } });
         },
-        allowedProtocols: ALLOW, allowInternal: true }), "H2_STREAM_ERROR");
+        allowedProtocols: ALLOW, allowInternal: true }), "http-client/h2-stream-error");
 
     // Piped Readable request body that errors → REQ_BODY_ERROR over h2.
     var badBody = new nodeStream.Readable({ read: function () { this.destroy(new Error("body blew up")); } });
     await _expectReject("h2c upload body stream error rejects REQ_BODY_ERROR",
       b.httpClient.request({ url: base + "/echo", preferH2: true, method: "POST", body: badBody,
-        allowedProtocols: ALLOW, allowInternal: true }), "REQ_BODY_ERROR");
+        allowedProtocols: ALLOW, allowInternal: true }), "http-client/req-body-error");
 
     // Server resets the stream → client surfaces the stream error.
     await _expectReject("h2c server stream reset surfaces a stream error",
@@ -1930,7 +1930,7 @@ async function testThrottledUploadBodyError() {
       var bad = new nodeStream.Readable({ read: function () { this.destroy(new Error("throttled body blew up")); } });
       await _expectReject("throttle h1: erroring upload body rejects REQ_BODY_ERROR",
         b.httpClient.request({ url: base + "/u", method: "POST", body: bad, maxBytesPerSec: 1024,
-          allowedProtocols: ALLOW, allowInternal: true }), "REQ_BODY_ERROR");
+          allowedProtocols: ALLOW, allowInternal: true }), "http-client/req-body-error");
     });
 
   // h2: same, over the h2 stream upload stages.
@@ -1939,7 +1939,7 @@ async function testThrottledUploadBodyError() {
       var bad = new nodeStream.Readable({ read: function () { this.destroy(new Error("throttled body blew up")); } });
       await _expectReject("throttle h2: erroring upload body rejects REQ_BODY_ERROR",
         b.httpClient.request({ url: base + "/u", method: "POST", body: bad, preferH2: true, maxBytesPerSec: 1024,
-          allowedProtocols: ALLOW, allowInternal: true }), "REQ_BODY_ERROR");
+          allowedProtocols: ALLOW, allowInternal: true }), "http-client/req-body-error");
     });
   b.httpClient._resetForTest();
 }
@@ -2046,7 +2046,7 @@ async function testPermanentFlag() {
   }
   var e403 = await _permFor(403);
   check("permanent: 403 is a permanent HTTP_ERROR (statusCode + permanent true)",
-    e403 && e403.code === "HTTP_ERROR" && e403.statusCode === 403 && e403.permanent === true);
+    e403 && e403.code === "http-client/http-error" && e403.statusCode === 403 && e403.permanent === true);
   var e429 = await _permFor(429);
   check("permanent: 429 (too-many-requests) is NOT permanent (retryable)",
     e429 && e429.statusCode === 429 && e429.permanent === false);
@@ -2075,7 +2075,7 @@ async function testMaxRedirectsZero() {
       // carrying the status (the operator inspects err.statusCode).
       var err = await _expectReject("maxRedirects 0: buffer-mode 3xx rejects HTTP_ERROR",
         b.httpClient.request({ url: base + "/a", maxRedirects: 0,
-          allowedProtocols: ALLOW, allowInternal: true }), "HTTP_ERROR");
+          allowedProtocols: ALLOW, allowInternal: true }), "http-client/http-error");
       check("maxRedirects 0: HTTP_ERROR carries the 3xx status", err && err.statusCode === 302);
     });
 }
@@ -2138,7 +2138,7 @@ async function testAllowedHostsEdges() {
       // saying this process may reach nothing.
       await _expectReject("allowedHosts: an empty array permits nothing",
         b.httpClient.request({ url: base + "/", allowedHosts: [],
-          allowedProtocols: ALLOW, allowInternal: true }), "HOST_DISALLOWED");
+          allowedProtocols: ALLOW, allowInternal: true }), "http-client/host-disallowed");
 
       // An empty-string entry is skipped; a later valid entry still matches.
       var r1 = await b.httpClient.request({ url: base + "/",
@@ -2287,7 +2287,7 @@ async function testHttpsFrameworkTransportError() {
         b.httpClient.request({ url: base + "/", allowedProtocols: ALLOW, allowInternal: true }),
         /CERT|SSL|SELF_SIGNED|TLS|ERR_/i);
       check("https framework transport: rejection is a TLS/cert error (fail-closed)",
-        err != null && err.code !== "HTTP_ERROR");
+        err != null && err.code !== "http-client/http-error");
     });
   b.httpClient._resetForTest();
 }
@@ -2315,7 +2315,7 @@ async function testHttpsConnectRefused() {
     b.httpClient.request({ url: "https://127.0.0.1:" + deadPort + "/x",
       allowedProtocols: ALLOW, allowInternal: true }), /ECONNREFUSED|ECONNRESET|REQ_ERROR/);
   check("https connect: a connect refusal fails closed (no silent h1 fallback)",
-    err != null && err.code !== "HTTP_ERROR" && /ECONNREFUSED|ECONNRESET/.test(err.code || ""));
+    err != null && err.code !== "http-client/http-error" && /ECONNREFUSED|ECONNRESET/.test(err.code || ""));
   b.httpClient._resetForTest();
 }
 
@@ -2422,7 +2422,7 @@ async function testRedirectParseEdgeCases() {
     var err = await _expectReject("onRedirect: throwing a message-less error still aborts REDIRECT_ABORTED",
       b.httpClient.request({ url: base + "/a", maxRedirects: 3,
         onRedirect: function () { throw new Error(""); },
-        allowedProtocols: ALLOW, allowInternal: true }), "REDIRECT_ABORTED");
+        allowedProtocols: ALLOW, allowInternal: true }), "http-client/redirect-aborted");
     check("onRedirect: empty-message throw uses the String(e) fallback",
       err != null && /refused redirect: Error$/.test(err.message));
   });
@@ -2438,7 +2438,7 @@ async function testAdversarialAuditOnHostDeny() {
   var throwingAudit = { safeEmit: function () { throw new Error("audit sink boom"); } };
   await _expectReject("allowedHosts deny: a throwing audit sink is swallowed (still HOST_DISALLOWED)",
     b.httpClient.request({ url: "http://127.0.0.1:9/x", allowedHosts: ["api.partner.example"],
-      audit: throwingAudit, allowedProtocols: ALLOW, allowInternal: true }), "HOST_DISALLOWED");
+      audit: throwingAudit, allowedProtocols: ALLOW, allowInternal: true }), "http-client/host-disallowed");
 }
 
 // ---- h1 best-effort hooks that throw + observer on error paths ------
@@ -2489,7 +2489,7 @@ async function testH1BestEffortHooksThrow() {
           downloadTransform: function () {
             return new nodeStream.Transform({ transform: function (c, e, cb) { cb(new Error("xform boom")); } });
           },
-          allowedProtocols: ALLOW, allowInternal: true }), "RES_ERROR");
+          allowedProtocols: ALLOW, allowInternal: true }), "http-client/res-error");
       check("h1 observer: fired an error stage on response failure", resStages.indexOf("error") !== -1);
     });
 }
@@ -2565,7 +2565,7 @@ async function testH2ErrorObserversAndTimeout() {
         downloadTransform: function () {
           return new nodeStream.Transform({ transform: function (c, e, cb) { cb(new Error("xform boom")); } });
         },
-        allowedProtocols: ALLOW, allowInternal: true }), "H2_STREAM_ERROR");
+        allowedProtocols: ALLOW, allowInternal: true }), "http-client/h2-stream-error");
     check("h2 observer: fired an error stage on the transform-pipeline error",
       xfStages.indexOf("error") !== -1);
   });
@@ -2869,7 +2869,7 @@ async function testDownloadStreamAuditThrows() {
 async function testBeforeHookFalsyThrow() {
   var err = await _expectReject("before: a hook throwing a message-less error surfaces BEFORE_THREW",
     b.httpClient.request({ url: "https://x.example/",
-      before: [function () { throw new Error(""); }] }), "BEFORE_THREW");
+      before: [function () { throw new Error(""); }] }), "http-client/before-threw");
   check("before: empty-message throw uses the String(e) fallback",
     err != null && /before\[0\] threw: Error$/.test(err.message));
 }

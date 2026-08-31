@@ -147,7 +147,7 @@ async function run() {
   var deepErr = null;
   try { redis._parseFrame(deepResp, 0); } catch (e) { deepErr = e; }
   check("parse: deep RESP nesting throws typed PROTOCOL (not RangeError)",
-        deepErr && deepErr.code === "PROTOCOL" && /nesting/.test(deepErr.message || ""));
+        deepErr && deepErr.code === "redis-client/protocol" && /nesting/.test(deepErr.message || ""));
   // A legitimately nested array (well under the cap) still parses.
   var shallow = redis._parseFrame(_bytes("*1\r\n*1\r\n*1\r\n:9\r\n"), 0);
   check("parse: shallow nested array still parses",
@@ -183,10 +183,10 @@ async function run() {
   // malformed `*0` frame or crash on `.length` of a non-array.
   var encEmpty = null;
   try { redis._encodeCommand([]); } catch (e) { encEmpty = e; }
-  check("encode: empty argv throws BAD_ARGS", encEmpty && encEmpty.code === "BAD_ARGS");
+  check("encode: empty argv throws BAD_ARGS", encEmpty && encEmpty.code === "redis-client/bad-args");
   var encNotArr = null;
   try { redis._encodeCommand("PING"); } catch (e) { encNotArr = e; }
-  check("encode: non-array argv throws BAD_ARGS", encNotArr && encNotArr.code === "BAD_ARGS");
+  check("encode: non-array argv throws BAD_ARGS", encNotArr && encNotArr.code === "redis-client/bad-args");
 
   // ---- _parseFrame malformed-header + edge frames ----
   // A caller offset already at/after the buffer end is "need more bytes",
@@ -201,7 +201,7 @@ async function run() {
     var e = null;
     try { redis._parseFrame(_bytes(wire), 0); } catch (x) { e = x; }
     check("parse: " + label + " throws PROTOCOL",
-          e && e.code === "PROTOCOL" && (!needle || needle.test(e.message || "")));
+          e && e.code === "redis-client/protocol" && (!needle || needle.test(e.message || "")));
   }
   _parseThrows("non-finite integer reply", ":9x9\r\n", /integer reply not finite/);
   _parseThrows("non-finite bulk length",   "$9x\r\n",  /bulk length not finite/);
@@ -227,7 +227,7 @@ async function run() {
   var ftvBad = null;
   try { redis._frameToValue({ type: "incomplete" }); } catch (e) { ftvBad = e; }
   check("frameToValue: unhandled frame type throws PROTOCOL",
-        ftvBad && ftvBad.code === "PROTOCOL" && /unknown frame type/.test(ftvBad.message || ""));
+        ftvBad && ftvBad.code === "redis-client/protocol" && /unknown frame type/.test(ftvBad.message || ""));
 
   // ---- create() with no argument uses the `opts || {}` default, then
   // fails the required-url check with a clear message (not a TypeError on
@@ -235,7 +235,7 @@ async function run() {
   var noOpts = null;
   try { redis.create(); } catch (e) { noOpts = e; }
   check("create: no opts throws a typed error (opts || {} default)",
-        noOpts && noOpts.code === "BAD_OPTS");
+        noOpts && noOpts.code === "redis-client/bad-opts");
 
   // ---- create() honors an explicit tls opt over the url scheme ----
   // opts.tls (when defined) wins over the redis:/rediss: scheme, in both
@@ -250,7 +250,7 @@ async function run() {
   // TypeError out of the URL constructor.
   var badUrl = null;
   try { redis._parseRedisUrl("not-a-valid-url"); } catch (e) { badUrl = e; }
-  check("url: unparseable string throws BAD_URL", badUrl && badUrl.code === "BAD_URL");
+  check("url: unparseable string throws BAD_URL", badUrl && badUrl.code === "redis-client/bad-url");
 
   // Missing host / missing port fall back to 127.0.0.1 / 6379.
   var uNoHostPort = redis._parseRedisUrl("redis:///3");
@@ -395,7 +395,7 @@ async function run() {
     }, { timeoutMs: 4000 });
     check("redis: command after give-up settles (does not wedge)", cmdSettled === true);
     check("redis: command after give-up rejects with RECONNECT_GAVE_UP",
-          cmdErr !== null && cmdErr.code === "RECONNECT_GAVE_UP");
+          cmdErr !== null && cmdErr.code === "redis-client/reconnect-gave-up");
     await c2.close();
     await dropMidAuth.close();
   }
@@ -416,7 +416,7 @@ async function run() {
     }, { timeoutMs: 4000 });
     check("redis: backlogged command settles (does not wedge)", c3Settled === true);
     check("redis: backlogged command rejects with COMMAND_TIMEOUT",
-          c3Err !== null && c3Err.code === "COMMAND_TIMEOUT");
+          c3Err !== null && c3Err.code === "redis-client/command-timeout");
     await c3.close();
   }
 
@@ -519,7 +519,7 @@ async function run() {
     var replyErr = null;
     try { await cErr.command("GET", "k"); } catch (e) { replyErr = e; }
     check("redis: server -ERR reply rejects with REDIS_REPLY",
-          replyErr && replyErr.code === "REDIS_REPLY" && /WRONGTYPE/.test(replyErr.message || ""));
+          replyErr && replyErr.code === "redis-client/redis-reply" && /WRONGTYPE/.test(replyErr.message || ""));
     check("redis: client stays connected after a server-side error reply",
           cErr.isOpen());
     await cErr.close();
@@ -617,7 +617,7 @@ async function run() {
     var badErr = null;
     try { await cBad.command("PING"); } catch (e) { badErr = e; }
     check("redis: malformed reply rejects the command with PROTOCOL",
-          badErr && badErr.code === "PROTOCOL");
+          badErr && badErr.code === "redis-client/protocol");
     check("redis: client disconnects after a protocol fault",
           cBad._state().connected === false);
     await cBad.close();
@@ -644,7 +644,7 @@ async function run() {
     var resetErr = null;
     try { await cReset.command("BOOM"); } catch (e) { resetErr = e; }
     check("redis: peer reset rejects the in-flight command (socket error path)",
-          resetErr && (resetErr.code === "SOCKET" || resetErr.code === "SOCKET_CLOSED"));
+          resetErr && (resetErr.code === "redis-client/socket" || resetErr.code === "redis-client/socket-closed"));
     check("redis: client disconnects after a peer reset",
           cReset._state().connected === false);
     await cReset.close();
@@ -681,7 +681,7 @@ async function run() {
     });
     var refErr = null;
     try { await cRef.connect(); } catch (e) { refErr = e; }
-    check("redis: a refused dial rejects with CONNECT", refErr && refErr.code === "CONNECT");
+    check("redis: a refused dial rejects with CONNECT", refErr && refErr.code === "redis-client/connect");
     await cRef.close();
   }
 
@@ -705,7 +705,7 @@ async function run() {
     var tlsErr = null;
     try { await cTls.connect(); } catch (e) { tlsErr = e; }
     check("redis: stalled TLS handshake rejects with CONNECT_TIMEOUT",
-          tlsErr && tlsErr.code === "CONNECT_TIMEOUT");
+          tlsErr && tlsErr.code === "redis-client/connect-timeout");
     await cTls.close();
     await stallSrv.close();
   }
@@ -725,7 +725,7 @@ async function run() {
     var authTimeoutErr = null;
     try { await cAuth.connect(); } catch (e) { authTimeoutErr = e; }
     check("redis: unanswered AUTH rejects connect with COMMAND_TIMEOUT",
-          authTimeoutErr && authTimeoutErr.code === "COMMAND_TIMEOUT");
+          authTimeoutErr && authTimeoutErr.code === "redis-client/command-timeout");
     await cAuth.close();
     await muteSrv.close();
   }
@@ -737,7 +737,7 @@ async function run() {
     var closedErr = null;
     try { await cClosed.command("PING"); } catch (e) { closedErr = e; }
     check("redis: command() after close() rejects with CLOSED",
-          closedErr && closedErr.code === "CLOSED");
+          closedErr && closedErr.code === "redis-client/closed");
   }
 
   await testConnectHandshakeLeavesNoArmedTimer();

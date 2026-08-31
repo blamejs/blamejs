@@ -181,13 +181,13 @@ async function runErrorPaths() {
 
   check("build missing system rejected",
     (e = _err(function () { cc.build({ provider: "x", systemVersion: "1.0.0", contentId: "y" }); })) &&
-    e.code === "MISSING_SYSTEM");
+    e.code === "content-credentials/missing-system");
   check("build missing systemVersion rejected",
     (e = _err(function () { cc.build({ provider: "x", system: "s", contentId: "y" }); })) &&
-    e.code === "MISSING_SYSTEMVERSION");
+    e.code === "content-credentials/missing-system-version");
   check("build missing contentId rejected",
     (e = _err(function () { cc.build({ provider: "x", system: "s", systemVersion: "1.0.0" }); })) &&
-    e.code === "MISSING_CONTENTID");
+    e.code === "content-credentials/missing-content-id");
 
   check("build provider over 256 chars rejected",
     (e = _err(function () { cc.build(_buildOpts({ provider: "a".repeat(257) })); })) &&
@@ -243,9 +243,9 @@ async function runErrorPaths() {
     (e = _err(function () { cc.sign(null, { privateKeyPem: pair.privateKey }); })) &&
     e.code === "content-credentials/bad-manifest");
   check("sign missing privateKeyPem rejected",
-    (e = _err(function () { cc.sign(manifest, {}); })) && e.code === "BAD_KEY");
+    (e = _err(function () { cc.sign(manifest, {}); })) && e.code === "content-credentials/bad-key");
   check("sign no opts rejected",
-    (e = _err(function () { cc.sign(manifest); })) && e.code === "BAD_KEY");
+    (e = _err(function () { cc.sign(manifest); })) && e.code === "content-credentials/bad-key");
 
   // ---- verify() fail-closed verdicts (never throws) ----
   var env = cc.sign(manifest, { privateKeyPem: pair.privateKey, audit: false });
@@ -271,7 +271,7 @@ async function runErrorPaths() {
     e.code === "content-credentials/bad-manifest");
   check("signCose missing privateKeyPem rejected",
     (e = _err(function () { cc.signCose(manifest, { alg: "ml-dsa-87", timestamp: false, timestampOptOutReason: "x" }); })) &&
-    e.code === "BAD_KEY");
+    e.code === "content-credentials/bad-key");
   check("signCose timestamp as string rejected",
     (e = _err(function () { cc.signCose(manifest, { privateKeyPem: pair.privateKey, timestamp: "soon" }); })) &&
     e.code === "content-credentials/bad-timestamp");
@@ -362,7 +362,7 @@ async function runErrorPaths() {
     e.code === "content-credentials/bad-referenced-assertions");
   check("attach missing privateKeyPem rejected",
     (e = _err(function () { cc.attachIdentityAssertion({ binding: "x509", subject: { name: "x" }, referencedAssertions: refs }); })) &&
-    e.code === "BAD_KEY");
+    e.code === "content-credentials/bad-key");
   check("attach unknown opt key rejected",
     (e = _err(function () { cc.attachIdentityAssertion({ binding: "x509", subject: { name: "x" }, referencedAssertions: refs, privateKeyPem: pair.privateKey, bogus: 1 }); })) &&
     /unknown option/.test(e.message));
@@ -560,7 +560,7 @@ async function runCoseEdgeCases() {
 
   // signCose with opts omitted defaults opts to {} then rejects the missing key.
   check("signCose with no opts rejected as BAD_KEY",
-    (function () { var er = _err(function () { cc.signCose(manifest); }); return er && er.code === "BAD_KEY"; })());
+    (function () { var er = _err(function () { cc.signCose(manifest); }); return er && er.code === "content-credentials/bad-key"; })());
 
   // signCose attach WITHOUT a re-pinned signature signs fresh (the
   // reuseSignature==null branch) and still emits a timestamped COSE.
@@ -777,7 +777,7 @@ async function run() {
   // Bad shapes
   var threw = null;
   try { b.contentCredentials.build({}); } catch (e) { threw = e; }
-  check("refuses missing required",  threw && threw.code === "MISSING_PROVIDER");
+  check("refuses missing required",  threw && threw.code === "content-credentials/missing-provider");
 
   threw = null;
   try { b.contentCredentials.build({
@@ -835,7 +835,7 @@ async function run() {
   threw = null;
   try { b.contentCredentials.signCose(manifest2, { privateKeyPem: pair.privateKey, alg: "ml-dsa-87", timestamp: false }); }
   catch (e) { threw = e; }
-  check("signCose: timestamp:false without reason refused", threw && threw.code === "TIMESTAMP_OPT_OUT_NO_REASON");
+  check("signCose: timestamp:false without reason refused", threw && threw.code === "content-credentials/timestamp-opt-out-no-reason");
 
   // Request-builder mode returns a TSA query + the signature to re-pin.
   var reqOnly = b.contentCredentials.signCose(manifest2, {

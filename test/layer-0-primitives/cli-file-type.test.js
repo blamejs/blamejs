@@ -77,7 +77,7 @@ async function run() {
     ["file-type", "detect", pngFile, "--allowlist", "application/pdf"], ctxDeny);
   check("detect --allowlist mismatch: exit 1",  rcDeny === 1);
   check("detect --allowlist mismatch: DISALLOWED_TYPE in error",
-        /DISALLOWED_TYPE/.test(ctxDeny.err()));
+        /file-type\/disallowed-type/.test(ctxDeny.err()));
 
   // ---- detect: missing file path returns 2 ----
   var ctxMissing = _captureCtx();

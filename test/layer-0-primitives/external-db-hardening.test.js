@@ -60,7 +60,7 @@ async function testExternalDbResidencyEnforcement() {
         classifications: ["personal"], residencyTag: "us-east-1" } } });
     } catch (e) { violation = e; }
     check("externalDb.init refuses a personal backend outside the residency region (RESIDENCY_VIOLATION)",
-      !!(violation && violation.code === "RESIDENCY_VIOLATION"));
+      !!(violation && violation.code === "external-db/residency-violation"));
 
     // Compliant: a personal backend tagged with the declared region is allowed.
     b.externalDb._resetForTest();
@@ -352,17 +352,17 @@ async function run() {
 
   // requireTls:true with no TLS declaration → refused.
   _initThrows("requireTls true, no TLS declared",
-    { connect: nd.connect, query: nd.query, requireTls: true }, /TLS_REQUIRED/);
+    { connect: nd.connect, query: nd.query, requireTls: true }, /external-db\/tls-required/);
 
   // requireTls:true with sslmode that permits plaintext fallback → refused.
   _initThrows("requireTls true, sslmode 'prefer' (plaintext fallback)",
-    { connect: nd.connect, query: nd.query, requireTls: true, sslmode: "prefer" }, /TLS_REQUIRED/);
+    { connect: nd.connect, query: nd.query, requireTls: true, sslmode: "prefer" }, /external-db\/tls-required/);
   _initThrows("requireTls true, sslmode 'disable'",
-    { connect: nd.connect, query: nd.query, requireTls: true, sslmode: "disable" }, /TLS_REQUIRED/);
+    { connect: nd.connect, query: nd.query, requireTls: true, sslmode: "disable" }, /external-db\/tls-required/);
 
   // requireTls:true with explicit non-TLS transport → refused.
   _initThrows("requireTls true, tls:false",
-    { connect: nd.connect, query: nd.query, requireTls: true, tls: false }, /TLS_REQUIRED/);
+    { connect: nd.connect, query: nd.query, requireTls: true, tls: false }, /external-db\/tls-required/);
 
   // requireTls:true satisfied by tls:true.
   _initOk("requireTls true, tls:true",

@@ -147,7 +147,7 @@ async function testRecordSurfacesUnsupportedCacheLoud() {
   var cache = {
     get: async function () { return undefined; },
     set: async function () {},
-    update: async function () { var e = new Error("backend has no atomic update"); e.code = "UNSUPPORTED"; throw e; },
+    update: async function () { var e = new Error("backend has no atomic update"); e.code = "cache/unsupported"; throw e; },
   };
   var q = b.network.byteQuota.create({ bytesPerDay: b.constants.BYTES.kib(10), cache: cache, audit: false });
   var threw = null;
@@ -167,7 +167,7 @@ async function testRecordRetriesUnderCacheContention() {
     get: async function (k) { return store.get(k); },
     set: async function (k, v) { store.set(k, v); },
     update: async function (k, fn) {
-      if (failsLeft > 0) { failsLeft -= 1; var e = new Error("write contention"); e.code = "UPDATE_CONTENTION"; throw e; }
+      if (failsLeft > 0) { failsLeft -= 1; var e = new Error("write contention"); e.code = "cache/update-contention"; throw e; }
       var dec = fn(store.get(k));
       store.set(k, dec.value);
       return { updated: true, value: dec.value };

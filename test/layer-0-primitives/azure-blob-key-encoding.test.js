@@ -100,7 +100,7 @@ async function _runTests() {
     srv.requests.length = 0;
     var threwNull = false;
     try { await c.put("bad" + String.fromCharCode(0) + "key.txt", Buffer.from("x", "utf8")); }
-    catch (e) { threwNull = e && e.code === "INVALID_KEY"; }
+    catch (e) { threwNull = e && e.code === "objectstore/invalid-key"; }
     check("null-byte key refused with INVALID_KEY", threwNull);
     check("null-byte key sends no request", srv.requests.length === 0);
 

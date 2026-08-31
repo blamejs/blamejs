@@ -253,9 +253,9 @@ function testValidateBadInput() {
 
 function testValidateBadOpt() {
   check("maxWidth: -1 → bad-opt throw",
-    _code(function () { b.guardImage.validate({ bytes: PNG_MAGIC }, { maxWidth: -1 }); }) === "image.bad-opt");
+    _code(function () { b.guardImage.validate({ bytes: PNG_MAGIC }, { maxWidth: -1 }); }) === "image/bad-opt");
   check("maxFrames: Infinity → bad-opt throw",
-    _code(function () { b.guardImage.validate({ bytes: PNG_MAGIC }, { maxFrames: Infinity }); }) === "image.bad-opt");
+    _code(function () { b.guardImage.validate({ bytes: PNG_MAGIC }, { maxFrames: Infinity }); }) === "image/bad-opt");
 }
 
 function testCompliancePostures() {
@@ -610,7 +610,7 @@ function testSanitizePassthroughShapes() {
 
 function testSanitizeBadInput() {
   check("sanitize(null) → bad-input refuse",
-    _code(function () { b.guardImage.sanitize(null); }) === "image.bad-input");
+    _code(function () { b.guardImage.sanitize(null); }) === "image/bad-input");
 }
 
 async function run() {

@@ -287,7 +287,7 @@ async function testPluggableStoreValidation() {
 
   threw = false;
   try { b.session.useStore("not-an-object"); }
-  catch (e) { threw = /must be an object exposing/.test(e.message) && e.code === "INVALID_ARG" && e.permanent === true; }
+  catch (e) { threw = /must be an object exposing/.test(e.message) && e.code === "session/invalid-arg" && e.permanent === true; }
   check("useStore: non-object refused", threw);
 
   threw = false;

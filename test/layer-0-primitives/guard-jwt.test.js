@@ -368,18 +368,18 @@ function testValidateBadOpts() {
   // A negative maxBytes is a config-time throw (entry-point tier).
   expectThrows("negative maxBytes throws jwt.bad-opt",
     function () { b.guardJwt.validate(BENIGN_JWT, { profile: "strict", maxBytes: -5 }); },
-    "jwt.bad-opt");
+    "jwt/bad-opt");
   // Non-integer slack window is a config-time throw.
   expectThrows("non-int nbfFutureSlackMs throws jwt.bad-opt",
     function () { b.guardJwt.validate(BENIGN_JWT, { profile: "strict", nbfFutureSlackMs: 1.5 }); },
-    "jwt.bad-opt");
+    "jwt/bad-opt");
   // Unknown profile / posture are config-time throws.
   expectThrows("unknown profile throws jwt.bad-profile",
     function () { b.guardJwt.validate(BENIGN_JWT, { profile: "nope" }); },
-    "jwt.bad-profile");
+    "jwt/bad-profile");
   expectThrows("unknown compliancePosture throws jwt.bad-posture",
     function () { b.guardJwt.validate(BENIGN_JWT, { compliancePosture: "nope" }); },
-    "jwt.bad-posture");
+    "jwt/bad-posture");
 }
 
 function testCompliancePosture() {

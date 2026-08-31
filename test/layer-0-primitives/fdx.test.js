@@ -75,7 +75,7 @@ async function run() {
   rejects("consent receipt refuses missing thirdParty",
     function () { b.fdx.consentReceipt({
       dataProvider: "x", consumerRef: "y", scopes: ["a"], revocationUrl: "z",
-    }); }, "BAD_THIRD_PARTY");
+    }); }, "fdx/bad-third-party");
 }
 
 module.exports = { run: run };

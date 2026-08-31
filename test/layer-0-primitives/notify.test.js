@@ -630,7 +630,7 @@ async function testQueueWithoutHandle() {
   try {
     await n.queue({ channel: "test", message: { x: 1 } });
   } catch (e) {
-    threw = (e && /NO_QUEUE/.test(e.code || ""));
+    threw = (e && /notify\/no-queue/.test(e.code || ""));
   }
   check("queue() without queue handle throws NO_QUEUE", threw);
 }
@@ -924,7 +924,7 @@ async function testRedactorThrows() {
 async function testSendBatchNonArray() {
   var n = b.notify.create({ channels: { x: { send: async function () {} } } });
   var threw = false;
-  try { await n.sendBatch("not-an-array"); } catch (e) { threw = /BAD_OPT/.test(e.code || ""); }
+  try { await n.sendBatch("not-an-array"); } catch (e) { threw = /notify\/bad-opt/.test(e.code || ""); }
   check("sendBatch() with non-array throws BAD_OPT", threw);
 }
 
@@ -935,7 +935,7 @@ async function testQueueBadInput() {
   var n = b.notify.create({ channels: { test: b.notify.transports.test() }, queue: fakeQueue });
   var threw = false;
   try { await n.queue({ message: { x: 1 } }); }        // missing channel
-  catch (e) { threw = /BAD_OPT/.test(e.code || ""); }
+  catch (e) { threw = /notify\/bad-opt/.test(e.code || ""); }
   check("queue() with input missing channel throws BAD_OPT", threw);
 }
 
@@ -1009,7 +1009,7 @@ async function testHttpJsonMissingResponse() {
   var t = b.notify.transports.httpJson({ url: "https://hooks.example.com/webhook", httpClient: hc });
   var threw = false;
   try { await t.send({ x: 1 }); }
-  catch (e) { threw = (e && e.code === "HTTP_FAILURE" && e.statusCode === 0); }
+  catch (e) { threw = (e && e.code === "notify/http-failure" && e.statusCode === 0); }
   check("httpJson missing response → status 0 → HTTP_FAILURE", threw);
 }
 

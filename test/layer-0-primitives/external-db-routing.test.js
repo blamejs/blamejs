@@ -37,13 +37,13 @@ async function run() {
     check("configurePool rejects: " + label,
           threw && codeRe.test(threw.code || ""));
   }
-  rejects("unknown backend",      function () { b.externalDb.configurePool("nope", { max: 10 }); }, /UNKNOWN_BACKEND/);
-  rejects("unknown opt",          function () { b.externalDb.configurePool("main", { bogus: 1 }); }, /INVALID_CONFIG/);
-  rejects("non-positive max",     function () { b.externalDb.configurePool("main", { max: 0 }); },  /INVALID_CONFIG/);
-  rejects("non-integer max",      function () { b.externalDb.configurePool("main", { max: 1.5 }); }, /INVALID_CONFIG/);
-  rejects("min > max",            function () { b.externalDb.configurePool("main", { min: 50, max: 10 }); }, /INVALID_CONFIG/);
-  rejects("Infinity max",         function () { b.externalDb.configurePool("main", { max: Infinity }); }, /INVALID_CONFIG/);
-  rejects("non-string name",      function () { b.externalDb.configurePool(42, {}); }, /INVALID_CONFIG/);
+  rejects("unknown backend",      function () { b.externalDb.configurePool("nope", { max: 10 }); }, /external-db\/unknown-backend/);
+  rejects("unknown opt",          function () { b.externalDb.configurePool("main", { bogus: 1 }); }, /external-db\/invalid-config/);
+  rejects("non-positive max",     function () { b.externalDb.configurePool("main", { max: 0 }); },  /external-db\/invalid-config/);
+  rejects("non-integer max",      function () { b.externalDb.configurePool("main", { max: 1.5 }); }, /external-db\/invalid-config/);
+  rejects("min > max",            function () { b.externalDb.configurePool("main", { min: 50, max: 10 }); }, /external-db\/invalid-config/);
+  rejects("Infinity max",         function () { b.externalDb.configurePool("main", { max: Infinity }); }, /external-db\/invalid-config/);
+  rejects("non-string name",      function () { b.externalDb.configurePool(42, {}); }, /external-db\/invalid-config/);
 
   // ---- adapters.connectAs ----
   // Track every SQL the driver sees so we can assert SET statements.
@@ -97,9 +97,9 @@ async function run() {
       { query: rawQuery, searchPath: ["1bad"] }); }, /sql\/bad-shape|INVALID/);
   rejectsCa("non-positive statementTimeoutMs",
     function () { b.externalDb.adapters.connectAs(rawConnect,
-      { query: rawQuery, statementTimeoutMs: 0 }); }, /INVALID_CONFIG/);
+      { query: rawQuery, statementTimeoutMs: 0 }); }, /external-db\/invalid-config/);
   rejectsCa("missing query fn",
-    function () { b.externalDb.adapters.connectAs(rawConnect, { role: "x" }); }, /INVALID_CONFIG/);
+    function () { b.externalDb.adapters.connectAs(rawConnect, { role: "x" }); }, /external-db\/invalid-config/);
   // SQL-standard single-quote escaping for application_name string literal.
   d2.seen.length = 0;
   var wcEsc = b.externalDb.adapters.connectAs(d2.connect, {
@@ -194,15 +194,15 @@ async function run() {
           threw && codeRe.test(threw.code || ""));
     b.externalDb._resetForTest();
   }
-  rejectsReplicas("empty array", [], /INVALID_CONFIG/);
+  rejectsReplicas("empty array", [], /external-db\/invalid-config/);
   rejectsReplicas("missing connect",
-    [{ query: replica1.query }], /INVALID_CONFIG/);
+    [{ query: replica1.query }], /external-db\/invalid-config/);
   rejectsReplicas("missing query",
-    [{ connect: replica1.connect }], /INVALID_CONFIG/);
+    [{ connect: replica1.connect }], /external-db\/invalid-config/);
   rejectsReplicas("non-positive weight",
-    [{ connect: replica1.connect, query: replica1.query, weight: 0 }], /INVALID_CONFIG/);
+    [{ connect: replica1.connect, query: replica1.query, weight: 0 }], /external-db\/invalid-config/);
   rejectsReplicas("non-integer weight",
-    [{ connect: replica1.connect, query: replica1.query, weight: 1.5 }], /INVALID_CONFIG/);
+    [{ connect: replica1.connect, query: replica1.query, weight: 1.5 }], /external-db\/invalid-config/);
 
   // ---- dbRoleBackends + ALS-routed backend pick (v0.6.6) ----
   b.externalDb._resetForTest();
@@ -274,15 +274,15 @@ async function run() {
   rejectsInit("non-object map",
     { backends: { x: { connect: appDriver.connect, query: appDriver.query } },
       dbRoleBackends: ["a"] },
-    /INVALID_CONFIG/);
+    /external-db\/invalid-config/);
   rejectsInit("malformed role identifier",
     { backends: { x: { connect: appDriver.connect, query: appDriver.query } },
       dbRoleBackends: { "bad name": "x" } },
-    /INVALID_CONFIG/);
+    /external-db\/invalid-config/);
   rejectsInit("backend reference does not exist",
     { backends: { x: { connect: appDriver.connect, query: appDriver.query } },
       dbRoleBackends: { app_user: "missing" } },
-    /INVALID_CONFIG/);
+    /external-db\/invalid-config/);
 
   // ---- runAs input validation ----
   b.externalDb._resetForTest();
@@ -298,7 +298,7 @@ async function run() {
   }
   rejectsRunAs("non-fn body",
     function () { b.externalDb.runAs("x", "not a fn"); },
-    /INVALID_FN/);
+    /external-db\/invalid-fn/);
   rejectsRunAs("malformed role identifier",
     function () { b.externalDb.runAs("bad name", function () {}); },
     /sql\/bad-shape|INVALID/);
@@ -350,11 +350,11 @@ async function run() {
     check("sessionGucs rejects: " + label,
       threw && (re.test(threw.code || "") || re.test(threw.message || "")));
   }
-  await rejectsTx("array shape",        ["a"],                    /INVALID_SESSION_GUCS/);
-  await rejectsTx("bad name",           { "bad name": "x" },      /INVALID_SESSION_GUCS|sql\//);
-  await rejectsTx("null value",         { "app.x": null },        /INVALID_SESSION_GUCS/);
-  await rejectsTx("Infinity number",    { "app.x": Infinity },    /INVALID_SESSION_GUCS/);
-  await rejectsTx("object value",       { "app.x": { y: 1 } },    /INVALID_SESSION_GUCS/);
+  await rejectsTx("array shape",        ["a"],                    /external-db\/invalid-session-gucs/);
+  await rejectsTx("bad name",           { "bad name": "x" },      /external-db\/invalid-session-gucs|sql\//);
+  await rejectsTx("null value",         { "app.x": null },        /external-db\/invalid-session-gucs/);
+  await rejectsTx("Infinity number",    { "app.x": Infinity },    /external-db\/invalid-session-gucs/);
+  await rejectsTx("object value",       { "app.x": { y: 1 } },    /external-db\/invalid-session-gucs/);
 
   // ---- v0.6.7: role-tagged metrics + 42501 denied detection ----
   b.externalDb._resetForTest();

@@ -69,13 +69,13 @@ async function testFactoryValidation() {
     check("factory: " + label,  threw && codeRe.test(threw.code || ""));
   }
   shouldThrow("rejects missing region",
-    { accessKeyId: "x", secretAccessKey: "y", accountId: "0" }, /INVALID_CONFIG/);
+    { accessKeyId: "x", secretAccessKey: "y", accountId: "0" }, /queue-sqs\/invalid-config/);
   shouldThrow("rejects missing accessKeyId",
-    { region: "us-east-1", secretAccessKey: "y", accountId: "0" }, /INVALID_CONFIG/);
+    { region: "us-east-1", secretAccessKey: "y", accountId: "0" }, /queue-sqs\/invalid-config/);
   shouldThrow("rejects missing secretAccessKey",
-    { region: "us-east-1", accessKeyId: "x", accountId: "0" }, /INVALID_CONFIG/);
+    { region: "us-east-1", accessKeyId: "x", accountId: "0" }, /queue-sqs\/invalid-config/);
   shouldThrow("rejects missing accountId without queueUrlByName",
-    { region: "us-east-1", accessKeyId: "x", secretAccessKey: "y" }, /INVALID_CONFIG/);
+    { region: "us-east-1", accessKeyId: "x", secretAccessKey: "y" }, /queue-sqs\/invalid-config/);
   // queueUrlByName lets cross-account / VPCE setups skip accountId.
   var ok = null;
   try {
@@ -196,7 +196,7 @@ async function testCompleteDeletes() {
     try { await q.complete("orders", "job-1"); }
     catch (e) { threw = e; }
     check("complete without receiptHandle throws MISSING_RECEIPT",
-          threw && threw.code === "MISSING_RECEIPT");
+          threw && threw.code === "queue-sqs/missing-receipt");
   } finally { await srv.close(); }
 }
 
@@ -301,21 +301,21 @@ async function testNumericConfigValidation() {
 
   // Present-but-bad visibilityTimeoutSec throws.
   shouldThrow("rejects NaN-coercing visibilityTimeoutSec",
-    { visibilityTimeoutSec: "30s" }, /INVALID_CONFIG/);
+    { visibilityTimeoutSec: "30s" }, /queue-sqs\/invalid-config/);
   shouldThrow("rejects negative visibilityTimeoutSec",
-    { visibilityTimeoutSec: -1 }, /INVALID_CONFIG/);
+    { visibilityTimeoutSec: -1 }, /queue-sqs\/invalid-config/);
   shouldThrow("rejects fractional visibilityTimeoutSec",
-    { visibilityTimeoutSec: 1.5 }, /INVALID_CONFIG/);
+    { visibilityTimeoutSec: 1.5 }, /queue-sqs\/invalid-config/);
   shouldThrow("rejects zero visibilityTimeoutSec (not a positive int)",
-    { visibilityTimeoutSec: 0 }, /INVALID_CONFIG/);
+    { visibilityTimeoutSec: 0 }, /queue-sqs\/invalid-config/);
 
   // Present-but-bad waitTimeSec throws — but 0 (short-poll) stays valid.
   shouldThrow("rejects NaN-coercing waitTimeSec",
-    { waitTimeSec: "10s" }, /INVALID_CONFIG/);
+    { waitTimeSec: "10s" }, /queue-sqs\/invalid-config/);
   shouldThrow("rejects negative waitTimeSec",
-    { waitTimeSec: -1 }, /INVALID_CONFIG/);
+    { waitTimeSec: -1 }, /queue-sqs\/invalid-config/);
   shouldThrow("rejects fractional waitTimeSec",
-    { waitTimeSec: 2.5 }, /INVALID_CONFIG/);
+    { waitTimeSec: 2.5 }, /queue-sqs\/invalid-config/);
 
   // Absent keeps the default (create succeeds, returns a live adapter).
   shouldPass("absent numeric knobs keep defaults", {});

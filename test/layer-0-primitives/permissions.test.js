@@ -409,49 +409,49 @@ function testCreateRejectsBadOpts() {
     check(label, threw && threw.code === code);
   }
   expect("create: missing roles",
-    function () { b.permissions.create({}); }, "BAD_OPT");
+    function () { b.permissions.create({}); }, "permissions/bad-opt");
   expect("create: roles not object",
-    function () { b.permissions.create({ roles: ["a", "b"] }); }, "BAD_OPT");
+    function () { b.permissions.create({ roles: ["a", "b"] }); }, "permissions/bad-opt");
   expect("create: empty roles",
-    function () { b.permissions.create({ roles: {} }); }, "BAD_OPT");
+    function () { b.permissions.create({ roles: {} }); }, "permissions/bad-opt");
   expect("create: bad scope format (uppercase)",
-    function () { b.permissions.create({ roles: { admin: ["Users:read"] } }); }, "BAD_SCOPE");
+    function () { b.permissions.create({ roles: { admin: ["Users:read"] } }); }, "permissions/bad-scope");
   expect("create: bad scope format (special chars)",
-    function () { b.permissions.create({ roles: { admin: ["users/read"] } }); }, "BAD_SCOPE");
+    function () { b.permissions.create({ roles: { admin: ["users/read"] } }); }, "permissions/bad-scope");
   expect("create: empty scope",
-    function () { b.permissions.create({ roles: { admin: [""] } }); }, "BAD_SCOPE");
+    function () { b.permissions.create({ roles: { admin: [""] } }); }, "permissions/bad-scope");
   expect("create: bad role shape (number)",
-    function () { b.permissions.create({ roles: { admin: 42 } }); }, "BAD_ROLE");
+    function () { b.permissions.create({ roles: { admin: 42 } }); }, "permissions/bad-role");
   expect("create: extends not array",
-    function () { b.permissions.create({ roles: { a: { extends: "b", permissions: [] } } }); }, "BAD_ROLE");
+    function () { b.permissions.create({ roles: { a: { extends: "b", permissions: [] } } }); }, "permissions/bad-role");
   expect("create: unknown role in extends",
-    function () { b.permissions.create({ roles: { a: { extends: ["ghost"], permissions: [] } } }); }, "UNKNOWN_ROLE");
+    function () { b.permissions.create({ roles: { a: { extends: ["ghost"], permissions: [] } } }); }, "permissions/unknown-role");
   expect("create: cycle in extends",
     function () { b.permissions.create({
       roles: {
         a: { extends: ["b"], permissions: [] },
         b: { extends: ["a"], permissions: [] },
       }
-    }); }, "CYCLE");
+    }); }, "permissions/cycle");
 
   // Middleware registration validates scope at declaration time
   var p = b.permissions.create({ roles: { admin: ["*"] } });
   expect("require: bad scope format throws at declaration",
-    function () { p.require("Bad:Scope"); }, "BAD_SCOPE");
+    function () { p.require("Bad:Scope"); }, "permissions/bad-scope");
   expect("requireAll: empty array",
-    function () { p.requireAll([]); }, "BAD_OPT");
+    function () { p.requireAll([]); }, "permissions/bad-opt");
   expect("requireAny: non-array",
-    function () { p.requireAny("not-array"); }, "BAD_OPT");
+    function () { p.requireAny("not-array"); }, "permissions/bad-opt");
 
   // Status code validation
   expect("create: bad denyStatus",
-    function () { b.permissions.create({ roles: { a: ["*"] }, denyStatus: 50 }); }, "BAD_OPT");
+    function () { b.permissions.create({ roles: { a: ["*"] }, denyStatus: 50 }); }, "permissions/bad-opt");
   expect("create: bad missingActorStatus",
-    function () { b.permissions.create({ roles: { a: ["*"] }, missingActorStatus: 999 }); }, "BAD_OPT");
+    function () { b.permissions.create({ roles: { a: ["*"] }, missingActorStatus: 999 }); }, "permissions/bad-opt");
 
   // Audit shape
   expect("create: bad audit shape",
-    function () { b.permissions.create({ roles: { a: ["*"] }, audit: {} }); }, "BAD_OPT");
+    function () { b.permissions.create({ roles: { a: ["*"] }, audit: {} }); }, "audit/bad-shape");
 }
 
 // ---- v0.6.6 — dbRole role-table integration ----
@@ -502,13 +502,13 @@ function testDbRoleFor() {
   }
   rejectsCreate("non-string dbRole",
     { roles: { x: { permissions: ["a:b"], dbRole: 42 } } },
-    /BAD_ROLE/);
+    /permissions\/bad-role/);
   rejectsCreate("empty dbRole",
     { roles: { x: { permissions: ["a:b"], dbRole: "" } } },
-    /BAD_ROLE/);
+    /permissions\/bad-role/);
   rejectsCreate("malformed dbRole identifier",
     { roles: { x: { permissions: ["a:b"], dbRole: "bad name" } } },
-    /BAD_ROLE/);
+    /permissions\/bad-role/);
 }
 
 // ---- Role-table validation: uncovered adversarial branches ----
@@ -523,33 +523,33 @@ function testRoleTableValidationEdgeCases() {
   // permissions must be an array (lib line 137-138)
   expect("create: permissions not an array → BAD_ROLE",
     function () { b.permissions.create({ roles: { admin: { permissions: "users:read" } } }); },
-    "BAD_ROLE");
+    "permissions/bad-role");
 
   // null entry short-circuits the `entry && typeof === object` guard →
   // falls to the catch-all throw (lib line 169; left-operand false branch)
   expect("create: null role entry → BAD_ROLE",
     function () { b.permissions.create({ roles: { admin: null } }); },
-    "BAD_ROLE");
+    "permissions/bad-role");
   expect("create: boolean role entry → BAD_ROLE",
     function () { b.permissions.create({ roles: { admin: true } }); },
-    "BAD_ROLE");
+    "permissions/bad-role");
 
   // mfaWindowMs must be a positive finite number (lib line 160-163)
   expect("create: negative role mfaWindowMs → BAD_ROLE",
     function () { b.permissions.create({ roles: { a: { permissions: ["x:y"], mfaWindowMs: -1 } } }); },
-    "BAD_ROLE");
+    "permissions/bad-role");
   expect("create: zero role mfaWindowMs → BAD_ROLE",
     function () { b.permissions.create({ roles: { a: { permissions: ["x:y"], mfaWindowMs: 0 } } }); },
-    "BAD_ROLE");
+    "permissions/bad-role");
   expect("create: NaN role mfaWindowMs → BAD_ROLE",
     function () { b.permissions.create({ roles: { a: { permissions: ["x:y"], mfaWindowMs: NaN } } }); },
-    "BAD_ROLE");
+    "permissions/bad-role");
   expect("create: Infinity role mfaWindowMs → BAD_ROLE",
     function () { b.permissions.create({ roles: { a: { permissions: ["x:y"], mfaWindowMs: Infinity } } }); },
-    "BAD_ROLE");
+    "permissions/bad-role");
   expect("create: string role mfaWindowMs → BAD_ROLE",
     function () { b.permissions.create({ roles: { a: { permissions: ["x:y"], mfaWindowMs: "600000" } } }); },
-    "BAD_ROLE");
+    "permissions/bad-role");
 
   // valid mfaWindowMs is accepted + a role with extends but NO permissions
   // key exercises the `entry.permissions || []` default (lib line 136, 164-165)
@@ -565,15 +565,15 @@ function testRoleTableValidationEdgeCases() {
   // empty-string role name (Object.keys yields "") (lib line 184-185)
   expect("create: empty-string role name → BAD_ROLE",
     function () { b.permissions.create({ roles: { "": ["a:b"] } }); },
-    "BAD_ROLE");
+    "permissions/bad-role");
 
   // extends entries must be non-empty strings (lib line 191-193)
   expect("create: empty-string extends entry → BAD_ROLE",
     function () { b.permissions.create({ roles: { a: { extends: [""], permissions: [] } } }); },
-    "BAD_ROLE");
+    "permissions/bad-role");
   expect("create: non-string extends entry → BAD_ROLE",
     function () { b.permissions.create({ roles: { a: { extends: [42], permissions: [] } } }); },
-    "BAD_ROLE");
+    "permissions/bad-role");
 }
 
 // Per-segment wildcard where required has fewer segments (lib line 99)
@@ -596,19 +596,19 @@ function testMiddlewareOptValidation() {
     check(label, threw && threw.code === code);
   }
   expect("require: negative mfaWindowMs → BAD_OPT",
-    function () { p.require("users:read", { mfaWindowMs: -5 }); }, "BAD_OPT");
+    function () { p.require("users:read", { mfaWindowMs: -5 }); }, "permissions/bad-opt");
   expect("require: zero mfaWindowMs → BAD_OPT",
-    function () { p.require("users:read", { mfaWindowMs: 0 }); }, "BAD_OPT");
+    function () { p.require("users:read", { mfaWindowMs: 0 }); }, "permissions/bad-opt");
   expect("require: NaN mfaWindowMs → BAD_OPT",
-    function () { p.require("users:read", { mfaWindowMs: NaN }); }, "BAD_OPT");
+    function () { p.require("users:read", { mfaWindowMs: NaN }); }, "permissions/bad-opt");
   expect("require: Infinity mfaWindowMs → BAD_OPT",
-    function () { p.require("users:read", { mfaWindowMs: Infinity }); }, "BAD_OPT");
+    function () { p.require("users:read", { mfaWindowMs: Infinity }); }, "permissions/bad-opt");
   expect("require: string mfaWindowMs → BAD_OPT",
-    function () { p.require("users:read", { mfaWindowMs: "1000" }); }, "BAD_OPT");
+    function () { p.require("users:read", { mfaWindowMs: "1000" }); }, "permissions/bad-opt");
   expect("require: non-function context → BAD_OPT",
-    function () { p.require("users:read", { context: "not-a-fn" }); }, "BAD_OPT");
+    function () { p.require("users:read", { context: "not-a-fn" }); }, "permissions/bad-opt");
   expect("require: object context → BAD_OPT",
-    function () { p.require("users:read", { context: {} }); }, "BAD_OPT");
+    function () { p.require("users:read", { context: {} }); }, "permissions/bad-opt");
 
   // A valid, explicit mfaWindowMs opt is accepted at registration.
   var mw = p.require("users:read", { mfaWindowMs: 600000, context: function (req) { return req; } });
@@ -627,15 +627,15 @@ function testPolicyRegistration() {
 
   // Bad scope shape rejected (lib 351)
   expect("policy: bad scope shape → BAD_SCOPE",
-    function () { p.policy("Bad:Scope", function (a, c) { return true; }); }, "BAD_SCOPE");
+    function () { p.policy("Bad:Scope", function (a, c) { return true; }); }, "permissions/bad-scope");
   // Non-function predicate (lib 352-353)
   expect("policy: non-function predicate → BAD_OPT",
-    function () { p.policy("orders:read", "nope"); }, "BAD_OPT");
+    function () { p.policy("orders:read", "nope"); }, "permissions/bad-opt");
 
   // First registration succeeds; second on same scope is refused (lib 355-357)
   p.policy("orders:read", function (a, c) { return true; });
   expect("policy: duplicate scope → DUPLICATE_POLICY",
-    function () { p.policy("orders:read", function (a, c) { return true; }); }, "DUPLICATE_POLICY");
+    function () { p.policy("orders:read", function (a, c) { return true; }); }, "permissions/duplicate-policy");
 }
 
 function testPolicyPredicateArityWarning() {
@@ -942,9 +942,9 @@ async function testBranchCleanups() {
   // denyStatus upper-bound (lib 257 `> 599` operand) + no-arg create()
   // hitting the `opts || {}` default (lib 324).
   expect("create: denyStatus above 599 → BAD_OPT",
-    function () { b.permissions.create({ roles: { a: ["*"] }, denyStatus: 600 }); }, "BAD_OPT");
+    function () { b.permissions.create({ roles: { a: ["*"] }, denyStatus: 600 }); }, "permissions/bad-opt");
   expect("create: no args → roles-missing BAD_OPT (opts||{} default)",
-    function () { b.permissions.create(); }, "BAD_OPT");
+    function () { b.permissions.create(); }, "permissions/bad-opt");
 
   // checkAll / checkAny non-array required-scopes → false (lib 425, 433).
   var p = b.permissions.create({ roles: { admin: ["*"] } });

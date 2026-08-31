@@ -424,7 +424,7 @@ async function testSweepFailedThrows() {
   var threw = null;
   try { await ret.run("boom"); } catch (e) { threw = e; }
   check("sweep against a missing table throws SWEEP_FAILED",
-        threw !== null && /SWEEP_FAILED|sweep failed/.test((threw && (threw.code || threw.message)) || ""));
+        threw !== null && /retention\/sweep-failed|sweep failed/.test((threw && (threw.code || threw.message)) || ""));
   // The lock is released even on failure — a retry is not permanently blocked.
   var threw2 = null;
   try { await ret.run("boom"); } catch (e) { threw2 = e; }
@@ -449,7 +449,7 @@ async function testNoSuchRule() {
   var threw = null;
   try { await ret.run("never-declared"); } catch (e) { threw = e; }
   check("run() on an undeclared rule throws NO_SUCH_RULE",
-        threw !== null && /NO_SUCH_RULE|not declared/.test((threw && (threw.code || threw.message)) || ""));
+        threw !== null && /retention\/no-such-rule|not declared/.test((threw && (threw.code || threw.message)) || ""));
 }
 
 function testDuplicateRule() {
@@ -484,7 +484,7 @@ function testHandleDialect() {
 function testRuleValidation() {
   var ret = b.retention.create({ db: b.db, audit: false });
   function bad(label, rule, matcher) {
-    _expectThrow(label, function () { ret.declare(rule); }, matcher || /BAD_RULE/);
+    _expectThrow(label, function () { ret.declare(rule); }, matcher || /retention\/bad-rule/);
   }
   bad("non-object rule rejected", null, /rule must be an object|BAD_RULE/);
   bad("non-object rule (string) rejected", "nope", /rule must be an object|BAD_RULE/);

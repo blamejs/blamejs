@@ -132,7 +132,7 @@ async function testSubscribeRequiresAttach() {
   var a = _fakeConn();
   var threw = null;
   try { hub.subscribe(a, "x"); } catch (e) { threw = e; }
-  check("subscribe before attach throws",         threw && threw.code === "NOT_ATTACHED");
+  check("subscribe before attach throws",         threw && threw.code === "websocket-channels/not-attached");
 }
 
 async function testInvalidChannelRejected() {
@@ -141,10 +141,10 @@ async function testInvalidChannelRejected() {
   hub.attach(a);
   var threw = null;
   try { hub.subscribe(a, ""); } catch (e) { threw = e; }
-  check("empty channel rejected on subscribe",    threw && threw.code === "INVALID_CHANNEL");
+  check("empty channel rejected on subscribe",    threw && threw.code === "websocket-channels/invalid-channel");
   threw = null;
   try { await hub.publish("", {}); } catch (e) { threw = e; }
-  check("empty channel rejected on publish",      threw && threw.code === "INVALID_CHANNEL");
+  check("empty channel rejected on publish",      threw && threw.code === "websocket-channels/invalid-channel");
 }
 
 async function testNonSerializablePayloadRejected() {
@@ -156,7 +156,7 @@ async function testNonSerializablePayloadRejected() {
   circular.self = circular;
   var threw = null;
   try { await hub.publish("room:1", circular); } catch (e) { threw = e; }
-  check("circular payload rejected",              threw && threw.code === "INVALID_PAYLOAD");
+  check("circular payload rejected",              threw && threw.code === "websocket-channels/invalid-payload");
 }
 
 async function testClusterBackendFanOut() {
@@ -270,7 +270,7 @@ async function testUnknownBackendRejected() {
   var threw = null;
   try { b.websocketChannels.create({ backend: "made-up-backend" }); } catch (e) { threw = e; }
   check("unknown backend rejected at create()",
-        threw && threw.code === "UNKNOWN_BACKEND");
+        threw && threw.code === "pubsub/unknown-backend");
 }
 
 async function testAuditEmit() {

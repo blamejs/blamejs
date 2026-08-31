@@ -294,7 +294,7 @@ function testGuardMarkdownSanitizeRefusesBadInput() {
     try { b.guardMarkdown.sanitize(bad, { profile: "strict" }); }
     catch (e) { threw = e; }
     check("sanitize(" + JSON.stringify(bad) + ") throws markdown.bad-input (no silent pass)",
-          threw && threw.code === "markdown.bad-input");
+          threw && threw.code === "markdown/bad-input");
   });
 }
 

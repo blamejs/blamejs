@@ -222,14 +222,14 @@ function testFactoryValidation() {
     try { bucketOps.create(opts); } catch (e) { threw = e; }
     check("factory: " + label,  threw && codeRe.test(threw.code || ""));
   }
-  shouldThrow("rejects null opts",      null, /INVALID_CONFIG/);
+  shouldThrow("rejects null opts",      null, /objectstore\/invalid-config/);
   shouldThrow("rejects missing region",
-    { accessKeyId: "x", secretAccessKey: "y" }, /INVALID_CONFIG/);
+    { accessKeyId: "x", secretAccessKey: "y" }, /objectstore\/invalid-config/);
   shouldThrow("rejects missing accessKeyId",
-    { region: "us-east-1", secretAccessKey: "y" }, /INVALID_CONFIG/);
+    { region: "us-east-1", secretAccessKey: "y" }, /objectstore\/invalid-config/);
   shouldThrow("rejects unsupported protocol",
     { protocol: "gcs", region: "us-east-1", accessKeyId: "x", secretAccessKey: "y" },
-    /INVALID_CONFIG/);
+    /objectstore\/invalid-config/);
 
   // `ca` was an accepted-but-dead config knob — nothing in the request
   // path (reqOpts → http-request → httpClient.request) threads a custom
@@ -251,7 +251,7 @@ function testBucketNameValidation() {
   function shouldThrow(label, name) {
     var threw = null;
     try { v(name); } catch (e) { threw = e; }
-    check("bucket-name: " + label,  threw && /BUCKET_INVALID_NAME/.test(threw.code));
+    check("bucket-name: " + label,  threw && /objectstore\/bucket-invalid-name/.test(threw.code));
   }
   shouldThrow("rejects too short",        "ab");
   shouldThrow("rejects too long",         new Array(65).join("a"));
@@ -301,22 +301,22 @@ function testLifecycleXml() {
     check("lifecycle: " + label,  threw && codeRe.test(threw.code || ""));
   }
   shouldThrow("rejects empty rules",            [],
-    /INVALID_LIFECYCLE/);
+    /objectstore\/invalid-lifecycle/);
   shouldThrow("rejects non-array rules",        "no",
-    /INVALID_LIFECYCLE/);
+    /objectstore\/invalid-lifecycle/);
   shouldThrow("rejects bad status",
     [{ prefix: "", status: "Mid", expiration: { days: 1 } }],
-    /INVALID_LIFECYCLE/);
+    /objectstore\/invalid-lifecycle/);
   shouldThrow("rejects rule with no action",
     [{ prefix: "", status: "Enabled" }],
-    /INVALID_LIFECYCLE/);
+    /objectstore\/invalid-lifecycle/);
   shouldThrow("rejects unknown storageClass",
     [{ prefix: "", status: "Enabled",
        transition: { days: 90, storageClass: "ICE" } }],
-    /INVALID_LIFECYCLE/);
+    /objectstore\/invalid-lifecycle/);
   shouldThrow("rejects expiration.days = 0",
     [{ prefix: "", status: "Enabled", expiration: { days: 0 } }],
-    /INVALID_LIFECYCLE/);
+    /objectstore\/invalid-lifecycle/);
 }
 
 // ---- CORS XML builder ----
@@ -343,19 +343,19 @@ function testCorsXml() {
     try { bucketOps._buildCorsXmlForTest(rules); } catch (e) { threw = e; }
     check("cors: " + label,  threw && codeRe.test(threw.code || ""));
   }
-  shouldThrow("rejects empty rules array",  [], /INVALID_CORS_RULE/);
+  shouldThrow("rejects empty rules array",  [], /objectstore\/invalid-cors-rule/);
   shouldThrow("rejects missing allowedOrigins",
     [{ allowedMethods: ["GET"] }],
-    /INVALID_CORS_RULE/);
+    /objectstore\/invalid-cors-rule/);
   shouldThrow("rejects missing allowedMethods",
     [{ allowedOrigins: ["*"] }],
-    /INVALID_CORS_RULE/);
+    /objectstore\/invalid-cors-rule/);
   shouldThrow("rejects bad allowedMethod",
     [{ allowedOrigins: ["*"], allowedMethods: ["TRACE"] }],
-    /INVALID_CORS_RULE/);
+    /objectstore\/invalid-cors-rule/);
   shouldThrow("rejects negative maxAgeSeconds",
     [{ allowedOrigins: ["*"], allowedMethods: ["GET"], maxAgeSeconds: -1 }],
-    /INVALID_CORS_RULE/);
+    /objectstore\/invalid-cors-rule/);
 }
 
 // ---- create / delete / list / setLifecycle / setCorsRules over the wire ----
@@ -402,7 +402,7 @@ async function testCreateBucketAlreadyOwnedMaps() {
     var threw = null;
     try { await ops.create("mine"); } catch (e) { threw = e; }
     check("create owned: maps to BUCKET_ALREADY_OWNED",
-          threw && /BUCKET_ALREADY_OWNED/.test(threw.code || ""));
+          threw && /objectstore\/bucket-already-owned/.test(threw.code || ""));
   } finally {
     await new Promise(function (r) { fake.server.close(function () { r(); }); });
   }
@@ -418,7 +418,7 @@ async function testCreateBucketTakenMaps() {
     var threw = null;
     try { await ops.create("taken"); } catch (e) { threw = e; }
     check("create taken: maps to BUCKET_NAME_TAKEN",
-          threw && /BUCKET_NAME_TAKEN/.test(threw.code || ""));
+          threw && /objectstore\/bucket-name-taken/.test(threw.code || ""));
   } finally {
     await new Promise(function (r) { fake.server.close(function () { r(); }); });
   }
@@ -454,7 +454,7 @@ async function testDeleteBucketNotEmptyMaps() {
     var threw = null;
     try { await ops.delete("full"); } catch (e) { threw = e; }
     check("delete not-empty: maps to BUCKET_NOT_EMPTY",
-          threw && /BUCKET_NOT_EMPTY/.test(threw.code || ""));
+          threw && /objectstore\/bucket-not-empty/.test(threw.code || ""));
   } finally {
     await new Promise(function (r) { fake.server.close(function () { r(); }); });
   }
@@ -576,13 +576,13 @@ async function testSetObjectLockConfigurationValidation() {
             threw && codeRe.test(threw.code || ""));
     }
     await shouldThrow("rejects bad mode",
-      { mode: "WORM" }, /INVALID_OBJECT_LOCK/);
+      { mode: "WORM" }, /objectstore\/invalid-object-lock/);
     await shouldThrow("rejects days+years together",
-      { mode: "COMPLIANCE", days: 30, years: 1 }, /INVALID_OBJECT_LOCK/);
+      { mode: "COMPLIANCE", days: 30, years: 1 }, /objectstore\/invalid-object-lock/);
     await shouldThrow("rejects negative days",
-      { mode: "COMPLIANCE", days: -5 }, /INVALID_OBJECT_LOCK/);
+      { mode: "COMPLIANCE", days: -5 }, /objectstore\/invalid-object-lock/);
     await shouldThrow("rejects fractional days",
-      { mode: "COMPLIANCE", days: 1.5 }, /INVALID_OBJECT_LOCK/);
+      { mode: "COMPLIANCE", days: 1.5 }, /objectstore\/invalid-object-lock/);
   } finally {
     await new Promise(function (r) { fake.server.close(function () { r(); }); });
   }
@@ -681,21 +681,21 @@ async function testSetObjectRetentionValidation() {
             threw && codeRe.test(threw.code || ""));
     }
     await shouldThrow("rejects null opts",
-      null, /INVALID_RETENTION/);
+      null, /objectstore\/invalid-retention/);
     await shouldThrow("rejects missing mode",
-      { retainUntil: new Date(Date.now() + 1000) }, /INVALID_RETENTION/);
+      { retainUntil: new Date(Date.now() + 1000) }, /objectstore\/invalid-retention/);
     await shouldThrow("rejects bad mode",
-      { mode: "WORM", retainUntil: new Date(Date.now() + 1000) }, /INVALID_RETENTION/);
+      { mode: "WORM", retainUntil: new Date(Date.now() + 1000) }, /objectstore\/invalid-retention/);
     await shouldThrow("rejects past retainUntil",
-      { mode: "COMPLIANCE", retainUntil: new Date(Date.now() - 1000) }, /INVALID_RETENTION/);
+      { mode: "COMPLIANCE", retainUntil: new Date(Date.now() - 1000) }, /objectstore\/invalid-retention/);
     await shouldThrow("rejects non-Date retainUntil",
-      { mode: "COMPLIANCE", retainUntil: "2027-01-01" }, /INVALID_RETENTION/);
+      { mode: "COMPLIANCE", retainUntil: "2027-01-01" }, /objectstore\/invalid-retention/);
     var threwKey = null;
     try { await ops.setObjectRetention("my-bucket", "",
             { mode: "COMPLIANCE", retainUntil: new Date(Date.now()+1000) }); }
     catch (e) { threwKey = e; }
     check("retention validation: rejects empty key",
-          threwKey && /INVALID_KEY/.test(threwKey.code || ""));
+          threwKey && /objectstore\/invalid-key/.test(threwKey.code || ""));
   } finally {
     await new Promise(function (r) { fake.server.close(function () { r(); }); });
   }
@@ -756,7 +756,7 @@ async function testLegalHold() {
     try { await ops.setObjectLegalHold("my-bucket", "k", "MAYBE"); }
     catch (e) { threw = e; }
     check("legal hold rejects bad status",
-          threw && /INVALID_LEGAL_HOLD/.test(threw.code || ""));
+          threw && /objectstore\/invalid-legal-hold/.test(threw.code || ""));
     var threwOff = await ops.setObjectLegalHold("my-bucket", "k", "OFF");
     check("legal hold accepts OFF",  threwOff.status === "OFF");
   } finally {
@@ -1062,7 +1062,7 @@ function testFactoryDefaultsAndTrailingSlash() {
     bucketOps.create({ region: "us-east-1", accessKeyId: "x" });
   } catch (e) { threwSecret = e; }
   check("factory: missing secretAccessKey rejected",
-        threwSecret && /INVALID_CONFIG/.test(threwSecret.code || ""));
+        threwSecret && /objectstore\/invalid-config/.test(threwSecret.code || ""));
 
   // No endpoint / allowedProtocols / allowInternal supplied — the factory
   // must fill each default (endpoint → https://s3.<region>.amazonaws.com,
@@ -1104,16 +1104,16 @@ function testLifecycleXmlAdversarial() {
   // irrelevant — a 1001-length array trips the S3 1000-rule ceiling.
   var tooMany = [];
   for (var i = 0; i < 1001; i++) tooMany.push({ expiration: { days: 1 } });
-  shouldThrow("rejects > 1000 rules", tooMany, /INVALID_LIFECYCLE/);
-  shouldThrow("rejects non-object rule", [null], /INVALID_LIFECYCLE/);
+  shouldThrow("rejects > 1000 rules", tooMany, /objectstore\/invalid-lifecycle/);
+  shouldThrow("rejects non-object rule", [null], /objectstore\/invalid-lifecycle/);
   shouldThrow("rejects empty-string id",
-    [{ id: "", status: "Enabled", expiration: { days: 1 } }], /INVALID_LIFECYCLE/);
+    [{ id: "", status: "Enabled", expiration: { days: 1 } }], /objectstore\/invalid-lifecycle/);
   shouldThrow("rejects non-string id",
-    [{ id: 5, status: "Enabled", expiration: { days: 1 } }], /INVALID_LIFECYCLE/);
+    [{ id: 5, status: "Enabled", expiration: { days: 1 } }], /objectstore\/invalid-lifecycle/);
   shouldThrow("rejects abortIncompleteMultipartUpload.daysAfterInitiation = 0",
     [{ status: "Enabled",
        abortIncompleteMultipartUpload: { daysAfterInitiation: 0 } }],
-    /INVALID_LIFECYCLE/);
+    /objectstore\/invalid-lifecycle/);
 
   // Optional expiration sub-fields (date + expiredObjectDeleteMarker) and
   // transition.date each emit their own element.
@@ -1157,8 +1157,8 @@ function testCorsXmlAdversarial() {
   for (var i = 0; i < 101; i++) {
     tooMany.push({ allowedOrigins: ["*"], allowedMethods: ["GET"] });
   }
-  shouldThrow("rejects > 100 rules", tooMany, /INVALID_CORS_RULE/);
-  shouldThrow("rejects non-object rule", [null], /INVALID_CORS_RULE/);
+  shouldThrow("rejects > 100 rules", tooMany, /objectstore\/invalid-cors-rule/);
+  shouldThrow("rejects non-object rule", [null], /objectstore\/invalid-cors-rule/);
 
   // A rule with an id emits <ID>; the escaped-content path is exercised too.
   var xml = bucketOps._buildCorsXmlForTest([{
@@ -1181,7 +1181,7 @@ function testCorsXmlAdversarial() {
     }]);
   } catch (e) { threwBig = e; }
   check("cors-adv: > 64 KB configuration rejected",
-        threwBig && /INVALID_CORS_RULE/.test(threwBig.code || "") &&
+        threwBig && /objectstore\/invalid-cors-rule/.test(threwBig.code || "") &&
         /64 KB/.test(threwBig.message || ""));
 }
 
@@ -1197,7 +1197,7 @@ async function testObjectKeyTooLong() {
     try { await ops.getObjectRetention("my-bucket", longKey); }
     catch (e) { threw = e; }
     check("object-key: > 1024 bytes rejected with INVALID_KEY",
-          threw && /INVALID_KEY/.test(threw.code || ""));
+          threw && /objectstore\/invalid-key/.test(threw.code || ""));
   } finally {
     await new Promise(function (r) { fake.server.close(function () { r(); }); });
   }
@@ -1306,13 +1306,13 @@ async function testObjectLockYearsAndValidation() {
       catch (e) { threw = e; }
       check("object-lock validation: " + label, threw && codeRe.test(threw.code || ""));
     }
-    await shouldThrow("rejects non-object cfg", null, /INVALID_OBJECT_LOCK/);
+    await shouldThrow("rejects non-object cfg", null, /objectstore\/invalid-object-lock/);
     await shouldThrow("rejects neither days nor years",
-      { mode: "GOVERNANCE" }, /INVALID_OBJECT_LOCK/);
+      { mode: "GOVERNANCE" }, /objectstore\/invalid-object-lock/);
     await shouldThrow("rejects negative years",
-      { mode: "GOVERNANCE", years: -1 }, /INVALID_OBJECT_LOCK/);
+      { mode: "GOVERNANCE", years: -1 }, /objectstore\/invalid-object-lock/);
     await shouldThrow("rejects fractional years",
-      { mode: "GOVERNANCE", years: 1.5 }, /INVALID_OBJECT_LOCK/);
+      { mode: "GOVERNANCE", years: 1.5 }, /objectstore\/invalid-object-lock/);
   } finally {
     await new Promise(function (r) { fake.server.close(function () { r(); }); });
   }
@@ -1622,7 +1622,7 @@ async function testVirtualHostStyleUrlConstruction() {
     var createErr = null;
     try { await ops.create("vh-bucket"); } catch (e) { createErr = e; }
     check("vhost: bucket-level op on an IP endpoint is REFUSED, not sent bucket-less",
-          !!createErr && createErr.code === "INVALID_ENDPOINT");
+          !!createErr && createErr.code === "objectstore/invalid-endpoint");
     check("vhost: the refusal names path-style as the remedy",
           !!createErr && /pathStyle/.test(createErr.message));
     check("vhost: nothing was put on the wire for the refused bucket-level op",
@@ -1633,7 +1633,7 @@ async function testVirtualHostStyleUrlConstruction() {
     try { await ops.setObjectLegalHold("vh-bucket", "some-key", "ON"); }
     catch (e) { holdErr = e; }
     check("vhost: object-level op on an IP endpoint is REFUSED too",
-          !!holdErr && holdErr.code === "INVALID_ENDPOINT");
+          !!holdErr && holdErr.code === "objectstore/invalid-endpoint");
     check("vhost: nothing was put on the wire for the refused object-level op",
           fake.requests.length === 0);
   } finally {
@@ -1973,7 +1973,7 @@ function testSigv4PresignNoOptsRejectsWithKeyGuard() {
     var threw = null;
     try { fn(); } catch (e) { threw = e; }
     check("presign no-opts: " + label + " rejects with INVALID_KEY",
-          threw && threw.code === "INVALID_KEY");
+          threw && threw.code === "objectstore/invalid-key");
     check("presign no-opts: " + label + " is not a raw TypeError",
           threw && !(threw instanceof TypeError));
   }
@@ -2029,7 +2029,7 @@ function testSigv4PresignResponseHeadersValidation() {
     try {
       store.presignedDownloadUrl({ key: "k", expiresIn: 60, responseHeaders: responseHeaders });
     } catch (e) { threw = e; }
-    check("presign rh: " + label, threw && /INVALID_RESPONSE_HEADERS/.test(threw.code || ""));
+    check("presign rh: " + label, threw && /objectstore\/invalid-response-headers/.test(threw.code || ""));
   }
   shouldThrow("non-object rejected",         "not-an-object");
   shouldThrow("unknown key rejected",        { bogusKey: "x" });
@@ -2056,13 +2056,13 @@ function testSigv4PresignKeyAndExpiresValidation() {
     check("presign validate: " + label, threw && codeRe.test(threw.code || ""));
   }
   shouldThrow("missing key rejected",
-    function () { store.presignedDownloadUrl({ expiresIn: 60 }); }, /INVALID_KEY/);
+    function () { store.presignedDownloadUrl({ expiresIn: 60 }); }, /objectstore\/invalid-key/);
   shouldThrow("null-byte key rejected",
-    function () { store.presignedDownloadUrl({ key: "a" + String.fromCharCode(0) + "b", expiresIn: 60 }); }, /INVALID_KEY/);
+    function () { store.presignedDownloadUrl({ key: "a" + String.fromCharCode(0) + "b", expiresIn: 60 }); }, /objectstore\/invalid-key/);
   shouldThrow("expiresIn below the 1s floor rejected",
-    function () { store.presignedDownloadUrl({ key: "k", expiresIn: 0 }); }, /INVALID_EXPIRES/);
+    function () { store.presignedDownloadUrl({ key: "k", expiresIn: 0 }); }, /objectstore\/invalid-expires/);
   shouldThrow("expiresIn above the 7-day cap rejected",
-    function () { store.presignedDownloadUrl({ key: "k", expiresIn: 8 * 24 * 60 * 60 }); }, /INVALID_EXPIRES/);
+    function () { store.presignedDownloadUrl({ key: "k", expiresIn: 8 * 24 * 60 * 60 }); }, /objectstore\/invalid-expires/);
 
   // Omitted expiresIn resolves to the 15-minute (900s) default.
   var r = store.presignedDownloadUrl({ key: "k" });
@@ -2146,7 +2146,7 @@ function testSigv4PostPolicySessionContentTypeAndMaxBytes() {
   var threw = null;
   try { store.presignedUploadPolicy({ key: "k", expiresIn: 60 }); } catch (e) { threw = e; }
   check("post-policy: missing maxBytes rejected with INVALID_MAX_BYTES",
-        threw && /INVALID_MAX_BYTES/.test(threw.code || ""));
+        threw && /objectstore\/invalid-max-bytes/.test(threw.code || ""));
 }
 
 // Key sanitization: a NUL byte throws before any request (get/head/delete call
@@ -2156,11 +2156,11 @@ async function testSigv4KeyNullByteViaConsumerPath() {
   var threwHead = null;
   try { await store.head("bad" + String.fromCharCode(0) + "key"); } catch (e) { threwHead = e; }
   check("null-byte key via head() rejected with INVALID_KEY (pre-request)",
-        threwHead && /INVALID_KEY/.test(threwHead.code || ""));
+        threwHead && /objectstore\/invalid-key/.test(threwHead.code || ""));
   var threwDelete = null;
   try { await store.delete("bad" + String.fromCharCode(0) + "key"); } catch (e) { threwDelete = e; }
   check("null-byte key via delete() rejected with INVALID_KEY (pre-request)",
-        threwDelete && /INVALID_KEY/.test(threwDelete.code || ""));
+        threwDelete && /objectstore\/invalid-key/.test(threwDelete.code || ""));
 }
 
 async function run() {

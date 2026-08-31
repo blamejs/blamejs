@@ -128,7 +128,7 @@ function testWebhookPemMismatch() {
     });
   } catch (e) { threw = e; }
   check("webhook signer refuses mismatched pqcAlgorithm vs PEM",
-        threw && threw.code === "BAD_OPT" &&
+        threw && threw.code === "webhook/bad-opt" &&
         /does not match PEM/.test(threw.message));
 }
 
@@ -143,7 +143,7 @@ function testWebhookHmacRejectsPqcAlgorithm() {
     });
   } catch (e) { threw = e; }
   check("webhook refuses pqcAlgorithm with hmac-sha3-512",
-        threw && threw.code === "BAD_OPT" &&
+        threw && threw.code === "webhook/bad-opt" &&
         /pqcAlgorithm only meaningful/.test(threw.message));
 }
 

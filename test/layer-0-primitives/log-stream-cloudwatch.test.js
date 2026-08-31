@@ -93,7 +93,7 @@ async function run() {
   var threwRegion = null;
   try { cw.create({}); } catch (e) { threwRegion = e; }
   check("create rejects missing region",
-    threwRegion && threwRegion.code === "BAD_OPT" && /region/.test(threwRegion.message));
+    threwRegion && threwRegion.code === "log-stream-cloudwatch/bad-opt" && /region/.test(threwRegion.message));
   var threwCreds = null;
   try { cw.create({ region: "us-east-1" }); } catch (e) { threwCreds = e; }
   check("create rejects missing credentials",

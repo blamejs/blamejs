@@ -568,7 +568,7 @@ function testGuardFilenameSanitizeEnforceRejections() {
 }
 
 function testGuardFilenameSanitizeBadInput() {
-  _expectThrowCode("sanitize non-string/Buffer input", "filename.bad-input", function () {
+  _expectThrowCode("sanitize non-string/Buffer input", "filename/bad-input", function () {
     b.guardFilename.sanitize(12345, { profile: "balanced" });
   });
 }
@@ -620,55 +620,55 @@ async function testGuardFilenameGateSanitizeAction() {
 
 function testVerifyExtractionPathStringRefusals() {
   var root = "/var/quarantine";
-  _expectThrowCode("vep empty entryName", "filename.extraction-empty", function () {
+  _expectThrowCode("vep empty entryName", "filename/extraction-empty", function () {
     b.guardFilename.verifyExtractionPath("", root);
   });
-  _expectThrowCode("vep non-string entryName", "filename.extraction-empty", function () {
+  _expectThrowCode("vep non-string entryName", "filename/extraction-empty", function () {
     b.guardFilename.verifyExtractionPath(123, root);
   });
-  _expectThrowCode("vep empty extractionRoot", "filename.extraction-bad-root", function () {
+  _expectThrowCode("vep empty extractionRoot", "filename/extraction-bad-root", function () {
     b.guardFilename.verifyExtractionPath("ok.txt", "");
   });
-  _expectThrowCode("vep non-string extractionRoot", "filename.extraction-bad-root", function () {
+  _expectThrowCode("vep non-string extractionRoot", "filename/extraction-bad-root", function () {
     b.guardFilename.verifyExtractionPath("ok.txt", 123);
   });
-  _expectThrowCode("vep PATH_MAX overflow", "filename.extraction-path-max", function () {
+  _expectThrowCode("vep PATH_MAX overflow", "filename/extraction-path-max", function () {
     b.guardFilename.verifyExtractionPath("a".repeat(4097), root);
   });
-  _expectThrowCode("vep null byte", "filename.extraction-null-byte", function () {
+  _expectThrowCode("vep null byte", "filename/extraction-null-byte", function () {
     b.guardFilename.verifyExtractionPath("file" + String.fromCharCode(0) + ".txt", root);
   });
-  _expectThrowCode("vep absolute path", "filename.extraction-absolute", function () {
+  _expectThrowCode("vep absolute path", "filename/extraction-absolute", function () {
     b.guardFilename.verifyExtractionPath("/etc/passwd", root);
   });
-  _expectThrowCode("vep drive-letter prefix", "filename.extraction-drive-prefix", function () {
+  _expectThrowCode("vep drive-letter prefix", "filename/extraction-drive-prefix", function () {
     b.guardFilename.verifyExtractionPath("C:/Windows/system32", root);
   });
-  _expectThrowCode("vep .. leading segment", "filename.extraction-traversal", function () {
+  _expectThrowCode("vep .. leading segment", "filename/extraction-traversal", function () {
     b.guardFilename.verifyExtractionPath("../etc/passwd", root);
   });
-  _expectThrowCode("vep .. interior segment", "filename.extraction-traversal", function () {
+  _expectThrowCode("vep .. interior segment", "filename/extraction-traversal", function () {
     b.guardFilename.verifyExtractionPath("a/../b", root);
   });
-  _expectThrowCode("vep backslash .. segment", "filename.extraction-traversal", function () {
+  _expectThrowCode("vep backslash .. segment", "filename/extraction-traversal", function () {
     b.guardFilename.verifyExtractionPath("a\\..\\b", root);
   });
-  _expectThrowCode("vep percent-encoded ..", "filename.extraction-traversal-encoded", function () {
+  _expectThrowCode("vep percent-encoded ..", "filename/extraction-traversal-encoded", function () {
     b.guardFilename.verifyExtractionPath("docs/%2e%2e/x", root);
   });
-  _expectThrowCode("vep overlong-encoded ..", "filename.extraction-traversal-encoded", function () {
+  _expectThrowCode("vep overlong-encoded ..", "filename/extraction-traversal-encoded", function () {
     b.guardFilename.verifyExtractionPath("docs/%c0%ae/x", root);
   });
-  _expectThrowCode("vep reserved device segment", "filename.extraction-reserved-name", function () {
+  _expectThrowCode("vep reserved device segment", "filename/extraction-reserved-name", function () {
     b.guardFilename.verifyExtractionPath("docs/CON/x.txt", root);
   });
-  _expectThrowCode("vep NTFS ADS segment", "filename.extraction-ntfs-ads", function () {
+  _expectThrowCode("vep NTFS ADS segment", "filename/extraction-ntfs-ads", function () {
     b.guardFilename.verifyExtractionPath("docs/file.txt:stream", root);
   });
-  _expectThrowCode("vep trailing-dot segment", "filename.extraction-leading-trailing", function () {
+  _expectThrowCode("vep trailing-dot segment", "filename/extraction-leading-trailing", function () {
     b.guardFilename.verifyExtractionPath("docs/secret.txt.", root);
   });
-  _expectThrowCode("vep leading-whitespace segment", "filename.extraction-leading-trailing", function () {
+  _expectThrowCode("vep leading-whitespace segment", "filename/extraction-leading-trailing", function () {
     b.guardFilename.verifyExtractionPath(" leading/x.txt", root);
   });
 }
@@ -730,7 +730,7 @@ function testVerifyExtractionPathRealpathEscape() {
       catch (_e2) { linkMade = false; }
     }
     if (linkMade) {
-      _expectThrowCode("vep symlink escaping root", "filename.extraction-realpath-escape", function () {
+      _expectThrowCode("vep symlink escaping root", "filename/extraction-realpath-escape", function () {
         b.guardFilename.verifyExtractionPath("link/evil.txt", realRoot);
       });
     }
@@ -1125,7 +1125,7 @@ function testAdsPolicyIsScopedToExtractionAndSaysSo() {
         typeof vepAllowed === "string" && vepAllowed.indexOf(":stream") !== -1,
         String(vepAllowed && (vepAllowed.code || vepAllowed)));
   check("guardFilename: verifyExtractionPath still refuses under \"reject\"",
-        refused !== null && refused.code === "filename.extraction-ntfs-ads",
+        refused !== null && refused.code === "filename/extraction-ntfs-ads",
         String(refused && refused.code));
 }
 

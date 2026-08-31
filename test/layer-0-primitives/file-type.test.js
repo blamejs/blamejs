@@ -149,17 +149,17 @@ async function run() {
   var threwExe = null;
   try { b.fileType.assertOneOf(_pe(), ["image/png", "application/pdf"]); }
   catch (e) { threwExe = e; }
-  check("assertOneOf: PE rejected",   threwExe && /DISALLOWED_TYPE/.test(threwExe.code || ""));
+  check("assertOneOf: PE rejected",   threwExe && /file-type\/disallowed-type/.test(threwExe.code || ""));
 
   var threwUnknown = null;
   try { b.fileType.assertOneOf(Buffer.from("not-a-real-format-bytes"), ["image/png"]); }
   catch (e) { threwUnknown = e; }
-  check("assertOneOf: unknown format", threwUnknown && /UNKNOWN_TYPE/.test(threwUnknown.code || ""));
+  check("assertOneOf: unknown format", threwUnknown && /file-type\/unknown-type/.test(threwUnknown.code || ""));
 
   var threwEmpty = null;
   try { b.fileType.assertOneOf(Buffer.alloc(0), ["image/png"]); }
   catch (e) { threwEmpty = e; }
-  check("assertOneOf: zero-byte rejected by default", threwEmpty && /EMPTY/.test(threwEmpty.code || ""));
+  check("assertOneOf: zero-byte rejected by default", threwEmpty && threwEmpty.code === "file-type/empty");
 
   var allowEmpty = b.fileType.assertOneOf(Buffer.alloc(0), ["image/png"], { allowEmpty: true });
   check("assertOneOf: zero-byte allowed when opted in", allowEmpty === null);

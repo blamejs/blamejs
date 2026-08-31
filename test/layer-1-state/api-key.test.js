@@ -174,14 +174,14 @@ async function testRotateNotFoundOrRevoked() {
   var threw = null;
   try { await keys.rotate("0000000000000000"); } catch (e) { threw = e; }
   check("rotate: missing id throws NOT_FOUND",
-        threw && threw.code === "NOT_FOUND");
+        threw && threw.code === "api-key/not-found");
 
   var issued = await keys.issue({ ownerId: "u1" });
   await keys.revoke(issued.id);
   threw = null;
   try { await keys.rotate(issued.id); } catch (e) { threw = e; }
   check("rotate: revoked id throws REVOKED",
-        threw && threw.code === "REVOKED");
+        threw && threw.code === "api-key/revoked");
 }
 
 // ---- listForOwner ----
@@ -491,17 +491,17 @@ function testCreateRejectsBadOpts() {
   }
 
   expect("create: missing namespace",
-    function () { b.apiKey.create({}); }, "BAD_OPT");
+    function () { b.apiKey.create({}); }, "api-key/bad-opt");
   expect("create: namespace with underscore",
-    function () { b.apiKey.create({ namespace: "bad_ns" }); }, "BAD_OPT");
+    function () { b.apiKey.create({ namespace: "bad_ns" }); }, "api-key/bad-opt");
   expect("create: namespace with whitespace",
-    function () { b.apiKey.create({ namespace: "bad ns" }); }, "BAD_OPT");
+    function () { b.apiKey.create({ namespace: "bad ns" }); }, "api-key/bad-opt");
   expect("create: prefix with underscore",
-    function () { b.apiKey.create({ namespace: "ok", prefix: "bad_x" }); }, "BAD_OPT");
+    function () { b.apiKey.create({ namespace: "ok", prefix: "bad_x" }); }, "api-key/bad-opt");
   expect("create: bad idBytes",
-    function () { b.apiKey.create({ namespace: "ok", idBytes: 0 }); }, "BAD_OPT");
+    function () { b.apiKey.create({ namespace: "ok", idBytes: 0 }); }, "validate-opts/bad-positive-int");
   expect("create: bad audit shape",
-    function () { b.apiKey.create({ namespace: "ok", audit: {} }); }, "BAD_OPT");
+    function () { b.apiKey.create({ namespace: "ok", audit: {} }); }, "audit/bad-shape");
 }
 
 async function testIssueRejectsBadOpts() {
@@ -514,22 +514,22 @@ async function testIssueRejectsBadOpts() {
   }
   await expect("issue: missing ownerId",
     keys.issue({}),
-    "MISSING_OWNER");
+    "api-key/missing-owner");
   await expect("issue: empty ownerId",
     keys.issue({ ownerId: "" }),
-    "MISSING_OWNER");
+    "api-key/missing-owner");
   await expect("issue: scopes not array",
     keys.issue({ ownerId: "u", scopes: "read" }),
-    "BAD_SCOPES");
+    "api-key/bad-scopes");
   await expect("issue: scopes contains non-string",
     keys.issue({ ownerId: "u", scopes: ["ok", 42] }),
-    "BAD_SCOPES");
+    "api-key/bad-scopes");
   await expect("issue: metadata not object",
     keys.issue({ ownerId: "u", metadata: "notobj" }),
-    "BAD_METADATA");
+    "api-key/bad-metadata");
   await expect("issue: bad expiresAt",
     keys.issue({ ownerId: "u", expiresAt: "soon" }),
-    "BAD_OPT");
+    "api-key/bad-opt");
 }
 
 // ---- Audit emission ----

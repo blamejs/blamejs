@@ -122,19 +122,19 @@ async function _underGdpr(fn) {
 async function testNotInitialized() {
   b.externalDb._resetForTest();
   await expectThrow("query before init → NOT_INITIALIZED",
-    function () { return b.externalDb.query("SELECT 1"); }, "NOT_INITIALIZED");
+    function () { return b.externalDb.query("SELECT 1"); }, "external-db/not-initialized");
   await expectThrow("transaction before init → NOT_INITIALIZED",
-    function () { return b.externalDb.transaction(async function () {}); }, "NOT_INITIALIZED");
+    function () { return b.externalDb.transaction(async function () {}); }, "external-db/not-initialized");
   await expectThrow("healthCheck before init → NOT_INITIALIZED",
-    function () { return b.externalDb.healthCheck(); }, "NOT_INITIALIZED");
+    function () { return b.externalDb.healthCheck(); }, "external-db/not-initialized");
   await expectThrow("read.query before init → NOT_INITIALIZED",
-    function () { return b.externalDb.read.query("SELECT 1"); }, "NOT_INITIALIZED");
+    function () { return b.externalDb.read.query("SELECT 1"); }, "external-db/not-initialized");
   await expectThrow("assertRoleHardening before init → NOT_INITIALIZED",
-    function () { return b.externalDb.assertRoleHardening({ declaredRoles: [] }); }, "NOT_INITIALIZED");
+    function () { return b.externalDb.assertRoleHardening({ declaredRoles: [] }); }, "external-db/not-initialized");
   expectThrowSync("configurePool before init → NOT_INITIALIZED",
-    function () { b.externalDb.configurePool("main", { min: 1 }); }, "NOT_INITIALIZED");
+    function () { b.externalDb.configurePool("main", { min: 1 }); }, "external-db/not-initialized");
   expectThrowSync("supportsTransactions before init → NOT_INITIALIZED",
-    function () { b.externalDb.supportsTransactions(); }, "NOT_INITIALIZED");
+    function () { b.externalDb.supportsTransactions(); }, "external-db/not-initialized");
 
   check("listBackends before init → []",
     Array.isArray(b.externalDb.listBackends()) && b.externalDb.listBackends().length === 0);
@@ -148,53 +148,53 @@ function testInitValidation() {
   expectInitThrow("init(undefined) → throws", undefined, null);
   expectInitThrow("init missing backends → throws", {}, null);
   expectInitThrow("init backend missing connect → INVALID_CONFIG",
-    { backends: { main: { query: async function () {} } } }, "INVALID_CONFIG");
+    { backends: { main: { query: async function () {} } } }, "external-db/invalid-config");
   expectInitThrow("init backend missing query → INVALID_CONFIG",
-    { backends: { main: { connect: async function () {} } } }, "INVALID_CONFIG");
+    { backends: { main: { connect: async function () {} } } }, "external-db/invalid-config");
   expectInitThrow("init unknown dialect → INVALID_CONFIG",
     { backends: { main: { connect: async function () {}, query: async function () {}, dialect: "oracle" } } },
-    "INVALID_CONFIG");
+    "external-db/invalid-config");
   expectInitThrow("init applicationName empty string → INVALID_CONFIG",
     { backends: { main: { connect: async function () {}, query: async function () {}, applicationName: "" } } },
-    "INVALID_CONFIG");
+    "external-db/invalid-config");
   expectInitThrow("init supportsTransactions non-boolean → INVALID_CONFIG",
     { backends: { main: { connect: async function () {}, query: async function () {}, supportsTransactions: "yes" } } },
-    "INVALID_CONFIG");
+    "external-db/invalid-config");
   expectInitThrow("init batch non-function → INVALID_CONFIG",
     { backends: { main: { connect: async function () {}, query: async function () {}, batch: "nope" } } },
-    "INVALID_CONFIG");
+    "external-db/invalid-config");
 
   // dbRoleBackends validation
   expectInitThrow("dbRoleBackends non-object → INVALID_CONFIG",
-    { backends: { main: okBackend() }, dbRoleBackends: [] }, "INVALID_CONFIG");
+    { backends: { main: okBackend() }, dbRoleBackends: [] }, "external-db/invalid-config");
   expectInitThrow("dbRoleBackends invalid role identifier → INVALID_CONFIG",
-    { backends: { main: okBackend() }, dbRoleBackends: { "1bad": "main" } }, "INVALID_CONFIG");
+    { backends: { main: okBackend() }, dbRoleBackends: { "1bad": "main" } }, "external-db/invalid-config");
   expectInitThrow("dbRoleBackends backend name non-string → INVALID_CONFIG",
-    { backends: { main: okBackend() }, dbRoleBackends: { good_role: 123 } }, "INVALID_CONFIG");
+    { backends: { main: okBackend() }, dbRoleBackends: { good_role: 123 } }, "external-db/invalid-config");
   expectInitThrow("dbRoleBackends unknown backend → INVALID_CONFIG",
-    { backends: { main: okBackend() }, dbRoleBackends: { good_role: "nope" } }, "INVALID_CONFIG");
+    { backends: { main: okBackend() }, dbRoleBackends: { good_role: "nope" } }, "external-db/invalid-config");
 
   // replica config validation
   expectInitThrow("replicas non-array → INVALID_CONFIG",
     { backends: { main: { connect: async function () {}, query: async function () {}, replicas: "x" } } },
-    "INVALID_CONFIG");
+    "external-db/invalid-config");
   expectInitThrow("replicas empty array → INVALID_CONFIG",
     { backends: { main: { connect: async function () {}, query: async function () {}, replicas: [] } } },
-    "INVALID_CONFIG");
+    "external-db/invalid-config");
   expectInitThrow("replica missing connect → INVALID_CONFIG",
     { backends: { main: { connect: async function () {}, query: async function () {},
-      replicas: [{ query: async function () {} }] } } }, "INVALID_CONFIG");
+      replicas: [{ query: async function () {} }] } } }, "external-db/invalid-config");
   expectInitThrow("replica missing query → INVALID_CONFIG",
     { backends: { main: { connect: async function () {}, query: async function () {},
-      replicas: [{ connect: async function () {} }] } } }, "INVALID_CONFIG");
+      replicas: [{ connect: async function () {} }] } } }, "external-db/invalid-config");
   expectInitThrow("replica weight non-positive → INVALID_CONFIG",
     { backends: { main: { connect: async function () {}, query: async function () {},
       replicas: [{ connect: async function () {}, query: async function () {}, weight: 0 }] } } },
-    "INVALID_CONFIG");
+    "external-db/invalid-config");
   expectInitThrow("replica cross-border residency mismatch → RESIDENCY_MISMATCH",
     { backends: { main: { connect: async function () {}, query: async function () {}, residencyTag: "EU",
       replicas: [{ connect: async function () {}, query: async function () {}, residencyTag: "US" }] } } },
-    "RESIDENCY_MISMATCH");
+    "external-db/residency-mismatch");
 }
 
 // ---- init idempotency ------------------------------------------------------
@@ -227,12 +227,12 @@ async function testPickBackend() {
   check("classification routes to serving backend", cRes.rows[0].src === "personal");
   await expectThrow("classification with no serving backend → NO_BACKEND_FOR_CLASSIFICATION",
     function () { return b.externalDb.query("SELECT 1", [], { classification: "secret" }); },
-    "NO_BACKEND_FOR_CLASSIFICATION");
+    "external-db/no-backend-for-classification");
   await expectThrow("explicit backend not serving classification → CLASSIFICATION_MISMATCH",
     function () { return b.externalDb.query("SELECT 1", [], { backend: "p", classification: "operational" }); },
-    "CLASSIFICATION_MISMATCH");
+    "external-db/classification-mismatch");
   await expectThrow("explicit unknown backend → UNKNOWN_BACKEND",
-    function () { return b.externalDb.query("SELECT 1", [], { backend: "nope" }); }, "UNKNOWN_BACKEND");
+    function () { return b.externalDb.query("SELECT 1", [], { backend: "nope" }); }, "external-db/unknown-backend");
   b.externalDb._resetForTest();
 }
 
@@ -241,11 +241,11 @@ async function testPickBackend() {
 // opaque TypeError when the first query dereferences a missing pool.
 async function testDefaultBackendValidation() {
   expectInitThrow("init defaultBackend typo → INVALID_CONFIG",
-    { backends: { main: okBackend() }, defaultBackend: "does_not_exist" }, "INVALID_CONFIG");
+    { backends: { main: okBackend() }, defaultBackend: "does_not_exist" }, "external-db/invalid-config");
   expectInitThrow("init defaultBackend non-string → INVALID_CONFIG",
-    { backends: { main: okBackend() }, defaultBackend: 123 }, "INVALID_CONFIG");
+    { backends: { main: okBackend() }, defaultBackend: 123 }, "external-db/invalid-config");
   expectInitThrow("init defaultBackend empty string → INVALID_CONFIG",
-    { backends: { main: okBackend() }, defaultBackend: "" }, "INVALID_CONFIG");
+    { backends: { main: okBackend() }, defaultBackend: "" }, "external-db/invalid-config");
 
   // valid defaultBackend routes the default (no opts.backend / classification
   // / role) query to the named backend — not the first-declared one.
@@ -330,33 +330,33 @@ async function testTransactionValidation() {
   check("supportsTransactions non-atomic backend → false", b.externalDb.supportsTransactions({ backend: "no" }) === false);
 
   await expectThrow("transaction fn not function → INVALID_FN",
-    function () { return b.externalDb.transaction("notfn"); }, "INVALID_FN");
+    function () { return b.externalDb.transaction("notfn"); }, "external-db/invalid-fn");
   await expectThrow("transaction on non-atomic backend → NON_ATOMIC_BACKEND",
-    function () { return b.externalDb.transaction(async function () {}, { backend: "no" }); }, "NON_ATOMIC_BACKEND");
+    function () { return b.externalDb.transaction(async function () {}, { backend: "no" }); }, "external-db/non-atomic-backend");
   check("non-atomic tx refused before BEGIN reached the wire",
     noD.seen.every(function (s) { return !/BEGIN/i.test(s); }));
 
   await expectThrow("deadlockRetries 2.5 → INVALID_OPT",
-    function () { return b.externalDb.transaction(async function () {}, { deadlockRetries: 2.5 }); }, "INVALID_OPT");
+    function () { return b.externalDb.transaction(async function () {}, { deadlockRetries: 2.5 }); }, "external-db/invalid-opt");
   await expectThrow("deadlockRetries -1 → INVALID_OPT",
-    function () { return b.externalDb.transaction(async function () {}, { deadlockRetries: -1 }); }, "INVALID_OPT");
+    function () { return b.externalDb.transaction(async function () {}, { deadlockRetries: -1 }); }, "external-db/invalid-opt");
   await expectThrow("deadlockRetries Infinity → INVALID_OPT",
-    function () { return b.externalDb.transaction(async function () {}, { deadlockRetries: Infinity }); }, "INVALID_OPT");
+    function () { return b.externalDb.transaction(async function () {}, { deadlockRetries: Infinity }); }, "external-db/invalid-opt");
   await expectThrow("deadlockRetries string → INVALID_OPT",
-    function () { return b.externalDb.transaction(async function () {}, { deadlockRetries: "3" }); }, "INVALID_OPT");
+    function () { return b.externalDb.transaction(async function () {}, { deadlockRetries: "3" }); }, "external-db/invalid-opt");
   await expectThrow("tx rowResidencyTag empty → INVALID_OPT",
-    function () { return b.externalDb.transaction(async function () {}, { rowResidencyTag: "" }); }, "INVALID_OPT");
+    function () { return b.externalDb.transaction(async function () {}, { rowResidencyTag: "" }); }, "external-db/invalid-opt");
 
   await expectThrow("sessionGucs non-object → INVALID_SESSION_GUCS",
-    function () { return b.externalDb.transaction(async function () {}, { sessionGucs: "x" }); }, "INVALID_SESSION_GUCS");
+    function () { return b.externalDb.transaction(async function () {}, { sessionGucs: "x" }); }, "external-db/invalid-session-gucs");
   await expectThrow("sessionGucs null value → INVALID_SESSION_GUCS",
-    function () { return b.externalDb.transaction(async function () {}, { sessionGucs: { "app.k": null } }); }, "INVALID_SESSION_GUCS");
+    function () { return b.externalDb.transaction(async function () {}, { sessionGucs: { "app.k": null } }); }, "external-db/invalid-session-gucs");
   await expectThrow("sessionGucs object value → INVALID_SESSION_GUCS",
-    function () { return b.externalDb.transaction(async function () {}, { sessionGucs: { "app.k": {} } }); }, "INVALID_SESSION_GUCS");
+    function () { return b.externalDb.transaction(async function () {}, { sessionGucs: { "app.k": {} } }); }, "external-db/invalid-session-gucs");
   await expectThrow("sessionGucs invalid identifier → INVALID_SESSION_GUCS",
-    function () { return b.externalDb.transaction(async function () {}, { sessionGucs: { "1bad name": "v" } }); }, "INVALID_SESSION_GUCS");
+    function () { return b.externalDb.transaction(async function () {}, { sessionGucs: { "1bad name": "v" } }); }, "external-db/invalid-session-gucs");
   await expectThrow("sessionGucs oversized value → INVALID_SESSION_GUCS",
-    function () { return b.externalDb.transaction(async function () {}, { sessionGucs: { "app.k": "x".repeat(5000) } }); }, "INVALID_SESSION_GUCS");
+    function () { return b.externalDb.transaction(async function () {}, { sessionGucs: { "app.k": "x".repeat(5000) } }); }, "external-db/invalid-session-gucs");
 
   b.externalDb._resetForTest();
 }
@@ -480,17 +480,17 @@ function testConfigurePool() {
   var cpD = mkDriver("cp");
   b.externalDb.init({ backends: { main: { connect: cpD.connect, query: cpD.query, close: cpD.close } } });
   expectThrowSync("configurePool bad backendName type → INVALID_CONFIG",
-    function () { b.externalDb.configurePool(123, { min: 1 }); }, "INVALID_CONFIG");
+    function () { b.externalDb.configurePool(123, { min: 1 }); }, "external-db/invalid-config");
   expectThrowSync("configurePool unknown backend → UNKNOWN_BACKEND",
-    function () { b.externalDb.configurePool("nope", { min: 1 }); }, "UNKNOWN_BACKEND");
+    function () { b.externalDb.configurePool("nope", { min: 1 }); }, "external-db/unknown-backend");
   expectThrowSync("configurePool opts not object → INVALID_CONFIG",
-    function () { b.externalDb.configurePool("main", null); }, "INVALID_CONFIG");
+    function () { b.externalDb.configurePool("main", null); }, "external-db/invalid-config");
   expectThrowSync("configurePool unknown option → INVALID_CONFIG",
-    function () { b.externalDb.configurePool("main", { bogus: 1 }); }, "INVALID_CONFIG");
+    function () { b.externalDb.configurePool("main", { bogus: 1 }); }, "external-db/invalid-config");
   expectThrowSync("configurePool non-positive min → INVALID_CONFIG",
-    function () { b.externalDb.configurePool("main", { min: 0 }); }, "INVALID_CONFIG");
+    function () { b.externalDb.configurePool("main", { min: 0 }); }, "external-db/invalid-config");
   expectThrowSync("configurePool min > max → INVALID_CONFIG",
-    function () { b.externalDb.configurePool("main", { min: 10, max: 2 }); }, "INVALID_CONFIG");
+    function () { b.externalDb.configurePool("main", { min: 10, max: 2 }); }, "external-db/invalid-config");
   var cpOk = true;
   try { b.externalDb.configurePool("main", { min: 2, max: 20, idleTimeoutMs: 120000 }); } catch (_e) { cpOk = false; }
   check("configurePool valid resize succeeds", cpOk);
@@ -502,25 +502,25 @@ function testConfigurePool() {
 async function testConnectAs() {
   var fn = function () { return {}; };
   expectThrowSync("connectAs opts not object → INVALID_CONFIG",
-    function () { b.externalDb.adapters.connectAs(fn, null); }, "INVALID_CONFIG");
+    function () { b.externalDb.adapters.connectAs(fn, null); }, "external-db/invalid-config");
   expectThrowSync("connectAs missing query → INVALID_CONFIG",
-    function () { b.externalDb.adapters.connectAs(fn, {}); }, "INVALID_CONFIG");
+    function () { b.externalDb.adapters.connectAs(fn, {}); }, "external-db/invalid-config");
   expectThrowSync("connectAs connect not function → INVALID_CONFIG",
-    function () { b.externalDb.adapters.connectAs(null, { query: fn }); }, "INVALID_CONFIG");
+    function () { b.externalDb.adapters.connectAs(null, { query: fn }); }, "external-db/invalid-config");
   expectThrowSync("connectAs unknown option → INVALID_CONFIG",
-    function () { b.externalDb.adapters.connectAs(fn, { query: fn, bogus: 1 }); }, "INVALID_CONFIG");
+    function () { b.externalDb.adapters.connectAs(fn, { query: fn, bogus: 1 }); }, "external-db/invalid-config");
   expectThrowSync("connectAs searchPath empty → INVALID_CONFIG",
-    function () { b.externalDb.adapters.connectAs(fn, { query: fn, searchPath: [] }); }, "INVALID_CONFIG");
+    function () { b.externalDb.adapters.connectAs(fn, { query: fn, searchPath: [] }); }, "external-db/invalid-config");
   expectThrowSync("connectAs applicationName non-string → INVALID_CONFIG",
-    function () { b.externalDb.adapters.connectAs(fn, { query: fn, applicationName: 123 }); }, "INVALID_CONFIG");
+    function () { b.externalDb.adapters.connectAs(fn, { query: fn, applicationName: 123 }); }, "external-db/invalid-config");
   expectThrowSync("connectAs statementTimeoutMs non-positive → INVALID_CONFIG",
-    function () { b.externalDb.adapters.connectAs(fn, { query: fn, statementTimeoutMs: 0 }); }, "INVALID_CONFIG");
+    function () { b.externalDb.adapters.connectAs(fn, { query: fn, statementTimeoutMs: 0 }); }, "external-db/invalid-config");
   expectThrowSync("connectAs gucs not object → INVALID_CONFIG",
-    function () { b.externalDb.adapters.connectAs(fn, { query: fn, gucs: "x" }); }, "INVALID_CONFIG");
+    function () { b.externalDb.adapters.connectAs(fn, { query: fn, gucs: "x" }); }, "external-db/invalid-config");
   expectThrowSync("connectAs gucs non-finite number → INVALID_CONFIG",
-    function () { b.externalDb.adapters.connectAs(fn, { query: fn, gucs: { work_mem: Infinity } }); }, "INVALID_CONFIG");
+    function () { b.externalDb.adapters.connectAs(fn, { query: fn, gucs: { work_mem: Infinity } }); }, "external-db/invalid-config");
   expectThrowSync("connectAs gucs string with newline → INVALID_CONFIG",
-    function () { b.externalDb.adapters.connectAs(fn, { query: fn, gucs: { search_path: "a\nb" } }); }, "INVALID_CONFIG");
+    function () { b.externalDb.adapters.connectAs(fn, { query: fn, gucs: { search_path: "a\nb" } }); }, "external-db/invalid-config");
   expectThrowSync("connectAs role invalid identifier → throws",
     function () { b.externalDb.adapters.connectAs(fn, { query: fn, role: "1bad" }); }, null);
 
@@ -551,11 +551,11 @@ async function testConnectAs() {
 async function testRunAs() {
   check("currentRole() outside runAs → null", b.externalDb.currentRole() === null);
   expectThrowSync("runAs fn not function → INVALID_FN",
-    function () { b.externalDb.runAs("r", "notfn"); }, "INVALID_FN");
+    function () { b.externalDb.runAs("r", "notfn"); }, "external-db/invalid-fn");
   expectThrowSync("runAs role not string → INVALID_ROLE",
-    function () { b.externalDb.runAs(123, function () {}); }, "INVALID_ROLE");
+    function () { b.externalDb.runAs(123, function () {}); }, "external-db/invalid-role");
   expectThrowSync("runAs role empty → INVALID_ROLE",
-    function () { b.externalDb.runAs("", function () {}); }, "INVALID_ROLE");
+    function () { b.externalDb.runAs("", function () {}); }, "external-db/invalid-role");
   expectThrowSync("runAs role invalid identifier → throws",
     function () { b.externalDb.runAs("1bad", function () {}); }, null);
 
@@ -589,13 +589,13 @@ async function testAssertRoleHardening() {
   var arD = mkDriver("ar", { roles: ["app_user", "postgres", "pg_signal_backend"] });
   b.externalDb.init({ backends: { main: { connect: arD.connect, query: arD.query, close: arD.close } } });
   await expectThrow("assertRoleHardening opts missing → INVALID_CONFIG",
-    function () { return b.externalDb.assertRoleHardening(); }, "INVALID_CONFIG");
+    function () { return b.externalDb.assertRoleHardening(); }, "external-db/invalid-config");
   await expectThrow("assertRoleHardening mode invalid → INVALID_CONFIG",
-    function () { return b.externalDb.assertRoleHardening({ declaredRoles: ["app_user"], mode: "bogus" }); }, "INVALID_CONFIG");
+    function () { return b.externalDb.assertRoleHardening({ declaredRoles: ["app_user"], mode: "bogus" }); }, "external-db/invalid-config");
   await expectThrow("assertRoleHardening declaredRoles element not string → INVALID_CONFIG",
-    function () { return b.externalDb.assertRoleHardening({ declaredRoles: [123] }); }, "INVALID_CONFIG");
+    function () { return b.externalDb.assertRoleHardening({ declaredRoles: [123] }); }, "external-db/invalid-config");
   await expectThrow("assertRoleHardening unknown backend → UNKNOWN_BACKEND",
-    function () { return b.externalDb.assertRoleHardening({ declaredRoles: ["x"], backend: "nope" }); }, "UNKNOWN_BACKEND");
+    function () { return b.externalDb.assertRoleHardening({ declaredRoles: ["x"], backend: "nope" }); }, "external-db/unknown-backend");
   var arOk = await b.externalDb.assertRoleHardening({ declaredRoles: ["app_user"], mode: "audit" });
   check("assertRoleHardening ok path filters system roles",
     arOk.unrecognized.length === 0 && arOk.missing.length === 0 && arOk.observed.indexOf("postgres") === -1);
@@ -613,7 +613,7 @@ async function testAssertRoleHardening() {
   var arFail = mkDriver("arfail", { failOn: { re: /pg_roles/i, code: "XX000", times: 99 } });
   b.externalDb.init({ backends: { main: { connect: arFail.connect, query: arFail.query, close: arFail.close } } });
   await expectThrow("assertRoleHardening pg_roles unreadable → ROLE_HARDENING_UNREADABLE",
-    function () { return b.externalDb.assertRoleHardening({ declaredRoles: ["x"] }); }, "ROLE_HARDENING_UNREADABLE");
+    function () { return b.externalDb.assertRoleHardening({ declaredRoles: ["x"] }); }, "external-db/role-hardening-unreadable");
 
   b.externalDb._resetForTest();
 }
@@ -717,7 +717,7 @@ async function testResidencyGate() {
   await _underGdpr(async function () {
     await expectThrow("gdpr + EU backend + untagged DML → RESIDENCY_GATE_REQUIRED",
       function () { return b.externalDb.query("INSERT INTO t (a) VALUES (1)"); },
-      "RESIDENCY_GATE_REQUIRED");
+      "external-db/residency-gate-required");
   });
   check("RESIDENCY_GATE_REQUIRED refused before the wire",
     g1.seen.every(function (s) { return !/INSERT INTO t/.test(s); }));
@@ -732,7 +732,7 @@ async function testResidencyGate() {
   await _underGdpr(async function () {
     await expectThrow("mismatched rowResidencyTag → RESIDENCY_TAG_MISMATCH",
       function () { return b.externalDb.query("UPDATE t SET a = 1", [], { rowResidencyTag: "US" }); },
-      "RESIDENCY_TAG_MISMATCH");
+      "external-db/residency-tag-mismatch");
   });
   check("RESIDENCY_TAG_MISMATCH refused before the wire",
     g3.seen.every(function (s) { return !/UPDATE t/.test(s); }));
@@ -741,7 +741,7 @@ async function testResidencyGate() {
   await _underGdpr(async function () {
     await expectThrow("empty rowResidencyTag on the gated path → INVALID_OPT",
       function () { return b.externalDb.query("DELETE FROM t", [], { rowResidencyTag: "" }); },
-      "INVALID_OPT");
+      "external-db/invalid-opt");
   });
   check("empty-tag refusal never reached the wire",
     g4.seen.every(function (s) { return !/DELETE FROM t/.test(s); }));
@@ -750,7 +750,7 @@ async function testResidencyGate() {
   await _underGdpr(async function () {
     await expectThrow("trailing statement on the gated path → MULTI_STATEMENT_REFUSED",
       function () { return b.externalDb.query("SELECT 1; INSERT INTO t (a) VALUES (1)"); },
-      "MULTI_STATEMENT_REFUSED");
+      "external-db/multi-statement-refused");
   });
   check("multi-statement refused before the wire",
     g5.seen.every(function (s) { return !/INSERT INTO t/.test(s); }));
@@ -765,21 +765,21 @@ async function testResidencyGate() {
   await _underGdpr(async function () {
     await expectThrow("unresolvable WITH on the gated path → STATEMENT_UNRESOLVED_REFUSED",
       function () { return b.externalDb.query("WITH x AS (SELECT 1)"); },
-      "STATEMENT_UNRESOLVED_REFUSED");
+      "external-db/statement-unresolved-refused");
   });
 
   initEu();
   await _underGdpr(async function () {
     await expectThrow("WITH ... INSERT (CTE write) untagged → RESIDENCY_GATE_REQUIRED",
       function () { return b.externalDb.query("WITH s AS (SELECT 1 AS id) INSERT INTO t (id) SELECT id FROM s"); },
-      "RESIDENCY_GATE_REQUIRED");
+      "external-db/residency-gate-required");
   });
 
   var g8 = initEu();
   await _underGdpr(async function () {
     await expectThrow("COPY ... FROM (bulk load) untagged → RESIDENCY_GATE_REQUIRED",
       function () { return b.externalDb.query("COPY t (id) FROM STDIN"); },
-      "RESIDENCY_GATE_REQUIRED");
+      "external-db/residency-gate-required");
     await b.externalDb.query("COPY (SELECT id FROM t) TO STDOUT");   // export → read → passes
   });
   check("COPY ... TO export reached the wire", _saw(g8, /COPY \(SELECT id FROM t\) TO STDOUT/));
@@ -788,14 +788,14 @@ async function testResidencyGate() {
   await _underGdpr(async function () {
     await expectThrow("COPY with neither FROM/TO → fail-closed write → RESIDENCY_GATE_REQUIRED",
       function () { return b.externalDb.query("COPY t"); },
-      "RESIDENCY_GATE_REQUIRED");
+      "external-db/residency-gate-required");
   });
 
   var g9 = initEu();
   await _underGdpr(async function () {
     await expectThrow("EXPLAIN ANALYZE INSERT untagged → RESIDENCY_GATE_REQUIRED",
       function () { return b.externalDb.query("EXPLAIN ANALYZE INSERT INTO t (a) VALUES (1)"); },
-      "RESIDENCY_GATE_REQUIRED");
+      "external-db/residency-gate-required");
     await b.externalDb.query("EXPLAIN SELECT a FROM t");   // plan-only read → passes
   });
   check("plain EXPLAIN reached the wire (read, not gated)", _saw(g9, /EXPLAIN SELECT a FROM t/));
@@ -804,7 +804,7 @@ async function testResidencyGate() {
   await _underGdpr(async function () {
     await expectThrow("CALL routine untagged → RESIDENCY_GATE_REQUIRED",
       function () { return b.externalDb.query("CALL do_load('x')"); },
-      "RESIDENCY_GATE_REQUIRED");
+      "external-db/residency-gate-required");
   });
 
   var g11 = initEu();
@@ -829,10 +829,10 @@ async function testResidencyGate() {
   await _underGdpr(async function () {
     await expectThrow("omitted tag to a residency-tagged replica → REPLICA_RESIDENCY_TAG_REQUIRED",
       function () { return b.externalDb.read.query("SELECT a FROM t"); },
-      "REPLICA_RESIDENCY_TAG_REQUIRED");
+      "external-db/replica-residency-tag-required");
     await expectThrow("EU row to US replica (no cross-border) → REPLICA_RESIDENCY_INCOMPATIBLE",
       function () { return b.externalDb.read.query("SELECT a FROM t", [], { rowResidencyTag: "EU" }); },
-      "REPLICA_RESIDENCY_INCOMPATIBLE");
+      "external-db/replica-residency-incompatible");
   });
   check("residency-refused replica reads never touched the replica wire",
     rr.seen.every(function (s) { return !/SELECT a FROM t/.test(s); }));
@@ -892,7 +892,7 @@ async function testReplicas() {
   await expectThrow("replica read failure, fallback disabled → surfaces the error",
     function () { return b.externalDb.read.query("SELECT id FROM t"); }, "ECONNRESET");
   await expectThrow("all replicas unhealthy + fallback disabled → ALL_REPLICAS_UNHEALTHY",
-    function () { return b.externalDb.read.query("SELECT id FROM t"); }, "ALL_REPLICAS_UNHEALTHY");
+    function () { return b.externalDb.read.query("SELECT id FROM t"); }, "external-db/all-replicas-unhealthy");
 
   // cross-border replica with allowCrossBorder:true → init accepts, read serves
   b.externalDb._resetForTest();
@@ -932,7 +932,7 @@ async function testPoolInternals() {
   await pB.drain();
   var rejB = null;
   try { await pendingB; } catch (e) { rejB = e; }
-  check("drain rejects queued waiter with POOL_DRAINED", rejB && rejB.code === "POOL_DRAINED");
+  check("drain rejects queued waiter with POOL_DRAINED", rejB && rejB.code === "external-db/pool-drained");
 
   // destroy resolves a queued waiter via a fresh acquire
   var pC = new Pool("poolC", { connect: async function () { return { id: "c" + Math.random() }; }, close: async function () {}, pool: { max: 1 } });
@@ -1043,9 +1043,9 @@ async function testMoreConfigAndPaths() {
 
   // ---- applicationName validation + postgres SET-application_name wiring ----
   expectInitThrow("init applicationName with newline → INVALID_CONFIG",
-    { backends: { main: { connect: no, query: no, applicationName: "bad\nname" } } }, "INVALID_CONFIG");
+    { backends: { main: { connect: no, query: no, applicationName: "bad\nname" } } }, "external-db/invalid-config");
   expectInitThrow("init applicationName over 63 bytes → INVALID_CONFIG",
-    { backends: { main: { connect: no, query: no, applicationName: "x".repeat(120) } } }, "INVALID_CONFIG");
+    { backends: { main: { connect: no, query: no, applicationName: "x".repeat(120) } } }, "external-db/invalid-config");
 
   // A valid applicationName on a postgres backend makes the connect wrapper
   // issue SET application_name (single-quote escaped) on every fresh client.
@@ -1072,13 +1072,13 @@ async function testMoreConfigAndPaths() {
 
   // ---- requireTls posture gate (init-time) ----
   expectInitThrow("requireTls non-boolean → INVALID_CONFIG",
-    { backends: { main: { connect: no, query: no, requireTls: "yes" } } }, "INVALID_CONFIG");
+    { backends: { main: { connect: no, query: no, requireTls: "yes" } } }, "external-db/invalid-config");
   expectInitThrow("requireTls true, no TLS declared → TLS_REQUIRED",
-    { backends: { main: { connect: no, query: no, requireTls: true } } }, "TLS_REQUIRED");
+    { backends: { main: { connect: no, query: no, requireTls: true } } }, "external-db/tls-required");
   expectInitThrow("requireTls true, sslmode 'prefer' (plaintext fallback) → TLS_REQUIRED",
-    { backends: { main: { connect: no, query: no, requireTls: true, sslmode: "prefer" } } }, "TLS_REQUIRED");
+    { backends: { main: { connect: no, query: no, requireTls: true, sslmode: "prefer" } } }, "external-db/tls-required");
   expectInitThrow("requireTls true, tls:false → TLS_REQUIRED",
-    { backends: { main: { connect: no, query: no, requireTls: true, tls: false } } }, "TLS_REQUIRED");
+    { backends: { main: { connect: no, query: no, requireTls: true, tls: false } } }, "external-db/tls-required");
   b.externalDb._resetForTest();
   var tlsOk = true;
   try {
@@ -1101,7 +1101,7 @@ async function testMoreConfigAndPaths() {
         return b.externalDb.transaction(async function (tx) {
           await tx.query("INSERT INTO t (a) VALUES (1)", [], { rowResidencyTag: "US" });
         }, { rowResidencyTag: "EU" });
-      }, "RESIDENCY_TAG_MISMATCH");
+      }, "external-db/residency-tag-mismatch");
   });
   check("tx residency refusal issued ROLLBACK, never COMMIT",
     _saw(txR, /^ROLLBACK\b/) && txR.seen.every(function (s) { return !/^COMMIT\b/i.test(s); }));
@@ -1121,7 +1121,7 @@ async function testMoreConfigAndPaths() {
   b.externalDb.init({ backends: { main: { connect: gD.connect, query: gD.query, close: gD.close } } });
   await expectThrow("sessionGucs empty-string name → INVALID_SESSION_GUCS",
     function () { return b.externalDb.transaction(async function () {}, { sessionGucs: { "": "v" } }); },
-    "INVALID_SESSION_GUCS");
+    "external-db/invalid-session-gucs");
 
   // ---- residency gate: a trailing comment after ; is not a second statement ----
   b.externalDb._resetForTest();
@@ -1162,13 +1162,13 @@ async function testMoreConfigAndPaths() {
   var arU = mkDriver("aru", { roles: ["app_user", "leftover_role"] });
   b.externalDb.init({ backends: { main: { connect: arU.connect, query: arU.query, close: arU.close } } });
   await expectThrow("assertRoleHardening non-array declaredRoles → INVALID_CONFIG",
-    function () { return b.externalDb.assertRoleHardening({ declaredRoles: "nope" }); }, "INVALID_CONFIG");
+    function () { return b.externalDb.assertRoleHardening({ declaredRoles: "nope" }); }, "external-db/invalid-config");
   var arAudit = await b.externalDb.assertRoleHardening({ declaredRoles: ["app_user"], mode: "audit" });
   check("assertRoleHardening audit mode surfaces the unrecognized role",
     arAudit.unrecognized.length === 1 && arAudit.unrecognized[0] === "leftover_role");
   await expectThrow("assertRoleHardening throw mode raises ROLE_HARDENING_FAIL",
     function () { return b.externalDb.assertRoleHardening({ declaredRoles: ["app_user"], mode: "throw" }); },
-    "ROLE_HARDENING_FAIL");
+    "external-db/role-hardening-fail");
 
   b.externalDb._resetForTest();
   b.compliance.clear();

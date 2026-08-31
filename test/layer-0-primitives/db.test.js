@@ -582,7 +582,7 @@ async function testDeclareWorm() {
     // TypeError reading .tables off undefined).
     var bareWorm = await _catch(function () { return b.db.declareWorm(); });
     check("declareWorm() with no args at all throws WormViolationError",
-      bareWorm && bareWorm.name === "WormViolationError" && bareWorm.code === "BAD_OPT");
+      bareWorm && bareWorm.name === "WormViolationError" && bareWorm.code === "db/bad-opt");
 
     var empty = await _catch(function () { return b.db.declareWorm({ tables: [] }); });
     check("declareWorm empty tables throws", empty !== null);
@@ -595,7 +595,7 @@ async function testDeclareWorm() {
 
     var reserved = await _catch(function () { return b.db.declareWorm({ tables: ["audit_log"] }); });
     check("declareWorm on framework audit_log throws RESERVED",
-      reserved && reserved.code === "RESERVED");
+      reserved && reserved.code === "db/reserved");
 
     var declared = b.db.declareWorm({ tables: ["blotter"], posture: "finra-4511" });
     check("declareWorm returns the declared table list", declared.tables[0] === "blotter");
@@ -2404,7 +2404,7 @@ async function testWormPostureAssertion() {
         schema: [{ name: "records", columns: { _id: "TEXT PRIMARY KEY" } }] });
     });
     check("boot under a WORM posture with no declared table throws POSTURE_VIOLATION",
-      refused && refused.code === "POSTURE_VIOLATION");
+      refused && refused.code === "db/posture-violation");
   } finally {
     b.compliance.clear();
     _teardownPlain(tmpDir);

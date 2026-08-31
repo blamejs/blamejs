@@ -59,7 +59,7 @@ async function run() {
   try { await httpPut.delete("some-key", { versionId: "v1" }); }
   catch (e) { hpThrew = e; }
   check("http-put versioned delete REFUSES loudly (VERSIONID_UNSUPPORTED)",
-    hpThrew && hpThrew.code === "VERSIONID_UNSUPPORTED");
+    hpThrew && hpThrew.code === "objectstore/versionid-unsupported");
 
   // A versioned delete on a backend with no version surface must THROW, not
   // silently unlink the single on-disk file and report a version erased.
@@ -67,7 +67,7 @@ async function run() {
   try { await loc.delete("some-key", { versionId: "v1" }); }
   catch (e) { threw = e; }
   check("local versioned delete REFUSES loudly (VERSIONID_UNSUPPORTED)",
-    threw && threw.code === "VERSIONID_UNSUPPORTED");
+    threw && threw.code === "objectstore/versionid-unsupported");
 
   // An UNVERSIONED local delete still works normally (returns false for a
   // missing key) — the guard only fires when versionId is actually passed.
@@ -85,7 +85,7 @@ async function run() {
   try { await b.storage.listVersions("any/prefix/"); }
   catch (e) { lvThrew = e; }
   check("b.storage.listVersions refuses on a no-version backend (VERSIONS_UNSUPPORTED)",
-    lvThrew && lvThrew.code === "VERSIONS_UNSUPPORTED");
+    lvThrew && lvThrew.code === "storage/versions-unsupported");
   b.storage._resetForTest();
 }
 

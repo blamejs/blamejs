@@ -2213,99 +2213,99 @@ function testErrorCodesExact() {
 
   // ---- BAD_LOCALE: a malformed BCP 47 tag at any boundary ----
   check("defaultLocale malformed tag → BAD_LOCALE",
-        codeOf(function () { b.i18n.create({ defaultLocale: "not_a_tag", locales: ["not_a_tag"] }); }) === "BAD_LOCALE");
+        codeOf(function () { b.i18n.create({ defaultLocale: "not_a_tag", locales: ["not_a_tag"] }); }) === "i18n/bad-locale");
   check("fallbackLocale malformed tag → BAD_LOCALE",
-        codeOf(function () { b.i18n.create({ defaultLocale: "en", locales: ["en"], fallbackLocale: "not_a_tag" }); }) === "BAD_LOCALE");
+        codeOf(function () { b.i18n.create({ defaultLocale: "en", locales: ["en"], fallbackLocale: "not_a_tag" }); }) === "i18n/bad-locale");
   check("eagerLocales malformed tag → BAD_LOCALE",
-        codeOf(function () { b.i18n.create({ defaultLocale: "en", locales: ["en"], lazyLoad: true, dir: "/x", eagerLocales: ["not_a_tag"] }); }) === "BAD_LOCALE");
+        codeOf(function () { b.i18n.create({ defaultLocale: "en", locales: ["en"], lazyLoad: true, dir: "/x", eagerLocales: ["not_a_tag"] }); }) === "i18n/bad-locale");
   check("localeChain malformed locale → BAD_LOCALE",
-        codeOf(function () { b.i18n.localeChain("not_a_tag", { defaultLocale: "en" }); }) === "BAD_LOCALE");
+        codeOf(function () { b.i18n.localeChain("not_a_tag", { defaultLocale: "en" }); }) === "i18n/bad-locale");
   check("localeChain malformed defaultLocale → BAD_LOCALE",
-        codeOf(function () { b.i18n.localeChain("en", { defaultLocale: "not_a_tag" }); }) === "BAD_LOCALE");
+        codeOf(function () { b.i18n.localeChain("en", { defaultLocale: "not_a_tag" }); }) === "i18n/bad-locale");
   check("t() locale override malformed tag → BAD_LOCALE",
-        (function () { var i = b.i18n.create(base); return codeOf(function () { i.t("k", null, { locale: "not_a_tag" }); }); })() === "BAD_LOCALE");
+        (function () { var i = b.i18n.create(base); return codeOf(function () { i.t("k", null, { locale: "not_a_tag" }); }); })() === "i18n/bad-locale");
   check("t() non-string locale override → BAD_LOCALE",
-        (function () { var i = b.i18n.create(base); return codeOf(function () { i.t("k", null, { locale: 5 }); }); })() === "BAD_LOCALE");
+        (function () { var i = b.i18n.create(base); return codeOf(function () { i.t("k", null, { locale: 5 }); }); })() === "i18n/bad-locale");
   check("setLocale malformed tag → BAD_LOCALE",
-        (function () { var i = b.i18n.create(base); return codeOf(function () { i.setLocale("not_a_tag"); }); })() === "BAD_LOCALE");
+        (function () { var i = b.i18n.create(base); return codeOf(function () { i.setLocale("not_a_tag"); }); })() === "i18n/bad-locale");
 
   // ---- BAD_OPT: structural create-opt / config errors ----
   check("empty locales array → BAD_OPT",
-        codeOf(function () { b.i18n.create({ defaultLocale: "en", locales: [] }); }) === "BAD_OPT");
+        codeOf(function () { b.i18n.create({ defaultLocale: "en", locales: [] }); }) === "i18n/bad-opt");
   check("defaultLocale not in locales → BAD_OPT",
-        codeOf(function () { b.i18n.create({ defaultLocale: "fr", locales: ["en"] }); }) === "BAD_OPT");
+        codeOf(function () { b.i18n.create({ defaultLocale: "fr", locales: ["en"] }); }) === "i18n/bad-opt");
   check("fallbackLocale not in locales → BAD_OPT",
-        codeOf(function () { b.i18n.create({ defaultLocale: "en", locales: ["en"], fallbackLocale: "fr" }); }) === "BAD_OPT");
+        codeOf(function () { b.i18n.create({ defaultLocale: "en", locales: ["en"], fallbackLocale: "fr" }); }) === "i18n/bad-opt");
   check("translations + dir together → BAD_OPT",
-        codeOf(function () { b.i18n.create({ defaultLocale: "en", locales: ["en"], translations: {}, dir: "/x" }); }) === "BAD_OPT");
+        codeOf(function () { b.i18n.create({ defaultLocale: "en", locales: ["en"], translations: {}, dir: "/x" }); }) === "i18n/bad-opt");
   check("translations as an array → BAD_OPT",
-        codeOf(function () { b.i18n.create(withBase({ translations: [] })); }) === "BAD_OPT");
+        codeOf(function () { b.i18n.create(withBase({ translations: [] })); }) === "i18n/bad-opt");
   check("translations as null → BAD_OPT",
-        codeOf(function () { b.i18n.create(withBase({ translations: null })); }) === "BAD_OPT");
+        codeOf(function () { b.i18n.create(withBase({ translations: null })); }) === "i18n/bad-opt");
   check("interpolation non-object → BAD_OPT",
-        codeOf(function () { b.i18n.create(withBase({ interpolation: 42 })); }) === "BAD_OPT");
+        codeOf(function () { b.i18n.create(withBase({ interpolation: 42 })); }) === "i18n/bad-opt");
   check("interpolation.start empty → BAD_OPT",
-        codeOf(function () { b.i18n.create(withBase({ interpolation: { start: "" } })); }) === "BAD_OPT");
+        codeOf(function () { b.i18n.create(withBase({ interpolation: { start: "" } })); }) === "i18n/bad-opt");
   check("interpolation.end empty → BAD_OPT",
-        codeOf(function () { b.i18n.create(withBase({ interpolation: { end: "" } })); }) === "BAD_OPT");
+        codeOf(function () { b.i18n.create(withBase({ interpolation: { end: "" } })); }) === "i18n/bad-opt");
   check("interpolation.escape non-function → BAD_OPT",
-        codeOf(function () { b.i18n.create(withBase({ interpolation: { escape: 1 } })); }) === "BAD_OPT");
+        codeOf(function () { b.i18n.create(withBase({ interpolation: { escape: 1 } })); }) === "i18n/bad-opt");
   check("interpolation.strict non-boolean → BAD_OPT",
-        codeOf(function () { b.i18n.create(withBase({ interpolation: { strict: "x" } })); }) === "BAD_OPT");
+        codeOf(function () { b.i18n.create(withBase({ interpolation: { strict: "x" } })); }) === "i18n/bad-opt");
   check("missingKey invalid value → BAD_OPT",
-        codeOf(function () { b.i18n.create(withBase({ missingKey: "nope" })); }) === "BAD_OPT");
+        codeOf(function () { b.i18n.create(withBase({ missingKey: "nope" })); }) === "i18n/bad-opt");
   check("rtlLanguages non-array → BAD_OPT",
-        codeOf(function () { b.i18n.create(withBase({ rtlLanguages: "ar" })); }) === "BAD_OPT");
+        codeOf(function () { b.i18n.create(withBase({ rtlLanguages: "ar" })); }) === "i18n/bad-opt");
   check("rtlLanguages non-string entry → BAD_OPT",
-        codeOf(function () { b.i18n.create(withBase({ rtlLanguages: [42] })); }) === "BAD_OPT");
+        codeOf(function () { b.i18n.create(withBase({ rtlLanguages: [42] })); }) === "i18n/bad-opt");
   check("lazyLoad + inline translations → BAD_OPT",
-        codeOf(function () { b.i18n.create(withBase({ lazyLoad: true, translations: { en: {} } })); }) === "BAD_OPT");
+        codeOf(function () { b.i18n.create(withBase({ lazyLoad: true, translations: { en: {} } })); }) === "i18n/bad-opt");
   check("eagerLocales non-array → BAD_OPT",
-        codeOf(function () { b.i18n.create({ defaultLocale: "en", locales: ["en"], lazyLoad: true, dir: "/x", eagerLocales: "en" }); }) === "BAD_OPT");
+        codeOf(function () { b.i18n.create({ defaultLocale: "en", locales: ["en"], lazyLoad: true, dir: "/x", eagerLocales: "en" }); }) === "i18n/bad-opt");
   check("eagerLocales not a subset of locales → BAD_OPT",
-        codeOf(function () { b.i18n.create({ defaultLocale: "en", locales: ["en"], lazyLoad: true, dir: "/x", eagerLocales: ["fr"] }); }) === "BAD_OPT");
+        codeOf(function () { b.i18n.create({ defaultLocale: "en", locales: ["en"], lazyLoad: true, dir: "/x", eagerLocales: ["fr"] }); }) === "i18n/bad-opt");
   check("onMissingKey non-function → BAD_OPT",
-        codeOf(function () { b.i18n.create(withBase({ onMissingKey: 42 })); }) === "BAD_OPT");
+        codeOf(function () { b.i18n.create(withBase({ onMissingKey: 42 })); }) === "i18n/bad-opt");
   check("localeChain configured-set omits defaultLocale → BAD_OPT",
-        codeOf(function () { b.i18n.localeChain("fr", { defaultLocale: "en", locales: ["fr", "de"] }); }) === "BAD_OPT");
+        codeOf(function () { b.i18n.localeChain("fr", { defaultLocale: "en", locales: ["fr", "de"] }); }) === "i18n/bad-opt");
 
   // ---- BAD_TRANSLATIONS: malformed translation-tree shapes ----
   check("number leaf → BAD_TRANSLATIONS",
-        codeOf(function () { b.i18n.create(withBase({ translations: { en: { n: 5 } } })); }) === "BAD_TRANSLATIONS");
+        codeOf(function () { b.i18n.create(withBase({ translations: { en: { n: 5 } } })); }) === "i18n/bad-translations");
   check("array leaf → BAD_TRANSLATIONS",
-        codeOf(function () { b.i18n.create(withBase({ translations: { en: { a: [1, 2] } } })); }) === "BAD_TRANSLATIONS");
+        codeOf(function () { b.i18n.create(withBase({ translations: { en: { a: [1, 2] } } })); }) === "i18n/bad-translations");
   check("plural entry missing 'other' → BAD_TRANSLATIONS",
-        codeOf(function () { b.i18n.create(withBase({ translations: { en: { it: { one: "x" } } } })); }) === "BAD_TRANSLATIONS");
+        codeOf(function () { b.i18n.create(withBase({ translations: { en: { it: { one: "x" } } } })); }) === "i18n/bad-translations");
   check("unknown plural category → BAD_TRANSLATIONS",
-        codeOf(function () { b.i18n.create(withBase({ translations: { en: { it: { other: "x", ohter: "y" } } } })); }) === "BAD_TRANSLATIONS");
+        codeOf(function () { b.i18n.create(withBase({ translations: { en: { it: { other: "x", ohter: "y" } } } })); }) === "i18n/bad-translations");
 
   // ---- MISSING_VAR: strict interpolation, missing placeholder var ----
   check("strict interpolation missing var → MISSING_VAR",
         (function () {
           var i = b.i18n.create(withBase({ interpolation: { strict: true }, translations: { en: { hi: "Hi {name}" } } }));
           return codeOf(function () { i.t("hi"); });
-        })() === "MISSING_VAR");
+        })() === "i18n/missing-var");
 
   // ---- BAD_KEY / MISSING_KEY: lookup-time contract ----
   check("t() empty-string key → BAD_KEY",
-        (function () { var i = b.i18n.create(base); return codeOf(function () { i.t(""); }); })() === "BAD_KEY");
+        (function () { var i = b.i18n.create(base); return codeOf(function () { i.t(""); }); })() === "i18n/bad-key");
   check("t() non-string key → BAD_KEY",
-        (function () { var i = b.i18n.create(base); return codeOf(function () { i.t(123); }); })() === "BAD_KEY");
+        (function () { var i = b.i18n.create(base); return codeOf(function () { i.t(123); }); })() === "i18n/bad-key");
   check("missingKey:'throw' on a miss → MISSING_KEY",
         (function () {
           var i = b.i18n.create(withBase({ missingKey: "throw", translations: { en: {} } }));
           return codeOf(function () { i.t("nope"); });
-        })() === "MISSING_KEY");
+        })() === "i18n/missing-key");
 
   // ---- LOAD_FAILED: dir-based loading (missing file + malformed JSON) ----
   var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-i18n-codes-"));
   try {
     fs.writeFileSync(path.join(tmpDir, "en.json"), JSON.stringify({ greet: "Hello" }));
     check("missing locale file → LOAD_FAILED",
-          codeOf(function () { b.i18n.create({ defaultLocale: "en", locales: ["en", "ja"], dir: tmpDir }); }) === "LOAD_FAILED");
+          codeOf(function () { b.i18n.create({ defaultLocale: "en", locales: ["en", "ja"], dir: tmpDir }); }) === "i18n/load-failed");
     fs.writeFileSync(path.join(tmpDir, "fr.json"), "{ not valid json");
     check("malformed JSON file → LOAD_FAILED",
-          codeOf(function () { b.i18n.create({ defaultLocale: "en", locales: ["en", "fr"], dir: tmpDir }); }) === "LOAD_FAILED");
+          codeOf(function () { b.i18n.create({ defaultLocale: "en", locales: ["en", "fr"], dir: tmpDir }); }) === "i18n/load-failed");
   } finally {
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_e) {}
   }

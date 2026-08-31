@@ -5293,13 +5293,29 @@ async function testNoDuplicateCodeBlocks() {
       // structure is coincidental — each validator carries its OWN error
       // class, its OWN code namespace, and a domain-specific message that
       // names the actual field ("ctx required", "report: incidentId is
-      // required", "traceparent required"). validateOpts.requireObject /
-      // requireNonEmptyString cannot host these: requireObject hardcodes the
-      // word "opts" ("opts must be an object") which is wrong for a data-input
-      // argument, and requireNonEmptyString normalises the message to
-      // "<label> must be a non-empty string, got <type>", dropping the field
-      // name and the domain code. Routing would mold these validators, not
-      // dedupe them; the duplication is structural only.
+      // required", "traceparent required").
+      //
+      // What routing would cost is the MESSAGES. requireObject builds
+      // "<label>: opts must be an object", and the word "opts" is wrong for a
+      // data argument called ctx or report; requireNonEmptyString builds
+      // "<label> must be a non-empty string, got <type>", which is a different
+      // sentence from "traceparent required" even though the caller's own
+      // label carries the field name perfectly well. So a routing that kept
+      // every message byte-identical would have to take the message as a
+      // parameter, at which point the primitive is a throw helper and each
+      // caller still supplies its own three strings.
+      //
+      // The shape is a LANGUAGE idiom, not a domain operation — which is what
+      // separates it from the extractions this catalog does host (a namespaced
+      // emit, a compliance-posture lookup, a tag-list parse). Checked for the
+      // correctness angle too, since a duplicated shape is often evidence the
+      // original is wrong: `typeof [] === "object"`, so this preamble accepts
+      // an ARRAY. Across lib/ that split 65 sites that reject arrays against
+      // 472 that do not, but the ones that accept are reached either by a
+      // required-field check that throws on the next line (an array's named
+      // fields are undefined) or by a body that reads named fields and handles
+      // undefined. No site was found where an array survives validation and
+      // changes an outcome, so there is no bug here for a primitive to fix.
       mode:  "family-subset",
       files: [
         "lib/ai-disclosure.js:chatbot",
@@ -16753,7 +16769,7 @@ function testResidencyGatesWired() {
   var extCalls = (edb.match(/_assertRowResidency\(sql,/g) || []).length;
   check("external-db wires the row residency gate on query AND transaction", extCalls >= 2);
   check("external-db replica reads honor the row tag",
-        edb.indexOf("REPLICA_RESIDENCY_INCOMPATIBLE") !== -1);
+        edb.indexOf("external-db/replica-residency-incompatible") !== -1);
 }
 
 // The Keycloak realm fixture is imported at container start, and a single
@@ -18292,11 +18308,50 @@ function testNoDetachedAsyncIifeInLegacyLayerFiles() {
 // is (code, message, ...)). Two anti-patterns this locks out, both swept
 // for v1: a bare UPPER_SNAKE code with no namespace (`"BAD_JSON"`), and a
 // camelCase namespace segment (`"aiDp/..."`). Codes built through a
-// `var _err = XError.factory` alias in not-yet-swept modules use the bare
-// `_err("X")` call shape (no literal `.factory(` / `new XError(` at the
-// site), so they are not matched here — they land in the v1.0 namespaced-
-// error sweep. Node-native codes (ETIMEDOUT / ENOENT / ABORT) are set by
-// assignment, not constructed via these literals, so they are untouched.
+// `var _err = XError.factory` alias use the bare `_err("X")` call shape (no
+// literal `.factory(` / `new XError(` at the site); that form is matched
+// too, and so is the code passed after the error class to a shared
+// validator. Node-native codes (ENOENT and friends) are set by assignment,
+// not constructed via these literals, so they are untouched; the few codes
+// that deliberately keep an external spelling are listed in
+// EXTERNAL_CODE_VOCABULARY with the reason.
+// The error names every guard inherits from gate-contract, as opposed to the
+// per-guard content-refusal ids. These are the only codes with one correct
+// spelling across the whole family, so they are the only ones the separator
+// check can speak to.
+var FRAMEWORK_ERROR_SUFFIXES = [
+  "bad-opt", "bad-input", "bad-profile", "bad-posture", "bad-spec",
+  "sanitize-amplified",
+];
+
+// Codes that arrive from Node, OpenSSL, llhttp or a database driver. Spelled
+// out rather than pattern-matched, because "E" followed by capitals also
+// matches framework codes such as EXPIRED.
+var NODE_ERRNO = new RegExp("^(?:" + [
+  "ENOENT", "ENOTFOUND", "ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EPIPE",
+  "EACCES", "EEXIST", "EISDIR", "ENOTDIR", "EMFILE", "EAGAIN", "EADDRINUSE",
+  "ENODATA", "EHOSTUNREACH", "ENETUNREACH", "EPROTO", "ECANCELED", "ENOSPC",
+  "EPERM", "EBUSY", "EROFS", "EXDEV", "ELOOP", "ENAMETOOLONG", "ESRCH",
+  "ABORT", "ABORT_ERR",
+  "ERR_[A-Z0-9_]+", "HPE_[A-Z0-9_]+", "ER_[A-Z0-9_]+", "SQLITE_[A-Z0-9_]+",
+].join("|") + ")$");
+
+// Codes that keep an un-namespaced spelling on purpose, with the reason.
+// Anything not listed here is held to namespace/kebab-case.
+var EXTERNAL_CODE_VOCABULARY = {
+  // Spelled as the POSIX/Node errno so a generic timeout classifier
+  // recognizes it. lib/audit.js and lib/external-db.js both compare against
+  // it, and their message fallback does not match "timed out".
+  ETIMEDOUT: 1,
+  // Held un-namespaced through the pre-1.0 line so operators matching
+  // err.code === "CIRCUIT_OPEN" keep working; renamed at v1.0 with a
+  // deprecation warning a minor ahead (see lib/circuit-breaker.js).
+  CIRCUIT_OPEN: 1,
+  // error-page reads this off the APP's error to pick a status, so the
+  // fallback beside it has to keep the spelling that comparison uses.
+  VALIDATION_ERROR: 1,
+};
+
 function testErrorCodesNamespacedKebab() {
   // Native error constructors (TypeError, RangeError, ...) take the MESSAGE
   // first, not a code — only framework defineClass errors are (code, msg).
@@ -18304,7 +18359,16 @@ function testErrorCodesNamespacedKebab() {
     ReferenceError: 1, EvalError: 1, URIError: 1, AggregateError: 1, InternalError: 1 };
   var bad = [];
   var files = _libFiles();
-  var re = /(?:new\s+(\w+Error)\(|(\w+)\.factory\()\s*"([^"]+)"/g;
+  // `_err(` is the third construction and by far the most common: 70 lib files
+  // do `var _err = SomeError.factory;` and then call `_err("code", msg)`. The
+  // first two alternatives could not see any of them, which is how the guard
+  // family drifted onto dotted codes without this check noticing.
+  // A fourth shape carries a code without constructing anything: the shared
+  // validators take it as an argument AFTER the error class —
+  // `numericBounds.requireX(v, "label", GuardCsvError, "csv/bad-opt")`. Those
+  // codes reach an operator exactly like a thrown one, and they were the last
+  // dotted holdouts in the guard family after the constructor forms converged.
+  var re = /(?:new\s+(\w+Error)\(|(\w+)\.factory\(|\b(_err)\(|(\w+Error),\s*)\s*"([^"]+)"/g;
   for (var fi = 0; fi < files.length; fi += 1) {
     var rel = _relPath(files[fi]);
     if (rel === "lib/framework-error.js") continue;   // the definition site
@@ -18320,21 +18384,168 @@ function testErrorCodesNamespacedKebab() {
       while ((m = re.exec(line)) !== null) {
         var ctor = m[1];                  // class name for the `new XError(` form
         if (ctor && NATIVE[ctor]) continue;   // native error — first arg is the message
-        var code = m[3];
+        var code = m[5];
         var slash = code.indexOf("/");
-        if (/^[A-Z][A-Z0-9_]*$/.test(code)) {
+        // The UPPER_SNAKE arm covers every construction form, including the
+        // `_err(` alias and the code-after-error-class validator argument.
+        // Those two carried the bare codes the framework has now converged,
+        // so leaving them out would let the same drift start over.
+        if (!EXTERNAL_CODE_VOCABULARY[code] && /^[A-Z][A-Z0-9_]*$/.test(code)) {
           bad.push({ file: rel, line: li + 1,
             content: "error code \"" + code + "\" is bare UPPER_SNAKE — use namespace/kebab-case (e.g. \"" +
               rel.replace(/^lib\//, "").replace(/\.js$/, "") + "/" + code.toLowerCase().replace(/_/g, "-") + "\")" });
-        } else if (slash > 0 && /[a-z0-9][A-Z]/.test(code.slice(0, slash))) {
+        } else if (slash > 0 && /^[A-Za-z][A-Za-z0-9-]*$/.test(code.slice(0, slash)) &&
+                   /[a-z0-9][A-Z]/.test(code.slice(0, slash))) {
+          // The namespace must look like a namespace before it can be judged
+          // camelCase. Without that anchor a message-first construction like
+          // `new SqlError("toSql: placeholder/param count mismatch - " + n)`
+          // reads as a code whose "namespace" is a sentence fragment.
           bad.push({ file: rel, line: li + 1,
             content: "error code \"" + code + "\" has a camelCase namespace segment — use a kebab-case namespace" });
+        } else if (slash === -1 && FRAMEWORK_ERROR_SUFFIXES.indexOf(code.slice(code.indexOf(".") + 1)) !== -1 &&
+                   /^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$/.test(code)) {
+          // The separator, which the two branches above could not see: they are
+          // gated on a slash being present, so a DOT-separated code fell
+          // through both and read as fine. The guard family drifted onto dots
+          // that way — 28 guards emitted `html.bad-profile` while 23 emitted
+          // `agent-registry/bad-profile`, and an operator catching
+          // `html/bad-profile` matched nothing.
+          //
+          // Rule IDs are a different namespace and ARE dotted
+          // (`filename.traversal`), but a rule id reaches an error constructor
+          // as a VARIABLE — see throwOnRefusalSeverity, which puts the id in
+          // the code slot. Only a dotted LITERAL in a code position is this
+          // mistake, which is why matching literals is enough.
+          //
+          // Anchored end-to-end so PROSE cannot match: the parsers construct
+          // some errors message-first (`new SafeEnvError("env.parse: maxBytes
+          // must be ...")`, which the class reads as a message and pairs with
+          // its own code), and a sentence beginning "env.parse:" is not a
+          // dotted code.
+          //
+          // Limited to the FRAMEWORK suffixes, because the call shape cannot
+          // tell the two namespaces apart — `_err("csv.bidi", ...)` is a
+          // content refusal naming the rule that fired, and belongs with the
+          // dotted rule ids. Only this fixed vocabulary is machinery every
+          // guard inherits, so only it has one right spelling.
+          bad.push({ file: rel, line: li + 1,
+            content: "error code \"" + code + "\" separates its namespace with a DOT — use \"" +
+              code.replace(".", "/") + "\". Dots belong to rule ids, not error codes" });
+        }
+      }
+    }
+  }
+  // The constructor forms above are not the only way a code reaches an
+  // operator. Three more shapes carry one, and each hid bare codes the
+  // constructor scan could not see: a shared validator takes the code as a
+  // trailing argument after the error class (the class arrives as a local
+  // whose name need not end in "Error", so the constructor pattern misses
+  // it); a code can be set as a plain property; and several modules wrap
+  // construction in a local helper. Scanning all of them is what makes a
+  // green run mean "converged", rather than "converged in the shapes this
+  // check happens to know".
+  var EXTRA_SHAPES = [
+    /(?:numericBounds|validateOpts)\.\w+\([^;\n]{0,220}?,\s*"([A-Z][A-Z0-9_]{2,})"\s*\)/g,
+    // Both the direct property and the fallback form. The fallback is where
+    // error-page keeps the code it emits when an app supplies none, and
+    // matching only the direct form converged one of those six and left the
+    // other five bare.
+    /(?:\.code\s*=\s*|\bcode\s*:\s*)(?:[A-Za-z_.$()]+\s*\|\|\s*)?"([A-Z][A-Z0-9_]{2,})"/g,
+    // A subclass that passes its code straight to the base constructor.
+    // NotLeaderError carried a bare code this way, and none of the shapes
+    // above look inside a super() call, so the check stayed green over the
+    // one refusal every clustered write can raise.
+    /\bsuper\s*\([^;\n]{0,160}?"([A-Z][A-Z0-9_]{2,})"/g,
+  ];
+
+  // A code can also miss its namespace while already being kebab-case
+  // ("missing-vendor"). Those read as well-formed and the UPPER_SNAKE arm
+  // steps right over them, so the promise that e.code.split("/")[0] names
+  // the subsystem quietly failed for them.
+  //
+  // Scoped to the CONSTRUCTION forms on purpose. The shared validators take
+  // a lowercase NAMESPACE PREFIX in the same argument position
+  // (validateOpts.outboundHttpOpts(..., AuthError, "auth-ciba") composes
+  // "auth-ciba/bad-http"), and a Builder subclass passes a lowercase KIND to
+  // super(). Neither is a code, and including those shapes would flag both.
+  // The local error helpers are added per file below. Leaving them out was
+  // the whole bug: mail-bounce raised its un-namespaced codes through
+  // `_err(...)`, so a check that only read the constructor forms would have
+  // stayed green with that exact code back in place.
+  var BARE_LOWERCASE_BASE = [
+    /(?:new\s+(\w+Error)\(|(\w+Error)\.factory\()\s*"([a-z][a-z0-9]*(?:-[a-z0-9]+)+)"/g,
+  ];
+  // Local error helpers are named per module (_err, _wormErr, _failure,
+  // _makeError). A fixed list of those names is a guess at the vocabulary
+  // rather than the vocabulary itself, and it missed _wormErr in lib/db.js
+  // for six codes. Discover them per file instead: an identifier bound to a
+  // .factory, or a function whose body constructs a framework error.
+  function _errorHelperNames(src) {
+    var found = {}, m;
+    var BIND = /var\s+(_[A-Za-z0-9_]*)\s*=\s*\w+\.factory\b/g;
+    while ((m = BIND.exec(src)) !== null) found[m[1]] = 1;
+    var FN = /function\s+(_[A-Za-z0-9_]*)\s*\([^)]*\)\s*\{([\s\S]{0,400}?)\n\}/g;
+    while ((m = FN.exec(src)) !== null) {
+      if (/new\s+\w+Error\(|\.factory\(|throw\s+\w+Error/.test(m[2])) found[m[1]] = 1;
+    }
+    return Object.keys(found);
+  }
+  for (var xf = 0; xf < files.length; xf += 1) {
+    var xrel = _relPath(files[xf]);
+    if (xrel === "lib/framework-error.js") continue;
+    var xsrc;
+    try { xsrc = fs.readFileSync(files[xf], "utf8"); }
+    catch (_e2) { continue; }
+    var xlines = xsrc.split(/\r?\n/);
+    var helperNames = _errorHelperNames(xsrc);
+    var helperShapes = helperNames.map(function (n) {
+      return new RegExp("\\b" + n + "\\s*\\(\\s*\"([A-Z][A-Z0-9_]{2,})\"", "g");
+    });
+    var shapes = EXTRA_SHAPES.concat(helperShapes);
+    // Anchored on the FIRST argument, which is the code. A helper that takes
+    // a lowercase value later in its argument list (webhook's _failure passes
+    // a rule id third) is untouched.
+    var BARE_LOWERCASE = BARE_LOWERCASE_BASE.concat(helperNames.map(function (n) {
+      return new RegExp("\\b" + n + "\\s*\\(\\s*\"([a-z][a-z0-9]*(?:-[a-z0-9]+)+)\"", "g");
+    }));
+    for (var xl = 0; xl < xlines.length; xl += 1) {
+      var XL = xlines[xl];
+      if (/^\s*(\/\/|\*|\/\*)/.test(XL)) continue;
+      for (var xs = 0; xs < shapes.length; xs += 1) {
+        var xre = shapes[xs];
+        xre.lastIndex = 0;
+        var xm;
+        while ((xm = xre.exec(XL)) !== null) {
+          var xcode = xm[1];
+          if (EXTERNAL_CODE_VOCABULARY[xcode] || NODE_ERRNO.test(xcode)) continue;
+          bad.push({ file: xrel, line: xl + 1,
+            content: "error code \"" + xcode + "\" is bare UPPER_SNAKE — use namespace/kebab-case (e.g. \"" +
+              xrel.replace(/^lib\//, "").replace(/\.js$/, "") + "/" +
+              xcode.toLowerCase().replace(/_/g, "-") + "\")" });
+        }
+      }
+      for (var bl = 0; bl < BARE_LOWERCASE.length; bl += 1) {
+        var bre = BARE_LOWERCASE[bl];
+        bre.lastIndex = 0;
+        var bm;
+        while ((bm = bre.exec(XL)) !== null) {
+          // The constructor pattern captures the class name plus the code;
+          // the per-helper patterns capture the code alone.
+          var isCtorForm = bm[3] !== undefined;
+          var ctorName = isCtorForm ? (bm[1] || bm[2]) : null;
+          if (ctorName && NATIVE[ctorName]) continue;   // message-first
+          var bcode = isCtorForm ? bm[3] : bm[1];
+          if (bcode.indexOf("/") !== -1) continue;
+          bad.push({ file: xrel, line: xl + 1,
+            content: "error code \"" + bcode + "\" has no namespace — use \"" +
+              xrel.replace(/^lib\//, "").replace(/\.js$/, "") + "/" + bcode +
+              "\" so e.code.split(\"/\")[0] names the subsystem" });
         }
       }
     }
   }
   bad = _filterMarkers(bad, "error-code-namespace-kebab");
-  _report("error codes are namespace/kebab-case (v1 — no bare UPPER_SNAKE or camelCase-namespace codes via new XError / factory)", bad);
+  _report("error codes are namespace/kebab-case (no bare UPPER_SNAKE or camelCase-namespace codes in any construction form)", bad);
 }
 
 // v0.13.34 — the wiki compose stop_grace_period MUST exceed the app

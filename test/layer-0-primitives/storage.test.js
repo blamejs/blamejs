@@ -57,7 +57,7 @@ async function testGetBackend() {
     var preThrew = null;
     try { b.storage.getBackend("default"); } catch (e) { preThrew = e; }
     check("storage.getBackend before init throws NOT_INITIALIZED",
-          preThrew && preThrew.code === "NOT_INITIALIZED");
+          preThrew && preThrew.code === "storage/not-initialized");
 
     b.storage.init({ backend: "local", uploadDir: uploadDir });
 
@@ -93,19 +93,19 @@ async function testInitConfigValidation() {
   b.storage._resetForTest();
   try {
     // Missing options entirely.
-    await expectThrow("storage.init(undefined)", "INVALID_CONFIG",
+    await expectThrow("storage.init(undefined)", "storage/invalid-config",
       function () { b.storage.init(undefined); });
 
     // 's3' was renamed to 'sigv4' — the rename is a hard error, not a silent alias.
-    await expectThrow("storage.init { backend: 's3' }", "INVALID_CONFIG",
+    await expectThrow("storage.init { backend: 's3' }", "storage/invalid-config",
       function () { b.storage.init({ backend: "s3", uploadDir: uploadDir }); });
 
     // Unknown single-backend name.
-    await expectThrow("storage.init unknown backend", "INVALID_CONFIG",
+    await expectThrow("storage.init unknown backend", "storage/invalid-config",
       function () { b.storage.init({ backend: "frobnicate", uploadDir: uploadDir }); });
 
     // Neither { backend } nor { backends }.
-    await expectThrow("storage.init with no backend/backends", "INVALID_CONFIG",
+    await expectThrow("storage.init with no backend/backends", "storage/invalid-config",
       function () { b.storage.init({ defaultClassification: "public" }); });
 
     // Multi-backend shape sets defaultClassification + refuseUnclassified.
@@ -154,15 +154,15 @@ async function testBackendDispatchErrors() {
     var body = Buffer.from("dispatch-bytes");
 
     // Explicit backend that doesn't exist.
-    await expectThrow("saveRaw explicit unknown backend", "UNKNOWN_BACKEND",
+    await expectThrow("saveRaw explicit unknown backend", "storage/unknown-backend",
       function () { return b.storage.saveRaw(body, "k1", { backend: "no-such" }); });
 
     // Explicit backend that doesn't serve the requested classification.
-    await expectThrow("saveRaw explicit backend classification mismatch", "CLASSIFICATION_MISMATCH",
+    await expectThrow("saveRaw explicit backend classification mismatch", "storage/classification-mismatch",
       function () { return b.storage.saveRaw(body, "k2", { backend: "eu-private", classification: "operational" }); });
 
     // A classification no backend serves.
-    await expectThrow("saveRaw classification with no serving backend", "NO_BACKEND_FOR_CLASSIFICATION",
+    await expectThrow("saveRaw classification with no serving backend", "storage/no-backend-for-classification",
       function () { return b.storage.saveRaw(body, "k3", { classification: "top-secret" }); });
 
     // Explicit backend + matching classification routes correctly.
@@ -186,13 +186,13 @@ async function testBackendDispatchErrors() {
       },
       refuseUnclassified: true,
     });
-    await expectThrow("saveRaw under refuseUnclassified without classification", "UNCLASSIFIED",
+    await expectThrow("saveRaw under refuseUnclassified without classification", "storage/unclassified",
       function () { return b.storage.saveRaw(body, "k4", {}); });
 
     // An empty backend registry is a valid-but-degenerate config; dispatch fails closed.
     b.storage._resetForTest();
     b.storage.init({ backends: {} });
-    await expectThrow("saveRaw with an empty backend registry", "NO_BACKENDS",
+    await expectThrow("saveRaw with an empty backend registry", "storage/no-backends",
       function () { return b.storage.saveRaw(body, "k5", {}); });
   } finally {
     try { b.storage._resetForTest(); } catch (_e) { /* best-effort */ }
@@ -210,14 +210,14 @@ async function testEncryptionRoundTripAndBodyValidation() {
 
     // Pre-init guard is exercised on a fresh reset (drives _requireInit's throw).
     b.storage._resetForTest();
-    await expectThrow("saveFile before init", "NOT_INITIALIZED",
+    await expectThrow("saveFile before init", "storage/not-initialized",
       function () { return b.storage.saveFile(Buffer.from("x"), "k"); });
     b.storage.init({ backend: "local", uploadDir: uploadDir });
 
     // Non-Buffer bodies are refused before any encryption / write.
-    await expectThrow("saveFile non-Buffer body", "INVALID_BODY",
+    await expectThrow("saveFile non-Buffer body", "storage/invalid-body",
       function () { return b.storage.saveFile("not-a-buffer", "k"); });
-    await expectThrow("saveRaw non-Buffer body", "INVALID_BODY",
+    await expectThrow("saveRaw non-Buffer body", "storage/invalid-body",
       function () { return b.storage.saveRaw({}, "k"); });
 
     // Full encrypted round-trip: saveFile seals a per-file key; getFileBuffer
@@ -243,7 +243,7 @@ async function testEncryptionRoundTripAndBodyValidation() {
     // Fail-closed: a decrypt attempt without the sealed key is refused (no
     // legacy plaintext fallback).
     await b.storage.saveRaw(Buffer.from("raw-envelope-bytes"), "raw/blob.bin");
-    await expectThrow("getFileBuffer without a sealed key", "KEY_REQUIRED",
+    await expectThrow("getFileBuffer without a sealed key", "storage/key-required",
       function () { return b.storage.getFileBuffer("raw/blob.bin", undefined); });
   } finally {
     try { b.storage._resetForTest(); } catch (_e) { /* best-effort */ }
@@ -272,7 +272,7 @@ async function testRawDeleteExists() {
 
     // A non-NOT_FOUND backend error (traversal-escaping key) propagates rather
     // than being swallowed as "doesn't exist".
-    await expectThrow("exists propagates a non-NOT_FOUND backend error", "INVALID_KEY",
+    await expectThrow("exists propagates a non-NOT_FOUND backend error", "objectstore/invalid-key",
       function () { return b.storage.exists("../escape.png"); });
 
     // deleteFile: true when present, false when already absent.
@@ -282,7 +282,7 @@ async function testRawDeleteExists() {
     // A versioned delete against a filesystem backend is refused — a local file
     // has no version history to erase.
     await b.storage.saveRaw(raw, "assets/keep.png");
-    await expectThrow("deleteFile versionId on a filesystem backend", "VERSIONID_UNSUPPORTED",
+    await expectThrow("deleteFile versionId on a filesystem backend", "objectstore/versionid-unsupported",
       function () { return b.storage.deleteFile("assets/keep.png", { versionId: "v-does-not-exist" }); });
   } finally {
     try { b.storage._resetForTest(); } catch (_e) { /* best-effort */ }
@@ -299,11 +299,11 @@ async function testListVersionsAndPresign() {
     // A filesystem backend has no version surface — listVersions refuses
     // rather than silently returning the current-only view.
     b.storage.init({ backend: "local", uploadDir: uploadDir });
-    await expectThrow("listVersions on a filesystem backend", "VERSIONS_UNSUPPORTED",
+    await expectThrow("listVersions on a filesystem backend", "storage/versions-unsupported",
       function () { return b.storage.listVersions("prefix/"); });
 
     // Calling a presign primitive on a local backend surfaces PRESIGN_NOT_SUPPORTED.
-    await expectThrow("presignedUploadUrl on a local backend", "PRESIGN_NOT_SUPPORTED",
+    await expectThrow("presignedUploadUrl on a local backend", "objectstore/presign-not-supported",
       function () { b.storage.presignedUploadUrl("k", {}); });
 
     // sigv4 presigning is pure-local HMAC signing — no network. Drives the
@@ -325,9 +325,9 @@ async function testListVersionsAndPresign() {
     });
 
     // Empty key is refused before any signing work.
-    await expectThrow("presignedUploadUrl empty key", "INVALID_KEY",
+    await expectThrow("presignedUploadUrl empty key", "storage/invalid-key",
       function () { b.storage.presignedUploadUrl("", { backend: "us-ops" }); });
-    await expectThrow("presignedUploadPolicy empty key", "INVALID_KEY",
+    await expectThrow("presignedUploadPolicy empty key", "storage/invalid-key",
       function () { b.storage.presignedUploadPolicy("", { backend: "us-ops" }); });
 
     var up = b.storage.presignedUploadUrl("incoming/x.bin", { backend: "us-ops", expiresInSec: 300 });
@@ -382,7 +382,7 @@ async function testResidencyValidation() {
     // A backend serving 'personal' data outside the app's residency region
     // fails the deployment at boot instead of leaking on first write.
     b.storage._resetForTest();
-    await expectThrow("init residency violation (personal served from US, app region EU)", "RESIDENCY_VIOLATION",
+    await expectThrow("init residency violation (personal served from US, app region EU)", "storage/residency-violation",
       function () {
         b.storage.init({
           backends: { "bad": { protocol: "local", rootDir: euDir, classifications: ["personal"], residencyTag: "US" } },
@@ -391,7 +391,7 @@ async function testResidencyValidation() {
 
     // defaultClassification 'personal' with no backend that declares 'personal'.
     b.storage._resetForTest();
-    await expectThrow("init defaultClassification=personal with no personal backend", "NO_PERSONAL_BACKEND",
+    await expectThrow("init defaultClassification=personal with no personal backend", "storage/no-personal-backend",
       function () {
         b.storage.init({
           backends: { "pub": { protocol: "local", rootDir: pubDir, classifications: ["public"], residencyTag: "EU" } },
@@ -436,15 +436,15 @@ async function testChunkScratchValidation() {
   b.storage._resetForTest();
   try {
     // chunkScratch itself is gated on init.
-    await expectThrow("chunkScratch before init", "NOT_INITIALIZED",
+    await expectThrow("chunkScratch before init", "storage/not-initialized",
       function () { b.storage.chunkScratch(); });
 
     b.storage.init({ backend: "local", uploadDir: uploadDir });
 
     // Numeric opts are validated at construction.
-    await expectThrow("chunkScratch negative maxChunkBytes", "INVALID_ARGUMENT",
+    await expectThrow("chunkScratch negative maxChunkBytes", "storage/invalid-argument",
       function () { b.storage.chunkScratch({ maxChunkBytes: -1 }); });
-    await expectThrow("chunkScratch zero staleAfterMs", "INVALID_ARGUMENT",
+    await expectThrow("chunkScratch zero staleAfterMs", "storage/invalid-argument",
       function () { b.storage.chunkScratch({ staleAfterMs: 0 }); });
 
     // rootKeyPrefix with trailing slashes is normalized (linear strip).
@@ -452,46 +452,46 @@ async function testChunkScratchValidation() {
     var data = Buffer.from("chunk-bytes");
 
     // saveChunk arg-shape + assemblyId rejections.
-    await expectThrow("saveChunk non-object args", "INVALID_ARGUMENT",
+    await expectThrow("saveChunk non-object args", "storage/invalid-argument",
       function () { return cs.saveChunk(null); });
-    await expectThrow("saveChunk empty assemblyId", "INVALID_ARGUMENT",
+    await expectThrow("saveChunk empty assemblyId", "storage/invalid-argument",
       function () { return cs.saveChunk({ assemblyId: "", chunkIndex: 0, data: data }); });
-    await expectThrow("saveChunk oversize assemblyId", "INVALID_ARGUMENT",
+    await expectThrow("saveChunk oversize assemblyId", "storage/invalid-argument",
       function () { return cs.saveChunk({ assemblyId: "a".repeat(129), chunkIndex: 0, data: data }); });
-    await expectThrow("saveChunk assemblyId with slash", "INVALID_ARGUMENT",
+    await expectThrow("saveChunk assemblyId with slash", "storage/invalid-argument",
       function () { return cs.saveChunk({ assemblyId: "has/slash", chunkIndex: 0, data: data }); });
-    await expectThrow("saveChunk assemblyId with control char", "INVALID_ARGUMENT",
+    await expectThrow("saveChunk assemblyId with control char", "storage/invalid-argument",
       function () { return cs.saveChunk({ assemblyId: "ctrl\u0001id", chunkIndex: 0, data: data }); });
-    await expectThrow("saveChunk assemblyId with dot-dot traversal", "INVALID_ARGUMENT",
+    await expectThrow("saveChunk assemblyId with dot-dot traversal", "storage/invalid-argument",
       function () { return cs.saveChunk({ assemblyId: "a..b", chunkIndex: 0, data: data }); });
-    await expectThrow("saveChunk assemblyId with leading dot", "INVALID_ARGUMENT",
+    await expectThrow("saveChunk assemblyId with leading dot", "storage/invalid-argument",
       function () { return cs.saveChunk({ assemblyId: ".hidden", chunkIndex: 0, data: data }); });
 
     // chunkIndex rejections.
-    await expectThrow("saveChunk non-integer chunkIndex", "INVALID_ARGUMENT",
+    await expectThrow("saveChunk non-integer chunkIndex", "storage/invalid-argument",
       function () { return cs.saveChunk({ assemblyId: "ok", chunkIndex: 1.5, data: data }); });
-    await expectThrow("saveChunk negative chunkIndex", "INVALID_ARGUMENT",
+    await expectThrow("saveChunk negative chunkIndex", "storage/invalid-argument",
       function () { return cs.saveChunk({ assemblyId: "ok", chunkIndex: -1, data: data }); });
-    await expectThrow("saveChunk chunkIndex over cap", "INVALID_ARGUMENT",
+    await expectThrow("saveChunk chunkIndex over cap", "storage/invalid-argument",
       function () { return cs.saveChunk({ assemblyId: "ok", chunkIndex: 100000, data: data }); });
 
     // data-shape + size rejections.
-    await expectThrow("saveChunk non-Buffer data", "INVALID_ARGUMENT",
+    await expectThrow("saveChunk non-Buffer data", "storage/invalid-argument",
       function () { return cs.saveChunk({ assemblyId: "ok", chunkIndex: 0, data: "nope" }); });
     var csTiny = b.storage.chunkScratch({ rootKeyPrefix: "tiny", maxChunkBytes: C.BYTES.bytes(4) });
-    await expectThrow("saveChunk exceeds maxChunkBytes", "INVALID_ARGUMENT",
+    await expectThrow("saveChunk exceeds maxChunkBytes", "storage/invalid-argument",
       function () { return csTiny.saveChunk({ assemblyId: "ok", chunkIndex: 0, data: Buffer.from("too-long") }); });
 
     // getChunk arg-shape rejections.
-    await expectThrow("getChunk non-object args", "INVALID_ARGUMENT",
+    await expectThrow("getChunk non-object args", "storage/invalid-argument",
       function () { return cs.getChunk(null); });
-    await expectThrow("getChunk missing encryptionKey", "INVALID_ARGUMENT",
+    await expectThrow("getChunk missing encryptionKey", "storage/invalid-argument",
       function () { return cs.getChunk({ assemblyId: "ok", chunkIndex: 0, encryptionKey: "" }); });
 
     // assemble arg-shape rejections.
-    await expectThrow("assemble non-object args", "INVALID_ARGUMENT",
+    await expectThrow("assemble non-object args", "storage/invalid-argument",
       function () { return cs.assemble(null); });
-    await expectThrow("assemble empty chunkEncryptionKeys", "INVALID_ARGUMENT",
+    await expectThrow("assemble empty chunkEncryptionKeys", "storage/invalid-argument",
       function () { return cs.assemble({ assemblyId: "ok", chunkEncryptionKeys: [] }); });
   } finally {
     try { b.storage._resetForTest(); } catch (_e) { /* best-effort */ }
@@ -530,9 +530,9 @@ async function testChunkScratchRoundTrip() {
     check("countChunks matches", (await cs.countChunks("upload-abc")) === 3);
 
     // assemble integrity rejections.
-    await expectThrow("assemble expectedTotal mismatch", "INCOMPLETE_ASSEMBLY",
+    await expectThrow("assemble expectedTotal mismatch", "storage/incomplete-assembly",
       function () { return cs.assemble({ assemblyId: "upload-abc", expectedTotal: 5, chunkEncryptionKeys: keys }); });
-    await expectThrow("assemble key-count mismatch", "INVALID_ARGUMENT",
+    await expectThrow("assemble key-count mismatch", "storage/invalid-argument",
       function () { return cs.assemble({ assemblyId: "upload-abc", chunkEncryptionKeys: [keys[0]] }); });
 
     // Valid assemble concatenates in order.
@@ -543,7 +543,7 @@ async function testChunkScratchRoundTrip() {
     var gapKeys = [];
     gapKeys.push((await cs.saveChunk({ assemblyId: "gappy", chunkIndex: 0, data: Buffer.from("g0") })).encryptionKey);
     gapKeys.push((await cs.saveChunk({ assemblyId: "gappy", chunkIndex: 2, data: Buffer.from("g2") })).encryptionKey);
-    await expectThrow("assemble refuses a chunk gap", "INCOMPLETE_ASSEMBLY",
+    await expectThrow("assemble refuses a chunk gap", "storage/incomplete-assembly",
       function () { return cs.assemble({ assemblyId: "gappy", expectedTotal: 2, chunkEncryptionKeys: gapKeys }); });
 
     // listAssemblies surfaces both assembly ids.

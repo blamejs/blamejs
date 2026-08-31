@@ -189,7 +189,7 @@ async function run() {
         rpSnap.size === 64 && rpSnap.bits === 1 && Buffer.isBuffer(rpSnap.bytes));
 
   // ---- create() input validation (config-time: THROW) ----
-  check("create rejects a non-object opts",           syncCode(function () { b.auth.statusList.create(null); }) === "BAD_OPT");
+  check("create rejects a non-object opts",           syncCode(function () { b.auth.statusList.create(null); }) === "validate-opts/bad-object");
   check("create rejects size=0",                      syncCode(function () { b.auth.statusList.create({ size: 0 }); }) === "status-list/bad-size");
   check("create rejects a negative size",             syncCode(function () { b.auth.statusList.create({ size: -8 }); }) === "status-list/bad-size");
   check("create rejects a fractional size",           syncCode(function () { b.auth.statusList.create({ size: 3.5 }); }) === "status-list/bad-size");
@@ -215,7 +215,7 @@ async function run() {
   check("get rejects a non-number idx",          syncCode(function () { setList.get("0"); }) === "status-list/bad-index");
 
   // ---- toJwt() input validation ----
-  check("toJwt rejects a non-object opts",  await asyncCode(function () { return setList.toJwt(null); }) === "BAD_OPT");
+  check("toJwt rejects a non-object opts",  await asyncCode(function () { return setList.toJwt(null); }) === "validate-opts/bad-object");
   check("toJwt rejects a missing issuer",   await asyncCode(function () { return setList.toJwt({ subject: "s", privateKey: kp.privateKey, algorithm: "ML-DSA-87" }); }) === "status-list/bad-issuer");
   check("toJwt rejects an empty issuer",    await asyncCode(function () { return setList.toJwt({ issuer: "", subject: "s", privateKey: kp.privateKey, algorithm: "ML-DSA-87" }); }) === "status-list/bad-issuer");
   check("toJwt rejects a missing subject",  await asyncCode(function () { return setList.toJwt({ issuer: "i", privateKey: kp.privateKey, algorithm: "ML-DSA-87" }); }) === "status-list/bad-subject");
@@ -243,7 +243,7 @@ async function run() {
         }) === "status-list/too-large");
 
   // ---- fromJwt() input validation ----
-  check("fromJwt rejects a non-object opts",     await asyncCode(function () { return b.auth.statusList.fromJwt(token, null); }) === "BAD_OPT");
+  check("fromJwt rejects a non-object opts",     await asyncCode(function () { return b.auth.statusList.fromJwt(token, null); }) === "validate-opts/bad-object");
   check("fromJwt rejects an empty-string token", await asyncCode(function () { return b.auth.statusList.fromJwt("", verifyOpts); }) === "status-list/bad-token");
   check("fromJwt rejects a non-string token",    await asyncCode(function () { return b.auth.statusList.fromJwt(12345, verifyOpts); }) === "status-list/bad-token");
 

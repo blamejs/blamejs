@@ -380,14 +380,14 @@ function testGuardArchiveLoadRulePack() {
   try { b.guardArchive.loadRulePack({ rules: [] }); }
   catch (e) { noId = e; }
   check("loadRulePack: missing id throws archive.bad-opt",
-        noId && noId.code === "archive.bad-opt");
+        noId && noId.code === "archive/bad-opt");
 
   // Empty-string id is likewise rejected.
   var emptyId = null;
   try { b.guardArchive.loadRulePack({ id: "" }); }
   catch (e) { emptyId = e; }
   check("loadRulePack: empty id throws archive.bad-opt",
-        emptyId && emptyId.code === "archive.bad-opt");
+        emptyId && emptyId.code === "archive/bad-opt");
 
   // Non-object pack throws a GuardArchiveError (proto-safe requireObject).
   var notObj = null;

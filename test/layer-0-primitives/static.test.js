@@ -1116,13 +1116,13 @@ async function testIntegrityHelper() {
     var emptyThrew = null;
     try { await b.staticServe.integrity(""); } catch (e) { emptyThrew = e; }
     check("integrity: empty path throws BAD_OPT",
-          emptyThrew && emptyThrew.code === "BAD_OPT");
+          emptyThrew && emptyThrew.code === "static/bad-opt");
 
     var missingThrew = null;
     try { await b.staticServe.integrity(path.join(dir, "nope.js")); }
     catch (e) { missingThrew = e; }
     check("integrity: missing file throws NOT_FOUND",
-          missingThrew && missingThrew.code === "NOT_FOUND");
+          missingThrew && missingThrew.code === "static/not-found");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -1271,7 +1271,7 @@ async function testCounterRetriesOnContention() {
       if (!threwOnce) {
         threwOnce = true;
         var e = new Error("cluster CAS lost the race");
-        e.code = "UPDATE_CONTENTION";
+        e.code = "cache/update-contention";
         throw e;
       }
       return real.update(k, fn, o);
@@ -1479,7 +1479,7 @@ async function testSymlinkFinalComponentFailsClosed() {
       var e = null;
       try { await b.staticServe.integrity(linkPath); } catch (err) { e = err; }
       check("final-component symlink: integrity() fails closed with NOT_FOUND, not a raw ELOOP",
-            e && e.code === "NOT_FOUND");
+            e && e.code === "static/not-found");
     } else {
       check("final-component symlink: link creation unsupported on this host", true);
     }
@@ -1577,7 +1577,7 @@ async function testIntegrityOnDirectory() {
     try { await b.staticServe.integrity(path.join(dir, "sub")); }
     catch (e) { threw = e; }
     check("integrity: a directory path (not a regular file) → NOT_FOUND",
-          threw && threw.code === "NOT_FOUND");
+          threw && threw.code === "static/not-found");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -1810,7 +1810,7 @@ async function testIntegrityNulPathRefused() {
   var threw = null;
   try { await b.staticServe.integrity("\u0000abc"); } catch (e) { threw = e; }
   check("integrity: a NUL-byte path is refused before any fs op → NOT_FOUND",
-        threw && threw.code === "NOT_FOUND");
+        threw && threw.code === "static/not-found");
 }
 
 // A request naming a DIFFERENT drive than the served root's (a Windows drive-

@@ -3051,7 +3051,7 @@ async function sectionMigrateSeedCodedError() {
       ["seed", "run", "--db", seedDb, "--env", "dev", "--dir", path.join(dir, "seeders")], cs);
     check("seed run (coded SQL error) → exit 1", rcs === 1);
     check("seed run (coded SQL error) → prints the error code",
-      /blamejs seed run: RUN_FAILED:/.test(cs.err()));
+      /blamejs seed run: seeders\/run-failed:/.test(cs.err()));
   } finally { _rm(dir); }
 }
 

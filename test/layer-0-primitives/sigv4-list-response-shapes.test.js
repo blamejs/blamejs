@@ -353,7 +353,7 @@ async function testHeadNon404IsRethrownNotMappedToNotFound() {
     check("head 503: statusCode preserved",     threw && threw.statusCode === 503);
     // The discriminator: a 503 must NOT be laundered into the missing-key
     // signal, or an existence probe reports "absent" for a live object.
-    check("head 503: NOT remapped to NOT_FOUND", !threw || threw.code !== "NOT_FOUND");
+    check("head 503: NOT remapped to NOT_FOUND", !threw || threw.code !== "objectstore/not-found");
   });
 }
 
@@ -367,7 +367,7 @@ async function testHead404MapsToNotFound() {
       check("head 404: should have thrown", false);
     } catch (e) { threw = e; }
     check("head 404: mapped to the framework NOT_FOUND code",
-          threw && threw.code === "NOT_FOUND");
+          threw && threw.code === "objectstore/not-found");
     check("head 404: message names the key",
           threw && String(threw.message).indexOf("gone.txt") !== -1);
   });
@@ -511,7 +511,7 @@ async function testPutStringAndNonBufferBodies() {
     }
     check("put: every non-serializable body is refused with INVALID_BODY",
           bodyErrs.length === badBodies.length &&
-          bodyErrs.every(function (c) { return c === "INVALID_BODY"; }));
+          bodyErrs.every(function (c) { return c === "objectstore/invalid-body"; }));
     check("put: a refused body puts NOTHING on the wire (no empty object stored)",
           fake.requests.length === sentCount);
 

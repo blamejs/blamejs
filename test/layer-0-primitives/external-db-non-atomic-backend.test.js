@@ -76,7 +76,7 @@ async function run() {
     });
   } catch (e) { threw = e; }
   check("#343 transaction() refuses a stateless backend (typed NON_ATOMIC_BACKEND)",
-        threw && /NON_ATOMIC_BACKEND/.test(threw.code || ""));
+        threw && /external-db\/non-atomic-backend/.test(threw.code || ""));
   check("#343 transaction() refuses BEFORE running the body / any BEGIN",
         bodyRan === false && stateless.sawBegin() === false);
 
@@ -86,7 +86,7 @@ async function run() {
     await b.externalDb.write.transaction(async function (tx) { await tx.query("SELECT 1", []); });
   } catch (e) { threwWrite = e; }
   check("#343 write.transaction() also refuses a stateless backend",
-        threwWrite && /NON_ATOMIC_BACKEND/.test(threwWrite.code || ""));
+        threwWrite && /external-db\/non-atomic-backend/.test(threwWrite.code || ""));
 
   // supportsTransactions probe reflects the declaration.
   check("#343 supportsTransactions() probe returns false for the stateless backend",
@@ -189,7 +189,7 @@ async function run() {
     await b.externalDb.transaction(async function (tx) { await tx.query("SELECT 1", []); });
   } catch (e) { batchThrew = e; }
   check("#343 a stateless adapter with only a batch hook still refuses interactive transaction()",
-        batchThrew && /NON_ATOMIC_BACKEND/.test(batchThrew.code || ""));
+        batchThrew && /external-db\/non-atomic-backend/.test(batchThrew.code || ""));
 
   b.externalDb._resetForTest();
   console.log("OK — externalDb non-atomic backend refusal (#343)");

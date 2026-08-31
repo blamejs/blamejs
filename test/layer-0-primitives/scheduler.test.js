@@ -156,16 +156,16 @@ async function run() {
 async function testSchedulerRegisterValidation() {
   var s = b.scheduler.create({ audit: false });
   function code(fn) { try { fn(); return "OK"; } catch (e) { return e.code; } }
-  check("register: empty name -> INVALID_NAME", code(function () { s.register("", 1000, function () {}); }) === "INVALID_NAME");
-  check("register: sub-second interval -> INVALID_SPEC", code(function () { s.register("a", 500, function () {}); }) === "INVALID_SPEC");
-  check("register: non-function fn -> INVALID_SPEC", code(function () { s.register("a", 1000, "nope"); }) === "INVALID_SPEC");
-  check("schedule: no spec object -> INVALID_SPEC", code(function () { s.schedule(null); }) === "INVALID_SPEC");
-  check("schedule: missing name -> INVALID_NAME", code(function () { s.schedule({ every: 1000, run: function () {} }); }) === "INVALID_NAME");
-  check("schedule: both cron+every -> INVALID_SPEC", code(function () { s.schedule({ name: "b", cron: "* * * * *", every: 1000, run: function () {} }); }) === "INVALID_SPEC");
-  check("schedule: neither cron nor every -> INVALID_SPEC", code(function () { s.schedule({ name: "c", run: function () {} }); }) === "INVALID_SPEC");
-  check("schedule: sub-second every -> INVALID_SPEC", code(function () { s.schedule({ name: "d", every: 500, run: function () {} }); }) === "INVALID_SPEC");
+  check("register: empty name -> INVALID_NAME", code(function () { s.register("", 1000, function () {}); }) === "scheduler/invalid-name");
+  check("register: sub-second interval -> INVALID_SPEC", code(function () { s.register("a", 500, function () {}); }) === "scheduler/invalid-spec");
+  check("register: non-function fn -> INVALID_SPEC", code(function () { s.register("a", 1000, "nope"); }) === "scheduler/invalid-spec");
+  check("schedule: no spec object -> INVALID_SPEC", code(function () { s.schedule(null); }) === "scheduler/invalid-spec");
+  check("schedule: missing name -> INVALID_NAME", code(function () { s.schedule({ every: 1000, run: function () {} }); }) === "scheduler/invalid-name");
+  check("schedule: both cron+every -> INVALID_SPEC", code(function () { s.schedule({ name: "b", cron: "* * * * *", every: 1000, run: function () {} }); }) === "scheduler/invalid-spec");
+  check("schedule: neither cron nor every -> INVALID_SPEC", code(function () { s.schedule({ name: "c", run: function () {} }); }) === "scheduler/invalid-spec");
+  check("schedule: sub-second every -> INVALID_SPEC", code(function () { s.schedule({ name: "d", every: 500, run: function () {} }); }) === "scheduler/invalid-spec");
   s.register("dup", 1000, function () {});
-  check("schedule: duplicate name -> DUPLICATE_NAME", code(function () { s.register("dup", 1000, function () {}); }) === "DUPLICATE_NAME");
+  check("schedule: duplicate name -> DUPLICATE_NAME", code(function () { s.register("dup", 1000, function () {}); }) === "scheduler/duplicate-name");
 }
 
 async function testSchedulerStartStopStatusAndAfterStart() {
@@ -179,7 +179,7 @@ async function testSchedulerStartStopStatusAndAfterStart() {
     check("getStatus: started=true after start()", s.getStatus().started === true);
     var threw = null;
     try { s.schedule({ name: "late", every: 1000, run: function () {} }); } catch (e) { threw = e; }
-    check("schedule after start -> ALREADY_STARTED", threw && threw.code === "ALREADY_STARTED");
+    check("schedule after start -> ALREADY_STARTED", threw && threw.code === "scheduler/already-started");
   } finally {
     await s.stop();
   }

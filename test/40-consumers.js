@@ -283,19 +283,19 @@ async function testMultiBackend() {
     // Unknown classification → fails
     var unknownClsRejected = false;
     try { await b.storage.saveFile(content1, "test", { classification: "unknown" }); }
-    catch (e) { unknownClsRejected = e.code === "NO_BACKEND_FOR_CLASSIFICATION"; }
+    catch (e) { unknownClsRejected = e.code === "storage/no-backend-for-classification"; }
     check("unknown classification rejected",           unknownClsRejected);
 
     // refuseUnclassified: missing classification rejected
     var noClsRejected = false;
     try { await b.storage.saveFile(content1, "test"); }
-    catch (e) { noClsRejected = e.code === "UNCLASSIFIED"; }
+    catch (e) { noClsRejected = e.code === "storage/unclassified"; }
     check("refuseUnclassified rejects missing classification", noClsRejected);
 
     // Wrong-backend-for-classification rejected
     var wrongBackendRejected = false;
     try { await b.storage.saveFile(content1, "test", { backend: "ops", classification: "personal" }); }
-    catch (e) { wrongBackendRejected = e.code === "CLASSIFICATION_MISMATCH"; }
+    catch (e) { wrongBackendRejected = e.code === "storage/classification-mismatch"; }
     check("backend that doesn't serve classification rejected", wrongBackendRejected);
   } finally {
     await teardownTestDb(tmpDir);
@@ -360,7 +360,7 @@ async function testResidencyEnforcement() {
         },
       });
     } catch (e) {
-      residencyViolation = e.code === "RESIDENCY_VIOLATION";
+      residencyViolation = e.code === "storage/residency-violation";
     }
     check("personal-data backend outside region refused", residencyViolation);
 
@@ -1141,22 +1141,22 @@ async function testJobsValidation() {
     // Invalid name / handler
     var threw = null;
     try { jobs.define("", async function () {}); } catch (e) { threw = e; }
-    check("jobs.define: empty name rejected",          threw && threw.code === "INVALID_NAME");
+    check("jobs.define: empty name rejected",          threw && threw.code === "jobs/invalid-name");
 
     threw = null;
     try { jobs.define("x", "not-a-fn"); } catch (e) { threw = e; }
-    check("jobs.define: non-function handler rejected", threw && threw.code === "INVALID_HANDLER");
+    check("jobs.define: non-function handler rejected", threw && threw.code === "jobs/invalid-handler");
 
     // Duplicate
     jobs.define("dup", async function () {});
     threw = null;
     try { jobs.define("dup", async function () {}); } catch (e) { threw = e; }
-    check("jobs.define: duplicate name rejected",      threw && threw.code === "DUPLICATE_NAME");
+    check("jobs.define: duplicate name rejected",      threw && threw.code === "jobs/duplicate-name");
 
     // enqueue without define
     threw = null;
     try { await jobs.enqueue("never-defined", {}); } catch (e) { threw = e; }
-    check("jobs.enqueue: undefined name rejected",     threw && threw.code === "UNDEFINED_NAME");
+    check("jobs.enqueue: undefined name rejected",     threw && threw.code === "jobs/undefined-name");
 
     // allowUnregistered: true bypasses
     var permissive = b.jobs.create({ allowUnregisteredEnqueue: true });
@@ -1167,7 +1167,7 @@ async function testJobsValidation() {
     await jobs.start();
     threw = null;
     try { jobs.define("post-start", async function () {}); } catch (e) { threw = e; }
-    check("jobs.define after start rejected",          threw && threw.code === "ALREADY_STARTED");
+    check("jobs.define after start rejected",          threw && threw.code === "jobs/already-started");
 
     await jobs.shutdown({ timeoutMs: 2000 });
     await permissive.shutdown({ timeoutMs: 2000 });
@@ -1528,7 +1528,7 @@ async function testExternalDbResidency() {
           },
         },
       });
-    } catch (e) { residencyViolation = e.code === "RESIDENCY_VIOLATION"; }
+    } catch (e) { residencyViolation = e.code === "external-db/residency-violation"; }
     check("external DB residency violation refused",     residencyViolation);
 
     // EU-tagged backend OK
@@ -1579,13 +1579,13 @@ async function testExternalDbClassification() {
     var rejected = false;
     try {
       await b.externalDb.query("SELECT 1", [], { backend: "ops-db", classification: "personal" });
-    } catch (e) { rejected = e.code === "CLASSIFICATION_MISMATCH"; }
+    } catch (e) { rejected = e.code === "external-db/classification-mismatch"; }
     check("backend that doesn't serve classification rejected",  rejected);
 
     // No backend serves a missing classification
     var noBackendRejected = false;
     try { await b.externalDb.query("SELECT 1", [], { classification: "nonexistent" }); }
-    catch (e) { noBackendRejected = e.code === "NO_BACKEND_FOR_CLASSIFICATION"; }
+    catch (e) { noBackendRejected = e.code === "external-db/no-backend-for-classification"; }
     check("missing classification rejected",             noBackendRejected);
   } finally {
     try { await b.externalDb.shutdown(); } catch (_e) {}

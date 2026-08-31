@@ -190,7 +190,7 @@ async function testUniqueExhausts() {
       { maxAttempts: 5 });
   } catch (e) { threw = e; }
   check("unique: throws SlugError on exhaustion",
-        threw && threw.code === "UNIQUE_EXHAUSTED");
+        threw && threw.code === "slug/unique-exhausted");
   check("unique: error mentions base slug",
         threw && /hello/.test(threw.message));
 }
@@ -239,33 +239,33 @@ function testRejectsBadOpts() {
     }
   }
   expectThrow("rejects multi-char separator",
-    function () { b.slug("hi", { separator: "--" }); }, "BAD_OPT");
+    function () { b.slug("hi", { separator: "--" }); }, "slug/bad-opt");
   expectThrow("rejects empty separator",
-    function () { b.slug("hi", { separator: "" }); }, "BAD_OPT");
+    function () { b.slug("hi", { separator: "" }); }, "slug/bad-opt");
   expectThrow("rejects non-string separator",
-    function () { b.slug("hi", { separator: 1 }); }, "BAD_OPT");
+    function () { b.slug("hi", { separator: 1 }); }, "slug/bad-opt");
   expectThrow("rejects non-bool lowercase",
-    function () { b.slug("hi", { lowercase: "yes" }); }, "BAD_OPT");
+    function () { b.slug("hi", { lowercase: "yes" }); }, "slug/bad-opt");
   expectThrow("rejects NaN maxLength",
-    function () { b.slug("hi", { maxLength: NaN }); }, "BAD_OPT");
+    function () { b.slug("hi", { maxLength: NaN }); }, "slug/bad-opt");
   expectThrow("rejects negative maxLength",
-    function () { b.slug("hi", { maxLength: -1 }); }, "BAD_OPT");
+    function () { b.slug("hi", { maxLength: -1 }); }, "slug/bad-opt");
   expectThrow("rejects float maxLength",
-    function () { b.slug("hi", { maxLength: 1.5 }); }, "BAD_OPT");
+    function () { b.slug("hi", { maxLength: 1.5 }); }, "slug/bad-opt");
   expectThrow("rejects non-bool preserveUnicode",
-    function () { b.slug("hi", { preserveUnicode: "yes" }); }, "BAD_OPT");
+    function () { b.slug("hi", { preserveUnicode: "yes" }); }, "slug/bad-opt");
   expectThrow("rejects non-string fallback",
-    function () { b.slug("hi", { fallback: 42 }); }, "BAD_OPT");
+    function () { b.slug("hi", { fallback: 42 }); }, "slug/bad-opt");
   expectThrow("rejects non-string title",
-    function () { b.slug(undefined); }, "BAD_TITLE");
+    function () { b.slug(undefined); }, "slug/bad-title");
   expectThrow("rejects null title",
-    function () { b.slug(null); }, "BAD_TITLE");
+    function () { b.slug(null); }, "slug/bad-title");
   expectThrow("rejects number title",
-    function () { b.slug(42); }, "BAD_TITLE");
+    function () { b.slug(42); }, "slug/bad-title");
 
   // create() validation
   expectThrow("create rejects bad opts",
-    function () { b.slug.create({ separator: "--" }); }, "BAD_OPT");
+    function () { b.slug.create({ separator: "--" }); }, "slug/bad-opt");
 }
 
 async function testUniqueRejectsBadOpts() {
@@ -277,19 +277,19 @@ async function testUniqueRejectsBadOpts() {
   }
   await makePromiseExpect("unique rejects non-fn isUsed",
     function () { return b.slug.unique("hi", "not a fn"); },
-    "BAD_ISUSED");
+    "slug/bad-isused");
   await makePromiseExpect("unique rejects 0 maxAttempts",
     function () { return b.slug.unique("hi", function () { return false; },
       { maxAttempts: 0 }); },
-    "BAD_OPT");
+    "slug/bad-opt");
   await makePromiseExpect("unique rejects negative start",
     function () { return b.slug.unique("hi", function () { return false; },
       { start: -1 }); },
-    "BAD_OPT");
+    "slug/bad-opt");
   await makePromiseExpect("unique rejects empty suffixSeparator",
     function () { return b.slug.unique("hi", function () { return false; },
       { suffixSeparator: "" }); },
-    "BAD_OPT");
+    "slug/bad-opt");
 }
 
 // ---- Run ----

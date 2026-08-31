@@ -78,9 +78,9 @@ async function testFactoryValidation() {
     try { bucketOps.create(opts); } catch (e) { threw = e; }
     check("factory: " + label,  threw && codeRe.test(threw.code || ""));
   }
-  shouldThrow("rejects null opts", null, /BAD_OPT/);
-  shouldThrow("rejects missing accountName", { accountKey: "x" }, /BAD_OPT/);
-  shouldThrow("rejects missing accountKey", { accountName: "x" }, /BAD_OPT/);
+  shouldThrow("rejects null opts", null, /objectstore\/bad-opt/);
+  shouldThrow("rejects missing accountName", { accountKey: "x" }, /objectstore\/bad-opt/);
+  shouldThrow("rejects missing accountKey", { accountName: "x" }, /objectstore\/bad-opt/);
 }
 
 async function testContainerNameValidation() {
@@ -90,7 +90,7 @@ async function testContainerNameValidation() {
     async function shouldRejectName(label, name) {
       var threw = null;
       try { await ops.create(name); } catch (e) { threw = e; }
-      check("rejects " + label, threw && /BUCKET_INVALID_NAME/.test(threw.code || ""));
+      check("rejects " + label, threw && /objectstore\/bucket-invalid-name/.test(threw.code || ""));
     }
     await shouldRejectName("UPPERCASE",       "MyBucket");
     await shouldRejectName("too short",       "ab");
@@ -131,7 +131,7 @@ async function testCreateContainerConflict() {
     var threw = null;
     try { await ops.create("existing"); } catch (e) { threw = e; }
     check("409 surfaces as BUCKET_ALREADY_OWNED",
-          threw && /BUCKET_ALREADY_OWNED/.test(threw.code || ""));
+          threw && /objectstore\/bucket-already-owned/.test(threw.code || ""));
   } finally { await l.close(); }
 }
 
@@ -190,7 +190,7 @@ async function testSetCorsRulesValidation() {
       var threw = null;
       try { await ops.setCorsRules(rules); } catch (e) { threw = e; }
       check("setCorsRules rejects: " + label,
-            threw && /INVALID_CORS_RULE/.test(threw.code || ""));
+            threw && /objectstore\/invalid-cors-rule/.test(threw.code || ""));
     }
     await shouldThrow("non-array",                "not an array");
     await shouldThrow("rule with empty origins",  [{ allowedOrigins: [], allowedMethods: ["GET"] }]);
@@ -231,7 +231,7 @@ async function testSetLifecycleNotSupported() {
     var threw = null;
     try { ops.setLifecycle("any", []); } catch (e) { threw = e; }
     check("setLifecycle throws NOT_SUPPORTED",
-          threw && /NOT_SUPPORTED/.test(threw.code || ""));
+          threw && /objectstore\/not-supported/.test(threw.code || ""));
     check("setLifecycle error mentions ARM",
           threw && /Resource Manager/.test(threw.message || ""));
   } finally { await l.close(); }

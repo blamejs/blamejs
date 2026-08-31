@@ -319,7 +319,7 @@ async function testMultipartAbortsOnPartFailure() {
       await store.put("ouch.bin", Buffer.alloc(12 * 1024 * 1024));
     } catch (e) { threw = e; }
     check("abort: put rejects on part failure",        threw !== null);
-    check("abort: error code reflects part failure",   threw && /MULTIPART_PART_FAILED|HTTP_ERROR/.test(threw.code || ""));
+    check("abort: error code reflects part failure",   threw && /objectstore\/multipart-part-failed|http-client\/http-error/.test(threw.code || ""));
     check("abort: server saw the abort DELETE",        fake.aborts.length === 1);
   } finally {
     await new Promise(function (r) { fake.server.close(function () { r(); }); });
@@ -342,7 +342,7 @@ async function testMultipartCompleteErrorBodyFails() {
     } catch (e) { threw = e; }
     check("complete-error: put rejects",              threw !== null);
     check("complete-error: code = MULTIPART_COMPLETE_FAILED",
-          threw && /MULTIPART_COMPLETE_FAILED/.test(threw.code || ""));
+          threw && /objectstore\/multipart-complete-failed/.test(threw.code || ""));
     check("complete-error: abort ran for cleanup",    fake.aborts.length === 1);
   } finally {
     await new Promise(function (r) { fake.server.close(function () { r(); }); });
@@ -418,7 +418,7 @@ async function testSseResponseVerificationFailsOnDroppedHeader() {
     } catch (e) { threw = e; }
     check("sse verify: silently-dropped SSE → put rejects",  threw !== null);
     check("sse verify: code = SSE_NOT_APPLIED",
-          threw && /SSE_NOT_APPLIED/.test(threw.code || ""));
+          threw && /objectstore\/sse-not-applied/.test(threw.code || ""));
   } finally {
     await new Promise(function (r) { fake.server.close(function () { r(); }); });
   }
@@ -434,17 +434,17 @@ async function testSseValidationRejectsBadValues() {
     var threw = null;
     try { await store.put("k", Buffer.alloc(0), { sse: "DES" }); }
     catch (e) { threw = e; }
-    check("sse validate: bad string rejected",   threw && /INVALID_SSE/.test(threw.code || ""));
+    check("sse validate: bad string rejected",   threw && /objectstore\/invalid-sse/.test(threw.code || ""));
 
     threw = null;
     try { await store.put("k", Buffer.alloc(0), { sse: 42 }); }
     catch (e) { threw = e; }
-    check("sse validate: number rejected",        threw && /INVALID_SSE/.test(threw.code || ""));
+    check("sse validate: number rejected",        threw && /objectstore\/invalid-sse/.test(threw.code || ""));
 
     threw = null;
     try { await store.put("k", Buffer.alloc(0), { sse: { type: "AES512" } }); }
     catch (e) { threw = e; }
-    check("sse validate: bad object type rejected", threw && /INVALID_SSE/.test(threw.code || ""));
+    check("sse validate: bad object type rejected", threw && /objectstore\/invalid-sse/.test(threw.code || ""));
   } finally {
     await new Promise(function (r) { fake.server.close(function () { r(); }); });
   }
@@ -459,11 +459,11 @@ function testConfigValidation() {
     check("config validate: " + label,  threw && codeRe.test(threw.code || ""));
   }
   shouldThrow("rejects partSizeBytes < 5MiB",
-    { partSizeBytes: 1024 }, /INVALID_CONFIG/);
+    { partSizeBytes: 1024 }, /objectstore\/invalid-config/);
   shouldThrow("rejects negative multipartThresholdBytes",
-    { multipartThresholdBytes: -1 }, /INVALID_CONFIG/);
+    { multipartThresholdBytes: -1 }, /objectstore\/invalid-config/);
   shouldThrow("rejects partConcurrency = 0",
-    { partConcurrency: 0 }, /INVALID_CONFIG/);
+    { partConcurrency: 0 }, /objectstore\/invalid-config/);
 }
 
 // ---- Config validation: offline type-guard / non-finite / boundary arms ----
@@ -475,7 +475,7 @@ function testConfigValidationOfflineBranches() {
   function shouldReject(label, overrides) {
     var threw = null;
     try { sigv4.create(_baseConfig(1, overrides)); } catch (e) { threw = e; }
-    check("config-offline: " + label, threw && /INVALID_CONFIG/.test(threw.code || ""));
+    check("config-offline: " + label, threw && /objectstore\/invalid-config/.test(threw.code || ""));
   }
   function shouldAccept(label, overrides) {
     var store = null, threw = null;
@@ -511,7 +511,7 @@ async function testMultipartFalseRejectsStreams() {
     try { await store.put("k", stream, { multipart: false }); }
     catch (e) { threw = e; }
     check("multipart=false: stream rejected upfront",
-          threw && /STREAM_REQUIRES_MULTIPART/.test(threw.code || ""));
+          threw && /objectstore\/stream-requires-multipart/.test(threw.code || ""));
   } finally {
     await new Promise(function (r) { fake.server.close(function () { r(); }); });
   }
@@ -615,7 +615,7 @@ async function testMultipartInitiateWithoutUploadIdFails() {
       check("initiate-no-uploadid: should have thrown", false);
     } catch (e) { threw = e; }
     check("initiate-no-uploadid: code = MULTIPART_INIT_FAILED",
-          threw && threw.code === "MULTIPART_INIT_FAILED");
+          threw && threw.code === "objectstore/multipart-init-failed");
     check("initiate-no-uploadid: no part was uploaded against an undefined uploadId",
           fake.requests.filter(function (r) {
             return r.method === "PUT" && r.url.indexOf("partNumber") !== -1;
@@ -644,7 +644,7 @@ async function testMultipartPartWithoutEtagFailsAndAborts() {
       check("part-no-etag: should have thrown", false);
     } catch (e) { threw = e; }
     check("part-no-etag: code = MULTIPART_PART_FAILED",
-          threw && threw.code === "MULTIPART_PART_FAILED");
+          threw && threw.code === "objectstore/multipart-part-failed");
     check("part-no-etag: message names the failing part number",
           threw && /part 1\b/.test(String(threw.message)));
     check("part-no-etag: CompleteMultipartUpload never issued",
@@ -680,7 +680,7 @@ async function testAbortFailureDoesNotMaskPrimaryError() {
     // the cleanup's HTTP 500 (which would send them debugging the wrong
     // request).
     check("abort-failure: primary error survives (MULTIPART_PART_FAILED)",
-          threw && threw.code === "MULTIPART_PART_FAILED");
+          threw && threw.code === "objectstore/multipart-part-failed");
     check("abort-failure: not replaced by the abort's HTTP status",
           threw && threw.statusCode === undefined);
   } finally {
@@ -705,7 +705,7 @@ async function testCompleteBareErrorBodyStillFails() {
       check("complete-bare-error: should have thrown", false);
     } catch (e) { threw = e; }
     check("complete-bare-error: code = MULTIPART_COMPLETE_FAILED",
-          threw && threw.code === "MULTIPART_COMPLETE_FAILED");
+          threw && threw.code === "objectstore/multipart-complete-failed");
     // An <Error> with no <Code>/<Message> must not degrade into
     // "returned error: undefined undefined".
     check("complete-bare-error: absent Code reported as 'unknown'",
@@ -773,12 +773,12 @@ async function testSseMismatchRejectsPut() {
       await store.put("k.bin", Buffer.alloc(1024), { sse: "AES256" });
       check("sse mismatch: should have thrown", false);
     } catch (e) { threw = e; }
-    check("sse mismatch: code = SSE_MISMATCH", threw && threw.code === "SSE_MISMATCH");
+    check("sse mismatch: code = SSE_MISMATCH", threw && threw.code === "objectstore/sse-mismatch");
     check("sse mismatch: message names BOTH the requested and applied algorithms",
           threw && String(threw.message).indexOf("AES256") !== -1 &&
           String(threw.message).indexOf("aws:kms") !== -1);
     check("sse mismatch: distinct from the dropped-header code",
-          threw && threw.code !== "SSE_NOT_APPLIED");
+          threw && threw.code !== "objectstore/sse-not-applied");
   } finally {
     await new Promise(function (r) { fake.server.close(function () { r(); }); });
   }

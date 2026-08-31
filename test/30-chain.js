@@ -201,7 +201,7 @@ async function testClusterEndpointInitValidation() {
       });
     } catch (e) { rejected = e; }
     check("cluster.init: http:// endpoint rejected by default",
-          rejected && rejected.code === "INVALID_ENDPOINT");
+          rejected && rejected.code === "cluster/invalid-endpoint");
     b.cluster._resetForTest();
 
     // 2. Malformed URL rejected
@@ -215,7 +215,7 @@ async function testClusterEndpointInitValidation() {
       });
     } catch (e) { malformed = e; }
     check("cluster.init: malformed endpoint rejected",
-          malformed && malformed.code === "INVALID_ENDPOINT");
+          malformed && malformed.code === "cluster/invalid-endpoint");
     b.cluster._resetForTest();
 
     // 3. http:// accepted with explicit allowedProtocols opt-in
@@ -1169,7 +1169,7 @@ async function testClusterAuditTipFencedOutErrorSurface() {
     check("checkpoint: error is ClusterError",
           threw && threw.isClusterError === true);
     check("checkpoint: error code is FENCED_OUT",
-          threw && threw.code === "FENCED_OUT");
+          threw && threw.code === "audit/fenced-out");
     check("checkpoint: error is permanent",
           threw && threw.permanent === true);
   } finally {
@@ -1771,7 +1771,7 @@ async function testAuditSignLegacyFileBackcompat() {
       });
     } catch (e) { threw = e; }
     check("legacy file (no algorithm field) refuses to load — explicit alg required",
-          threw && /MISSING_ALG|missing.*algorithm/i.test(threw.code || threw.message || ""));
+          threw && /audit-sign\/(key-file|unwrapped)-missing-alg|missing.*algorithm/i.test(threw.code || threw.message || ""));
   } finally {
     await teardownTestDb(tmpDir);
   }

@@ -240,7 +240,7 @@ async function run() {
       await _uploadAndFinalize(u6, "u-mislabel", [pdfBytes], { metadata: { filename: "evil.png" } });
     } catch (e) { refusedCode = e.code || null; }
     check("mislabel: PDF content named .png is scanned by the sniffed .pdf gate (not dodged by extension)",
-          pdfGateRan === true && refusedCode === "CONTENT_SAFETY_REFUSED");
+          pdfGateRan === true && refusedCode === "file-upload/content-safety-refused");
   }
 
   // ---- A STREAMED mislabel routes to its real type's gate, so the skip

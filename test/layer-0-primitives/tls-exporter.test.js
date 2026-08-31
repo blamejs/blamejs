@@ -35,18 +35,18 @@ function testSurface() {
 function testValidationPaths() {
   var t1 = null;
   try { b.tlsExporter.fromSocket(null); } catch (e) { t1 = e; }
-  check("null socket throws", t1 && t1.code === "BAD_INPUT");
+  check("null socket throws", t1 && t1.code === "tls-exporter/bad-input");
 
   var t2 = null;
   try { b.tlsExporter.fromSocket({}); } catch (e) { t2 = e; }
-  check("non-TLS socket throws", t2 && t2.code === "NOT_TLS");
+  check("non-TLS socket throws", t2 && t2.code === "tls-exporter/not-tls");
 
   var t3 = null;
   try {
     b.tlsExporter.fromSocket({ exportKeyingMaterial: function () {}, getProtocol: function () { return "TLSv1.2"; } });
   } catch (e) { t3 = e; }
   check("TLS<1.3 socket throws NOT_TLS_1_3",
-        t3 && t3.code === "NOT_TLS_1_3");
+        t3 && t3.code === "tls-exporter/not-tls-1-3");
 
   var t4 = null;
   try {
@@ -55,7 +55,7 @@ function testValidationPaths() {
       getProtocol: function () { return "TLSv1.3"; },
     }, { length: 999999 });
   } catch (e) { t4 = e; }
-  check("out-of-range length throws", t4 && t4.code === "BAD_LENGTH");
+  check("out-of-range length throws", t4 && t4.code === "tls-exporter/bad-length");
 }
 
 function _selfSignedKeyAndCert() {

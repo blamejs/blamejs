@@ -127,6 +127,70 @@ function testCspErrorClass() {
 // b.csp.mergeDirectives / mergePermissionsPolicy — per-route additive merge (#333).
 function _code(fn) { try { fn(); return null; } catch (e) { return e.code || e.message; } }
 
+// A CSP header with nothing in it constrains nothing, and the caller who set it
+// believes the page is protected. `build({})` returned "" — so a directive set
+// assembled conditionally, where every branch happened to be skipped, produced
+// a header that reads as configured and enforces nothing.
+//
+// The sibling builder already takes this position: b.cdnCacheControl.build({})
+// throws `cdn-cache-control/empty` rather than "refuse to emit an empty
+// Cache-Control list". The security-critical builder of the two was the lenient
+// one, which is the wrong way round.
+//
+// An ARRAY reaches the same place: `typeof [] === "object"`, so it passes the
+// object check, and `Object.keys([])` is empty. A NON-empty array is already
+// caught (its index "0" is not a directive name), so the empty one was the only
+// way through.
+function testRefusesAnEmptyPolicy() {
+  check("build refuses an empty directive set rather than emitting an empty header",
+        _code(function () { b.csp.build({}); }) === "csp/empty",
+        String(_code(function () { b.csp.build({}); })));
+  check("build refuses an empty array, which passes a bare typeof object check",
+        _code(function () { b.csp.build([]); }) === "csp/empty",
+        String(_code(function () { b.csp.build([]); })));
+
+  // Adding NOTHING to a base policy is a valid no-op, and the result is the
+  // base — which is not empty. The refusal has to look at the policy a caller
+  // actually receives, not at an intermediate validation pass over the
+  // additions alone, or merging `{}` refuses a policy that was never empty.
+  var noop = b.csp.mergeDirectives(undefined, {});
+  check("mergeDirectives with no additions returns the base policy, not a refusal",
+        typeof noop === "string" && noop.indexOf("default-src") !== -1,
+        JSON.stringify(String(noop).slice(0, 60)));
+
+  // `sandbox` with no value is the STRICTEST form of the directive: it
+  // applies every sandbox restriction. The serializer treated it as a
+  // directive whose value list happened to be empty and emitted nothing, so
+  // the emptiness refusal turned the strictest policy a caller can express
+  // into a refusal. It belongs with the other valueless directives.
+  var sandboxOnly = b.csp.build({ sandbox: [] });
+  check("sandbox with no value emits the bare directive",
+        sandboxOnly === "sandbox", JSON.stringify(String(sandboxOnly)));
+  check("sandbox with values still emits them",
+        b.csp.build({ sandbox: ["allow-forms"] }) === "sandbox allow-forms");
+
+  // An addition whose value list is empty is refused EARLIER, as a bad
+  // directive value, so it never reaches the additions-validation pass. That
+  // ordering is what keeps `csp/empty` unreachable from a merge: pinned here
+  // because if the earlier check were relaxed, a no-op merge would start
+  // failing with the wrong code and this is the only thing that would say so.
+  check("an empty addition list is refused as a bad value, before the emptiness check",
+        _code(function () { b.csp.mergeDirectives(undefined, { "script-src": [] }); }) ===
+          "csp/bad-directive-value",
+        String(_code(function () { b.csp.mergeDirectives(undefined, { "script-src": [] }); })));
+
+  // The control: a policy with a directive in it still builds, so the refusal
+  // is about emptiness and not about the builder refusing everything.
+  check("build still emits a policy that has directives",
+        b.csp.build({ "default-src": ["'self'"] }) === "default-src 'self'",
+        JSON.stringify(b.csp.build({ "default-src": ["'self'"] })));
+  // And a non-empty array is still refused for naming a directive "0", not for
+  // being empty — the two refusals stay distinguishable.
+  check("build still refuses a non-empty array as an unknown directive",
+        _code(function () { b.csp.build(["default-src 'self'"]); }) === "csp/unknown-directive",
+        String(_code(function () { b.csp.build(["default-src 'self'"]); })));
+}
+
 function testMergeDirectives() {
   // Deriving from the strict default must NOT re-validate (and thus refuse)
   // the default's own img-src 'self' data: — only the ADDED sources are gated.
@@ -184,6 +248,7 @@ function run() {
   testNonce();
   testHash();
   testCspErrorClass();
+  testRefusesAnEmptyPolicy();
   testMergeDirectives();
   testMergePermissionsPolicy();
 }
