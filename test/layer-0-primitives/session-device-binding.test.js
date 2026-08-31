@@ -775,8 +775,51 @@ async function testPayloadWritesCannotTouchTheReservedBindingKey() {
   }
 }
 
+// `clock` and `storeInSession` are accepted opts whose TYPE was never checked.
+// Both fail in the direction that hides: a non-function `clock` throws from
+// `boundAt: clock()`, which sits inside bind()'s drop-silent catch, so bind
+// records `stored: false`, writes nothing, and every later verify answers
+// missing-bind — the same silent lockout #687 was about, reached by a typo in
+// an option instead. `storeInSession` was coerced with `!!`, so the string
+// "false" enabled the session-backed store the operator had just turned off.
+//
+// Refused at create(), where the caller is still on the stack, rather than at
+// the first bind on a live session.
+function testCreateRefusesMistypedClockAndStoreInSession() {
+  var BAD = [
+    ["a non-function clock",       { session: { updateData: function () {}, verify: function () {} },
+                                     storeInSession: true, clock: 12345 }],
+    ["a string clock",             { session: { updateData: function () {}, verify: function () {} },
+                                     storeInSession: true, clock: "Date.now" }],
+    ["a string storeInSession",    { session: { updateData: function () {}, verify: function () {} },
+                                     storeInSession: "false" }],
+    ["a numeric storeInSession",   { session: { updateData: function () {}, verify: function () {} },
+                                     storeInSession: 1 }],
+  ];
+  BAD.forEach(function (c) {
+    var threw = null;
+    try { b.sessionDeviceBinding.create(c[1]); } catch (e) { threw = e; }
+    check("create: " + c[0] + " is refused at config time",
+      threw !== null, "create() returned an instance instead of throwing");
+  });
+
+  // The controls: the documented types still build, and omitting them still
+  // builds. Without these the assertions above would pass on a create() that
+  // refused everything.
+  var withClock = b.sessionDeviceBinding.create({
+    session: { updateData: function () {}, verify: function () {} },
+    storeInSession: true, clock: function () { return 1; },
+  });
+  check("create: a function clock and a boolean storeInSession still build",
+    withClock && typeof withClock.bind === "function");
+  var plain = b.sessionDeviceBinding.create({ bindingStore: _memoryStore() });
+  check("create: omitting both still builds",
+    plain && typeof plain.bind === "function");
+}
+
 async function run() {
   testSurface();
+  testCreateRefusesMistypedClockAndStoreInSession();
   testNamespaceFingerprint();
   await testCreateRejectsBadOpts();
   await testBindAndVerifyHappyPath();

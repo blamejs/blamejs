@@ -42,6 +42,7 @@ var SHORT_TIMEOUT_MS = "250";
 var ENV_KEYS = [
   "BLAMEJS_SKIP_NTP_CHECK", "BLAMEJS_NTS_REQUIRE", "BLAMEJS_NTS_SERVERS",
   "BLAMEJS_NTP_SERVERS", "BLAMEJS_NTP_TIMEOUT_MS", "BLAMEJS_NTP_REQUIRE_REACHABLE",
+  "BLAMEJS_NTP_DRIFT_WARN_MS", "BLAMEJS_NTP_DRIFT_FATAL_MS",
 ];
 
 function snapshotEnv() {
@@ -114,12 +115,49 @@ async function attemptBoot(tmpDir, requireNts, ntsServers) {
   }
 }
 
+// The three numeric NTP env vars are read with parseInt and passed on without
+// checking the result. "abc" parses to NaN, and NaN reaches the boot check as a
+// timeout — where it now fails the opts schema, so the whole clock check is
+// SKIPPED. The thresholds are worse: their setThresholds call is wrapped in a
+// catch that logs at DEBUG, so a mistyped drift threshold left the registered
+// value in place and said nothing at all.
+//
+// A typo in a numeric setting must not quietly change clock policy. Refused at
+// boot, naming the variable.
+async function attemptBootWithEnv(tmpDir, key, value) {
+  delete process.env.BLAMEJS_SKIP_NTP_CHECK;
+  delete process.env.BLAMEJS_NTS_REQUIRE;
+  delete process.env.BLAMEJS_NTP_REQUIRE_REACHABLE;
+  process.env.BLAMEJS_NTP_SERVERS = UNREACHABLE_NTP;
+  process.env[key] = value;
+  helpers.setTestPassphraseEnv();
+  b.cluster._resetForTest();
+  b.audit._resetForTest();
+  b.vault._resetForTest();
+  b.db._resetForTest();
+  await b.vault.init({ dataDir: tmpDir });
+  try {
+    await b.db.init({
+      dataDir:             tmpDir,
+      tmpDir:              path.join(tmpDir, "tmpfs"),
+      allowNonTmpfsTmpDir: true,
+      schema:              [{ name: "t", columns: { _id: "TEXT PRIMARY KEY" } }],
+    });
+    return null;
+  } catch (e) {
+    return e;
+  } finally {
+    delete process.env[key];
+  }
+}
+
 async function run() {
   var saved = snapshotEnv();
   var refusedDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-nts-req-"));
   var allowedDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-nts-opt-"));
   var badCfgDir  = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-nts-bad-"));
   var skipDir    = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-nts-skip-"));
+  var envDirs    = [];
   try {
     var refused = await attemptBoot(refusedDir, true);
     check("db.init refuses when authenticated time is required and none was obtained",
@@ -187,11 +225,58 @@ async function run() {
     check("db.init: and the refusal names the setting that skipped it",
       skipped && /BLAMEJS_SKIP_NTP_CHECK/.test(skipped.message || ""),
       skipped && skipped.message);
+
+    // A mistyped numeric setting must be refused, not absorbed. Each of these
+    // parses to NaN and previously changed clock policy in silence.
+    var NUMERIC_ENV = [
+      "BLAMEJS_NTP_TIMEOUT_MS",
+      "BLAMEJS_NTP_DRIFT_WARN_MS",
+      "BLAMEJS_NTP_DRIFT_FATAL_MS",
+    ];
+    for (var ei = 0; ei < NUMERIC_ENV.length; ei += 1) {
+      try { await b.db.close(); } catch (_e) { /* may not be open */ }
+      var envDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-nts-env-"));
+      envDirs.push(envDir);
+      var envErr = await attemptBootWithEnv(envDir, NUMERIC_ENV[ei], "abc");
+      check("db.init refuses a non-numeric " + NUMERIC_ENV[ei],
+        envErr !== null, "init resolved instead of throwing");
+      check("db.init: and the refusal names " + NUMERIC_ENV[ei],
+        envErr && new RegExp(NUMERIC_ENV[ei]).test(envErr.message || ""),
+        envErr && envErr.message);
+    }
+
+    // Both values well-formed, the COMBINATION incoherent: a warn threshold
+    // above the fatal one cannot be satisfied. setThresholds refuses it, and
+    // that refusal used to be caught and logged at debug, leaving the
+    // registered defaults in force with nothing an operator would notice.
+    try { await b.db.close(); } catch (_e) { /* may not be open */ }
+    var comboDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-nts-combo-"));
+    envDirs.push(comboDir);
+    process.env.BLAMEJS_NTP_DRIFT_FATAL_MS = "1000";
+    var comboErr = await attemptBootWithEnv(comboDir, "BLAMEJS_NTP_DRIFT_WARN_MS", "100000");
+    delete process.env.BLAMEJS_NTP_DRIFT_FATAL_MS;
+    check("db.init refuses a warn threshold above the fatal one",
+      comboErr !== null && comboErr.code === "db/bad-ntp-setting",
+      comboErr && ((comboErr.code || "") + " :: " + (comboErr.message || "")));
+    check("db.init: and the refusal names both settings",
+      comboErr && /BLAMEJS_NTP_DRIFT_WARN_MS/.test(comboErr.message || "") &&
+        /BLAMEJS_NTP_DRIFT_FATAL_MS/.test(comboErr.message || ""),
+      comboErr && comboErr.message);
+
+    // The control: a well-formed value for the same variable still boots, so
+    // the refusals above are about the garbage and not about the variable
+    // being read at all.
+    try { await b.db.close(); } catch (_e) { /* may not be open */ }
+    var goodDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-nts-envok-"));
+    envDirs.push(goodDir);
+    var goodErr = await attemptBootWithEnv(goodDir, "BLAMEJS_NTP_TIMEOUT_MS", "250");
+    check("db.init boots with a well-formed BLAMEJS_NTP_TIMEOUT_MS",
+      goodErr === null, goodErr && ((goodErr.code || "") + " :: " + (goodErr.message || "")));
   } finally {
     try { await b.db.close(); } catch (_e) { /* may already be closed */ }
     b.db._resetForTest();
     restoreEnv(saved);
-    [refusedDir, allowedDir, badCfgDir, skipDir].forEach(function (d) {
+    [refusedDir, allowedDir, badCfgDir, skipDir].concat(envDirs).forEach(function (d) {
       try { fs.rmSync(d, { recursive: true, force: true }); } catch (_e) { /* best effort */ }
     });
   }

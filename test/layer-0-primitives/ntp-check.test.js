@@ -178,6 +178,72 @@ async function testCheckDriftPrefersAuthenticatedTime() {
     parse("[2001:db8::1]").port === undefined,
     JSON.stringify(parse("[2001:db8::1]")));
 
+  // A present option of the wrong TYPE is refused, never coerced and never
+  // ignored. Both of these took the guarantee away silently: `requireNts` was
+  // compared against `true`, so a config loader handing back the string "true"
+  // or the number 1 read as DISABLED and the unauthenticated fallback ran; and
+  // a non-array `ntsServers` read as an empty list, so no authenticated query
+  // was attempted at all. db.init builds a real boolean and a real array, so
+  // neither reached it — a direct caller lost the guarantee and was told
+  // nothing.
+  var BAD_OPTS = [
+    ["requireNts as a string",  { requireNts: "true" },  "ntp/bad-require-nts"],
+    ["requireNts as a number",  { requireNts: 1 },       "ntp/bad-require-nts"],
+    // `servers` is the same shape one field over, and it was the one that
+    // actually reached a socket: a string is iterated by CHARACTER, so
+    // `servers: "zq"` queried the hosts "z" and "q" and reported an ordinary
+    // unreachable warning. The configured server was never contacted, and the
+    // clock went unchecked with nothing saying why. Measured, not assumed —
+    // the returned error read `no reply from q`.
+    ["servers as a string",     { servers: "time.example" },    "ntp/bad-servers"],
+    ["servers as an object",    { servers: { host: "x" } },     "ntp/bad-servers"],
+    ["an empty entry in servers", { servers: ["time.example", ""] }, "ntp/bad-servers"],
+    // A negative timeout is truthy, so it passed the `|| DEFAULT` guard and
+    // armed a timer that fires immediately — every query "times out" at once.
+    ["a negative timeoutMs",    { timeoutMs: -1 },              "ntp/bad-timeout"],
+    ["a non-numeric timeoutMs", { timeoutMs: "soon" },          "ntp/bad-timeout"],
+    ["ntsServers as a string",  { ntsServers: "time.example" }, "ntp/bad-nts-servers"],
+    ["ntsServers as an object", { ntsServers: { host: "x" } },  "ntp/bad-nts-servers"],
+    // The shared validator checks the ELEMENTS too, so a list with a hole in
+    // it is refused where it is configured rather than at the first query.
+    ["an empty entry in the list", { ntsServers: ["time.example", ""] }, "ntp/bad-nts-servers"],
+    ["a non-string entry",         { ntsServers: [{ host: "x" }] },      "ntp/bad-nts-servers"],
+  ];
+  for (var bi = 0; bi < BAD_OPTS.length; bi += 1) {
+    var badErr = null;
+    try {
+      await b.ntpCheck.checkDrift(Object.assign(
+        { servers: ["127.0.0.1"], port: 1, timeoutMs: 250 }, BAD_OPTS[bi][1]));                        // allow:raw-time-literal — test-only short probe
+    } catch (e) { badErr = e; }
+    check("checkDrift: " + BAD_OPTS[bi][0] + " is refused rather than read as absent",
+      badErr !== null && badErr.code === BAD_OPTS[bi][2],
+      String(badErr && (badErr.code || badErr.message)));
+  }
+  // `null` is the framework's "absent, use the default" across every
+  // optionalX validator, so it is accepted here rather than refused — the one
+  // shape that is deliberately NOT a type error.
+  var nullOk = await b.ntpCheck.checkDrift({
+    servers: ["127.0.0.1"], port: 1, timeoutMs: 250,                                                   // allow:raw-time-literal — test-only short probe
+    requireNts: null, ntsServers: null,
+  });
+  check("checkDrift: a null option reads as absent, matching every other optional opt",
+    nullOk && nullOk.driftMs === null, JSON.stringify(nullOk));
+
+  // The controls: the documented types still work, and so does omitting them.
+  // Without these the assertions above would pass on a checkDrift that refused
+  // every call.
+  var okTrue = await b.ntpCheck.checkDrift({
+    ntsServers: ["127.0.0.1"], servers: ["127.0.0.1"], port: 1, timeoutMs: 250,                        // allow:raw-time-literal — test-only short probe
+    requireNts: true,
+  });
+  check("checkDrift: a boolean true requireNts is accepted",
+    okTrue && okTrue.authenticated === false, JSON.stringify(okTrue));
+  var okFalse = await b.ntpCheck.checkDrift({
+    ntsServers: [], servers: ["127.0.0.1"], port: 1, timeoutMs: 250, requireNts: false,                // allow:raw-time-literal — test-only short probe
+  });
+  check("checkDrift: a boolean false requireNts and an empty list are accepted",
+    okFalse && okFalse.driftMs === null, JSON.stringify(okFalse));
+
   // And the refusal reaches the caller through the real entry point, not only
   // the parser: checkDrift is what an operator's configuration flows into.
   var listErr = null;
@@ -242,6 +308,94 @@ async function testBootCheckCarriesAuthenticationThrough() {
     await new Promise(function (resolve) { fake.srv.close(resolve); });
     b.ntpCheck._resetThresholdsForTest();
   }
+}
+
+// monitor() starts a timer and hands back a handle. Its opts are validated
+// inside _tick, which CATCHES and returns — so a typo or a wrong type left the
+// caller holding a live-looking monitor whose every check failed, and the only
+// trace was an audit row nobody was watching for. The refusal has to happen
+// where the caller is still on the stack.
+function testMonitorRejectsBadOptsSynchronously() {
+  var BAD = [
+    ["an unknown option",        { intervalMs: 40, bogusOption: 1 }],                                  // allow:raw-time-literal — fixture interval, not a runtime budget
+    ["a string servers",         { intervalMs: 40, servers: "time.example" }],                         // allow:raw-time-literal — fixture interval, not a runtime budget
+    ["a string requireNts",      { intervalMs: 40, requireNts: "true" }],                              // allow:raw-time-literal — fixture interval, not a runtime budget
+    ["a non-array ntsServers",   { intervalMs: 40, ntsServers: "nts.example" }],                       // allow:raw-time-literal — fixture interval, not a runtime budget
+    ["a negative timeoutMs",     { intervalMs: 40, timeoutMs: -1 }],                                   // allow:raw-time-literal — fixture interval, not a runtime budget
+  ];
+  BAD.forEach(function (c) {
+    var mon = null;
+    var threw = null;
+    try { mon = b.ntpCheck.monitor(c[1]); } catch (e) { threw = e; }
+    if (mon && typeof mon.stop === "function") mon.stop();
+    check("monitor: " + c[0] + " is refused before the timer starts",
+      threw !== null, "monitor() returned a handle instead of throwing");
+  });
+
+  // Zero DISABLES a threshold — bootCheck applies each one only when it is
+  // `> 0`, so `driftFatalMs: 0` is a supported override, not a bad value. A
+  // positive-only rule would refuse it and make monitor reject what bootCheck
+  // accepts for the same option.
+  var zeroed = null;
+  var zeroErr = null;
+  try {
+    zeroed = b.ntpCheck.monitor({
+      intervalMs: 60000, servers: ["127.0.0.1"], port: 1, timeoutMs: 250,                              // allow:raw-time-literal — fixture interval, not a runtime budget
+      driftWarnMs: 0, driftFatalMs: 0, audit: false,
+    });
+  } catch (e) { zeroErr = e; }
+  if (zeroed && typeof zeroed.stop === "function") zeroed.stop();
+  check("monitor: a zeroed threshold is accepted, because zero disables it",
+    zeroErr === null, String(zeroErr && (zeroErr.code || zeroErr.message)));
+
+  // The control: a fully-valid opts object still builds a monitor, so the
+  // assertions above are about the bad values and not about monitor refusing
+  // everything.
+  var ok = b.ntpCheck.monitor({
+    intervalMs: 60000, servers: ["127.0.0.1"], port: 1, timeoutMs: 250,                                // allow:raw-time-literal — fixture interval, not a runtime budget
+    driftWarnMs: 2000, driftFatalMs: 30000, audit: false,                                              // allow:raw-time-literal — fixture thresholds, not a runtime budget
+    onDrift: function () {},
+  });
+  check("monitor: a valid opts object still returns a handle",
+    ok && typeof ok.stop === "function");
+  ok.stop();
+}
+
+// bootCheck reads its two threshold overrides with `typeof x === "number"` and
+// falls back to the registered thresholds otherwise, so a string
+// `driftFatalMs` was IGNORED and the boot ran against the registered value
+// instead of the one the caller passed. monitor refuses the same value, so the
+// two disagreed about an option they share — the mirror of the inconsistency
+// that made a zeroed threshold worth allowing.
+async function testBootCheckRefusesMistypedThresholds() {
+  var BAD = [
+    ["a string driftFatalMs", { driftFatalMs: "60000" }],
+    ["a string driftWarnMs",  { driftWarnMs: "1000" }],
+    ["a negative driftWarnMs", { driftWarnMs: -1 }],
+  ];
+  for (var i = 0; i < BAD.length; i += 1) {
+    var err = null;
+    try {
+      await b.ntpCheck.bootCheck(Object.assign(
+        { servers: ["127.0.0.1"], port: 1, timeoutMs: 250 }, BAD[i][1]));                              // allow:raw-time-literal — test-only short probe
+    } catch (e) { err = e; }
+    check("bootCheck: " + BAD[i][0] + " is refused rather than ignored",
+      err !== null && err.code === "ntp/bad-threshold",
+      String(err && (err.code || err.message)));
+  }
+
+  // Controls: a numeric override is honoured, and zero still disables — the
+  // same contract monitor now enforces, so the two agree.
+  var numeric = await b.ntpCheck.bootCheck({
+    servers: ["127.0.0.1"], port: 1, timeoutMs: 250, driftFatalMs: 60000, driftWarnMs: 1000,           // allow:raw-time-literal — test-only short probe
+  });
+  check("bootCheck: a numeric threshold override is accepted",
+    numeric && numeric.driftMs === null, JSON.stringify(numeric));
+  var zeroed = await b.ntpCheck.bootCheck({
+    servers: ["127.0.0.1"], port: 1, timeoutMs: 250, driftFatalMs: 0, driftWarnMs: 0,                  // allow:raw-time-literal — test-only short probe
+  });
+  check("bootCheck: a zeroed threshold is accepted, because zero disables it",
+    zeroed && zeroed.driftMs === null, JSON.stringify(zeroed));
 }
 
 function testMonitorRejectsBadInterval() {
@@ -314,6 +468,8 @@ async function testMonitorFiresOnDriftAndAudits() {
 
 async function run() {
   testMonitorRejectsBadInterval();
+  testMonitorRejectsBadOptsSynchronously();
+  await testBootCheckRefusesMistypedThresholds();
   await testMonitorFiresOnDriftAndAudits();
   await testUnreachableMessageNamesAReadableSetting();
   await testCheckDriftPrefersAuthenticatedTime();
