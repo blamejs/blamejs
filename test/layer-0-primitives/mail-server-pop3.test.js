@@ -1073,6 +1073,464 @@ async function run() {
   await testBackendMessagelessRejections();
   await testTenantRefuseNullFallbacks();
   await testAuthSuccessTenantless();
+  await testSessionLifecycleHooks();
+  await testLifecycleHooksThatThrow();
+  await testLifecycleHooksThatReject();
+  await testSessionEndWaitsForStoreWork();
+  await testImplicitTls();
+}
+
+// RFC 8314 §3 asks for implicit TLS on 995 rather than the in-band upgrade.
+// Without it the only arrangement available is a TLS terminator in front of
+// 110, and behind one the listener is handed a plaintext connection — so it
+// cannot see the TLS it is not part of, and every credential is refused. The
+// tell is visible on the wire: a greeting advertising STLS inside an
+// established TLS session.
+async function testImplicitTls() {
+  var s = await _makeServer({ implicitTls: true });
+  // No STLS step: TLS from the first byte.
+  var tls = nodeTls.connect({ port: s.port, host: "127.0.0.1", ca: s.caPem,
+    servername: "localhost" });
+  tls.on("error", function () {});
+  await new Promise(function (r, j) { tls.once("secureConnect", r); tls.once("error", j); });
+  try {
+    check("implicit TLS: the greeting arrives over TLS", /^\+OK/.test(await _readReply(tls)));
+    var capa = await _send(tls, "CAPA", true);
+    check("implicit TLS: STLS is not advertised on this port",
+      !/STLS/.test(capa), JSON.stringify(capa));
+    check("implicit TLS: and the verb is refused if sent anyway (RFC 8314 §3.3)",
+      /^-ERR/.test(await _send(tls, "STLS")));
+    // The point of the whole thing: credentials are accepted, because the
+    // listener knows the session is encrypted.
+    check("implicit TLS: USER accepted", /^\+OK/.test(await _send(tls, "USER alice")));
+    check("implicit TLS: PASS accepted over the implicit session",
+      /^\+OK/.test(await _send(tls, "PASS good")));
+  } finally { tls.destroy(); await s.srv.close(); }
+
+  await testImplicitTlsRefusalIsAClose();
+}
+
+// A rate-limit refusal is decided before the socket is wrapped, so writing the
+// protocol's refusal line there would put plaintext in front of a peer that is
+// mid-handshake: it reads as a handshake failure, the refusal itself is
+// unreadable, and the port's "TLS from the first byte" claim is broken by the
+// listener. Handshaking first so the line COULD be written would spend a full
+// key exchange on every rejected peer — the resource the limit protects.
+async function testImplicitTlsRefusalIsAClose() {
+  var s = await _makeServer({
+    implicitTls: true,
+    rateLimit: {
+      admitConnection:   function () { return { ok: false, reason: "too-many" }; },
+      releaseConnection: function () {},
+      checkAuthAdmit:    function () { return { ok: true }; },
+      noteAuthFailure:   function () {},
+      checkRcptAdmit:    function () { return { ok: true }; },
+      noteRcptFailure:   function () {},
+      minBytesPerSecond: function () { return 0; },
+      bodyRateStarved:   function () { return false; },
+      bodyRateWindowMs:  function () { return 1000; },                                                // allow:raw-time-literal — test-only stub window
+    },
+  });
+  var raw = nodeNet.connect(s.port, "127.0.0.1");
+  var bytes = Buffer.alloc(0);
+  raw.on("error", function () {});
+  raw.on("data", function (d) { bytes = Buffer.concat([bytes, d]); });
+  await new Promise(function (r) { raw.once("connect", r); });
+  await new Promise(function (r) { raw.once("close", r); });
+  check("implicit TLS: a refused connection is closed, not answered in plaintext",
+    bytes.length === 0, JSON.stringify(bytes.toString("utf8").slice(0, 80)));
+  raw.destroy();
+  await s.srv.close();
+}
+
+// A consumer releases the exclusive maildrop on onSessionEnd, so the end must
+// not be reported around store work that is still running. A link dropping
+// mid-open would otherwise report the end BEFORE the open acquired the lease —
+// stranding a lease whose end has already been announced — and one dropping
+// mid-commit would let the next session in while UPDATE is still writing.
+async function testSessionEndWaitsForStoreWork() {
+  var order = [];
+  var releaseOpen = null;
+  var store = _stubStore();
+  var baseOpen = store.openPop3Drop;
+  store.openPop3Drop = function (actor, opts) {
+    order.push("open-started");
+    return new Promise(function (resolve) {
+      releaseOpen = function () {
+        order.push("open-finished");
+        resolve(baseOpen.call(store, actor, opts));
+      };
+    });
+  };
+  var s = await _makeServer({
+    mailStore:    store,
+    onSessionEnd: function () { order.push("session-end"); },
+  });
+  var sock = nodeNet.connect(s.port, "127.0.0.1");
+  sock.on("error", function () {});
+  await _readReply(sock); // greeting
+  check("store-work: STLS begins negotiation", /^\+OK/.test(await _send(sock, "STLS")));
+  var tls = nodeTls.connect({ socket: sock, ca: s.caPem, servername: "localhost" });
+  tls.on("error", function () {});
+  await new Promise(function (r, j) { tls.once("secureConnect", r); tls.once("error", j); });
+  check("store-work: USER accepted", /^\+OK/.test(await _send(tls, "USER alice")));
+  // PASS opens the drop; the stub holds it open until released below.
+  tls.write("PASS good\r\n");
+  await helpers.waitUntil(function () { return order.indexOf("open-started") !== -1; },
+    { timeoutMs: 5000, label: "pop3 store-work: open started" });
+
+  // Drop the link with the open still in flight.
+  tls.destroy();
+  sock.destroy();
+  await helpers.passiveObserve(200, "pop3 store-work: no session end while the open is pending");
+  check("store-work: the end is not reported while the open is in flight",
+    order.indexOf("session-end") === -1, JSON.stringify(order));
+
+  releaseOpen();
+  await helpers.waitUntil(function () { return order.indexOf("session-end") !== -1; },
+    { timeoutMs: 5000, label: "pop3 store-work: session end after the open settled" });
+  check("store-work: and is reported once the lease it acquired exists",
+    order.indexOf("open-finished") < order.indexOf("session-end"), JSON.stringify(order));
+  await s.srv.close();
+
+  await testCleartextRefusalChecksTheBudgetBeforeCounting();
+  await testSessionEndWaitsForASlowCommit();
+  await testSessionEndWaitsForEveryStoreCall();
+  await testNoMaildropAfterTheSessionEnded();
+}
+
+// The peer can go while its credentials are still being verified. Nothing is
+// in flight against the store at that moment, so the end is reported at once —
+// and the verify then resolves and opens a maildrop. That lease is taken after
+// the only end notification the consumer will ever get, so nothing releases
+// it: the account is locked out of its own mailbox by a login that never
+// finished.
+async function testNoMaildropAfterTheSessionEnded() {
+  var ended = [];
+  var opened = 0;
+  var releaseVerify = null;
+  var store = _stubStore();
+  var baseOpen = store.openPop3Drop;
+  store.openPop3Drop = function (actor, opts) { opened += 1; return baseOpen.call(store, actor, opts); };
+  var s = await _makeServer({
+    mailStore: store,
+    auth: { verify: function () {
+      return new Promise(function (resolve) {
+        releaseVerify = function () {
+          resolve({ ok: true, actor: { username: "alice", tenantId: "t1" } });
+        };
+      });
+    } },
+    onSessionEnd: function () { ended.push(1); },
+  });
+  var sock = nodeNet.connect(s.port, "127.0.0.1");
+  sock.on("error", function () {});
+  await _readReply(sock);
+  await _send(sock, "STLS");
+  var tls = nodeTls.connect({ socket: sock, ca: s.caPem, servername: "localhost" });
+  tls.on("error", function () {});
+  await new Promise(function (r, j) { tls.once("secureConnect", r); tls.once("error", j); });
+  await _send(tls, "USER alice");
+  tls.write("PASS good\r\n");
+  await helpers.waitUntil(function () { return releaseVerify !== null; },
+    { timeoutMs: 5000, label: "pop3 late-auth: the verifier was called" });
+
+  // The link goes while the verifier is still deciding.
+  tls.destroy();
+  sock.destroy();
+  await helpers.waitUntil(function () { return ended.length > 0; },
+    { timeoutMs: 5000, label: "pop3 late-auth: the session ended" });
+  check("late auth: the session end is reported when the link drops",
+    ended.length === 1, JSON.stringify(ended));
+
+  releaseVerify();
+  await helpers.passiveObserve(300, "pop3 late-auth: no maildrop opened after the end");
+  check("late auth: a verdict that lands after the end opens no maildrop",
+    opened === 0, String(opened));
+  check("late auth: and no second end is reported for it",
+    ended.length === 1, JSON.stringify(ended));
+  await s.srv.close();
+}
+
+// A DELE mutates the maildrop exactly as an open or a commit does, and so does
+// an RSET clearing the marks. Tracking only the two operations that came to
+// mind would let a link dropping mid-DELE report the session ended, and the
+// consumer would release the exclusive lease and admit the next session while
+// the previous one is still writing.
+async function testSessionEndWaitsForEveryStoreCall() {
+  var order = [];
+  var releaseDelete = null;
+  var store = _stubStore();
+  store.markDelete = function () {
+    order.push("delete-started");
+    return new Promise(function (resolve) {
+      releaseDelete = function () { order.push("delete-finished"); resolve(); };
+    });
+  };
+  var s = await _makeServer({
+    mailStore:    store,
+    onSessionEnd: function () { order.push("session-end"); },
+  });
+  var sock = nodeNet.connect(s.port, "127.0.0.1");
+  sock.on("error", function () {});
+  await _readReply(sock);
+  await _send(sock, "STLS");
+  var tls = nodeTls.connect({ socket: sock, ca: s.caPem, servername: "localhost" });
+  tls.on("error", function () {});
+  await new Promise(function (r, j) { tls.once("secureConnect", r); tls.once("error", j); });
+  await _send(tls, "USER alice");
+  check("every store call: PASS accepted", /^\+OK/.test(await _send(tls, "PASS good")));
+  tls.write("DELE 1\r\n");
+  await helpers.waitUntil(function () { return order.indexOf("delete-started") !== -1; },
+    { timeoutMs: 5000, label: "pop3 store-calls: the delete started" });
+
+  tls.destroy();
+  sock.destroy();
+  await helpers.passiveObserve(250, "pop3 store-calls: no session end while the delete runs");
+  check("every store call: the session does not end while a DELE is in flight",
+    order.indexOf("session-end") === -1, JSON.stringify(order));
+
+  releaseDelete();
+  await helpers.waitUntil(function () { return order.indexOf("session-end") !== -1; },
+    { timeoutMs: 5000, label: "pop3 store-calls: session end after the delete settled" });
+  check("every store call: and is reported once the drop is no longer being written",
+    order.indexOf("delete-finished") < order.indexOf("session-end"), JSON.stringify(order));
+  await s.srv.close();
+}
+
+// A commit that outruns commitTimeoutMs is answered on the wire — the client
+// cannot be left hanging — but the write is still in progress: a timeout gives
+// up on the ANSWER, it does not stop the backend. Releasing the maildrop then
+// would hand the next session a mailbox that is still being mutated, which is
+// the same corruption the deferral exists to prevent, reached by the one path
+// that reports failure.
+// A cleartext credential verb is refused under the balanced profile, and the
+// refusal is COUNTED against the per-IP auth-failure budget on purpose — a
+// scanner enumerating over plaintext should spend budget doing it. What it must
+// not do is count before asking whether the address is still admitted.
+//
+// The budget is a rolling window over stored timestamps, not a counter that
+// decays: `checkAuthAdmit` prunes entries older than the window and refuses once
+// enough remain. So an address already at the cap that keeps ADDING timestamps
+// holds the window populated and pushes the end of its own wait forward. Every
+// sibling listener closes the connection before anything is counted, so the
+// address serves the time it earned; these four branches counted first and
+// returned, and the refusals are free — no credential verified, no work done,
+// nothing closing the socket. A client looping USER over plaintext could hold
+// its own address, and anyone sharing it, out of the listener indefinitely
+// without ever presenting a password.
+async function testCleartextRefusalChecksTheBudgetBeforeCounting() {
+  var verbs = [
+    { label: "USER", lines: ["USER alice"] },
+    { label: "PASS", lines: ["USER alice", "PASS wrong"] },
+    { label: "APOP", lines: ["APOP alice nope"] },
+  ];
+  for (var i = 0; i < verbs.length; i += 1) {
+    var v = verbs[i];
+    // Cap of 1, so the SECOND arrival is already over budget. Balanced profile
+    // over a plaintext connection is the configuration that reaches these
+    // branches at all.
+    var s = await _makeFullServer({
+      profile: "balanced",
+      rateLimit: { authFailuresPerIpPer15Min: 1 },
+    });
+    var c = _conn(s.port);
+    try {
+      await c.waitFor(/ready\r\n/, v.label + ": greeting");
+      v.lines.forEach(function (ln) { c.send(ln); });
+      await c.waitFor(/refused over cleartext/, v.label + ": first cleartext refusal");
+
+      // Second attempt from the same address, now over the cap. It has to be
+      // closed rather than served another free refusal — and being served one
+      // is what extended the window.
+      v.lines.forEach(function (ln) { c.send(ln); });
+      await c.waitFor(/Too many AUTH failures/, v.label + ": budget refusal");
+      check("pop3 " + v.label + " over cleartext is closed once the address is " +
+            "at the per-IP cap, not served another counted refusal",
+        /Too many AUTH failures/.test(c.text()));
+      await c.waitClosed(v.label + ": rate-limit close");
+    } finally { c.destroy(); await s.srv.close(); }
+  }
+}
+
+async function testSessionEndWaitsForASlowCommit() {
+  var order = [];
+  var releaseCommit = null;
+  var store = _stubStore();
+  store.commitPop3Drop = function () {
+    order.push("commit-started");
+    return new Promise(function (resolve) {
+      releaseCommit = function () { order.push("commit-finished"); resolve({ deleted: 0 }); };
+    });
+  };
+  var s = await _makeServer({
+    mailStore:        store,
+    commitTimeoutMs:  200,
+    onSessionEnd:     function () { order.push("session-end"); },
+  });
+  var sock = nodeNet.connect(s.port, "127.0.0.1");
+  sock.on("error", function () {});
+  await _readReply(sock);
+  check("slow commit: STLS begins negotiation", /^\+OK/.test(await _send(sock, "STLS")));
+  var tls = nodeTls.connect({ socket: sock, ca: s.caPem, servername: "localhost" });
+  tls.on("error", function () {});
+  await new Promise(function (r, j) { tls.once("secureConnect", r); tls.once("error", j); });
+  await _send(tls, "USER alice");
+  check("slow commit: PASS accepted", /^\+OK/.test(await _send(tls, "PASS good")));
+  tls.write("QUIT\r\n");
+  await helpers.waitUntil(function () { return order.indexOf("commit-started") !== -1; },
+    { timeoutMs: 5000, label: "pop3 slow commit: the commit started" });
+
+  // Past the timeout: the client has been answered and the socket closed, but
+  // the write has not finished.
+  await helpers.passiveObserve(600, "pop3 slow commit: no session end while the commit runs");
+  check("slow commit: the session does not end while the write is still running",
+    order.indexOf("session-end") === -1, JSON.stringify(order));
+
+  releaseCommit();
+  await helpers.waitUntil(function () { return order.indexOf("session-end") !== -1; },
+    { timeoutMs: 5000, label: "pop3 slow commit: session end after the commit settled" });
+  check("slow commit: and is reported once the mailbox is no longer being written",
+    order.indexOf("commit-finished") < order.indexOf("session-end"), JSON.stringify(order));
+  await s.srv.close();
+}
+
+// RFC 1939 §3 gives a maildrop to one session at a time, so a store leases it
+// exclusively — and had no signal telling it when to let go. A client that
+// loses its link never sends QUIT, so the socket just goes away, and the lease
+// stays held until a timer the consumer guessed at expires. For that window the
+// account holder's own retries are refused, correctly, for a lease genuinely
+// still held.
+async function testSessionLifecycleHooks() {
+  var ended = [];
+  var activity = [];
+  var s = await _makeServer({
+    onSessionEnd: function (actor, sessionId) {
+      ended.push({ user: actor && actor.username, sessionId: sessionId });
+    },
+    onSessionActivity: function (actor, sessionId, verb) {
+      activity.push(verb);
+    },
+  });
+  var sock = nodeNet.connect(s.port, "127.0.0.1");
+  sock.on("error", function () {});
+  await _readReply(sock); // greeting
+  check("lifecycle: STLS begins negotiation", /^\+OK/.test(await _send(sock, "STLS")));
+  var tls = nodeTls.connect({ socket: sock, ca: s.caPem, servername: "localhost" });
+  tls.on("error", function () {});
+  await new Promise(function (r, j) { tls.once("secureConnect", r); tls.once("error", j); });
+  check("lifecycle: USER accepted", /^\+OK/.test(await _send(tls, "USER alice")));
+  check("lifecycle: PASS accepted", /^\+OK/.test(await _send(tls, "PASS good")));
+  // NOOP is what the protocol offers as a keepalive, and the listener answers
+  // it without touching the store — so a consumer ageing an idle lease never
+  // saw it and reaped the lease under a live connection.
+  check("lifecycle: NOOP answered", /^\+OK/.test(await _send(tls, "NOOP")));
+  check("lifecycle: the keepalive reaches the consumer",
+    activity.indexOf("NOOP") !== -1, JSON.stringify(activity));
+  check("lifecycle: and so does every other verb",
+    activity.indexOf("USER") !== -1 && activity.indexOf("PASS") !== -1,
+    JSON.stringify(activity));
+
+  // The case that locks a mailbox: the link drops mid-session. No QUIT, no
+  // commit — just a socket that goes away.
+  check("lifecycle: no session end reported while the session is open",
+    ended.length === 0, JSON.stringify(ended));
+  tls.destroy();
+  sock.destroy();
+  await helpers.waitUntil(function () { return ended.length > 0; },
+    { timeoutMs: 5000, label: "pop3 lifecycle: onSessionEnd after a dropped link" });
+  check("lifecycle: a dropped link ends the session",
+    ended.length === 1, JSON.stringify(ended));
+  check("lifecycle: and reports the actor the drop was opened with",
+    ended[0].user === "alice" && typeof ended[0].sessionId === "string",
+    JSON.stringify(ended[0]));
+
+  // Once only: a socket that errors AND closes emits both, and a consumer
+  // releasing by decrementing a holder count would corrupt its own accounting.
+  await helpers.passiveObserve(120, "pop3 lifecycle: no second session end");
+  check("lifecycle: the end is reported exactly once",
+    ended.length === 1, JSON.stringify(ended));
+  await s.srv.close();
+}
+
+// A consumer hook is a report, not a veto: by the time either one runs, the
+// thing it describes has already happened. So a hook that throws must not take
+// anything down with it — not the command it fired on, not the connection, and
+// least of all the process, since onSessionEnd runs inside the socket's own
+// close handler where an escaping throw has no caller left to catch it.
+async function testLifecycleHooksThatThrow() {
+  var ended = [];
+  var s = await _makeServer({
+    onSessionActivity: function () { throw new Error("consumer activity hook blew up"); },
+    onSessionEnd:      function (actor, sessionId) { ended.push(sessionId); },
+  });
+  var sock = nodeNet.connect(s.port, "127.0.0.1");
+  sock.on("error", function () {});
+  await _readReply(sock); // greeting
+  check("throwing hook: the command it fired on is still answered",
+    /STLS/.test(await _send(sock, "CAPA", true)));
+  check("throwing hook: and so is the next one",
+    /^\+OK/.test(await _send(sock, "STLS")));
+  sock.destroy();
+  await helpers.waitUntil(function () { return ended.length > 0; },
+    { timeoutMs: 5000, label: "pop3 lifecycle: session end after a throwing activity hook" });
+  check("throwing hook: the session still ends exactly once",
+    ended.length === 1, JSON.stringify(ended));
+  await s.srv.close();
+
+  // The end hook is the dangerous one: it runs from the close handler, so an
+  // escaping throw is an uncaught exception on an EventEmitter, not a rejected
+  // promise someone can observe.
+  var s2 = await _makeServer({
+    onSessionEnd: function () { throw new Error("consumer end hook blew up"); },
+  });
+  var sock2 = nodeNet.connect(s2.port, "127.0.0.1");
+  sock2.on("error", function () {});
+  await _readReply(sock2);
+  sock2.destroy();
+  await helpers.passiveObserve(150, "pop3 lifecycle: throwing end hook does not kill the listener");
+  var sock3 = nodeNet.connect(s2.port, "127.0.0.1");
+  sock3.on("error", function () {});
+  check("throwing end hook: the listener still serves the next connection",
+    /^\+OK/.test(await _readReply(sock3)));
+  sock3.destroy();
+  await s2.srv.close();
+}
+
+// A consumer hook is more likely to be async than not — releasing a lease is a
+// store call — and a rejected promise is the same failure as a throw, arriving
+// later. Unobserved it is an unhandled rejection, which under Node's default
+// takes the process down: exactly the outcome the synchronous catch prevents
+// for the synchronous shape.
+async function testLifecycleHooksThatReject() {
+  var unhandled   = [];
+  var onUnhandled = function (e) { unhandled.push(e); };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    var ended = [];
+    var s = await _makeServer({
+      onSessionActivity: async function () { throw new Error("async activity hook rejected"); },
+      onSessionEnd:      async function () {
+        ended.push(1);
+        throw new Error("async end hook rejected");
+      },
+    });
+    var sock = nodeNet.connect(s.port, "127.0.0.1");
+    sock.on("error", function () {});
+    await _readReply(sock); // greeting
+    check("rejecting hook: the command it fired on is still answered",
+      /STLS/.test(await _send(sock, "CAPA", true)));
+    sock.destroy();
+    await helpers.waitUntil(function () { return ended.length > 0; },
+      { timeoutMs: 5000, label: "pop3 lifecycle: async end hook ran" });
+    // The rejection surfaces a turn after the hook runs, so give it one.
+    await helpers.passiveObserve(200, "pop3 lifecycle: no unhandled rejection from a hook");
+    check("rejecting hook: no unhandled rejection reaches the process",
+      unhandled.length === 0, JSON.stringify(unhandled.map(String)));
+    await s.srv.close();
+  } finally {
+    process.removeListener("unhandledRejection", onUnhandled);
+  }
 }
 
 module.exports = { run: run };

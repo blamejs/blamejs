@@ -219,7 +219,7 @@ async function testStorage() {
     check("absolute path rejected",                    absRejected);
 
     var nullByteRejected = false;
-    try { await b.storage.saveFile(content, "ok injected"); }
+    try { await b.storage.saveFile(content, "ok\x00injected"); }
     catch (_) { nullByteRejected = true; }
     check("null-byte in path rejected",                nullByteRejected);
 

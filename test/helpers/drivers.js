@@ -216,7 +216,26 @@ function _makeFakeServiceAccount() {
   };
 }
 
+// Wrap a statement whose body contains semicolons so the mysql COMMAND-LINE
+// client sends it whole.
+//
+// Every live MySQL suite here drives the server through a `docker exec mysql`
+// shim, and that client splits its input on semicolons. A trigger body that
+// decides anything contains one — `IF … THEN SIGNAL …; END IF` — so the shim
+// would send it in fragments and fail on the first. DELIMITER is how the
+// client is told where the statement really ends, and it is a client
+// construct: a protocol driver sends the whole CREATE TRIGGER in one message
+// and never needs it.
+//
+// Shared rather than copied into each shim because there are nine of them, and
+// the framework's guard should not be shaped by which of them was updated.
+function mysqlDelimited(sql) {
+  if (!/^\s*CREATE\s+TRIGGER/i.test(sql) || sql.indexOf(";") === -1) return sql;
+  return "DELIMITER $$\n" + sql + "$$\nDELIMITER ;\n";
+}
+
 module.exports = {
+  mysqlDelimited:          mysqlDelimited,
   _makeFakeDriver:         _makeFakeDriver,
   _makeSqliteDriver:       _makeSqliteDriver,
   _makeFakeMysqlDriver:    _makeFakeMysqlDriver,

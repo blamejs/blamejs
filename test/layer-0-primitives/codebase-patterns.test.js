@@ -24,9 +24,21 @@
   // smoke orchestrator (smoke.js sets its own heap policy if needed).
   if (require.main !== module) return;
   var cp = require("node:child_process");
+  // The duplicate-block scan is the heaviest thing in this file. It now
+  // holds one (pass, size) fingerprint map at a time instead of all
+  // sixteen, and completes in ~1.3 GB on the current corpus (measured by
+  // bisecting the limit: 1024 MB fails, 1280 MB passes). 3 GB is roughly
+  // twice that.
+  //
+  // The point of a bound close to the real need is that it FAILS when
+  // the accumulator regresses. The previous 6144 was raised twice to stay
+  // ahead of a design whose footprint grew with the corpus, and by the
+  // time the corpus caught up this file could no longer run at Node's
+  // default heap at all — it aborted for anyone invoking it directly,
+  // while CI stayed green on a raised NODE_OPTIONS ceiling of its own.
   var r  = cp.spawnSync(
     process.execPath,
-    ["--max-old-space-size=6144"].concat(process.argv.slice(1)),
+    ["--max-old-space-size=3072"].concat(process.argv.slice(1)),
     { stdio: "inherit" }
   );
   process.exit(r.status === null ? 1 : r.status);
@@ -916,9 +928,18 @@ function testNoStaleDefers() {
 // The Edit / Write tooling decodes JSON `\u0000` escape sequences into
 // literal NUL bytes when written to disk. Inside JS regex literals
 // this trips ESLint's `no-control-regex` rule on Linux CI but slips
-// past Windows local lint (encoding-related). Class-of-bug: any file
-// in lib/ containing a literal 0x00 byte should fail the gate at
+// past Windows local lint (encoding-related). Class-of-bug: any source
+// file containing a literal 0x00 byte should fail the gate at
 // authoring time, not on the npm-publish workflow at tag-push time.
+//
+// It walked lib/ alone, and the files that had the problem were all in
+// test/: 34 literal NULs across 16 files, which the gate reported zero
+// of because it never looked there. Nine of those git classified as
+// BINARY — it sniffs the first 8000 bytes, so whether a file went
+// unreadable came down to how early its first NUL sat — and a binary
+// file diffs whole-file and cannot be read by the local review at all.
+// Test files are where hostile-input fixtures live, so they are both
+// the likeliest place to type one and the worst place to lose review.
 // To embed NUL semantically, use the JS source escape `\u0000` (the
 // six-char sequence backslash + u + 0+0+0+0) — JS regex parses that
 // to a NUL char without ESLint complaining.
@@ -952,6 +973,8 @@ function testNoLiteralNulBytesInSource() {
     }
   }
   walk(path.resolve(__dirname, "..", "..", "lib"));
+  walk(path.resolve(__dirname, "..", "..", "test"));
+  walk(path.resolve(__dirname, "..", "..", "scripts"));
   _report("no literal NUL (0x00) bytes in source files (use \\u0000 escape; CI ESLint catches it but Windows local lint may not)",
     hits);
 }
@@ -4699,6 +4722,95 @@ function _normalizeJsLine(line) {
   return line;
 }
 
+// The duplicate-block scan tokenizes and filters a shard ONCE and records the
+// surviving offsets as a byte per (file, size, offset); every later round reads
+// that byte instead of re-deriving the verdict. That is what lets it hold one
+// (pass, size) fingerprint map at a time rather than all sixteen.
+//
+// A keep-flag indexed against the wrong offset would silently shift or drop
+// sites, and the failure is invisible: the report still looks like a report,
+// with different clusters in it. So the round scan is compared against an
+// independent direct scan that recomputes both filters inline and never
+// consults a flag — the control implementation, not a re-run of the same one.
+function testShingleRoundMatchesDirectScan() {
+  var shingle = require(path.join(__dirname, "..", "helpers", "_codebase-shingle"));
+  var REPO_ROOT_LOCAL = path.resolve(__dirname, "..", "..");
+  // A handful of real lib/ files: big enough to produce cross-file matches,
+  // small enough that the direct scan is cheap.
+  var SAMPLE = ["lib/numeric-bounds.js", "lib/http2-teardown.js", "lib/canonical-json.js",
+                "lib/lazy-require.js", "lib/codepoint-class.js"];
+  var SIZES  = [16, 8];
+  var MIN_DISTINCT_TOKENS = 5;
+
+  var abs = SAMPLE.map(function (rel) { return path.join(REPO_ROOT_LOCAL, rel); })
+                  .filter(function (p) { return fs.existsSync(p); });
+  var hits = [];
+  if (abs.length < 2) {
+    hits.push({
+      file: "test/layer-0-primitives/codebase-patterns.test.js", line: 1,
+      content: "shingle round control: fewer than two sample files resolved, so the " +
+        "comparison proves nothing — update SAMPLE to name files that exist",
+    });
+    _report("the shingle round scan agrees with a direct scan of the same files", hits);
+    return;
+  }
+
+  // Control: the all-at-once shape, recomputing every filter per shingle.
+  function directScan(passKey, n) {
+    var fpFn = passKey === "skeleton" ? shingle.sliceFingerprintSkeleton
+                                      : shingle.sliceFingerprintExact;
+    var bucket = {};
+    abs.forEach(function (p) {
+      var entry = shingle.tokenizeFile(p, REPO_ROOT_LOCAL);
+      if (!entry || entry.tokens.length < n) return;
+      for (var ti = 0; ti + n <= entry.tokens.length; ti += 1) {
+        var slice = entry.tokens.slice(ti, ti + n);
+        var distinct = {};
+        for (var di = 0; di < slice.length; di += 1) distinct[slice[di].tok] = true;
+        if (Object.keys(distinct).length < MIN_DISTINCT_TOKENS) continue;
+        if (shingle.isBoilerplate(slice)) continue;
+        var fp = fpFn(slice);
+        if (!bucket[fp]) bucket[fp] = [];
+        bucket[fp].push({ file: entry.rel, line: slice[0].line,
+                          endLine: slice[slice.length - 1].line });
+      }
+    });
+    return bucket;
+  }
+
+  var prepared = shingle.prepareShard(abs, {
+    repoRoot: REPO_ROOT_LOCAL, shingleSizes: SIZES, minDistinctTokens: MIN_DISTINCT_TOKENS,
+  });
+  var compared = 0;
+  ["exact", "skeleton"].forEach(function (passKey) {
+    SIZES.forEach(function (n) {
+      var viaRound  = shingle.scanRound(prepared, { pass: passKey, size: n });
+      var viaDirect = directScan(passKey, n);
+      compared += Object.keys(viaDirect).length;
+      // Site ORDER is compared too, not just membership: cluster identity
+      // depends on which occurrences land in `sites`.
+      if (JSON.stringify(viaRound) !== JSON.stringify(viaDirect)) {
+        hits.push({
+          file: "test/helpers/_codebase-shingle.js", line: 1,
+          content: "scanRound(" + passKey + ", " + n + ") disagrees with a direct scan of the " +
+            "same files (" + Object.keys(viaRound).length + " vs " +
+            Object.keys(viaDirect).length + " fingerprints) — the prepared keep-flags no " +
+            "longer select the same shingles",
+        });
+      }
+    });
+  });
+  // A comparison of two empty maps passes without testing anything.
+  if (compared === 0) {
+    hits.push({
+      file: "test/layer-0-primitives/codebase-patterns.test.js", line: 1,
+      content: "shingle round control: the direct scan produced no fingerprints at any " +
+        "size, so the agreement above is vacuous — pick larger sample files",
+    });
+  }
+  _report("the shingle round scan agrees with a direct scan of the same files", hits);
+}
+
 async function testNoDuplicateCodeBlocks() {
   // class: duplicate-block
   // Token-n-gram shingle detection. Each .js file is fully tokenized
@@ -4742,9 +4854,10 @@ async function testNoDuplicateCodeBlocks() {
   };
 
   // Two-pass scan (exact + skeleton fingerprints) runs inside worker
-  // threads — see test/helpers/_codebase-shingle.js. Each shard
-  // returns a per-pass-per-size fingerprint map; the main thread
-  // merges them and runs the cluster-aggregation logic below.
+  // threads — see test/helpers/_codebase-shingle.js. Each shard is
+  // tokenized and filtered once, then answers one (pass, size)
+  // fingerprint map per request; the main thread merges the shards for
+  // that combination and runs the cluster-aggregation logic below.
 
 
   // ---- Enclosing-function index ----
@@ -4811,57 +4924,133 @@ async function testNoDuplicateCodeBlocks() {
   // — kept as separate entries so each call site is reported.
   var clusters = {};   // fileSetKey → { fileSet, bestSize, bestPass, sites: [{file, startLine, endLine, size}] }
 
-  // Fan files across worker_threads. Each worker tokenizes its shard
-  // and runs the shingle scan, returning a per-pass-per-size
-  // fingerprint map. Main thread merges shard maps (per (pass, size,
-  // fp) key, append site lists) then runs the cluster-aggregation
-  // identical to the previous single-thread version. With 32 cores,
-  // ~250 files split into ~8-file shards: the cross-thread overhead
-  // is tiny vs the savings on the 60-token × 250-file × 8-size scan.
+  // Fan files across worker_threads. Each worker tokenizes and filters
+  // its shard once, then answers one (pass, size) request at a time.
+  // The main thread merges the shards for that one combination, folds
+  // it into the cluster table, and drops it before asking for the next.
+  //
+  // Scanning per combination rather than all sixteen at once is what
+  // keeps this inside a normal heap. Building them together retained
+  // every distinct fingerprint STRING in the corpus at once — eleven
+  // million of them, ~5 GB — and the detector could only run under a
+  // raised ceiling, which it had already outgrown. A fingerprint seen
+  // in one file can never reach MIN_DISTINCT_FILES, so nothing about
+  // the result depended on holding them all; only the peak did.
   //
   // Knobs: HS_PATTERNS_WORKERS=N overrides the worker count;
   // HS_PATTERNS_NO_THREADS=1 forces in-process execution (debug /
   // single-core CI).
   var Worker = require("worker_threads").Worker;
   var os     = require("os");
-  function _scanShardInWorker(shardFiles) {
-    return new Promise(function (resolve, reject) {
-      var w = new Worker(WORKER_PATH, {
-        workerData: Object.assign({ files: shardFiles }, SHINGLE_OPTS_FOR_WORKER),
-      });
-      // Reap the worker on EVERY settle path (#123). Previously the error and
-      // exit handlers rejected without terminate(), so an errored worker thread
-      // stayed alive holding its event-loop handles — the parent could not exit
-      // and the smoke run ran to the 25-min watchdog on memory-starved
-      // macOS-arm64 runners. settle() terminates first, idempotently.
-      var settled = false;
-      function settle(fn, arg) {
-        if (settled) return;
-        settled = true;
-        try { w.terminate(); } catch (_e) { /* already terminating */ }
-        fn(arg);
-      }
-      w.once("message", function (msg) { settle(resolve, msg); });
-      w.once("error", function (e) { settle(reject, e); });
-      w.once("exit", function (code) {
-        if (code !== 0 && code !== null) settle(reject, new Error("shingle worker exited " + code));
-      });
+  // A shard worker outlives a single request, so its failure paths are
+  // a state machine rather than one promise. Reap the thread on EVERY
+  // settle path (#123): an error or exit handler that rejects without
+  // terminate() leaves the thread alive holding its event-loop handles,
+  // the parent cannot exit, and the smoke run burns to the watchdog on
+  // memory-starved macOS-arm64 runners.
+  function _spawnShardWorker(shardFiles) {
+    var w = new Worker(WORKER_PATH, {
+      workerData: Object.assign({ files: shardFiles }, SHINGLE_OPTS_FOR_WORKER),
     });
+    var pending = null;
+    var fatal   = null;
+    var closed  = false;
+    function reap() { try { w.terminate(); } catch (_e) { /* already terminating */ } }
+    function fail(e) {
+      if (closed || fatal) return;
+      fatal = e;
+      reap();
+      if (pending) { var p = pending; pending = null; p.reject(e); }
+    }
+    w.on("message", function (msg) {
+      if (!pending) return;
+      var p = pending; pending = null; p.resolve(msg);
+    });
+    w.on("error", function (e) { fail(e); });
+    w.on("exit", function (code) {
+      if (!closed && code !== 0 && code !== null) fail(new Error("shingle worker exited " + code));
+    });
+    function request(msg) {
+      return new Promise(function (resolve, reject) {
+        if (fatal) { reject(fatal); return; }
+        pending = { resolve: resolve, reject: reject };
+        if (msg) w.postMessage(msg);
+      });
+    }
+    return {
+      // Resolves on the worker's ready announcement — its shard is
+      // tokenized and filtered and it can answer round requests.
+      ready: request(null),
+      round: function (passKey, size) { return request({ pass: passKey, size: size }); },
+      close: function () { closed = true; reap(); },
+    };
   }
-  // Cap worker fan-out at 4 — each Worker holds the per-shard
-  // fingerprint map in heap until message-resolve; on macOS-arm64
-  // CI runners (2 GB Node default heap) ~250 files × 8 cores
-  // peaked above the heap-limit and OOMed the smoke run. 4 workers
-  // keeps the parallel speedup (5x faster than single-threaded)
-  // without crossing the memory ceiling on slow runners. Operators
-  // with bigger machines override via HS_PATTERNS_WORKERS=N.
+  // Cap worker fan-out at 4. Each worker holds its shard's tokens for
+  // the life of the run plus one round's fingerprint map in flight;
+  // more threads buy little once the corpus scan is the bottleneck.
+  // Operators with bigger machines override via HS_PATTERNS_WORKERS=N.
   var WORKER_CAP = 4;                                                                          // allow:raw-byte-literal — worker fan-out cap, not bytes
   var workerCount = Number(process.env.HS_PATTERNS_WORKERS) ||
                     Math.min(os.cpus().length, Math.max(1, files.length), WORKER_CAP);
-  var shardResults;
+
+  // Sizes largest-first so a cluster's sites end up holding the
+  // bestSize occurrences in a single pass. Within a size, fingerprints
+  // sort lexically so cluster identity (which fp's occurrences populate
+  // `sites` when several map to the same fileSet+size) is invariant
+  // under shard-merge order — without it, parallel runs diverge from
+  // in-process runs because shards contribute fps in different orders.
+  var PASS_LABELS  = [["exact", "[exact]"], ["skeleton", "[skeleton]"]];
+  var sortedSizes  = SHINGLE_SIZES.slice().sort(function (a, b) { return b - a; });
+
+  function _foldRoundIntoClusters(passLabel, n, seen) {
+    var fps = Object.keys(seen).sort();
+    for (var fpi = 0; fpi < fps.length; fpi += 1) {
+      var fp = fps[fpi];
+      var occ = seen[fp];
+      var distinctFiles = {};
+      occ.forEach(function (o) { distinctFiles[o.file] = true; });
+      var fileList = Object.keys(distinctFiles).sort();
+      if (fileList.length < MIN_DISTINCT_FILES) continue;
+      var key = passLabel + "|" + fileList.join("|");
+      if (!clusters[key]) {
+        clusters[key] = {
+          fileSet:   fileList,
+          passLabel: passLabel,
+          bestSize:  n,
+          sites:     occ.slice(),
+        };
+      } else if (n > clusters[key].bestSize) {
+        clusters[key].bestSize = n;
+        clusters[key].sites = occ.slice();
+      }
+    }
+  }
+
+  // Merge one combination's shard maps in shard order, appending site
+  // lists per fingerprint — the order the all-at-once scan produced.
+  function _mergeRound(partials) {
+    var seen = {};
+    for (var i = 0; i < partials.length; i += 1) {
+      var src = partials[i];
+      var srcFps = Object.keys(src);
+      for (var j = 0; j < srcFps.length; j += 1) {
+        var fp = srcFps[j];
+        if (!seen[fp]) seen[fp] = src[fp];
+        else seen[fp] = seen[fp].concat(src[fp]);
+      }
+    }
+    return seen;
+  }
+
   if (process.env.HS_PATTERNS_NO_THREADS === "1" || workerCount <= 1) {
     var shingleScan = require(path.join(__dirname, "..", "helpers", "_codebase-shingle"));
-    shardResults = [shingleScan.scanShard(files, SHINGLE_OPTS_FOR_WORKER)];
+    var prepared = shingleScan.prepareShard(files, SHINGLE_OPTS_FOR_WORKER);
+    for (var pi = 0; pi < PASS_LABELS.length; pi += 1) {
+      for (var szi = 0; szi < sortedSizes.length; szi += 1) {
+        _foldRoundIntoClusters(PASS_LABELS[pi][1], sortedSizes[szi],
+          shingleScan.scanRound(prepared, { pass: PASS_LABELS[pi][0], size: sortedSizes[szi] }));
+      }
+    }
   } else {
     var shards = [];
     for (var sIdx = 0; sIdx < workerCount; sIdx += 1) shards.push([]);
@@ -4869,67 +5058,22 @@ async function testNoDuplicateCodeBlocks() {
       shards[fIdx % workerCount].push(files[fIdx]);
     }
     shards = shards.filter(function (s) { return s.length > 0; });
-    shardResults = await Promise.all(shards.map(_scanShardInWorker));
-  }
-
-  // Merge shard outputs into a single per-(pass, size) seen map, then
-  // run the existing cluster-aggregation. Identical semantics to the
-  // pre-parallel version — workers only handle the per-shard fp
-  // generation, never the cluster identity decision.
-  var seenByPassSize = { "[exact]": {}, "[skeleton]": {} };
-  shardResults.forEach(function (shardOut) {
-    ["exact", "skeleton"].forEach(function (passKey) {
-      var label = passKey === "exact" ? "[exact]" : "[skeleton]";
-      var perSize = shardOut[passKey] || {};
-      Object.keys(perSize).forEach(function (sizeStr) {
-        if (!seenByPassSize[label][sizeStr]) seenByPassSize[label][sizeStr] = {};
-        var dest = seenByPassSize[label][sizeStr];
-        var src  = perSize[sizeStr];
-        Object.keys(src).forEach(function (fp) {
-          if (!dest[fp]) dest[fp] = src[fp];
-          else dest[fp] = dest[fp].concat(src[fp]);
-        });
-      });
-    });
-  });
-
-  // Iterate sizes largest-first so cluster.sites end up holding the
-  // bestSize occurrences in a single pass. Within a size, sort the
-  // fingerprints lexically so cluster identity (which fp's
-  // occurrences populate `sites` when multiple fps map to the same
-  // fileSet+size) is invariant under shard-merge order — without
-  // this, parallel runs diverge from in-process runs because shards
-  // contribute fps in different orders.
-  var sortedSizes = Object.keys(seenByPassSize["[exact]"] || {}).map(Number).sort(function (a, b) { return b - a; });
-  Object.keys(seenByPassSize).forEach(function (passLabel) {
-    var perSize = seenByPassSize[passLabel];
-    for (var szi = 0; szi < sortedSizes.length; szi += 1) {
-      var n = sortedSizes[szi];
-      var seen = perSize[String(n)];
-      if (!seen) continue;
-      var fps = Object.keys(seen).sort();
-      for (var fpi = 0; fpi < fps.length; fpi += 1) {
-        var fp = fps[fpi];
-        var occ = seen[fp];
-        var distinctFiles = {};
-        occ.forEach(function (o) { distinctFiles[o.file] = true; });
-        var fileList = Object.keys(distinctFiles).sort();
-        if (fileList.length < MIN_DISTINCT_FILES) continue;
-        var key = passLabel + "|" + fileList.join("|");
-        if (!clusters[key]) {
-          clusters[key] = {
-            fileSet:   fileList,
-            passLabel: passLabel,
-            bestSize:  n,
-            sites:     occ.slice(),
-          };
-        } else if (n > clusters[key].bestSize) {
-          clusters[key].bestSize = n;
-          clusters[key].sites = occ.slice();
+    var handles = shards.map(_spawnShardWorker);
+    try {
+      await Promise.all(handles.map(function (h) { return h.ready; }));
+      for (var wpi = 0; wpi < PASS_LABELS.length; wpi += 1) {
+        for (var wszi = 0; wszi < sortedSizes.length; wszi += 1) {
+          var passKey = PASS_LABELS[wpi][0];
+          var size    = sortedSizes[wszi];
+          var replies = await Promise.all(handles.map(function (h) { return h.round(passKey, size); }));
+          _foldRoundIntoClusters(PASS_LABELS[wpi][1], size,
+            _mergeRound(replies.map(function (r) { return r.bucket; })));
         }
       }
+    } finally {
+      handles.forEach(function (h) { h.close(); });
     }
-  });
+  }
 
   // Convert clusters to sorted report rows. Bigger shingles + larger
   // file-sets are stronger primitive opportunities — surface first.
@@ -5787,6 +5931,26 @@ async function testNoDuplicateCodeBlocks() {
       // the mailbox-existence oracle expensive rather than merely refused. The
       // accept-side spine, which had no such divergence, IS extracted —
       // mailServerNet.acceptConnection.
+      //
+      // The `_fail` closure each listener declares before handing control to
+      // mailServerNet.runSaslStep is the same spine seen from the other end:
+      // clear the pending exchange, charge the failure against the per-IP
+      // budget, record it, write the refusal. Three of those four steps are
+      // protocol-specific — the field holding the exchange (authPending vs
+      // saslExchange), the audit metadata (IMAP reports `mechanism` where the
+      // others report `mech`, and IMAP must capture the tag before clearing so
+      // the refusal answers the right command), and the wire line (`-ERR` vs
+      // `NO "…"` vs a tagged reply the caller chooses). Only the budget charge
+      // and the emit are common, and routing two statements through a helper
+      // whose call literal is identical at every site renames the duplication
+      // rather than removing it.
+      //
+      // Which of these bodies a cluster reports moves with unrelated edits:
+      // clusters are keyed by their file set, so an edit that breaks the
+      // create-scaffolding shingle in ONE listener re-forms the set around the
+      // SASL spine instead, and tuples that were never reported before surface
+      // at once. The membership below is therefore the union of both shapes,
+      // not the output of a single run.
       mode:  "family-subset",
       files: [
         "lib/mail-server-imap.js:<top>",
@@ -5810,6 +5974,10 @@ async function testNoDuplicateCodeBlocks() {
         "lib/mail-server-pop3.js:_assertTenantOrRefuse",
         "lib/mail-server-pop3.js:_close",
         "lib/mail-server-pop3.js:_handlePass",
+        "lib/mail-server-imap.js:_fail",
+        "lib/mail-server-managesieve.js:_fail",
+        "lib/mail-server-managesieve.js:_handleAuthenticate",
+        "lib/mail-server-pop3.js:_fail",
         "lib/mail-server-submission.js:<top>",
         "lib/mail-server-submission.js:create",
         "lib/mail-server-submission.js:_handleAuth",
@@ -8092,6 +8260,126 @@ var KNOWN_ANTIPATTERNS = [
       ],
     },
     reason: "A path beginning with '/' is absolute only on POSIX. On Windows it is DRIVE-relative, so nodeFs.existsSync(\"/dev/shm\") asks about C:\\dev\\shm — a directory any unprivileged user can create, and one that had 5855 files on a development host by the time this was found, including live decrypted SQLite working copies. db.init's tmpfs resolver probed it on every platform, so on Windows encrypted-at-rest silently resolved a persistent NTFS directory as its in-memory mount and wrote the plaintext database there; the residency check that exists to catch precisely that is a path comparison against Linux mount points and could not fire. The rule is not 'guard the probe with an if' — db-file-lifecycle and watcher both had the guard and were still untestable, so nothing could show the Windows branch was right. Take the platform and the reader as PARAMETERS (_resolveTmpDirFrom(optsTmpDir, platform, exists), _tmpDirResidencyIssue(tmpDir, platform, realpath), _namespaceFrom(platform, readlink), _detectAutoMode(root, probe)): the literal then sits behind an injected reader, every platform's branch is drivable from a Linux CI host, and the shape this refuses cannot reappear. A constructed path or one held in a variable is a different question and stays quiet. Empty allowlist: lib/ has no remaining call site that needs a hardcoded POSIX root, and the one that reintroduces it is the one to catch. What this deliberately does NOT cover: a POSIX root bound to a constant and used later (safe-mount-info's DEFAULT_PATH was exactly that shape, and is guarded instead by _defaultPathFor(platform) plus its own tests), and a literal handed to an injected reader, which is the fixed form and is in the quiet fixtures. Widening to every POSIX-looking literal would refuse legitimate path comparison — _tmpDirResidencyIssue compares against these same four strings — so the claim stays on the call site, where the bug was.",
+  },
+  {
+    id: "a-consumer-hook-needs-its-rejection-contained",
+    primitive: "b.safeAsync.safeInvoke",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // Anchored on the two tokens that together make the mistake: a `try` whose
+    // very first statement calls an `on<Name>` hook. That is the shape a
+    // synchronous catch cannot cover — anything between the two would be work
+    // the catch legitimately guards, so the match is deliberately adjacent.
+    // `opts.on<Name>` is matched as well because half the sites read the hook
+    // straight off opts rather than binding it first.
+    regex: /\btry\s*\{\s*(?:opts\s*\.\s*)?on[A-Z][A-Za-z0-9_$]*\s*\(/,
+    allowlist: [],
+    fixtures: {
+      fires: [
+        "try { onEvict(oldest, evictedVal); } catch (_e) { /* drop-silent */ }",
+        "try { opts.onError(e); } catch (_e2) { /* operator hook */ }",
+        "try { onProgress({ id: entry.id }); }\n        catch (_e) { /* drop-silent */ }",
+        "try { opts.onCorruption(issues); } catch (_e) { /* operator hook */ }",
+        "try {\n  onSessionEnd(state.actor, state.id);\n} catch (e) { emit(e); }",
+      ],
+      quiet: [
+        "safeAsync.safeInvoke(onEvict, { key: k });",
+        "safeAsync.safeApply(onMissingKey, [key, locale]);",
+        "safeAsync.containRejection(onDeny(req, res, info), ctx.onThrow);",
+        "try { await onFail(failure); } catch (oe) { audit(oe); }",
+        "try { runSqlOnHandle(db, \"ROLLBACK\"); } catch (e) { onRollbackFail(e); }",
+        "tlsSocket.on(\"timeout\", function () { safeAsync.safeInvoke(opts.onTimeout, tlsSocket); });",
+      ],
+    },
+    reason: "A synchronous try/catch around an operator hook covers only the hooks that happen not to be async. `async function onSessionEnd() { await store.releaseLease(id); }` is the ordinary way to write one — releasing a lease or ageing a timer is a store call — and its rejection arrives a turn after the catch has gone, so it becomes an unhandled rejection, which under Node's default ends the process. That is the opposite of what every one of these sites documents: 'drop-silent', 'best-effort', 'must not crash the request'. The mail POP3 session-end hook made it concrete — it runs inside the socket's own close handler, where an escaping rejection has no caller left to catch it — but the sweep found the same shape at 47 sites across 24 files, from bounded-map's onEvict to db's onCorruption to the TLS-report onRefuse chain, so the found one was a sample. All of them route through b.safeAsync.safeInvoke (one payload), b.safeAsync.safeApply (positional list), or b.safeAsync.containRejection (when the caller needs the hook's return value to decide what happens next, as denyResponse does). Each inspects the returned value and routes a rejection to the same onError a throw takes, so the drop-silent promise holds for both shapes. Empty allowlist: no lib/ site needs to call a hook without containment, and the one that reintroduces it is the one to catch. Deliberately NOT covered: a hook that is genuinely awaited (`try { await onFail(x); }` — the await makes the catch sufficient, and it is in the quiet fixtures), and a hook called from inside a catch block that is handling something else, which is a different question.",
+  },
+  {
+    id: "an-exist-message-test-matches-both-answers",
+    primitive: "b.clusterStorage.duplicateIndexCode",
+    scanScope: "lib",
+    // Anchored on a regex literal containing `exist` being tested against a
+    // `.message`. Narrow on purpose: the claim is not "never read a message",
+    // it is that this ONE word cannot discriminate, because it is a substring
+    // of both answers.
+    regex: /\/[^/\n]*\bexist[^/\n]*\/[a-z]*\s*\.\s*test\s*\([^;\n]*\.\s*message/,
+    allowlist: [],
+    fixtures: {
+      fires: [
+        "if (!/exist|duplicate/i.test((e && e.message) || \"\")) throw e;",
+        "if (!/duplicate|exist|1061/i.test((e && e.message) || \"\")) throw e;",
+        "if (/does not exist/.test(err.message)) return null;",
+        "var absent = /no such table|does not exist/i.test((e && e.message) || \"\");",
+      ],
+      quiet: [
+        "if (!clusterStorage.duplicateIndexCode(e)) throw e;",
+        "if (b.clusterStorage.missingRelationCode(e)) return null;",
+        "if (/NOT_FOUND|not found/i.test(e.message || \"\")) return null;",
+        "var isTimeout = e && (e.code === \"ETIMEDOUT\" || /timeout/i.test(e.message || \"\"));",
+        "if (/duplicate/i.test(e.message || \"\")) return true;",
+        "var msg = \"the row does not exist\";",
+      ],
+    },
+    reason: "`exist` is a substring of both answers a driver can give, so a message test built on it cannot tell them apart. MySQL words an already-present index \"Duplicate key name 'X'\" and a missing table \"Table 'db.X' doesn't exist\" — and the schema reconcilers, which re-issue CREATE INDEX because MySQL has no IF NOT EXISTS form, tested for /exist|duplicate/ to swallow the duplicate. A CREATE INDEX that failed because its table was absent matched too: the error was swallowed and the pass reported the schema reconciled with the index never created. The driver states it exactly and in every locale through its own fields, which is what b.clusterStorage.duplicateIndexCode reads (errno 1061 / ER_DUP_KEYNAME), alongside missingRelationCode and missingColumnCode for the other two. That predicate deliberately does not accept SQLSTATE 42000 on its own, because MySQL uses it as the catch-all for syntax and access errors and accepting it would swallow a malformed statement as an already-present index. Empty allowlist: no lib/ site needs this word to carry a decision. Deliberately NOT covered: a message test on any other word — `duplicate` alone is unambiguous and is in the quiet fixtures — and prose or a string literal that merely contains the word, since the match requires a regex literal reaching .test against a .message.",
+  },
+  {
+    id: "a-thenable-needs-a-callable-fulfillment-handler",
+    primitive: "b.safeAsync.containRejection",
+    scanScope: "lib",
+    // Anchored on the whole mistake: a `.then(` whose FIRST argument is a
+    // non-callable placeholder. Deliberately NOT comment-stripped — this is a
+    // bad-shape check, so a hit inside a comment is a loud false positive that
+    // gets rewritten, whereas stripping risks hiding a live one.
+    regex: /\.\s*then\s*\(\s*(?:null|undefined|void\s+0)\s*,/,
+    allowlist: [],
+    fixtures: {
+      fires: [
+        "emitted.then(null, function () { /* drop-silent by contract */ });",
+        "result.then(undefined, function () { /* started, not completed */ });",
+        "promise . then ( null , reportLater );",
+        "settled.then(void 0, function (e) { route(onError, e); }).then(next);",
+        "var settled = promise.then(null,\n      function () { /* the call site reports it */ });",
+      ],
+      quiet: [
+        "settled.catch(function (e) { _routeCallbackError(onError, e); }).then(_schedule);",
+        "safeAsync.containRejection(result);",
+        "then.call(value, _noop, function (e) { _routeCallbackError(onError, e); });",
+        "p.then(function (v) { return v; }, function (e) { report(e); });",
+        "Promise.resolve(promise).catch(function () { /* reported elsewhere */ });",
+        "drain().catch(function (e) { onError(e, []); });",
+      ],
+    },
+    reason: "Attaching a rejection handler by passing a non-callable first argument is safe on a native promise and unsafe on every other thenable, which is exactly the wrong way round for code that accepts consumer objects. The promise spec substitutes an identity function for a non-callable onFulfilled, so `p.then(null, fn)` on a real promise does what it looks like. A hand-written thenable is not obliged to, and the ordinary way to write one is `then(resolve, reject) { ... resolve(v) }` — it CALLS what it was handed, so the null becomes a TypeError raised on a later turn, outside the try that was supposed to be containing failures, which under Node's default ends the process. A consumer's session store returning such an object from close() was the live instance; the same shape sat in the audit sink and the POP3 session-end barrier. b.safeAsync.containRejection is the primitive for a value whose thenable-ness was duck-typed: it reads the then-getter inside the guard (the getter itself can throw) and hands over a real no-op function. When the receiver is provably a native promise — the result of a Promise.resolve, or a chain built here — .catch(fn) says so and needs no placeholder at all. Empty allowlist: between those two there is no site that needs the placeholder form, and the one that reintroduces it is the one to catch. Deliberately NOT covered: `then.call(value, handler, ...)` with a callable first argument, which is how containRejection itself attaches to a foreign thenable.",
+  },
+  {
+    id: "a-key-selected-by-fingerprint-must-hash-to-it",
+    primitive: "b.auditSign.getPublicKeyByFingerprint",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // Anchored on the comparison and tempered so it cannot cross a function
+    // close at column 0: the claim is about ONE lookup returning key material
+    // it selected by label, not about a fingerprint compared anywhere in a
+    // file that also returns a public key somewhere else. The negative
+    // lookaheads are on the GOOD tokens, so any recompute between the two —
+    // whatever it is named — silences it, and a mutation that drops the
+    // recompute fires again. The quantifier is a ReDoS backstop, far above any
+    // real body, never the precision mechanism.
+    regex: /\.fingerprint\s*===(?:(?!\n\})(?!fingerprintOf\s*\()(?!_computeFingerprint\s*\()[\s\S]){0,600}?return\s+[\w$]+(?:\[[^\]]*\])?\.publicKey/,
+    allowlist: [],
+    fixtures: {
+      fires: [
+        'for (var i = 0; i < list.length; i += 1) {\n    if (list[i] && list[i].fingerprint === fp && typeof list[i].publicKey === "string") {\n      return list[i].publicKey;\n    }\n  }',
+        'if (entry.fingerprint === want) {\n    return entry.publicKey;\n  }',
+        "if (e.fingerprint === fp) return e.publicKey;",
+      ],
+      quiet: [
+        'if (entry.fingerprint !== fp) continue;\n    var actual;\n    try { actual = _computeFingerprint(entry.publicKey); }\n    catch (_e) { continue; }\n    if (actual !== fp) continue;\n    return entry.publicKey;',
+        "if (entry.fingerprint === fp) {\n    if (fingerprintOf(entry.publicKey) !== fp) continue;\n    return entry.publicKey;\n  }",
+        "if (r.fingerprint === fingerprint) { removed.push(r); return false; }",
+        "var match = a.fingerprint === b.fingerprint;",
+        "if (e.fingerprint === fp) { return e.label; }\n}\nfunction other() {\n  return list[0].publicKey;\n}",
+      ],
+    },
+    reason: "A fingerprint IS the hash of the key text, so an entry that hands back key material because its `fingerprint` field matched has proved nothing — the field is a label sitting next to the material, and whoever wrote the one wrote the other. `audit-sign.pubkeys.json` is the case that matters: it is deliberately UNSEALED, because resolving a rotated-out key has to work in a process with no passphrase (a verifier running `auditSigning: false`, or `blamejs audit verify-chain` against a database file). Anyone who can write that file can therefore file their own public key under the fingerprint an anchor names, sign a purge anchor with the matching private key, and have verification accept a boundary that erases rows — without ever touching the wrapped private key the whole mechanism protects. Both lookups over that file had this shape and one recompute now covers both. The framework already knew the rule elsewhere: lib/backup/manifest.js derives the fingerprint from the block's own publicKey and says in its comment that the self-asserted field is attacker-controlled — two modules answering one structural question, one of them hardened and the other not, which is what this detector exists to stop recurring. Empty allowlist: a lookup that selects key material by label owes the one hash that makes the label mean something, and there is no call site in lib/ that does not. A fingerprint compared for any other purpose — revoking a CA by fingerprint, comparing two records — never returns a public key from the branch and stays quiet.",
   },
   {
     id: "mail-reply-must-not-interpolate-an-unguarded-reason",
@@ -12773,9 +13061,14 @@ var KNOWN_ANTIPATTERNS = [
     // matches `new nodeTls.TLSSocket(` without requiring lookbehind.
     regex: /new\s+nodeTls\.TLSSocket\s*\(\s*rawSocket\b/,
     allowlist: [
-      // Submission listener's implicit-TLS path (port 465) wraps the FIRST byte on the wire — no
-      // plaintext predecessor, so listener removal is moot.
-      "lib/mail-server-submission.js",
+      // The implicit-TLS wrapper wraps the FIRST byte on the wire — there is no plaintext
+      // predecessor, so there is no "data" listener to remove and nothing a peer could have
+      // pipelined before the handshake. It is written ONCE, in the module that owns TLS socket
+      // construction (mailServerTls.implicitTlsWrap), and the four listeners that offer the mode
+      // (submission 465, imap 993, pop3 995, managesieve 4190) compose it — so this stays a
+      // single-file exemption rather than one per listener, and a listener that hand-rolls the
+      // construction instead still trips.
+      "lib/mail-server-tls.js",
     ],
     reason: "STARTTLS / STLS upgrade — only the upgradeSocket helper is allowed to wrap a TLSSocket around a previously-attached plain socket. The implicit-TLS variant on port 465 wraps the rawSocket BEFORE any plain bytes are read (no listener to remove), so it stays allowlisted.",
   },
@@ -16353,6 +16646,100 @@ function testNoTrackedInternalNotes() {
 // _assertLocalResidency, the external query/transaction paths run
 // _assertRowResidency, and assertColumnResidency has a real lib/
 // caller outside its own definition file.
+// Encrypted mode refuses a tmpDir it cannot show to be an in-memory mount, and
+// the check reads the mount table — so a scratch directory is refused on Linux
+// and merely warned about on Windows and macOS, where there is nothing to
+// classify it against. Every test that hands db.init a scratch tmpDir has to
+// opt out explicitly, or it passes on the author's host and fails in a
+// container.
+//
+// Per CALL SITE, not per file. A file can have one init that opts out and two
+// that do not, which is exactly how the last sweep of this class missed two of
+// them; the run after that missed four more, each surfacing one container leg
+// at a time because smoke stops at the first failure.
+//
+// The two deliberate refusal tests are allowlisted by their enclosing function
+// name rather than by line, so moving them does not silently drop the guard.
+var TMPFS_OPTOUT_EXEMPT = [
+  "test/20-db.js::testEncryptedNonTmpfsTmpDirRefusedByDefault",
+  "test/layer-0-primitives/db.test.js::testEncryptedInitHandlesAnUnclassifiableTmpDir",
+];
+function testDbInitScratchTmpDirOptsOut() {
+  var roots = [TEST_ROOT, path.resolve(__dirname, "..", "..", "examples")];
+  var files = [];
+  function walk(dir) {
+    var ents;
+    try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (_e) { return; }
+    for (var i = 0; i < ents.length; i += 1) {
+      var p = path.join(dir, ents[i].name);
+      if (ents[i].isDirectory()) {
+        if (ents[i].name === "node_modules" || ents[i].name === ".test-output" ||
+            ents[i].name === "data" || ents[i].name === "data-e2e") continue;
+        walk(p);
+      } else if (ents[i].name.slice(-3) === ".js") {
+        files.push(p);
+      }
+    }
+  }
+  roots.forEach(walk);
+
+  var hits = [];
+  var seenExempt = {};
+  files.forEach(function (abs) {
+    var src;
+    try { src = fs.readFileSync(abs, "utf8"); } catch (_e) { return; }
+    var rel = _relPath(abs);
+    var from = 0;
+    for (;;) {
+      var at = src.indexOf("db.init(", from);
+      if (at === -1) break;
+      from = at + 8;
+      // Balance the call's own parens, so the opts read belong to THIS call
+      // and not to the next one further down the file.
+      var open = src.indexOf("(", at);
+      var depth = 0, end = -1;
+      for (var i = open; i < src.length && i < open + 20000; i += 1) {
+        if (src[i] === "(") depth += 1;
+        else if (src[i] === ")") { depth -= 1; if (depth === 0) { end = i; break; } }
+      }
+      if (end === -1) continue;
+      var callText = src.slice(open, end + 1);
+      if (!/\btmpDir\s*:/.test(callText)) continue;
+      if (/allowNonTmpfsTmpDir/.test(callText)) continue;
+      if (/atRest\s*:\s*["']plain["']/.test(callText)) continue;
+
+      // Nearest preceding function declaration is the enclosing test.
+      var head = src.slice(0, at);
+      var fnName = "<top>";
+      var m = /(?:^|\n)\s*(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/g;
+      var found;
+      while ((found = m.exec(head)) !== null) fnName = found[1];
+      var key = rel + "::" + fnName;
+      if (TMPFS_OPTOUT_EXEMPT.indexOf(key) !== -1) { seenExempt[key] = true; continue; }
+
+      hits.push({
+        file: rel, line: src.slice(0, at).split("\n").length,
+        content: "db.init is given a tmpDir with no allowNonTmpfsTmpDir and no atRest:'plain' " +
+          "(" + key + ") — a scratch dir is refused wherever the mount table can classify it, " +
+          "so this passes on Windows and fails in a container",
+      });
+      from = end;
+    }
+  });
+
+  // An exemption that no longer matches anything is a guard nobody is holding.
+  TMPFS_OPTOUT_EXEMPT.forEach(function (key) {
+    if (!seenExempt[key]) {
+      hits.push({
+        file: key.split("::")[0], line: 1,
+        content: "the tmpfs opt-out exemption " + key + " matched no call site — the refusal " +
+          "test it names has moved or gone, so remove the entry rather than leave it standing",
+      });
+    }
+  });
+  _report("every db.init handed a scratch tmpDir opts out of the residency requirement", hits);
+}
+
 function testResidencyGatesWired() {
   var dbq, edb;
   try {
@@ -19073,6 +19460,7 @@ async function run() {
   testDefineClassErrorArgOrder();
   testNoHandrolledUrlBuild();
   testNoHandrolledRetryLoop();
+  testShingleRoundMatchesDirectScan();
   await testNoDuplicateCodeBlocks();
   testStateStampScanningDeferred();
   testNoLegacyUrlFormat();
@@ -19190,6 +19578,7 @@ async function run() {
   testNoDetachedAsyncIifeInLegacyLayerFiles();
   testNoTrackedInternalNotes();
   testResidencyGatesWired();
+  testDbInitScratchTmpDirOptsOut();
   testWikiStopGraceExceedsShutdownBudget();
   testOrchestratorRegistryReadsTenantScoped();
   testErrorCodesNamespacedKebab();

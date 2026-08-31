@@ -184,13 +184,24 @@ function _startKeServer(cert, cfg) {
   });
 }
 
-function _startUdpServer(onMessage) {
+function _startUdpServer(onMessage, family, address) {
   return new Promise(function (resolve) {
-    var sock = dgram.createSocket("udp4");
+    var sock = dgram.createSocket(family || "udp4");
     sock.on("error", function () { /* best-effort loopback listener */ });
     sock.on("message", function (msg, rinfo) { onMessage(msg, rinfo, sock); });
-    sock.bind(0, "127.0.0.1", function () {
+    sock.bind(0, address || "127.0.0.1", function () {
       resolve({ sock: sock, port: sock.address().port });
+    });
+  });
+}
+
+// Some CI images run without an IPv6 loopback. Asked rather than assumed, so
+// the IPv6 case reports as skipped instead of failing for the wrong reason.
+function _hasIpv6Loopback() {
+  var ifaces = require("node:os").networkInterfaces();
+  return Object.keys(ifaces).some(function (name) {
+    return (ifaces[name] || []).some(function (a) {
+      return a.family === "IPv6" || a.family === 6;
     });
   });
 }
@@ -584,6 +595,38 @@ async function testQuerySingleTimeout() {
   check("querySingle timeout code is nts/timeout", caught && caught.code === "nts/timeout");
 }
 
+// The NTP leg opened a udp4 socket unconditionally, so an IPv6 NTS server
+// could not be addressed at all — every send failed before a packet left the
+// host. Under requireNts that is worse than a missing feature: a reachable
+// server the client cannot address refuses the boot.
+//
+// Discriminated by WHICH failure comes back rather than by a successful
+// exchange, so the test needs no authenticated reply: on a udp4 socket the
+// send to an IPv6 literal errors out, and the assertion is that it reaches the
+// timeout instead — meaning the datagram was actually sent.
+async function testQuerySingleAddressesIpv6() {
+  if (!_hasIpv6Loopback()) {
+    check("[skipped] querySingle IPv6: no ::1 loopback on this host", true);
+    return;
+  }
+  var aeadId = b.network.ntp.nts.AEAD_AES_SIV_CMAC_256;
+  var udp = await _startUdpServer(function () { /* never reply */ }, "udp6", "::1");
+  var caught = null;
+  try {
+    await helpers.withTestTimeout("querySingle ipv6", function () {
+      return b.network.ntp.nts.querySingle({
+        host: "::1", port: udp.port, aeadId: aeadId,
+        c2sKey: nodeCrypto.randomBytes(32), s2cKey: nodeCrypto.randomBytes(32),
+        cookies: [nodeCrypto.randomBytes(32)], timeoutMs: 300,
+      });
+    }, { timeoutMs: 9000 });
+  } catch (e) { caught = e; }
+  try { udp.sock.close(); } catch (_e) { /* best-effort */ }
+  check("querySingle reaches an IPv6 server rather than failing to send",
+    caught && caught.code === "nts/timeout",
+    caught && (caught.code + " :: " + caught.message));
+}
+
 async function testQuerySingleSivSuccess() {
   var aeadId = b.network.ntp.nts.AEAD_AES_SIV_CMAC_256;
   var s2cKey = nodeCrypto.randomBytes(32);
@@ -717,6 +760,7 @@ async function run() {
     await testQuerySingleUnsupportedAeadEncrypt();
     await testQuerySingleClosesItsSocketWhenTheRequestCannotBeBuilt();
     await testQuerySingleTimeout();
+    await testQuerySingleAddressesIpv6();
     await testQuerySingleSivSuccess();
     await testQuerySingleChaChaSuccess();
 

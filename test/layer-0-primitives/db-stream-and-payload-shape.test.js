@@ -192,7 +192,7 @@ async function run() {
     gotAstral.sealedText === astral);
 
   // --- Shape 2: a string containing embedded NUL bytes ---
-  var withNul = "before middle  after";
+  var withNul = "before\x00middle\x00\x00after";
   b.db.from("blobs").insertOne({ _id: "nul", sealedText: withNul });
   var gotNul = b.db.from("blobs").where({ _id: "nul" }).first();
   check("string with embedded NUL bytes round-trips byte-identical through sealed column",
@@ -235,7 +235,7 @@ async function run() {
   // A sealed column declared to hold a structured value (the framework
   // even JSON.stringify's containment values elsewhere) must recover the
   // SAME object — not a coerced "[object Object]" / lossy string.
-  var nested = { a: { b: { c: { d: [1, 2, { e: "deep", f: [null, true, "x y"] }] } } }, n: 42 };
+  var nested = { a: { b: { c: { d: [1, 2, { e: "deep", f: [null, true, "x\x00y"] }] } } }, n: 42 };
   b.db.from("blobs").insertOne({ _id: "nested", sealedText: nested });
   var gotNested = b.db.from("blobs").where({ _id: "nested" }).first();
   var recovered;

@@ -346,6 +346,10 @@ async function run() {
     await b.db.init({
       dataDir: reopenDataDir,
       tmpDir:  path.join(reopenDataDir, "tmpfs"),
+      // A scratch directory under the restore target, not a real tmpfs mount.
+      // The residency check reads the mount table, and this suite runs against
+      // the live stack on Linux where that resolves to a disk-backed mount.
+      allowNonTmpfsTmpDir: true,
       schema:  [
         {
           name: "users",

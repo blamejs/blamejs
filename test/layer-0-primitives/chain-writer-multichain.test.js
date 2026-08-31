@@ -143,7 +143,343 @@ async function run() {
     check("chain-writer: an append on another key is not blocked", otherDone === true);
     releaseB();
     await holdingB;
+
+    // A counter is primed from MAX(monotonicCounter) BEFORE the mutex is
+    // taken, and has to be: the read reports its own outcome through the audit
+    // chain in cluster mode, so an append that primes while holding the mutex
+    // queues an append that waits for that same mutex. Priming outside means
+    // concurrent appends share one in-flight read instead of each starting a
+    // new one behind the lock.
+    //
+    // The cost is that a read CAN land midway through a sanctioned deletion
+    // and answer zero. What stops a stale answer from surviving is
+    // invalidateOrigin: whoever changed the state discards what was primed
+    // from the half-finished version of it, while still holding the lock, so
+    // the next append re-derives from the finished state.
+    await w.append({ deviceId: "dev-D", kind: "first", payload: "1" });
+    await b.clusterStorage.execute(
+      "INSERT INTO device_event_log (_id, deviceId, monotonicCounter, recordedAt, " +
+      "kind, payload, prevHash, rowHash, nonce, fencingToken) " +
+      "VALUES ('seed-d-50', 'dev-D', 50, 1750000000000, 'seed', 'x', '" +
+      "0".repeat(128) + "', '" + "a".repeat(128) + "', NULL, NULL)");
+
+    var stale = await w.append({ deviceId: "dev-D", kind: "stale", payload: "2" });
+    check("chain-writer: a primed counter is reused without re-reading",
+      Number(stale.monotonicCounter) === 2, "counter=" + stale.monotonicCounter);
+
+    w.invalidateOrigin("dev-D");
+    var rederived = await w.append({ deviceId: "dev-D", kind: "rederived", payload: "3" });
+    check("chain-writer: invalidateOrigin makes the next append re-derive it",
+      Number(rederived.monotonicCounter) === 51,
+      "counter=" + rederived.monotonicCounter + " (3 means the stale value survived)");
+
+    var otherKey = await w.append({ deviceId: "dev-A", kind: "after", payload: "4" });
+    check("chain-writer: and invalidating one key leaves another alone",
+      Number(otherKey.monotonicCounter) > 1, "counter=" + otherKey.monotonicCounter);
+
+    // Re-derivation is a FLOOR, never a replacement. It re-reads
+    // MAX(monotonicCounter), and the whole reason invalidation exists is that
+    // rows can have been REMOVED — so that maximum can be lower than what this
+    // process already handed out. Replacing rather than raising would then
+    // reissue counters that rows in flight are already using. Emptying the
+    // key's rows below is what a purge does to the chain it anchors.
+    var beforeInvalidate = Number(rederived.monotonicCounter);
+    await b.clusterStorage.execute("DELETE FROM device_event_log WHERE deviceId = 'dev-D'");
+    w.invalidateOrigin("dev-D");
+    var afterInvalidate = await w.append({ deviceId: "dev-D", kind: "floor", payload: "5" });
+    check("chain-writer: re-derivation never sends a counter backwards",
+      Number(afterInvalidate.monotonicCounter) > beforeInvalidate,
+      "before=" + beforeInvalidate + " after=" + afterInvalidate.monotonicCounter +
+      " (a lower value means the re-read replaced instead of raising)");
+
+    // And it happens BEFORE the lock: a key marked stale while another holder
+    // has the lock must not do its re-read inside it. Holding dev-D's lock and
+    // invalidating it, the queued append still completes rather than wedging
+    // on a read that waits for the lock it is holding.
+    var releaseE;
+    var heldE = new Promise(function (resolve) { releaseE = resolve; });
+    var holdingE = w.withChainLock("dev-D", function () {
+      w.invalidateOrigin("dev-D");
+      return heldE;
+    });
+    var queued = w.append({ deviceId: "dev-D", kind: "queued", payload: "6" });
+    await helpers.passiveObserve(150, "chain-writer: append queued behind an invalidating holder");
+    releaseE();
+    await holdingE;
+    var queuedRow = await queued;
+    check("chain-writer: an append queued behind an invalidation still completes",
+      Number(queuedRow.monotonicCounter) > Number(afterInvalidate.monotonicCounter),
+      "counter=" + queuedRow.monotonicCounter);
   } finally {
+    try { await teardownTestDb(tmpDir); } catch (_e) { /* best-effort */ }
+  }
+
+  await testOriginFloorAppliesToAnAlreadyPrimedAppend();
+  await testOriginExpiresWhenLeadershipMoved();
+}
+
+// A writer WITH an origin resolver, which is what `b.audit` uses so a purged
+// chain resumes above the boundary instead of restarting inside it.
+//
+// The floor is checked on every append, not only when priming answered 1,
+// because priming runs BEFORE the append lock: an invalidation that arrives
+// after an append primed and before it reached the lock is invisible to that
+// append any other way, and the value it primed is then the pre-invalidation
+// answer. Re-reading the origin here is what makes the new boundary reach it.
+async function testOriginFloorAppliesToAnAlreadyPrimedAppend() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-cworigin-"));
+  try {
+    await setupTestDb(tmpDir, CONSUMER_SCHEMA);
+    b.chainWriter.registerTable("device_event_log");
+
+    var boundary = 0;
+    var w = b.chainWriter.create({
+      table: "device_event_log", chainKey: "deviceId",
+      columnsForInsert: COLS, hashableColumns: HASHABLE,
+      resolveOrigin: function () {
+        return boundary === 0 ? null
+          : { hash: "b".repeat(128), counter: boundary };
+      },
+    });
+
+    // Nothing came before: the resolver says so and the chain starts at 1,
+    // which is what every table that has never had rows removed looks like.
+    var first = await w.append({ deviceId: "dev-Z", kind: "first", payload: "1" });
+    check("chain-writer: a resolver returning nothing starts a fresh chain",
+      Number(first.monotonicCounter) === 1 &&
+      String(first.prevHash) === "0".repeat(128),
+      "counter=" + first.monotonicCounter);
+
+    // Now a boundary appears — a purge — and this key's counter was primed
+    // before it. The next append must clear the boundary and link to it.
+    boundary = 80;
+    w.invalidateOrigin("dev-Z");
+    var after = await w.append({ deviceId: "dev-Z", kind: "after", payload: "2" });
+    check("chain-writer: an already-primed counter is raised past a new boundary",
+      Number(after.monotonicCounter) > boundary,
+      "counter=" + after.monotonicCounter + " boundary=" + boundary);
+
+    // And with the key's rows gone, as a purge leaves them, it links to the
+    // boundary's hash rather than restarting the chain.
+    await b.clusterStorage.execute("DELETE FROM device_event_log WHERE deviceId = 'dev-Z'");
+    w.invalidateOrigin("dev-Z");
+    var resumed = await w.append({ deviceId: "dev-Z", kind: "resumed", payload: "3" });
+    check("chain-writer: and an emptied key links to the boundary hash",
+      String(resumed.prevHash) === "b".repeat(128), String(resumed.prevHash));
+    check("chain-writer: still above the boundary after the rows went",
+      Number(resumed.monotonicCounter) > boundary,
+      "counter=" + resumed.monotonicCounter);
+
+    // monotonicCounter is a BIGINT, and above 2^53 two distinct stored values
+    // land on the same Number — a floor taken from up there would silently
+    // equal a different counter, and the writer would reuse or skip one. The
+    // purge anchor refuses that range for the same reason; a resolver reaching
+    // this writer has to answer to it too.
+    boundary = Number.MAX_SAFE_INTEGER + 2;
+    w.invalidateOrigin("dev-Z");
+    var unsafeErr = null;
+    try { await w.append({ deviceId: "dev-Z", kind: "unsafe", payload: "4" }); }
+    catch (e) { unsafeErr = e; }
+    check("chain-writer: an origin counter beyond the safe range is refused",
+      unsafeErr !== null && unsafeErr.code === "chain-writer/bad-origin",
+      String(unsafeErr && (unsafeErr.code || unsafeErr.message)));
+    check("chain-writer: and says what the bound is",
+      unsafeErr !== null && /2\^53/.test(unsafeErr.message || ""),
+      String(unsafeErr && unsafeErr.message));
+
+    // MAX_SAFE_INTEGER is itself a safe integer, so a check for safety alone
+    // lets it through — and the writer then resumes at the counter after it,
+    // which is not safe. A floor has to leave room for its own successor.
+    boundary = Number.MAX_SAFE_INTEGER;
+    w.invalidateOrigin("dev-Z");
+    var edgeErr = null;
+    try { await w.append({ deviceId: "dev-Z", kind: "edge", payload: "5" }); }
+    catch (e) { edgeErr = e; }
+    check("chain-writer: an origin at MAX_SAFE_INTEGER is refused too",
+      edgeErr !== null && edgeErr.code === "chain-writer/bad-origin",
+      String(edgeErr && (edgeErr.code || edgeErr.message)));
+  } finally {
+    try { await teardownTestDb(tmpDir); } catch (_e) { /* best-effort */ }
+  }
+}
+
+// A purge happens on ONE node, and `invalidateOrigin` reaches only that
+// node's memory. The dangerous shape is a node that led BEFORE the purge and
+// leads again AFTER it: nothing told it anything changed, its cached origin
+// still says the chain starts from nothing, and the table it appends to is
+// empty because another node emptied it. Without expiry the row links to
+// ZERO_HASH instead of the boundary, and the next verify calls a legitimate
+// purge a chain break.
+async function testOriginExpiresWhenLeadershipMoved() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-cwterm-"));
+  var realFencingToken = b.cluster.fencingToken;
+  try {
+    await setupTestDb(tmpDir, CONSUMER_SCHEMA);
+    b.chainWriter.registerTable("device_event_log");
+
+    // Stand in for the lease: leadership terms this process moves between.
+    var term = 7;
+    b.cluster.fencingToken = function () { return term; };
+
+    var boundary = 0;
+    var resolveCalls = 0;
+    var w = b.chainWriter.create({
+      table: "device_event_log", chainKey: "deviceId",
+      columnsForInsert: COLS, hashableColumns: HASHABLE,
+      resolveOrigin: function () {
+        resolveCalls += 1;
+        return boundary === 0 ? null
+          : { hash: "c".repeat(128), counter: boundary };
+      },
+    });
+
+    var first = await w.append({ deviceId: "dev-T", kind: "first", payload: "1" });
+    check("chain-writer: term 7 starts a fresh chain",
+      Number(first.monotonicCounter) === 1 &&
+      String(first.prevHash) === "0".repeat(128),
+      "counter=" + first.monotonicCounter);
+    var callsAfterFirst = resolveCalls;
+
+    // Same term, so the cached answer stands and the resolver is not asked
+    // again — the property that keeps an append from reading per row.
+    await w.append({ deviceId: "dev-T", kind: "second", payload: "2" });
+    check("chain-writer: within one term the origin is resolved once",
+      resolveCalls === callsAfterFirst, "calls=" + resolveCalls);
+
+    // Another node purges: the rows go and a boundary exists. THIS process is
+    // told nothing — no invalidateOrigin call — which is the whole point.
+    await b.clusterStorage.execute("DELETE FROM device_event_log WHERE deviceId = 'dev-T'");
+    boundary = 140;
+    // ...and leadership comes back here, under a later term.
+    term = 11;
+
+    var resumed = await w.append({ deviceId: "dev-T", kind: "resumed", payload: "3" });
+    check("chain-writer: a new term links to the boundary another node wrote",
+      String(resumed.prevHash) === "c".repeat(128), String(resumed.prevHash));
+    check("chain-writer: and takes its counter from above that boundary",
+      Number(resumed.monotonicCounter) > boundary,
+      "counter=" + resumed.monotonicCounter + " boundary=" + boundary);
+    check("chain-writer: the term change is what re-asked the resolver",
+      resolveCalls > callsAfterFirst, "calls=" + resolveCalls);
+
+    // The read is a database round trip, so a whole term can begin and end
+    // inside it. An origin read just before another node purged describes a
+    // chain that no longer exists — and noticing only on the NEXT append is
+    // too late, because THIS one has already linked to it.
+    await b.clusterStorage.execute("DELETE FROM device_event_log WHERE deviceId = 'dev-T'");
+    w.invalidateOrigin("dev-T");
+    var movedDuringRead = 0;
+    var stale = { hash: "d".repeat(128), counter: 200 };
+    var fresh = { hash: "e".repeat(128), counter: 400 };
+    var w2 = b.chainWriter.create({
+      table: "device_event_log", chainKey: "deviceId",
+      columnsForInsert: COLS, hashableColumns: HASHABLE,
+      resolveOrigin: function () {
+        // Leadership moves DURING this read, exactly once: the first answer
+        // belongs to the term that ended while it was being fetched.
+        movedDuringRead += 1;
+        if (movedDuringRead === 1) { term = 21; return stale; }
+        return fresh;
+      },
+    });
+    var afterRace = await w2.append({ deviceId: "dev-T", kind: "raced", payload: "6" });
+    check("chain-writer: an origin read across a term change is not used",
+      String(afterRace.prevHash) === fresh.hash, String(afterRace.prevHash));
+    check("chain-writer: and the read was retried under the settled term",
+      movedDuringRead >= 2, "reads=" + movedDuringRead);
+
+    // Leadership that never settles is not something an append should wait
+    // out — it means this node is not reliably the leader, and the boundary it
+    // would link to may already be superseded.
+    var churn = 30;
+    var w3 = b.chainWriter.create({
+      table: "device_event_log", chainKey: "deviceId",
+      columnsForInsert: COLS, hashableColumns: HASHABLE,
+      resolveOrigin: function () { term = (churn += 1); return fresh; },
+    });
+    var churnErr = null;
+    try { await w3.append({ deviceId: "dev-T", kind: "churn", payload: "7" }); }
+    catch (e) { churnErr = e; }
+    check("chain-writer: an unsettled term refuses the append rather than guessing",
+      churnErr !== null && churnErr.code === "chain-writer/origin-term-unstable",
+      String(churnErr && (churnErr.code || churnErr.message)));
+
+    // Checking the term before the lock is not enough on its own: the append
+    // then WAITS — for the counter to prime and for every append queued ahead
+    // of it — and a new leader can purge inside that wait. Moving the term
+    // after the origin is cached and before the row is written stands in for
+    // that window.
+    await b.clusterStorage.execute("DELETE FROM device_event_log WHERE deviceId = 'dev-W'");
+    term = 50;
+    var w4 = b.chainWriter.create({
+      table: "device_event_log", chainKey: "deviceId",
+      columnsForInsert: COLS, hashableColumns: HASHABLE,
+      resolveOrigin: function () { return { hash: "f".repeat(128), counter: 600 }; },
+    });
+    // Prime the cache under term 50 with a completed append.
+    await w4.append({ deviceId: "dev-W", kind: "primed", payload: "8" });
+    await b.clusterStorage.execute("DELETE FROM device_event_log WHERE deviceId = 'dev-W'");
+
+    // Hold the chain lock, let an append clear its pre-lock checks under term
+    // 50 and queue behind us, THEN move leadership. That is the window the
+    // pre-lock check cannot see: it already ran, and the row has not been
+    // written yet.
+    var releaseLock;
+    var lockHeld = new Promise(function (resolve) { releaseLock = resolve; });
+    var lockDone = w4.withChainLock("dev-W", function () { return lockHeld; });
+    var lateErr = null;
+    var queued = w4.append({ deviceId: "dev-W", kind: "late", payload: "9" })
+      .catch(function (e) { lateErr = e; });
+    // Give the queued append time to pass its pre-lock checks and block.
+    await helpers.waitUntil(function () {
+      return w4._getMutexForTest("dev-W").isLocked !== false;
+    }, { timeoutMs: 5000, label: "chain-writer term race: append queued on the chain lock" });
+    term = 51;
+    releaseLock();
+    await lockDone;
+    await queued;
+    check("chain-writer: a term that moved before the row is written stops it",
+      lateErr !== null &&
+      (lateErr.code === "chain-writer/origin-term-changed" ||
+       lateErr.code === "chain-writer/origin-term-unstable"),
+      String(lateErr && (lateErr.code || lateErr.message)));
+    var noRow = await b.clusterStorage.executeAll(
+      "SELECT * FROM device_event_log WHERE deviceId = 'dev-W'");
+    check("chain-writer: and writes nothing while it is unresolved",
+      noRow.length === 0, "rows=" + noRow.length);
+
+    // A falsy non-function is the dangerous spelling of a bad resolver: it
+    // reads as "no resolver configured", which is a legitimate setting, so the
+    // table silently loses origin resolution and a purged chain restarts at
+    // ZERO_HASH inside the range a verifier skips. Only undefined and null
+    // mean absent.
+    var badResolvers = [false, 0, "", "nope", 7, {}];
+    for (var bi = 0; bi < badResolvers.length; bi += 1) {
+      var cfgErr = null;
+      try {
+        b.chainWriter.create({
+          table: "device_event_log", chainKey: "deviceId",
+          columnsForInsert: COLS, hashableColumns: HASHABLE,
+          resolveOrigin: badResolvers[bi],
+        });
+      } catch (e) { cfgErr = e; }
+      check("chain-writer: resolveOrigin " + JSON.stringify(badResolvers[bi]) +
+        " is refused rather than read as absent",
+        cfgErr !== null && cfgErr.code === "chain-writer/invalid-config",
+        String(cfgErr && (cfgErr.code || cfgErr.message)));
+    }
+    var absentOk = null;
+    try {
+      b.chainWriter.create({
+        table: "device_event_log", chainKey: "deviceId",
+        columnsForInsert: COLS, hashableColumns: HASHABLE,
+        resolveOrigin: null,
+      });
+    } catch (e) { absentOk = e; }
+    check("chain-writer: an explicit null still means no resolver",
+      absentOk === null, String(absentOk && absentOk.message));
+  } finally {
+    b.cluster.fencingToken = realFencingToken;
     try { await teardownTestDb(tmpDir); } catch (_e) { /* best-effort */ }
   }
 }

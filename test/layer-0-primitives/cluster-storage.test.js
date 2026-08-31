@@ -23,6 +23,14 @@ var setupTestDb    = helpers.setupTestDb;
 var teardownTestDb = helpers.teardownTestDb;
 
 var SCHEMA = [{ name: "cs_tx_t", columns: { k: "TEXT PRIMARY KEY", v: "INTEGER" } }];
+var FENCE_SCHEMA = [{
+  name: "cs_fence_t",
+  columns: {
+    scope:        "TEXT PRIMARY KEY",
+    v:            "INTEGER",
+    fencingToken: "INTEGER NOT NULL DEFAULT 0",
+  },
+}];
 
 function testSurface() {
   check("clusterStorage namespace",      typeof b.clusterStorage === "object");
@@ -143,6 +151,74 @@ async function testCteReadReturnsRows() {
   }
 }
 
+// A single-writer table stays single-writer across processes only because the
+// stored token says whose turn it is. A superseded leader still holds a
+// working handle and can still issue writes; nothing in this process knows it
+// has been replaced, so the refusal has to come from the database.
+async function testFencedUpsertRefusesAStaleToken() {
+  var tmp = fs.mkdtempSync(path.join(os.tmpdir(), "cs-fence-"));
+  try {
+    await setupTestDb(tmp, FENCE_SCHEMA);
+    var cs = b.clusterStorage;
+
+    var first = await cs.fencedUpsert({
+      table: "cs_fence_t", keyColumns: ["scope"], label: "test.fence",
+      values: { scope: "s", v: 1, fencingToken: 5 },
+    });
+    check("fencedUpsert: the first write is not fenced", first.fenced === false);
+    check("fencedUpsert: and it landed",
+      (await cs.executeOne("SELECT v FROM cs_fence_t WHERE scope = 's'")).v === 1);
+
+    var higher = await cs.fencedUpsert({
+      table: "cs_fence_t", keyColumns: ["scope"], label: "test.fence",
+      values: { scope: "s", v: 2, fencingToken: 6 },
+    });
+    check("fencedUpsert: a higher token proceeds", higher.fenced === false);
+    check("fencedUpsert: and replaces the row",
+      (await cs.executeOne("SELECT v FROM cs_fence_t WHERE scope = 's'")).v === 2);
+
+    var equal = await cs.fencedUpsert({
+      table: "cs_fence_t", keyColumns: ["scope"], label: "test.fence",
+      values: { scope: "s", v: 3, fencingToken: 6 },
+    });
+    check("fencedUpsert: an EQUAL token proceeds — the same leader writing twice",
+      equal.fenced === false);
+
+    var stale = await cs.fencedUpsert({
+      table: "cs_fence_t", keyColumns: ["scope"], label: "test.fence",
+      values: { scope: "s", v: 99, fencingToken: 4 },
+    });
+    check("fencedUpsert: a lower token is fenced", stale.fenced === true);
+    check("fencedUpsert: and changes nothing",
+      (await cs.executeOne("SELECT v FROM cs_fence_t WHERE scope = 's'")).v === 3,
+      "a fenced write must not be a partial write");
+
+    // More than one column can be fenced, and then ALL of them must be
+    // non-decreasing. A value that may only ever advance — a purge boundary, a
+    // high-water mark — is safest held that way by the database, rather than
+    // by whoever happens to write next holding the right token: a legitimate
+    // higher-token writer can still be proposing a lower boundary.
+    var advanced = await cs.fencedUpsert({
+      table: "cs_fence_t", keyColumns: ["scope"], label: "test.fence",
+      fenceColumns: ["fencingToken", "v"],
+      values: { scope: "s", v: 10, fencingToken: 6 },
+    });
+    check("fencedUpsert: advancing both fenced columns proceeds", advanced.fenced === false);
+
+    var backwards = await cs.fencedUpsert({
+      table: "cs_fence_t", keyColumns: ["scope"], label: "test.fence",
+      fenceColumns: ["fencingToken", "v"],
+      values: { scope: "s", v: 4, fencingToken: 99 },
+    });
+    check("fencedUpsert: a HIGHER token cannot move a fenced value backwards",
+      backwards.fenced === true, "a monotonic column is not the token's to lower");
+    check("fencedUpsert: and the stored value stands",
+      (await cs.executeOne("SELECT v FROM cs_fence_t WHERE scope = 's'")).v === 10);
+  } finally {
+    try { await helpers.teardownTestDb(tmp); } catch (_e) { /* best-effort */ }
+  }
+}
+
 async function run() {
   testSurface();
   await testTransactionCommits();
@@ -150,6 +226,89 @@ async function run() {
   await testTransactionSerializesExecute();
   await testTransactionRejectsBadArg();
   await testCteReadReturnsRows();
+  await testFencedUpsertRefusesAStaleToken();
+  testMissingRelationAndColumnCodes();
+}
+
+// Every reader that has to tell "the table is not there yet" from "the query
+// failed" was answering it from the error MESSAGE, and MySQL words a missing
+// table with a contraction — "Table 'db.X' doesn't exist" — that the SQLite
+// and Postgres wordings do not cover. The driver's own fields say it plainly
+// and in every locale, so they are what gets asked, through one predicate
+// rather than a spelling per caller.
+function testMissingRelationAndColumnCodes() {
+  var mysqlTable = Object.assign(new Error("Table 'blamejs.audit_log' doesn't exist"),
+    { errno: 1146, code: "ER_NO_SUCH_TABLE", sqlState: "42S02" });
+  var pgTable = Object.assign(new Error('relation "audit_log" does not exist'),
+    { code: "42P01" });
+  // The docker-exec shim and ANSI drivers carry the SQLSTATE alone, with a
+  // message that names nothing recognizable.
+  var ansiTable = Object.assign(new Error("SQL execution failed"), { sqlState: "42S02" });
+  check("missingRelationCode: mysql2's own fields",
+    b.clusterStorage.missingRelationCode(mysqlTable) === true);
+  check("missingRelationCode: postgres SQLSTATE",
+    b.clusterStorage.missingRelationCode(pgTable) === true);
+  check("missingRelationCode: a SQLSTATE with no recognizable message",
+    b.clusterStorage.missingRelationCode(ansiTable) === true);
+
+  var mysqlColumn = Object.assign(new Error("Unknown column 'signature' in 'field list'"),
+    { errno: 1054, code: "ER_BAD_FIELD_ERROR", sqlState: "42S22" });
+  var pgColumn = Object.assign(new Error('column "signature" does not exist'),
+    { code: "42703" });
+  check("missingColumnCode: mysql2's own fields",
+    b.clusterStorage.missingColumnCode(mysqlColumn) === true);
+  check("missingColumnCode: postgres SQLSTATE",
+    b.clusterStorage.missingColumnCode(pgColumn) === true);
+
+  // The two must not answer each other's question: a reader that ends the
+  // read on an absent table and falls back to an older projection on an
+  // absent column would do the wrong one either way round.
+  check("missingRelationCode: an absent COLUMN is not an absent table",
+    b.clusterStorage.missingRelationCode(pgColumn) === false &&
+    b.clusterStorage.missingRelationCode(mysqlColumn) === false);
+  check("missingColumnCode: an absent TABLE is not an absent column",
+    b.clusterStorage.missingColumnCode(pgTable) === false &&
+    b.clusterStorage.missingColumnCode(mysqlTable) === false);
+
+  // The third of the family, for the reconcilers that re-issue CREATE INDEX on
+  // MySQL because it has no IF NOT EXISTS form. They swallow the duplicate so
+  // the pass is idempotent — and they were deciding it by testing the message
+  // for /exist/, which also matches "Table 'db.X' doesn't exist". A CREATE
+  // INDEX that failed because the TABLE is missing was swallowed and the
+  // schema reported as reconciled with the index never created.
+  var mysqlDupIndex = Object.assign(new Error("Duplicate key name 'idx_actor'"),
+    { errno: 1061, code: "ER_DUP_KEYNAME", sqlState: "42000" });
+  var ansiDupIndex = Object.assign(new Error("SQL execution failed"), { sqlState: "42000" });
+  check("duplicateIndexCode: mysql2's own fields",
+    b.clusterStorage.duplicateIndexCode(mysqlDupIndex) === true);
+  check("duplicateIndexCode: an absent TABLE is not a duplicate index",
+    b.clusterStorage.duplicateIndexCode(mysqlTable) === false);
+  check("duplicateIndexCode: an absent COLUMN is not a duplicate index",
+    b.clusterStorage.duplicateIndexCode(mysqlColumn) === false);
+  // 42000 is MySQL's catch-all syntax/access SQLSTATE — it covers far more than
+  // a duplicate key name, so unlike the two above it must NOT be accepted on
+  // the SQLSTATE alone, or every syntax error in a reconciler would be
+  // swallowed as an already-present index.
+  check("duplicateIndexCode: the catch-all SQLSTATE alone is not enough",
+    b.clusterStorage.duplicateIndexCode(ansiDupIndex) === false);
+
+  // And the control the whole predicate exists for: a failure that says
+  // nothing about the schema must be neither. Reading "absent" from a timeout
+  // or a permission error is how a purged chain gets verified from ZERO_HASH
+  // and reported clean.
+  var denied = Object.assign(new Error("SELECT command denied to user 'app'"),
+    { errno: 1142, code: "ER_TABLEACCESS_DENIED_ERROR", sqlState: "42000" });
+  var timedOut = Object.assign(new Error("connection terminated unexpectedly"),
+    { code: "ETIMEDOUT" });
+  check("neither predicate reads a permission error as a missing schema object",
+    b.clusterStorage.missingRelationCode(denied) === false &&
+    b.clusterStorage.missingColumnCode(denied) === false);
+  check("neither reads a dropped connection as one",
+    b.clusterStorage.missingRelationCode(timedOut) === false &&
+    b.clusterStorage.missingColumnCode(timedOut) === false);
+  check("neither answers true for a missing error",
+    b.clusterStorage.missingRelationCode(null) === false &&
+    b.clusterStorage.missingColumnCode(undefined) === false);
 }
 
 module.exports = { run: run };

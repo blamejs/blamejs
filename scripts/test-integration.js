@@ -27,6 +27,9 @@
  *   node scripts/test-integration.js
  *   node scripts/test-integration.js queue-redis           — single test
  *   node scripts/test-integration.js --skip-service-check  — assume up
+ *   node scripts/test-integration.js --no-docker           — for a selection
+ *     that uses no compose service: skips the readiness probe AND the CA
+ *     export, which reads the certs volume out of a running container.
  */
 var fs   = require("node:fs");
 var os   = require("node:os");
@@ -86,7 +89,12 @@ async function _exportCaCert() {
 
 (async function main() {
   var args = process.argv.slice(2);
-  var skipCheck = args.indexOf("--skip-service-check") !== -1;
+  // `--no-docker` is for a selection that needs nothing from the compose
+  // stack: no readiness probe, and no CA export either. The export reaches
+  // for the certs volume through a running container, so leaving it in place
+  // would make a Docker daemon a precondition for tests that never touch one.
+  var noDocker  = args.indexOf("--no-docker") !== -1;
+  var skipCheck = noDocker || args.indexOf("--skip-service-check") !== -1;
   var named = args.filter(function (a) { return a.charAt(0) !== "-"; });
 
   if (!fs.existsSync(INTEGRATION_DIR)) {
@@ -124,20 +132,35 @@ async function _exportCaCert() {
   // weakening the framework's verification — operators in production
   // do exactly the same thing (set NODE_EXTRA_CA_CERTS or trust the
   // CA at the OS level).
-  var caPath;
-  try {
-    caPath = await _exportCaCert();
-    console.log("[test-integration] CA exported: " + caPath);
-  } catch (e) {
-    console.error("[test-integration] CA export failed: " + e.message);
-    process.exit(3);
+  var caPath = null;
+  if (noDocker) {
+    console.log("[test-integration] --no-docker: skipping the CA export " +
+      "(the selected tests use no compose service)");
+  } else {
+    try {
+      caPath = await _exportCaCert();
+      console.log("[test-integration] CA exported: " + caPath);
+    } catch (e) {
+      console.error("[test-integration] CA export failed: " + e.message);
+      process.exit(3);
+    }
   }
 
   var childEnv = Object.assign({}, process.env, {
-    NODE_EXTRA_CA_CERTS:           caPath,
-    BLAMEJS_TEST_CA_PATH:          caPath,
     BLAMEJS_INTEGRATION_RUNNER:    "1",
   });
+  // With no CA to trust, both variables must be ABSENT from the child, not
+  // merely un-assigned: the environment is inherited, so a value left over
+  // from an earlier run or set by the invoking shell would otherwise reach
+  // tests that are supposed to trust nothing extra — quietly changing what a
+  // TLS handshake in them accepts.
+  if (caPath) {
+    childEnv.NODE_EXTRA_CA_CERTS  = caPath;
+    childEnv.BLAMEJS_TEST_CA_PATH = caPath;
+  } else {
+    delete childEnv.NODE_EXTRA_CA_CERTS;
+    delete childEnv.BLAMEJS_TEST_CA_PATH;
+  }
 
   console.log("");
   console.log("[test-integration] running " + files.length + " integration test file" +

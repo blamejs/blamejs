@@ -61,6 +61,11 @@ async function _catch(thunk) {
   catch (e) { return e; }
 }
 
+function _catchSync(thunk) {
+  try { thunk(); return null; }
+  catch (e) { return e; }
+}
+
 // --- init() argument validation (no db opened) ----------------------------
 
 async function testInitArgValidation() {
@@ -92,6 +97,25 @@ async function testInitArgValidation() {
 
     var e7 = await _catch(function () { return b.db.init({ dataDir: tmpDir, schema: [], atRest: "plain", columnGate: "bogus" }); });
     check("init bad columnGate throws db/bad-init", e7 && e7.code === "db/bad-init");
+
+    // Only a callable resolver is consulted, so a present-but-wrong one would
+    // remove the boot check that a purge boundary's archive still exists — and
+    // the volume would report itself healthy while licensing the gap. A typo
+    // and a config that failed to load both look exactly like this.
+    var uncallableResolvers = ["not-a-function", null, 42, {}];
+    for (var ri = 0; ri < uncallableResolvers.length; ri += 1) {
+      var badResolver = uncallableResolvers[ri];
+      var badResolverErr = await _catch(function () {
+        return b.db.init({
+          dataDir: tmpDir, schema: [], atRest: "plain",
+          resolvePurgeArchive: badResolver,
+        });
+      });
+      check("init uncallable resolvePurgeArchive (" +
+        (badResolver === null ? "null" : typeof badResolver) + ") is refused",
+        badResolverErr && badResolverErr.code === "db/bad-resolve-purge-archive",
+        String(badResolverErr && (badResolverErr.code || badResolverErr.message)));
+    }
 
     // db was never opened by any of these — still not initialized.
     var e8 = await _catch(function () { return b.db.from("x"); });
@@ -974,22 +998,77 @@ async function testTmpfsResolverNeverProbesAPosixPathOffLinux() {
     b.db._resolveTmpDirFromForTest("/mnt/ram", "linux", refuseToRun) === "/mnt/ram");
 }
 
+// A mount table as the kernel publishes it. Fields per
+// Documentation/filesystems/proc.rst: id parent maj:min root mountPoint options
+// - fstype source superOptions.
+function _mounts(spec) {
+  return function () {
+    return spec.map(function (m, i) {
+      return (i + 20) + " 1 0:" + (i + 30) + " / " + m[0] +
+        " rw,relatime - " + m[1] + " " + m[1] + " rw";
+    }).join("\n");
+  };
+}
+// The shape of a host that is doing everything right.
+var TMPFS_HOST = _mounts([
+  ["/", "ext4"],
+  ["/dev/shm", "tmpfs"],
+  ["/run/user/1000", "tmpfs"],
+  ["/tmp", "tmpfs"],
+]);
+// The same host with an ordinary disk-backed /tmp, which is entirely normal and
+// was the case that passed silently.
+var DISK_TMP_HOST = _mounts([
+  ["/", "ext4"],
+  ["/dev/shm", "tmpfs"],
+]);
+
 async function testTmpDirResidencyDistinguishesUnknownFromDiskBacked() {
   function identity(p) { return p; }
 
   check("db: a /dev/shm path is a recognized in-memory mount",
-    b.db._tmpDirResidencyIssueForTest("/dev/shm/work", "linux", identity) === null);
+    b.db._tmpDirResidencyIssueForTest("/dev/shm/work", "linux", identity, TMPFS_HOST) === null);
   check("db: /tmp too — tmpfs on systemd defaults and most container images",
-    b.db._tmpDirResidencyIssueForTest("/tmp/work", "linux", identity) === null);
+    b.db._tmpDirResidencyIssueForTest("/tmp/work", "linux", identity, TMPFS_HOST) === null);
   check("db: /run/user counts as well",
-    b.db._tmpDirResidencyIssueForTest("/run/user/1000/x", "linux", identity) === null);
+    b.db._tmpDirResidencyIssueForTest("/run/user/1000/x", "linux", identity, TMPFS_HOST) === null);
+
+  // The name was never the question. These four all passed the prefix
+  // comparison that stood in for it, and every one of them is ordinary disk:
+  // three because a name merely BEGINS with an accepted string, and the fourth
+  // — the common one — because a host can simply not have tmpfs at /tmp. That
+  // last case was silent: not a refusal, not a warning, nothing, while the
+  // whole decrypted database was written where backups and snapshots reach it.
+  [
+    ["/tmpdata/blamejs", "a name that merely starts with /tmp"],
+    ["/dev/shmx/work", "a name that merely starts with /dev/shm"],
+    ["/run/shm-backup/x", "a name that merely starts with /run/shm"],
+  ].forEach(function (c) {
+    var issue = b.db._tmpDirResidencyIssueForTest(c[0], "linux", identity, TMPFS_HOST);
+    check("db: " + c[1] + " is disk-backed, not memory (" + c[0] + ")",
+      issue !== null && issue.determined === true, JSON.stringify(issue));
+  });
+
+  var diskTmp = b.db._tmpDirResidencyIssueForTest("/tmp/work", "linux", identity, DISK_TMP_HOST);
+  check("db: a /tmp that is NOT tmpfs on this host is a determined finding",
+    diskTmp !== null && diskTmp.determined === true, JSON.stringify(diskTmp));
+  check("db: and the finding names the filesystem actually mounted there",
+    diskTmp !== null && /ext4/.test(diskTmp.message), diskTmp && diskTmp.message);
+
+  // An unreadable mount table cannot answer the question either way. Reporting
+  // that as "in memory" is the silent pass this whole check exists to prevent,
+  // and reporting it as disk-backed would refuse hosts nothing is wrong with.
+  var unreadable = b.db._tmpDirResidencyIssueForTest("/dev/shm/work", "linux", identity,
+    function () { throw new Error("EACCES"); });
+  check("db: an unreadable mount table is undetermined, not a pass",
+    unreadable !== null && unreadable.determined === false, JSON.stringify(unreadable));
 
   // On Linux the mount table CAN be compared against, so a path outside those
   // mounts is a positive finding that the copy lands on disk. That one is
   // refused, which is what it has done since the fail-closed default landed.
-  var home = b.db._tmpDirResidencyIssueForTest("/home/op/work", "linux", identity);
+  var home = b.db._tmpDirResidencyIssueForTest("/home/op/work", "linux", identity, TMPFS_HOST);
   check("db: a linux path outside those mounts is a determined finding",
-    home && home.determined === true && home.message.indexOf("not a") !== -1,
+    home && home.determined === true && home.message.indexOf("not tmpfs") !== -1,
     JSON.stringify(home));
 
   // Off Linux nothing can be compared, so the finding is that it is unknown —
@@ -1009,7 +1088,7 @@ async function testTmpDirResidencyDistinguishesUnknownFromDiskBacked() {
   // which is the definition of not shown to be in memory.
   var broken = b.db._tmpDirResidencyIssueForTest("/dev/shm/gone", "linux", function () {
     throw new Error("ENOENT");
-  });
+  }, TMPFS_HOST);
   check("db: an unresolvable path is reported rather than assumed fine",
     broken && broken.determined === true, JSON.stringify(broken));
 }
@@ -1182,9 +1261,25 @@ async function testEncryptedInitHandlesAnUnclassifiableTmpDir() {
     b.db._resetForTest();
 
     var classifiable = process.platform === "linux";
-    var underTmpfs = classifiable && (
-      onDisk.indexOf("/dev/shm") === 0 || onDisk.indexOf("/run/shm") === 0 ||
-      onDisk.indexOf("/run/user/") === 0 || onDisk.indexOf("/tmp") === 0);
+    // Asked of the mount table, the way production now asks it. This used to
+    // predict the outcome from the path's NAME — the same four-prefix
+    // comparison the residency check itself used — so the test agreed with the
+    // implementation by construction and could not have caught the case that
+    // mattered. It also made the test wrong wherever the name lies: in a
+    // container /tmp is overlay, so a scratch dir under it looked like tmpfs to
+    // the old prediction while the check correctly refused it.
+    var underTmpfs = false;
+    if (classifiable) {
+      try {
+        var mounts = b.safeMountInfo.parse(fs.readFileSync(b.safeMountInfo.DEFAULT_PATH, "utf8"));
+        var m = b.safeMountInfo.bestMatch(mounts, fs.realpathSync(onDisk));
+        underTmpfs = !!(m && (m.fstype === "tmpfs" || m.fstype === "ramfs"));
+      } catch (_e) {
+        // No readable mount table — production reports the residency as
+        // UNKNOWN there, which boots with a warning, so predict that.
+        classifiable = false;
+      }
+    }
 
     if (classifiable && !underTmpfs) {
       check("db: a linux tmpDir shown to be disk-backed fails encrypted init closed",
@@ -1264,6 +1359,22 @@ async function testEncryptedRoundTrip() {
   fs.writeFileSync(path.join(tmpfs, "blamejs-staleorphan.db"), "orphan");
   fs.writeFileSync(path.join(tmpfs, "blamejs-staleorphan.db.owner"),
     b.db._ownerNamespaceForTest() + " 2147483645");
+  // A record whose working copy is GONE — what an open that failed after
+  // claiming leaves behind. It does not end in `.db`, so a sweep enumerating
+  // that suffix never sees it, and one accumulates per failed open in the
+  // directory that holds decrypted databases.
+  fs.writeFileSync(path.join(tmpfs, "blamejs-lonerecord.db.owner"),
+    b.db._ownerNamespaceForTest() + " 2147483644");
+  // And one whose owner is STILL RUNNING with no copy beside it yet: the claim
+  // is written before the database exists, so this is what a peer looks like
+  // mid-open. Removing it would delete a live peer's claim.
+  fs.writeFileSync(path.join(tmpfs, "blamejs-liveclaim.db.owner"),
+    b.db._ownerNamespaceForTest() + " " + process.pid);
+  // A record too damaged to name an owner, with no working copy beside it.
+  // For an actual database "unprovable" means leave it — removing one costs
+  // data. For a record accounting for nothing, leaving it is how they pile up
+  // forever, which is the whole complaint.
+  fs.writeFileSync(path.join(tmpfs, "blamejs-unreadable.db.owner"), "garbage");
   var encOpts = {
     dataDir: tmpDir, tmpDir: tmpfs, allowNonTmpfsTmpDir: true, atRest: "encrypted",
     frameworkTables: false, auditSigning: false, minFreeBytes: 0,
@@ -1274,6 +1385,14 @@ async function testEncryptedRoundTrip() {
     await b.db.init(encOpts);
     check("stale tmpfs working copy is swept at encrypted boot",
       !fs.existsSync(path.join(tmpfs, "blamejs-staleorphan.db")));
+    check("and its ownership record goes with it",
+      !fs.existsSync(path.join(tmpfs, "blamejs-staleorphan.db.owner")));
+    check("an ownership record whose working copy is gone is reclaimed too",
+      !fs.existsSync(path.join(tmpfs, "blamejs-lonerecord.db.owner")));
+    check("but a live peer's claim is left alone, copy not yet created",
+      fs.existsSync(path.join(tmpfs, "blamejs-liveclaim.db.owner")));
+    check("and a record too damaged to name an owner, with no copy, is not kept forever",
+      !fs.existsSync(path.join(tmpfs, "blamejs-unreadable.db.owner")));
 
     b.db.from("vaultrows").insertOne({ _id: "a", v: "persisted" });
 
@@ -1294,6 +1413,221 @@ async function testEncryptedRoundTrip() {
     check("encrypted round-trip recovers the row through decryptToTmp",
       row && row.v === "persisted");
   } finally {
+    _teardownPlain(tmpDir);
+  }
+  await testFailedInitLeavesNoPlaintext();
+  await testRejectedInitKeepsItsWorkingCopyWhenResealFails();
+  testEveryWormPostureIsSettable();
+}
+
+// db.js names three postures that oblige an operator to declare row-level WORM,
+// and refuses to boot without one. compliance.set decides which postures an
+// operator can actually be IN. Two lists, one question — and they disagreed:
+// `sec-17a-4` and `finra-4511` were absent from the catalog, so
+// `b.compliance.set` refused them and `compliance.current()` could never return
+// them. The boot assertion was therefore unreachable for two of the three
+// regimes it names, and the refusal it would have raised — quoting SEC 17a-4(f)
+// and FINRA 4511 — could not fire on the volumes those rules govern. The
+// declareWorm docs offered `posture: "sec-17a-4"` as their example all the
+// while, because declareWorm takes any string.
+function testEveryWormPostureIsSettable() {
+  var src = fs.readFileSync(path.join(__dirname, "..", "..", "lib", "db.js"), "utf8");
+  var decl = /var WORM_POSTURES = Object\.freeze\(\[([^\]]*)\]\)/.exec(src);
+  check("db.js declares a WORM posture list", decl !== null);
+  if (!decl) return;
+  var postures = decl[1].split(",")
+    .map(function (s) { return s.trim().replace(/^"|"$/g, ""); })
+    .filter(function (s) { return s.length > 0; });
+  check("the WORM posture list is not empty", postures.length > 0, String(postures.length));
+  postures.forEach(function (p) {
+    var threw = null;
+    try { b.compliance.set(p); } catch (e) { threw = e; }
+    b.compliance.clear();
+    check("a posture db.js requires WORM under can actually be set: " + p,
+      threw === null, threw && String(threw.message).slice(0, 90));
+  });
+}
+
+// The sibling case, one branch over, and the one where the tempting fix is
+// wrong. The test above fails BEFORE `initialized`, so nothing has been written
+// and cleanup runs through removePlaintextFiles directly. A refusal that
+// arrives once the handle is live goes through a full shutdown instead — and
+// that shutdown KEEPS the decrypted working copy when its final encryptToDisk
+// throws.
+//
+// Reading that as an oversight and discarding the copy loses data. Migrations
+// and the schema reconcile commit BEFORE the verifications run, so on this path
+// the working copy can hold work db.enc does not, and removing it would take
+// committed migrations with it while leaving the stale encrypted volume behind
+// — the next boot re-running steps it has no record of having applied. The
+// leftover plaintext is the lesser cost, and it is bounded: the owner record
+// names a live pid, so a later boot reclaims it once this process is gone, and
+// the failed re-encryption is logged rather than passed over.
+//
+// Pinned as a test because the deletion reads as an obvious tidy-up.
+async function testRejectedInitKeepsItsWorkingCopyWhenResealFails() {
+  var tmpDir = _mkTmp("db-cov-reseal-fail-");
+  var tmpfs = path.join(tmpDir, "tmpfs");
+  fs.mkdirSync(tmpfs, { recursive: true });
+  // A regular FILE standing where the encrypted database's parent directory
+  // would be. decryptToTmp asks existsSync() and gets false, so the volume
+  // opens fresh and claims a working copy; the reseal on the way out has to
+  // stage a temp file in that same parent and cannot. Portable — no platform
+  // will treat a file as a directory — and it needs no permission games, which
+  // behave differently enough across platforms to be their own flake.
+  var blocked = path.join(tmpDir, "not-a-directory");
+  fs.writeFileSync(blocked, "x");
+  var encTarget = path.join(blocked, "db.enc");
+  try {
+    await _freshVault(tmpDir);
+    // A regulated posture with no WORM declaration refuses the boot from
+    // _assertWormUnderPosture, which runs after the handle goes live. No
+    // forged sidecar needed: the refusal is a property of the configuration.
+    b.compliance.set("fda-21cfr11");
+    var thrown = null;
+    try {
+      await b.db.init({
+        dataDir: tmpDir, tmpDir: tmpfs, allowNonTmpfsTmpDir: true,
+        atRest: "encrypted", encryptedDbPath: encTarget,
+        frameworkTables: true, auditSigning: false, minFreeBytes: 0,
+        schema: [{ name: "vaultrows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+      });
+    } catch (e) { thrown = e; }
+    check("a regulated posture with no WORM declaration refuses the boot",
+      thrown !== null, String(thrown && thrown.message).slice(0, 120));
+
+    // The control. Without this the test could pass for the wrong reason: if
+    // the reseal quietly succeeded, the ordinary shutdown would have removed
+    // the plaintext and the assertion below would say nothing about the branch
+    // it is aimed at.
+    check("the control: the reseal really did fail, so db.enc was never written",
+      fs.existsSync(encTarget) === false && fs.statSync(blocked).isFile(),
+      "encTarget exists=" + fs.existsSync(encTarget));
+
+    var leftBehind = fs.readdirSync(tmpfs).filter(function (n) {
+      return n.startsWith("blamejs-") && n.endsWith(".db");
+    });
+    check("a rejected init whose reseal failed KEEPS its working copy — it is " +
+          "the only carrier of migrations that committed before the refusal",
+      leftBehind.length === 1, "left=" + JSON.stringify(leftBehind));
+
+    // And the record that names it, or nothing could ever identify the copy as
+    // reclaimable: the sweep matches a working copy to its owner, and a
+    // database sitting there with no record beside it is the one shape it
+    // refuses to touch.
+    var records = fs.readdirSync(tmpfs).filter(function (n) {
+      return n.startsWith("blamejs-") && !n.endsWith(".db");
+    });
+    check("and keeps the ownership record, so a later boot can reclaim it",
+      records.length >= 1, "records=" + JSON.stringify(records));
+  } finally {
+    b.compliance.clear();
+    _teardownPlain(tmpDir);
+  }
+}
+
+// An init that throws AFTER it has claimed a working copy used to leave the
+// decrypted database in tmpDir: close() returned early on `initialized` being
+// false, and that flag says only that init did not FINISH — nothing about what
+// it took. A failed open is exactly the case nobody is watching, because the
+// caller saw a throw and moved on.
+async function testFailedInitLeavesNoPlaintext() {
+  var tmpDir = _mkTmp("db-cov-failinit-");
+  var tmpfs = path.join(tmpDir, "tmpfs");
+  fs.mkdirSync(tmpfs, { recursive: true });
+  var encOpts = {
+    dataDir: tmpDir, tmpDir: tmpfs, allowNonTmpfsTmpDir: true, atRest: "encrypted",
+    frameworkTables: false, auditSigning: false, minFreeBytes: 0,
+    schema: [{ name: "vaultrows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+  };
+  try {
+    await _freshVault(tmpDir);
+    // A first open creates db.enc, so the second has a real database to
+    // decrypt — the claim has to happen for this to test anything.
+    await b.db.init(encOpts);
+    b.db.from("vaultrows").insertOne({ _id: "a", v: "persisted" });
+    b.db.close();
+
+    var thrown = null;
+    try {
+      await b.db.init(Object.assign({}, encOpts, {
+        // Fails after the working copy is claimed and decrypted: schema
+        // application runs against the open database.
+        schema: [{ name: "bad", columns: { _id: "TEXT PRIMARY KEY", v: "NOT A TYPE(((" } }],
+      }));
+    } catch (e) { thrown = e; }
+    check("init that fails after claiming a working copy does throw",
+      thrown !== null, String(thrown && thrown.message).slice(0, 120));
+
+    var leftBehind = fs.readdirSync(tmpfs).filter(function (n) {
+      return n.startsWith("blamejs-") && n.endsWith(".db");
+    });
+    check("the decrypted working copy is not left in tmpDir",
+      leftBehind.length === 0, "left=" + JSON.stringify(leftBehind));
+
+    b.db.close();
+    var afterClose = fs.readdirSync(tmpfs).filter(function (n) {
+      return n.startsWith("blamejs-");
+    });
+    check("and close() after a failed init leaves neither copy nor record",
+      afterClose.length === 0, "left=" + JSON.stringify(afterClose));
+  } finally {
+    _teardownPlain(tmpDir);
+  }
+  await testFailedInitKeepsAPreservedRecoveryCopy();
+}
+
+// The authorization to delete a decrypted working copy must belong to the init
+// that claimed it, and to no other.
+//
+// A `close()` that cannot re-encrypt deliberately KEEPS its working copy: at
+// that moment it is the only carrier of writes since the last flush. If the
+// claim outlived that close, the very next init to fail — one that never
+// claimed anything, `db.init({})` failing its option validation — would delete
+// that copy on its way out, turning a recoverable state into data loss.
+async function testFailedInitKeepsAPreservedRecoveryCopy() {
+  var tmpDir = _mkTmp("db-cov-preserved-");
+  var tmpfs = path.join(tmpDir, "tmpfs");
+  fs.mkdirSync(tmpfs, { recursive: true });
+  var encOpts = {
+    dataDir: tmpDir, tmpDir: tmpfs, allowNonTmpfsTmpDir: true, atRest: "encrypted",
+    frameworkTables: false, auditSigning: false, minFreeBytes: 0,
+    schema: [{ name: "vaultrows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+  };
+  try {
+    await _freshVault(tmpDir);
+    await b.db.init(encOpts);
+    b.db.from("vaultrows").insertOne({ _id: "a", v: "first" });
+    b.db.close();
+
+    // Open again, write, then make re-encryption impossible by putting a
+    // DIRECTORY where db.enc has to be written. close() then keeps the
+    // working copy, which is the state this is about.
+    await b.db.init(encOpts);
+    b.db.from("vaultrows").insertOne({ _id: "b", v: "since last flush" });
+    var encFile = path.join(tmpDir, "db.enc");
+    fs.rmSync(encFile, { force: true });
+    fs.mkdirSync(encFile);
+    b.db.close();
+
+    var preserved = fs.readdirSync(tmpfs).filter(function (n) {
+      return n.startsWith("blamejs-") && n.endsWith(".db");
+    });
+    check("close() that cannot re-encrypt keeps the working copy",
+      preserved.length === 1, "left=" + JSON.stringify(preserved));
+
+    // An init that fails before claiming anything must not touch it.
+    var validationErr = null;
+    try { await b.db.init({}); } catch (e) { validationErr = e; }
+    check("a later init that fails its own validation does throw",
+      validationErr !== null, String(validationErr && validationErr.code));
+    var stillPreserved = fs.readdirSync(tmpfs).filter(function (n) {
+      return n.startsWith("blamejs-") && n.endsWith(".db");
+    });
+    check("and leaves the preserved recovery copy alone",
+      stillPreserved.length === 1, "left=" + JSON.stringify(stillPreserved));
+  } finally {
+    try { fs.rmSync(path.join(tmpDir, "db.enc"), { recursive: true, force: true }); } catch (_e) { /* best effort */ }
     _teardownPlain(tmpDir);
   }
 }
@@ -1680,6 +2014,74 @@ async function testReadOnlyOpenDoesNotMigrateTheKeySidecar() {
     b.db.close();
     check("db: the key sidecar is still untouched after the reader closes",
       Buffer.compare(legacyBefore, fs.readFileSync(keyPath)) === 0);
+  } finally {
+    _teardownPlain(tmpDir);
+  }
+}
+
+// A volume written by an earlier version is missing whatever columns that
+// version had not declared yet, and reconcile answers a missing column with
+// `ALTER TABLE ... ADD COLUMN`. On a read-only handle that write fails and
+// takes the open down with it — so the flag whose entire purpose is "inspect
+// this database without touching it" would work on every volume EXCEPT the
+// older ones an inspection is most likely to be about.
+async function testReadOnlyOpenOfAnOlderSchemaDoesNotMigrateIt() {
+  var tmpDir = _mkTmp("db-cov-ro-oldschema-");
+  var tmpfs = path.join(tmpDir, "tmpfs");
+  fs.mkdirSync(tmpfs, { recursive: true });
+  try {
+    await _freshVault(tmpDir);
+    var base = {
+      dataDir: tmpDir, tmpDir: tmpfs, atRest: "plain", allowNonTmpfsTmpDir: true,
+      frameworkTables: false, auditSigning: false, minFreeBytes: 0,
+      schema: [{ name: "rows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT" } }],
+    };
+    await b.db.init(base);
+    b.db.from("rows").insertOne({ _id: "a", v: "before" });
+    b.db.flushToDisk();
+    b.db.close();
+    b.db._resetForTest();
+
+    // Stand in for the older version: the declaration gains a column the
+    // stored volume does not have. A writer adds it; a reader must not try.
+    var widened = Object.assign({}, base, {
+      schema: [{ name: "rows", columns: { _id: "TEXT PRIMARY KEY", v: "TEXT", addedLater: "TEXT" } }],
+    });
+
+    var readerErr = null;
+    try { await b.db.init(Object.assign({}, widened, { readOnly: true })); }
+    catch (e) { readerErr = e; }
+    check("db: a read-only open of an older schema does not attempt the migration",
+      readerErr === null, String(readerErr && readerErr.message));
+    check("db: and still reads the rows that are there",
+      (b.db.from("rows").where({ _id: "a" }).first() || {}).v === "before");
+    b.db.close();
+    b.db._resetForTest();
+
+    // acceptUnsignedPurgeAnchor asks for the anchor to be SIGNED in place — a
+    // write. Combined with readOnly the two options ask for opposite things,
+    // and refusing is better than quietly skipping the repair: the operator
+    // would otherwise believe the boundary was pinned, remove the flag as the
+    // log tells them to, and meet the same refusal on the next writable boot.
+    var contradiction = null;
+    try {
+      await b.db.init(Object.assign({}, base, {
+        readOnly: true, acceptUnsignedPurgeAnchor: true,
+      }));
+    } catch (e) { contradiction = e; }
+    check("db: readOnly with acceptUnsignedPurgeAnchor is refused at config time",
+      contradiction !== null &&
+      contradiction.code === "db/bad-accept-unsigned-purge-anchor",
+      String(contradiction && (contradiction.code || contradiction.message)));
+    b.db._resetForTest();
+
+    // The writer still migrates, so skipping it for the reader costs nothing.
+    await b.db.init(widened);
+    var cols = b.db.prepare("PRAGMA table_info(rows)").all();
+    check("db: a writer opening the same volume does add the column",
+      cols.some(function (c) { return c.name === "addedLater"; }),
+      cols.map(function (c) { return c.name; }).join(","));
+    b.db.close();
   } finally {
     _teardownPlain(tmpDir);
   }
@@ -2174,6 +2576,16 @@ async function testChainBreakDetection() {
     var auditBreak = await _catch(function () { return b.db.init(opts1); });
     check("boot refuses on a broken audit_log chain (db/audit-chain-break)",
       auditBreak && auditBreak.code === "db/audit-chain-break");
+    // The handle goes live before the chain verify so the verify can read
+    // through the public surface, and init throws from there — so the caller,
+    // who never received a handle, has nothing to close. A database this boot
+    // just refused must not stay reachable: leaving it open is a tamper
+    // refusal that still serves the tampered rows.
+    var afterRefusal = _catchSync(function () {
+      return b.db.prepare("SELECT 1 AS one").get();
+    });
+    check("a refused boot leaves no live handle behind",
+      afterRefusal !== null, JSON.stringify(afterRefusal));
     try { b.db.close(); } catch (_e) { /* partially-initialized */ }
   } finally {
     _teardownPlain(d1);
@@ -2927,6 +3339,7 @@ async function run() {
   await testReadOnlyOpenNeverWritesBack();
   await testReadOnlyOpenDoesNotWriteABootCheckpoint();
   await testReadOnlyOpenDoesNotMigrateTheKeySidecar();
+  await testReadOnlyOpenOfAnOlderSchemaDoesNotMigrateIt();
   await testReadOnlyOpenRefusesToCreateAKey();
   await testReadOnlyOpenDoesNotBootstrapASigningKey();
   await testReadOnlyOpenInPlainModeTouchesNothing();

@@ -34,6 +34,19 @@ async function run() {
   check("surface: upgradeSocket is fn",       typeof modSurface.upgradeSocket === "function");
   check("surface: upgradeLineProtocol is fn", typeof modSurface.upgradeLineProtocol === "function");
 
+  // ---- implicitTlsWrap: one option, not two code paths ----
+  // A listener passes the mode straight through, so the plaintext-upgrade port
+  // gets null and hands nothing to its accept path — rather than each listener
+  // writing `implicitTls ? function (raw) {...} : null` for itself, which is
+  // where a TLSSocket gets constructed with an inert compression option or
+  // without isServer.
+  check("implicitTlsWrap: off returns null, so a plaintext port wraps nothing",
+    b.mail.server.tls.implicitTlsWrap({}, false) === null &&
+    b.mail.server.tls.implicitTlsWrap({}, undefined) === null);
+  var wrapFn = b.mail.server.tls.implicitTlsWrap({}, true);
+  check("implicitTlsWrap: on returns the wrapper the accept path calls",
+    typeof wrapFn === "function" && wrapFn.length === 1);
+
   // ---- upgradeLineProtocol: config-time validation (§8 entry-point) ----
   var ulpBad = [];
   try { modSurface.upgradeLineProtocol(); }              catch (e) { ulpBad.push(e); }
@@ -118,6 +131,90 @@ async function run() {
           badThrew !== null, badThrew && badThrew.message);
   } finally {
     fs.rmSync(tmp1, { recursive: true, force: true });
+  }
+
+  // ---- a mismatched pair says WHICH files were compared ----
+  //
+  // This is a boot failure with the server refusing to start, and OpenSSL's
+  // own text says what is wrong without saying where. On a host mid-renewal
+  // there are several candidate files and usually a symlink, and this function
+  // is the only thing that knows which pair it just tried.
+  //
+  // Two independently minted pairs, crossed — a real `key values mismatch`
+  // from OpenSSL rather than a synthesised string, so the message being
+  // matched is the one an operator actually sees.
+  var tmpMix = _mkTmpDir("mismatch");
+  try {
+    var pairA = await _mintTestCert();
+    var pairB = await _mintTestCert();
+    var certA = _writeFile(path.join(tmpMix, "a-cert.pem"), pairA.certPem);
+    var keyB  = _writeFile(path.join(tmpMix, "b-key.pem"),  pairB.keyPem);
+    var mixErr = null;
+    try { b.mail.server.tls.context({ certFile: certA, keyFile: keyB }); }
+    catch (e) { mixErr = e; }
+    check("context: a mismatched pair is refused",
+      mixErr && mixErr.code === "mail-server-tls/secure-context-failed",
+      String(mixErr && mixErr.code));
+    check("context: and the refusal names the certificate file",
+      mixErr && mixErr.message.indexOf(certA) !== -1,
+      String(mixErr && mixErr.message).slice(0, 200));
+    check("context: and names the key file",
+      mixErr && mixErr.message.indexOf(keyB) !== -1,
+      String(mixErr && mixErr.message).slice(0, 200));
+    check("context: and keeps OpenSSL's own text rather than replacing it",
+      mixErr && /key values mismatch/i.test(mixErr.message),
+      String(mixErr && mixErr.message).slice(0, 200));
+    check("context: and says in words what the operator has to fix",
+      mixErr && /different issuances/.test(mixErr.message),
+      String(mixErr && mixErr.message).slice(0, 200));
+    // The private key must never reach a message because a certificate failed
+    // to load — paths are the diagnostic, contents are not.
+    check("context: and carries no key material",
+      mixErr && mixErr.message.indexOf("PRIVATE KEY") === -1 &&
+      mixErr.message.indexOf(pairB.keyPem.split("\n")[1] || "@@none@@") === -1,
+      String(mixErr && mixErr.message).slice(0, 200));
+
+    // A file that is not PEM at all. Only ONE path is named here, and that is
+    // the point: when the framework knows which file is wrong it says which,
+    // and it is only the mismatch above — where each file is fine and the pair
+    // is not — that has to name both.
+    var notPem = _writeFile(path.join(tmpMix, "not-pem.key"), "this is not a PEM file\n");
+    var pemErr = null;
+    try { b.mail.server.tls.context({ certFile: certA, keyFile: notPem }); }
+    catch (e) { pemErr = e; }
+    check("context: a file holding no PEM block is refused, naming that file",
+      pemErr && pemErr.code === "mail-server-tls/pem-empty" &&
+      pemErr.message.indexOf(notPem) !== -1,
+      String(pemErr && (pemErr.code + " " + pemErr.message)).slice(0, 200));
+    check("context: and says what that usually is",
+      pemErr && /interrupted renewal/.test(pemErr.message),
+      String(pemErr && pemErr.message).slice(0, 200));
+    // An empty file is the same class and the same advice — an interrupted
+    // renewal leaves exactly this, and OpenSSL reports it identically.
+    var emptyKey = _writeFile(path.join(tmpMix, "empty.key"), "");
+    var emptyErr = null;
+    try { b.mail.server.tls.context({ certFile: certA, keyFile: emptyKey }); }
+    catch (e) { emptyErr = e; }
+    check("context: an empty key file is refused at startup, naming it",
+      emptyErr && emptyErr.code === "mail-server-tls/pem-empty" &&
+      emptyErr.message.indexOf(emptyKey) !== -1,
+      String(emptyErr && (emptyErr.code + " " + emptyErr.message)).slice(0, 200));
+
+    // The dangerous half: createSecureContext does NOT refuse an empty
+    // certificate — a context without one is what a TLS client uses, and it is
+    // perfectly legal. So the server used to start, advertise STARTTLS, and
+    // fail every handshake at runtime, which is the same interrupted renewal
+    // reported where it is hardest to trace.
+    var emptyCert = _writeFile(path.join(tmpMix, "empty-cert.pem"), "");
+    var emptyCertErr = null;
+    try { b.mail.server.tls.context({ certFile: emptyCert, keyFile: keyB }); }
+    catch (e) { emptyCertErr = e; }
+    check("context: an empty certificate is refused rather than silently accepted",
+      emptyCertErr && emptyCertErr.code === "mail-server-tls/pem-empty" &&
+      emptyCertErr.message.indexOf(emptyCert) !== -1,
+      String(emptyCertErr && (emptyCertErr.code + " " + emptyCertErr.message)).slice(0, 200));
+  } finally {
+    fs.rmSync(tmpMix, { recursive: true, force: true });
   }
 
   // ---- bad-input refusals ----

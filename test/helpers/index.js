@@ -55,6 +55,7 @@ module.exports = {
 
   // DB fixtures
   setupTestDb:           _db.setupTestDb,
+  reopenTestDb:          _db.reopenTestDb,
   teardownTestDb:        _db.teardownTestDb,
   setupTestDbForMW:      _db.setupTestDbForMW,
   teardownMW:            _db.teardownMW,

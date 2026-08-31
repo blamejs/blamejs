@@ -57,7 +57,11 @@ async function _makeTestTlsContext() {
     sans:         ["DNS:imap.test", "DNS:localhost", "IP:127.0.0.1"],
     validityDays: 1,
   });
-  return nodeTls.createSecureContext({ key: leaf.key, cert: leaf.cert });
+  var ctx = nodeTls.createSecureContext({ key: leaf.key, cert: leaf.cert });
+  // The CA travels with the context so a test connecting directly (implicit
+  // TLS) can VERIFY the chain rather than turning verification off.
+  ctx.testCaPem = ca.caCertPem;
+  return ctx;
 }
 
 async function _readGreeting(socket) {
@@ -138,6 +142,230 @@ async function _connectAndLogin(srv) {
   await new Promise(function (r) { socket.once("connect", r); });
   await _readGreeting(socket);
   return { socket: socket, port: info.port };
+}
+
+// The capability list is written in three places on one connection — the
+// greeting (RFC 9051 §7.1.5), the answer to CAPABILITY (§6.1.1), and the
+// response code completing AUTHENTICATE / LOGIN — and a consumer had no way to
+// reach any of them. Overriding the CAPABILITY verb through the dispatch
+// registry produces a server whose three answers disagree, so one of them is
+// false whichever way it is set: worse than the gap. The hook applies where
+// the list is COMPUTED, so all three stay identical by construction.
+async function testCapabilityHook() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("capability hook (skipped)", true); return; }
+  var seen = [];
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx,
+    mailStore:  _makeStubMailStore(),
+    profile:    "permissive",
+    capabilities: function (caps, state) {
+      seen.push({ caps: caps.slice(), tls: !!(state && state.tls) });
+      return caps.concat(["X-CONSUMER-EXT"]);
+    },
+    auth: {
+      mechanisms: ["PLAIN"],
+      verify: function () {
+        return Promise.resolve({ ok: true, actor: { id: "u1", mailboxes: ["INBOX"] } });
+      },
+    },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var socket = nodeNet.connect(info.port, "127.0.0.1");
+  await new Promise(function (r) { socket.once("connect", r); });
+  try {
+    var greeting = await _readGreeting(socket);
+    check("capability hook: the greeting carries what the hook returned",
+      /X-CONSUMER-EXT/.test(greeting), JSON.stringify(greeting));
+    var capReply = await _sendCommand(socket, "a1", "CAPABILITY");
+    check("capability hook: and so does the CAPABILITY answer",
+      /X-CONSUMER-EXT/.test(capReply), JSON.stringify(capReply));
+    var authReply = await _sendCommand(socket, "a2",
+      "AUTHENTICATE PLAIN " + Buffer.from("\0u1\0pw", "utf8").toString("base64"));
+    check("capability hook: and the code completing AUTHENTICATE",
+      /X-CONSUMER-EXT/.test(authReply), JSON.stringify(authReply));
+    check("capability hook: it was given the resolved list and the session",
+      seen.length >= 3 && seen[0].caps.indexOf("IMAP4rev2") !== -1 &&
+      seen[0].caps.indexOf("X-CONSUMER-EXT") === -1,
+      JSON.stringify(seen[0]));
+    socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+// RFC 9051 §6.1.1 requires IMAP4rev2 in the list. A hook that drops it would
+// leave the listener claiming a protocol it does not speak, so the refusal
+// stays with the listener rather than being delegated to the consumer.
+async function testCapabilityHookMustKeepImap4rev2() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("capability hook rev2 (skipped)", true); return; }
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx,
+    mailStore:  _makeStubMailStore(),
+    profile:    "permissive",
+    capabilities: function (caps) {
+      return caps.filter(function (c) { return c !== "IMAP4rev2"; });
+    },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var socket = nodeNet.connect(info.port, "127.0.0.1");
+  await new Promise(function (r) { socket.once("connect", r); });
+  try {
+    var greeting = await _readGreeting(socket);
+    check("capability hook: a list without IMAP4rev2 is not advertised",
+      /IMAP4rev2/.test(greeting), JSON.stringify(greeting));
+    socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+// Each capability is written into a space-separated protocol line, so a value
+// carrying a space is two capabilities and one carrying CRLF is a second
+// server response of the consumer's choosing. And the hook runs on the
+// greeting — before a client has sent anything — so a throw there would take
+// out a connection at the point where nothing has gone wrong yet.
+async function testCapabilityHookCannotInjectOrCrash() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("capability hook injection (skipped)", true); return; }
+
+  async function _greetingWith(hook) {
+    var srv = b.mail.server.imap.create({
+      tlsContext: ctx, mailStore: _makeStubMailStore(), profile: "permissive",
+      capabilities: hook,
+    });
+    var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+    var socket = nodeNet.connect(info.port, "127.0.0.1");
+    await new Promise(function (r) { socket.once("connect", r); });
+    try {
+      return await _readGreeting(socket);
+    } finally { socket.destroy(); await srv.close({ timeoutMs: 1000 }); }                               // allow:raw-time-literal — test-only short drain
+  }
+
+  var injected = await _greetingWith(function (caps) {
+    return caps.concat(["X-OK", "X-BAD\r\n* BYE injected", "X SPACED",
+      // Valid RFC 9051 atoms that a narrower allowlist would have refused:
+      // the grammar excludes specific characters, it does not enumerate the
+      // permitted ones.
+      "X-SEARCH/FOO", "X-VENDOR:EXT", "X-BANG!", "X-TILDE~",
+      // atom-specials, each of which would change how the line parses.
+      "X-PAREN(1)", "X-BRACE{2}", "X-WILD*", "X-PCT%", "X-RESP]", "X-QUOTE\""]);
+  });
+  check("capability hook: a value carrying CRLF is not advertised",
+    injected.indexOf("BYE injected") === -1, JSON.stringify(injected));
+  check("capability hook: nor one carrying a space",
+    injected.indexOf("X SPACED") === -1, JSON.stringify(injected));
+  check("capability hook: and the rest of the list still is",
+    /X-OK/.test(injected) && /IMAP4rev2/.test(injected), JSON.stringify(injected));
+  check("capability hook: a valid atom is advertised whatever punctuation it uses",
+    /X-SEARCH\/FOO/.test(injected) && /X-VENDOR:EXT/.test(injected) &&
+    /X-BANG!/.test(injected) && /X-TILDE~/.test(injected), JSON.stringify(injected));
+  check("capability hook: every atom-special is refused",
+    injected.indexOf("X-PAREN") === -1 && injected.indexOf("X-BRACE") === -1 &&
+    injected.indexOf("X-WILD") === -1 && injected.indexOf("X-PCT") === -1 &&
+    injected.indexOf("X-RESP") === -1 && injected.indexOf("X-QUOTE") === -1,
+    JSON.stringify(injected));
+
+  var afterThrow = await _greetingWith(function () { throw new Error("hook blew up"); });
+  check("capability hook: a throwing hook leaves the framework's own list",
+    /^\* OK \[CAPABILITY IMAP4rev2/.test(afterThrow), JSON.stringify(afterThrow));
+
+  // Reading a value is the consumer's code too: an entry whose toString throws
+  // fails in the same way as a hook that threw outright, and would escape a
+  // guard that covered only the call.
+  var afterHostileEntry = await _greetingWith(function (caps) {
+    return caps.concat([{ toString: function () { throw new Error("hostile entry"); } }]);
+  });
+  check("capability hook: an entry that throws while being read is contained too",
+    /^\* OK \[CAPABILITY IMAP4rev2/.test(afterHostileEntry), JSON.stringify(afterHostileEntry));
+}
+
+// A non-callable hook is the operator asking for a list the listener would
+// then never consult.
+async function testCapabilityHookRejectsNonFunction() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("capability hook non-callable (skipped)", true); return; }
+  var threw = null;
+  try {
+    b.mail.server.imap.create({ tlsContext: ctx, mailStore: _makeStubMailStore(),
+      profile: "permissive", capabilities: ["X-NOPE"] });
+  } catch (e) { threw = e; }
+  check("capability hook: a non-callable one is refused at construction",
+    threw !== null && /capabilities/.test(threw.message || ""), String(threw && threw.message));
+}
+
+// RFC 8314 §3 asks for implicit TLS on 993 rather than the in-band upgrade.
+// Without it the only arrangement available is a TLS terminator in front of
+// 143, and behind one the listener is handed a plaintext connection — so it
+// cannot see the TLS it is not part of, and every credential is refused. The
+// tell is on the wire: a greeting advertising STARTTLS inside an established
+// TLS session.
+async function testImplicitTls() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("imap implicit TLS (skipped)", true); return; }
+  var srv = b.mail.server.imap.create({
+    tlsContext:  ctx,
+    mailStore:   _makeStubMailStore(),
+    profile:     "strict",
+    implicitTls: true,
+    auth: {
+      mechanisms: ["PLAIN"],
+      verify: function () {
+        return Promise.resolve({ ok: true, actor: { id: "u1", mailboxes: ["INBOX"] } });
+      },
+    },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var socket = nodeTls.connect({ port: info.port, host: "127.0.0.1",
+    ca: ctx.testCaPem, servername: "localhost" });
+  socket.on("error", function () {});
+  await new Promise(function (r, j) { socket.once("secureConnect", r); socket.once("error", j); });
+  try {
+    var greeting = await _readGreeting(socket);
+    check("imap implicit TLS: the greeting arrives over TLS", /^\* OK/.test(greeting),
+      JSON.stringify(greeting));
+    check("imap implicit TLS: STARTTLS is not advertised on this port",
+      !/STARTTLS/.test(greeting), JSON.stringify(greeting));
+    var caps = await _sendCommand(socket, "a1", "CAPABILITY");
+    check("imap implicit TLS: nor in the CAPABILITY answer",
+      !/STARTTLS/.test(caps), JSON.stringify(caps));
+    check("imap implicit TLS: and the command is refused if sent (RFC 8314 §3.3)",
+      /^a2 BAD/m.test(await _sendCommand(socket, "a2", "STARTTLS")));
+    // The point of the mode: credentials are accepted under `strict`, which
+    // is what a terminator in front of 143 cannot achieve.
+    var auth = await _sendCommand(socket, "a3",
+      "AUTHENTICATE PLAIN " + Buffer.from(" u1 pw", "utf8").toString("base64"));
+    check("imap implicit TLS: AUTHENTICATE succeeds on the implicit session",
+      /^a3 OK/m.test(auth), JSON.stringify(auth));
+    socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+
+  // Whether STARTTLS is offered depends on the state of THIS connection, and
+  // on this port the listener refuses the command outright — so it is not the
+  // consumer's to advertise. A hook that puts it back would have a client
+  // select a capability the listener cannot honour.
+  var srv2 = b.mail.server.imap.create({
+    tlsContext:   ctx,
+    mailStore:    _makeStubMailStore(),
+    profile:      "permissive",
+    implicitTls:  true,
+    capabilities: function (caps) { return caps.concat(["STARTTLS", "X-KEPT"]); },
+  });
+  var info2 = await srv2.listen({ port: 0, address: "127.0.0.1" });
+  var socket2 = nodeTls.connect({ port: info2.port, host: "127.0.0.1",
+    ca: ctx.testCaPem, servername: "localhost" });
+  socket2.on("error", function () {});
+  await new Promise(function (r, j) { socket2.once("secureConnect", r); socket2.once("error", j); });
+  try {
+    var greeting2 = await _readGreeting(socket2);
+    check("imap implicit TLS: a hook cannot re-advertise STARTTLS on this port",
+      !/STARTTLS/.test(greeting2), JSON.stringify(greeting2));
+    check("imap implicit TLS: and the rest of its list is still advertised",
+      /X-KEPT/.test(greeting2), JSON.stringify(greeting2));
+    socket2.destroy();
+  } finally { await srv2.close({ timeoutMs: 1000 }); }                                                  // allow:raw-time-literal — test-only short drain
 }
 
 async function testCapabilityAdvertisesCondstore() {
@@ -2125,13 +2353,165 @@ async function testClientDisconnectReleasesTheConnectionSlot() {
 // RFC 9051 §6.4.9 is the form a client with a cross-session cache asks for,
 // because a sequence number is only meaningful within the session that issued
 // it. So the client doing the durable thing was the one being refused.
+// The literal window is a resource commitment: a continuation request invites
+// up to maxLiteralBytes and holds a connection slot until the payload arrives.
+// It was decided from the PARSED SHAPE alone, while the authorization that
+// would refuse the command — _requireAuth, the first line of _handleAppend —
+// runs only after the whole literal has been buffered, because handlers are
+// reached through _completeLiteralCommand. So an unauthenticated peer could
+// open the window on a verb the state table lists as AUTHENTICATED-only and
+// trickle bytes into it indefinitely.
+//
+// LOGIN and AUTHENTICATE are the two that legitimately carry a literal before
+// authentication — a password is exactly the value a quoted string cannot
+// always hold — so this is an allowlist rather than a blanket refusal.
+async function testPreAuthLiteralIsRefusedForAuthenticatedOnlyVerbs() {
+  var s = await _makeServer({});
+  var sock = await _connect(s.port);
+  try {
+    // APPEND is AUTHENTICATED-only. The window must not open.
+    //
+    // Waits on EITHER outcome, because the failing behaviour is a continuation
+    // request and the passing one is a tagged refusal — a reader that waited
+    // only for the tag would hang for the full test budget on the bug it is
+    // meant to report, which is a timeout rather than a finding.
+    var appended = await _cmdT(sock, "P1", "APPEND INBOX {1048576}", /(^\+ |^P1 )/m);                   // allow:raw-byte-literal — 1 MiB literal opener
+    check("imap: an unauthenticated APPEND literal gets no continuation request",
+      !/^\+ /m.test(appended), JSON.stringify(appended));
+    check("imap: it is refused with a tagged response instead",
+      /^P1 (NO|BAD)/m.test(appended), JSON.stringify(appended));
+
+    // A verb that is available pre-auth but takes no literal argument must not
+    // open a window either. Allowing the whole NOT-AUTHENTICATED set let
+    // `NOOP {67108864}` commit 64 MiB and a connection slot to a peer that had
+    // proved nothing — the state table says which commands are AVAILABLE, not
+    // which can carry a literal.
+    // The refusal may be tagged or untagged depending on where it is caught,
+    // so the read waits for any of the three outcomes rather than hanging on
+    // the one shape it expected.
+    var noopLit = await _cmdT(sock, "P5", "NOOP {67108864}", /(^\+ |^P5 |^\* BAD)/m);                   // allow:raw-byte-literal — 64 MiB literal opener
+    check("imap: a pre-auth verb that takes no literal cannot open one",
+      !/^\+ /m.test(noopLit), JSON.stringify(noopLit));
+
+    // And the session is still usable — this is a refusal, not a teardown.
+    var cap = await _cmd(sock, "P2", "CAPABILITY");
+    check("imap: the connection survives the refusal",
+      /^P2 OK/m.test(cap), JSON.stringify(cap));
+
+    // ID is available before login per the state table, and RFC 2971 makes its
+    // parameters strings a client may send as literals — so it has to be able
+    // to open one. Picking the pre-auth verbs by which "obviously" need a
+    // literal missed it and refused a documented command.
+    var idLit = await _cmdT(sock, "P4", "ID (\"name\" {4}", /(^\+ |^P4 )/m);
+    check("imap: ID may open a literal before authentication",
+      /^\+ /m.test(idLit), JSON.stringify(idLit));
+    // Finish the command so the connection is left usable for what follows.
+    var idDone = await _raw(sock, _tagTerm("P4"), "test)\r\n");
+    check("imap: and the ID command completes",
+      /^P4 (OK|BAD|NO)/m.test(idDone), JSON.stringify(idDone));
+
+    // The two that may carry one before authentication still can.
+    var loginLit = await _cmdT(sock, "P3", "LOGIN alice {4}", /\+ /);
+    check("imap: LOGIN may still open a literal before authentication",
+      /\+ /.test(loginLit), JSON.stringify(loginLit));
+    var done = await _raw(sock, _tagTerm("P3"), "good\r\n");
+    check("imap: and it completes", /^P3 OK/m.test(done), JSON.stringify(done));
+  } finally { sock.destroy(); await s.srv.close({ timeoutMs: 1000 }); }                                 // allow:raw-time-literal — test-only short drain
+}
+
+// The listener documents a minimum body rate and builds the limiter that
+// enforces one, and never asked it. The only bound on a literal transfer was
+// the idle timeout, which every arriving byte resets — so a peer trickling one
+// byte at a time held a connection slot for as long as it cared to, which is
+// what the floor exists to stop. MX and submission were given this; IMAP and
+// ManageSieve were left out of that sweep.
+async function testLiteralBelowTheByteRateFloorIsClosed() {
+  // A limiter whose floor is unreachable in a fast test is substituted, the
+  // same way the MX test does it, so this does not have to spend the
+  // ten-second grace window to reach the branch. What is pinned here is that
+  // the listener ASKS; the number itself is pinned in the limiter's own tests.
+  var asked = [];
+  var real = b.mail.server.rateLimit.create({});
+  var starving = {};
+  Object.keys(real).forEach(function (k) {
+    starving[k] = typeof real[k] === "function"
+      ? function () { return real[k].apply(real, arguments); }
+      : real[k];
+  });
+  starving.bodyRateStarved = function (bytes, elapsedMs) {
+    asked.push({ bytes: bytes, elapsedMs: elapsedMs });
+    return true;
+  };
+
+  var s = await _makeServer({ rateLimit: starving });
+  var sock = await _authConn(s);
+  try {
+    var closed = false;
+    sock.on("close", function () { closed = true; });
+    var opened = await _cmdT(sock, "R1", "APPEND INBOX {200000}", /\+ /);                               // allow:raw-byte-literal — 200 KB literal opener
+    check("imap: the literal opens for an authenticated peer",
+      /\+ /.test(opened), JSON.stringify(opened));
+
+    sock.write("x");
+    await helpers.waitUntil(function () { return closed; }, {
+      timeoutMs: 5000, label: "imap byte-rate floor: connection closed",                                // allow:raw-time-literal — test-only cap
+    });
+    check("imap: a literal below the rate floor closes the connection", closed);
+    check("imap: and the listener actually asked the limiter",
+      asked.length >= 1, String(asked.length));
+    // The bytes reported must include the chunk being judged, or a one-chunk
+    // payload is measured as though nothing had arrived.
+    check("imap: the bytes reported include the chunk under judgement",
+      asked.length >= 1 && asked[0].bytes >= 1, JSON.stringify(asked[0]));
+  } finally { sock.destroy(); await s.srv.close({ timeoutMs: 1000 }); }                                 // allow:raw-time-literal — test-only short drain
+}
+
+// The case the data-driven check structurally cannot see: a peer opens a
+// literal and then sends NOTHING. No data event ever arrives, so the floor is
+// never asked, and the connection was held until an idle timeout that a peer
+// sending nothing was never going to trip either. The deadline is what closes
+// it, so this exercises the timer rather than the chunk path.
+async function testLiteralWithNoPayloadAtAllIsClosed() {
+  var real = b.mail.server.rateLimit.create({});
+  var starving = {};
+  Object.keys(real).forEach(function (k) {
+    starving[k] = typeof real[k] === "function"
+      ? function () { return real[k].apply(real, arguments); }
+      : real[k];
+  });
+  starving.bodyRateStarved = function () { return true; };
+  // A short window so the deadline fires inside the test's budget; the number
+  // is the limiter's to choose, which is exactly why the listener reads it
+  // from the limiter rather than holding one of its own.
+  starving.bodyRateWindowMs = function () { return 50; };                                               // allow:raw-time-literal — test-only window
+
+  var s = await _makeServer({ rateLimit: starving });
+  var sock = await _authConn(s);
+  try {
+    var closed = false;
+    sock.on("close", function () { closed = true; });
+    var opened = await _cmdT(sock, "Z1", "APPEND INBOX {200000}", /\+ /);                               // allow:raw-byte-literal — 200 KB literal opener
+    check("imap: [setup] the literal opens", /\+ /.test(opened), JSON.stringify(opened));
+    // Not one byte follows.
+    await helpers.waitUntil(function () { return closed; }, {
+      timeoutMs: 5000, label: "imap: a literal with no payload at all is closed",                       // allow:raw-time-literal — test-only cap
+    });
+    check("imap: a literal opened and never fed is closed by the deadline", closed);
+  } finally { sock.destroy(); await s.srv.close({ timeoutMs: 1000 }); }                                 // allow:raw-time-literal — test-only short drain
+}
+
 async function testUidRoutesThroughTheRegistrySeam() {
   var seen = [];
   var s = await _makeServer({
     overrides: {
       SEARCH: {
-        fn: function (_state, socket, parsed) {
-          seen.push({ args: parsed.args, useUid: parsed.useUid === true });
+        // Four parameters, the signature a consumer writes when their search
+        // terms can arrive as literals.
+        fn: function (_state, socket, parsed, literalBody) {
+          seen.push({
+            args: parsed.args, useUid: parsed.useUid === true,
+            literal: literalBody == null ? null : String(literalBody),
+          });
           socket.write("* SEARCH 7 9\r\n");
           socket.write(parsed.tag + " OK SEARCH completed\r\n");
         },
@@ -2159,6 +2539,51 @@ async function testUidRoutesThroughTheRegistrySeam() {
       seen[1] && seen[1].useUid === true, JSON.stringify(seen[1]));
     check("imap: the sub-command's own arguments are passed through intact",
       seen[1] && seen[1].args === "UNSEEN", JSON.stringify(seen[1]));
+
+    // And the literal payload, which is how a real client sends any non-ASCII
+    // search term. It was dropped twice over on this path: the registry entry's
+    // closure declared three parameters while dispatch supplied four, so arity
+    // discarded it at the boundary, and _handleUid's own sub-dispatch passed no
+    // literal onward either. Repairing one leaves the other, so both are
+    // exercised here through the ONE command that has to cross both.
+    var lit = await _cmdT(sock, "S5", "UID SEARCH SUBJECT {5}", /\+ /);
+    check("imap: UID SEARCH with a literal gets a continuation request",
+      /\+ /.test(lit), JSON.stringify(lit));
+    var litDone = await _raw(sock, _tagTerm("S5"), "hello\r\n");
+    check("imap: and the UID form completes rather than failing BAD",
+      /^S5 OK/m.test(litDone), JSON.stringify(litDone));
+    check("imap: the literal payload reaches the supplied handler",
+      seen[2] && seen[2].literal === "hello",
+      JSON.stringify(seen[2] && seen[2].literal));
+
+    // The drop was a property of ARITY, not of UID, and the listener hands a
+    // literal to whatever verb arrived carrying one — so the same shape could
+    // bite any handler whose closure declares three parameters. LOGIN is the
+    // one that matters, because RFC 9051 lets a client send its password as a
+    // literal and the listener strips the opener from the line before the
+    // handler parses it. Asked rather than assumed.
+    var fresh = await _connect(s.port);
+    try {
+      var loginLit = await _cmdT(fresh, "S6", "LOGIN alice {4}", /\+ /);
+      check("imap: LOGIN with a literal password gets a continuation request",
+        /\+ /.test(loginLit), JSON.stringify(loginLit));
+      // `good` is alice's real password, so this must AUTHENTICATE. Accepting
+      // a NO here would pass just as happily with the literal dropped and the
+      // credential simply wrong, which is the thing being tested.
+      var loginDone = await _raw(fresh, _tagTerm("S6"), "good\r\n");
+      check("imap: and the literal password reaches auth, so the login succeeds",
+        /^S6 OK/m.test(loginDone), JSON.stringify(loginDone));
+
+      // The other astring a client commonly sends as a literal is a mailbox
+      // name, which is where a UTF-8 name has to go. Asked the same way, on the
+      // now-authenticated connection.
+      var selLit = await _cmdT(fresh, "S7", "SELECT {5}", /\+ /);
+      check("imap: SELECT with a literal mailbox gets a continuation request",
+        /\+ /.test(selLit), JSON.stringify(selLit));
+      var selDone = await _raw(fresh, _tagTerm("S7"), "INBOX\r\n");
+      check("imap: and the literal mailbox name reaches the handler",
+        /^S7 OK/m.test(selDone), JSON.stringify(selDone));
+    } finally { fresh.destroy(); }
 
     // Routing by "is it in the registry" would dispatch real handlers that
     // know nothing about UIDs. SELECT would select a mailbox; UID would
@@ -2215,6 +2640,11 @@ async function run() {
     testRequiresTlsContext();
     testRequiresMailStore();
     testBadBoundsRefused();
+    await testImplicitTls();
+    await testCapabilityHook();
+    await testCapabilityHookMustKeepImap4rev2();
+    await testCapabilityHookCannotInjectOrCrash();
+    await testCapabilityHookRejectsNonFunction();
     await testCapabilityAdvertisesCondstore();
     await testEnableCondstore();
     await testFetchChangedSinceParses();
@@ -2250,6 +2680,9 @@ async function run() {
     await wtt("connection rate-limit",  testConnectionRateLimit);
     await wtt("client disconnect frees", testClientDisconnectReleasesTheConnectionSlot);
     await wtt("uid routes via registry",  testUidRoutesThroughTheRegistrySeam);
+    await wtt("pre-auth literal refused",  testPreAuthLiteralIsRefusedForAuthenticatedOnlyVerbs);
+    await wtt("literal byte-rate floor",   testLiteralBelowTheByteRateFloorIsClosed);
+    await wtt("literal with no payload",   testLiteralWithNoPayloadAtAllIsClosed);
     await wtt("uid expunge via override", testUidExpungeReachesAConsumerSuppliedHandler);
     await wtt("line too long",          testLineTooLong);
     await wtt("literal smuggling",      testLiteralSmuggling);

@@ -69,8 +69,6 @@ var SOURCE_ONLY_ALLOWED = {
 var COMPOSE_ONLY_ALLOWED = {
   "BLAMEJS_AUDIT_PASSPHRASE": "consumed by `blamejs audit ...` CLI runs, not app boot",
   "BLAMEJS_DEPRECATIONS":     "consumed by lib/deprecate.js on first deprecation hit, not boot",
-  "BLAMEJS_NTS_REQUIRE":      "passed to b.network.ntp.nts.query() at operator's call site, not boot",
-  "BLAMEJS_NTS_SERVERS":      "passed to b.network.ntp.nts.query() at operator's call site, not boot",
   "NODE_ENV":                 "Node-builtin runtime knob; standard, not a wiki opt",
   "LOG_LEVEL":                "Standard convention; BLAMEJS_LOG_STREAM_MIN_LEVEL is the framework opt",
 };

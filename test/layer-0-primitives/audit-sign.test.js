@@ -219,6 +219,138 @@ async function testWrappedModeAndErrors() {
     check("wrapped rotation wrote the history file to disk", fs.existsSync(rot.historyPath));
     check("wrapped rotation archived the rotated-out public key",
       as.getPublicKeyByFingerprint(beforeFp) === beforePub);
+
+    // The same lookup for a process that has NOT loaded signing, and should
+    // not: a deployment running `auditSigning: false` still has to verify a
+    // signature written while signing was on. Bootstrapping a keypair to read
+    // a public key would write to a volume opened without one.
+    as._resetForTest();
+    check("publicKeyFromHistory resolves a rotated-out key with signing unloaded",
+      b.auditSign.publicKeyFromHistory(dSeal, beforeFp) === beforePub);
+    check("publicKeyFromHistory returns null for a fingerprint it has no record of",
+      b.auditSign.publicKeyFromHistory(dSeal, "0".repeat(128)) === null);
+    check("publicKeyFromHistory returns null for a directory with no history",
+      b.auditSign.publicKeyFromHistory(dNoAlg, beforeFp) === null);
+    check("publicKeyFromHistory refuses a missing dataDir rather than throwing",
+      b.auditSign.publicKeyFromHistory("", beforeFp) === null &&
+      b.auditSign.publicKeyFromHistory(dSeal, "") === null);
+    check("publicKeyFromHistory did not initialize signing as a side effect",
+      as.getMode() === null, String(as.getMode()));
+
+    // The history file is deliberately UNSEALED, which is what lets the two
+    // lookups above work without a passphrase — and it means anyone who can
+    // write it can put their own key under someone else's fingerprint. They
+    // would then sign a purge anchor with the matching private key and have
+    // verification accept the forged boundary, never touching the wrapped key
+    // the whole mechanism protects. The label has to prove itself: a
+    // fingerprint IS the hash of the key text.
+    var attacker = nodeCrypto.generateKeyPairSync("ed25519", {
+      publicKeyEncoding:  { type: "spki",  format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
+    var histRaw = JSON.parse(fs.readFileSync(_historyPath(dSeal), "utf8"));
+    var swapped = histRaw.map(function (e) {
+      return e && e.fingerprint === beforeFp
+        ? { fingerprint: e.fingerprint, publicKey: attacker.publicKey }
+        : e;
+    });
+    check("the swap kept the fingerprint label the attacker wants resolved",
+      swapped.some(function (e) { return e && e.fingerprint === beforeFp; }));
+    check("and put a different key under it",
+      swapped.some(function (e) {
+        return e && e.fingerprint === beforeFp && e.publicKey !== beforePub;
+      }));
+    fs.writeFileSync(_historyPath(dSeal), JSON.stringify(swapped));
+    check("publicKeyFromHistory refuses an entry whose key does not hash to its label",
+      b.auditSign.publicKeyFromHistory(dSeal, beforeFp) === null,
+      String(b.auditSign.publicKeyFromHistory(dSeal, beforeFp)));
+    // The same file, the same question, through the initialized lookup — two
+    // readers of one unsealed file is exactly where one gets hardened and the
+    // other does not.
+    process.env.BLAMEJS_AUDIT_SIGNING_PASSPHRASE = PASS;
+    await as.init({ dataDir: dSeal, mode: "wrapped" });
+    check("getPublicKeyByFingerprint refuses the same swapped entry",
+      as.getPublicKeyByFingerprint(beforeFp) === null,
+      String(as.getPublicKeyByFingerprint(beforeFp)));
+    as._resetForTest();
+    fs.writeFileSync(_historyPath(dSeal), JSON.stringify(histRaw));
+    check("and resolves again once the real key is put back",
+      b.auditSign.publicKeyFromHistory(dSeal, beforeFp) === beforePub);
+
+    // The resolver used for the one claim that erases rows. It answers for the
+    // live key and nothing else — deliberately NOT the history, which is
+    // unsealed so a passphrase-less verifier can read it, and which therefore
+    // cannot say which key was ALLOWED to license a deletion, only which key
+    // signed something.
+    process.env.BLAMEJS_AUDIT_SIGNING_PASSPHRASE = PASS;
+    await as.init({ dataDir: dSeal, mode: "wrapped" });
+    var liveFp = as.getPublicKeyFingerprint();
+    check("publicKeyLicensingDeletion answers for the live key",
+      b.auditSign.publicKeyLicensingDeletion(liveFp) === as.getPublicKey());
+    check("publicKeyLicensingDeletion refuses a rotated-out key the history knows",
+      as.getPublicKeyByFingerprint(beforeFp) !== null &&
+      b.auditSign.publicKeyLicensingDeletion(beforeFp) === null,
+      String(b.auditSign.publicKeyLicensingDeletion(beforeFp)));
+    check("publicKeyLicensingDeletion refuses a fingerprint nothing knows",
+      b.auditSign.publicKeyLicensingDeletion("0".repeat(128)) === null);
+    as._resetForTest();
+
+    // An operator may bring their own keypair — a hardware-backed signer, say
+    // — and the PEM they hand over becomes the key's identity, because a
+    // fingerprint is the hash of that text. Saved with CRLF line endings it
+    // would take a different fingerprint from the same key saved with LF, and
+    // any later reader that re-serializes before hashing would compute the
+    // other one and call a healthy chain unknown. One key gets one spelling.
+    var byo = _genPair("ml-dsa-65");
+    var crlfPub = byo.publicKey.replace(/\n/g, "\r\n");
+    check("the two spellings of the supplied key differ as text",
+      crlfPub !== byo.publicKey);
+    process.env.BLAMEJS_AUDIT_SIGNING_PASSPHRASE = PASS;
+    await as.init({ dataDir: dSeal, mode: "wrapped" });
+    process.env.BLAMEJS_AUDIT_SIGNING_PASSPHRASE = PASS;
+    var byoRot = await as.rotateSigningKey({
+      privateKeyPem: byo.privateKey, publicKeyPem: crlfPub, algorithm: "ml-dsa-65",
+    });
+    check("a CRLF-supplied key is stored in one canonical spelling",
+      as.getPublicKey() === byo.publicKey, JSON.stringify(as.getPublicKey()));
+    check("and its fingerprint is the one that spelling hashes to",
+      byoRot.newFingerprint === b.auditSign.fingerprintOf(byo.publicKey) &&
+      byoRot.newFingerprint !== b.auditSign.fingerprintOf(crlfPub),
+      byoRot.newFingerprint);
+    var byoBad = null;
+    try {
+      process.env.BLAMEJS_AUDIT_SIGNING_PASSPHRASE = PASS;
+      await as.rotateSigningKey({
+        privateKeyPem: byo.privateKey, publicKeyPem: "not a pem", algorithm: "ml-dsa-65",
+      });
+    } catch (e) { byoBad = e; }
+    check("an unreadable supplied public key is refused at rotation",
+      byoBad !== null && /not a readable PEM/.test(byoBad.message || ""),
+      String(byoBad && byoBad.message));
+    as._resetForTest();
+
+    // A consumer anchor's counter goes into the signed bytes as text, so above
+    // 2^53 two distinct tips render identically and one signature would cover
+    // both — the anchor could be moved between them and still verify. Refused
+    // at both ends: no such signature is minted, and one presented is not
+    // believed.
+    process.env.BLAMEJS_AUDIT_SIGNING_PASSPHRASE = PASS;
+    await as.init({ dataDir: dSeal, mode: "wrapped" });
+    var unsafeTipErr = null;
+    try {
+      as.anchor({ counter: Number.MAX_SAFE_INTEGER + 2, tipHash: "a".repeat(128) });
+    } catch (e) { unsafeTipErr = e; }
+    check("anchor refuses a tip counter beyond the safe-integer range",
+      unsafeTipErr !== null && /2\^53/.test(unsafeTipErr.message || ""),
+      String(unsafeTipErr && unsafeTipErr.message));
+
+    var unsafeVerify = as.verifyAnchor({
+      counter: Number.MAX_SAFE_INTEGER + 2, tipHash: "a".repeat(128),
+      signature: "00", publicKeyFingerprint: "ab", createdAt: 1,
+    });
+    check("verifyAnchor refuses one too",
+      unsafeVerify.ok === false && /2\^53/.test(unsafeVerify.reason || ""),
+      JSON.stringify(unsafeVerify));
   } finally {
     as._resetForTest();
     delete process.env.BLAMEJS_AUDIT_SIGNING_PASSPHRASE;
@@ -450,6 +582,42 @@ async function testPublicHistoryEdges() {
   }
 }
 
+// The signature sizes the framework's comments quote when they tell an
+// operator what audit-checkpoint storage will cost. Four of them named the
+// wrong algorithm variant — the default was documented at 59% of its real
+// size, and one site was out by an order of magnitude — because prose is the
+// one place a wrong number survives every gate. Pinned here so the next drift
+// fails a test rather than shipping: if node:crypto's output changes, this is
+// what says the comments need revisiting.
+function testPqcSignatureSizes() {
+  var nodeCrypto = require("node:crypto");
+  var expected = {
+    "slh-dsa-shake-256f": 49856,                                                                        // allow:raw-byte-literal — FIPS 205 Table 2
+    "slh-dsa-shake-256s": 29792,                                                                        // allow:raw-byte-literal — FIPS 205 Table 2
+    "ml-dsa-87":           4627,                                                                        // allow:raw-byte-literal — FIPS 204 Table 2
+    "ml-dsa-65":           3309,                                                                        // allow:raw-byte-literal — FIPS 204 Table 2
+    "ml-dsa-44":           2420,                                                                        // allow:raw-byte-literal — FIPS 204 Table 2
+  };
+  Object.keys(expected).forEach(function (alg) {
+    var kp = nodeCrypto.generateKeyPairSync(alg);
+    var sig = nodeCrypto.sign(null, Buffer.from("size probe"), kp.privateKey);
+    check("signature size: " + alg + " is " + expected[alg] + " bytes",
+      sig.length === expected[alg], alg + " measured " + sig.length);
+  });
+  // The default (lib/audit-sign.js DEFAULT_SIGNING_ALG) is the FAST variant,
+  // which is what made the wrong figure expensive: it was documented at the
+  // slow variant's size, 40% under what an operator would actually store.
+  check("signature size: the two SLH-DSA variants are not interchangeable figures",
+    expected["slh-dsa-shake-256f"] > expected["slh-dsa-shake-256s"] * 1.6,
+    expected["slh-dsa-shake-256f"] + " vs " + expected["slh-dsa-shake-256s"]);
+  // The encodings b.webhook quotes for a header-cap budget.
+  var one = nodeCrypto.sign(null, Buffer.from("x"),
+    nodeCrypto.generateKeyPairSync("slh-dsa-shake-256f").privateKey);
+  check("signature size: base64url and hex encodings are what the header budget assumes",
+    one.toString("base64url").length === 66475 && one.toString("hex").length === 99712,             // allow:raw-byte-literal — encoded lengths quoted in lib/webhook.js
+    one.toString("base64url").length + " / " + one.toString("hex").length);
+}
+
 async function run() {
   b.auditSign._resetForTest();
   try {
@@ -462,6 +630,7 @@ async function run() {
     await testReSignAllEdges();
     await testAnchorInputEdges();
     await testPublicHistoryEdges();
+    testPqcSignatureSizes();
   } finally {
     try { b.auditSign._resetForTest(); } catch (_e) { /* best-effort */ }
     delete process.env.BLAMEJS_AUDIT_SIGNING_PASSPHRASE;

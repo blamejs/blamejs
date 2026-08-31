@@ -622,6 +622,39 @@ async function testStoreSwapReleasesTheStoreItReplaces() {
   check("an asynchronous close failure is not reported as a swap failure",
         asyncThrew === null, asyncThrew && asyncThrew.message);
 
+  // A store is consumer-supplied, so close() may return a hand-written
+  // thenable rather than a native promise. A native promise IGNORES a
+  // non-callable fulfillment handler; a hand-written one is
+  // `then(resolve, reject) { ... resolve(v) }` and CALLS it — so attaching
+  // with a null fulfillment handler turns a perfectly ordinary store into a
+  // TypeError thrown on a later turn, outside any try, which ends the process.
+  var handedTo = null;
+  var thenableClose = {
+    execute: function () {}, executeOne: function () { return null; },
+    close: function () {
+      return {
+        then: function (resolve, _reject) {
+          handedTo = typeof resolve;
+          setTimeout(function () { resolve("closed"); }, 5);                                            // allow:raw-time-literal — test-only microdelay
+        },
+      };
+    },
+  };
+  var uncaught = [];
+  function onUncaught(e) { uncaught.push(e); }
+  process.on("uncaughtException", onUncaught);
+  var thenableThrew = null;
+  try { b.session.useStore(thenableClose); b.session.useStore(null); } catch (e) { thenableThrew = e; }
+  check("a store whose close() returns a thenable gets a CALLABLE fulfillment handler",
+        handedTo === "function", String(handedTo));
+  check("and the swap itself still succeeds", thenableThrew === null,
+        thenableThrew && thenableThrew.message);
+  await helpers.passiveObserve(200, "session useStore: a thenable close() fulfils without crashing");
+  process.removeListener("uncaughtException", onUncaught);
+  check("and fulfilling that thenable reaches nothing that throws",
+        uncaught.length === 0,
+        uncaught.map(function (u) { return u && u.message; }).join("; "));
+
   // Re-installing the SAME store must not close the one still in use, and a
   // rejected argument must leave the installed store open and serving.
   var liveDir = _mktmp("live");

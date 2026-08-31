@@ -36,6 +36,13 @@ var C                    = b.constants;
 
 var providerFactory = require(path.join(__dirname, "..", "..", "lib", "cluster-provider-db"));
 
+// What two Date.now() reads may disagree by. A lease expiry has to be written
+// in wall-clock time — it is compared across NODES, and a monotonic clock is
+// per-process — so the comparison below is between two reads of a clock that
+// is not monotonic. Far below any real drift, which grows by a whole TTL per
+// renewal rather than by a millisecond.
+var CLOCK_JITTER_MS = 50;                                                                               // allow:raw-time-literal — clock-granularity allowance, not a timeout
+
 // Renew `count` times with real elapsed time between each, asserting the
 // lease span stays pinned at the configured TTL. `label` tags the dialect.
 async function _assertRenewalKeepsTtl(label, provider, ttlMs) {
@@ -60,8 +67,17 @@ async function _assertRenewalKeepsTtl(label, provider, ttlMs) {
           ", TTL " + ttlMs + ")", span === ttlMs);
     // And the remaining lifetime never balloons past the TTL — a dead
     // leader would expire within leaseTtl and be steal-able on schedule.
+    //
+    // Compared with a tolerance, because both sides come from Date.now() and
+    // that clock is not monotonic: it has millisecond granularity at best and
+    // steps under NTP adjustment, so the read here can land microscopically
+    // BEFORE the one renewLease used and put `remaining` a millisecond over.
+    // A container on this host produced exactly 30001 against a 30000 TTL.
+    // The defect this guards is unbounded growth — an expiry that slides
+    // further into the future on every renewal — which the span assertion
+    // above pins exactly and which no clock jitter can produce.
     check(label + ": renewal #" + i + " remaining <= TTL (got " + remaining + ")",
-          remaining <= ttlMs);
+          remaining <= ttlMs + CLOCK_JITTER_MS);
   }
 }
 

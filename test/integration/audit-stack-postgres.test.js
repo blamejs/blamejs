@@ -347,6 +347,7 @@ async function run() {
     await _testBreakGlassConcurrentDoubleClaim(driver);
     await _testCryptoFieldKRowRoundTrip(liveQueryAll);
     await _testTamperDetection();
+    await _testClusterPurgeDeletionAgainstWormTriggers(liveQueryAll);
 
   } finally {
     try { if (driverClient) await driver.close(driverClient); } catch (_e) {}
@@ -624,6 +625,178 @@ async function _testAuditToolsBundleAndPurge(tmpDir) {
         "coerced lastPurgedCounter BIGINT→number",
         anchorReadBack && anchorReadBack.lastPurgedCounter === 5 &&
         anchorReadBack.lastPurgedRowHash === "anchor-hash");
+
+}
+
+// The REAL cluster deletion, with no injected apply. Runs LAST, because it
+// removes rows.
+//
+// Every purge assertion above uses a no-op apply so the chain survives for
+// the sections in between — which means the actual DELETE, and the
+// append-only BEFORE-DELETE trigger ensureSchema installs on these tables,
+// were never executed against this backend. That is the configuration in
+// which the bug cannot appear: the cluster branch deleted straight through a
+// trigger it did not know about, so a cluster purge failed AFTER the signed
+// boundary had been recorded, leaving rows present that verification skips.
+//
+// The counter has to match real rows. A DELETE that matches none never fires
+// a per-row trigger, so it passes whether or not the guard is suspended.
+async function _testClusterPurgeDeletionAgainstWormTriggers(liveQueryAll) {
+  // The tamper-detection section above drops both guards so it can edit a
+  // row, so put them back — this test is about what a purge does when the
+  // guard IS installed, and without that it would pass for the wrong reason.
+  await b.frameworkSchema.ensureSchema({ externalDbBackend: "ops", dialect: "postgres" });
+
+  var before = await liveQueryAll(
+    'SELECT "monotonicCounter" FROM _blamejs_audit_log ORDER BY "monotonicCounter" ASC');
+  check("there are rows for the purge deletion to act on", before.length > 0,
+        "rows=" + before.length);
+  var through = Number(before[0].monotonicCounter);
+
+  // Prove the guard is live before relying on it. What it refuses is a row no
+  // anchor accounts for — which, before this purge runs, is every row. A test
+  // that skipped this would pass whether the trigger existed or not.
+  //
+  // It deliberately targets a row ABOVE the boundary this purge is about to
+  // claim: after the purge, rows at or below that boundary ARE licensed to be
+  // missing, and refusing to delete rows the signed anchor already says may be
+  // absent would protect nothing. The guard's job is the rows nothing accounts
+  // for.
+  var guardLive = null;
+  try {
+    await b.clusterStorage.execute(
+      'DELETE FROM audit_log WHERE "monotonicCounter" >= ?', [through]);
+  } catch (e) { guardLive = e; }
+  check("the append-only guard refuses an ordinary DELETE of unaccounted rows",
+        guardLive !== null && /append-only/i.test(guardLive.message || ""),
+        String(guardLive && guardLive.message).slice(0, 160));
+  // Asserted on the rows themselves, not a row count: the refusal is audited,
+  // so the table legitimately GAINS a query-failure row while losing none.
+  var survived = await liveQueryAll(
+    'SELECT "monotonicCounter" FROM _blamejs_audit_log WHERE "monotonicCounter" >= $1',
+    [through]);
+  check("and the rows it tried to remove are all still there",
+        survived.length >= 1, "surviving=" + survived.length);
+
+  var refused = null;
+  try {
+    await b.db.purgeAuditChain({ lastPurgedCounter: through });
+  } catch (e) { refused = e; }
+  check("purgeAuditChain's cluster DELETE passes the live append-only trigger",
+        refused === null, String(refused && refused.message).slice(0, 200));
+
+  var after = await liveQueryAll(
+    'SELECT "monotonicCounter" FROM _blamejs_audit_log WHERE "monotonicCounter" <= $1',
+    [through]);
+  check("and the row it covered is actually gone", after.length === 0,
+        "remaining=" + after.length);
+
+  // The guard is never taken off, and it is not switched off either. It stays
+  // installed and decides per row against the boundary the purge anchor
+  // records — so a purge opens no window in which another connection may
+  // delete audit rows, and no session can grant itself the permission.
+  check("postgres bounds the guard by the anchor rather than a session flag",
+        b.frameworkSchema.wormGuardIsAnchorBounded("postgres") === true);
+
+  // The flag the guard used to read is gone. Setting it now buys nothing —
+  // which is the point: `SET LOCAL blamejs.audit_purge = 'on'` is available to
+  // any session holding the framework's own role, so a guard that honoured it
+  // could be self-granted by exactly the caller it exists to stop. Measured on
+  // this server with a non-owner role: the flag turned a refused DELETE into
+  // an accepted one, while DROP TRIGGER stayed refused.
+  var flagged = null;
+  try {
+    await b.clusterStorage.transaction(async function (tx) {
+      await tx.execute("SET LOCAL blamejs.audit_purge = 'on'", []);
+      await tx.execute(
+        'DELETE FROM audit_log WHERE "monotonicCounter" > ?', [through + 50]);
+    });
+  } catch (e) { flagged = e; }
+  check("a session that sets the old flag still cannot delete beyond the boundary",
+        flagged !== null && /append-only/i.test(flagged.message || ""),
+        String(flagged && flagged.message).slice(0, 160));
+
+  // A row read INSIDE a transaction has to come back in the same JS types as
+  // the identical read outside one. node-postgres returns BIGINT as a decimal
+  // string, so without the same coercion `execute` applies, a counter is a
+  // number on one path and a string on the other — arithmetic and strict
+  // comparison then diverge depending on whether a caller happened to be in a
+  // transaction. SQLite cannot show this: both are already numbers there.
+  var txTypedRow = null;
+  var plainTypedRow = await b.clusterStorage.executeOne(
+    'SELECT "monotonicCounter", "rowHash", nonce FROM audit_log ORDER BY "monotonicCounter" ASC LIMIT 1');
+  await b.clusterStorage.transaction(async function (tx) {
+    txTypedRow = await tx.executeOne(
+      'SELECT "monotonicCounter", "rowHash", nonce FROM audit_log ORDER BY "monotonicCounter" ASC LIMIT 1');
+  });
+  check("a transaction read returns the same counter type as a plain read",
+        txTypedRow !== null && plainTypedRow !== null &&
+        typeof txTypedRow.monotonicCounter === typeof plainTypedRow.monotonicCounter &&
+        typeof txTypedRow.monotonicCounter === "number",
+        "tx=" + typeof (txTypedRow && txTypedRow.monotonicCounter) +
+        " plain=" + typeof (plainTypedRow && plainTypedRow.monotonicCounter));
+  check("and the same counter value",
+        txTypedRow && plainTypedRow &&
+        Number(txTypedRow.monotonicCounter) === Number(plainTypedRow.monotonicCounter));
+
+  // A row the anchor does not cover is refused on any connection, including
+  // the one the purge itself used. The boundary is the whole permission.
+  var liveRows = await liveQueryAll(
+    'SELECT "monotonicCounter" FROM _blamejs_audit_log ' +
+    'WHERE "monotonicCounter" > (SELECT "lastPurgedCounter" FROM _blamejs_audit_purge_anchor WHERE scope = $1) ' +
+    'ORDER BY "monotonicCounter" DESC LIMIT 1', ["audit"]);
+  check("there is a row above the boundary for the guard to refuse",
+        liveRows.length === 1, "candidates=" + liveRows.length);
+  var beyond = null;
+  try {
+    await b.clusterStorage.execute(
+      'DELETE FROM audit_log WHERE "monotonicCounter" = ?',
+      [Number(liveRows[0].monotonicCounter)]);
+  } catch (e) { beyond = e; }
+  check("a row above the anchored boundary is refused",
+        beyond !== null && /append-only/i.test(beyond.message || ""),
+        String(beyond && beyond.message).slice(0, 160));
+
+  // And a checkpoint above it too — the same rule, read from the column that
+  // table records its position in. Targeted at a checkpoint that EXISTS above
+  // the boundary: a DELETE matching no rows never fires a per-row trigger, so
+  // it would "succeed" and prove nothing.
+  // Read the boundary rather than assuming it is still `through` — earlier
+  // sections in this file purge too, and the anchor records the latest one.
+  var anchorRows = await liveQueryAll(
+    'SELECT "lastPurgedCounter" FROM _blamejs_audit_purge_anchor WHERE scope = $1',
+    ["audit"]);
+  check("the anchor records a boundary for the guard to read",
+        anchorRows.length === 1, "anchors=" + anchorRows.length);
+  check("the anchor's boundary is a real counter", Number.isFinite(
+    Number(anchorRows[0].lastPurgedCounter)), String(anchorRows[0].lastPurgedCounter));
+
+  // `audit_checkpoints` is bounded by the column IT records its position in,
+  // which is not the one `audit_log` uses. Asserted on the installed function
+  // body rather than by deleting a checkpoint: at this point in the file the
+  // leader has been fenced by an earlier section, so no new checkpoint can be
+  // written to delete, and a DELETE matching nothing never fires a per-row
+  // trigger — it would pass on an empty set and prove nothing. A wrong column
+  // baked into that SQL is exactly what this catches.
+  var ckptFn = _psql(
+    "SELECT pg_get_functiondef(p.oid) AS d FROM pg_proc p " +
+    "WHERE p.proname = '_blamejs_audit_checkpoints_worm_block';");
+  check("the checkpoint guard bounds on atMonotonicCounter",
+        /atMonotonicCounter/.test(ckptFn) && /lastPurgedCounter/.test(ckptFn),
+        String(ckptFn).slice(0, 200));
+  var logFn = _psql(
+    "SELECT pg_get_functiondef(p.oid) AS d FROM pg_proc p " +
+    "WHERE p.proname = '_blamejs_audit_log_worm_block';");
+  check("and the audit-log guard bounds on monotonicCounter",
+        /monotonicCounter/.test(logFn) && !/atMonotonicCounter/.test(logFn),
+        String(logFn).slice(0, 200));
+  var consentFn = _psql(
+    "SELECT pg_get_functiondef(p.oid) AS d FROM pg_proc p " +
+    "WHERE p.proname = '_blamejs_consent_log_worm_block';");
+  check("and consent_log permits no deletion at all, having no purge path",
+        /FALSE/i.test(consentFn) && !/lastPurgedCounter/.test(consentFn),
+        String(consentFn).slice(0, 200));
+
 }
 
 // ====================================================================

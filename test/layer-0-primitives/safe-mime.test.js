@@ -257,7 +257,7 @@ function testRefusesUnknownCharset() {
 
 function testRefusesControlCharInHeader() {
   // Manually inject NUL into a header value.
-  var msg = "Subject: hello world\r\nContent-Type: text/plain\r\n\r\nbody";
+  var msg = "Subject: hello\x00world\r\nContent-Type: text/plain\r\n\r\nbody";
   expectRefused("refuses NUL in header (header-injection defense)",
     function () { b.safeMime.parse(msg); },
     "safe-mime/control-char-in-header");

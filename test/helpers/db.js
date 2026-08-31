@@ -30,15 +30,11 @@ function _setTestEnv() {
   delete process.env.BLAMEJS_AUDIT_SIGNING_MODE;
 }
 
-async function setupTestDb(tmpDir, schemaOverrides) {
-  process.env.BLAMEJS_SKIP_NTP_CHECK = "1";
-  _setTestEnv();
-  b.cluster._resetForTest();
-  b.audit._resetForTest();
-  b.vault._resetForTest();
-  b.db._resetForTest();
-  await b.vault.init({ dataDir: tmpDir });
-  await b.db.init({
+// The init options every fixture opens with. One definition, so a reopen
+// cannot drift from the original open — a reopen that differed in any of these
+// would be testing a different database than the one the test built.
+function _initOpts(tmpDir, schemaOverrides, extra) {
+  var o = {
     dataDir: tmpDir,
     tmpDir:  path.join(tmpDir, "tmpfs"),
     // Test scratch dir is a plain directory, not a real tmpfs mount, and may
@@ -63,7 +59,38 @@ async function setupTestDb(tmpDir, schemaOverrides) {
         derivedHashes: { emailHash: { from: "email", normalize: function (v) { return String(v).toLowerCase(); } } },
       },
     ],
-  });
+  };
+  if (extra) Object.keys(extra).forEach(function (k) { o[k] = extra[k]; });
+  return o;
+}
+
+async function setupTestDb(tmpDir, schemaOverrides) {
+  process.env.BLAMEJS_SKIP_NTP_CHECK = "1";
+  _setTestEnv();
+  b.cluster._resetForTest();
+  b.audit._resetForTest();
+  b.vault._resetForTest();
+  b.db._resetForTest();
+  await b.vault.init({ dataDir: tmpDir });
+  await b.db.init(_initOpts(tmpDir, schemaOverrides));
+}
+
+// Close and open the SAME data directory again — what an operator restarting
+// the process does. Distinct from teardown-then-setup, which removes the
+// directory and hands back an empty database: a test that checks a boot
+// against one of those passes without ever loading the state it means to test.
+// Anything that only goes wrong on the second open (state written by the first
+// run, subsystem ordering at startup) is invisible without this.
+async function reopenTestDb(tmpDir, schemaOverrides, initExtras) {
+  try { await b.audit.flush(); } catch (_e) { /* best-effort drain */ }
+  try { b.db.close(); } catch (_e) { /* best-effort close */ }
+  b.audit._resetForTest();
+  b.db._resetForTest();
+  b.vault._resetForTest();
+  b.cluster._resetForTest();
+  _setTestEnv();
+  await b.vault.init({ dataDir: tmpDir });
+  await b.db.init(_initOpts(tmpDir, schemaOverrides, initExtras));
 }
 
 async function teardownTestDb(tmpDir) {
@@ -144,6 +171,7 @@ function teardownVaultOnly(tmpDir) {
 
 module.exports = {
   setupTestDb:       setupTestDb,
+  reopenTestDb:      reopenTestDb,
   teardownTestDb:    teardownTestDb,
   setupTestDbForMW:  setupTestDbForMW,
   teardownMW:        teardownMW,

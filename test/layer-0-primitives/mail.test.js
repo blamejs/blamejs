@@ -1350,6 +1350,52 @@ async function testSmtpBinaryMimeBdat(certPair) {
   } finally { await closeServer(st); }
 }
 
+// RFC 8689 — the operator sets a documented flag saying every outbound
+// envelope asks for REQUIRETLS, and the parameter never reached the wire: the
+// transport was handed the option and had no reader for it. A receiver that
+// would have honoured it was never asked, and nothing reported a problem,
+// because from the consumer's side the flag was accepted and threaded exactly
+// as documented.
+async function testSmtpRequireTls(certPair) {
+  var st = startTlsSmtp(certPair, { ext: ["REQUIRETLS", "8BITMIME"] });
+  await listen(st);
+  try {
+    var t = tlsTransport(certPair, st.port, { requireTls: true });
+    var r = await t.send({ from: "s@a.test", to: "r@b.test", subject: "rt", text: "body" });
+    check("smtp-requiretls: delivered", r.code === 250);
+    check("smtp-requiretls: MAIL FROM carried the REQUIRETLS parameter",
+      / REQUIRETLS\b/.test(st.mailFromLine || ""), JSON.stringify(st.mailFromLine));
+  } finally { await closeServer(st); }
+
+  // RFC 8689 §4.1 — the sender fails rather than downgrading. Delivering
+  // without the parameter to a peer that never advertised it is the silent
+  // downgrade the flag exists to prevent, and it is indistinguishable from
+  // success to the consumer.
+  var stNo = startTlsSmtp(certPair, { ext: ["8BITMIME"] });
+  await listen(stNo);
+  try {
+    var t2 = tlsTransport(certPair, stNo.port, { requireTls: true });
+    var err = null;
+    try {
+      await t2.send({ from: "s@a.test", to: "r@b.test", subject: "rt", text: "body" });
+    } catch (e) { err = e; }
+    check("smtp-requiretls: a peer that does not advertise it is refused, not downgraded",
+      err !== null && /REQUIRETLS/i.test(err.message || ""), String(err && err.message));
+    check("smtp-requiretls: and nothing was sent to it",
+      stNo.mailFromLine === null, JSON.stringify(stNo.mailFromLine));
+  } finally { await closeServer(stNo); }
+
+  // Unset, the parameter is absent — an existing composition is unaffected.
+  var stOff = startTlsSmtp(certPair, { ext: ["REQUIRETLS", "8BITMIME"] });
+  await listen(stOff);
+  try {
+    var t3 = tlsTransport(certPair, stOff.port);
+    await t3.send({ from: "s@a.test", to: "r@b.test", subject: "rt", text: "body" });
+    check("smtp-requiretls: absent unless asked for",
+      !/REQUIRETLS/.test(stOff.mailFromLine || ""), JSON.stringify(stOff.mailFromLine));
+  } finally { await closeServer(stOff); }
+}
+
 async function testSmtpSmtpUtf8And8BitMime(certPair) {
   var st1 = startTlsSmtp(certPair, { ext: ["SMTPUTF8", "8BITMIME", "SIZE 1000000"] });
   await listen(st1);
@@ -1422,7 +1468,26 @@ async function testSmtpRejectionCodes(certPair) {
   try {
     var eE = await _sendErr(tlsTransport(certPair, stE.port), { from: "s@a.test", to: "r@b.test", text: "x" });
     check("smtp-reject: EHLO 500 → smtp-failed", eE && /ehlo-rejected/.test(eE.message));
+    // The code travels, but the verdict does NOT reach the message. A 5yz on
+    // the greeting or EHLO refuses this SESSION with this HOST — the recipient
+    // has not been named yet, let alone judged — so a backup MX may take the
+    // message happily. Marking it permanent would end the failover loop and
+    // bounce deliverable mail because one host was unwilling.
+    check("smtp-reject: an EHLO refusal carries its code but stays failover-eligible",
+      eE && eE.statusCode === 500 && eE.permanent === false,
+      JSON.stringify(eE && { statusCode: eE.statusCode, permanent: eE.permanent }));
   } finally { await closeServer(stE); }
+
+  // Same for the greeting, which is even earlier in the session.
+  var stGreet = startTlsSmtp(certPair, { ext: ["8BITMIME"], greeting: "554 mock refuses this session" });
+  await listen(stGreet);
+  try {
+    var eGreet = await _sendErr(tlsTransport(certPair, stGreet.port),
+      { from: "s@a.test", to: "r@b.test", text: "x" });
+    check("smtp-reject: a greeting refusal stays failover-eligible too",
+      eGreet && eGreet.permanent === false,
+      JSON.stringify(eGreet && { code: eGreet.code, permanent: eGreet.permanent }));
+  } finally { await closeServer(stGreet); }
 
   // MAIL FROM rejected
   var stM = startTlsSmtp(certPair, { ext: ["8BITMIME"], mailFromCode: 550 });
@@ -1438,7 +1503,35 @@ async function testSmtpRejectionCodes(certPair) {
   try {
     var eR = await _sendErr(tlsTransport(certPair, stR.port), { from: "s@a.test", to: "r@b.test", text: "x" });
     check("smtp-reject: RCPT 550 → smtp-failed", eR && /rcpt-rejected/.test(eR.message));
+    // RFC 5321 §4.2.1 makes the leading digit the whole verdict: a 5yz reply
+    // means the client SHOULD NOT repeat the request. The code was formatted
+    // into the message and discarded, and `permanent` was hardcoded false — so
+    // a delivery layer classifying from it deferred every hard bounce and
+    // retried a "User unknown" on a schedule for hours.
+    check("smtp-reject: the peer's numeric reply travels on the error",
+      eR && eR.statusCode === 550, JSON.stringify(eR && eR.statusCode));
+    check("smtp-reject: and a 5yz refusal is marked permanent",
+      eR && eR.permanent === true, JSON.stringify(eR && eR.permanent));
+    // ...but only when the envelope names ONE recipient. This transport aborts
+    // the transaction on the first refusal, so with several recipients a
+    // permanent verdict would bounce the ones never offered — a valid address
+    // discarded because a sibling was unknown.
+    var eMulti = await _sendErr(tlsTransport(certPair, stR.port),
+      { from: "s@a.test", to: ["r@b.test", "r2@b.test"], text: "x" });
+    check("smtp-reject: one RCPT refusal does not condemn a multi-recipient envelope",
+      eMulti && eMulti.statusCode === 550 && eMulti.permanent === false,
+      JSON.stringify(eMulti && { statusCode: eMulti.statusCode, permanent: eMulti.permanent }));
   } finally { await closeServer(stR); }
+
+  // A 4yz refusal is the one RFC 5321 §4.5.4.1 sets a retry discipline for.
+  var stT = startTlsSmtp(certPair, { ext: ["8BITMIME"], rcptCode: 451 });
+  await listen(stT);
+  try {
+    var eT = await _sendErr(tlsTransport(certPair, stT.port), { from: "s@a.test", to: "r@b.test", text: "x" });
+    check("smtp-reject: a 4yz refusal carries its code and stays transient",
+      eT && eT.statusCode === 451 && eT.permanent === false,
+      JSON.stringify(eT && { statusCode: eT.statusCode, permanent: eT.permanent }));
+  } finally { await closeServer(stT); }
 
   // DATA rejected
   var stD = startTlsSmtp(certPair, { ext: ["8BITMIME"], dataCode: 503 });
@@ -1462,7 +1555,24 @@ async function testSmtpRejectionCodes(certPair) {
   try {
     var eBd = await _sendErr(tlsTransport(certPair, stBd.port), { from: "s@a.test", to: "r@b.test", text: "x" });
     check("smtp-reject: BDAT chunk 552 → mail/bdat-chunk-rejected", eBd && eBd.code === "mail/bdat-chunk-rejected");
+    // The chunked path builds its own reject rather than routing through
+    // fail(), which is how it kept a hardcoded transient verdict while the
+    // other eight steps were carrying the peer's code. A 552 is a refusal like
+    // any other 5yz.
+    check("smtp-reject: a rejected BDAT chunk carries its code and is permanent",
+      eBd && eBd.statusCode === 552 && eBd.permanent === true,
+      JSON.stringify(eBd && { statusCode: eBd.statusCode, permanent: eBd.permanent }));
   } finally { await closeServer(stBd); }
+
+  // And a 4yz on the same path stays retryable.
+  var stBt = startTlsSmtp(certPair, { ext: ["CHUNKING", "8BITMIME"], bdatCode: 451 });
+  await listen(stBt);
+  try {
+    var eBt = await _sendErr(tlsTransport(certPair, stBt.port), { from: "s@a.test", to: "r@b.test", text: "x" });
+    check("smtp-reject: a 4yz BDAT refusal carries its code and stays transient",
+      eBt && eBt.statusCode === 451 && eBt.permanent === false,
+      JSON.stringify(eBt && { statusCode: eBt.statusCode, permanent: eBt.permanent }));
+  } finally { await closeServer(stBt); }
 
   // AUTH final rejected
   var stA = startTlsSmtp(certPair, { ext: ["8BITMIME"], authFinalCode: 535 });
@@ -1470,7 +1580,26 @@ async function testSmtpRejectionCodes(certPair) {
   try {
     var eA = await _sendErr(tlsTransport(certPair, stA.port, { user: "u", pass: "p" }), { from: "s@a.test", to: "r@b.test", text: "x" });
     check("smtp-reject: AUTH final 535 → smtp-failed", eA && /auth-failed/.test(eA.message));
+    // AUTH is the exception among the session-scoped steps: a transport that
+    // authenticates is talking to ONE configured relay, not a set of MX
+    // records, so `535` on those credentials is a configuration error that
+    // retrying the same relay with the same credentials will never resolve.
+    check("smtp-reject: a 535 credential refusal is permanent, not deferred forever",
+      eA && eA.statusCode === 535 && eA.permanent === true,
+      JSON.stringify(eA && { statusCode: eA.statusCode, permanent: eA.permanent }));
   } finally { await closeServer(stA); }
+
+  // A 4yz there is the authenticator being busy, not the credentials being
+  // wrong — still worth retrying.
+  var stAt = startTlsSmtp(certPair, { ext: ["8BITMIME"], authFinalCode: 454 });
+  await listen(stAt);
+  try {
+    var eAt = await _sendErr(tlsTransport(certPair, stAt.port, { user: "u", pass: "p" }),
+      { from: "s@a.test", to: "r@b.test", text: "x" });
+    check("smtp-reject: a 454 AUTH refusal stays transient",
+      eAt && eAt.statusCode === 454 && eAt.permanent === false,
+      JSON.stringify(eAt && { statusCode: eAt.statusCode, permanent: eAt.permanent }));
+  } finally { await closeServer(stAt); }
 }
 
 async function testSmtpResponseTooLarge(certPair) {
@@ -1542,7 +1671,7 @@ async function testSmtpCapabilitiesComeOnlyFromThePostTlsEhlo(certPair) {
     var r = await t.send({
       from: "s@a.test", to: "r@b.test", subject: "binary",
       raw: "Content-Type: application/octet-stream\r\n" +
-           "Content-Transfer-Encoding: binary\r\n\r\n ",
+           "Content-Transfer-Encoding: binary\r\n\r\n\x00",
     });
     check("smtp-starttls: a binary message is accepted when BINARYMIME is " +
           "advertised only AFTER the upgrade", r.code === 250);
@@ -3301,6 +3430,7 @@ async function run() {
   await testSmtpAuthLogin(certPair);
   await testSmtpBdatChunking(certPair);
   await testSmtpBinaryMimeBdat(certPair);
+  await testSmtpRequireTls(certPair);
   await testSmtpSmtpUtf8And8BitMime(certPair);
   await testSmtpSizeRefusal(certPair);
   await testSmtpEaiUnsupportedRefusal(certPair);

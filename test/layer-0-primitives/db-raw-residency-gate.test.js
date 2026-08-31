@@ -33,6 +33,10 @@ async function initDb(tmpDir) {
   await b.db.init({
     dataDir:       tmpDir,
     tmpDir:        path.join(tmpDir, "tmpfs"),
+    // Scratch dir, not a real tmpfs mount — opted out explicitly, as
+    // test/helpers/db.js does. The residency check reads the mount table now,
+    // and a container's /tmp is overlay.
+    allowNonTmpfsTmpDir: true,
     schema:        SCHEMA,
     dataResidency: { region: "eu-west-1" },
   });

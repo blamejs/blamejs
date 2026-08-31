@@ -203,6 +203,23 @@ function testOutcomeClassifier() {
   check("452 → transient",  deliver.classifyOutcome(null, { code: 452 }) === "transient");
   check("550 → permanent",  deliver.classifyOutcome(null, { code: 550 }) === "permanent");
   check("554 → permanent",  deliver.classifyOutcome(null, { code: 554 }) === "permanent");
+  // Those three pass a `response` the delivery path never had: it was read
+  // from `err.smtpResponse`, which nothing in the tree ever set. So the
+  // response branches were dead and every peer refusal — at any code, at any
+  // step — fell through to transient, burning the whole retry budget on a
+  // "User unknown" the receiver answered immediately. The classifier has to
+  // answer for the error the TRANSPORT actually constructs.
+  var rejected = new b.mail.MailError("mail/smtp-failed",
+    "SMTP send failed: rcpt-rejected (code 550)", true, 550);
+  check("the transport's own 5yz error → permanent",
+    deliver.classifyOutcome(rejected, rejected.statusCode == null ? null
+      : { code: rejected.statusCode }) === "permanent",
+    JSON.stringify({ statusCode: rejected.statusCode, permanent: rejected.permanent }));
+  var deferred = new b.mail.MailError("mail/smtp-failed",
+    "SMTP send failed: rcpt-rejected (code 451)", false, 451);
+  check("the transport's own 4yz error → transient",
+    deliver.classifyOutcome(deferred, deferred.statusCode == null ? null
+      : { code: deferred.statusCode }) === "transient");
   // Network errors → transient (allow MX-failover).
   check("ECONNREFUSED → transient",
     deliver.classifyOutcome({ code: "ECONNREFUSED" }, null) === "transient");
@@ -213,6 +230,12 @@ function testOutcomeClassifier() {
   // Policy-class errors → permanent.
   check("mta-sts-mx-mismatch → permanent",
     deliver.classifyOutcome({ code: "deliver/mta-sts-mx-mismatch", message: "" }, null) === "permanent");
+  // A peer not advertising REQUIRETLS is host-scoped, like a DANE mismatch: a
+  // backup MX may offer it, and failing over honours the flag rather than
+  // violating it. Bouncing here would refuse mail a willing host would carry.
+  check("requiretls-not-advertised → transient, so the next MX gets a turn",
+    deliver.classifyOutcome({ code: "mail/requiretls-not-advertised", message: "" }, null)
+      === "transient");
   // A DANE failure is NOT in that class. The TLSA lookup failing, or the
   // certificate not matching, says this host could not be authenticated — most
   // often a rollover mid-propagation or a DNS blip, both of which resolve
@@ -221,6 +244,218 @@ function testOutcomeClassifier() {
   // sender retries and the other hosts get their turn (RFC 7672 §2.2).
   check("dane-fetch-failed (enforce) → transient",
     deliver.classifyOutcome({ code: "deliver/dane-fetch-failed", message: "" }, null) === "transient");
+}
+
+// And the delivery path itself, which is where the reading happened. A peer
+// answering 550 has permanently refused the recipient (RFC 5321 §4.2.1); the
+// message belongs in `failed` with the receiver's own code, not in `deferred`
+// to be retried for hours against a mailbox that does not exist.
+async function testPeerRefusalIsAHardBounce() {
+  var fakeResolver = { queryMx: async function (d) {
+    return [{ exchange: "mx1." + d, priority: 10 }, { exchange: "mx2." + d, priority: 20 }]; } };
+  var attempts = [];
+  function _refusingTransport(code, permanent) {
+    return function (opts) {
+      return { send: async function () {
+        attempts.push(opts.host);
+        throw new b.mail.MailError("mail/smtp-failed",
+          "SMTP send failed: rcpt-rejected (code " + code + ")", permanent, code);
+      } };
+    };
+  }
+
+  var hard = b.mail.send.deliver({
+    hostname: "mta1.example.com", resolver: fakeResolver,
+    policy: { mtaSts: "off", dane: "off" },
+    transportFactory: _refusingTransport(550, true), audit: false,
+  });
+  var hardRes = await hard({
+    from: "s@a.test", to: ["nobody@recipient.com"],
+    rfc822: Buffer.from("From: s@a.test\r\nTo: nobody@recipient.com\r\n\r\nx"),
+  });
+  check("a 550 recipient refusal is a hard bounce, not a deferral",
+    hardRes.failed.length === 1 && hardRes.deferred.length === 0,
+    JSON.stringify({ failed: hardRes.failed.length, deferred: hardRes.deferred.length }));
+  // A permanent verdict is the only one that stops the MX failover loop, so a
+  // recipient the first host refused outright was offered to every other host.
+  check("and it is not offered to the next MX",
+    attempts.length === 1, JSON.stringify(attempts));
+  // RFC 3464 §2.3.4 — the DSN `Status:` field is an ENHANCED status, not the
+  // three-digit SMTP reply. The reply belongs in Diagnostic-Code, and it is
+  // already there inside the transport's reason. `Status: 550` is what a
+  // conforming parser rejects or misreads.
+  check("the reported code is an enhanced status, not the bare SMTP reply",
+    /^\d\.\d+\.\d+$/.test(String(hardRes.failed[0].reasonCode)),
+    JSON.stringify(hardRes.failed[0].reasonCode));
+  check("and it carries the reply's class",
+    String(hardRes.failed[0].reasonCode).charAt(0) === "5",
+    JSON.stringify(hardRes.failed[0].reasonCode));
+  check("while the peer's own reply is still in the reason the DSN quotes",
+    /550/.test(String(hardRes.failed[0].reason)), JSON.stringify(hardRes.failed[0].reason));
+
+  attempts.length = 0;
+  var soft = b.mail.send.deliver({
+    hostname: "mta1.example.com", resolver: fakeResolver,
+    policy: { mtaSts: "off", dane: "off" },
+    transportFactory: _refusingTransport(451, false), audit: false,
+  });
+  var softRes = await soft({
+    from: "s@a.test", to: ["busy@recipient.com"],
+    rfc822: Buffer.from("From: s@a.test\r\nTo: busy@recipient.com\r\n\r\nx"),
+  });
+  check("CONTROL — a 451 is still deferred, so 550 did not simply turn retries off",
+    softRes.deferred.length === 1 && softRes.failed.length === 0,
+    JSON.stringify({ failed: softRes.failed.length, deferred: softRes.deferred.length }));
+
+  // A 5xx is not a verdict on the recipient when it answered a SESSION-level
+  // command. The transport says so — it knows which command the peer replied
+  // to — and reading the digit instead would skip every remaining MX and
+  // bounce mail the backup host would have taken.
+  attempts.length = 0;
+  var sessionRefusal = b.mail.send.deliver({
+    hostname: "mta1.example.com", resolver: fakeResolver,
+    policy: { mtaSts: "off", dane: "off" }, audit: false,
+    transportFactory: function (opts) {
+      return { send: async function () {
+        attempts.push(opts.host);
+        // What the transport builds for `500 ehlo-rejected`: the code travels,
+        // the verdict does not reach the message.
+        throw new b.mail.MailError("mail/smtp-failed",
+          "SMTP send failed: ehlo-rejected (code 500)", false, 500);
+      } };
+    },
+  });
+  var sessionRes = await sessionRefusal({
+    from: "s@a.test", to: ["ok@recipient.com"],
+    rfc822: Buffer.from("From: s@a.test\r\nTo: ok@recipient.com\r\n\r\nx"),
+  });
+  check("a session-scoped 5xx tries the next MX rather than bouncing",
+    attempts.length === 2, JSON.stringify(attempts));
+  check("and the recipient is deferred, not failed",
+    sessionRes.deferred.length === 1 && sessionRes.failed.length === 0,
+    JSON.stringify({ failed: sessionRes.failed.length, deferred: sessionRes.deferred.length }));
+
+  // A REQUIRETLS refusal fails over while hosts remain — a backup MX may offer
+  // it — but once every host has been asked and none does, the answer is
+  // settled. RFC 8689 §4.1 makes the message undeliverable, and deferring it
+  // would rediscover the same fact on every schedule tick while the sender
+  // waits for a bounce that never arrives.
+  attempts.length = 0;
+  var noRequireTls = b.mail.send.deliver({
+    hostname: "mta1.example.com", resolver: fakeResolver,
+    policy: { mtaSts: "off", dane: "off" }, audit: false,
+    transportFactory: function (opts) {
+      return { send: async function () {
+        attempts.push(opts.host);
+        throw new b.mail.MailError("mail/requiretls-not-advertised",
+          "requireTls was asked for but the peer does not advertise REQUIRETLS", false);
+      } };
+    },
+  });
+  // `requireTls: true` on the envelope, because that is the only way production
+  // reaches this error at all — lib/mail.js raises it from the branch guarded by
+  // the flag. A fixture that throws it without asking for the extension models a
+  // state the framework cannot produce, and would keep passing if the promotion
+  // stopped consulting the flag.
+  var rtRes = await noRequireTls({
+    from: "s@a.test", to: ["secure@recipient.com"], requireTls: true,
+    rfc822: Buffer.from("From: s@a.test\r\nTo: secure@recipient.com\r\n\r\nx"),
+  });
+  check("REQUIRETLS: every MX is asked before the verdict",
+    attempts.length === 2, JSON.stringify(attempts));
+  check("REQUIRETLS: and once none offers it the message is undeliverable, not deferred",
+    rtRes.failed.length === 1 && rtRes.deferred.length === 0,
+    JSON.stringify({ failed: rtRes.failed.length, deferred: rtRes.deferred.length }));
+
+  // CONTROL: a host that merely failed for another reason has not answered the
+  // REQUIRETLS question, so a mixed run stays deferrable.
+  attempts.length = 0;
+  var mixed = b.mail.send.deliver({
+    hostname: "mta1.example.com", resolver: fakeResolver,
+    policy: { mtaSts: "off", dane: "off" }, audit: false,
+    transportFactory: function (opts) {
+      return { send: async function () {
+        attempts.push(opts.host);
+        if (attempts.length === 1) {
+          throw new b.mail.MailError("mail/smtp-failed", "SMTP send failed: timeout", false);
+        }
+        throw new b.mail.MailError("mail/requiretls-not-advertised",
+          "requireTls was asked for but the peer does not advertise REQUIRETLS", false);
+      } };
+    },
+  });
+  var mixedRes = await mixed({
+    from: "s@a.test", to: ["secure@recipient.com"], requireTls: true,
+    rfc822: Buffer.from("From: s@a.test\r\nTo: secure@recipient.com\r\n\r\nx"),
+  });
+  check("CONTROL — a host that failed for another reason leaves the message deferrable",
+    mixedRes.deferred.length === 1 && mixedRes.failed.length === 0,
+    JSON.stringify({ failed: mixedRes.failed.length, deferred: mixedRes.deferred.length }));
+
+  // A transient failure is entitled to MENTION REQUIRETLS without being read as
+  // the peer declining to offer it. "451 the REQUIRETLS policy service is
+  // temporarily unavailable" says the opposite of "this host does not support
+  // REQUIRETLS" — it is the extension's own machinery asking for a retry. Only
+  // the framework's own `mail/requiretls-not-advertised` settles that question,
+  // so the exhaustion promotion turns on the code and not on the wording.
+  attempts.length = 0;
+  var wordyTransient = b.mail.send.deliver({
+    hostname: "mta1.example.com", resolver: fakeResolver,
+    policy: { mtaSts: "off", dane: "off" }, audit: false,
+    transportFactory: function (opts) {
+      return { send: async function () {
+        attempts.push(opts.host);
+        throw new b.mail.MailError("mail/smtp-failed",
+          "451 4.7.0 REQUIRETLS policy service temporarily unavailable, try again later", false);
+      } };
+    },
+  });
+  var wordyRes = await wordyTransient({
+    from: "s@a.test", to: ["secure@recipient.com"],
+    rfc822: Buffer.from("From: s@a.test\r\nTo: secure@recipient.com\r\n\r\nx"),
+  });
+  check("a transient error that merely mentions REQUIRETLS is still deferred, not bounced",
+    wordyRes.deferred.length === 1 && wordyRes.failed.length === 0,
+    JSON.stringify({ failed: wordyRes.failed.length, deferred: wordyRes.deferred.length,
+                     reasonCode: (wordyRes.failed[0] || {}).reasonCode }));
+
+  // The same holds for a host SKIPPED before the send — a DANE lookup that
+  // failed mid-rollover. It was never asked about REQUIRETLS, so the run is
+  // not "every host refused it", and the skipped host may advertise it on the
+  // retry after its records settle.
+  attempts.length = 0;
+  var skipped = b.mail.send.deliver({
+    hostname: "mta1.example.com",
+    // The first host's TLSA lookup fails — mid-rollover — so it is skipped
+    // before the send; the second is queried normally and refuses for want of
+    // REQUIRETLS.
+    resolver: {
+      queryMx: fakeResolver.queryMx,
+      queryTlsa: async function (name) {
+        if (name.indexOf("mx1.") !== -1) throw new Error("dane: TLSA lookup failed");
+        return { rrs: [{ type: 52, typeName: "TLSA", decoded: {                                         // allow:raw-byte-literal — DNS TLSA rrtype
+          usage: 3, selector: 1, matchingType: 1,
+          certData: Buffer.from("0123456789abcdef0123456789abcdef", "hex"),
+        } }] };
+      },
+    },
+    policy: { mtaSts: "off", dane: "enforce", dnssecValidated: true }, audit: false,
+    transportFactory: function (opts) {
+      return { send: async function () {
+        attempts.push(opts.host);
+        throw new b.mail.MailError("mail/requiretls-not-advertised",
+          "requireTls was asked for but the peer does not advertise REQUIRETLS", false);
+      } };
+    },
+  });
+  var skippedRes = await skipped({
+    from: "s@a.test", to: ["secure@recipient.com"], requireTls: true,
+    rfc822: Buffer.from("From: s@a.test\r\nTo: secure@recipient.com\r\n\r\nx"),
+  });
+  check("CONTROL — a host skipped before the send leaves the message deferrable",
+    skippedRes.deferred.length === 1 && skippedRes.failed.length === 0,
+    JSON.stringify({ failed: skippedRes.failed.length, deferred: skippedRes.deferred.length,
+                     attempts: attempts }));
 }
 
 // ---- DSN composer (RFC 3464 multipart/report) ----
@@ -386,15 +621,19 @@ async function testNullReversePathIsAValueNotAnAbsence() {
 async function testNullReversePathGeneratesNoDsn() {
   var fakeResolver = { queryMx: async function (d) {
     return [{ exchange: "mx1." + d, priority: 10 }]; } };
-  // A permanent failure is a THROW carrying an SMTP response, which is how the
+  // A permanent failure is a THROW carrying the peer's reply, which is how the
   // wire layer reports one — not a returned `{ ok: false }`. Getting that wrong
   // is what the control below caught: both cases sent no DSN, so the assertion
   // above would have passed for a fixture that never reached the DSN path.
+  //
+  // It carries the reply the way b.mail's transport does — `statusCode` on a
+  // MailError. The earlier fixture invented `err.smtpResponse`, a property the
+  // transport never set, so it exercised a branch production could not reach
+  // and the delivery path's real classification went untested.
   var hardFail = function () {
     return { send: async function () {
-      var err = new Error("550 5.1.1 no such user");
-      err.smtpResponse = { code: 550 };
-      throw err;
+      throw new b.mail.MailError("mail/smtp-failed",
+        "SMTP send failed: rcpt-rejected (code 550)", true, 550);
     } };
   };
   var dsnCalls = [];
@@ -569,15 +808,16 @@ async function testTransientDefersPermanentFails() {
     return {
       send: async function (msg) {
         var to = msg.to[0];
+        // Both carry the peer's reply the way b.mail's transport does —
+        // `statusCode` on a MailError — rather than an invented property the
+        // wire layer never set.
         if (to === "transient@example.com") {
-          var err = new Error("temporary failure");
-          err.smtpResponse = { code: 451 };
-          throw err;
+          throw new b.mail.MailError("mail/smtp-failed",
+            "SMTP send failed: rcpt-rejected (code 451)", false, 451);
         }
         if (to === "permanent@example.com") {
-          var err2 = new Error("550 5.1.1 user not found");
-          err2.smtpResponse = { code: 550 };
-          throw err2;
+          throw new b.mail.MailError("mail/smtp-failed",
+            "SMTP send failed: rcpt-rejected (code 550)", true, 550);
         }
         return { ok: true, code: 250 };
       },
@@ -632,9 +872,8 @@ async function testMaxAttemptsFlowsThrough() {
   var transientTransport = function () {
     return {
       send: async function () {
-        var err = new Error("temporary failure");
-        err.smtpResponse = { code: 451 };
-        throw err;
+        throw new b.mail.MailError("mail/smtp-failed",
+          "SMTP send failed: rcpt-rejected (code 451)", false, 451);
       },
     };
   };
@@ -655,6 +894,23 @@ async function testMaxAttemptsFlowsThrough() {
   var r1 = await deliverBudget1(envelope);
   check("maxAttempts:1 exhausts budget on first transient → failed",
     r1.failed.length === 1 && r1.deferred.length === 0);
+  // RFC 3463 §3.1 makes class 4 a PERSISTENT TRANSIENT failure — "try again
+  // later" — and this result composes a DSN that says Action: failed. Leaving
+  // the status at 4.x.y tells the reader's parser the opposite of what the
+  // report is for, so the class converts when the outcome does.
+  check("an exhausted retry budget reports a class-5 status, not a class-4 one",
+    String(r1.failed[0].reasonCode).charAt(0) === "5",
+    JSON.stringify(r1.failed[0].reasonCode));
+  // CONTROL: while the budget remains, the deferral keeps its class-4 status —
+  // it really is "try again later" at that point.
+  var rStill = await (b.mail.send.deliver({
+    hostname: "mta1.example.com", resolver: fakeResolver,
+    policy: { mtaSts: "off", dane: "off" },
+    transportFactory: transientTransport, audit: false,
+  }))(envelope);
+  check("CONTROL — a deferral that may still be retried keeps its class-4 status",
+    String(rStill.deferred[0].reasonCode).charAt(0) === "4",
+    JSON.stringify(rStill.deferred[0].reasonCode));
 
   var deliverDefault = b.mail.send.deliver({
     hostname:         "mta1.example.com",
@@ -941,14 +1197,79 @@ async function testDaneFailureFailsOverAndDefersRatherThanBouncing() {
         r2.deferred.length === 1 && r2.failed.length === 0,
         JSON.stringify({ df: r2.deferred.length, f: r2.failed.length }));
 
+  // A queue that gives up too early loses mail that would have been delivered.
+  // RFC 5321 §4.5.4.1: "the give-up time generally needs to be at least 4-5
+  // days". The default was 81 minutes, because maxAttempts defaulted to the
+  // RAMP'S LENGTH — and N attempts have only N-1 waits between them, so the
+  // last rung was never reached and the ramp's own longest wait was dead.
+  var policy = b.mail.send.deliver({ hostname: "mta1.example.com" }).retryPolicy();
+  check("deliver: every backoff rung is reachable",
+    policy.maxAttempts > policy.backoffMs.length,
+    "maxAttempts " + policy.maxAttempts + " vs " + policy.backoffMs.length + " rungs");
+  check("deliver: the default give-up time meets RFC 5321 §4.5.4.1 (4-5 days)",
+    policy.giveUpMs >= b.constants.TIME.days(4),
+    "gives up after " + Math.round(policy.giveUpMs / b.constants.TIME.hours(1)) + "h");
+
+  // A caller who supplies their own ramp must have the attempt count derived
+  // from THEIRS. It was derived from the default constant's length regardless,
+  // so a two-rung ramp still ran five attempts and repeated its last wait.
+  var shortRamp = b.mail.send.deliver({
+    hostname: "mta1.example.com",
+    retry: { backoffMs: [b.constants.TIME.minutes(1), b.constants.TIME.minutes(2)] },
+  }).retryPolicy();
+  check("deliver: a supplied ramp sets the attempt count",
+    shortRamp.maxAttempts === 3,
+    "maxAttempts " + shortRamp.maxAttempts + " for a 2-rung ramp");
+
+  // And an explicit maxAttempts still wins over both.
+  var explicit = b.mail.send.deliver({
+    hostname: "mta1.example.com", retry: { maxAttempts: 2 },
+  }).retryPolicy();
+  check("deliver: an explicit maxAttempts is honoured",
+    explicit.maxAttempts === 2, String(explicit.maxAttempts));
+
+  // Past the end of the ramp the schedule repeats its last rung, so the
+  // reported give-up time has to as well. Summing only the rungs the ramp
+  // holds understates it by every repeat — nine waits reported as two — which
+  // is the opposite of what an introspection surface is for.
+  var repeated = b.mail.send.deliver({
+    hostname: "mta1.example.com",
+    retry: { maxAttempts: 10, backoffMs: [b.constants.TIME.minutes(1), b.constants.TIME.minutes(2)] },
+  }).retryPolicy();
+  check("deliver: giveUpMs counts the repeated final rung",
+    repeated.giveUpMs === b.constants.TIME.minutes(1) + b.constants.TIME.minutes(2) * 8,
+    "reported " + repeated.giveUpMs + "ms for 9 waits on a 2-rung ramp");
+
   // The control. A genuine policy refusal that IS permanent must stay
   // permanent, or this would have turned every refusal into an endless retry.
+  // Keyed on the code the policy layer actually raises, not on wording.
   check("classifyOutcome: an MTA-STS refusal is still permanent",
-        deliver.classifyOutcome({ code: "", message: "mta-sts: no matching MX" }, null) === "permanent");
-  check("classifyOutcome: a REQUIRETLS refusal is still permanent",
-        deliver.classifyOutcome({ code: "", message: "REQUIRETLS was not offered" }, null) === "permanent");
+        deliver.classifyOutcome({ code: "deliver/mta-sts-mx-mismatch",
+                                  message: "no matching MX" }, null) === "permanent");
+  // REQUIRETLS moved to the DANE side of this line, for the reason stated
+  // three lines above it: whether the extension is offered is a property of
+  // THIS HOST. A backup MX may advertise it, and failing over honours the flag
+  // rather than violating it — bouncing here refuses mail a willing host would
+  // have carried. If none of them offers it the message ends deferred, which
+  // is the honest answer to "nobody here can promise what you asked for".
+  check("classifyOutcome: a REQUIRETLS refusal is host-scoped, so the next MX gets a turn",
+        deliver.classifyOutcome({ code: "mail/requiretls-not-advertised",
+                                  message: "the peer does not advertise it" }, null) === "transient");
   check("classifyOutcome: a DANE failure is transient",
-        deliver.classifyOutcome({ code: "", message: "dane: chain matches none" }, null) === "transient");
+        deliver.classifyOutcome({ code: "deliver/dane-fetch-failed",
+                                  message: "chain matches none" }, null) === "transient");
+
+  // The classification comes from the code this framework assigned, never from
+  // the message — a message carries the PEER's reply text, so matching words in
+  // it hands a remote party the choice of verdict. The permanent arm is the one
+  // that matters: a transient refusal whose text happens to name the policy
+  // would otherwise bounce mail that a retry would have delivered.
+  check("classifyOutcome: policy wording in a message does not make a failure permanent",
+        deliver.classifyOutcome({ code: "mail/smtp-failed",
+                                  message: "451 4.7.0 mta-sts policy service unavailable" },
+                                null) === "transient");
+  check("classifyOutcome: nor does a bare message with no code at all",
+        deliver.classifyOutcome({ code: "", message: "mta-sts: no matching MX" }, null) === "transient");
 }
 
 function testDaneEnforceWithoutDnssecAssertionIsRefusedAtCreate() {
@@ -1117,10 +1438,23 @@ function testClassifierFallthroughs() {
   // Response present but no code → String("") matches nothing → transient.
   check("classify response w/o code → transient",
     deliver.classifyOutcome(null, {}) === "transient");
-  // Policy signal in the MESSAGE only (empty code) → the OR alternative
-  // of the policy-class regex must still classify permanent.
-  check("classify policy-signal via message only → permanent",
-    deliver.classifyOutcome({ code: "", message: "REQUIRETLS was not offered" }, null) === "permanent");
+  // Policy signal in the MESSAGE only (empty code) → NOT a classification.
+  // Each policy class is recognised by the code this framework assigned when it
+  // detected the condition. The message is the peer's own reply text, so a
+  // remote party that words its refusal well could otherwise pick its verdict —
+  // and the MTA-STS side is permanent, so the peer's choice would be a bounce.
+  // Unclassified falls through to transient, which defers rather than bounces.
+  check("classify policy-signal via message only → transient, not permanent",
+    deliver.classifyOutcome({ code: "", message: "mta-sts: no matching MX" }, null) === "transient");
+  check("classify host-scoped policy signal via message only → transient",
+    deliver.classifyOutcome({ code: "", message: "REQUIRETLS was not offered" }, null) === "transient");
+  // And the codes themselves still classify, on the side each class sits on:
+  // MTA-STS is a domain policy this host cannot satisfy, REQUIRETLS is an
+  // extension THIS host does not offer and a backup MX might.
+  check("classify MTA-STS by code → permanent",
+    deliver.classifyOutcome({ code: "deliver/mta-sts-fetch-failed" }, null) === "permanent");
+  check("classify REQUIRETLS by code → transient",
+    deliver.classifyOutcome({ code: "mail/requiretls-not-advertised" }, null) === "transient");
   // Generic error code that is neither a network code nor a policy
   // signal → transient (the err-branch fallthrough).
   check("classify generic err code → transient",
@@ -1339,9 +1673,8 @@ async function testAllHostsTransient() {
     policy:   { mtaSts: "off", dane: "off" },
     transportFactory: function () {
       return { send: async function () {
-        var err = new Error("temporary failure");
-        err.smtpResponse = { code: 451 };
-        throw err;
+        throw new b.mail.MailError("mail/smtp-failed",
+          "SMTP send failed: rcpt-rejected (code 451)", false, 451);
       } };
     },
     audit:    false,
@@ -1349,8 +1682,15 @@ async function testAllHostsTransient() {
   var result = await deliver({ from: "ops@example.com", to: ["a@example.com"], rfc822: Buffer.from("hi") });
   check("all-MX-transient → deferred (no delivery, no permanent fail)",
     result.deferred.length === 1 && result.delivered.length === 0 && result.failed.length === 0);
-  check("all-MX-transient carries the last SMTP response code (4xx)",
-    result.deferred[0].reasonCode === 451);
+  // `reasonCode` becomes the DSN's `Status:` field, which RFC 3464 §2.3.4
+  // makes an ENHANCED status — the bare three-digit reply belongs in
+  // Diagnostic-Code, and is carried there inside the reason. It used to hold
+  // `451`, which is `Status: 451` on the wire: not a status a conforming
+  // parser accepts.
+  check("all-MX-transient reports the reply's CLASS as an enhanced status",
+    result.deferred[0].reasonCode === "4.0.0", JSON.stringify(result.deferred[0].reasonCode));
+  check("all-MX-transient still names the peer's own reply in the reason",
+    /451/.test(String(result.deferred[0].reason)), JSON.stringify(result.deferred[0].reason));
 }
 
 // ---- Permanent 5xx send failure records the MX host on the result ----
@@ -1362,9 +1702,8 @@ async function testPermanentFailKeepsMxHost() {
     policy:   { mtaSts: "off", dane: "off" },
     transportFactory: function () {
       return { send: async function () {
-        var err = new Error("550 5.1.1 no such user");
-        err.smtpResponse = { code: 550 };
-        throw err;
+        throw new b.mail.MailError("mail/smtp-failed",
+          "SMTP send failed: rcpt-rejected (code 550)", true, 550);
       } };
     },
     audit:    false,
@@ -1372,8 +1711,12 @@ async function testPermanentFailKeepsMxHost() {
   var result = await deliver({ from: "ops@example.com", to: ["a@example.com"], rfc822: Buffer.from("hi") });
   check("permanent 5xx → failed with mxHost recorded",
     result.failed.length === 1 && result.failed[0].mxHost === "mx1.example.com");
-  check("permanent 5xx reasonCode is the SMTP code",
-    result.failed[0].reasonCode === 550);
+  // Enhanced status, not the bare reply — see the transient sibling above for
+  // why `Status: 550` is not a status.
+  check("permanent 5xx reasonCode is an enhanced status carrying the reply's class",
+    result.failed[0].reasonCode === "5.0.0", JSON.stringify(result.failed[0].reasonCode));
+  check("and the reply itself is still named in the reason",
+    /550/.test(String(result.failed[0].reason)), JSON.stringify(result.failed[0].reason));
 }
 
 // ---- MTA-STS policy matrix (fault-injected b.network.smtp.policy) ----
@@ -1581,9 +1924,8 @@ async function testDsnCallbackFailure() {
     policy:   { mtaSts: "off", dane: "off" },
     transportFactory: function () {
       return { send: async function () {
-        var err = new Error("550 5.1.1 no such user");
-        err.smtpResponse = { code: 550 };
-        throw err;
+        throw new b.mail.MailError("mail/smtp-failed",
+          "SMTP send failed: rcpt-rejected (code 550)", true, 550);
       } };
     },
     dsn: {
@@ -1610,9 +1952,8 @@ async function testExtractHeaderBlockVariants() {
       policy:   { mtaSts: "off", dane: "off" },
       transportFactory: function () {
         return { send: async function () {
-          var err = new Error("550 5.1.1 no such user");
-          err.smtpResponse = { code: 550 };
-          throw err;
+          throw new b.mail.MailError("mail/smtp-failed",
+            "SMTP send failed: rcpt-rejected (code 550)", true, 550);
         } };
       },
       dsn: {
@@ -1647,9 +1988,8 @@ async function testRetryBudgetClamp() {
     retry:    { maxAttempts: 10, backoffMs: backoff },
     transportFactory: function () {
       return { send: async function () {
-        var err = new Error("temporary");
-        err.smtpResponse = { code: 451 };
-        throw err;
+        throw new b.mail.MailError("mail/smtp-failed",
+          "SMTP send failed: rcpt-rejected (code 451)", false, 451);
       } };
     },
     audit:    false,
@@ -1730,6 +2070,7 @@ async function run() {
   await testDeliverCreateDottedForm();
   await testEnvelopeValidation();
   testOutcomeClassifier();
+  await testPeerRefusalIsAHardBounce();
   testDsnComposer();
   testDsnRejectsCrlfHeaderInjection();
   await testNullReversePathIsAValueNotAnAbsence();

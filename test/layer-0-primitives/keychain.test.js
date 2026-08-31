@@ -349,7 +349,7 @@ async function run() {
     threw && threw.code === "keychain/bad-identifier");
 
   threw = null;
-  try { await b.keychain.store({ service: "s", account: "a bad", password: "p", preferFile: true }); }
+  try { await b.keychain.store({ service: "s", account: "a\x00bad", password: "p", preferFile: true }); }
   catch (e) { threw = e; }
   check("keychain.store: NUL in account throws",
     threw && threw.code === "keychain/bad-identifier");

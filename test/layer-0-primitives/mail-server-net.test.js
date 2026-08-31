@@ -170,13 +170,21 @@ async function testAnOrdinaryExchangeStillCompletes() {
 async function testListenerCeilingRefusesBeyondMaxConnections() {
   var nodeNet = require("node:net");
   var accepted = [];
+  var emits = [];
   var listener = mailServerNet.createTcpListener(nodeNet, {
     defaultPort:      0,
     maxConnections:   2,
     handleConnection: function (sock) { accepted.push(sock); sock.write("* OK ready\r\n"); },
     errorFactory:     function (code, message) { return new Error(code + ": " + message); },
-    emit:             function () {},
+    // Recorded rather than discarded: a refusal at the ceiling emitted
+    // nothing at all, so an emitter that throws its argument away could not
+    // tell a listener turning senders away from an idle one — which is
+    // precisely the condition an operator needs to see.
+    emit:             function (action, meta, outcome) {
+      emits.push({ action: action, meta: meta, outcome: outcome });
+    },
     listeningEvent:   "test.listening",
+    ceilingRefusedEvent: "test.max_connections_refused",
   });
   var info = await listener.listen({ port: 0, address: "127.0.0.1" });
 
@@ -203,6 +211,24 @@ async function testListenerCeilingRefusesBeyondMaxConnections() {
       (await dial()) === "closed");
     check("net: the refused connection never reached the handler",
       accepted.length === 2, String(accepted.length));
+
+    // And it is visible. Nothing downstream of the drop runs by design, so
+    // this is the only place a listener at capacity can be observed at all —
+    // without it, an operator's first evidence is a peer complaining.
+    await helpers.waitUntil(function () {
+      return emits.some(function (e) { return /max_connections_refused/.test(e.action); });
+    }, { timeoutMs: 5000, label: "net: the ceiling refusal is emitted" });                              // allow:raw-time-literal — test-only cap
+    var refusal = emits.filter(function (e) {
+      return /max_connections_refused/.test(e.action);
+    })[0];
+    check("net: a connection dropped at the ceiling is audited",
+      !!refusal, JSON.stringify(emits.map(function (e) { return e.action; })));
+    check("net: the refusal is recorded as a denial, not an informational note",
+      refusal && refusal.outcome === "denied", refusal && refusal.outcome);
+    check("net: and it carries the ceiling it hit, so the number is actionable",
+      refusal && refusal.meta && refusal.meta.maxConnections === 2 &&
+      refusal.meta.reason === "listener-at-capacity",
+      JSON.stringify(refusal && refusal.meta));
   } finally {
     clients.forEach(function (c) { c.destroy(); });
     await listener.closeSimple({
@@ -297,7 +323,62 @@ function testBodyRateWindowGivesNoCreditForAnEarlyBurst() {
         JSON.stringify(judged.map(function (j) { return j.elapsedMs; })));
 }
 
+// RFC 5233: the detail part after the delimiter is chosen by whoever writes
+// the address, so `alice+anything@example.com` is delivered to the mailbox
+// `alice@example.com` and can never be enumerated in advance. Folding is what
+// lets an identity check compare at the mailbox rather than the spelling.
+function testFoldSubaddress() {
+  var fold = function (a, d) { return mailServerNet.foldSubaddress(a, d === undefined ? "+" : d); };
+  check("foldSubaddress: the detail part is folded away",
+    fold("alice+newsletter@example.com") === "alice@example.com");
+  // RFC 5321: the domain is case-insensitive (§2.3.4), the local part is not
+  // (§2.4). A listener that compares local parts case-insensitively is making
+  // a deployment-shaped choice at the point it parses the address; this
+  // function does not make it on its behalf.
+  check("foldSubaddress: the domain folds, the local part does not",
+    fold("ALICE+Tag@Example.COM") === "ALICE@example.com");
+  check("foldSubaddress: an address with no tag keeps its local part as given",
+    fold("Alice@Example.com") === "Alice@example.com");
+  check("foldSubaddress: only the FIRST delimiter separates",
+    fold("alice+a+b@example.com") === "alice@example.com");
+  // Whether a local part carries a detail part at all is a property of the
+  // DELIVERY side. A caller that has not said what its delimiter is gets its
+  // address back, rather than a fold this cannot know applies — on a server
+  // that allocates plus-addresses as distinct mailboxes, folding would hand
+  // one account authority over another's.
+  check("foldSubaddress: no delimiter named means no fold",
+    mailServerNet.foldSubaddress("alice+tag@example.com") === "alice+tag@example.com" &&
+    mailServerNet.foldSubaddress("alice+tag@example.com", "") === "alice+tag@example.com" &&
+    mailServerNet.foldSubaddress("ALICE+Tag@Example.com", null) === "ALICE+Tag@example.com");
+  // A local part that BEGINS with the delimiter has no base to fold to —
+  // `+tag@example.com` is an address in its own right, and folding it to
+  // `@example.com` would make every such address collide.
+  check("foldSubaddress: a leading delimiter is not a separator",
+    fold("+tag@example.com") === "+tag@example.com");
+  // The delimiter is a LOCAL-part construct; one in the domain is just a
+  // character, and folding there would make a different domain match.
+  check("foldSubaddress: a delimiter in the domain is left alone",
+    fold("alice@ex+ample.com") === "alice@ex+ample.com");
+  check("foldSubaddress: the last @ separates, so an escaped one in the local part is kept",
+    fold("a+b@c@example.com") === "a@example.com");
+  check("foldSubaddress: an operator whose delivery splits on something else says so",
+    fold("alice-tag@example.com", "-") === "alice@example.com" &&
+    fold("alice-tag@example.com", "+") === "alice-tag@example.com");
+  check("foldSubaddress: a non-address is not invented into one",
+    fold("") === "" && fold(null) === "" && fold("not-an-address") === "not-an-address");
+  check("foldSubaddress: a local part that is only a tag keeps it",
+    fold("+@example.com") === "+@example.com");
+  // RFC 5321 §4.1.2 — inside a quoted local part the delimiter is literal
+  // mailbox data, so these are two different mailboxes. Folding would collapse
+  // them to one string and let either speak for the other.
+  check("foldSubaddress: a quoted local part is never folded",
+    fold('"alice+one"@example.com') === '"alice+one"@example.com' &&
+    fold('"alice+two"@example.com') === '"alice+two"@example.com' &&
+    fold('"alice+one"@example.com') !== fold('"alice+two"@example.com'));
+}
+
 async function run() {
+  testFoldSubaddress();
   testBodyRateWindowGivesNoCreditForAnEarlyBurst();
   await testListenerCeilingRefusesBeyondMaxConnections();
   await testPipelinedSaslResponseAbandonsTheRoundInFlight();

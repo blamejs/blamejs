@@ -444,8 +444,382 @@ async function testSessionAnonymousLifecycle() {
   }
 }
 
+// bind() falls back to the session when an external bindingStore.set() fails,
+// so the fresh session is not lost. _readBound returned the external store's
+// answer whenever a bindingStore was configured and never looked at the
+// session, so the fallback was written somewhere nothing reads: every later
+// verify answered missing-bind and the operator saw a session refused
+// immediately after being bound.
+//
+// A write path and a read path that disagree about where a value lives is the
+// defect, so both directions are driven here rather than asserting the write
+// landed.
+async function testSessionFallbackIsReadableWhenTheExternalStoreFailedTheWrite() {
+  var req = _mockReq();
+  var rows = { "tok-fallback": {} };
+  var fakeSession = {
+    updateData: function (tok, data, opts) {
+      if (!rows[tok]) return Promise.resolve(false);
+      if (opts && opts.merge) {
+        Object.keys(data).forEach(function (k) { rows[tok][k] = data[k]; });
+      } else { rows[tok] = data; }
+      return Promise.resolve(true);
+    },
+    verify: function (tok) { return Promise.resolve(rows[tok] ? { data: rows[tok] } : null); },
+  };
+  // Writes fail; reads succeed and report the entry as absent — a store that
+  // is up but lost the write, which is the case the fallback exists for.
+  var writeFailStore = {
+    get: function () { return Promise.resolve(null); },
+    set: function () { return Promise.reject(new Error("store write failed")); },
+    del: function () { return Promise.resolve(); },
+  };
+  var sdb = b.sessionDeviceBinding.create({
+    bindingStore: writeFailStore, session: fakeSession, storeInSession: true,
+  });
+
+  await sdb.bind("tok-fallback", req);
+  check("[setup] a failed external write falls back to the session",
+    rows["tok-fallback"].__bj_deviceBinding &&
+    typeof rows["tok-fallback"].__bj_deviceBinding.fingerprint === "string",
+    JSON.stringify(rows["tok-fallback"]));
+  var v = await sdb.verify("tok-fallback", req);
+  check("verify reads the session fallback when the external store has no entry",
+    v.ok === true, JSON.stringify(v));
+
+  // The external store still WINS when it has an answer: the fallback is a
+  // second place to look, not a second opinion. A drifted device must still be
+  // refused on the external value even with a matching session binding.
+  var otherFp = sdb.fingerprint(_mockReq({ socket: { remoteAddress: "203.0.113.9" } }));
+  check("[setup] the other device fingerprints differently",
+    Buffer.isBuffer(otherFp) && !otherFp.equals(sdb.fingerprint(req)),
+    otherFp && otherFp.toString("hex").slice(0, 16));
+  var presentStore = {
+    get: function () { return Promise.resolve(otherFp); },
+    set: function () { return Promise.resolve(); },
+    del: function () { return Promise.resolve(); },
+  };
+  var sdb2 = b.sessionDeviceBinding.create({
+    bindingStore: presentStore, session: fakeSession, storeInSession: true,
+  });
+  var vDrift = await sdb2.verify("tok-fallback", req);
+  check("an external value still decides when it is present, session or not",
+    vDrift.ok === false && vDrift.reason === "drift", JSON.stringify(vDrift));
+
+  // A store that cannot answer at all stays fail-closed. Reading the session
+  // here would turn an unreachable store into a silent downgrade to whatever
+  // the session happens to carry.
+  var errStore = {
+    get: function () { return Promise.reject(new Error("store down")); },
+    set: function () { return Promise.resolve(); },
+    del: function () { return Promise.resolve(); },
+  };
+  var sdb3 = b.sessionDeviceBinding.create({
+    bindingStore: errStore, session: fakeSession, storeInSession: true,
+  });
+  var vErr = await sdb3.verify("tok-fallback", req);
+  check("an unreadable external store still fails closed, not into the session",
+    vErr.ok === false && vErr.reason === "store-error", JSON.stringify(vErr));
+
+  // Making the fallback readable makes a STALE fallback dangerous. A bind whose
+  // external write failed leaves the old device in the session; a later bind
+  // that succeeds externally must not leave it there, or the moment the
+  // external entry expires the session hands back the device that was replaced
+  // — accepting the old one and refusing the new.
+  rows["tok-rebind"] = {};
+  var external = { value: null, failWrites: true };
+  var flakyStore = {
+    get: function () { return Promise.resolve(external.value); },
+    set: function (tok, val) {
+      if (external.failWrites) return Promise.reject(new Error("store write failed"));
+      external.value = val;
+      return Promise.resolve();
+    },
+    del: function () { external.value = null; return Promise.resolve(); },
+  };
+  var sdb4 = b.sessionDeviceBinding.create({
+    bindingStore: flakyStore, session: fakeSession, storeInSession: true,
+  });
+  var oldDevice = req;
+  var newDevice = _mockReq({ socket: { remoteAddress: "203.0.113.9" } });
+
+  await sdb4.bind("tok-rebind", oldDevice);                     // external fails → session holds the old device
+  check("[setup] the failed external write left the old device in the session",
+    rows["tok-rebind"].__bj_deviceBinding &&
+    rows["tok-rebind"].__bj_deviceBinding.fingerprint ===
+      sdb4.fingerprint(oldDevice).toString("hex"),
+    JSON.stringify(rows["tok-rebind"]));
+
+  external.failWrites = false;
+  await sdb4.bind("tok-rebind", newDevice);                     // external succeeds this time
+  check("[setup] the external store now holds the new device",
+    Buffer.isBuffer(external.value) && external.value.equals(sdb4.fingerprint(newDevice)),
+    external.value && external.value.toString("hex").slice(0, 16));
+
+  // The external entry expires or is evicted; the fallback is consulted again.
+  external.value = null;
+  var vStale = await sdb4.verify("tok-rebind", oldDevice);
+  check("an expired external entry does not resurrect the device a later bind replaced",
+    vStale.ok === false, JSON.stringify(vStale));
+
+  // Clearing the superseded copy is a WRITE, and a write can fail. What makes
+  // the stale copy unusable rather than merely unlikely is that the session
+  // fallback ages out on the same ttlMs the external store was given: a copy
+  // written before the bind that replaced it has already expired by the time
+  // that bind's own entry does. ttlMs was accepted on this path and never
+  // enforced, so the session-backed store outlived the external one.
+  var ttlRows = { "tok-ttl": {} };
+  var ttlSession = {
+    updateData: function (tok, data, opts) {
+      if (!ttlRows[tok]) return Promise.resolve(false);
+      if (opts && opts.merge) {
+        Object.keys(data).forEach(function (k) { ttlRows[tok][k] = data[k]; });
+      } else { ttlRows[tok] = data; }
+      return Promise.resolve(true);
+    },
+    verify: function (tok) { return Promise.resolve(ttlRows[tok] ? { data: ttlRows[tok] } : null); },
+  };
+  var now = 1000000;
+  var sdbTtl = b.sessionDeviceBinding.create({
+    session: ttlSession, storeInSession: true,
+    ttlMs: 60000, clock: function () { return now; },                                                  // allow:raw-time-literal — fixture clock, not a runtime budget
+  });
+  await sdbTtl.bind("tok-ttl", oldDevice);
+  check("[setup] the session-backed binding verifies while it is fresh",
+    (await sdbTtl.verify("tok-ttl", oldDevice)).ok === true);
+  now += 59000;                                                                                        // allow:raw-time-literal — fixture clock, not a runtime budget
+  check("a session-backed binding still verifies inside its ttl",
+    (await sdbTtl.verify("tok-ttl", oldDevice)).ok === true);
+  now += 2000;                                                                                         // allow:raw-time-literal — fixture clock, not a runtime budget
+  var vExpired = await sdbTtl.verify("tok-ttl", oldDevice);
+  check("a session-backed binding past its ttl reads as unbound, as the external store would",
+    vExpired.ok === false && vExpired.reason === "missing-bind", JSON.stringify(vExpired));
+
+  // A clear that fails leaves the two stores disagreeing until the older copy
+  // ages out. That is survivable, but it must not be invisible.
+  var audits = _captureAudit();
+  var clearFailSession = {
+    updateData: function (tok, data) {
+      if (data && Object.prototype.hasOwnProperty.call(data, "__bj_deviceBinding") &&
+          data.__bj_deviceBinding === null) {
+        return Promise.reject(new Error("session write failed"));
+      }
+      return Promise.resolve(true);
+    },
+    verify: function () { return Promise.resolve({ data: {} }); },
+  };
+  var okStore = {
+    get: function () { return Promise.resolve(null); },
+    set: function () { return Promise.resolve(); },
+    del: function () { return Promise.resolve(); },
+  };
+  var sdb5 = b.sessionDeviceBinding.create({
+    bindingStore: okStore, session: clearFailSession, storeInSession: true,
+    audit: audits,
+  });
+  await sdb5.bind("tok-clearfail", oldDevice);
+  check("a clear that fails is audited rather than swallowed",
+    audits.byAction("session.device.stale_fallback").length === 1,
+    JSON.stringify(audits.captured.map(function (e) { return e.action; })));
+
+  // A clear that reports false did not throw, but it did not confirm either.
+  // `session` is operator-supplied, so what its false means is not something
+  // this primitive can reason about — unproven is reported, not assumed clean.
+  var quietAudits = _captureAudit();
+  var sdb6 = b.sessionDeviceBinding.create({
+    bindingStore: okStore,
+    session: {
+      updateData: function () { return Promise.resolve(false); },
+      verify:     function () { return Promise.resolve(null); },
+    },
+    storeInSession: true,
+    audit: quietAudits,
+  });
+  await sdb6.bind("tok-clearfalse", oldDevice);
+  check("a clear that reports false is treated as unproven, not as cleared",
+    quietAudits.byAction("session.device.stale_fallback").length === 1,
+    JSON.stringify(quietAudits.captured.map(function (e) { return e.action; })));
+
+  // The control: a clear that confirms says nothing.
+  var cleanAudits = _captureAudit();
+  var sdb7 = b.sessionDeviceBinding.create({
+    bindingStore: okStore,
+    session: {
+      updateData: function () { return Promise.resolve(true); },
+      verify:     function () { return Promise.resolve(null); },
+    },
+    storeInSession: true,
+    audit: cleanAudits,
+  });
+  await sdb7.bind("tok-clearok", oldDevice);
+  check("a confirmed clear raises nothing",
+    cleanAudits.byAction("session.device.stale_fallback").length === 0,
+    JSON.stringify(cleanAudits.captured.map(function (e) { return e.action; })));
+
+  // A binding stamped in the FUTURE makes `clock() - boundAt` negative, which
+  // is below any ttl and so passes a bare upper-bound check forever — the one
+  // shape that turns a TTL into no TTL at all. Reachable without an attacker:
+  // the wall clock stepping back after a bind does it, and `boundAt` arrives
+  // from a session object the operator supplies. Unprovable freshness is
+  // treated as stale, the same as a record carrying no boundAt.
+  ttlRows["tok-future"] = {
+    __bj_deviceBinding: {
+      fingerprint: sdbTtl.fingerprint(oldDevice).toString("hex"),
+      boundAt:     now + 3600000,                                                                      // allow:raw-time-literal — fixture clock, not a runtime budget
+    },
+  };
+  var vFuture = await sdbTtl.verify("tok-future", oldDevice);
+  check("a session-backed binding stamped in the future is not trusted",
+    vFuture.ok === false, JSON.stringify(vFuture));
+
+  // A record with no usable boundAt cannot be shown to be fresh, so it is not
+  // trusted — the same direction as every other unprovable case here.
+  ttlRows["tok-noage"] = { __bj_deviceBinding: { fingerprint: sdbTtl.fingerprint(oldDevice).toString("hex") } };
+  var vNoAge = await sdbTtl.verify("tok-noage", oldDevice);
+  check("a session-backed binding with no boundAt is not trusted",
+    vNoAge.ok === false, JSON.stringify(vNoAge));
+}
+
+// The device binding decides whether a session is accepted, so the ordinary
+// payload path must not be able to write it — the same reason __bj_fingerprint
+// has always been stripped there. It was not: a payload carrying the key won
+// over the stored value on both the merge and the replace path, so an
+// application could null its own binding, or install one computed from the
+// public fingerprint helper, and strict verification would agree. The accident
+// is likelier than the abuse — one payload write with a key of that name
+// destroys the binding silently.
+//
+// Driven through the REAL b.session, because the reservation lives there and a
+// fake would only restate the test's own assumption.
+async function testPayloadWritesCannotTouchTheReservedBindingKey() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ses-reserved-"));
+  try {
+    await setupTestDb(tmpDir);
+    var req = _mockReq();
+    var s = await b.session.create({ userId: "u-reserved", req: _dev("203.0.113.10", "deviceA") });
+    var sdb = b.sessionDeviceBinding.create({ session: b.session, storeInSession: true });
+
+    await sdb.bind(s.token, req);
+    check("[setup] the framework's own writer binds the session",
+      (await sdb.verify(s.token, req)).ok === true);
+
+    // Null it through the payload path.
+    await b.session.updateData(s.token, { __bj_deviceBinding: null }, { merge: true });
+    check("a payload write cannot null the device binding",
+      (await sdb.verify(s.token, req)).ok === true);
+
+    // Replace the whole payload with a forged binding for another device.
+    var other = _mockReq({ socket: { remoteAddress: "203.0.113.99" } });
+    await b.session.updateData(s.token, {
+      __bj_deviceBinding: {
+        fingerprint: sdb.fingerprint(other).toString("hex"),
+        boundAt:     Date.now(),
+      },
+    });
+    check("a payload replace cannot install a binding of the caller's choosing",
+      (await sdb.verify(s.token, other)).ok === false,
+      JSON.stringify(await sdb.verify(s.token, other)));
+    check("and the real binding is still the one that was bound",
+      (await sdb.verify(s.token, req)).ok === true);
+
+    // The control: ordinary payload keys still round-trip, so the reservation
+    // has not simply broken updateData.
+    await b.session.updateData(s.token, { cart: ["x"] }, { merge: true });
+    var sess = await b.session.verify(s.token);
+    check("ordinary payload keys are unaffected by the reservation",
+      sess && sess.data && sess.data.cart && sess.data.cart[0] === "x",
+      JSON.stringify(sess && sess.data));
+
+    // rotate REPLACES the payload and is public, so it is the same door by
+    // another name. Login is a rotation, which is exactly when a bound session
+    // would be handed a caller-chosen binding.
+    var rotated = await b.session.rotate(s.token, {
+      req:  _dev("203.0.113.10", "deviceA"),
+      data: {
+        __bj_deviceBinding: {
+          fingerprint: sdb.fingerprint(other).toString("hex"),
+          boundAt:     Date.now(),
+        },
+      },
+    });
+    check("[setup] the session rotated", rotated && typeof rotated.token === "string",
+      JSON.stringify(rotated && Object.keys(rotated)));
+    check("a rotation cannot install a binding of the caller's choosing",
+      (await sdb.verify(rotated.token, other)).ok === false,
+      JSON.stringify(await sdb.verify(rotated.token, other)));
+    check("and the binding carried across the rotation intact",
+      (await sdb.verify(rotated.token, req)).ok === true);
+
+    // create() builds the same column from caller data. A session that arrives
+    // already bound to a device that never bound is the same bypass.
+    var seeded = await b.session.create({
+      userId: "u-seeded",
+      req:    _dev("203.0.113.10", "deviceA"),
+      data:   {
+        __bj_deviceBinding: {
+          fingerprint: sdb.fingerprint(other).toString("hex"),
+          boundAt:     Date.now(),
+        },
+      },
+    });
+    check("a session cannot be created already carrying a device binding",
+      (await sdb.verify(seeded.token, other)).ok === false,
+      JSON.stringify(await sdb.verify(seeded.token, other)));
+
+    // And unbind still works, because it goes through the framework's writer.
+    await sdb.unbind(rotated.token);
+    check("unbind still removes the binding through the framework's own writer",
+      (await sdb.verify(rotated.token, req)).ok === false);
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
+// `clock` and `storeInSession` are accepted opts whose TYPE was never checked.
+// Both fail in the direction that hides: a non-function `clock` throws from
+// `boundAt: clock()`, which sits inside bind()'s drop-silent catch, so bind
+// records `stored: false`, writes nothing, and every later verify answers
+// missing-bind — the same silent lockout #687 was about, reached by a typo in
+// an option instead. `storeInSession` was coerced with `!!`, so the string
+// "false" enabled the session-backed store the operator had just turned off.
+//
+// Refused at create(), where the caller is still on the stack, rather than at
+// the first bind on a live session.
+function testCreateRefusesMistypedClockAndStoreInSession() {
+  var BAD = [
+    ["a non-function clock",       { session: { updateData: function () {}, verify: function () {} },
+                                     storeInSession: true, clock: 12345 }],
+    ["a string clock",             { session: { updateData: function () {}, verify: function () {} },
+                                     storeInSession: true, clock: "Date.now" }],
+    ["a string storeInSession",    { session: { updateData: function () {}, verify: function () {} },
+                                     storeInSession: "false" }],
+    ["a numeric storeInSession",   { session: { updateData: function () {}, verify: function () {} },
+                                     storeInSession: 1 }],
+  ];
+  BAD.forEach(function (c) {
+    var threw = null;
+    try { b.sessionDeviceBinding.create(c[1]); } catch (e) { threw = e; }
+    check("create: " + c[0] + " is refused at config time",
+      threw !== null, "create() returned an instance instead of throwing");
+  });
+
+  // The controls: the documented types still build, and omitting them still
+  // builds. Without these the assertions above would pass on a create() that
+  // refused everything.
+  var withClock = b.sessionDeviceBinding.create({
+    session: { updateData: function () {}, verify: function () {} },
+    storeInSession: true, clock: function () { return 1; },
+  });
+  check("create: a function clock and a boolean storeInSession still build",
+    withClock && typeof withClock.bind === "function");
+  var plain = b.sessionDeviceBinding.create({ bindingStore: _memoryStore() });
+  check("create: omitting both still builds",
+    plain && typeof plain.bind === "function");
+}
+
 async function run() {
   testSurface();
+  testCreateRefusesMistypedClockAndStoreInSession();
   testNamespaceFingerprint();
   await testCreateRejectsBadOpts();
   await testBindAndVerifyHappyPath();
@@ -463,6 +837,8 @@ async function run() {
   await testSessionRotateRequiresReqOnBound();
   await testSessionAnonymousLifecycle();
   await testSessionDeviceBindingStoreInSessionAndStoreError();
+  await testSessionFallbackIsReadableWhenTheExternalStoreFailedTheWrite();
+  await testPayloadWritesCannotTouchTheReservedBindingKey();
 }
 
 if (require.main === module) {
@@ -492,19 +868,119 @@ async function testSessionDeviceBindingStoreInSessionAndStoreError() {
   check("verify: bindingStore.get error fails closed (store-error)",
         vErr.ok === false && vErr.reason === "store-error");
 
-  // storeInSession: bind stashes the fingerprint via session.touch metadata,
-  // and verify reads it back via session.verify (no bindingStore).
-  var stored = {};
+  // storeInSession: bind writes the fingerprint into the session's sealed data
+  // payload, and verify reads it back through session.verify.
+  //
+  // The fake below mirrors the REAL session contract, and that is the whole
+  // point of this test. It used to give touch() a metadata parameter it
+  // records — a shape b.session.touch does not have: touch reads opts.extendBy
+  // and nothing else, both its SQL paths carry a static SET list, and
+  // opts.metadata was accepted and discarded. So this test passed while the
+  // feature wrote nothing, every verify answered missing-bind, and the audit
+  // row said stored: true. A mock that can do what production cannot is a test
+  // that cannot fail.
+  var rows = {};
   var fakeSession = {
-    touch:  function (tok, opts) { stored[tok] = opts.metadata; return Promise.resolve(); },
-    verify: function (tok) { return Promise.resolve(stored[tok] ? { data: stored[tok] } : null); },
+    // Accepts opts and ignores everything but extendBy, exactly as the real
+    // one does — including returning TRUE, which is what made the failure
+    // silent: nothing threw, so the write was recorded as having happened.
+    touch: function (tok, opts) {
+      if (opts && opts.extendBy) rows[tok] = rows[tok] || {};
+      return Promise.resolve(!!rows[tok]);
+    },
+    updateData: function (tok, data, opts) {
+      if (!rows[tok]) return Promise.resolve(false);            // unknown / expired
+      if (opts && opts.merge) {
+        Object.keys(data).forEach(function (k) { rows[tok][k] = data[k]; });
+      } else { rows[tok] = data; }
+      return Promise.resolve(true);
+    },
+    verify: function (tok) { return Promise.resolve(rows[tok] ? { data: rows[tok] } : null); },
   };
+  rows["tok-sess"] = {};                                        // a live session
   var sdbSess = b.sessionDeviceBinding.create({ session: fakeSession, storeInSession: true });
   var fp = await sdbSess.bind("tok-sess", req);
-  check("bind via storeInSession writes fingerprint to session.touch metadata",
-        Buffer.isBuffer(fp) && stored["tok-sess"] && typeof stored["tok-sess"].deviceFingerprint === "string");
+  check("bind via storeInSession writes the fingerprint to the session data",
+        Buffer.isBuffer(fp) && rows["tok-sess"] &&
+        rows["tok-sess"].__bj_deviceBinding &&
+        typeof rows["tok-sess"].__bj_deviceBinding.fingerprint === "string",
+        JSON.stringify(rows["tok-sess"]));
   var vSess = await sdbSess.verify("tok-sess", req);
-  check("verify via session.verify matches the stored fingerprint", vSess.ok === true);
+  check("verify via session.verify matches the stored fingerprint", vSess.ok === true,
+        JSON.stringify(vSess));
+
+  // The merge must not discard what the application already keeps there.
+  rows["tok-keep"] = { cart: ["a"] };
+  await sdbSess.bind("tok-keep", req);
+  check("binding a session preserves the payload already on it",
+        rows["tok-keep"].cart && rows["tok-keep"].cart[0] === "a" &&
+        rows["tok-keep"].__bj_deviceBinding &&
+        typeof rows["tok-keep"].__bj_deviceBinding.fingerprint === "string",
+        JSON.stringify(rows["tok-keep"]));
+
+  // A write that did not land must not be recorded as one. updateData reports
+  // false for an unknown or expired token, and the previous path could not
+  // tell the difference because touch answered true for any live row.
+  var vGone = await sdbSess.verify("tok-never-created", req);
+  check("an unbound token still reports missing-bind rather than a match",
+        vGone.ok === false, JSON.stringify(vGone));
+
+  // The constructor has to check for the capability the feature actually uses.
+  // It checked for touch(), which every session object has and which cannot
+  // persist a fingerprint — so the documented wiring validated and did nothing.
+  var threwTouchOnly = null;
+  try {
+    b.sessionDeviceBinding.create({
+      session: { touch: function () { return Promise.resolve(true); } },
+      storeInSession: true,
+    });
+  } catch (e) { threwTouchOnly = e; }
+  check("storeInSession refuses a session that can only touch()",
+        threwTouchOnly !== null, threwTouchOnly && threwTouchOnly.message);
+
+  // Both halves, because this store is a read AND a write. An adapter that can
+  // only write would report the fingerprint stored — truthfully — while every
+  // later check answered missing-bind: the same silent lockout by another route.
+  var threwWriteOnly = null;
+  try {
+    b.sessionDeviceBinding.create({
+      session: { updateData: function () { return Promise.resolve(true); } },
+      storeInSession: true,
+    });
+  } catch (e) { threwWriteOnly = e; }
+  check("storeInSession refuses a session that cannot read back",
+        threwWriteOnly !== null, threwWriteOnly && threwWriteOnly.message);
+
+  // unbind has to remove what bind wrote. Removing it only from a bindingStore
+  // left a session-backed binding live while reporting success, so the next
+  // verify still matched a device the operator had just unbound.
+  rows["tok-unbind"] = {};
+  await sdbSess.bind("tok-unbind", req);
+  check("[setup] the session-backed binding is written",
+        rows["tok-unbind"].__bj_deviceBinding &&
+        typeof rows["tok-unbind"].__bj_deviceBinding.fingerprint === "string");
+  await sdbSess.unbind("tok-unbind");
+  var vUnbound = await sdbSess.verify("tok-unbind", req);
+  check("unbind removes a session-backed binding, so verify stops matching",
+        vUnbound.ok === false, JSON.stringify(vUnbound));
+
+  // A caller who chose an EXTERNAL store may pass `session` for other reasons.
+  // Their session payload is theirs: an unbind that never wrote a fingerprint
+  // there must not null fields of the same name that the application owns.
+  rows["tok-external"] = { deviceFingerprint: "app-owned-value", cart: ["b"] };
+  var extStore = {
+    get: function () { return Promise.resolve(null); },
+    set: function () { return Promise.resolve(); },
+    del: function () { return Promise.resolve(); },
+  };
+  var sdbExternal = b.sessionDeviceBinding.create({
+    bindingStore: extStore, session: fakeSession,
+  });
+  await sdbExternal.unbind("tok-external");
+  check("an external-store unbind leaves the application's session payload alone",
+        rows["tok-external"].deviceFingerprint === "app-owned-value" &&
+        rows["tok-external"].cart[0] === "b",
+        JSON.stringify(rows["tok-external"]));
 }
 
 module.exports = { run: run };

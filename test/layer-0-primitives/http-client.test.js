@@ -2373,9 +2373,16 @@ async function testProxyRequestPath() {
   networkProxy.set({ http: "http://127.0.0.1:" + deadPort });
   b.httpClient._resetForTest();
   try {
+    // The assertion is that the request went through the proxy agent and
+    // could not complete — the comment above says the failure code is not the
+    // point, and pinning it to ECONNREFUSED made that a lie: under a loaded
+    // runner the connect to a dead port stops being refused promptly and times
+    // out instead, so the test failed for the machine being busy rather than
+    // for the branch being wrong.
     await _expectReject("proxy path: request dispatched through the proxy agent (dead proxy → connect error)",
       b.httpClient.request({ url: "http://example.com/thing",
-        allowInternal: true, allowedProtocols: ALLOW }), /ECONNREFUSED|REQ_ERROR/);
+        allowInternal: true, allowedProtocols: ALLOW }),
+      /ECONNREFUSED|ECONNRESET|ETIMEDOUT|REQ_ERROR/);
   } finally {
     networkProxy._resetForTest();
     b.httpClient._resetForTest();

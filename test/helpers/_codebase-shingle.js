@@ -6,11 +6,13 @@
  * test/layer-0-primitives/codebase-patterns.test.js so the heavy
  * tokenize + cross-file shingle scan can run inside worker_threads.
  *
- * The main `testNoDuplicateCodeBlocks` detector sharded across N
- * workers (N = os.cpus().length by default) each call into
- * `scanShard(absFiles, opts)` which returns a per-pass-per-size
- * fingerprint map. The main thread merges those maps and runs the
- * existing cluster-aggregation logic untouched.
+ * The main `testNoDuplicateCodeBlocks` detector shards the corpus
+ * across N workers. Each worker calls `prepareShard(absFiles, opts)`
+ * once to tokenize and filter its shard, then answers a series of
+ * `scanRound(prepared, {pass, size})` requests — one fingerprint map
+ * per (pass, size) combination. The main thread merges the shards for
+ * a combination, folds it into the cluster table, and releases it
+ * before asking for the next one.
  *
  * KEEP IN SYNC: the helpers below are the verbatim copies of the
  * functions previously inlined in codebase-patterns.test.js. Do not
@@ -135,71 +137,105 @@ function sliceFingerprintSkeleton(slice) {
   }).join(" ");
 }
 
+var DEFAULT_SHINGLE_SIZES = [60, 50, 40, 30, 22, 16, 12, 8];
+
 /**
- * scanShard(absFiles, opts) — tokenize the assigned files and run the
- * shingle scan. Returns:
- *   {
- *     exact:    { "<size>": { fp -> [{file, line, endLine}] } },
- *     skeleton: { "<size>": { fp -> [{file, line, endLine}] } }
- *   }
+ * prepareShard(absFiles, opts) — tokenize the assigned files ONCE and
+ * record, per (file, size, offset), whether the shingle starting there
+ * clears the cheap filters (distinct-token floor, then boilerplate).
  *
- * The main thread merges per-(pass,size,fp) lists from every shard
- * and runs the existing cluster-aggregation logic.
+ * Returns { files: [{ rel, tokens, keep: { "<size>": Uint8Array } }] },
+ * where `keep[size][offset]` is 1 for a shingle that survives.
+ *
+ * The verdict is what costs: `isBoilerplate` runs a couple of dozen
+ * regexes over the joined slice. Deciding it once and consulting a byte
+ * per offset lets both fingerprint passes reuse the answer instead of
+ * re-deriving it, which is what makes scanning one combination at a
+ * time affordable.
  */
-function scanShard(absFiles, opts) {
+function prepareShard(absFiles, opts) {
   opts = opts || {};
   var repoRoot = opts.repoRoot;
-  var shingleSizes = opts.shingleSizes || [60, 50, 40, 30, 22, 16, 12, 8];
+  var shingleSizes = opts.shingleSizes || DEFAULT_SHINGLE_SIZES;
   var minDistinctTokens = opts.minDistinctTokens || 5;
 
-  var out = { exact: {}, skeleton: {} };
-  for (var sz = 0; sz < shingleSizes.length; sz += 1) {
-    out.exact[shingleSizes[sz]] = {};
-    out.skeleton[shingleSizes[sz]] = {};
-  }
-
-  var passes = [
-    { label: "exact",    fpFn: sliceFingerprintExact,    bucket: out.exact    },
-    { label: "skeleton", fpFn: sliceFingerprintSkeleton, bucket: out.skeleton },
-  ];
-
+  var out = { files: [] };
   for (var fi = 0; fi < absFiles.length; fi += 1) {
     var entry = tokenizeFile(absFiles[fi], repoRoot);
     if (!entry) continue;
     var tokens = entry.tokens;
-    var rel    = entry.rel;
+    var keep = {};
     for (var si = 0; si < shingleSizes.length; si += 1) {
       var n = shingleSizes[si];
-      if (tokens.length < n) continue;
+      if (tokens.length < n) { keep[n] = new Uint8Array(0); continue; }
+      var flags = new Uint8Array(tokens.length - n + 1);
       for (var ti = 0; ti + n <= tokens.length; ti += 1) {
         var slice = tokens.slice(ti, ti + n);
         var distinctMap = {};
         for (var di = 0; di < slice.length; di += 1) distinctMap[slice[di].tok] = true;
         if (Object.keys(distinctMap).length < minDistinctTokens) continue;
         if (isBoilerplate(slice)) continue;
-        for (var pi = 0; pi < passes.length; pi += 1) {
-          var pass = passes[pi];
-          var fp = pass.fpFn(slice);
-          var bucketForSize = pass.bucket[n];
-          if (!bucketForSize[fp]) bucketForSize[fp] = [];
-          bucketForSize[fp].push({
-            file:    rel,
-            line:    slice[0].line,
-            endLine: slice[slice.length - 1].line,
-          });
-        }
+        flags[ti] = 1;
       }
+      keep[n] = flags;
     }
+    out.files.push({ rel: entry.rel, tokens: tokens, keep: keep });
   }
   return out;
 }
 
+/**
+ * scanRound(prepared, opts) — fingerprint ONE (pass, size) combination
+ * across a prepared shard. `opts.pass` is "exact" or "skeleton";
+ * `opts.size` is one of the prepared shingle sizes. Returns
+ * `{ fp -> [{file, line, endLine}] }` for that combination alone.
+ *
+ * One combination at a time is the point. Building all sixteen together
+ * meant retaining every distinct fingerprint STRING in the corpus — on
+ * the order of eleven million of them, several GB — even though a
+ * fingerprint seen in a single file can never reach the two-file floor
+ * the cluster aggregation applies. Emitting one combination lets the
+ * caller fold it into the cluster table and drop it, so the peak is the
+ * largest single combination instead of the sum of all of them.
+ *
+ * Files are walked in prepared order with offsets ascending, so a
+ * fingerprint's site list arrives in the order the all-at-once scan
+ * produced. Cluster identity depends on that ordering.
+ */
+function scanRound(prepared, opts) {
+  opts = opts || {};
+  var size = opts.size;
+  var fpFn = opts.pass === "skeleton" ? sliceFingerprintSkeleton : sliceFingerprintExact;
+  var bucket = {};
+  var files = prepared.files;
+  for (var fi = 0; fi < files.length; fi += 1) {
+    var f = files[fi];
+    var flags = f.keep[size];
+    if (!flags || flags.length === 0) continue;
+    var tokens = f.tokens;
+    for (var ti = 0; ti < flags.length; ti += 1) {
+      if (!flags[ti]) continue;
+      var slice = tokens.slice(ti, ti + size);
+      var fp = fpFn(slice);
+      if (!bucket[fp]) bucket[fp] = [];
+      bucket[fp].push({
+        file:    f.rel,
+        line:    slice[0].line,
+        endLine: slice[slice.length - 1].line,
+      });
+    }
+  }
+  return bucket;
+}
+
 module.exports = {
   JS_KEYWORDS:              JS_KEYWORDS,
+  DEFAULT_SHINGLE_SIZES:    DEFAULT_SHINGLE_SIZES,
   normalizeJsLine:          normalizeJsLine,
   tokenizeFile:             tokenizeFile,
   isBoilerplate:            isBoilerplate,
   sliceFingerprintExact:    sliceFingerprintExact,
   sliceFingerprintSkeleton: sliceFingerprintSkeleton,
-  scanShard:                scanShard,
+  prepareShard:             prepareShard,
+  scanRound:                scanRound,
 };

@@ -90,6 +90,80 @@ async function run() {
   }, { timeoutMs: 5000, label: "fixed-window rollover: same key allowed in new window" });
   check("fixed-window rollover: same key re-seeded in new window", true);
   fwRoll.close();
+
+  // ---- both backends measure against a supplied clock ----
+  // The rollover above waits on the WALL clock, which is the only reading these
+  // backends had. An application that puts its other budgets on a monotonic one
+  // — auth.lockout and cache both take opts.clock — could not put these on it,
+  // so a clock step forward ended a sign-in window that was partway through.
+  // The middleware validator enumerates accepted names and REFUSES the rest,
+  // so passing one was rejected rather than quietly ignored.
+  var ct = 5000000;
+  function _fixedClock() { return ct; }
+
+  var fwClock = rateLimitMod._memoryFixedWindowBackend({
+    max: 1, windowMs: 60000, clock: _fixedClock,                                                       // allow:raw-time-literal — one-minute window on the injected clock
+  });
+  check("fixed-window: first take on the supplied clock is allowed",
+    fwClock.take("ip-clock", 1).allowed === true);
+  check("fixed-window: second take in the same window is denied",
+    fwClock.take("ip-clock", 1).allowed === false);
+  ct += 61000;                                                                                         // allow:raw-time-literal — past the window on the injected clock
+  check("fixed-window: past the window on that clock, allowed again",
+    fwClock.take("ip-clock", 1).allowed === true);
+  fwClock.close();
+
+  var tbClock = rateLimitMod._memoryTokenBucketBackend({
+    burst: 1, refillPerSecond: 1, clock: _fixedClock,
+  });
+  check("token-bucket: first take on the supplied clock is allowed",
+    tbClock.take("ip-tb", 1).allowed === true);
+  check("token-bucket: the drained bucket denies on the same reading",
+    tbClock.take("ip-tb", 1).allowed === false);
+  ct += 5000;                                                                                          // allow:raw-time-literal — five seconds of refill on the injected clock
+  check("token-bucket: the bucket refills as that clock advances",
+    tbClock.take("ip-tb", 1).allowed === true);
+  tbClock.close();
+
+  // A mistyped clock has to be refused where it is CONFIGURED. `opts.clock ||
+  // Date.now` accepts a number or a string as readily as a function, and the
+  // failure then surfaces inside backend.take() — which this middleware catches
+  // and fails open. So the wrong type would not raise at boot; it would quietly
+  // stop limiting every request, which is the opposite of what configuring a
+  // rate limiter is for.
+  [12345, "now", {}, []].forEach(function (bad) {
+    var threw = null;
+    try {
+      b.middleware.rateLimit({ max: 1, windowMs: 1000, algorithm: "fixed-window", clock: bad });      // allow:raw-time-literal — test-only window
+    } catch (e) { threw = e; }
+    check("middleware.rateLimit refuses a non-function clock at create: " +
+          JSON.stringify(bad), threw !== null, "accepted " + JSON.stringify(bad));
+  });
+  var okThrew = null;
+  try {
+    b.middleware.rateLimit({ max: 1, windowMs: 1000, algorithm: "fixed-window",                        // allow:raw-time-literal — test-only window
+      clock: function () { return 1; } });
+  } catch (e) { okThrew = e; }
+  check("middleware.rateLimit accepts a function clock",
+    okThrew === null, okThrew && okThrew.message);
+
+  // But not for a window that spans processes. The cluster backend derives its
+  // boundary from this reading and writes it into a row every node upserts
+  // against, keeping whichever windowStart is newer — so two nodes on different
+  // clocks stop sharing a window, the node running ahead keeps resetting the
+  // shared counter, and the cluster-wide limit is not the limit anyone gets.
+  // A process-local monotonic reading is exactly the shape a caller supplies,
+  // and nothing here can distinguish it from an epoch-accurate one. Refused at
+  // configuration rather than ignored, so a caller cannot believe their clock
+  // is governing a budget it is not.
+  var clusterThrew = null;
+  try {
+    b.middleware.rateLimit({ backend: "cluster", limit: 1, windowMs: 1000,                             // allow:raw-time-literal — test-only window
+      clock: function () { return 1; } });
+  } catch (e) { clusterThrew = e; }
+  check("middleware.rateLimit refuses a caller clock on the cluster backend",
+    clusterThrew !== null && /cluster/.test(String(clusterThrew.message)),
+    clusterThrew && clusterThrew.message);
 }
 
 module.exports = { run: run };

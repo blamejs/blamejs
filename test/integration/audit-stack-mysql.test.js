@@ -42,6 +42,7 @@ var path = require("node:path");
 var helpers  = require("../helpers");
 var check    = helpers.check;
 var services = require("../helpers/services");
+var drivers  = require("../helpers/drivers");
 var setupTestDb    = require("../helpers/db").setupTestDb;
 var teardownTestDb = require("../helpers/db").teardownTestDb;
 var b = require("../../");
@@ -52,6 +53,16 @@ var DB_NAME   = "blamejs_audit_mysql_test";
 // ---- one-shot mysql (setup / teardown / out-of-band assertions) ----
 function _mysqlRoot(sql, dbName) {
   var args = ["exec", "-i", CONTAINER, "mysql", "-uroot", "-pblamejs_test_root", "--batch", "--raw"];
+  if (dbName) args.push(dbName);
+  args.push("-e", sql);
+  return execFileSync("docker", args, { stdio: ["pipe", "pipe", "pipe"] }).toString("utf8");
+}
+
+// The same shim as a NAMED role rather than root, so a test can ask what a
+// least-privilege deployment is actually allowed to do.
+function _mysqlAs(user, password, sql, dbName) {
+  var args = ["exec", "-i", CONTAINER, "mysql", "-u" + user, "-p" + password,
+              "--batch", "--raw"];
   if (dbName) args.push(dbName);
   args.push("-e", sql);
   return execFileSync("docker", args, { stdio: ["pipe", "pipe", "pipe"] }).toString("utf8");
@@ -99,7 +110,7 @@ function _exec(sql) {
     return execFileSync("docker",
       ["exec", "-i", CONTAINER, "mysql", "-uroot", "-pblamejs_test_root",
        "--batch", "--raw", DB_NAME],
-      { input: sql + "\n", stdio: ["pipe", "pipe", "pipe"] }).toString("utf8");
+      { input: drivers.mysqlDelimited(sql) + "\n", stdio: ["pipe", "pipe", "pipe"] }).toString("utf8");
   } catch (e) {
     var msg = e.stderr ? e.stderr.toString("utf8") : (e.message || String(e));
     var errLine = (msg.split(/\r?\n/).filter(function (l) { return /ERROR \d+/.test(l); })[0]) || msg.trim();
@@ -303,6 +314,7 @@ async function run() {
     await _testCryptoFieldKRowRoundTrip();
     await _testDerivedHashDualRead();
     await _testTamperDetection();
+    await _testClusterPurgeDeletionAgainstWormTriggers();
 
   } finally {
     try { await b.cluster.shutdown(); } catch (_e) {}
@@ -718,6 +730,159 @@ async function _testTamperDetection() {
     "WHERE `monotonicCounter` = 2", DB_NAME);
   var v = await b.audit.verify({});
   check("audit.verify returns ok:false after a hashed column is tampered on MySQL", v.ok === false);
+}
+
+// The REAL cluster deletion on MySQL, with the append-only guard installed.
+//
+// The guard is anchor-bounded here now, exactly as on Postgres: it stays
+// installed and permits a DELETE only for a row the purge anchor already
+// licenses. It used to be unconditional, with the purge dropping it for the
+// duration — a window in which any other session holding the framework role
+// could delete audit rows, and one a process death could leave open. The
+// condition needs a compound trigger body, which a protocol driver sends as
+// one message; only a CLI splits on the semicolons inside, which is what this
+// harness does and why the guard was shaped around it before.
+async function _testClusterPurgeDeletionAgainstWormTriggers() {
+  // The tamper section above drops both guards; put them back, or this passes
+  // for the wrong reason.
+  await b.frameworkSchema.ensureSchema({ externalDbBackend: "ops", dialect: "mysql" });
+
+  var rows = _parseBatch(_mysqlRoot(
+    "SELECT `monotonicCounter` FROM `_blamejs_audit_log` " +
+    "ORDER BY `monotonicCounter` ASC LIMIT 1", DB_NAME)).rows;
+  check("there are rows for the purge deletion to act on", rows.length > 0,
+        "rows=" + rows.length);
+  var through = Number(rows[0].monotonicCounter);
+
+  // Prove the guard is live before relying on it. Nothing has authorized a
+  // deletion at this point — no anchor names these rows — so every DELETE is
+  // refused, including one for rows the caller is about to purge legitimately.
+  var guardLive = null;
+  try {
+    await b.clusterStorage.execute(
+      "DELETE FROM audit_log WHERE `monotonicCounter` <= ?", [through]);
+  } catch (e) { guardLive = e; }
+  check("MySQL: the append-only guard refuses an ordinary DELETE",
+        guardLive !== null && /append-only/i.test(guardLive.message || ""),
+        String(guardLive && guardLive.message).slice(0, 160));
+
+  // And it fails CLOSED on the volume that has never purged: with no anchor
+  // row the boundary comparison is NULL, and a guard that read that as "no
+  // restriction" would leave the never-purged volume the least protected one.
+  var noAnchorRows = _parseBatch(_mysqlRoot(
+    "SELECT COUNT(*) AS n FROM `_blamejs_audit_purge_anchor`", DB_NAME)).rows;
+  check("MySQL: and does so with no purge anchor present at all",
+        Number(noAnchorRows[0].n) === 0, "anchors=" + noAnchorRows[0].n);
+
+  // The purge writes the anchor BEFORE it deletes, so the guard permits
+  // exactly the rows the anchor names. Written here through the same primitive
+  // the purge uses, in the same order, so this drives the real sequence rather
+  // than arranging a state the framework never produces.
+  await b.auditTools.signExistingPurgeAnchor().catch(function () { /* none yet */ });
+  await b.clusterStorage.fencedUpsert({
+    table:      "_blamejs_audit_purge_anchor",
+    keyColumns: ["scope"],
+    label:      "test.mysqlPurgeAnchor",
+    fenceColumns: ["fencingToken", "lastPurgedCounter"],
+    values: {
+      scope: "audit", lastPurgedCounter: through,
+      lastPurgedRowHash: "0".repeat(128),
+      archiveBundleId: "manifest:" + through, purgedAt: Date.now(),
+      firstPurgedCounter: 0, archiveRowsDigest: "",
+      signature: null, publicKeyFingerprint: null,
+      fencingToken: b.cluster.fencingToken(),
+    },
+  });
+
+  var refused = null;
+  try {
+    await b.db.purgeAuditChain({ lastPurgedCounter: through });
+  } catch (e) { refused = e; }
+  check("MySQL: purgeAuditChain's cluster DELETE passes the live guard",
+        refused === null, String(refused && refused.message).slice(0, 200));
+
+  var after = _parseBatch(_mysqlRoot(
+    "SELECT `monotonicCounter` FROM `_blamejs_audit_log` " +
+    "WHERE `monotonicCounter` <= " + through, DB_NAME)).rows;
+  check("MySQL: and the row it covered is gone", after.length === 0,
+        "remaining=" + after.length);
+
+  var stillGuarded = null;
+  try {
+    await b.clusterStorage.execute(
+      "DELETE FROM audit_log WHERE `monotonicCounter` <= ?", [through + 1]);
+  } catch (e) { stillGuarded = e; }
+  check("MySQL: and the guard is restored once the purge is done",
+        stillGuarded !== null,
+        "a purge must not leave the audit table writable");
+
+  await _testTriggerPrivilegeIsExplained();
+}
+
+// The guard's installation needs a privilege this harness has and a
+// least-privilege deployment usually does not.
+//
+// Measured on this server: a role granted SELECT/INSERT/UPDATE/DELETE and
+// TRIGGER on the schema still cannot CREATE TRIGGER while binary logging is on
+// — MySQL wants SUPER, or the server set to log_bin_trust_function_creators=1
+// — and adding SET_ANY_DEFINER does not change that. The whole live suite
+// connects as root, which is the one configuration where this cannot appear,
+// so nothing here would otherwise notice that an operator following ordinary
+// practice fails at boot on a message about "the less safe
+// log_bin_trust_function_creators variable" with no mention of the audit guard
+// it was installing.
+//
+// The framework cannot grant itself the privilege. What it can do is say what
+// is missing instead of passing the raw driver error through — and never
+// install the guard silently, because a volume reported as append-only with no
+// guard on it is the worse outcome.
+async function _testTriggerPrivilegeIsExplained() {
+  var probeDb = "blamejs_trigger_priv_probe";
+  _mysqlRoot("DROP DATABASE IF EXISTS `" + probeDb + "`");
+  _mysqlRoot("CREATE DATABASE `" + probeDb + "`");
+  _mysqlRoot("CREATE TABLE `" + probeDb + "`.`_blamejs_audit_log` (id INT)");
+  _mysqlRoot("DROP USER IF EXISTS 'bj_lowpriv'@'%'");
+  _mysqlRoot("CREATE USER 'bj_lowpriv'@'%' IDENTIFIED BY 'p'");
+  _mysqlRoot("GRANT SELECT, INSERT, UPDATE, DELETE, TRIGGER ON `" +
+             probeDb + "`.* TO 'bj_lowpriv'@'%'");
+  try {
+    // The control: this role really can write the table, so a refusal below is
+    // about the trigger privilege and not about access to the schema.
+    var wrote = null;
+    try {
+      _mysqlAs("bj_lowpriv", "p", "INSERT INTO `_blamejs_audit_log` VALUES (1)", probeDb);
+    } catch (e) { wrote = e; }
+    check("MySQL: the low-privilege role can write the audit table",
+          wrote === null, String(wrote && wrote.message).slice(0, 120));
+
+    var raw = null;
+    try {
+      _mysqlAs("bj_lowpriv", "p",
+        "CREATE TRIGGER no_delete__blamejs_audit_log BEFORE DELETE ON " +
+        "`_blamejs_audit_log` FOR EACH ROW SET @x = 1", probeDb);
+    } catch (e) { raw = e; }
+    check("MySQL: and still cannot create the append-only trigger",
+          raw !== null && /1419|SUPER privilege/i.test(String(raw.message)),
+          String(raw && raw.message).slice(0, 140));
+
+    // That raw error is what the framework must not hand an operator as-is.
+    var translated = b.frameworkSchema._wrapMysqlTriggerPrivilegeErrorForTest(
+      raw, "_blamejs_audit_log");
+    check("MySQL: the framework translates it into a typed, actionable error",
+          translated && translated.code === "framework-schema/mysql-trigger-privilege",
+          String(translated && translated.code));
+    check("MySQL: naming the privilege and the server setting that lift it",
+          /SUPER/.test(translated.message) &&
+          /log_bin_trust_function_creators/.test(translated.message) &&
+          /TRIGGER privilege alone is not sufficient/.test(translated.message),
+          String(translated.message).slice(0, 200));
+    check("MySQL: and an unrelated error passes through untouched",
+          b.frameworkSchema._wrapMysqlTriggerPrivilegeErrorForTest(
+            new Error("table is full"), "_blamejs_audit_log").message === "table is full");
+  } finally {
+    try { _mysqlRoot("DROP USER IF EXISTS 'bj_lowpriv'@'%'"); } catch (_e) { /* best effort */ }
+    try { _mysqlRoot("DROP DATABASE IF EXISTS `" + probeDb + "`"); } catch (_e) { /* best effort */ }
+  }
 }
 
 module.exports = { run: run };
