@@ -8,6 +8,29 @@ upgrading across more than a few patches at a time.
 
 ## v0.18.x
 
+- v0.18.60 (2026-09-01) — **Eleven scans over request data took time proportional to the square of their input.** A pattern with no start anchor retries from every position, so a value made of the one character it is looking for costs time proportional to the SQUARE of its length. Eleven such scans were reachable with request data: an email guard spent 243ms on a 16k value of carriage returns, a JSONPath filter 400ms on a 16k pattern, and an IMAP FETCH, a GPP consent string, a List-Unsubscribe header and an XML entity decoder each about 25ms at the byte cap their own caller enforces. One request, one core, tens of milliseconds each.
+
+All eleven now walk their input once. Behaviour is unchanged: each rewrite was checked against the pattern it replaces over hundreds of thousands of generated inputs. **Added:** *`b.codepointClass` gains three text scans* — The rewrites above needed the same three operations in several places, so they are primitives rather than a copy per module:
+
+- `trimTrailingChars(text, chars)` removes the run of characters at the end of `text` that are all in `chars`.
+- `firstDelimited(text, open, close, from?)` returns the first non-empty `open`...`close` group as `{ body, start, end }`.
+- `lastDelimited(text, open, close)` returns the group that ends the text, ignoring trailing whitespace.
+
+Each walks the text once. The patterns they replace (`/\/+$/`, `/<([^>]+)>/`, `/<([^>]+)>\s*$/`) all restart at every candidate position. **Security:** *Scans over request data run in time proportional to their input* — Each of these was reachable with a value an attacker chooses, and each cost time proportional to the square of its length:
+
+- `b.guardEmail.sanitize` / `validateMessage`: the smuggled-SMTP-verb scan walked the whitespace after every bare line ending, and a carriage return is itself whitespace, so a value of carriage returns re-walked the same run once per position. 243ms for a single 16k value, now 0.7ms.
+- `b.jsonPath`: a `match()` or `search()` filter pattern is translated before it is screened, and the translation restarted at every `[`. A 16k pattern took 400ms, and the pattern carries no length cap. Now 0.9ms.
+- `b.iabMspa.parseGpp`: reading the section-ID list off a GPP header cost 25ms at the 8192-character cap.
+- `b.mailServer` IMAP: the trailing modifier list on a FETCH cost 25ms at the default 8192-byte line cap.
+- `b.mailUnsubscribe`: the `<...>` unwrap on a List-Unsubscribe header, both when validating and when checking the owner address.
+- `b.xmlC14n`: the entity decoder, on text inside a signed document.
+- `b.aiOutput.sanitize`: the markdown image, link and reference-definition URL extractors, which is the surface the EchoLeak exfiltration gate reads. 218ms for 64 KiB of model output, now 1.4ms.
+- `b.forms` numeric bounds, `b.ssrfGuard` hostname normalization, `b.mailStore` full-text tokens, and the trailing-slash trims in `b.acme`, `b.mcp`, `b.queue`, `b.logStream` and the request body parser.
+
+No behaviour changed. Every rewrite was compared against the pattern it replaces across the inputs that reach it, including the case the markdown extractor exists for: an alt text equal to its own target URL, where locating the URL by searching the matched text hits the alt copy and leaves the real target intact. **Detectors:** *A gate measures what the framework's own patterns cost* — `b.guardRegex.assertSafe` screens every operator-supplied pattern and `b.regexLinear` runs one without a backtracking engine. Neither had ever been pointed at the patterns the framework itself ships, so a library pattern could run away and nothing would say so.
+
+The new check measures rather than inspects. Screening on shape would refuse ten library patterns that are in fact linear, because a shape that can backtrack usually does not; what separates the ones worth fixing is that a single call cost tens of milliseconds at the byte cap its caller enforces. So the gate asks for both: expensive at 8192 characters, and still growing faster than its input between 8k and 32k. It reads every regex literal in the library, not the ones written in a particular place, after a first version that only read `var X = /re/;` declarations walked straight past a pattern written inline.
+
 - v0.18.59 (2026-08-31) — **Every framework error code is namespace/code, and an empty CSP is refused rather than emitted.** An error code is the thing operators branch on, and the framework spelled it three ways. Most codes were `namespace/kebab-case`, 28 guards used a dot instead of a slash, and roughly 970 codes across 83 modules were bare `UPPER_SNAKE` with no namespace at all: `catch (e) { e.code === "BAD_OPT" }` matched a cache error, a queue error and a signing error alike, and told you nothing about which subsystem refused. Every framework error code is now `namespace/code`.
 
 `b.csp.build` returned an empty string for a directive set that emitted nothing, which sets a Content-Security-Policy header that constrains nothing while reading, at the call site, as a policy that was set. It refuses now, the way the sibling `b.cdnCacheControl.build` already refused an empty Cache-Control list. **Changed:** *Error codes are `namespace/code` everywhere* — **This changes error codes you may be matching on.** Every framework error now carries a namespaced, kebab-case code:

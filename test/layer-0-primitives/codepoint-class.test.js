@@ -1115,6 +1115,106 @@ function testFoldedSearchAndRangeRuns() {
         JSON.stringify(CP.splitLines("a\rb")) === JSON.stringify(["a\rb"]));
   check("splitLinesAny refuses a non-string",
         JSON.stringify(CP.splitLinesAny(null)) === "[]");
+
+  // ---- trimTrailingChars ----
+  check("trimTrailingChars removes a run of one character",
+        CP.trimTrailingChars("https://x.example///", "/") === "https://x.example");
+  check("trimTrailingChars removes a single trailing character",
+        CP.trimTrailingChars("host.example.", ".") === "host.example");
+  check("trimTrailingChars leaves a string with no trailing run alone",
+        CP.trimTrailingChars("host.example", ".") === "host.example");
+  check("trimTrailingChars only looks at the END",
+        CP.trimTrailingChars("...host...example", ".") === "...host...example");
+  check("trimTrailingChars accepts a set of characters",
+        CP.trimTrailingChars("1.500", "0") === "1.5");
+  check("trimTrailingChars can consume the whole string",
+        CP.trimTrailingChars("///", "/") === "");
+  check("trimTrailingChars passes a non-string through",
+        CP.trimTrailingChars(null, ".") === null);
+  check("trimTrailingChars with no characters to trim is a no-op",
+        CP.trimTrailingChars("abc", "") === "abc");
+
+  // The reason this helper exists: the regex spelling has no start anchor, so
+  // a long run costs time proportional to its SQUARE. Growth is the assertion
+  // rather than a wall-clock budget, so a loaded machine moves both readings.
+  function _trimMs(n) {
+    var subject = "/".repeat(n) + "x";
+    CP.trimTrailingChars(subject, "/");                       // warm
+    var best = Infinity;
+    for (var k = 0; k < 3; k += 1) {
+      var t0 = process.hrtime.bigint();
+      CP.trimTrailingChars(subject, "/");
+      best = Math.min(best, Number(process.hrtime.bigint() - t0) / 1e6);
+    }
+    return best;
+  }
+  var smallTrim = _trimMs(2000);
+  var largeTrim = _trimMs(8000);
+  var trimRatio = smallTrim > 0.02 ? (largeTrim / smallTrim) : 1;
+  check("trimTrailingChars runs in time proportional to the run it removes",
+        trimRatio < 8, "4x input took " + trimRatio.toFixed(1) + "x the time");
+
+  // ---- firstDelimited / lastDelimited ----
+  check("firstDelimited takes the leftmost non-empty group",
+        CP.firstDelimited("Name <a@b.example>", "<", ">").body === "a@b.example");
+  check("firstDelimited skips an empty group and keeps looking",
+        CP.firstDelimited("<><x>", "<", ">").body === "x");
+  check("firstDelimited reports where the group sits",
+        CP.firstDelimited("ab<cd>", "<", ">").start === 2 &&
+        CP.firstDelimited("ab<cd>", "<", ">").end === 5);
+  check("firstDelimited returns null with no group",
+        CP.firstDelimited("abc", "<", ">") === null);
+  check("firstDelimited returns null when nothing closes",
+        CP.firstDelimited("<<<", "<", ">") === null);
+  check("firstDelimited honours a starting offset",
+        CP.firstDelimited("<a><b>", "<", ">", 3).body === "b");
+  check("firstDelimited passes a non-string through",
+        CP.firstDelimited(null, "<", ">") === null);
+
+  check("lastDelimited takes the group that ends the text",
+        CP.lastDelimited("List <a@b.example>", "<", ">").body === "a@b.example");
+  check("lastDelimited ignores trailing whitespace",
+        CP.lastDelimited("List <a@b.example>   ", "<", ">").body === "a@b.example");
+  check("lastDelimited keeps the leftmost open, as a greedy body would",
+        CP.lastDelimited("a <b <c>", "<", ">").body === "b <c");
+  check("lastDelimited returns null when the text does not end with the group",
+        CP.lastDelimited("<a> trailing", "<", ">") === null);
+  check("lastDelimited returns null on an empty group",
+        CP.lastDelimited("a<>", "<", ">") === null);
+
+  // A delimiter is text, and a caller can pass any. An empty one has no
+  // position to find, so the search would never advance; a multi-character
+  // one shifts where the body starts.
+  check("firstDelimited refuses an empty open delimiter",
+        CP.firstDelimited("a<b>", "", ">") === null);
+  check("firstDelimited refuses an empty close delimiter",
+        CP.firstDelimited("a<b>", "<", "") === null);
+  check("firstDelimited measures the body from the END of a multi-character open",
+        CP.firstDelimited("x<!--body-->y", "<!--", "-->").body === "body");
+  check("lastDelimited refuses a multi-character delimiter rather than mis-slicing",
+        CP.lastDelimited("x<!--body-->", "<!--", "-->") === null);
+  check("lastDelimited refuses an empty delimiter",
+        CP.lastDelimited("a<b>", "", ">") === null);
+
+  // Both replaced patterns that restarted at every opening character. The
+  // assertion is growth, so a loaded machine moves both readings together.
+  function _firstMs(n) {
+    var subject = "<".repeat(n);
+    CP.firstDelimited(subject, "<", ">");
+    var best = Infinity;
+    for (var k = 0; k < 3; k += 1) {
+      var t0 = process.hrtime.bigint();
+      CP.firstDelimited(subject, "<", ">");
+      CP.lastDelimited(subject, "<", ">");
+      best = Math.min(best, Number(process.hrtime.bigint() - t0) / 1e6);
+    }
+    return best;
+  }
+  var smallScan = _firstMs(2000);
+  var largeScan = _firstMs(8000);
+  var scanRatio = smallScan > 0.02 ? (largeScan / smallScan) : 1;
+  check("the delimiter scans run in time proportional to the text",
+        scanRatio < 8, "4x input took " + scanRatio.toFixed(1) + "x the time");
 }
 
 module.exports = { run: run };

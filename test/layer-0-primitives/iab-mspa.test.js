@@ -60,6 +60,40 @@ async function run() {
     function () { b.iabMspa.parseGpp(null); }, "iab-mspa/bad-input");
   rejects("checkOptOut refuses bad dataUse",
     function () { b.iabMspa.checkOptOut(parsed, { dataUse: "marketing" }); }, "iab-mspa/bad-data-use");
+
+  // The header's section-ID list is read by scanning, not by a pattern that
+  // restarts at every position. A GPP string arrives on the request, so a
+  // header of digits with no dot used to cost time proportional to the SQUARE
+  // of its length: 25ms at the 8192-char cap, which is a CPU amplifier for one
+  // request. Growth is the assertion, not a wall-clock budget, so a loaded
+  // machine moves both measurements together.
+  var idsFromTail = b.iabMspa.parseGpp("DBABBg.7.8").header.sectionIds;
+  check("the section-ID tail is still read from the header",
+        idsFromTail.length === 2 && idsFromTail[0] === 7 && idsFromTail[1] === 8,
+        JSON.stringify(idsFromTail));
+  check("a header with no numeric tail yields no section ids",
+        b.iabMspa.parseGpp("DBABLA~BVQqAAAAAg").header.sectionIds.length === 0);
+
+  function _parseMs(n) {
+    var subject = "1".repeat(n) + "!";
+    b.iabMspa.parseGpp(subject);                       // warm
+    var best = Infinity;
+    for (var k = 0; k < 3; k += 1) {
+      var t0 = process.hrtime.bigint();
+      b.iabMspa.parseGpp(subject);
+      best = Math.min(best, Number(process.hrtime.bigint() - t0) / 1e6);
+    }
+    return best;
+  }
+  var small = _parseMs(1000);
+  var large = _parseMs(4000);
+  // Four times the input is about four times the work when the scan is linear
+  // and about sixteen when it is quadratic. Eight separates them with room to
+  // spare, and the floor keeps a sub-microsecond pair from dividing into noise.
+  var ratio = small > 0.02 ? (large / small) : 1;
+  check("a digits-only header parses in time proportional to its length",
+        ratio < 8, "4x input took " + ratio.toFixed(1) + "x the time (" +
+        small.toFixed(3) + "ms -> " + large.toFixed(3) + "ms)");
 }
 
 module.exports = { run: run };

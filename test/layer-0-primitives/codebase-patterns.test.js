@@ -2959,8 +2959,15 @@ function testFormatValidatorLengthCap() {
       // there is no path on which the regex sees more than N characters. Only
       // counted on the test line itself, so a slice of some OTHER value
       // nearby cannot vouch for this one.
+      // A subject read as a single character (`s.charAt(i)`, `s.charCodeAt(i)`)
+      // is bounded at one character by construction, which is a stronger
+      // guarantee than any comparison against a length. Character-at-a-time
+      // scanning is how a pattern that would otherwise backtrack across the
+      // whole string gets rewritten, so the gate has to recognise the shape
+      // the fix takes.
       if (/\.length\s*[><=!]/.test(window) || /byteLength/.test(window) ||
-          /\.slice\(\s*0\s*,\s*\d+\s*\)/.test(line)) continue;
+          /\.slice\(\s*0\s*,\s*\d+\s*\)/.test(line) ||
+          /\.charAt\(|\.charCodeAt\(/.test(line)) continue;
       bad.push({
         file:    _relPath(files[fi]),
         line:    li + 1,
@@ -2972,6 +2979,194 @@ function testFormatValidatorLengthCap() {
   _report("regex-only format validators bound length before test " +
           "(or have allow marker)",
     bad);
+}
+
+// ---- Pattern: the framework's OWN regexes run in time proportional to input ----
+//
+// b.guardRegex.assertSafe screens every OPERATOR-supplied pattern, and
+// b.regexLinear runs one without a backtracking engine. Neither ever looked at
+// the patterns the framework itself ships, so a library regex could backtrack
+// super-linearly and nothing would say so. `NUMERIC_LITERAL_RE` in lib/forms.js
+// did: `\d+\.?\d*` lets the two digit runs split a digit sequence many ways, so
+// a long run of digits followed by a character that fails the anchor took time
+// proportional to the SQUARE of the length. Its own comment claimed it was
+// linear.
+//
+// Measured rather than pattern-matched. assertSafe is deliberately conservative
+// (it refuses shapes that merely COULD backtrack) and refuses ten library
+// patterns that are in fact linear, so screening on shape would mean an
+// allowlist of things that are not bugs. Growth is the property that matters
+// and the only one that distinguishes them.
+//
+// The threshold is wide on purpose: 4x the input is ~4x the work when linear
+// and ~16x when quadratic, so 8x separates them with room for a loaded
+// machine, and each timing is the best of three to drop scheduler noise. A
+// regex is only escalated to the growth measurement when a cheap 600-character
+// probe is already slow, which keeps the whole gate around 400ms.
+// Every regex literal, wherever it is written.
+//
+// The first version of this read `var X = /re/;` declarations, which is a
+// name-shaped lens over a population that does not care about names: the
+// second super-linear pattern in lib/ was written inline as
+// `parts[0].match(/re/)` and the declaration scan walked past it. Narrowing to
+// "declarations plus the method calls I thought of" only moves the same
+// mistake one step along, so the scan takes any literal at all.
+//
+// A `/` that is really a division can be captured this way, but only a subject
+// that is BOTH expensive and super-linear is reported, and no such accident
+// exists across the 2118 literals in lib/. Nothing is skipped to keep it
+// quick: probing all of them costs about a tenth of a second.
+var _REGEX_SITES = [
+  new RegExp("(\\/(?:[^\\/\\\\\\n\\[]|\\\\.|\\[(?:[^\\]\\\\\\n]|\\\\.)*\\])+\\/[gimsuyd]*)", "g"),
+];
+
+function _timeRegex(re, s) {
+  var t0 = process.hrtime.bigint();
+  try { re.lastIndex = 0; re.test(s); } catch (_e) { /* a pattern that throws is not this gate's business */ }
+  return Number(process.hrtime.bigint() - t0) / 1e6;
+}
+
+function testOwnRegexesRunLinear() {
+  // Characters worth repeating (the classes library patterns quantify over)
+  // and a tail that denies the overall match so the engine has to exhaust its
+  // alternatives rather than succeeding on the first path.
+  // The alphabet a pattern can be made to chew on. Started as digits, letters
+  // and whitespace, which missed a markdown-link scan whose `[^\]]+` only runs
+  // away on a subject of `[`. The delimiters below are the characters library
+  // patterns actually quantify over, so the set is drawn from the patterns
+  // rather than from what looks like text.
+  var FILLERS = [
+    "1", "a", " ", "\t", ".", "/", "0", "-",
+    "[", "]", "{", "}", "<", ">", "(", ")",
+    "\"", "'", "\\", "&", "@", ":", ";", ",", "=", "%", "*", "+", "#", "$",
+  ];
+  var TAILS = ["!", ""];
+  // Built once. Rebuilding an 8192-character subject for every pattern is tens
+  // of thousands of allocations and dominates the run.
+  var SUBJECTS = [];
+  for (var pf = 0; pf < FILLERS.length; pf += 1) {
+    for (var pt = 0; pt < TAILS.length; pt += 1) {
+      SUBJECTS.push({
+        label: JSON.stringify(FILLERS[pf]) + " x N + " + JSON.stringify(TAILS[pt]),
+        // A cheap first look. Scanning 8192 characters with two thousand
+        // patterns is most of the run even when every one of them is fast, so
+        // a quarter-size subject decides who is worth the full measurement.
+        // Something that costs 25ms at 8192 is already milliseconds here,
+        // while a linear pattern stays in the microseconds.
+        small: FILLERS[pf].repeat(2048) + TAILS[pt],
+        big:   FILLERS[pf].repeat(8192) + TAILS[pt],
+        // The growth window sits ABOVE the cost probe, where the asymptote
+        // shows. A pattern that bounds its own inner scan (`[^\]]{0,2048}`)
+        // looks quadratic until the input passes that bound and linear after,
+        // so a window below it reports a shape the caller can never reach:
+        // measured across 2k to 64k, that pattern settles at 2.0x per
+        // doubling, which is linear with a large constant rather than the
+        // runaway this gate is for.
+        sizes: [FILLERS[pf].repeat(8192) + TAILS[pt],
+                FILLERS[pf].repeat(16384) + TAILS[pt],
+                FILLERS[pf].repeat(32768) + TAILS[pt]],
+      });
+    }
+  }
+  var files = _libFiles();
+  var bad = [];
+  // The same pattern is written in many files (`/\/+$/` appeared in six), and
+  // measuring is the expensive part, so each distinct pattern is measured once
+  // and every site that spells it is reported.
+  var measured = {};
+
+  for (var fi = 0; fi < files.length; fi += 1) {
+    var rel = _relPath(files[fi]);
+    // regex-linear exists to RUN a hostile pattern safely; its fixtures are
+    // meant to be catastrophic.
+    if (rel === "lib/regex-linear.js") continue;
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    var lines = content.split(/\r?\n/);
+
+    for (var li = 0; li < lines.length; li += 1) {
+      if (/^\s*(\/\/|\*|\/\*)/.test(lines[li])) continue;
+      var sources = [];
+      for (var sf = 0; sf < _REGEX_SITES.length; sf += 1) {
+        var site = _REGEX_SITES[sf];
+        site.lastIndex = 0;
+        var sm;
+        while ((sm = site.exec(lines[li])) !== null) {
+          if (sources.indexOf(sm[1]) === -1) sources.push(sm[1]);
+          if (!site.global) break;
+        }
+      }
+      if (!sources.length) continue;
+
+      for (var sx = 0; sx < sources.length; sx += 1) {
+      var src = sources[sx];
+      if (Object.prototype.hasOwnProperty.call(measured, src)) {
+        var prior = measured[src];
+        if (prior) bad.push({ file: rel, line: li + 1, content: prior });
+        continue;
+      }
+      measured[src] = null;
+      var lastSlash = src.lastIndexOf("/");
+      var re;
+      // Rebuilt through the constructor: the captured text is only ever used
+      // as a pattern, never executed as code. `g`/`y` are dropped so lastIndex
+      // cannot carry between probes.
+      try { re = new RegExp(src.slice(1, lastSlash), src.slice(lastSlash + 1).replace(/[gy]/g, "")); }
+      catch (_e) { continue; }
+
+      var worst = 0, worstSubject = "", worstCost = 0;
+      for (var sj = 0; sj < SUBJECTS.length; sj += 1) {
+        var subj = SUBJECTS[sj];
+        // Cost first, growth second.
+        //
+        // Growth alone flags idioms nobody would rewrite: a pattern trimming
+        // trailing slashes is quadratic in principle and irrelevant in
+        // practice when the value is a short path. What separated the patterns
+        // actually worth fixing is that each cost about 25ms for a single call
+        // at the byte cap its own caller enforces, which is a CPU amplifier
+        // for one request.
+        //
+        // So the expensive subject is the filter: measure once at 8192
+        // characters, the cap this codebase uses for a request-supplied
+        // string, and ask about growth only when that is already slow. Almost
+        // nothing gets past it, which is also what keeps the gate quick.
+        if (_timeRegex(re, subj.small) < 0.3) continue;
+        var cost = Math.min(_timeRegex(re, subj.big), _timeRegex(re, subj.big));
+        if (cost < 5) continue;
+
+        var row = [];
+        for (var si = 0; si < subj.sizes.length; si += 1) {
+          _timeRegex(re, subj.sizes[si]);                  // warm
+          var best = Infinity;
+          for (var k = 0; k < 3; k += 1) best = Math.min(best, _timeRegex(re, subj.sizes[si]));
+          row.push(best);
+        }
+        if (row[0] <= 0.02) continue;                      // too fast to measure a ratio
+        var growth = row[2] / row[0];
+        if (growth > worst) {
+          worst = growth;
+          worstCost = cost;
+          worstSubject = subj.label;
+        }
+      }
+
+      // Both conditions: expensive at the cap AND super-linear. Four times the
+      // input is about four times the work when linear and about sixteen when
+      // quadratic, so eight separates them with room for a loaded machine.
+      if (worst >= 8) {
+        measured[src] = src.slice(0, 60) + " costs " + worstCost.toFixed(0) +
+                        "ms at 8192 chars and grows " + worst.toFixed(1) +
+                        "x for 4x the input (" + worstSubject + ") — rewrite so " +
+                        "two quantifiers cannot split the same run";
+        bad.push({ file: rel, line: li + 1, content: measured[src] });
+      }
+      }
+    }
+  }
+
+  bad = _filterMarkers(bad, "regex-superlinear-by-design");
+  _report("the framework's own regexes run in time proportional to their input", bad);
 }
 
 // ---- Pattern 17: process.exit() in lib/ (should not exit unilaterally) ----
@@ -14716,6 +14911,11 @@ function testHostnameCompareTrailingDotNormalize() {
                    // end-anchored regex strip of one-or-more trailing dots:
                    // .replace(/\.$/, ...) / .replace(/\.+$/, ...) / .replace(/\.*$/, ...)
                    /\.replace\(\s*\/\\\.[+*]?\$\//.test(content) ||
+                   // The same strip through the shared helper. The regex form
+                   // above has no start anchor, so on a long run of dots it
+                   // retried from every position; the helper walks back from
+                   // the end once. Both remove exactly the trailing dots.
+                   /trimTrailingChars\([^;\n]{0,120}?,\s*"\."\s*\)/.test(content) ||
                    // Label-list normalize: the name is split into labels, the
                    // ROOT label dropped, and the rest rejoined — the same
                    // normalization done positionally rather than lexically, and
@@ -19622,6 +19822,7 @@ async function run() {
   testNoBareJsonParse();
   testNoBareCanonicalizeWalks();
   testFormatValidatorLengthCap();
+  testOwnRegexesRunLinear();
   testNoProcessExitInLib();
   testListenPortFalsyDefault();
   testImapLiteralSizeZeroFootgun();

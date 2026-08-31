@@ -9,7 +9,84 @@ var helpers = require("../helpers");
 var b     = helpers.b;
 var check = helpers.check;
 
+// The URL extractors are scans, not patterns. As patterns they had no start
+// anchor and restarted at every "[", so model output that is a run of opening
+// brackets cost time proportional to its square until the bracket bound took
+// over. Growth is the assertion, not a wall-clock budget, so a loaded machine
+// moves both readings together.
+function testUrlExtractionIsLinear() {
+  function _sanitized(s) {
+    var r = b.ai.output.sanitize(s, { audit: false });
+    return (r && r.text) || String(r);
+  }
+  function _ms(build, n) {
+    var subject = build(n);
+    try { b.ai.output.sanitize(subject, { audit: false }); } catch (_e) { /* refusal is fine */ }
+    var best = Infinity;
+    for (var k = 0; k < 3; k += 1) {
+      var t0 = process.hrtime.bigint();
+      try { b.ai.output.sanitize(subject, { audit: false }); } catch (_e2) { /* timing */ }
+      best = Math.min(best, Number(process.hrtime.bigint() - t0) / 1e6);
+    }
+    return best;
+  }
+  function _ratio(build) {
+    var small = _ms(build, 4000);
+    var large = _ms(build, 16000);
+    return { r: small > 0.05 ? (large / small) : 1, small: small, large: large };
+  }
+
+  var open = _ratio(function (n) { return "[".repeat(n); });
+  check("a run of opening brackets is scanned in linear time",
+        open.r < 8, "4x input took " + open.r.toFixed(1) + "x (" +
+        open.small.toFixed(1) + "ms -> " + open.large.toFixed(1) + "ms)");
+
+  // The harder shape: every opening bracket has a closing one somewhere ahead,
+  // so a per-bracket search re-reads the same suffix from each of them however
+  // that search is bounded.
+  var closed = _ratio(function (n) { return "[".repeat(n) + "]"; });
+  check("a run of opening brackets before a distant closing one is linear too",
+        closed.r < 8, "4x input took " + closed.r.toFixed(1) + "x (" +
+        closed.small.toFixed(1) + "ms -> " + closed.large.toFixed(1) + "ms)");
+
+  // The extraction itself is unchanged, including the case the exact-offset
+  // splice exists for: an alt text equal to its own target URL.
+  check("an image URL pointing at link-local metadata is neutralized",
+        _sanitized("![u](http://169.254.169.254/latest/meta-data)").indexOf("169.254") === -1);
+  check("a link URL pointing at link-local metadata is neutralized",
+        _sanitized("[t](http://169.254.169.254/x)").indexOf("169.254") === -1);
+  check("a reference definition is neutralized too",
+        _sanitized("[id]: http://169.254.169.254/z").indexOf("169.254") === -1);
+  check("an alt text equal to its target still rewrites the target",
+        _sanitized("![u](u)").indexOf("about:blank") !== -1);
+  check("an ordinary external https URL is left alone",
+        _sanitized("[t](https://example.com/x)").indexOf("https://example.com/x") !== -1);
+
+  // A reference label is "any character but ]", and a newline is one of those,
+  // so the label may span lines. Reading only to the end of the line let a
+  // label with a break in it through while the single-line form was caught.
+  check("a reference label spanning a line break is still neutralized",
+        _sanitized("[a\nb]: http://169.254.169.254/x").indexOf("169.254") === -1);
+  check("an indented reference definition is neutralized",
+        _sanitized("  [x]: http://169.254.169.254/q").indexOf("169.254") === -1);
+
+  // A line starts after any JavaScript line terminator, not only a line feed.
+  // Splitting on the line feed alone left a definition introduced by a bare
+  // carriage return or a Unicode line separator unrecognized. The separators
+  // are built from character codes so no invisible byte sits in this file.
+  var CR = String.fromCharCode(0x0D);
+  var LF = String.fromCharCode(0x0A);
+  [["CR", CR], ["U+2028", String.fromCharCode(0x2028)],
+   ["U+2029", String.fromCharCode(0x2029)], ["CRLF", CR + LF]]
+    .forEach(function (pair) {
+      check("a reference definition after " + pair[0] + " is neutralized",
+            _sanitized("safe" + pair[1] + "[id]: http://169.254.169.254/x")
+              .indexOf("169.254") === -1);
+    });
+}
+
 async function run() {
+  testUrlExtractionIsLinear();
   check("b.ai.output.sanitize is fn", typeof b.ai.output.sanitize === "function");
   check("b.ai.output.redact is fn",   typeof b.ai.output.redact === "function");
 

@@ -398,7 +398,46 @@ function testAddressShapesAgreeWithThePatternsTheyReplaced() {
         splitDiffs.length === 0, splitDiffs.slice(0, 3).join(" | "));
 }
 
+// The smuggled-verb scan looks for an SMTP verb after a bare line ending. It
+// skipped whitespace by walking forward from every bare ending it found, and a
+// carriage return is itself whitespace, so a value that is nothing but bare
+// carriage returns made it re-walk the same run once per position: time
+// proportional to the SQUARE of the value. A guard is handed hostile input by
+// definition, so this is the one place that shape is guaranteed to arrive.
+function testSmuggledVerbScanIsLinear() {
+  function _ms(n) {
+    var subject = "\r".repeat(n);
+    try { b.guardEmail.sanitize(subject); } catch (_e) { /* refusal is fine */ }
+    var best = Infinity;
+    for (var k = 0; k < 3; k += 1) {
+      var t0 = process.hrtime.bigint();
+      try { b.guardEmail.sanitize(subject); } catch (_e2) { /* timing the work */ }
+      best = Math.min(best, Number(process.hrtime.bigint() - t0) / 1e6);
+    }
+    return best;
+  }
+  var small = _ms(2000);
+  var large = _ms(8000);
+  // Four times the input is about four times the work when the scan is linear
+  // and about sixteen when it is quadratic. Growth rather than a wall-clock
+  // budget, so a loaded machine moves both readings together.
+  var ratio = small > 0.05 ? (large / small) : 1;
+  check("a value of bare carriage returns is scanned in linear time",
+        ratio < 8, "4x input took " + ratio.toFixed(1) + "x the time (" +
+        small.toFixed(1) + "ms -> " + large.toFixed(1) + "ms)");
+
+  // The detection itself is unchanged: a bare ending followed by a verb is
+  // still smuggling, and one followed by ordinary text is still not.
+  var smuggled = b.guardEmail.validateMessage("Subject: hi\r.\r\n RCPT TO: <x@y.example>");
+  check("a bare ending before an SMTP verb is still detected",
+        smuggled && smuggled.ok === false);
+  var clean = b.guardEmail.validateMessage("Subject: hi\r\nTo: a@b.example\r\n\r\nbody text\r\n");
+  check("an ordinary message is still accepted", clean && clean.ok === true,
+        JSON.stringify(clean && clean.issues));
+}
+
 async function run() {
+  testSmuggledVerbScanIsLinear();
   testAddressShapesAgreeWithThePatternsTheyReplaced();
   testGuardEmailSurface();
   testGuardEmailRegistryParity();

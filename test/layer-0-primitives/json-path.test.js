@@ -378,6 +378,42 @@ function testFunctionArgLiterals() {
 // Driven with a subject that FAILS the match: `(a+)+$` against a run of `a`
 // that ends in something else. A subject that matches returns on the first
 // path through and hides the bug entirely.
+// The ReDoS screen below only gets to look at a pattern once the I-Regexp
+// translation has finished with it. That translation restarted at every "[",
+// so a filter pattern of nothing but "[" cost time proportional to its SQUARE
+// before any screen ran: a 16k pattern took 400ms, and the pattern carries no
+// length cap. Growth is the assertion, not a wall-clock budget.
+function testFilterTranslationIsLinear() {
+  var doc = { items: [{ a: "xxx" }, { a: "yyy" }] };
+  function _ms(n) {
+    var q = '$.items[?match(@.a, "' + "[".repeat(n) + '")]';
+    try { b.jsonPath.query(doc, q); } catch (_e) { /* a refusal is fine */ }
+    var best = Infinity;
+    for (var k = 0; k < 3; k += 1) {
+      var t0 = process.hrtime.bigint();
+      try { b.jsonPath.query(doc, q); } catch (_e2) { /* timing the work */ }
+      best = Math.min(best, Number(process.hrtime.bigint() - t0) / 1e6);
+    }
+    return best;
+  }
+  var small = _ms(2000);
+  var large = _ms(8000);
+  var ratio = small > 0.05 ? (large / small) : 1;
+  check("a filter pattern of opening brackets translates in linear time",
+        ratio < 8, "4x input took " + ratio.toFixed(1) + "x the time (" +
+        small.toFixed(1) + "ms -> " + large.toFixed(1) + "ms)");
+
+  // The translation itself is unchanged: a bare dot still stops at a line
+  // break, an escaped dot is still literal, and a class still passes through.
+  check("a bare dot still matches within a line",
+        JSON.stringify(b.jsonPath.query(doc, '$.items[?match(@.a, "x.x")]')) ===
+          JSON.stringify([{ a: "xxx" }]));
+  check("a character class still passes through",
+        JSON.stringify(b.jsonPath.query(doc, '$.items[?match(@.a, "[xy]+")]')).length > 2);
+  check("an escaped dot is still a literal dot",
+        JSON.stringify(b.jsonPath.query(doc, '$.items[?match(@.a, "x\\\\.x")]')) === "[]");
+}
+
 function testFilterRegexIsScreenedForRedos() {
   var doc = [{ name: "a".repeat(28) + "!" }];
   var refused = null;
@@ -424,6 +460,7 @@ function testFilterRegexIsScreenedForRedos() {
 }
 
 async function run() {
+  testFilterTranslationIsLinear();
   testFilterRegexIsScreenedForRedos();
   testSurface();
   testCts();
