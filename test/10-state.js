@@ -464,7 +464,7 @@ async function testClusterInitAndRequireLeader() {
     try { b.cluster.requireLeader(); } catch (e) { threwOnFollower = e; }
     check("requireLeader throws when not leader",        threwOnFollower !== null);
     check("error is NotLeaderError",                     threwOnFollower &&
-                                                          threwOnFollower.code === "NOT_LEADER");
+                                                          threwOnFollower.code === "cluster/not-leader");
     check("error has 503 statusCode",                    threwOnFollower &&
                                                           threwOnFollower.statusCode === 503);
   } finally {

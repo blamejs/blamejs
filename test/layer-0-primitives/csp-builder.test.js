@@ -158,6 +158,17 @@ function testRefusesAnEmptyPolicy() {
         typeof noop === "string" && noop.indexOf("default-src") !== -1,
         JSON.stringify(String(noop).slice(0, 60)));
 
+  // `sandbox` with no value is the STRICTEST form of the directive: it
+  // applies every sandbox restriction. The serializer treated it as a
+  // directive whose value list happened to be empty and emitted nothing, so
+  // the emptiness refusal turned the strictest policy a caller can express
+  // into a refusal. It belongs with the other valueless directives.
+  var sandboxOnly = b.csp.build({ sandbox: [] });
+  check("sandbox with no value emits the bare directive",
+        sandboxOnly === "sandbox", JSON.stringify(String(sandboxOnly)));
+  check("sandbox with values still emits them",
+        b.csp.build({ sandbox: ["allow-forms"] }) === "sandbox allow-forms");
+
   // An addition whose value list is empty is refused EARLIER, as a bad
   // directive value, so it never reaches the additions-validation pass. That
   // ordering is what keeps `csp/empty` unreachable from a merge: pinned here

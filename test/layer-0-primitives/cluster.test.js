@@ -355,7 +355,7 @@ async function testSyncSurfaceAndGetters() {
           postThrew && /not initialized/.test(postThrew.message));
     check("NotLeaderError carries a 503 status", postThrew && postThrew.statusCode === 503);
     check("NotLeaderError carries the cluster/not-leader flags",
-          postThrew && postThrew.code === "NOT_LEADER" &&
+          postThrew && postThrew.code === "cluster/not-leader" &&
           postThrew.isNotLeaderError === true && postThrew.isClusterError === true);
   } finally {
     try { await b.cluster.shutdown(); } catch (_e) { /* idempotent */ }
@@ -374,7 +374,7 @@ async function testSyncSurfaceAndGetters() {
     check("follower is not leader", b.cluster.isLeader() === false);
     var fThrew = null;
     try { b.cluster.requireLeader(); } catch (e) { fThrew = e; }
-    check("follower requireLeader throws NOT_LEADER", fThrew && fThrew.code === "NOT_LEADER");
+    check("follower requireLeader throws NOT_LEADER", fThrew && fThrew.code === "cluster/not-leader");
     check("follower NotLeaderError omits the uninitialized suffix",
           fThrew && !/not initialized/.test(fThrew.message));
 

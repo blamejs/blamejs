@@ -18451,6 +18451,11 @@ function testErrorCodesNamespacedKebab() {
     // matching only the direct form converged one of those six and left the
     // other five bare.
     /(?:\.code\s*=\s*|\bcode\s*:\s*)(?:[A-Za-z_.$()]+\s*\|\|\s*)?"([A-Z][A-Z0-9_]{2,})"/g,
+    // A subclass that passes its code straight to the base constructor.
+    // NotLeaderError carried a bare code this way, and none of the shapes
+    // above look inside a super() call, so the check stayed green over the
+    // one refusal every clustered write can raise.
+    /\bsuper\s*\([^;\n]{0,160}?"([A-Z][A-Z0-9_]{2,})"/g,
   ];
   // Local error helpers are named per module (_err, _wormErr, _failure,
   // _makeError). A fixed list of those names is a guess at the vocabulary

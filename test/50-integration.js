@@ -112,13 +112,13 @@ async function testClusterGatesQueue() {
     try { await b.queue.enqueue("test-q", { x: 1 }); }
     catch (e) { threwEnqueue = e; }
     check("queue.enqueue on follower throws NotLeaderError",
-          threwEnqueue && threwEnqueue.code === "NOT_LEADER");
+          threwEnqueue && threwEnqueue.code === "cluster/not-leader");
 
     var threwPurge = null;
     try { await b.queue.purge("test-q"); }
     catch (e) { threwPurge = e; }
     check("queue.purge on follower throws NotLeaderError",
-          threwPurge && threwPurge.code === "NOT_LEADER");
+          threwPurge && threwPurge.code === "cluster/not-leader");
     try { await b.queue.shutdown(); } catch (_e) {}
   } finally {
     await fx.teardown();
@@ -136,13 +136,13 @@ async function testClusterGatesObjectStoreLocal() {
     try { await backend.put("foo/bar", Buffer.from("hi")); }
     catch (e) { threwPut = e; }
     check("object-store-local.put on follower throws",
-          threwPut && threwPut.code === "NOT_LEADER");
+          threwPut && threwPut.code === "cluster/not-leader");
 
     var threwDelete = null;
     try { await backend.delete("foo/bar"); }
     catch (e) { threwDelete = e; }
     check("object-store-local.delete on follower throws",
-          threwDelete && threwDelete.code === "NOT_LEADER");
+          threwDelete && threwDelete.code === "cluster/not-leader");
 
     // Reads remain anywhere — no gate. Set up a non-existent key for
     // a clean error type comparison (NOT_FOUND, not NOT_LEADER).
