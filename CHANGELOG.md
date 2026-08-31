@@ -18,6 +18,7 @@ upgrading across more than a few patches at a time.
 - `auditDailyReview/...`, a camelCase namespace, is now `audit-daily-review/...`
 - `b.httpClient` spelled its own namespace two ways; every code is now `http-client/...`
 - `NOT_LEADER`, raised by every write-side gate on a follower, is now `cluster/not-leader`
+- `b.mailBounce.parse` raised `missing-vendor` and `unknown-vendor` with no namespace at all; both now carry `mail-bounce/`
 
 The same name previously meant different things in different modules, so a caller could not tell a cache refusal from a queue refusal without reading the message. Matching on the namespaced code is exact, and `e.code.split("/")[0]` gives the subsystem.
 

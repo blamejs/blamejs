@@ -18457,6 +18457,24 @@ function testErrorCodesNamespacedKebab() {
     // one refusal every clustered write can raise.
     /\bsuper\s*\([^;\n]{0,160}?"([A-Z][A-Z0-9_]{2,})"/g,
   ];
+
+  // A code can also miss its namespace while already being kebab-case
+  // ("missing-vendor"). Those read as well-formed and the UPPER_SNAKE arm
+  // steps right over them, so the promise that e.code.split("/")[0] names
+  // the subsystem quietly failed for them.
+  //
+  // Scoped to the CONSTRUCTION forms on purpose. The shared validators take
+  // a lowercase NAMESPACE PREFIX in the same argument position
+  // (validateOpts.outboundHttpOpts(..., AuthError, "auth-ciba") composes
+  // "auth-ciba/bad-http"), and a Builder subclass passes a lowercase KIND to
+  // super(). Neither is a code, and including those shapes would flag both.
+  // The local error helpers are added per file below. Leaving them out was
+  // the whole bug: mail-bounce raised its un-namespaced codes through
+  // `_err(...)`, so a check that only read the constructor forms would have
+  // stayed green with that exact code back in place.
+  var BARE_LOWERCASE_BASE = [
+    /(?:new\s+(\w+Error)\(|(\w+Error)\.factory\()\s*"([a-z][a-z0-9]*(?:-[a-z0-9]+)+)"/g,
+  ];
   // Local error helpers are named per module (_err, _wormErr, _failure,
   // _makeError). A fixed list of those names is a guess at the vocabulary
   // rather than the vocabulary itself, and it missed _wormErr in lib/db.js
@@ -18479,10 +18497,17 @@ function testErrorCodesNamespacedKebab() {
     try { xsrc = fs.readFileSync(files[xf], "utf8"); }
     catch (_e2) { continue; }
     var xlines = xsrc.split(/\r?\n/);
-    var helperShapes = _errorHelperNames(xsrc).map(function (n) {
+    var helperNames = _errorHelperNames(xsrc);
+    var helperShapes = helperNames.map(function (n) {
       return new RegExp("\\b" + n + "\\s*\\(\\s*\"([A-Z][A-Z0-9_]{2,})\"", "g");
     });
     var shapes = EXTRA_SHAPES.concat(helperShapes);
+    // Anchored on the FIRST argument, which is the code. A helper that takes
+    // a lowercase value later in its argument list (webhook's _failure passes
+    // a rule id third) is untouched.
+    var BARE_LOWERCASE = BARE_LOWERCASE_BASE.concat(helperNames.map(function (n) {
+      return new RegExp("\\b" + n + "\\s*\\(\\s*\"([a-z][a-z0-9]*(?:-[a-z0-9]+)+)\"", "g");
+    }));
     for (var xl = 0; xl < xlines.length; xl += 1) {
       var XL = xlines[xl];
       if (/^\s*(\/\/|\*|\/\*)/.test(XL)) continue;
@@ -18497,6 +18522,24 @@ function testErrorCodesNamespacedKebab() {
             content: "error code \"" + xcode + "\" is bare UPPER_SNAKE — use namespace/kebab-case (e.g. \"" +
               xrel.replace(/^lib\//, "").replace(/\.js$/, "") + "/" +
               xcode.toLowerCase().replace(/_/g, "-") + "\")" });
+        }
+      }
+      for (var bl = 0; bl < BARE_LOWERCASE.length; bl += 1) {
+        var bre = BARE_LOWERCASE[bl];
+        bre.lastIndex = 0;
+        var bm;
+        while ((bm = bre.exec(XL)) !== null) {
+          // The constructor pattern captures the class name plus the code;
+          // the per-helper patterns capture the code alone.
+          var isCtorForm = bm[3] !== undefined;
+          var ctorName = isCtorForm ? (bm[1] || bm[2]) : null;
+          if (ctorName && NATIVE[ctorName]) continue;   // message-first
+          var bcode = isCtorForm ? bm[3] : bm[1];
+          if (bcode.indexOf("/") !== -1) continue;
+          bad.push({ file: xrel, line: xl + 1,
+            content: "error code \"" + bcode + "\" has no namespace — use \"" +
+              xrel.replace(/^lib\//, "").replace(/\.js$/, "") + "/" + bcode +
+              "\" so e.code.split(\"/\")[0] names the subsystem" });
         }
       }
     }

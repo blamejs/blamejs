@@ -1008,10 +1008,10 @@ async function testCustomParserValidation() {
 async function testParseRoutingDefaults() {
   // No opts object at all → default {} → missing-vendor.
   var e1 = _threw(function () { b.mailBounce.parse({ Email: "a@b.com" }); });
-  check("parse: no opts → missing-vendor", e1 && e1.code === "missing-vendor");
+  check("parse: no opts → missing-vendor", e1 && e1.code === "mail-bounce/missing-vendor");
   // Empty-string vendor → missing-vendor (length 0 branch).
   var e2 = _threw(function () { b.mailBounce.parse({}, { vendor: "" }); });
-  check("parse: empty vendor → missing-vendor", e2 && e2.code === "missing-vendor");
+  check("parse: empty vendor → missing-vendor", e2 && e2.code === "mail-bounce/missing-vendor");
 }
 
 // ---- handler: config-time validation ----
