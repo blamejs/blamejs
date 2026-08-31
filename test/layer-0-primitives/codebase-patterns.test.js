@@ -24,9 +24,21 @@
   // smoke orchestrator (smoke.js sets its own heap policy if needed).
   if (require.main !== module) return;
   var cp = require("node:child_process");
+  // The duplicate-block scan is the heaviest thing in this file. It now
+  // holds one (pass, size) fingerprint map at a time instead of all
+  // sixteen, and completes in ~1.3 GB on the current corpus (measured by
+  // bisecting the limit: 1024 MB fails, 1280 MB passes). 3 GB is roughly
+  // twice that.
+  //
+  // The point of a bound close to the real need is that it FAILS when
+  // the accumulator regresses. The previous 6144 was raised twice to stay
+  // ahead of a design whose footprint grew with the corpus, and by the
+  // time the corpus caught up this file could no longer run at Node's
+  // default heap at all — it aborted for anyone invoking it directly,
+  // while CI stayed green on a raised NODE_OPTIONS ceiling of its own.
   var r  = cp.spawnSync(
     process.execPath,
-    ["--max-old-space-size=6144"].concat(process.argv.slice(1)),
+    ["--max-old-space-size=3072"].concat(process.argv.slice(1)),
     { stdio: "inherit" }
   );
   process.exit(r.status === null ? 1 : r.status);
@@ -4710,6 +4722,95 @@ function _normalizeJsLine(line) {
   return line;
 }
 
+// The duplicate-block scan tokenizes and filters a shard ONCE and records the
+// surviving offsets as a byte per (file, size, offset); every later round reads
+// that byte instead of re-deriving the verdict. That is what lets it hold one
+// (pass, size) fingerprint map at a time rather than all sixteen.
+//
+// A keep-flag indexed against the wrong offset would silently shift or drop
+// sites, and the failure is invisible: the report still looks like a report,
+// with different clusters in it. So the round scan is compared against an
+// independent direct scan that recomputes both filters inline and never
+// consults a flag — the control implementation, not a re-run of the same one.
+function testShingleRoundMatchesDirectScan() {
+  var shingle = require(path.join(__dirname, "..", "helpers", "_codebase-shingle"));
+  var REPO_ROOT_LOCAL = path.resolve(__dirname, "..", "..");
+  // A handful of real lib/ files: big enough to produce cross-file matches,
+  // small enough that the direct scan is cheap.
+  var SAMPLE = ["lib/numeric-bounds.js", "lib/http2-teardown.js", "lib/canonical-json.js",
+                "lib/lazy-require.js", "lib/codepoint-class.js"];
+  var SIZES  = [16, 8];
+  var MIN_DISTINCT_TOKENS = 5;
+
+  var abs = SAMPLE.map(function (rel) { return path.join(REPO_ROOT_LOCAL, rel); })
+                  .filter(function (p) { return fs.existsSync(p); });
+  var hits = [];
+  if (abs.length < 2) {
+    hits.push({
+      file: "test/layer-0-primitives/codebase-patterns.test.js", line: 1,
+      content: "shingle round control: fewer than two sample files resolved, so the " +
+        "comparison proves nothing — update SAMPLE to name files that exist",
+    });
+    _report("the shingle round scan agrees with a direct scan of the same files", hits);
+    return;
+  }
+
+  // Control: the all-at-once shape, recomputing every filter per shingle.
+  function directScan(passKey, n) {
+    var fpFn = passKey === "skeleton" ? shingle.sliceFingerprintSkeleton
+                                      : shingle.sliceFingerprintExact;
+    var bucket = {};
+    abs.forEach(function (p) {
+      var entry = shingle.tokenizeFile(p, REPO_ROOT_LOCAL);
+      if (!entry || entry.tokens.length < n) return;
+      for (var ti = 0; ti + n <= entry.tokens.length; ti += 1) {
+        var slice = entry.tokens.slice(ti, ti + n);
+        var distinct = {};
+        for (var di = 0; di < slice.length; di += 1) distinct[slice[di].tok] = true;
+        if (Object.keys(distinct).length < MIN_DISTINCT_TOKENS) continue;
+        if (shingle.isBoilerplate(slice)) continue;
+        var fp = fpFn(slice);
+        if (!bucket[fp]) bucket[fp] = [];
+        bucket[fp].push({ file: entry.rel, line: slice[0].line,
+                          endLine: slice[slice.length - 1].line });
+      }
+    });
+    return bucket;
+  }
+
+  var prepared = shingle.prepareShard(abs, {
+    repoRoot: REPO_ROOT_LOCAL, shingleSizes: SIZES, minDistinctTokens: MIN_DISTINCT_TOKENS,
+  });
+  var compared = 0;
+  ["exact", "skeleton"].forEach(function (passKey) {
+    SIZES.forEach(function (n) {
+      var viaRound  = shingle.scanRound(prepared, { pass: passKey, size: n });
+      var viaDirect = directScan(passKey, n);
+      compared += Object.keys(viaDirect).length;
+      // Site ORDER is compared too, not just membership: cluster identity
+      // depends on which occurrences land in `sites`.
+      if (JSON.stringify(viaRound) !== JSON.stringify(viaDirect)) {
+        hits.push({
+          file: "test/helpers/_codebase-shingle.js", line: 1,
+          content: "scanRound(" + passKey + ", " + n + ") disagrees with a direct scan of the " +
+            "same files (" + Object.keys(viaRound).length + " vs " +
+            Object.keys(viaDirect).length + " fingerprints) — the prepared keep-flags no " +
+            "longer select the same shingles",
+        });
+      }
+    });
+  });
+  // A comparison of two empty maps passes without testing anything.
+  if (compared === 0) {
+    hits.push({
+      file: "test/layer-0-primitives/codebase-patterns.test.js", line: 1,
+      content: "shingle round control: the direct scan produced no fingerprints at any " +
+        "size, so the agreement above is vacuous — pick larger sample files",
+    });
+  }
+  _report("the shingle round scan agrees with a direct scan of the same files", hits);
+}
+
 async function testNoDuplicateCodeBlocks() {
   // class: duplicate-block
   // Token-n-gram shingle detection. Each .js file is fully tokenized
@@ -4753,9 +4854,10 @@ async function testNoDuplicateCodeBlocks() {
   };
 
   // Two-pass scan (exact + skeleton fingerprints) runs inside worker
-  // threads — see test/helpers/_codebase-shingle.js. Each shard
-  // returns a per-pass-per-size fingerprint map; the main thread
-  // merges them and runs the cluster-aggregation logic below.
+  // threads — see test/helpers/_codebase-shingle.js. Each shard is
+  // tokenized and filtered once, then answers one (pass, size)
+  // fingerprint map per request; the main thread merges the shards for
+  // that combination and runs the cluster-aggregation logic below.
 
 
   // ---- Enclosing-function index ----
@@ -4822,57 +4924,133 @@ async function testNoDuplicateCodeBlocks() {
   // — kept as separate entries so each call site is reported.
   var clusters = {};   // fileSetKey → { fileSet, bestSize, bestPass, sites: [{file, startLine, endLine, size}] }
 
-  // Fan files across worker_threads. Each worker tokenizes its shard
-  // and runs the shingle scan, returning a per-pass-per-size
-  // fingerprint map. Main thread merges shard maps (per (pass, size,
-  // fp) key, append site lists) then runs the cluster-aggregation
-  // identical to the previous single-thread version. With 32 cores,
-  // ~250 files split into ~8-file shards: the cross-thread overhead
-  // is tiny vs the savings on the 60-token × 250-file × 8-size scan.
+  // Fan files across worker_threads. Each worker tokenizes and filters
+  // its shard once, then answers one (pass, size) request at a time.
+  // The main thread merges the shards for that one combination, folds
+  // it into the cluster table, and drops it before asking for the next.
+  //
+  // Scanning per combination rather than all sixteen at once is what
+  // keeps this inside a normal heap. Building them together retained
+  // every distinct fingerprint STRING in the corpus at once — eleven
+  // million of them, ~5 GB — and the detector could only run under a
+  // raised ceiling, which it had already outgrown. A fingerprint seen
+  // in one file can never reach MIN_DISTINCT_FILES, so nothing about
+  // the result depended on holding them all; only the peak did.
   //
   // Knobs: HS_PATTERNS_WORKERS=N overrides the worker count;
   // HS_PATTERNS_NO_THREADS=1 forces in-process execution (debug /
   // single-core CI).
   var Worker = require("worker_threads").Worker;
   var os     = require("os");
-  function _scanShardInWorker(shardFiles) {
-    return new Promise(function (resolve, reject) {
-      var w = new Worker(WORKER_PATH, {
-        workerData: Object.assign({ files: shardFiles }, SHINGLE_OPTS_FOR_WORKER),
-      });
-      // Reap the worker on EVERY settle path (#123). Previously the error and
-      // exit handlers rejected without terminate(), so an errored worker thread
-      // stayed alive holding its event-loop handles — the parent could not exit
-      // and the smoke run ran to the 25-min watchdog on memory-starved
-      // macOS-arm64 runners. settle() terminates first, idempotently.
-      var settled = false;
-      function settle(fn, arg) {
-        if (settled) return;
-        settled = true;
-        try { w.terminate(); } catch (_e) { /* already terminating */ }
-        fn(arg);
-      }
-      w.once("message", function (msg) { settle(resolve, msg); });
-      w.once("error", function (e) { settle(reject, e); });
-      w.once("exit", function (code) {
-        if (code !== 0 && code !== null) settle(reject, new Error("shingle worker exited " + code));
-      });
+  // A shard worker outlives a single request, so its failure paths are
+  // a state machine rather than one promise. Reap the thread on EVERY
+  // settle path (#123): an error or exit handler that rejects without
+  // terminate() leaves the thread alive holding its event-loop handles,
+  // the parent cannot exit, and the smoke run burns to the watchdog on
+  // memory-starved macOS-arm64 runners.
+  function _spawnShardWorker(shardFiles) {
+    var w = new Worker(WORKER_PATH, {
+      workerData: Object.assign({ files: shardFiles }, SHINGLE_OPTS_FOR_WORKER),
     });
+    var pending = null;
+    var fatal   = null;
+    var closed  = false;
+    function reap() { try { w.terminate(); } catch (_e) { /* already terminating */ } }
+    function fail(e) {
+      if (closed || fatal) return;
+      fatal = e;
+      reap();
+      if (pending) { var p = pending; pending = null; p.reject(e); }
+    }
+    w.on("message", function (msg) {
+      if (!pending) return;
+      var p = pending; pending = null; p.resolve(msg);
+    });
+    w.on("error", function (e) { fail(e); });
+    w.on("exit", function (code) {
+      if (!closed && code !== 0 && code !== null) fail(new Error("shingle worker exited " + code));
+    });
+    function request(msg) {
+      return new Promise(function (resolve, reject) {
+        if (fatal) { reject(fatal); return; }
+        pending = { resolve: resolve, reject: reject };
+        if (msg) w.postMessage(msg);
+      });
+    }
+    return {
+      // Resolves on the worker's ready announcement — its shard is
+      // tokenized and filtered and it can answer round requests.
+      ready: request(null),
+      round: function (passKey, size) { return request({ pass: passKey, size: size }); },
+      close: function () { closed = true; reap(); },
+    };
   }
-  // Cap worker fan-out at 4 — each Worker holds the per-shard
-  // fingerprint map in heap until message-resolve; on macOS-arm64
-  // CI runners (2 GB Node default heap) ~250 files × 8 cores
-  // peaked above the heap-limit and OOMed the smoke run. 4 workers
-  // keeps the parallel speedup (5x faster than single-threaded)
-  // without crossing the memory ceiling on slow runners. Operators
-  // with bigger machines override via HS_PATTERNS_WORKERS=N.
+  // Cap worker fan-out at 4. Each worker holds its shard's tokens for
+  // the life of the run plus one round's fingerprint map in flight;
+  // more threads buy little once the corpus scan is the bottleneck.
+  // Operators with bigger machines override via HS_PATTERNS_WORKERS=N.
   var WORKER_CAP = 4;                                                                          // allow:raw-byte-literal — worker fan-out cap, not bytes
   var workerCount = Number(process.env.HS_PATTERNS_WORKERS) ||
                     Math.min(os.cpus().length, Math.max(1, files.length), WORKER_CAP);
-  var shardResults;
+
+  // Sizes largest-first so a cluster's sites end up holding the
+  // bestSize occurrences in a single pass. Within a size, fingerprints
+  // sort lexically so cluster identity (which fp's occurrences populate
+  // `sites` when several map to the same fileSet+size) is invariant
+  // under shard-merge order — without it, parallel runs diverge from
+  // in-process runs because shards contribute fps in different orders.
+  var PASS_LABELS  = [["exact", "[exact]"], ["skeleton", "[skeleton]"]];
+  var sortedSizes  = SHINGLE_SIZES.slice().sort(function (a, b) { return b - a; });
+
+  function _foldRoundIntoClusters(passLabel, n, seen) {
+    var fps = Object.keys(seen).sort();
+    for (var fpi = 0; fpi < fps.length; fpi += 1) {
+      var fp = fps[fpi];
+      var occ = seen[fp];
+      var distinctFiles = {};
+      occ.forEach(function (o) { distinctFiles[o.file] = true; });
+      var fileList = Object.keys(distinctFiles).sort();
+      if (fileList.length < MIN_DISTINCT_FILES) continue;
+      var key = passLabel + "|" + fileList.join("|");
+      if (!clusters[key]) {
+        clusters[key] = {
+          fileSet:   fileList,
+          passLabel: passLabel,
+          bestSize:  n,
+          sites:     occ.slice(),
+        };
+      } else if (n > clusters[key].bestSize) {
+        clusters[key].bestSize = n;
+        clusters[key].sites = occ.slice();
+      }
+    }
+  }
+
+  // Merge one combination's shard maps in shard order, appending site
+  // lists per fingerprint — the order the all-at-once scan produced.
+  function _mergeRound(partials) {
+    var seen = {};
+    for (var i = 0; i < partials.length; i += 1) {
+      var src = partials[i];
+      var srcFps = Object.keys(src);
+      for (var j = 0; j < srcFps.length; j += 1) {
+        var fp = srcFps[j];
+        if (!seen[fp]) seen[fp] = src[fp];
+        else seen[fp] = seen[fp].concat(src[fp]);
+      }
+    }
+    return seen;
+  }
+
   if (process.env.HS_PATTERNS_NO_THREADS === "1" || workerCount <= 1) {
     var shingleScan = require(path.join(__dirname, "..", "helpers", "_codebase-shingle"));
-    shardResults = [shingleScan.scanShard(files, SHINGLE_OPTS_FOR_WORKER)];
+    var prepared = shingleScan.prepareShard(files, SHINGLE_OPTS_FOR_WORKER);
+    for (var pi = 0; pi < PASS_LABELS.length; pi += 1) {
+      for (var szi = 0; szi < sortedSizes.length; szi += 1) {
+        _foldRoundIntoClusters(PASS_LABELS[pi][1], sortedSizes[szi],
+          shingleScan.scanRound(prepared, { pass: PASS_LABELS[pi][0], size: sortedSizes[szi] }));
+      }
+    }
   } else {
     var shards = [];
     for (var sIdx = 0; sIdx < workerCount; sIdx += 1) shards.push([]);
@@ -4880,67 +5058,22 @@ async function testNoDuplicateCodeBlocks() {
       shards[fIdx % workerCount].push(files[fIdx]);
     }
     shards = shards.filter(function (s) { return s.length > 0; });
-    shardResults = await Promise.all(shards.map(_scanShardInWorker));
-  }
-
-  // Merge shard outputs into a single per-(pass, size) seen map, then
-  // run the existing cluster-aggregation. Identical semantics to the
-  // pre-parallel version — workers only handle the per-shard fp
-  // generation, never the cluster identity decision.
-  var seenByPassSize = { "[exact]": {}, "[skeleton]": {} };
-  shardResults.forEach(function (shardOut) {
-    ["exact", "skeleton"].forEach(function (passKey) {
-      var label = passKey === "exact" ? "[exact]" : "[skeleton]";
-      var perSize = shardOut[passKey] || {};
-      Object.keys(perSize).forEach(function (sizeStr) {
-        if (!seenByPassSize[label][sizeStr]) seenByPassSize[label][sizeStr] = {};
-        var dest = seenByPassSize[label][sizeStr];
-        var src  = perSize[sizeStr];
-        Object.keys(src).forEach(function (fp) {
-          if (!dest[fp]) dest[fp] = src[fp];
-          else dest[fp] = dest[fp].concat(src[fp]);
-        });
-      });
-    });
-  });
-
-  // Iterate sizes largest-first so cluster.sites end up holding the
-  // bestSize occurrences in a single pass. Within a size, sort the
-  // fingerprints lexically so cluster identity (which fp's
-  // occurrences populate `sites` when multiple fps map to the same
-  // fileSet+size) is invariant under shard-merge order — without
-  // this, parallel runs diverge from in-process runs because shards
-  // contribute fps in different orders.
-  var sortedSizes = Object.keys(seenByPassSize["[exact]"] || {}).map(Number).sort(function (a, b) { return b - a; });
-  Object.keys(seenByPassSize).forEach(function (passLabel) {
-    var perSize = seenByPassSize[passLabel];
-    for (var szi = 0; szi < sortedSizes.length; szi += 1) {
-      var n = sortedSizes[szi];
-      var seen = perSize[String(n)];
-      if (!seen) continue;
-      var fps = Object.keys(seen).sort();
-      for (var fpi = 0; fpi < fps.length; fpi += 1) {
-        var fp = fps[fpi];
-        var occ = seen[fp];
-        var distinctFiles = {};
-        occ.forEach(function (o) { distinctFiles[o.file] = true; });
-        var fileList = Object.keys(distinctFiles).sort();
-        if (fileList.length < MIN_DISTINCT_FILES) continue;
-        var key = passLabel + "|" + fileList.join("|");
-        if (!clusters[key]) {
-          clusters[key] = {
-            fileSet:   fileList,
-            passLabel: passLabel,
-            bestSize:  n,
-            sites:     occ.slice(),
-          };
-        } else if (n > clusters[key].bestSize) {
-          clusters[key].bestSize = n;
-          clusters[key].sites = occ.slice();
+    var handles = shards.map(_spawnShardWorker);
+    try {
+      await Promise.all(handles.map(function (h) { return h.ready; }));
+      for (var wpi = 0; wpi < PASS_LABELS.length; wpi += 1) {
+        for (var wszi = 0; wszi < sortedSizes.length; wszi += 1) {
+          var passKey = PASS_LABELS[wpi][0];
+          var size    = sortedSizes[wszi];
+          var replies = await Promise.all(handles.map(function (h) { return h.round(passKey, size); }));
+          _foldRoundIntoClusters(PASS_LABELS[wpi][1], size,
+            _mergeRound(replies.map(function (r) { return r.bucket; })));
         }
       }
+    } finally {
+      handles.forEach(function (h) { h.close(); });
     }
-  });
+  }
 
   // Convert clusters to sorted report rows. Bigger shingles + larger
   // file-sets are stronger primitive opportunities — surface first.
@@ -16513,6 +16646,100 @@ function testNoTrackedInternalNotes() {
 // _assertLocalResidency, the external query/transaction paths run
 // _assertRowResidency, and assertColumnResidency has a real lib/
 // caller outside its own definition file.
+// Encrypted mode refuses a tmpDir it cannot show to be an in-memory mount, and
+// the check reads the mount table — so a scratch directory is refused on Linux
+// and merely warned about on Windows and macOS, where there is nothing to
+// classify it against. Every test that hands db.init a scratch tmpDir has to
+// opt out explicitly, or it passes on the author's host and fails in a
+// container.
+//
+// Per CALL SITE, not per file. A file can have one init that opts out and two
+// that do not, which is exactly how the last sweep of this class missed two of
+// them; the run after that missed four more, each surfacing one container leg
+// at a time because smoke stops at the first failure.
+//
+// The two deliberate refusal tests are allowlisted by their enclosing function
+// name rather than by line, so moving them does not silently drop the guard.
+var TMPFS_OPTOUT_EXEMPT = [
+  "test/20-db.js::testEncryptedNonTmpfsTmpDirRefusedByDefault",
+  "test/layer-0-primitives/db.test.js::testEncryptedInitHandlesAnUnclassifiableTmpDir",
+];
+function testDbInitScratchTmpDirOptsOut() {
+  var roots = [TEST_ROOT, path.resolve(__dirname, "..", "..", "examples")];
+  var files = [];
+  function walk(dir) {
+    var ents;
+    try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (_e) { return; }
+    for (var i = 0; i < ents.length; i += 1) {
+      var p = path.join(dir, ents[i].name);
+      if (ents[i].isDirectory()) {
+        if (ents[i].name === "node_modules" || ents[i].name === ".test-output" ||
+            ents[i].name === "data" || ents[i].name === "data-e2e") continue;
+        walk(p);
+      } else if (ents[i].name.slice(-3) === ".js") {
+        files.push(p);
+      }
+    }
+  }
+  roots.forEach(walk);
+
+  var hits = [];
+  var seenExempt = {};
+  files.forEach(function (abs) {
+    var src;
+    try { src = fs.readFileSync(abs, "utf8"); } catch (_e) { return; }
+    var rel = _relPath(abs);
+    var from = 0;
+    for (;;) {
+      var at = src.indexOf("db.init(", from);
+      if (at === -1) break;
+      from = at + 8;
+      // Balance the call's own parens, so the opts read belong to THIS call
+      // and not to the next one further down the file.
+      var open = src.indexOf("(", at);
+      var depth = 0, end = -1;
+      for (var i = open; i < src.length && i < open + 20000; i += 1) {
+        if (src[i] === "(") depth += 1;
+        else if (src[i] === ")") { depth -= 1; if (depth === 0) { end = i; break; } }
+      }
+      if (end === -1) continue;
+      var callText = src.slice(open, end + 1);
+      if (!/\btmpDir\s*:/.test(callText)) continue;
+      if (/allowNonTmpfsTmpDir/.test(callText)) continue;
+      if (/atRest\s*:\s*["']plain["']/.test(callText)) continue;
+
+      // Nearest preceding function declaration is the enclosing test.
+      var head = src.slice(0, at);
+      var fnName = "<top>";
+      var m = /(?:^|\n)\s*(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/g;
+      var found;
+      while ((found = m.exec(head)) !== null) fnName = found[1];
+      var key = rel + "::" + fnName;
+      if (TMPFS_OPTOUT_EXEMPT.indexOf(key) !== -1) { seenExempt[key] = true; continue; }
+
+      hits.push({
+        file: rel, line: src.slice(0, at).split("\n").length,
+        content: "db.init is given a tmpDir with no allowNonTmpfsTmpDir and no atRest:'plain' " +
+          "(" + key + ") — a scratch dir is refused wherever the mount table can classify it, " +
+          "so this passes on Windows and fails in a container",
+      });
+      from = end;
+    }
+  });
+
+  // An exemption that no longer matches anything is a guard nobody is holding.
+  TMPFS_OPTOUT_EXEMPT.forEach(function (key) {
+    if (!seenExempt[key]) {
+      hits.push({
+        file: key.split("::")[0], line: 1,
+        content: "the tmpfs opt-out exemption " + key + " matched no call site — the refusal " +
+          "test it names has moved or gone, so remove the entry rather than leave it standing",
+      });
+    }
+  });
+  _report("every db.init handed a scratch tmpDir opts out of the residency requirement", hits);
+}
+
 function testResidencyGatesWired() {
   var dbq, edb;
   try {
@@ -19233,6 +19460,7 @@ async function run() {
   testDefineClassErrorArgOrder();
   testNoHandrolledUrlBuild();
   testNoHandrolledRetryLoop();
+  testShingleRoundMatchesDirectScan();
   await testNoDuplicateCodeBlocks();
   testStateStampScanningDeferred();
   testNoLegacyUrlFormat();
@@ -19350,6 +19578,7 @@ async function run() {
   testNoDetachedAsyncIifeInLegacyLayerFiles();
   testNoTrackedInternalNotes();
   testResidencyGatesWired();
+  testDbInitScratchTmpDirOptsOut();
   testWikiStopGraceExceedsShutdownBudget();
   testOrchestratorRegistryReadsTenantScoped();
   testErrorCodesNamespacedKebab();

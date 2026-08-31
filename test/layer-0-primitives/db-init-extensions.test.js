@@ -72,6 +72,10 @@ async function testEncryptedDbNameOverride() {
   await b.db.init({
     dataDir:           tmpDir,
     tmpDir:            path.join(tmpDir, "tmpfs"),
+    // Scratch dir, not a real tmpfs mount — opted out explicitly, as
+    // test/helpers/db.js does. The residency check reads the mount table now,
+    // and a container's /tmp is overlay.
+    allowNonTmpfsTmpDir: true,
     encryptedDbName:   "custom.enc",
     frameworkTables:   false,
     auditSigning:      false,
@@ -94,6 +98,7 @@ async function testDbKeyPathOverride() {
   await b.db.init({
     dataDir:           dataDir,
     tmpDir:            path.join(dataDir, "tmpfs"),
+    allowNonTmpfsTmpDir: true,   // scratch dir, not a real tmpfs mount
     dbKeyPath:         customKeyPath,
     frameworkTables:   false,
     auditSigning:      false,
@@ -113,6 +118,7 @@ async function testSnapshot() {
   await b.db.init({
     dataDir:          tmpDir,
     tmpDir:           path.join(tmpDir, "tmpfs"),
+    allowNonTmpfsTmpDir: true,   // scratch dir, not a real tmpfs mount
     frameworkTables:  false,
     auditSigning:     false,
     schema:           [{ name: "ledger", columns: { _id: "TEXT PRIMARY KEY", balance: "INTEGER" } }],

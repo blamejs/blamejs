@@ -1197,6 +1197,49 @@ async function testDaneFailureFailsOverAndDefersRatherThanBouncing() {
         r2.deferred.length === 1 && r2.failed.length === 0,
         JSON.stringify({ df: r2.deferred.length, f: r2.failed.length }));
 
+  // A queue that gives up too early loses mail that would have been delivered.
+  // RFC 5321 §4.5.4.1: "the give-up time generally needs to be at least 4-5
+  // days". The default was 81 minutes, because maxAttempts defaulted to the
+  // RAMP'S LENGTH — and N attempts have only N-1 waits between them, so the
+  // last rung was never reached and the ramp's own longest wait was dead.
+  var policy = b.mail.send.deliver({ hostname: "mta1.example.com" }).retryPolicy();
+  check("deliver: every backoff rung is reachable",
+    policy.maxAttempts > policy.backoffMs.length,
+    "maxAttempts " + policy.maxAttempts + " vs " + policy.backoffMs.length + " rungs");
+  check("deliver: the default give-up time meets RFC 5321 §4.5.4.1 (4-5 days)",
+    policy.giveUpMs >= b.constants.TIME.days(4),
+    "gives up after " + Math.round(policy.giveUpMs / b.constants.TIME.hours(1)) + "h");
+
+  // A caller who supplies their own ramp must have the attempt count derived
+  // from THEIRS. It was derived from the default constant's length regardless,
+  // so a two-rung ramp still ran five attempts and repeated its last wait.
+  var shortRamp = b.mail.send.deliver({
+    hostname: "mta1.example.com",
+    retry: { backoffMs: [b.constants.TIME.minutes(1), b.constants.TIME.minutes(2)] },
+  }).retryPolicy();
+  check("deliver: a supplied ramp sets the attempt count",
+    shortRamp.maxAttempts === 3,
+    "maxAttempts " + shortRamp.maxAttempts + " for a 2-rung ramp");
+
+  // And an explicit maxAttempts still wins over both.
+  var explicit = b.mail.send.deliver({
+    hostname: "mta1.example.com", retry: { maxAttempts: 2 },
+  }).retryPolicy();
+  check("deliver: an explicit maxAttempts is honoured",
+    explicit.maxAttempts === 2, String(explicit.maxAttempts));
+
+  // Past the end of the ramp the schedule repeats its last rung, so the
+  // reported give-up time has to as well. Summing only the rungs the ramp
+  // holds understates it by every repeat — nine waits reported as two — which
+  // is the opposite of what an introspection surface is for.
+  var repeated = b.mail.send.deliver({
+    hostname: "mta1.example.com",
+    retry: { maxAttempts: 10, backoffMs: [b.constants.TIME.minutes(1), b.constants.TIME.minutes(2)] },
+  }).retryPolicy();
+  check("deliver: giveUpMs counts the repeated final rung",
+    repeated.giveUpMs === b.constants.TIME.minutes(1) + b.constants.TIME.minutes(2) * 8,
+    "reported " + repeated.giveUpMs + "ms for 9 waits on a 2-rung ramp");
+
   // The control. A genuine policy refusal that IS permanent must stay
   // permanent, or this would have turned every refusal into an endless retry.
   // Keyed on the code the policy layer actually raises, not on wording.

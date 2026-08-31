@@ -37,7 +37,11 @@ function dbKeyAad(tmp, keyPath) {
 async function reinitDbOnly(tmp) {
   helpers.setTestPassphraseEnv();
   b.db._resetForTest();
-  await b.db.init({ dataDir: tmp, tmpDir: path.join(tmp, "tmpfs"), schema: SCHEMA });
+  // Scratch dir, not a real tmpfs mount — opted out explicitly the way
+  // test/helpers/db.js does, since the residency check now reads the mount
+  // table and a container's /tmp is overlay.
+  await b.db.init({ dataDir: tmp, tmpDir: path.join(tmp, "tmpfs"),
+                    allowNonTmpfsTmpDir: true, schema: SCHEMA });
 }
 
 async function run() {

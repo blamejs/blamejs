@@ -454,6 +454,115 @@ async function testAuthenticateContinuationAcceptsALiteralResponse() {
 // RFC 5804 §2.1 also allows the initial response inline. The listener took the
 // literal form and silently discarded the quoted one, answering a conforming
 // client as though it had said nothing.
+// The sibling of the IMAP gap. This listener documents the same minimum body
+// rate and builds the same limiter, and never asked it either — so a PUTSCRIPT
+// literal trickled a byte at a time held a connection for as long as the peer
+// liked, the idle timeout being reset by every byte that arrived. Slower to
+// burn than the IMAP one because PUTSCRIPT requires authentication first, but
+// the same shape.
+//
+// A limiter whose floor is unreachable in a fast test is substituted, so this
+// does not spend the ten-second grace window to reach the branch. What is
+// pinned is that the listener ASKS.
+async function testPutscriptBelowTheByteRateFloorIsClosed() {
+  var asked = [];
+  var real = b.mail.server.rateLimit.create({});
+  var starving = {};
+  Object.keys(real).forEach(function (k) {
+    starving[k] = typeof real[k] === "function"
+      ? function () { return real[k].apply(real, arguments); }
+      : real[k];
+  });
+  starving.bodyRateStarved = function (bytes, elapsedMs) {
+    asked.push({ bytes: bytes, elapsedMs: elapsedMs });
+    return true;
+  };
+
+  var tls = await _makeTestTlsContext();
+  var srv = b.mail.server.managesieve.create({
+    tlsContext: tls.ctx, profile: "permissive", mailStore: _richStore(),
+    auth: { mechanisms: ["PLAIN"], verify: _verify },
+    rateLimit: starving,
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var sock = _connect(info.port);
+  // Read every byte directly rather than through the one-reply-per-command
+  // helper: the interesting sequence has a command that draws NO reply (a
+  // non-synchronizing opener) followed by an unsolicited refusal, which a
+  // reader expecting one answer per command cannot line up.
+  var said = "";
+  sock.on("data", function (c) { said += c.toString("utf8"); });
+  var closed = false;
+  sock.on("close", function () { closed = true; });
+  try {
+    await helpers.passiveObserve(200, "managesieve: greeting settles");                                 // allow:raw-time-literal — let the capability banner land
+    sock.write('AUTHENTICATE "PLAIN" "' + _b64(NUL + "alice" + NUL + "good") + '"\r\n');
+    await helpers.waitUntil(function () { return /OK "Authenticated"/.test(said); }, {
+      timeoutMs: 5000, label: "managesieve: [setup] the probe connection authenticates",                // allow:raw-time-literal — test-only cap
+    });
+
+    // Control on the setup: a COMPLETE PUTSCRIPT must succeed here, or an
+    // assertion about a partial one is measuring the wrong thing.
+    said = "";
+    sock.write('PUTSCRIPT "ok" {5+}\r\nkeep;\r\n');                                                     // allow:raw-byte-literal — 5-byte script
+    await helpers.waitUntil(function () { return /OK "PUTSCRIPT completed"/.test(said); }, {
+      timeoutMs: 5000, label: "managesieve: [setup] a complete PUTSCRIPT is accepted",                  // allow:raw-time-literal — test-only cap
+    });
+
+    // An opener whose payload never arrives, then one byte. What is pinned is
+    // that the listener ASKS the limiter about the rate — it never did, which
+    // is the whole defect — and that a starved verdict ends the connection
+    // rather than being noted and ignored.
+    said = "";
+    sock.write('PUTSCRIPT "slow" {64+}\r\n');                                                           // allow:raw-byte-literal — 64-byte literal, none sent
+    await helpers.passiveObserve(150, "managesieve: the literal window opens");                         // allow:raw-time-literal — let the opener be parsed
+    sock.write("k");
+    await helpers.waitUntil(function () { return asked.length >= 1; }, {
+      timeoutMs: 5000, label: "managesieve byte-rate floor: the limiter is asked",                      // allow:raw-time-literal — test-only cap
+    });
+    check("managesieve: the listener asks the limiter about a literal's rate",
+          asked.length >= 1, String(asked.length));
+    check("managesieve: the bytes reported include the chunk under judgement",
+          asked[0] && asked[0].bytes >= 1, JSON.stringify(asked[0]));
+    await helpers.waitUntil(function () { return closed; }, {
+      timeoutMs: 5000, label: "managesieve byte-rate floor: connection closed",                         // allow:raw-time-literal — test-only cap
+    });
+    check("managesieve: a literal below the rate floor closes the connection", closed);
+    check("managesieve: and says why before closing",
+          /below the minimum rate/.test(said), JSON.stringify(said.slice(0, 140)));
+
+    // The PRE-AUTHENTICATION transfer, which is the one that matters most and
+    // the one a guard watching only the script literal misses: an AUTHENTICATE
+    // initial response is tracked on pendingAuth, not pendingLiteral, so it
+    // could be trickled by a peer that has proved nothing.
+    asked.length = 0;
+    var sock2 = _connect(info.port);
+    var closed2 = false;
+    // A data listener, or the socket never flows and the close it is waiting
+    // for cannot arrive.
+    var said2 = "";
+    sock2.on("data", function (c) { said2 += c.toString("utf8"); });
+    sock2.on("close", function () { closed2 = true; });
+    try {
+      await helpers.passiveObserve(200, "managesieve: second greeting settles");                        // allow:raw-time-literal — let the banner land
+      sock2.write('AUTHENTICATE "PLAIN" {64+}\r\n');                                                    // allow:raw-byte-literal — 64-byte initial response, none sent
+      await helpers.passiveObserve(150, "managesieve: the auth literal window opens");                  // allow:raw-time-literal — let the opener be parsed
+      sock2.write("z");
+      await helpers.waitUntil(function () { return asked.length >= 1; }, {
+        timeoutMs: 5000, label: "managesieve: the auth literal is rate-checked too",                    // allow:raw-time-literal — test-only cap
+      });
+      check("managesieve: an unauthenticated AUTHENTICATE literal is rate-checked",
+            asked.length >= 1, String(asked.length));
+      await helpers.waitUntil(function () { return closed2; }, {
+        timeoutMs: 5000, label: "managesieve: the pre-auth trickle is closed",                          // allow:raw-time-literal — test-only cap
+      });
+      check("managesieve: and a peer that has proved nothing is disconnected", closed2);
+      check("managesieve: the pre-auth refusal says why too",
+            /below the minimum rate/.test(said2), JSON.stringify(said2.slice(0, 140)));
+    } finally { try { sock2.destroy(); } catch (_e) { /* already gone */ } }
+  } finally { try { sock.destroy(); } catch (_e) { /* already gone */ } await srv.close(); }
+}
+
 async function testPutscriptLiteralAnswersExactlyOnce() {
   var seen = [];
   var tls = await _makeTestTlsContext();
@@ -1159,6 +1268,7 @@ async function run() {
   await testAuthenticateContinuationAcceptsALiteralResponse();
   await testAuthenticateContinuationAcceptsASynchronizingLiteral();
   await testAuthenticateContinuationLiteralIsBounded();
+  await testPutscriptBelowTheByteRateFloorIsClosed();
   await testPutscriptLiteralAnswersExactlyOnce();
   await testPipelinedSaslResponsesAreRefusedNotRaced();
   await testAuthenticateMultiStepFailureStillCounts();

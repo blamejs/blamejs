@@ -2353,6 +2353,153 @@ async function testClientDisconnectReleasesTheConnectionSlot() {
 // RFC 9051 §6.4.9 is the form a client with a cross-session cache asks for,
 // because a sequence number is only meaningful within the session that issued
 // it. So the client doing the durable thing was the one being refused.
+// The literal window is a resource commitment: a continuation request invites
+// up to maxLiteralBytes and holds a connection slot until the payload arrives.
+// It was decided from the PARSED SHAPE alone, while the authorization that
+// would refuse the command — _requireAuth, the first line of _handleAppend —
+// runs only after the whole literal has been buffered, because handlers are
+// reached through _completeLiteralCommand. So an unauthenticated peer could
+// open the window on a verb the state table lists as AUTHENTICATED-only and
+// trickle bytes into it indefinitely.
+//
+// LOGIN and AUTHENTICATE are the two that legitimately carry a literal before
+// authentication — a password is exactly the value a quoted string cannot
+// always hold — so this is an allowlist rather than a blanket refusal.
+async function testPreAuthLiteralIsRefusedForAuthenticatedOnlyVerbs() {
+  var s = await _makeServer({});
+  var sock = await _connect(s.port);
+  try {
+    // APPEND is AUTHENTICATED-only. The window must not open.
+    //
+    // Waits on EITHER outcome, because the failing behaviour is a continuation
+    // request and the passing one is a tagged refusal — a reader that waited
+    // only for the tag would hang for the full test budget on the bug it is
+    // meant to report, which is a timeout rather than a finding.
+    var appended = await _cmdT(sock, "P1", "APPEND INBOX {1048576}", /(^\+ |^P1 )/m);                   // allow:raw-byte-literal — 1 MiB literal opener
+    check("imap: an unauthenticated APPEND literal gets no continuation request",
+      !/^\+ /m.test(appended), JSON.stringify(appended));
+    check("imap: it is refused with a tagged response instead",
+      /^P1 (NO|BAD)/m.test(appended), JSON.stringify(appended));
+
+    // A verb that is available pre-auth but takes no literal argument must not
+    // open a window either. Allowing the whole NOT-AUTHENTICATED set let
+    // `NOOP {67108864}` commit 64 MiB and a connection slot to a peer that had
+    // proved nothing — the state table says which commands are AVAILABLE, not
+    // which can carry a literal.
+    // The refusal may be tagged or untagged depending on where it is caught,
+    // so the read waits for any of the three outcomes rather than hanging on
+    // the one shape it expected.
+    var noopLit = await _cmdT(sock, "P5", "NOOP {67108864}", /(^\+ |^P5 |^\* BAD)/m);                   // allow:raw-byte-literal — 64 MiB literal opener
+    check("imap: a pre-auth verb that takes no literal cannot open one",
+      !/^\+ /m.test(noopLit), JSON.stringify(noopLit));
+
+    // And the session is still usable — this is a refusal, not a teardown.
+    var cap = await _cmd(sock, "P2", "CAPABILITY");
+    check("imap: the connection survives the refusal",
+      /^P2 OK/m.test(cap), JSON.stringify(cap));
+
+    // ID is available before login per the state table, and RFC 2971 makes its
+    // parameters strings a client may send as literals — so it has to be able
+    // to open one. Picking the pre-auth verbs by which "obviously" need a
+    // literal missed it and refused a documented command.
+    var idLit = await _cmdT(sock, "P4", "ID (\"name\" {4}", /(^\+ |^P4 )/m);
+    check("imap: ID may open a literal before authentication",
+      /^\+ /m.test(idLit), JSON.stringify(idLit));
+    // Finish the command so the connection is left usable for what follows.
+    var idDone = await _raw(sock, _tagTerm("P4"), "test)\r\n");
+    check("imap: and the ID command completes",
+      /^P4 (OK|BAD|NO)/m.test(idDone), JSON.stringify(idDone));
+
+    // The two that may carry one before authentication still can.
+    var loginLit = await _cmdT(sock, "P3", "LOGIN alice {4}", /\+ /);
+    check("imap: LOGIN may still open a literal before authentication",
+      /\+ /.test(loginLit), JSON.stringify(loginLit));
+    var done = await _raw(sock, _tagTerm("P3"), "good\r\n");
+    check("imap: and it completes", /^P3 OK/m.test(done), JSON.stringify(done));
+  } finally { sock.destroy(); await s.srv.close({ timeoutMs: 1000 }); }                                 // allow:raw-time-literal — test-only short drain
+}
+
+// The listener documents a minimum body rate and builds the limiter that
+// enforces one, and never asked it. The only bound on a literal transfer was
+// the idle timeout, which every arriving byte resets — so a peer trickling one
+// byte at a time held a connection slot for as long as it cared to, which is
+// what the floor exists to stop. MX and submission were given this; IMAP and
+// ManageSieve were left out of that sweep.
+async function testLiteralBelowTheByteRateFloorIsClosed() {
+  // A limiter whose floor is unreachable in a fast test is substituted, the
+  // same way the MX test does it, so this does not have to spend the
+  // ten-second grace window to reach the branch. What is pinned here is that
+  // the listener ASKS; the number itself is pinned in the limiter's own tests.
+  var asked = [];
+  var real = b.mail.server.rateLimit.create({});
+  var starving = {};
+  Object.keys(real).forEach(function (k) {
+    starving[k] = typeof real[k] === "function"
+      ? function () { return real[k].apply(real, arguments); }
+      : real[k];
+  });
+  starving.bodyRateStarved = function (bytes, elapsedMs) {
+    asked.push({ bytes: bytes, elapsedMs: elapsedMs });
+    return true;
+  };
+
+  var s = await _makeServer({ rateLimit: starving });
+  var sock = await _authConn(s);
+  try {
+    var closed = false;
+    sock.on("close", function () { closed = true; });
+    var opened = await _cmdT(sock, "R1", "APPEND INBOX {200000}", /\+ /);                               // allow:raw-byte-literal — 200 KB literal opener
+    check("imap: the literal opens for an authenticated peer",
+      /\+ /.test(opened), JSON.stringify(opened));
+
+    sock.write("x");
+    await helpers.waitUntil(function () { return closed; }, {
+      timeoutMs: 5000, label: "imap byte-rate floor: connection closed",                                // allow:raw-time-literal — test-only cap
+    });
+    check("imap: a literal below the rate floor closes the connection", closed);
+    check("imap: and the listener actually asked the limiter",
+      asked.length >= 1, String(asked.length));
+    // The bytes reported must include the chunk being judged, or a one-chunk
+    // payload is measured as though nothing had arrived.
+    check("imap: the bytes reported include the chunk under judgement",
+      asked.length >= 1 && asked[0].bytes >= 1, JSON.stringify(asked[0]));
+  } finally { sock.destroy(); await s.srv.close({ timeoutMs: 1000 }); }                                 // allow:raw-time-literal — test-only short drain
+}
+
+// The case the data-driven check structurally cannot see: a peer opens a
+// literal and then sends NOTHING. No data event ever arrives, so the floor is
+// never asked, and the connection was held until an idle timeout that a peer
+// sending nothing was never going to trip either. The deadline is what closes
+// it, so this exercises the timer rather than the chunk path.
+async function testLiteralWithNoPayloadAtAllIsClosed() {
+  var real = b.mail.server.rateLimit.create({});
+  var starving = {};
+  Object.keys(real).forEach(function (k) {
+    starving[k] = typeof real[k] === "function"
+      ? function () { return real[k].apply(real, arguments); }
+      : real[k];
+  });
+  starving.bodyRateStarved = function () { return true; };
+  // A short window so the deadline fires inside the test's budget; the number
+  // is the limiter's to choose, which is exactly why the listener reads it
+  // from the limiter rather than holding one of its own.
+  starving.bodyRateWindowMs = function () { return 50; };                                               // allow:raw-time-literal — test-only window
+
+  var s = await _makeServer({ rateLimit: starving });
+  var sock = await _authConn(s);
+  try {
+    var closed = false;
+    sock.on("close", function () { closed = true; });
+    var opened = await _cmdT(sock, "Z1", "APPEND INBOX {200000}", /\+ /);                               // allow:raw-byte-literal — 200 KB literal opener
+    check("imap: [setup] the literal opens", /\+ /.test(opened), JSON.stringify(opened));
+    // Not one byte follows.
+    await helpers.waitUntil(function () { return closed; }, {
+      timeoutMs: 5000, label: "imap: a literal with no payload at all is closed",                       // allow:raw-time-literal — test-only cap
+    });
+    check("imap: a literal opened and never fed is closed by the deadline", closed);
+  } finally { sock.destroy(); await s.srv.close({ timeoutMs: 1000 }); }                                 // allow:raw-time-literal — test-only short drain
+}
+
 async function testUidRoutesThroughTheRegistrySeam() {
   var seen = [];
   var s = await _makeServer({
@@ -2533,6 +2680,9 @@ async function run() {
     await wtt("connection rate-limit",  testConnectionRateLimit);
     await wtt("client disconnect frees", testClientDisconnectReleasesTheConnectionSlot);
     await wtt("uid routes via registry",  testUidRoutesThroughTheRegistrySeam);
+    await wtt("pre-auth literal refused",  testPreAuthLiteralIsRefusedForAuthenticatedOnlyVerbs);
+    await wtt("literal byte-rate floor",   testLiteralBelowTheByteRateFloorIsClosed);
+    await wtt("literal with no payload",   testLiteralWithNoPayloadAtAllIsClosed);
     await wtt("uid expunge via override", testUidExpungeReachesAConsumerSuppliedHandler);
     await wtt("line too long",          testLineTooLong);
     await wtt("literal smuggling",      testLiteralSmuggling);

@@ -10,6 +10,10 @@ var sqlite = require("node:sqlite");
 var helpers = require("../helpers");
 var check = helpers.check;
 var cli = require("../../lib/cli");
+// The manifest is written canonically, so a tamper fixture has to rewrite it
+// the same way — otherwise the test would be measuring the formatting change
+// rather than the value it altered.
+var canonicalJson = require("../../lib/canonical-json");
 var b = require("../../index.js");
 
 function _tmpDir(prefix) {
@@ -291,6 +295,34 @@ async function runArchiveResolution() {
   var ctxBack = _captureCtx();
   check("verify-chain: and resolves again once both are back",
         (await cli.main(baseArgs, ctxBack)) === 0, ctxBack.err());
+
+  // Neither payload touched, and both signed digests still match — only the
+  // salt the decryption key is derived from is changed. Every byte the resolver
+  // compared before still compared equal, so the archive reported as producible
+  // while the key derived from that salt opened nothing: an anchor licensing
+  // rows away on the strength of an archive that cannot be read. The manifest
+  // is bound into the signature now, so the edit is caught.
+  var saltManifestPath = path.join(bundleOut, "manifest.json");
+  var saltManifestBytes = fs.readFileSync(saltManifestPath);
+  var tampered = JSON.parse(saltManifestBytes.toString("utf8"));
+  check("verify-chain: [setup] the manifest carries a rows salt to alter",
+        tampered.salts && typeof tampered.salts.rows === "string",
+        JSON.stringify(tampered.salts));
+  // A different salt of the same shape — the manifest stays well-formed, and
+  // every checksum it states about the payloads stays true.
+  tampered.salts.rows = tampered.salts.rows.slice(0, -2) +
+    (tampered.salts.rows.slice(-2) === "00" ? "11" : "00");
+  fs.writeFileSync(saltManifestPath, Buffer.from(canonicalJson.stringify(tampered), "utf8"));
+  var ctxSalt = _captureCtx();
+  var cSalt = await cli.main(baseArgs, ctxSalt);
+  check("verify-chain: an altered manifest salt is not a resolvable archive",
+        cSalt === 1 && /could not be produced/.test(ctxSalt.err()),
+        "exit=" + cSalt + " err=" + ctxSalt.err());
+
+  fs.writeFileSync(saltManifestPath, saltManifestBytes);
+  var ctxSaltBack = _captureCtx();
+  check("verify-chain: and resolves again once the manifest is restored",
+        (await cli.main(baseArgs, ctxSaltBack)) === 0, ctxSaltBack.err());
 
   // A fingerprint is the hash of the PEM TEXT, so one key can answer to two of
   // them. A key an operator supplied to rotateSigningKey before that call

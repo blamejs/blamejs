@@ -285,6 +285,46 @@ async function testExpungeRetentionFloor() {
   } finally { _teardown(fx); }
 }
 
+// An arrival time the store cannot supply used to read as 0 — the epoch —
+// which makes a message look 56 years old and clears every retention floor
+// there is. So the one input the check could not verify was the one that
+// always passed it, and the failure fell toward permitting destruction on
+// exactly the volumes a floor is configured to protect.
+async function testExpungeRefusesAnUnknownArrivalTime() {
+  var fx = await _setup("expungeunknown");
+  try {
+    var agent = b.mail.agent.create({ store: fx.store, posture: "hipaa" });
+    var actor = { id: "u1", purposeOfUse: "treatment" };
+    var meta = fx.store.appendMessage("INBOX", _msg([
+      "From: a@x", "To: b@y", "Subject: no-arrival-time", "Message-Id: <n@x>",
+      "Date: Wed, 14 May 2026 12:00:00 +0000",
+    ], "x"));
+    fx.store.moveMessages("INBOX", "Trash", [meta.objectid]);
+
+    // Strip both arrival timestamps from what the expunge path reads, which is
+    // the state a store that does not record one produces.
+    var realFetch = fx.store.fetchByObjectId;
+    fx.store.fetchByObjectId = function (folder, oid) {
+      var row = realFetch.call(fx.store, folder, oid);
+      if (row) { delete row.receivedAt; delete row.internalDate; }
+      return row;
+    };
+    try {
+      var rv = await agent.expunge({
+        actor: actor, folder: "Trash", objectIds: [meta.objectid],
+      });
+      check("expunge: a message with no establishable arrival time is refused",
+        rv.deleted.length === 0 && rv.refused.length === 1,
+        JSON.stringify(rv.refused));
+      check("expunge: and the refusal says the arrival time was the problem",
+        rv.refused[0] && rv.refused[0].reason === "retention-floor-unknown-arrival",
+        JSON.stringify(rv.refused[0]));
+      check("expunge: the message is still there",
+        realFetch.call(fx.store, "Trash", meta.objectid) !== null);
+    } finally { fx.store.fetchByObjectId = realFetch; }
+  } finally { _teardown(fx); }
+}
+
 async function testNotImplemented() {
   var fx = await _setup("notimpl");
   try {
@@ -901,6 +941,7 @@ async function run() {
   await testExpungeRefusesAPostureItCannotResolve();
   await testExpungeHardDelete();
   await testExpungeRetentionFloor();
+  await testExpungeRefusesAnUnknownArrivalTime();
   await testNotImplemented();
   await testPosture();
   await testPermissions();

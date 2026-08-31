@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.18.58",
-  "createdAt": "2026-08-30T17:10:18.987Z",
+  "createdAt": "2026-08-31T02:39:00.184Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -17755,6 +17755,10 @@
               "valueType": "string"
             },
             "archiveCheckpointDigest": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "archiveManifestDigest": {
               "type": "primitive",
               "valueType": "string"
             },

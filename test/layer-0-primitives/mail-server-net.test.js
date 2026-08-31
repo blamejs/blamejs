@@ -170,13 +170,21 @@ async function testAnOrdinaryExchangeStillCompletes() {
 async function testListenerCeilingRefusesBeyondMaxConnections() {
   var nodeNet = require("node:net");
   var accepted = [];
+  var emits = [];
   var listener = mailServerNet.createTcpListener(nodeNet, {
     defaultPort:      0,
     maxConnections:   2,
     handleConnection: function (sock) { accepted.push(sock); sock.write("* OK ready\r\n"); },
     errorFactory:     function (code, message) { return new Error(code + ": " + message); },
-    emit:             function () {},
+    // Recorded rather than discarded: a refusal at the ceiling emitted
+    // nothing at all, so an emitter that throws its argument away could not
+    // tell a listener turning senders away from an idle one — which is
+    // precisely the condition an operator needs to see.
+    emit:             function (action, meta, outcome) {
+      emits.push({ action: action, meta: meta, outcome: outcome });
+    },
     listeningEvent:   "test.listening",
+    ceilingRefusedEvent: "test.max_connections_refused",
   });
   var info = await listener.listen({ port: 0, address: "127.0.0.1" });
 
@@ -203,6 +211,24 @@ async function testListenerCeilingRefusesBeyondMaxConnections() {
       (await dial()) === "closed");
     check("net: the refused connection never reached the handler",
       accepted.length === 2, String(accepted.length));
+
+    // And it is visible. Nothing downstream of the drop runs by design, so
+    // this is the only place a listener at capacity can be observed at all —
+    // without it, an operator's first evidence is a peer complaining.
+    await helpers.waitUntil(function () {
+      return emits.some(function (e) { return /max_connections_refused/.test(e.action); });
+    }, { timeoutMs: 5000, label: "net: the ceiling refusal is emitted" });                              // allow:raw-time-literal — test-only cap
+    var refusal = emits.filter(function (e) {
+      return /max_connections_refused/.test(e.action);
+    })[0];
+    check("net: a connection dropped at the ceiling is audited",
+      !!refusal, JSON.stringify(emits.map(function (e) { return e.action; })));
+    check("net: the refusal is recorded as a denial, not an informational note",
+      refusal && refusal.outcome === "denied", refusal && refusal.outcome);
+    check("net: and it carries the ceiling it hit, so the number is actionable",
+      refusal && refusal.meta && refusal.meta.maxConnections === 2 &&
+      refusal.meta.reason === "listener-at-capacity",
+      JSON.stringify(refusal && refusal.meta));
   } finally {
     clients.forEach(function (c) { c.destroy(); });
     await listener.closeSimple({

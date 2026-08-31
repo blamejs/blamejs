@@ -30,6 +30,10 @@ async function _initDbWithResidency(tmpDir, region, allowedStorageRegions) {
   await b.db.init({
     dataDir:       tmpDir,
     tmpDir:        path.join(tmpDir, "tmpfs"),
+    // Scratch dir, not a real tmpfs mount — opted out explicitly, as
+    // test/helpers/db.js does. The residency check reads the mount table now,
+    // and a container's /tmp is overlay.
+    allowNonTmpfsTmpDir: true,
     schema:        [{ name: "users", columns: { _id: "TEXT PRIMARY KEY" } }],
     dataResidency: { region: region, allowedStorageRegions: allowedStorageRegions || [] },
   });

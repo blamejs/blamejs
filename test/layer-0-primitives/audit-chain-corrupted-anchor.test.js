@@ -529,6 +529,41 @@ async function testAnchorMustProveItWasWrittenWithTheSigningKey() {
       preCkptRead.result.purgeAnchor.signatureVerified === true,
       JSON.stringify(preCkptRead.result.purgeAnchor));
 
+    // The newest rung. An anchor written before the manifest digest existed
+    // signed the shorter bytes, and the additive migration fills its new
+    // column with a default — so rebuilding the current layout produces
+    // different bytes and would report a healthy volume as forged, with the
+    // repair sitting behind the refusal that raises. This release has twice
+    // shipped a refusal with no reachable recovery; this is the rung that
+    // keeps it from being a third time.
+    var preManifest = Object.assign({}, signedAnchor,
+      { firstPurgedCounter: 6, archiveRowsDigest: "f".repeat(128),
+        archiveCheckpointDigest: "a".repeat(128), archiveManifestDigest: "" });
+    preManifest.signature = b.auditSign.sign(
+      b.auditChain.purgeAnchorPayload(preManifest, { layout: "no-manifest-digest" }));
+    var preManifestResult = await _verifyWith(preManifest, undefined);
+    check("an anchor written before the manifest digest still verifies",
+      preManifestResult.result && preManifestResult.result.ok === true,
+      JSON.stringify(preManifestResult.result));
+    check("and is reported as signature-verified, not merely tolerated",
+      preManifestResult.result.purgeAnchor &&
+      preManifestResult.result.purgeAnchor.signatureVerified === true,
+      JSON.stringify(preManifestResult.result.purgeAnchor));
+
+    // And the rung is gated the same way as its siblings: an anchor that
+    // RECORDS a manifest digest gets no layout that omits one, so stripping
+    // the field cannot be laundered into a valid signature.
+    var strippedManifest = Object.assign({}, signedAnchor,
+      { firstPurgedCounter: 6, archiveRowsDigest: "f".repeat(128),
+        archiveCheckpointDigest: "a".repeat(128),
+        archiveManifestDigest: "c".repeat(128) });
+    strippedManifest.signature = b.auditSign.sign(
+      b.auditChain.purgeAnchorPayload(strippedManifest, { layout: "no-manifest-digest" }));
+    var strippedResult = await _verifyWith(strippedManifest, undefined);
+    check("but an anchor recording a manifest digest gets no digest-less retry",
+      strippedResult.result && strippedResult.result.ok === false,
+      JSON.stringify(strippedResult.result));
+
     // Two rungs down, and it must stop there rather than continuing: a table
     // with the range column but neither digest column. The rung above is the
     // one the digest-carrying volumes need, and walking past this one would

@@ -97,6 +97,149 @@ async function run() {
     await _drive(mw, mwReq);
     check("attachUser(requireFingerprintMatch) does NOT attach an unbound session",
           mwReq.user === null && mwReq.session === null);
+
+    // --- The basis the binding is computed FROM has to travel too.
+    //
+    // attachUser enumerates its accepted option names and refuses the rest, so
+    // fingerprintFields could not be passed at all — the only reachable policy
+    // through this middleware was the default set, which includes the full
+    // client address. An operator who deliberately bound on the user-agent
+    // alone (a mobile client roams between addresses within one session) got
+    // strict enforcement against a basis they had opted out of, and their
+    // users were signed out on every network change.
+    var narrow = { fingerprintFields: ["userAgent"] };
+    var roamA = _makeReq({ "x-forwarded-for": "203.0.113.10", "user-agent": "roamer" });
+    var roamSession = await b.session.create({ userId: "u-roam", req: roamA,
+                                               fingerprintFields: narrow.fingerprintFields });
+    var mwNarrow = attachUser.create({
+      userLoader:              async function (sess) { return { id: sess.userId }; },
+      tokenFrom:               "header",
+      requireFingerprintMatch: true,
+      fingerprintFields:       narrow.fingerprintFields,
+      audit:                   false,
+    });
+    // Same device, different address — which the chosen basis does not read.
+    var roamB = _makeReq({ "x-forwarded-for": "198.51.100.77", "user-agent": "roamer",
+                           authorization: "Bearer " + roamSession.token });
+    await _drive(mwNarrow, roamB);
+    check("attachUser forwards fingerprintFields, so a roaming client stays signed in",
+          roamB.user !== null && roamB.session !== null,
+          JSON.stringify({ user: roamB.user, session: !!roamB.session }));
+
+    // The control: the SAME session under the default basis is refused, so the
+    // assertion above is about the forwarded fields and not about the binding
+    // being inert.
+    var mwDefault = attachUser.create({
+      userLoader:              async function (sess) { return { id: sess.userId }; },
+      tokenFrom:               "header",
+      requireFingerprintMatch: true,
+      audit:                   false,
+    });
+    var roamC = _makeReq({ "x-forwarded-for": "198.51.100.77", "user-agent": "roamer",
+                           authorization: "Bearer " + roamSession.token });
+    await _drive(mwDefault, roamC);
+    check("CONTROL — without the forwarded fields the same request is refused",
+          roamC.user === null && roamC.session === null,
+          JSON.stringify({ user: roamC.user }));
+
+    // A device binding kept on the session survives an ordinary payload write.
+    //
+    // updateData REPLACES by default and carries only reserved keys across, so
+    // a binding stored in an ordinary field was destroyed by the next cart
+    // write or preference flip the application made — after which every strict
+    // verification answered missing-bind, and nothing reported why. A reserved
+    // key is how framework state lives inside an operator-owned payload.
+    //
+    // Seeded through the framework's own writer, because the payload path
+    // cannot write the reserved key at all — that is the point of reserving it.
+    // A session whose binding an ordinary updateData could set is one whose
+    // binding an ordinary updateData could also forge.
+    var bindSess = await b.session.create({ userId: "u-binding", data: { cart: ["x"] } });
+    await b.session._setDeviceBinding(bindSess.token,
+      { fingerprint: "abcd", boundAt: 1 });
+    await b.session.updateData(bindSess.token, { cart: ["y", "z"] });   // an ordinary REPLACE
+    var afterWrite = await b.session.verify(bindSess.token);
+    check("session: an ordinary data replace preserves the device binding",
+          afterWrite && afterWrite.data && afterWrite.data.__bj_deviceBinding &&
+          afterWrite.data.__bj_deviceBinding.fingerprint === "abcd",
+          JSON.stringify(afterWrite && afterWrite.data));
+    check("session: and the application's own write still lands",
+          afterWrite.data.cart && afterWrite.data.cart[0] === "y",
+          JSON.stringify(afterWrite.data.cart));
+    // Rotation is the other payload writer, and it has its own preservation
+    // logic — fixing updateData alone left the binding dropped by any rotation
+    // that supplies replacement data. Login IS a rotation, so that is exactly
+    // when a bound session would have lost its binding.
+    var rotated = await b.session.rotate(bindSess.token, { data: { cart: ["rotated"] } });
+    check("[setup] the session rotates", rotated !== null);
+    var afterRotate = await b.session.verify(rotated.token);
+    check("session: a rotation with replacement data preserves the device binding",
+          afterRotate && afterRotate.data && afterRotate.data.__bj_deviceBinding &&
+          afterRotate.data.__bj_deviceBinding.fingerprint === "abcd",
+          JSON.stringify(afterRotate && afterRotate.data));
+    check("session: and the rotation's own data still lands",
+          afterRotate.data.cart && afterRotate.data.cart[0] === "rotated",
+          JSON.stringify(afterRotate.data.cart));
+    bindSess = rotated;
+
+    // Clearing the payload is a supported operation and clears the OPERATOR's
+    // data, not the framework state beside it. Both restores were guarded on
+    // the new payload being an object, so `updateData(token, null)` dropped the
+    // device binding and the sid-keyed fingerprint alike — and every later
+    // strict check answered missing-bind for a session the caller had only
+    // meant to empty.
+    var cleared = await b.session.updateData(bindSess.token, null);
+    check("[setup] the payload clears", cleared === true, String(cleared));
+    var afterNull = await b.session.verify(bindSess.token);
+    check("session: clearing the payload keeps the device binding",
+          afterNull && afterNull.data && afterNull.data.__bj_deviceBinding &&
+          afterNull.data.__bj_deviceBinding.fingerprint === "abcd",
+          JSON.stringify(afterNull && afterNull.data));
+    check("session: and the operator's own data is gone, which is what was asked",
+          afterNull.data.cart === undefined, JSON.stringify(afterNull.data));
+
+    // The framework's writer still owns it, or the binding could never be
+    // removed. Through _setDeviceBinding, not the payload path: an application
+    // that could clear its own binding could defeat strict verification by
+    // writing a cart.
+    await b.session._setDeviceBinding(bindSess.token, null);
+    var afterClear = await b.session.verify(bindSess.token);
+    check("session: the framework's own writer still owns the reserved key",
+          afterClear && afterClear.data && afterClear.data.__bj_deviceBinding === null,
+          JSON.stringify(afterClear && afterClear.data));
+
+    // And the payload path cannot, in either direction — the control for the
+    // seeding above, so it is not just a different spelling of the same call.
+    await b.session._setDeviceBinding(bindSess.token, { fingerprint: "abcd", boundAt: 1 });
+    await b.session.updateData(bindSess.token, { __bj_deviceBinding: null }, { merge: true });
+    var afterPayloadNull = await b.session.verify(bindSess.token);
+    check("session: a payload write cannot clear the reserved key",
+          afterPayloadNull && afterPayloadNull.data &&
+          afterPayloadNull.data.__bj_deviceBinding &&
+          afterPayloadNull.data.__bj_deviceBinding.fingerprint === "abcd",
+          JSON.stringify(afterPayloadNull && afterPayloadNull.data));
+    await b.session.updateData(bindSess.token,
+      { __bj_deviceBinding: { fingerprint: "forged", boundAt: 2 } }, { merge: true });
+    var afterPayloadForge = await b.session.verify(bindSess.token);
+    check("session: nor set it to a value of the caller's choosing",
+          afterPayloadForge.data.__bj_deviceBinding.fingerprint === "abcd",
+          JSON.stringify(afterPayloadForge.data.__bj_deviceBinding));
+
+    // A typo in any of the three has to be refused where it is configured. A
+    // mistyped fingerprintFields silently became null and fell back to the
+    // DEFAULT basis — reinstating exactly the policy the operator was
+    // configuring their way out of — and a mistyped clientIpResolver made
+    // verify throw on every request, which this middleware catches and reports
+    // as "no user", so nobody could sign in and nothing said why.
+    [["fingerprintFields", "clientIp"], ["trustedProxies", "10.0.0.0/8"],
+     ["clientIpResolver", "not-a-function"]].forEach(function (pair) {
+      var o = { userLoader: async function () { return { id: "u" }; }, audit: false };
+      o[pair[0]] = pair[1];
+      var threw = null;
+      try { attachUser.create(o); } catch (e) { threw = e; }
+      check("attachUser refuses a malformed " + pair[0] + " at create",
+            threw !== null, "accepted " + JSON.stringify(pair[1]));
+    });
   } finally {
     await teardownTestDb(tmpDir);
   }

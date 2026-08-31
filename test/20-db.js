@@ -172,6 +172,12 @@ async function testDbPersistence() {
     await b.db.init({
       dataDir: tmpDir,
       tmpDir:  path.join(tmpDir, "tmpfs"),
+      // A scratch directory, not a real tmpfs mount, opted out explicitly the
+      // way test/helpers/db.js does. setupTestDb passes this for the FIRST
+      // init; a re-init written out by hand has to pass it too, and the
+      // residency check reads the mount table now — a container's /tmp is
+      // overlay, so this refuses there while the host cannot classify it.
+      allowNonTmpfsTmpDir: true,
       schema: [
         {
           name: "users",
@@ -212,6 +218,9 @@ async function testDbSchemaEvolution() {
     await b.db.init({
       dataDir: tmpDir,
       tmpDir:  path.join(tmpDir, "tmpfs"),
+      // Scratch directory, not a real tmpfs mount — same opt-out setupTestDb
+      // passes on the first init, which a hand-written re-init has to repeat.
+      allowNonTmpfsTmpDir: true,
       schema: [
         {
           name: "users",

@@ -195,8 +195,45 @@ function testNoDefaultPathOffLinux() {
         captured.length ? String(captured[0].metadata.reason).slice(0, 120) : "no event");
 }
 
+// The kernel escapes space, tab, newline and backslash in mountinfo's path
+// fields as octal (Documentation/filesystems/proc.rst). Left encoded, a mount
+// point never equals what realpath() returns for the same directory — so
+// bestMatch skips it and answers with the parent filesystem instead. Every
+// caller then gets a confident wrong answer: b.db reads the encrypted working
+// copy's residency as disk-backed and refuses to boot on a perfectly good
+// tmpfs, and b.watcher's bind-mount detection misses the mount entirely.
+function testMountPointEscapesAreDecoded() {
+  var text = [
+    "20 1 0:20 / / rw,relatime - ext4 /dev/sda1 rw",
+    "21 20 0:21 / /mnt/secure\\040tmpfs rw,relatime - tmpfs tmpfs rw",
+    "22 20 0:22 / /mnt/tab\\011here rw,relatime - tmpfs tmpfs rw",
+    "23 20 0:23 / /mnt/back\\134slash rw,relatime - tmpfs tmpfs rw",
+  ].join("\n");
+  var entries = b.safeMountInfo.parse(text);
+
+  var spaced = entries.filter(function (e) { return /secure/.test(e.mountPoint); })[0];
+  check("safeMountInfo: a space in a mount point is decoded",
+    spaced && spaced.mountPoint === "/mnt/secure tmpfs",
+    spaced && JSON.stringify(spaced.mountPoint));
+  var tabbed = entries.filter(function (e) { return /tab/.test(e.mountPoint); })[0];
+  check("safeMountInfo: a tab is decoded",
+    tabbed && tabbed.mountPoint === "/mnt/tab\there",
+    tabbed && JSON.stringify(tabbed.mountPoint));
+  var slashed = entries.filter(function (e) { return /back/.test(e.mountPoint); })[0];
+  check("safeMountInfo: a backslash is decoded",
+    slashed && slashed.mountPoint === "/mnt/back\\slash",
+    slashed && JSON.stringify(slashed.mountPoint));
+
+  // The consequence the decoding exists for: a real path matches its own
+  // mount rather than falling through to the filesystem beneath it.
+  var m = b.safeMountInfo.bestMatch(entries, "/mnt/secure tmpfs/work");
+  check("safeMountInfo: a path under an escaped mount point matches that mount",
+    m && m.fstype === "tmpfs", JSON.stringify(m && { mp: m.mountPoint, fs: m.fstype }));
+}
+
 async function run() {
   testSurface();
+  testMountPointEscapesAreDecoded();
   testNoDefaultPathOffLinux();
   testParseFixture();
   testIsBindMount();

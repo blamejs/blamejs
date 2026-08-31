@@ -80,6 +80,170 @@ async function testUnreachableMessageNamesAReadableSetting() {
     named[0] + " is not read anywhere in lib/db.js");
 }
 
+// A plain SNTP reply is unauthenticated by construction, and this reading
+// decides whether the process refuses to boot — so a spoofer on the path can
+// force a refusal, or mask real drift, and the check cannot tell. The framework
+// ships an RFC 8915 client for exactly this, and BLAMEJS_NTS_SERVERS was
+// declared in the shipped compose files while nothing anywhere read it: an
+// operator who set it got the unauthenticated check they were trying to
+// replace, with no signal that the setting had done nothing.
+async function testCheckDriftPrefersAuthenticatedTime() {
+  // Nothing answers on port 1, so the NTS attempt fails and the fallback runs.
+  // What is pinned is the ORDER and the reporting, not a live NTS server.
+  var fellBack = await b.ntpCheck.checkDrift({
+    ntsServers: ["127.0.0.1"], servers: ["127.0.0.1"], port: 1, timeoutMs: 250,                        // allow:raw-time-literal — test-only short probe
+  });
+  check("checkDrift: an unreachable NTS server falls back rather than failing closed",
+    fellBack && fellBack.driftMs === null, JSON.stringify(fellBack));
+  check("checkDrift: and says the answer was not authenticated",
+    fellBack.authenticated === false, JSON.stringify(fellBack.authenticated));
+
+  // requireNts turns a failed authenticated query into the answer, rather than
+  // a reason to ask an unauthenticated one. An operator who asks for the
+  // guarantee gets the guarantee or nothing.
+  var required = await b.ntpCheck.checkDrift({
+    ntsServers: ["127.0.0.1"], servers: ["127.0.0.1"], port: 1, timeoutMs: 250,                        // allow:raw-time-literal — test-only short probe
+    requireNts: true,
+  });
+  check("checkDrift: requireNts does not fall back to unauthenticated time",
+    required && required.driftMs === null && required.authenticated === false,
+    JSON.stringify(required));
+
+  // And the boot path reads the knob the compose files advertise, which is what
+  // was missing: the variable existed, was documented, and reached no code.
+  var dbSrc = require("node:fs").readFileSync(
+    require("node:path").join(__dirname, "..", "..", "lib", "db.js"), "utf8");
+  check("checkDrift: the boot path reads BLAMEJS_NTS_SERVERS",
+    dbSrc.indexOf('readVar("BLAMEJS_NTS_SERVERS"') !== -1);
+  check("checkDrift: and BLAMEJS_NTS_REQUIRE",
+    dbSrc.indexOf('readVar("BLAMEJS_NTS_REQUIRE"') !== -1);
+
+  // Requiring authenticated time has to REFUSE the boot, not merely decline to
+  // fall back. Disabling the fallback alone left bootCheck reporting an
+  // unreachable warning with ok:true, so a deployment that asked for the
+  // guarantee booted anyway unless a second, unrelated variable happened to be
+  // set — the same shape as a setting that names itself fail-closed and is not.
+  //
+  // That refusal is asserted where it can actually be observed, by starting the
+  // framework: test/layer-0-primitives/db-nts-required-boot.test.js. Matching
+  // the source text here would only pin a spelling.
+
+  // An NTS-KE endpoint does not run on a port anyone should have to guess, so
+  // a server list that could only name a host would push every non-default
+  // deployment into writing its own call site. A naive split on ":" is wrong
+  // for the IPv6 form, which is full of them.
+  var parse = b.ntpCheck._parseEndpointForTest;
+  check("checkDrift: a bare host takes the default port",
+    parse("time.example").host === "time.example" &&
+    parse("time.example").port === undefined, JSON.stringify(parse("time.example")));
+  check("checkDrift: host:port splits",
+    parse("nts.example:4460").host === "nts.example" &&
+    parse("nts.example:4460").port === 4460, JSON.stringify(parse("nts.example:4460")));
+  check("checkDrift: a bracketed IPv6 literal with a port splits at the bracket",
+    parse("[2001:db8::1]:4460").host === "2001:db8::1" &&
+    parse("[2001:db8::1]:4460").port === 4460, JSON.stringify(parse("[2001:db8::1]:4460")));
+  check("checkDrift: a bare IPv6 literal is not mistaken for host:port",
+    parse("2001:db8::1").host === "2001:db8::1" &&
+    parse("2001:db8::1").port === undefined, JSON.stringify(parse("2001:db8::1")));
+  // An explicit port that cannot be used is a typo, not an omission. Reading it
+  // as absent fell back to the NTS-KE default, so `:70000` quietly contacted a
+  // different endpoint than the one configured and nothing reported it.
+  var BAD_ENDPOINTS = [
+    ["a port above the IANA range", "time.example:70000"],
+    ["a non-numeric port",          "time.example:abc"],
+    ["an empty port",               "time.example:"],
+    ["an unclosed bracket",         "[2001:db8::1"],
+    ["trailing text after ]",       "[2001:db8::1]junk"],
+    ["a bracketed bad port",        "[2001:db8::1]:70000"],
+    // An empty host is a configuration error, not an unreachable server: read
+    // as a host it produced a failed query, which fell back to unauthenticated
+    // SNTP and pointed the operator at the network instead of the setting.
+    ["an empty entry",              ""],
+    ["a whitespace-only entry",     "   "],
+    ["a null entry",                null],
+    ["empty brackets",              "[]"],
+    ["empty brackets with a port",  "[]:4460"],
+    ["a missing host before :port", ":4460"],
+  ];
+  BAD_ENDPOINTS.forEach(function (c) {
+    var err = null;
+    try { parse(c[1]); } catch (e) { err = e; }
+    check("checkDrift: " + c[0] + " is refused rather than silently defaulted",
+      err !== null && err.code === "ntp/bad-nts-endpoint",
+      c[1] + " → " + String(err && (err.code || err.message)));
+  });
+  // The control: a bracketed address with no port at all is still valid.
+  check("checkDrift: a bracketed IPv6 literal with no port takes the default",
+    parse("[2001:db8::1]").host === "2001:db8::1" &&
+    parse("[2001:db8::1]").port === undefined,
+    JSON.stringify(parse("[2001:db8::1]")));
+
+  // And the refusal reaches the caller through the real entry point, not only
+  // the parser: checkDrift is what an operator's configuration flows into.
+  var listErr = null;
+  try {
+    await b.ntpCheck.checkDrift({ ntsServers: ["time.example:70000"], servers: ["127.0.0.1"],
+      port: 1, timeoutMs: 250 });                                                                      // allow:raw-time-literal — test-only short probe
+  } catch (e) { listErr = e; }
+  check("checkDrift: a malformed entry in the server list surfaces, not swallowed",
+    listErr !== null && listErr.code === "ntp/bad-nts-endpoint",
+    String(listErr && (listErr.code || listErr.message)));
+}
+
+// bootCheck does not return checkDrift's result — it builds a NEW object on
+// each of its four branches. Every field it forgets to copy is silently absent,
+// and `authenticated` is the one the boot decision now reads: with it dropped,
+// `authenticated !== true` holds even for a genuinely authenticated reading, so
+// requiring NTS refused every boot instead of the unauthenticated ones. The
+// mode was unusable in exactly the configuration it exists for.
+//
+// Asserted on all four branches rather than the one that had the bug, because
+// the defect is the rebuild, and each branch rebuilds separately.
+async function testBootCheckCarriesAuthenticationThrough() {
+  var fake = await _startFakeNtpServer();
+  b.ntpCheck._resetThresholdsForTest();
+  try {
+    // Reachable, and far enough out to cross the fatal line.
+    var fatal = await b.ntpCheck.bootCheck({
+      servers: ["127.0.0.1"], port: fake.port, timeoutMs: 3000,
+      driftWarnMs: 2000, driftFatalMs: 30000,
+    });
+    check("bootCheck: a fatal-drift result still reports whether the reading was authenticated",
+      typeof fatal.authenticated === "boolean", JSON.stringify(fatal));
+    check("bootCheck: and a plain SNTP reply is reported as unauthenticated",
+      fatal.authenticated === false, JSON.stringify(fatal.authenticated));
+
+    // Same reading, thresholds raised so it lands on the warning branch.
+    var warn = await b.ntpCheck.bootCheck({
+      servers: ["127.0.0.1"], port: fake.port, timeoutMs: 3000,
+      driftWarnMs: 2000, driftFatalMs: 600000,
+    });
+    check("bootCheck: a warning result carries it too",
+      warn.severity === "warning" && warn.authenticated === false,
+      JSON.stringify(warn));
+
+    // And again with both thresholds above the drift, for the info branch.
+    var info = await b.ntpCheck.bootCheck({
+      servers: ["127.0.0.1"], port: fake.port, timeoutMs: 3000,
+      driftWarnMs: 600000, driftFatalMs: 900000,
+    });
+    check("bootCheck: an in-tolerance result carries it too",
+      info.severity === "info" && info.authenticated === false,
+      JSON.stringify(info));
+
+    // Nothing answered, so nothing was authenticated — still a stated false
+    // rather than an absent field, because the boot reads it on this path too.
+    var unreachable = await b.ntpCheck.bootCheck({
+      servers: ["127.0.0.1"], port: 1, timeoutMs: 250,                                                 // allow:raw-time-literal — test-only short probe
+    });
+    check("bootCheck: an unreachable server reports unauthenticated, not undefined",
+      unreachable.authenticated === false, JSON.stringify(unreachable));
+  } finally {
+    await new Promise(function (resolve) { fake.srv.close(resolve); });
+    b.ntpCheck._resetThresholdsForTest();
+  }
+}
+
 function testMonitorRejectsBadInterval() {
   var t1 = null;
   try { b.ntpCheck.monitor({ intervalMs: -1 }); } catch (e) { t1 = e; }
@@ -126,6 +290,12 @@ async function testMonitorFiresOnDriftAndAudits() {
     var fatal = auditEvents.find(function (e) { return e.action === "system.ntp.drift_fatal"; });
     check("monitor drift_fatal audit carries driftMs metadata",
           fatal && fatal.metadata && typeof fatal.metadata.driftMs === "number");
+    // A drift figure alone does not say whether the source could be spoofed,
+    // and the audit trail is read long after the tick.
+    var checked = auditEvents.find(function (e) { return e.action === "system.ntp.checked"; });
+    check("monitor system.ntp.checked records whether the reading was authenticated",
+          checked && checked.metadata && checked.metadata.authenticated === false,
+          JSON.stringify(checked && checked.metadata));
 
     // stop() halts the ticker — over a 10-interval window a running monitor
     // would fire ~10 more onDrifts; a stopped one fires at most one straggler
@@ -146,6 +316,8 @@ async function run() {
   testMonitorRejectsBadInterval();
   await testMonitorFiresOnDriftAndAudits();
   await testUnreachableMessageNamesAReadableSetting();
+  await testCheckDriftPrefersAuthenticatedTime();
+  await testBootCheckCarriesAuthenticationThrough();
 }
 
 module.exports = { run: run };

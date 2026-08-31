@@ -101,7 +101,9 @@ async function run() {
     await b.vault.init({ dataDir: dirA, mode: "plaintext" });
     var oldKeys = JSON.parse(b.vault.getKeysJson());
     check("old and new keypairs differ", JSON.stringify(oldKeys) !== JSON.stringify(newKeys));
-    await b.db.init({ dataDir: dirA, tmpDir: path.join(dirA, "tmpfs"), atRest: "encrypted", auditSigning: false, frameworkTables: false, schema: SECRETS_SCHEMA });
+    await b.db.init({ dataDir: dirA, tmpDir: path.join(dirA, "tmpfs"), atRest: "encrypted",
+      allowNonTmpfsTmpDir: true,   // scratch dir, not a real tmpfs mount
+      auditSigning: false, frameworkTables: false, schema: SECRETS_SCHEMA });
 
     var sealed = b.cryptoField.sealRow("secrets", { _id: "sec-1", tenantId: "t1", secret: "top-secret-value" });
     check("AAD seal produced a vault.aad: cell (db.init honored aad:true)",
@@ -146,7 +148,9 @@ async function run() {
     await _reset();
     await b.vault.init({ dataDir: dirA, mode: "plaintext" });
     check("vault now live under the NEW keypair", JSON.stringify(JSON.parse(b.vault.getKeysJson())) === JSON.stringify(newKeys));
-    await b.db.init({ dataDir: dirA, tmpDir: path.join(dirA, "tmpfs"), atRest: "encrypted", auditSigning: false, frameworkTables: false, schema: SECRETS_SCHEMA });
+    await b.db.init({ dataDir: dirA, tmpDir: path.join(dirA, "tmpfs"), atRest: "encrypted",
+      allowNonTmpfsTmpDir: true,   // scratch dir, not a real tmpfs mount
+      auditSigning: false, frameworkTables: false, schema: SECRETS_SCHEMA });
 
     var got = b.cryptoField.unsealRow("secrets", b.db.from("secrets").where({ _id: "sec-1" }).first());
     check("AAD cell decrypts after rotation under the new keypair", !!got && got.secret === "top-secret-value");

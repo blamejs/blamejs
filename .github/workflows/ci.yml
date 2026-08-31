@@ -88,16 +88,16 @@ jobs:
         run: npm ci --no-audit --no-fund
 
       - name: Run framework smoke
-        # NODE_OPTIONS heap bump — codebase-patterns duplicate-block
-        # detector accumulates shingle-fingerprint entries across the
-        # lib/ corpus + the parent smoke runner buffers per-fork
-        # stdout/stderr for every parallel child. 4 GB was enough at
-        # v0.9.30; v0.9.44 (chunkScratch + tenant cryptoField + the
-        # accumulated v0.9.x slice growth) tipped ubuntu-latest's
-        # 7 GB runner into OOM during the shingle pass. 6 GB gives
-        # headroom for the lib/ corpus to keep growing across the
-        # remaining v0.9.x slices before we revisit the shingle
-        # accumulator design.
+        # NODE_OPTIONS heap bump — the parent smoke runner buffers
+        # per-fork stdout/stderr for every parallel child, and that
+        # grows with the suite rather than with any one file.
+        #
+        # This bump used to carry the codebase-patterns duplicate-block
+        # scan as well, which retained every distinct shingle
+        # fingerprint in the lib/ corpus and needed the ceiling raised
+        # twice to keep up. That scan now holds one (pass, size) map at
+        # a time and sets its own ~3 GB ceiling when it re-execs, so it
+        # no longer depends on this value.
         env:
           NODE_OPTIONS: --max-old-space-size=6144
           # Run layer-0 forked rather than as one long-lived in-process

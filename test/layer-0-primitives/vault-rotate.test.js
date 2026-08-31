@@ -568,6 +568,7 @@ async function testRotateFullPlaintextRotation() {
     check("full-rotation old and new keypairs differ",
       JSON.stringify(oldKeys) !== JSON.stringify(newKeys));
     await b.db.init({ dataDir: dirA, tmpDir: path.join(dirA, "tmpfs"), atRest: "encrypted",
+      allowNonTmpfsTmpDir: true,   // scratch dir, not a real tmpfs mount
       auditSigning: false, frameworkTables: false, schema: PLAIN_SCHEMA });
 
     var sealed = b.cryptoField.sealRow("notes", { _id: "n1", title: "confidential-title" });
@@ -625,6 +626,7 @@ async function testRotateFullPlaintextRotation() {
     check("vault now live under the NEW keypair",
       JSON.stringify(JSON.parse(b.vault.getKeysJson())) === JSON.stringify(newKeys));
     await b.db.init({ dataDir: dirA, tmpDir: path.join(dirA, "tmpfs"), atRest: "encrypted",
+      allowNonTmpfsTmpDir: true,   // scratch dir, not a real tmpfs mount
       auditSigning: false, frameworkTables: false, schema: PLAIN_SCHEMA });
 
     var got = b.cryptoField.unsealRow("notes", b.db.from("notes").where({ _id: "n1" }).first());
@@ -781,6 +783,7 @@ async function testRotateVerifyFailedOnSameKeypair() {
     await b.vault.init({ dataDir: dirA, mode: "plaintext" });
     var liveKeys = JSON.parse(b.vault.getKeysJson());
     await b.db.init({ dataDir: dirA, tmpDir: path.join(dirA, "tmpfs"), atRest: "encrypted",
+      allowNonTmpfsTmpDir: true,   // scratch dir, not a real tmpfs mount
       auditSigning: false, frameworkTables: false, schema: [PLAIN_SCHEMA[0]] });
     b.db.from("notes").insertOne(b.cryptoField.sealRow("notes", { _id: "n1", title: "x" }));
     await b.db.flushToDisk();

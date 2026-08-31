@@ -52,7 +52,13 @@ async function initDb(tmpDir, columnGate, dataResidency) {
   b.vault._resetForTest();
   b.db._resetForTest();
   await b.vault.init({ dataDir: tmpDir });
-  var opts = { dataDir: tmpDir, tmpDir: path.join(tmpDir, "tmpfs"), schema: SCHEMA };
+  // The scratch dir is a plain directory, not a real tmpfs mount, and
+  // encrypted mode refuses one — now correctly, since the residency check reads
+  // the mount table rather than the path's name, and a container's /tmp is
+  // overlay. The fixture knowingly uses a scratch dir, so it opts out
+  // explicitly, exactly as test/helpers/db.js does.
+  var opts = { dataDir: tmpDir, tmpDir: path.join(tmpDir, "tmpfs"),
+               allowNonTmpfsTmpDir: true, schema: SCHEMA };
   if (columnGate !== undefined) opts.columnGate = columnGate;
   if (dataResidency !== undefined) opts.dataResidency = dataResidency;
   await b.db.init(opts);

@@ -998,22 +998,77 @@ async function testTmpfsResolverNeverProbesAPosixPathOffLinux() {
     b.db._resolveTmpDirFromForTest("/mnt/ram", "linux", refuseToRun) === "/mnt/ram");
 }
 
+// A mount table as the kernel publishes it. Fields per
+// Documentation/filesystems/proc.rst: id parent maj:min root mountPoint options
+// - fstype source superOptions.
+function _mounts(spec) {
+  return function () {
+    return spec.map(function (m, i) {
+      return (i + 20) + " 1 0:" + (i + 30) + " / " + m[0] +
+        " rw,relatime - " + m[1] + " " + m[1] + " rw";
+    }).join("\n");
+  };
+}
+// The shape of a host that is doing everything right.
+var TMPFS_HOST = _mounts([
+  ["/", "ext4"],
+  ["/dev/shm", "tmpfs"],
+  ["/run/user/1000", "tmpfs"],
+  ["/tmp", "tmpfs"],
+]);
+// The same host with an ordinary disk-backed /tmp, which is entirely normal and
+// was the case that passed silently.
+var DISK_TMP_HOST = _mounts([
+  ["/", "ext4"],
+  ["/dev/shm", "tmpfs"],
+]);
+
 async function testTmpDirResidencyDistinguishesUnknownFromDiskBacked() {
   function identity(p) { return p; }
 
   check("db: a /dev/shm path is a recognized in-memory mount",
-    b.db._tmpDirResidencyIssueForTest("/dev/shm/work", "linux", identity) === null);
+    b.db._tmpDirResidencyIssueForTest("/dev/shm/work", "linux", identity, TMPFS_HOST) === null);
   check("db: /tmp too — tmpfs on systemd defaults and most container images",
-    b.db._tmpDirResidencyIssueForTest("/tmp/work", "linux", identity) === null);
+    b.db._tmpDirResidencyIssueForTest("/tmp/work", "linux", identity, TMPFS_HOST) === null);
   check("db: /run/user counts as well",
-    b.db._tmpDirResidencyIssueForTest("/run/user/1000/x", "linux", identity) === null);
+    b.db._tmpDirResidencyIssueForTest("/run/user/1000/x", "linux", identity, TMPFS_HOST) === null);
+
+  // The name was never the question. These four all passed the prefix
+  // comparison that stood in for it, and every one of them is ordinary disk:
+  // three because a name merely BEGINS with an accepted string, and the fourth
+  // — the common one — because a host can simply not have tmpfs at /tmp. That
+  // last case was silent: not a refusal, not a warning, nothing, while the
+  // whole decrypted database was written where backups and snapshots reach it.
+  [
+    ["/tmpdata/blamejs", "a name that merely starts with /tmp"],
+    ["/dev/shmx/work", "a name that merely starts with /dev/shm"],
+    ["/run/shm-backup/x", "a name that merely starts with /run/shm"],
+  ].forEach(function (c) {
+    var issue = b.db._tmpDirResidencyIssueForTest(c[0], "linux", identity, TMPFS_HOST);
+    check("db: " + c[1] + " is disk-backed, not memory (" + c[0] + ")",
+      issue !== null && issue.determined === true, JSON.stringify(issue));
+  });
+
+  var diskTmp = b.db._tmpDirResidencyIssueForTest("/tmp/work", "linux", identity, DISK_TMP_HOST);
+  check("db: a /tmp that is NOT tmpfs on this host is a determined finding",
+    diskTmp !== null && diskTmp.determined === true, JSON.stringify(diskTmp));
+  check("db: and the finding names the filesystem actually mounted there",
+    diskTmp !== null && /ext4/.test(diskTmp.message), diskTmp && diskTmp.message);
+
+  // An unreadable mount table cannot answer the question either way. Reporting
+  // that as "in memory" is the silent pass this whole check exists to prevent,
+  // and reporting it as disk-backed would refuse hosts nothing is wrong with.
+  var unreadable = b.db._tmpDirResidencyIssueForTest("/dev/shm/work", "linux", identity,
+    function () { throw new Error("EACCES"); });
+  check("db: an unreadable mount table is undetermined, not a pass",
+    unreadable !== null && unreadable.determined === false, JSON.stringify(unreadable));
 
   // On Linux the mount table CAN be compared against, so a path outside those
   // mounts is a positive finding that the copy lands on disk. That one is
   // refused, which is what it has done since the fail-closed default landed.
-  var home = b.db._tmpDirResidencyIssueForTest("/home/op/work", "linux", identity);
+  var home = b.db._tmpDirResidencyIssueForTest("/home/op/work", "linux", identity, TMPFS_HOST);
   check("db: a linux path outside those mounts is a determined finding",
-    home && home.determined === true && home.message.indexOf("not a") !== -1,
+    home && home.determined === true && home.message.indexOf("not tmpfs") !== -1,
     JSON.stringify(home));
 
   // Off Linux nothing can be compared, so the finding is that it is unknown —
@@ -1033,7 +1088,7 @@ async function testTmpDirResidencyDistinguishesUnknownFromDiskBacked() {
   // which is the definition of not shown to be in memory.
   var broken = b.db._tmpDirResidencyIssueForTest("/dev/shm/gone", "linux", function () {
     throw new Error("ENOENT");
-  });
+  }, TMPFS_HOST);
   check("db: an unresolvable path is reported rather than assumed fine",
     broken && broken.determined === true, JSON.stringify(broken));
 }
@@ -1206,9 +1261,25 @@ async function testEncryptedInitHandlesAnUnclassifiableTmpDir() {
     b.db._resetForTest();
 
     var classifiable = process.platform === "linux";
-    var underTmpfs = classifiable && (
-      onDisk.indexOf("/dev/shm") === 0 || onDisk.indexOf("/run/shm") === 0 ||
-      onDisk.indexOf("/run/user/") === 0 || onDisk.indexOf("/tmp") === 0);
+    // Asked of the mount table, the way production now asks it. This used to
+    // predict the outcome from the path's NAME — the same four-prefix
+    // comparison the residency check itself used — so the test agreed with the
+    // implementation by construction and could not have caught the case that
+    // mattered. It also made the test wrong wherever the name lies: in a
+    // container /tmp is overlay, so a scratch dir under it looked like tmpfs to
+    // the old prediction while the check correctly refused it.
+    var underTmpfs = false;
+    if (classifiable) {
+      try {
+        var mounts = b.safeMountInfo.parse(fs.readFileSync(b.safeMountInfo.DEFAULT_PATH, "utf8"));
+        var m = b.safeMountInfo.bestMatch(mounts, fs.realpathSync(onDisk));
+        underTmpfs = !!(m && (m.fstype === "tmpfs" || m.fstype === "ramfs"));
+      } catch (_e) {
+        // No readable mount table — production reports the residency as
+        // UNKNOWN there, which boots with a warning, so predict that.
+        classifiable = false;
+      }
+    }
 
     if (classifiable && !underTmpfs) {
       check("db: a linux tmpDir shown to be disk-backed fails encrypted init closed",

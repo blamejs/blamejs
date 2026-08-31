@@ -923,6 +923,7 @@ async function runIntegrated(root) {
       firstPurgedCounter: Number(highAnchor.firstPurgedCounter || 0),
       archiveRowsDigest: highAnchor.archiveRowsDigest,
       archiveCheckpointDigest: highAnchor.archiveCheckpointDigest,
+      archiveManifestDigest: highAnchor.archiveManifestDigest,
       fencingToken:      9999,
     };
     var highSig = b.auditSign.sign(b.auditChain.purgeAnchorPayload(highSigned));
@@ -1380,11 +1381,17 @@ async function runIntegrated(root) {
         lastPurgedRowHash: reAnchored.lastPurgedRowHash,
         archiveBundleId:   String(reAnchored.archiveBundleId),
         purgedAt:          Number(reAnchored.purgedAt),
-        firstPurgedCounter: 0, archiveRowsDigest: "", archiveCheckpointDigest: "" },
+        // Every field a newer layout added has to be cleared, not just the
+        // ones this layout omits by name: an older rung is offered only when
+        // the NEWER fields are empty, so a row still carrying one of them is
+        // not a legacy row and is refused — correctly.
+        firstPurgedCounter: 0, archiveRowsDigest: "", archiveCheckpointDigest: "",
+        archiveManifestDigest: "" },
       { layout: "no-range" });
     await b.clusterStorage.execute(
       "UPDATE _blamejs_audit_purge_anchor SET firstPurgedCounter = 0, archiveRowsDigest = '', " +
-      "archiveCheckpointDigest = '', signature = ?, publicKeyFingerprint = ? WHERE scope = 'audit'",
+      "archiveCheckpointDigest = '', archiveManifestDigest = '', " +
+      "signature = ?, publicKeyFingerprint = ? WHERE scope = 'audit'",
       [b.auditSign.sign(legacyPayload), legacySigner]);
     var legacyRow = await b.clusterStorage.executeOne(
       "SELECT * FROM _blamejs_audit_purge_anchor WHERE scope = 'audit'");

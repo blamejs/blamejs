@@ -2014,7 +2014,12 @@ async function testRollbackDetection() {
       "process.env.BLAMEJS_SKIP_NTP_CHECK = '1';\n" +
       "(async function () {\n" +
       "  await b.vault.init({ dataDir: " + JSON.stringify(tmpDir) + " });\n" +
-      "  await b.db.init({ dataDir: " + JSON.stringify(tmpDir) + ", tmpDir: " + JSON.stringify(path.join(tmpDir, "tmpfs")) + ", schema: [] });\n" +
+      // allowNonTmpfsTmpDir, because the child's tmpDir is a scratch directory
+      // rather than a real tmpfs mount. Without it the residency check refuses
+      // first and the child still exits 99 through the same catch — the exit
+      // code alone would look right while nothing about rollback ran. The
+      // stderr assertion below is what distinguishes the two.
+      "  await b.db.init({ dataDir: " + JSON.stringify(tmpDir) + ", tmpDir: " + JSON.stringify(path.join(tmpDir, "tmpfs")) + ", allowNonTmpfsTmpDir: true, schema: [] });\n" +
       "})().catch(function (e) { console.error(e.message); process.exit(99); });\n";
     var result = spawnSync(process.execPath, ["-e", childScript], { encoding: "utf8" });
     check("rollback boot exits via the catch handler (code 99)", result.status === 99);

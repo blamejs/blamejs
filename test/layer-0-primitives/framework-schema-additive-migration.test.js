@@ -101,8 +101,87 @@ function testWormGuardExampleAgreesWithTheFunction() {
     /WHEN NOT COALESCE\(OLD\./.test(src) && /lastPurgedCounter/.test(src));
 }
 
+// The suspension primitive advertised `postgres | mysql | sqlite` and used
+// postgres in its own example, while refusing postgres outright — and postgres
+// was also the DEFAULT, so calling it the documented way, or without naming a
+// dialect at all, could only throw. A refusal can be the right answer; naming
+// the refused dialect as the example is not.
+//
+// Compared against the source rather than restated, so a dialect added to the
+// doc without an implementation fails here.
+async function testSuspensionDialectSurfaceAgreesWithTheDoc() {
+  var src = fs.readFileSync(path.join(__dirname, "..", "..", "lib", "framework-schema.js"), "utf8");
+  var block = src.split("@primitive b.frameworkSchema.withDeleteTriggersSuspended")[1];
+  check("the primitive's comment block is findable",
+    typeof block === "string" && block.length > 0);
+  var docBlock = block.split("*/")[0];
+
+  // Every dialect the @opts line offers must be one the function accepts.
+  var optsLine = /dialect:\s*string,\s*\/\/\s*([a-z |]+)/.exec(docBlock);
+  check("the @opts line names the dialects it accepts", optsLine !== null,
+    String(optsLine));
+  var documented = optsLine
+    ? optsLine[1].split("|").map(function (s) { return s.trim(); }).filter(Boolean)
+    : [];
+  check("at least one dialect is documented", documented.length > 0,
+    JSON.stringify(documented));
+
+  for (var i = 0; i < documented.length; i += 1) {
+    var err = null;
+    try {
+      // No backend is configured here, so a supported dialect gets PAST the
+      // config checks and fails later on the store. What must not happen is a
+      // refusal of the dialect itself.
+      await b.frameworkSchema.withDeleteTriggersSuspended(
+        { externalDbBackend: "nope", dialect: documented[i] },
+        async function () { return null; });
+    } catch (e) { err = e; }
+    check("the documented dialect " + documented[i] + " is not refused as unsupported",
+      !err || err.code !== "framework-schema/unsupported-dialect",
+      documented[i] + " → " + String(err && (err.code || err.message)));
+  }
+
+  // And every dialect named in the @example must be documented in @opts.
+  var exampleDialects = [];
+  var exampleText = docBlock.split("@example")[1] || "";
+  var reDialect = /dialect:\s*"([a-z]+)"/g;
+  var m;
+  while ((m = reDialect.exec(exampleText)) !== null) exampleDialects.push(m[1]);
+  check("the example names a dialect", exampleDialects.length > 0,
+    JSON.stringify(exampleDialects));
+  exampleDialects.forEach(function (d) {
+    check("the example's dialect " + d + " is one @opts offers",
+      documented.indexOf(d) !== -1, d + " not in " + JSON.stringify(documented));
+  });
+
+  // An omitted dialect must say so rather than pick one for the caller. It
+  // defaulted to postgres, which this refuses — so the default call could only
+  // fail, and the message blamed the dialect the caller never chose.
+  var omitted = null;
+  try {
+    await b.frameworkSchema.withDeleteTriggersSuspended(
+      { externalDbBackend: "nope" }, async function () { return null; });
+  } catch (e) { omitted = e; }
+  check("omitting the dialect is refused as a config error, not defaulted",
+    omitted !== null && omitted.code === "framework-schema/invalid-config" &&
+    /dialect/.test(omitted.message || ""),
+    String(omitted && (omitted.code + " :: " + omitted.message)));
+
+  // Postgres stays refused, and says why — its guard is one trigger FUNCTION
+  // shared by every WORM table, so dropping and restoring is not symmetric.
+  var pg = null;
+  try {
+    await b.frameworkSchema.withDeleteTriggersSuspended(
+      { externalDbBackend: "nope", dialect: "postgres" }, async function () { return null; });
+  } catch (e) { pg = e; }
+  check("postgres is refused with a code that names the reason",
+    pg !== null && pg.code === "framework-schema/unsupported-dialect",
+    String(pg && (pg.code + " :: " + pg.message)));
+}
+
 async function run() {
   testWormGuardExampleAgreesWithTheFunction();
+  await testSuspensionDialectSurfaceAgreesWithTheDoc();
   var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-fs-migrate-"));
   var driver = null;
   try {

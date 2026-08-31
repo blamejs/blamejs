@@ -367,6 +367,10 @@ async function _rotationRoundTrip() {
       JSON.stringify(oldKeys) !== JSON.stringify(newKeys));
     await b.db.init({
       dataDir: dirA, tmpDir: path.join(dirA, "tmpfs"), atRest: "encrypted",
+      // Scratch dir, not a real tmpfs mount — opted out explicitly, as
+      // test/helpers/db.js does. The residency check reads the mount table
+      // now, and a container's /tmp is overlay.
+      allowNonTmpfsTmpDir: true,
       auditSigning: false, schema: KEYED_SCHEMA,
     });
     b.cryptoField.clearResidencyForTest();
@@ -407,6 +411,10 @@ async function _rotationRoundTrip() {
       JSON.stringify(JSON.parse(b.vault.getKeysJson())) === JSON.stringify(newKeys));
     await b.db.init({
       dataDir: dirA, tmpDir: path.join(dirA, "tmpfs"), atRest: "encrypted",
+      // Scratch dir, not a real tmpfs mount — opted out explicitly, as
+      // test/helpers/db.js does. The residency check reads the mount table
+      // now, and a container's /tmp is overlay.
+      allowNonTmpfsTmpDir: true,
       auditSigning: false, schema: KEYED_SCHEMA,
     });
     b.cryptoField.clearResidencyForTest();

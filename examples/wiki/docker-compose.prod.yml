@@ -168,6 +168,11 @@ services:
       BLAMEJS_NTP_TIMEOUT_MS:        ${BLAMEJS_NTP_TIMEOUT_MS:-}
       BLAMEJS_NTP_DRIFT_WARN_MS:     ${BLAMEJS_NTP_DRIFT_WARN_MS:-}
       BLAMEJS_NTP_DRIFT_FATAL_MS:    ${BLAMEJS_NTP_DRIFT_FATAL_MS:-}
+      # Refuse the boot when no time server answers at all. Distinct from
+      # BLAMEJS_NTP_STRICT, which governs EXCESS DRIFT — a reading that was
+      # taken and was wrong. This one covers no reading at all, and is off by
+      # default because a network without outbound UDP/123 is ordinary.
+      BLAMEJS_NTP_REQUIRE_REACHABLE: ${BLAMEJS_NTP_REQUIRE_REACHABLE:-}
       BLAMEJS_NTS_SERVERS:           ${BLAMEJS_NTS_SERVERS:-}
       BLAMEJS_NTS_REQUIRE:           ${BLAMEJS_NTS_REQUIRE:-}
       # DNS — production deploys typically pin internal resolvers and
