@@ -49,6 +49,14 @@ function testUrlExtractionIsLinear() {
         closed.r < 8, "4x input took " + closed.r.toFixed(1) + "x (" +
         closed.small.toFixed(1) + "ms -> " + closed.large.toFixed(1) + "ms)");
 
+  // The reference-definition scan reads each LINE, so many lines that open a
+  // bracket and never close it is its own version of the same shape: a search
+  // per line re-reads the whole remaining text from each one.
+  var perLine = _ratio(function (n) { return "[\n".repeat(n); });
+  check("many lines that open a bracket and never close it are linear",
+        perLine.r < 8, "4x input took " + perLine.r.toFixed(1) + "x (" +
+        perLine.small.toFixed(1) + "ms -> " + perLine.large.toFixed(1) + "ms)");
+
   // The extraction itself is unchanged, including the case the exact-offset
   // splice exists for: an alt text equal to its own target URL.
   check("an image URL pointing at link-local metadata is neutralized",
