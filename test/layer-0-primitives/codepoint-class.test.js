@@ -1217,6 +1217,26 @@ function testFoldedSearchAndRangeRuns() {
   var setRatio = setSmall > 0.02 ? (setLarge / setSmall) : 1;
   check("trimTrailingChars stays linear with a long character set",
         setRatio < 8, "4x input took " + setRatio.toFixed(1) + "x the time");
+
+  // The set is codepoints, not UTF-16 units. Built from units, an astral
+  // character in the set contributes its two surrogate halves separately, and
+  // a DIFFERENT astral character in the text sharing one half would be cut in
+  // two, leaving a lone surrogate.
+  var ASTRAL = String.fromCodePoint(0x1FA00);
+  var EMOJI = String.fromCodePoint(0x1F600);
+  check("trimTrailingChars leaves an astral character that is not in the set",
+        CP.trimTrailingChars(ASTRAL, EMOJI + "x") === ASTRAL,
+        JSON.stringify(CP.trimTrailingChars(ASTRAL, EMOJI + "x")));
+  check("trimTrailingChars removes an astral character that IS in the set",
+        CP.trimTrailingChars("a" + ASTRAL, ASTRAL + "x") === "a");
+
+  // Identical delimiters have no unambiguous grouping: forward, the closing
+  // character of one group opens the next; backward it is the other way
+  // round, so the two helpers would disagree about the same text.
+  check("firstDelimited refuses identical delimiters",
+        CP.firstDelimited("\"\"abc\"\"", "\"", "\"") === null);
+  check("lastDelimited refuses identical delimiters",
+        CP.lastDelimited("\"abc\"", "\"", "\"") === null);
   check("lastDelimited refuses an empty delimiter",
         CP.lastDelimited("a<b>", "", ">") === null);
 
