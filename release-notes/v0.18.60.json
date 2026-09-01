@@ -19,7 +19,7 @@
       "items": [
         {
           "title": "`b.codepointClass` gains three text scans",
-          "body": "The rewrites above needed the same three operations in several places, so they are primitives rather than a copy per module:\n\n- `trimTrailingChars(text, chars)` removes the run of characters at the end of `text` that are all in `chars`.\n- `firstDelimited(text, open, close, from?)` returns the first non-empty `open`...`close` group as `{ body, start, end }`.\n- `lastDelimited(text, open, close)` returns the group that ends the text, ignoring trailing whitespace.\n\nEach walks the text once. The patterns they replace (`/\\/+$/`, `/<([^>]+)>/`, `/<([^>]+)>\\s*$/`) all restart at every candidate position."
+          "body": "The rewrites above needed the same three operations in several places, so they are primitives rather than a copy per module:\n\n- `trimTrailingChars(text, chars)` removes the run of characters at the end of `text` that are all in `chars`.\n- `firstDelimited(text, open, close, from?)` returns the first non-empty `open`...`close` group as `{ body, start, end }`.\n- `lastDelimited(text, open, close)` returns the group that ends the text, ignoring trailing whitespace.\n\nBoth delimiter scans take single characters and return `null` for anything longer: skipping an empty group advances by one position and searches again, so a longer delimiter would be re-matched from nearly the same place each time. `trimTrailingChars` accepts a set of any size and decides membership once per character in it.\n\nEach walks the text once. The patterns they replace (`/\\/+$/`, `/<([^>]+)>/`, `/<([^>]+)>\\s*$/`) all restart at every candidate position."
         }
       ]
     },

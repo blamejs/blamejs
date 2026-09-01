@@ -16,6 +16,8 @@ All eleven now walk their input once. Behaviour is unchanged: each rewrite was c
 - `firstDelimited(text, open, close, from?)` returns the first non-empty `open`...`close` group as `{ body, start, end }`.
 - `lastDelimited(text, open, close)` returns the group that ends the text, ignoring trailing whitespace.
 
+Both delimiter scans take single characters and return `null` for anything longer: skipping an empty group advances by one position and searches again, so a longer delimiter would be re-matched from nearly the same place each time. `trimTrailingChars` accepts a set of any size and decides membership once per character in it.
+
 Each walks the text once. The patterns they replace (`/\/+$/`, `/<([^>]+)>/`, `/<([^>]+)>\s*$/`) all restart at every candidate position. **Security:** *Scans over request data run in time proportional to their input* — Each of these was reachable with a value an attacker chooses, and each cost time proportional to the square of its length:
 
 - `b.guardEmail.sanitize` / `validateMessage`: the smuggled-SMTP-verb scan walked the whitespace after every bare line ending, and a carriage return is itself whitespace, so a value of carriage returns re-walked the same run once per position. 243ms for a single 16k value, now 0.7ms.

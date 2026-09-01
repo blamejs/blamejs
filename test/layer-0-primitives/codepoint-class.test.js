@@ -1189,10 +1189,34 @@ function testFoldedSearchAndRangeRuns() {
         CP.firstDelimited("a<b>", "", ">") === null);
   check("firstDelimited refuses an empty close delimiter",
         CP.firstDelimited("a<b>", "<", "") === null);
-  check("firstDelimited measures the body from the END of a multi-character open",
-        CP.firstDelimited("x<!--body-->y", "<!--", "-->").body === "body");
+  // Both take single characters. Skipping an empty group advances by one and
+  // searches again, so a long delimiter would be re-matched from nearly the
+  // same place each time and the scan would be quadratic in its length.
+  check("firstDelimited refuses a multi-character delimiter",
+        CP.firstDelimited("x<!--body-->y", "<!--", "-->") === null);
   check("lastDelimited refuses a multi-character delimiter rather than mis-slicing",
         CP.lastDelimited("x<!--body-->", "<!--", "-->") === null);
+
+  // The advertised linear scan has to hold for the ARGUMENTS a caller picks,
+  // not only for the text. A long character set asked per text character, or a
+  // long delimiter re-matched per empty group, turns either scan quadratic.
+  function _trimSetMs(n) {
+    var text = "a".repeat(n);
+    var chars = "b".repeat(n) + "a";
+    CP.trimTrailingChars(text, chars);
+    var best = Infinity;
+    for (var k = 0; k < 3; k += 1) {
+      var t0 = process.hrtime.bigint();
+      CP.trimTrailingChars(text, chars);
+      best = Math.min(best, Number(process.hrtime.bigint() - t0) / 1e6);
+    }
+    return best;
+  }
+  var setSmall = _trimSetMs(16000);
+  var setLarge = _trimSetMs(64000);
+  var setRatio = setSmall > 0.02 ? (setLarge / setSmall) : 1;
+  check("trimTrailingChars stays linear with a long character set",
+        setRatio < 8, "4x input took " + setRatio.toFixed(1) + "x the time");
   check("lastDelimited refuses an empty delimiter",
         CP.lastDelimited("a<b>", "", ">") === null);
 
