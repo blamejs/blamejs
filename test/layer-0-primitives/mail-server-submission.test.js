@@ -442,6 +442,51 @@ async function testBdatBinaryBytesPreserved() {
   } finally { await srv.close({ timeoutMs: 1000 }); }                                                  // allow:raw-time-literal — test-only short drain
 }
 
+// The AUTH guards read state the verify writes, and the verify is
+// asynchronous. The line loop holds the client's pipelined remainder for the
+// sender-policy hook; it has to hold it here too, or two credential exchanges
+// written in one segment are both dispatched while the session is still
+// unauthenticated.
+async function testPipelinedAuthCannotRaceTheSubmissionGuard() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("submission pipelined AUTH (skipped)", true); return; }
+  var verifies = 0;
+  var srv = b.mail.server.submission.create({
+    tlsContext: ctx,
+    profile:    "permissive",
+    auth: { mechanisms: ["PLAIN"], verify: function () {
+      verifies += 1;
+      return Promise.resolve({ ok: true, actor: { id: "u1", username: "alice" } });
+    } },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  try {
+    var socket = nodeNet.connect(info.port, "127.0.0.1");
+    await new Promise(function (r) { socket.once("connect", r); });
+    await _readGreeting(socket);
+    await _sendCommand(socket, "EHLO client.example.com");
+
+    var seen = "";
+    socket.on("data", function (c) { seen += c.toString("utf8"); });
+    var plain = Buffer.from(NUL + "alice" + NUL + "pw", "utf8").toString("base64");
+    // One write, no waiting between them.
+    socket.write("AUTH PLAIN " + plain + "\r\nAUTH PLAIN " + plain + "\r\n");
+    await helpers.waitUntil(function () {
+      return seen.split("\r\n").filter(function (l) { return l.length > 0; }).length >= 2;
+    }, { timeoutMs: 5000, label: "submission pipelined AUTH: two replies" });
+    await helpers.passiveObserve(300, "submission pipelined AUTH: settle");
+
+    var replies = seen.split("\r\n").filter(function (l) { return l.length > 0; });
+    var accepted = replies.filter(function (l) { return l.indexOf("235") === 0; });
+    check("a pipelined second AUTH does not authenticate again",
+          accepted.length <= 1, JSON.stringify(replies));
+    check("and the second exchange is not verified concurrently with the first",
+          verifies <= 1, String(verifies));
+    socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                  // allow:raw-time-literal — test-only short drain
+}
+
 async function testBdatOversizeRefused() {
   var ctx;
   try { ctx = await _makeTestTlsContext(); }
@@ -1990,6 +2035,7 @@ async function run() {
   await testBdatOutsideTransaction();
   await testBdatBadArgs();
   await testBdatBinaryBytesPreserved();
+  await testPipelinedAuthCannotRaceTheSubmissionGuard();
   await testBdatOversizeRefused();
 
   var tls;

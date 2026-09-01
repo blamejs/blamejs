@@ -177,6 +177,76 @@ async function testExpungeRefusesAPostureItCannotResolve() {
   } finally { _teardown(fx); }
 }
 
+// The retention floor measures how old a message is. `internalDate` is chosen
+// by whoever sent it: RFC 9051 6.3.12 lets an APPEND carry a date-time, and a
+// backend that records it without stamping its own arrival time produces a row
+// whose only date came from the client. Reading that as the arrival time hands
+// the age -- and so the delete -- to the party the floor exists to constrain.
+async function testExpungeIgnoresClientSuppliedArrivalDate() {
+  var fx = await _setup("expunge-client-date");
+  try {
+    var m = fx.store.appendMessage("INBOX", _msg([
+      "From: a@x", "To: b@y", "Subject: client-date", "Message-Id: <cd@x>",
+      "Date: Wed, 14 May 2026 12:00:00 +0000",
+    ], "x"));
+    fx.store.moveMessages("INBOX", "Trash", [m.objectid]);
+
+    // A store that reports what a backend honouring the APPEND date reports:
+    // no server arrival stamp, and an `internalDate` the sender picked. The
+    // epoch dates the message 56 years back, clearing any floor there is.
+    function _storeReporting(meta) {
+      var wrapped = Object.create(fx.store);
+      wrapped.fetchByObjectId = function (folder, oid) {
+        var row = fx.store.fetchByObjectId(folder, oid);
+        if (!row) return row;
+        var copy = Object.assign({}, row);
+        delete copy.receivedAt;
+        delete copy.internalDate;
+        if (meta.receivedAt !== undefined) copy.receivedAt = meta.receivedAt;
+        if (meta.internalDate !== undefined) copy.internalDate = meta.internalDate;
+        return copy;
+      };
+      return wrapped;
+    }
+
+    var agent = b.mail.agent.create({ store: _storeReporting({ internalDate: 1 }) });
+    var rv = await agent.expunge({ actor: { id: "u1" }, folder: "Trash",
+                                   objectIds: [m.objectid], posture: "hipaa" });
+    check("expunge: a client-supplied date is not an arrival time",
+          rv.deleted.length === 0,
+          "deleted " + rv.deleted.length + " under a six-year floor");
+    check("expunge: it is refused as unknown arrival",
+          rv.refused.some(function (r) {
+            return r.id === m.objectid && r.reason === "retention-floor-unknown-arrival";
+          }), JSON.stringify(rv.refused));
+    check("expunge: the message survived",
+          fx.store.fetchByObjectId("Trash", m.objectid) !== null);
+
+    // Controls. Without these, "refused" above could mean the floor refuses
+    // everything rather than refusing this one input.
+    var neither = b.mail.agent.create({ store: _storeReporting({}) });
+    var rvNeither = await neither.expunge({ actor: { id: "u1" }, folder: "Trash",
+                                            objectIds: [m.objectid], posture: "hipaa" });
+    check("expunge control: no date at all is still unknown arrival",
+          rvNeither.refused.some(function (r) {
+            return r.reason === "retention-floor-unknown-arrival";
+          }));
+
+    var fresh = b.mail.agent.create({ store: _storeReporting({ receivedAt: Date.now() }) });
+    var rvFresh = await fresh.expunge({ actor: { id: "u1" }, folder: "Trash",
+                                        objectIds: [m.objectid], posture: "hipaa" });
+    check("expunge control: a server arrival time inside the floor is refused as too young",
+          rvFresh.refused.some(function (r) { return r.reason === "retention-floor"; }),
+          JSON.stringify(rvFresh.refused));
+
+    var old = b.mail.agent.create({ store: _storeReporting({ receivedAt: 1 }) });
+    var rvOld = await old.expunge({ actor: { id: "u1" }, folder: "Trash",
+                                    objectIds: [m.objectid], posture: "hipaa" });
+    check("expunge control: a server arrival time past the floor still deletes",
+          rvOld.deleted.length === 1, JSON.stringify(rvOld.refused));
+  } finally { _teardown(fx); }
+}
+
 async function testExpungeHardDelete() {
   // Hard expunge — composes legal-hold + retention-floor refusal
   // gates before the destructive SQL runs.
@@ -939,6 +1009,7 @@ async function run() {
   await testSearchThread();
   await testFlagMoveDelete();
   await testExpungeRefusesAPostureItCannotResolve();
+  await testExpungeIgnoresClientSuppliedArrivalDate();
   await testExpungeHardDelete();
   await testExpungeRetentionFloor();
   await testExpungeRefusesAnUnknownArrivalTime();

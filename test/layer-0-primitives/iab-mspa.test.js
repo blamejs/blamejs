@@ -74,26 +74,13 @@ async function run() {
   check("a header with no numeric tail yields no section ids",
         b.iabMspa.parseGpp("DBABLA~BVQqAAAAAg").header.sectionIds.length === 0);
 
-  function _parseMs(n) {
-    var subject = "1".repeat(n) + "!";
-    b.iabMspa.parseGpp(subject);                       // warm
-    var best = Infinity;
-    for (var k = 0; k < 3; k += 1) {
-      var t0 = process.hrtime.bigint();
-      b.iabMspa.parseGpp(subject);
-      best = Math.min(best, Number(process.hrtime.bigint() - t0) / 1e6);
-    }
-    return best;
-  }
-  var small = _parseMs(1000);
-  var large = _parseMs(4000);
-  // Four times the input is about four times the work when the scan is linear
-  // and about sixteen when it is quadratic. Eight separates them with room to
-  // spare, and the floor keeps a sub-microsecond pair from dividing into noise.
-  var ratio = small > 0.02 ? (large / small) : 1;
+  // helpers.looksSuperlinear holds the floor below which no ratio is taken and
+  // re-measures before failing anything. A ratio taken here between two
+  // sub-millisecond readings reports whatever else the machine was doing.
   check("a digits-only header parses in time proportional to its length",
-        ratio < 8, "4x input took " + ratio.toFixed(1) + "x the time (" +
-        small.toFixed(3) + "ms -> " + large.toFixed(3) + "ms)");
+        !helpers.looksSuperlinear(function (n) {
+          b.iabMspa.parseGpp("1".repeat(n) + "!");
+        }, { small: 16000, large: 32000 }));
 }
 
 module.exports = { run: run };

@@ -431,26 +431,16 @@ function testAddressShapesAgreeWithThePatternsTheyReplaced() {
 // proportional to the SQUARE of the value. A guard is handed hostile input by
 // definition, so this is the one place that shape is guaranteed to arrive.
 function testSmuggledVerbScanIsLinear() {
-  function _ms(n) {
-    var subject = "\r".repeat(n);
-    try { b.guardEmail.sanitize(subject); } catch (_e) { /* refusal is fine */ }
-    var best = Infinity;
-    for (var k = 0; k < 3; k += 1) {
-      var t0 = process.hrtime.bigint();
-      try { b.guardEmail.sanitize(subject); } catch (_e2) { /* timing the work */ }
-      best = Math.min(best, Number(process.hrtime.bigint() - t0) / 1e6);
-    }
-    return best;
-  }
-  var small = _ms(2000);
-  var large = _ms(8000);
-  // Four times the input is about four times the work when the scan is linear
-  // and about sixteen when it is quadratic. Growth rather than a wall-clock
-  // budget, so a loaded machine moves both readings together.
-  var ratio = small > 0.05 ? (large / small) : 1;
-  check("a value of bare carriage returns is scanned in linear time",
-        ratio < 8, "4x input took " + ratio.toFixed(1) + "x the time (" +
-        small.toFixed(1) + "ms -> " + large.toFixed(1) + "ms)");
+  // helpers.looksSuperlinear rather than a ratio taken here: it holds the
+  // floor below which no ratio is taken at all, and it re-measures before it
+  // fails anything. A hand-rolled version of this compared two sub-millisecond
+  // readings, where one scheduling stall on a shared runner moves the ratio
+  // further than the algorithm ever could -- which is how it reported 9.5x on
+  // a scan that measures 3.4x to 4.2x across a dozen local runs.
+  var superlinear = helpers.looksSuperlinear(function (n) {
+    try { b.guardEmail.sanitize("\r".repeat(n)); } catch (_e) { /* refusal is fine */ }
+  }, { small: 32000, large: 64000 });
+  check("a value of bare carriage returns is scanned in linear time", !superlinear);
 
   // The detection itself is unchanged: a bare ending followed by a verb is
   // still smuggling, and one followed by ordinary text is still not.
