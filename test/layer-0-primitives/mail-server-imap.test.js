@@ -1045,6 +1045,80 @@ async function testZeroLengthSynchronizingLiteralGetsAContinuation() {
   } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
 }
 
+// A literal may be an element of a parenthesized list, where the byte after
+// its octets is the closing paren rather than a space. `ID ("name" {4}` is the
+// shape, and it is one a client may send before authenticating.
+async function testLiteralInsideAParenthesizedListCompletes() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("literal in list (skipped)", true); return; }
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: _makeStubMailStore(), profile: "permissive",
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    var seen = "";
+    function collect(chunk) { seen += chunk.toString("utf8"); }
+    c.socket.on("data", collect);
+
+    c.socket.write('a1 ID ("name" {4}\r\n');
+    await helpers.waitUntil(function () { return seen.indexOf("+") !== -1; },
+      { timeoutMs: 5000, label: "literal in list: continuation" });
+    // The octets, then the closing paren and the line's own terminator.
+    c.socket.write("test)\r\n");
+    await helpers.waitUntil(function () { return /^a1 /m.test(seen); },
+      { timeoutMs: 5000, label: "literal in list: tagged response" });
+
+    check("a literal closed by ')' rather than a space is accepted",
+          !/BAD Expected end of command/.test(seen), JSON.stringify(seen));
+    c.socket.removeListener("data", collect);
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+// The cap is on what ONE command's literals add up to, so the last one counts
+// as much as the ones before it. Counting only the non-final literals let a
+// command carry one more than the limit allows.
+async function testAggregateLiteralCapCountsTheFinalLiteral() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("aggregate literal cap (skipped)", true); return; }
+  var verified = [];
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: _makeStubMailStore(), profile: "permissive",
+    maxLiteralBytes: 1024,                                                                             // allow:raw-byte-literal — two full-size literals must exceed it together
+    auth: { mechanisms: ["LOGIN"], verify: function (mech, creds) {
+      verified.push(creds); return Promise.resolve({ ok: true, actor: { id: "u1" } });
+    } },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    var seen = "";
+    function collect(chunk) { seen += chunk.toString("utf8"); }
+    c.socket.on("data", collect);
+
+    // Two literals, each exactly at the cap, so only their SUM exceeds it.
+    var big = "u".repeat(1024);
+    c.socket.write("A001 LOGIN {1024}\r\n");
+    await helpers.waitUntil(function () { return seen.indexOf("+") !== -1; },
+      { timeoutMs: 5000, label: "aggregate cap: first continuation" });
+    c.socket.write(big + " {1024}\r\n");
+    await helpers.waitUntil(function () {
+      return seen.split("+").length > 2 || /^A001 /m.test(seen);
+    }, { timeoutMs: 5000, label: "aggregate cap: second continuation" });
+    c.socket.write("p".repeat(1024) + "\r\n");
+    await helpers.waitUntil(function () { return /^A001 /m.test(seen); },
+      { timeoutMs: 5000, label: "aggregate cap: tagged response" });
+
+    check("two literals that exceed the cap together are refused",
+          /^A001 BAD/m.test(seen), JSON.stringify(seen.slice(-140)));
+    check("and no credential built from them reaches the verifier",
+          verified.length === 0, String(verified.length));
+    c.socket.removeListener("data", collect);
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
 // A literal is framed by its own octet count and bounded by maxLiteralBytes;
 // the line cap bounds what the client typed. Charging a literal's bytes
 // against the line cap refuses a command whose text is short and whose
@@ -3214,6 +3288,8 @@ async function run() {
     await testLiteralFramingDoesNotDependOnPacketBoundaries();
     await testPipelineBoundIsNotBypassedByAPendingLiteral();
     await testZeroLengthSynchronizingLiteralGetsAContinuation();
+    await testLiteralInsideAParenthesizedListCompletes();
+    await testAggregateLiteralCapCountsTheFinalLiteral();
     await testLiteralBytesAreNotChargedToTheLineCap();
     await testFinalLiteralCompletesWhenItsTerminatorArrivesLate();
     await testLiteralCommandConsumesItsOwnTerminator();
