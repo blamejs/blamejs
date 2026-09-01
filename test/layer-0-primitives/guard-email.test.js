@@ -177,6 +177,32 @@ function testGuardEmailBareLfSmuggling() {
         rv.issues.some(function (i) { return i.kind === "smtp-smuggling"; }));
 }
 
+// The smuggling scan walks its input once. It must not also BUILD anything
+// that grows with the input: a table of one entry per character turns an
+// under-cap message into an allocation several times its size, and the
+// permissive profile accepts 128 MiB. Records the largest typed array the
+// scan asks for, which is the auxiliary allocation the scan controls.
+function testGuardEmailSmugglingScanUsesConstantSpace() {
+  var msg = "From: a@example.com\r\nTo: b@example.com\r\nSubject: x\r\n\r\n" +
+            "\r".repeat(200000) + "body\r\n";
+  var real = global.Int32Array;
+  var widest = 0;
+  function Spy(arg) {
+    if (typeof arg === "number" && arg > widest) widest = arg;
+    return new real(arg);
+  }
+  Spy.prototype = real.prototype;
+  Spy.BYTES_PER_ELEMENT = real.BYTES_PER_ELEMENT;
+  global.Int32Array = Spy;
+  try {
+    b.guardEmail.validateMessage(msg, { profile: "permissive" });
+  } finally {
+    global.Int32Array = real;
+  }
+  check("the smuggling scan allocates nothing proportional to its input",
+        widest < 4096);
+}
+
 function testGuardEmailCrlfHeaderInjection() {
   // Build a header value that contains an embedded CRLF — header injection.
   // The unfolder collapses adjacent line; we simulate by injecting raw `\r\n`
@@ -452,6 +478,7 @@ async function run() {
   testGuardEmailUnicodeLocalPartRejected();
   testGuardEmailSyntaxReject();
   testGuardEmailBareLfSmuggling();
+  testGuardEmailSmugglingScanUsesConstantSpace();
   testGuardEmailCrlfHeaderInjection();
   testGuardEmailAutoRouterHeaderInjection();
   testGuardEmailDisplayNameSpoof();

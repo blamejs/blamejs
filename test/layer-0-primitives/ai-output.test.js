@@ -41,6 +41,26 @@ function testUrlExtractionIsLinear() {
         open.r < 8, "4x input took " + open.r.toFixed(1) + "x (" +
         open.small.toFixed(1) + "ms -> " + open.large.toFixed(1) + "ms)");
 
+  // Linear TIME bought with an index one entry per character is the same
+  // amplifier aimed at memory instead. Records the largest typed array the
+  // extraction asks for, which is the auxiliary allocation it controls.
+  var realI32 = global.Int32Array;
+  var widest = 0;
+  function SpyI32(arg) {
+    if (typeof arg === "number" && arg > widest) widest = arg;
+    return new realI32(arg);
+  }
+  SpyI32.prototype = realI32.prototype;
+  SpyI32.BYTES_PER_ELEMENT = realI32.BYTES_PER_ELEMENT;
+  global.Int32Array = SpyI32;
+  try {
+    b.ai.output.sanitize("[".repeat(60000), { audit: false });
+    b.ai.output.sanitize("[x\n".repeat(20000), { audit: false });
+  } catch (_e3) { /* a refusal is fine; the allocation is the subject */ }
+  finally { global.Int32Array = realI32; }
+  check("URL extraction allocates nothing proportional to its input",
+        widest < 4096, "widest typed array was " + widest + " entries");
+
   // The harder shape: every opening bracket has a closing one somewhere ahead,
   // so a per-bracket search re-reads the same suffix from each of them however
   // that search is bounded.
