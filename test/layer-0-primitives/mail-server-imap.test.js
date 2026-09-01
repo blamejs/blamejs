@@ -1168,6 +1168,14 @@ async function testAnOpenerTheListenerWouldRefuseBuysNoExemption() {
           JSON.stringify(seen3.slice(-200)));
     check("and its payload does not reach a handler",
           !/^c1 OK/m.test(seen3), JSON.stringify(seen3.slice(-200)));
+    // The exemption was a prediction about a line the reader had not taken.
+    // Once it refuses that literal the octets are ordinary queue, and the
+    // allowance has to be applied to them rather than waiting for a socket
+    // read that a single coalesced write never produces.
+    await helpers.waitUntil(function () { return /Too much pipelined data/.test(seen3); },
+      { timeoutMs: 5000, label: "refused speculative literal: backlog recharged" });
+    check("and the octets it announced are charged once the literal is refused",
+          /Too much pipelined data/.test(seen3), JSON.stringify(seen3.slice(-200)));
     s3.destroy();
 
     // Many short commands and then the literal, all inside the allowance. The

@@ -1719,6 +1719,48 @@ async function testIdleTimeout() {
   } finally { await srv.close({ timeoutMs: 1000 }); }                                 // allow:raw-time-literal — test-only short drain
 }
 
+// A chunk that arrives while an earlier one is still in a gate is chained
+// behind it, and the flag that stops the queue was written from the socket's
+// own `close` event. That event is a macrotask; the chained chunk resumes on a
+// microtask, so between a handler deciding to tear the connection down and the
+// event firing there is a turn in which the peer's queued commands still run.
+// The flag has to be set where the teardown is decided.
+async function testAQueuedChunkDoesNotRunAfterTheGateTearsDown() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("mx queued chunk after teardown (skipped)", true); return; }
+  var rejectQuery = null;
+  var queries     = 0;
+  var srv = b.mail.server.mx.create({
+    tlsContext: ctx, profile: "permissive", localDomains: ["example.com"],
+    // Awaited without a try/catch, so a rejection reaches the pump's own
+    // handler-fault arm — which answers 421 and tears the connection down.
+    rbl: { query: function () {
+      queries += 1;
+      return new Promise(function (_r, j) { rejectQuery = function () { j(new Error("rbl down")); }; });
+    } },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var sock;
+  try {
+    sock = await _connectTo(info);                       // greeting already read
+    _collect(sock);
+    sock.write("EHLO peer.example.net\r\nMAIL FROM:<a@example.net>\r\nRCPT TO:<x@example.com>\r\n");
+    await helpers.waitUntil(function () { return rejectQuery !== null; },
+      { timeoutMs: 5000, label: "mx queued chunk: first RCPT is in the gate" });
+
+    // A separate segment, chained behind the chunk still in the gate.
+    sock.write("RCPT TO:<y@example.com>\r\n");
+    await helpers.passiveObserve(120, "mx queued chunk: second segment is queued");
+
+    rejectQuery();
+    await helpers.passiveObserve(400, "mx queued chunk: nothing resumes");
+    check("a chunk queued behind a torn-down gate is not processed",
+          queries === 1, String(queries));
+    sock.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                 // allow:raw-time-literal — test-only short drain
+}
+
 // ---- close() drains, then force-destroys a lingering connection ---------
 async function testCloseDestroysLingering() {
   var ctx;
@@ -1935,6 +1977,7 @@ async function run() {
   await testAgentHandoffFailure();
   await testGateThrows();
   await testIdleTimeout();
+  await testAQueuedChunkDoesNotRunAfterTheGateTearsDown();
   await testCloseDestroysLingering();
   await testCloseIdempotent();
   await testTlsErrorPaths();

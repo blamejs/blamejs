@@ -487,6 +487,121 @@ async function testPipelinedAuthCannotRaceTheSubmissionGuard() {
   } finally { await srv.close({ timeoutMs: 1000 }); }                                                  // allow:raw-time-literal — test-only short drain
 }
 
+// Refusing the pipelined backlog destroys the socket, and the command that was
+// already waiting on a verdict resumes the drain when it answers. Unless the
+// close marks the SESSION, that resume reads the buffer the refusal was about
+// and runs it: a transaction pipelined behind an AUTH reaches the agent on a
+// connection the server refused and closed.
+async function testRefusedBacklogDoesNotFinalizeAfterTheVerdict() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("submission refused backlog (skipped)", true); return; }
+  var release   = null;
+  var gate      = new Promise(function (r) { release = r; });
+  var handoffs  = [];
+  var srv = b.mail.server.submission.create({
+    tlsContext: ctx,
+    profile:    "permissive",
+    // The aggregate bound is maxLineBytes * (maxRcptsPerMsg + 4). Both are set
+    // small so a short flood clears it, and the per-line bound (maxLineBytes
+    // * 4) stays well above the longest line the test sends.
+    maxLineBytes:       100,                                                                           // allow:raw-byte-literal — 400-byte per-line bound, far above any line here
+    maxRcptsPerMessage: 2,
+    agent: { handoff: function (env) { handoffs.push(env); return Promise.resolve({ messageId: "<x@t>" }); } },
+    // The mailbox matters: without an assigned send-as identity the queued
+    // MAIL FROM is refused on its own merits and the test would pass whether
+    // or not the reader had stopped.
+    auth: { mechanisms: ["PLAIN"], verify: function () {
+      return gate.then(function () {
+        return { ok: true, actor: { id: "alice@example.com", mailboxes: ["alice@example.com"] } };
+      });
+    } },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  try {
+    var socket = nodeNet.connect(info.port, "127.0.0.1");
+    await new Promise(function (r) { socket.once("connect", r); });
+    await _readGreeting(socket);
+    await _sendCommand(socket, "EHLO client.example.com");
+
+    var seen = "";
+    socket.on("data", function (c) { seen += c.toString("utf8"); });
+
+    // Hold the reader on a credential check that will not finish.
+    var plain = Buffer.from(NUL + "alice" + NUL + "pw", "utf8").toString("base64");
+    socket.write("AUTH PLAIN " + plain + "\r\n");
+    await helpers.passiveObserve(120, "submission refused backlog: verify in flight");
+
+    // Then overrun the allowance, with a whole transaction at the end of it.
+    // Sized to clear the 600-byte bound and still fit in ONE segment: the
+    // refusal destroys the socket, which stops the reader, so bytes in a later
+    // segment never arrive and the transaction has to be in the buffer the
+    // refusal is about.
+    var flood = "";
+    for (var i = 0; i < 110; i += 1) flood += "NOOP\r\n";
+    socket.write(flood +
+      "MAIL FROM:<alice@example.com>\r\n" +
+      "RCPT TO:<b@example.com>\r\n" +
+      "BDAT 5 LAST\r\nhello");
+    await helpers.waitUntil(function () { return /Too many pipelined bytes/.test(seen); },
+      { timeoutMs: 5000, label: "submission refused backlog: refusal written" });
+
+    // Release the verdict the reader was waiting on. Its continuation must not
+    // pick the queue back up.
+    release();
+    await helpers.passiveObserve(500, "submission refused backlog: nothing resumes");
+    check("a transaction queued behind a refused backlog does not reach the agent",
+          handoffs.length === 0, JSON.stringify(handoffs.length));
+    socket.destroy();
+  } finally { if (release) release(); await srv.close({ timeoutMs: 1000 }); }                           // allow:raw-time-literal — test-only short drain
+}
+
+// A session also ends without the listener deciding it. A peer that pipelines
+// a transaction behind a command still waiting on a verdict and then hangs up
+// leaves nothing to mark the session, so the verdict's continuation resumes
+// the drain and the message reaches the agent on a connection that is gone.
+async function testAPeerHangUpStopsTheDrain() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("submission peer hang-up (skipped)", true); return; }
+  var release  = null;
+  var gate     = new Promise(function (r) { release = r; });
+  var handoffs = [];
+  var srv = b.mail.server.submission.create({
+    tlsContext: ctx,
+    profile:    "permissive",
+    agent: { handoff: function (env) { handoffs.push(env); return Promise.resolve({ messageId: "<x@t>" }); } },
+    auth: { mechanisms: ["PLAIN"], verify: function () {
+      return gate.then(function () {
+        return { ok: true, actor: { id: "alice@example.com", mailboxes: ["alice@example.com"] } };
+      });
+    } },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  try {
+    var socket = nodeNet.connect(info.port, "127.0.0.1");
+    await new Promise(function (r) { socket.once("connect", r); });
+    await _readGreeting(socket);
+    await _sendCommand(socket, "EHLO client.example.com");
+
+    // The credential check parks the reader; the whole transaction is queued
+    // behind it in the same segment.
+    var plain = Buffer.from(NUL + "alice" + NUL + "pw", "utf8").toString("base64");
+    socket.write("AUTH PLAIN " + plain + "\r\n" +
+      "MAIL FROM:<alice@example.com>\r\n" +
+      "RCPT TO:<b@example.com>\r\n" +
+      "BDAT 5 LAST\r\nhello");
+    await helpers.passiveObserve(200, "submission peer hang-up: verify in flight");
+
+    socket.destroy();
+    await helpers.passiveObserve(300, "submission peer hang-up: the close is delivered");
+    release();
+    await helpers.passiveObserve(500, "submission peer hang-up: nothing resumes");
+    check("a transaction queued behind a verdict does not reach the agent after a hang-up",
+          handoffs.length === 0, JSON.stringify(handoffs.length));
+  } finally { if (release) release(); await srv.close({ timeoutMs: 1000 }); }                           // allow:raw-time-literal — test-only short drain
+}
+
 async function testBdatOversizeRefused() {
   var ctx;
   try { ctx = await _makeTestTlsContext(); }
@@ -2036,6 +2151,8 @@ async function run() {
   await testBdatBadArgs();
   await testBdatBinaryBytesPreserved();
   await testPipelinedAuthCannotRaceTheSubmissionGuard();
+  await testRefusedBacklogDoesNotFinalizeAfterTheVerdict();
+  await testAPeerHangUpStopsTheDrain();
   await testBdatOversizeRefused();
 
   var tls;

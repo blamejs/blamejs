@@ -448,6 +448,50 @@ async function testPostStlsTimeoutStopsTheReader() {
   } finally { if (releaseList) releaseList(); await s.srv.close({ timeoutMs: 1000 }); }                  // allow:raw-time-literal — test-only short drain
 }
 
+// A connection also ends without the listener deciding it. This listener marks
+// the session from `acceptConnection`'s own close hook, which it wires for the
+// maildrop lease, so the reader already stops here. The sibling listeners have
+// no such hook and take the marker from the shared socket wiring instead; the
+// coverage for that path is in the ManageSieve suite. Kept because it pins the
+// contract from the consumer side rather than from which hook happens to
+// provide it.
+async function testAPeerHangUpStopsTheReader() {
+  var releaseList = null;
+  var listCalled  = false;
+  var marked      = [];
+  var store = _stubStore();
+  store.listMessages = function () {
+    listCalled = true;
+    return new Promise(function (r) { releaseList = function () { r([]); }; });
+  };
+  store.markDelete = async function (actor, dropId, n) { marked.push(n); };
+  var s = await _makeServer({ mailStore: store });
+  var sock = nodeNet.connect(s.port, "127.0.0.1");
+  sock.on("error", function () {});
+  await _readReply(sock);                                    // greeting
+  await _send(sock, "STLS");
+  var tls = nodeTls.connect({ socket: sock, ca: s.caPem, servername: "localhost" });
+  tls.on("error", function () {});
+  await new Promise(function (r, j) { tls.once("secureConnect", r); tls.once("error", j); });
+  try {
+    await _send(tls, "USER alice");
+    await _send(tls, "PASS good");                           // TRANSACTION
+
+    // One segment: the reader takes STAT and waits on a store call that does
+    // not resolve, so DELE is still queued when the peer disappears.
+    tls.write("STAT\r\nDELE 1\r\n");
+    await helpers.waitUntil(function () { return listCalled; },
+      { timeoutMs: 5000, label: "peer hang-up: STAT reached the store" });
+
+    tls.destroy();
+    await helpers.passiveObserve(300, "peer hang-up: the close is delivered");
+    releaseList();
+    await helpers.passiveObserve(500, "peer hang-up: nothing resumes");
+    check("a command queued behind a running handler does not run after the peer hangs up",
+          marked.length === 0, JSON.stringify(marked));
+  } finally { if (releaseList) releaseList(); await s.srv.close({ timeoutMs: 1000 }); }                  // allow:raw-time-literal — test-only short drain
+}
+
 async function testAuthPlainMechanism() {
   var s = await _makeServer();
   var sock = nodeNet.connect(s.port, "127.0.0.1");
@@ -1309,6 +1353,7 @@ async function run() {
   await testPipelinedBacklogIsBounded();
   await testRefusedBacklogStopsTheReader();
   await testPostStlsTimeoutStopsTheReader();
+  await testAPeerHangUpStopsTheReader();
   await testAuthPlainMechanism();
   await testAuthMultiStepChallenge();
   await testAuthMultiStepFailureStillCounts();
