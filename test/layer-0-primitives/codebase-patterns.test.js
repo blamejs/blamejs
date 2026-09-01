@@ -94,6 +94,7 @@
 
 var fs = require("fs");
 var path = require("path");
+var childProcess = require("child_process");
 var nodeCrypto = require("crypto");
 var helpers = require("../helpers");
 var check = helpers.check;
@@ -3026,6 +3027,150 @@ function _timeRegex(re, s) {
   return Number(process.hrtime.bigint() - t0) / 1e6;
 }
 
+function _couldBacktrack(re) {
+  try {
+    require("../../lib/guard-regex").assertSafe(re, "codebase-patterns regex probe");
+    return false;
+  } catch (_e) { return true; }
+}
+
+var PROBE_TIMEOUT_MS = 20000;
+// A single match still running after this long is not slow, it is not
+// returning. The slowest finite pattern this gate has measured costs 400ms.
+var PROBE_PER_MATCH_MS = 5000;
+
+// The child runs the same steps in the same order as the main path, so a
+// pattern is judged the same way wherever it was measured: a 2048-character
+// look decides whether the pattern is worth measuring, a call at 8192
+// characters gives the cost, and 8192 to 32768 gives the growth.
+//
+// Each match writes its start time to the descriptor before it begins and a
+// finish line after it returns. A match interrupted by the deadline leaves a
+// start with no finish, and its start time says how long that one match had
+// been running.
+var _RISKY_PROBE_CHILD = [
+  "var cfs = require('fs');",
+  "var re = new RegExp(process.env.PROBE_SOURCE, process.env.PROBE_FLAGS);",
+  "var subjects = JSON.parse(process.env.PROBE_SUBJECTS);",
+  "var t0 = process.hrtime.bigint();",
+  "function now() { return Number(process.hrtime.bigint() - t0) / 1e6; }",
+  "function ms(s) {",
+  "  try { cfs.writeSync(2, 'S' + now().toFixed(1) + '\\n'); } catch (e) { /* ignore */ }",
+  "  var a = process.hrtime.bigint();",
+  "  try { re.lastIndex = 0; re.test(s); } catch (e) { /* not this gate's business */ }",
+  "  var d = Number(process.hrtime.bigint() - a) / 1e6;",
+  "  try { cfs.writeSync(2, 'F\\n'); } catch (e) { /* ignore */ }",
+  "  return d;",
+  "}",
+  "function best(s) { ms(s); var b = Infinity;",
+  "  for (var k = 0; k < 3; k += 1) b = Math.min(b, ms(s)); return b; }",
+  "var seed = JSON.parse(process.env.PROBE_SEED || '{}');",
+  "var worstCost = seed.cost || 0, worstGrowth = seed.growth || 0;",
+  "var worstLabel = seed.label || '';",
+  "var SIZES = [8192, 16384, 32768];",
+  "for (var i = Number(process.env.PROBE_FROM || 0); i < subjects.length; i += 1) {",
+  "  var fill = subjects[i][0], tail = subjects[i][1];",
+  "  if (ms(fill.repeat(2048) + tail) >= 0.3) {",
+  "    var cost = Math.min(ms(fill.repeat(8192) + tail), ms(fill.repeat(8192) + tail));",
+  "    if (cost >= 5) {",
+  "      var row = [];",
+  "      for (var si = 0; si < SIZES.length; si += 1) {",
+  "        row.push(best(fill.repeat(SIZES[si]) + tail));",
+  "      }",
+  "      if (row[0] > 0.02 && (row[2] / row[0]) > worstGrowth) {",
+  "        worstGrowth = row[2] / row[0]; worstCost = cost; worstLabel = subjects[i][2];",
+  "      }",
+  "    }",
+  "  }",
+  // The subject just finished, and the worst seen so far. A killed probe is
+  // resumed from the next subject carrying this forward, so nothing measured
+  // is thrown away and the run does not restart from the beginning.
+  "  try { cfs.writeSync(2, 'D' + i + ' ' + JSON.stringify({",
+  "    cost: worstCost, growth: worstGrowth, label: worstLabel }) + '\\n'); }",
+  "  catch (e) { /* ignore */ }",
+  "}",
+  "process.stdout.write(JSON.stringify({",
+  "  cost: worstCost, growth: worstGrowth, label: worstLabel }));",
+].join("\n");
+
+// How long the match that was running when the deadline landed had been
+// running, or 0 when every match that started also finished.
+function _longestUnfinishedMatch(marks) {
+  var lines = String(marks || "").split("\n");
+  var startedAt = null;
+  for (var i = 0; i < lines.length; i += 1) {
+    var ln = lines[i];
+    if (ln.charAt(0) === "S") { startedAt = parseFloat(ln.slice(1)); }
+    else if (ln.charAt(0) === "F") { startedAt = null; }
+  }
+  if (startedAt === null || !isFinite(startedAt)) return 0;
+  return PROBE_TIMEOUT_MS - startedAt;
+}
+
+// The last subject the child finished, and the worst measurement it held at
+// that point.
+function _lastCompletedSubject(marks) {
+  var lines = String(marks || "").split("\n");
+  for (var i = lines.length - 1; i >= 0; i -= 1) {
+    if (lines[i].charAt(0) !== "D") continue;
+    var sp = lines[i].indexOf(" ");
+    if (sp === -1) continue;
+    var idx = parseInt(lines[i].slice(1, sp), 10);
+    if (!isFinite(idx)) continue;
+    try { return { index: idx, seed: JSON.parse(lines[i].slice(sp + 1)) }; }
+    catch (_e) { return { index: idx, seed: null }; }
+  }
+  return null;
+}
+
+// Four rounds is far more than any pattern here needs; it bounds a probe that
+// keeps being interrupted rather than letting one pattern run without end.
+var PROBE_MAX_ROUNDS = 4;
+
+function _probeRiskyPattern(source, flags, subjects) {
+  var from = 0;
+  var seed = { cost: 0, growth: 0, label: "" };
+  for (var round = 0; round < PROBE_MAX_ROUNDS; round += 1) {
+    var res = childProcess.spawnSync(process.execPath, ["-e", _RISKY_PROBE_CHILD], {
+      timeout: PROBE_TIMEOUT_MS, encoding: "utf8",
+      env: Object.assign({}, process.env, { PROBE_SOURCE: source, PROBE_FLAGS: flags,
+        PROBE_SUBJECTS: JSON.stringify(subjects), PROBE_FROM: String(from),
+        PROBE_SEED: JSON.stringify(seed) }),
+    });
+    var done = res.status === 0 && typeof res.stdout === "string";
+    if (done) {
+      var parsed = null;
+      try { parsed = JSON.parse(res.stdout); } catch (_e) { parsed = null; }
+      if (parsed && isFinite(parsed.cost) && isFinite(parsed.growth)) {
+        return { neverReturned: false, unmeasured: false, cost: parsed.cost,
+                 growth: parsed.growth, label: parsed.label };
+      }
+      return { neverReturned: false, unmeasured: true, cost: seed.cost,
+               growth: seed.growth, label: seed.label };
+    }
+    // Killed on the deadline, or died. One match still running after
+    // PROBE_PER_MATCH_MS is the pattern this branch reports; many short
+    // matches that each returned only mean the probe ran out of time, so it
+    // resumes at the subject that was in flight with a fresh deadline.
+    if (_longestUnfinishedMatch(res.stderr) >= PROBE_PER_MATCH_MS) {
+      return { neverReturned: true, unmeasured: false, cost: 0, growth: 0, label: "" };
+    }
+    var progress = _lastCompletedSubject(res.stderr);
+    if (progress && progress.seed) seed = progress.seed;
+    var next = progress ? progress.index + 1 : from;
+    if (next <= from) break;                    // no subject completed: resuming repeats this
+    from = next;
+    if (from >= subjects.length) {
+      return { neverReturned: false, unmeasured: false, cost: seed.cost,
+               growth: seed.growth, label: seed.label };
+    }
+  }
+  // Never measured to the end. Reported rather than passed: a pattern this
+  // gate could not measure is not a pattern it has cleared.
+  return { neverReturned: false, unmeasured: true, cost: seed.cost,
+           growth: seed.growth, label: seed.label };
+}
+
 function testOwnRegexesRunLinear() {
   // Characters worth repeating (the classes library patterns quantify over)
   // and a tail that denies the overall match so the engine has to exhaust its
@@ -3048,6 +3193,8 @@ function testOwnRegexesRunLinear() {
     for (var pt = 0; pt < TAILS.length; pt += 1) {
       SUBJECTS.push({
         label: JSON.stringify(FILLERS[pf]) + " x N + " + JSON.stringify(TAILS[pt]),
+        filler: FILLERS[pf],
+        tail: TAILS[pt],
         // A cheap first look. Scanning 8192 characters with two thousand
         // patterns is most of the run even when every one of them is fast, so
         // a quarter-size subject decides who is worth the full measurement.
@@ -3116,7 +3263,27 @@ function testOwnRegexesRunLinear() {
       catch (_e) { continue; }
 
       var worst = 0, worstSubject = "", worstCost = 0;
-      for (var sj = 0; sj < SUBJECTS.length; sj += 1) {
+      var blewUpAt = null;
+      var measuredInChild = false;
+      var unmeasured = false;
+      if (_couldBacktrack(re)) {
+        // Measured over there, so a pattern that never returns is killed
+        // there instead of stopping this run. The child answers the same two
+        // questions, so the verdict below is reached the same way.
+        var probe = _probeRiskyPattern(src.slice(1, lastSlash),
+          src.slice(lastSlash + 1).replace(/[gy]/g, ""),
+          SUBJECTS.map(function (s) { return [s.filler, s.tail, s.label]; }));
+        if (probe.neverReturned) {
+          blewUpAt = true;
+        } else {
+          measuredInChild = true;
+          unmeasured = probe.unmeasured;
+          worst = probe.growth;
+          worstCost = probe.cost;
+          worstSubject = probe.label;
+        }
+      }
+      for (var sj = 0; !blewUpAt && !measuredInChild && sj < SUBJECTS.length; sj += 1) {
         var subj = SUBJECTS[sj];
         // Cost first, growth second.
         //
@@ -3151,10 +3318,27 @@ function testOwnRegexesRunLinear() {
         }
       }
 
+      if (unmeasured) {
+        measured[src] = src.slice(0, 60) + " could not be measured: the probe " +
+                        "was interrupted in every round without finishing its " +
+                        "subjects, so nothing here has cleared it";
+        bad.push({ file: rel, line: li + 1, content: measured[src] });
+        continue;
+      }
+
+      if (blewUpAt) {
+        measured[src] = src.slice(0, 60) + " never returned: probed in a child " +
+                        "process under a deadline, it did not finish one match, " +
+                        "which is what a pattern does when its work doubles with " +
+                        "every character added";
+        bad.push({ file: rel, line: li + 1, content: measured[src] });
+        continue;
+      }
+
       // Both conditions: expensive at the cap AND super-linear. Four times the
       // input is about four times the work when linear and about sixteen when
       // quadratic, so eight separates them with room for a loaded machine.
-      if (worst >= 8) {
+      if (worst >= 8 && worstCost >= 5) {
         measured[src] = src.slice(0, 60) + " costs " + worstCost.toFixed(0) +
                         "ms at 8192 chars and grows " + worst.toFixed(1) +
                         "x for 4x the input (" + worstSubject + ") — rewrite so " +

@@ -24,11 +24,20 @@
       ]
     },
     {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "The vendored `@blamejs/pki` bundle moves to 0.6.14",
+          "body": "`b.mtlsCa` and `b.auth.passkey` are built on the vendored PKI toolkit; `lib/vendor/blamejs-pki.cjs` and its `MANIFEST.json` hashes now carry 0.6.14. The toolkit is internal and is not re-exported, so no blamejs API changes shape.\n\nThe PKCS#12 archives `generateClientP12` writes are unchanged: the classical ECDSA-P384 bridge keeps the RFC 7292 HMAC MacData that pre-3.5 OpenSSL peers can read, the PQC default keeps PBMAC1, and both are authenticated with HMAC-SHA-512. The archive test now reads the digest name alongside the verdict and refuses a wrong password explicitly, so a MAC that verified under SHA-1 would fail the run rather than pass as authenticated."
+        }
+      ]
+    },
+    {
       "heading": "Detectors",
       "items": [
         {
           "title": "A gate measures what the framework's own patterns cost",
-          "body": "`b.guardRegex.assertSafe` screens every operator-supplied pattern and `b.regexLinear` runs one without a backtracking engine. Neither had ever been pointed at the patterns the framework itself ships, so a library pattern could run away and nothing would say so.\n\nThe new check measures rather than inspects. Screening on shape would refuse ten library patterns that are in fact linear, because a shape that can backtrack usually does not; what separates the ones worth fixing is that a single call cost tens of milliseconds at the byte cap its caller enforces. So the gate asks for both: expensive at 8192 characters, and still growing faster than its input between 8k and 32k. It reads every regex literal in the library, not the ones written in a particular place, after a first version that only read `var X = /re/;` declarations walked straight past a pattern written inline."
+          "body": "`b.guardRegex.assertSafe` screens every operator-supplied pattern and `b.regexLinear` runs one without a backtracking engine. Neither had ever been pointed at the patterns the framework itself ships, so a library pattern could run away and nothing would say so.\n\nThe new check measures rather than inspects. Screening on shape would refuse ten library patterns that are in fact linear, because a shape that can backtrack usually does not; what separates the ones worth fixing is that a single call cost tens of milliseconds at the byte cap its caller enforces. So the gate asks for both: expensive at 8192 characters, and still growing faster than its input between 8k and 32k. It reads every regex literal in the library, not the ones written in a particular place, after a first version that only read `var X = /re/;` declarations walked straight past a pattern written inline.\n\nA pattern that can backtrack is measured in a separate process under a deadline, so a pattern whose cost doubles with every character added is named and reported rather than hanging the run. What separates that from a probe that merely ran out of time is how long the match interrupted at the deadline had been running: one match still going after five seconds is the runaway, while many short matches that each returned are just a slow machine. In the second case the probe resumes in a fresh process from the subject it was on, carrying its worst measurement forward. A pattern that never finishes its measurement is reported too, since a pattern the gate could not measure is not one it has cleared."
         }
       ]
     }
