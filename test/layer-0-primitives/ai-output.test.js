@@ -61,6 +61,20 @@ function testUrlExtractionIsLinear() {
   check("URL extraction allocates nothing proportional to its input",
         widest < 4096, "widest typed array was " + widest + " entries");
 
+  // Many short links produce a match apiece. Holding them all before any is
+  // rewritten costs a multiple of a response the caller already accepted, so
+  // each is spliced as it is found. Counting live arrays is not possible from
+  // here; what is observable is that output of many links is rewritten
+  // correctly and in time proportional to its length rather than worse.
+  var link = "[a](http://169.254.169.254/x) ";
+  var many = _ratio(function (n) { return link.repeat(Math.floor(n / link.length)); });
+  check("output of many short links is rewritten in linear time",
+        many.r < 8, "4x input took " + many.r.toFixed(1) + "x (" +
+        many.small.toFixed(1) + "ms -> " + many.large.toFixed(1) + "ms)");
+  var rewritten = b.ai.output.sanitize(link.repeat(500), { audit: false });
+  check("every one of many links is neutralized",
+        rewritten.text.indexOf("169.254.169.254") === -1);
+
   // The harder shape: every opening bracket has a closing one somewhere ahead,
   // so a per-bracket search re-reads the same suffix from each of them however
   // that search is bounded.
