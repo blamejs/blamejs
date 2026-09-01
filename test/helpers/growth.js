@@ -77,7 +77,63 @@ function looksSuperlinear(run, opts) {
   return second !== null && second > threshold;
 }
 
+// The same measurement where the work is asynchronous -- a protocol round
+// trip, a store call -- so `run` returns a promise and each sample is awaited.
+//
+// It exists because the synchronous form cannot be used there at all, and what
+// gets written instead is a single unrepeated reading. One of those decided a
+// release gate at SMOKE_PARALLEL=64: 4x the input measured 9.41 against a bound
+// of 9, on a scan that is linear. A curve reproduces and contention does not,
+// so the verdict is re-measured here for the same reason it is above.
+// A rejection PROPAGATES here, unlike the synchronous form above.
+//
+// There a throw is a legitimate answer: the work ran, a hostile input was
+// refused, and what is being measured is the time it took. Here the work is a
+// round trip, and a rejection means it did not happen — a closed socket makes
+// every later sample reject in about no time, which puts the large reading
+// under the floor and returns "not superlinear". A protocol regression would
+// read as fast enough, which is the one answer this must never give by
+// accident. Let it fail loudly instead.
+async function bestMsAsync(fn, reps) {
+  var lowest = Infinity;
+  for (var i = 0; i < (reps || 3); i += 1) {
+    var t0 = process.hrtime.bigint();
+    await fn();
+    var ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    if (ms < lowest) lowest = ms;
+  }
+  return lowest;
+}
+
+// Same contract as looksSuperlinear, awaiting each sample. Defaults differ in
+// one place: an async sample costs a round trip, so `reps` and `confirmReps`
+// are smaller.
+async function looksSuperlinearAsync(run, opts) {
+  opts = opts || {};
+  var threshold = opts.threshold === undefined ? 3 : opts.threshold;
+  var floorMs   = opts.floorMs === undefined ? 25 : opts.floorMs;
+  var reps      = opts.reps || 2;
+  var confirm   = opts.confirmReps || 4;
+
+  async function ratio(n) {
+    var large = await bestMsAsync(function () { return run(opts.large); }, n);
+    if (large < floorMs) return null;                 // fast enough to rule out
+    var small = await bestMsAsync(function () { return run(opts.small); }, n);
+    return large / Math.max(small, 0.05);             // 0.05ms: timer floor
+  }
+
+  var first = await ratio(reps);
+  if (first === null || first <= threshold) return { superlinear: false, ratio: first };
+  var second = await ratio(confirm);
+  return {
+    superlinear: second !== null && second > threshold,
+    ratio:       second === null ? first : second,
+  };
+}
+
 module.exports = {
-  bestMs:           bestMs,
-  looksSuperlinear: looksSuperlinear,
+  bestMs:                bestMs,
+  looksSuperlinear:      looksSuperlinear,
+  bestMsAsync:           bestMsAsync,
+  looksSuperlinearAsync: looksSuperlinearAsync,
 };

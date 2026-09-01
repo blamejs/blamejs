@@ -2061,40 +2061,38 @@ async function testFoldedDkimTagDoesNotBacktrack(tls) {
     // far below the bound. That is the whole reason to assert a curve instead
     // of a number — the two runs inflate together, and the ratio survives what
     // a ceiling cannot.
-    async function _timeRun(lines) {
-      var hostile = "DKIM-Signature: v=1 x" + "\r\n ".repeat(lines) + "y\r\n" +
-                    "From: u@example.com\r\n\r\nx";
-      await _send(sock, "MAIL FROM:<u@example.com>");
-      await _send(sock, "RCPT TO:<b@example.com>");
-      var started = process.hrtime.bigint();
-      var reply = await _dataDot(sock, hostile);
-      return { ms: Number(process.hrtime.bigint() - started) / 1e6, reply: reply };
-    }
-
     // Sized so both runs are well clear of timer noise. 40,000 lines — the
     // size a millisecond budget was once put around — scans in about 3ms on an
     // idle box, which is the other half of why that budget was measuring load
     // rather than complexity: there was nothing else in the number.
-    var small = await _timeRun(100000);
-    var large = await _timeRun(400000);
-    var ratio = large.ms / Math.max(small.ms, 1);
+    async function _run(lines) {
+      var hostile = "DKIM-Signature: v=1 x" + "\r\n ".repeat(lines) + "y\r\n" +
+                    "From: u@example.com\r\n\r\nx";
+      await _send(sock, "MAIL FROM:<u@example.com>");
+      await _send(sock, "RCPT TO:<b@example.com>");
+      // The verdict is not the point — no d= tag means it is refused either
+      // way. What is measured is how the time moves with the input.
+      await _dataDot(sock, hostile);
+    }
 
-    // The control for a ratio: a measurement too small to mean anything would
-    // make any ratio look fine, so the smaller run has to be genuinely timed.
-    check("submission: the backtracking probe measures real work (" +
-          small.ms.toFixed(0) + "ms at 100k lines)",
-          small.ms >= 5, small.ms.toFixed(0) + "ms — too fast to compare against");
-
-    // The verdict is not the point — no d= tag means it is refused either way.
-    // What is asserted is the curve: four times the input costs a linear scan
-    // about four times the time and a backtracking one about sixteen. The bound
-    // sits between, with room for the load factor measured above on either side
-    // of it.
+    // The shared measurement, not a ratio taken here: it takes the best of
+    // several samples per size, declines to judge below a floor where the shape
+    // is already ruled out, and RE-MEASURES before it fails anything. A single
+    // reading of this probe returned 9.41 against a bound of 9 at
+    // SMOKE_PARALLEL=64 and failed a release gate on a scan that is linear.
+    var verdict = await helpers.looksSuperlinearAsync(_run, {
+      small: 100000, large: 400000,
+      // Four times the input, so the hypotheses are 4x for a linear scan and
+      // 16x for a backtracking one. The bound sits between them with room on
+      // both sides for a load factor, which a 2x step does not leave: a
+      // doubling measured 3.21x here under parallel load, squarely between
+      // what linear and quadratic predict at that step.
+      threshold: 9,
+    });
     check("submission: a folded DKIM-Signature tag is scanned without " +
-          "backtracking (x" + ratio.toFixed(2) + " for 4x the input)",
-          ratio < 9,
-          "100k=" + small.ms.toFixed(0) + "ms 400k=" + large.ms.toFixed(0) +
-          "ms ratio=" + ratio.toFixed(2) + ", reply " + String(large.reply).slice(0, 12));
+          "backtracking (x" + (verdict.ratio === null ? "under floor" : verdict.ratio.toFixed(2)) +
+          " for 4x the input)",
+          verdict.superlinear === false, JSON.stringify(verdict));
   } finally { sock.destroy(); await s.srv.close({ timeoutMs: b.constants.TIME.seconds(2) }); }
 }
 
