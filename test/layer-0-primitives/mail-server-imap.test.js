@@ -1045,6 +1045,153 @@ async function testZeroLengthSynchronizingLiteralGetsAContinuation() {
   } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
 }
 
+// A non-synchronizing literal and its body arrive together, and at that moment
+// no literal is pending yet. Counting raw buffered bytes as queued commands
+// therefore refuses a literal that is well inside its own cap, purely because
+// the opener had not been parsed when the bound was applied.
+async function testCoalescedLiteralIsNotCountedAsBacklog() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("coalesced literal (skipped)", true); return; }
+  var appended = [];
+  var stub = _makeStubMailStore();
+  stub.appendMessage = function (folder, bytes) {
+    appended.push(bytes && bytes.length);
+    return Promise.resolve({ uid: 11, uidValidity: 1 });
+  };
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: stub, profile: "permissive",
+    maxLineBytes: 200,                                                                                 // allow:raw-byte-literal — allowance is 8 lines, far under the literal
+    maxLiteralBytes: 65536,                                                                            // allow:raw-byte-literal — the literal is well inside its own cap
+    auth: { mechanisms: ["LOGIN"], verify: function () {
+      return Promise.resolve({ ok: true, actor: { id: "u1" } });
+    } },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    await _sendCommand(c.socket, "a0", "LOGIN test test");
+    var seen = "";
+    function collect(chunk) { seen += chunk.toString("utf8"); }
+    c.socket.on("data", collect);
+
+    // LITERAL+ so there is no continuation to wait behind: opener and body go
+    // out together and land in one read.
+    var body = "x".repeat(4000);
+    c.socket.write("a1 APPEND INBOX {" + body.length + "+}\r\n" + body + "\r\n");
+    await helpers.waitUntil(function () { return /^a1 /m.test(seen); },
+      { timeoutMs: 5000, label: "coalesced literal: tagged response" });
+
+    check("a literal arriving with its opener is not charged to the backlog",
+          !/Too much pipelined data/.test(seen), JSON.stringify(seen.slice(0, 160)));
+    check("and the command completes with the whole body",
+          /^a1 OK/m.test(seen) && appended.length === 1 && appended[0] === body.length,
+          JSON.stringify({ seen: seen.slice(0, 120), appended: appended }));
+    c.socket.removeListener("data", collect);
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+// The exemption is for a payload the listener would actually collect. Reading
+// it off the `{N+}` a line ends with instead lets any line shaped like a
+// command claim one, and the bound is then satisfied by bytes no handler will
+// ever read: `BOGUS {N+}` is not a command, so its declared payload is queue.
+//
+// The second half is the reason the exemption does NOT also ask whether the
+// session is authenticated. A peer may pipeline LOGIN and APPEND in one write,
+// so the APPEND is judged against the state as it stands before the login. It
+// gives nothing away, because a literal the reader refuses is never opened and
+// the bytes behind it are charged on the next read, which is what the third
+// assertion holds.
+async function testAnOpenerTheListenerWouldRefuseBuysNoExemption() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("refused opener exemption (skipped)", true); return; }
+  var stub = _makeStubMailStore();
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: stub, profile: "permissive",
+    maxLineBytes:    200,                                                                              // allow:raw-byte-literal — allowance is 8 lines, far under the payload
+    maxLiteralBytes: 65536,                                                                            // allow:raw-byte-literal — the payload is inside the literal cap
+    auth: { mechanisms: ["LOGIN"], verify: function () {
+      return Promise.resolve({ ok: true, actor: { id: "u1" } });
+    } },
+  });
+  var payload = "x".repeat(4000);
+  // One listener, two connections: each command is refused on its own session,
+  // and `srv.listen` may only be called once.
+  async function _freshSession(port) {
+    var socket = nodeNet.connect(port, "127.0.0.1");
+    await new Promise(function (r) { socket.once("connect", r); });
+    await _readGreeting(socket);
+    return socket;
+  }
+  try {
+    var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+    var s1 = await _freshSession(info.port);
+    var seen = "";
+    s1.on("data", function (chunk) { seen += chunk.toString("utf8"); });
+    s1.write("a1 BOGUS INBOX {" + payload.length + "+}\r\n" + payload + "\r\n");
+    await helpers.waitUntil(function () { return /Too much pipelined data/.test(seen); },
+      { timeoutMs: 5000, label: "bogus opener: payload charged to the backlog" });
+    check("a payload behind a verb the listener does not have is charged",
+          /Too much pipelined data/.test(seen), JSON.stringify(seen.slice(-160)));
+    s1.destroy();
+
+    // LOGIN and a large APPEND in one write, which RFC 9051 allows and
+    // LITERAL+ exists to make worth doing. The APPEND is over the pipelined
+    // allowance on its own, so it survives only if the payload is exempt.
+    var s2 = await _freshSession(info.port);
+    var seen2 = "";
+    s2.on("data", function (chunk) { seen2 += chunk.toString("utf8"); });
+    s2.write("b1 LOGIN test test\r\n" +
+             "b2 APPEND INBOX {" + payload.length + "+}\r\n" + payload + "\r\n");
+    await helpers.waitUntil(function () { return /^b2 /m.test(seen2); },
+      { timeoutMs: 5000, label: "pipelined login then literal: b2 answered" });
+    check("a literal pipelined behind the login that authorizes it is not refused",
+          !/Too much pipelined data/.test(seen2) && /^b2 OK/m.test(seen2),
+          JSON.stringify(seen2.slice(-200)));
+    s2.destroy();
+
+    // The same APPEND with no login in front of it. The reader refuses the
+    // literal rather than opening it, so the payload stops being exempt as
+    // soon as the opener is taken and the bytes queued behind it are charged.
+    // A synchronizing literal, because the guard refuses LITERAL+ outright to
+    // an unauthenticated peer and the refusal would then be for that reason.
+    var s3 = await _freshSession(info.port);
+    var seen3 = "";
+    s3.on("data", function (chunk) { seen3 += chunk.toString("utf8"); });
+    s3.write("c1 APPEND INBOX {" + payload.length + "}\r\n" + payload + "\r\n");
+    await helpers.waitUntil(function () {
+      return /requires authentication/.test(seen3) || /Too much pipelined data/.test(seen3);
+    }, { timeoutMs: 5000, label: "pre-auth opener: refused" });
+    check("a pre-auth literal is refused rather than collected",
+          /requires authentication|Too much pipelined data/.test(seen3),
+          JSON.stringify(seen3.slice(-200)));
+    check("and its payload does not reach a handler",
+          !/^c1 OK/m.test(seen3), JSON.stringify(seen3.slice(-200)));
+    s3.destroy();
+
+    // Many short commands and then the literal, all inside the allowance. The
+    // opener is found by walking the queue, so how many commands precede it
+    // does not decide whether the literal is accepted.
+    var s4 = await _freshSession(info.port);
+    var seen4 = "";
+    s4.on("data", function (chunk) { seen4 += chunk.toString("utf8"); });
+    var queue = "d0 LOGIN test test\r\n";
+    for (var i = 0; i < 100; i += 1) queue += "d" + (i + 1) + " NOOP\r\n";
+    // The queue has to be long enough that a line-counted scan would stop
+    // short of the opener, and small enough that the backlog bound would not.
+    check("the queued commands are many but inside the allowance",
+          queue.length < (200 + 2) * 8, String(queue.length));
+    s4.write(queue + "dz APPEND INBOX {" + payload.length + "+}\r\n" + payload + "\r\n");
+    await helpers.waitUntil(function () { return /^dz /m.test(seen4); },
+      { timeoutMs: 5000, label: "queued commands then literal: dz answered" });
+    check("a literal behind a queue of short commands is not refused for their number",
+          !/Too much pipelined data/.test(seen4) && /^dz OK/m.test(seen4),
+          JSON.stringify(seen4.slice(-200)));
+    s4.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
 // A literal may be an element of a parenthesized list, where the byte after
 // its octets is the closing paren rather than a space. `ID ("name" {4}` is the
 // shape, and it is one a client may send before authenticating.
@@ -3288,6 +3435,8 @@ async function run() {
     await testLiteralFramingDoesNotDependOnPacketBoundaries();
     await testPipelineBoundIsNotBypassedByAPendingLiteral();
     await testZeroLengthSynchronizingLiteralGetsAContinuation();
+    await testCoalescedLiteralIsNotCountedAsBacklog();
+    await testAnOpenerTheListenerWouldRefuseBuysNoExemption();
     await testLiteralInsideAParenthesizedListCompletes();
     await testAggregateLiteralCapCountsTheFinalLiteral();
     await testLiteralBytesAreNotChargedToTheLineCap();

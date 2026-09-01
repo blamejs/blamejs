@@ -222,7 +222,7 @@ export default [
   // binding is different in kind — it is the only name in the file that a
   // reader assumes is stable everywhere.
   {
-    files: ["lib/**/*.js", "scripts/**/*.js"],
+    files: ["lib/**/*.js", "scripts/**/*.js", "test/**/*.js"],
     ignores: ["lib/vendor/**"],
     plugins: {
       blamejs: {
@@ -326,6 +326,80 @@ export default [
               };
             },
           },
+          // A `var` read above its own assignment is `undefined`, not an error,
+          // so the expression around it produces a plausible wrong value and
+          // runs on. `maxAnnouncedLiteralBytes` was resolved from a `profile`
+          // assigned eight lines lower: `PROFILES[undefined]` took the fallback
+          // and bounded a permissive ManageSieve listener at the strict number,
+          // refusing scripts the profile allows.
+          //
+          // The stock `no-use-before-define` reports 138 sites here, and nearly
+          // all of them are a function body naming a module-level `var` declared
+          // below it — safe, because the call happens after the assignment. What
+          // separates the two is whether a FUNCTION BOUNDARY sits between the
+          // reference and the declaration: with none, the reference evaluates
+          // immediately, while the binding still holds `undefined`. This rule
+          // reports that case only.
+          "no-var-read-before-assignment": {
+            meta: {
+              type: "problem",
+              docs: { description: "a var must not be read above its own assignment in the same scope" },
+              schema: [],
+            },
+            create(context) {
+              const sourceCode = context.sourceCode || context.getSourceCode();
+
+              function enclosingFunction(node) {
+                for (let n = node; n; n = n.parent) {
+                  if (n.type === "FunctionDeclaration" || n.type === "FunctionExpression" ||
+                      n.type === "ArrowFunctionExpression" || n.type === "Program") {
+                    return n;
+                  }
+                }
+                return null;
+              }
+
+              return {
+                "Program:exit"(node) {
+                  const top = sourceCode.getScope
+                    ? sourceCode.getScope(node)
+                    : context.getScope();
+
+                  (function walk(scope) {
+                    for (const variable of scope.variables) {
+                      for (const def of variable.defs) {
+                        // `var` only. `let`/`const` throw on the same read, and
+                        // a parameter or function declaration is bound before
+                        // any statement runs.
+                        if (def.type !== "Variable" || def.parent.kind !== "var") continue;
+                        if (!def.node.init) continue;
+                        const declaredAt = def.node.init.range[1];
+                        const owner = enclosingFunction(def.node);
+                        for (const ref of variable.references) {
+                          if (!ref.identifier.range) continue;
+                          if (ref.identifier.range[0] >= declaredAt) continue;
+                          if (ref.isWrite() && !ref.isRead()) continue;
+                          // A reference inside a nested function runs when that
+                          // function is CALLED, which is the idiomatic and safe
+                          // form. Only a reference evaluated in the declaring
+                          // scope itself reads the hole.
+                          if (enclosingFunction(ref.identifier) !== owner) continue;
+                          context.report({
+                            node: ref.identifier,
+                            message: "`" + variable.name + "` is read here but assigned lower in " +
+                              "the same scope, so it is `undefined` at this point rather than an " +
+                              "error — the surrounding expression yields a wrong value and runs " +
+                              "on. Move the declaration above this line.",
+                          });
+                        }
+                      }
+                    }
+                    for (const child of scope.childScopes) walk(child);
+                  })(top);
+                },
+              };
+            },
+          },
           // Content-safety primitives screen input by walking characters, never
           // with a regular expression — an attacker supplies the subject, and a
           // pattern with nested quantifiers turns that into a denial of service.
@@ -399,7 +473,20 @@ export default [
         },
       },
     },
-    rules: { "blamejs/no-shadowed-module-binding": "error" },
+    rules: {
+      "blamejs/no-shadowed-module-binding":    "error",
+      "blamejs/no-var-read-before-assignment": "error",
+    },
+  },
+  {
+    // `test/` is in the block above so `no-var-read-before-assignment` covers
+    // it — a test that reads a hole asserts against `undefined` and passes for
+    // the wrong reason, which is worse than a failure. `no-shadowed-module-
+    // binding` stays off there: it reports 43 sites, and a fixture naming a
+    // local `db` or `net` is the clearest name available inside a test that
+    // never calls the module afterwards.
+    files: ["test/**/*.js"],
+    rules: { "blamejs/no-shadowed-module-binding": "off" },
   },
   {
     // Nested primitives are in scope too. The scanner this replaces selected on

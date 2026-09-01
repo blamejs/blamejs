@@ -323,6 +323,76 @@ function testBodyRateWindowGivesNoCreditForAnEarlyBurst() {
         JSON.stringify(judged.map(function (j) { return j.elapsedMs; })));
 }
 
+// The listeners bound how much command text may wait while a handler runs, and
+// a literal's payload is not waiting. Which bytes are payload is the caller's
+// question, because only the listener knows whether it would take that line
+// now; this asks whether the shared scan does what it is told.
+function testAnnouncedLiteralBytes() {
+  // Every line ending in `{N}` opens a literal of N bytes. A test-only stand-in
+  // for a listener's guard, so the scan itself is what is under test.
+  function tail(line) {
+    var m = /\{([0-9]+)\}$/.exec(line);
+    return m ? parseInt(m[1], 10) : null;
+  }
+  function ann(text, cfg) {
+    var full = {
+      pending: null, maxLineBytes: 1024, maxPipelinedBytes: 8208, openerBytes: tail,
+    };
+    for (var k in cfg) if (Object.prototype.hasOwnProperty.call(cfg, k)) full[k] = cfg[k];
+    return mailServerNet.announcedLiteralBytes(Buffer.from(text, "utf8"), full);
+  }
+
+  check("announcedLiteralBytes: a transfer already in progress answers on its own",
+    ann("anything at all", { pending: { size: 500, body: Buffer.alloc(120) } }) === 380);
+  check("announcedLiteralBytes: a completed transfer is owed nothing",
+    ann("", { pending: { size: 40, body: Buffer.alloc(40) } }) === 0);
+
+  check("announcedLiteralBytes: an opener's arrived payload is exempt",
+    ann("PUT {10}\r\n0123456789") === 10);
+  check("announcedLiteralBytes: only what has arrived counts",
+    ann("PUT {10}\r\n0123") === 4);
+  check("announcedLiteralBytes: a line that opens nothing is skipped",
+    ann("NOOP\r\nPUT {6}\r\nabcdef") === 6);
+  check("announcedLiteralBytes: an unterminated line exempts nothing",
+    ann("PUT {10}") === 0);
+  check("announcedLiteralBytes: a zero-octet opener exempts nothing",
+    ann("PUT {0}\r\nNOOP\r\n") === 0);
+
+  // Only one literal can be in flight, because the reader takes one command at
+  // a time. A second is queue, which is exactly what the bound counts.
+  check("announcedLiteralBytes: a second opener behind the first is not exempt",
+    ann("PUT {4}\r\nabcdPUT {4}\r\nefgh") === 4);
+
+  // A line over the cap is refused where lines are taken, so the scan stops
+  // rather than reading an opener out of bytes that will never be a command.
+  check("announcedLiteralBytes: a line longer than the cap stops the scan",
+    ann("PUT " + "x".repeat(40) + " {6}\r\nabcdef", { maxLineBytes: 8 }) === 0);
+
+  // The scan walks the caller's whole allowance, so a client that queues
+  // hundreds of short commands before the one that opens a literal is still
+  // answered. A fixed line count would refuse this for the number of commands
+  // rather than for their size.
+  var many = "";
+  for (var i = 0; i < 400; i += 1) many += "NOOP\r\n";
+  check("announcedLiteralBytes: the fixture is many lines but inside the allowance",
+    many.length < 8208 && many.length / 6 > 64);
+  check("announcedLiteralBytes: an opener behind hundreds of short commands is found",
+    ann(many + "PUT {6}\r\nabcdef") === 6);
+
+  // Past the allowance the caller refuses the connection whatever this says,
+  // so the scan stops rather than walking an unbounded queue.
+  var over = "";
+  while (over.length <= 8208) over += "NOOP\r\n";
+  check("announcedLiteralBytes: an opener past the allowance is not reached",
+    ann(over + "PUT {6}\r\nabcdef") === 0);
+
+  // A caller that answers with something other than a count is not believed.
+  check("announcedLiteralBytes: a negative count exempts nothing",
+    ann("PUT\r\nbody", { openerBytes: function () { return -1; } }) === 0);
+  check("announcedLiteralBytes: a non-numeric count exempts nothing",
+    ann("PUT\r\nbody", { openerBytes: function () { return "12"; } }) === 0);
+}
+
 // RFC 5233: the detail part after the delimiter is chosen by whoever writes
 // the address, so `alice+anything@example.com` is delivered to the mailbox
 // `alice@example.com` and can never be enumerated in advance. Folding is what
@@ -379,6 +449,7 @@ function testFoldSubaddress() {
 
 async function run() {
   testFoldSubaddress();
+  testAnnouncedLiteralBytes();
   testBodyRateWindowGivesNoCreditForAnEarlyBurst();
   await testListenerCeilingRefusesBeyondMaxConnections();
   await testPipelinedSaslResponseAbandonsTheRoundInFlight();

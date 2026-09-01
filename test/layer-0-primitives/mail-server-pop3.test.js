@@ -341,6 +341,113 @@ async function testPipelinedBacklogIsBounded() {
   } finally { if (release) release(); await s.srv.close({ timeoutMs: 1000 }); }                          // allow:raw-time-literal — test-only short drain
 }
 
+// Refusing a backlog closes the connection, and the reader has to stop with
+// it. The pump was waiting on a handler; when that handler settles its
+// continuation resumes, and unless closing marks the session the queued
+// commands are executed on a connection the server already refused.
+async function testRefusedBacklogStopsTheReader() {
+  var release = null;
+  var gate = new Promise(function (r) { release = r; });
+  // STAT reaches the store through listMessages, and only once the session is
+  // in TRANSACTION — so the verify SUCCEEDS here. Otherwise the state guard
+  // refuses the queued command for its own reasons and the test would pass
+  // whether or not the reader had stopped.
+  var seenVerbs = [];
+  var store = _stubStore();
+  var origList = store.listMessages;
+  store.listMessages = function () {
+    seenVerbs.push("listMessages");
+    return origList.apply(this, arguments);
+  };
+  var s = await _makeServer({
+    mailStore: store,
+    auth: { verify: function () {
+      return gate.then(function () {
+        return { ok: true, actor: { username: "alice", tenantId: "t1" } };
+      });
+    } },
+  });
+  var sock = nodeNet.connect(s.port, "127.0.0.1");
+  sock.on("error", function () {});
+  await _readReply(sock);                                    // greeting
+  await _send(sock, "STLS");
+  var tls = nodeTls.connect({ socket: sock, ca: s.caPem, servername: "localhost" });
+  tls.on("error", function () {});
+  await new Promise(function (r, j) { tls.once("secureConnect", r); tls.once("error", j); });
+  try {
+    var seen = "";
+    tls.on("data", function (c) { seen += c.toString("utf8"); });
+
+    // Hold the reader on a credential check that will not finish.
+    tls.write("USER alice\r\nPASS good\r\n");
+    await helpers.waitUntil(function () { return /Send password/.test(seen); },
+      { timeoutMs: 5000, label: "refused backlog: verify in flight" });
+
+    // Then overrun the allowance, with a real command at the end of the queue.
+    var flood = "";
+    for (var i = 0; i < 3000; i += 1) flood += "NOOP\r\n";
+    tls.write(flood + "STAT\r\n");
+    await helpers.waitUntil(function () { return /Too much pipelined data/.test(seen); },
+      { timeoutMs: 5000, label: "refused backlog: refusal written" });
+
+    // Release the handler the reader was waiting on. Its continuation must not
+    // pick the queue back up.
+    release();
+    await helpers.passiveObserve(500, "refused backlog: nothing resumes");
+    check("a command queued behind a refused backlog is not executed",
+          seenVerbs.length === 0, JSON.stringify(seenVerbs));
+    tls.destroy();
+  } finally { if (release) release(); await s.srv.close({ timeoutMs: 1000 }); }                          // allow:raw-time-literal — test-only short drain
+}
+
+// The same stop, on the other close path. A post-STLS idle timeout is wired
+// separately from the plaintext one and hands the upgraded socket to the
+// close, so a close that does not take the session leaves the reader believing
+// the connection is still live and it runs the peer's queued commands after
+// the teardown wrote -ERR and destroyed the socket.
+async function testPostStlsTimeoutStopsTheReader() {
+  var releaseList = null;
+  var listCalled  = false;
+  var marked      = [];
+  var store = _stubStore();
+  store.listMessages = function () {
+    listCalled = true;
+    return new Promise(function (r) { releaseList = function () { r([]); }; });
+  };
+  store.markDelete = async function (actor, dropId, n) { marked.push(n); };
+  var s = await _makeServer({
+    mailStore:     store,
+    idleTimeoutMs: b.constants.TIME.seconds(0.3),
+  });
+  var sock = nodeNet.connect(s.port, "127.0.0.1");
+  sock.on("error", function () {});
+  await _readReply(sock);                                    // greeting
+  await _send(sock, "STLS");
+  var tls = nodeTls.connect({ socket: sock, ca: s.caPem, servername: "localhost" });
+  tls.on("error", function () {});
+  await new Promise(function (r, j) { tls.once("secureConnect", r); tls.once("error", j); });
+  try {
+    await _send(tls, "USER alice");
+    await _send(tls, "PASS good");                           // TRANSACTION
+
+    var seen = "";
+    tls.on("data", function (c) { seen += c.toString("utf8"); });
+    // One segment: the reader takes STAT and waits on a store call that does
+    // not resolve, so DELE is still queued when the connection goes idle.
+    tls.write("STAT\r\nDELE 1\r\n");
+    await helpers.waitUntil(function () { return listCalled; },
+      { timeoutMs: 5000, label: "post-STLS timeout: STAT reached the store" });
+    await helpers.waitUntil(function () { return /Idle timeout/.test(seen); },
+      { timeoutMs: 5000, label: "post-STLS timeout: idle -ERR written" });
+
+    releaseList();
+    await helpers.passiveObserve(500, "post-STLS timeout: nothing resumes");
+    check("a command queued behind a running handler does not run after a post-TLS timeout",
+          marked.length === 0, JSON.stringify(marked));
+    tls.destroy();
+  } finally { if (releaseList) releaseList(); await s.srv.close({ timeoutMs: 1000 }); }                  // allow:raw-time-literal — test-only short drain
+}
+
 async function testAuthPlainMechanism() {
   var s = await _makeServer();
   var sock = nodeNet.connect(s.port, "127.0.0.1");
@@ -1200,6 +1307,8 @@ async function run() {
   await testPipelinedCredentialsCannotRaceTheAuthGuard();
   await testPipelinedAuthVerbsCannotRaceEither();
   await testPipelinedBacklogIsBounded();
+  await testRefusedBacklogStopsTheReader();
+  await testPostStlsTimeoutStopsTheReader();
   await testAuthPlainMechanism();
   await testAuthMultiStepChallenge();
   await testAuthMultiStepFailureStillCounts();
