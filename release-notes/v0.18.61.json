@@ -30,6 +30,10 @@
           "body": "`b.mail.server.mx.create`, `.submission.create`, `.imap.create`, `.pop3.create` and `.managesieve.create` throw `mail-server-<name>/bad-opts` naming the unknown key and listing the accepted ones. They accepted anything: a misspelled option left the setting at its default while the caller believed it was set, and afterwards nothing distinguished a typo from an omission. These options decide security posture, so the failure was silent in the direction that matters.\n\nUpgrade note: a call passing a name that was never read now throws where it used to start a listener. That is the point, and the message names the key.\n\nTwo names were only ever accepted, never read. `compress` appeared in a source comment describing how to enable COMPRESS=DEFLATE; nothing read it, and the extension is not offered because a compression oracle applies to the encrypted stream. `maxSize` and `depth` are parsed from a GETMETADATA command, not from construction."
         },
         {
+          "title": "The vendored `@blamejs/pki` bundle moves to 0.6.16",
+          "body": "`b.mtlsCa` and `b.auth.passkey` are built on the vendored PKI toolkit; `lib/vendor/blamejs-pki.cjs` and its `MANIFEST.json` hashes now carry 0.6.16. The toolkit is internal and is not re-exported, so no blamejs API changes shape.\n\nIt carries a Sigstore verification fix: a bundle whose certificate holds a non-text subjectAltName `otherName` value is no longer read as an identity, so a value whose raw bytes matched a pinned identity can no longer satisfy an identity policy. The behaviour change in the release, SCEP enrollment polling a PENDING response, is on verbs the framework does not call."
+        },
+        {
           "title": "`audit` reaches the sink on the listeners that document it",
           "body": "`b.mail.server.imap`, `.pop3` and `.managesieve` document an `audit` option and never read it, so an operator who wired a sink received nothing from these three. The sink is now validated at construction, in the same shape every other primitive takes, and receives each event alongside the framework audit rather than in place of it."
         }
