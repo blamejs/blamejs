@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.18.59",
-  "createdAt": "2026-08-31T17:06:24.176Z",
+  "frameworkVersion": "0.18.60",
+  "createdAt": "2026-09-01T06:49:16.297Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -7145,6 +7145,10 @@
           "type": "function",
           "arity": 2
         },
+        "firstDelimited": {
+          "type": "function",
+          "arity": 4
+        },
         "firstInRanges": {
           "type": "function",
           "arity": 3
@@ -7217,6 +7221,10 @@
           "type": "function",
           "arity": 1
         },
+        "lastDelimited": {
+          "type": "function",
+          "arity": 3
+        },
         "matchesAtFolded": {
           "type": "function",
           "arity": 3
@@ -7268,6 +7276,10 @@
         "trimRanges": {
           "type": "function",
           "arity": 3
+        },
+        "trimTrailingChars": {
+          "type": "function",
+          "arity": 2
         }
       }
     },

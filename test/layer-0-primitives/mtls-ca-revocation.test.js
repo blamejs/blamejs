@@ -178,8 +178,16 @@ async function testP12MacFollowsAlgorithmTier() {
   var parsedC = pki.schema.pkcs12.parse(p12c.p12);
   check("classical-bridge P12 uses the legacy RFC 7292 HMAC MacData (not PBMAC1)",
         parsedC.mac && parsedC.mac.kind === "hmac");
+  // verifyMac reports the digest beside the verdict. Read both: an archive
+  // whose MAC verified under a SHA-1 digest is authenticated by a hash that no
+  // longer resists collision, and a bare pass/fail cannot tell the two apart.
+  var macC = await pki.pkcs12.verifyMac(p12c.p12, "p12-pw-classical-7h2");
   check("classical-bridge P12 MacData verifies under its password",
-        (await pki.pkcs12.verifyMac(p12c.p12, "p12-pw-classical-7h2")) === true);
+        macC.valid === true);
+  check("classical-bridge P12 MacData is HMAC-SHA-512, not a legacy SHA-1 digest",
+        macC.macAlgorithm === "hmac" && macC.macAlgorithmName === "sha512");
+  check("classical-bridge P12 MacData refuses a wrong password",
+        (await pki.pkcs12.verifyMac(p12c.p12, "p12-pw-classical-wrong")).valid === false);
 
   var caP = b.mtlsCa.create({ dataDir: dirP, caKeySealedMode: "disabled" });
   var p12p = await caP.generateClientP12({ cn: "pqc-holder", password: "p12-pw-pqc-7h2" });

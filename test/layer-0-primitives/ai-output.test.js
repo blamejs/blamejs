@@ -9,7 +9,126 @@ var helpers = require("../helpers");
 var b     = helpers.b;
 var check = helpers.check;
 
+// The URL extractors are scans, not patterns. As patterns they had no start
+// anchor and restarted at every "[", so model output that is a run of opening
+// brackets cost time proportional to its square until the bracket bound took
+// over. Growth is the assertion, not a wall-clock budget, so a loaded machine
+// moves both readings together.
+function testUrlExtractionIsLinear() {
+  function _sanitized(s) {
+    var r = b.ai.output.sanitize(s, { audit: false });
+    return (r && r.text) || String(r);
+  }
+  function _ms(build, n) {
+    var subject = build(n);
+    try { b.ai.output.sanitize(subject, { audit: false }); } catch (_e) { /* refusal is fine */ }
+    var best = Infinity;
+    for (var k = 0; k < 3; k += 1) {
+      var t0 = process.hrtime.bigint();
+      try { b.ai.output.sanitize(subject, { audit: false }); } catch (_e2) { /* timing */ }
+      best = Math.min(best, Number(process.hrtime.bigint() - t0) / 1e6);
+    }
+    return best;
+  }
+  function _ratio(build) {
+    var small = _ms(build, 4000);
+    var large = _ms(build, 16000);
+    return { r: small > 0.05 ? (large / small) : 1, small: small, large: large };
+  }
+
+  var open = _ratio(function (n) { return "[".repeat(n); });
+  check("a run of opening brackets is scanned in linear time",
+        open.r < 8, "4x input took " + open.r.toFixed(1) + "x (" +
+        open.small.toFixed(1) + "ms -> " + open.large.toFixed(1) + "ms)");
+
+  // Linear TIME bought with an index one entry per character is the same
+  // amplifier aimed at memory instead. Records the largest typed array the
+  // extraction asks for, which is the auxiliary allocation it controls.
+  var realI32 = global.Int32Array;
+  var widest = 0;
+  function SpyI32(arg) {
+    if (typeof arg === "number" && arg > widest) widest = arg;
+    return new realI32(arg);
+  }
+  SpyI32.prototype = realI32.prototype;
+  SpyI32.BYTES_PER_ELEMENT = realI32.BYTES_PER_ELEMENT;
+  global.Int32Array = SpyI32;
+  try {
+    b.ai.output.sanitize("[".repeat(60000), { audit: false });
+    b.ai.output.sanitize("[x\n".repeat(20000), { audit: false });
+  } catch (_e3) { /* a refusal is fine; the allocation is the subject */ }
+  finally { global.Int32Array = realI32; }
+  check("URL extraction allocates nothing proportional to its input",
+        widest < 4096, "widest typed array was " + widest + " entries");
+
+  // Many short links produce a match apiece. Holding them all before any is
+  // rewritten costs a multiple of a response the caller already accepted, so
+  // each is spliced as it is found. Counting live arrays is not possible from
+  // here; what is observable is that output of many links is rewritten
+  // correctly and in time proportional to its length rather than worse.
+  var link = "[a](http://169.254.169.254/x) ";
+  var many = _ratio(function (n) { return link.repeat(Math.floor(n / link.length)); });
+  check("output of many short links is rewritten in linear time",
+        many.r < 8, "4x input took " + many.r.toFixed(1) + "x (" +
+        many.small.toFixed(1) + "ms -> " + many.large.toFixed(1) + "ms)");
+  var rewritten = b.ai.output.sanitize(link.repeat(500), { audit: false });
+  check("every one of many links is neutralized",
+        rewritten.text.indexOf("169.254.169.254") === -1);
+
+  // The harder shape: every opening bracket has a closing one somewhere ahead,
+  // so a per-bracket search re-reads the same suffix from each of them however
+  // that search is bounded.
+  var closed = _ratio(function (n) { return "[".repeat(n) + "]"; });
+  check("a run of opening brackets before a distant closing one is linear too",
+        closed.r < 8, "4x input took " + closed.r.toFixed(1) + "x (" +
+        closed.small.toFixed(1) + "ms -> " + closed.large.toFixed(1) + "ms)");
+
+  // The reference-definition scan reads each LINE, so many lines that open a
+  // bracket and never close it is its own version of the same shape: a search
+  // per line re-reads the whole remaining text from each one.
+  var perLine = _ratio(function (n) { return "[\n".repeat(n); });
+  check("many lines that open a bracket and never close it are linear",
+        perLine.r < 8, "4x input took " + perLine.r.toFixed(1) + "x (" +
+        perLine.small.toFixed(1) + "ms -> " + perLine.large.toFixed(1) + "ms)");
+
+  // The extraction itself is unchanged, including the case the exact-offset
+  // splice exists for: an alt text equal to its own target URL.
+  check("an image URL pointing at link-local metadata is neutralized",
+        _sanitized("![u](http://169.254.169.254/latest/meta-data)").indexOf("169.254") === -1);
+  check("a link URL pointing at link-local metadata is neutralized",
+        _sanitized("[t](http://169.254.169.254/x)").indexOf("169.254") === -1);
+  check("a reference definition is neutralized too",
+        _sanitized("[id]: http://169.254.169.254/z").indexOf("169.254") === -1);
+  check("an alt text equal to its target still rewrites the target",
+        _sanitized("![u](u)").indexOf("about:blank") !== -1);
+  check("an ordinary external https URL is left alone",
+        _sanitized("[t](https://example.com/x)").indexOf("https://example.com/x") !== -1);
+
+  // A reference label is "any character but ]", and a newline is one of those,
+  // so the label may span lines. Reading only to the end of the line let a
+  // label with a break in it through while the single-line form was caught.
+  check("a reference label spanning a line break is still neutralized",
+        _sanitized("[a\nb]: http://169.254.169.254/x").indexOf("169.254") === -1);
+  check("an indented reference definition is neutralized",
+        _sanitized("  [x]: http://169.254.169.254/q").indexOf("169.254") === -1);
+
+  // A line starts after any JavaScript line terminator, not only a line feed.
+  // Splitting on the line feed alone left a definition introduced by a bare
+  // carriage return or a Unicode line separator unrecognized. The separators
+  // are built from character codes so no invisible byte sits in this file.
+  var CR = String.fromCharCode(0x0D);
+  var LF = String.fromCharCode(0x0A);
+  [["CR", CR], ["U+2028", String.fromCharCode(0x2028)],
+   ["U+2029", String.fromCharCode(0x2029)], ["CRLF", CR + LF]]
+    .forEach(function (pair) {
+      check("a reference definition after " + pair[0] + " is neutralized",
+            _sanitized("safe" + pair[1] + "[id]: http://169.254.169.254/x")
+              .indexOf("169.254") === -1);
+    });
+}
+
 async function run() {
+  testUrlExtractionIsLinear();
   check("b.ai.output.sanitize is fn", typeof b.ai.output.sanitize === "function");
   check("b.ai.output.redact is fn",   typeof b.ai.output.redact === "function");
 

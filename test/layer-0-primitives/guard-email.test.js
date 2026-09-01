@@ -177,6 +177,32 @@ function testGuardEmailBareLfSmuggling() {
         rv.issues.some(function (i) { return i.kind === "smtp-smuggling"; }));
 }
 
+// The smuggling scan walks its input once. It must not also BUILD anything
+// that grows with the input: a table of one entry per character turns an
+// under-cap message into an allocation several times its size, and the
+// permissive profile accepts 128 MiB. Records the largest typed array the
+// scan asks for, which is the auxiliary allocation the scan controls.
+function testGuardEmailSmugglingScanUsesConstantSpace() {
+  var msg = "From: a@example.com\r\nTo: b@example.com\r\nSubject: x\r\n\r\n" +
+            "\r".repeat(200000) + "body\r\n";
+  var real = global.Int32Array;
+  var widest = 0;
+  function Spy(arg) {
+    if (typeof arg === "number" && arg > widest) widest = arg;
+    return new real(arg);
+  }
+  Spy.prototype = real.prototype;
+  Spy.BYTES_PER_ELEMENT = real.BYTES_PER_ELEMENT;
+  global.Int32Array = Spy;
+  try {
+    b.guardEmail.validateMessage(msg, { profile: "permissive" });
+  } finally {
+    global.Int32Array = real;
+  }
+  check("the smuggling scan allocates nothing proportional to its input",
+        widest < 4096);
+}
+
 function testGuardEmailCrlfHeaderInjection() {
   // Build a header value that contains an embedded CRLF — header injection.
   // The unfolder collapses adjacent line; we simulate by injecting raw `\r\n`
@@ -398,7 +424,46 @@ function testAddressShapesAgreeWithThePatternsTheyReplaced() {
         splitDiffs.length === 0, splitDiffs.slice(0, 3).join(" | "));
 }
 
+// The smuggled-verb scan looks for an SMTP verb after a bare line ending. It
+// skipped whitespace by walking forward from every bare ending it found, and a
+// carriage return is itself whitespace, so a value that is nothing but bare
+// carriage returns made it re-walk the same run once per position: time
+// proportional to the SQUARE of the value. A guard is handed hostile input by
+// definition, so this is the one place that shape is guaranteed to arrive.
+function testSmuggledVerbScanIsLinear() {
+  function _ms(n) {
+    var subject = "\r".repeat(n);
+    try { b.guardEmail.sanitize(subject); } catch (_e) { /* refusal is fine */ }
+    var best = Infinity;
+    for (var k = 0; k < 3; k += 1) {
+      var t0 = process.hrtime.bigint();
+      try { b.guardEmail.sanitize(subject); } catch (_e2) { /* timing the work */ }
+      best = Math.min(best, Number(process.hrtime.bigint() - t0) / 1e6);
+    }
+    return best;
+  }
+  var small = _ms(2000);
+  var large = _ms(8000);
+  // Four times the input is about four times the work when the scan is linear
+  // and about sixteen when it is quadratic. Growth rather than a wall-clock
+  // budget, so a loaded machine moves both readings together.
+  var ratio = small > 0.05 ? (large / small) : 1;
+  check("a value of bare carriage returns is scanned in linear time",
+        ratio < 8, "4x input took " + ratio.toFixed(1) + "x the time (" +
+        small.toFixed(1) + "ms -> " + large.toFixed(1) + "ms)");
+
+  // The detection itself is unchanged: a bare ending followed by a verb is
+  // still smuggling, and one followed by ordinary text is still not.
+  var smuggled = b.guardEmail.validateMessage("Subject: hi\r.\r\n RCPT TO: <x@y.example>");
+  check("a bare ending before an SMTP verb is still detected",
+        smuggled && smuggled.ok === false);
+  var clean = b.guardEmail.validateMessage("Subject: hi\r\nTo: a@b.example\r\n\r\nbody text\r\n");
+  check("an ordinary message is still accepted", clean && clean.ok === true,
+        JSON.stringify(clean && clean.issues));
+}
+
 async function run() {
+  testSmuggledVerbScanIsLinear();
   testAddressShapesAgreeWithThePatternsTheyReplaced();
   testGuardEmailSurface();
   testGuardEmailRegistryParity();
@@ -413,6 +478,7 @@ async function run() {
   testGuardEmailUnicodeLocalPartRejected();
   testGuardEmailSyntaxReject();
   testGuardEmailBareLfSmuggling();
+  testGuardEmailSmugglingScanUsesConstantSpace();
   testGuardEmailCrlfHeaderInjection();
   testGuardEmailAutoRouterHeaderInjection();
   testGuardEmailDisplayNameSpoof();

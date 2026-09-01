@@ -94,6 +94,7 @@
 
 var fs = require("fs");
 var path = require("path");
+var childProcess = require("child_process");
 var nodeCrypto = require("crypto");
 var helpers = require("../helpers");
 var check = helpers.check;
@@ -2959,8 +2960,15 @@ function testFormatValidatorLengthCap() {
       // there is no path on which the regex sees more than N characters. Only
       // counted on the test line itself, so a slice of some OTHER value
       // nearby cannot vouch for this one.
+      // A subject read as a single character (`s.charAt(i)`, `s.charCodeAt(i)`)
+      // is bounded at one character by construction, which is a stronger
+      // guarantee than any comparison against a length. Character-at-a-time
+      // scanning is how a pattern that would otherwise backtrack across the
+      // whole string gets rewritten, so the gate has to recognise the shape
+      // the fix takes.
       if (/\.length\s*[><=!]/.test(window) || /byteLength/.test(window) ||
-          /\.slice\(\s*0\s*,\s*\d+\s*\)/.test(line)) continue;
+          /\.slice\(\s*0\s*,\s*\d+\s*\)/.test(line) ||
+          /\.charAt\(|\.charCodeAt\(/.test(line)) continue;
       bad.push({
         file:    _relPath(files[fi]),
         line:    li + 1,
@@ -2972,6 +2980,377 @@ function testFormatValidatorLengthCap() {
   _report("regex-only format validators bound length before test " +
           "(or have allow marker)",
     bad);
+}
+
+// ---- Pattern: the framework's OWN regexes run in time proportional to input ----
+//
+// b.guardRegex.assertSafe screens every OPERATOR-supplied pattern, and
+// b.regexLinear runs one without a backtracking engine. Neither ever looked at
+// the patterns the framework itself ships, so a library regex could backtrack
+// super-linearly and nothing would say so. `NUMERIC_LITERAL_RE` in lib/forms.js
+// did: `\d+\.?\d*` lets the two digit runs split a digit sequence many ways, so
+// a long run of digits followed by a character that fails the anchor took time
+// proportional to the SQUARE of the length. Its own comment claimed it was
+// linear.
+//
+// Measured rather than pattern-matched. assertSafe is deliberately conservative
+// (it refuses shapes that merely COULD backtrack) and refuses ten library
+// patterns that are in fact linear, so screening on shape would mean an
+// allowlist of things that are not bugs. Growth is the property that matters
+// and the only one that distinguishes them.
+//
+// The threshold is wide on purpose: 4x the input is ~4x the work when linear
+// and ~16x when quadratic, so 8x separates them with room for a loaded
+// machine, and each timing is the best of three to drop scheduler noise. A
+// regex is only escalated to the growth measurement when a cheap 600-character
+// probe is already slow, which keeps the whole gate around 400ms.
+// Every regex literal, wherever it is written.
+//
+// The first version of this read `var X = /re/;` declarations, which is a
+// name-shaped lens over a population that does not care about names: the
+// second super-linear pattern in lib/ was written inline as
+// `parts[0].match(/re/)` and the declaration scan walked past it. Narrowing to
+// "declarations plus the method calls I thought of" only moves the same
+// mistake one step along, so the scan takes any literal at all.
+//
+// A `/` that is really a division can be captured this way, but only a subject
+// that is BOTH expensive and super-linear is reported, and no such accident
+// exists across the 2118 literals in lib/. Nothing is skipped to keep it
+// quick: probing all of them costs about a tenth of a second.
+var _REGEX_SITES = [
+  new RegExp("(\\/(?:[^\\/\\\\\\n\\[]|\\\\.|\\[(?:[^\\]\\\\\\n]|\\\\.)*\\])+\\/[gimsuyd]*)", "g"),
+];
+
+function _timeRegex(re, s) {
+  var t0 = process.hrtime.bigint();
+  try { re.lastIndex = 0; re.test(s); } catch (_e) { /* a pattern that throws is not this gate's business */ }
+  return Number(process.hrtime.bigint() - t0) / 1e6;
+}
+
+function _couldBacktrack(re) {
+  try {
+    require("../../lib/guard-regex").assertSafe(re, "codebase-patterns regex probe");
+    return false;
+  } catch (_e) { return true; }
+}
+
+var PROBE_TIMEOUT_MS = 20000;
+// A single match still running after this long is not slow, it is not
+// returning. The slowest finite pattern this gate has measured costs 400ms.
+var PROBE_PER_MATCH_MS = 5000;
+
+// The child runs the same steps in the same order as the main path, so a
+// pattern is judged the same way wherever it was measured: a 2048-character
+// look decides whether the pattern is worth measuring, a call at 8192
+// characters gives the cost, and 8192 to 32768 gives the growth.
+//
+// Each match writes its start time to the descriptor before it begins and a
+// finish line after it returns. A match interrupted by the deadline leaves a
+// start with no finish, and its start time says how long that one match had
+// been running.
+var _RISKY_PROBE_CHILD = [
+  "var cfs = require('fs');",
+  "var re = new RegExp(process.env.PROBE_SOURCE, process.env.PROBE_FLAGS);",
+  "var subjects = JSON.parse(process.env.PROBE_SUBJECTS);",
+  "var t0 = process.hrtime.bigint();",
+  "function now() { return Number(process.hrtime.bigint() - t0) / 1e6; }",
+  "function ms(s) {",
+  "  try { cfs.writeSync(2, 'S' + now().toFixed(1) + '\\n'); } catch (e) { /* ignore */ }",
+  "  var a = process.hrtime.bigint();",
+  "  try { re.lastIndex = 0; re.test(s); } catch (e) { /* not this gate's business */ }",
+  "  var d = Number(process.hrtime.bigint() - a) / 1e6;",
+  "  try { cfs.writeSync(2, 'F\\n'); } catch (e) { /* ignore */ }",
+  "  return d;",
+  "}",
+  "function best(s) { ms(s); var b = Infinity;",
+  "  for (var k = 0; k < 3; k += 1) b = Math.min(b, ms(s)); return b; }",
+  "var seed = JSON.parse(process.env.PROBE_SEED || '{}');",
+  "var worstCost = seed.cost || 0, worstGrowth = seed.growth || 0;",
+  "var worstLabel = seed.label || '';",
+  "var SIZES = [8192, 16384, 32768];",
+  "for (var i = Number(process.env.PROBE_FROM || 0); i < subjects.length; i += 1) {",
+  "  var fill = subjects[i][0], tail = subjects[i][1];",
+  "  if (ms(fill.repeat(2048) + tail) >= 0.3) {",
+  "    var cost = Math.min(ms(fill.repeat(8192) + tail), ms(fill.repeat(8192) + tail));",
+  "    if (cost >= 5) {",
+  "      var row = [];",
+  "      for (var si = 0; si < SIZES.length; si += 1) {",
+  "        row.push(best(fill.repeat(SIZES[si]) + tail));",
+  "      }",
+  "      if (row[0] > 0.02 && (row[2] / row[0]) > worstGrowth) {",
+  "        worstGrowth = row[2] / row[0]; worstCost = cost; worstLabel = subjects[i][2];",
+  "      }",
+  "    }",
+  "  }",
+  // The subject just finished, and the worst seen so far. A killed probe is
+  // resumed from the next subject carrying this forward, so nothing measured
+  // is thrown away and the run does not restart from the beginning.
+  "  try { cfs.writeSync(2, 'D' + i + ' ' + JSON.stringify({",
+  "    cost: worstCost, growth: worstGrowth, label: worstLabel }) + '\\n'); }",
+  "  catch (e) { /* ignore */ }",
+  "}",
+  "process.stdout.write(JSON.stringify({",
+  "  cost: worstCost, growth: worstGrowth, label: worstLabel }));",
+].join("\n");
+
+// How long the match that was running when the deadline landed had been
+// running, or 0 when every match that started also finished.
+function _longestUnfinishedMatch(marks) {
+  var lines = String(marks || "").split("\n");
+  var startedAt = null;
+  for (var i = 0; i < lines.length; i += 1) {
+    var ln = lines[i];
+    if (ln.charAt(0) === "S") { startedAt = parseFloat(ln.slice(1)); }
+    else if (ln.charAt(0) === "F") { startedAt = null; }
+  }
+  if (startedAt === null || !isFinite(startedAt)) return 0;
+  return PROBE_TIMEOUT_MS - startedAt;
+}
+
+// The last subject the child finished, and the worst measurement it held at
+// that point.
+function _lastCompletedSubject(marks) {
+  var lines = String(marks || "").split("\n");
+  for (var i = lines.length - 1; i >= 0; i -= 1) {
+    if (lines[i].charAt(0) !== "D") continue;
+    var sp = lines[i].indexOf(" ");
+    if (sp === -1) continue;
+    var idx = parseInt(lines[i].slice(1, sp), 10);
+    if (!isFinite(idx)) continue;
+    try { return { index: idx, seed: JSON.parse(lines[i].slice(sp + 1)) }; }
+    catch (_e) { return { index: idx, seed: null }; }
+  }
+  return null;
+}
+
+// Four rounds is far more than any pattern here needs; it bounds a probe that
+// keeps being interrupted rather than letting one pattern run without end.
+var PROBE_MAX_ROUNDS = 4;
+
+function _probeRiskyPattern(source, flags, subjects) {
+  var from = 0;
+  var seed = { cost: 0, growth: 0, label: "" };
+  for (var round = 0; round < PROBE_MAX_ROUNDS; round += 1) {
+    var res = childProcess.spawnSync(process.execPath, ["-e", _RISKY_PROBE_CHILD], {
+      timeout: PROBE_TIMEOUT_MS, encoding: "utf8",
+      env: Object.assign({}, process.env, { PROBE_SOURCE: source, PROBE_FLAGS: flags,
+        PROBE_SUBJECTS: JSON.stringify(subjects), PROBE_FROM: String(from),
+        PROBE_SEED: JSON.stringify(seed) }),
+    });
+    var done = res.status === 0 && typeof res.stdout === "string";
+    if (done) {
+      var parsed = null;
+      try { parsed = JSON.parse(res.stdout); } catch (_e) { parsed = null; }
+      if (parsed && isFinite(parsed.cost) && isFinite(parsed.growth)) {
+        return { neverReturned: false, unmeasured: false, cost: parsed.cost,
+                 growth: parsed.growth, label: parsed.label };
+      }
+      return { neverReturned: false, unmeasured: true, cost: seed.cost,
+               growth: seed.growth, label: seed.label };
+    }
+    // Killed on the deadline, or died. One match still running after
+    // PROBE_PER_MATCH_MS is the pattern this branch reports; many short
+    // matches that each returned only mean the probe ran out of time, so it
+    // resumes at the subject that was in flight with a fresh deadline.
+    if (_longestUnfinishedMatch(res.stderr) >= PROBE_PER_MATCH_MS) {
+      return { neverReturned: true, unmeasured: false, cost: 0, growth: 0, label: "" };
+    }
+    var progress = _lastCompletedSubject(res.stderr);
+    if (progress && progress.seed) seed = progress.seed;
+    var next = progress ? progress.index + 1 : from;
+    if (next <= from) break;                    // no subject completed: resuming repeats this
+    from = next;
+    if (from >= subjects.length) {
+      return { neverReturned: false, unmeasured: false, cost: seed.cost,
+               growth: seed.growth, label: seed.label };
+    }
+  }
+  // Never measured to the end. Reported rather than passed: a pattern this
+  // gate could not measure is not a pattern it has cleared.
+  return { neverReturned: false, unmeasured: true, cost: seed.cost,
+           growth: seed.growth, label: seed.label };
+}
+
+function testOwnRegexesRunLinear() {
+  // Characters worth repeating (the classes library patterns quantify over)
+  // and a tail that denies the overall match so the engine has to exhaust its
+  // alternatives rather than succeeding on the first path.
+  // The alphabet a pattern can be made to chew on. Started as digits, letters
+  // and whitespace, which missed a markdown-link scan whose `[^\]]+` only runs
+  // away on a subject of `[`. The delimiters below are the characters library
+  // patterns actually quantify over, so the set is drawn from the patterns
+  // rather than from what looks like text.
+  var FILLERS = [
+    "1", "a", " ", "\t", ".", "/", "0", "-",
+    "[", "]", "{", "}", "<", ">", "(", ")",
+    "\"", "'", "\\", "&", "@", ":", ";", ",", "=", "%", "*", "+", "#", "$",
+  ];
+  var TAILS = ["!", ""];
+  // Built once. Rebuilding an 8192-character subject for every pattern is tens
+  // of thousands of allocations and dominates the run.
+  var SUBJECTS = [];
+  for (var pf = 0; pf < FILLERS.length; pf += 1) {
+    for (var pt = 0; pt < TAILS.length; pt += 1) {
+      SUBJECTS.push({
+        label: JSON.stringify(FILLERS[pf]) + " x N + " + JSON.stringify(TAILS[pt]),
+        filler: FILLERS[pf],
+        tail: TAILS[pt],
+        // A cheap first look. Scanning 8192 characters with two thousand
+        // patterns is most of the run even when every one of them is fast, so
+        // a quarter-size subject decides who is worth the full measurement.
+        // Something that costs 25ms at 8192 is already milliseconds here,
+        // while a linear pattern stays in the microseconds.
+        small: FILLERS[pf].repeat(2048) + TAILS[pt],
+        big:   FILLERS[pf].repeat(8192) + TAILS[pt],
+        // The growth window sits ABOVE the cost probe, where the asymptote
+        // shows. A pattern that bounds its own inner scan (`[^\]]{0,2048}`)
+        // looks quadratic until the input passes that bound and linear after,
+        // so a window below it reports a shape the caller can never reach:
+        // measured across 2k to 64k, that pattern settles at 2.0x per
+        // doubling, which is linear with a large constant rather than the
+        // runaway this gate is for.
+        sizes: [FILLERS[pf].repeat(8192) + TAILS[pt],
+                FILLERS[pf].repeat(16384) + TAILS[pt],
+                FILLERS[pf].repeat(32768) + TAILS[pt]],
+      });
+    }
+  }
+  var files = _libFiles();
+  var bad = [];
+  // The same pattern is written in many files (`/\/+$/` appeared in six), and
+  // measuring is the expensive part, so each distinct pattern is measured once
+  // and every site that spells it is reported.
+  var measured = {};
+
+  for (var fi = 0; fi < files.length; fi += 1) {
+    var rel = _relPath(files[fi]);
+    // regex-linear exists to RUN a hostile pattern safely; its fixtures are
+    // meant to be catastrophic.
+    if (rel === "lib/regex-linear.js") continue;
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    var lines = content.split(/\r?\n/);
+
+    for (var li = 0; li < lines.length; li += 1) {
+      if (/^\s*(\/\/|\*|\/\*)/.test(lines[li])) continue;
+      var sources = [];
+      for (var sf = 0; sf < _REGEX_SITES.length; sf += 1) {
+        var site = _REGEX_SITES[sf];
+        site.lastIndex = 0;
+        var sm;
+        while ((sm = site.exec(lines[li])) !== null) {
+          if (sources.indexOf(sm[1]) === -1) sources.push(sm[1]);
+          if (!site.global) break;
+        }
+      }
+      if (!sources.length) continue;
+
+      for (var sx = 0; sx < sources.length; sx += 1) {
+      var src = sources[sx];
+      if (Object.prototype.hasOwnProperty.call(measured, src)) {
+        var prior = measured[src];
+        if (prior) bad.push({ file: rel, line: li + 1, content: prior });
+        continue;
+      }
+      measured[src] = null;
+      var lastSlash = src.lastIndexOf("/");
+      var re;
+      // Rebuilt through the constructor: the captured text is only ever used
+      // as a pattern, never executed as code. `g`/`y` are dropped so lastIndex
+      // cannot carry between probes.
+      try { re = new RegExp(src.slice(1, lastSlash), src.slice(lastSlash + 1).replace(/[gy]/g, "")); }
+      catch (_e) { continue; }
+
+      var worst = 0, worstSubject = "", worstCost = 0;
+      var blewUpAt = null;
+      var measuredInChild = false;
+      var unmeasured = false;
+      if (_couldBacktrack(re)) {
+        // Measured over there, so a pattern that never returns is killed
+        // there instead of stopping this run. The child answers the same two
+        // questions, so the verdict below is reached the same way.
+        var probe = _probeRiskyPattern(src.slice(1, lastSlash),
+          src.slice(lastSlash + 1).replace(/[gy]/g, ""),
+          SUBJECTS.map(function (s) { return [s.filler, s.tail, s.label]; }));
+        if (probe.neverReturned) {
+          blewUpAt = true;
+        } else {
+          measuredInChild = true;
+          unmeasured = probe.unmeasured;
+          worst = probe.growth;
+          worstCost = probe.cost;
+          worstSubject = probe.label;
+        }
+      }
+      for (var sj = 0; !blewUpAt && !measuredInChild && sj < SUBJECTS.length; sj += 1) {
+        var subj = SUBJECTS[sj];
+        // Cost first, growth second.
+        //
+        // Growth alone flags idioms nobody would rewrite: a pattern trimming
+        // trailing slashes is quadratic in principle and irrelevant in
+        // practice when the value is a short path. What separated the patterns
+        // actually worth fixing is that each cost about 25ms for a single call
+        // at the byte cap its own caller enforces, which is a CPU amplifier
+        // for one request.
+        //
+        // So the expensive subject is the filter: measure once at 8192
+        // characters, the cap this codebase uses for a request-supplied
+        // string, and ask about growth only when that is already slow. Almost
+        // nothing gets past it, which is also what keeps the gate quick.
+        if (_timeRegex(re, subj.small) < 0.3) continue;
+        var cost = Math.min(_timeRegex(re, subj.big), _timeRegex(re, subj.big));
+        if (cost < 5) continue;
+
+        var row = [];
+        for (var si = 0; si < subj.sizes.length; si += 1) {
+          _timeRegex(re, subj.sizes[si]);                  // warm
+          var best = Infinity;
+          for (var k = 0; k < 3; k += 1) best = Math.min(best, _timeRegex(re, subj.sizes[si]));
+          row.push(best);
+        }
+        if (row[0] <= 0.02) continue;                      // too fast to measure a ratio
+        var growth = row[2] / row[0];
+        if (growth > worst) {
+          worst = growth;
+          worstCost = cost;
+          worstSubject = subj.label;
+        }
+      }
+
+      if (unmeasured) {
+        measured[src] = src.slice(0, 60) + " could not be measured: the probe " +
+                        "was interrupted in every round without finishing its " +
+                        "subjects, so nothing here has cleared it";
+        bad.push({ file: rel, line: li + 1, content: measured[src] });
+        continue;
+      }
+
+      if (blewUpAt) {
+        measured[src] = src.slice(0, 60) + " never returned: probed in a child " +
+                        "process under a deadline, it did not finish one match, " +
+                        "which is what a pattern does when its work doubles with " +
+                        "every character added";
+        bad.push({ file: rel, line: li + 1, content: measured[src] });
+        continue;
+      }
+
+      // Both conditions: expensive at the cap AND super-linear. Four times the
+      // input is about four times the work when linear and about sixteen when
+      // quadratic, so eight separates them with room for a loaded machine.
+      if (worst >= 8 && worstCost >= 5) {
+        measured[src] = src.slice(0, 60) + " costs " + worstCost.toFixed(0) +
+                        "ms at 8192 chars and grows " + worst.toFixed(1) +
+                        "x for 4x the input (" + worstSubject + ") — rewrite so " +
+                        "two quantifiers cannot split the same run";
+        bad.push({ file: rel, line: li + 1, content: measured[src] });
+      }
+      }
+    }
+  }
+
+  bad = _filterMarkers(bad, "regex-superlinear-by-design");
+  _report("the framework's own regexes run in time proportional to their input", bad);
 }
 
 // ---- Pattern 17: process.exit() in lib/ (should not exit unilaterally) ----
@@ -11467,6 +11846,8 @@ var KNOWN_ANTIPATTERNS = [
 
   { id: "regex-polynomial-whitespace-in-repeated-group", primitive: "a regex literal must not place an optional-whitespace `\\s*` / `\\s+` at the END of a repeated group (the `(?:…\\s*)*` / `…\\s*)+` shape) — the same whitespace can be consumed either inside the group or by surrounding whitespace, so a crafted input backtracks polynomially (CWE-1333 ReDoS). Consume whitespace as a single disjoint alternative `(?:\\s|…)*` instead, and match block comments with the star-not-slash form, never a lazy `[\\s\\S]*?`.", scanScope: "lib", skipCommentLines: true, regex: /\\s[*+]\)[*+]/, allowlist: [], reason: "CodeQL js/polynomial-redos (alert 330) flagged lib/external-db.js's leading-keyword classifier `/^\\s*(?:\\/\\*…\\s*|--…\\s*)*([A-Za-z]+)/` — the `\\s*` both before AND at the tail of the repeated group gives two ways to consume the same whitespace run, so a SQL string of nested `/**/` or `*/--` comment runs backtracks polynomially; reused by the new OTel db.operation path it became a taint sink. Rewritten to `/^(?:\\s|\\/\\*(?:[^*]|\\*(?!\\/))*\\*\\/|--[^\\n]*\\n)*([A-Za-z]+)/` (disjoint single-char alternatives). codebase-patterns is a curated detector set, not a taint/ReDoS analyzer like CodeQL — this closes the specific shape locally so the next agent-authored comment-skip regex trips the gate before CI. Empty allowlist — a `\\s*)*` / `\\s+)+` tail in a lib regex is the ReDoS tell; allowlist a genuinely-anchored case with its structural reason." },
 
+  { id: "scan-index-sized-by-its-own-input", primitive: "a scan over caller-supplied text must not build a typed-array index with one entry per character (`new Int32Array(text.length)`) — the table makes the scan linear in TIME and allocates several times the input in MEMORY, which is the same amplifier pointed at a different resource. Carry the boundary in scalars during a backward pass, or answer forward-only queries with a pointer that never moves back", scanScope: "lib", skipCommentLines: true, regex: /new\s+(?:Int8|Uint8Clamped|Uint8|Int16|Uint16|Int32|Uint32|Float32|Float64|BigInt64|BigUint64)Array\s*\(\s*[^)\n]{0,80}?(?:\.length\b|\blen\b|\blength\b|[A-Za-z0-9_$][Ll]en\b|[A-Za-z0-9_$][Ll]ength\b)/, allowlist: ["lib/guard-markdown.js", "lib/yaml-lex.js"], reason: "v0.18.60 Codex P1 on PR #695 — the SMTP-smuggling scan in lib/guard-email.js was rewritten from quadratic to linear by precomputing `new Int32Array(len + 1)` of whitespace-run boundaries, and lib/ai-output.js's markdown URL extractors did the same with a next-`]` table. Both are handed caller-supplied text under a maxBytes the profile sets, and guardEmail's permissive profile accepts 128 MiB: one entry per UTF-16 code unit is a 512 MiB auxiliary allocation beside a message that PASSED the size gate, so a few concurrent under-cap messages exhaust process memory. Trading a CPU amplifier for a memory amplifier is not a fix. guard-email now carries the run boundary in two scalars during a single backward pass (proven identical over 400,000 generated inputs) and ai-output answers its forward-only queries with a pointer that never moves backwards (identical across 398,396 monotone queries); both stayed linear in time. Allowlist names lib/guard-markdown.js, whose `new Int32Array(lines.length)` is parallel to an already-allocated `lines` array rather than a new per-character index, and whose bracket arrays are sized by a delimiter count an explicit `markdown/too-many-delimiters` throw caps at MAX_INLINE_DELIMITERS before the allocation, and lib/yaml-lex.js, whose `nodeStarts` is RETURNED as half of `{ masked, nodeStarts }` and documented as one byte per source character: it is the function's product, aligned to the source by contract, and it sits beside a `masked` string of the same size, so it is not an index built to speed a scan up. A NEW per-character index over caller text, held only for the duration of a scan, is the bug. The size is matched through a local alias, not only a literal `.length`: BOTH removed implementations spelled it `new Int32Array(len + 1)` after `var len = text.length`, so a first version anchored on `<ident>.length` would have let either one back in unnoticed. The argument is read up to the first `)` or newline so the alias has to sit in the allocation's own argument list." },
+
   { id: "attestation-pop-replay-store-must-await-thenable", primitive: "verifyClientAttestation's jti replay check (vopts.seenJti) MUST handle an async (Promise-returning) store — its result is awaited when it is a thenable so a Redis/DB store's resolved `false` (a replayed jti) refuses, instead of comparing a never-`false` Promise object with `=== false` and silently accepting the replay", scanScope: "lib", skipCommentLines: true, regex: /vopts\.seenJti\s*\(/, requires: /typeof\s+unseen\.then\s*===\s*["']function["']|unseen\s*=\s*await\s+unseen/, allowlist: [], reason: "v0.14.20 Codex P1 on PR #300 (replay-defense bypass, CWE-294) — verifyClientAttestation read `unseen = vopts.seenJti(jti, iat)` then `if (unseen === false) throw replay`. With an async (Redis/DB) atomic check-and-insert the callback returns a Promise; a Promise is never `=== false`, so a replayed jti was ACCEPTED and the draft-ietf-oauth-attestation-based-client-auth §12.1 replay defense was disabled for every multi-instance AS deployment. The verifier is now async and awaits a thenable result (`if (unseen && typeof unseen.then === \"function\") unseen = await unseen;`). The other oauth replay sinks (refreshAccessToken's ropts.checkAndInsert / ropts.seen, _normalizeTokens' vopts.seen) already await at the call site; only this path deviated. Anchored on the vopts.seenJti( token unique to this verifier; the requires-companion fails if a future edit drops the thenable-await, re-opening the silent-accept window. Empty allowlist — a seenJti result that is neither awaited nor thenable-checked is the bug." },
 
   { id: "jose-jws-builder-fixed-classical-alg-default", primitive: "a JWS builder that signs with an operator-supplied key MUST NOT default `opts.algorithm` to a fixed classical JOSE alg (ES256/384/512, RS/PS*) via `|| \"<alg>\"` — that signs a key of a different type (RSA / Ed25519 / non-matching EC curve) under a header alg that disagrees with the key (un-signable, or a self-invalid JWS the verifier's alg/kty check rejects). Derive the alg from the key type (mirroring oauth _resolveAttestationAlg / sd-jwt-vc-holder _resolveHolderAlg), or use a PQC pass-through default that works with any key", scanScope: "lib", skipCommentLines: true, regex: /\.algorithm\s*\|\|\s*["'](?:ES256|ES384|ES512|RS256|RS384|RS512|PS256|PS384|PS512)["']/, allowlist: [], reason: "v0.14.20 — the OAuth client-attestation builders (Codex P2 on PR #300) AND the sd-jwt-vc holder (`var algorithm = opts.algorithm || \"ES256\"`, found by the post-fix adversarial review) both hardcoded a fixed ES256 default that overrode any key-type reconciliation. ES256 is only self-consistent for an EC P-256 key; an RSA / Ed25519 / EC-P384 key signed under an ES256 header is un-signable or yields a JWS whose header alg disagrees with the signature, which every alg/kty-checking verifier rejects (self-invalid token; broken authentication / presentation). Both are now key-derived (_resolveAttestationAlg / _resolveHolderAlg). This detector flags any lib JWS builder reintroducing a fixed CLASSICAL JOSE alg as the `opts.algorithm ||` default — it deliberately does NOT match a PQC pass-through default (`|| \"ML-DSA-87\"` / `|| DEFAULT_ALG` / `|| \"SLH-DSA-...\"`, which sign with a null digest and work for the matching key) nor non-JOSE alg selectors (hash `\"sha384\"`, DKIM `\"rsa-sha256\"`, `\"token-bucket\"`). Empty allowlist — a fixed classical-alg default on a sign path is the self-invalid-JWS bug; a genuine EC-P256-only builder should still derive/validate the key, not assume." },
@@ -14716,6 +15097,11 @@ function testHostnameCompareTrailingDotNormalize() {
                    // end-anchored regex strip of one-or-more trailing dots:
                    // .replace(/\.$/, ...) / .replace(/\.+$/, ...) / .replace(/\.*$/, ...)
                    /\.replace\(\s*\/\\\.[+*]?\$\//.test(content) ||
+                   // The same strip through the shared helper. The regex form
+                   // above has no start anchor, so on a long run of dots it
+                   // retried from every position; the helper walks back from
+                   // the end once. Both remove exactly the trailing dots.
+                   /trimTrailingChars\([^;\n]{0,120}?,\s*"\."\s*\)/.test(content) ||
                    // Label-list normalize: the name is split into labels, the
                    // ROOT label dropped, and the rest rejoined — the same
                    // normalization done positionally rather than lexically, and
@@ -19622,6 +20008,7 @@ async function run() {
   testNoBareJsonParse();
   testNoBareCanonicalizeWalks();
   testFormatValidatorLengthCap();
+  testOwnRegexesRunLinear();
   testNoProcessExitInLib();
   testListenPortFalsyDefault();
   testImapLiteralSizeZeroFootgun();
