@@ -602,6 +602,60 @@ async function testAPeerHangUpStopsTheDrain() {
   } finally { if (release) release(); await srv.close({ timeoutMs: 1000 }); }                           // allow:raw-time-literal — test-only short drain
 }
 
+// The bound is about how much is HELD while a command waits for its verdict,
+// and on arrival that is measured with nothing pending yet. An AUTH line and
+// an over-cap remainder in the same segment are therefore checked before the
+// AUTH is taken: the remainder is never measured, and the completion drains it.
+async function testTheBacklogIsBoundedWhenAuthStartsWaiting() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("submission auth backlog (skipped)", true); return; }
+  var release  = null;
+  var gate     = new Promise(function (r) { release = r; });
+  var handoffs = [];
+  var srv = b.mail.server.submission.create({
+    tlsContext: ctx,
+    profile:    "permissive",
+    maxLineBytes:       100,                                                                           // allow:raw-byte-literal — 600-byte aggregate bound
+    maxRcptsPerMessage: 2,
+    agent: { handoff: function (env) { handoffs.push(env); return Promise.resolve({ messageId: "<x@t>" }); } },
+    auth: { mechanisms: ["PLAIN"], verify: function () {
+      return gate.then(function () {
+        return { ok: true, actor: { id: "alice@example.com", mailboxes: ["alice@example.com"] } };
+      });
+    } },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  try {
+    var socket = nodeNet.connect(info.port, "127.0.0.1");
+    await new Promise(function (r) { socket.once("connect", r); });
+    await _readGreeting(socket);
+    await _sendCommand(socket, "EHLO client.example.com");
+
+    var seen = "";
+    socket.on("data", function (c) { seen += c.toString("utf8"); });
+    // ONE segment: the AUTH that will park the reader, and behind it more than
+    // the allowance, ending in a whole transaction.
+    var plain = Buffer.from(NUL + "alice" + NUL + "pw", "utf8").toString("base64");
+    var flood = "";
+    for (var i = 0; i < 110; i += 1) flood += "NOOP\r\n";
+    socket.write("AUTH PLAIN " + plain + "\r\n" + flood +
+      "MAIL FROM:<alice@example.com>\r\n" +
+      "RCPT TO:<b@example.com>\r\n" +
+      "BDAT 5 LAST\r\nhello");
+    await helpers.waitUntil(function () { return /Too many pipelined bytes/.test(seen); },
+      { timeoutMs: 5000, label: "submission auth backlog: refused" });
+    check("a backlog pipelined behind an AUTH in one segment is bounded",
+          /Too many pipelined bytes/.test(seen), JSON.stringify(seen.slice(-160)));
+
+    release();
+    await helpers.passiveObserve(400, "submission auth backlog: nothing resumes");
+    check("and the transaction behind it does not reach the agent",
+          handoffs.length === 0, JSON.stringify(handoffs.length));
+    socket.destroy();
+  } finally { if (release) release(); await srv.close({ timeoutMs: 1000 }); }                           // allow:raw-time-literal — test-only short drain
+}
+
 async function testBdatOversizeRefused() {
   var ctx;
   try { ctx = await _makeTestTlsContext(); }
@@ -2151,6 +2205,7 @@ async function run() {
   await testPipelinedAuthCannotRaceTheSubmissionGuard();
   await testRefusedBacklogDoesNotFinalizeAfterTheVerdict();
   await testAPeerHangUpStopsTheDrain();
+  await testTheBacklogIsBoundedWhenAuthStartsWaiting();
   await testBdatOversizeRefused();
 
   var tls;

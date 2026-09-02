@@ -1324,6 +1324,57 @@ async function testLiteralBytesAreNotChargedToTheLineCap() {
   } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
 }
 
+// The two budgets are charged separately, and that has to hold for the SECOND
+// non-final literal as much as the first. Each completed literal is written
+// back into the command line as a quoted string, so by the time the next one
+// is checked the line carries the previous payload — and charging it against
+// `maxLineBytes` refuses a command whose own syntax is a few dozen bytes and
+// whose literals are each well inside their own cap.
+//
+// Needs THREE literals to show: the last one goes down the completion path,
+// which has no line check, so a two-literal command never reaches the case.
+async function testEarlierLiteralsAreNotChargedToTheLineCap() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("earlier literals vs line cap (skipped)", true); return; }
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: _makeStubMailStore(), profile: "permissive",
+    maxLineBytes:    200,                                                                              // allow:raw-byte-literal — small line cap, large literal cap
+    maxLiteralBytes: 65536,                                                                            // allow:raw-byte-literal — each literal is inside its own cap
+    auth: { mechanisms: ["LOGIN"], verify: function () {
+      return Promise.resolve({ ok: true, actor: { id: "u1" } });
+    } },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    var seen = "";
+    function collect(chunk) { seen += chunk.toString("utf8"); }
+    c.socket.on("data", collect);
+
+    // Each payload is past the 200-byte line cap on its own. The command's own
+    // syntax — `A001 ID (`, the separators, the closing paren — is tiny.
+    var big = "v".repeat(400);
+    c.socket.write("A001 ID ({" + big.length + "}\r\n");
+    await helpers.waitUntil(function () { return seen.indexOf("+") !== -1; },
+      { timeoutMs: 5000, label: "earlier literals: first continuation" });
+    c.socket.write(big + " {" + big.length + "}\r\n");
+    await helpers.waitUntil(function () { return seen.split("+").length > 2; },
+      { timeoutMs: 5000, label: "earlier literals: second continuation" });
+    // The third opener is what gets checked with TWO expansions already in the
+    // line. Written together with the second payload so the reader sees them
+    // as one command line.
+    c.socket.write(big + " {3}\r\n");
+    await helpers.waitUntil(function () {
+      return seen.split("+").length > 3 || /^A001 /m.test(seen);
+    }, { timeoutMs: 5000, label: "earlier literals: third continuation" });
+
+    check("a command is not refused for the payloads of its earlier literals",
+          !/Line too long/.test(seen), JSON.stringify(seen.slice(-200)));
+    c.socket.removeListener("data", collect);
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
 // The terminator arriving in its own segment, well after the octets.
 async function testFinalLiteralCompletesWhenItsTerminatorArrivesLate() {
   var ctx;
@@ -3448,6 +3499,7 @@ async function run() {
     await testLiteralInsideAParenthesizedListCompletes();
     await testAggregateLiteralCapCountsTheFinalLiteral();
     await testLiteralBytesAreNotChargedToTheLineCap();
+    await testEarlierLiteralsAreNotChargedToTheLineCap();
     await testFinalLiteralCompletesWhenItsTerminatorArrivesLate();
     await testLiteralCommandConsumesItsOwnTerminator();
     await testNonFinalLiteralContinuesTheSameCommand();

@@ -589,6 +589,62 @@ async function testSafeEmitNormalizationAndRedaction() {
 
 // ---- namespaced — prefix / no-prefix / disabled / alternate-sink / extra ----
 
+// `audit: b.audit` is a documented and reasonable thing for an operator to
+// write, and it names the very module `emit()` already writes through. A caller
+// that emits to both then appends the same event twice — two audit-chain rows,
+// and two of whatever the operator alerts on — and nothing downstream can tell
+// the pair from a genuine repeat, because the pair is identical.
+function testEmitToSinkDoesNotDoubleAppendTheFrameworkTrail() {
+  var auditEmit = require("../../lib/audit-emit");
+
+  // Count what reaches the TRAIL, since that is where a duplicate lands.
+  // Patched on the exact object auditEmit resolves, restored unconditionally.
+  function _trailCalls(fn) {
+    var n = 0;
+    var real = b.audit.safeEmit;
+    b.audit.safeEmit = function () { n += 1; };
+    try { fn(); } finally { b.audit.safeEmit = real; }
+    return n;
+  }
+
+  var seen = [];
+  var ownSink = { safeEmit: function (ev) { seen.push(ev); } };
+
+  // An ordinary sink: the trail gets one, the sink gets one.
+  var trail = _trailCalls(function () {
+    auditEmit.dualEmitter({ audit: ownSink })("t.action", { k: 1 }, "success");
+  });
+  check("dualEmitter: an operator's own sink receives the event",
+        seen.length === 1 && seen[0].action === "t.action", JSON.stringify(seen));
+  check("dualEmitter: and the framework trail receives it once",
+        trail === 1, String(trail));
+
+  // The framework module itself, which emit() already writes through.
+  trail = _trailCalls(function () {
+    auditEmit.dualEmitter({ audit: b.audit })("t.action2", { k: 2 }, "success");
+  });
+  check("dualEmitter: naming the framework trail as the sink writes it once",
+        trail === 1, String(trail));
+
+  // Identity, not shape: an operator's wrapper around the trail is a distinct
+  // sink and keeps its events.
+  var wrapped = [];
+  var wrapper = { safeEmit: function (ev) { wrapped.push(ev); } };
+  auditEmit.dualEmitter({ audit: wrapper })("t.action3", {}, "success");
+  check("dualEmitter: a wrapper around the trail is still a distinct sink",
+        wrapped.length === 1 && wrapped[0].action === "t.action3", JSON.stringify(wrapped));
+
+  // The other half, and the reason this does not live in emitToSink: a caller
+  // that writes ONLY to the sink has `audit: b.audit` as its single path to the
+  // trail. Suppressing it there would lose the event rather than deduplicate
+  // it, which is what the archive readers do.
+  trail = _trailCalls(function () {
+    auditEmit.emitToSink({ audit: b.audit }, "t.action4", "success", {});
+  });
+  check("emitToSink: a sink-only caller naming the trail still reaches it",
+        trail === 1, String(trail));
+}
+
 async function testNamespaced() {
   var tmpDir = _tmp();
   await setupTestDb(tmpDir);
@@ -1003,6 +1059,7 @@ async function run() {
   await testVerifyChain();
   await testEmitFlushDropPath();
   await testSafeEmitNormalizationAndRedaction();
+  testEmitToSinkDoesNotDoubleAppendTheFrameworkTrail();
   await testNamespaced();
   await testBindActor();
   testGenerateActorBindingTriggerSql();
