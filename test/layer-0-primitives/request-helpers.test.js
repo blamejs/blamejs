@@ -378,6 +378,79 @@ function testTrustProxyRequiresBooleanTrue() {
     b.requestHelpers.requestHost(hostReq, { trustProxy: asyncTrust }) === "real.example");
 }
 
+// Both sides of the contract, written before the code that satisfies them.
+//
+// Node does not synthesize `Host` from `:authority`. RFC 9113 section 8.3.1
+// makes `:authority` the HTTP/2 form and says clients SHOULD NOT send `Host`,
+// so over h2 -- which is what this framework's own TLS listeners negotiate with
+// every browser -- `req.headers.host` is undefined and every consumer that
+// reads it alone gets nothing.
+function testRequestHostReadsTheHttp2Authority() {
+  var rh = b.requestHelpers.requestHost;
+
+  // MUST resolve
+  check("requestHost: an HTTP/1.1 Host is returned",
+    rh({ headers: { host: "app.example.com" } }) === "app.example.com");
+  check("requestHost: an HTTP/2 :authority is returned when Host is absent",
+    rh({ headers: { ":authority": "app.example.com" } }) === "app.example.com");
+  check("requestHost: :authority wins over a Host sent alongside it",
+    rh({ headers: { ":authority": "app.example.com", host: "evil.example" } }) ===
+      "app.example.com",
+    "the pseudo-header comes from the connection; Host is caller text");
+
+  // MUST NOT resolve
+  check("requestHost: neither present is null",
+    rh({ headers: {} }) === null);
+  check("requestHost: a non-string :authority is not returned",
+    rh({ headers: { ":authority": 42 } }) === null);
+  check("requestHost: an empty :authority falls through to Host",
+    rh({ headers: { ":authority": "", host: "app.example.com" } }) === "app.example.com");
+
+  // MUST NOT regress: the proxy header is still gated on a trusted peer, and
+  // still wins over both when it is trusted.
+  var trusted = function (a) { return a === "10.0.0.1"; };
+  var fwd = { socket: { remoteAddress: "10.0.0.1" },
+    headers: { ":authority": "app.example.com", "x-forwarded-host": "edge.example" } };
+  check("requestHost: a trusted X-Forwarded-Host still wins over :authority",
+    rh(fwd, { trustProxy: trusted }) === "edge.example");
+  var untrusted = { socket: { remoteAddress: "203.0.113.9" },
+    headers: { ":authority": "app.example.com", "x-forwarded-host": "evil.example" } };
+  check("requestHost: an untrusted X-Forwarded-Host is ignored and :authority stands",
+    rh(untrusted, { trustProxy: trusted }) === "app.example.com");
+}
+
+// The HTTP/2 `:scheme` pseudo-header is the scheme the client used, and it
+// comes from the connection framing the same way `:authority` does. Without it
+// an h2 request — including an RFC 8441 extended CONNECT, whose request object
+// is built from headers alone — reads as cleartext.
+function testRequestProtocolReadsTheHttp2Scheme() {
+  var rp = b.requestHelpers.requestProtocol;
+
+  check("requestProtocol: an HTTP/2 :scheme of https is https",
+    rp({ headers: { ":scheme": "https" } }) === "https");
+  check("requestProtocol: an HTTP/2 :scheme of http is http",
+    rp({ headers: { ":scheme": "http" } }) === "http");
+  check("requestProtocol: an encrypted socket is https when no :scheme is present",
+    rp({ socket: { encrypted: true }, headers: {} }) === "https");
+  check("requestProtocol: a plain socket is http",
+    rp({ socket: { encrypted: false }, headers: {} }) === "http");
+  check("requestProtocol: an unrecognized :scheme does not become https",
+    rp({ socket: { encrypted: false }, headers: { ":scheme": "gopher" } }) === "http");
+
+  // MUST NOT regress: behind a TLS-terminating proxy the backend leg may be
+  // cleartext h2, so `:scheme` there says `http` while the browser used
+  // `https`. The trusted forwarded header still wins over both.
+  var trusted = function (a) { return a === "10.0.0.1"; };
+  check("requestProtocol: a trusted X-Forwarded-Proto wins over :scheme",
+    rp({ socket: { encrypted: false, remoteAddress: "10.0.0.1" },
+         headers: { ":scheme": "http", "x-forwarded-proto": "https" } },
+       { trustProxy: trusted }) === "https");
+  check("requestProtocol: an untrusted X-Forwarded-Proto is still ignored",
+    rp({ socket: { encrypted: false, remoteAddress: "203.0.113.9" },
+         headers: { ":scheme": "http", "x-forwarded-proto": "https" } },
+       { trustProxy: trusted }) === "http");
+}
+
 function testClientIpLegacyFormsStillWork() {
   // Legacy spoofable forms preserved for edge-terminated deployments.
   var req = { socket: { remoteAddress: "10.0.0.1" },
@@ -768,6 +841,8 @@ async function run() {
   testClientIpPeerGatedUntrustedPeerIgnoresXff();
   testClientIpPeerGatedAllHopsTrusted();
   testTrustProxyRequiresBooleanTrue();
+  testRequestHostReadsTheHttp2Authority();
+  testRequestProtocolReadsTheHttp2Scheme();
   testClientIpLegacyFormsStillWork();
   testTrustedClientIpPeerGatedFlag();
   testTrustedClientIpResolves();

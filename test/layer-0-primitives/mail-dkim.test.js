@@ -402,10 +402,13 @@ function testDkimRejectsLTagBodyLength() {
         threw && /l-tag-forbidden|forbidden/.test(threw.code || threw.message || ""));
 }
 
-async function _signedMessage(keypair) {
+// `domain` / `selector` are parameters because the verifier caches key records
+// by qname for their TTL: a test that signs three messages under one selector
+// is really testing the first lookup three times.
+async function _signedMessage(keypair, domain, selector) {
   var signer = b.mail.dkim.create({
-    domain:     "example.com",
-    selector:   "s1",
+    domain:     domain || "example.com",
+    selector:   selector || "s1",
     privateKey: keypair.privateKey,
   });
   var rfc822 =
@@ -432,6 +435,41 @@ async function testDkimVerifyHappyPath() {
   check("verify: result is array", Array.isArray(rv));
   check("verify: pass on valid signature", rv[0] && rv[0].result === "pass");
   check("verify: warnings array on pass", Array.isArray(rv[0].warnings));
+}
+
+// RFC 6376 §3.2: "Tags MUST be interpreted in a case-sensitive manner." A
+// selector record published with upper-case tag names carries no `p=` tag as
+// far as a conforming verifier is concerned, so it has no public key and the
+// signature fails. Reading it leniently here tells an operator their DKIM is
+// correct while the receivers they actually send to treat their mail as
+// unsigned -- and nothing on the sending side can see that, because the only
+// party that reports the truth is the receiver.
+async function testDkimVerifyKeyRecordTagsAreCaseSensitive() {
+  var kp = _rsaKeypair();
+  var b64 = _spkiPemToB64(kp.publicKey);
+  // A selector of its own per case, so no result is the cached answer to an
+  // earlier one.
+  async function verifyUnder(selector, record) {
+    var signed = await _signedMessage(kp, "example.com", selector);
+    return b.mail.dkim.verify(signed, {
+      dnsLookup: async function () { return [[record]]; },
+    });
+  }
+
+  var rvUpper = await verifyUnder("case-upper", "V=DKIM1; K=rsa; P=" + b64);
+  check("an upper-case key record does not verify",
+    rvUpper[0] && rvUpper[0].result !== "pass", JSON.stringify(rvUpper[0]));
+
+  // One upper-case tag is enough: `P=` alone leaves no key to verify against.
+  var rvMixed = await verifyUnder("case-mixed", "v=DKIM1; k=rsa; P=" + b64);
+  check("a single upper-case p= tag does not verify",
+    rvMixed[0] && rvMixed[0].result !== "pass", JSON.stringify(rvMixed[0]));
+
+  // ...and the conforming spelling still passes, which is the half a
+  // case-folding parser gets right by accident.
+  var rvLower = await verifyUnder("case-lower", "v=DKIM1; k=rsa; p=" + b64);
+  check("the conforming lower-case record still verifies",
+    rvLower[0] && rvLower[0].result === "pass", JSON.stringify(rvLower[0]));
 }
 
 // The end-to-end claim: a message whose octets are not valid UTF-8 signs and
@@ -1754,6 +1792,7 @@ async function run() {
   testDkimSignerRejectsBadInput();
   testDkimRejectsLTagBodyLength();
   await testDkimVerifyHappyPath();
+  await testDkimVerifyKeyRecordTagsAreCaseSensitive();
   await testDkimRoundTripsNonUtf8Octets();
   await testDkimVerifyEd25519RawKeyRfc8463();
   await testDkimEd25519KFamilyConfusionRefused();

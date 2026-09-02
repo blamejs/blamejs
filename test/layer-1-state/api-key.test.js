@@ -238,6 +238,58 @@ async function testEnvelopeFormatPersisted() {
   check("envelope: payload is 128 bytes by default", info.payloadBytes === 128);
 }
 
+// `ownerId` is the scope: it is what a consumer reads back from verify() to
+// decide what a credential may do. Sealing the column is supposed to mean that
+// write access to the database is disclosure rather than escalation -- but a
+// plain envelope carries no binding to the row it sits on, so the cell can be
+// lifted from one credential's row onto another's. Performed here rather than
+// argued about: the transplant is run, and the second credential must not come
+// back speaking for the first.
+async function testSealedScopeCannotBeRelocatedBetweenRows() {
+  var keys = b.apiKey.create({ namespace: "aad-bind" });
+  var a = await keys.issue({ ownerId: "owner-a", scopes: ["admin"] });
+  var bKey = await keys.issue({ ownerId: "owner-b", scopes: ["read"] });
+
+  var aRow = await b.clusterStorage.executeOne(
+    "SELECT ownerId FROM _blamejs_api_keys WHERE id = ?", ["aad-bind:" + a.id]);
+  var bRow = await b.clusterStorage.executeOne(
+    "SELECT ownerId FROM _blamejs_api_keys WHERE id = ?", ["aad-bind:" + bKey.id]);
+  check("the scope column is sealed at rest",
+        typeof aRow.ownerId === "string" && aRow.ownerId !== "owner-a" &&
+        typeof bRow.ownerId === "string" && aRow.ownerId !== bRow.ownerId,
+        JSON.stringify({ a: String(aRow.ownerId).slice(0, 12) }));
+
+  // The transplant: A's sealed cell written onto B's row.
+  await b.clusterStorage.execute(
+    "UPDATE _blamejs_api_keys SET ownerId = ? WHERE id = ?",
+    [aRow.ownerId, "aad-bind:" + bKey.id]);
+
+  var verified = await keys.verify(bKey.key);
+  check("a relocated scope cell does not speak for the row it was moved to",
+        !verified || verified.ownerId !== "owner-a",
+        JSON.stringify({ ownerId: verified && verified.ownerId }));
+
+  // And the credential it was taken from still reads correctly, so the binding
+  // refuses the move rather than breaking the column.
+  var stillA = await keys.verify(a.key);
+  check("the credential it was copied from is unaffected",
+        stillA && stillA.ownerId === "owner-a",
+        JSON.stringify({ ownerId: stillA && stillA.ownerId }));
+
+  // An UNBOUND cell is what an attacker with write access would place, so the
+  // migration window that accepts one is a hole for as long as it is open.
+  // It is closed unless the operator names the table for the length of an
+  // upgrade -- the framework does not ship it open.
+  var seal = b.vault.seal(JSON.stringify("owner-a"));
+  await b.clusterStorage.execute(
+    "UPDATE _blamejs_api_keys SET ownerId = ? WHERE id = ?",
+    [seal, "aad-bind:" + bKey.id]);
+  var unbound = await keys.verify(bKey.key);
+  check("an unbound cell is refused by default, not accepted and audited",
+        !unbound || unbound.ownerId !== "owner-a",
+        JSON.stringify({ ownerId: unbound && unbound.ownerId }));
+}
+
 async function testHashAlgoOptArgon2id() {
   // Argon2id costs ~250ms per verify — keep this test small (issue +
   // verify only; no rotation, no purge sweep).
@@ -773,6 +825,7 @@ async function run() {
     await testGracefulRotationExplicitMs();
     await testHardRotateClearsSecondary();
     await testEnvelopeFormatPersisted();
+    await testSealedScopeCannotBeRelocatedBetweenRows();
     await testHashAlgoOptArgon2id();
     await testRotateOnVerifyUpgradesHashAlgo();
     await testRehashOnVerifyDoesNotClobberConcurrentRotate();

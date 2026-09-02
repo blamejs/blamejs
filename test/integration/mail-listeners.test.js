@@ -197,6 +197,82 @@ async function _imapLiteralRoundTrip(tls, store) {
   } finally { await srv.close({ timeoutMs: 2000 }); }                                                  // allow:raw-time-literal — test-only short drain
 }
 
+// ---- Submission: a refusal after STARTTLS reaches the client -------------
+
+// The listener requires the upgrade before it accepts an envelope, so by the
+// time a MAIL FROM reaches a sender policy the connection is always TLS. A
+// refusal written to the socket the connection opened on therefore goes to a
+// peer that stopped reading it, and the client waits out the idle timeout --
+// indistinguishable from a dead server, and the shape that makes a client retry
+// the same message rather than report it.
+//
+// Driven over a real STARTTLS upgrade because that is the whole claim: on the
+// plaintext socket the bug cannot appear.
+async function _senderPolicyRefusalReachesTheClient(tls) {
+  var srv = b.mail.server.submission.create({
+    tlsContext: tls.ctx,
+    profile:    "balanced",
+    agent: { handoff: async function () { return { messageId: "<unused@test>" }; } },
+    // Raising is the documented fail-closed path: a policy that could not
+    // decide has not decided in the sender's favour.
+    senderPolicy: function () { throw new Error("policy backend unreachable"); },
+    auth: { mechanisms: ["PLAIN"], verify: function () {
+      return Promise.resolve({ ok: true,
+        actor: { id: "alice@example.com", mailboxes: ["alice@example.com"] } });
+    } },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var plain = _connect(info.port);
+  var secure = null;
+  try {
+    await _readUntil(plain, function (s) { return /^220 /m.test(s); });
+    await (function () {
+      var p = _readUntil(plain, function (s) { return /STARTTLS/.test(s) && /\r\n250 /.test(s); });
+      plain.write("EHLO client.example.com\r\n");
+      return p;
+    })();
+    await (function () {
+      var p = _readUntil(plain, function (s) { return /^220 /m.test(s); });
+      plain.write("STARTTLS\r\n");
+      return p;
+    })();
+
+    secure = nodeTls.connect({
+      socket: plain, servername: "localhost", ca: tls.caPem, minVersion: "TLSv1.3",
+    });
+    secure.on("error", function () { /* asserted through the reply, not here */ });
+    await new Promise(function (resolve, reject) {
+      secure.once("secureConnect", resolve);
+      secure.once("error", reject);
+    });
+    check("submission live: the upgrade is authorized against the pinned CA",
+          secure.authorized === true, String(secure.authorizationError));
+
+    var seen = "";
+    secure.on("data", function (c) { seen += c.toString("utf8"); });
+    secure.write("EHLO client.example.com\r\n");
+    await helpers.waitUntil(function () { return /\r\n250 [^\r\n]*\r\n$/.test(seen); },
+      { timeoutMs: 8000, label: "submission live: post-upgrade EHLO" });
+    var creds = Buffer.from(NUL + "alice" + NUL + "pw", "utf8").toString("base64");
+    secure.write("AUTH PLAIN " + creds + "\r\n");
+    await helpers.waitUntil(function () { return /235 2\.7\.0/.test(seen); },
+      { timeoutMs: 8000, label: "submission live: post-upgrade AUTH" });
+
+    // The sender is one the mailbox set does not cover, so the policy is asked,
+    // and it raises.
+    seen = "";
+    secure.write("MAIL FROM:<someone-else@example.com>\r\n");
+    await helpers.waitUntil(function () { return /\r\n$/.test(seen) && seen.length > 0; },
+      { timeoutMs: 8000, label: "submission live: sender-policy refusal reaches the client" });
+    check("submission live: a raising sender policy answers the client it is talking to",
+          /^553 5\.7\.1 /.test(seen), JSON.stringify(seen));
+  } finally {
+    if (secure) secure.destroy();
+    plain.destroy();
+    await srv.close({ timeoutMs: 3000 });                                                            // allow:raw-time-literal — test-only short drain
+  }
+}
+
 // ---- ManageSieve: what is stored is what was uploaded --------------------
 
 async function _managesieveScriptFidelity(tls, store) {
@@ -265,6 +341,28 @@ async function _managesieveScriptFidelity(tls, store) {
           JSON.stringify(badReply.slice(0, 160)));
     check("managesieve live: and no repaired copy reached the store",
           scripts.bad === undefined, JSON.stringify(Object.keys(scripts)));
+
+    // GETSCRIPT announces a count, so the CRLF that closes the literal is
+    // fixed by the framing and not by what the body happens to end with
+    // (RFC 5804 §2.9). A script already ending in CRLF is the case where
+    // inspecting the body serves the literal unclosed and the client reads
+    // the OK line where the terminator belongs.
+    scripts.crlfend  = "keep;\r\n";
+    scripts.bareend  = "keep;";
+    var expectations = [
+      { name: "crlfend", body: scripts.crlfend },
+      { name: "bareend", body: scripts.bareend },
+    ];
+    for (var gi = 0; gi < expectations.length; gi += 1) {
+      var exp  = expectations[gi];
+      var want = "{" + Buffer.byteLength(exp.body, "utf8") + "}\r\n" + exp.body +
+                 "\r\nOK \"GETSCRIPT completed\"\r\n";
+      var getp = _readUntil(sock, terminal);
+      sock.write('GETSCRIPT "' + exp.name + '"\r\n');
+      var got = await getp;
+      check("managesieve live: GETSCRIPT closes the literal it announced (" + exp.name + ")",
+            got === want, JSON.stringify({ want: want, got: got }));
+    }
     sock.destroy();
   } finally { await srv.close(); }
 }
@@ -352,10 +450,9 @@ async function _submissionDeliversToMailpit(tls) {
     // stream. It is relayed as text, so Mailpit's copy proves the whole path
     // ran -- listener, agent, real SMTP with verification on, third-party MTA.
     //
-    // Whether the last line keeps its own CRLF is issue #709 and is NOT
-    // asserted here: that is a framing contract this release does not change,
-    // and pinning it now would fail for a reason unrelated to what is under
-    // test. The body length is recorded so the fix has a live place to land.
+    // The framing itself is asserted below: DATA and BDAT carry the same
+    // message through two different doors, and what the agent is handed has
+    // to be the same octets either way.
     agent: { handoff: async function (env) {
       relayed.push(env);
       await transport.send({
@@ -421,6 +518,32 @@ async function _submissionDeliversToMailpit(tls) {
             /first line/.test(text) && /second line/.test(text),
             JSON.stringify(text.slice(-120)));
     }
+
+    // RFC 5321 §4.1.1.4 gives the terminator's leading CRLF to the last line
+    // of the mail data, so the message the agent receives is every octet the
+    // peer transmitted before `.\r\n`.
+    var dataBody = Buffer.isBuffer(relayed[0].body)
+      ? relayed[0].body.toString("utf8") : String(relayed[0].body || "");
+    check("submission live: DATA keeps the last line's own CRLF",
+          dataBody === body, JSON.stringify({ want: body.slice(-24), got: dataBody.slice(-24) }));
+
+    // The same message through the count-framed door. BDAT states its length,
+    // so there is no terminator to attribute and nothing to get wrong -- which
+    // is what makes it the control: the two doors either agree or one of them
+    // is losing octets.
+    var chunk = Buffer.from(body, "utf8");
+    await send("RSET", /250 2\.0\.0/);
+    await send("MAIL FROM:<alice@example.com>", /250 2\.1\.0/);
+    await send("RCPT TO:<recipient@example.com>", /250 2\.1\.5/);
+    sock.write("BDAT " + chunk.length + " LAST\r\n");
+    sock.write(chunk);
+    await helpers.waitUntil(function () { return relayed.length === 2; },
+      { timeoutMs: 20000, label: "submission live: BDAT message handed off" });
+    var bdatBody = Buffer.isBuffer(relayed[1].body)
+      ? relayed[1].body.toString("utf8") : String(relayed[1].body || "");
+    check("submission live: BDAT and DATA hand over the same octets",
+          bdatBody === dataBody,
+          JSON.stringify({ bdat: bdatBody.length, data: dataBody.length }));
     sock.destroy();
   } finally { await srv.close({ timeoutMs: 3000 }); }                                                  // allow:raw-time-literal — test-only short drain
 }
@@ -436,6 +559,7 @@ async function run() {
     await _managesieveScriptFidelity(tls, live.store);
     await _pop3PipelinedCredentials(tls, live.store);
     await _submissionDeliversToMailpit(tls);
+    await _senderPolicyRefusalReachesTheClient(tls);
   } finally {
     try { await dbHelpers.teardownTestDb(live.dataDir); }
     catch (_e) { /* best-effort teardown */ }

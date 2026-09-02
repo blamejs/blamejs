@@ -511,7 +511,12 @@ async function testSafeEmitNormalizationAndRedaction() {
     b.audit.safeEmit({ action: "system.norm.err",     outcome: "error" });
     b.audit.safeEmit({ action: "system.norm.refused", outcome: "refused" });
     b.audit.safeEmit({ action: "system.norm.nonstr",  outcome: 999 });
-    b.audit.safeEmit({ action: "system.norm.unknown",  outcome: "bananas" });  // unknown alias → success
+    b.audit.safeEmit({ action: "system.norm.unknown",  outcome: "bananas" });
+    // OMITTED is not unrecognized: the caller did not classify the event, and
+    // the documented default for that is success. Several shipped callers
+    // (`system.log.incoming`, `system.ws.publish`) emit exactly this shape.
+    b.audit.safeEmit({ action: "system.norm.omitted" });
+    b.audit.safeEmit({ action: "system.norm.nulled",  outcome: null });
 
     // redact.redact() throwing on a hostile metadata value (a getter that
     // throws when the redactor walks it) must be swallowed by the inner
@@ -544,6 +549,14 @@ async function testSafeEmitNormalizationAndRedaction() {
     check("safeEmit's outer catch swallows a throwing resource getter",
           resourceThrew === null);
 
+    // `warning` is its own outcome. It is what a PARTIAL result needs — an
+    // ingest that stored 490 of 500 records is neither a success nor a denial —
+    // and mapping it to success made that row read exactly like one with
+    // nothing wrong in it.
+    b.audit.safeEmit({ action: "system.norm.partial",  outcome: "warning" });
+    b.audit.safeEmit({ action: "system.norm.warnabbr", outcome: "warn" });
+    b.audit.safeEmit({ action: "system.norm.advisory", outcome: "info" });
+
     // Action hyphen normalization: hyphens in the verb become underscores.
     b.audit.safeEmit({ action: "system.norm.biometric-id-check", outcome: "success" });
 
@@ -567,11 +580,39 @@ async function testSafeEmitNormalizationAndRedaction() {
     check("safeEmit normalized outcome 'error' → 'failure'", errRow && errRow.outcome === "failure");
     var refRow = await one("system.norm.refused");
     check("safeEmit normalized outcome 'refused' → 'denied'", refRow && refRow.outcome === "denied");
+    // An outcome the vocabulary does not carry is a programming error, and on
+    // a trail read after something went wrong the safe direction is not "fine".
+    // safeEmit cannot throw — it is drop-silent by contract, and throwing would
+    // lose the row — so it records the loudest value instead: a typo becomes a
+    // failure somebody investigates rather than a success nobody reads.
     var nsRow = await one("system.norm.nonstr");
-    check("safeEmit normalized a non-string outcome → 'success'", nsRow && nsRow.outcome === "success");
+    check("safeEmit normalizes a non-string outcome to 'failure', not 'success'",
+          nsRow && nsRow.outcome === "failure", JSON.stringify(nsRow && nsRow.outcome));
     var unkRow = await one("system.norm.unknown");
-    check("safeEmit normalized an unknown outcome alias → 'success'",
-          unkRow && unkRow.outcome === "success");
+    check("safeEmit normalizes an unrecognized outcome to 'failure', not 'success'",
+          unkRow && unkRow.outcome === "failure", JSON.stringify(unkRow && unkRow.outcome));
+
+    // The other side: an omitted outcome is not a typo, and turning those into
+    // failures would fill the trail with rows that never happened.
+    var omittedRow = await one("system.norm.omitted");
+    check("safeEmit still defaults an OMITTED outcome to 'success'",
+          omittedRow && omittedRow.outcome === "success",
+          JSON.stringify(omittedRow && omittedRow.outcome));
+    var nulledRow = await one("system.norm.nulled");
+    check("safeEmit treats a null outcome as omitted, not as a typo",
+          nulledRow && nulledRow.outcome === "success",
+          JSON.stringify(nulledRow && nulledRow.outcome));
+
+    var partialRow = await one("system.norm.partial");
+    check("safeEmit records 'warning' as its own outcome, not as success",
+          partialRow && partialRow.outcome === "warning",
+          JSON.stringify(partialRow && partialRow.outcome));
+    var warnRow = await one("system.norm.warnabbr");
+    check("safeEmit normalizes 'warn' to 'warning'",
+          warnRow && warnRow.outcome === "warning", JSON.stringify(warnRow && warnRow.outcome));
+    var infoRow = await one("system.norm.advisory");
+    check("safeEmit records an advisory outcome as 'warning', not success",
+          infoRow && infoRow.outcome === "warning", JSON.stringify(infoRow && infoRow.outcome));
 
     var hyphenRow = await one("system.norm.biometric_id_check");
     check("safeEmit normalized hyphens in the action to underscores", !!hyphenRow);

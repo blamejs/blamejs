@@ -1301,10 +1301,16 @@ async function testAuthenticatedHandlers() {
     check("SETACTIVE name → OK",                 /OK "SETACTIVE completed"/.test(await _cmd(sock, 'SETACTIVE "s"')));
     check("SETACTIVE empty (deactivate) → OK",   /OK "SETACTIVE completed"/.test(await _cmd(sock, 'SETACTIVE ""')));
 
+    // RFC 5804 §2.9: the literal's announced octets, then a CRLF, then the OK.
+    // The client reads exactly the count it was given, so the CRLF that follows
+    // is fixed by the framing -- a script already ending in CRLF gets one too,
+    // and the reply carries both.
     var g1 = await _cmd(sock, 'GETSCRIPT "exists"');
-    check("GETSCRIPT returns literal + body",    /\{7\}\r\nkeep;\r\nOK "GETSCRIPT completed"/.test(g1));
+    check("GETSCRIPT closes the literal it announced",
+      /\{7\}\r\nkeep;\r\n\r\nOK "GETSCRIPT completed"/.test(g1), JSON.stringify(g1));
     var g2 = await _cmd(sock, 'GETSCRIPT "nocrlf"');
-    check("GETSCRIPT appends CRLF when absent",  /\{5\}\r\nkeep;\r\nOK "GETSCRIPT completed"/.test(g2));
+    check("GETSCRIPT closes a body that does not end with one",
+      /\{5\}\r\nkeep;\r\nOK "GETSCRIPT completed"/.test(g2), JSON.stringify(g2));
     check("GETSCRIPT missing → NONEXISTENT",     /NO "\(NONEXISTENT\) Script not found"/.test(await _cmd(sock, 'GETSCRIPT "missing"')));
 
     check("DELETESCRIPT → OK",                   /OK "DELETESCRIPT completed"/.test(await _cmd(sock, 'DELETESCRIPT "s"')));

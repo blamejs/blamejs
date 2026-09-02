@@ -15,11 +15,48 @@ function testSurface() {
   check("SafeSmtpError is fn",     typeof b.safeSmtp.SafeSmtpError === "function");
 }
 
+// RFC 5321 section 4.1.1.4 defines the terminator as <CRLF>.<CRLF> and says the
+// first of those CRLFs "is actually the terminator of the previous line" -- so
+// it belongs to the mail data. The index returned is where the mail data ends,
+// which is two octets past the byte the terminator sequence starts on.
 function testFindDotTerminatorCanonical() {
   var body = Buffer.from("Hello world.\r\n.\r\n", "utf8");
   var idx = b.safeSmtp.findDotTerminator(body);
-  check("canonical \\r\\n.\\r\\n found at correct index",
-    idx === Buffer.byteLength("Hello world.", "utf8"));
+  check("mail data ends after the last line's CRLF",
+    idx === Buffer.byteLength("Hello world.\r\n", "utf8"), String(idx));
+  check("slicing to it reproduces the transmitted mail data",
+    body.subarray(0, idx).toString("utf8") === "Hello world.\r\n");
+}
+
+// The blank final line is the case that reaches a person: a body ending
+// "...text\r\n\r\n" whose last line is empty loses that line entirely if the
+// terminator's leading CRLF is treated as framing. A MIME epilogue is made of
+// them.
+function testFindDotTerminatorKeepsBlankFinalLine() {
+  var body = Buffer.from("line of body\r\n\r\n.\r\n", "utf8");
+  var idx = b.safeSmtp.findDotTerminator(body);
+  check("a blank final line survives",
+    body.subarray(0, idx).toString("utf8") === "line of body\r\n\r\n", String(idx));
+}
+
+// A message with no body at all: the peer answers the 354 with ".\r\n" and
+// nothing else. The CRLF that would precede the dot ended the DATA command
+// line, so it is not in this buffer at all, and a scan for the five-byte
+// sequence never matches -- the collector waits for a terminator that has
+// already been sent.
+function testFindDotTerminatorEmptyMailData() {
+  check("empty mail data terminates, with zero octets of body",
+    b.safeSmtp.findDotTerminator(Buffer.from(".\r\n", "utf8")) === 0);
+  // The stuffed form of a body whose first line is "." is NOT the terminator.
+  check("a stuffed leading dot-line is not the terminator",
+    b.safeSmtp.findDotTerminator(Buffer.from("..\r\n", "utf8")) === -1);
+  // ...and it still terminates normally further along.
+  var stuffed = Buffer.from("..\r\n.\r\n", "utf8");
+  check("a body that is one stuffed dot-line terminates after it",
+    stuffed.subarray(0, b.safeSmtp.findDotTerminator(stuffed)).toString("utf8") === "..\r\n");
+  // A window that does not start at the body gets no dot-at-start exemption.
+  check("a mid-stream window is not read as an empty body",
+    b.safeSmtp.findDotTerminator(Buffer.from(".\r\n", "utf8"), false) === -1);
 }
 
 function testFindDotTerminatorMissing() {
@@ -186,6 +223,8 @@ function run() {
   testBodyScannerAgreesWithTheWholeBufferScans();
   testSurface();
   testFindDotTerminatorCanonical();
+  testFindDotTerminatorKeepsBlankFinalLine();
+  testFindDotTerminatorEmptyMailData();
   testFindDotTerminatorMissing();
   testFindDotTerminatorStrictCrlf();
   testDotUnstuffReverses();

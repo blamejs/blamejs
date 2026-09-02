@@ -1152,7 +1152,95 @@ function testRedactTextPanTernaryBothSides() {
         b.redact.redactText("order 1234567890123456 shipped") === "order 1234567890123456 shipped");
 }
 
+// A field name short enough to sit inside ordinary words cannot be matched as
+// a bare substring: `auth` took 93 of the field names this framework emits,
+// including `authenticated`, `authservId` and `author` — the RFC 5322 word for
+// the `From` party — and `ssn` took `className`. Those are the fields an
+// operator reads to find out what happened.
+//
+// Matching them EXACTLY is the opposite mistake and loses real credentials:
+// `authCode`, `authHeader` and `preAuthCode` are secrets and none of them is
+// exactly `auth`. Both directions have to hold, which is what segment matching
+// buys — the short name has to be a whole segment of the field name.
+function testShortFieldNamesMatchBySegmentNotBySubstring() {
+  function kept(k) {
+    var o = b.redact.redact({ [k]: "VALUE" });
+    return o[k] === "VALUE";
+  }
+
+  // Not credentials. Every one of these was scrubbed by a bare short entry.
+  //
+  // Every one of these is a field name lib/ actually emits, harvested rather
+  // than imagined, and each is included in BOTH its camel spelling and the
+  // lowercased one a caller that normalizes its keys would send.
+  var readable = ["authenticated", "authenticatedAs", "authservId", "authserv", "author",
+                  "authority", "authoritative", "authentication",
+                  "authenticationResults", "residency", "sidecar", "side", "sides",
+                  "residentKey", "isIdentifierChar", "residualRisks",
+                  "stepIndex", "stepindex", "mapping", "mappings", "grouping", "stamping",
+                  "sweepIntervalMs", "roleMappingFn", "pinning", "pinnedKeyResolver",
+                  "pingMs", "pins", "spkiPinVerifier",
+                  "className", "classNames", "classname", "residual"];
+  for (var i = 0; i < readable.length; i += 1) {
+    check("redact: '" + readable[i] + "' is not a credential and survives",
+          kept(readable[i]), readable[i]);
+  }
+
+  // The key's LENGTH must not decide whether it is scanned. A bound on the
+  // work is not a bound on the rule: the short names are matched only here, so
+  // skipping a long name stops matching them at all, and the key is the one
+  // part of a logged object a caller can make any length it likes.
+  var longPrefix = new Array(202).join("a");
+  check("redact: a long field name is still scanned for a short credential",
+        !kept(longPrefix + "cvv"), String(longPrefix.length));
+  check("redact: and for one in the middle of it",
+        !kept(longPrefix + "ssnnumber" + longPrefix), "middle");
+  check("redact: a long name that is not a credential still survives",
+        kept(longPrefix + "Count"), "long-innocent");
+
+  // A one- or two-letter exemption has to be the WHOLE remainder. Read as a
+  // prefix, the `s` that keeps `pins` readable also clears every credential
+  // whose noun begins with one.
+  var prefixTraps = ["pinSalt", "pinsalt", "pinSecret", "pinsecret", "pinSeed",
+                     "pinGuess", "pinguess", "pinIpsecKey", "pinSetupToken",
+                     "sidEncryptionKey", "sidencryptionkey", "sidEntropy",
+                     "sidSecret", "ssnAmerican", "ssnAmount"];
+  for (var p = 0; p < prefixTraps.length; p += 1) {
+    check("redact: '" + prefixTraps[p] + "' is a credential and is scrubbed",
+          !kept(prefixTraps[p]), prefixTraps[p]);
+  }
+
+  // Credentials, including every compound where the short name is a segment.
+  // `authCode`, `authHeader`, `authResponse` and `preAuthCode` are the ones an
+  // exact-match rule would have let through unredacted.
+  //
+  // The lowercased and acronym-styled spellings matter as much as the camel
+  // ones: a caller that normalizes its JSON keys hands over `authcode` as a
+  // single segment, and a rule that only splits on case would let it through.
+  var secrets = ["auth", "pin", "sid", "ssn", "cvc", "cvv",
+                 "authToken", "auth_token", "authCode", "authHeader",
+                 "authResponse", "authKey", "preAuthCode",
+                 "authcode", "authheader", "authresponse", "preauthcode", "AUTHCode",
+                 "pinCode", "sessionPin", "pincode", "sessionpin",
+                 "ssnnumber", "last4ssn", "ssnHash", "customercvv", "sessionsid", "sidhash",
+                 // Mid-word in a lowercased compound, which is where a
+                 // boundary rule and a segment rule both lose it.
+                 "shippingPinCode", "shippingpincode", "customerssnnumber",
+                 "paymentcvvcode", "pin_code",
+                 // `authentication` is readable and `authenticationCode` is a
+                 // secret, and they are lexically identical up to the noun. A
+                 // prefix-shaped exemption cleared both; the exemption is
+                 // anchored at both ends so an unlisted compound redacts.
+                 "authenticationCode", "authenticationcode", "authorization",
+                 "password", "userPassword", "apiKey", "sessionId", "clientSecret"];
+  for (var j = 0; j < secrets.length; j += 1) {
+    check("redact: '" + secrets[j] + "' is still redacted",
+          !kept(secrets[j]), secrets[j]);
+  }
+}
+
 async function run() {
+  testShortFieldNamesMatchBySegmentNotBySubstring();
   // registerValueDetector
   testRegisterValueDetectorRedactsMatchingValue();
   testRegisterValueDetectorFunctionReplacement();

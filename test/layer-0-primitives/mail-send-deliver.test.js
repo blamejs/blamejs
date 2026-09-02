@@ -1975,6 +1975,69 @@ async function testExtractHeaderBlockVariants() {
     rfc822: Buffer.from("Subject: no-separator-single-line") });
   check("DSN embeds header block when message has no blank-line separator",
     seen.length === 2 && seen[1].indexOf("Subject: no-separator-single-line") !== -1);
+
+  // The separator's own line terminator is two octets when it is CRLF and one
+  // when it is LF. Adding a fixed two either way makes the two spellings of one
+  // message produce header blocks that differ by more than their line endings:
+  // the LF form keeps the blank line that ends the block, the CRLF form does
+  // not. Whichever inclusion is intended, both branches have to make it.
+  function blockOf(dsn) {
+    var at = dsn.indexOf("Content-Type: text/rfc822-headers");
+    var start = dsn.indexOf("\r\n\r\n", at) + 4;
+    var end = dsn.indexOf("\r\n--", start);
+    return dsn.slice(start, end);
+  }
+  seen.length = 0;
+  await makeDeliver()({ from: "ops@example.com", to: ["a@example.com"],
+    rfc822: Buffer.from("Subject: crlf\r\nX-Tag: one\r\n\r\nbody") });
+  await makeDeliver()({ from: "ops@example.com", to: ["a@example.com"],
+    rfc822: Buffer.from("Subject: lf\nX-Tag: one\n\nbody") });
+  check("CRLF separator: the header block stops before the blank line",
+    blockOf(seen[0]) === "Subject: crlf\r\nX-Tag: one\r\n",
+    JSON.stringify(blockOf(seen[0])));
+  check("LF separator: the header block stops before the blank line too",
+    blockOf(seen[1]) === "Subject: lf\nX-Tag: one\n",
+    JSON.stringify(blockOf(seen[1])));
+
+  // A header carrying a byte that is not valid UTF-8. `toString("utf8")`
+  // substitutes U+FFFD for it rather than reporting it, so the bounce quotes a
+  // header the sender never wrote -- and the quoted header is the part of a
+  // delivery report a person reads most closely.
+  seen.length = 0;
+  var eightBit = Buffer.concat([
+    Buffer.from("Subject: caf", "ascii"), Buffer.from([0xE9]),
+    Buffer.from("\r\nX-Tag: one\r\n\r\nbody", "ascii"),
+  ]);
+  await makeDeliver()({ from: "ops@example.com", to: ["a@example.com"],
+    rfc822: eightBit });
+  var quoted = blockOf(seen[0]);
+  check("an 8-bit header byte is not replaced with U+FFFD",
+    quoted.indexOf("�") === -1, JSON.stringify(quoted));
+  // The report is assembled as a string and written out as UTF-8, so the only
+  // way an octet above 0x7F reaches the reader unchanged is an explicit
+  // transfer encoding. Decoding it to its own code point preserves the value
+  // inside this process and emits two bytes for it on the way out, which is
+  // neither the original octet nor what the charset label promises.
+  check("the part declares the transfer encoding that carries the octets",
+    /Content-Type: text\/rfc822-headers; charset=iso-8859-1\r\nContent-Transfer-Encoding: base64/
+      .test(seen[0]), JSON.stringify(quoted.slice(0, 60)));
+  check("and decoding it reproduces the transmitted header block exactly",
+    Buffer.compare(Buffer.from(quoted.replace(/\r\n/g, ""), "base64"),
+      Buffer.concat([Buffer.from("Subject: caf", "ascii"), Buffer.from([0xE9]),
+                     Buffer.from("\r\nX-Tag: one\r\n", "ascii")])) === 0,
+    JSON.stringify(quoted));
+  check("every base64 line is within the MIME line length",
+    quoted.split("\r\n").every(function (l) { return l.length <= 76; }),
+    JSON.stringify(quoted));
+
+  // A header block that IS valid UTF-8 keeps saying so.
+  seen.length = 0;
+  await makeDeliver()({ from: "ops@example.com", to: ["a@example.com"],
+    rfc822: Buffer.from("Subject: café\r\nX-Tag: one\r\n\r\nbody", "utf8") });
+  check("a UTF-8 header block is decoded as UTF-8",
+    blockOf(seen[0]) === "Subject: café\r\nX-Tag: one\r\n", JSON.stringify(blockOf(seen[0])));
+  check("and the part declares utf-8",
+    /Content-Type: text\/rfc822-headers; charset=utf-8/.test(seen[0]));
 }
 
 // ---- Retry budget: custom backoff + attempt-index clamp + envelope.attempt ----

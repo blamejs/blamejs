@@ -656,6 +656,92 @@ async function testTheBacklogIsBoundedWhenAuthStartsWaiting() {
   } finally { if (release) release(); await srv.close({ timeoutMs: 1000 }); }                           // allow:raw-time-literal — test-only short drain
 }
 
+// A second MAIL inside an open transaction is RFC 5321 section 4.1.4's "sender
+// already specified". It was answered with "EHLO/HELO first", which the client
+// already did successfully, so a reader who trusts the reply goes looking for a
+// session that lost its EHLO. The verdict was right and only the sentence was
+// wrong, which costs debugging time rather than correctness.
+async function testASecondMailNamesTheRightFault() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("second MAIL reply (skipped)", true); return; }
+  var srv = b.mail.server.submission.create({
+    tlsContext: ctx,
+    profile:    "permissive",
+    auth: { mechanisms: ["PLAIN"], verify: function () {
+      return Promise.resolve({ ok: true,
+        actor: { id: "alice@example.com", mailboxes: ["alice@example.com"] } });
+    } },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  try {
+    var socket = nodeNet.connect(info.port, "127.0.0.1");
+    await new Promise(function (r) { socket.once("connect", r); });
+    await _readGreeting(socket);
+    await _sendCommand(socket, "EHLO client.example.com");
+    var plain = Buffer.from(NUL + "alice" + NUL + "pw", "utf8").toString("base64");
+    await _sendCommand(socket, "AUTH PLAIN " + plain);
+    await _sendCommand(socket, "MAIL FROM:<alice@example.com>");
+
+    var second = await _sendCommand(socket, "MAIL FROM:<alice@example.com>");
+    check("a second MAIL is refused",         /^503 /m.test(second), JSON.stringify(second));
+    check("and it says the sender is already specified, not to issue EHLO",
+          /Sender already specified/.test(second) && !/EHLO\/HELO first/.test(second),
+          JSON.stringify(second));
+
+    // RSET clears the transaction, so the next MAIL is accepted — the refusal
+    // above is the open transaction and not the session having broken.
+    await _sendCommand(socket, "RSET");
+    var third = await _sendCommand(socket, "MAIL FROM:<alice@example.com>");
+    check("and after RSET a MAIL is accepted again",
+          /^250 /m.test(third), JSON.stringify(third));
+
+    // The null reverse path (RFC 5321 section 4.5.5) stores as the EMPTY
+    // STRING, which is falsy, so a truthiness test for an open transaction
+    // misses it. The identity check refuses `<>` on its own, so the reachable
+    // way here is a sender policy that accepts it — which is exactly what the
+    // hook is for.
+    var policySrv = b.mail.server.submission.create({
+      tlsContext: ctx,
+      profile:    "permissive",
+      // `{ ok: true }` is the hook's contract; a bare boolean reads as a
+      // refusal.
+      senderPolicy: function () { return { ok: true }; },
+      auth: { mechanisms: ["PLAIN"], verify: function () {
+        return Promise.resolve({ ok: true,
+          actor: { id: "alice@example.com", mailboxes: ["alice@example.com"] } });
+      } },
+    });
+    var pInfo = await policySrv.listen({ port: 0, address: "127.0.0.1" });
+    try {
+      var ps = nodeNet.connect(pInfo.port, "127.0.0.1");
+      await new Promise(function (r) { ps.once("connect", r); });
+      await _readGreeting(ps);
+      await _sendCommand(ps, "EHLO client.example.com");
+      await _sendCommand(ps, "AUTH PLAIN " + plain);
+      var bounce = await _sendCommand(ps, "MAIL FROM:<>");
+      check("a null reverse path accepted by the policy is accepted",
+            /^250 /m.test(bounce), JSON.stringify(bounce));
+      var afterBounce = await _sendCommand(ps, "MAIL FROM:<alice@example.com>");
+      check("and a second MAIL after it is refused as sender-already-specified",
+            /Sender already specified/.test(afterBounce) && !/EHLO\/HELO first/.test(afterBounce),
+            JSON.stringify(afterBounce));
+      ps.destroy();
+    } finally { await policySrv.close({ timeoutMs: 1000 }); }                                           // allow:raw-time-literal — test-only short drain
+
+    // The other half of the condition still answers its own fault: a MAIL
+    // before any EHLO is told to issue one.
+    var s2 = nodeNet.connect(info.port, "127.0.0.1");
+    await new Promise(function (r) { s2.once("connect", r); });
+    await _readGreeting(s2);
+    var noHelo = await _sendCommand(s2, "MAIL FROM:<alice@example.com>");
+    check("a MAIL before EHLO is still told to issue one",
+          /EHLO\/HELO first/.test(noHelo), JSON.stringify(noHelo));
+    s2.destroy();
+    socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
 async function testBdatOversizeRefused() {
   var ctx;
   try { ctx = await _makeTestTlsContext(); }
@@ -2206,6 +2292,7 @@ async function run() {
   await testRefusedBacklogDoesNotFinalizeAfterTheVerdict();
   await testAPeerHangUpStopsTheDrain();
   await testTheBacklogIsBoundedWhenAuthStartsWaiting();
+  await testASecondMailNamesTheRightFault();
   await testBdatOversizeRefused();
 
   var tls;

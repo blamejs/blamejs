@@ -1337,6 +1337,21 @@ async function testDownloadHandler() {
       appendMessage: function () {},
       downloadBlob: function (actor, accountId, blobId) {
         if (blobId === "rawbuf") return Promise.resolve(Buffer.from("rawbytes"));
+        if (blobId === "quoted") {
+          return Promise.resolve({ bytes: Buffer.from("q"), type: 'text/plain; charset="utf-8"' });
+        }
+        if (blobId === "inject") {
+          return Promise.resolve({ bytes: Buffer.from("i"),
+            type: "text/html\r\nX-Injected: 1" });
+        }
+        if (blobId === "escaped") {
+          return Promise.resolve({ bytes: Buffer.from("e"),
+            type: 'multipart/mixed; boundary="a\\"b"' });
+        }
+        if (blobId === "escapecr") {
+          return Promise.resolve({ bytes: Buffer.from("c"),
+            type: 'text/html; x="a\\\rb"' });
+        }
         if (blobId === "notbuf") return Promise.resolve({ bytes: "not-a-buffer" });
         if (blobId === "missing") return Promise.resolve(null);
         if (blobId === "boom") return Promise.reject(new Error("download boom"));
@@ -1354,14 +1369,56 @@ async function testDownloadHandler() {
     check("download Content-Disposition attachment",
       /attachment; filename="note\.txt"/.test(rOk.headers["content-disposition"] || ""));
 
-    // 6b. invalid filename segment → no Content-Disposition
+    // 6b. A filename that cannot be quoted costs the NAME, not the
+    // disposition. Without one the response renders inline, and blob bytes are
+    // attacker-influenced in the ordinary case — a mail attachment — so an
+    // inline render is script execution in the application's origin against a
+    // session the endpoint has already authenticated.
     var rNoDisp = await _req(s.port, { path: "/jmap/download/A1/blob_1/no,te" });
-    check("download invalid filename → no disposition", !rNoDisp.headers["content-disposition"]);
+    check("download with an unquotable filename is still an attachment",
+      (rNoDisp.headers["content-disposition"] || "") === "attachment",
+      JSON.stringify(rNoDisp.headers["content-disposition"]));
 
-    // 6c. raw Buffer result + ?accept type
+    // 6c. The requester does not choose the response type. RFC 8620 section
+    // 6.2 makes `accept` a request; honoring it unconstrained returns
+    // attacker-influenced bytes under a type the URL picked, so
+    // `?accept=text/html` would be script execution in the application's
+    // origin. A blob whose backend reports no type is the generic type.
     var rRaw = await _req(s.port, { path: "/jmap/download/A1/rawbuf/f.bin?accept=application/x-test" });
     check("download raw Buffer + accept → 200", rRaw.status === 200);
-    check("download raw Buffer uses accept type", (rRaw.headers["content-type"] || "") === "application/x-test");
+    check("download does not take its Content-Type from the requester",
+      (rRaw.headers["content-type"] || "") === "application/octet-stream",
+      JSON.stringify(rRaw.headers["content-type"]));
+
+    var rHtml = await _req(s.port, { path: "/jmap/download/A1/rawbuf/f.bin?accept=text/html" });
+    check("and ?accept=text/html does not make the response render as HTML",
+      (rHtml.headers["content-type"] || "") === "application/octet-stream" &&
+      /^attachment/.test(rHtml.headers["content-disposition"] || ""),
+      JSON.stringify({ t: rHtml.headers["content-type"], d: rHtml.headers["content-disposition"] }));
+
+    // 6d. A backend type with a QUOTED parameter is valid media-type syntax
+    // (RFC 9110 section 5.6.6) and has to survive; a type carrying CRLF is
+    // header injection and must not.
+    var rQuoted = await _req(s.port, { path: "/jmap/download/A1/quoted/f.txt" });
+    check("download preserves a valid quoted media-type parameter",
+      (rQuoted.headers["content-type"] || "") === 'text/plain; charset="utf-8"',
+      JSON.stringify(rQuoted.headers["content-type"]));
+    var rInject = await _req(s.port, { path: "/jmap/download/A1/inject/f.txt" });
+    check("download refuses a backend type carrying CRLF",
+      (rInject.headers["content-type"] || "") === "application/octet-stream" &&
+      rInject.headers["x-injected"] === undefined,
+      JSON.stringify(rInject.headers["content-type"]));
+    // A backslash inside a quoted parameter is a quoted-pair, not a stray
+    // byte, so `boundary="a\"b"` survives. What follows the backslash is
+    // still bounded, so it cannot smuggle a CR back in behind the escape.
+    var rEsc = await _req(s.port, { path: "/jmap/download/A1/escaped/f.txt" });
+    check("download preserves a valid quoted-pair in a media-type parameter",
+      (rEsc.headers["content-type"] || "") === 'multipart/mixed; boundary="a\\"b"',
+      JSON.stringify(rEsc.headers["content-type"]));
+    var rEscCr = await _req(s.port, { path: "/jmap/download/A1/escapecr/f.txt" });
+    check("download refuses a CR escaped behind a backslash",
+      (rEscCr.headers["content-type"] || "") === "application/octet-stream",
+      JSON.stringify(rEscCr.headers["content-type"]));
     check("download raw Buffer body", rRaw.body === "rawbytes");
 
     // 6d. malformed %-encoded accept is drop-silent (still 200 octet-stream)
