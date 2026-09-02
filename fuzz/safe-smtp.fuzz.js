@@ -41,12 +41,23 @@ module.exports.fuzz = function (data) {
     if (endIdx !== -1 && (endIdx < 0 || endIdx > data.length)) {
       throw new Error("findDotTerminator returned out-of-range index: " + endIdx);
     }
-    // If a terminator was found, verify the 5-byte pattern actually
-    // exists at the returned index (\r\n.\r\n).
-    if (endIdx !== -1) {
-      if (data[endIdx]     !== 0x0d || data[endIdx + 1] !== 0x0a ||
-          data[endIdx + 2] !== 0x2e ||
-          data[endIdx + 3] !== 0x0d || data[endIdx + 4] !== 0x0a) {
+    // The index is where the MAIL DATA ends, which RFC 5321 §4.1.1.4 puts
+    // after the terminator's leading CRLF -- that CRLF ends the last line of
+    // the message. So the 5-byte terminator starts two octets BEFORE the
+    // returned index.
+    //
+    // Empty mail data is the exception and returns 0: the client answered the
+    // 354 with `.\r\n` alone, and the CRLF that opens the terminator ended the
+    // DATA command line, so it is not in this buffer.
+    if (endIdx === 0) {
+      if (data[0] !== 0x2e || data[1] !== 0x0d || data[2] !== 0x0a) {
+        throw new Error("findDotTerminator returned 0 without a leading dot-line");
+      }
+    } else if (endIdx !== -1) {
+      var t = endIdx - 2;
+      if (data[t]     !== 0x0d || data[t + 1] !== 0x0a ||
+          data[t + 2] !== 0x2e ||
+          data[t + 3] !== 0x0d || data[t + 4] !== 0x0a) {
         throw new Error("findDotTerminator returned index without CRLF.CRLF: " + endIdx);
       }
     }
