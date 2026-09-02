@@ -52,11 +52,11 @@ async function run() {
       { timeoutMs: 8000 });
 
     check("#127 the timing-out task A is reaped (timeout, as expected)",
-          aErr && aErr.code === "workerpool/timeout");
+          aErr && aErr.code === "workerpool/timeout", String(aErr && aErr.code));
     check("#127 the task queued behind it is NOT dropped by slot recycling",
-          bError === null);
+          bError === null, String(bError && (bError.code || bError.message)));
     check("#127 the queued task runs on the replacement worker and returns its result",
-          bResult && bResult.v === 42);
+          bResult && bResult.v === 42, JSON.stringify(bResult));
   } finally {
     // Await termination so the worker threads fully exit before run()
     // returns — an un-awaited terminate() leaves the worker's MessagePort

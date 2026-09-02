@@ -741,7 +741,13 @@ function _regexCanStartHere(lastSig) {
   return !_slashDivides(lastSig);
 }
 
-function stripComments(src) {
+// `onComment(start, end, kind)` is called for every comment the walk skips,
+// with `end` exclusive and `kind` one of "line", "block", "html-open",
+// "html-close". It exists so a caller that wants the RANGES rather than the
+// stripped text asks this lexer instead of writing a second one: two answers to
+// "where are the comments" drift, and the one that drifts is whichever is not
+// the one the gates already trust.
+function stripComments(src, onComment) {
   // A mode STACK, not nested ad-hoc loops.
   //
   // Comment stripping is lexing, and the constructs nest: an interpolation
@@ -781,7 +787,9 @@ function stripComments(src) {
 
     if (mode === "code") {
       if (c === "/" && d === "/") {
+        var lineStart = i;
         while (i < n && src.charAt(i) !== "\n") i += 1;
+        if (onComment) onComment(lineStart, i, "line");
         continue;
       }
       // The HTML-like comment forms. A script — which every file here is,
@@ -791,14 +799,19 @@ function stripComments(src) {
       // runtime, which is the direction that hides things: a token inside one
       // would read as live and exempt the file.
       if (c === "<" && src.substr(i, 4) === "<!--") {
+        var htmlOpenStart = i;
         while (i < n && src.charAt(i) !== "\n") i += 1;
+        if (onComment) onComment(htmlOpenStart, i, "html-open");
         continue;
       }
       if (c === "-" && src.substr(i, 3) === "-->" && _atLineStart(out)) {
+        var htmlCloseStart = i;
         while (i < n && src.charAt(i) !== "\n") i += 1;
+        if (onComment) onComment(htmlCloseStart, i, "html-close");
         continue;
       }
       if (c === "/" && d === "*") {
+        var blockStart = i;
         i += 2;
         var spannedLines = false;
         while (i < n && !(src.charAt(i) === "*" && src.charAt(i + 1) === "/")) {
@@ -809,6 +822,7 @@ function stripComments(src) {
           i += 1;
         }
         i += 2;
+        if (onComment) onComment(blockStart, i, "block");
         // A block comment can SEPARATE two tokens — `foo/* note */in obj`, or
         // `a +/* note */+b` — and deleting it outright fuses them into `fooin`
         // and `a ++b`, which are different programs. One space restores the
@@ -1104,9 +1118,29 @@ function stripComments(src) {
   return out;
 }
 
+// Every comment in `src`, as `{ start, end, kind }` with `end` exclusive, in
+// source order. The same walk `stripComments` performs, reporting the ranges
+// instead of the text between them -- so a caller that EXCISES comments and a
+// gate that FINDS them cannot disagree about what a comment is. `//` appears
+// inside strings, regex literals and template interpolations throughout this
+// tree, which is why neither can be a regex.
+function commentRanges(src) {
+  var ranges = [];
+  stripComments(src, function (start, end, kind) {
+    ranges.push({ start: start, end: end, kind: kind });
+  });
+  return ranges;
+}
+
 module.exports = {
   tokenize:           tokenize,
   stripComments:      stripComments,
+  commentRanges:      commentRanges,
+  // Exported for the same reason `commentRanges` is: a caller that EXCISES a
+  // comment has to answer "would these two characters have fused" the way the
+  // stripper does. `foo/* note */bar` becomes `foobar` without it, and
+  // `f(/* x */a)` gains a space it should not have with a coarser rule.
+  wouldFuse:          _wouldFuse,
   significantTokens:  significantTokens,
   findCalls:          findCalls,
   findEnclosingTry:   findEnclosingTry,
