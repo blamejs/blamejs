@@ -641,6 +641,234 @@ async function testPutscriptLiteralAnswersExactlyOnce() {
   } finally { sock.destroy(); await srv.close(); }
 }
 
+// The backlog bound counts what is WAITING to be executed. A LITERAL+ payload
+// is not waiting: it belongs to the command whose opener announced it, and the
+// profile's own script cap is what says whether it is too big. Reading only
+// `state.pendingLiteral` misses this, because a client that puts the opener
+// and the payload in one write has not made the literal pending yet — so a
+// script well inside the profile cap is refused for how the write was chunked,
+// which is the difference between two clients sending identical bytes.
+async function testCoalescedLiteralPlusIsNotChargedToTheBacklog() {
+  var tls  = await _makeTestTlsContext();
+  var put  = [];
+  var store = _richStore();
+  store.sieveScripts.put = async function (actor, name, bodyText) {
+    put.push({ name: name, script: bodyText });
+  };
+  var srv = b.mail.server.managesieve.create({
+    tlsContext: tls.ctx, profile: "permissive", mailStore: store,
+    // maxPipelinedBytes is (maxLineBytes + 2) * 8 = 8208, and the permissive
+    // script cap is 1 MiB, so a 32 KiB script sits between the two: legal to
+    // the guard, over the backlog bound if the bound charges it.
+    maxLineBytes: 1024,
+    auth: { mechanisms: ["PLAIN"], verify: _verify },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var sock = _connect(info.port);
+  try {
+    await _read(sock);                                                              // greeting
+    await _cmd(sock, 'AUTHENTICATE "PLAIN" "' + _b64(NUL + "alice" + NUL + "good") + '"');
+
+    var body = "";
+    while (Buffer.byteLength(body, "utf8") < 32 * 1024) body += "keep;\r\n";
+    var size = Buffer.byteLength(body, "utf8");
+    check("managesieve: the fixture script is over the backlog bound",
+          size > (1024 + 2) * 8, String(size));
+
+    // One write: opener, payload and terminator together, which is what a
+    // client sending a LITERAL+ without waiting actually produces.
+    var reply = await _cmd(sock, 'PUTSCRIPT "big" {' + size + '+}\r\n' + body.slice(0, -2));
+    check("managesieve: a coalesced LITERAL+ script inside the profile cap is accepted",
+          /OK "PUTSCRIPT completed"/.test(reply), JSON.stringify(reply.slice(0, 120)));
+    check("managesieve: the whole script reached the store",
+          put.length === 1 && Buffer.byteLength(put[0].script, "utf8") === size,
+          JSON.stringify(put.length && Buffer.byteLength(put[0].script, "utf8")));
+
+    // The bound still holds for data that IS waiting: pipelined commands
+    // behind the literal are charged, so the exemption covers the declared
+    // payload and nothing else.
+    var pad = "";
+    while (Buffer.byteLength(pad, "utf8") < (1024 + 2) * 8) pad += 'HAVESPACE "x" 1\r\n';
+    var refused = await _cmd(sock,
+      'PUTSCRIPT "big2" {' + size + '+}\r\n' + body.slice(0, -2) + "\r\n" + pad.slice(0, -2));
+    check("managesieve: commands pipelined behind a literal are still bounded",
+          /NO "Too much pipelined data/.test(refused), JSON.stringify(refused.slice(0, 160)));
+  } finally { sock.destroy(); await srv.close(); }
+}
+
+// A literal carries octets. Decoding one that is not UTF-8 substitutes a
+// replacement character for each byte it cannot read, so the script that gets
+// validated and stored is a repaired copy of the one that arrived -- longer
+// than the announced count, under an OK reply, with nothing saying it changed.
+async function testAScriptThatIsNotUtf8IsRefusedNotRepaired() {
+  var tls = await _makeTestTlsContext();
+  var put = [];
+  var store = _richStore();
+  store.sieveScripts.put = async function (actor, name, bodyText) {
+    put.push({ name: name, script: bodyText });
+  };
+  var srv = b.mail.server.managesieve.create({
+    tlsContext: tls.ctx, profile: "permissive", mailStore: store,
+    auth: { mechanisms: ["PLAIN"], verify: _verify },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var sock = _connect(info.port);
+  try {
+    await _read(sock);                                                              // greeting
+    await _cmd(sock, 'AUTHENTICATE "PLAIN" "' + _b64(NUL + "alice" + NUL + "good") + '"');
+
+    // A lone 0xFF inside a comment: valid Sieve once decoded, and not
+    // decodable as UTF-8. Built as bytes so the file itself stays ASCII.
+    var head = Buffer.from("# ", "utf8");
+    var bad  = Buffer.from([0xFF]);
+    var tail = Buffer.from("\r\nkeep;\r\n", "utf8");
+    var body = Buffer.concat([head, bad, tail]);
+
+    var p = _read(sock);
+    sock.write('PUTSCRIPT "bad" {' + body.length + '+}\r\n');
+    sock.write(body);
+    sock.write("\r\n");
+    var reply = await p;
+
+    check("managesieve: a script that is not UTF-8 is refused",
+          /NO /.test(reply) && !/PUTSCRIPT completed/.test(reply),
+          JSON.stringify(reply.slice(0, 160)));
+    check("managesieve: and no repaired copy reaches the store",
+          put.length === 0, JSON.stringify(put.length));
+
+    // The session is still usable: the refusal is this command's answer, not
+    // the connection's.
+    var ok = await _cmd(sock, 'PUTSCRIPT "good" {7+}\r\nkeep;\r\n');
+    check("managesieve: a UTF-8 script after the refusal still stores",
+          /OK "PUTSCRIPT completed"/.test(ok), JSON.stringify(ok.slice(0, 160)));
+    check("managesieve: and it stores byte-for-byte what was sent",
+          put.length === 1 && put[0].script === "keep;\r\n",
+          JSON.stringify(put.length && put[0].script));
+  } finally { sock.destroy(); await srv.close(); }
+}
+
+// The same decode on the other literal this listener takes. A SASL token is
+// base64, which is ASCII, so the replacement character's own bytes fall outside
+// the alphabet and are dropped when the token is decoded: a response carrying
+// an undecodable byte reaches the verifier as the response without it. Two
+// different things on the wire become one credential.
+async function testASaslResponseThatIsNotUtf8IsRefused() {
+  var tls = await _makeTestTlsContext();
+  var seen = [];
+  var srv = b.mail.server.managesieve.create({
+    tlsContext: tls.ctx, profile: "permissive", mailStore: _richStore(),
+    auth: {
+      mechanisms: ["PLAIN"],
+      verify: function (mech, creds) { seen.push(creds.clientResponse); return _verify(mech, creds); },
+    },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var sock = _connect(info.port);
+  try {
+    await _read(sock);                                                              // greeting
+    var good = _b64(NUL + "alice" + NUL + "good");
+    var token = Buffer.concat([
+      Buffer.from(good, "utf8"),
+      Buffer.from([0xFF]),                                                          // dropped by a base64 decode
+    ]);
+
+    var p = _read(sock);
+    sock.write('AUTHENTICATE "PLAIN" {' + token.length + '+}\r\n');
+    sock.write(token);
+    sock.write("\r\n");
+    var reply = await p;
+
+    check("managesieve: a SASL response that is not UTF-8 is refused",
+          /NO /.test(reply) && !/Authenticated/.test(reply), JSON.stringify(reply.slice(0, 160)));
+    check("managesieve: and the repaired token never reaches the verifier",
+          seen.length === 0, JSON.stringify(seen));
+  } finally { sock.destroy(); await srv.close(); }
+}
+
+// The exemption is for a payload the listener would actually collect. Reading
+// it off the `{N+}` a line ends with instead lets any line shaped like a
+// command claim one, and the bound is then satisfied by bytes no handler will
+// ever read: `BOGUS {N+}` is refused as an unknown verb, so its declared
+// payload is queue like everything else.
+async function testABogusOpenerBuysNoExemption() {
+  var tls = await _makeTestTlsContext();
+  var srv = b.mail.server.managesieve.create({
+    tlsContext: tls.ctx, profile: "permissive", mailStore: _richStore(),
+    maxLineBytes: 1024,
+    auth: { mechanisms: ["PLAIN"], verify: _verify },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var sock = _connect(info.port);
+  try {
+    await _read(sock);                                                              // greeting
+    await _cmd(sock, 'AUTHENTICATE "PLAIN" "' + _b64(NUL + "alice" + NUL + "good") + '"');
+
+    var junk = Buffer.alloc(32 * 1024, 0x61).toString("utf8");
+    var reply = await _cmd(sock, "BOGUS {" + junk.length + "+}\r\n" + junk);
+    check("managesieve: a payload behind an unknown verb is charged to the backlog",
+          /NO "Too much pipelined data/.test(reply), JSON.stringify(reply.slice(0, 160)));
+  } finally { sock.destroy(); await srv.close(); }
+}
+
+// The exemption does not ask whether the session is authenticated, because a
+// peer may pipeline AUTHENTICATE and PUTSCRIPT in one write and the script
+// would then be judged against the state as it stood before the login. It
+// gives nothing away: a PUTSCRIPT the reader refuses never opens its literal,
+// so the bytes queued behind it are charged on the next read.
+async function testAPipelinedLoginCarriesTheLiteralBehindIt() {
+  var tls = await _makeTestTlsContext();
+  var put = [];
+  var store = _richStore();
+  store.sieveScripts.put = async function (actor, name, bodyText) {
+    put.push({ name: name, script: bodyText });
+  };
+  var srv = b.mail.server.managesieve.create({
+    tlsContext: tls.ctx, profile: "permissive", mailStore: store,
+    maxLineBytes: 1024,
+    auth: { mechanisms: ["PLAIN"], verify: _verify },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var sock = _connect(info.port);
+  var sock2 = null;
+  try {
+    await _read(sock);                                                              // greeting
+    var body = "";
+    while (Buffer.byteLength(body, "utf8") < 32 * 1024) body += "keep;\r\n";
+    var size = Buffer.byteLength(body, "utf8");
+
+    var seen = "";
+    sock.on("data", function (c) { seen += c.toString("utf8"); });
+    sock.write('AUTHENTICATE "PLAIN" "' + _b64(NUL + "alice" + NUL + "good") + '"\r\n' +
+               'PUTSCRIPT "big" {' + size + '+}\r\n' + body.slice(0, -2) + "\r\n");
+    await helpers.waitUntil(function () { return /PUTSCRIPT completed|NO /.test(seen); },
+      { timeoutMs: 5000, label: "managesieve: pipelined login then literal answered" });
+    check("managesieve: a script pipelined behind the login that authorizes it is not refused",
+          /OK "PUTSCRIPT completed"/.test(seen) && !/Too much pipelined data/.test(seen),
+          JSON.stringify(seen.slice(-200)));
+    check("managesieve: and the whole script reached the store",
+          put.length === 1 && Buffer.byteLength(put[0].script, "utf8") === size,
+          JSON.stringify(put.length && Buffer.byteLength(put[0].script, "utf8")));
+
+    // The same script with no login in front of it is refused, and its payload
+    // is not collected.
+    sock2 = _connect(info.port);
+    await _read(sock2);                                                             // greeting
+    var reply = await _cmd(sock2,
+      'PUTSCRIPT "big" {' + size + '+}\r\n' + body.slice(0, -2));
+    check("managesieve: an unauthenticated PUTSCRIPT is refused, not collected",
+          /NO "AUTHENTICATE first"/.test(reply) && !/PUTSCRIPT completed/.test(reply),
+          JSON.stringify(reply.slice(0, 160)));
+    check("managesieve: and nothing more reached the store",
+          put.length === 1, JSON.stringify(put.length));
+    // The exemption was a prediction about a line the reader had not taken.
+    // Once the reader refuses that PUTSCRIPT the octets are ordinary queue, and
+    // the allowance is applied to them rather than waiting for a socket read
+    // that a single coalesced write never produces.
+    check("managesieve: the payload behind a refused opener is charged, not exempt",
+          /Too much pipelined data/.test(reply), JSON.stringify(reply.slice(0, 240)));
+  } finally { sock.destroy(); if (sock2) sock2.destroy(); await srv.close(); }
+}
+
 // A continuation literal declares its own size, and the client declaring it is
 // unauthenticated. Without a bound, `{999999999+}` makes the listener collect
 // attacker bytes toward a gigabyte per connection. The quoted form of the same
@@ -1227,6 +1455,94 @@ async function testStartTlsIdleTimeoutByeEncrypted() {
   } finally { if (tsock) tsock.destroy(); sock.destroy(); await srv.close(); }
 }
 
+// The reader takes the next command only while the session is open, and what
+// tells it the session closed is the stage `_close` writes. A close given the
+// socket alone tears the connection down without writing it, so a handler that
+// was already running resumes into a reader that still believes the session is
+// live and executes whatever the peer queued behind it. The post-STARTTLS
+// timeout is a second close path, wired separately from the plaintext one.
+async function testPostStartTlsTimeoutStopsTheReader() {
+  var tls = await _makeTestTlsContext();
+  var deleted = [];
+  var releaseList = null;
+  var store = _richStore();
+  store.sieveScripts.list = function () {
+    return new Promise(function (r) { releaseList = function () { r([]); }; });
+  };
+  store.sieveScripts.delete = async function (actor, name) { deleted.push(name); };
+  var srv = b.mail.server.managesieve.create({
+    tlsContext: tls.ctx, profile: "permissive", mailStore: store,
+    idleTimeoutMs: b.constants.TIME.seconds(0.3),
+    auth: { mechanisms: ["PLAIN"], verify: _verify },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var sock = _connect(info.port);
+  var tsock = null;
+  try {
+    await _read(sock);                                                              // greeting
+    await _cmd(sock, "STARTTLS");
+    tsock = nodeTls.connect({ socket: sock, ca: tls.caPem, servername: "localhost" });
+    tsock.on("error", function () {});
+    await new Promise(function (r, j) { tsock.once("secureConnect", r); tsock.once("error", j); });
+    await _read(tsock);                                                             // post-TLS banner
+    await _cmd(tsock, 'AUTHENTICATE "PLAIN" "' + _b64(NUL + "alice" + NUL + "good") + '"');
+
+    var got = "";
+    tsock.on("data", function (d) { got += d.toString("utf8"); });
+    // One segment: the reader takes LISTSCRIPTS and waits on a store call that
+    // does not resolve, so DELETESCRIPT is still queued when the timeout fires.
+    tsock.write('LISTSCRIPTS\r\nDELETESCRIPT "victim"\r\n');
+    await helpers.waitUntil(function () { return releaseList !== null; },
+      { timeoutMs: 5000, label: "managesieve: LISTSCRIPTS reached the store" });
+    await helpers.waitUntil(function () { return /BYE "Idle timeout"/.test(got); },
+      { timeoutMs: 5000, label: "managesieve: post-STARTTLS idle BYE" });
+
+    releaseList();
+    await helpers.passiveObserve(300, "managesieve: the queued command does not run after teardown");
+    check("a command queued behind a running handler does not run after a post-TLS timeout",
+          deleted.length === 0, JSON.stringify(deleted));
+  } finally { if (tsock) tsock.destroy(); sock.destroy(); await srv.close(); }
+}
+
+// A connection also ends without the listener deciding it: the peer hangs up,
+// or the server destroys a lingering socket at shutdown. Neither runs a
+// refusal, so nothing marked the session, and a reader waiting on a handler
+// resumed when it settled and ran whatever the peer had already pipelined --
+// a DELETESCRIPT reaching the store on a connection that no longer exists.
+async function testAPeerHangUpStopsTheReader() {
+  var tls = await _makeTestTlsContext();
+  var deleted = [];
+  var releaseList = null;
+  var store = _richStore();
+  store.sieveScripts.list = function () {
+    return new Promise(function (r) { releaseList = function () { r([]); }; });
+  };
+  store.sieveScripts.delete = async function (actor, name) { deleted.push(name); };
+  var srv = b.mail.server.managesieve.create({
+    tlsContext: tls.ctx, profile: "permissive", mailStore: store,
+    auth: { mechanisms: ["PLAIN"], verify: _verify },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var sock = _connect(info.port);
+  try {
+    await _read(sock);                                                              // greeting
+    await _cmd(sock, 'AUTHENTICATE "PLAIN" "' + _b64(NUL + "alice" + NUL + "good") + '"');
+
+    // One segment: the reader takes LISTSCRIPTS and waits on a store call that
+    // does not resolve, so DELETESCRIPT is still queued when the peer goes.
+    sock.write('LISTSCRIPTS\r\nDELETESCRIPT "victim"\r\n');
+    await helpers.waitUntil(function () { return releaseList !== null; },
+      { timeoutMs: 5000, label: "managesieve peer hang-up: LISTSCRIPTS reached the store" });
+
+    sock.destroy();
+    await helpers.passiveObserve(300, "managesieve peer hang-up: the close is delivered");
+    releaseList();
+    await helpers.passiveObserve(400, "managesieve peer hang-up: nothing resumes");
+    check("a command queued behind a running handler does not run after the peer hangs up",
+          deleted.length === 0, JSON.stringify(deleted));
+  } finally { if (releaseList) releaseList(); sock.destroy(); await srv.close(); }
+}
+
 // ==========================================================================
 // 9. handler faults — sync throw (handler_threw) + async reject
 //    (handler_rejected) via operator overrides
@@ -1270,6 +1586,11 @@ async function run() {
   await testAuthenticateContinuationLiteralIsBounded();
   await testPutscriptBelowTheByteRateFloorIsClosed();
   await testPutscriptLiteralAnswersExactlyOnce();
+  await testCoalescedLiteralPlusIsNotChargedToTheBacklog();
+  await testAPipelinedLoginCarriesTheLiteralBehindIt();
+  await testABogusOpenerBuysNoExemption();
+  await testAScriptThatIsNotUtf8IsRefusedNotRepaired();
+  await testASaslResponseThatIsNotUtf8IsRefused();
   await testPipelinedSaslResponsesAreRefusedNotRaced();
   await testAuthenticateMultiStepFailureStillCounts();
   await testAuthenticateChallengeCannotInjectALine();
@@ -1283,6 +1604,8 @@ async function run() {
   await testLineTooLong();
   await testIdleTimeout();
   await testStartTlsIdleTimeoutByeEncrypted();
+  await testPostStartTlsTimeoutStopsTheReader();
+  await testAPeerHangUpStopsTheReader();
   await testHandlerFaults();
 }
 

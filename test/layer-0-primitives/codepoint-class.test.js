@@ -1137,22 +1137,13 @@ function testFoldedSearchAndRangeRuns() {
   // The reason this helper exists: the regex spelling has no start anchor, so
   // a long run costs time proportional to its SQUARE. Growth is the assertion
   // rather than a wall-clock budget, so a loaded machine moves both readings.
-  function _trimMs(n) {
-    var subject = "/".repeat(n) + "x";
-    CP.trimTrailingChars(subject, "/");                       // warm
-    var best = Infinity;
-    for (var k = 0; k < 3; k += 1) {
-      var t0 = process.hrtime.bigint();
-      CP.trimTrailingChars(subject, "/");
-      best = Math.min(best, Number(process.hrtime.bigint() - t0) / 1e6);
-    }
-    return best;
-  }
-  var smallTrim = _trimMs(2000);
-  var largeTrim = _trimMs(8000);
-  var trimRatio = smallTrim > 0.02 ? (largeTrim / smallTrim) : 1;
+  // helpers.looksSuperlinear holds the floor below which no ratio is taken and
+  // re-measures before failing; a ratio between two readings this small is
+  // decided by whatever else the machine was doing at the time.
   check("trimTrailingChars runs in time proportional to the run it removes",
-        trimRatio < 8, "4x input took " + trimRatio.toFixed(1) + "x the time");
+        !helpers.looksSuperlinear(function (n) {
+          CP.trimTrailingChars("/".repeat(n) + "x", "/");
+        }, { small: 400000, large: 800000 }));
 
   // ---- firstDelimited / lastDelimited ----
   check("firstDelimited takes the leftmost non-empty group",
@@ -1200,23 +1191,10 @@ function testFoldedSearchAndRangeRuns() {
   // The advertised linear scan has to hold for the ARGUMENTS a caller picks,
   // not only for the text. A long character set asked per text character, or a
   // long delimiter re-matched per empty group, turns either scan quadratic.
-  function _trimSetMs(n) {
-    var text = "a".repeat(n);
-    var chars = "b".repeat(n) + "a";
-    CP.trimTrailingChars(text, chars);
-    var best = Infinity;
-    for (var k = 0; k < 3; k += 1) {
-      var t0 = process.hrtime.bigint();
-      CP.trimTrailingChars(text, chars);
-      best = Math.min(best, Number(process.hrtime.bigint() - t0) / 1e6);
-    }
-    return best;
-  }
-  var setSmall = _trimSetMs(16000);
-  var setLarge = _trimSetMs(64000);
-  var setRatio = setSmall > 0.02 ? (setLarge / setSmall) : 1;
   check("trimTrailingChars stays linear with a long character set",
-        setRatio < 8, "4x input took " + setRatio.toFixed(1) + "x the time");
+        !helpers.looksSuperlinear(function (n) {
+          CP.trimTrailingChars("a".repeat(n), "b".repeat(n) + "a");
+        }, { small: 128000, large: 256000 }));
 
   // The set is codepoints, not UTF-16 units. Built from units, an astral
   // character in the set contributes its two surrogate halves separately, and
@@ -1242,23 +1220,12 @@ function testFoldedSearchAndRangeRuns() {
 
   // Both replaced patterns that restarted at every opening character. The
   // assertion is growth, so a loaded machine moves both readings together.
-  function _firstMs(n) {
-    var subject = "<".repeat(n);
-    CP.firstDelimited(subject, "<", ">");
-    var best = Infinity;
-    for (var k = 0; k < 3; k += 1) {
-      var t0 = process.hrtime.bigint();
-      CP.firstDelimited(subject, "<", ">");
-      CP.lastDelimited(subject, "<", ">");
-      best = Math.min(best, Number(process.hrtime.bigint() - t0) / 1e6);
-    }
-    return best;
-  }
-  var smallScan = _firstMs(2000);
-  var largeScan = _firstMs(8000);
-  var scanRatio = smallScan > 0.02 ? (largeScan / smallScan) : 1;
   check("the delimiter scans run in time proportional to the text",
-        scanRatio < 8, "4x input took " + scanRatio.toFixed(1) + "x the time");
+        !helpers.looksSuperlinear(function (n) {
+          var subject = "<".repeat(n);
+          CP.firstDelimited(subject, "<", ">");
+          CP.lastDelimited(subject, "<", ">");
+        }, { small: 400000, large: 800000 }));
 }
 
 module.exports = { run: run };

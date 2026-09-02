@@ -124,8 +124,10 @@ module.exports = {
 
   // Superlinear-growth measurement (shared so the flake threshold cannot drift
   // between the suites that assert it).
-  bestMs:             _growth.bestMs,
-  looksSuperlinear:   _growth.looksSuperlinear,
+  bestMs:                _growth.bestMs,
+  looksSuperlinear:      _growth.looksSuperlinear,
+  bestMsAsync:           _growth.bestMsAsync,
+  looksSuperlinearAsync: _growth.looksSuperlinearAsync,
 
   // fs.watch / fs.watchFile test primitives
   backdateFile:       _fsWatch.backdateFile,

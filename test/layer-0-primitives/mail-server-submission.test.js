@@ -442,6 +442,220 @@ async function testBdatBinaryBytesPreserved() {
   } finally { await srv.close({ timeoutMs: 1000 }); }                                                  // allow:raw-time-literal — test-only short drain
 }
 
+// The AUTH guards read state the verify writes, and the verify is
+// asynchronous. The line loop holds the client's pipelined remainder for the
+// sender-policy hook; it has to hold it here too, or two credential exchanges
+// written in one segment are both dispatched while the session is still
+// unauthenticated.
+async function testPipelinedAuthCannotRaceTheSubmissionGuard() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("submission pipelined AUTH (skipped)", true); return; }
+  var verifies = 0;
+  var srv = b.mail.server.submission.create({
+    tlsContext: ctx,
+    profile:    "permissive",
+    auth: { mechanisms: ["PLAIN"], verify: function () {
+      verifies += 1;
+      return Promise.resolve({ ok: true, actor: { id: "u1", username: "alice" } });
+    } },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  try {
+    var socket = nodeNet.connect(info.port, "127.0.0.1");
+    await new Promise(function (r) { socket.once("connect", r); });
+    await _readGreeting(socket);
+    await _sendCommand(socket, "EHLO client.example.com");
+
+    var seen = "";
+    socket.on("data", function (c) { seen += c.toString("utf8"); });
+    var plain = Buffer.from(NUL + "alice" + NUL + "pw", "utf8").toString("base64");
+    // One write, no waiting between them.
+    socket.write("AUTH PLAIN " + plain + "\r\nAUTH PLAIN " + plain + "\r\n");
+    await helpers.waitUntil(function () {
+      return seen.split("\r\n").filter(function (l) { return l.length > 0; }).length >= 2;
+    }, { timeoutMs: 5000, label: "submission pipelined AUTH: two replies" });
+    await helpers.passiveObserve(300, "submission pipelined AUTH: settle");
+
+    var replies = seen.split("\r\n").filter(function (l) { return l.length > 0; });
+    var accepted = replies.filter(function (l) { return l.indexOf("235") === 0; });
+    check("a pipelined second AUTH does not authenticate again",
+          accepted.length <= 1, JSON.stringify(replies));
+    check("and the second exchange is not verified concurrently with the first",
+          verifies <= 1, String(verifies));
+    socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                  // allow:raw-time-literal — test-only short drain
+}
+
+// Refusing the pipelined backlog destroys the socket, and the command that was
+// already waiting on a verdict resumes the drain when it answers. Unless the
+// close marks the SESSION, that resume reads the buffer the refusal was about
+// and runs it: a transaction pipelined behind an AUTH reaches the agent on a
+// connection the server refused and closed.
+async function testRefusedBacklogDoesNotFinalizeAfterTheVerdict() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("submission refused backlog (skipped)", true); return; }
+  var release   = null;
+  var gate      = new Promise(function (r) { release = r; });
+  var handoffs  = [];
+  var srv = b.mail.server.submission.create({
+    tlsContext: ctx,
+    profile:    "permissive",
+    // The aggregate bound is maxLineBytes * (maxRcptsPerMsg + 4). Both are set
+    // small so a short flood clears it, and the per-line bound (maxLineBytes
+    // * 4) stays well above the longest line the test sends.
+    maxLineBytes:       100,                                                                           // allow:raw-byte-literal — 400-byte per-line bound, far above any line here
+    maxRcptsPerMessage: 2,
+    agent: { handoff: function (env) { handoffs.push(env); return Promise.resolve({ messageId: "<x@t>" }); } },
+    // The mailbox matters: without an assigned send-as identity the queued
+    // MAIL FROM is refused on its own merits and the test would pass whether
+    // or not the reader had stopped.
+    auth: { mechanisms: ["PLAIN"], verify: function () {
+      return gate.then(function () {
+        return { ok: true, actor: { id: "alice@example.com", mailboxes: ["alice@example.com"] } };
+      });
+    } },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  try {
+    var socket = nodeNet.connect(info.port, "127.0.0.1");
+    await new Promise(function (r) { socket.once("connect", r); });
+    await _readGreeting(socket);
+    await _sendCommand(socket, "EHLO client.example.com");
+
+    var seen = "";
+    socket.on("data", function (c) { seen += c.toString("utf8"); });
+
+    // Hold the reader on a credential check that will not finish.
+    var plain = Buffer.from(NUL + "alice" + NUL + "pw", "utf8").toString("base64");
+    socket.write("AUTH PLAIN " + plain + "\r\n");
+    await helpers.passiveObserve(120, "submission refused backlog: verify in flight");
+
+    // Then overrun the allowance, with a whole transaction at the end of it.
+    // Sized to clear the 600-byte bound and still fit in ONE segment: the
+    // refusal destroys the socket, which stops the reader, so bytes in a later
+    // segment never arrive and the transaction has to be in the buffer the
+    // refusal is about.
+    var flood = "";
+    for (var i = 0; i < 110; i += 1) flood += "NOOP\r\n";
+    socket.write(flood +
+      "MAIL FROM:<alice@example.com>\r\n" +
+      "RCPT TO:<b@example.com>\r\n" +
+      "BDAT 5 LAST\r\nhello");
+    await helpers.waitUntil(function () { return /Too many pipelined bytes/.test(seen); },
+      { timeoutMs: 5000, label: "submission refused backlog: refusal written" });
+
+    // Release the verdict the reader was waiting on. Its continuation must not
+    // pick the queue back up.
+    release();
+    await helpers.passiveObserve(500, "submission refused backlog: nothing resumes");
+    check("a transaction queued behind a refused backlog does not reach the agent",
+          handoffs.length === 0, JSON.stringify(handoffs.length));
+    socket.destroy();
+  } finally { if (release) release(); await srv.close({ timeoutMs: 1000 }); }                           // allow:raw-time-literal — test-only short drain
+}
+
+// A session also ends without the listener deciding it. A peer that pipelines
+// a transaction behind a command still waiting on a verdict and then hangs up
+// leaves nothing to mark the session, so the verdict's continuation resumes
+// the drain and the message reaches the agent on a connection that is gone.
+async function testAPeerHangUpStopsTheDrain() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("submission peer hang-up (skipped)", true); return; }
+  var release  = null;
+  var gate     = new Promise(function (r) { release = r; });
+  var handoffs = [];
+  var srv = b.mail.server.submission.create({
+    tlsContext: ctx,
+    profile:    "permissive",
+    agent: { handoff: function (env) { handoffs.push(env); return Promise.resolve({ messageId: "<x@t>" }); } },
+    auth: { mechanisms: ["PLAIN"], verify: function () {
+      return gate.then(function () {
+        return { ok: true, actor: { id: "alice@example.com", mailboxes: ["alice@example.com"] } };
+      });
+    } },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  try {
+    var socket = nodeNet.connect(info.port, "127.0.0.1");
+    await new Promise(function (r) { socket.once("connect", r); });
+    await _readGreeting(socket);
+    await _sendCommand(socket, "EHLO client.example.com");
+
+    // The credential check parks the reader; the whole transaction is queued
+    // behind it in the same segment.
+    var plain = Buffer.from(NUL + "alice" + NUL + "pw", "utf8").toString("base64");
+    socket.write("AUTH PLAIN " + plain + "\r\n" +
+      "MAIL FROM:<alice@example.com>\r\n" +
+      "RCPT TO:<b@example.com>\r\n" +
+      "BDAT 5 LAST\r\nhello");
+    await helpers.passiveObserve(200, "submission peer hang-up: verify in flight");
+
+    socket.destroy();
+    await helpers.passiveObserve(300, "submission peer hang-up: the close is delivered");
+    release();
+    await helpers.passiveObserve(500, "submission peer hang-up: nothing resumes");
+    check("a transaction queued behind a verdict does not reach the agent after a hang-up",
+          handoffs.length === 0, JSON.stringify(handoffs.length));
+  } finally { if (release) release(); await srv.close({ timeoutMs: 1000 }); }                           // allow:raw-time-literal — test-only short drain
+}
+
+// The bound is about how much is HELD while a command waits for its verdict,
+// and on arrival that is measured with nothing pending yet. An AUTH line and
+// an over-cap remainder in the same segment are therefore checked before the
+// AUTH is taken: the remainder is never measured, and the completion drains it.
+async function testTheBacklogIsBoundedWhenAuthStartsWaiting() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("submission auth backlog (skipped)", true); return; }
+  var release  = null;
+  var gate     = new Promise(function (r) { release = r; });
+  var handoffs = [];
+  var srv = b.mail.server.submission.create({
+    tlsContext: ctx,
+    profile:    "permissive",
+    maxLineBytes:       100,                                                                           // allow:raw-byte-literal — 600-byte aggregate bound
+    maxRcptsPerMessage: 2,
+    agent: { handoff: function (env) { handoffs.push(env); return Promise.resolve({ messageId: "<x@t>" }); } },
+    auth: { mechanisms: ["PLAIN"], verify: function () {
+      return gate.then(function () {
+        return { ok: true, actor: { id: "alice@example.com", mailboxes: ["alice@example.com"] } };
+      });
+    } },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  try {
+    var socket = nodeNet.connect(info.port, "127.0.0.1");
+    await new Promise(function (r) { socket.once("connect", r); });
+    await _readGreeting(socket);
+    await _sendCommand(socket, "EHLO client.example.com");
+
+    var seen = "";
+    socket.on("data", function (c) { seen += c.toString("utf8"); });
+    // ONE segment: the AUTH that will park the reader, and behind it more than
+    // the allowance, ending in a whole transaction.
+    var plain = Buffer.from(NUL + "alice" + NUL + "pw", "utf8").toString("base64");
+    var flood = "";
+    for (var i = 0; i < 110; i += 1) flood += "NOOP\r\n";
+    socket.write("AUTH PLAIN " + plain + "\r\n" + flood +
+      "MAIL FROM:<alice@example.com>\r\n" +
+      "RCPT TO:<b@example.com>\r\n" +
+      "BDAT 5 LAST\r\nhello");
+    await helpers.waitUntil(function () { return /Too many pipelined bytes/.test(seen); },
+      { timeoutMs: 5000, label: "submission auth backlog: refused" });
+    check("a backlog pipelined behind an AUTH in one segment is bounded",
+          /Too many pipelined bytes/.test(seen), JSON.stringify(seen.slice(-160)));
+
+    release();
+    await helpers.passiveObserve(400, "submission auth backlog: nothing resumes");
+    check("and the transaction behind it does not reach the agent",
+          handoffs.length === 0, JSON.stringify(handoffs.length));
+    socket.destroy();
+  } finally { if (release) release(); await srv.close({ timeoutMs: 1000 }); }                           // allow:raw-time-literal — test-only short drain
+}
+
 async function testBdatOversizeRefused() {
   var ctx;
   try { ctx = await _makeTestTlsContext(); }
@@ -1901,40 +2115,38 @@ async function testFoldedDkimTagDoesNotBacktrack(tls) {
     // far below the bound. That is the whole reason to assert a curve instead
     // of a number — the two runs inflate together, and the ratio survives what
     // a ceiling cannot.
-    async function _timeRun(lines) {
-      var hostile = "DKIM-Signature: v=1 x" + "\r\n ".repeat(lines) + "y\r\n" +
-                    "From: u@example.com\r\n\r\nx";
-      await _send(sock, "MAIL FROM:<u@example.com>");
-      await _send(sock, "RCPT TO:<b@example.com>");
-      var started = process.hrtime.bigint();
-      var reply = await _dataDot(sock, hostile);
-      return { ms: Number(process.hrtime.bigint() - started) / 1e6, reply: reply };
-    }
-
     // Sized so both runs are well clear of timer noise. 40,000 lines — the
     // size a millisecond budget was once put around — scans in about 3ms on an
     // idle box, which is the other half of why that budget was measuring load
     // rather than complexity: there was nothing else in the number.
-    var small = await _timeRun(100000);
-    var large = await _timeRun(400000);
-    var ratio = large.ms / Math.max(small.ms, 1);
+    async function _run(lines) {
+      var hostile = "DKIM-Signature: v=1 x" + "\r\n ".repeat(lines) + "y\r\n" +
+                    "From: u@example.com\r\n\r\nx";
+      await _send(sock, "MAIL FROM:<u@example.com>");
+      await _send(sock, "RCPT TO:<b@example.com>");
+      // The verdict is not the point — no d= tag means it is refused either
+      // way. What is measured is how the time moves with the input.
+      await _dataDot(sock, hostile);
+    }
 
-    // The control for a ratio: a measurement too small to mean anything would
-    // make any ratio look fine, so the smaller run has to be genuinely timed.
-    check("submission: the backtracking probe measures real work (" +
-          small.ms.toFixed(0) + "ms at 100k lines)",
-          small.ms >= 5, small.ms.toFixed(0) + "ms — too fast to compare against");
-
-    // The verdict is not the point — no d= tag means it is refused either way.
-    // What is asserted is the curve: four times the input costs a linear scan
-    // about four times the time and a backtracking one about sixteen. The bound
-    // sits between, with room for the load factor measured above on either side
-    // of it.
+    // The shared measurement, not a ratio taken here: it takes the best of
+    // several samples per size, declines to judge below a floor where the shape
+    // is already ruled out, and RE-MEASURES before it fails anything. A single
+    // reading of this probe returned 9.41 against a bound of 9 at
+    // SMOKE_PARALLEL=64 and failed a release gate on a scan that is linear.
+    var verdict = await helpers.looksSuperlinearAsync(_run, {
+      small: 100000, large: 400000,
+      // Four times the input, so the hypotheses are 4x for a linear scan and
+      // 16x for a backtracking one. The bound sits between them with room on
+      // both sides for a load factor, which a 2x step does not leave: a
+      // doubling measured 3.21x here under parallel load, squarely between
+      // what linear and quadratic predict at that step.
+      threshold: 9,
+    });
     check("submission: a folded DKIM-Signature tag is scanned without " +
-          "backtracking (x" + ratio.toFixed(2) + " for 4x the input)",
-          ratio < 9,
-          "100k=" + small.ms.toFixed(0) + "ms 400k=" + large.ms.toFixed(0) +
-          "ms ratio=" + ratio.toFixed(2) + ", reply " + String(large.reply).slice(0, 12));
+          "backtracking (x" + (verdict.ratio === null ? "under floor" : verdict.ratio.toFixed(2)) +
+          " for 4x the input)",
+          verdict.superlinear === false, JSON.stringify(verdict));
   } finally { sock.destroy(); await s.srv.close({ timeoutMs: b.constants.TIME.seconds(2) }); }
 }
 
@@ -1990,6 +2202,10 @@ async function run() {
   await testBdatOutsideTransaction();
   await testBdatBadArgs();
   await testBdatBinaryBytesPreserved();
+  await testPipelinedAuthCannotRaceTheSubmissionGuard();
+  await testRefusedBacklogDoesNotFinalizeAfterTheVerdict();
+  await testAPeerHangUpStopsTheDrain();
+  await testTheBacklogIsBoundedWhenAuthStartsWaiting();
   await testBdatOversizeRefused();
 
   var tls;

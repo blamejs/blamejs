@@ -196,6 +196,302 @@ async function testAuthenticatedTransaction() {
 }
 
 // ---- AUTH PLAIN mechanism over TLS ----
+// The AUTHORIZATION-state guards read `state.stage` and `state.actor`, and the
+// stage moves only after an async verify resolves. The drain loop dispatched
+// every complete line in the buffer without awaiting any of them, so a client
+// that wrote both credential pairs in ONE segment had all four lines
+// dispatched while the stage was still "authorization" and the actor still
+// null. Both guards passed, and two verifies raced to own the session.
+async function testPipelinedCredentialsCannotRaceTheAuthGuard() {
+  var s = await _makeServer();
+  var sock = nodeNet.connect(s.port, "127.0.0.1");
+  sock.on("error", function () {});
+  await _readReply(sock);                                    // greeting
+  await _send(sock, "STLS");
+  var tls = nodeTls.connect({ socket: sock, ca: s.caPem, servername: "localhost" });
+  tls.on("error", function () {});
+  await new Promise(function (r, j) { tls.once("secureConnect", r); tls.once("error", j); });
+  try {
+    var seen = "";
+    tls.on("data", function (c) { seen += c.toString("utf8"); });
+
+    // One write. Nothing here awaits a reply, which is the point.
+    tls.write("USER alice\r\nPASS good\r\nUSER bob\r\nPASS good\r\n");
+    await helpers.waitUntil(function () {
+      return seen.split("\r\n").filter(function (l) { return l.length > 0; }).length >= 4;
+    }, { timeoutMs: 5000, label: "pop3 pipeline: four replies" });
+    await helpers.passiveObserve(300, "pop3 pipeline: settle");
+
+    var replies = seen.split("\r\n").filter(function (l) { return l.length > 0; });
+    var oks = replies.filter(function (l) { return l.indexOf("+OK") === 0; });
+    // One session authenticates once. Three or four +OK means the
+    // re-authentication guard was passed.
+    check("a pipelined second credential pair does not authenticate again",
+          oks.length <= 2, JSON.stringify(replies));
+    tls.destroy();
+  } finally { await s.srv.close({ timeoutMs: 1000 }); }                                                 // allow:raw-time-literal — test-only short drain
+}
+
+// The same race on the OTHER authentication verb. Serializing the reader only
+// helps for handlers that hand their work back to it, and the stage moves
+// inside a chain that runs after the credential check resolves.
+async function testPipelinedAuthVerbsCannotRaceEither() {
+  var s = await _makeServer();
+  var sock = nodeNet.connect(s.port, "127.0.0.1");
+  sock.on("error", function () {});
+  await _readReply(sock);                                    // greeting
+  await _send(sock, "STLS");
+  var tls = nodeTls.connect({ socket: sock, ca: s.caPem, servername: "localhost" });
+  tls.on("error", function () {});
+  await new Promise(function (r, j) { tls.once("secureConnect", r); tls.once("error", j); });
+  try {
+    var seen = "";
+    tls.on("data", function (c) { seen += c.toString("utf8"); });
+
+    // SASL PLAIN is authzid NUL authcid NUL passwd. NUL is the module
+    // constant, never a byte typed into this file.
+    var plain = Buffer.from(NUL + "alice" + NUL + "good", "utf8").toString("base64");
+    tls.write("AUTH PLAIN " + plain + "\r\nAUTH PLAIN " + plain + "\r\n");
+    await helpers.waitUntil(function () {
+      return seen.split("\r\n").filter(function (l) { return l.length > 0; }).length >= 2;
+    }, { timeoutMs: 5000, label: "pop3 pipelined AUTH: two replies" });
+    await helpers.passiveObserve(300, "pop3 pipelined AUTH: settle");
+
+    var replies = seen.split("\r\n").filter(function (l) { return l.length > 0; });
+    var oks = replies.filter(function (l) { return l.indexOf("+OK") === 0; });
+    check("a pipelined second AUTH does not authenticate again",
+          oks.length <= 1, JSON.stringify(replies));
+    tls.destroy();
+  } finally { await s.srv.close({ timeoutMs: 1000 }); }                                                 // allow:raw-time-literal — test-only short drain
+}
+
+// Commands wait while a handler runs, so the buffer holds a queue. A client
+// that sends faster than the handlers complete would grow it for as long as it
+// liked, which a per-line cap cannot bound because it says nothing about how
+// many lines are held.
+async function testPipelinedBacklogIsBounded() {
+  // The pump has to be BUSY for a backlog to exist at all: with fast handlers
+  // the buffer drains as quickly as it fills and never grows. So the verify is
+  // held open while the client keeps sending.
+  var release = null;
+  var gate = new Promise(function (r) { release = r; });
+  var s = await _makeServer({
+    auth: { verify: function () { return gate.then(function () { return { ok: false }; }); } },
+  });
+  var sock = nodeNet.connect(s.port, "127.0.0.1");
+  sock.on("error", function () {});
+  await _readReply(sock);                                    // greeting
+  await _send(sock, "STLS");
+  var tls = nodeTls.connect({ socket: sock, ca: s.caPem, servername: "localhost" });
+  tls.on("error", function () {});
+  await new Promise(function (r, j) { tls.once("secureConnect", r); tls.once("error", j); });
+  try {
+    var seen = "";
+    var closed = false;
+    tls.on("data", function (c) { seen += c.toString("utf8"); });
+    tls.on("close", function () { closed = true; });
+
+    // The cap holds on the FIRST data event too, before any handler is
+    // running: a single write carrying more than the allowance takes the
+    // pump-not-yet-started path, and a bound checked only once a pump is
+    // already running would let that whole buffer through.
+    var upfront = "";
+    for (var u = 0; u < 3000; u += 1) upfront += "NOOP\r\n";
+    tls.write(upfront);
+    await helpers.waitUntil(function () { return closed || /Too much pipelined data/.test(seen); },
+      { timeoutMs: 5000, label: "pop3 backlog: first-chunk flood refused" });
+    check("a first data event past the allowance is refused, not drained",
+          /Too much pipelined data/.test(seen) || closed, JSON.stringify(seen.slice(-160)));
+    tls.destroy();
+    await s.srv.close({ timeoutMs: 1000 });                                                             // allow:raw-time-literal — test-only short drain
+
+    // And again with a handler held open, which is the other way a backlog
+    // forms.
+    s = await _makeServer({
+      auth: { verify: function () { return gate.then(function () { return { ok: false }; }); } },
+    });
+    sock = nodeNet.connect(s.port, "127.0.0.1");
+    sock.on("error", function () {});
+    await _readReply(sock);
+    await _send(sock, "STLS");
+    tls = nodeTls.connect({ socket: sock, ca: s.caPem, servername: "localhost" });
+    tls.on("error", function () {});
+    await new Promise(function (r, j) { tls.once("secureConnect", r); tls.once("error", j); });
+    seen = "";
+    closed = false;
+    tls.on("data", function (c) { seen += c.toString("utf8"); });
+    tls.on("close", function () { closed = true; });
+
+    // Start a credential check that will not finish, so the reader is holding.
+    tls.write("USER alice\r\nPASS good\r\n");
+    await helpers.waitUntil(function () { return /Send password/.test(seen); },
+      { timeoutMs: 5000, label: "pop3 backlog: verify in flight" });
+
+    // Then keep sending. Well past eight lines' worth of the 1024-byte
+    // default, in valid short commands, with nothing draining them.
+    var flood = "";
+    for (var i = 0; i < 3000; i += 1) flood += "NOOP\r\n";
+    tls.write(flood);
+
+    await helpers.waitUntil(function () { return closed || /Too much pipelined data/.test(seen); },
+      { timeoutMs: 5000, label: "pop3 backlog: refused or closed" });
+    check("a backlog past the pipeline allowance is refused, not buffered",
+          /Too much pipelined data/.test(seen) || closed, JSON.stringify(seen.slice(-160)));
+    tls.destroy();
+  } finally { if (release) release(); await s.srv.close({ timeoutMs: 1000 }); }                          // allow:raw-time-literal — test-only short drain
+}
+
+// Refusing a backlog closes the connection, and the reader has to stop with
+// it. The pump was waiting on a handler; when that handler settles its
+// continuation resumes, and unless closing marks the session the queued
+// commands are executed on a connection the server already refused.
+async function testRefusedBacklogStopsTheReader() {
+  var release = null;
+  var gate = new Promise(function (r) { release = r; });
+  // STAT reaches the store through listMessages, and only once the session is
+  // in TRANSACTION — so the verify SUCCEEDS here. Otherwise the state guard
+  // refuses the queued command for its own reasons and the test would pass
+  // whether or not the reader had stopped.
+  var seenVerbs = [];
+  var store = _stubStore();
+  var origList = store.listMessages;
+  store.listMessages = function () {
+    seenVerbs.push("listMessages");
+    return origList.apply(this, arguments);
+  };
+  var s = await _makeServer({
+    mailStore: store,
+    auth: { verify: function () {
+      return gate.then(function () {
+        return { ok: true, actor: { username: "alice", tenantId: "t1" } };
+      });
+    } },
+  });
+  var sock = nodeNet.connect(s.port, "127.0.0.1");
+  sock.on("error", function () {});
+  await _readReply(sock);                                    // greeting
+  await _send(sock, "STLS");
+  var tls = nodeTls.connect({ socket: sock, ca: s.caPem, servername: "localhost" });
+  tls.on("error", function () {});
+  await new Promise(function (r, j) { tls.once("secureConnect", r); tls.once("error", j); });
+  try {
+    var seen = "";
+    tls.on("data", function (c) { seen += c.toString("utf8"); });
+
+    // Hold the reader on a credential check that will not finish.
+    tls.write("USER alice\r\nPASS good\r\n");
+    await helpers.waitUntil(function () { return /Send password/.test(seen); },
+      { timeoutMs: 5000, label: "refused backlog: verify in flight" });
+
+    // Then overrun the allowance, with a real command at the end of the queue.
+    var flood = "";
+    for (var i = 0; i < 3000; i += 1) flood += "NOOP\r\n";
+    tls.write(flood + "STAT\r\n");
+    await helpers.waitUntil(function () { return /Too much pipelined data/.test(seen); },
+      { timeoutMs: 5000, label: "refused backlog: refusal written" });
+
+    // Release the handler the reader was waiting on. Its continuation must not
+    // pick the queue back up.
+    release();
+    await helpers.passiveObserve(500, "refused backlog: nothing resumes");
+    check("a command queued behind a refused backlog is not executed",
+          seenVerbs.length === 0, JSON.stringify(seenVerbs));
+    tls.destroy();
+  } finally { if (release) release(); await s.srv.close({ timeoutMs: 1000 }); }                          // allow:raw-time-literal — test-only short drain
+}
+
+// The same stop, on the other close path. A post-STLS idle timeout is wired
+// separately from the plaintext one and hands the upgraded socket to the
+// close, so a close that does not take the session leaves the reader believing
+// the connection is still live and it runs the peer's queued commands after
+// the teardown wrote -ERR and destroyed the socket.
+async function testPostStlsTimeoutStopsTheReader() {
+  var releaseList = null;
+  var listCalled  = false;
+  var marked      = [];
+  var store = _stubStore();
+  store.listMessages = function () {
+    listCalled = true;
+    return new Promise(function (r) { releaseList = function () { r([]); }; });
+  };
+  store.markDelete = async function (actor, dropId, n) { marked.push(n); };
+  var s = await _makeServer({
+    mailStore:     store,
+    idleTimeoutMs: b.constants.TIME.seconds(0.3),
+  });
+  var sock = nodeNet.connect(s.port, "127.0.0.1");
+  sock.on("error", function () {});
+  await _readReply(sock);                                    // greeting
+  await _send(sock, "STLS");
+  var tls = nodeTls.connect({ socket: sock, ca: s.caPem, servername: "localhost" });
+  tls.on("error", function () {});
+  await new Promise(function (r, j) { tls.once("secureConnect", r); tls.once("error", j); });
+  try {
+    await _send(tls, "USER alice");
+    await _send(tls, "PASS good");                           // TRANSACTION
+
+    var seen = "";
+    tls.on("data", function (c) { seen += c.toString("utf8"); });
+    // One segment: the reader takes STAT and waits on a store call that does
+    // not resolve, so DELE is still queued when the connection goes idle.
+    tls.write("STAT\r\nDELE 1\r\n");
+    await helpers.waitUntil(function () { return listCalled; },
+      { timeoutMs: 5000, label: "post-STLS timeout: STAT reached the store" });
+    await helpers.waitUntil(function () { return /Idle timeout/.test(seen); },
+      { timeoutMs: 5000, label: "post-STLS timeout: idle -ERR written" });
+
+    releaseList();
+    await helpers.passiveObserve(500, "post-STLS timeout: nothing resumes");
+    check("a command queued behind a running handler does not run after a post-TLS timeout",
+          marked.length === 0, JSON.stringify(marked));
+    tls.destroy();
+  } finally { if (releaseList) releaseList(); await s.srv.close({ timeoutMs: 1000 }); }                  // allow:raw-time-literal — test-only short drain
+}
+
+// A connection also ends without the listener deciding it. This listener marks
+// the session from `acceptConnection`'s own close hook, which it wires for the
+// maildrop lease, so the reader already stops here. The sibling listeners have
+// no such hook and take the marker from the shared socket wiring instead; the
+// coverage for that path is in the ManageSieve suite. Kept because it pins the
+// contract from the consumer side rather than from which hook happens to
+// provide it.
+async function testAPeerHangUpStopsTheReader() {
+  var releaseList = null;
+  var listCalled  = false;
+  var marked      = [];
+  var store = _stubStore();
+  store.listMessages = function () {
+    listCalled = true;
+    return new Promise(function (r) { releaseList = function () { r([]); }; });
+  };
+  store.markDelete = async function (actor, dropId, n) { marked.push(n); };
+  var s = await _makeServer({ mailStore: store });
+  var sock = nodeNet.connect(s.port, "127.0.0.1");
+  sock.on("error", function () {});
+  await _readReply(sock);                                    // greeting
+  await _send(sock, "STLS");
+  var tls = nodeTls.connect({ socket: sock, ca: s.caPem, servername: "localhost" });
+  tls.on("error", function () {});
+  await new Promise(function (r, j) { tls.once("secureConnect", r); tls.once("error", j); });
+  try {
+    await _send(tls, "USER alice");
+    await _send(tls, "PASS good");                           // TRANSACTION
+
+    // One segment: the reader takes STAT and waits on a store call that does
+    // not resolve, so DELE is still queued when the peer disappears.
+    tls.write("STAT\r\nDELE 1\r\n");
+    await helpers.waitUntil(function () { return listCalled; },
+      { timeoutMs: 5000, label: "peer hang-up: STAT reached the store" });
+
+    tls.destroy();
+    await helpers.passiveObserve(300, "peer hang-up: the close is delivered");
+    releaseList();
+    await helpers.passiveObserve(500, "peer hang-up: nothing resumes");
+    check("a command queued behind a running handler does not run after the peer hangs up",
+          marked.length === 0, JSON.stringify(marked));
+  } finally { if (releaseList) releaseList(); await s.srv.close({ timeoutMs: 1000 }); }                  // allow:raw-time-literal — test-only short drain
+}
+
 async function testAuthPlainMechanism() {
   var s = await _makeServer();
   var sock = nodeNet.connect(s.port, "127.0.0.1");
@@ -679,11 +975,23 @@ async function testUserDuringAuthWindowRefused() {
       await helpers.waitUntil(function () { return openCalled; },
         { timeoutMs: 5000, label: "openPop3Drop invoked" });
       c.send("USER bob");
-      await c.waitFor(/Already authenticated/, "USER during auth-window");
-      check("USER during the pending-drop window is refused as already-authenticated",
-        /Already authenticated/.test(c.text()));
+      // It is not answered inside the window any more, because the reader
+      // does not take a command while the previous one is still running --
+      // which is what let a pipelined pair authenticate twice. The guarantee
+      // it was written for is stronger now: the command is READ after the
+      // session finishes authenticating, and refused then.
+      await helpers.passiveObserve(400, "pop3 auth-window: USER bob is not answered yet");
+      check("USER sent during the pending-drop window is not answered inside it",
+        !/Already authenticated/.test(c.text()), c.text());
       releaseOpen();
       await c.waitFor(/Logged in/, "auth completes after gate release");
+      // Read after the session finished authenticating, so the state guard is
+      // the one that answers it rather than the already-authenticated guard.
+      // Either way it is refused and never grants a second login.
+      await c.waitFor(/only valid in AUTHORIZATION|Already authenticated/,
+        "USER refused once the window closes");
+      check("USER sent during the pending-drop window is refused, not granted",
+        /-ERR/.test(c.text()) && c.text().split("+OK").length - 1 <= 3, c.text());
     } finally {
       if (releaseOpen) releaseOpen();
       c.destroy(); await s.srv.close();
@@ -1040,6 +1348,12 @@ async function run() {
   testTenantScopeCreateValidation();
   await testPlaintextDispatch();
   await testAuthenticatedTransaction();
+  await testPipelinedCredentialsCannotRaceTheAuthGuard();
+  await testPipelinedAuthVerbsCannotRaceEither();
+  await testPipelinedBacklogIsBounded();
+  await testRefusedBacklogStopsTheReader();
+  await testPostStlsTimeoutStopsTheReader();
+  await testAPeerHangUpStopsTheReader();
   await testAuthPlainMechanism();
   await testAuthMultiStepChallenge();
   await testAuthMultiStepFailureStillCounts();

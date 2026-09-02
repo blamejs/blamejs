@@ -385,23 +385,14 @@ function testFunctionArgLiterals() {
 // length cap. Growth is the assertion, not a wall-clock budget.
 function testFilterTranslationIsLinear() {
   var doc = { items: [{ a: "xxx" }, { a: "yyy" }] };
-  function _ms(n) {
-    var q = '$.items[?match(@.a, "' + "[".repeat(n) + '")]';
-    try { b.jsonPath.query(doc, q); } catch (_e) { /* a refusal is fine */ }
-    var best = Infinity;
-    for (var k = 0; k < 3; k += 1) {
-      var t0 = process.hrtime.bigint();
-      try { b.jsonPath.query(doc, q); } catch (_e2) { /* timing the work */ }
-      best = Math.min(best, Number(process.hrtime.bigint() - t0) / 1e6);
-    }
-    return best;
-  }
-  var small = _ms(2000);
-  var large = _ms(8000);
-  var ratio = small > 0.05 ? (large / small) : 1;
+  // helpers.looksSuperlinear holds the floor below which no ratio is taken and
+  // re-measures before failing anything, so one preempted sample cannot decide
+  // the verdict.
   check("a filter pattern of opening brackets translates in linear time",
-        ratio < 8, "4x input took " + ratio.toFixed(1) + "x the time (" +
-        small.toFixed(1) + "ms -> " + large.toFixed(1) + "ms)");
+        !helpers.looksSuperlinear(function (n) {
+          try { b.jsonPath.query(doc, '$.items[?match(@.a, "' + "[".repeat(n) + '")]'); }
+          catch (_e) { /* a refusal is an answer */ }
+        }, { small: 32000, large: 64000 }));
 
   // The translation itself is unchanged: a bare dot still stops at a line
   // break, an escaped dot is still literal, and a class still passes through.

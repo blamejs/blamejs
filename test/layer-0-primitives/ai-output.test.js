@@ -19,27 +19,23 @@ function testUrlExtractionIsLinear() {
     var r = b.ai.output.sanitize(s, { audit: false });
     return (r && r.text) || String(r);
   }
-  function _ms(build, n) {
-    var subject = build(n);
-    try { b.ai.output.sanitize(subject, { audit: false }); } catch (_e) { /* refusal is fine */ }
-    var best = Infinity;
-    for (var k = 0; k < 3; k += 1) {
-      var t0 = process.hrtime.bigint();
-      try { b.ai.output.sanitize(subject, { audit: false }); } catch (_e2) { /* timing */ }
-      best = Math.min(best, Number(process.hrtime.bigint() - t0) / 1e6);
-    }
-    return best;
-  }
-  function _ratio(build) {
-    var small = _ms(build, 4000);
-    var large = _ms(build, 16000);
-    return { r: small > 0.05 ? (large / small) : 1, small: small, large: large };
+  // helpers.looksSuperlinear rather than a ratio taken here: it holds the
+  // floor below which no ratio is taken, and re-measures before failing. A
+  // ratio between two sub-millisecond readings is decided by whatever else the
+  // machine was doing.
+  // A DOUBLING, which is what the helper's threshold is calibrated for: linear
+  // work doubles and quadratic work quadruples, so 3 separates them. Measured
+  // across 4x instead, linear work lands near 4 and reports itself as
+  // superlinear -- which is a property of the span, not of the scan.
+  function _superlinear(build) {
+    return helpers.looksSuperlinear(function (n) {
+      try { b.ai.output.sanitize(build(n), { audit: false }); }
+      catch (_e) { /* a refusal is an answer */ }
+    }, { small: 32000, large: 64000 });
   }
 
-  var open = _ratio(function (n) { return "[".repeat(n); });
   check("a run of opening brackets is scanned in linear time",
-        open.r < 8, "4x input took " + open.r.toFixed(1) + "x (" +
-        open.small.toFixed(1) + "ms -> " + open.large.toFixed(1) + "ms)");
+        !_superlinear(function (n) { return "[".repeat(n); }));
 
   // Linear TIME bought with an index one entry per character is the same
   // amplifier aimed at memory instead. Records the largest typed array the
@@ -67,10 +63,8 @@ function testUrlExtractionIsLinear() {
   // here; what is observable is that output of many links is rewritten
   // correctly and in time proportional to its length rather than worse.
   var link = "[a](http://169.254.169.254/x) ";
-  var many = _ratio(function (n) { return link.repeat(Math.floor(n / link.length)); });
   check("output of many short links is rewritten in linear time",
-        many.r < 8, "4x input took " + many.r.toFixed(1) + "x (" +
-        many.small.toFixed(1) + "ms -> " + many.large.toFixed(1) + "ms)");
+        !_superlinear(function (n) { return link.repeat(Math.floor(n / link.length)); }));
   var rewritten = b.ai.output.sanitize(link.repeat(500), { audit: false });
   check("every one of many links is neutralized",
         rewritten.text.indexOf("169.254.169.254") === -1);
@@ -78,18 +72,14 @@ function testUrlExtractionIsLinear() {
   // The harder shape: every opening bracket has a closing one somewhere ahead,
   // so a per-bracket search re-reads the same suffix from each of them however
   // that search is bounded.
-  var closed = _ratio(function (n) { return "[".repeat(n) + "]"; });
   check("a run of opening brackets before a distant closing one is linear too",
-        closed.r < 8, "4x input took " + closed.r.toFixed(1) + "x (" +
-        closed.small.toFixed(1) + "ms -> " + closed.large.toFixed(1) + "ms)");
+        !_superlinear(function (n) { return "[".repeat(n) + "]"; }));
 
   // The reference-definition scan reads each LINE, so many lines that open a
   // bracket and never close it is its own version of the same shape: a search
   // per line re-reads the whole remaining text from each one.
-  var perLine = _ratio(function (n) { return "[\n".repeat(n); });
   check("many lines that open a bracket and never close it are linear",
-        perLine.r < 8, "4x input took " + perLine.r.toFixed(1) + "x (" +
-        perLine.small.toFixed(1) + "ms -> " + perLine.large.toFixed(1) + "ms)");
+        !_superlinear(function (n) { return "[\n".repeat(Math.floor(n / 2)); }));
 
   // The extraction itself is unchanged, including the case the exact-offset
   // splice exists for: an alt text equal to its own target URL.

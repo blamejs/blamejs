@@ -45,6 +45,70 @@ function testBadBoundsRefused() {
     { tlsContext: {}, mailStore: { appendMessage: function () {} }, idleTimeoutMs: Infinity });
 }
 
+// A misspelled option is a setting that never takes effect, and every option
+// here decides posture, so the listener starts and behaves as though the
+// caller had never passed it. Construction is where that has to be caught:
+// afterwards nothing distinguishes a typo from an omission.
+function testUnknownOptionRefused() {
+  var base = { tlsContext: {}, mailStore: { appendMessage: function () {} } };
+  function expectUnknown(label, key, value) {
+    var opts = Object.assign({}, base);
+    opts[key] = value;
+    var threw = null;
+    try { b.mail.server.imap.create(opts); } catch (e) { threw = e; }
+    check(label, threw && (threw.code || "").indexOf("mail-server-imap/") === 0,
+          String(threw && (threw.code || threw.message)));
+  }
+  expectUnknown("a misspelled option is refused", "maxLiteralByte", 1024);
+  expectUnknown("an option belonging to another listener is refused", "allowPlaintext", true);
+  // GETMETADATA parses MAXSIZE and DEPTH into a LOCAL opts object inside its
+  // handler. Neither is a create option, and a key list read off the source
+  // would have admitted both.
+  expectUnknown("a handler-local option name is refused", "maxSize", 1024);
+  expectUnknown("the other handler-local name is refused", "depth", "infinity");
+  // A source comment described enabling COMPRESS=DEFLATE "via opts.compress",
+  // which nothing ever read. A caller following it got silence; it is a name,
+  // not an option.
+  expectUnknown("an option named only in a comment is refused", "compress", true);
+
+  // The control: every documented option is still accepted together.
+  var threw = null;
+  try {
+    b.mail.server.imap.create({
+      tlsContext: {}, mailStore: { appendMessage: function () {} },
+      implicitTls: false, greeting: "ready", maxLineBytes: 8192,
+      maxLiteralBytes: 1024, idleTimeoutMs: 1000, maxConnections: 4,
+      profile: "permissive", rateLimit: undefined,
+      capabilities: function (caps) { return caps; },
+      allowLegacyMUtf7: false, overrides: {},
+      agentTenantId: "t1", tenantScope: undefined,
+    });
+  } catch (e) { threw = e; }
+  check("every documented option is still accepted", threw === null,
+        String(threw && (threw.code || threw.message)));
+}
+
+// `audit` is documented as an option on this listener and was never read, so
+// an operator wiring a sink got silence. It is an operator-supplied sink in
+// the same shape every other primitive takes.
+function testOperatorAuditSinkIsWired() {
+  var seen = [];
+  var srv = b.mail.server.imap.create({
+    tlsContext: {}, mailStore: { appendMessage: function () {} },
+    audit: { safeEmit: function (ev) { seen.push(ev); } },
+  });
+  check("a listener with an operator audit sink is constructible", srv !== null);
+  var threw = null;
+  try {
+    b.mail.server.imap.create({
+      tlsContext: {}, mailStore: { appendMessage: function () {} },
+      audit: { notASink: true },
+    });
+  } catch (e) { threw = e; }
+  check("an audit sink without safeEmit is refused at construction", threw !== null,
+        String(threw && (threw.code || threw.message)));
+}
+
 // ---- CONDSTORE / QRESYNC (RFC 7162) — v0.11.27 ----
 
 async function _makeTestTlsContext() {
@@ -831,6 +895,757 @@ async function testCatenateBackendMissing() {
 // CAPABILITY does not advertise it, so the non-synchronizing route is closed
 // too. The same file already used the right writer for the SASL challenge and
 // for IDLE — only the literal path reached for the untagged one.
+// A conforming client ends the command line after the literal octets, so the
+// wire carries `{N}` CRLF, N octets, then the CRLF that terminates the
+// command. Consuming only the octets leaves that CRLF in the buffer, where the
+// next turn reads it as a line of its own and answers BAD to a command that
+// had already succeeded.
+//
+// The second half is the one that cannot be worked around. RFC 9051 allows a
+// literal wherever an astring is allowed, and the LOGIN example carries two on
+// one line, so bytes after a NON-FINAL literal are the same command continuing
+// rather than a new one.
+// A command carrying a literal must parse the same however TCP split it. What
+// follows a literal's octets is what says whether the literal was the last
+// argument, so the reader waits for that line to end rather than deciding from
+// whichever bytes happened to arrive together.
+async function testLiteralFramingDoesNotDependOnPacketBoundaries() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("literal packet boundaries (skipped)", true); return; }
+  var seenCreds = [];
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: _makeStubMailStore(), profile: "permissive",
+    auth: { mechanisms: ["LOGIN"], verify: function (mech, creds) {
+      seenCreds.push({ username: creds.username, password: creds.password });
+      return Promise.resolve({ ok: true, actor: { id: "u1" } });
+    } },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    var seen = "";
+    function collect(chunk) { seen += chunk.toString("utf8"); }
+    c.socket.on("data", collect);
+
+    // A two-literal LOGIN with EVERY part in its own write, and a pause
+    // between each so they cannot coalesce. This is the shape that parsed by
+    // luck when the reader guessed from an empty buffer.
+    c.socket.write("A001 LOGIN {5}\r\n");
+    await helpers.waitUntil(function () { return seen.indexOf("+") !== -1; },
+      { timeoutMs: 5000, label: "split literal: first continuation" });
+    c.socket.write("alice");
+    await helpers.passiveObserve(150, "split literal: octets alone are not a command");
+    check("a non-final literal's octets alone do not complete the command",
+          !/^A001 /m.test(seen), JSON.stringify(seen));
+
+    c.socket.write(" {6}\r\n");
+    await helpers.waitUntil(function () { return seen.split("+").length > 2; },
+      { timeoutMs: 5000, label: "split literal: second continuation" });
+    c.socket.write("s3cr3t");
+    await helpers.passiveObserve(150, "split literal: second octets alone");
+    c.socket.write("\r\n");
+    await helpers.waitUntil(function () { return /^A001 /m.test(seen); },
+      { timeoutMs: 5000, label: "split literal: tagged response" });
+
+    check("a command split at every literal boundary still parses as one",
+          /^A001 OK/m.test(seen), JSON.stringify(seen));
+    check("and both literals reach the verifier as the arguments they were",
+          seenCreds.length === 1 && seenCreds[0].username === "alice" &&
+          seenCreds[0].password === "s3cr3t", JSON.stringify(seenCreds));
+    check("no fragment of it is answered as a command of its own",
+          seen.split("\r\n").filter(function (l) {
+            return l.indexOf("BAD") !== -1;
+          }).length === 0, JSON.stringify(seen));
+    c.socket.removeListener("data", collect);
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+// A literal's outstanding octets are exempt from the backlog bound, because
+// they are payload rather than queued commands. The rest of the buffer is not:
+// putting a literal opener in front of a flood would otherwise carry the whole
+// write past the bound, and once the literal is consumed the reader continues
+// through the queue without passing the check again.
+async function testPipelineBoundIsNotBypassedByAPendingLiteral() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("pipeline bound behind literal (skipped)", true); return; }
+  var stub = _makeStubMailStore();
+  stub.appendMessage = function () { return Promise.resolve({ uid: 3, uidValidity: 1 }); };
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: stub, profile: "permissive",
+    maxLineBytes: 200,                                                                                 // allow:raw-byte-literal — small cap so the flood clears the allowance
+    auth: { mechanisms: ["LOGIN"], verify: function () {
+      return Promise.resolve({ ok: true, actor: { id: "u1" } });
+    } },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    await _sendCommand(c.socket, "a0", "LOGIN test test");
+    var seen = "";
+    c.socket.on("data", function (chunk) { seen += chunk.toString("utf8"); });
+
+    // A literal opener and far more queued command bytes than the allowance,
+    // in one write. Asserted on the refusal reaching the client rather than on
+    // the socket closing: a closed connection could equally be the literal
+    // deadline or the rate floor, and the test would then pass without any
+    // bound existing.
+    var flood = "";
+    for (var i = 0; i < 400; i += 1) flood += "n" + i + " NOOP\r\n";
+    c.socket.write("a1 APPEND INBOX {5}\r\n" + flood);
+
+    await helpers.waitUntil(function () { return /BAD/.test(seen); },
+      { timeoutMs: 5000, label: "pipeline behind literal: refused" });
+    check("a literal opener in front of a flood does not carry it past the bounds",
+          /Too much pipelined data|Line too long/.test(seen),
+          JSON.stringify(seen.slice(-160)));
+    check("and the connection does not go on serving the queued commands",
+          !/^n399 /m.test(seen), JSON.stringify(seen.slice(-160)));
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+// A synchronizing literal gets a continuation request whatever its length. RFC
+// 9051 section 7.5 does not exempt an empty one, and a conforming client waits
+// for the `+` before sending the CRLF that ends the command — so a reader that
+// waits for that CRLF without sending the `+` waits forever.
+async function testZeroLengthSynchronizingLiteralGetsAContinuation() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("zero literal continuation (skipped)", true); return; }
+  var stub = _makeStubMailStore();
+  stub.appendMessage = function () { return Promise.resolve({ uid: 9, uidValidity: 1 }); };
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: stub, profile: "permissive",
+    auth: { mechanisms: ["LOGIN"], verify: function () {
+      return Promise.resolve({ ok: true, actor: { id: "u1" } });
+    } },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    await _sendCommand(c.socket, "a0", "LOGIN test test");
+    var seen = "";
+    function collect(chunk) { seen += chunk.toString("utf8"); }
+    c.socket.on("data", collect);
+
+    // The client waits for the continuation, as one that follows the spec does.
+    c.socket.write("a1 APPEND INBOX {0}\r\n");
+    await helpers.waitUntil(function () { return seen.indexOf("+") !== -1; },
+      { timeoutMs: 5000, label: "zero literal: continuation request" });
+    check("a zero-byte synchronizing literal is answered with a continuation",
+          seen.indexOf("+") !== -1, JSON.stringify(seen));
+
+    // Only then does it send the CRLF that ends the command.
+    c.socket.write("\r\n");
+    await helpers.waitUntil(function () { return /^a1 /m.test(seen); },
+      { timeoutMs: 5000, label: "zero literal: tagged response" });
+    check("and the command completes", /^a1 /m.test(seen), JSON.stringify(seen));
+    c.socket.removeListener("data", collect);
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+// A non-synchronizing literal and its body arrive together, and at that moment
+// no literal is pending yet. Counting raw buffered bytes as queued commands
+// therefore refuses a literal that is well inside its own cap, purely because
+// the opener had not been parsed when the bound was applied.
+async function testCoalescedLiteralIsNotCountedAsBacklog() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("coalesced literal (skipped)", true); return; }
+  var appended = [];
+  var stub = _makeStubMailStore();
+  stub.appendMessage = function (folder, bytes) {
+    appended.push(bytes && bytes.length);
+    return Promise.resolve({ uid: 11, uidValidity: 1 });
+  };
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: stub, profile: "permissive",
+    maxLineBytes: 200,                                                                                 // allow:raw-byte-literal — allowance is 8 lines, far under the literal
+    maxLiteralBytes: 65536,                                                                            // allow:raw-byte-literal — the literal is well inside its own cap
+    auth: { mechanisms: ["LOGIN"], verify: function () {
+      return Promise.resolve({ ok: true, actor: { id: "u1" } });
+    } },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    await _sendCommand(c.socket, "a0", "LOGIN test test");
+    var seen = "";
+    function collect(chunk) { seen += chunk.toString("utf8"); }
+    c.socket.on("data", collect);
+
+    // LITERAL+ so there is no continuation to wait behind: opener and body go
+    // out together and land in one read.
+    var body = "x".repeat(4000);
+    c.socket.write("a1 APPEND INBOX {" + body.length + "+}\r\n" + body + "\r\n");
+    await helpers.waitUntil(function () { return /^a1 /m.test(seen); },
+      { timeoutMs: 5000, label: "coalesced literal: tagged response" });
+
+    check("a literal arriving with its opener is not charged to the backlog",
+          !/Too much pipelined data/.test(seen), JSON.stringify(seen.slice(0, 160)));
+    check("and the command completes with the whole body",
+          /^a1 OK/m.test(seen) && appended.length === 1 && appended[0] === body.length,
+          JSON.stringify({ seen: seen.slice(0, 120), appended: appended }));
+    c.socket.removeListener("data", collect);
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+// The exemption is for a payload the listener would actually collect. Reading
+// it off the `{N+}` a line ends with instead lets any line shaped like a
+// command claim one, and the bound is then satisfied by bytes no handler will
+// ever read: `BOGUS {N+}` is not a command, so its declared payload is queue.
+//
+// The second half is the reason the exemption does NOT also ask whether the
+// session is authenticated. A peer may pipeline LOGIN and APPEND in one write,
+// so the APPEND is judged against the state as it stands before the login. It
+// gives nothing away, because a literal the reader refuses is never opened and
+// the bytes behind it are charged on the next read, which is what the third
+// assertion holds.
+async function testAnOpenerTheListenerWouldRefuseBuysNoExemption() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("refused opener exemption (skipped)", true); return; }
+  var stub = _makeStubMailStore();
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: stub, profile: "permissive",
+    maxLineBytes:    200,                                                                              // allow:raw-byte-literal — allowance is 8 lines, far under the payload
+    maxLiteralBytes: 65536,                                                                            // allow:raw-byte-literal — the payload is inside the literal cap
+    auth: { mechanisms: ["LOGIN"], verify: function () {
+      return Promise.resolve({ ok: true, actor: { id: "u1" } });
+    } },
+  });
+  var payload = "x".repeat(4000);
+  // One listener, two connections: each command is refused on its own session,
+  // and `srv.listen` may only be called once.
+  async function _freshSession(port) {
+    var socket = nodeNet.connect(port, "127.0.0.1");
+    await new Promise(function (r) { socket.once("connect", r); });
+    await _readGreeting(socket);
+    return socket;
+  }
+  try {
+    var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+    var s1 = await _freshSession(info.port);
+    var seen = "";
+    s1.on("data", function (chunk) { seen += chunk.toString("utf8"); });
+    s1.write("a1 BOGUS INBOX {" + payload.length + "+}\r\n" + payload + "\r\n");
+    await helpers.waitUntil(function () { return /Too much pipelined data/.test(seen); },
+      { timeoutMs: 5000, label: "bogus opener: payload charged to the backlog" });
+    check("a payload behind a verb the listener does not have is charged",
+          /Too much pipelined data/.test(seen), JSON.stringify(seen.slice(-160)));
+    s1.destroy();
+
+    // LOGIN and a large APPEND in one write, which RFC 9051 allows and
+    // LITERAL+ exists to make worth doing. The APPEND is over the pipelined
+    // allowance on its own, so it survives only if the payload is exempt.
+    var s2 = await _freshSession(info.port);
+    var seen2 = "";
+    s2.on("data", function (chunk) { seen2 += chunk.toString("utf8"); });
+    s2.write("b1 LOGIN test test\r\n" +
+             "b2 APPEND INBOX {" + payload.length + "+}\r\n" + payload + "\r\n");
+    await helpers.waitUntil(function () { return /^b2 /m.test(seen2); },
+      { timeoutMs: 5000, label: "pipelined login then literal: b2 answered" });
+    check("a literal pipelined behind the login that authorizes it is not refused",
+          !/Too much pipelined data/.test(seen2) && /^b2 OK/m.test(seen2),
+          JSON.stringify(seen2.slice(-200)));
+    s2.destroy();
+
+    // The same APPEND with no login in front of it. The reader refuses the
+    // literal rather than opening it, so the payload stops being exempt as
+    // soon as the opener is taken and the bytes queued behind it are charged.
+    // A synchronizing literal, because the guard refuses LITERAL+ outright to
+    // an unauthenticated peer and the refusal would then be for that reason.
+    var s3 = await _freshSession(info.port);
+    var seen3 = "";
+    s3.on("data", function (chunk) { seen3 += chunk.toString("utf8"); });
+    s3.write("c1 APPEND INBOX {" + payload.length + "}\r\n" + payload + "\r\n");
+    await helpers.waitUntil(function () {
+      return /requires authentication/.test(seen3) || /Too much pipelined data/.test(seen3);
+    }, { timeoutMs: 5000, label: "pre-auth opener: refused" });
+    check("a pre-auth literal is refused rather than collected",
+          /requires authentication|Too much pipelined data/.test(seen3),
+          JSON.stringify(seen3.slice(-200)));
+    check("and its payload does not reach a handler",
+          !/^c1 OK/m.test(seen3), JSON.stringify(seen3.slice(-200)));
+    // The exemption was a prediction about a line the reader had not taken.
+    // Once it refuses that literal the octets are ordinary queue, and the
+    // allowance has to be applied to them rather than waiting for a socket
+    // read that a single coalesced write never produces.
+    await helpers.waitUntil(function () { return /Too much pipelined data/.test(seen3); },
+      { timeoutMs: 5000, label: "refused speculative literal: backlog recharged" });
+    check("and the octets it announced are charged once the literal is refused",
+          /Too much pipelined data/.test(seen3), JSON.stringify(seen3.slice(-200)));
+    s3.destroy();
+
+    // Many short commands and then the literal, all inside the allowance. The
+    // opener is found by walking the queue, so how many commands precede it
+    // does not decide whether the literal is accepted.
+    var s4 = await _freshSession(info.port);
+    var seen4 = "";
+    s4.on("data", function (chunk) { seen4 += chunk.toString("utf8"); });
+    var queue = "d0 LOGIN test test\r\n";
+    for (var i = 0; i < 100; i += 1) queue += "d" + (i + 1) + " NOOP\r\n";
+    // The queue has to be long enough that a line-counted scan would stop
+    // short of the opener, and small enough that the backlog bound would not.
+    check("the queued commands are many but inside the allowance",
+          queue.length < (200 + 2) * 8, String(queue.length));
+    s4.write(queue + "dz APPEND INBOX {" + payload.length + "+}\r\n" + payload + "\r\n");
+    await helpers.waitUntil(function () { return /^dz /m.test(seen4); },
+      { timeoutMs: 5000, label: "queued commands then literal: dz answered" });
+    check("a literal behind a queue of short commands is not refused for their number",
+          !/Too much pipelined data/.test(seen4) && /^dz OK/m.test(seen4),
+          JSON.stringify(seen4.slice(-200)));
+    s4.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+// A literal may be an element of a parenthesized list, where the byte after
+// its octets is the closing paren rather than a space. `ID ("name" {4}` is the
+// shape, and it is one a client may send before authenticating.
+async function testLiteralInsideAParenthesizedListCompletes() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("literal in list (skipped)", true); return; }
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: _makeStubMailStore(), profile: "permissive",
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    var seen = "";
+    function collect(chunk) { seen += chunk.toString("utf8"); }
+    c.socket.on("data", collect);
+
+    c.socket.write('a1 ID ("name" {4}\r\n');
+    await helpers.waitUntil(function () { return seen.indexOf("+") !== -1; },
+      { timeoutMs: 5000, label: "literal in list: continuation" });
+    // The octets, then the closing paren and the line's own terminator.
+    c.socket.write("test)\r\n");
+    await helpers.waitUntil(function () { return /^a1 /m.test(seen); },
+      { timeoutMs: 5000, label: "literal in list: tagged response" });
+
+    check("a literal closed by ')' rather than a space is accepted",
+          !/BAD Expected end of command/.test(seen), JSON.stringify(seen));
+    c.socket.removeListener("data", collect);
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+// The cap is on what ONE command's literals add up to, so the last one counts
+// as much as the ones before it. Counting only the non-final literals let a
+// command carry one more than the limit allows.
+async function testAggregateLiteralCapCountsTheFinalLiteral() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("aggregate literal cap (skipped)", true); return; }
+  var verified = [];
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: _makeStubMailStore(), profile: "permissive",
+    maxLiteralBytes: 1024,                                                                             // allow:raw-byte-literal — two full-size literals must exceed it together
+    auth: { mechanisms: ["LOGIN"], verify: function (mech, creds) {
+      verified.push(creds); return Promise.resolve({ ok: true, actor: { id: "u1" } });
+    } },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    var seen = "";
+    function collect(chunk) { seen += chunk.toString("utf8"); }
+    c.socket.on("data", collect);
+
+    // Two literals, each exactly at the cap, so only their SUM exceeds it.
+    var big = "u".repeat(1024);
+    c.socket.write("A001 LOGIN {1024}\r\n");
+    await helpers.waitUntil(function () { return seen.indexOf("+") !== -1; },
+      { timeoutMs: 5000, label: "aggregate cap: first continuation" });
+    c.socket.write(big + " {1024}\r\n");
+    await helpers.waitUntil(function () {
+      return seen.split("+").length > 2 || /^A001 /m.test(seen);
+    }, { timeoutMs: 5000, label: "aggregate cap: second continuation" });
+    c.socket.write("p".repeat(1024) + "\r\n");
+    await helpers.waitUntil(function () { return /^A001 /m.test(seen); },
+      { timeoutMs: 5000, label: "aggregate cap: tagged response" });
+
+    check("two literals that exceed the cap together are refused",
+          /^A001 BAD/m.test(seen), JSON.stringify(seen.slice(-140)));
+    check("and no credential built from them reaches the verifier",
+          verified.length === 0, String(verified.length));
+    c.socket.removeListener("data", collect);
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+// A literal is framed by its own octet count and bounded by maxLiteralBytes;
+// the line cap bounds what the client typed. Charging a literal's bytes
+// against the line cap refuses a command whose text is short and whose
+// argument is legitimately large.
+async function testLiteralBytesAreNotChargedToTheLineCap() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("literal vs line cap (skipped)", true); return; }
+  var seenCreds = [];
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: _makeStubMailStore(), profile: "permissive",
+    maxLineBytes: 200,                                                                                 // allow:raw-byte-literal — small line cap, large literal cap
+    maxLiteralBytes: 65536,                                                                            // allow:raw-byte-literal — the literal is bounded by ITS own cap
+    auth: { mechanisms: ["LOGIN"], verify: function (mech, creds) {
+      seenCreds.push({ username: creds.username, password: creds.password });
+      return Promise.resolve({ ok: true, actor: { id: "u1" } });
+    } },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    var seen = "";
+    function collect(chunk) { seen += chunk.toString("utf8"); }
+    c.socket.on("data", collect);
+
+    // A username far past the 200-byte LINE cap and far inside the literal
+    // cap, followed by another argument so the literal is not the last token.
+    var longUser = "u".repeat(1000);
+    c.socket.write("A001 LOGIN {" + longUser.length + "}\r\n");
+    await helpers.waitUntil(function () { return seen.indexOf("+") !== -1; },
+      { timeoutMs: 5000, label: "literal vs line cap: continuation" });
+    c.socket.write(longUser + " {6}\r\n");
+    await helpers.waitUntil(function () { return seen.split("+").length > 2; },
+      { timeoutMs: 5000, label: "literal vs line cap: second continuation" });
+    c.socket.write("s3cr3t\r\n");
+    await helpers.waitUntil(function () { return /^A001 /m.test(seen); },
+      { timeoutMs: 5000, label: "literal vs line cap: tagged response" });
+
+    check("a literal larger than the line cap is accepted as an argument",
+          /^A001 OK/m.test(seen), JSON.stringify(seen.slice(0, 200)));
+    check("and it reaches the verifier whole",
+          seenCreds.length === 1 && seenCreds[0].username === longUser &&
+          seenCreds[0].password === "s3cr3t",
+          JSON.stringify(seenCreds.map(function (x) {
+            return { u: x.username && x.username.length, p: x.password };
+          })));
+    c.socket.removeListener("data", collect);
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+// The two budgets are charged separately, and that has to hold for the SECOND
+// non-final literal as much as the first. Each completed literal is written
+// back into the command line as a quoted string, so by the time the next one
+// is checked the line carries the previous payload — and charging it against
+// `maxLineBytes` refuses a command whose own syntax is a few dozen bytes and
+// whose literals are each well inside their own cap.
+//
+// Needs THREE literals to show: the last one goes down the completion path,
+// which has no line check, so a two-literal command never reaches the case.
+async function testEarlierLiteralsAreNotChargedToTheLineCap() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("earlier literals vs line cap (skipped)", true); return; }
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: _makeStubMailStore(), profile: "permissive",
+    maxLineBytes:    200,                                                                              // allow:raw-byte-literal — small line cap, large literal cap
+    maxLiteralBytes: 65536,                                                                            // allow:raw-byte-literal — each literal is inside its own cap
+    auth: { mechanisms: ["LOGIN"], verify: function () {
+      return Promise.resolve({ ok: true, actor: { id: "u1" } });
+    } },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    var seen = "";
+    function collect(chunk) { seen += chunk.toString("utf8"); }
+    c.socket.on("data", collect);
+
+    // Each payload is past the 200-byte line cap on its own. The command's own
+    // syntax — `A001 ID (`, the separators, the closing paren — is tiny.
+    var big = "v".repeat(400);
+    c.socket.write("A001 ID ({" + big.length + "}\r\n");
+    await helpers.waitUntil(function () { return seen.indexOf("+") !== -1; },
+      { timeoutMs: 5000, label: "earlier literals: first continuation" });
+    c.socket.write(big + " {" + big.length + "}\r\n");
+    await helpers.waitUntil(function () { return seen.split("+").length > 2; },
+      { timeoutMs: 5000, label: "earlier literals: second continuation" });
+    // The third opener is what gets checked with TWO expansions already in the
+    // line. Written together with the second payload so the reader sees them
+    // as one command line.
+    c.socket.write(big + " {3}\r\n");
+    await helpers.waitUntil(function () {
+      return seen.split("+").length > 3 || /^A001 /m.test(seen);
+    }, { timeoutMs: 5000, label: "earlier literals: third continuation" });
+
+    check("a command is not refused for the payloads of its earlier literals",
+          !/Line too long/.test(seen), JSON.stringify(seen.slice(-200)));
+    c.socket.removeListener("data", collect);
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+// The terminator arriving in its own segment, well after the octets.
+async function testFinalLiteralCompletesWhenItsTerminatorArrivesLate() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("literal without terminator (skipped)", true); return; }
+  var stub = _makeStubMailStore();
+  stub.appendMessage = function () { return Promise.resolve({ uid: 7, uidValidity: 1 }); };
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: stub, profile: "permissive",
+    auth: { mechanisms: ["LOGIN"], verify: function () {
+      return Promise.resolve({ ok: true, actor: { id: "u1" } });
+    } },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    await _sendCommand(c.socket, "a0", "LOGIN test test");
+    var seen = "";
+    function collect(chunk) { seen += chunk.toString("utf8"); }
+    c.socket.on("data", collect);
+
+    var body = "Subject: hi\r\n\r\nhello\r\n";
+    c.socket.write("a1 APPEND INBOX {" + body.length + "}\r\n");
+    await helpers.waitUntil(function () { return seen.indexOf("+") !== -1; },
+      { timeoutMs: 5000, label: "no-terminator: continuation" });
+
+    // The octets, then a pause, then the CRLF that ends the command line in a
+    // segment of its own.
+    c.socket.write(body);
+    await helpers.passiveObserve(300, "late terminator: the octets alone are not the whole line");
+    c.socket.write("\r\n");
+    await helpers.waitUntil(function () { return /^a1 /m.test(seen); },
+      { timeoutMs: 5000, label: "late terminator: tagged response" });
+    check("APPEND completes when its terminator arrives separately",
+          /^a1 OK/m.test(seen), JSON.stringify(seen));
+    check("and the terminator is not answered as an empty command",
+          seen.indexOf("BAD") === -1, JSON.stringify(seen));
+
+    // The connection still works afterwards.
+    var next = await _sendCommand(c.socket, "a2", "NOOP");
+    check("the session continues", /^a2 OK/m.test(next), JSON.stringify(next));
+    c.socket.removeListener("data", collect);
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+async function testLiteralCommandConsumesItsOwnTerminator() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("APPEND literal terminator (skipped)", true); return; }
+  var stub = _makeStubMailStore();
+  stub.appendMessage = function () { return Promise.resolve({ uid: 42, uidValidity: 1 }); };
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: stub, profile: "permissive",
+    auth: { mechanisms: ["LOGIN"], verify: function () {
+      return Promise.resolve({ ok: true, actor: { id: "u1" } });
+    } },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    await _sendCommand(c.socket, "a0", "LOGIN test test");
+
+    var seen = "";
+    function collect(chunk) { seen += chunk.toString("utf8"); }
+    c.socket.on("data", collect);
+
+    var body = "Subject: hi\r\n\r\nhello\r\n";
+    c.socket.write("a1 APPEND INBOX {" + body.length + "}\r\n");
+    await helpers.waitUntil(function () { return seen.indexOf("+") !== -1; },
+      { timeoutMs: 5000, label: "imap literal: continuation request" });
+
+    // The octets, then the CRLF that ends the command line -- what a
+    // conforming client sends and what the earlier test left out.
+    c.socket.write(body);
+    c.socket.write("\r\n");
+    await helpers.waitUntil(function () { return /^a1 /m.test(seen); },
+      { timeoutMs: 5000, label: "imap literal: tagged response for a1" });
+    check("APPEND with its terminating CRLF completes OK",
+          /^a1 OK/m.test(seen), JSON.stringify(seen));
+
+    // No BAD anywhere in the exchange. Deliberately not "no BAD after the a1
+    // line": when the terminator IS read as a command the refusal arrives
+    // BEFORE the tagged OK, so an assertion anchored on that line looks past
+    // the thing it is checking for.
+    await helpers.passiveObserve(600, "imap literal: no reply to the terminating CRLF");
+    check("the terminating CRLF is not answered as an empty command",
+          seen.indexOf("BAD") === -1, JSON.stringify(seen));
+    c.socket.removeListener("data", collect);
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+// RFC 9051 section 6.2.3: `A001 LOGIN {11}` / `FRED FOOBAR {7}` / `fubar` is
+// ONE command carrying two literals. The reader must assemble it rather than
+// dispatch the bytes after the first literal as a fresh line.
+async function testNonFinalLiteralContinuesTheSameCommand() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("non-final literal (skipped)", true); return; }
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: _makeStubMailStore(), profile: "permissive",
+    auth: { mechanisms: ["LOGIN"], verify: function () {
+      return Promise.resolve({ ok: true, actor: { id: "u1" } });
+    } },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    var seen = "";
+    function collect(chunk) { seen += chunk.toString("utf8"); }
+    c.socket.on("data", collect);
+
+    // `{11}` is exactly "FRED FOOBAR"; the octets are followed by ` {5}` and
+    // the CRLF that ends the line, so the command continues rather than ends.
+    c.socket.write("A001 LOGIN {11}\r\n");
+    await helpers.waitUntil(function () { return seen.indexOf("+") !== -1; },
+      { timeoutMs: 5000, label: "imap login: first continuation" });
+    c.socket.write("FRED FOOBAR {5}\r\n");
+    await helpers.waitUntil(function () { return seen.split("+").length > 2; },
+      { timeoutMs: 5000, label: "imap login: second continuation" });
+    c.socket.write("fubar\r\n");
+    await helpers.waitUntil(function () { return /^A001 /m.test(seen); },
+      { timeoutMs: 5000, label: "imap login: tagged response for A001" });
+
+    // Exactly one tagged response, and no fragment answered on its own.
+    var tagged = seen.split("\r\n").filter(function (l) { return l.indexOf("A001 ") === 0; });
+    check("a two-literal command draws exactly one tagged response",
+          tagged.length === 1, JSON.stringify(seen));
+    check("no fragment of it is answered as a command of its own",
+          seen.split("\r\n").filter(function (l) {
+            return l.indexOf("BAD") !== -1 && l.indexOf("A001") !== 0;
+          }).length === 0, JSON.stringify(seen));
+    c.socket.removeListener("data", collect);
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+// An IMAP literal carries CHAR8 — arbitrary octets, not text. Writing a
+// non-final one back into the command line as a quoted string means decoding
+// it, and decoding bytes that are not UTF-8 replaces them with U+FFFD. A
+// password would be silently changed and the login would fail as a wrong
+// password. Refused instead, naming the reason.
+// A literal that ends its command is the last argument, and it reaches the
+// handler as bytes rather than being written back into the line. `LOGIN user
+// {N}` is the case that matters: the password is the literal, and a client
+// sends one precisely when the value is not expressible as a quoted string, so
+// re-quoting it would refuse the passwords this path exists to carry.
+// Commands queue while a handler runs, so the buffer legitimately holds more
+// than one line. The per-line cap must be measured against the line still
+// arriving, not against everything waiting behind it — otherwise a client that
+// merely pipelines is answered "Line too long" and disconnected.
+async function testPipelinedCommandsAreNotRefusedAsOneLongLine() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("imap pipelined line cap (skipped)", true); return; }
+  var release = null;
+  var gate = new Promise(function (r) { release = r; });
+  var store = _makeStubMailStore();
+  store.listFolders = function () {
+    return gate.then(function () {
+      return [{ name: "INBOX", attributes: ["HasNoChildren"] }];
+    });
+  };
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: store, profile: "permissive",
+    maxLineBytes: 200,                                                                                 // allow:raw-byte-literal — small cap so a few lines exceed it together
+    auth: { mechanisms: ["LOGIN"], verify: function () {
+      return Promise.resolve({ ok: true, actor: { id: "u1" } });
+    } },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    await _sendCommand(c.socket, "a0", "LOGIN test test");
+    var seen = "";
+    function collect(chunk) { seen += chunk.toString("utf8"); }
+    c.socket.on("data", collect);
+
+    // One slow command, then more than a line-cap's worth of short valid ones
+    // queued behind it. No single line is anywhere near the cap.
+    c.socket.write("b1 LIST \"\" *\r\n");
+    var queued = "";
+    for (var i = 0; i < 30; i += 1) queued += "n" + i + " NOOP\r\n";
+    check("the queued commands together exceed one line's cap",
+          queued.length > 200, String(queued.length));
+    c.socket.write(queued);
+    await helpers.passiveObserve(400, "imap pipeline cap: nothing refused while queued");
+    check("pipelined commands are not refused as one long line",
+          seen.indexOf("Line too long") === -1, JSON.stringify(seen));
+
+    release();
+    await helpers.waitUntil(function () { return /^n29 /m.test(seen); },
+      { timeoutMs: 5000, label: "imap pipeline cap: the last queued command runs" });
+    check("every queued command runs once the slow one finishes",
+          /^b1 /m.test(seen) && /^n0 /m.test(seen) && /^n29 /m.test(seen),
+          JSON.stringify(seen));
+    c.socket.removeListener("data", collect);
+    c.socket.destroy();
+  } finally { if (release) release(); await srv.close({ timeoutMs: 1000 }); }                            // allow:raw-time-literal — test-only short drain
+}
+
+async function testFinalLiteralReachesTheHandlerAsItsArgument() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("final literal argument (skipped)", true); return; }
+  var seenCreds = [];
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: _makeStubMailStore(), profile: "permissive",
+    auth: { mechanisms: ["LOGIN"], verify: function (mech, creds) {
+      seenCreds.push({ username: creds.username, password: creds.password });
+      return Promise.resolve({ ok: true, actor: { id: "u1" } });
+    } },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    var seen = "";
+    function collect(chunk) { seen += chunk.toString("utf8"); }
+    c.socket.on("data", collect);
+
+    c.socket.write("A001 LOGIN alice {6}\r\n");
+    await helpers.waitUntil(function () { return seen.indexOf("+") !== -1; },
+      { timeoutMs: 5000, label: "imap final-literal: continuation" });
+    c.socket.write("s3cr3t\r\n");
+    await helpers.waitUntil(function () { return /^A001 /m.test(seen); },
+      { timeoutMs: 5000, label: "imap final-literal: tagged response" });
+
+    check("a command ending in a literal argument is accepted",
+          /^A001 OK/m.test(seen), JSON.stringify(seen));
+    check("and nothing in it is answered as a command of its own",
+          seen.indexOf("BAD") === -1, JSON.stringify(seen));
+    check("the literal reaches the verifier as the password it was",
+          seenCreds.length === 1 && seenCreds[0].password === "s3cr3t",
+          JSON.stringify(seenCreds));
+    c.socket.removeListener("data", collect);
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+async function testNonFinalLiteralRefusesUndecodableBytes() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("non-final literal CHAR8 (skipped)", true); return; }
+  var verified = [];
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: _makeStubMailStore(), profile: "permissive",
+    auth: { mechanisms: ["LOGIN"], verify: function (mech, creds) {
+      verified.push(creds);
+      return Promise.resolve({ ok: true, actor: { id: "u1" } });
+    } },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    var seen = "";
+    function collect(chunk) { seen += chunk.toString("utf8"); }
+    c.socket.on("data", collect);
+
+    c.socket.write("A001 LOGIN {4}\r\n");
+    await helpers.waitUntil(function () { return seen.indexOf("+") !== -1; },
+      { timeoutMs: 5000, label: "imap char8: continuation" });
+    // 0xFF is not a valid UTF-8 lead byte, so decoding it loses it.
+    c.socket.write(Buffer.from([0x75, 0x73, 0x65, 0xFF]));
+    c.socket.write(" {3}\r\n");
+    await helpers.waitUntil(function () { return /^A001 /m.test(seen); },
+      { timeoutMs: 5000, label: "imap char8: tagged response" });
+
+    check("a non-final literal that is not decodable is refused",
+          /^A001 BAD/m.test(seen), JSON.stringify(seen));
+    check("no credential built from replacement characters reaches verify",
+          verified.length === 0, JSON.stringify(verified));
+    c.socket.removeListener("data", collect);
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
 async function testAppendLiteralGetsARealContinuation() {
   var ctx;
   try { ctx = await _makeTestTlsContext(); }
@@ -878,7 +1693,11 @@ async function testAppendLiteralGetsARealContinuation() {
       }
       c.socket.on("data", onData);
       c.socket.once("error", reject);
+      // The octets, then the CRLF that ends the command line. RFC 9051
+      // section 2.2.1: the line is terminated after the literal's octets, and
+      // the reader waits for it the way it waits for any unfinished line.
       c.socket.write(body);
+      c.socket.write("\r\n");
     });
     check("APPEND literal: the command completes OK", /^a1 OK/m.test(done), JSON.stringify(done));
     check("APPEND literal: the backend received the body",
@@ -1591,7 +2410,11 @@ async function _appendLiteral(sock, tag, cmdRest, bodyBuf, nonSync) {
     sock.write(tag + " " + cmdRest + "\r\n");
   }
   var p = _read(sock, _tagTerm(tag));
+  // The octets, then the CRLF that ends the command line. RFC 9051's grammar
+  // puts it there (`command = tag SP ... CRLF`), and it is what tells the
+  // reader the literal was the last argument rather than the first of several.
   sock.write(bodyBuf);
+  sock.write("\r\n");
   return p;
 }
 
@@ -1601,7 +2424,13 @@ async function testAppend() {
   try {
     check("APPEND {5} literal → OK [APPENDUID 3 5]",
       /^a1 OK \[APPENDUID 3 5\] APPEND completed/m.test(await _appendLiteral(sock, "a1", "APPEND INBOX {5}", Buffer.from("HELLO"))));
-    check("APPEND {0} zero-byte literal → OK", /^a2 OK/m.test(await _cmd(sock, "a2", "APPEND INBOX {0}")));
+    // Zero octets, then the CRLF that ends the command line. The line ends
+    // after the literal whatever its length, and leaving that terminator
+    // behind is what got it read as an empty command.
+    var zeroLit = await _raw(sock, _tagTerm("a2"), "a2 APPEND INBOX {0}\r\n\r\n");
+    check("APPEND {0} zero-byte literal → OK", /^a2 OK/m.test(zeroLit), JSON.stringify(zeroLit));
+    check("APPEND {0} does not leave its terminator to be read as a command",
+      zeroLit.indexOf("BAD") === -1, JSON.stringify(zeroLit));
     check("APPEND with date-time → OK",
       /^a3 OK/m.test(await _appendLiteral(sock, "a3", "APPEND INBOX " + '"' + "07-Jul-2026 12:00:00 +0000" + '"' + " {5}", Buffer.from("WORLD"))));
     check("APPEND LITERAL+ (non-sync) → OK",
@@ -2640,6 +3469,8 @@ async function run() {
     testRequiresTlsContext();
     testRequiresMailStore();
     testBadBoundsRefused();
+    testUnknownOptionRefused();
+    testOperatorAuditSinkIsWired();
     await testImplicitTls();
     await testCapabilityHook();
     await testCapabilityHookMustKeepImap4rev2();
@@ -2660,6 +3491,21 @@ async function run() {
     await testMetadataBackendMissing();
     await testCatenateBackendMissing();
     await testAppendLiteralGetsARealContinuation();
+    await testLiteralFramingDoesNotDependOnPacketBoundaries();
+    await testPipelineBoundIsNotBypassedByAPendingLiteral();
+    await testZeroLengthSynchronizingLiteralGetsAContinuation();
+    await testCoalescedLiteralIsNotCountedAsBacklog();
+    await testAnOpenerTheListenerWouldRefuseBuysNoExemption();
+    await testLiteralInsideAParenthesizedListCompletes();
+    await testAggregateLiteralCapCountsTheFinalLiteral();
+    await testLiteralBytesAreNotChargedToTheLineCap();
+    await testEarlierLiteralsAreNotChargedToTheLineCap();
+    await testFinalLiteralCompletesWhenItsTerminatorArrivesLate();
+    await testLiteralCommandConsumesItsOwnTerminator();
+    await testNonFinalLiteralContinuesTheSameCommand();
+    await testPipelinedCommandsAreNotRefusedAsOneLongLine();
+    await testFinalLiteralReachesTheHandlerAsItsArgument();
+    await testNonFinalLiteralRefusesUndecodableBytes();
     await testCatenatePartOrderingAndValidation();
     // v0.11.33 — QRESYNC (RFC 7162 §3.2)
     await testCapabilityAdvertisesQresync();

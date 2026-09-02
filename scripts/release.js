@@ -528,7 +528,7 @@ var BACKEND_LIVE_MAP = [
                "lib/mail-crypto", "lib/mail-deploy", "lib/mail-auth",
                "lib/mail.js"],
     services: ["mailpit"],
-    tests:    ["mail-smtp", "mail-dkim", "mail-crypto-smime"],
+    tests:    ["mail-smtp", "mail-dkim", "mail-crypto-smime", "mail-listeners"],
   },
   {
     backend:  "ntp",
