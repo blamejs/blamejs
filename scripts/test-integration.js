@@ -36,6 +36,35 @@ var os   = require("node:os");
 var path = require("node:path");
 var spawn = require("node:child_process").spawn;
 
+// Persist everything this run prints, the way every other gate does.
+//
+// Without it the only record of which file failed is the terminal, and a caller
+// that pipes this through `tail` keeps the summary and throws away the failing
+// file's name and its output -- which is exactly what happened when the release
+// orchestrator ran it: "1 of 37 files failed" survived and the identity of the
+// one did not, so the only way back to it was another full run. Synchronous fd
+// writes, because an async stream does not flush before `process.exit`.
+var OUT_DIR  = path.join(__dirname, "..", ".test-output");
+var LOG_PATH = path.join(OUT_DIR, "test-integration.log");
+try { fs.mkdirSync(OUT_DIR, { recursive: true }); } catch (_e) { /* best-effort */ }
+try { fs.unlinkSync(LOG_PATH); } catch (_e) { /* fresh start */ }
+var _logFd = null;
+try { _logFd = fs.openSync(LOG_PATH, "w"); } catch (_e) { _logFd = null; }
+function _logWrite(chunk) {
+  if (_logFd === null) return;
+  try {
+    var buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), "utf8");
+    fs.writeSync(_logFd, buf, 0, buf.length, null);
+  } catch (_e) { /* best-effort */ }
+}
+var _origStdout = process.stdout.write.bind(process.stdout);
+var _origStderr = process.stderr.write.bind(process.stderr);
+process.stdout.write = function (c, e, cb) { _logWrite(c); return _origStdout(c, e, cb); };
+process.stderr.write = function (c, e, cb) { _logWrite(c); return _origStderr(c, e, cb); };
+process.on("exit", function () {
+  if (_logFd !== null) { try { fs.closeSync(_logFd); } catch (_e) { /* best-effort */ } }
+});
+
 var INTEGRATION_DIR = path.join(__dirname, "..", "test", "integration");
 var CHECK_SERVICES  = path.join(__dirname, "check-services.js");
 var CA_EXPORT_PATH  = path.join(os.tmpdir(), "blamejs-test-ca.crt");

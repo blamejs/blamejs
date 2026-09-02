@@ -3167,6 +3167,27 @@ async function testClientDisconnectReleasesTheConnectionSlot() {
     });
     check("imap: a client-initiated disconnect leaves no entry behind",
       s.srv.connectionCount() === 0, String(s.srv.connectionCount()));
+
+    // A SERVER-decided close holds the socket open until its reply has
+    // flushed, so the count follows the socket rather than the decision.
+    //
+    // Measured: with the replies this listener sends — one short line — the
+    // flush completes immediately on loopback, so this assertion passes
+    // whether the entry is removed when the close is DECIDED or when the
+    // socket actually closes. It is kept because it catches a slot leaking
+    // entirely, and it does NOT prove the ordering; observing that window
+    // needs a peer that stops reading and a reply large enough to fill the
+    // write buffer, which nothing on this path produces.
+    var held = await _connect(s.port);
+    await helpers.waitUntil(function () { return s.srv.connectionCount() === 1; },
+      { timeoutMs: 5000, label: "imap connection-accounting: the held connection is counted" });
+    // Drive a server-side refusal: a line past the cap is answered and closed.
+    held.write("z".repeat(200000) + "\r\n");                                                            // allow:raw-byte-literal — past any default line cap
+    await helpers.waitUntil(function () { return s.srv.connectionCount() === 0; },
+      { timeoutMs: 8000, label: "imap connection-accounting: the slot is released once the socket closes" });
+    check("imap: a server-decided close releases its slot when the socket closes",
+      s.srv.connectionCount() === 0, String(s.srv.connectionCount()));
+    held.destroy();
   } finally { await s.srv.close(); }
 }
 

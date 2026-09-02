@@ -116,7 +116,11 @@ function upgradeReq(extraHeaders, url) {
     host:                    "app.example.com",
     origin:                  "https://app.example.com",
   }, extraHeaders || {});
-  return { method: "GET", url: url || "/ws", headers: h };
+  // The socket carries the scheme half of the origin. Without it the request
+  // reads as cleartext while its own Origin says `https`, which is a
+  // cross-scheme request and is refused — the fixture has to be a request a
+  // browser could actually have made.
+  return { method: "GET", url: url || "/ws", headers: h, socket: { encrypted: true } };
 }
 
 // Ensure a connection's ping timer is stopped (unref'd, but transition
@@ -278,14 +282,84 @@ function testNegotiateSubprotocol() {
         ws.negotiateSubprotocol({ headers: {} }, ["chat.v1"]) === null);
 }
 
+// Both sides of the contract, written before the code that satisfies them.
+//
+// RFC 6454 defines an origin as the triple of scheme, host and port. The
+// default same-origin branch compared HOSTS only — `URL.prototype.host` carries
+// no scheme and neither does the `Host` header — so an attacker at the
+// cleartext origin of the same host passed a gate whose docstring claims to
+// close the cross-site WebSocket hijacking class.
+function testIsOriginAllowedComparesTheWholeOrigin() {
+  var tls   = { encrypted: true };
+  var plain = { encrypted: false };
+
+  // MUST accept: the scheme agrees on both sides.
+  check("ws origin: https Origin on a TLS upgrade is same-origin",
+    ws.isOriginAllowed({ socket: tls,
+      headers: { origin: "https://app.example.com", host: "app.example.com" } },
+      undefined) === true);
+  check("ws origin: http Origin on a cleartext upgrade is same-origin",
+    ws.isOriginAllowed({ socket: plain,
+      headers: { origin: "http://app.example.com", host: "app.example.com" } },
+      undefined) === true);
+
+  // MUST REJECT: same host, different scheme. This is the CSWSH case the
+  // docstring claims to close.
+  check("ws origin: a cleartext Origin is refused against a TLS deployment",
+    ws.isOriginAllowed({ socket: tls,
+      headers: { origin: "http://app.example.com", host: "app.example.com" } },
+      undefined) === false);
+  check("ws origin: a TLS Origin is refused against a cleartext deployment",
+    ws.isOriginAllowed({ socket: plain,
+      headers: { origin: "https://app.example.com", host: "app.example.com" } },
+      undefined) === false);
+
+  // MUST REJECT: a port is part of the origin too.
+  check("ws origin: a differing port is refused",
+    ws.isOriginAllowed({ socket: tls,
+      headers: { origin: "https://app.example.com:8443", host: "app.example.com" } },
+      undefined) === false);
+
+  // MUST accept over HTTP/2, where there is no Host header at all.
+  check("ws origin: an HTTP/2 upgrade compares against :authority",
+    ws.isOriginAllowed({ socket: tls,
+      headers: { origin: "https://app.example.com", ":authority": "app.example.com" } },
+      undefined) === true);
+
+  // MUST accept behind a TLS-terminating proxy: the browser's Origin is
+  // `https` while the backend socket is cleartext, so the external scheme has
+  // to come from the forwarded header — peer-gated, exactly as every other
+  // scheme decision in this framework takes it.
+  var trusted = function (a) { return a === "10.0.0.1"; };
+  var behindProxy = {
+    socket:  { encrypted: false, remoteAddress: "10.0.0.1" },
+    headers: { origin: "https://app.example.com", host: "app.example.com",
+               "x-forwarded-proto": "https" },
+  };
+  check("ws origin: a TLS-terminating proxy's forwarded scheme is honored when the peer is trusted",
+    ws.isOriginAllowed(behindProxy, undefined, { trustProxy: trusted }) === true);
+
+  // MUST REJECT: the same forwarded header from an untrusted peer is a
+  // direct caller claiming to be behind a proxy.
+  var forgedProxy = {
+    socket:  { encrypted: false, remoteAddress: "203.0.113.9" },
+    headers: { origin: "https://app.example.com", host: "app.example.com",
+               "x-forwarded-proto": "https" },
+  };
+  check("ws origin: a forged X-Forwarded-Proto from an untrusted peer is ignored",
+    ws.isOriginAllowed(forgedProxy, undefined, { trustProxy: trusted }) === false);
+}
+
 function testIsOriginAllowed() {
-  var same = { headers: { origin: "https://app.example.com", host: "app.example.com" } };
+  var same = { socket: { encrypted: true },
+    headers: { origin: "https://app.example.com", host: "app.example.com" } };
   check("origin: '*' accept-all returns true",
         ws.isOriginAllowed(same, "*") === true);
   check("origin: default same-origin match returns true",
         ws.isOriginAllowed(same, undefined) === true);
 
-  var cross = { headers: { origin: "https://evil.example.com", host: "app.example.com" } };
+  var cross = { socket: { encrypted: true },
+    headers: { origin: "https://evil.example.com", host: "app.example.com" } };
   check("origin: default same-origin mismatch returns false",
         ws.isOriginAllowed(cross, undefined) === false);
 
@@ -301,7 +375,8 @@ function testIsOriginAllowed() {
         ws.isOriginAllowed({ headers: { origin: "https://app.example.com" } }, undefined) === false);
 
   check("origin: malformed Origin URL returns false (parse catch)",
-        ws.isOriginAllowed({ headers: { origin: "::::not a url", host: "app.example.com" } }, undefined) === false);
+        ws.isOriginAllowed({ socket: { encrypted: true },
+          headers: { origin: "::::not a url", host: "app.example.com" } }, undefined) === false);
 
   // origins present but not "*", not array, not falsy (e.g. a bogus
   // string) falls through to the final `return false`.
@@ -1020,6 +1095,31 @@ function testHandleExtendedConnectRefusals() {
   var r3 = ws.handleExtendedConnect(s3, h2Headers({ origin: "https://evil.example.com" }), {});
   check("h2: origin refusal returns 403 + null",
         r3 === null && s3.responded && s3.responded[":status"] === 403);
+
+  // An ordinary same-origin extended CONNECT over TLS. The request object here
+  // is built from headers alone, so the scheme has to come from `:scheme` —
+  // there is no socket to ask, and reading one would make every h2 WebSocket
+  // upgrade look like a cross-scheme request and draw a 403.
+  var s4 = makeH2Stream();
+  var r4 = ws.handleExtendedConnect(s4, h2Headers({
+    ":scheme":    "https",
+    ":authority": "app.example.com",
+    origin:       "https://app.example.com",
+  }), {});
+  check("h2: a same-origin extended CONNECT over TLS is accepted",
+        r4 !== null && !(s4.responded && s4.responded[":status"] === 403),
+        JSON.stringify(s4.responded));
+  if (r4) { try { r4.close(); } catch (_e) { /* fixture teardown */ } }
+
+  // And the cross-scheme case is still refused: same authority, cleartext.
+  var s5 = makeH2Stream();
+  var r5 = ws.handleExtendedConnect(s5, h2Headers({
+    ":scheme":    "http",
+    ":authority": "app.example.com",
+    origin:       "https://app.example.com",
+  }), {});
+  check("h2: a cross-scheme extended CONNECT is refused",
+        r5 === null && s5.responded && s5.responded[":status"] === 403);
 }
 
 function testHandleExtendedConnectSuccess() {
@@ -1221,6 +1321,7 @@ async function run() {
   testValidateCredentialQueryRefusal();
   testValidateHeaderFallbacks();
   testNegotiateSubprotocol();
+  testIsOriginAllowedComparesTheWholeOrigin();
   testIsOriginAllowed();
   testPureHelpersMissingHeaders();
   testParseExtensionHeaderEdges();

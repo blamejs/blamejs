@@ -83,6 +83,7 @@ module.exports = {
 
   // HTTP helpers
   listenOnRandomPort: _http.listenOnRandomPort,
+  refusedPort:        _http.refusedPort,
 
   // End-of-file teardown: retire the httpClient pool and wait for every
   // socket and pending file operation to finish, so a leak fails in the file

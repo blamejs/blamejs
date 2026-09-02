@@ -528,6 +528,22 @@ async function testArcVerifyMissing() {
         rv.chainStatus === "fail");
 }
 
+// RFC 8617 §3.8 imports `tag-list` from RFC 6376 §3.2, which interprets tag
+// names case-sensitively. A seal written `I=1` therefore carries no instance
+// number, and a verifier that folds the name reads a hop where a conforming
+// one reads none. The lower-case arm is the control: the two spellings have to
+// reach different verdicts, or the test cannot tell the two parsers apart.
+async function testArcTagNamesAreCaseSensitive() {
+  var tail = " a=rsa-sha256; cv=none; d=example.com; s=arc; b=AAAA\r\n" +
+             "From: alice@example.com\r\n\r\nbody\r\n";
+  var lower = await b.mail.arc.verify("ARC-Seal: i=1;" + tail);
+  check("arc.verify: a conforming seal is read as one hop",
+        lower.hopCount === 1, JSON.stringify(lower));
+  var upper = await b.mail.arc.verify("ARC-Seal: I=1;" + tail);
+  check("arc.verify: an upper-case i= tag is not an instance number",
+        upper.hopCount === 0 && upper.chainStatus === "none", JSON.stringify(upper));
+}
+
 async function testArcVerifyNone() {
   var msg = "From: alice@example.com\r\n\r\nbody\r\n";
   var rv = await b.mail.arc.verify(msg);
@@ -2465,6 +2481,96 @@ function testDmarcRuaGunzipBombDistinguished() {
   catch (e) { threw = e; }
   check("MAIL-39: decompression-bomb gunzip output → dmarc-rua-gunzip-bomb (distinct from gunzip-failed)",
         threw && /dmarc-rua-gunzip-bomb/.test(threw.code || ""));
+}
+
+// The absolute output cap bounds memory; what it does not bound is how little
+// input reaches it, and the input arrives from anyone who sends a report to a
+// published `rua=` address. The ratio cap is the second bound -- and it is the
+// one that has to be measured rather than borrowed, because a DMARC report is
+// repetitive XML and compresses like one. Both directions are asserted: a
+// report of a size operators really receive still parses, and a stream that
+// expands far past what any report does is refused.
+function testDmarcRuaExpansionRatioBounded() {
+  var nodeZlib = require("zlib");
+
+  function report(nRecords) {
+    var out = '<?xml version="1.0" encoding="UTF-8" ?>\n<feedback>\n' +
+      "<report_metadata><org_name>reporter.example</org_name>" +
+      "<email>dmarc@reporter.example</email><report_id>ratio-1</report_id>" +
+      "<date_range><begin>1700000000</begin><end>1700086400</end></date_range>" +
+      "</report_metadata>\n" +
+      "<policy_published><domain>example.com</domain><adkim>r</adkim>" +
+      "<aspf>r</aspf><p>reject</p><sp>reject</sp><pct>100</pct></policy_published>\n";
+    for (var i = 0; i < nRecords; i += 1) {
+      out += "<record><row><source_ip>203.0." + ((i >> 8) & 0xFF) + "." + (i & 0xFF) +
+        "</source_ip><count>1</count><policy_evaluated><disposition>none</disposition>" +
+        "<dkim>pass</dkim><spf>pass</spf></policy_evaluated></row>" +
+        "<identifiers><header_from>example.com</header_from></identifiers>" +
+        "<auth_results><dkim><domain>example.com</domain><result>pass</result></dkim>" +
+        "<spf><domain>example.com</domain><result>pass</result></spf></auth_results>" +
+        "</record>\n";
+    }
+    return out + "</feedback>\n";
+  }
+
+  // 5,000 records is an ordinary daily report for a domain of any size, and it
+  // compresses about 100:1 -- twice what the sibling parser's 50:1 default
+  // allows, which is why that default is not the one used here.
+  var xml = Buffer.from(report(5000), "utf8");
+  var gz  = nodeZlib.gzipSync(xml, { level: 9 });
+  var ratio = xml.length / gz.length;
+  check("a real report compresses well past a 50:1 cap",
+        ratio > 50, "ratio=" + ratio.toFixed(1));
+  var parsed = null, err = null;
+  try { parsed = b.mail.dmarc.parseAggregateReport(gz, { contentType: "application/gzip" }); }
+  catch (e) { err = e; }
+  check("and it still parses",
+        err === null && parsed && parsed.records.length === 5000,
+        String(err && err.code));
+
+  // The record cap and the XML element cap are statements about one thing, so
+  // a report inside the record cap has to be inside the element cap too. Left
+  // at the parser's 10,000-element default it was not: `<record>` expands to
+  // seventeen elements, so a report was refused at about 580 of them, as
+  // malformed XML rather than as over a limit.
+  var plainErr = null, plainParsed = null;
+  try { plainParsed = b.mail.dmarc.parseAggregateReport(Buffer.from(report(9000), "utf8")); }
+  catch (e) { plainErr = e; }
+  check("a report just inside the record cap is not refused as malformed XML",
+        plainErr === null && plainParsed && plainParsed.records.length === 9000,
+        JSON.stringify({ code: plainErr && plainErr.code,
+                         message: plainErr && plainErr.message.slice(0, 90) }));
+
+  // A stream that expands far past anything a report reaches, while staying
+  // under the absolute output cap the other bound enforces.
+  var padded = Buffer.alloc(4 * 1024 * 1024, 0x41);                                                  // allow:raw-byte-literal — fixture size, under the 8 MiB cap
+  var bomb = nodeZlib.gzipSync(padded, { level: 9 });
+  check("the bomb fixture stays under the absolute output cap",
+        padded.length < 8 * 1024 * 1024, String(padded.length));                                     // allow:raw-byte-literal — the cap under test
+  var bombErr = null;
+  try { b.mail.dmarc.parseAggregateReport(bomb, { contentType: "application/gzip" }); }
+  catch (e) { bombErr = e; }
+  check("a stream expanding past the ratio cap is refused as a bomb",
+        bombErr && /dmarc-rua-gunzip-bomb/.test(bombErr.code || ""),
+        JSON.stringify({ code: bombErr && bombErr.code }));
+}
+
+// RFC 7489 §7.2.1.1 names ZIP alongside gzip. A ZIP holds entries rather than
+// one stream, so the reader is `b.archive.read.zip` and it is asynchronous; the
+// refusal says so instead of failing as malformed XML further down.
+function testDmarcRuaZipIsNamed() {
+  var zipMagic = Buffer.concat([
+    Buffer.from([0x50, 0x4B, 0x03, 0x04]), Buffer.alloc(64, 0x00),
+  ]);
+  var threw = null;
+  try { b.mail.dmarc.parseAggregateReport(zipMagic); }
+  catch (e) { threw = e; }
+  check("a ZIP-delivered report is refused by its own name",
+        threw && /dmarc-rua-zip-not-unpacked/.test(threw.code || ""),
+        String(threw && threw.code));
+  check("and the refusal names the reader to compose",
+        threw && /archive\.read\.zip/.test(threw.message || ""),
+        String(threw && threw.message));
 }
 
 function testDmarcRuaBuildRoundTrip() {
@@ -4771,6 +4877,7 @@ async function run() {
   await testInboundVerifyValidation();
   await testArcVerifyMissing();
   await testArcVerifyNone();
+  await testArcTagNamesAreCaseSensitive();
   await testArcSealsTheOctetsItWasGiven();
   await testArcSeparatesATransientLookupFromABadSeal();
   await testArcEvaluateAgreesWithVerify();
@@ -4815,6 +4922,8 @@ async function run() {
   await testDmarcPctSamplingDeterministic();
   await testDmarcAlignmentUsesPsl();
   testDmarcRuaGunzipBombDistinguished();
+  testDmarcRuaExpansionRatioBounded();
+  testDmarcRuaZipIsNamed();
   testDmarcRuaBuildRoundTrip();
   testDmarcRuaBuildBadInput();
   testDmarcForensicSurface();

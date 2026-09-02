@@ -17024,12 +17024,16 @@ function testWebSocketHandshake() {
         ws.validateUpgradeRequest(encodedReq).ok === false);
 
   // Origin policy
-  var browserReq = { method: "GET", headers: Object.assign({}, goodReq.headers, { "origin": "https://app.example.com", "host": "app.example.com" }) };
-  // Default (origins omitted) enforces same-origin: Origin's host must match Host.
+  // The socket carries the SCHEME half of the origin. RFC 6454 makes an origin
+  // the triple of scheme, host and port, so a fixture claiming an `https`
+  // Origin has to be a request that arrived over TLS — otherwise it is a
+  // cross-scheme request, which is the case the default exists to refuse.
+  var browserReq = { method: "GET", socket: { encrypted: true }, headers: Object.assign({}, goodReq.headers, { "origin": "https://app.example.com", "host": "app.example.com" }) };
+  // Default (origins omitted) enforces same-origin on scheme, host and port.
   check("isOriginAllowed: undefined origins enforces same-origin (match)",
         ws.isOriginAllowed(browserReq, null) === true);
   // Cross-origin under default policy is refused.
-  var crossOriginReq = { method: "GET", headers: Object.assign({}, goodReq.headers, { "origin": "https://attacker.example", "host": "app.example.com" }) };
+  var crossOriginReq = { method: "GET", socket: { encrypted: true }, headers: Object.assign({}, goodReq.headers, { "origin": "https://attacker.example", "host": "app.example.com" }) };
   check("isOriginAllowed: undefined origins enforces same-origin (refuse cross-origin)",
         ws.isOriginAllowed(crossOriginReq, null) === false);
   check("isOriginAllowed: '*' accepts all",               ws.isOriginAllowed(browserReq, "*") === true);

@@ -672,9 +672,10 @@ async function run() {
   // The connect-phase error handler destroys the half-open socket and
   // rejects with the typed CONNECT error.
   {
-    var slot = await _listen(function () {});
-    var deadPort = slot.port;
-    await slot.close();   // port now guaranteed closed → connection refused
+    // Not a closed ephemeral port: that number is one the operating system
+    // can hand to another worker between the close and the dial, and under
+    // SMOKE_PARALLEL=64 it does. A low reserved port stays refused.
+    var deadPort = await helpers.refusedPort();
     var cRef = redis.create({
       url: "redis://127.0.0.1:" + deadPort + "/0",
       connectTimeoutMs: 1000, maxReconnectAttempts: 0,

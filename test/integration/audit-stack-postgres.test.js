@@ -341,8 +341,13 @@ async function run() {
 
     await _testAuditRecordAndChain(liveQueryAll);
     await _testCheckpointAndFence(liveQueryAll);
+    // The instant the checkpoint anchored the chain. `archive` requires a
+    // signed checkpoint covering the LAST row of the slice it bundles, so the
+    // slice has to end where that checkpoint does -- see the boundary's use
+    // below.
+    var anchoredAt = Date.now();
     await _testCoercionFidelity(liveQueryAll);
-    await _testAuditToolsBundleAndPurge(tmpDir);
+    await _testAuditToolsBundleAndPurge(tmpDir, anchoredAt);
     await _testBreakGlass();
     await _testBreakGlassConcurrentDoubleClaim(driver);
     await _testCryptoFieldKRowRoundTrip(liveQueryAll);
@@ -533,7 +538,7 @@ async function _testCoercionFidelity() {
 //    archive (needs a covering checkpoint) → verifyBundle, then the purge
 //    monotonic gate + the live anchor UPSERT through clusterStorage.
 // ====================================================================
-async function _testAuditToolsBundleAndPurge(tmpDir) {
+async function _testAuditToolsBundleAndPurge(tmpDir, anchoredAt) {
   var pass = Buffer.from("audit-bundle-passphrase-not-secret-1234567890", "utf8");
 
   // exportSlice reads rows from the live Postgres audit_log (default
@@ -553,22 +558,28 @@ async function _testAuditToolsBundleAndPurge(tmpDir) {
     check("EXPORT-VERIFY DETAIL: '" + exVerify.reason + "'", false);
   }
 
-  // archive needs a covering checkpoint (we wrote one at counter 5) and a
-  // `before` boundary newer than every row. recordedAt is Date.now()-based,
-  // so a `before` of now+1h covers all rows.
+  // `archive` requires a signed checkpoint covering the LAST row of the slice
+  // it bundles, and the checkpoint this run has anchors counter 5. So the
+  // slice ends where that checkpoint does: `before` is the instant the
+  // checkpoint was taken, not "now plus an hour".
   //
-  // KNOWN FLAKE, tracked separately: in a full integration run this has failed
-  // with "no signed checkpoint covers counter=15" while passing standalone —
-  // phases between the checkpoint and here emit their own audit rows, and once
-  // the chain moves past counter 5 that anchor no longer covers the tip. Taking
-  // a fresh checkpoint here does NOT work: the fencing phase above deliberately
-  // UPSERTs a higher fencingToken to prove a lower one is refused, so any later
-  // checkpoint is fenced out by design. The fix has to reorder the phases or
-  // give this one its own scope, not add a call.
+  // A `before` of now+1h bundles every row the chain has reached by the time
+  // this phase runs, and the phases between the checkpoint and here emit rows
+  // of their own -- so the tip moves past counter 5 and the anchor no longer
+  // covers it. That failed as "no signed checkpoint covers counter=15" in a
+  // full run and passed standalone, and it moved to counter=16 the moment this
+  // release added an audit emission anywhere upstream: a boundary defined by
+  // wall-clock rather than by the anchor is a boundary that whatever runs in
+  // between gets to move.
+  //
+  // Taking a FRESH checkpoint here instead does not work and is not the fix:
+  // the fencing phase above deliberately UPSERTs a higher fencingToken to
+  // prove a lower one is refused, so any later checkpoint is fenced out by
+  // design.
   var arDir = path.join(tmpDir, "archive-bundle");
   var ar = await b.auditTools.archive({
     out:        arDir,
-    before:     Date.now() + b.constants.TIME.hours(1),
+    before:     anchoredAt,
     passphrase: pass,
   });
   check("audit-tools.archive bundled every live-Postgres row under a covering " +

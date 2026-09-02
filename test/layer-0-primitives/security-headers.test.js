@@ -36,17 +36,23 @@ function testFencedFrameSrcInDefaultCsp() {
     typeof csp === "string" && csp.indexOf("fenced-frame-src 'none'") !== -1);
 }
 
-function testDocumentPolicyDefault() {
+// The default named three features no shipping browser recognizes, so the
+// header carried no mitigation and logged one warning per feature on every
+// navigation. It is not sent unless the operator asks for it.
+function testDocumentPolicyIsNotSentByDefault() {
   var mw = b.middleware.securityHeaders();
   var res = _mkRes();
   mw({ headers: {} }, res, function () {});
-  var dp = res._hdrs["Document-Policy"];
-  check("Document-Policy default emits document-write=?0",
-    typeof dp === "string" && dp.indexOf("document-write=?0") !== -1);
-  check("Document-Policy default emits unsized-media=?0",
-    typeof dp === "string" && dp.indexOf("unsized-media=?0") !== -1);
-  check("Document-Policy default emits oversized-images=?0",
-    typeof dp === "string" && dp.indexOf("oversized-images=?0") !== -1);
+  check("Document-Policy is not sent by default",
+    res._hdrs["Document-Policy"] === undefined,
+    JSON.stringify(res._hdrs["Document-Policy"]));
+
+  // What actually stops the sink the old default claimed to block. Asserted
+  // here so removing the inert header cannot read as removing the mitigation.
+  var csp = res._hdrs["Content-Security-Policy"];
+  check("and the CSP still requires Trusted Types for script sinks",
+    typeof csp === "string" && csp.indexOf("require-trusted-types-for 'script'") !== -1,
+    JSON.stringify(csp && csp.slice(0, 120)));
 }
 
 function testDocumentPolicyOperatorOverride() {
@@ -148,8 +154,13 @@ function testV0870PermissionsPolicyDefaults() {
 
 function testDefaultDocumentPolicyExportedConstant() {
   var m = b.middleware._modules.securityHeaders;
+  // Still exported so an operator can read what the default is; the default is
+  // now that no Document-Policy is sent, because every feature the old one
+  // named is unrecognized by shipping browsers.
   check("DEFAULT_DOCUMENT_POLICY exported for operator inspection",
-    typeof m.DEFAULT_DOCUMENT_POLICY === "string" && m.DEFAULT_DOCUMENT_POLICY.length > 0);
+    Object.prototype.hasOwnProperty.call(m, "DEFAULT_DOCUMENT_POLICY"));
+  check("DEFAULT_DOCUMENT_POLICY is off",
+    m.DEFAULT_DOCUMENT_POLICY === false, JSON.stringify(m.DEFAULT_DOCUMENT_POLICY));
 }
 
 function testReportOnlyHeadersEmittedWhenOptedIn() {
@@ -183,8 +194,11 @@ function testReportOnlyDoesNotTouchEnforcingHeaders() {
     res._hdrs["Cross-Origin-Opener-Policy"] === "same-origin");
   check("enforcing COEP keeps its default-on value despite coepReportOnly",
     res._hdrs["Cross-Origin-Embedder-Policy"] === "credentialless");
+  // Unchanged means still absent: the enforcing Document-Policy is off by
+  // default, and a report-only opt-in must not turn it on.
   check("enforcing Document-Policy unchanged by report-only opts",
-    res._hdrs["Document-Policy"] === b.middleware._modules.securityHeaders.DEFAULT_DOCUMENT_POLICY);
+    res._hdrs["Document-Policy"] === undefined,
+    JSON.stringify(res._hdrs["Document-Policy"]));
 }
 
 function testReportOnlyDefaultOff() {
@@ -284,7 +298,7 @@ function testCoepDefaultOnAndOptOut() {
 
 async function run() {
   testFencedFrameSrcInDefaultCsp();
-  testDocumentPolicyDefault();
+  testDocumentPolicyIsNotSentByDefault();
   testDocumentPolicyOperatorOverride();
   testDocumentPolicyDisabled();
   testAcceptChAndCriticalCh();

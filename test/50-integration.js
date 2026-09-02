@@ -211,6 +211,51 @@ async function testCreateAppMinimalBoot() {
   }
 }
 
+// A bind failure arrives asynchronously, as an `error` event on the server. A
+// try/catch around the bind call sees only a synchronous throw, so the returned
+// promise never settles and the event reaches a server with no listener, which
+// ends the process. `EADDRINUSE` is the ordinary way an operator meets this:
+// the port is already taken, and what they get is a dead process instead of an
+// error they can report.
+async function testCreateAppListenRejectsOnBindFailure() {
+  process.env.BLAMEJS_SKIP_NTP_CHECK = "1";
+  process.env.BLAMEJS_AUDIT_SIGNING_MODE = "plaintext";
+  b.cluster._resetForTest();
+  b.audit._resetForTest();
+  b.vault._resetForTest();
+  b.db._resetForTest();
+  var dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-app-"));
+
+  // Hold a port with a plain server, so the app meets a bind that cannot
+  // succeed rather than a configuration this framework rejects earlier.
+  var occupied = require("node:net").createServer();
+  var port = await b.testing.listenOnRandomPort(occupied, "127.0.0.1");
+
+  var app = await b.createApp({
+    dataDir: dataDir,
+    vault:   { mode: "plaintext" },
+    db:      { atRest: "plain", auditSigning: { mode: "plaintext" } },
+    schema:  [],
+    middleware: { botGuard: false },
+    routes:  function (r) {
+      r.get("/", function (req, res) { b.render.text(res, "OK"); });
+    },
+  });
+  var err = null;
+  try {
+    await app.listen({ port: port, host: "127.0.0.1" });
+  } catch (e) { err = e; } finally {
+    occupied.close();
+    try { await app.shutdown(); } catch (_e) { /* never bound */ }
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+  check("listen on a taken port rejects rather than ending the process",
+        err !== null, String(err));
+  check("and the rejection names the bind failure",
+        err !== null && (err.code === "EADDRINUSE" || /EADDRINUSE/.test(err.message || "")),
+        JSON.stringify({ code: err && err.code, message: err && err.message }));
+}
+
 async function testCreateAppDefaultMiddleware() {
   process.env.BLAMEJS_SKIP_NTP_CHECK = "1";
   process.env.BLAMEJS_AUDIT_SIGNING_MODE = "plaintext";
@@ -851,6 +896,7 @@ async function run() {
   testCreateAppSurface();
   await testCreateAppValidation();
   await testCreateAppMinimalBoot();
+  await testCreateAppListenRejectsOnBindFailure();
   await testCreateAppDefaultMiddleware();
   await testCreateAppMiddlewareDisableable();
   await testCreateAppSecurityDefaultsWired();
@@ -874,6 +920,7 @@ module.exports = {
   testCreateAppSurface:               testCreateAppSurface,
   testCreateAppValidation:            testCreateAppValidation,
   testCreateAppMinimalBoot:           testCreateAppMinimalBoot,
+  testCreateAppListenRejectsOnBindFailure: testCreateAppListenRejectsOnBindFailure,
   testCreateAppDefaultMiddleware:     testCreateAppDefaultMiddleware,
   testCreateAppMiddlewareDisableable: testCreateAppMiddlewareDisableable,
   testCreateAppSecurityDefaultsWired: testCreateAppSecurityDefaultsWired,

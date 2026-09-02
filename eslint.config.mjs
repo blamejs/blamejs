@@ -400,6 +400,116 @@ export default [
               };
             },
           },
+          // A mail listener holds one `socket` per connection, and STARTTLS
+          // replaces it: the plaintext socket stays open and readable, and every
+          // byte written to it after the upgrade goes to a peer that has stopped
+          // reading it. Handlers therefore take the live socket as a parameter.
+          // A nested function that instead closes over the connection's own
+          // binding writes to whichever socket was current when the connection
+          // opened, which on a listener that requires the upgrade is always the
+          // wrong one.
+          //
+          // The rule asks the SCOPE ANALYZER which binding a `socket` reference
+          // resolves to, rather than matching the name: a parameter, a local, or
+          // the module scope is fine, and only a reference crossing a function
+          // boundary into an enclosing function's binding is reported. Deciding
+          // that textually cannot work, because the name is identical in every
+          // case and the answer is entirely about which scope declared it.
+          "no-captured-connection-socket": {
+            meta: {
+              type: "problem",
+              docs: { description: "a mail listener handler takes its socket as a parameter" },
+              schema: [],
+            },
+            create(context) {
+              const sourceCode = context.sourceCode || context.getSourceCode();
+
+              function functionScopeOf(scope) {
+                for (let s = scope; s; s = s.upper) {
+                  if (s.type === "function") return s;
+                }
+                return null;
+              }
+
+              // A listener registered ON the socket itself runs for that socket,
+              // so reading the binding inside it is not a capture across the
+              // upgrade -- it is the receiver of the very call that registered
+              // it. `rawSocket` counts too: the upgraded socket sits on top of
+              // it and closes with it, which is why the close handler is
+              // registered there.
+              const SELF_REGISTERING = new Set([
+                "on", "once", "addListener", "prependListener", "prependOnceListener",
+              ]);
+              function namesTheSocket(n) {
+                return n && n.type === "Identifier" &&
+                  (n.name === "socket" || n.name === "rawSocket");
+              }
+              function isListenerOnTheSocketItself(node) {
+                for (let n = node; n; n = n.parent) {
+                  if (n.type !== "FunctionExpression" && n.type !== "ArrowFunctionExpression") continue;
+                  // Find the call this function is being handed to, whether
+                  // directly or as one property of a callbacks object.
+                  let call = n.parent;
+                  if (call && call.type === "Property") call = call.parent;
+                  if (call && call.type === "ObjectExpression") call = call.parent;
+                  if (!call || call.type !== "CallExpression") continue;
+                  // `socket.on(cb)` / `rawSocket.once(cb)`.
+                  const callee = call.callee;
+                  if (callee && callee.type === "MemberExpression" && !callee.computed &&
+                      callee.property.type === "Identifier" &&
+                      SELF_REGISTERING.has(callee.property.name) &&
+                      namesTheSocket(callee.object)) {
+                    return true;
+                  }
+                  // `mailServerNet.wireLineSocket(socket, { onIdleTimeout: cb })`
+                  // -- the socket is the subject of the call, so the callbacks
+                  // are registered on it and the upgrade strips them with it.
+                  if (namesTheSocket(call.arguments[0])) return true;
+                }
+                return false;
+              }
+
+              return {
+                "Program:exit"(node) {
+                  const top = sourceCode.getScope
+                    ? sourceCode.getScope(node)
+                    : context.getScope();
+
+                  (function walk(scope) {
+                    for (const variable of scope.variables) {
+                      if (variable.name !== "socket") continue;
+                      // A PARAMETER is the live socket by construction -- the
+                      // caller passed whichever one is current -- so a callback
+                      // closing over its own handler's parameter is the ordinary
+                      // and correct shape. What this reports is a `var` holding
+                      // the connection's socket, read from a nested function:
+                      // that value was fixed when the connection opened.
+                      if (!variable.defs.some((d) => d.type === "Variable")) continue;
+                      // Only a binding a FUNCTION declares can be captured in the
+                      // sense that matters; a module-level one is not per
+                      // connection.
+                      const owner = functionScopeOf(scope);
+                      if (!owner) continue;
+                      for (const ref of variable.references) {
+                        const from = functionScopeOf(ref.from);
+                        if (from === owner) continue;
+                        if (isListenerOnTheSocketItself(ref.identifier)) continue;
+                        context.report({
+                          node: ref.identifier,
+                          message: "`socket` here is the binding from an enclosing " +
+                            "function, not one this function received. STARTTLS " +
+                            "replaces the connection's socket, so a captured one " +
+                            "is the pre-upgrade socket and anything written to it " +
+                            "reaches nobody. Take it as a parameter.",
+                        });
+                      }
+                    }
+                    for (const child of scope.childScopes) walk(child);
+                  })(top);
+                },
+              };
+            },
+          },
           // Content-safety primitives screen input by walking characters, never
           // with a regular expression — an attacker supplies the subject, and a
           // pattern with nested quantifiers turns that into a denial of service.
@@ -487,6 +597,12 @@ export default [
     // never calls the module afterwards.
     files: ["test/**/*.js"],
     rules: { "blamejs/no-shadowed-module-binding": "off" },
+  },
+  {
+    // Only the listeners: they are what STARTTLS replaces a socket under. A
+    // client holding one socket for its lifetime captures it legitimately.
+    files: ["lib/mail-server-*.js"],
+    rules: { "blamejs/no-captured-connection-socket": "error" },
   },
   {
     // Nested primitives are in scope too. The scanner this replaces selected on

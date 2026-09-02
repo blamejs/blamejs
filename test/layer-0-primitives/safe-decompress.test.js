@@ -111,8 +111,28 @@ function testMaxOutputBytesRefusal() {
   try {
     b.safeDecompress(gz, { algorithm: "gzip", maxOutputBytes: C.BYTES.kib(1) });
   } catch (e) { threw = e; }
+  // Its own code, distinct from a malformed stream. A caller acts differently
+  // on the two -- amplification says something about the sender, a malformed
+  // stream says something about the transfer -- and the alternative is every
+  // caller walking the `.cause` chain and matching zlib's wording, which has
+  // changed across Node releases.
   check("output > maxOutputBytes → refused before allocation",
-        threw && /decompress-failed|output-too-large/.test(threw.code || ""));
+        threw && threw.code === "safe-decompress/output-cap-exceeded",
+        String(threw && threw.code));
+  check("and the refusal keeps zlib's own error for diagnosis",
+        threw && threw.cause && typeof threw.cause.message === "string",
+        String(threw && threw.cause && threw.cause.code));
+
+  // A stream that is not a bomb but is not gzip either keeps the other code,
+  // so the two cannot be told apart only by which one happened to be checked.
+  var malformed = null;
+  try {
+    b.safeDecompress(Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0xFF, 0xFF]),
+      { algorithm: "gzip", maxOutputBytes: C.BYTES.mib(1) });
+  } catch (e) { malformed = e; }
+  check("a malformed stream is not reported as amplification",
+        malformed && malformed.code === "safe-decompress/decompress-failed",
+        String(malformed && malformed.code));
 }
 
 // ---- maxRatio refusal (post-decompress, the new defense vs status quo) ----

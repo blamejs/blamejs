@@ -418,7 +418,94 @@ async function testIssuedCookieShape() {
         value === req.csrfToken && /^[a-f0-9]{64}$/.test(value));
 }
 
+// The denial's reason is the whole value of an enhanced audit line, and this
+// exit returned an object where every other one returns a string. The caller
+// builds the line by concatenation, so the one configuration an operator turns
+// on deliberately -- `requireOrigin` -- recorded `origin/referer:
+// [object Object]`, indistinguishable in the trail from any other object that
+// might arrive there later. The refusal itself was never affected.
+async function testRequireOriginDenialNamesItsReason() {
+  var events = [];
+  var realSafeEmit = b.audit.safeEmit;
+  b.audit.safeEmit = function (ev) { events.push(ev); };
+  var r;
+  try {
+    var noOriginAtAll = _mockReq({
+      method:  "POST",
+      url:     "/submit",
+      headers: { host: "example.com" },
+    });
+    r = await _runCsrf(
+      { cookie: true, checkOrigin: true, requireOrigin: true }, noOriginAtAll);
+  } finally { b.audit.safeEmit = realSafeEmit; }
+
+  check("csrf: a request with no Origin or Referer is refused under requireOrigin",
+        r.outcome === "denied" && r.status === 403, r.outcome + " " + (r.status || ""));
+
+  var reasons = events.map(function (e) {
+    return (e && e.metadata && e.metadata.reason) || (e && e.reason) || "";
+  }).join(" | ");
+  check("csrf: and the denial names the reason rather than an object",
+        /missing-origin-and-referer/.test(reasons) && !/\[object Object\]/.test(reasons),
+        JSON.stringify(reasons.slice(0, 200)));
+}
+
+// The same-origin baseline is built from the authority the request named, and
+// node maps neither `Host` nor `:authority` into the other. Over HTTP/2 — what
+// this framework's own TLS listeners negotiate with every browser — reading
+// `Host` alone left the baseline empty, so every browser Origin mismatched and
+// the gate refused every form submission.
+//
+// Both sides: the h2 request must pass, and a cross-origin one over h2 must
+// still be refused, so the fix is not "the check stopped running".
+async function testTheOriginBaselineIsBuiltFromTheHttp2Authority() {
+  var sameOrigin = _mockReq({
+    method: "POST", url: "/submit",
+    headers: {
+      ":authority":   "example.com",
+      origin:         "http://example.com",
+      authorization:  "Bearer not-a-real-token",
+    },
+  });
+  var r = await _runCsrf(
+    { cookie: true, skipStateless: true, checkOrigin: true }, sameOrigin);
+  check("csrf: a same-origin HTTP/2 request is not refused for a missing Host",
+    r.outcome === "next", r.outcome + " " + (r.status || ""));
+
+  var crossOrigin = _mockReq({
+    method: "POST", url: "/submit",
+    headers: {
+      ":authority":   "example.com",
+      origin:         "https://attacker.example",
+      authorization:  "Bearer not-a-real-token",
+    },
+  });
+  var r2 = await _runCsrf(
+    { cookie: true, skipStateless: true, checkOrigin: true }, crossOrigin);
+  check("csrf: and a cross-origin HTTP/2 request is still refused",
+    r2.outcome === "denied" && r2.status === 403, r2.outcome + " " + (r2.status || ""));
+
+  // The pseudo-header comes from the connection; a `Host` sent alongside it is
+  // caller text. Believing the latter let a non-browser client write BOTH
+  // halves of the comparison and have the check agree with it.
+  var forged = _mockReq({
+    method: "POST", url: "/submit",
+    headers: {
+      ":authority":   "example.com",
+      host:           "attacker.example",
+      origin:         "http://attacker.example",
+      authorization:  "Bearer not-a-real-token",
+    },
+  });
+  var r3 = await _runCsrf(
+    { cookie: true, skipStateless: true, checkOrigin: true }, forged);
+  check("csrf: a forged Host cannot supply both halves of the origin comparison",
+    r3.outcome === "denied" && r3.status === 403, r3.outcome + " " + (r3.status || ""));
+}
+
 async function run() {
+  await testTheOriginBaselineIsBuiltFromTheHttp2Authority();
+  await testRequireOriginDenialNamesItsReason();
   await testSuccessPathDoubleSubmit();
   await testCookieAttributesCannotSplitTheHeader();
   testHostPrefixWithAutoDetectedSecureRefusedAtBoot();

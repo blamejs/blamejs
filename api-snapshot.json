@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.18.61",
-  "createdAt": "2026-09-02T00:14:56.381Z",
+  "frameworkVersion": "0.18.62",
+  "createdAt": "2026-09-02T14:03:44.910Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -54378,7 +54378,7 @@
         },
         "findDotTerminator": {
           "type": "function",
-          "arity": 1
+          "arity": 2
         }
       }
     },
@@ -57178,7 +57178,7 @@
         },
         "isOriginAllowed": {
           "type": "function",
-          "arity": 2
+          "arity": 3
         },
         "negotiateSubprotocol": {
           "type": "function",

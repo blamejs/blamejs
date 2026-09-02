@@ -24,17 +24,23 @@ function _spin(ms) {
   while (Number(process.hrtime.bigint() - t0) / 1e6 < ms) { /* burn */ }
 }
 
-// Both curves are sized so the LARGE reading clears the helper's 25ms floor
-// and nothing else: what is under test is the measurement, not any particular
-// implementation's speed, so a production-scale input would only spend CPU.
-// Small 10ms, large 40ms linear and 160ms quadratic.
+// The SMALL reading is the denominator of the ratio, and it is sized above the
+// scheduler's noise rather than as small as the floor allows. A spin loop
+// checks the wall clock, so a descheduled process resumes past its deadline and
+// overshoots by however long it was away -- a fixed overshoot that is a few
+// percent of a 100ms reading and tens of percent of a 10ms one. At
+// SMOKE_PARALLEL=64 that compressed a quadratic curve's ratio from 16 to 8.6
+// and the helper correctly declined to call it superlinear, so the test failed
+// while nothing it tests was wrong.
+//
+// Small 25ms, large 100ms linear and 400ms quadratic.
 var SMALL = 1000;
 var LARGE = 4000;
 
 // 4x the input for 4x the time.
-function _linear(n) { _spin(n / 100); }
+function _linear(n) { _spin(n / 40); }
 // 4x the input for 16x the time.
-function _quadratic(n) { var k = n / SMALL; _spin(k * k * 10); }
+function _quadratic(n) { var k = n / SMALL; _spin(k * k * 25); }
 
 // Two samples is enough for a spin loop, which has no variance worth averaging
 // away. The point of the second pass is that the verdict is RE-TAKEN, and that

@@ -87,8 +87,12 @@ function testDetectSmugglingShape() {
 function testFindDotTerminator() {
   var withTerm = Buffer.from("body line\r\n.\r\n", "utf8");
   var idx = b.safeSmtp.findDotTerminator(withTerm);
-  check("dot-terminator found at body end",
-    idx === Buffer.byteLength("body line", "utf8"));
+  // The terminator's leading CRLF ends the last line of the mail data
+  // (RFC 5321 §4.1.1.4), so it is inside the message, not framing around it.
+  check("mail data runs to the end of its last line",
+    idx === Buffer.byteLength("body line\r\n", "utf8"), String(idx));
+  check("the sliced body is what the peer transmitted",
+    withTerm.subarray(0, idx).toString("utf8") === "body line\r\n");
 
   var noTerm = Buffer.from("body line\r\n", "utf8");
   check("no terminator returns -1",
@@ -1761,6 +1765,95 @@ async function testAQueuedChunkDoesNotRunAfterTheGateTearsDown() {
   } finally { await srv.close({ timeoutMs: 1000 }); }                                 // allow:raw-time-literal — test-only short drain
 }
 
+// A second MAIL inside an open transaction is RFC 5321 section 4.1.4's "sender
+// already specified". It was answered with "EHLO/HELO first", which the client
+// already did successfully, so a reader who trusts the reply goes looking for a
+// session that lost its EHLO.
+async function testASecondMailNamesTheRightFault() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("mx second MAIL reply (skipped)", true); return; }
+  var srv = b.mail.server.mx.create({
+    tlsContext: ctx, profile: "permissive", localDomains: ["example.com"],
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var sock;
+  try {
+    sock = await _connectTo(info);
+    await _sendCommand(sock, "EHLO peer.example.net");
+    await _sendCommand(sock, "MAIL FROM:<a@example.net>");
+
+    var second = await _sendCommand(sock, "MAIL FROM:<a@example.net>");
+    check("mx: a second MAIL is refused", /^503 /m.test(second), JSON.stringify(second));
+    check("mx: and it says the sender is already specified, not to issue EHLO",
+          /Sender already specified/.test(second) && !/EHLO\/HELO first/.test(second),
+          JSON.stringify(second));
+
+    await _sendCommand(sock, "RSET");
+    var third = await _sendCommand(sock, "MAIL FROM:<a@example.net>");
+    check("mx: and after RSET a MAIL is accepted again",
+          /^250 /m.test(third), JSON.stringify(third));
+
+    // The null reverse path — RFC 5321 section 4.5.5, the bounce sender — is
+    // the case an MX sees most, and it stores as the EMPTY STRING. A
+    // truthiness test for an open transaction misses exactly this one.
+    await _sendCommand(sock, "RSET");
+    var bounce = await _sendCommand(sock, "MAIL FROM:<>");
+    check("mx: the null reverse path is accepted", /^250 /m.test(bounce), JSON.stringify(bounce));
+    var afterBounce = await _sendCommand(sock, "MAIL FROM:<a@example.net>");
+    check("mx: and a second MAIL after it is refused as sender-already-specified",
+          /Sender already specified/.test(afterBounce) && !/EHLO\/HELO first/.test(afterBounce),
+          JSON.stringify(afterBounce));
+    sock.destroy();
+
+    // The other half still answers its own fault.
+    var s2 = await _connectTo(info);
+    var noHelo = await _sendCommand(s2, "MAIL FROM:<a@example.net>");
+    check("mx: a MAIL before EHLO is still told to issue one",
+          /EHLO\/HELO first/.test(noHelo), JSON.stringify(noHelo));
+    s2.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                 // allow:raw-time-literal — test-only short drain
+}
+
+// A permanent refusal has to reach the peer. `end()` queues the FIN behind
+// whatever is still in the write buffer, and a `destroy()` on the next line
+// tore the socket down without waiting for it — so whether the reply arrived
+// depended on how much the PEER had sent, not on anything the server decided.
+//
+// RFC 5321 section 4.2.1 makes that load-bearing: a peer that receives a 5xx
+// stops and reports to its sender, and one that receives nothing has no verdict
+// and falls back to its retry schedule for the whole of its queue lifetime.
+async function testAPermanentRefusalSurvivesALargeOvershoot() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("refusal delivery (skipped)", true); return; }
+  var srv = b.mail.server.mx.create({
+    tlsContext: ctx, profile: "permissive", localDomains: ["example.com"],
+    maxMessageBytes: 65536,                                                            // allow:raw-byte-literal — small ceiling so the overshoot is cheap to send
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var sock;
+  try {
+    sock = await _connectTo(info);
+    var col = _collect(sock);
+    await _sendCommand(sock, "EHLO peer.example.net");
+    await _sendCommand(sock, "MAIL FROM:<a@example.net>");
+    await _sendCommand(sock, "RCPT TO:<x@example.com>");
+    await _sendCommand(sock, "DATA");
+
+    // Far past the ceiling, in one push, so the refusal is written while the
+    // peer still has a great deal in flight — the shape that used to reset the
+    // connection with nothing delivered.
+    sock.write("x".repeat(512 * 1024));                                                // allow:raw-byte-literal — overshoot well past the 64 KiB ceiling
+
+    await helpers.waitUntil(function () { return /^55[0-9] /m.test(col.text()); },
+      { timeoutMs: 8000, label: "refusal delivery: permanent reply reaches the peer" });
+    check("a permanent refusal reaches a peer that overshot by a large margin",
+          /^55[0-9] /m.test(col.text()), JSON.stringify(col.text().slice(-160)));
+    sock.destroy();
+  } finally { await srv.close({ timeoutMs: 2000 }); }                                 // allow:raw-time-literal — test-only short drain
+}
+
 // ---- close() drains, then force-destroys a lingering connection ---------
 async function testCloseDestroysLingering() {
   var ctx;
@@ -1978,6 +2071,8 @@ async function run() {
   await testGateThrows();
   await testIdleTimeout();
   await testAQueuedChunkDoesNotRunAfterTheGateTearsDown();
+  await testASecondMailNamesTheRightFault();
+  await testAPermanentRefusalSurvivesALargeOvershoot();
   await testCloseDestroysLingering();
   await testCloseIdempotent();
   await testTlsErrorPaths();

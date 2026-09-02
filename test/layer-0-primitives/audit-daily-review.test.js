@@ -44,6 +44,9 @@ async function testRunSummary() {
     { action: "honeytoken.tripped",        outcome: "denied",  recordedAt: Date.now() },
     { action: "ato.killSwitch.tripped",    outcome: "denied",  recordedAt: Date.now() },
     { action: "subject.export",            outcome: "success", recordedAt: Date.now() },
+    // A partial result. Counting it under `other` would hide exactly the rows
+    // a daily review exists to surface.
+    { action: "ingest.batch.partial",      outcome: "warning", recordedAt: Date.now() },
   ];
   var fakeAudit = _fakeAudit(rows);
   var review = b.auditDailyReview.create({
@@ -52,12 +55,26 @@ async function testRunSummary() {
     notify:            null,
   });
   var summary = await review.run();
-  check("run returns totalEvents = 5",            summary.totalEvents === 5);
+  check("run returns totalEvents = 6",            summary.totalEvents === 6);
   check("classify alert hit",                      summary.bySeverity.alert >= 1);
   check("classify critical hit",                   summary.bySeverity.critical >= 1);
   check("byOutcome.success counted",               summary.byOutcome.success >= 2);
+  check("byOutcome.warning counts a partial result in its own bucket",
+        summary.byOutcome.warning === 1, JSON.stringify(summary.byOutcome));
+  check("and it does not fall through to 'other'",
+        summary.byOutcome.other === 0, JSON.stringify(summary.byOutcome));
   check("thresholdHits >= 3 (warning+)",           summary.hitCount >= 3);
-  check("review.lastRun returns the same summary", review.lastRun().totalEvents === 5);
+  // Counting a partial result in its own bucket is not the same as surfacing
+  // it. The review's default threshold IS `warning`, so an outcome of
+  // `warning` classified as `info` is counted and then left out of the list an
+  // operator reads -- which is the whole reason the outcome exists.
+  check("a partial result reaches the review at the warning threshold",
+        summary.thresholdHits.some(function (h) {
+          return h.action === "ingest.batch.partial" && h.severity === "warning";
+        }), JSON.stringify(summary.thresholdHits.map(function (h) {
+          return h.action + ":" + h.severity;
+        })));
+  check("review.lastRun returns the same summary", review.lastRun().totalEvents === 6);
   check("audit.daily_review.completed emitted",
         fakeAudit._emitted.some(function (e) { return e.action === "audit.daily_review.completed"; }));
 }
