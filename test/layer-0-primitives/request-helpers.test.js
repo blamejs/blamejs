@@ -437,6 +437,18 @@ function testRequestProtocolReadsTheHttp2Scheme() {
   check("requestProtocol: an unrecognized :scheme does not become https",
     rp({ socket: { encrypted: false }, headers: { ":scheme": "gopher" } }) === "http");
 
+  // Unlike `:authority`, `:scheme` is a value the CLIENT writes, and over
+  // cleartext h2c node passes `:scheme: https` through on an unencrypted
+  // socket. Where a socket exists its encryption state decides, because that
+  // is the half the peer cannot assert. The answer feeds the `secure`
+  // attribute on a session cookie and the DPoP `htu` a token is bound to.
+  check("requestProtocol: a client-claimed https :scheme does not beat a cleartext socket",
+    rp({ socket: { encrypted: false }, headers: { ":scheme": "https" } }) === "http");
+  check("requestProtocol: and an encrypted socket is https whatever :scheme claims",
+    rp({ socket: { encrypted: true }, headers: { ":scheme": "http" } }) === "https");
+  check("requestProtocol: :scheme still answers a request that carries no socket",
+    rp({ headers: { ":scheme": "https" } }) === "https");
+
   // MUST NOT regress: behind a TLS-terminating proxy the backend leg may be
   // cleartext h2, so `:scheme` there says `http` while the browser used
   // `https`. The trusted forwarded header still wins over both.

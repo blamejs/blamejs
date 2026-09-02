@@ -1179,7 +1179,7 @@ function testShortFieldNamesMatchBySegmentNotBySubstring() {
                   "residentKey", "isIdentifierChar", "residualRisks",
                   "stepIndex", "stepindex", "mapping", "mappings", "grouping", "stamping",
                   "sweepIntervalMs", "roleMappingFn", "pinning", "pinnedKeyResolver",
-                  "pingMs", "pins", "spkiPinVerifier",
+                  "pingMs", "spkiPinVerifier",
                   "className", "classNames", "classname", "residual"];
   for (var i = 0; i < readable.length; i += 1) {
     check("redact: '" + readable[i] + "' is not a credential and survives",
@@ -1201,8 +1201,12 @@ function testShortFieldNamesMatchBySegmentNotBySubstring() {
   // A one- or two-letter exemption has to be the WHOLE remainder. Read as a
   // prefix, the `s` that keeps `pins` readable also clears every credential
   // whose noun begins with one.
+  // `pins` and `userPins` read as the plural of a certificate pin and as the
+  // plural of a credential. Only one reading can be served, and a scrubbed pin
+  // list costs legibility while a printed PIN does not come back.
   var prefixTraps = ["pinSalt", "pinsalt", "pinSecret", "pinsecret", "pinSeed",
                      "pinGuess", "pinguess", "pinIpsecKey", "pinSetupToken",
+                     "pins", "userPins", "userpins",
                      "sidEncryptionKey", "sidencryptionkey", "sidEntropy",
                      "sidSecret", "ssnAmerican", "ssnAmount"];
   for (var p = 0; p < prefixTraps.length; p += 1) {

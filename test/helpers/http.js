@@ -9,6 +9,7 @@
  * the same helper the framework's own smoke suite uses.
  */
 
+var net = require("node:net");
 var b = require("../../index.js");
 var wait = require("./wait");
 
@@ -298,8 +299,54 @@ async function withDrain(label, body, teardown, drainOpts) {
   if (failed) throw failure;
 }
 
+// A port that refuses a connection, and keeps refusing it.
+//
+// The usual fixture binds an ephemeral port, closes it, and calls it dead. It
+// is dead only until the operating system hands it to somebody else, and under
+// SMOKE_PARALLEL=64 the suite is opening and closing ports continuously: a
+// worker can take the just-freed number between the close and the connect, and
+// then the request the test expected to be refused succeeds. Measured as a
+// failure of "h2c: connect to a dead port rejects with a connect error", which
+// passes on its own every time.
+//
+// A port below 1024 cannot be claimed by any of those workers, because binding
+// one needs privilege they do not have. Each candidate is probed once and the
+// first that refuses is returned, so a machine that really does serve one of
+// them falls through to the next rather than being assumed.
+var LOW_RESERVED_PORTS = [1, 9, 19, 47];
+
+function _refuses(port) {
+  return new Promise(function (resolve) {
+    var sock = net.connect({ port: port, host: "127.0.0.1" });
+    var done = false;
+    function finish(refused) {
+      if (done) return;
+      done = true;
+      try { sock.destroy(); } catch (_e) { /* already gone */ }
+      resolve(refused);
+    }
+    sock.once("error", function (e) { finish(e && e.code === "ECONNREFUSED"); });
+    sock.once("connect", function () { finish(false); });
+    sock.setTimeout(1000, function () { finish(false); });                                            // allow:raw-time-literal — test-only probe bound
+  });
+}
+
+async function refusedPort() {
+  for (var i = 0; i < LOW_RESERVED_PORTS.length; i += 1) {
+    if (await _refuses(LOW_RESERVED_PORTS[i])) return LOW_RESERVED_PORTS[i];
+  }
+  // Every candidate answered, which is unusual but not impossible. Fall back
+  // to bind-and-close and say so, so a failure here reads as the race it is
+  // rather than as the behaviour under test.
+  var s = net.createServer();
+  var port = await b.testing.listenOnRandomPort(s, "127.0.0.1");
+  await new Promise(function (r) { s.close(function () { r(); }); });
+  return port;
+}
+
 module.exports = {
   listenOnRandomPort: b.testing.listenOnRandomPort,
+  refusedPort:        refusedPort,
   drainOpenHandles:   drainOpenHandles,
   withDrain:          withDrain,
 };

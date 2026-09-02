@@ -483,12 +483,10 @@ async function testTimeoutAbortConnError() {
   });
 
   // Connection refused: bind a server, capture its port, close it, then hit it.
-  var deadPort = await (async function () {
-    var s = http.createServer();
-    var port = await b.testing.listenOnRandomPort(s, "127.0.0.1");
-    await new Promise(function (r) { s.close(function () { r(); }); });
-    return port;
-  })();
+  // A port that keeps refusing. Binding an ephemeral port and closing it
+  // leaves a number the operating system can hand to another worker between
+  // the close and the connect, and under SMOKE_PARALLEL=64 it does.
+  var deadPort = await helpers.refusedPort();
   b.httpClient._resetForTest();  // drop any cached transport for that origin
   await _expectReject("connection refused: rejects with a connect error",
     b.httpClient.request({ url: "http://127.0.0.1:" + deadPort + "/x",
@@ -1858,12 +1856,10 @@ async function testH2cExtended() {
 
 async function testH2cTimeoutAbortConnErr() {
   // Connect error — no listener on the captured port.
-  var deadPort = await (async function () {
-    var s = http.createServer();
-    var port = await b.testing.listenOnRandomPort(s, "127.0.0.1");
-    await new Promise(function (r) { s.close(function () { r(); }); });
-    return port;
-  })();
+  // A port that keeps refusing. Binding an ephemeral port and closing it
+  // leaves a number the operating system can hand to another worker between
+  // the close and the connect, and under SMOKE_PARALLEL=64 it does.
+  var deadPort = await helpers.refusedPort();
   b.httpClient._resetForTest();
   await _expectReject("h2c: connect to a dead port rejects with a connect error",
     b.httpClient.request({ url: "http://127.0.0.1:" + deadPort + "/x", preferH2: true,
@@ -2304,12 +2300,10 @@ async function testHttpsFrameworkTransportError() {
 // dead https endpoint, no live network.
 
 async function testHttpsConnectRefused() {
-  var deadPort = await (async function () {
-    var s = http.createServer();
-    var port = await b.testing.listenOnRandomPort(s, "127.0.0.1");
-    await new Promise(function (r) { s.close(function () { r(); }); });
-    return port;
-  })();
+  // A port that keeps refusing. Binding an ephemeral port and closing it
+  // leaves a number the operating system can hand to another worker between
+  // the close and the connect, and under SMOKE_PARALLEL=64 it does.
+  var deadPort = await helpers.refusedPort();
   b.httpClient._resetForTest();
   var err = await _expectReject("https connect: dead-port session error surfaces (non-ALPN _fail arm)",
     b.httpClient.request({ url: "https://127.0.0.1:" + deadPort + "/x",
@@ -2364,12 +2358,10 @@ async function testH2RequestSyncThrow() {
 
 async function testProxyRequestPath() {
   var networkProxy = require("../../lib/network-proxy");
-  var deadPort = await (async function () {
-    var s = http.createServer();
-    var port = await b.testing.listenOnRandomPort(s, "127.0.0.1");
-    await new Promise(function (r) { s.close(function () { r(); }); });
-    return port;
-  })();
+  // A port that keeps refusing. Binding an ephemeral port and closing it
+  // leaves a number the operating system can hand to another worker between
+  // the close and the connect, and under SMOKE_PARALLEL=64 it does.
+  var deadPort = await helpers.refusedPort();
   networkProxy.set({ http: "http://127.0.0.1:" + deadPort });
   b.httpClient._resetForTest();
   try {

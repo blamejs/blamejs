@@ -301,9 +301,9 @@ async function testConnectWithEchAgainstLocalServer() {
   }
 
   // Error: connect to a port with no listener -> socket 'error' -> reject.
-  var closed = await _startTlsServer();
-  var deadPort = closed.port;
-  closed.close();
+  // A closed ephemeral port is a number the operating system can hand to
+  // another worker before this connect runs; a low reserved one it cannot.
+  var deadPort = await helpers.refusedPort();
   var connErr = null;
   try {
     await nt.connectWithEch({
