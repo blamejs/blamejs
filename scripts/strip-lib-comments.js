@@ -301,6 +301,9 @@ files.forEach(function (f) {
     perFile.push({ rel: rel, removed: r.removed });
   }
   if (diffOf && rel === diffOf) {
+    // .test-output is gitignored, so a fresh checkout does not have it and the
+    // first write would fail with ENOENT before producing anything.
+    fs.mkdirSync(path.join(REPO, ".test-output"), { recursive: true });
     fs.writeFileSync(path.join(REPO, ".test-output", "strip-before.js"), src);
     fs.writeFileSync(path.join(REPO, ".test-output", "strip-after.js"), r.out);
     console.log("wrote .test-output/strip-before.js and strip-after.js for " + rel);

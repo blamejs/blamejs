@@ -20,10 +20,6 @@
         {
           "title": "`b.safeBuffer.hasCrlfOrNul`",
           "body": "Detect CR, LF or NUL in a string. A header field carries all three as one class of problem: CR and LF end the field, and NUL truncates it wherever the value reaches C. Non-string input returns `false`, so the predicate chains without a pre-typecheck, exactly as `b.safeBuffer.hasCrlf` does.\n\nIt replaces the same character loop written out twice — once where a multipart part header is parsed out of a body, once where one is serialized into a body. Both refused CR, LF and NUL already; they now ask one primitive."
-        },
-        {
-          "title": "`b.structuredFields` and the shared lexer expose comment ranges",
-          "body": "`commentRanges(src)` sits beside the comment stripper in the framework's test lexer and returns every comment as a start/end pair. Finding a comment is a lexing question, not a pattern-matching one: `//` appears inside string literals, regex literals and template interpolations throughout a real codebase, and a regex cannot tell those apart from a comment. Both the sweep and the check that guards it read this one answer."
         }
       ]
     },
@@ -41,7 +37,7 @@
       "items": [
         {
           "title": "A narrative comment in `lib/` is refused",
-          "body": "`testLibCarriesNoNarrativeComments` walks every file with the lexer and reports any comment outside the kept classes, naming the file and line and the command that removes them. It cannot be expressed as a pattern in the framework's regex-driven catalog, which is the reason it lives beside the other lexer-backed checks."
+          "body": "`testLibCarriesNoNarrativeComments` walks every file and reports any comment outside the kept classes, naming the file, the line, and the command that removes it.\n\nFinding a comment at all is a lexing question rather than a pattern-matching one — `//` appears inside string literals, regex literals and template interpolations throughout a real codebase, and a regular expression cannot tell those apart from a comment. The check therefore cannot be an entry in the framework's regex-driven pattern catalog, and it reads comment boundaries from the same lexer the sweep uses so the two cannot disagree about what a comment is. Both are repository tooling; neither is part of the published package."
         }
       ]
     }
