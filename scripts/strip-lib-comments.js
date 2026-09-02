@@ -57,7 +57,16 @@ function _isSoleBlockBody(src, range, ranges, index) {
   var i = index - 1;
   for (;;) {
     while (b >= 0 && /\s/.test(src.charAt(b))) b -= 1;
-    if (i >= 0 && ranges[i].end === b + 1) { b = ranges[i].start - 1; i -= 1; continue; }
+    // Containment, not `end === b + 1`. A line comment's range runs to the
+    // `\n`, so on a CRLF file it ABSORBS the `\r` -- walking back over the
+    // newline then lands on the last letter of the comment, two before the
+    // recorded end rather than one. The equality missed by exactly that, so a
+    // block whose body was two comments kept the first and dropped the second,
+    // and the survivor then satisfied this same predicate, which is what made
+    // it invisible afterwards.
+    if (i >= 0 && b >= ranges[i].start && b < ranges[i].end) {
+      b = ranges[i].start - 1; i -= 1; continue;
+    }
     break;
   }
   if (src.charAt(b) !== "{") return false;
