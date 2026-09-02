@@ -2,13 +2,13 @@
 // Copyright (c) blamejs contributors
 "use strict";
 /**
- * Fuzz target: b.guardMailSieve.validate
+ * Fuzz target: guardMailSieve.validate
  *
  * Pre-parser shape-only validation; full Sieve parse lands at v0.9.26
  * via b.safeSieve.
  */
 
-var b        = require("..");
+var guardMailSieve = require("../lib/guard-mail-sieve");
 var expected = require("./_expected");
 
 module.exports.fuzz = function (data) {
@@ -18,7 +18,7 @@ module.exports.fuzz = function (data) {
   // Two shapes are exercised: the raw string as a script body, and a
   // JSON-shaped op envelope.
   try {
-    b.guardMailSieve.validate({
+    guardMailSieve.validate({
       kind: "put", actor: { id: "fuzz", mailScope: "admin" },
       name: "f.sieve", script: text,
     });
@@ -29,7 +29,7 @@ module.exports.fuzz = function (data) {
   var op;
   try { op = JSON.parse(text); } catch (_e) { return; }
   try {
-    b.guardMailSieve.validate(op);
+    guardMailSieve.validate(op);
   } catch (e) {
     if (expected.isExpected(e)) return;
     if (e && typeof e.code === "string" && e.code.indexOf("mail-sieve/") === 0) return;

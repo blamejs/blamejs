@@ -2,7 +2,7 @@
 // Copyright (c) blamejs contributors
 "use strict";
 
-var b        = require("..");
+var guardText = require("../lib/guard-text");
 var expected = require("./_expected");
 
 // Fuzz the free-text guard's two parsing surfaces: validate() (pure inspection,
@@ -13,8 +13,8 @@ module.exports.fuzz = function (data) {
   try { input = data.toString("utf8"); }
   catch (_e) { return; }
   try {
-    b.guardText.validate(input, { profile: "strict" });
-    b.guardText.sanitize(input, { profile: "balanced" });
+    guardText.validate(input, { profile: "strict" });
+    guardText.sanitize(input, { profile: "balanced" });
   } catch (e) {
     if (expected.isExpected(e)) return;
     throw e;

@@ -4,7 +4,7 @@
 /**
  * Fuzz target: b.safeArchive
  *
- * Feeds adversarial bytes into `b.safeArchive.inspect` (the read-only
+ * Feeds adversarial bytes into `safeArchive.inspect` (the read-only
  * path that walks EOCD + CD + LFH skew checks). The fuzzer probes
  * the malformed-ZIP class — EOCD pointers past EOF, CD-claimed sizes
  * that don't match LFH, ZIP64 sentinels (refused in v0.12.7),
@@ -19,15 +19,15 @@
  * from random noise.
  */
 
-var b        = require("..");
+var safeArchive = require("../lib/safe-archive");
 var expected = require("./_expected");
 
 module.exports.fuzz = function (data) {
   if (!Buffer.isBuffer(data) || data.length === 0) return;
   // The fuzzer can't usefully drive an async function under jazzer.js
   // without an await; we lean on the format sniffer + EOCD locator which
-  // are the parsing-heavy phases. Both run inside b.safeArchive.inspect.
-  return b.safeArchive.inspect({
+  // are the parsing-heavy phases. Both run inside safeArchive.inspect.
+  return safeArchive.inspect({
     source: data,
   }).then(
     function () { /* legitimate ZIP-shaped input → no finding */ },

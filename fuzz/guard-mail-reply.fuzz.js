@@ -2,10 +2,10 @@
 // Copyright (c) blamejs contributors
 "use strict";
 /**
- * Fuzz target: b.guardMailReply.validate
+ * Fuzz target: guardMailReply.validate
  */
 
-var b        = require("..");
+var guardMailReply = require("../lib/guard-mail-reply");
 var expected = require("./_expected");
 
 module.exports.fuzz = function (data) {
@@ -15,7 +15,7 @@ module.exports.fuzz = function (data) {
   var reply;
   try { reply = JSON.parse(text); } catch (_e) { return; }
   try {
-    b.guardMailReply.validate(reply);
+    guardMailReply.validate(reply);
   } catch (e) {
     if (expected.isExpected(e)) return;
     if (e && typeof e.code === "string" &&

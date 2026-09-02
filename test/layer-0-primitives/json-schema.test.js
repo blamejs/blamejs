@@ -192,9 +192,42 @@ function testRegexFallback() {
   // A pattern valid without the /u flag but invalid with it — the compiler
   // falls back to a non-unicode RegExp rather than dropping the constraint.
   check("pattern retries without /u flag", b.jsonSchema.isValid({ pattern: "a\\-z" }, "a-z") && !b.jsonSchema.isValid({ pattern: "a\\-z" }, "qqq"));
-  // A pattern invalid under both flags compiles to null → constraint skipped.
-  check("uncompilable pattern is skipped", b.jsonSchema.isValid({ pattern: "[" }, "anything"));
-  check("uncompilable patternProperties key is skipped", b.jsonSchema.isValid({ patternProperties: { "[": { type: "number" } } }, { x: "str" }));
+
+  // A pattern that compiles under NEITHER flag is refused, not skipped.
+  //
+  // Skipping it means a schema author's typo silently removes the constraint:
+  // `pattern: "["` validated every string, and the schema still reported
+  // valid, so the one keyword standing between an instance and acceptance was
+  // gone with nothing said. The sibling case already refuses — a pattern whose
+  // SHAPE is a ReDoS risk throws `json-schema/unsafe-pattern` from the same
+  // function — so a pattern that is not a regex at all being waved through was
+  // two opposite answers to one question.
+  function compileThrew(schema) {
+    try { b.jsonSchema.compile(schema); return null; }
+    catch (e) { return e; }
+  }
+  var badPattern = compileThrew({ pattern: "[" });
+  check("an uncompilable pattern is refused at compile time",
+        badPattern !== null && badPattern.code === "json-schema/invalid-pattern",
+        String(badPattern && badPattern.code));
+  var badKey = compileThrew({ patternProperties: { "[": { type: "number" } } });
+  check("an uncompilable patternProperties key is refused too",
+        badKey !== null && badKey.code === "json-schema/invalid-pattern",
+        String(badKey && badKey.code));
+  var badNested = compileThrew({ properties: { a: { pattern: "(" } } });
+  check("and one nested in a subschema is found by the same screen",
+        badNested !== null && badNested.code === "json-schema/invalid-pattern",
+        String(badNested && badNested.code));
+
+  // The refusal names the pattern, so an operator can find it in a large schema.
+  check("the refusal quotes the offending pattern",
+        badPattern !== null && String(badPattern.message).indexOf("[") !== -1,
+        String(badPattern && badPattern.message));
+
+  // Every valid pattern still compiles and still constrains.
+  check("a valid pattern is unaffected",
+        b.jsonSchema.isValid({ pattern: "^a+$" }, "aaa") &&
+        !b.jsonSchema.isValid({ pattern: "^a+$" }, "b"));
 }
 
 function testArrayApplicatorEdges() {

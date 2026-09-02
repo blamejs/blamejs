@@ -2,7 +2,7 @@
 // Copyright (c) blamejs contributors
 "use strict";
 
-var b        = require("..");
+var guardHtml = require("../lib/guard-html");
 var expected = require("./_expected");
 
 module.exports.fuzz = function (data) {
@@ -10,7 +10,7 @@ module.exports.fuzz = function (data) {
   try { input = data.toString("utf8"); }
   catch (_e) { return; }
   try {
-    b.guardHtml.validate(input, { profile: "strict" });
+    guardHtml.validate(input, { profile: "strict" });
   } catch (e) {
     if (expected.isExpected(e)) return;
     throw e;

@@ -2,7 +2,7 @@
 // Copyright (c) blamejs contributors
 "use strict";
 /**
- * Fuzz target: b.safeJson.parse
+ * Fuzz target: safeJson.parse
  *
  * libFuzzer / jazzer.js harness. ClusterFuzzLite (local PRs) and
  * OSS-Fuzz (continuous, Google-hosted) both consume this shape:
@@ -11,7 +11,7 @@
  * initial corpus live in `fuzz/safe-json_seed_corpus/`.
  */
 
-var b        = require("..");
+var safeJson = require("../lib/safe-json");
 var expected = require("./_expected");
 
 module.exports.fuzz = function (data) {
@@ -19,7 +19,7 @@ module.exports.fuzz = function (data) {
   try { input = data.toString("utf8"); }
   catch (_e) { return; }
   try {
-    b.safeJson.parse(input);
+    safeJson.parse(input);
   } catch (e) {
     if (expected.isExpected(e)) return;
     throw e;

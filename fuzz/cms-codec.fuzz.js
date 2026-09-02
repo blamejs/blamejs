@@ -2,7 +2,7 @@
 // Copyright (c) blamejs contributors
 "use strict";
 
-var b        = require("..");
+var cms      = require("../lib/cms-codec");
 var expected = require("./_expected");
 
 // b.cms parses CMS SignedData / EnvelopedData from untrusted DER (S/MIME
@@ -10,8 +10,8 @@ var expected = require("./_expected");
 // parseSignedData MUST refuse a malformed structure with a typed cms/* error,
 // never crash with an uncaught RangeError / TypeError.
 module.exports.fuzz = function (data) {
-  try { b.cms.decode(data); }
+  try { cms.decode(data); }
   catch (e) { if (!expected.isExpected(e)) throw e; }
-  try { b.cms.parseSignedData(data); }
+  try { cms.parseSignedData(data); }
   catch (e) { if (!expected.isExpected(e)) throw e; }
 };

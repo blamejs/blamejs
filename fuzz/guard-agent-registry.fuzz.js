@@ -2,10 +2,10 @@
 // Copyright (c) blamejs contributors
 "use strict";
 /**
- * Fuzz target: b.guardAgentRegistry.validate
+ * Fuzz target: guardAgentRegistry.validate
  */
 
-var b        = require("..");
+var guardAgentRegistry = require("../lib/guard-agent-registry");
 var expected = require("./_expected");
 
 module.exports.fuzz = function (data) {
@@ -15,7 +15,7 @@ module.exports.fuzz = function (data) {
   var op;
   try { op = JSON.parse(text); } catch (_e) { return; }
   try {
-    b.guardAgentRegistry.validate(op);
+    guardAgentRegistry.validate(op);
   } catch (e) {
     if (expected.isExpected(e)) return;
     if (e && typeof e.code === "string" && e.code.indexOf("agent-registry/") === 0) return;

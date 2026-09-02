@@ -17,7 +17,7 @@
  * mutates around those seeds.
  */
 
-var b        = require("..");
+var safeDecompress = require("../lib/safe-decompress").safeDecompress;
 var expected = require("./_expected");
 
 var ALGS = ["gzip", "deflate", "deflate-raw", "brotli"];
@@ -39,7 +39,7 @@ module.exports.fuzz = function (data) {
   var maxRatio       = ratioByte === 0 ? 0 : (ratioByte & 0x7F) + 1;                   // allow:raw-byte-literal — 0=unlimited, else 1..128 ratio
 
   try {
-    b.safeDecompress(body, {
+    safeDecompress(body, {
       algorithm:      ALGS[algoIdx],
       maxOutputBytes: maxOutputBytes,
       maxRatio:       maxRatio,

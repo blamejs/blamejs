@@ -2,7 +2,7 @@
 // Copyright (c) blamejs contributors
 "use strict";
 
-var b        = require("..");
+var safeUrl = require("../lib/safe-url");
 var expected = require("./_expected");
 
 module.exports.fuzz = function (data) {
@@ -10,7 +10,7 @@ module.exports.fuzz = function (data) {
   try { input = data.toString("utf8"); }
   catch (_e) { return; }
   try {
-    b.safeUrl.parse(input);
+    safeUrl.parse(input);
   } catch (e) {
     if (expected.isExpected(e)) return;
     throw e;

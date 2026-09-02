@@ -13,7 +13,7 @@
  * refuses unrepairable input with GuardSqlError (code prefix "sql.").
  */
 
-var b        = require("..");
+var guardSql = require("../lib/guard-sql");
 var expected = require("./_expected");
 
 function expectedRefusal(e) {
@@ -24,13 +24,13 @@ function expectedRefusal(e) {
 
 module.exports.fuzz = function (data) {
   // No-throw classification contract (default + strict profiles).
-  b.guardSql.validate(data);
-  b.guardSql.validate(data, { profile: "strict" });
+  guardSql.validate(data);
+  guardSql.validate(data, { profile: "strict" });
 
   // Refusal path: sanitize throws GuardSqlError on hostile / unrepairable
   // input; anything else is an unexpected crash.
   try {
-    b.guardSql.sanitize(data);
+    guardSql.sanitize(data);
   } catch (e) {
     if (expectedRefusal(e)) return;
     throw e;
