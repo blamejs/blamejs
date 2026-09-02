@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.18.62",
-  "createdAt": "2026-09-02T14:03:44.910Z",
+  "frameworkVersion": "0.19.0",
+  "createdAt": "2026-09-02T21:02:48.124Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -52716,6 +52716,10 @@
           "arity": 2
         },
         "hasCrlf": {
+          "type": "function",
+          "arity": 1
+        },
+        "hasCrlfOrNul": {
           "type": "function",
           "arity": 1
         },

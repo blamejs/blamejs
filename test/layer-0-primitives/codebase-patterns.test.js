@@ -395,6 +395,7 @@ var VALID_ALLOW_CLASSES = {
   "handrolled-buffer-collect-bounded-framing": 1,
   "handrolled-debounce-stream-idle": 1,
   "handrolled-debounce-oneshot-grace-clear": 1,
+  "handrolled-debounce-oneshot-connect-deadline": 1,
   "hostname-compare-trailing-dot-pre-split-refused": 1,
   "inline-numeric-bounds-cascade": 1,
   "inline-require": 1,
@@ -693,6 +694,17 @@ function testNoRawTimeLiterals() {
     var content;
     try { content = fs.readFileSync(files[fi], "utf8"); }
     catch (_e) { continue; }
+    // Comments come off through the shared LEXER, not the line-level strip
+    // below, because deciding whether a `/` opens a regex or divides is
+    // exactly what a line-level regex cannot do. `exp: Math.floor(Date.now() /
+    // 1000) + 300,   // assertion 5m TTL` fed the regex-literal stripper a `/`
+    // from the division and a `/` from the comment, so it ate `1000) + 300,`
+    // as a pattern and the literal this detector exists to find was never
+    // seen. Four of those sat in lib/ and surfaced the moment the comments
+    // around them were removed for an unrelated reason -- a detector blind in
+    // exactly the shape it screens for. stripComments preserves newlines, so
+    // reported line numbers still point at the source.
+    content = _stripComments(content);
     var lines = content.split(/\r?\n/);
     for (var li = 0; li < lines.length; li++) {
       var line = lines[li];
@@ -3172,6 +3184,44 @@ function _probeRiskyPattern(source, flags, subjects) {
            growth: seed.growth, label: seed.label };
 }
 
+// ---- lib/ carries no comment a reader cannot check against the code -------
+//
+// A comment narrating a past decision describes something the file no longer
+// contains, and a stranger opening it has no way to verify any of it. What
+// stays is what something READS: the licence header, a `/** */` block carrying
+// an `@tag` (the wiki page IS that block), a suppression marker the gates
+// consume, the sole body of a block that would otherwise be empty, and the note
+// that documents why a `lazyRequire` closes a cycle.
+//
+// This cannot be a KNOWN_ANTIPATTERNS entry: those are regexes, and `//`
+// appears inside strings, regex literals and template interpolations all over
+// this tree, so finding a comment at all is a LEXING question. It shares its
+// classifier with scripts/strip-lib-comments.js rather than restating it --
+// two answers to "is this comment load-bearing" drift, and the one that drifts
+// is whichever is not the one the tree was last swept with.
+function testLibCarriesNoNarrativeComments() {
+  var stripper = require("../../scripts/strip-lib-comments.js");
+  var files = stripper.libFiles(path.join(path.resolve(__dirname, "..", ".."), "lib"));
+  var bad = [];
+  for (var fi = 0; fi < files.length; fi++) {
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    var found = stripper.narrativeComments(content);
+    for (var k = 0; k < found.length; k++) {
+      bad.push({
+        file:    _relPath(files[fi]),
+        line:    found[k].line,
+        content: found[k].text.split("\n")[0].trim().slice(0, 110),
+      });
+    }
+  }
+  _report("lib/ carries no comment a reader cannot check against the code " +
+          "(run `node scripts/strip-lib-comments.js --dry-run` to see them, " +
+          "`--apply` to remove them)",
+    bad);
+}
+
 function testOwnRegexesRunLinear() {
   // Characters worth repeating (the classes library patterns quantify over)
   // and a tail that denies the overall match so the engine has to exhaust its
@@ -4764,6 +4814,12 @@ function testNoHandrolledDebounce() {
   // together, so it reports one; what makes a debounce a debounce is the
   // RE-arming on each new event, and there is nothing to debounce here.
   bad = _filterMarkers(bad, "handrolled-debounce-oneshot-grace-clear");
+  // The proxy's CONNECT deadline is the same one-shot situation under a
+  // different name: armed once when the connect starts, cleared in the `done`
+  // that settles it, and never re-armed. It came inside the matcher's
+  // five-line window only when the comments between the clear and the arm were
+  // removed, which is a change in layout and not in what the code does.
+  bad = _filterMarkers(bad, "handrolled-debounce-oneshot-connect-deadline");
   _report("hand-rolled clearTimeout/setTimeout debounce → use " +
           "safeAsync.debounce (timer lifecycle owned)",
     bad);
@@ -20083,6 +20139,7 @@ async function run() {
   testNoBareCanonicalizeWalks();
   testFormatValidatorLengthCap();
   testOwnRegexesRunLinear();
+  testLibCarriesNoNarrativeComments();
   testNoProcessExitInLib();
   testListenPortFalsyDefault();
   testImapLiteralSizeZeroFootgun();

@@ -145,6 +145,32 @@ function testShapePredicatesAgreeWithThePatternsTheyReplaced() {
           sb.hasCrlf(v) === false);
   });
 
+  // A header field carries CR, LF and NUL as one class of problem: the first
+  // two end the field and the third truncates it wherever the value reaches C.
+  // Both multipart paths -- the one parsing a part header out of a body and the
+  // one serializing a part header into one -- refuse on this predicate, so it
+  // has to answer for all three and for nothing else.
+  var NUL = String.fromCharCode(0);
+  [["filename.txt", false], ["Content-Type: text/plain", false],
+   ["ok\r\nX-Injected: 1", true], ["ok\nbad", true], ["ok\rbad", true],
+   ["ok" + NUL + "hidden", true], [NUL, true],
+   ["", false], ["tab\there", false]].forEach(function (c) {
+    check("hasCrlfOrNul(" + JSON.stringify(c[0]) + ") is " + c[1],
+          sb.hasCrlfOrNul(c[0]) === c[1], JSON.stringify(sb.hasCrlfOrNul(c[0])));
+  });
+  // The two differ on exactly one thing, so an input carrying no NUL has to
+  // get the same answer from both -- otherwise the wider predicate is not the
+  // narrower one plus NUL, it is something else.
+  check("hasCrlfOrNul answers as hasCrlf does on every input carrying no NUL",
+        [null, undefined, 42, {}, [], true, "plain", "a\r\nb", "a\nb", "", "a\rb"]
+          .every(function (v) { return sb.hasCrlfOrNul(v) === sb.hasCrlf(v); }));
+  check("and differs from it exactly where a NUL is present",
+        sb.hasCrlfOrNul("a" + NUL + "b") === true && sb.hasCrlf("a" + NUL + "b") === false);
+  check("non-string is refused by hasCrlfOrNul too",
+        [null, undefined, 42, {}, [], Buffer.from("ab"), true].every(function (v) {
+          return sb.hasCrlfOrNul(v) === false;
+        }));
+
   // Two sequential replacements are not one pass: escaping the backslashes
   // first produces backslashes the quote pass would then escape again.
   check("quoteString escapes each backslash and quote exactly once",

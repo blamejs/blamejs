@@ -1235,6 +1235,21 @@ async function testMultipartBuildBranches() {
     { files: [{ field: "f", content: "x", filename: "a\r\nX-Injected: 1" }] });
   await mpReject("multipart: CRLF in contentType refused (header injection)",
     { files: [{ field: "f", content: "x", contentType: "text/plain\r\nX-Injected: 1" }] });
+  // A NON-STRING carrying the same CRLF. The value is string-coerced into the
+  // part header further down, so a screen that only asks a CR/LF/NUL predicate
+  // lets it through: the predicate answers `false` for a non-string, which is
+  // its documented contract and not a verdict about the value. The type has to
+  // be refused first.
+  await mpReject("multipart: an array contentType carrying CRLF is refused",
+    { files: [{ field: "f", content: "x", contentType: ["text/plain\r\nX-Injected: 1"] }] });
+  await mpReject("multipart: a Buffer contentType carrying CRLF is refused",
+    { files: [{ field: "f", content: "x", contentType: Buffer.from("text/plain\r\nX-Injected: 1") }] });
+  // `filename` differs and is already safe: it is used only when it IS a
+  // string, so a non-string one never reaches the header at all -- the entry
+  // falls back to "blob". `contentType` is taken verbatim, which is why it is
+  // the one that needed the type refused.
+  await mpReject("multipart: an object contentType is refused",
+    { files: [{ field: "f", content: "x", contentType: { toString: function () { return "t/p\r\nX: 1"; } } }] });
   await mpReject("multipart: non-object file entry refused",
     { files: [42] });
   await mpReject("multipart: file entry missing field refused",
