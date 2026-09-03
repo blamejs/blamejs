@@ -43,6 +43,10 @@
       "heading": "Changed",
       "items": [
         {
+          "title": "Vendored PKI bundle moves to 0.6.29",
+          "body": "`lib/vendor/blamejs-pki.cjs` carries `@blamejs/pki` 0.6.29, up from 0.6.28. This is shipped code: `b.mtlsCa` and `b.auth.passkey` run it.\n\n0.6.29 lets the EST, ACME and CMP clients reach a CA through a forward HTTP proxy, using the same `proxy` option the SCEP client already took. 0.6.28 returns the best accepted path when the candidate cap is reached while ranking paths under policy, rather than discarding it.\n\nNo API changes and nothing to do on upgrade. The bundle ships with no dependencies and no install hooks, and its recorded SHA-256 is checked against the file on every build."
+        },
+        {
           "title": "A live rate-limit check stops racing a window boundary",
           "body": "The cluster rate-limiter's window is aligned to the epoch, so a one-minute window puts a boundary on every wall-clock minute. The MySQL and Postgres checks took four counted requests in sequence against a real database and asserted the fourth was refused; a sequence that straddled a boundary saw the counter reset and the fourth allowed, failing a check whose subject was the SQL upsert rather than wall-clock timing.\n\nEach sequence now reads the window on both sides of itself and runs again on a fresh key when it turned over, so a boundary costs a repeat rather than a failure. Both still exercise the window-rollover branch by advancing the stored window directly. Repository tooling only; the limiter is unchanged."
         },

@@ -17074,6 +17074,25 @@ function testDocProseIsAmericanEnglish() {
     "|defence(?:s)?" +
     "|favour(?:s|ed|ing|able|ite|ites)?" +
     "|honour(?:s|ed|ing|able)?" +
+    // `analogue` sat in a reference page while the gate called the pages
+    // American English, so the list carries the other everyday families too
+    // rather than waiting for each to be found one at a time.
+    // `cancellation` and `dialogue` are not on this list. Both are standard
+    // American spellings, and a gate that refuses a correct word is a gate
+    // someone turns off.
+    "|analogue(?:s)?" +
+    "|programme(?:s|d)?" +
+    "|centre(?:s|d)?" +
+    "|metre(?:s)?" +
+    "|litre(?:s)?" +
+    "|fibre(?:s)?" +
+    "|travell(?:ed|ing|er|ers)" +
+    "|offence(?:s)?" +
+    "|pretence(?:s)?" +
+    "|judgement(?:s)?" +
+    "|fulfil(?:s|ment|ments)?" +
+    "|enrol(?:s|ment|ments)?" +
+    "|whilst|amongst" +
     ")\\b", "i");
   var bad = [];
   _libFiles().forEach(function (file) {
