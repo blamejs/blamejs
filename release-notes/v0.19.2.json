@@ -13,6 +13,10 @@
           "body": "The option block for `b.guardMarkdown.validate` listed `schemeAllowlist: string[]` with a default of `[\"http\",\"https\",\"mailto\"]`. That name appeared once in the whole framework, on that line. No code read it, so an operator passing `{ schemeAllowlist: [\"https\"] }` to stop `http:` link targets changed nothing and got no error, and the quoted default described a constant used by `b.guardMarkdown.render` rather than by `validate`.\n\nThe line is removed. `validate` screens schemes against a fixed dangerous-scheme list under `dangerousSchemePolicy`, `imageSchemePolicy`, `autolinkSchemePolicy` and `referenceLinkPolicy`, which are documented and implemented. `b.guardMarkdown.render` limits link targets to `http`, `https`, `mailto` and relative references, which its own page already states.\n\nNothing to change on upgrade: the option never had an effect, so no configuration depended on it. An operator who set it expecting narrower schemes was not getting them and should use the scheme policies above."
         },
         {
+          "title": "`b.auth.oauth.parseJarmResponse` documents the options it accepts",
+          "body": "The page listed `acceptedAlgs` and `maxClockSkewMs`. Neither reaches the JWT verification: the JARM response's signature is checked with a fixed set of options, and neither name appears anywhere in the framework's code. An operator narrowing the algorithms a JARM response may be signed with, or tightening the clock skew, got a silent no-op, which on an authorization-response verifier is a false sense of a tightened boundary.\n\nBoth are removed. The page now lists `requireIssParam`, which the function does accept and forward, and which it had not documented.\n\nIf you were passing either removed option, verification was already running with the framework's own algorithm set and skew; nothing about how a response is verified changes here, only what the page claims."
+        },
+        {
           "title": "Two pages no longer document a positional argument as an option",
           "body": "`b.mail.bimi.validateTinyPsSvg` carried an option block listing `svgBytes: Buffer | string`, and `b.consent.recognizedPurpose` one listing `name: string`. Both take that value as their first positional argument, which their signature lines already show, and `recognizedPurpose`'s own example calls it as `b.consent.recognizedPurpose(\"educational-only\")`. Following the option block instead gave `validateTinyPsSvg({ svgBytes: buf })`, an object that is neither a Buffer nor a string.\n\nBoth option blocks are removed. Pass the value directly."
         }
@@ -38,6 +42,10 @@
     {
       "heading": "Changed",
       "items": [
+        {
+          "title": "A growth measurement holds up on a loaded machine",
+          "body": "The check that the growth helper separates a linear curve from a quadratic one measured its baseline at 25ms. Scheduler delay adds a fixed amount to both readings, and against a 25ms denominator that was enough to pull a true ratio of 16 below the threshold, so the check failed on a busy machine while nothing it tests was wrong. The baseline is 50ms now, which takes the tolerance from about 22ms of delay to about 57ms. Repository tooling only."
+        },
         {
           "title": "Reference-page wording",
           "body": "Numeric ranges in the CBOR, PIPL and redirect pages read `28 to 30` rather than using a dash. Sentences in `b.money`, `b.apiKey`, `b.audit`, `b.codepointClass`, `b.logStream`, `b.queue` and `b.auditSign` that carried an aside on a dash, or stated a result as what it costs or buys, now name what happens and to what. No documented behavior changes."

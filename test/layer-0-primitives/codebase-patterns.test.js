@@ -16768,12 +16768,28 @@ function testDocumentedOptsAreRead() {
         if (/^\s*\*\s*@opts\b/.test(buf[k])) { oi = k; break; }
       }
       if (oi < 0) continue;
+      var depth = 0;
       for (var j = oi + 1; j < buf.length; j += 1) {
         var line = buf[j].replace(/^\s*\*/, "");
         if (/^\s*@[a-z]/i.test(line.trim())) break;
         if (buf[j].trim().indexOf("*/") === 0) break;
-        var m = line.match(/^\s{2,}([A-Za-z_$][A-Za-z0-9_$]*)\s*:/);
+        // `name?: type` marks an optional option, and requiring the colon
+        // to follow the identifier skipped every one of them. That blind
+        // spot hid `acceptedAlgs?` and `maxClockSkewMs?` on
+        // b.auth.oauth.parseJarmResponse, neither of which the function
+        // reads.
+        var m = line.match(/^\s{2,}([A-Za-z_$][A-Za-z0-9_$]*)\??\s*:/);
+        var opens = (line.match(/[{[]/g) || []).length;
+        var closes = (line.match(/[}\]]/g) || []).length;
+        var depthHere = depth;
+        depth += opens - closes;
         if (!m) continue;
+        // Only the block's own options. A field nested deeper belongs to a
+        // payload the caller hands over whole, so the code serializes it
+        // without ever naming it: b.middleware.assetlinks passes
+        // `statements[].target.package_name` into the JSON it serves, and
+        // that is the Digital Asset Links spec's field, not a knob.
+        if (depthHere > 1) continue;
         var name = m[1];
         // Whether the code HONORS an option is a data-flow question, and
         // three attempts to answer it with a matcher each traded one
@@ -16864,7 +16880,7 @@ function testOptsBlocksHaveAnOptsParameter() {
           var ln = buf[q].replace(/^\s*\*/, "");
           if (/^\s*@[a-z]/i.test(ln.trim())) break;
           if (buf[q].trim().indexOf("*/") === 0) break;
-          var km = ln.match(/^\s{2,}([A-Za-z_$][A-Za-z0-9_$]*)\s*:/);
+          var km = ln.match(/^\s{2,}([A-Za-z_$][A-Za-z0-9_$]*)\??\s*:/);
           if (km) keys.push(km[1]);
         }
         break;

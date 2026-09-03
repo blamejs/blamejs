@@ -33,18 +33,26 @@ function _spin(ms) {
 // and the helper correctly declined to call it superlinear, so the test failed
 // while nothing it tests was wrong.
 //
-// Small 25ms, large 100ms linear and 400ms quadratic.
+// The overshoot is ADDITIVE, so what matters is its size against the
+// denominator: a true ratio of 16 survives an overshoot of d only while
+// (16S + d) / (S + d) stays above 9, which is while S is larger than about
+// 1.14d. At a 25ms small reading that tolerated 22ms of scheduler noise, and
+// a run at SMOKE_PARALLEL=64 on a loaded box exceeded it. Doubling the small
+// reading to 50ms takes the tolerance to 57ms.
+//
+// Small 50ms, large 200ms linear and 800ms quadratic.
 var SMALL = 1000;
 var LARGE = 4000;
 
 // 4x the input for 4x the time.
-function _linear(n) { _spin(n / 40); }
+function _linear(n) { _spin(n / 20); }
 // 4x the input for 16x the time.
-function _quadratic(n) { var k = n / SMALL; _spin(k * k * 25); }
+function _quadratic(n) { var k = n / SMALL; _spin(k * k * 50); }
 
-// Two samples is enough for a spin loop, which has no variance worth averaging
-// away. The point of the second pass is that the verdict is RE-TAKEN, and that
-// happens at any rep count.
+// Two samples, because the tolerance above comes from the denominator rather
+// than the sample count and four of them cost four times as long for the same
+// verdict. The helper keeps the lowest of the two and the second pass re-takes
+// it, which is what rejects a reading the machine disturbed.
 var FAST = { small: SMALL, large: LARGE, threshold: 9, reps: 2, confirmReps: 2 };
 
 function testSyncSeparatesLinearFromQuadratic() {
