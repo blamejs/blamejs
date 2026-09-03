@@ -2,13 +2,13 @@
 // Copyright (c) blamejs contributors
 "use strict";
 /**
- * Fuzz target: b.guardEnvelope.check
+ * Fuzz target: guardEnvelope.check
  *
  * Targets the RFC 9989 §4.4 DMARC Identifier Alignment primitive.
  * Engine mutates a JSON-encoded ctx; we decode + check.
  */
 
-var b        = require("..");
+var guardEnvelope = require("../lib/guard-envelope");
 var expected = require("./_expected");
 
 module.exports.fuzz = function (data) {
@@ -17,7 +17,7 @@ module.exports.fuzz = function (data) {
   catch (_e) { return; }
   if (!ctx || typeof ctx !== "object") return;
   try {
-    b.guardEnvelope.check(ctx);
+    guardEnvelope.check(ctx);
   } catch (e) {
     if (expected.isExpected(e)) return;
     if (e && typeof e.code === "string" && e.code.indexOf("guard-envelope/") === 0) return;

@@ -2,7 +2,7 @@
 // Copyright (c) blamejs contributors
 "use strict";
 /**
- * Fuzz target: b.safeMountInfo.parse
+ * Fuzz target: safeMountInfo.parse
  *
  * Feeds adversarial bytes through the canonical mountinfo parser
  * to catch shapes that produce uncaught error classes outside the
@@ -13,7 +13,7 @@
  * bytes via a writable /proc bind.
  */
 
-var b        = require("..");
+var safeMountInfo = require("../lib/safe-mount-info");
 var expected = require("./_expected");
 
 module.exports.fuzz = function (data) {
@@ -27,7 +27,7 @@ module.exports.fuzz = function (data) {
   var capByte  = data.length > 1 ? data[1] : 0;
   var maxLines = (capByte + 1) * 16;                                                   // allow:raw-byte-literal — 16..4096 line cap range
   try {
-    b.safeMountInfo.parse(text, { strict: strict, maxLines: maxLines });
+    safeMountInfo.parse(text, { strict: strict, maxLines: maxLines });
   } catch (e) {
     if (expected.isExpected(e)) return;
     throw e;

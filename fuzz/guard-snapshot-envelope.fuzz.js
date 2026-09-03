@@ -2,10 +2,10 @@
 // Copyright (c) blamejs contributors
 "use strict";
 /**
- * Fuzz target: b.guardSnapshotEnvelope.validate
+ * Fuzz target: guardSnapshotEnvelope.validate
  */
 
-var b        = require("..");
+var guardSnapshotEnvelope = require("../lib/guard-snapshot-envelope");
 var expected = require("./_expected");
 
 module.exports.fuzz = function (data) {
@@ -15,7 +15,7 @@ module.exports.fuzz = function (data) {
   var env;
   try { env = JSON.parse(text); } catch (_e) { return; }
   try {
-    b.guardSnapshotEnvelope.validate(env);
+    guardSnapshotEnvelope.validate(env);
   } catch (e) {
     if (expected.isExpected(e)) return;
     if (e && typeof e.code === "string" && e.code.indexOf("snapshot-envelope/") === 0) return;

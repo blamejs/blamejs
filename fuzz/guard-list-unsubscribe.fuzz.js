@@ -2,14 +2,14 @@
 // Copyright (c) blamejs contributors
 "use strict";
 /**
- * Fuzz target: b.guardListUnsubscribe.validate
+ * Fuzz target: guardListUnsubscribe.validate
  *
  * Targets RFC 2369 / RFC 8058 header validation — refuses dangerous
  * URI schemes, CRLF injection, control chars, missing one-click
  * Post header, malformed Post header value.
  */
 
-var b        = require("..");
+var guardListUnsubscribe = require("../lib/guard-list-unsubscribe");
 var expected = require("./_expected");
 
 module.exports.fuzz = function (data) {
@@ -18,7 +18,7 @@ module.exports.fuzz = function (data) {
   catch (_e) { return; }
   if (!ctx || typeof ctx !== "object") return;
   try {
-    b.guardListUnsubscribe.validate(ctx);
+    guardListUnsubscribe.validate(ctx);
   } catch (e) {
     if (expected.isExpected(e)) return;
     if (e && typeof e.code === "string" && e.code.indexOf("guard-list-unsubscribe/") === 0) return;

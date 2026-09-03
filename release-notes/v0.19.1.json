@@ -1,0 +1,27 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.19.1",
+  "date": "2026-09-02",
+  "headline": "A JSON Schema `pattern` that is not a regular expression is refused instead of ignored",
+  "summary": "A `pattern` keyword that failed to compile was skipped, so a typo in a schema silently removed the constraint and every string validated. It is refused at compile time now, the way a pattern with a ReDoS shape already was. Separately, each fuzz harness loads the primitive it fuzzes rather than the whole framework, which is repository tooling and not part of the published package.",
+  "sections": [
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "An invalid `pattern` no longer drops the constraint",
+          "body": "`b.jsonSchema` compiled a `pattern` under the `u` flag, retried without it, and on a string that is not a regular expression under either left the keyword unapplied. `{ pattern: \"[\" }` therefore accepted every string and reported the instance valid — a schema author's typo removed the one keyword standing between an instance and acceptance, and nothing said so.\n\nThe same function already refused a pattern whose SHAPE is a denial-of-service risk, throwing `json-schema/unsafe-pattern` when the schema is compiled. A string that is not a regular expression at all is now refused there too, as `json-schema/invalid-pattern`, and the message quotes the offending pattern so it can be found in a large schema. Patterns are screened across the whole schema when it is compiled, including inside subschemas and `patternProperties` keys, so the error arrives once at compile rather than per instance.\n\nUpgrade note: a schema carrying an uncompilable pattern used to compile and validate; it now throws. A schema whose patterns are valid is unaffected, and the retry without the `u` flag is unchanged — a pattern valid only without it still compiles and still constrains.\n\nThe screen follows `$ref` and `$dynamicRef` as it walks, resolving each one through the same registry the validator resolves through. A reference names a location rather than a keyword, and the location can be one the walk does not reach on its own: `contentSchema`, a vendor extension with no keyword at all, a resource named by its URI instead of by a bare fragment, or a document supplied through the `schemas` option. Patterns at those locations reached compile unscreened, so the refusal arrived on the first instance that touched one rather than on the schema, which made it depend on which request came in.\n\nResolution is scoped the way the specification scopes it. A `$id` starts a new resource, so a fragment inside one names a location in that resource and not the same-named location in the document around it, and a subschema reused under two resources is screened under each. `const` and `enum` hold instance data, so an object sitting in one may carry a `pattern` property that is an ordinary string and is left alone.\n\nThe other places the framework compiles a caller-supplied pattern were checked against the same question and were already refusing or failing closed: `b.jsonPath`'s `match()` and `search()` evaluate to false for a pattern they cannot build, `b.flagTargeting` throws on an invalid targeting regex, and the MCP tool-input validator returns a rejection."
+        }
+      ]
+    },
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "Each fuzz harness loads the primitive it fuzzes",
+          "body": "Every harness under `fuzz/` opened the package root to reach one guard. The fuzzer instruments each module it loads, so fuzzing one primitive instrumented all 565 — measured, a process starting at between 1487 MB and 1911 MB against its 2048 MB ceiling, which left one target crossing it and reporting an out-of-memory on a 112-byte input its guard refuses in under a millisecond.\n\nThe harnesses require their target directly, which is what they exercise. The same target now starts at 256 MB and runs at 337 MB. A check refuses a harness that reaches for the package root again.\n\nRepository tooling only: `fuzz/` is not part of the published package and no runtime behavior changes."
+        }
+      ]
+    }
+  ]
+}

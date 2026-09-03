@@ -2,10 +2,10 @@
 // Copyright (c) blamejs contributors
 "use strict";
 /**
- * Fuzz target: b.guardTraceContext.validate
+ * Fuzz target: guardTraceContext.validate
  */
 
-var b        = require("..");
+var guardTraceContext = require("../lib/guard-trace-context");
 var expected = require("./_expected");
 
 module.exports.fuzz = function (data) {
@@ -14,14 +14,14 @@ module.exports.fuzz = function (data) {
   catch (_e) { return; }
   // Try both shapes: object with traceparent, or raw string.
   try {
-    b.guardTraceContext.validate({ traceparent: input });
+    guardTraceContext.validate({ traceparent: input });
   } catch (e) {
     if (!expected.isExpected(e) && (!e || typeof e.code !== "string" ||
         e.code.indexOf("trace-context/") !== 0)) throw e;
   }
   try {
     var parsed = JSON.parse(input);
-    b.guardTraceContext.validate(parsed);
+    guardTraceContext.validate(parsed);
   } catch (e) {
     if (expected.isExpected(e)) return;
     if (e && typeof e.code === "string" && e.code.indexOf("trace-context/") === 0) return;

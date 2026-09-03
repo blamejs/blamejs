@@ -2,10 +2,10 @@
 // Copyright (c) blamejs contributors
 "use strict";
 /**
- * Fuzz target: b.guardSagaConfig.validate
+ * Fuzz target: guardSagaConfig.validate
  */
 
-var b        = require("..");
+var guardSagaConfig = require("../lib/guard-saga-config");
 var expected = require("./_expected");
 
 module.exports.fuzz = function (data) {
@@ -25,7 +25,7 @@ module.exports.fuzz = function (data) {
     }
   }
   try {
-    b.guardSagaConfig.validate(cfg);
+    guardSagaConfig.validate(cfg);
   } catch (e) {
     if (expected.isExpected(e)) return;
     if (e && typeof e.code === "string" && e.code.indexOf("saga-config/") === 0) return;

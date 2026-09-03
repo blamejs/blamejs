@@ -3222,6 +3222,64 @@ function testLibCarriesNoNarrativeComments() {
     bad);
 }
 
+// ---- a fuzz harness requires its target, not the whole framework ---------
+//
+// jazzer instruments every module it loads, so a harness that opens the barrel
+// to reach one guard is instrumenting 565 modules to fuzz one. Measured: the
+// barrel loads 565 modules and 48 MB of heap where a direct require loads 17 to
+// 25 and 6 to 7 MB, and under instrumentation that is the difference between a
+// process starting at 1487-1911 MB against a 2048 MB cap and one with room to
+// run. `ClusterFuzzLite guard-saga-config` reported
+// `out-of-memory (used: 2049Mb; limit: 2048Mb)` on a 112-byte input its guard
+// refuses in 0 ms -- the target was never the problem, the baseline was, and
+// which harness draws it is a scheduling accident.
+//
+// A harness tests one primitive's handling of hostile bytes, so the module
+// under test is what it should ask for. Its own path is the check: a name that
+// resolves to the package root pulls in everything.
+function testFuzzHarnessesRequireTheirTargetDirectly() {
+  var repoRoot = path.resolve(__dirname, "..", "..");
+  var fuzzDir = path.join(repoRoot, "fuzz");
+  var rootEntry;
+  try { rootEntry = require.resolve(repoRoot); }
+  catch (_e0) { rootEntry = path.join(repoRoot, "index.js"); }
+  var bad = [];
+  var entries;
+  try { entries = fs.readdirSync(fuzzDir); }
+  catch (_e) { entries = []; }
+  for (var i = 0; i < entries.length; i++) {
+    if (!/\.fuzz\.js$/.test(entries[i])) continue;
+    var full = path.join(fuzzDir, entries[i]);
+    var content;
+    try { content = _stripComments(fs.readFileSync(full, "utf8")); }
+    catch (_e2) { continue; }
+    // `..`, `../`, `../index`, `../index.js` and a call split across lines are
+    // one import wearing five names. Listing the spellings drew a review
+    // finding per spelling, so the specifier is read and the resolver decides
+    // where it lands. `\s*` around the string spans newlines, so a call broken
+    // over several lines is one match.
+    var reqRe = /require\(\s*(["'])([^"'\n]*)\1\s*\)/g;
+    var m;
+    while ((m = reqRe.exec(content)) !== null) {
+      var spec = m[2];
+      if (spec.charAt(0) !== ".") continue;
+      var landsAtRoot;
+      try {
+        landsAtRoot = require.resolve(spec, { paths: [fuzzDir] }) === rootEntry;
+      } catch (_e3) { continue; }
+      if (!landsAtRoot) continue;
+      bad.push({
+        file:    "fuzz/" + entries[i],
+        line:    content.slice(0, m.index).split("\n").length,
+        content: m[0].replace(/\s+/g, " ").slice(0, 100),
+      });
+    }
+  }
+  _report("a fuzz harness requires the module it fuzzes, not the package root " +
+          "(the barrel loads 565 modules for jazzer to instrument, against a 2 GB cap)",
+    bad);
+}
+
 function testOwnRegexesRunLinear() {
   // Characters worth repeating (the classes library patterns quantify over)
   // and a tail that denies the overall match so the engine has to exhaust its
@@ -20140,6 +20198,7 @@ async function run() {
   testFormatValidatorLengthCap();
   testOwnRegexesRunLinear();
   testLibCarriesNoNarrativeComments();
+  testFuzzHarnessesRequireTheirTargetDirectly();
   testNoProcessExitInLib();
   testListenPortFalsyDefault();
   testImapLiteralSizeZeroFootgun();

@@ -2,10 +2,10 @@
 // Copyright (c) blamejs contributors
 "use strict";
 /**
- * Fuzz target: b.guardMailCompose.validate
+ * Fuzz target: guardMailCompose.validate
  */
 
-var b        = require("..");
+var guardMailCompose = require("../lib/guard-mail-compose");
 var expected = require("./_expected");
 
 module.exports.fuzz = function (data) {
@@ -15,7 +15,7 @@ module.exports.fuzz = function (data) {
   var draft;
   try { draft = JSON.parse(text); } catch (_e) { return; }
   try {
-    b.guardMailCompose.validate(draft);
+    guardMailCompose.validate(draft);
   } catch (e) {
     if (expected.isExpected(e)) return;
     if (e && typeof e.code === "string" && e.code.indexOf("mail-compose/") === 0) return;

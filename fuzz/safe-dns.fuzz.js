@@ -2,7 +2,7 @@
 // Copyright (c) blamejs contributors
 "use strict";
 /**
- * Fuzz target: b.safeDns.parseResponse
+ * Fuzz target: safeDns.parseResponse
  *
  * libFuzzer / jazzer.js harness. ClusterFuzzLite + OSS-Fuzz consume
  * `module.exports.fuzz = function (data)` where `data` is a Buffer
@@ -17,12 +17,12 @@
  *   - RFC 1035 §4.1.4 compression-pointer loop class (generic).
  */
 
-var b        = require("..");
+var safeDns = require("../lib/safe-dns");
 var expected = require("./_expected");
 
 module.exports.fuzz = function (data) {
   try {
-    b.safeDns.parseResponse(data);
+    safeDns.parseResponse(data);
   } catch (e) {
     if (expected.isExpected(e)) return;
     if (e && typeof e.code === "string" && e.code.indexOf("safe-dns/") === 0) return;

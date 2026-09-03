@@ -19,7 +19,8 @@
  *   - _dotUnstuff returns a Buffer of length <= input length; never throws.
  */
 
-var b        = require("..");
+var guardSmtpCommand = require("../lib/guard-smtp-command");
+var safeSmtp         = require("../lib/safe-smtp");
 var expected = require("./_expected");
 
 module.exports.fuzz = function (data) {
@@ -28,13 +29,13 @@ module.exports.fuzz = function (data) {
 
   try {
     // 1. guardSmtpCommand.detectBodySmuggling — must return boolean.
-    var smuggling = b.guardSmtpCommand.detectBodySmuggling(data);
+    var smuggling = guardSmtpCommand.detectBodySmuggling(data);
     if (typeof smuggling !== "boolean") {
       throw new Error("detectBodySmuggling returned non-boolean: " + typeof smuggling);
     }
 
     // 2. safeSmtp.findDotTerminator — must return -1 OR an index in range.
-    var endIdx = b.safeSmtp.findDotTerminator(data);
+    var endIdx = safeSmtp.findDotTerminator(data);
     if (typeof endIdx !== "number") {
       throw new Error("findDotTerminator returned non-number: " + typeof endIdx);
     }
@@ -63,7 +64,7 @@ module.exports.fuzz = function (data) {
     }
 
     // 3. safeSmtp.dotUnstuff — must return a Buffer; length never exceeds input.
-    var unstuffed = b.safeSmtp.dotUnstuff(data);
+    var unstuffed = safeSmtp.dotUnstuff(data);
     if (!Buffer.isBuffer(unstuffed)) {
       throw new Error("dotUnstuff returned non-Buffer: " + typeof unstuffed);
     }

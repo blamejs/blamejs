@@ -9,8 +9,8 @@
 // neither crashes nor leaks an exception type the framework doesn't
 // expect.
 
-var b = require("../index");
-var SafeSieveError = b.safeSieve.SafeSieveError;
+var safeSieve = require("../lib/safe-sieve");
+var SafeSieveError = safeSieve.SafeSieveError;
 
 module.exports.fuzz = function (data) {
   var s;
@@ -21,7 +21,7 @@ module.exports.fuzz = function (data) {
   // churn without exercising the parser.
   if (s.length > 200000) s = s.slice(0, 200000);                                                       // allow:raw-byte-literal — fuzz cap
   try {
-    b.safeSieve.parse(s, { profile: "permissive" });
+    safeSieve.parse(s, { profile: "permissive" });
   } catch (e) {
     if (e instanceof SafeSieveError) return;
     if (e instanceof RangeError) return;                                                               // stack overflow on degenerate input is acceptable

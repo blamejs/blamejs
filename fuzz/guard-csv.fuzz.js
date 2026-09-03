@@ -2,7 +2,7 @@
 // Copyright (c) blamejs contributors
 "use strict";
 
-var b        = require("..");
+var guardCsv = require("../lib/guard-csv");
 var expected = require("./_expected");
 
 module.exports.fuzz = function (data) {
@@ -10,7 +10,7 @@ module.exports.fuzz = function (data) {
   try { input = data.toString("utf8"); }
   catch (_e) { return; }
   try {
-    b.guardCsv.validate(input, { profile: "strict" });
+    guardCsv.validate(input, { profile: "strict" });
   } catch (e) {
     if (expected.isExpected(e)) return;
     throw e;

@@ -2,7 +2,7 @@
 // Copyright (c) blamejs contributors
 "use strict";
 /**
- * Fuzz target: b.safeMime.parse
+ * Fuzz target: safeMime.parse
  *
  * libFuzzer / jazzer.js harness. ClusterFuzzLite (local PRs) and
  * OSS-Fuzz (continuous, Google-hosted) both consume this shape:
@@ -15,12 +15,12 @@
  * smuggling shapes.
  */
 
-var b        = require("..");
+var safeMime = require("../lib/safe-mime");
 var expected = require("./_expected");
 
 module.exports.fuzz = function (data) {
   try {
-    b.safeMime.parse(data);
+    safeMime.parse(data);
   } catch (e) {
     if (expected.isExpected(e)) return;
     if (e && typeof e.code === "string" && e.code.indexOf("safe-mime/") === 0) return;
