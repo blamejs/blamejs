@@ -228,6 +228,114 @@ function testRegexFallback() {
   check("a valid pattern is unaffected",
         b.jsonSchema.isValid({ pattern: "^a+$" }, "aaa") &&
         !b.jsonSchema.isValid({ pattern: "^a+$" }, "b"));
+
+  // A `$ref` is a JSON pointer, so it names a location rather than a keyword,
+  // and the location it names does not have to be one this implementation
+  // recurses through. Screening only the keywords the validator walks left the
+  // refusal reachable only through an instance: the schema compiled, and the
+  // first string validated against it threw instead of returning a result.
+  // Which instance arrives is the caller's, so the throw was request-dependent.
+  var refUnknownKeyword = compileThrew({
+    contentSchema: { pattern: "[" },
+    $ref:          "#/contentSchema",
+  });
+  check("a pattern under a keyword the validator does not walk is still screened",
+        refUnknownKeyword !== null &&
+        refUnknownKeyword.code === "json-schema/invalid-pattern",
+        String(refUnknownKeyword && refUnknownKeyword.code));
+
+  // The same holds for a location this implementation has no name for at all.
+  // A vendor extension is a legal place to park a subschema and point at it.
+  var refVendorKey = compileThrew({
+    "x-shared": { pattern: "(" },
+    $ref:       "#/x-shared",
+  });
+  check("and one under a vendor extension the pointer reaches",
+        refVendorKey !== null && refVendorKey.code === "json-schema/invalid-pattern",
+        String(refVendorKey && refVendorKey.code));
+
+  // A pointer target holding its own reference is followed too, so a chain
+  // cannot hide the pattern one hop further along.
+  var refChain = compileThrew({
+    "x-a":  { $ref: "#/x-b" },
+    "x-b":  { pattern: "[" },
+    $ref:   "#/x-a",
+  });
+  check("a pattern one reference hop further along is reached",
+        refChain !== null && refChain.code === "json-schema/invalid-pattern",
+        String(refChain && refChain.code));
+
+  // The control the widening could break: `const` and `enum` hold INSTANCE
+  // data, not schema, so an object sitting in one may carry a `pattern`
+  // property whose value is an ordinary string. Reading it as a regex would
+  // refuse a schema that is entirely valid.
+  check("a `pattern` inside const is instance data, not a regex to compile",
+        compileThrew({ const: { pattern: "[" } }) === null);
+  check("and one inside enum is left alone as well",
+        compileThrew({ enum: [{ pattern: "(" }] }) === null);
+  check("a schema whose pointer targets are sound still compiles",
+        compileThrew({ "x-ok": { pattern: "^a+$" }, $ref: "#/x-ok" }) === null);
+
+  // `$id` starts a new resource, and a fragment-only reference inside one is
+  // resolved against that resource rather than against the document. Reading
+  // every pointer from the document root gets this wrong in both directions:
+  // it misses a pattern that belongs to the nested resource, and it reaches a
+  // same-named location outside the resource that the reference never meant.
+  var refInResource = compileThrew({
+    $defs: {
+      r: { $id: "urn:blamejs-test:res", "x-p": { pattern: "[" }, $ref: "#/x-p" },
+    },
+  });
+  check("a pattern behind a fragment inside a nested $id resource is screened",
+        refInResource !== null && refInResource.code === "json-schema/invalid-pattern",
+        String(refInResource && refInResource.code));
+
+  check("and the fragment does not reach a same-named location outside it",
+        compileThrew({
+          "x-p":  { pattern: "[" },
+          $defs: {
+            r: { $id: "urn:blamejs-test:res2", "x-p": { pattern: "^a+$" }, $ref: "#/x-p" },
+          },
+        }) === null);
+
+  // A reference may name its resource by URI instead of by bare fragment, and
+  // may name a document supplied through `opts.schemas`. Both reach the same
+  // subschema the validator would evaluate, so both are screened. The screen
+  // resolves through the registry the validator resolves through, rather than
+  // reading pointers out of the document itself.
+  var refByUri = compileThrew({
+    $id:  "urn:blamejs-test:byuri",
+    "x-p": { pattern: "[" },
+    $ref: "urn:blamejs-test:byuri#/x-p",
+  });
+  check("a URI-qualified reference is screened like a bare fragment",
+        refByUri !== null && refByUri.code === "json-schema/invalid-pattern",
+        String(refByUri && refByUri.code));
+
+  var refExternal = null;
+  try {
+    b.jsonSchema.compile(
+      { $ref: "urn:blamejs-test:ext#/x-p" },
+      { schemas: { "urn:blamejs-test:ext": { "x-p": { pattern: "(" } } } });
+  } catch (e) { refExternal = e; }
+  check("a reference into an external schema is screened too",
+        refExternal !== null && refExternal.code === "json-schema/invalid-pattern",
+        String(refExternal && refExternal.code));
+
+  // One subschema object reused under two resources resolves its fragment
+  // against whichever resource is applying it. Recording only that the object
+  // was visited screens it once and skips the second resource, where the same
+  // fragment names a different location.
+  var shared = { $ref: "#/x-p" };
+  var reused = compileThrew({
+    $defs: {
+      a: { $id: "urn:blamejs-test:sh-a", "x-p": { pattern: "^a+$" }, allOf: [shared] },
+      b: { $id: "urn:blamejs-test:sh-b", "x-p": { pattern: "[" },    allOf: [shared] },
+    },
+  });
+  check("a subschema reused under two resources is screened under each",
+        reused !== null && reused.code === "json-schema/invalid-pattern",
+        String(reused && reused.code));
 }
 
 function testArrayApplicatorEdges() {
