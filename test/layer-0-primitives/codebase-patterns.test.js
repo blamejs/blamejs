@@ -17049,6 +17049,14 @@ function testDocProseIsAmericanEnglish() {
   ALLOW["lib/dual-control.js::*   `dual.grant.expired` / `dual.grant.cancelled`. Each event"] = true;
   // ISO 18013-5 names the credential "mobile driving licence".
   ALLOW["lib/mdoc.js::*   credential format behind mobile driving licences (mDL) and the ISO"] = true;
+  // `biometric-categorisation` is the EU AI Act Art. 50(3) term and the value
+  // of the `systemType` and `kind` fields, so the prose beside it matches what
+  // an operator passes. Spelling the prose one way and the value another would
+  // make the page disagree with itself.
+  ALLOW["lib/ai-disclosure.js::*     recognition / biometric-categorisation systems must inform"] = true;
+  ALLOW["lib/ai-disclosure.js::* categorisation disclosure. Operators deploying these systems"] = true;
+  ALLOW["lib/ai-disclosure.js::*   systemType:    \"emotion\" | \"biometric-categorisation\",   // default \"emotion\""] = true;
+  ALLOW["lib/middleware/ai-act-disclosure.js::*     kind:         \"ai-interaction\"|\"ai-generated-content\"|\"emotion-recognition\"|\"biometric-categorisation\"|\"deep-fake\"|\"ai-text-public-interest\","] = true;
 
   // Case-insensitive: a sentence or a heading capitalizes its first word,
   // so "Recognised keys" and "Behaviour by" sit exactly where a
@@ -17059,12 +17067,35 @@ function testDocProseIsAmericanEnglish() {
   // `optimistic` are American words that share the first eight letters
   // with one. Failing a build over `organism` is the kind of refusal that
   // gets a gate switched off.
+  // The `-ise` family is listed the other way round. Naming the British stems
+  // meant a review round per stem: organise, then recognise, then analogue,
+  // then ageing, each found only because someone looked. The British side is
+  // open and the American side is closed, so the rule is every `-ise` word
+  // EXCEPT the American ones, and a word nobody has written yet is covered on
+  // the day it is written.
+  var AMERICAN_ISE = {};
+  ("advertise advise anise apprise arise appraise braise bruise cerise " +
+   "chastise chemise circumcise comprise compromise concise cruise demise " +
+   "despise devise disenfranchise disfranchise disguise enfranchise " +
+   "enterprise excise exercise expertise franchise guise improvise incise " +
+   "merchandise misadvise mortise noise paradise poise porpoise praise " +
+   "precise premise promise raise remise reprise revise rise seise " +
+   "supervise surmise surprise televise tortoise treatise turquoise " +
+   "valise").split(" ")
+    .forEach(function (w) {
+      var stem = w.replace(/e$/, "");
+      [w, w + "s", stem + "ed", stem + "es", stem + "ing", stem + "er",
+       stem + "ers"].forEach(function (f) { AMERICAN_ISE[f] = true; });
+    });
+  // `-wise` takes any first element, so it is a shape rather than a list:
+  // pairwise, piecewise, bytewise, clockwise, lengthwise, and the next one
+  // somebody writes.
+  var WISE_SHAPE = /wise$/;
+  var ISE_SHAPE = /^[a-z]{3,}is(?:e|es|ed|er|ers|ing|ation|ations|able|ability)$/;
+
   var TERMS = new RegExp(
     "\\b(?:" +
-      "(?:organis|recognis|authoris|normalis|serialis|initialis|sanitis|" +
-      "optimis|maximis|minimis|summaris|utilis|prioritis|synchronis|customis)" +
-      "(?:e|es|ed|ing|ation|ations|able|ability)" +
-    "|behaviour(?:s|al|ally)?" +
+      "behaviour(?:s|al|ally)?" +
     "|colour(?:s|ed|ing|ful)?" +
     "|licence(?:s|d)?" +
     "|cancell(?:ed|ing)" +
@@ -17086,7 +17117,11 @@ function testDocProseIsAmericanEnglish() {
     "|metre(?:s)?" +
     "|litre(?:s)?" +
     "|fibre(?:s)?" +
+    "|flavour(?:s|ed|ing)?" +
+    "|neighbour(?:s|ing|hood)?" +
+    "|ageing" +
     "|travell(?:ed|ing|er|ers)" +
+    "|tunnell(?:ed|ing)" +
     "|offence(?:s)?" +
     "|pretence(?:s)?" +
     "|judgement(?:s)?" +
@@ -17110,6 +17145,21 @@ function testDocProseIsAmericanEnglish() {
       }
       if (t.indexOf("*/") !== -1) { inDoc = false; continue; }
       var m = lines[i].match(TERMS);
+      if (!m) {
+        // An `-ise` word this list does not already exempt.
+        var words = lines[i].match(/[A-Za-z]+/g) || [];
+        for (var wi = 0; wi < words.length; wi += 1) {
+          // An interior capital marks an identifier rather than a word:
+          // `keyCompromise` is an RFC 8555 revocation reason, `dnsPromises`
+          // is Node's own API, and renaming either is a breaking change
+          // rather than a copy edit.
+          if (/^.+[A-Z]/.test(words[wi])) continue;
+          var lw = words[wi].toLowerCase();
+          if (!ISE_SHAPE.test(lw) || AMERICAN_ISE[lw] || WISE_SHAPE.test(lw)) continue;
+          m = [words[wi]];
+          break;
+        }
+      }
       if (!m) continue;
       // Keyed on the line's own text, so the exception covers the one
       // sentence it was written for. Editing that line retires the
