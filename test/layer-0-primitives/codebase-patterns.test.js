@@ -16734,6 +16734,35 @@ function _optKeysWithDepth(code, depth) {
     if (!/(^|[{[,])\s*$/.test(prefix)) continue;
     keys.push({ name: m[1], depth: d });
   }
+
+  // A third form names the options and glosses them in prose instead of
+  // giving each a type: b.auth.saml's logout builders list `nameId,
+  // nameIdFormat, sessionIndex, relayState` and then say what they are. No
+  // colon appears, so the scan above reads nothing and dropping any of those
+  // implementations would trip nothing.
+  //
+  // Only the run before the gloss is read, and only when every comma-separated
+  // piece of it is a bare identifier, which is what separates a list of names
+  // from a wrapped line of prose. A lone word with no comma and no gloss is
+  // left alone, since nothing distinguishes it from prose.
+  //
+  // The gloss is a dash and nothing else. Counting an opening parenthesis as
+  // one made every prose line describing a call into a declaration, so
+  // `rotate() enforces ...` in b.session read as an option named `rotate`,
+  // which would have failed the build the day that method was renamed.
+  if (keys.length === 0) {
+    var glossAt = code.search(/\s(?:—|--?)\s/);
+    var head = (glossAt === -1 ? code : code.slice(0, glossAt)).trim();
+    var pieces = head.split(",").map(function (p) { return p.trim(); })
+      .filter(function (p) { return p.length > 0; });
+    var allNames = pieces.length > 0 && pieces.every(function (p) {
+      return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(p);
+    });
+    if (allNames && (pieces.length > 1 || glossAt !== -1)) {
+      pieces.forEach(function (p) { keys.push({ name: p, depth: depth }); });
+    }
+  }
+
   return {
     keys:  keys,
     depth: depth +
@@ -16915,17 +16944,21 @@ function testOptsBlocksHaveAnOptsParameter() {
         .filter(function (p) { return p.length > 0; });
       if (params.length !== 1) continue;
 
-      // Collect the keys the block documents.
+      // Collect the keys the block documents, through the same reader the
+      // sibling check uses. Two parsers for one block format drift, and the
+      // one that lags stops seeing the shapes the other learned.
       var optsLine = start, keys = [];
       for (var k = 0; k < buf.length; k += 1) {
         if (!/^\s*\*\s*@opts\b/.test(buf[k])) continue;
         optsLine = start + k + 1;
+        var kDepth = 0;
         for (var q = k + 1; q < buf.length; q += 1) {
           var ln = buf[q].replace(/^\s*\*/, "");
           if (/^\s*@[a-z]/i.test(ln.trim())) break;
           if (buf[q].trim().indexOf("*/") === 0) break;
-          var km = ln.match(/^\s{2,}([A-Za-z_$][A-Za-z0-9_$]*)\??\s*:/);
-          if (km) keys.push(km[1]);
+          var kf = _optKeysWithDepth(ln.replace(/\/\/.*$/, ""), kDepth);
+          kDepth = kf.depth;
+          kf.keys.forEach(function (kk) { keys.push(kk.name); });
         }
         break;
       }
