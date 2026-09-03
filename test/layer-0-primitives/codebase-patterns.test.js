@@ -16789,7 +16789,13 @@ function testDocumentedOptsAreRead() {
         // on its own documentation line is documentation with nothing
         // behind it, which is what `schemeAllowlist` was. Anything subtler
         // than that belongs to a reader, not to a regular expression.
-        if (new RegExp("\\b" + name + "\\b").test(corpus)) continue;
+        // The key grammar above accepts `$`, which is an anchor once it
+        // reaches a pattern: `$mode` would compile to something no code can
+        // match and report a working option as never read. `\b` is wrong
+        // beside it for the same reason, since `$` is not a word character,
+        // so the boundaries are spelled against the identifier alphabet.
+        var esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        if (new RegExp("(?<![A-Za-z0-9_$])" + esc + "(?![A-Za-z0-9_$])").test(corpus)) continue;
         bad.push({
           file:    rel,
           line:    start + j + 1,
