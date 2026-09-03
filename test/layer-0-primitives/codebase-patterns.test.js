@@ -16712,6 +16712,270 @@ function testValidateOptsAcceptedKeysAreRead() {
     bad);
 }
 
+// ---- Pattern: an @opts block documents an option no code reads ----
+//
+// class: documented-opt-never-read
+//
+// The sibling above reads the validateOpts allowlist, which is the
+// contract the CODE states. This one reads the @opts block, which is the
+// contract the WIKI states, and the two are advertised surface by
+// different routes: an option can be documented without ever appearing
+// in a validateOpts call, so it passes that gate untouched.
+//
+// b.guardMarkdown.validate documented `schemeAllowlist: string[] //
+// default ["http","https","mailto"]`. The identifier appeared exactly
+// once in the repository, on that doc line. An operator narrowing the
+// permitted schemes got silence, and the quoted default described
+// RENDER_ALLOWED_SCHEMES, a module constant on the render path that
+// validate does not touch.
+//
+// An option is routinely forwarded wholesale to a helper in another
+// file (circuitBreaker.create hands its whole opts object to
+// retryHelper.CircuitBreaker), so a file-local search reports the
+// forwarding, not the drift. The question is whether ANY code in lib/
+// reads the name; one that appears in no code at all is documentation
+// with nothing behind it.
+function testDocumentedOptsAreRead() {
+  var files = _libFiles();
+  var codeByFile = {};
+  var allCode = [];
+  files.forEach(function (f) {
+    var stripped = _stripComments(fs.readFileSync(f, "utf8"));
+    codeByFile[f] = stripped;
+    allCode.push(stripped);
+  });
+  var corpus = allCode.join("\n");
+
+  var bad = [];
+  files.forEach(function (file) {
+    var rel = _relPath(file);
+    var lines = fs.readFileSync(file, "utf8").split(/\r?\n/);
+    var inBlock = false, buf = [], start = 0;
+    for (var i = 0; i < lines.length; i += 1) {
+      var t = lines[i].trim();
+      if (!inBlock) {
+        if (t.indexOf("/**") === 0) { inBlock = true; buf = [lines[i]]; start = i; }
+        continue;
+      }
+      buf.push(lines[i]);
+      if (t.indexOf("*/") === -1) continue;
+      inBlock = false;
+      var body = buf.join("\n");
+      var pm = body.match(/@primitive\s+(\S+)/);
+      if (!pm) continue;
+      var oi = -1;
+      for (var k = 0; k < buf.length; k += 1) {
+        if (/^\s*\*\s*@opts\b/.test(buf[k])) { oi = k; break; }
+      }
+      if (oi < 0) continue;
+      for (var j = oi + 1; j < buf.length; j += 1) {
+        var line = buf[j].replace(/^\s*\*/, "");
+        if (/^\s*@[a-z]/i.test(line.trim())) break;
+        if (buf[j].trim().indexOf("*/") === 0) break;
+        var m = line.match(/^\s{2,}([A-Za-z_$][A-Za-z0-9_$]*)\s*:/);
+        if (!m) continue;
+        var name = m[1];
+        // Whether the code HONORS an option is a data-flow question, and
+        // three attempts to answer it with a matcher each traded one
+        // wrong answer for another: requiring a property read missed the
+        // profile, mapping and rule TABLES this codebase consumes options
+        // through (`algNonePolicy: "reject"`, `contentLanguage:
+        // "response-content-language"`), while accepting those tables let
+        // any unrelated object key stand in as proof.
+        //
+        // So this check does not claim to answer it. It answers the
+        // narrower question it can settle exactly: does the name occur
+        // anywhere in the framework's code at all? A name that lives only
+        // on its own documentation line is documentation with nothing
+        // behind it, which is what `schemeAllowlist` was. Anything subtler
+        // than that belongs to a reader, not to a regular expression.
+        if (new RegExp("\\b" + name + "\\b").test(corpus)) continue;
+        bad.push({
+          file:    rel,
+          line:    start + j + 1,
+          content: "@opts on `" + pm[1] + "` documents \"" + name +
+                   "\" but no code in lib/ reads it — implement it, or " +
+                   "drop the line so the page states what the code does",
+        });
+      }
+    }
+  });
+  bad = _filterMarkers(bad, "documented-opt-never-read");
+  _report("every option an @opts block documents appears in lib/ code " +
+          "(guardMarkdown.validate advertised a schemeAllowlist that existed " +
+          "only on the doc line)",
+    bad);
+}
+
+// ---- Pattern: @opts on a primitive that takes no options object ----
+//
+// class: opts-block-without-opts-parameter
+//
+// b.mail.bimi.validateTinyPsSvg took the SVG as its first positional
+// argument, and its signature said so, but the block below carried an
+// @opts section listing `svgBytes: Buffer | string`. Read as the page
+// presents it that gives `validateTinyPsSvg({ svgBytes: buf })`, an
+// object that is neither a Buffer nor a string.
+//
+// The sibling check above asks whether a documented option appears in
+// the code, which cannot see this: `svgBytes` appears throughout the
+// function as its own parameter name. This one compares the block
+// against its own @signature, which is exact.
+function testOptsBlocksHaveAnOptsParameter() {
+  var bad = [];
+  _libFiles().forEach(function (file) {
+    var rel = _relPath(file);
+    var lines = fs.readFileSync(file, "utf8").split(/\r?\n/);
+    var inBlock = false, buf = [], start = 0;
+    for (var i = 0; i < lines.length; i += 1) {
+      var t = lines[i].trim();
+      if (!inBlock) {
+        if (t.indexOf("/**") === 0) { inBlock = true; buf = [lines[i]]; start = i; }
+        continue;
+      }
+      buf.push(lines[i]);
+      if (t.indexOf("*/") === -1) continue;
+      inBlock = false;
+      var body = buf.join("\n");
+      var pm = body.match(/@primitive\s+(\S+)/);
+      if (!pm) continue;
+      if (!/^\s*\*\s*@opts\b/m.test(body)) continue;
+      var sm = body.match(/@signature\s+(.+)/);
+      if (!sm) continue;
+      var paren = sm[1].indexOf("(");
+      if (paren === -1) continue;
+      var params = sm[1].slice(paren + 1).replace(/\).*$/, "")
+        .split(",").map(function (p) { return p.trim().replace(/\?$/, ""); })
+        .filter(function (p) { return p.length > 0; });
+      if (params.length !== 1) continue;
+
+      // Collect the keys the block documents.
+      var optsLine = start, keys = [];
+      for (var k = 0; k < buf.length; k += 1) {
+        if (!/^\s*\*\s*@opts\b/.test(buf[k])) continue;
+        optsLine = start + k + 1;
+        for (var q = k + 1; q < buf.length; q += 1) {
+          var ln = buf[q].replace(/^\s*\*/, "");
+          if (/^\s*@[a-z]/i.test(ln.trim())) break;
+          if (buf[q].trim().indexOf("*/") === 0) break;
+          var km = ln.match(/^\s{2,}([A-Za-z_$][A-Za-z0-9_$]*)\s*:/);
+          if (km) keys.push(km[1]);
+        }
+        break;
+      }
+      // Documenting the FIELDS of a single object argument is the
+      // convention and is correct however that argument is named:
+      // `b.audit.record(event)` lists what an event carries. The defect
+      // is a block whose one key IS the parameter, which documents the
+      // argument itself as though it were a field of an options object.
+      if (keys.length !== 1 || keys[0] !== params[0]) continue;
+      bad.push({
+        file:    rel,
+        line:    optsLine,
+        content: "@opts on `" + pm[1] + "` documents \"" + keys[0] +
+                 "\", which IS its only parameter (" + sm[1].trim().slice(0, 50) +
+                 ") — an operator reading the block wraps the argument in an " +
+                 "object the function never accepts",
+      });
+    }
+  });
+  bad = _filterMarkers(bad, "opts-block-without-opts-parameter");
+  _report("an @opts block belongs to a primitive that accepts an options " +
+          "object (bimi.validateTinyPsSvg documented its positional argument " +
+          "as an option)",
+    bad);
+}
+
+// ---- Pattern: British spelling in doc-block prose ----
+//
+// class: british-spelling-in-doc-prose
+//
+// Every doc block in lib/ becomes a wiki page, so the spelling in one is
+// the spelling an operator reads. The project writes American English,
+// and a sweep of the 1,949 blocks found 36 prose lines that did not:
+// behaviour, honours, recognise, normalises, defence, catalogue.
+//
+// Two things keep their source spelling and are allowed below with the
+// reason: an identifier or API value (`dual.grant.cancelled` is an event
+// name, and renaming it is a breaking change, not a copy edit), and a
+// standard's own wording (ISO 18013-5 spells it "mobile driving
+// licence"; the EU AI Act Art. 50(3) notice text is quoted).
+function testDocProseIsAmericanEnglish() {
+  // "<relative file>::<term>" -> why the source spelling stands.
+  var ALLOW = Object.create(null);
+  // The Art. 50(3) notice text the code emits verbatim
+  // (DEFAULT_EMOTION_TEXT), beside the "biometric-categorisation"
+  // systemType value it pairs with.
+  ALLOW["lib/ai-disclosure.js::*   // notice.text → \"This system uses AI to recognise emotions ...\""] = true;
+  // `cancelled` is a status value in the documented union.
+  ALLOW["lib/dsr.js::*   `partially_completed` | `cancelled` | `rejected` | `expired`)."] = true;
+  // `dual.grant.cancelled` is an emitted event name.
+  ALLOW["lib/dual-control.js::*   `dual.grant.expired` / `dual.grant.cancelled`. Each event"] = true;
+  // ISO 18013-5 names the credential "mobile driving licence".
+  ALLOW["lib/mdoc.js::*   credential format behind mobile driving licences (mDL) and the ISO"] = true;
+
+  // Case-insensitive: a sentence or a heading capitalizes its first word,
+  // so "Recognised keys" and "Behaviour by" sit exactly where a
+  // lowercase-only pattern cannot see them.
+  //
+  // An `-is` stem takes the British inflections rather than any
+  // continuation, because `organism`, `organist`, `optimism` and
+  // `optimistic` are American words that share the first eight letters
+  // with one. Failing a build over `organism` is the kind of refusal that
+  // gets a gate switched off.
+  var TERMS = new RegExp(
+    "\\b(?:" +
+      "(?:organis|recognis|authoris|normalis|serialis|initialis|sanitis|" +
+      "optimis|maximis|minimis|summaris|utilis|prioritis|synchronis|customis)" +
+      "(?:e|es|ed|ing|ation|ations|able|ability)" +
+    "|behaviour(?:s|al|ally)?" +
+    "|colour(?:s|ed|ing|ful)?" +
+    "|licence(?:s|d)?" +
+    "|cancell(?:ed|ing)" +
+    "|modell(?:ed|ing)" +
+    "|labell(?:ed|ing)" +
+    "|catalogue(?:s|d)?" +
+    "|defence(?:s)?" +
+    "|favour(?:s|ed|ing|able|ite|ites)?" +
+    "|honour(?:s|ed|ing|able)?" +
+    ")\\b", "i");
+  var bad = [];
+  _libFiles().forEach(function (file) {
+    var rel = _relPath(file);
+    var lines = fs.readFileSync(file, "utf8").split(/\r?\n/);
+    // Only a `/** ... */` block becomes a page. An ordinary `/* ... */`
+    // comment carries the same leading `*` and is not operator-facing, so
+    // matching on the star alone would fail the build over internal prose.
+    var inDoc = false;
+    for (var i = 0; i < lines.length; i += 1) {
+      var t = lines[i].trim();
+      if (!inDoc) {
+        if (t.indexOf("/**") === 0 && t.indexOf("*/") === -1) inDoc = true;
+        continue;
+      }
+      if (t.indexOf("*/") !== -1) { inDoc = false; continue; }
+      var m = lines[i].match(TERMS);
+      if (!m) continue;
+      // Keyed on the line's own text, so the exception covers the one
+      // sentence it was written for. Editing that line retires the
+      // exception and asks for the reason again, which is the point: a
+      // file-wide key would wave through every later use of the spelling.
+      if (ALLOW[rel + "::" + t]) continue;
+      bad.push({
+        file:    rel,
+        line:    i + 1,
+        content: "doc prose spells \"" + m[0] + "\" — the wiki page reads " +
+                 "American English; an identifier or a quoted standard keeps " +
+                 "its source spelling and goes in the ALLOW map with a cite",
+      });
+    }
+  });
+  bad = _filterMarkers(bad, "british-spelling-in-doc-prose");
+  _report("doc-block prose in lib/ is American English " +
+          "(every block is a wiki page an operator reads)",
+    bad);
+}
+
 // ---- Pattern: a shape-using function validates EVERY opt via the shape ----
 //
 // class: shape-file-inline-opts-validation
@@ -20381,6 +20645,9 @@ async function run() {
   // code reads is an advertised knob with no implementation
   // (csp-report opts.audit shipped as a silent no-op).
   testValidateOptsAcceptedKeysAreRead();
+  testDocumentedOptsAreRead();
+  testOptsBlocksHaveAnOptsParameter();
+  testDocProseIsAmericanEnglish();
   testShapeFactoriesValidateOnlyViaShape();
   testKnownAntipatterns();
 

@@ -1,0 +1,48 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.19.2",
+  "date": "2026-09-03",
+  "headline": "A documented `schemeAllowlist` that no code read is gone, and two checks hold the reference pages to what the code does",
+  "summary": "`b.guardMarkdown.validate` documented an option that existed only on its documentation line. Setting it did nothing, and the default it quoted described a constant on a different code path. The line is removed, and a check now compares every documented option against the code that would read it. A second check holds the reference pages to American English.",
+  "sections": [
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "`b.guardMarkdown.validate` no longer documents an option nothing reads",
+          "body": "The option block for `b.guardMarkdown.validate` listed `schemeAllowlist: string[]` with a default of `[\"http\",\"https\",\"mailto\"]`. That name appeared once in the whole framework, on that line. No code read it, so an operator passing `{ schemeAllowlist: [\"https\"] }` to stop `http:` link targets changed nothing and got no error, and the quoted default described a constant used by `b.guardMarkdown.render` rather than by `validate`.\n\nThe line is removed. `validate` screens schemes against a fixed dangerous-scheme list under `dangerousSchemePolicy`, `imageSchemePolicy`, `autolinkSchemePolicy` and `referenceLinkPolicy`, which are documented and implemented. `b.guardMarkdown.render` limits link targets to `http`, `https`, `mailto` and relative references, which its own page already states.\n\nNothing to change on upgrade: the option never had an effect, so no configuration depended on it. An operator who set it expecting narrower schemes was not getting them and should use the scheme policies above."
+        },
+        {
+          "title": "Two pages no longer document a positional argument as an option",
+          "body": "`b.mail.bimi.validateTinyPsSvg` carried an option block listing `svgBytes: Buffer | string`, and `b.consent.recognizedPurpose` one listing `name: string`. Both take that value as their first positional argument, which their signature lines already show, and `recognizedPurpose`'s own example calls it as `b.consent.recognizedPurpose(\"educational-only\")`. Following the option block instead gave `validateTinyPsSvg({ svgBytes: buf })`, an object that is neither a Buffer nor a string.\n\nBoth option blocks are removed. Pass the value directly."
+        }
+      ]
+    },
+    {
+      "heading": "Detectors",
+      "items": [
+        {
+          "title": "A documented option must appear in the code",
+          "body": "Every option named in a reference page's option block is now compared against the framework's own source, and a name that appears nowhere in the code fails the build. An option is often handed to a helper in another file, so the check reads the whole tree rather than the declaring file.\n\nIt does not try to decide whether the code honors an option, which is a data-flow question a text search cannot settle: options are consumed here through profile, mapping and rule tables as often as through a direct property read. It settles the narrower question exactly, which is whether the name exists in the code at all.\n\nThe existing sibling check reads the option allowlist the code states. This one reads the option block the documentation states, and the two are separate routes to advertised surface: an option can be documented without appearing in an allowlist, which is how this one survived."
+        },
+        {
+          "title": "An option block belongs to a primitive that takes an options object",
+          "body": "A block whose single documented key is also the primitive's single parameter now fails the build. Documenting the fields of an object argument is the convention and stays correct however that argument is named, so a page listing what an audit event carries is unaffected; the defect is a page that presents the argument itself as a field of an options object."
+        },
+        {
+          "title": "Reference-page prose is American English",
+          "body": "Every documentation block in the framework's source becomes a reference page, so 36 lines reading `behaviour`, `honours`, `recognise`, `normalises`, `defence` and `catalogue` are corrected. A check holds the rest.\n\nTwo kinds of text keep their source spelling and are listed in the check with the reason: an identifier or API value, since `dual.grant.cancelled` is an emitted event name and the `cancelled` data-subject-request status is part of a documented union, and a standard's own wording, since ISO 18013-5 names the credential a mobile driving licence and the EU AI Act Art. 50(3) notice text is quoted verbatim."
+        }
+      ]
+    },
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "Reference-page wording",
+          "body": "Numeric ranges in the CBOR, PIPL and redirect pages read `28 to 30` rather than using a dash. Sentences in `b.money`, `b.apiKey`, `b.audit`, `b.codepointClass`, `b.logStream`, `b.queue` and `b.auditSign` that carried an aside on a dash, or stated a result as what it costs or buys, now name what happens and to what. No documented behavior changes."
+        }
+      ]
+    }
+  ]
+}
