@@ -16712,6 +16712,36 @@ function testValidateOptsAcceptedKeysAreRead() {
     bad);
 }
 
+// Pull the option keys out of one @opts line, each with the brace depth it
+// sits at, and return the depth the next line starts from.
+//
+// An option block is written two ways. Most span lines, one key each. Others
+// declare the object inline (`{ requireJarm?: boolean }` on
+// b.fapi2.clientPolicy, and the same shape on b.auth.ciba and b.auth.saml),
+// and a pattern anchored to the start of the line reads none of their keys,
+// so removing what any of them documents would trip nothing.
+function _optKeysWithDepth(code, depth) {
+  var keys = [];
+  var re = /([A-Za-z_$][A-Za-z0-9_$]*)\s*\??\s*:/g;
+  var m;
+  while ((m = re.exec(code)) !== null) {
+    var prefix = code.slice(0, m.index);
+    var d = depth +
+      (prefix.match(/[{[]/g) || []).length -
+      (prefix.match(/[}\]]/g) || []).length;
+    // A key names the field it introduces, so it follows a brace, a comma or
+    // the start of the line. `https://x` and a `? :` conditional do not.
+    if (!/(^|[{[,])\s*$/.test(prefix)) continue;
+    keys.push({ name: m[1], depth: d });
+  }
+  return {
+    keys:  keys,
+    depth: depth +
+      (code.match(/[{[]/g) || []).length -
+      (code.match(/[}\]]/g) || []).length,
+  };
+}
+
 // ---- Pattern: an @opts block documents an option no code reads ----
 //
 // class: documented-opt-never-read
@@ -16768,6 +16798,20 @@ function testDocumentedOptsAreRead() {
         if (/^\s*\*\s*@opts\b/.test(buf[k])) { oi = k; break; }
       }
       if (oi < 0) continue;
+      // Some blocks wrap their options in braces and some list them flat, so
+      // the depth an option sits at is a property of the block. Reading it
+      // from the first line keeps a nested map's PLACEHOLDER key out: the
+      // `skillName` in b.a2a.middleware.tasks's `scopes: { skillName:
+      // scopeString }` stands for whatever skill an operator names, and is
+      // not an option anything could read.
+      var baseDepth = 0;
+      for (var b0 = oi + 1; b0 < buf.length; b0 += 1) {
+        var first = buf[b0].replace(/^\s*\*/, "").replace(/\/\/.*$/, "").trim();
+        if (first === "") continue;
+        if (/^\s*@[a-z]/i.test(first) || first.indexOf("*/") === 0) break;
+        if (first.charAt(0) === "{") baseDepth = 1;
+        break;
+      }
       var depth = 0;
       for (var j = oi + 1; j < buf.length; j += 1) {
         var line = buf[j].replace(/^\s*\*/, "");
@@ -16778,19 +16822,18 @@ function testDocumentedOptsAreRead() {
         // spot hid `acceptedAlgs?` and `maxClockSkewMs?` on
         // b.auth.oauth.parseJarmResponse, neither of which the function
         // reads.
-        var m = line.match(/^\s{2,}([A-Za-z_$][A-Za-z0-9_$]*)\??\s*:/);
-        var opens = (line.match(/[{[]/g) || []).length;
-        var closes = (line.match(/[}\]]/g) || []).length;
-        var depthHere = depth;
-        depth += opens - closes;
-        if (!m) continue;
+        // A trailing `// default: 16 MiB` is prose, and it carries a colon.
+        var code = line.replace(/\/\/.*$/, "");
+        var found = _optKeysWithDepth(code, depth);
+        depth = found.depth;
+        for (var fi = 0; fi < found.keys.length; fi += 1) {
         // Only the block's own options. A field nested deeper belongs to a
         // payload the caller hands over whole, so the code serializes it
         // without ever naming it: b.middleware.assetlinks passes
         // `statements[].target.package_name` into the JSON it serves, and
         // that is the Digital Asset Links spec's field, not a knob.
-        if (depthHere > 1) continue;
-        var name = m[1];
+        if (found.keys[fi].depth !== baseDepth) continue;
+        var name = found.keys[fi].name;
         // Whether the code HONORS an option is a data-flow question, and
         // three attempts to answer it with a matcher each traded one
         // wrong answer for another: requiring a property read missed the
@@ -16819,6 +16862,7 @@ function testDocumentedOptsAreRead() {
                    "\" but no code in lib/ reads it — implement it, or " +
                    "drop the line so the page states what the code does",
         });
+        }
       }
     }
   });

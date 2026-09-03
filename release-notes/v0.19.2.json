@@ -43,8 +43,12 @@
       "heading": "Changed",
       "items": [
         {
+          "title": "A live rate-limit check stops racing a window boundary",
+          "body": "The cluster rate-limiter's window is aligned to the epoch, so a one-minute window puts a boundary on every wall-clock minute. The MySQL and Postgres checks took four counted requests in sequence against a real database and asserted the fourth was refused; a sequence that straddled a boundary saw the counter reset and the fourth allowed, failing a check whose subject was the SQL upsert rather than wall-clock timing.\n\nEach sequence now reads the window on both sides of itself and runs again on a fresh key when it turned over, so a boundary costs a repeat rather than a failure. Both still exercise the window-rollover branch by advancing the stored window directly. Repository tooling only; the limiter is unchanged."
+        },
+        {
           "title": "A growth measurement holds up on a loaded machine",
-          "body": "The check that the growth helper separates a linear curve from a quadratic one measured its baseline at 25ms. Scheduler delay adds a fixed amount to both readings, and against a 25ms denominator that was enough to pull a true ratio of 16 below the threshold, so the check failed on a busy machine while nothing it tests was wrong. The baseline is 50ms now, which takes the tolerance from about 22ms of delay to about 57ms. Repository tooling only."
+          "body": "The check that the growth helper separates a linear curve from a quadratic one measured its baseline at 25ms. Scheduler delay adds a fixed amount to both readings, and against a 25ms denominator that was enough to pull a true ratio of 16 below the threshold, so the check failed on a busy machine while nothing it tests was wrong. The baseline is 50ms now, which takes the tolerated delay from about 22ms to about 44ms. Repository tooling only."
         },
         {
           "title": "Reference-page wording",

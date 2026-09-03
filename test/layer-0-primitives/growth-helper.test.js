@@ -34,11 +34,12 @@ function _spin(ms) {
 // while nothing it tests was wrong.
 //
 // The overshoot is ADDITIVE, so what matters is its size against the
-// denominator: a true ratio of 16 survives an overshoot of d only while
-// (16S + d) / (S + d) stays above 9, which is while S is larger than about
-// 1.14d. At a 25ms small reading that tolerated 22ms of scheduler noise, and
-// a run at SMOKE_PARALLEL=64 on a loaded box exceeded it. Doubling the small
-// reading to 50ms takes the tolerance to 57ms.
+// denominator. A true ratio of 16 survives an overshoot of d only while
+// (16S + d) / (S + d) stays above the threshold of 9, which rearranges to
+// 7S > 8d, so d must stay under 0.875 of the small reading. At 25ms that was
+// 22ms of scheduler noise, and a run at SMOKE_PARALLEL=64 on a loaded box
+// exceeded it. At 50ms it is 44ms, which held across six runs against six
+// processes spinning on the same cores.
 //
 // Small 50ms, large 200ms linear and 800ms quadratic.
 var SMALL = 1000;

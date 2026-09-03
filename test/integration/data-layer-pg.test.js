@@ -527,27 +527,39 @@ async function _testNonceCluster() {
 //   silent always-allow).
 // ======================================================================
 async function _testRateLimitCluster() {
+  var RATE_WINDOW_MS = b.constants.TIME.hours(1);
   var backend = rateLimitModule._clusterBackend({
-    backend: "cluster", limit: 3, windowMs: b.constants.TIME.minutes(1),
+    backend: "cluster", limit: 3, windowMs: RATE_WINDOW_MS,
   });
   // Unique per run, for the reason the MySQL sibling carries: these assertions
   // are about ABSOLUTE counts, and a fixed key makes them depend on nothing
   // else in a shared live database having written to it in the same window.
-  var rateKey = "ratekey-" + process.pid + "-" + Date.now();
+  //
+  // The window is epoch-aligned, so a sequence that straddles a boundary sees
+  // the counter reset and the fourth take allowed. The sequence reads the
+  // window on both sides of itself and runs again on a fresh key if it turned
+  // over, which the MySQL sibling explains at more length.
+  function _windowIndex() { return Math.floor(Date.now() / RATE_WINDOW_MS); }
+  var rateKey, v1, v2, v3, v4, rowAfter1;
+  for (var attempt = 0; attempt < 4; attempt += 1) {
+    rateKey = "ratekey-" + process.pid + "-" + Date.now() + "-" + attempt;
+    var windowBefore = _windowIndex();
+    v1 = await backend.take(rateKey, 1);
+    rowAfter1 = _psql("SELECT \"count\" FROM _blamejs_rate_limit_counters WHERE \"key\" = '" + rateKey + "';");
+    v2 = await backend.take(rateKey, 1);
+    v3 = await backend.take(rateKey, 1);
+    v4 = await backend.take(rateKey, 1);
+    if (_windowIndex() === windowBefore) break;
+  }
 
-  var v1 = await backend.take(rateKey, 1);
   softCheck("rate-limit(pg): first take() is allowed against real Postgres",
         v1 && v1.allowed === true);
   softCheck("rate-limit(pg): the take() verdict count math is numeric " +
         "(remaining is a finite number, not NaN from a string compare)",
         typeof v1.remaining === "number" && isFinite(v1.remaining) && v1.remaining === 2);
 
-  var rowAfter1 = _psql("SELECT \"count\" FROM _blamejs_rate_limit_counters WHERE \"key\" = '" + rateKey + "';");
   softCheck("rate-limit(pg): counter row landed with count=1", /\b1\b/.test(rowAfter1.trim()));
 
-  var v2 = await backend.take(rateKey, 1);
-  var v3 = await backend.take(rateKey, 1);
-  var v4 = await backend.take(rateKey, 1);
   softCheck("rate-limit(pg): 2nd + 3rd allowed, 4th over the limit refused",
         v2.allowed === true && v3.allowed === true && v4.allowed === false);
   softCheck("rate-limit(pg): the over-limit verdict carries a positive retryAfter",
