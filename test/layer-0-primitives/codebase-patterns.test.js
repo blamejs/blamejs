@@ -16722,7 +16722,11 @@ function testValidateOptsAcceptedKeysAreRead() {
 // so removing what any of them documents would trip nothing.
 function _optKeysWithDepth(code, depth) {
   var keys = [];
-  var re = /([A-Za-z_$][A-Za-z0-9_$]*)\s*\??\s*:/g;
+  // A key may be qualified by the parameter that carries it, as
+  // b.ai.disclosure.applyAll writes `scenario.kinds` and `scenario.session`.
+  // The name that has to appear in the code is the field itself, so the last
+  // segment is what gets looked up.
+  var re = /([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*)\s*\??\s*:/g;
   var m;
   while ((m = re.exec(code)) !== null) {
     var prefix = code.slice(0, m.index);
@@ -16732,7 +16736,8 @@ function _optKeysWithDepth(code, depth) {
     // A key names the field it introduces, so it follows a brace, a comma or
     // the start of the line. `https://x` and a `? :` conditional do not.
     if (!/(^|[{[,])\s*$/.test(prefix)) continue;
-    keys.push({ name: m[1], depth: d });
+    var segments = m[1].split(".");
+    keys.push({ name: segments[segments.length - 1], depth: d });
   }
 
   // A third form names the options and glosses them in prose instead of
@@ -16841,7 +16846,22 @@ function testDocumentedOptsAreRead() {
         if (first.charAt(0) === "{") baseDepth = 1;
         break;
       }
+      // A block can say it has no options, and several do: `(none)`, `(none —
+      // flags are the second argument)`, a `...` wildcard standing for
+      // whatever a detector defines, a line that is only a comment, or a
+      // pointer at the sibling whose options these are. Those declare
+      // nothing, so there is nothing to check and nothing to report.
+      var declaresNothing = false;
+      for (var e0 = oi + 1; e0 < buf.length; e0 += 1) {
+        var eln = buf[e0].replace(/^\s*\*/, "").replace(/\/\/.*$/, "").trim();
+        if (eln === "") continue;
+        if (/^\s*@[a-z]/i.test(eln) || eln.indexOf("*/") === 0) { declaresNothing = true; break; }
+        if (/^\(\s*none/i.test(eln) || eln.indexOf("...") === 0 ||
+            /^same as\b/i.test(eln)) declaresNothing = true;
+        break;
+      }
       var depth = 0;
+      var keysSeen = 0;
       for (var j = oi + 1; j < buf.length; j += 1) {
         var line = buf[j].replace(/^\s*\*/, "");
         if (/^\s*@[a-z]/i.test(line.trim())) break;
@@ -16862,6 +16882,7 @@ function testDocumentedOptsAreRead() {
         // `statements[].target.package_name` into the JSON it serves, and
         // that is the Digital Asset Links spec's field, not a knob.
         if (found.keys[fi].depth !== baseDepth) continue;
+        keysSeen += 1;
         var name = found.keys[fi].name;
         // Whether the code HONORS an option is a data-flow question, and
         // three attempts to answer it with a matcher each traded one
@@ -16892,6 +16913,22 @@ function testDocumentedOptsAreRead() {
                    "drop the line so the page states what the code does",
         });
         }
+      }
+      // A block this reader takes no keys from is a block it is not checking,
+      // and it says so rather than passing. The @opts section has no single
+      // grammar: typed lines, an inline object, a brace-wrapped object, a
+      // comma list glossed in prose, and keys qualified by their parameter
+      // are all in the tree, and each was found only when something happened
+      // to look. Reporting the blanks is what makes the next spelling visible
+      // on the day it is written instead of on the day it hides a defect.
+      if (keysSeen === 0 && !declaresNothing) {
+        bad.push({
+          file:    rel,
+          line:    start + oi + 1,
+          content: "@opts on `" + pm[1] + "` yields no options to this reader " +
+                   "— the block uses a shape it cannot read, so nothing in it " +
+                   "is being checked; teach _optKeysWithDepth the shape",
+        });
       }
     }
   });
