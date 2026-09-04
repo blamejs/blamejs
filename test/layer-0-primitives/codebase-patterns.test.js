@@ -200,13 +200,19 @@ function _testFiles() {
 // supply-chain trust-root pins (e.g. SHA-pinning of reusable
 // workflows) declare `scanScope: "workflows"` to route here.
 function _workflowFiles() {
-  var all;
-  try { all = _walk(WORKFLOWS_ROOT); }
-  catch (_e) { return []; }
-  return all.filter(function (full) {
-    var rel = _relPath(full);
-    return /\.ya?ml$/.test(rel);
-  });
+  // `_walk` collects `.js` and nothing else, so filtering its result for
+  // `.ya?ml` intersected to the empty set and every workflow-scoped rule
+  // scanned no files at all. The directory is read directly here.
+  var out = [];
+  var entries;
+  try { entries = fs.readdirSync(WORKFLOWS_ROOT, { withFileTypes: true }); }
+  catch (_e) { return out; }
+  for (var i = 0; i < entries.length; i++) {
+    var e = entries[i];
+    if (!e.isFile() || !/\.ya?ml$/.test(e.name)) continue;
+    out.push(path.join(WORKFLOWS_ROOT, e.name));
+  }
+  return out;
 }
 
 // Release-tooling walker. scripts/ never ships (package.json `files` omits
@@ -381,6 +387,107 @@ function _report(label, matches) {
 // does not exist — so the underlying violation it was meant to explain ships
 // unflagged. When you add a detector with a new allow-class, register it here.
 var VALID_ALLOW_CLASSES = {
+  "aad-external-store-table-without-rotation": 1,
+  "ai-output-url-ssrf-gate": 1,
+  "ai-prompt-template-fixed-delimiter": 1,
+  "bdat-last-double-reply": 1,
+  "bool-string-coerce-shape": 1,
+  "bot-challenge-secret-in-audit": 1,
+  "british-spelling-in-doc-prose": 1,
+  "buffer-from-no-encoding": 1,
+  "build-profile-base": 1,
+  "calendar-bysetpos-start-gate": 1,
+  "calendar-typeof-object-accepts-null": 1,
+  "calendar-utc-roundtrip-loss": 1,
+  "catenate-parens-order": 1,
+  "ci-test-job-missing-timeout": 1,
+  "cluster-vault-key-drift-without-rotation-accept-gate": 1,
+  "compliance-posture-coverage-drift": 1,
+  "condstore-implicit-engage-missing": 1,
+  "date-utc-round-trip": 1,
+  "db-collection-like-escapes-wildcards": 1,
+  "define-class-error-arg-order": 1,
+  "dense-wildcard": 1,
+  "documented-opt-never-read": 1,
+  "duplicate-block": 1,
+  "enum-rank-without-validation": 1,
+  "error-code-namespace-kebab": 1,
+  "esbuild-pin-cross-artifact-drift": 1,
+  "fsm-define-no-clone-before-freeze": 1,
+  "fuzz-build-jazzer-runtime": 1,
+  "gitleaks-entropy-unallowed": 1,
+  "gpai-adherence-declaration-must-be-signed": 1,
+  "gunzip-bomb-conflated": 1,
+  "handrolled-deep-clone": 1,
+  "handrolled-race-timeout": 1,
+  "handrolled-retry-loop": 1,
+  "handrolled-sleep": 1,
+  "handrolled-url-build": 1,
+  "hardcoded-auth-mech": 1,
+  "hardcoded-framework-file-name": 1,
+  "hex-sha-compare-equals": 1,
+  "http2-bare-close": 1,
+  "info-label-empty-omit-mismatch": 1,
+  "inline-require-in-deferred": 1,
+  "jmap-eventsource-ping-shape": 1,
+  "jmap-id-undersized-cap": 1,
+  "legacy-url-format": 1,
+  "listen-port-default": 1,
+  "literal-size-zero": 1,
+  "mail-direct-node-dns": 1,
+  "mail-store-fts-untransacted": 1,
+  "manual-byte-compare": 1,
+  "math-random-in-policy": 1,
+  "mtls-ca-adopt-commit-pin-journal-divergence": 1,
+  "mtls-ca-commit-missing-rollback-journal": 1,
+  "mtls-ca-fingerprint-hashes-pem-not-der": 1,
+  "mtls-ca-generatecrl-persist-races-revocation": 1,
+  "mtls-ca-issuance-generation-zero-on-undeterminable": 1,
+  "mtls-ca-issuance-ledger-silent-empty-on-corrupt": 1,
+  "mtls-ca-leaf-algorithm-reads-mutable-pin": 1,
+  "mtls-ca-reconcile-silent-on-corrupt-journal": 1,
+  "mtls-ca-trust-bundle-unstable-snapshot": 1,
+  "naive-suffix-alignment": 1,
+  "nav-category-allowlist-drift": 1,
+  "node-builtin-prefix": 1,
+  "noncestore-sync-treatment": 1,
+  "number-env-coerce": 1,
+  "open-coded-lazy-require": 1,
+  "opts-block-without-opts-parameter": 1,
+  "orchestrator-registry-tenant-scope": 1,
+  "outcome-branch-fallthrough-to-failed": 1,
+  "parseint-no-radix": 1,
+  "rag-source-classify-without-classifywithsources": 1,
+  "raw-headers-distinct": 1,
+  "raw-mib-literal": 1,
+  "raw-remote-addr": 1,
+  "raw-xff": 1,
+  "regex-superlinear-by-design": 1,
+  "release-push-path-missing-live-integration": 1,
+  "release-unresolved-threads-cap-fail-open": 1,
+  "require-binding-name": 1,
+  "require-mtls-revocation-source-returns-boolean": 1,
+  "resolver-querymx-shape-assumed": 1,
+  "root-prefix-family-without-reseal": 1,
+  "scoped-context-binding-unused": 1,
+  "session-updatedata-merges-one-level-deep": 1,
+  "shape-file-inline-opts-validation": 1,
+  "smtp-linebuffer-utf8-roundtrip": 1,
+  "smtp-transport-hostname-local-typo": 1,
+  "sql-where-delegator-fixed-signature": 1,
+  "tenant-scope-shape-not-validated": 1,
+  "test-detached-async-iife-legacy": 1,
+  "tier-terminology": 1,
+  "trim-before-validate": 1,
+  "uncapped-searchparams-object": 1,
+  "unresolved-marker": 1,
+  "url-path-unbounded-regex": 1,
+  "validateopts-key-never-read": 1,
+  "vendor-deny": 1,
+  "wiki-lockfile-file-link": 1,
+  "wiki-port-cross-artifact-drift": 1,
+  "wiki-stop-grace-below-shutdown-budget": 1,
+  "wrapped-aad-seal-needs-reseal-path": 1,
   "release-script-capture-status-unchecked": 1,
   "sfv-citation-must-match-referencing-protocol": 1,
   "ai-disclosure-on-request-without-requested-gate": 1,
@@ -406,9 +513,7 @@ var VALID_ALLOW_CLASSES = {
   "handrolled-debounce-oneshot-grace-clear": 1,
   "handrolled-debounce-oneshot-connect-deadline": 1,
   "hostname-compare-trailing-dot-pre-split-refused": 1,
-  "inline-numeric-bounds-cascade": 1,
   "inline-require": 1,
-  "inline-require-non-empty-string-validation": 1,
   "internal-binding-in-prose": 1,
   "internal-narrative-comment": 1,
   "leftmost-domain-informational": 1,
@@ -469,6 +574,102 @@ var RETIRED_ALLOW_TOKENS = {
   "bare-split-on-quoted-header": "renamed to 'bare-split-on-quoted-header-token-grammar' (2026-06-26 re-verify pass) — every live marker splits an RFC token-only header grammar with no quoted-string members (RRULE / RFC 9421 component-ids / TLS-RPT rua / SCIM attribute paths), so a bare comma/semicolon split is correct; re-verify the grammar before reusing. The re-verify also found 5 markers were inert (detector pre-filter skips their file, or the line is a .replace not a split) and cleared them",
   "numeric-opt-Infinity": "renamed to 'numeric-opt-Infinity-intentional' (2026-06-27 re-verify pass) — only the markers where Infinity is genuinely SAFE remain: clamped to a max (agent-posture-chain maxHopCount), fail-closed (age-gate requireAge / consentRequired), or a deliberate unbounded intent (inbox retentionDays = retain indefinitely, ws-client reconnect maxAttempts = retry forever). The re-verify found 13 sites where Infinity SILENTLY DISABLED a cap or security check (clock-skew → expiry/OCSP-freshness/ARC-expiry; ws-client maxMessageBytes/maxFrameBytes/handshakeTimeoutMs; inbox/flag-cache/audit-chain caps; mail-arc-sign timestamp) — those now route through numeric-bounds (throw / safe-default on non-finite) and lost the marker. re-verify each remaining site before reusing",
 };
+
+// The classes the rules actually honor, read from the rules rather than from a
+// list beside them. A marker is consumed two ways: a bespoke check filters on
+// the class by name, or a rule TESTS for the marker with a pattern, which
+// covers both a `requires` regex and an inline `/allow:x/.test(line)`.
+//
+// Which text is a pattern is asked of the lexer. Matching `allow:x` across the
+// raw source reads it out of prose as well: a class named in a rule's `reason`
+// string is described, not consumed, and counting those registers an exemption
+// no rule reads.
+function _consumedAllowClasses() {
+  var out = Object.create(null);
+  var self;
+  try { self = fs.readFileSync(__filename, "utf8"); }
+  catch (_e) { return out; }
+
+  var lines = self.split(/\r?\n/);
+  for (var i = 0; i < lines.length; i += 1) {
+    var code = lines[i];
+    var c = code.indexOf("//");
+    if (c !== -1) code = code.slice(0, c);
+    var m = /_filterMarkers\(\s*[^,]+,\s*"([a-z][a-zA-Z0-9-]*)"/.exec(code);
+    if (m) out[m[1]] = true;
+  }
+
+  var toks;
+  try { toks = shapeMatch.tokenize(self); }
+  catch (_e2) { return out; }
+  for (var t = 0; t < toks.length; t += 1) {
+    if (toks[t].type !== shapeMatch.TOK_REGEX) continue;
+    var named = toks[t].value.match(/allow:([a-z][a-zA-Z0-9-]*)/g) || [];
+    for (var n = 0; n < named.length; n += 1) out[named[n].slice(6)] = true;
+  }
+  return out;
+}
+
+function testEveryScanScopeReachesFiles() {
+  // class: scan-scope-empty (no marker)
+  // A rule that scans no files reports nothing and reads as a pass. The
+  // workflow walker collected `.js` and was then filtered for `.ya?ml`, so it
+  // returned the empty set and the one rule routed to it, the SLSA builder
+  // trust-root pin, had never run.
+  var scopes = [
+    ["lib", _libFiles],
+    ["test", _testFiles],
+    ["workflows", _workflowFiles],
+    ["scripts", _scriptFiles],
+  ];
+  var bad = [];
+  scopes.forEach(function (s) {
+    var files = [];
+    try { files = s[1]() || []; }
+    catch (_e) { files = []; }
+    if (files.length) return;
+    bad.push({
+      file:    "test/layer-0-primitives/codebase-patterns.test.js",
+      line:    0,
+      content: "scan scope '" + s[0] + "' walks no files, so every rule routed " +
+               "to it reports nothing and reads as a pass",
+    });
+  });
+  _report("every scan scope reaches files", bad);
+}
+
+function testAllowClassRegistryMatchesTheRules() {
+  // class: registry-consumer-drift (no marker)
+  // Two statements about which classes exist: the registry, and the rules that
+  // filter on them. They had parted by 101 entries. A class a rule honors but
+  // the registry omits fails the build as unregistered on the contributor who
+  // followed the rule's own header to it; a class the registry lists that no
+  // rule reads is accepted and does nothing.
+  var consumed = _consumedAllowClasses();
+  var bad = [];
+  Object.keys(consumed).forEach(function (cls) {
+    if (Object.prototype.hasOwnProperty.call(VALID_ALLOW_CLASSES, cls)) return;
+    if (Object.prototype.hasOwnProperty.call(RETIRED_ALLOW_TOKENS, cls)) return;
+    bad.push({
+      file:    "test/layer-0-primitives/codebase-patterns.test.js",
+      line:    0,
+      content: "allow-class '" + cls + "' is honored by a rule but missing from " +
+               "VALID_ALLOW_CLASSES, so writing the marker the rule advertises " +
+               "fails the build as unregistered. Add it",
+    });
+  });
+  Object.keys(VALID_ALLOW_CLASSES).forEach(function (cls) {
+    if (consumed[cls] === true) return;
+    bad.push({
+      file:    "test/layer-0-primitives/codebase-patterns.test.js",
+      line:    0,
+      content: "allow-class '" + cls + "' is registered but no rule filters on " +
+               "it, so the marker is accepted and then ignored. Route a rule's " +
+               "findings through it, or drop it from VALID_ALLOW_CLASSES",
+    });
+  });
+  _report("VALID_ALLOW_CLASSES lists exactly the classes the rules honor", bad);
+}
 
 function testNoRetiredAllowTokenReRegistered() {
   // A retired token must never reappear as a VALID_ALLOW_CLASSES key — that would
@@ -563,7 +764,7 @@ function testDeclaredClassIsHonored() {
     // it is the next function, and from inside it is the enclosing one.
     var prevFn = -1, prevClose = -1;
     for (var b = fromLine - 1; b >= 0; b -= 1) {
-      if (prevFn === -1 && /^function\s+[A-Za-z_]/.test(lines[b])) prevFn = b;
+      if (prevFn === -1 && /^(?:async\s+)?function\s+[A-Za-z_]/.test(lines[b])) prevFn = b;
       if (prevClose === -1 && /^\}/.test(lines[b])) prevClose = b;
       if (prevFn !== -1 && prevClose !== -1) break;
     }
@@ -573,7 +774,7 @@ function testDeclaredClassIsHonored() {
     } else {
       start = -1;
       for (var f = fromLine; f < lines.length; f += 1) {
-        if (/^function\s+[A-Za-z_]/.test(lines[f])) { start = f; break; }
+        if (/^(?:async\s+)?function\s+[A-Za-z_]/.test(lines[f])) { start = f; break; }
       }
       if (start === -1) return Object.create(null);
     }
@@ -7119,7 +7320,7 @@ function testShingleRoundMatchesDirectScan() {
 }
 
 async function testNoDuplicateCodeBlocks() {
-  // class: duplicate-block (no marker)
+  // class: duplicate-block
   // Token-n-gram shingle detection. Each .js file is fully tokenized
   // (with identifiers/strings/numbers/regexes normalized to placeholders),
   // then split into overlapping N-token shingles. Each shingle that
@@ -16252,6 +16453,11 @@ var KNOWN_ANTIPATTERNS = [
     // freezes the reusable-workflow bytes.
     regex: /\bslsa-framework\/[^@\s]+@(?!(?:[0-9a-fA-F]{40})\b)\S+/,
     skipCommentLines: true,
+    // The per-line marker this rule's reason advertises, honored. The callsite
+    // that needs the tag form carries it; without this the marker was written,
+    // read by nothing, and the rule had no way to pass on a file that needs
+    // the exemption it documents.
+    requires: /allow:slsa-framework-action-not-sha-pinned/,
     allowlist: [],
     reason: "Reusable workflows under slsa-framework/* are the SLSA builder root of trust. A tag-pinned reference (e.g. @v2.1.0) is mutable in principle — the upstream maintainer can re-publish the tag to point at different code, silently rotating the builder we attest from. SHA-pinning freezes the bytes. The SLSA workflow itself, however, requires a tag ref for its internal builder-fetch step; specific callsites that need the tag form use the per-line `# allow:slsa-framework-action-not-sha-pinned — <reason>` marker on the `uses:` line (the same allowlist-by-line shape every other detector in this catalog supports). New callsites without a per-line marker continue to fail the gate. Resolve a tag's SHA via `gh api repos/slsa-framework/slsa-github-generator/commits/<tag>` for slsa-framework callsites that DON'T need the tag-ref shape.",
   },
@@ -22458,6 +22664,8 @@ async function run() {
   testNoInternalNarrativeComments();
   testNoOrphanAllowClass();
   testDeclaredClassIsHonored();
+  testEveryScanScopeReachesFiles();
+  testAllowClassRegistryMatchesTheRules();
   testNoRetiredAllowTokenReRegistered();
   testNoRetiredTokenUsedAnywhere();
   testNoRawByteLiterals();
