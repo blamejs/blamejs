@@ -16846,11 +16846,11 @@ function testDocumentedOptsAreRead() {
         if (first.charAt(0) === "{") baseDepth = 1;
         break;
       }
-      // A block can say it has no options, and several do: `(none)`, `(none —
-      // flags are the second argument)`, a `...` wildcard standing for
-      // whatever a detector defines, a line that is only a comment, or a
-      // pointer at the sibling whose options these are. Those declare
-      // nothing, so there is nothing to check and nothing to report.
+      // A block can say it has no options, and several do. The spellings in
+      // the tree are `(none)`, `(none` followed by a reason, a `...` wildcard
+      // standing for whatever a detector defines, a line that is only a
+      // comment, and a pointer at the sibling whose options these are. Those
+      // declare nothing, so there is nothing to check and nothing to report.
       var declaresNothing = false;
       for (var e0 = oi + 1; e0 < buf.length; e0 += 1) {
         var eln = buf[e0].replace(/^\s*\*/, "").replace(/\/\/.*$/, "").trim();
@@ -16909,7 +16909,7 @@ function testDocumentedOptsAreRead() {
           file:    rel,
           line:    start + j + 1,
           content: "@opts on `" + pm[1] + "` documents \"" + name +
-                   "\" but no code in lib/ reads it — implement it, or " +
+                   "\" but no code in lib/ reads it. Implement it, or " +
                    "drop the line so the page states what the code does",
         });
         }
@@ -16925,8 +16925,8 @@ function testDocumentedOptsAreRead() {
         bad.push({
           file:    rel,
           line:    start + oi + 1,
-          content: "@opts on `" + pm[1] + "` yields no options to this reader " +
-                   "— the block uses a shape it cannot read, so nothing in it " +
+          content: "@opts on `" + pm[1] + "` yields no options to this reader. " +
+                   "The block uses a shape it cannot read, so nothing in it " +
                    "is being checked; teach _optKeysWithDepth the shape",
         });
       }
@@ -17010,7 +17010,7 @@ function testOptsBlocksHaveAnOptsParameter() {
         line:    optsLine,
         content: "@opts on `" + pm[1] + "` documents \"" + keys[0] +
                  "\", which IS its only parameter (" + sm[1].trim().slice(0, 50) +
-                 ") — an operator reading the block wraps the argument in an " +
+                 "). An operator reading the block wraps the argument in an " +
                  "object the function never accepts",
       });
     }
@@ -17084,8 +17084,12 @@ function testDocProseIsAmericanEnglish() {
    "valise").split(" ")
     .forEach(function (w) {
       var stem = w.replace(/e$/, "");
+      // Every form ISE_SHAPE accepts, or the shape refuses a derivative of a
+      // word this list has already exempted: `improvisation` and `advisable`
+      // both reduce to entries that are here.
       [w, w + "s", stem + "ed", stem + "es", stem + "ing", stem + "er",
-       stem + "ers"].forEach(function (f) { AMERICAN_ISE[f] = true; });
+       stem + "ers", stem + "ation", stem + "ations", stem + "able",
+       stem + "ability"].forEach(function (f) { AMERICAN_ISE[f] = true; });
     });
   // `-wise` takes any first element, so it is a shape rather than a list:
   // pairwise, piecewise, bytewise, clockwise, lengthwise, and the next one
@@ -17169,7 +17173,7 @@ function testDocProseIsAmericanEnglish() {
       bad.push({
         file:    rel,
         line:    i + 1,
-        content: "doc prose spells \"" + m[0] + "\" — the wiki page reads " +
+        content: "doc prose spells \"" + m[0] + "\". The wiki page reads " +
                  "American English; an identifier or a quoted standard keeps " +
                  "its source spelling and goes in the ALLOW map with a cite",
       });

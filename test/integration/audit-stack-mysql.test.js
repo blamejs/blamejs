@@ -807,10 +807,23 @@ async function _testClusterPurgeDeletionAgainstWormTriggers() {
   check("MySQL: and the row it covered is gone", after.length === 0,
         "remaining=" + after.length);
 
+  // Target a row that is known to be there. `through + 1` names a counter
+  // only a contiguous sequence has to occupy, and a DELETE matching no row
+  // fires no per-row trigger and raises nothing, which reads here as a
+  // restored guard. The Postgres sibling carried the same shape with a
+  // larger offset and failed on a table whose rows did not reach it.
+  var surviving = _parseBatch(_mysqlRoot(
+    "SELECT `monotonicCounter` FROM `_blamejs_audit_log` " +
+    "WHERE `monotonicCounter` > " + through +
+    " ORDER BY `monotonicCounter` DESC LIMIT 1", DB_NAME)).rows;
+  check("MySQL: there is a row above the boundary for the guard to refuse",
+        surviving.length === 1, "rows=" + surviving.length);
+  var target = Number(surviving[0].monotonicCounter);
+
   var stillGuarded = null;
   try {
     await b.clusterStorage.execute(
-      "DELETE FROM audit_log WHERE `monotonicCounter` <= ?", [through + 1]);
+      "DELETE FROM audit_log WHERE `monotonicCounter` >= ?", [target]);
   } catch (e) { stillGuarded = e; }
   check("MySQL: and the guard is restored once the purge is done",
         stillGuarded !== null,
