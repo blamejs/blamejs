@@ -13,6 +13,14 @@
  * The work under measurement is a spin loop keyed to the size argument, so the
  * curve is known in advance and the assertions are about the measurement, not
  * about anything's performance.
+ *
+ * SMOKE_RUN_SOLO. A spin loop reads the wall clock, so a descheduled process
+ * resumes past its deadline and the reading carries however long it was away.
+ * That overshoot is additive, and against a 50ms baseline it compresses the
+ * ratio: measured in a cold process against a saturated box, a quadratic
+ * curve's ratio of 16 came back between 4 and 6, and the verdict was false on
+ * 2 runs in 10. The suites that call the helper on real work hold up under the
+ * same load, because their baselines are seconds rather than milliseconds.
  */
 var helpers = require("../helpers");
 var check   = helpers.check;
@@ -25,21 +33,11 @@ function _spin(ms) {
 }
 
 // The SMALL reading is the denominator of the ratio, and it is sized above the
-// scheduler's noise rather than as small as the floor allows. A spin loop
-// checks the wall clock, so a descheduled process resumes past its deadline and
-// overshoots by however long it was away -- a fixed overshoot that is a few
-// percent of a 100ms reading and tens of percent of a 10ms one. At
-// SMOKE_PARALLEL=64 that compressed a quadratic curve's ratio from 16 to 8.6
-// and the helper correctly declined to call it superlinear, so the test failed
-// while nothing it tests was wrong.
-//
-// The overshoot is ADDITIVE, so what matters is its size against the
-// denominator. A true ratio of 16 survives an overshoot of d only while
-// (16S + d) / (S + d) stays above the threshold of 9, which rearranges to
-// 7S > 8d, so d must stay under 0.875 of the small reading. At 25ms that was
-// 22ms of scheduler noise, and a run at SMOKE_PARALLEL=64 on a loaded box
-// exceeded it. At 50ms it is 44ms, which held across six runs against six
-// processes spinning on the same cores.
+// scheduler's noise rather than as small as the floor allows. A true ratio of
+// 16 survives an overshoot of d only while (16S + d) / (S + d) stays above the
+// threshold of 9, which rearranges to 7S > 8d, so d must stay under 0.875 of
+// the small reading. At 50ms that is 44ms. A box running more processes than
+// it has cores exceeds that, which is what the solo marker above answers.
 //
 // Small 50ms, large 200ms linear and 800ms quadratic.
 var SMALL = 1000;

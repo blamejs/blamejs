@@ -3805,6 +3805,10 @@ function testOwnRegexesRunLinear() {
       var probeSet = SUBJECTS;
       if (seeds.length) {
         probeSet = SUBJECTS.slice();
+        // A one-character filler and a motif made of that character repeat
+        // into the same subject, so the pieces are combined and the subjects
+        // they build are counted once.
+        var built = Object.create(null);
         seeds.forEach(function (seed) {
           fillers.forEach(function (f) {
             ["!", ""].forEach(function (tail) {
@@ -3815,6 +3819,9 @@ function testOwnRegexesRunLinear() {
               function at(n) {
                 return seed + f.repeat(Math.max(1, Math.floor(n / f.length))) + tail;
               }
+              var key = at(2048);
+              if (built[key] === 1) return;
+              built[key] = 1;
               probeSet.push({
                 label: JSON.stringify(seed) + " + " + JSON.stringify(f) +
                        " x N + " + JSON.stringify(tail),
