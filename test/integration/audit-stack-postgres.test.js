@@ -715,12 +715,24 @@ async function _testClusterPurgeDeletionAgainstWormTriggers(liveQueryAll) {
   // could be self-granted by exactly the caller it exists to stop. Measured on
   // this server with a non-owner role: the flag turned a refused DELETE into
   // an accepted one, while DROP TRIGGER stayed refused.
+  // Target a row that is known to be there. `through + 50` named a counter
+  // nothing had to occupy, and on a table whose rows do not reach it the
+  // DELETE matched none, fired no per-row trigger, raised nothing, and read
+  // as a guard that had been switched off. That is the trap this file's own
+  // header describes, applied to the check above it but not to this one.
+  var unaccounted = await liveQueryAll(
+    'SELECT "monotonicCounter" FROM _blamejs_audit_log WHERE "monotonicCounter" > $1' +
+    ' ORDER BY "monotonicCounter" DESC LIMIT 1', [through]);
+  check("there is a row above the purge boundary for the flag to be tried against",
+        unaccounted.length === 1, "rows=" + unaccounted.length);
+  var target = Number(unaccounted[0].monotonicCounter);
+
   var flagged = null;
   try {
     await b.clusterStorage.transaction(async function (tx) {
       await tx.execute("SET LOCAL blamejs.audit_purge = 'on'", []);
       await tx.execute(
-        'DELETE FROM audit_log WHERE "monotonicCounter" > ?', [through + 50]);
+        'DELETE FROM audit_log WHERE "monotonicCounter" >= ?', [target]);
     });
   } catch (e) { flagged = e; }
   check("a session that sets the old flag still cannot delete beyond the boundary",

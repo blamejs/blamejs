@@ -556,33 +556,49 @@ async function _testNonceCluster() {
 //   count must coerce to a JS number so count<=limit is numeric.
 // ======================================================================
 async function _testRateLimitCluster() {
+  var RATE_WINDOW_MS = b.constants.TIME.hours(1);
   var backend = rateLimitModule._clusterBackend({
-    backend: "cluster", limit: 3, windowMs: b.constants.TIME.minutes(1),
+    backend: "cluster", limit: 3, windowMs: RATE_WINDOW_MS,
   });
   // Unique per run. These assertions are about ABSOLUTE counts — first take
   // allowed, fourth refused, row at exactly 4 — so any row this key already
   // carries changes the answers. The table is dropped and recreated at the top
   // of this file, but the suite shares one MySQL instance with every other
   // live file, and a fixed key makes this test depend on nothing else having
-  // written to it in the same minute-long window. A key nobody else can name
-  // removes the dependency rather than hoping.
-  var rateKey = "ratekey-" + process.pid + "-" + Date.now();
+  // written to it in the same window. A key nobody else can name removes the
+  // dependency rather than hoping.
+  //
+  // The window is epoch-aligned (`floor(now / windowMs) * windowMs`), so a
+  // sequence that straddles a boundary sees the counter reset and the fourth
+  // take allowed, which fails a check whose subject is the SQL upsert rather
+  // than wall-clock timing. A longer window makes that rarer and does not
+  // remove it, so the sequence reads the window on both sides of itself and
+  // runs again on a fresh key if it turned over. That cannot fail on a
+  // boundary; it can only do the work twice, and only for a sequence unlucky
+  // enough to span one.
+  function _windowIndex() { return Math.floor(Date.now() / RATE_WINDOW_MS); }
+  var rateKey, v1, v2, v3, v4, rowAfter1;
+  for (var attempt = 0; attempt < 4; attempt += 1) {
+    rateKey = "ratekey-" + process.pid + "-" + Date.now() + "-" + attempt;
+    var windowBefore = _windowIndex();
+    v1 = await backend.take(rateKey, 1);
+    rowAfter1 = _selectDirect(
+      "SELECT `count` FROM `_blamejs_rate_limit_counters` WHERE `key` = '" + rateKey + "';");
+    v2 = await backend.take(rateKey, 1);
+    v3 = await backend.take(rateKey, 1);
+    v4 = await backend.take(rateKey, 1);
+    if (_windowIndex() === windowBefore) break;
+  }
 
-  var v1 = await backend.take(rateKey, 1);
   softCheck("rate-limit(mysql): first take() is allowed against real MySQL",
         v1 && v1.allowed === true);
   softCheck("rate-limit(mysql): the take() verdict count math is numeric " +
         "(remaining is a finite number, not NaN from a string compare)",
         typeof v1.remaining === "number" && isFinite(v1.remaining) && v1.remaining === 2);
 
-  var rowAfter1 = _selectDirect(
-    "SELECT `count` FROM `_blamejs_rate_limit_counters` WHERE `key` = '" + rateKey + "';");
   softCheck("rate-limit(mysql): counter row landed with count=1",
         rowAfter1.length === 1 && Number(rowAfter1[0].count) === 1);
 
-  var v2 = await backend.take(rateKey, 1);
-  var v3 = await backend.take(rateKey, 1);
-  var v4 = await backend.take(rateKey, 1);
   softCheck("rate-limit(mysql): 2nd + 3rd allowed, 4th over the limit refused",
         v2.allowed === true && v3.allowed === true && v4.allowed === false);
   softCheck("rate-limit(mysql): the over-limit verdict carries a positive retryAfter",
