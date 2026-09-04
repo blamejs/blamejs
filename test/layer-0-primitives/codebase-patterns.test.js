@@ -17081,7 +17081,10 @@ function testDocProseIsAmericanEnglish() {
    "merchandise misadvise mortise noise paradise poise porpoise praise " +
    "precise premise promise raise remise reprise revise rise seise " +
    "supervise surmise surprise televise tortoise treatise turquoise " +
-   "valise").split(" ")
+   // Compounds are their own entries. A suffix test would be shorter and
+   // wrong: `organise` ends with `anise`, so matching on the tail alone
+   // exempts the word this check exists to catch.
+   "valise sunrise moonrise uprise fundraise malaise liaise").split(" ")
     .forEach(function (w) {
       var stem = w.replace(/e$/, "");
       // Every form ISE_SHAPE accepts, or the shape refuses a derivative of a
@@ -17156,8 +17159,10 @@ function testDocProseIsAmericanEnglish() {
           // An interior capital marks an identifier rather than a word:
           // `keyCompromise` is an RFC 8555 revocation reason, `dnsPromises`
           // is Node's own API, and renaming either is a breaking change
-          // rather than a copy edit.
-          if (/^.+[A-Z]/.test(words[wi])) continue;
+          // rather than a copy edit. It has to be MIXED case, because a
+          // heading that shouts `NORMALISE` has an interior capital too and
+          // is prose.
+          if (/[a-z]/.test(words[wi]) && /^.+[A-Z]/.test(words[wi])) continue;
           var lw = words[wi].toLowerCase();
           if (!ISE_SHAPE.test(lw) || AMERICAN_ISE[lw] || WISE_SHAPE.test(lw)) continue;
           m = [words[wi]];
