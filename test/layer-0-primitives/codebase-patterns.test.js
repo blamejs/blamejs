@@ -678,6 +678,9 @@ function testNoOrphanAllowClass() {
   var re = /\ballow:([a-z][a-zA-Z0-9-]*)/g;
   for (var fi = 0; fi < files.length; fi++) {
     var rel = _relPath(files[fi]);
+    // The example app's gate holds its own marker machinery, and its prose
+    // names markers in order to explain them.
+    if (rel === "examples/wiki/test/codebase-patterns.test.js") continue;
     // Skip THIS file: it holds the marker machinery + the registry itself,
     // where `allow:` appears in regexes and the VALID_ALLOW_CLASSES keys.
     if (rel === "test/layer-0-primitives/codebase-patterns.test.js") continue;
@@ -699,10 +702,15 @@ function testNoOrphanAllowClass() {
         // else. Falling back to the framework's registry would accept a class
         // no example detector reads, which is the inert marker this pass
         // exists to remove.
+        // What this asks is whether the class is a real one, not whether the
+        // rule naming it reads this particular file. An example file may
+        // carry either registry's class: the example app's gate has its own,
+        // and a marker placed where a rule may later widen to is not wrong.
+        // Whether a marker is CONSUMED is a separate question, and answering
+        // it needs each rule's scan scope declared rather than inferred.
         var inExample = rel.indexOf("examples/") === 0;
-        var known = inExample
-          ? !!exampleClasses[cls]
-          : Object.prototype.hasOwnProperty.call(VALID_ALLOW_CLASSES, cls);
+        var known = Object.prototype.hasOwnProperty.call(VALID_ALLOW_CLASSES, cls) ||
+                    (inExample && !!exampleClasses[cls]);
         if (!known) {
           var isRetired = Object.prototype.hasOwnProperty.call(RETIRED_ALLOW_TOKENS, cls);
           bad.push({
@@ -712,8 +720,9 @@ function testNoOrphanAllowClass() {
               ? "retired allow-class '" + cls + "' — " + RETIRED_ALLOW_TOKENS[cls]
               : "unregistered allow-class '" + cls + "' — names no detector " +
                 (inExample
-                  ? "in the example app's own gate (fix the typo, or have " +
-                    "examples/wiki/test/codebase-patterns.test.js filter on it)"
+                  ? "in either registry (fix the typo, register it in " +
+                    "VALID_ALLOW_CLASSES, or have the example app's own gate " +
+                    "filter on it)"
                   : "(fix the typo, or register it in VALID_ALLOW_CLASSES)"),
           });
         }
@@ -3399,15 +3408,17 @@ var _RISKY_PROBE_CHILD = [
   "var SIZES = [8192, 16384, 32768];",
   "for (var i = Number(process.env.PROBE_FROM || 0); i < subjects.length; i += 1) {",
   "  var fill = subjects[i][0], tail = subjects[i][1];",
+  // Sizes are in characters, so a multi-character motif repeats fewer times.
+  "  function rep(k) { return fill.repeat(Math.max(1, Math.floor(k / fill.length))); }",
   // A pattern opening with a literal never reaches its body on filler alone,
   // so a subject may carry a prefix that gets it past that token.
   "  var pre = subjects[i][3] || '';",
-  "  if (ms(pre + fill.repeat(2048) + tail) >= 0.3) {",
-  "    var cost = Math.min(ms(pre + fill.repeat(8192) + tail), ms(pre + fill.repeat(8192) + tail));",
+  "  if (ms(pre + rep(2048) + tail) >= 0.3) {",
+  "    var cost = Math.min(ms(pre + rep(8192) + tail), ms(pre + rep(8192) + tail));",
   "    if (cost >= 5) {",
   "      var row = [];",
   "      for (var si = 0; si < SIZES.length; si += 1) {",
-  "        row.push(best(pre + fill.repeat(SIZES[si]) + tail));",
+  "        row.push(best(pre + rep(SIZES[si]) + tail));",
   "      }",
   "      if (row[0] > 0.02 && (row[2] / row[0]) > worstGrowth) {",
   "        worstGrowth = row[2] / row[0]; worstCost = cost; worstLabel = subjects[i][2];",
@@ -3779,6 +3790,13 @@ function testOwnRegexesRunLinear() {
         }
         if (ch && fillers.length < 6 && fillers.indexOf(ch) === -1) fillers.push(ch);
       });
+      // Some ambiguity needs a MOTIF rather than a character: `(?:ab|ab)+$`
+      // costs on "ab" repeated and returns at once on either letter alone.
+      // The pattern's own short literal runs are the motifs to try.
+      runs.forEach(function (w) {
+        if (w.length < 2 || w.length > 4) return;
+        if (fillers.length < 10 && fillers.indexOf(w) === -1) fillers.push(w);
+      });
 
       // The tail is what makes the match FAIL, and a pattern only backtracks
       // on the way to failing. `PREFIX(a+)+$` matches a subject that ends in
@@ -3790,7 +3808,13 @@ function testOwnRegexesRunLinear() {
         seeds.forEach(function (seed) {
           fillers.forEach(function (f) {
             ["!", ""].forEach(function (tail) {
-              function at(n) { return seed + f.repeat(n) + tail; }
+              // Sizes are in CHARACTERS, which is what the cost threshold is
+              // set against. A two-character motif repeated 8192 times is a
+              // 16 KiB subject, and a pattern that only turns costly past the
+              // caller's cap would be reported for work no caller can ask for.
+              function at(n) {
+                return seed + f.repeat(Math.max(1, Math.floor(n / f.length))) + tail;
+              }
               probeSet.push({
                 label: JSON.stringify(seed) + " + " + JSON.stringify(f) +
                        " x N + " + JSON.stringify(tail),

@@ -85,12 +85,17 @@ function _slashIsRegex(prevSignificant) {
       prevSignificant.type === TOK_TEMPLATE ||
       prevSignificant.type === TOK_REGEX) return false;
   if (prevSignificant.type === TOK_KEYWORD) {
+    // A keyword in property position is a value, so a slash after it divides.
+    if (prevSignificant.isProperty === true) return false;
     var kw = prevSignificant.value;
     // After these keywords a `/` is part of a regex literal.
+    // `else` and `do` are followed by the statement they govern, which may be
+    // unbraced and may begin with a pattern: `else /re/.test(s);`.
     if (kw === "return" || kw === "typeof" || kw === "throw" ||
         kw === "new" || kw === "delete" || kw === "void" ||
         kw === "instanceof" || kw === "in" || kw === "of" ||
-        kw === "case" || kw === "yield" || kw === "await") return true;
+        kw === "case" || kw === "yield" || kw === "await" ||
+        kw === "else" || kw === "do") return true;
     return false;
   }
   if (prevSignificant.type === TOK_PUNCT) {
@@ -240,6 +245,13 @@ function tokenize(source) {
       var idVal = source.slice(is, i);
       var idType = KEYWORDS[idVal] ? TOK_KEYWORD : TOK_IDENT;
       var itok = { type: idType, value: idVal, start: is, end: i };
+      // Every keyword is also a legal property name, and one in that position
+      // is a value rather than a keyword: `obj.return / 2` and `obj.else / 2`
+      // both divide. Recorded here, where the preceding token is known.
+      if (prevSig !== null && prevSig.type === TOK_PUNCT &&
+          (prevSig.value === "." || prevSig.value === "?.")) {
+        itok.isProperty = true;
+      }
       tokens.push(itok); prevSig = itok;
       continue;
     }
@@ -291,24 +303,10 @@ function tokenize(source) {
           }
         }
         // A control keyword is also a legal property name, and `obj.if(x) / 2`
-        // divides. What makes it a header is standing on its own, so the
-        // token before it must not be member access.
-        var headIsControl = head !== null &&
-          (head.type === TOK_KEYWORD || head.type === TOK_IDENT) &&
-          _CONTROL_HEADER_KEYWORDS[head.value] === 1;
-        if (headIsControl) {
-          for (var mb = tokens.length - 1; mb >= 0; mb -= 1) {
-            var mt = tokens[mb];
-            if (mt.type === TOK_WS || mt.type === TOK_COMMENT) continue;
-            if (mt === head) continue;
-            if (mt.end > head.start) continue;
-            if (mt.type === TOK_PUNCT && (mt.value === "." || mt.value === "?.")) {
-              headIsControl = false;
-            }
-            break;
-          }
-        }
-        parenStack.push(headIsControl);
+        // divides. Property position is recorded on the token itself.
+        parenStack.push(head !== null && head.isProperty !== true &&
+                        (head.type === TOK_KEYWORD || head.type === TOK_IDENT) &&
+                        _CONTROL_HEADER_KEYWORDS[head.value] === 1);
       } else if (ptok.value === ")") {
         ptok.closedControlHeader = parenStack.pop() === true;
       }
