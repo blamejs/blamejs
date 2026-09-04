@@ -218,6 +218,23 @@ function _scriptFiles() {
   catch (_e) { return []; }
 }
 
+// The example apps' own sources, without their installed dependencies or
+// their build output. A bundle carries whatever its inputs carried, and
+// editing one to satisfy a rule edits a file the next build overwrites.
+function _exampleAppFiles() {
+  var root = path.resolve(__dirname, "..", "..", "examples");
+  var out = [];
+  try {
+    _walk(root).forEach(function (f) {
+      var rel = _relPath(f);
+      if (rel.indexOf("/node_modules/") !== -1) return;
+      if (rel.indexOf("/public/dist/") !== -1) return;
+      out.push(f);
+    });
+  } catch (_e) { return []; }
+  return out;
+}
+
 function _relPath(absPath) {
   return path.relative(path.resolve(__dirname, "..", ".."), absPath).replace(/\\/g, "/");
 }
@@ -339,7 +356,8 @@ function _blankCommentLines(src) {
 // used two blind replaces, which deleted a real emission from its scan.
 //
 // testCommentStripHelper below pins both directions of its behaviour.
-var _stripComments = require("../helpers/_shape-match").stripComments;
+var shapeMatch = require("../helpers/_shape-match");
+var _stripComments = shapeMatch.stripComments;
 
 var _allViolations = [];
 
@@ -384,7 +402,6 @@ var VALID_ALLOW_CLASSES = {
   "bare-error-throw": 1,
   "bare-split-on-quoted-header-token-grammar": 1,
   "console-direct": 1,
-  "deny-path-hardcoded-response": 1,
   "duplicate-regex": 1,
   "dynamic-regex": 1,
   "dynamic-require-operator-module": 1,
@@ -407,7 +424,6 @@ var VALID_ALLOW_CLASSES = {
   "math-random-noncrypto-jitter-sampling": 1,
   "no-number-money-arithmetic": 1,
   "numeric-opt-Infinity-intentional": 1,
-  "primitive-unreachable": 1,
   "process-exit-operator-optin": 1,
   "raw-byte-literal": 1,
   "raw-hash-compare-nonsecret-tag": 1,
@@ -440,6 +456,8 @@ var VALID_ALLOW_CLASSES = {
 // each surviving site under the NEW token only after re-checking it. Never reuse
 // a retired name; never bulk find-replace the markers.
 var RETIRED_ALLOW_TOKENS = {
+  "deny-path-hardcoded-response": "retired (2026-09-04) — testDenyPathComposesDenyResponse never routed its findings through _filterMarkers, so this marker was accepted and then ignored. That detector carries a NOT_DENY_PATH map of content-servers instead; add the file there with its reason rather than marking the line",
+  "primitive-unreachable": "retired (2026-09-04) — testPrimitiveReachability never routed its findings through _filterMarkers, so this marker was accepted and then ignored. A documented primitive that index.js does not expose is wired or the @primitive block goes, and neither is a marker",
   "silent-catch": "renamed to 'silent-catch-stream-teardown' (2026-06-26 re-verify pass) — re-examine each empty-catch site before reusing; the old token is retired and must not be re-registered",
   "raw-randombytes-token": "renamed to 'raw-randombytes-token-mime-boundary' (2026-06-26 re-verify pass) — the one site is a MIME boundary, not an auth credential; re-verify before reusing",
   "raw-timing-safe-equal": "renamed to 'raw-timing-safe-equal-boot-prechecked' (2026-06-26 re-verify pass) — node timingSafeEqual used directly (b.crypto circular at boot) with a length pre-check; re-verify before reusing",
@@ -522,9 +540,133 @@ function testNoRetiredTokenUsedAnywhere() {
   _report("no retired allow-token is used as a marker or detector arg anywhere (lib + test + examples)", bad);
 }
 
+// ---- Pattern: a detector's declared class is the one it honors ----
+//
+// class: declared-class-not-honored (no marker)
+//
+// Every detector heads itself with `// class: <name>`, which is where a
+// reader goes to find the marker that exempts a site. Two ways that goes
+// wrong, and the tree held both.
+//
+// The name can be a RETIRED token. Ten headers still read `raw-process-env`,
+// `seal-without-aad`, `handrolled-debounce` and their neighbors, renamed in a
+// re-verification pass that reached the markers and not the headers. A reader
+// following one writes a marker the orphan gate then refuses.
+//
+// Or the name can be registered while the detector never routes its findings
+// through _filterMarkers. Then the marker is accepted, does nothing, and says
+// nothing: the build still fails and the reason it gives is the one the
+// contributor already tried to answer.
+function testDeclaredClassIsHonored() {
+  var self = path.resolve(__dirname, "codebase-patterns.test.js");
+  var text = fs.readFileSync(self, "utf8");
+  var lines = text.split(/\r?\n/);
+
+  // Honored is asked per detector, not across the file. A shared map lets a
+  // header advertise whatever some other detector happens to filter on, which
+  // is the copied-header case this exists to catch.
+  function honoredWithin(fromLine) {
+    // The declaration sits either in the header comment above a detector or
+    // inside its body. Which one decides where the body is: from the header
+    // it is the next function, and from inside it is the enclosing one.
+    var prevFn = -1, prevClose = -1;
+    for (var b = fromLine - 1; b >= 0; b -= 1) {
+      if (prevFn === -1 && /^function\s+[A-Za-z_]/.test(lines[b])) prevFn = b;
+      if (prevClose === -1 && /^\}/.test(lines[b])) prevClose = b;
+      if (prevFn !== -1 && prevClose !== -1) break;
+    }
+    var start;
+    if (prevFn > prevClose) {
+      start = prevFn;
+    } else {
+      start = -1;
+      for (var f = fromLine; f < lines.length; f += 1) {
+        if (/^function\s+[A-Za-z_]/.test(lines[f])) { start = f; break; }
+      }
+      if (start === -1) return Object.create(null);
+    }
+    var end = lines.length;
+    for (var j = start + 1; j < lines.length; j += 1) {
+      if (/^\}/.test(lines[j])) { end = j + 1; break; }
+    }
+    var body = lines.slice(start, end).join("\n");
+    var found = Object.create(null);
+    (body.match(/_filterMarkers\([^,)]+,\s*"([a-zA-Z0-9-]+)"/g) || []).forEach(function (s) {
+      var mm = s.match(/"([a-zA-Z0-9-]+)"/);
+      if (mm) found[mm[1]] = true;
+    });
+    // A KNOWN_ANTIPATTERNS entry carries its own allowlist and is filtered by
+    // the shared runner, so its id is honored without a call of its own.
+    (body.match(/\bid:\s*"([a-zA-Z0-9-]+)"/g) || []).forEach(function (s) {
+      var mm = s.match(/"([a-zA-Z0-9-]+)"/);
+      if (mm) found[mm[1]] = true;
+    });
+    return found;
+  }
+
+  var bad = [];
+  for (var i = 0; i < lines.length; i += 1) {
+    var m = lines[i].match(/^\s*\/\/\s*class:\s*([a-zA-Z0-9-]+)\s*(.*)$/);
+    if (!m) continue;
+    var cls = m[1];
+    var where = { file: "test/layer-0-primitives/codebase-patterns.test.js", line: i + 1 };
+    // A gate with no escape hatch still wants a name. It says so on the line,
+    // which keeps the label and keeps the claim honest, and a registered
+    // class saying it takes no marker is a contradiction rather than a pass.
+    if (/^\(no marker\)$/i.test((m[2] || "").trim())) {
+      if (Object.prototype.hasOwnProperty.call(VALID_ALLOW_CLASSES, cls)) {
+        bad.push({
+          file: where.file, line: where.line,
+          content: "declared class '" + cls + "' says it takes no marker while " +
+                   "being registered in VALID_ALLOW_CLASSES, so a marker IS " +
+                   "accepted and then ignored. Drop one of the two",
+        });
+      }
+      continue;
+    }
+    if (Object.prototype.hasOwnProperty.call(RETIRED_ALLOW_TOKENS, cls)) {
+      bad.push({
+        file: where.file, line: where.line,
+        content: "declared class '" + cls + "' is retired. " +
+                 RETIRED_ALLOW_TOKENS[cls].split(" — ")[0] +
+                 "; name the class this detector filters on",
+      });
+      continue;
+    }
+    if (honoredWithin(i)[cls]) continue;
+    if (Object.prototype.hasOwnProperty.call(VALID_ALLOW_CLASSES, cls)) {
+      bad.push({
+        file: where.file, line: where.line,
+        content: "declared class '" + cls + "' is registered but this detector " +
+                 "never calls _filterMarkers for it, so the marker it advertises " +
+                 "is accepted and ignored. Route the findings through it, or drop " +
+                 "the class from VALID_ALLOW_CLASSES so the marker is refused",
+      });
+      continue;
+    }
+    // Neither retired, nor honored here, nor registered. The header names an
+    // exemption nobody can spend: writing it is refused as unregistered.
+    bad.push({
+      file: where.file, line: where.line,
+      content: "declared class '" + cls + "' is not registered and this detector " +
+               "does not filter on it, so the marker it advertises cannot be " +
+               "used. Register and honor it, or say the detector takes no marker",
+    });
+  }
+  _report("a detector's declared class names the marker it actually honors", bad);
+}
+
 function testNoOrphanAllowClass() {
-  // scanScope: lib + test (every shipped + test source).
-  var files = _libFiles().concat(_testFiles());
+  // scanScope: lib + test + scripts + the example apps.
+  //
+  // It read lib and test alone, and a marker anywhere else named whatever it
+  // liked. That is where the 2026-06-26 renames went: retiring `raw-process-env`
+  // to force a re-check reached every marker the gate could see, and left five
+  // in scripts/ still spelling the retired token, which no detector answers to
+  // and nothing reported. A marker is a claim about a rule, so it is checked
+  // wherever it is written.
+  var files = _libFiles().concat(_testFiles()).concat(_scriptFiles())
+    .concat(_exampleAppFiles());
   var bad = [];
   var re = /\ballow:([a-z][a-zA-Z0-9-]*)/g;
   for (var fi = 0; fi < files.length; fi++) {
@@ -2543,7 +2685,7 @@ function testNoInternalBindingNameInProse() {
 
 // ---- Pattern: require-block `=` column alignment ----
 //
-// class: require-block-misaligned
+// class: require-block-misaligned (no marker)
 //
 // Within a contiguous top-of-file run of `var <name> = require(...)` /
 // `var { ... } = require(...)` lines, the `=` signs share a column WHEN
@@ -2651,7 +2793,7 @@ function _requireModalColumn(infos) {
 }
 
 function testRequireBlockAlignment() {
-  // class: require-block-misaligned
+  // class: require-block-misaligned (no marker)
   var files = _libFiles();
   var bad = [];
 
@@ -3034,6 +3176,162 @@ var _REGEX_SITES = [
   new RegExp("(\\/(?:[^\\/\\\\\\n\\[]|\\\\.|\\[(?:[^\\]\\\\\\n]|\\\\.)*\\])+\\/[gimsuyd]*)", "g"),
 ];
 
+// A pattern the source builds out of a string rather than writing as a
+// literal. The extractor above reads literals, so `new RegExp("\\bCOPY\\b" +
+// ...)` and the `_re("...")` table in b.guardSql were measured by nothing:
+// 34 of them, including the dangerous-construct table that reads hostile SQL.
+//
+// Two shapes are reconstructable without running the file. A direct
+// `new RegExp("body", "flags")`, and a one-argument helper that wraps
+// `new RegExp(src, "flags")` with fixed flags, which is how guard-sql spells
+// its table. A pattern assembled from an identifier or a `join()` is not
+// reconstructable and is left to the module's own tests.
+// Returned as { line -> [source, ...] } and read from the whole file rather
+// than one line at a time, so a constructor written across lines is seen. Both
+// quote styles count: `new RegExp('(?:a+)+$')` is the same pattern as the
+// double-quoted one, and a check that reads only one of them says nothing
+// about half the shape it claims to cover.
+// The run of characters a pattern requires literally before anything else can
+// match. Read verbatim, so a separator inside it survives: `^api-key:(a+)+$`
+// yields `api-key:`, and a subject built from its words alone would stop at
+// the hyphen and never reach the body.
+function _literalPrefixOf(pattern) {
+  var out = "";
+  var i = 0;
+  if (pattern.charAt(0) === "^") i = 1;
+  for (; i < pattern.length; i += 1) {
+    var ch = pattern.charAt(i);
+    var lit = null;
+    if (ch === "\\") {
+      var nx = pattern.charAt(i + 1);
+      if (nx === "" || /[dDsSwWbBnrtvfux0-9kpP]/.test(nx)) break;   // a class or an anchor, not a character
+      lit = nx;
+      i += 1;
+    } else if ("([{|.*+?$)]}".indexOf(ch) !== -1) {
+      break;
+    } else {
+      lit = ch;
+    }
+    // A quantifier makes the character it follows optional or repeatable, so
+    // it is not part of what must appear.
+    if ("*+?{".indexOf(pattern.charAt(i + 1)) !== -1) break;
+    out += lit;
+    if (out.length >= 40) break;
+  }
+  return out;
+}
+
+function _composedRegexSourcesByLine(content) {
+  var byLine = {};
+  var sig;
+  try { sig = shapeMatch.significantTokens(shapeMatch.tokenize(content)); }
+  catch (_e) { return byLine; }
+
+  function isPunct(t, v) { return t && t.type === shapeMatch.TOK_PUNCT && t.value === v; }
+  function isIdent(t, v) { return t && (t.type === shapeMatch.TOK_IDENT || t.type === shapeMatch.TOK_KEYWORD) && t.value === v; }
+  function isStr(t) { return t && t.type === shapeMatch.TOK_STRING; }
+
+  // JavaScript's string escapes, not JSON's. JSON has no `\x61` and no
+  // `\u{61}`, so reading these with JSON.parse returned nothing for a pattern
+  // that uses either, and the pattern was dropped from the check without a
+  // word. A dropped pattern reads exactly like a safe one.
+  function bodyOf(tok) {
+    var inner = tok.value.slice(1, -1);
+    var out = "";
+    for (var i = 0; i < inner.length; i += 1) {
+      var ch = inner.charAt(i);
+      if (ch !== "\\") { out += ch; continue; }
+      i += 1;
+      var esc = inner.charAt(i);
+      if (esc === "n") { out += "\n"; continue; }
+      if (esc === "r") { out += "\r"; continue; }
+      if (esc === "t") { out += "\t"; continue; }
+      if (esc === "b") { out += "\b"; continue; }
+      if (esc === "f") { out += "\f"; continue; }
+      if (esc === "v") { out += String.fromCharCode(11); continue; }
+      if (esc === "\n") { continue; }                       // line continuation
+      if (esc === "0" && !/[0-9]/.test(inner.charAt(i + 1))) {
+        out += String.fromCharCode(0); continue;
+      }
+      if (esc === "x") {
+        var hx = inner.substr(i + 1, 2);
+        if (!/^[0-9a-fA-F]{2}$/.test(hx)) return null;
+        out += String.fromCharCode(parseInt(hx, 16)); i += 2; continue;
+      }
+      if (esc === "u") {
+        if (inner.charAt(i + 1) === "{") {
+          var end = inner.indexOf("}", i + 2);
+          if (end === -1) return null;
+          var cp = inner.slice(i + 2, end);
+          if (!/^[0-9a-fA-F]{1,6}$/.test(cp)) return null;
+          out += String.fromCodePoint(parseInt(cp, 16)); i = end; continue;
+        }
+        var u4 = inner.substr(i + 1, 4);
+        if (!/^[0-9a-fA-F]{4}$/.test(u4)) return null;
+        out += String.fromCharCode(parseInt(u4, 16)); i += 4; continue;
+      }
+      // `\\`, `\'`, `\"`, `\/` and anything else stand for the character.
+      out += esc;
+    }
+    return out;
+  }
+
+  function push(tok, decoded, flags) {
+    if (decoded === null) return;
+    var line = shapeMatch.positionToLineCol(content, tok.start).line;
+    if (!byLine[line]) byLine[line] = [];
+    // Re-spelled as a literal so the caller can slice pattern from flags the
+    // way it does for one it read from the source.
+    byLine[line].push("/" + decoded.replace(/\//g, "\\/") + "/" + (flags || ""));
+  }
+
+  // Helpers in this file that wrap new RegExp with fixed flags, found the
+  // same way: `function _x(src) { ... return new RegExp(src, "i"); }`.
+  var wrappers = {};
+  for (var w = 0; w + 8 < sig.length; w += 1) {
+    if (!isIdent(sig[w], "function")) continue;
+    var fname = sig[w + 1];
+    if (!fname || fname.type !== shapeMatch.TOK_IDENT) continue;
+    if (!isPunct(sig[w + 2], "(")) continue;
+    var param = sig[w + 3];
+    if (!param || param.type !== shapeMatch.TOK_IDENT) continue;
+    for (var q = w + 4; q < sig.length && q < w + 120; q += 1) {
+      if (isIdent(sig[q], "function")) break;
+      if (!isIdent(sig[q], "new") || !isIdent(sig[q + 1], "RegExp")) continue;
+      if (!isPunct(sig[q + 2], "(")) continue;
+      if (!isIdent(sig[q + 3], param.value)) continue;
+      if (!isPunct(sig[q + 4], ",") || !isStr(sig[q + 5])) continue;
+      wrappers[fname.value] = bodyOf(sig[q + 5]) || "";
+      break;
+    }
+  }
+
+  for (var i = 0; i + 3 < sig.length; i += 1) {
+    // new RegExp("body"[, "flags"]). The whole argument has to BE the string:
+    // `new RegExp("prefix" + rest)` builds a pattern this cannot see, and
+    // measuring the first fragment measures a regex the module never runs,
+    // which is a worse answer than measuring nothing.
+    if (isIdent(sig[i], "new") && isIdent(sig[i + 1], "RegExp") &&
+        isPunct(sig[i + 2], "(") && isStr(sig[i + 3]) &&
+        (isPunct(sig[i + 4], ")") || isPunct(sig[i + 4], ","))) {
+      var flags = "";
+      if (isPunct(sig[i + 4], ",")) {
+        if (!isStr(sig[i + 5]) || !isPunct(sig[i + 6], ")")) continue;
+        flags = bodyOf(sig[i + 5]) || "";
+      }
+      push(sig[i + 3], bodyOf(sig[i + 3]), flags);
+      continue;
+    }
+    // A wrapper call: _re("body")
+    if (sig[i].type === shapeMatch.TOK_IDENT &&
+        Object.prototype.hasOwnProperty.call(wrappers, sig[i].value) &&
+        isPunct(sig[i + 1], "(") && isStr(sig[i + 2]) && isPunct(sig[i + 3], ")")) {
+      push(sig[i + 2], bodyOf(sig[i + 2]), wrappers[sig[i].value]);
+    }
+  }
+  return byLine;
+}
+
 function _timeRegex(re, s) {
   var t0 = process.hrtime.bigint();
   try { re.lastIndex = 0; re.test(s); } catch (_e) { /* a pattern that throws is not this gate's business */ }
@@ -3083,12 +3381,15 @@ var _RISKY_PROBE_CHILD = [
   "var SIZES = [8192, 16384, 32768];",
   "for (var i = Number(process.env.PROBE_FROM || 0); i < subjects.length; i += 1) {",
   "  var fill = subjects[i][0], tail = subjects[i][1];",
-  "  if (ms(fill.repeat(2048) + tail) >= 0.3) {",
-  "    var cost = Math.min(ms(fill.repeat(8192) + tail), ms(fill.repeat(8192) + tail));",
+  // A pattern opening with a literal never reaches its body on filler alone,
+  // so a subject may carry a prefix that gets it past that token.
+  "  var pre = subjects[i][3] || '';",
+  "  if (ms(pre + fill.repeat(2048) + tail) >= 0.3) {",
+  "    var cost = Math.min(ms(pre + fill.repeat(8192) + tail), ms(pre + fill.repeat(8192) + tail));",
   "    if (cost >= 5) {",
   "      var row = [];",
   "      for (var si = 0; si < SIZES.length; si += 1) {",
-  "        row.push(best(fill.repeat(SIZES[si]) + tail));",
+  "        row.push(best(pre + fill.repeat(SIZES[si]) + tail));",
   "      }",
   "      if (row[0] > 0.02 && (row[2] / row[0]) > worstGrowth) {",
   "        worstGrowth = row[2] / row[0]; worstCost = cost; worstLabel = subjects[i][2];",
@@ -3340,19 +3641,32 @@ function testOwnRegexesRunLinear() {
     try { content = fs.readFileSync(files[fi], "utf8"); }
     catch (_e) { continue; }
     var lines = content.split(/\r?\n/);
+    var composedByLine = _composedRegexSourcesByLine(content);
+    // Which `/.../` is a pattern is a lexing question, so it is asked of the
+    // lexer rather than of a regex over the line. Matching slashes textually
+    // reads the middle of a base64 certificate as a pattern: the embedded
+    // WebAuthn roots carry lines like `ZohZbvabO/X+MVT3rri...DF+60PV7/`, whose
+    // two `+` quantifiers measure superlinear once a probe reaches them.
+    var literalByLine = {};
+    try {
+      var toks = shapeMatch.tokenize(content);
+      for (var ti = 0; ti < toks.length; ti += 1) {
+        if (toks[ti].type !== shapeMatch.TOK_REGEX) continue;
+        var lnum = shapeMatch.positionToLineCol(content, toks[ti].start).line;
+        if (!literalByLine[lnum]) literalByLine[lnum] = [];
+        literalByLine[lnum].push(toks[ti].value);
+      }
+    } catch (_e) { literalByLine = {}; }
 
     for (var li = 0; li < lines.length; li += 1) {
       if (/^\s*(\/\/|\*|\/\*)/.test(lines[li])) continue;
       var sources = [];
-      for (var sf = 0; sf < _REGEX_SITES.length; sf += 1) {
-        var site = _REGEX_SITES[sf];
-        site.lastIndex = 0;
-        var sm;
-        while ((sm = site.exec(lines[li])) !== null) {
-          if (sources.indexOf(sm[1]) === -1) sources.push(sm[1]);
-          if (!site.global) break;
-        }
-      }
+      (literalByLine[li + 1] || []).forEach(function (s) {
+        if (sources.indexOf(s) === -1) sources.push(s);
+      });
+      (composedByLine[li + 1] || []).forEach(function (s) {
+        if (sources.indexOf(s) === -1) sources.push(s);
+      });
       if (!sources.length) continue;
 
       for (var sx = 0; sx < sources.length; sx += 1) {
@@ -3364,12 +3678,111 @@ function testOwnRegexesRunLinear() {
       }
       measured[src] = null;
       var lastSlash = src.lastIndexOf("/");
+      // `v` mode allows character classes to nest, and the reader that found
+      // this token treats the first `]` as closing the class. A `/` after
+      // that point ends the token early, so what gets rebuilt is a different
+      // pattern from the one that ships, measured and cleared under the wrong
+      // name. Refused rather than guessed at: the framework has no `v`
+      // pattern today, and the day it has one this says so.
+      if (src.slice(lastSlash + 1).indexOf("v") !== -1) {
+        measured[src] = src.slice(0, 60) + " uses the `v` flag, whose nested " +
+          "character classes this reader does not parse, so the pattern it " +
+          "rebuilds may not be the pattern that runs. Measure it in the " +
+          "module's own tests, or write it without the flag";
+        bad.push({ file: rel, line: li + 1, content: measured[src] });
+        continue;
+      }
       var re;
       // Rebuilt through the constructor: the captured text is only ever used
       // as a pattern, never executed as code. `g`/`y` are dropped so lastIndex
       // cannot carry between probes.
       try { re = new RegExp(src.slice(1, lastSlash), src.slice(lastSlash + 1).replace(/[gy]/g, "")); }
       catch (_e) { continue; }
+
+      // A pattern that opens with a literal is never driven past it by filler
+      // alone. `\bCOPY\b[\s\S]{0,4000}?\bPROGRAM\b` fails at its first token
+      // on a subject of repeated `a`, so the part after it is measured on
+      // nothing, and a catastrophic body behind a literal prefix reads as a
+      // fast pattern. Each literal run in the pattern is therefore seeded into
+      // subjects of its own, both leading and embedded.
+      // Escapes are stripped before the literal runs are read, or `\bCOPY`
+      // yields the seed `bCOPY`, which has no word boundary before `COPY` and
+      // so never matches the token it was meant to get past. Each run is tried
+      // both bare and followed by a space, since a `\b` after the literal
+      // needs a non-word character to land on.
+      var literalText = src.slice(1, lastSlash)
+        .replace(/\\[bBdDsSwWnrtvf]/g, " ")
+        .replace(/\\(.)/g, "$1");
+      // The prefix a subject must carry is whatever the pattern insists on
+      // literally, punctuation included. Rebuilding it out of word runs
+      // joined by spaces loses the separator: `^PREFIX-(a+)+$` needs the
+      // hyphen, and `PREFIX` alone stops one character short of the body
+      // this probe exists to reach. So the prefix is read off the pattern
+      // verbatim, and the word runs stay only as seeds for literals further
+      // in.
+      var prefix = _literalPrefixOf(src.slice(1, lastSlash));
+      var runs = literalText.match(/[A-Za-z_][A-Za-z0-9_]*/g) || [];
+      // The leading literal is what a subject must carry to get past the
+      // first token, and its length is not a measure of that: `^xy(a+)+$`
+      // hides its body behind two characters. It goes first whatever its
+      // length; the rest follow longest-first, since the cap should spend
+      // itself on the specific ones.
+      var ordered = (prefix ? [prefix] : []).concat(
+        runs.slice().sort(function (a, b) { return b.length - a.length; }));
+      var seeds = [];
+      ordered.forEach(function (w) {
+        if (seeds.length >= 6) return;
+        if (seeds.indexOf(w) === -1) seeds.push(w);
+        if (seeds.indexOf(w + " ") === -1) seeds.push(w + " ");
+      });
+      // A body can sit behind more than one required literal, and a subject
+      // carrying only one of them stops at the next: `BEGIN\s+END(a+)+$` is
+      // reached by neither `BEGIN` nor `END` alone. The runs joined in order
+      // stand in for the whole prefix, with a space for whatever separates
+      // them.
+      if (runs.length > 1) {
+        var chain = runs.filter(function (w) { return w.length > 1; }).slice(0, 6).join(" ");
+        if (seeds.indexOf(chain) === -1) seeds.push(chain);
+        if (seeds.indexOf(chain + " ") === -1) seeds.push(chain + " ");
+      }
+      // The filler has to be a character the costly body accepts. `a` and a
+      // space do not enter `(?:x+)+`, so the characters the pattern itself
+      // names are tried as well: the members of its classes and its literal
+      // characters.
+      var fillers = ["a", " "];
+      (src.slice(1, lastSlash).match(/\[[^\]]{0,80}\]|\\?./g) || []).forEach(function (tok) {
+        var ch = null;
+        if (tok.charAt(0) === "[") {
+          var inner = tok.slice(1, -1).replace(/^\^/, "");
+          var cm = inner.match(/[A-Za-z0-9_]/);
+          if (cm) ch = cm[0];
+        } else if (/^[A-Za-z0-9_]$/.test(tok)) {
+          ch = tok;
+        }
+        if (ch && fillers.length < 6 && fillers.indexOf(ch) === -1) fillers.push(ch);
+      });
+
+      // The tail is what makes the match FAIL, and a pattern only backtracks
+      // on the way to failing. `PREFIX(a+)+$` matches a subject that ends in
+      // its own filler and returns at once; the same subject with one
+      // character it cannot accept is what costs.
+      var probeSet = SUBJECTS;
+      if (seeds.length) {
+        probeSet = SUBJECTS.slice();
+        seeds.forEach(function (seed) {
+          fillers.forEach(function (f) {
+            ["!", ""].forEach(function (tail) {
+              function at(n) { return seed + f.repeat(n) + tail; }
+              probeSet.push({
+                label: JSON.stringify(seed) + " + " + JSON.stringify(f) +
+                       " x N + " + JSON.stringify(tail),
+                small: at(2048), big: at(8192),
+                sizes: [at(8192), at(16384), at(32768)],
+              });
+            });
+          });
+        });
+      }
 
       var worst = 0, worstSubject = "", worstCost = 0;
       var blewUpAt = null;
@@ -3379,9 +3792,17 @@ function testOwnRegexesRunLinear() {
         // Measured over there, so a pattern that never returns is killed
         // there instead of stopping this run. The child answers the same two
         // questions, so the verdict below is reached the same way.
+        var tuples = SUBJECTS.map(function (s) { return [s.filler, s.tail, s.label]; });
+        seeds.forEach(function (seed) {
+          fillers.forEach(function (f) {
+            ["!", ""].forEach(function (tail) {
+              tuples.push([f, tail, JSON.stringify(seed) + " + " +
+                JSON.stringify(f) + " x N + " + JSON.stringify(tail), seed]);
+            });
+          });
+        });
         var probe = _probeRiskyPattern(src.slice(1, lastSlash),
-          src.slice(lastSlash + 1).replace(/[gy]/g, ""),
-          SUBJECTS.map(function (s) { return [s.filler, s.tail, s.label]; }));
+          src.slice(lastSlash + 1).replace(/[gy]/g, ""), tuples);
         if (probe.neverReturned) {
           blewUpAt = true;
         } else {
@@ -3392,8 +3813,8 @@ function testOwnRegexesRunLinear() {
           worstSubject = probe.label;
         }
       }
-      for (var sj = 0; !blewUpAt && !measuredInChild && sj < SUBJECTS.length; sj += 1) {
-        var subj = SUBJECTS[sj];
+      for (var sj = 0; !blewUpAt && !measuredInChild && sj < probeSet.length; sj += 1) {
+        var subj = probeSet[sj];
         // Cost first, growth second.
         //
         // Growth alone flags idioms nobody would rewrite: a pattern trimming
@@ -4427,7 +4848,7 @@ function testNoRawXffRead() {
 // ---- Pattern 20b: peer-gating bypass — raw X-Forwarded-Proto/-Host read ----
 
 function testNoRawForwardedProtoHostRead() {
-  // class: raw-xfp
+  // class: raw-xfp-telemetry-only
   // The XFP sibling of Pattern 20. X-Forwarded-Proto / X-Forwarded-Host are
   // forgeable; reading them directly for a scheme/authority decision (Secure
   // cookie, HSTS, same-origin, the cryptographically-bound DPoP htu) bypasses
@@ -4468,7 +4889,7 @@ function testNoRawRemoteAddress() {
 // ---- Pattern 22: process.env raw read in lib/ ----
 
 function testNoRawProcessEnv() {
-  // class: raw-process-env
+  // class: raw-process-env-bootstrap
   // v0.5.18: process.env.X reads should route through safeEnv.readVar
   // for the size cap + type coercion + missing/empty handling. log.js
   // is an exception (safeEnv requires log → load-time cycle); other
@@ -4487,7 +4908,7 @@ function testNoRawProcessEnv() {
 // ---- Pattern 23: nodeCrypto.timingSafeEqual direct (length-throws) ----
 
 function testNoRawTimingSafeEqual() {
-  // class: raw-timing-safe-equal
+  // class: raw-timing-safe-equal-boot-prechecked
   // v0.5.18: Node's nodeCrypto.timingSafeEqual throws on length-mismatch
   // (itself a side channel). Framework wrapper b.crypto.timingSafeEqual
   // short-circuits length-mismatch in constant time before delegating.
@@ -4585,7 +5006,7 @@ function testBufferFromStringEncoding() {
 // ---- Pattern 26: setInterval without unref for background timers ----
 
 function testTimersUnref() {
-  // class: timer-no-unref
+  // class: timer-no-unref-unrefed-below
   // Background timers (heartbeats, debounce flushers, rate-limit
   // sweepers, cache GC) without unref() pin the process — graceful
   // shutdown waits indefinitely. Framework should use safeAsync.sleep
@@ -4629,7 +5050,7 @@ function testTimersUnref() {
 // ---- Pattern 27: nodeCrypto.randomBytes raw token generation ----
 
 function testNoRawRandomBytesToken() {
-  // class: raw-randombytes-token
+  // class: raw-randombytes-token-mime-boundary
   // v0.5.18 sweep: hand-rolled tokens via nodeCrypto.randomBytes(n)
   // .toString("hex"|"base64"|"base64url") should route through
   // b.crypto.generateToken / generateBytes so the framework's PQC-
@@ -4660,7 +5081,7 @@ function testNoHandrolledSleep() {
 // ---- Pattern 29: raw http/https/fetch outbound bypassing httpClient ----
 
 function testNoRawOutboundHttp() {
-  // class: raw-outbound-http
+  // class: raw-outbound-http-framework-internal
   // SSRF guard + DNS pinning + retry policy live in b.httpClient.
   // Direct http.request / https.request / fetch in lib/ bypasses the
   // ssrfGuard + pinned-DNS lookup (v0.5.4 DNS-rebinding window).
@@ -4785,7 +5206,7 @@ function testNoHandrolledDeepClone() {
 // ---- Pattern 33: hand-rolled buffer collection ----
 
 function testNoHandrolledBufferCollect() {
-  // class: handrolled-buffer-collect
+  // class: handrolled-buffer-collect-bounded-framing
   // The `var chunks = []; …on("data", chunks.push); …on("end",
   // Buffer.concat(chunks))` shape is what `b.safeBuffer.boundedChunkCollector`
   // exists for (with maxBytes cap + drop semantics). Inline reinvention
@@ -4835,7 +5256,7 @@ function testNoHandrolledBufferCollect() {
 // ---- Pattern 34: hand-rolled debounce ----
 
 function testNoHandrolledDebounce() {
-  // class: handrolled-debounce
+  // class: handrolled-debounce-stream-idle
   // The `clearTimeout(t); t = setTimeout(fn, ms)` shape is the debounce
   // idiom. Used in 5+ places pre-sweep. Should be wrapped in a
   // `b.safeAsync.debounce(fn, ms)` primitive that handles the timer
@@ -5311,7 +5732,7 @@ function testShingleRoundMatchesDirectScan() {
 }
 
 async function testNoDuplicateCodeBlocks() {
-  // class: duplicate-block
+  // class: duplicate-block (no marker)
   // Token-n-gram shingle detection. Each .js file is fully tokenized
   // (with identifiers/strings/numbers/regexes normalized to placeholders),
   // then split into overlapping N-token shingles. Each shingle that
@@ -15270,7 +15691,7 @@ function testFromBase64UrlUntrappedOnAdversarialInput() {
 // gate. Surfaced by Codex on v0.10.7 PR #90 for
 // `b.guardListUnsubscribe._isRefusedAutoFetchHost`.
 function testHostnameCompareTrailingDotNormalize() {
-  // class: hostname-compare-trailing-dot
+  // class: hostname-compare-trailing-dot-pre-split-refused
   var files = _libFiles();
   var bad = [];
   var reservedHostLiteralRe = /===\s*"(localhost|localhost\.localdomain|ip6-localhost|ip6-loopback)"/;
@@ -15850,7 +16271,7 @@ function testGitleaksTrippingPatternsAllowlisted() {
 // ---- Pattern: release notes must not claim the shipped tarball is
 //      identical / unchanged across a version ----
 //
-// class: release-notes-unchanged-tarball-claim
+// class: release-notes-unchanged-tarball-claim (no marker)
 //
 // Every release bumps package.json's version and adds a CHANGELOG.md
 // entry, and both files ship inside the published npm tarball (the
@@ -16002,7 +16423,7 @@ function testNoInlineRequireInDeferred() {
 
 // ---- Pattern: vault.seal direct in dbStore-shaped sealed-row paths ----
 //
-// class: seal-without-aad
+// class: seal-without-aad-by-design
 //
 // `vault.seal(plaintext)` produces a ciphertext that decrypts in ANY
 // row of the same vault. A DB-write attacker can copy a sealed value
@@ -19845,7 +20266,7 @@ function testCalendarBysetposStartGate() {
 }
 
 function testKnownAntipatterns() {
-  // class: known-antipattern
+  // class: known-antipattern (no marker)
   // Fires at n=1 — any file matching a registered antipattern (and not
   // in its allowlist) fails the gate with a pointer to the primitive
   // that should replace it.
@@ -19942,7 +20363,7 @@ function testKnownAntipatterns() {
 // ---- Pattern: every top-level lib/safe-*.js / lib/guard-*.js MUST
 //                be wired into the public surface via index.js ----
 //
-// class: safe-guard-not-wired-in-index
+// class: safe-guard-not-wired-in-index (no marker)
 //
 // Discipline: when a new `b.safe*` / `b.guard*` primitive lands in
 // lib/, the same PR MUST wire it into the public surface so operators
@@ -19965,7 +20386,7 @@ function testKnownAntipatterns() {
 //     unexposed (composed by another primitive). Each entry
 //     carries a reason; mirrors the FUZZ_NOT_REQUIRED shape.
 function testSafeGuardWiredInIndex() {
-  // class: safe-guard-not-wired-in-index
+  // class: safe-guard-not-wired-in-index (no marker)
   var INDEX_WIRING_NOT_REQUIRED = {
     // The aggregator over all guards — every member is wired
     // individually; the aggregator itself IS wired via `guardAll`,
@@ -20064,7 +20485,7 @@ function testSafeGuardWiredInIndex() {
 //                paired KNOWN_ANTIPATTERN that flags raw uses of the
 //                unsafe API to force the discipline ----
 //
-// class: safe-guard-not-paired-with-must-compose-detector
+// class: safe-guard-not-paired-with-must-compose-detector (no marker)
 //
 // Some safe-*/guard-* primitives REPLACE an unsafe-by-default API
 // (e.g. `b.safeDecompress` replaces `zlib.gunzip*` / `inflate*`;
@@ -20085,7 +20506,7 @@ function testSafeGuardWiredInIndex() {
 // aggregator). Those carry an explicit MUST_COMPOSE_NOT_REQUIRED
 // entry with the reason.
 function testSafeGuardHasMustComposeDetector() {
-  // class: safe-guard-not-paired-with-must-compose-detector
+  // class: safe-guard-not-paired-with-must-compose-detector (no marker)
   //
   // INVERTED ALLOWLIST: most safe-*/guard-* primitives are operator-
   // boundary validators (content guards / parsers operators wire at
@@ -20162,7 +20583,8 @@ function testSafeGuardHasMustComposeDetector() {
 // `b.auth.oauth.create(...).parseCallback`). Those are NOT gaps, so a
 // parent that exposes `create` is skipped.
 function testPrimitiveReachability() {
-  // class: primitive-unreachable
+  // No marker exempts a finding here. A documented primitive that index.js
+  // does not expose is wired up, or its @primitive block goes.
   var bSurface;
   try { bSurface = require("../../index.js"); }
   catch (_e) { check("primitive-reachability — index.js require", false); return; }
@@ -20275,7 +20697,8 @@ function testPrimitiveReachability() {
 //               what pinned rate-limit's 429 to text/plain before this
 //               convention existed. ----
 function testDenyPathComposesDenyResponse() {
-  // class: deny-path-hardcoded-response
+  // No marker exempts a finding here. A middleware whose 4xx is not an
+  // access refusal goes in NOT_DENY_PATH below, with the reason.
   var MW_ROOT = path.resolve(LIB_ROOT, "middleware");
   // NOT access-refusals: content-servers that 4xx when the
   // .well-known resource isn't configured, and the CSP report-ingest
@@ -20640,6 +21063,7 @@ async function run() {
   testSfvCitationMatchesReferencingProtocol();
   testNoInternalNarrativeComments();
   testNoOrphanAllowClass();
+  testDeclaredClassIsHonored();
   testNoRetiredAllowTokenReRegistered();
   testNoRetiredTokenUsedAnywhere();
   testNoRawByteLiterals();

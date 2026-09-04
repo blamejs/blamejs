@@ -206,7 +206,10 @@ function tokenize(source) {
         i += 1;
       }
       // Trailing flags
-      while (i < n && /[gimsuyd]/.test(source.charAt(i))) i += 1;
+      // `v` is a flag Node accepts, and stopping before it ends the token
+      // early: the flag is then read as an identifier, and a caller that
+      // rebuilds the pattern from this token builds one without it.
+      while (i < n && /[gimsuydv]/.test(source.charAt(i))) i += 1;
       var rtok = { type: TOK_REGEX, value: source.slice(rs, i), start: rs, end: i };
       tokens.push(rtok); prevSig = rtok;
       continue;

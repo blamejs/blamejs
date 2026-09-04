@@ -322,9 +322,9 @@ function main() {
   var doc = buildAttestation({
     pkg:        pkg,
     version:    _resolveVersion(args, pkg),
-    commit:     _resolveCommit(args, process.env),     // allow:raw-process-env — env-driven release script
+    commit:     _resolveCommit(args, process.env),
     repository: _resolveRepository(args, pkg),
-    timestamp:  _resolveTimestamp(args, process.env),  // allow:raw-process-env — env-driven release script
+    timestamp:  _resolveTimestamp(args, process.env),
   });
 
   var json = JSON.stringify(doc, null, 2) + "\n";

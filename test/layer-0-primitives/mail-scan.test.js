@@ -269,6 +269,102 @@ async function testClamavCleanVerdict() {
     sock._writes.length > 0 && sock._writes[0].toString("ascii").indexOf("zINSTREAM") === 0);
 }
 
+// A reply that never says FOUND is where the classifier used to spend its
+// time. It read the threat name with a lazy run between two whitespace
+// quantifiers, and `.` matches a space, so every way of splitting one run of
+// spaces between them is a candidate the engine tries before it can answer
+// "no". The daemon's reply is capped at 50 MiB, so the size of that search is
+// the daemon's to choose: 2,400 spaces already cost 1.8 seconds, and 8,192
+// did not finish inside five.
+//
+// Measured as growth rather than against a clock: what makes this a defect is
+// that four times the reply costs far more than four times the work, and a
+// budget would pass or fail on how busy the machine is.
+async function testClamavLongReplyWithoutFoundStaysLinear() {
+  var audit = _fakeAudit();
+  async function scanReplyOf(spaces) {
+    var reply = Buffer.from("stream: " + " ".repeat(spaces) + "\n", "ascii");
+    var h = _clamHandle(audit);
+    await h.scan(Buffer.from("body"), { _socket: _fakeSocket(reply) });
+  }
+  // The async form answers with { superlinear, ratio }, where its synchronous
+  // sibling answers with a boolean.
+  var growth = await helpers.looksSuperlinearAsync(scanReplyOf, {
+    small: 4096, large: 16384, threshold: 9, reps: 2, confirmReps: 2,
+  });
+  check("clamav: a long reply with no FOUND does not blow up the classifier",
+        growth.superlinear === false, "ratio=" + String(growth.ratio));
+
+  // And it still answers. A reply that says nothing about a threat is an
+  // error verdict, not a hang.
+  var h2 = _clamHandle(audit);
+  var rv = await h2.scan(Buffer.from("body"), {
+    _socket: _fakeSocket(Buffer.from("stream: " + " ".repeat(8192) + "\n", "ascii")),
+  });
+  check("clamav: and the long no-FOUND reply still returns a verdict",
+        rv && typeof rv.verdict === "string", String(rv && rv.verdict));
+}
+
+// The one-pass reader has to answer what the pattern it replaced answered,
+// for every reply shape short enough that the pattern could answer at all.
+async function testClamavReplyReaderMatchesThePatternItReplaced() {
+  var audit = _fakeAudit();
+  var OLD = /stream:\s+(.+?)\s+FOUND\b/;
+
+  var shapes = [
+    "stream: OK\n",
+    "stream: Eicar-Test-Signature FOUND\n",
+    "stream: OK\nstream: Eicar-Test-Signature FOUND\n",
+    "stream: A stream: B FOUND\n",
+    "stream:\n  Threat FOUND\n",
+    "stream: Threat\nFOUND\n",
+    "stream: FOUNDx\n",
+    "stream: name FOUNDER\n",
+    "stream: name FOUND",
+    "stream:name FOUND\n",
+    "stream:  \t name  \t FOUND\n",
+    "stream: FOUND\n",
+    "stream:  FOUND FOUND\n",
+    "prefix stream: x y FOUND tail\n",
+    "stream: a\nstream: b FOUND\n",
+    "stream: \nFOUND\n",
+    "ERROR\n",
+  ];
+  // Shapes built from the pieces these replies are made of. The index drives
+  // the choice, so the set is the same on every run.
+  var ALPHA = ["stream:", "FOUND", "OK", "x", " ", "  ", "\n", "\t", "ERROR", ":"];
+  for (var c = 0; c < 120; c += 1) {
+    var parts = [];
+    var len = 1 + (c % 7);
+    for (var p = 0; p <= len; p += 1) {
+      parts.push(ALPHA[(c * 7 + p * 3 + (c % 5)) % ALPHA.length]);
+    }
+    shapes.push(parts.join(""));
+  }
+
+  var disagreed = [];
+  for (var s = 0; s < shapes.length; s += 1) {
+    var m = shapes[s].match(OLD);
+    var expected = m ? m[1] : null;
+    var h = _clamHandle(audit);
+    var rv = await h.scan(Buffer.from("body"), {
+      _socket: _fakeSocket(Buffer.from(shapes[s], "ascii")),
+    });
+    // The reply is stripped of its trailing EOL before the read, so the
+    // comparison runs against the same text the classifier sees.
+    var stripped = shapes[s].replace(/[\r\n\0]+$/, "");
+    var m2 = stripped.match(OLD);
+    var want = m2 ? m2[1] : null;
+    var got = rv.verdict === "infected" ? rv.threats[0] : null;
+    if (got !== want) disagreed.push(JSON.stringify(shapes[s]) + " want=" +
+      JSON.stringify(want) + " got=" + JSON.stringify(got));
+    void expected;
+  }
+  check("clamav: the reply reader agrees with the pattern it replaced on " +
+        shapes.length + " shapes",
+        disagreed.length === 0, disagreed.slice(0, 3).join(" | "));
+}
+
 async function testClamavInfectedVerdict() {
   var audit = _fakeAudit();
   var h = _clamHandle(audit);
@@ -429,6 +525,8 @@ function run(cb) {
     .then(testScanIcapInfectedVerdict)
     .then(testScanArchiveEntriesGate)
     .then(testClamavCleanVerdict)
+    .then(testClamavLongReplyWithoutFoundStaysLinear)
+    .then(testClamavReplyReaderMatchesThePatternItReplaced)
     .then(testClamavInfectedVerdict)
     .then(testClamavErrorReplyVerdict)
     .then(testClamavUnrecognizedReplyFailsClosed)
