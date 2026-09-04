@@ -3266,34 +3266,68 @@ function _charMatching(fragment) {
   return null;
 }
 
-// The characters a repetition actually consumes: a character or class with a
-// quantifier directly on it. These are what a subject has to be made of to
-// reach a costly body at all, so they are chosen before anything else the
-// pattern happens to spell.
-function _quantifiedChars(body) {
+// One token of a pattern body: a character class, a complete escape, or a
+// single character. An escape has to be taken whole. `\x7a` is the character
+// `z`, and reading it as `\x` then `7` then `a` builds subjects out of
+// characters the pattern never accepts, so a costly body behind it is entered
+// by nothing.
+function _regexTokens(body) {
   var out = [];
   var i = 0;
   while (i < body.length) {
     var ch = body.charAt(i);
-    var end = i;
-    var pick = null;
     if (ch === "\\") {
-      end = i + 1;
-      pick = _charMatching(body.slice(i, i + 2));
-    } else if (ch === "[") {
-      var close = body.indexOf("]", i + 1);
-      if (close === -1) { i += 1; continue; }
-      end = close;
-      pick = _charMatching(body.slice(i, close + 1));
-    } else if (ch === "." || /^[A-Za-z0-9_ ]$/.test(ch)) {
-      pick = ch === "." ? "a" : ch;
+      var nx = body.charAt(i + 1);
+      var len = 2;
+      if (nx === "x" && /^[0-9a-fA-F]{2}$/.test(body.slice(i + 2, i + 4))) {
+        len = 4;
+      } else if (nx === "u" && body.charAt(i + 2) === "{") {
+        var brace = body.indexOf("}", i + 3);
+        if (brace !== -1) len = brace - i + 1;
+      } else if (nx === "u" && /^[0-9a-fA-F]{4}$/.test(body.slice(i + 2, i + 6))) {
+        len = 6;
+      } else if (nx === "c" && /^[A-Za-z]$/.test(body.charAt(i + 2))) {
+        len = 3;
+      }
+      out.push({ text: body.slice(i, i + len), end: i + len - 1 });
+      i += len;
+      continue;
     }
-    var after = body.charAt(end + 1);
-    if (pick !== null && (after === "+" || after === "*" || after === "{") &&
-        out.indexOf(pick) === -1) {
-      out.push(pick);
+    if (ch === "[") {
+      var cl = i + 1;
+      if (body.charAt(cl) === "^") cl += 1;
+      if (body.charAt(cl) === "]") cl += 1;                 // a `]` first in a class is a literal
+      while (cl < body.length && body.charAt(cl) !== "]") {
+        if (body.charAt(cl) === "\\") cl += 1;
+        cl += 1;
+      }
+      if (cl < body.length) {
+        out.push({ text: body.slice(i, cl + 1), end: cl });
+        i = cl + 1;
+        continue;
+      }
     }
-    i = end + 1;
+    out.push({ text: ch, end: i });
+    i += 1;
+  }
+  return out;
+}
+
+// The characters a repetition actually consumes: a token with a quantifier
+// directly on it. These are what a subject has to be made of to reach a costly
+// body at all, so they are chosen before anything else the pattern spells.
+function _quantifiedChars(body) {
+  var out = [];
+  var toks = _regexTokens(body);
+  for (var t = 0; t < toks.length; t += 1) {
+    var after = body.charAt(toks[t].end + 1);
+    if (after !== "+" && after !== "*" && after !== "{") continue;
+    var text = toks[t].text;
+    var pick = null;
+    if (text.charAt(0) === "\\" || text.charAt(0) === "[") pick = _charMatching(text);
+    else if (text === ".") pick = "a";
+    else if (/^[A-Za-z0-9_ ]$/.test(text)) pick = text;
+    if (pick !== null && out.indexOf(pick) === -1) out.push(pick);
   }
   return out;
 }
@@ -3357,12 +3391,12 @@ function _probeSubjectPieces(body) {
   _quantifiedChars(body).forEach(function (ch) {
     if (fillers.length < 8 && fillers.indexOf(ch) === -1) fillers.push(ch);
   });
-  (body.match(/\[[^\]]{0,80}\]|\\?./g) || []).forEach(function (tok) {
+  _regexTokens(body).forEach(function (tok) {
     var ch = null;
-    if (tok.charAt(0) === "[" || tok.charAt(0) === "\\") {
-      ch = _charMatching(tok);
-    } else if (/^[A-Za-z0-9_]$/.test(tok)) {
-      ch = tok;
+    if (tok.text.charAt(0) === "[" || tok.text.charAt(0) === "\\") {
+      ch = _charMatching(tok.text);
+    } else if (/^[A-Za-z0-9_]$/.test(tok.text)) {
+      ch = tok.text;
     }
     if (ch && fillers.length < 8 && fillers.indexOf(ch) === -1) fillers.push(ch);
   });
@@ -3760,6 +3794,12 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     ["^PREFIX(\\s+)+$",          " "],
     ["^PREFIX([0-9]+)+$",        "0"],
     ["^PREFIX([^a-z]+)+$",       "0"],
+    // A hex or Unicode escape is one token naming one character. Split into
+    // `\x`, `7`, `a` it yields fillers the pattern does not accept.
+    ["^PREFIX(\\x7a+)+$",        "z"],
+    ["^PREFIX(\\u007a+)+$",      "z"],
+    ["^PREFIX([\\x7a]+)+$",      "z"],
+    ["^PREFIX(\\x2c+)+$",        ","],
   ];
   for (var i = 0; i < CASES.length; i += 1) {
     var body = CASES[i][0];
