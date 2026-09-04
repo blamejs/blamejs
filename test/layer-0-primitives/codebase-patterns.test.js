@@ -3248,6 +3248,135 @@ function _literalPrefixOf(pattern) {
   return out;
 }
 
+// A character the given one-token fragment accepts, found by asking the engine
+// what matches rather than by reading the token's own letters. `\d` names a
+// set and the letter `d` is not in it, so a filler read off the text enters a
+// class the pattern refuses; the same goes for `[\d]`, for a range, and for a
+// negated class, where what is wanted is a character the class does NOT list.
+var _FILLER_CANDIDATES = ["a", "0", " ", "b", "x", "z", "_", "-", ".", "/", "!",
+                          "A", "9", "\n", "\t", "\r", ",", "+", ";", ":", "=",
+                          "@", "*", "&", "%", "#", "$", "|", "~", "^", "'", "\""];
+function _charMatching(fragment) {
+  var re;
+  try { re = new RegExp("^(?:" + fragment + ")$"); } catch (_e) { return null; }
+  for (var i = 0; i < _FILLER_CANDIDATES.length; i += 1) {
+    var c = _FILLER_CANDIDATES[i];
+    try { if (re.test(c)) return c; } catch (_e2) { return null; }
+  }
+  return null;
+}
+
+// The characters a repetition actually consumes: a character or class with a
+// quantifier directly on it. These are what a subject has to be made of to
+// reach a costly body at all, so they are chosen before anything else the
+// pattern happens to spell.
+function _quantifiedChars(body) {
+  var out = [];
+  var i = 0;
+  while (i < body.length) {
+    var ch = body.charAt(i);
+    var end = i;
+    var pick = null;
+    if (ch === "\\") {
+      end = i + 1;
+      pick = _charMatching(body.slice(i, i + 2));
+    } else if (ch === "[") {
+      var close = body.indexOf("]", i + 1);
+      if (close === -1) { i += 1; continue; }
+      end = close;
+      pick = _charMatching(body.slice(i, close + 1));
+    } else if (ch === "." || /^[A-Za-z0-9_ ]$/.test(ch)) {
+      pick = ch === "." ? "a" : ch;
+    }
+    var after = body.charAt(end + 1);
+    if (pick !== null && (after === "+" || after === "*" || after === "{") &&
+        out.indexOf(pick) === -1) {
+      out.push(pick);
+    }
+    i = end + 1;
+  }
+  return out;
+}
+
+// What a probe subject for one pattern body is built from. Extracted so the
+// claim it rests on -- that a subject reaches the body a pattern quantifies
+// over -- can be asserted against a pattern written to test it, rather than
+// only against whatever lib/ happens to contain today.
+function _probeSubjectPieces(body) {
+  // A pattern that opens with a literal is never driven past it by filler
+  // alone. `\bCOPY\b[\s\S]{0,4000}?\bPROGRAM\b` fails at its first token on a
+  // subject of repeated `a`, so the part after it is measured on nothing, and
+  // a catastrophic body behind a literal prefix reads as a fast pattern. Each
+  // literal run in the pattern is therefore seeded into subjects of its own,
+  // both leading and embedded.
+  // Escapes are stripped before the literal runs are read, or `\bCOPY` yields
+  // the seed `bCOPY`, which has no word boundary before `COPY` and so never
+  // matches the token it was meant to get past. Each run is tried both bare
+  // and followed by a space, since a `\b` after the literal needs a non-word
+  // character to land on.
+  var literalText = body
+    .replace(/\\[bBdDsSwWnrtvf]/g, " ")
+    .replace(/\\(.)/g, "$1");
+  // The prefix a subject must carry is whatever the pattern requires
+  // literally, punctuation included. Rebuilding it out of word runs joined by
+  // spaces loses the separator: `^PREFIX-(a+)+$` needs the hyphen, and
+  // `PREFIX` alone stops one character short of the body this probe exists to
+  // reach. So the prefix is read off the pattern verbatim, and the word runs
+  // stay only as seeds for literals further in.
+  var prefix = _literalPrefixOf(body);
+  var runs = literalText.match(/[A-Za-z_][A-Za-z0-9_]*/g) || [];
+  // The leading literal is what a subject must carry to get past the first
+  // token, and its length is not a measure of that: `^xy(a+)+$` hides its body
+  // behind two characters. It goes first whatever its length; the rest follow
+  // longest-first, since the cap should spend itself on the specific ones.
+  var ordered = (prefix ? [prefix] : []).concat(
+    runs.slice().sort(function (a, b) { return b.length - a.length; }));
+  var seeds = [];
+  ordered.forEach(function (w) {
+    if (seeds.length >= 6) return;
+    if (seeds.indexOf(w) === -1) seeds.push(w);
+    if (seeds.indexOf(w + " ") === -1) seeds.push(w + " ");
+  });
+  // A body can sit behind more than one required literal, and a subject
+  // carrying only one of them stops at the next: `BEGIN\s+END(a+)+$` is
+  // reached by neither `BEGIN` nor `END` alone. The runs joined in order stand
+  // in for the whole prefix, with a space for whatever separates them.
+  if (runs.length > 1) {
+    var chain = runs.filter(function (w) { return w.length > 1; }).slice(0, 6).join(" ");
+    if (seeds.indexOf(chain) === -1) seeds.push(chain);
+    if (seeds.indexOf(chain + " ") === -1) seeds.push(chain + " ");
+  }
+
+  // The filler has to be a character the costly body accepts. `a` and a space
+  // do not enter `(?:x+)+`, so the characters the pattern itself names are
+  // tried as well. The quantified ones go first: the cap is spent
+  // left-to-right, and a prefix long enough to fill it left `^PREFIX(z+)+$`
+  // with the fillers `a`, a space, `P`, `R`, `E`, `F` and never `z`, so every
+  // subject failed at the prefix and the body behind it was never entered.
+  var fillers = ["a", " "];
+  _quantifiedChars(body).forEach(function (ch) {
+    if (fillers.length < 8 && fillers.indexOf(ch) === -1) fillers.push(ch);
+  });
+  (body.match(/\[[^\]]{0,80}\]|\\?./g) || []).forEach(function (tok) {
+    var ch = null;
+    if (tok.charAt(0) === "[" || tok.charAt(0) === "\\") {
+      ch = _charMatching(tok);
+    } else if (/^[A-Za-z0-9_]$/.test(tok)) {
+      ch = tok;
+    }
+    if (ch && fillers.length < 8 && fillers.indexOf(ch) === -1) fillers.push(ch);
+  });
+  // Some ambiguity needs a MOTIF rather than a character: `(?:ab|ab)+$` costs
+  // on "ab" repeated and returns at once on either letter alone. The pattern's
+  // own short literal runs are the motifs to try.
+  runs.forEach(function (w) {
+    if (w.length < 2 || w.length > 4) return;
+    if (fillers.length < 12 && fillers.indexOf(w) === -1) fillers.push(w);
+  });
+
+  return { seeds: seeds, fillers: fillers };
+}
+
 function _composedRegexSourcesByLine(content) {
   var byLine = {};
   var sig;
@@ -3610,6 +3739,58 @@ function testFuzzHarnessesRequireTheirTargetDirectly() {
     bad);
 }
 
+// The linear-time gate rests on one claim: a probe subject reaches the part of
+// the pattern that can be made to cost. Patterns written for the purpose are
+// what test that, since lib/ contains no pattern of a shape it does not already
+// pass on.
+function testProbeSubjectsReachTheQuantifiedBody() {
+  var CASES = [
+    // [pattern body, a character every probe must be able to repeat]
+    ["^PREFIX(z+)+$",            "z"],
+    ["^A_LONG_LEADING_TOKEN(q+)+$", "q"],
+    ["^(?:x+)+$",                "x"],
+    ["\\bCOPY\\b(y+)+$",         "y"],
+    ["^BEGIN\\s+END(w+)+$",      "w"],
+    ["^[A-F]{2}(k+)+$",          "k"],
+    // A class escape names a set, and its letter is not in it. Reading `\d`
+    // as `d` builds subjects the class refuses.
+    ["^PREFIX(\\d+)+$",          "0"],
+    ["^PREFIX([\\d]+)+$",        "0"],
+    ["^PREFIX(\\w+)+$",          "a"],
+    ["^PREFIX(\\s+)+$",          " "],
+    ["^PREFIX([0-9]+)+$",        "0"],
+    ["^PREFIX([^a-z]+)+$",       "0"],
+  ];
+  for (var i = 0; i < CASES.length; i += 1) {
+    var body = CASES[i][0];
+    var want = CASES[i][1];
+    var pieces = _probeSubjectPieces(body);
+    check("regex probe: /" + body + "/ is driven with the character its body repeats (" +
+          JSON.stringify(want) + ")",
+          pieces.fillers.indexOf(want) !== -1,
+          "fillers=" + JSON.stringify(pieces.fillers));
+  }
+
+  // And the subject those pieces build actually reaches the body: a pattern
+  // whose cost is behind a prefix must measure as costly, not as fast.
+  var planted = new RegExp("^PREFIX(z+)+$");
+  var plantedPieces = _probeSubjectPieces("^PREFIX(z+)+$");
+  var reached = false;
+  for (var s = 0; s < plantedPieces.seeds.length && !reached; s += 1) {
+    for (var f = 0; f < plantedPieces.fillers.length && !reached; f += 1) {
+      var fill = plantedPieces.fillers[f];
+      var subject = plantedPieces.seeds[s] +
+        fill.repeat(Math.max(1, Math.floor(24 / fill.length))) + "!";
+      var t0 = process.hrtime.bigint();
+      planted.test(subject);
+      var ms = Number(process.hrtime.bigint() - t0) / 1e6;
+      if (ms > 5) reached = true;
+    }
+  }
+  check("regex probe: a costly body behind a literal prefix is reached by some subject",
+        reached === true);
+}
+
 function testOwnRegexesRunLinear() {
   // Characters worth repeating (the classes library patterns quantify over)
   // and a tail that denies the overall match so the engine has to exhaust its
@@ -3728,75 +3909,9 @@ function testOwnRegexesRunLinear() {
       try { re = new RegExp(src.slice(1, lastSlash), src.slice(lastSlash + 1).replace(/[gy]/g, "")); }
       catch (_e) { continue; }
 
-      // A pattern that opens with a literal is never driven past it by filler
-      // alone. `\bCOPY\b[\s\S]{0,4000}?\bPROGRAM\b` fails at its first token
-      // on a subject of repeated `a`, so the part after it is measured on
-      // nothing, and a catastrophic body behind a literal prefix reads as a
-      // fast pattern. Each literal run in the pattern is therefore seeded into
-      // subjects of its own, both leading and embedded.
-      // Escapes are stripped before the literal runs are read, or `\bCOPY`
-      // yields the seed `bCOPY`, which has no word boundary before `COPY` and
-      // so never matches the token it was meant to get past. Each run is tried
-      // both bare and followed by a space, since a `\b` after the literal
-      // needs a non-word character to land on.
-      var literalText = src.slice(1, lastSlash)
-        .replace(/\\[bBdDsSwWnrtvf]/g, " ")
-        .replace(/\\(.)/g, "$1");
-      // The prefix a subject must carry is whatever the pattern insists on
-      // literally, punctuation included. Rebuilding it out of word runs
-      // joined by spaces loses the separator: `^PREFIX-(a+)+$` needs the
-      // hyphen, and `PREFIX` alone stops one character short of the body
-      // this probe exists to reach. So the prefix is read off the pattern
-      // verbatim, and the word runs stay only as seeds for literals further
-      // in.
-      var prefix = _literalPrefixOf(src.slice(1, lastSlash));
-      var runs = literalText.match(/[A-Za-z_][A-Za-z0-9_]*/g) || [];
-      // The leading literal is what a subject must carry to get past the
-      // first token, and its length is not a measure of that: `^xy(a+)+$`
-      // hides its body behind two characters. It goes first whatever its
-      // length; the rest follow longest-first, since the cap should spend
-      // itself on the specific ones.
-      var ordered = (prefix ? [prefix] : []).concat(
-        runs.slice().sort(function (a, b) { return b.length - a.length; }));
-      var seeds = [];
-      ordered.forEach(function (w) {
-        if (seeds.length >= 6) return;
-        if (seeds.indexOf(w) === -1) seeds.push(w);
-        if (seeds.indexOf(w + " ") === -1) seeds.push(w + " ");
-      });
-      // A body can sit behind more than one required literal, and a subject
-      // carrying only one of them stops at the next: `BEGIN\s+END(a+)+$` is
-      // reached by neither `BEGIN` nor `END` alone. The runs joined in order
-      // stand in for the whole prefix, with a space for whatever separates
-      // them.
-      if (runs.length > 1) {
-        var chain = runs.filter(function (w) { return w.length > 1; }).slice(0, 6).join(" ");
-        if (seeds.indexOf(chain) === -1) seeds.push(chain);
-        if (seeds.indexOf(chain + " ") === -1) seeds.push(chain + " ");
-      }
-      // The filler has to be a character the costly body accepts. `a` and a
-      // space do not enter `(?:x+)+`, so the characters the pattern itself
-      // names are tried as well: the members of its classes and its literal
-      // characters.
-      var fillers = ["a", " "];
-      (src.slice(1, lastSlash).match(/\[[^\]]{0,80}\]|\\?./g) || []).forEach(function (tok) {
-        var ch = null;
-        if (tok.charAt(0) === "[") {
-          var inner = tok.slice(1, -1).replace(/^\^/, "");
-          var cm = inner.match(/[A-Za-z0-9_]/);
-          if (cm) ch = cm[0];
-        } else if (/^[A-Za-z0-9_]$/.test(tok)) {
-          ch = tok;
-        }
-        if (ch && fillers.length < 6 && fillers.indexOf(ch) === -1) fillers.push(ch);
-      });
-      // Some ambiguity needs a MOTIF rather than a character: `(?:ab|ab)+$`
-      // costs on "ab" repeated and returns at once on either letter alone.
-      // The pattern's own short literal runs are the motifs to try.
-      runs.forEach(function (w) {
-        if (w.length < 2 || w.length > 4) return;
-        if (fillers.length < 10 && fillers.indexOf(w) === -1) fillers.push(w);
-      });
+      var pieces = _probeSubjectPieces(src.slice(1, lastSlash));
+      var seeds = pieces.seeds;
+      var fillers = pieces.fillers;
 
       // The tail is what makes the match FAIL, and a pattern only backtracks
       // on the way to failing. `PREFIX(a+)+$` matches a subject that ends in
@@ -18736,17 +18851,25 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
                "hardCutRemovalDone) — else a hard cut that republished the byte-identical current CA and crashed before " +
                "the journal delete is read as interrupted and RESTORES ca.prev.crt, resurrecting the hard-cut root" });
   }
-  // parseGeneration()'s OU=CAv{N} RDN-boundary match must recognize the " + " attribute separator node
-  // emits inside a MULTI-VALUED RDN (e.g. "CN=x + OU=CAv7") via an unescaped-plus boundary with a
-  // lookbehind that excludes an escaped "\+" inside a value. Without it an externally generated gen-N
-  // CA reads as the legacy fallback 1, letting status()/rotate() allow generation 2 over it.
-  if (!/\(\?<!\\\\\)\[,\+\]\)\\s\*OU=CAv/.test(noComments)) {
+  // parseGeneration()'s OU=CAv{N} RDN-boundary reading must recognize the " + " attribute separator node
+  // emits inside a MULTI-VALUED RDN (e.g. "CN=x + OU=CAv7"), and must not treat an escaped "\+" or "\,"
+  // inside a value as one. Without it an externally generated gen-N CA reads as the legacy fallback 1,
+  // letting status()/rotate() allow generation 2 over it. The three parts are checked separately, and
+  // inside _dnGeneration's own body rather than anywhere in the file, so the check follows the reading
+  // wherever it is written rather than naming one spelling of it.
+  var _dnBody = /function\s+_dnGeneration\b(?:(?!\n\})[\s\S]){0,4000}/.source;
+  var _dnMissing = [];
+  if (!new RegExp(_dnBody + 'ch === ","').test(noComments)) _dnMissing.push("the comma separator");
+  if (!new RegExp(_dnBody + 'ch === "\\+"').test(noComments)) _dnMissing.push("the multi-valued-RDN \" + \" separator");
+  if (!new RegExp(_dnBody + 'charAt\\(i - 1\\) !== "\\\\\\\\"').test(noComments)) {
+    _dnMissing.push("the escaped-separator exclusion (the character before it is not a backslash)");
+  }
+  if (_dnMissing.length) {
     bad.push({ file: "lib/mtls-ca.js", line: 1,
-      content: "parseGeneration()'s OU=CAv{N} RDN-boundary regex must guard BOTH the comma and the multi-valued-RDN \" + \" " +
-               "separators with the (?<!\\) escaped-separator lookbehind (an unescaped [,+] class) — node renders a " +
-               "value-internal comma/plus as \"\\,\"/\"\\+\", so an unguarded comma reads \"CN=foo\\,OU=CAv9\" as gen 9, " +
-               "and a missing plus boundary reads a multi-valued \"CN=x + OU=CAv7\" as the legacy 1; both mis-cohort " +
-               "issuance/revocation and let status()/rotate() mis-order generations" });
+      content: "parseGeneration()'s OU=CAv{N} RDN-boundary reading is missing " + _dnMissing.join(" and ") +
+               ". Node renders a value-internal comma/plus as \"\\,\"/\"\\+\", so an unguarded comma reads " +
+               "\"CN=foo\\,OU=CAv9\" as gen 9, and a missing plus boundary reads a multi-valued \"CN=x + OU=CAv7\" " +
+               "as the legacy 1; both mis-cohort issuance/revocation and let status()/rotate() mis-order generations" });
   }
   // A CUSTOM engine's effective algorithm label is not cert-derivable, so a commit/rotate({ algorithm })
   // that changes it must PERSIST it as shared metadata (paths.algorithm) and an adopting handle must
@@ -21147,6 +21270,7 @@ async function run() {
   testNoBareJsonParse();
   testNoBareCanonicalizeWalks();
   testFormatValidatorLengthCap();
+  testProbeSubjectsReachTheQuantifiedBody();
   testOwnRegexesRunLinear();
   testLibCarriesNoNarrativeComments();
   testFuzzHarnessesRequireTheirTargetDirectly();
