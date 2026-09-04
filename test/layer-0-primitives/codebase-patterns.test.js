@@ -3222,26 +3222,62 @@ var _REGEX_SITES = [
 // match. Read verbatim, so a separator inside it survives: `^api-key:(a+)+$`
 // yields `api-key:`, and a subject built from its words alone would stop at
 // the hyphen and never reach the body.
+// The single character a complete escape token denotes, or null when it names
+// a SET, an anchor or a backreference rather than one character. `\x50` is the
+// character `P`: reading it as a class stops a required prefix at the escape,
+// and every subject built after that fails the anchor before the body behind
+// it is entered.
+function _decodeEscape(tok) {
+  if (tok.charAt(0) !== "\\" || tok.length < 2) return null;
+  var nx = tok.charAt(1);
+  if (nx === "n") return "\n";
+  if (nx === "r") return "\r";
+  if (nx === "t") return "\t";
+  if (nx === "v") return "\v";
+  if (nx === "f") return "\f";
+  if (nx === "0" && tok.length === 2) return "\0";
+  // The braced form is read first, and each fixed-width form checks its own
+  // digits. `\u{50}` is also six characters long, so a length test alone sends
+  // it into the four-digit branch, where `parseInt("{50}", 16)` is NaN and
+  // `fromCharCode` turns that into NUL: the prefix becomes a NUL followed by
+  // the rest, and no subject built from it satisfies the anchor.
+  if (nx === "u" && tok.charAt(2) === "{" && tok.charAt(tok.length - 1) === "}") {
+    var cp = parseInt(tok.slice(3, -1), 16);
+    if (!isFinite(cp) || cp < 0 || cp > 0x10FFFF) return null;
+    if (!/^[0-9a-fA-F]+$/.test(tok.slice(3, -1))) return null;
+    return String.fromCodePoint(cp);
+  }
+  if (nx === "x" && tok.length === 4 && /^[0-9a-fA-F]{2}$/.test(tok.slice(2))) {
+    return String.fromCharCode(parseInt(tok.slice(2), 16));
+  }
+  if (nx === "u" && tok.length === 6 && /^[0-9a-fA-F]{4}$/.test(tok.slice(2))) {
+    return String.fromCharCode(parseInt(tok.slice(2), 16));
+  }
+  // A class, an anchor, a backreference or a property escape names no single
+  // character.
+  if (/^[dDsSwWbBkpPu1-9]$/.test(nx)) return null;
+  return nx;                                                  // an escaped literal
+}
+
 function _literalPrefixOf(pattern) {
   var out = "";
-  var i = 0;
-  if (pattern.charAt(0) === "^") i = 1;
-  for (; i < pattern.length; i += 1) {
-    var ch = pattern.charAt(i);
+  var toks = _regexTokens(pattern);
+  for (var t = 0; t < toks.length; t += 1) {
+    var text = toks[t].text;
+    if (t === 0 && text === "^") continue;
     var lit = null;
-    if (ch === "\\") {
-      var nx = pattern.charAt(i + 1);
-      if (nx === "" || /[dDsSwWbBnrtvfux0-9kpP]/.test(nx)) break;   // a class or an anchor, not a character
-      lit = nx;
-      i += 1;
-    } else if ("([{|.*+?$)]}".indexOf(ch) !== -1) {
+    if (text.charAt(0) === "\\") {
+      lit = _decodeEscape(text);
+      if (lit === null) break;                                // a class or an anchor
+    } else if (text.charAt(0) === "[" || "([{|.*+?$)]}".indexOf(text) !== -1) {
       break;
     } else {
-      lit = ch;
+      lit = text;
     }
     // A quantifier makes the character it follows optional or repeatable, so
     // it is not part of what must appear.
-    if ("*+?{".indexOf(pattern.charAt(i + 1)) !== -1) break;
+    var after = pattern.charAt(toks[t].end + 1);
+    if ("*+?{".indexOf(after) !== -1) break;
     out += lit;
     if (out.length >= 40) break;
   }
@@ -3309,6 +3345,116 @@ function _regexTokens(body) {
     }
     out.push({ text: ch, end: i });
     i += 1;
+  }
+  return out;
+}
+
+// Where the substitution opened at `from` closes. The brace that ends it is a
+// PUNCT token, so the search is over tokens rather than characters: counting
+// characters treats a `}` inside a string, a comment or a character class as
+// structural, which ends `${ "}" + /(?:a+)+$/.test(x) }` at the string and
+// truncates a pattern containing `[}]`.
+function _substitutionEnd(text, from) {
+  var rest = text.slice(from);
+  var toks;
+  try { toks = shapeMatch.tokenize(rest); }
+  catch (_e) { toks = null; }
+  if (toks) {
+    var depth = 0;
+    for (var i = 0; i < toks.length; i += 1) {
+      if (toks[i].type !== shapeMatch.TOK_PUNCT) continue;
+      var v = toks[i].value;
+      if (v === "{") depth += 1;
+      else if (v === "}") {
+        if (depth === 0) return from + toks[i].start;
+        depth -= 1;
+      }
+    }
+  }
+  // A tokenizer that cannot read the remainder leaves the character count as
+  // the answer, which is right whenever no brace is quoted.
+  var d = 1;
+  for (var k = from; k < text.length; k += 1) {
+    var c = text.charAt(k);
+    if (c === "{") d += 1;
+    else if (c === "}") { d -= 1; if (d === 0) return k; }
+  }
+  return -1;
+}
+
+// Every regex literal in the source, including the ones inside a template
+// substitution. The lexer emits a whole template as one token, so a pattern
+// written in `${ /(?:a+)+$/.test(s) }` is inside that token and reaches no
+// caller reading TOK_REGEX. The code between `${` and its matching `}` is
+// tokenized in turn, and offsets are carried through so a line number still
+// points at the pattern.
+function _regexLiteralsIn(source, baseOffset) {
+  var out = [];
+  var toks;
+  try { toks = shapeMatch.tokenize(source); }
+  catch (_e) { return out; }
+  for (var i = 0; i < toks.length; i += 1) {
+    var tok = toks[i];
+    if (tok.type === shapeMatch.TOK_REGEX) {
+      out.push({ value: tok.value, start: baseOffset + tok.start });
+      continue;
+    }
+    if (tok.type !== shapeMatch.TOK_TEMPLATE) continue;
+    var text = tok.value;
+    for (var j = 0; j < text.length - 1; j += 1) {
+      if (text.charAt(j) !== "$" || text.charAt(j + 1) !== "{") continue;
+      // `\${` is an escaped dollar and opens nothing; `\\${` is an escaped
+      // backslash and opens a substitution. What decides it is whether the run
+      // of backslashes before the `$` is odd, not whether there is one.
+      var slashes = 0;
+      for (var b = j - 1; b >= 0 && text.charAt(b) === "\\"; b -= 1) slashes += 1;
+      if (slashes % 2 === 1) continue;
+      var close = _substitutionEnd(text, j + 2);
+      if (close === -1) break;                      // unterminated, nothing to read
+      var inner = text.slice(j + 2, close);
+      var nested = _regexLiteralsIn(inner, baseOffset + tok.start + j + 2);
+      for (var n = 0; n < nested.length; n += 1) out.push(nested[n]);
+      j = close;
+    }
+  }
+  return out;
+}
+
+// The literal strings a quantified GROUP repeats. `(?:a-|a-)+` costs on `a-`
+// repeated and returns at once on either character alone, and `a-` is not a
+// word run, so a motif list built from word runs never contains it. The
+// alternatives are read off the group itself, and an alternative that is not
+// wholly literal is skipped: a subject cannot be built from it by repetition.
+function _quantifiedGroupMotifs(body) {
+  var out = [];
+  var toks = _regexTokens(body);
+  var depth = 0;
+  var starts = [];
+  for (var i = 0; i < toks.length; i += 1) {
+    var text = toks[i].text;
+    if (text === "(") { starts.push(toks[i]); depth += 1; continue; }
+    if (text !== ")" || depth === 0) continue;
+    depth -= 1;
+    var open = starts.pop();
+    var after = body.charAt(toks[i].end + 1);
+    if (after !== "+" && after !== "*" && after !== "{") continue;
+    var inner = body.slice(open.end + 1, toks[i].end);
+    inner = inner.replace(/^\?(?::|<?[=!]|<[A-Za-z_$][A-Za-z0-9_$]*>)/, "");
+    inner.split("|").forEach(function (alt) {
+      if (!alt) return;
+      var lit = "";
+      var altToks = _regexTokens(alt);
+      for (var a = 0; a < altToks.length; a += 1) {
+        var at = altToks[a].text;
+        var piece = null;
+        if (at.charAt(0) === "\\") piece = _decodeEscape(at);
+        else if (at.charAt(0) === "[" || "()[]{}|.*+?^$".indexOf(at) !== -1) piece = null;
+        else piece = at;
+        if (piece === null) return;                     // not a repeatable literal
+        lit += piece;
+      }
+      if (lit.length >= 2 && lit.length <= 6 && out.indexOf(lit) === -1) out.push(lit);
+    });
   }
   return out;
 }
@@ -3401,11 +3547,18 @@ function _probeSubjectPieces(body) {
     if (ch && fillers.length < 8 && fillers.indexOf(ch) === -1) fillers.push(ch);
   });
   // Some ambiguity needs a MOTIF rather than a character: `(?:ab|ab)+$` costs
-  // on "ab" repeated and returns at once on either letter alone. The pattern's
-  // own short literal runs are the motifs to try.
+  // on "ab" repeated and returns at once on either letter alone.
+  //
+  // The motifs come from the alternatives of the quantified groups themselves,
+  // not from word runs. A word run is letters and digits, so the motif
+  // `(?:a-|a-)+$` repeats was never built and that pattern measured fast on
+  // every subject. The pattern's short literal runs are tried as well.
+  _quantifiedGroupMotifs(body).forEach(function (w) {
+    if (fillers.length < 14 && fillers.indexOf(w) === -1) fillers.push(w);
+  });
   runs.forEach(function (w) {
     if (w.length < 2 || w.length > 4) return;
-    if (fillers.length < 12 && fillers.indexOf(w) === -1) fillers.push(w);
+    if (fillers.length < 14 && fillers.indexOf(w) === -1) fillers.push(w);
   });
 
   return { seeds: seeds, fillers: fillers };
@@ -3800,6 +3953,12 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     ["^PREFIX(\\u007a+)+$",      "z"],
     ["^PREFIX([\\x7a]+)+$",      "z"],
     ["^PREFIX(\\x2c+)+$",        ","],
+    // A motif is what a quantified GROUP repeats, and it need not be a word:
+    // `(?:a-|a-)+` costs on `a-` and returns at once on either character.
+    ["(?:a-|a-)+$",              "a-"],
+    ["(?:ab|ab)+$",              "ab"],
+    ["^PREFIX(?:x-|x-)+$",       "x-"],
+    ["(?:a\\x2d|a\\x2d)+$",      "a-"],
   ];
   for (var i = 0; i < CASES.length; i += 1) {
     var body = CASES[i][0];
@@ -3809,6 +3968,64 @@ function testProbeSubjectsReachTheQuantifiedBody() {
           JSON.stringify(want) + ")",
           pieces.fillers.indexOf(want) !== -1,
           "fillers=" + JSON.stringify(pieces.fillers));
+  }
+
+  // A required prefix written with an escape names characters like any other.
+  // Stopping at the escape leaves every subject failing the anchor, so the
+  // body behind it is entered by nothing.
+  var PREFIXES = [
+    ["^PREFIX(z+)+$",        "PREFIX"],
+    ["^\\x50REFIX(z+)+$",    "PREFIX"],
+    ["^\\u0050REFIX(z+)+$",  "PREFIX"],
+    ["^PRE\\x46IX(z+)+$",    "PREFIX"],
+    ["^A-B(z+)+$",           "A-B"],
+  ];
+  for (var p = 0; p < PREFIXES.length; p += 1) {
+    check("regex probe: /" + PREFIXES[p][0] + "/ requires the prefix " +
+          JSON.stringify(PREFIXES[p][1]),
+          _literalPrefixOf(PREFIXES[p][0]) === PREFIXES[p][1],
+          "got=" + JSON.stringify(_literalPrefixOf(PREFIXES[p][0])));
+  }
+
+  // A pattern written inside a template substitution is still a pattern. The
+  // lexer emits the whole template as one token, so reading only TOK_REGEX
+  // walks past it and the linear-time gate measures nothing.
+  var IN_TEMPLATE = "var s = `${/(?:a+)+$/.test(input)}`;";
+  var foundInTemplate = _regexLiteralsIn(IN_TEMPLATE, 0).map(function (r) { return r.value; });
+  check("regex probe: a pattern inside a template substitution is found",
+        foundInTemplate.indexOf("/(?:a+)+$/") !== -1,
+        JSON.stringify(foundInTemplate));
+  var NESTED = "var s = `${ `${/(?:b+)+$/.test(x)}` }`;";
+  check("regex probe: and one inside a nested template substitution",
+        _regexLiteralsIn(NESTED, 0).map(function (r) { return r.value; })
+          .indexOf("/(?:b+)+$/") !== -1);
+
+  // The brace that ends a substitution is a token, not a character. A `}`
+  // written inside a string, a comment or a character class ends nothing.
+  var SUBS = [
+    ['var s = `${ "}" + /(?:a+)+$/.test(x) }`;',      "/(?:a+)+$/", "a brace inside a string"],
+    ['var s = `${ /[}]+x/.test(y) }`;',               "/[}]+x/",    "a brace inside a class"],
+    ['var s = `${ /* } */ /(?:c+)+$/.test(y) }`;',    "/(?:c+)+$/", "a brace inside a comment"],
+    ['var s = `\\\\${ /(?:d+)+$/.test(y) }`;',        "/(?:d+)+$/", "an escaped backslash before the opener"],
+    ['var s = `${ {a:1} && /(?:e+)+$/.test(y) }`;',   "/(?:e+)+$/", "a nested object literal"],
+  ];
+  for (var su = 0; su < SUBS.length; su += 1) {
+    var got = _regexLiteralsIn(SUBS[su][0], 0).map(function (r) { return r.value; });
+    check("regex probe: a pattern is found past " + SUBS[su][2],
+          got.indexOf(SUBS[su][1]) !== -1, JSON.stringify(got));
+  }
+
+  // A braced Unicode escape names a character whatever its digit count.
+  var ESCAPES = [
+    ["\\u{50}", "P"], ["\\u0050", "P"], ["\\x50", "P"],
+    ["\\d", null], ["\\b", null], ["\\w", null], ["\\1", null], ["\\u", null],
+    ["\\-", "-"], ["\\.", "."], ["\\n", "\n"],
+  ];
+  for (var es = 0; es < ESCAPES.length; es += 1) {
+    check("regex probe: escape " + ESCAPES[es][0] + " decodes to " +
+          JSON.stringify(ESCAPES[es][1]),
+          _decodeEscape(ESCAPES[es][0]) === ESCAPES[es][1],
+          JSON.stringify(_decodeEscape(ESCAPES[es][0])));
   }
 
   // And the subject those pieces build actually reaches the body: a pattern
@@ -3899,13 +4116,13 @@ function testOwnRegexesRunLinear() {
     // two `+` quantifiers measure superlinear once a probe reaches them.
     var literalByLine = {};
     try {
-      var toks = shapeMatch.tokenize(content);
-      for (var ti = 0; ti < toks.length; ti += 1) {
-        if (toks[ti].type !== shapeMatch.TOK_REGEX) continue;
-        var lnum = shapeMatch.positionToLineCol(content, toks[ti].start).line;
+      _regexLiteralsIn(content, 0).forEach(function (found) {
+        var lnum = shapeMatch.positionToLineCol(content, found.start).line;
         if (!literalByLine[lnum]) literalByLine[lnum] = [];
-        literalByLine[lnum].push(toks[ti].value);
-      }
+        if (literalByLine[lnum].indexOf(found.value) === -1) {
+          literalByLine[lnum].push(found.value);
+        }
+      });
     } catch (_e) { literalByLine = {}; }
 
     for (var li = 0; li < lines.length; li += 1) {
