@@ -621,6 +621,7 @@ function testEveryScanScopeReachesFiles() {
     ["test", _testFiles],
     ["workflows", _workflowFiles],
     ["scripts", _scriptFiles],
+    ["example apps", _exampleAppFiles],
   ];
   var bad = [];
   scopes.forEach(function (s) {
