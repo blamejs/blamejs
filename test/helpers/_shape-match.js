@@ -99,7 +99,10 @@ function _slashIsRegex(prevSignificant) {
     // is division. (Object-literal `}` is statement-end and would be a
     // regex — but the bounded grammar we care about uses semicolons.)
     var p = prevSignificant.value;
-    if (p === ")" || p === "]") return false;
+    // The paren that closed a control-flow header is followed by a statement,
+    // and a statement may begin with a pattern: `if (ok) /re/.test(s);`.
+    if (p === ")") return prevSignificant.closedControlHeader === true;
+    if (p === "]") return false;
     return true;
   }
   return true;
@@ -110,6 +113,7 @@ function tokenize(source) {
   var i = 0;
   var n = source.length;
   var prevSig = null;
+  var parenStack = [];
   while (i < n) {
     var ch = source.charAt(i);
     var cc = source.charCodeAt(i);
@@ -263,6 +267,51 @@ function tokenize(source) {
         i += 1;
       }
       var ptok = { type: TOK_PUNCT, value: source.slice(ps, i), start: ps, end: i };
+      // Whether a `)` allows a pattern after it is decided at the matching
+      // `(`: the paren that closes `if (ok)` is followed by the statement it
+      // governs, which may begin with one, while the paren that closes
+      // `(a + b)` is followed by division. The comment stripper in this file
+      // already decides it that way, and reading it two ways is how the two
+      // answers drift.
+      if (ptok.value === "(") {
+        // `for await (` puts a transparent word between the keyword and the
+        // paren, so the word before is read through the same way the comment
+        // stripper reads it. Looking only at the token next to the paren
+        // classifies `for await` as a call.
+        var head = prevSig;
+        if (head !== null && (head.type === TOK_KEYWORD || head.type === TOK_IDENT) &&
+            _TRANSPARENT_WORDS[head.value] === 1) {
+          for (var bk = tokens.length - 1; bk >= 0; bk -= 1) {
+            var bt = tokens[bk];
+            if (bt.type === TOK_WS || bt.type === TOK_COMMENT) continue;
+            if ((bt.type === TOK_KEYWORD || bt.type === TOK_IDENT) &&
+                _TRANSPARENT_WORDS[bt.value] === 1) continue;
+            head = bt;
+            break;
+          }
+        }
+        // A control keyword is also a legal property name, and `obj.if(x) / 2`
+        // divides. What makes it a header is standing on its own, so the
+        // token before it must not be member access.
+        var headIsControl = head !== null &&
+          (head.type === TOK_KEYWORD || head.type === TOK_IDENT) &&
+          _CONTROL_HEADER_KEYWORDS[head.value] === 1;
+        if (headIsControl) {
+          for (var mb = tokens.length - 1; mb >= 0; mb -= 1) {
+            var mt = tokens[mb];
+            if (mt.type === TOK_WS || mt.type === TOK_COMMENT) continue;
+            if (mt === head) continue;
+            if (mt.end > head.start) continue;
+            if (mt.type === TOK_PUNCT && (mt.value === "." || mt.value === "?.")) {
+              headIsControl = false;
+            }
+            break;
+          }
+        }
+        parenStack.push(headIsControl);
+      } else if (ptok.value === ")") {
+        ptok.closedControlHeader = parenStack.pop() === true;
+      }
       tokens.push(ptok); prevSig = ptok;
       continue;
     }
