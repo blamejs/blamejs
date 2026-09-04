@@ -218,21 +218,13 @@ function _scriptFiles() {
   catch (_e) { return []; }
 }
 
-// The example apps' own sources, without their installed dependencies or
-// their build output. A bundle carries whatever its inputs carried, and
-// editing one to satisfy a rule edits a file the next build overwrites.
+// The example apps' own sources. `_walkAllSource` prunes node_modules and
+// dist as it descends rather than after, so a populated dependency tree is
+// never walked and a bundle never reaches a rule: an edit to one satisfies
+// the rule until the next build overwrites it.
 function _exampleAppFiles() {
-  var root = path.resolve(__dirname, "..", "..", "examples");
-  var out = [];
-  try {
-    _walk(root).forEach(function (f) {
-      var rel = _relPath(f);
-      if (rel.indexOf("/node_modules/") !== -1) return;
-      if (rel.indexOf("/public/dist/") !== -1) return;
-      out.push(f);
-    });
-  } catch (_e) { return []; }
-  return out;
+  try { return _walkAllSource(path.resolve(__dirname, "..", "..", "examples")); }
+  catch (_e) { return []; }
 }
 
 function _relPath(absPath) {
@@ -667,6 +659,21 @@ function testNoOrphanAllowClass() {
   // wherever it is written.
   var files = _libFiles().concat(_testFiles()).concat(_scriptFiles())
     .concat(_exampleAppFiles());
+
+  // The example app runs a gate of its own with its own classes, so a marker
+  // under examples/ is answerable to that one. Reading it here rather than
+  // skipping those files keeps a typo in the example app visible, and reading
+  // the framework's registry alone would have called its markers orphans.
+  var exampleClasses = Object.create(null);
+  try {
+    var exampleGate = fs.readFileSync(path.resolve(__dirname, "..", "..",
+      "examples", "wiki", "test", "codebase-patterns.test.js"), "utf8");
+    (exampleGate.match(/_filterMarkers\([^,)]+,\s*"([a-zA-Z0-9-]+)"/g) || [])
+      .forEach(function (s) {
+        var em = s.match(/"([a-zA-Z0-9-]+)"/);
+        if (em) exampleClasses[em[1]] = true;
+      });
+  } catch (_e) { exampleClasses = Object.create(null); }
   var bad = [];
   var re = /\ballow:([a-z][a-zA-Z0-9-]*)/g;
   for (var fi = 0; fi < files.length; fi++) {
@@ -688,7 +695,15 @@ function testNoOrphanAllowClass() {
       re.lastIndex = 0;
       while ((m = re.exec(comment)) !== null) {
         var cls = m[1];
-        if (!Object.prototype.hasOwnProperty.call(VALID_ALLOW_CLASSES, cls)) {
+        // An example file answers to the example app's gate and to nothing
+        // else. Falling back to the framework's registry would accept a class
+        // no example detector reads, which is the inert marker this pass
+        // exists to remove.
+        var inExample = rel.indexOf("examples/") === 0;
+        var known = inExample
+          ? !!exampleClasses[cls]
+          : Object.prototype.hasOwnProperty.call(VALID_ALLOW_CLASSES, cls);
+        if (!known) {
           var isRetired = Object.prototype.hasOwnProperty.call(RETIRED_ALLOW_TOKENS, cls);
           bad.push({
             file:    rel,
@@ -696,7 +711,10 @@ function testNoOrphanAllowClass() {
             content: isRetired
               ? "retired allow-class '" + cls + "' — " + RETIRED_ALLOW_TOKENS[cls]
               : "unregistered allow-class '" + cls + "' — names no detector " +
-                "(fix the typo, or register it in VALID_ALLOW_CLASSES)",
+                (inExample
+                  ? "in the example app's own gate (fix the typo, or have " +
+                    "examples/wiki/test/codebase-patterns.test.js filter on it)"
+                  : "(fix the typo, or register it in VALID_ALLOW_CLASSES)"),
           });
         }
       }

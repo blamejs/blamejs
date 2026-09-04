@@ -163,7 +163,7 @@ function _escapeHtml(s) {
 // ---------------------------------------------------------------------
 function harvest() {
   var raw = fs.readFileSync(MANIFEST_PATH, "utf8");
-  var doc = JSON.parse(raw);
+  var doc = JSON.parse(raw); // allow:bare-json-parse — reads framework's own vendor MANIFEST.json (not operator input)
   if (!doc || typeof doc !== "object" || !doc.packages || typeof doc.packages !== "object") {
     throw new HarvestError("wiki/harvest-bad-manifest", "harvest-vendored-deps: MANIFEST.json missing 'packages' object");
   }

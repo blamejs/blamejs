@@ -31,7 +31,7 @@
         },
         {
           "title": "An exemption marker is checked wherever it is written",
-          "body": "A marker that exempts a line from a rule was validated in `lib/` and `test/` only. Everywhere else it could name whatever it liked. Six markers had been sitting outside that scope, five of them spelling a class renamed in an earlier pass specifically so that every use would be re-examined; the rename reached the markers the check could see and left these. The check now reads scripts and the example apps too, skipping installed dependencies and build output.\n\nAll six are removed. None of them exempted anything: the rules they named scan the framework's own source, not those files."
+          "body": "A marker that exempts a line from a rule was validated in `lib/` and `test/` only. Everywhere else it could name whatever it liked. Five markers had been sitting outside that scope, all spelling a class renamed in an earlier pass specifically so that every use would be re-examined; the rename reached the markers the check could see and left these. None of them exempted anything, since the rule they named reads the framework's own source and not those files, so they are removed.\n\nThe check now reads scripts and the example apps too, skipping installed dependencies and build output. The example app runs a gate of its own with its own classes, so a marker under `examples/` is answered against that registry rather than the framework's; a name in neither is still reported."
         },
         {
           "title": "A rule's advertised exemption is the one it honors",
