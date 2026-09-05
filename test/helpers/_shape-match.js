@@ -75,6 +75,12 @@ var PUNCT_CHARS = "{}()[];,.<>!=+-*/%&|^~?:";
 // against a character class, so the four ECMAScript terminators are named
 // here without any of them appearing in this file.
 var LINE_TERMINATOR_CODES = [0x0A, 0x0D, 0x2028, 0x2029];
+
+// Space, tab, the two ASCII line breaks and the two Unicode ones, by code.
+function _isSpaceCode(cc) {
+  return cc === 0x20 || cc === 0x09 || cc === 0x0A || cc === 0x0D ||
+         cc === 0x2028 || cc === 0x2029;
+}
 function _hasLineTerminator(text) {
   for (var i = 0; i < text.length; i += 1) {
     if (LINE_TERMINATOR_CODES.indexOf(text.charCodeAt(i)) !== -1) return true;
@@ -208,12 +214,13 @@ function tokenize(source) {
     var ch = source.charAt(i);
     var cc = source.charCodeAt(i);
 
-    // Whitespace
-    if (ch === " " || ch === "\t" || ch === "\n" || ch === "\r") {
+    // Whitespace. The two Unicode line terminators count: a token that skips
+    // them as unknown leaves no whitespace between the statements they
+    // separate, so a reader asking whether a line break came between finds
+    // none and reads two statements as one.
+    if (_isSpaceCode(cc)) {
       var ws = i;
-      while (i < n) {
-        var c2 = source.charAt(i);
-        if (c2 !== " " && c2 !== "\t" && c2 !== "\n" && c2 !== "\r") break;
+      while (i < n && _isSpaceCode(source.charCodeAt(i))) {
         i += 1;
       }
       tokens.push({ type: TOK_WS, value: source.slice(ws, i), start: ws, end: i });

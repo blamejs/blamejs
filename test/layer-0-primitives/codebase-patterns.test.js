@@ -3348,6 +3348,15 @@ function _literalPrefixOf(pattern, unicode) {
 var _FILLER_CANDIDATES = ["a", "0", " ", "b", "x", "z", "_", "-", ".", "/", "!",
                           "A", "9", "\n", "\t", "\r", ",", "+", ";", ":", "=",
                           "@", "*", "&", "%", "#", "$", "|", "~", "^", "'", "\""];
+// One character from each script a property escape is likely to name, written
+// by code point so this file carries none of them literally. Tried after the
+// ranges above, which is where a set like `\p{Script=Han}` has no member.
+var _SCRIPT_SAMPLES = [0x0391, 0x0410, 0x05D0, 0x0627, 0x0905, 0x0E01,
+                       0x10A0, 0x1E00, 0x2E80, 0x3042, 0x30A2, 0x4E00,
+                       0xAC00, 0xFB00, 0x1F600].map(function (cp) {
+  return String.fromCodePoint(cp);
+});
+
 var _CHAR_MATCH_CACHE = Object.create(null);
 function _charMatching(fragment, unicode) {
   var key = (unicode ? "u|" : "-|") + fragment;
@@ -3424,6 +3433,14 @@ function _charMatchingUncached(fragment, unicode) {
   for (var hi = 0xA0; hi <= 0x2FF; hi += 1) {
     try { if (re.test(String.fromCharCode(hi))) return String.fromCharCode(hi); }
     catch (_e4) { return null; }
+  }
+  // A property can name a set whose every member is above any range worth
+  // walking one code point at a time: `\p{Script=Han}` has none below U+2E80.
+  // One character from each common script is tried instead, so the set is
+  // answered by a member of itself rather than by the walk running out.
+  for (var sa = 0; sa < _SCRIPT_SAMPLES.length; sa += 1) {
+    try { if (re.test(_SCRIPT_SAMPLES[sa])) return _SCRIPT_SAMPLES[sa]; }
+    catch (_e5) { return null; }
   }
   return null;
 }
@@ -4236,6 +4253,8 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     ["^(?:\\p{Letter}0|\\p{Letter}0)+$", "a0", true],
     ["^(?:\\p{Nd}x|\\p{Nd}x)+$",         "0x", true],
     ["^(?:\\p{L}0|\\p{L}0)+$",           "p{L}0"],
+    // A property whose members all lie above any range worth walking.
+    ["^(?:\\p{Script=Han}0|\\p{Script=Han}0)+$", String.fromCodePoint(0x2E80) + "0", true],
   ];
   for (var i = 0; i < CASES.length; i += 1) {
     var body = CASES[i][0];
@@ -4361,6 +4380,11 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // ended its statement, so the brace on the next line opens a block.
     ["function* f(){ yield\n{} /(?:t+)+$/.test(x); }",   "/(?:t+)+$/"],
     ["function f(){ return\n{} /(?:u+)+$/.test(x); }",   "/(?:u+)+$/"],
+    // The two Unicode line terminators end a statement as an ASCII one does.
+    ["function f(){ return" + String.fromCodePoint(0x2028) +
+     "{} /(?:u1+)+$/.test(x); }",                        "/(?:u1+)+$/"],
+    ["function f(){ return" + String.fromCodePoint(0x2029) +
+     "{} /(?:u2+)+$/.test(x); }",                        "/(?:u2+)+$/"],
     ["function f(){ return {} / 2; } var re = /(?:v+)+$/;", "/(?:v+)+$/"],
     // A keyword written as a property name is a value, so the brace after the
     // extends clause opens a class body; and `debugger` is a whole statement.
