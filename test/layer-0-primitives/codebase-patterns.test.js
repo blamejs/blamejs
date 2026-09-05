@@ -3269,9 +3269,9 @@ function _decodeEscape(tok) {
   return nx;                                                  // an escaped literal
 }
 
-function _literalPrefixOf(pattern) {
+function _literalPrefixOf(pattern, unicode) {
   var out = "";
-  var toks = _regexTokens(pattern);
+  var toks = _regexTokens(pattern, unicode);
   for (var t = 0; t < toks.length; t += 1) {
     var text = toks[t].text;
     if (t === 0 && text === "^") continue;
@@ -3285,11 +3285,11 @@ function _literalPrefixOf(pattern) {
       // character and does end the prefix.
       if (lit === null) {
         if (/^\\[bB]$/.test(text)) break;
-        lit = _charMatching(text);
+        lit = _charMatching(text, unicode);
         if (lit === null) break;
       }
     } else if (text.charAt(0) === "[" || text === ".") {
-      lit = _charMatching(text === "." ? "[^\\n]" : text);
+      lit = _charMatching(text === "." ? "[^\\n]" : text, unicode);
       if (lit === null) break;
     } else if (text === "(") {
       // A group that is not quantified is required, so what it matches is part
@@ -3314,9 +3314,9 @@ function _literalPrefixOf(pattern) {
       }
       var gInner = gRaw.replace(/^\?(?::|<[A-Za-z_$][A-Za-z0-9_$]*>)/, "");
       var gPicked = null;
-      var gAlts = _topLevelAlternatives(gInner);
+      var gAlts = _topLevelAlternatives(gInner, unicode);
       for (var ga = 0; ga < gAlts.length && gPicked === null; ga += 1) {
-        gPicked = _literalOfAlternative(gAlts[ga], 0);
+        gPicked = _literalOfAlternative(gAlts[ga], 0, unicode);
       }
       if (gPicked === null || gPicked === "") break;
       out += gPicked;
@@ -3349,12 +3349,13 @@ var _FILLER_CANDIDATES = ["a", "0", " ", "b", "x", "z", "_", "-", ".", "/", "!",
                           "A", "9", "\n", "\t", "\r", ",", "+", ";", ":", "=",
                           "@", "*", "&", "%", "#", "$", "|", "~", "^", "'", "\""];
 var _CHAR_MATCH_CACHE = Object.create(null);
-function _charMatching(fragment) {
-  if (Object.prototype.hasOwnProperty.call(_CHAR_MATCH_CACHE, fragment)) {
-    return _CHAR_MATCH_CACHE[fragment];
+function _charMatching(fragment, unicode) {
+  var key = (unicode ? "u|" : "-|") + fragment;
+  if (Object.prototype.hasOwnProperty.call(_CHAR_MATCH_CACHE, key)) {
+    return _CHAR_MATCH_CACHE[key];
   }
-  var answer = _charMatchingUncached(fragment);
-  _CHAR_MATCH_CACHE[fragment] = answer;
+  var answer = _charMatchingUncached(fragment, unicode);
+  _CHAR_MATCH_CACHE[key] = answer;
   return answer;
 }
 
@@ -3362,11 +3363,11 @@ function _charMatching(fragment) {
 // than guessed at. A range walk has to stop somewhere, and wherever it stops
 // is a class it answers null for: `[Ω]` names one character above any
 // ASCII bound. The class body says what its members are, so it is read.
-function _classMembers(classText) {
+function _classMembers(classText, unicode) {
   var out = [];
   var body = classText.slice(1, -1);
   if (body.charAt(0) === "^") return out;         // a negated class lists what it excludes
-  var toks = _regexTokens(body);
+  var toks = _regexTokens(body, unicode);
   for (var i = 0; i < toks.length; i += 1) {
     var text = toks[i].text;
     // `a-z` is a range: its low end is a member, and the `-` is not.
@@ -3387,17 +3388,22 @@ function _classMembers(classText) {
   return out;
 }
 
-function _charMatchingUncached(fragment) {
+function _charMatchingUncached(fragment, unicode) {
   // An anchor matches no character at all, so the range walk below would run
   // to the end and return null every time. The same few anchors appear in
   // hundreds of patterns, which is enough to dominate the run.
   if (/^(?:\\[bB]|\^|\$)$/.test(fragment)) return null;
   var re;
-  try { re = new RegExp("^(?:" + fragment + ")$"); } catch (_e) { return null; }
+  // The mode comes from the pattern's own flags, never from how the fragment
+  // is spelled. `\p{L}` is a property escape only under `u`; without it the
+  // same text is the letter `p` and a literal brace, and inferring the mode
+  // from the spelling answers for a pattern that was never written.
+  try { re = new RegExp("^(?:" + fragment + ")$", unicode ? "u" : ""); }
+  catch (_e) { return null; }
   // A class is asked what it holds before anything is guessed at, so a member
   // outside every range this would otherwise walk is still found.
   if (fragment.charAt(0) === "[" && fragment.charAt(fragment.length - 1) === "]") {
-    var members = _classMembers(fragment);
+    var members = _classMembers(fragment, unicode);
     for (var mi = 0; mi < members.length; mi += 1) {
       try { if (re.test(members[mi])) return members[mi]; } catch (_em) { return null; }
     }
@@ -3427,7 +3433,7 @@ function _charMatchingUncached(fragment) {
 // `z`, and reading it as `\x` then `7` then `a` builds subjects out of
 // characters the pattern never accepts, so a costly body behind it is entered
 // by nothing.
-function _regexTokens(body) {
+function _regexTokens(body, unicode) {
   var out = [];
   var i = 0;
   while (i < body.length) {
@@ -3444,6 +3450,12 @@ function _regexTokens(body) {
         len = 6;
       } else if (nx === "c" && /^[A-Za-z]$/.test(body.charAt(i + 2))) {
         len = 3;
+      } else if (unicode && (nx === "p" || nx === "P") && body.charAt(i + 2) === "{") {
+        // A property escape names a set and is one token, but only under the
+        // `u` flag. Without it the same text is the letter `p` and a literal
+        // brace, so grouping it there would name a set the pattern has not.
+        var propEnd = body.indexOf("}", i + 3);
+        if (propEnd !== -1) len = propEnd - i + 1;
       }
       out.push({ text: body.slice(i, i + len), end: i + len - 1 });
       i += len;
@@ -3543,9 +3555,9 @@ function _regexLiteralsIn(source, baseOffset) {
 // The alternatives of one group, divided at its own `|` and not at any inside
 // a nested group. A class is one token here, so a `|` written inside one
 // divides nothing either.
-function _topLevelAlternatives(inner) {
+function _topLevelAlternatives(inner, unicode) {
   var out = [];
-  var toks = _regexTokens(inner);
+  var toks = _regexTokens(inner, unicode);
   var depth = 0;
   var current = "";
   for (var i = 0; i < toks.length; i += 1) {
@@ -3563,11 +3575,11 @@ function _topLevelAlternatives(inner) {
 // one. A nested group contributes the string of its own first such
 // alternative, so `a(?:b|b)` is the motif `ab`; treating the group as opaque
 // dropped the motif and left the pattern driven by single characters.
-function _literalOfAlternative(alt, depth) {
+function _literalOfAlternative(alt, depth, unicode) {
   if (depth > 4) return null;
   var lit = "";
   var lastPiece = null;
-  var toks = _regexTokens(alt);
+  var toks = _regexTokens(alt, unicode);
   for (var i = 0; i < toks.length; i += 1) {
     var at = toks[i].text;
     if (at === "{") {
@@ -3575,10 +3587,15 @@ function _literalOfAlternative(alt, depth) {
       // motif `abb`. Refusing every `{` dropped it, and the pattern was then
       // driven with single characters that cost nothing.
       var qClose = alt.indexOf("}", toks[i].end);
-      if (qClose === -1 || lastPiece === null) return null;
-      var qSpec = alt.slice(toks[i].end + 1, qClose);
-      var qm = /^(\d+)(?:,(\d+))?$/.exec(qSpec);
-      if (!qm) return null;
+      var qSpec = qClose === -1 ? null : alt.slice(toks[i].end + 1, qClose);
+      var qm = qSpec === null ? null : /^(\d+)(?:,(\d+))?$/.exec(qSpec);
+      // A brace that is not a quantifier is a literal brace: `{L}` in a
+      // pattern without the `u` flag is three characters, not a repetition.
+      if (!qm || lastPiece === null) {
+        lit += at;
+        lastPiece = at;
+        continue;
+      }
       var qLo = parseInt(qm[1], 10);
       var qHi = qm[2] === undefined ? qLo : parseInt(qm[2], 10);
       if (qLo !== qHi || qLo < 1 || qLo > 16) return null;   // variable length
@@ -3608,9 +3625,9 @@ function _literalOfAlternative(alt, depth) {
       if (_ASSERTION_OPENER.test(rawInner)) { i = j - 1; continue; }
       var innerText = rawInner.replace(/^\?(?::|<[A-Za-z_$][A-Za-z0-9_$]*>)/, "");
       var picked = null;
-      var alts = _topLevelAlternatives(innerText);
+      var alts = _topLevelAlternatives(innerText, unicode);
       for (var k = 0; k < alts.length && picked === null; k += 1) {
-        picked = _literalOfAlternative(alts[k], depth + 1);
+        picked = _literalOfAlternative(alts[k], depth + 1, unicode);
       }
       if (picked === null) return null;
       lit += picked;
@@ -3623,11 +3640,11 @@ function _literalOfAlternative(alt, depth) {
       // A class inside the motif names a set, and a member of it repeats just
       // as well. Dropping the whole motif left `(?:a\d|a\d)+$` with only the
       // single characters `a` and `0`, neither of which costs.
-      if (piece === null && !/^\\[bB]$/.test(at)) piece = _charMatching(at);
+      if (piece === null && !/^\\[bB]$/.test(at)) piece = _charMatching(at, unicode);
     } else if (at.charAt(0) === "[") {
-      piece = _charMatching(at);
+      piece = _charMatching(at, unicode);
     } else if (at === ".") {
-      piece = _charMatching("[^\\n]");
+      piece = _charMatching("[^\\n]", unicode);
     } else if (")|^$".indexOf(at) !== -1) {
       piece = null;
     } else {
@@ -3645,9 +3662,9 @@ function _literalOfAlternative(alt, depth) {
 // word run, so a motif list built from word runs never contains it. The
 // alternatives are read off the group itself, and an alternative that is not
 // wholly literal is skipped: a subject cannot be built from it by repetition.
-function _quantifiedGroupMotifs(body) {
+function _quantifiedGroupMotifs(body, unicode) {
   var out = [];
-  var toks = _regexTokens(body);
+  var toks = _regexTokens(body, unicode);
   var depth = 0;
   var starts = [];
   for (var i = 0; i < toks.length; i += 1) {
@@ -3664,9 +3681,9 @@ function _quantifiedGroupMotifs(body) {
     // `a(?:b|b)|a(?:b|b)` on all of them yields fragments with unmatched
     // parentheses, none of which is a motif, so the group that repeats `ab`
     // contributed nothing.
-    _topLevelAlternatives(inner).forEach(function (alt) {
+    _topLevelAlternatives(inner, unicode).forEach(function (alt) {
       if (!alt) return;
-      var lit = _literalOfAlternative(alt, 0);
+      var lit = _literalOfAlternative(alt, 0, unicode);
       // Bounded by what a subject can carry, not by a short fixed length. A
       // seven-character motif was discarded, and `(?:abcdefg|abcdefg)+$` costs
       // on nothing shorter, so the probes repeated single characters after the
@@ -3683,15 +3700,15 @@ function _quantifiedGroupMotifs(body) {
 // The characters a repetition actually consumes: a token with a quantifier
 // directly on it. These are what a subject has to be made of to reach a costly
 // body at all, so they are chosen before anything else the pattern spells.
-function _quantifiedChars(body) {
+function _quantifiedChars(body, unicode) {
   var out = [];
-  var toks = _regexTokens(body);
+  var toks = _regexTokens(body, unicode);
   for (var t = 0; t < toks.length; t += 1) {
     var after = body.charAt(toks[t].end + 1);
     if (after !== "+" && after !== "*" && after !== "{") continue;
     var text = toks[t].text;
     var pick = null;
-    if (text.charAt(0) === "\\" || text.charAt(0) === "[") pick = _charMatching(text);
+    if (text.charAt(0) === "\\" || text.charAt(0) === "[") pick = _charMatching(text, unicode);
     else if (text === ".") pick = "a";
     else if (/^[A-Za-z0-9_ ]$/.test(text)) pick = text;
     if (pick !== null && out.indexOf(pick) === -1) out.push(pick);
@@ -3703,7 +3720,7 @@ function _quantifiedChars(body) {
 // claim it rests on -- that a subject reaches the body a pattern quantifies
 // over -- can be asserted against a pattern written to test it, rather than
 // only against whatever lib/ happens to contain today.
-function _probeSubjectPieces(body) {
+function _probeSubjectPieces(body, unicode) {
   // A pattern that opens with a literal is never driven past it by filler
   // alone. `\bCOPY\b[\s\S]{0,4000}?\bPROGRAM\b` fails at its first token on a
   // subject of repeated `a`, so the part after it is measured on nothing, and
@@ -3721,7 +3738,7 @@ function _probeSubjectPieces(body) {
   // subject fails the anchor and the body is measured on nothing. A token that
   // names a set or an anchor becomes a separator, which is what it is.
   var literalText = "";
-  var litToks = _regexTokens(body);
+  var litToks = _regexTokens(body, unicode);
   for (var lt = 0; lt < litToks.length; lt += 1) {
     var ltText = litToks[lt].text;
     var ltChar = null;
@@ -3735,7 +3752,7 @@ function _probeSubjectPieces(body) {
   // `PREFIX` alone stops one character short of the body this probe exists to
   // reach. So the prefix is read off the pattern verbatim, and the word runs
   // stay only as seeds for literals further in.
-  var prefix = _literalPrefixOf(body);
+  var prefix = _literalPrefixOf(body, unicode);
   var runs = literalText.match(/[A-Za-z_][A-Za-z0-9_]*/g) || [];
   // The leading literal is what a subject must carry to get past the first
   // token, and its length is not a measure of that: `^xy(a+)+$` hides its body
@@ -3766,13 +3783,13 @@ function _probeSubjectPieces(body) {
   // with the fillers `a`, a space, `P`, `R`, `E`, `F` and never `z`, so every
   // subject failed at the prefix and the body behind it was never entered.
   var fillers = ["a", " "];
-  _quantifiedChars(body).forEach(function (ch) {
+  _quantifiedChars(body, unicode).forEach(function (ch) {
     if (fillers.length < 8 && fillers.indexOf(ch) === -1) fillers.push(ch);
   });
-  _regexTokens(body).forEach(function (tok) {
+  _regexTokens(body, unicode).forEach(function (tok) {
     var ch = null;
     if (tok.text.charAt(0) === "[" || tok.text.charAt(0) === "\\") {
-      ch = _charMatching(tok.text);
+      ch = _charMatching(tok.text, unicode);
     } else if (/^[A-Za-z0-9_]$/.test(tok.text)) {
       ch = tok.text;
     }
@@ -3785,7 +3802,7 @@ function _probeSubjectPieces(body) {
   // not from word runs. A word run is letters and digits, so the motif
   // `(?:a-|a-)+$` repeats was never built and that pattern measured fast on
   // every subject. The pattern's short literal runs are tried as well.
-  _quantifiedGroupMotifs(body).forEach(function (w) {
+  _quantifiedGroupMotifs(body, unicode).forEach(function (w) {
     if (fillers.length < 14 && fillers.indexOf(w) === -1) fillers.push(w);
   });
   runs.forEach(function (w) {
@@ -4212,11 +4229,20 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // A fixed quantifier keeps the alternative fixed-length.
     ["^(?:ab{2}|ab{2})+$",       "abb"],
     ["^(?:a{3}|a{3})+$",         "aaa"],
+    // A property escape names a set only under the `u` flag, so the mode is
+    // said here rather than guessed at from the spelling. Without the flag the
+    // same text is the letter `p` and a literal brace, and a filler chosen for
+    // the set would be one the pattern refuses.
+    ["^(?:\\p{Letter}0|\\p{Letter}0)+$", "a0", true],
+    ["^(?:\\p{Nd}x|\\p{Nd}x)+$",         "0x", true],
+    ["^(?:\\p{L}0|\\p{L}0)+$",           "p{L}0"],
   ];
   for (var i = 0; i < CASES.length; i += 1) {
     var body = CASES[i][0];
     var want = CASES[i][1];
-    var pieces = _probeSubjectPieces(body);
+    // A third element says the pattern carries the `u` flag, which is the only
+    // thing that makes `\p{...}` a property escape.
+    var pieces = _probeSubjectPieces(body, CASES[i][2] === true);
     check("regex probe: /" + body + "/ is driven with the character its body repeats (" +
           JSON.stringify(want) + ")",
           pieces.fillers.indexOf(want) !== -1,
@@ -4320,6 +4346,31 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     ["if (ok) ++/(?:i+)+$/.lastIndex;",                  "/(?:i+)+$/"],
     ["x\n++/(?:j+)+$/.lastIndex;",                       "/(?:j+)+$/"],
     ["x // c\n++/(?:k+)+$/.lastIndex;",                  "/(?:k+)+$/"],
+    // A `}` that closed an object closed an expression, so the slash after it
+    // divides; one that closed a block ended a statement.
+    ["var n = {} / 2; var re = /(?:m+)+$/;",             "/(?:m+)+$/"],
+    ["var n = { a: 1 } / 2; var re = /(?:n+)+$/;",       "/(?:n+)+$/"],
+    ["function f() {} /(?:o+)+$/.test(x);",              "/(?:o+)+$/"],
+    // A label or a `case` ends with a colon and is followed by a STATEMENT,
+    // so the brace after one opens a block, not an object.
+    ["label: {} /(?:p+)+$/.test(x);",                    "/(?:p+)+$/"],
+    ["switch (x) { case 1: {} /(?:q+)+$/.test(x); }",    "/(?:q+)+$/"],
+    ["var o = { a: 1 }; var re = /(?:r+)+$/;",           "/(?:r+)+$/"],
+    ["var v = c ? {} : {}; var re = /(?:s+)+$/;",        "/(?:s+)+$/"],
+    // A restricted-production keyword with a line terminator after it has
+    // ended its statement, so the brace on the next line opens a block.
+    ["function* f(){ yield\n{} /(?:t+)+$/.test(x); }",   "/(?:t+)+$/"],
+    ["function f(){ return\n{} /(?:u+)+$/.test(x); }",   "/(?:u+)+$/"],
+    ["function f(){ return {} / 2; } var re = /(?:v+)+$/;", "/(?:v+)+$/"],
+    // A keyword written as a property name is a value, so the brace after the
+    // extends clause opens a class body; and `debugger` is a whole statement.
+    ["class X extends B.default {} /(?:w+)+$/.test(x);", "/(?:w+)+$/"],
+    ["debugger\n{} /(?:y+)+$/.test(x);",                 "/(?:y+)+$/"],
+    // A word after `class` or `function` is that thing's name, whatever word
+    // it is spelled like, and the brace after it opens a body.
+    ["class of {} /(?:z1+)+$/.test(x);",                 "/(?:z1+)+$/"],
+    ["function of() {} /(?:z2+)+$/.test(x);",            "/(?:z2+)+$/"],
+    ["class in {} /(?:z3+)+$/.test(x);",                 "/(?:z3+)+$/"],
   ];
   for (var ai = 0; ai < ASI.length; ai += 1) {
     var asiFound = _regexLiteralsIn(ASI[ai][0], 0).map(function (r) { return r.value; });
@@ -4602,7 +4653,8 @@ function testOwnRegexesRunLinear() {
       try { re = new RegExp(src.slice(1, lastSlash), src.slice(lastSlash + 1).replace(/[gy]/g, "")); }
       catch (_e) { continue; }
 
-      var pieces = _probeSubjectPieces(src.slice(1, lastSlash));
+      var pieces = _probeSubjectPieces(src.slice(1, lastSlash),
+                                       src.slice(lastSlash + 1).indexOf("u") !== -1);
       var seeds = pieces.seeds;
       var fillers = pieces.fillers;
 

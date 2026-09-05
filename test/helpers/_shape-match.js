@@ -82,6 +82,63 @@ function _hasLineTerminator(text) {
   return false;
 }
 
+// The token, as the single-character form the brace classifier reads. That
+// classifier takes the last significant TEXT rather than a token, so a value
+// token is handed the character its kind is spelled with.
+// The significant token before the given one, skipping whitespace and
+// comments. Used where one token alone does not say what a word is: a name
+// after `class` is a name whatever it is spelled like.
+function _significantBefore(tokens, tok) {
+  var seenIt = false;
+  for (var i = tokens.length - 1; i >= 0; i -= 1) {
+    var t = tokens[i];
+    if (t.type === TOK_WS || t.type === TOK_COMMENT) continue;
+    if (!seenIt) { seenIt = (t === tok); continue; }
+    return t;
+  }
+  return null;
+}
+
+// Was there a line terminator between the last significant token and here?
+// Reads back over the whitespace and comments the caller skipped.
+function _lineBreakBeforeEnd(tokens) {
+  for (var i = tokens.length - 1; i >= 0; i -= 1) {
+    var t = tokens[i];
+    if (t.type !== TOK_WS && t.type !== TOK_COMMENT) return false;
+    if (_hasLineTerminator(t.value)) return true;
+  }
+  return false;
+}
+
+// The keywords ECMAScript forbids a line terminator after: one there ends the
+// statement, so what follows starts a new one. `yield` and a newline leave the
+// brace on the next line opening a BLOCK rather than an object.
+var _RESTRICTED_PRODUCTIONS = {
+  "return": 1, "throw": 1, "yield": 1, "break": 1, "continue": 1,
+};
+
+function _lastSigText(tok) {
+  if (!tok) return "";
+  if (tok.type === TOK_NUMBER) return "0";
+  if (tok.type === TOK_STRING) return "\"";
+  if (tok.type === TOK_TEMPLATE) return "`";
+  if (tok.type === TOK_REGEX) return "0";                 // a value, so a brace after it opens an object
+  // A colon either separates a property from its value or closes a ternary,
+  // and both are followed by a value; or it ends a label or a `case`, and
+  // those are followed by a STATEMENT. Handing the raw colon to the brace
+  // classifier read `label: {}` as an object.
+  if (tok.value === ":" && tok.colonIsValue !== true) return _STATEMENT_POSITION;
+  // A keyword written as a property name is a VALUE, not the keyword: the
+  // brace after `class X extends B.default {}` opens a class body, and handing
+  // the classifier the word `default` answered for a keyword nobody wrote.
+  if (tok.isProperty === true) return "0";
+  // `debugger` is a complete statement, so the brace after it opens a BLOCK.
+  // It sits in the regex-leading set, which the brace classifier reads as "a
+  // value may follow", and that is the one place the two questions differ.
+  if (tok.value === "debugger") return _STATEMENT_POSITION;
+  return tok.value;
+}
+
 function _slashIsRegex(prevSignificant) {
   if (!prevSignificant) return true;
   if (prevSignificant.type === TOK_IDENT) {
@@ -128,6 +185,12 @@ function _slashIsRegex(prevSignificant) {
     // the line and consumes the opening slash of the next real one. A PREFIX
     // one is followed by its operand, which may begin with a pattern.
     if (p === "++" || p === "--") return prevSignificant.isPostfix !== true;
+    // A `}` that closed an OBJECT closed an expression, so the slash after it
+    // divides: `var n = {} / 2`. One that closed a block ended a statement, and
+    // a statement may begin with a pattern. Which it is cannot be read off the
+    // brace, so it is decided at the matching `{`, the way the comment stripper
+    // in this file already decides it.
+    if (p === "}") return prevSignificant.closedObject !== true;
     return true;
   }
   return true;
@@ -139,6 +202,8 @@ function tokenize(source) {
   var n = source.length;
   var prevSig = null;
   var parenStack = [];
+  var braceStack = [];
+  var frames = [{ ternary: 0, isObject: false }];
   while (i < n) {
     var ch = source.charAt(i);
     var cc = source.charCodeAt(i);
@@ -305,6 +370,50 @@ function tokenize(source) {
       // control-flow header (`if (ok) ++x` is a statement, not an operand).
       // A prefix one is followed by its operand, which may begin with a
       // pattern, and the two forms decide the next slash differently.
+      // Whether a `}` closed an object or a block is decided at the matching
+      // `{`, by the same classifier the comment stripper uses. Two answers to
+      // one structural question drift, and this one had drifted: every `}` read
+      // as a statement end, so `var n = {} / 2` had its division read as a
+      // pattern opener, which then swallowed the next real one.
+      // A ternary lives inside the nearest enclosing group, so each `(` and
+      // `{` opens a frame that counts its own `?`. Without that, the `:` of a
+      // ternary written inside an object is taken for a property colon.
+      if (ptok.value === "(") {
+        frames.push({ ternary: 0, isObject: false });
+      } else if (ptok.value === ")") {
+        if (frames.length > 1) frames.pop();
+      } else if (ptok.value === "{") {
+        // A restricted-production keyword with a line terminator after it has
+        // ended its statement, so the brace opens a block whatever the keyword
+        // would otherwise imply.
+        var braceLastSig = _lastSigText(prevSig);
+        if (prevSig !== null && prevSig.type === TOK_KEYWORD &&
+            _RESTRICTED_PRODUCTIONS[prevSig.value] === 1 &&
+            _lineBreakBeforeEnd(tokens)) {
+          braceLastSig = _STATEMENT_POSITION;
+        }
+        // A word right after `class` or `function` is that thing's NAME, not
+        // the word it is spelled like: `class of {}` names a class `of`, and
+        // the brace opens its body. Reading the name as the keyword `of` made
+        // the body an object.
+        var beforePrev = _significantBefore(tokens, prevSig);
+        if (beforePrev !== null && beforePrev.type === TOK_KEYWORD &&
+            (beforePrev.value === "class" || beforePrev.value === "function")) {
+          braceLastSig = _STATEMENT_POSITION;
+        }
+        var opensObject = _braceOpensObject(braceLastSig);
+        braceStack.push(opensObject);
+        frames.push({ ternary: 0, isObject: opensObject });
+      } else if (ptok.value === "}") {
+        ptok.closedObject = braceStack.pop() === true;
+        if (frames.length > 1) frames.pop();
+      } else if (ptok.value === "?") {
+        frames[frames.length - 1].ternary += 1;
+      } else if (ptok.value === ":") {
+        var frame = frames[frames.length - 1];
+        if (frame.ternary > 0) { frame.ternary -= 1; ptok.colonIsValue = true; }
+        else ptok.colonIsValue = frame.isObject === true;
+      }
       if (ptok.value === "++" || ptok.value === "--") {
         var operandBefore = prevSig !== null &&
           (prevSig.type === TOK_IDENT || prevSig.type === TOK_NUMBER ||
@@ -313,13 +422,7 @@ function tokenize(source) {
            (prevSig.type === TOK_PUNCT &&
             (prevSig.value === "]" ||
              (prevSig.value === ")" && prevSig.closedControlHeader !== true))));
-        var brokeLine = false;
-        for (var bk2 = tokens.length - 1; bk2 >= 0; bk2 -= 1) {
-          var bt2 = tokens[bk2];
-          if (bt2.type !== TOK_WS && bt2.type !== TOK_COMMENT) break;
-          if (_hasLineTerminator(bt2.value)) { brokeLine = true; break; }
-        }
-        ptok.isPostfix = operandBefore && !brokeLine;
+        ptok.isPostfix = operandBefore && !_lineBreakBeforeEnd(tokens);
       }
       // Whether a `)` allows a pattern after it is decided at the matching
       // `(`: the paren that closes `if (ok)` is followed by the statement it
