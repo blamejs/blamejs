@@ -958,13 +958,33 @@ function _regexCanStartHere(lastSig) {
   return !_slashDivides(lastSig);
 }
 
+// Reading back from `at` over the whitespace before it, was any of it a line
+// terminator? Answers whether a semicolon was inserted between the previous
+// word and this one.
+function _lineBreakBackFrom(src, at) {
+  for (var i = at - 1; i >= 0; i -= 1) {
+    var cc = src.charCodeAt(i);
+    if (LINE_TERMINATOR_CODES.indexOf(cc) !== -1) return true;
+    if (cc !== 0x20 && cc !== 0x09 && cc !== 0x0B && cc !== 0x0C) return false;
+  }
+  return false;
+}
+
 // `onComment(start, end, kind)` is called for every comment the walk skips,
 // with `end` exclusive and `kind` one of "line", "block", "html-open",
 // "html-close". It exists so a caller that wants the RANGES rather than the
 // stripped text asks this lexer instead of writing a second one: two answers to
 // "where are the comments" drift, and the one that drifts is whichever is not
 // the one the gates already trust.
-function stripComments(src, onComment) {
+//
+// `onRegex(start, end, text)` is the same arrangement for pattern literals.
+// This walk already has to know which slash opens one, since a `/*` inside a
+// pattern opens no comment, and it carries the state that decides it: which
+// brace closed a value, whether a colon ended a label, whether a keyword's
+// line ended before the word after it. A caller that asks a second lexer the
+// same question gets a second answer, and the one that drifts is the one the
+// gates do not already trust.
+function stripComments(src, onComment, onRegex) {
   // A mode STACK, not nested ad-hoc loops.
   //
   // Comment stripping is lexing, and the constructs nest: an interpolation
@@ -1088,6 +1108,7 @@ function stripComments(src, onComment) {
         }
         while (i < n && /[a-z]/.test(src.charAt(i))) i += 1;   // flags
         out += src.slice(rxStart, i);
+        if (typeof onRegex === "function") onRegex(rxStart, i, src.slice(rxStart, i));
         top.lastSig = _VALUE_REGEX;               // a pattern is a value
         continue;
       }
@@ -1299,9 +1320,19 @@ function stripComments(src, onComment) {
           top.lastSig = _VALUE_MEMBER;
           continue;
         }
+        // A word after `break` or `continue` is the LABEL they take, but only
+        // on the same line: both forbid a line terminator before the label, so
+        // one there ends the statement and this word begins the next.
         if (lastSig === "break" || lastSig === "continue") {
-          top.lastSig = _STATEMENT_POSITION;
-          continue;
+          if (!_lineBreakBackFrom(src, wStart)) {
+            top.lastSig = _STATEMENT_POSITION;      // the word is the label
+            continue;
+          }
+          // The line terminator ended the jump statement, so this word begins
+          // a new one and is read from statement position. Leaving the jump
+          // keyword in place made `break` + newline + `function f() {}` an
+          // expression, and the pattern after its brace read as division.
+          lastSig = _STATEMENT_POSITION;
         }
         if (_TRANSPARENT_WORDS[word] === 1) top.beforeWord[word] = lastSig;
         if (_EXPRESSION_BODY_KEYWORDS[word] === 1) {

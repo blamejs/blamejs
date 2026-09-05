@@ -1789,6 +1789,12 @@ function testCommentStripHelper() {
      "var f = () => {}; /[/*]/.test(x); console.log(helpers.getChecks() + \" checks passed\");", true],
     ["an else body is a block, not an object",
      "if (a) { b(); } else {} /[/*]/.test(x); console.log(helpers.getChecks() + \" checks passed\");", true],
+    // A line terminator ends a jump statement, so the declaration after it is
+    // read from statement position and its body is a block.
+    ["a declaration after break on the next line",
+     "while (true) { break\nfunction f() {}\n/[/*]/.test(x); } console.log(helpers.getChecks() + \" checks passed\");", true],
+    ["a declaration after continue on the next line",
+     "while (true) { continue\nclass C {}\n/[/*]/.test(x); } console.log(helpers.getChecks() + \" checks passed\");", true],
     ["a returned object still divides",
      "function f() { return { a: 1 } / 2; } // helpers.getChecks() + \" checks passed\"", false],
     // An identifier is any run of non-punctuation, not an ASCII letter list:
@@ -3565,6 +3571,10 @@ function _substitutionEnd(text, from) {
 // points at the pattern.
 function _regexLiteralsIn(source, baseOffset) {
   var out = [];
+  // Both lexers in `_shape-match.js` decide which slash opens a pattern, and
+  // each knows something the other does not. The tokenizer is read here
+  // because the cases below pin its answers; the two are not yet one, and
+  // making them one is its own change rather than a corner of this one.
   var toks;
   try { toks = shapeMatch.tokenize(source); }
   catch (_e) { return out; }
@@ -3641,7 +3651,10 @@ function _literalOfAlternative(alt, depth, unicode) {
       }
       var qLo = parseInt(qm[1], 10);
       var qHi = qm[2] === undefined ? qLo : parseInt(qm[2], 10);
-      if (qLo !== qHi || qLo < 1 || qLo > 16) return null;   // variable length
+      // Bounded by what a motif can be, which is the length cap below, not by
+      // a smaller number: `ab{17}` is eighteen characters and is the only
+      // thing `(?:ab{17}|ab{17})+$` costs on.
+      if (qLo !== qHi || qLo < 1 || qLo > 64) return null;   // variable length
       lit += lastPiece.repeat(qLo - 1);
       while (i < toks.length && toks[i].end < qClose) i += 1;
       lastPiece = null;
