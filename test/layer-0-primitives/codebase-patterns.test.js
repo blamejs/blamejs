@@ -3293,8 +3293,10 @@ function _literalPrefixOf(pattern) {
     }
     // A quantifier makes the character it follows optional or repeatable, so
     // it is not part of what must appear.
+    // `charAt` past the end gives "", and `indexOf("")` is 0, so a pattern
+    // that ends at this token read as quantified and lost its last character.
     var after = pattern.charAt(toks[t].end + 1);
-    if ("*+?{".indexOf(after) !== -1) break;
+    if (after !== "" && "*+?{".indexOf(after) !== -1) break;
     out += lit;
     if (out.length >= 40) break;
   }
@@ -3319,6 +3321,35 @@ function _charMatching(fragment) {
   return answer;
 }
 
+// The characters a `[...]` class actually names, read off the class rather
+// than guessed at. A range walk has to stop somewhere, and wherever it stops
+// is a class it answers null for: `[Ω]` names one character above any
+// ASCII bound. The class body says what its members are, so it is read.
+function _classMembers(classText) {
+  var out = [];
+  var body = classText.slice(1, -1);
+  if (body.charAt(0) === "^") return out;         // a negated class lists what it excludes
+  var toks = _regexTokens(body);
+  for (var i = 0; i < toks.length; i += 1) {
+    var text = toks[i].text;
+    // `a-z` is a range: its low end is a member, and the `-` is not.
+    if (text === "-" && i > 0 && i + 1 < toks.length) continue;
+    var ch = null;
+    if (text.charAt(0) === "\\") {
+      ch = _decodeEscape(text);
+      if (ch === null) {
+        if (text === "\\d") ch = "0";
+        else if (text === "\\w") ch = "a";
+        else if (text === "\\s") ch = " ";
+      }
+    } else if (text.length === 1) {
+      ch = text;
+    }
+    if (ch !== null && out.indexOf(ch) === -1) out.push(ch);
+  }
+  return out;
+}
+
 function _charMatchingUncached(fragment) {
   // An anchor matches no character at all, so the range walk below would run
   // to the end and return null every time. The same few anchors appear in
@@ -3326,6 +3357,14 @@ function _charMatchingUncached(fragment) {
   if (/^(?:\\[bB]|\^|\$)$/.test(fragment)) return null;
   var re;
   try { re = new RegExp("^(?:" + fragment + ")$"); } catch (_e) { return null; }
+  // A class is asked what it holds before anything is guessed at, so a member
+  // outside every range this would otherwise walk is still found.
+  if (fragment.charAt(0) === "[" && fragment.charAt(fragment.length - 1) === "]") {
+    var members = _classMembers(fragment);
+    for (var mi = 0; mi < members.length; mi += 1) {
+      try { if (re.test(members[mi])) return members[mi]; } catch (_em) { return null; }
+    }
+  }
   for (var i = 0; i < _FILLER_CANDIDATES.length; i += 1) {
     var c = _FILLER_CANDIDATES[i];
     try { if (re.test(c)) return c; } catch (_e2) { return null; }
@@ -3464,6 +3503,84 @@ function _regexLiteralsIn(source, baseOffset) {
   return out;
 }
 
+// The alternatives of one group, divided at its own `|` and not at any inside
+// a nested group. A class is one token here, so a `|` written inside one
+// divides nothing either.
+function _topLevelAlternatives(inner) {
+  var out = [];
+  var toks = _regexTokens(inner);
+  var depth = 0;
+  var current = "";
+  for (var i = 0; i < toks.length; i += 1) {
+    var text = toks[i].text;
+    if (text === "(") { depth += 1; current += text; continue; }
+    if (text === ")") { depth -= 1; current += text; continue; }
+    if (text === "|" && depth === 0) { out.push(current); current = ""; continue; }
+    current += text;
+  }
+  out.push(current);
+  return out;
+}
+
+// The fixed string one alternative matches, or null when it matches more than
+// one. A nested group contributes the string of its own first such
+// alternative, so `a(?:b|b)` is the motif `ab`; treating the group as opaque
+// dropped the motif and left the pattern driven by single characters.
+function _literalOfAlternative(alt, depth) {
+  if (depth > 4) return null;
+  var lit = "";
+  var toks = _regexTokens(alt);
+  for (var i = 0; i < toks.length; i += 1) {
+    var at = toks[i].text;
+    // A quantifier makes the alternative variable-length, so it is not a motif
+    // a subject can be built from by repetition.
+    if ("*+?{".indexOf(at) !== -1) return null;
+    if (at === "(") {
+      var d = 1;
+      var j = i + 1;
+      for (; j < toks.length && d > 0; j += 1) {
+        if (toks[j].text === "(") d += 1;
+        else if (toks[j].text === ")") d -= 1;
+      }
+      if (d !== 0) return null;                          // unbalanced, not readable
+      // `indexOf("")` is 0, so an empty `after` reads as a quantifier unless it
+      // is excluded: a group at the end of the alternative was dropped.
+      var after = j < toks.length ? toks[j].text : "";
+      if (after !== "" && "*+?{".indexOf(after) !== -1) return null;  // the group itself repeats
+      var innerText = alt.slice(toks[i].end + 1, toks[j - 1].end);
+      innerText = innerText.replace(/^\?(?::|<?[=!]|<[A-Za-z_$][A-Za-z0-9_$]*>)/, "");
+      var picked = null;
+      var alts = _topLevelAlternatives(innerText);
+      for (var k = 0; k < alts.length && picked === null; k += 1) {
+        picked = _literalOfAlternative(alts[k], depth + 1);
+      }
+      if (picked === null) return null;
+      lit += picked;
+      i = j - 1;
+      continue;
+    }
+    var piece = null;
+    if (at.charAt(0) === "\\") {
+      piece = _decodeEscape(at);
+      // A class inside the motif names a set, and a member of it repeats just
+      // as well. Dropping the whole motif left `(?:a\d|a\d)+$` with only the
+      // single characters `a` and `0`, neither of which costs.
+      if (piece === null && !/^\\[bB]$/.test(at)) piece = _charMatching(at);
+    } else if (at.charAt(0) === "[") {
+      piece = _charMatching(at);
+    } else if (at === ".") {
+      piece = _charMatching("[^\\n]");
+    } else if (")|^$".indexOf(at) !== -1) {
+      piece = null;
+    } else {
+      piece = at;
+    }
+    if (piece === null) return null;
+    lit += piece;
+  }
+  return lit;
+}
+
 // The literal strings a quantified GROUP repeats. `(?:a-|a-)+` costs on `a-`
 // repeated and returns at once on either character alone, and `a-` is not a
 // word run, so a motif list built from word runs never contains it. The
@@ -3484,39 +3601,21 @@ function _quantifiedGroupMotifs(body) {
     if (after !== "+" && after !== "*" && after !== "{") continue;
     var inner = body.slice(open.end + 1, toks[i].end);
     inner = inner.replace(/^\?(?::|<?[=!]|<[A-Za-z_$][A-Za-z0-9_$]*>)/, "");
-    inner.split("|").forEach(function (alt) {
+    // Split at the group's OWN alternations, not at every `|` in it. Splitting
+    // `a(?:b|b)|a(?:b|b)` on all of them yields fragments with unmatched
+    // parentheses, none of which is a motif, so the group that repeats `ab`
+    // contributed nothing.
+    _topLevelAlternatives(inner).forEach(function (alt) {
       if (!alt) return;
-      var lit = "";
-      var altToks = _regexTokens(alt);
-      for (var a = 0; a < altToks.length; a += 1) {
-        var at = altToks[a].text;
-        // A quantifier makes the alternative variable-length, so it is not a
-        // motif a subject can be built from by repetition.
-        if ("*+?{".indexOf(at) !== -1) return;
-        var piece = null;
-        if (at.charAt(0) === "\\") {
-          piece = _decodeEscape(at);
-          // A class inside the motif names a set, and a member of it repeats
-          // just as well. Dropping the whole motif left `(?:a\d|a\d)+$` with
-          // only the single characters `a` and `0`, neither of which costs.
-          if (piece === null && !/^\\[bB]$/.test(at)) piece = _charMatching(at);
-        } else if (at.charAt(0) === "[") {
-          piece = _charMatching(at);
-        } else if (at === ".") {
-          piece = _charMatching("[^\\n]");
-        } else if ("()|^$".indexOf(at) !== -1) {
-          piece = null;
-        } else {
-          piece = at;
-        }
-        if (piece === null) return;                     // not a repeatable literal
-        lit += piece;
-      }
+      var lit = _literalOfAlternative(alt, 0);
       // Bounded by what a subject can carry, not by a short fixed length. A
       // seven-character motif was discarded, and `(?:abcdefg|abcdefg)+$` costs
       // on nothing shorter, so the probes repeated single characters after the
       // seed and returned at once.
-      if (lit.length >= 2 && lit.length <= 64 && out.indexOf(lit) === -1) out.push(lit);
+      if (lit !== null && lit.length >= 2 && lit.length <= 64 &&
+          out.indexOf(lit) === -1) {
+        out.push(lit);
+      }
     });
   }
   return out;
@@ -3557,9 +3656,20 @@ function _probeSubjectPieces(body) {
   // matches the token it was meant to get past. Each run is tried both bare
   // and followed by a space, since a `\b` after the literal needs a non-word
   // character to land on.
-  var literalText = body
-    .replace(/\\[bBdDsSwWnrtvf]/g, " ")
-    .replace(/\\(.)/g, "$1");
+  // Built from decoded TOKENS, not by stripping backslashes. A blind strip
+  // turns `Ω` into the word `u03A9` and `\bCOPY` into `bCOPY`, and the
+  // seeds made from those are strings the pattern does not accept, so every
+  // subject fails the anchor and the body is measured on nothing. A token that
+  // names a set or an anchor becomes a separator, which is what it is.
+  var literalText = "";
+  var litToks = _regexTokens(body);
+  for (var lt = 0; lt < litToks.length; lt += 1) {
+    var ltText = litToks[lt].text;
+    var ltChar = null;
+    if (ltText.charAt(0) === "\\") ltChar = _decodeEscape(ltText);
+    else if (ltText.length === 1 && "()[]{}|.*+?^$".indexOf(ltText) === -1) ltChar = ltText;
+    literalText += (ltChar === null ? " " : ltChar);
+  }
   // The prefix a subject must carry is whatever the pattern requires
   // literally, punctuation included. Rebuilding it out of word runs joined by
   // spaces loses the separator: `^PREFIX-(a+)+$` needs the hyphen, and
@@ -3624,11 +3734,13 @@ function _probeSubjectPieces(body) {
     if (fillers.length < 14 && fillers.indexOf(w) === -1) fillers.push(w);
   });
 
-  // A pattern made entirely of punctuation has no literal prefix and no word
-  // run, so it produced no seed and the caller then built no seeded subjects
-  // at all: the motifs above were derived and never used. An empty seed is the
-  // right one for such a pattern, since the subject IS the repeated motif.
-  if (!seeds.length) seeds.push("");
+  // A pattern that requires no literal prefix is matched from the first
+  // character, so the empty seed is a real one for it and often the only right
+  // one: the subject IS the repeated filler. Added whenever no prefix is
+  // required, not only when nothing else was found, since a word run taken
+  // from further in the pattern is not something the front of the subject has
+  // to carry.
+  if (!prefix && seeds.indexOf("") === -1) seeds.push("");
 
   return { seeds: seeds, fillers: fillers };
 }
@@ -4034,6 +4146,10 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // No literal prefix and no word run, so the motif is the whole subject.
     ["^(?:,-|,-)+$",             ",-"],
     ["^(?:::|::)+$",             "::"],
+    // A class names its members whatever their codepoint, and a nested group
+    // inside an alternative contributes the string it matches.
+    ["^(?:[\\u03A9]|[\\u03A9])+$", String.fromCharCode(0x03A9)],
+    ["^(?:a(?:b|b)|a(?:b|b))+$", "ab"],
   ];
   for (var i = 0; i < CASES.length; i += 1) {
     var body = CASES[i][0];
@@ -4063,12 +4179,36 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     ["^[0-9][0-9]X(z+)+$",   "00X"],
     // A control escape names a control character, not the letter after the c.
     ["^\\cAPREFIX(z+)+$",    String.fromCharCode(1) + "PREFIX"],
+    // A pattern that ENDS at a literal keeps that literal: nothing follows it,
+    // and nothing is not a quantifier.
+    ["^ABC",                 "ABC"],
+    ["^A\\x42C",             "ABC"],
   ];
   for (var p = 0; p < PREFIXES.length; p += 1) {
     check("regex probe: /" + PREFIXES[p][0] + "/ requires the prefix " +
           JSON.stringify(PREFIXES[p][1]),
           _literalPrefixOf(PREFIXES[p][0]) === PREFIXES[p][1],
           "got=" + JSON.stringify(_literalPrefixOf(PREFIXES[p][0])));
+  }
+
+  // A seed comes from what a pattern MATCHES, not from how it is spelled.
+  // Stripping backslashes made `u03A9` a word run of `[Ω]` and `bCOPY`
+  // one of `\bCOPY`, and a subject starting with either fails the anchor
+  // before the body behind it is entered.
+  var SPELLINGS = [
+    ["^(?:[\\u03A9]|[\\u03A9])+$", "u03A9"],
+    ["\\bCOPY\\b\\s(y+)+$",        "bCOPY"],
+    ["^\\x50REFIX(z+)+$",          "x50REFIX"],
+    ["^\\cAPREFIX(z+)+$",          "cAPREFIX"],
+  ];
+  for (var sp = 0; sp < SPELLINGS.length; sp += 1) {
+    var spSeeds = _probeSubjectPieces(SPELLINGS[sp][0]).seeds;
+    var spelled = spSeeds.some(function (s) {
+      return s.indexOf(SPELLINGS[sp][1]) !== -1;
+    });
+    check("regex probe: /" + SPELLINGS[sp][0] + "/ seeds no subject on its own " +
+          "spelling (" + JSON.stringify(SPELLINGS[sp][1]) + ")",
+          spelled === false, JSON.stringify(spSeeds));
   }
 
   // A pattern written inside a template substitution is still a pattern. The
@@ -4198,6 +4338,8 @@ function testProbeSubjectsMakeACatastrophicPatternCost() {
     "^PREFIX(?:x-|x-)+$",
     "^(?:,-|,-)+$",
     "^\\cAPREFIX(z+)+$",
+    "^(?:[\\u03A9]|[\\u03A9])+$",
+    "^(?:a(?:b|b)|a(?:b|b))+$",
   ];
   var missed = [];
   for (var i = 0; i < PATTERNS.length; i += 1) {
