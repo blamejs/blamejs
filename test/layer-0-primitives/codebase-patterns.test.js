@@ -3333,7 +3333,23 @@ function _literalPrefixOf(pattern, unicode) {
     // `charAt` past the end gives "", and `indexOf("")` is 0, so a pattern
     // that ends at this token read as quantified and lost its last character.
     var after = pattern.charAt(toks[t].end + 1);
-    if (after !== "" && "*+?{".indexOf(after) !== -1) break;
+    if (after === "{") {
+      // A FIXED quantifier still requires its character, that many times:
+      // `^A{2}PREFIX` requires `AAPREFIX`. Stopping at the brace required
+      // nothing, and no subject reached the body behind it.
+      var pClose = pattern.indexOf("}", toks[t].end + 1);
+      var pm = pClose === -1 ? null
+        : /^(\d+)(?:,(\d+))?$/.exec(pattern.slice(toks[t].end + 2, pClose));
+      if (!pm) break;
+      var pLo = parseInt(pm[1], 10);
+      var pHi = pm[2] === undefined ? pLo : parseInt(pm[2], 10);
+      if (pLo !== pHi || pLo < 1 || pLo > 16) break;      // optional or variable
+      out += lit.repeat(pLo);
+      if (out.length >= 40) break;
+      while (t < toks.length && toks[t].end < pClose) t += 1;
+      continue;
+    }
+    if (after !== "" && "*+?".indexOf(after) !== -1) break;
     out += lit;
     if (out.length >= 40) break;
   }
@@ -3348,15 +3364,6 @@ function _literalPrefixOf(pattern, unicode) {
 var _FILLER_CANDIDATES = ["a", "0", " ", "b", "x", "z", "_", "-", ".", "/", "!",
                           "A", "9", "\n", "\t", "\r", ",", "+", ";", ":", "=",
                           "@", "*", "&", "%", "#", "$", "|", "~", "^", "'", "\""];
-// One character from each script a property escape is likely to name, written
-// by code point so this file carries none of them literally. Tried after the
-// ranges above, which is where a set like `\p{Script=Han}` has no member.
-var _SCRIPT_SAMPLES = [0x0391, 0x0410, 0x05D0, 0x0627, 0x0905, 0x0E01,
-                       0x10A0, 0x1E00, 0x2E80, 0x3042, 0x30A2, 0x4E00,
-                       0xAC00, 0xFB00, 0x1F600].map(function (cp) {
-  return String.fromCodePoint(cp);
-});
-
 var _CHAR_MATCH_CACHE = Object.create(null);
 function _charMatching(fragment, unicode) {
   var key = (unicode ? "u|" : "-|") + fragment;
@@ -3434,13 +3441,20 @@ function _charMatchingUncached(fragment, unicode) {
     try { if (re.test(String.fromCharCode(hi))) return String.fromCharCode(hi); }
     catch (_e4) { return null; }
   }
-  // A property can name a set whose every member is above any range worth
-  // walking one code point at a time: `\p{Script=Han}` has none below U+2E80.
-  // One character from each common script is tried instead, so the set is
-  // answered by a member of itself rather than by the walk running out.
-  for (var sa = 0; sa < _SCRIPT_SAMPLES.length; sa += 1) {
-    try { if (re.test(_SCRIPT_SAMPLES[sa])) return _SCRIPT_SAMPLES[sa]; }
+  // A property can name a set with no member anywhere the walk above reaches:
+  // `\p{Script=Han}` has none below U+2E80 and `\p{Script=Adlam}` none below
+  // U+1E900. A list of sample characters answers whichever scripts someone
+  // thought to list and null for the rest, so the range is searched instead:
+  // the whole Basic Multilingual Plane, then the supplementary planes at a
+  // stride, which lands inside any block of sixteen or more.
+  for (var bmp = 0x300; bmp <= 0xFFFF; bmp += 1) {
+    if (bmp >= 0xD800 && bmp <= 0xDFFF) continue;          // half a surrogate pair
+    try { if (re.test(String.fromCodePoint(bmp))) return String.fromCodePoint(bmp); }
     catch (_e5) { return null; }
+  }
+  for (var astral = 0x10000; astral <= 0x10FFFF; astral += 8) {
+    try { if (re.test(String.fromCodePoint(astral))) return String.fromCodePoint(astral); }
+    catch (_e6) { return null; }
   }
   return null;
 }
@@ -4255,6 +4269,10 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     ["^(?:\\p{L}0|\\p{L}0)+$",           "p{L}0"],
     // A property whose members all lie above any range worth walking.
     ["^(?:\\p{Script=Han}0|\\p{Script=Han}0)+$", String.fromCodePoint(0x2E80) + "0", true],
+    ["^(?:\\p{Script=Adlam}0|\\p{Script=Adlam}0)+$", String.fromCodePoint(0x1E900) + "0", true],
+    // A fixed quantifier in the prefix still requires its character, that many
+    // times over.
+    ["^A{2}PREFIX(z+)+$",        "z"],
   ];
   for (var i = 0; i < CASES.length; i += 1) {
     var body = CASES[i][0];
@@ -4301,6 +4319,12 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     ["^(?=A)ABC",            "ABC"],
     ["^(?!X)ABC",            "ABC"],
     ["^A(?=B)BC",            "ABC"],
+    // A fixed quantifier repeats what it follows, and that is still required.
+    ["^A{2}PREFIX(z+)+$",    "AAPREFIX"],
+    ["^AB{3}C(z+)+$",        "ABBBC"],
+    ["^A{2,2}X(z+)+$",       "AAX"],
+    // A variable one is not, so the prefix ends there.
+    ["^A{1,3}X(z+)+$",       ""],
   ];
   for (var p = 0; p < PREFIXES.length; p += 1) {
     check("regex probe: /" + PREFIXES[p][0] + "/ requires the prefix " +
@@ -4395,6 +4419,10 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     ["class of {} /(?:z1+)+$/.test(x);",                 "/(?:z1+)+$/"],
     ["function of() {} /(?:z2+)+$/.test(x);",            "/(?:z2+)+$/"],
     ["class in {} /(?:z3+)+$/.test(x);",                 "/(?:z3+)+$/"],
+    // Every line terminator ends a line comment, not only LF.
+    ["x(); // c\rvar re = /(?:z4+)+$/;",                  "/(?:z4+)+$/"],
+    ["x(); // c" + String.fromCodePoint(0x2028) + "var re = /(?:z5+)+$/;", "/(?:z5+)+$/"],
+    ["x(); // c" + String.fromCodePoint(0x2029) + "var re = /(?:z6+)+$/;", "/(?:z6+)+$/"],
   ];
   for (var ai = 0; ai < ASI.length; ai += 1) {
     var asiFound = _regexLiteralsIn(ASI[ai][0], 0).map(function (r) { return r.value; });

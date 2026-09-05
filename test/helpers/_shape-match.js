@@ -230,7 +230,10 @@ function tokenize(source) {
     // Line comment
     if (ch === "/" && source.charAt(i + 1) === "/") {
       var lc = i;
-      while (i < n && source.charAt(i) !== "\n") i += 1;
+      // Every line terminator ends a line comment, not only LF. Stopping at LF
+      // alone swallowed the rest of a CR-terminated file as one comment, and
+      // whatever followed, including a pattern, was never seen.
+      while (i < n && LINE_TERMINATOR_CODES.indexOf(source.charCodeAt(i)) === -1) i += 1;
       tokens.push({ type: TOK_COMMENT, value: source.slice(lc, i), start: lc, end: i });
       continue;
     }
