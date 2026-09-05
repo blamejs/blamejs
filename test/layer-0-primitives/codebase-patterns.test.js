@@ -3447,14 +3447,26 @@ function _charMatchingUncached(fragment, unicode) {
   // thought to list and null for the rest, so the range is searched instead:
   // the whole Basic Multilingual Plane, then the supplementary planes at a
   // stride, which lands inside any block of sixteen or more.
-  for (var bmp = 0x300; bmp <= 0xFFFF; bmp += 1) {
-    if (bmp >= 0xD800 && bmp <= 0xDFFF) continue;          // half a surrogate pair
-    try { if (re.test(String.fromCodePoint(bmp))) return String.fromCodePoint(bmp); }
-    catch (_e5) { return null; }
-  }
-  for (var astral = 0x10000; astral <= 0x10FFFF; astral += 8) {
-    try { if (re.test(String.fromCodePoint(astral))) return String.fromCodePoint(astral); }
-    catch (_e6) { return null; }
+  // Searched over every code point rather than sampled, and searched a chunk
+  // at a time so it stays quick: an unanchored pattern run once over a string
+  // of many candidates finds a member in a single pass, where testing them one
+  // by one costs a call each. A stride misses a narrow set outright, and
+  // `\p{Emoji_Modifier}` is five characters wide.
+  var scan;
+  try { scan = new RegExp(fragment, unicode ? "u" : ""); } catch (_e5) { return null; }
+  for (var base = 0x300; base <= 0x10FFFF; base += 0x1000) {
+    var chunk = "";
+    for (var cp2 = base; cp2 < base + 0x1000 && cp2 <= 0x10FFFF; cp2 += 1) {
+      if (cp2 >= 0xD800 && cp2 <= 0xDFFF) continue;        // half a surrogate pair
+      chunk += String.fromCodePoint(cp2);
+    }
+    var hit;
+    try { hit = scan.exec(chunk); } catch (_e6) { return null; }
+    if (!hit || !hit[0]) continue;
+    // The search pattern is unanchored, so confirm the piece it found is one
+    // character the anchored form accepts before handing it back.
+    var found = String.fromCodePoint(hit[0].codePointAt(0));
+    try { if (re.test(found)) return found; } catch (_e7) { return null; }
   }
   return null;
 }
@@ -4270,6 +4282,8 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // A property whose members all lie above any range worth walking.
     ["^(?:\\p{Script=Han}0|\\p{Script=Han}0)+$", String.fromCodePoint(0x2E80) + "0", true],
     ["^(?:\\p{Script=Adlam}0|\\p{Script=Adlam}0)+$", String.fromCodePoint(0x1E900) + "0", true],
+    // A property only five characters wide, which no stride is sure to land in.
+    ["^(?:\\p{Emoji_Modifier}0|\\p{Emoji_Modifier}0)+$", String.fromCodePoint(0x1F3FB) + "0", true],
     // A fixed quantifier in the prefix still requires its character, that many
     // times over.
     ["^A{2}PREFIX(z+)+$",        "z"],
@@ -4373,6 +4387,12 @@ function testProbeSubjectsReachTheQuantifiedBody() {
   var ASI = [
     ["while (ok) { break\n/(?:a+)+$/.test(input); }",    "/(?:a+)+$/"],
     ["while (ok) { continue\n/(?:b+)+$/.test(input); }", "/(?:b+)+$/"],
+    // A labelled one carries the label, and nothing divides a label.
+    ["outer: while (ok) { break outer\n/(?:b1+)+$/.test(input); }",    "/(?:b1+)+$/"],
+    ["outer: while (ok) { continue outer\n/(?:b2+)+$/.test(input); }", "/(?:b2+)+$/"],
+    // A line terminator before the word ends the statement, so the word starts
+    // the next one and is not a label.
+    ["while (ok) { break\nx / 2; /(?:b3+)+$/.test(input); }",          "/(?:b3+)+$/"],
     ["function f() { return\n/(?:c+)+$/.test(input); }", "/(?:c+)+$/"],
     // A postfix increment ends an expression, so the slash after it divides;
     // reading it as a pattern swallowed the rest of the line and ate the

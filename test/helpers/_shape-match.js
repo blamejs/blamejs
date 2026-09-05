@@ -148,6 +148,10 @@ function _lastSigText(tok) {
 function _slashIsRegex(prevSignificant) {
   if (!prevSignificant) return true;
   if (prevSignificant.type === TOK_IDENT) {
+    // A word after `break` or `continue` is the LABEL those take, and nothing
+    // divides a label, so a slash after one opens a pattern the way it does
+    // after the bare keyword.
+    if (prevSignificant.isBreakLabel === true) return true;
     // After an identifier we don't know whether it's a variable name
     // (division) or an unparenthesised expression-tail. Be conservative:
     // identifiers preceded only by `return`, `typeof`, etc. resolve via
@@ -346,6 +350,14 @@ function tokenize(source) {
       if (prevSig !== null && prevSig.type === TOK_PUNCT &&
           (prevSig.value === "." || prevSig.value === "?.")) {
         itok.isProperty = true;
+      }
+      // The word after `break` or `continue` is the label they jump to, but
+      // only on the same line: these forbid a line terminator before the
+      // label, so one there ends the statement and the word starts the next.
+      if (prevSig !== null && prevSig.type === TOK_KEYWORD &&
+          (prevSig.value === "break" || prevSig.value === "continue") &&
+          !_lineBreakBeforeEnd(tokens)) {
+        itok.isBreakLabel = true;
       }
       tokens.push(itok); prevSig = itok;
       continue;
