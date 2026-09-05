@@ -3304,12 +3304,39 @@ function _literalPrefixOf(pattern) {
 var _FILLER_CANDIDATES = ["a", "0", " ", "b", "x", "z", "_", "-", ".", "/", "!",
                           "A", "9", "\n", "\t", "\r", ",", "+", ";", ":", "=",
                           "@", "*", "&", "%", "#", "$", "|", "~", "^", "'", "\""];
+var _CHAR_MATCH_CACHE = Object.create(null);
 function _charMatching(fragment) {
+  if (Object.prototype.hasOwnProperty.call(_CHAR_MATCH_CACHE, fragment)) {
+    return _CHAR_MATCH_CACHE[fragment];
+  }
+  var answer = _charMatchingUncached(fragment);
+  _CHAR_MATCH_CACHE[fragment] = answer;
+  return answer;
+}
+
+function _charMatchingUncached(fragment) {
+  // An anchor matches no character at all, so the range walk below would run
+  // to the end and return null every time. The same few anchors appear in
+  // hundreds of patterns, which is enough to dominate the run.
+  if (/^(?:\\[bB]|\^|\$)$/.test(fragment)) return null;
   var re;
   try { re = new RegExp("^(?:" + fragment + ")$"); } catch (_e) { return null; }
   for (var i = 0; i < _FILLER_CANDIDATES.length; i += 1) {
     var c = _FILLER_CANDIDATES[i];
     try { if (re.test(c)) return c; } catch (_e2) { return null; }
+  }
+  // The list above is a PREFERENCE, not the vocabulary of what a class can
+  // hold. `[q]` names a character outside it, and returning null there left
+  // `(?:[q]|[q])+$` driven by `a` and a space, neither of which enters it. The
+  // rest of the range is asked one character at a time, so a class is answered
+  // by a member of itself rather than by whichever characters were listed.
+  for (var cp = 0x20; cp <= 0x7E; cp += 1) {
+    try { if (re.test(String.fromCharCode(cp))) return String.fromCharCode(cp); }
+    catch (_e3) { return null; }
+  }
+  for (var hi = 0xA0; hi <= 0x2FF; hi += 1) {
+    try { if (re.test(String.fromCharCode(hi))) return String.fromCharCode(hi); }
+    catch (_e4) { return null; }
   }
   return null;
 }
@@ -3480,7 +3507,11 @@ function _quantifiedGroupMotifs(body) {
         if (piece === null) return;                     // not a repeatable literal
         lit += piece;
       }
-      if (lit.length >= 2 && lit.length <= 6 && out.indexOf(lit) === -1) out.push(lit);
+      // Bounded by what a subject can carry, not by a short fixed length. A
+      // seven-character motif was discarded, and `(?:abcdefg|abcdefg)+$` costs
+      // on nothing shorter, so the probes repeated single characters after the
+      // seed and returned at once.
+      if (lit.length >= 2 && lit.length <= 64 && out.indexOf(lit) === -1) out.push(lit);
     });
   }
   return out;
@@ -4121,6 +4152,68 @@ function testProbeSubjectsReachTheQuantifiedBody() {
   }
   check("regex probe: a costly body behind a literal prefix is reached by some subject",
         reached === true);
+}
+
+// The end-to-end claim, which is the one that matters: for a pattern that IS
+// catastrophic, the pieces build a subject that makes it cost. Five review
+// rounds each found a different token the builder stopped at, and every one of
+// them was invisible to a check on the pieces alone and visible here. The
+// measurement runs in the same child process the gate uses, so a pattern that
+// never returns is killed there rather than stopping this run.
+function testProbeSubjectsMakeACatastrophicPatternCost() {
+  // class: catastrophic-probe-reach (no marker)
+  var PATTERNS = [
+    "^PREFIX(z+)+$",
+    "^[A-F]PREFIX(z+)+$",
+    "^\\x50REFIX(z+)+$",
+    "^\\dPREFIX(z+)+$",
+    "(?:a-|a-)+$",
+    "(?:a\\d|a\\d)+$",
+    "^(?:[q]|[q])+$",
+    "^(?:abcdefg|abcdefg)+$",
+    "^(?:x+)+$",
+    // The boundary after COPY needs a non-word character, and the body has to
+    // be able to consume one, or the pattern matches nothing and costs nothing.
+    "\\bCOPY\\b\\s(y+)+$",
+    "^BEGIN\\s+END(w+)+$",
+    "^A_LONG_LEADING_TOKEN(q+)+$",
+    "^PREFIX([0-9]+)+$",
+    "^PREFIX(\\w+)+$",
+    "^PREFIX(?:x-|x-)+$",
+  ];
+  var missed = [];
+  for (var i = 0; i < PATTERNS.length; i += 1) {
+    var body = PATTERNS[i];
+    var pieces = _probeSubjectPieces(body);
+    // Measured on SHORT subjects, and stopping at the first that costs.
+    //
+    // The gate's own probe measures every subject at the sizes a caller can
+    // supply, which for a catastrophic pattern means each one runs to its
+    // budget: fifteen patterns that way took four and a half minutes. What
+    // this asks is only whether SOME subject reaches the body, and a body that
+    // backtracks exponentially says so at twenty repetitions. The ladder stops
+    // at 26, so a subject that costs nothing still returns promptly.
+    var re;
+    try { re = new RegExp(body); } catch (_e) { missed.push(body + " (not a pattern)"); continue; }
+    var costly = false;
+    for (var si = 0; si < pieces.seeds.length && !costly; si += 1) {
+      for (var fi2 = 0; fi2 < pieces.fillers.length && !costly; fi2 += 1) {
+        var fill = pieces.fillers[fi2];
+        if (!fill) continue;
+        for (var reps = 14; reps <= 26 && !costly; reps += 6) {
+          var subject = pieces.seeds[si] + fill.repeat(reps) + "!";
+          var t0 = process.hrtime.bigint();
+          re.test(subject);
+          var ms = Number(process.hrtime.bigint() - t0) / 1e6;
+          if (ms > 2) costly = true;
+        }
+      }
+    }
+    if (!costly) missed.push("/" + body + "/ is reached by none of the subjects its pieces build");
+  }
+  check("regex probe: every known-catastrophic pattern is driven to cost by the " +
+        "subjects its own pieces build (" + PATTERNS.length + " patterns)",
+        missed.length === 0, missed.slice(0, 4).join(" | "));
 }
 
 function testOwnRegexesRunLinear() {
@@ -21603,6 +21696,7 @@ async function run() {
   testNoBareCanonicalizeWalks();
   testFormatValidatorLengthCap();
   testProbeSubjectsReachTheQuantifiedBody();
+  testProbeSubjectsMakeACatastrophicPatternCost();
   testOwnRegexesRunLinear();
   testLibCarriesNoNarrativeComments();
   testFuzzHarnessesRequireTheirTargetDirectly();
