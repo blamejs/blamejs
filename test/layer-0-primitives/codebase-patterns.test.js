@@ -3268,8 +3268,20 @@ function _literalPrefixOf(pattern) {
     var lit = null;
     if (text.charAt(0) === "\\") {
       lit = _decodeEscape(text);
-      if (lit === null) break;                                // a class or an anchor
-    } else if (text.charAt(0) === "[" || "([{|.*+?$)]}".indexOf(text) !== -1) {
+      // A class escape names a SET and still requires one character, so a
+      // member of it is what a subject must carry. Stopping here left
+      // `^\dPREFIX(z+)+$` requiring nothing, and every subject failed the
+      // anchor before the body behind it was entered. An anchor matches no
+      // character and does end the prefix.
+      if (lit === null) {
+        if (/^\\[bB]$/.test(text)) break;
+        lit = _charMatching(text);
+        if (lit === null) break;
+      }
+    } else if (text.charAt(0) === "[" || text === ".") {
+      lit = _charMatching(text === "." ? "[^\\n]" : text);
+      if (lit === null) break;
+    } else if ("([{|*+?$)]}".indexOf(text) !== -1) {
       break;
     } else {
       lit = text;
@@ -3446,10 +3458,25 @@ function _quantifiedGroupMotifs(body) {
       var altToks = _regexTokens(alt);
       for (var a = 0; a < altToks.length; a += 1) {
         var at = altToks[a].text;
+        // A quantifier makes the alternative variable-length, so it is not a
+        // motif a subject can be built from by repetition.
+        if ("*+?{".indexOf(at) !== -1) return;
         var piece = null;
-        if (at.charAt(0) === "\\") piece = _decodeEscape(at);
-        else if (at.charAt(0) === "[" || "()[]{}|.*+?^$".indexOf(at) !== -1) piece = null;
-        else piece = at;
+        if (at.charAt(0) === "\\") {
+          piece = _decodeEscape(at);
+          // A class inside the motif names a set, and a member of it repeats
+          // just as well. Dropping the whole motif left `(?:a\d|a\d)+$` with
+          // only the single characters `a` and `0`, neither of which costs.
+          if (piece === null && !/^\\[bB]$/.test(at)) piece = _charMatching(at);
+        } else if (at.charAt(0) === "[") {
+          piece = _charMatching(at);
+        } else if (at === ".") {
+          piece = _charMatching("[^\\n]");
+        } else if ("()|^$".indexOf(at) !== -1) {
+          piece = null;
+        } else {
+          piece = at;
+        }
         if (piece === null) return;                     // not a repeatable literal
         lit += piece;
       }
@@ -3959,6 +3986,9 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     ["(?:ab|ab)+$",              "ab"],
     ["^PREFIX(?:x-|x-)+$",       "x-"],
     ["(?:a\\x2d|a\\x2d)+$",      "a-"],
+    // A class inside a motif names a set, and a member of it repeats too.
+    ["(?:a\\d|a\\d)+$",          "a0"],
+    ["(?:a[0-9]|a[0-9])+$",      "a0"],
   ];
   for (var i = 0; i < CASES.length; i += 1) {
     var body = CASES[i][0];
@@ -3979,6 +4009,13 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     ["^\\u0050REFIX(z+)+$",  "PREFIX"],
     ["^PRE\\x46IX(z+)+$",    "PREFIX"],
     ["^A-B(z+)+$",           "A-B"],
+    // A required class still requires one character, so the prefix carries a
+    // member of it rather than stopping at the class.
+    ["^[A-F]PREFIX(z+)+$",   "APREFIX"],
+    ["^\\dPREFIX(z+)+$",     "0PREFIX"],
+    ["^\\wPREFIX(z+)+$",     "aPREFIX"],
+    ["^.PREFIX(z+)+$",       "aPREFIX"],
+    ["^[0-9][0-9]X(z+)+$",   "00X"],
   ];
   for (var p = 0; p < PREFIXES.length; p += 1) {
     check("regex probe: /" + PREFIXES[p][0] + "/ requires the prefix " +
@@ -4027,6 +4064,44 @@ function testProbeSubjectsReachTheQuantifiedBody() {
           _decodeEscape(ESCAPES[es][0]) === ESCAPES[es][1],
           JSON.stringify(_decodeEscape(ESCAPES[es][0])));
   }
+
+  // The claim behind all of the above, stated once and checked over generated
+  // shapes rather than a list someone thought of: the prefix a pattern
+  // requires is a string that pattern ACCEPTS. Four rounds of review each
+  // found a different token the reader stopped at, so what is pinned here is
+  // the property, not the next shape.
+  var HEADS = ["P", "[A-F]", "\\d", "\\w", "\\x50", "\\u0051", ".", "[0-9]",
+               "[^a-z]", "_", "9", "\\-", "[a-c]"];
+  var TAILS = ["", "X", "XY", "\\x59", "[A-F]", "\\d"];
+  var BODIES = ["(z+)+$", "(?:a-|a-)+$", "(?:a\\d|a\\d)+$", "(?:x+)+$"];
+  var unreachable = [];
+  for (var h = 0; h < HEADS.length; h += 1) {
+    for (var ta = 0; ta < TAILS.length; ta += 1) {
+      for (var bo = 0; bo < BODIES.length; bo += 1) {
+        var patternBody = "^" + HEADS[h] + TAILS[ta] + BODIES[bo];
+        var re;
+        try { re = new RegExp(patternBody); } catch (_e) { continue; }
+        var prefix = _literalPrefixOf(patternBody);
+        if (prefix === "") { unreachable.push(patternBody + " -> no prefix"); continue; }
+        // What the prefix claims is required must be something the pattern
+        // accepts at the front, or every subject built on it fails the anchor
+        // and the body behind it is measured on nothing.
+        var head;
+        try { head = new RegExp("^(?:" + HEADS[h] + TAILS[ta] + ")"); }
+        catch (_e2) { continue; }
+        if (!head.test(prefix)) {
+          unreachable.push(patternBody + " -> prefix " + JSON.stringify(prefix) +
+                           " is not accepted by its own pattern");
+        }
+        if (re.test(prefix)) {
+          unreachable.push(patternBody + " -> prefix alone already matches");
+        }
+      }
+    }
+  }
+  check("regex probe: a required prefix is a string its own pattern accepts, " +
+        "across " + (HEADS.length * TAILS.length * BODIES.length) + " generated shapes",
+        unreachable.length === 0, unreachable.slice(0, 4).join(" | "));
 
   // And the subject those pieces build actually reaches the body: a pattern
   // whose cost is behind a prefix must measure as costly, not as fast.
