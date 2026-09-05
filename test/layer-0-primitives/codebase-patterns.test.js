@@ -3247,6 +3247,11 @@ function _decodeEscape(tok) {
     if (!/^[0-9a-fA-F]+$/.test(tok.slice(3, -1))) return null;
     return String.fromCodePoint(cp);
   }
+  // `\cA` is control-A, not the letter `c`. Reading the letter put `cPREFIX`
+  // in front of a body nothing then reached.
+  if (nx === "c" && tok.length === 3 && /^[A-Za-z]$/.test(tok.charAt(2))) {
+    return String.fromCharCode(tok.charCodeAt(2) % 32);
+  }
   if (nx === "x" && tok.length === 4 && /^[0-9a-fA-F]{2}$/.test(tok.slice(2))) {
     return String.fromCharCode(parseInt(tok.slice(2), 16));
   }
@@ -3618,6 +3623,12 @@ function _probeSubjectPieces(body) {
     if (w.length < 2 || w.length > 4) return;
     if (fillers.length < 14 && fillers.indexOf(w) === -1) fillers.push(w);
   });
+
+  // A pattern made entirely of punctuation has no literal prefix and no word
+  // run, so it produced no seed and the caller then built no seeded subjects
+  // at all: the motifs above were derived and never used. An empty seed is the
+  // right one for such a pattern, since the subject IS the repeated motif.
+  if (!seeds.length) seeds.push("");
 
   return { seeds: seeds, fillers: fillers };
 }
@@ -4020,6 +4031,9 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // A class inside a motif names a set, and a member of it repeats too.
     ["(?:a\\d|a\\d)+$",          "a0"],
     ["(?:a[0-9]|a[0-9])+$",      "a0"],
+    // No literal prefix and no word run, so the motif is the whole subject.
+    ["^(?:,-|,-)+$",             ",-"],
+    ["^(?:::|::)+$",             "::"],
   ];
   for (var i = 0; i < CASES.length; i += 1) {
     var body = CASES[i][0];
@@ -4047,6 +4061,8 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     ["^\\wPREFIX(z+)+$",     "aPREFIX"],
     ["^.PREFIX(z+)+$",       "aPREFIX"],
     ["^[0-9][0-9]X(z+)+$",   "00X"],
+    // A control escape names a control character, not the letter after the c.
+    ["^\\cAPREFIX(z+)+$",    String.fromCharCode(1) + "PREFIX"],
   ];
   for (var p = 0; p < PREFIXES.length; p += 1) {
     check("regex probe: /" + PREFIXES[p][0] + "/ requires the prefix " +
@@ -4180,6 +4196,8 @@ function testProbeSubjectsMakeACatastrophicPatternCost() {
     "^PREFIX([0-9]+)+$",
     "^PREFIX(\\w+)+$",
     "^PREFIX(?:x-|x-)+$",
+    "^(?:,-|,-)+$",
+    "^\\cAPREFIX(z+)+$",
   ];
   var missed = [];
   for (var i = 0; i < PATTERNS.length; i += 1) {
