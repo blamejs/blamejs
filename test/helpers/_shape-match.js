@@ -909,13 +909,6 @@ function significantTokens(tokens) {
 }
 
 // Reverse-lookup: from source position → significant-tokens index.
-function _sigIdxBeforePos(sig, pos) {
-  for (var i = sig.length - 1; i >= 0; i -= 1) {
-    if (sig[i].end <= pos) return i;
-  }
-  return -1;
-}
-
 // ---- Primitive: findCalls ----
 //
 // Match every call of the form `<head>(...)` where `<head>` is an

@@ -372,7 +372,6 @@ async function testDrainQuiesce() {
   var fakeOutbox = {
     pendingCount: function () { return Promise.resolve(pendingNow); },
   };
-  var _stopped = [];
   var fakeQueue = {
     consume: async function () {
       return { unsubscribe: async function () { /* fast */ } };

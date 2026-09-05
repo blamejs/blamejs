@@ -13,7 +13,6 @@ var helpers = require("../helpers");
 var b       = helpers.b;
 var check   = helpers.check;
 var nodeTls = require("tls");
-var nodeCrypto = require("crypto");
 
 function testSurface() {
   check("tlsExporter namespace exposed",
@@ -56,21 +55,6 @@ function testValidationPaths() {
     }, { length: 999999 });
   } catch (e) { t4 = e; }
   check("out-of-range length throws", t4 && t4.code === "tls-exporter/bad-length");
-}
-
-function _selfSignedKeyAndCert() {
-  // Generate an ed25519 self-signed cert for the server. ed25519 is
-  // accepted by node:tls as the server identity for TLS 1.3.
-  var pair = nodeCrypto.generateKeyPairSync("ec", {
-    namedCurve: "P-256",
-    publicKeyEncoding:  { type: "spki",  format: "pem" },
-    privateKeyEncoding: { type: "pkcs8", format: "pem" },
-  });
-  // Build a minimal self-signed X.509 via X509Certificate.. Not in
-  // node stdlib; instead use a precomputed self-signed cert path.
-  // For this test we use a runtime-generated cert via the snake-case
-  // fields supported by node 22+ generateX509.
-  return pair;
 }
 
 function testLiveHandshake() {

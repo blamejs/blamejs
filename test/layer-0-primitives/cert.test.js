@@ -120,50 +120,6 @@ async function _selfSignedCertNoSan(cn, validityDays) {
   return { keyPem: keyPem, certPem: certPem };
 }
 
-function _mockAcmeClient(pem) {
-  // Fulfills the b.acme.create contract the cert manager calls into.
-  // Every method returns synchronously-resolved promises with the
-  // shape the manager expects; the test asserts the manager's
-  // behavior given that surface, not the wire-protocol correctness.
-  return {
-    fetchDirectory: async function () { return { newOrder: "mock://order" }; },
-    newAccount:     async function () { return { url: "mock://acct" }; },
-    newOrder:       async function (opts) {
-      return {
-        url:            "mock://order/1",
-        status:         "pending",
-        authorizations: opts.identifiers.map(function (id, i) {
-          return "mock://auth/" + i;
-        }),
-        finalize:       "mock://order/1/finalize",
-      };
-    },
-    fetchAuthorization: async function (authUrl) {
-      var idx = parseInt(authUrl.replace("mock://auth/", ""), 10);
-      return {
-        url:        authUrl,
-        status:     "pending",
-        identifier: { type: "dns", value: ["a.example", "b.example", "c.example"][idx] || "x.example" },
-        challenges: [
-          { type: "http-01",     url: authUrl + "/http01",     token: "tok-" + idx, status: "pending" },
-          { type: "dns-01",      url: authUrl + "/dns01",      token: "tok-" + idx, status: "pending" },
-          { type: "tls-alpn-01", url: authUrl + "/tlsalpn01",  token: "tok-" + idx, status: "pending" },
-        ],
-      };
-    },
-    notifyChallengeReady: async function () { return { status: "processing" }; },
-    waitForAuthorization: async function (authUrl) {
-      return { url: authUrl, status: "valid" };
-    },
-    keyAuthorization:        function (token) { return token + ".thumbprint"; },
-    tlsAlpn01KeyAuthorization: function (token) { return token + ".alpn-thumb"; },
-    buildCsr:                function ()      { return "-----BEGIN CERTIFICATE REQUEST-----\nMOCK\n-----END CERTIFICATE REQUEST-----"; },
-    finalize:                async function () { return { url: "mock://order/1", status: "valid", certificate: "mock://cert" }; },
-    retrieveCert:            async function () { return pem; },
-    renewIfDue:              async function () { return { shouldRenew: false }; },
-  };
-}
-
 // ---- Surface ----
 
 function testSurface() {

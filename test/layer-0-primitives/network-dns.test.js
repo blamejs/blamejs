@@ -20,7 +20,6 @@ var dgram = require("node:dgram");
 var net = require("node:net");
 var tls = require("node:tls");
 var nodeHttps = require("node:https");
-var nodeCrypto = require("node:crypto");
 
 var helpers = require("../helpers");
 var check = helpers.check;
@@ -160,53 +159,6 @@ function _startTcpResponder(replyBytes) {
       });
       sock.on("error", function () { /* fixture best-effort */ });
     });
-    srv.unref();
-    srv.listen(0, "127.0.0.1", function () {
-      resolve({ srv: srv, port: srv.address().port });
-    });
-  });
-}
-
-function _genSelfSignedCert() {
-  // Deterministic-enough self-signed cert via node:crypto for the DoT
-  // fixture. We pin against the leaf via the `ca` option, so the cert
-  // chain is just the leaf itself.
-  var alg = { type: "ec", namedCurve: "prime256v1" };
-  var keys = nodeCrypto.generateKeyPairSync(alg.type, { namedCurve: alg.namedCurve });
-  // Fall back if X509 self-sign isn't available; tests using this
-  // helper guard against that by checking for the cert before use.
-  if (typeof nodeCrypto.X509Certificate !== "function") return null;
-  // Generate via spawn of node's built-in --tls-min-v1.3 self-signed?
-  // No — we use selfsigned-via-ec.js stub: build a cert object using
-  // tls.createSecureContext on raw key pair won't accept a non-cert.
-  // Easiest: skip TLS handshake test if we can't generate a cert.
-  return { key: keys.privateKey, cert: null };
-}
-
-function _startTlsResponder(replyBytes, keyPem, certPem) {
-  return new Promise(function (resolve, reject) {
-    var srv = tls.createServer({
-      key:        keyPem,
-      cert:       certPem,
-      minVersion: "TLSv1.2",
-    }, function (sock) {
-      var got = [];
-      var expected = -1;
-      sock.on("data", function (chunk) {
-        got.push(chunk);
-        var all = Buffer.concat(got);
-        if (expected === -1 && all.length >= 2) expected = all.readUInt16BE(0);
-        if (expected >= 0 && all.length >= expected + 2) {
-          var rlen = Buffer.alloc(2);
-          rlen.writeUInt16BE(replyBytes.length, 0);
-          sock.write(rlen);
-          sock.write(replyBytes);
-          sock.end();
-        }
-      });
-      sock.on("error", function () { /* fixture best-effort */ });
-    });
-    srv.on("error", reject);
     srv.unref();
     srv.listen(0, "127.0.0.1", function () {
       resolve({ srv: srv, port: srv.address().port });
