@@ -266,35 +266,24 @@ function tokenize(source) {
       continue;
     }
 
-    // Template literal — backtick. Substitutions ${ ... } can recurse;
-    // for the bounded use here we track brace-depth inside the substitution
-    // and resume the template after the matching `}`.
+    // Template literal — backtick. Where a substitution ends is found by
+    // counting braces, which is wrong about a brace written inside a string, a
+    // comment, a nested template or a character class.
+    //
+    // Lexing the substitution instead answers those correctly and is the
+    // change this file does NOT make. What sits between `${` and its `}` is
+    // code, so a lexer is the right instrument, but this lexer is incomplete
+    // in ways that are known and being worked through one at a time, and
+    // reading a substitution with it turns each remaining gap from one
+    // mis-read token into the loss of every pattern after the template: a
+    // scan that runs past the closing brace ends the template at some later
+    // backtick, and nothing about that is detectable from the result. Counting
+    // is wrong about a narrower thing and wrong locally. The framework holds
+    // no substitution that either reads incorrectly.
     if (ch === "`") {
-      var ts = i; i += 1;
-      var depth = 0;
-      while (i < n) {
-        var c4 = source.charAt(i);
-        if (depth === 0) {
-          if (c4 === "\\") { i += 2; continue; }
-          if (c4 === "`") { i += 1; break; }
-          if (c4 === "$" && source.charAt(i + 1) === "{") {
-            depth = 1; i += 2; continue;
-          }
-          i += 1; continue;
-        }
-        // inside ${...} — track nested braces but skip nested strings/templates
-        if (c4 === "{") { depth += 1; i += 1; continue; }
-        if (c4 === "}") { depth -= 1; i += 1; continue; }
-        if (c4 === "'" || c4 === '"') {
-          var nQ = c4; i += 1;
-          while (i < n && source.charAt(i) !== nQ) {
-            if (source.charAt(i) === "\\") i += 2; else i += 1;
-          }
-          if (i < n) i += 1;
-          continue;
-        }
-        i += 1;
-      }
+      var ts = i;
+      var tEnd = _templateEnd(source, ts);
+      i = tEnd === -1 ? n : tEnd;
       var ttok = { type: TOK_TEMPLATE, value: source.slice(ts, i), start: ts, end: i };
       tokens.push(ttok); prevSig = ttok;
       continue;
@@ -944,6 +933,84 @@ var _TRANSPARENT_WORDS = { "async": 1, "await": 1 };
 function _seeThrough(frame, lastSig) {
   if (_TRANSPARENT_WORDS[lastSig] !== 1) return lastSig;
   return frame.beforeWord[lastSig] === undefined ? "" : frame.beforeWord[lastSig];
+}
+
+// Where the template opening at `ts` ends, one past its closing backtick, or
+// -1 when no closing backtick is reached.
+function _templateEnd(source, ts) {
+  var n = source.length;
+  var i = ts + 1;
+  while (i < n) {
+    var c = source.charAt(i);
+    if (c === "\\") { i += 2; continue; }
+    if (c === "`") return i + 1;
+    if (c === "$" && source.charAt(i + 1) === "{") {
+      var end = _countingBraceEnd(source, i + 2);
+      if (end === -1) return -1;
+      i = end + 1;
+      continue;
+    }
+    i += 1;
+  }
+  return -1;
+}
+
+// Where a substitution ends, counted rather than lexed. Right whenever no
+// brace is quoted, and wrong exactly where the lexer above is right, so it is
+// the SECOND answer and not the first. It is here because a lexer that reads
+// one token wrongly inside a substitution never finds the closing brace at all
+// and takes the rest of the file into the template, where a count that is
+// wrong about a quoted brace still stops somewhere near. The lexer is known to
+// be incomplete, so the cost of each remaining gap is bounded to the
+// substitution rather than to everything after it.
+function _countingBraceEnd(source, from) {
+  var n = source.length;
+  var d = 1;
+  var k = from;
+  while (k < n) {
+    var c = source.charAt(k);
+    // A brace written in a string is not structural. The places left where one
+    // can be written and close nothing are a comment, a nested template and a
+    // character class, and none of them can be found here.
+    //
+    // Skipping a `//`, a `/*` or a backtick reads each of them correctly and
+    // reads `/[//]/`, `/[/*]/` and a backtick in a class incorrectly, because
+    // whether the scan is INSIDE a pattern is the question it cannot answer.
+    // Every such refinement is defeated by the same construct written inside a
+    // pattern, so the count stays as narrow as it can be and the gaps are
+    // listed rather than half-closed.
+    //
+    // A quote is not always opening a string: `/'/`, `[']` and `// it's` all
+    // hold one that opens nothing, and skipping to the next quote from there
+    // ran past the closing brace. What settles it without lexing is that a
+    // string literal cannot hold a raw CR or LF, so a quote whose partner is
+    // on another line, or absent, was not opening one. U+2028 and U+2029 are
+    // NOT in that set: a string may hold either of them raw, so finding one
+    // says nothing about whether a string is open.
+    if (c === "'" || c === '"') {
+      var j = k + 1;
+      var closed = false;
+      while (j < n) {
+        var sc = source.charAt(j);
+        if (sc === "\\") {
+          // A line continuation, and `\` + CRLF is one of them rather than a
+          // continuation followed by a bare LF that ends the string.
+          j += (source.charCodeAt(j + 1) === 0x0D && source.charCodeAt(j + 2) === 0x0A)
+            ? 3 : 2;
+          continue;
+        }
+        if (sc === c) { closed = true; break; }
+        var scc = source.charCodeAt(j);
+        if (scc === 0x0A || scc === 0x0D) break;
+        j += 1;
+      }
+      if (closed) { k = j + 1; continue; }
+    }
+    if (c === "{") d += 1;
+    else if (c === "}") { d -= 1; if (d === 0) return k; }
+    k += 1;
+  }
+  return -1;
 }
 
 function _braceOpensObject(lastSig) {

@@ -558,6 +558,23 @@ async function _runBearerAuthTests() {
   check("bearer: missing header → Bearer challenge", noAuth.res._hdrs["www-authenticate"] === "Bearer");
   check("bearer: missing header → detail",         JSON.parse(noAuth.res._body()).detail === "Missing Bearer token");
 
+  // The token starts at a non-space, so a run of spaces before it is skipped
+  // and a header carrying nothing but spaces has no token to read. Spelled
+  // `(.+)`, the capture and the `\s+` before it both accepted a space, and a
+  // header divisible at every space cost 5ms at 4,096 characters and 72ms at
+  // 16,384 before failing.
+  bearerCalls.length = 0;
+  var padded = await _drive(mw, { method: "GET", url: "/scim/v2/Users",
+                                  headers: { authorization: "Bearer      good" } });
+  check("bearer: spaces before the token are skipped", padded.res._sc() === 200);
+  check("bearer: the token itself carries no padding", bearerCalls[0] === "good");
+
+  var spacesOnly = await _drive(mw, { method: "GET", url: "/scim/v2/Users",
+                                      headers: { authorization: "Bearer        " } });
+  check("bearer: a header of only spaces → 401 Missing",
+        spacesOnly.res._sc() === 401 &&
+        JSON.parse(spacesOnly.res._body()).detail === "Missing Bearer token");
+
   // A non-Bearer scheme is rejected the same way (regex miss).
   var basic = await _drive(mw, { method: "GET", url: "/scim/v2/Users", headers: { authorization: "Basic dXNlcjpwYXNz" } });
   check("bearer: non-Bearer scheme → 401 Missing",

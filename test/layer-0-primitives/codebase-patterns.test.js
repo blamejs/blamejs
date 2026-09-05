@@ -3192,23 +3192,6 @@ function testFormatValidatorLengthCap() {
 // machine, and each timing is the best of three to drop scheduler noise. A
 // regex is only escalated to the growth measurement when a cheap 600-character
 // probe is already slow, which keeps the whole gate around 400ms.
-// Every regex literal, wherever it is written.
-//
-// The first version of this read `var X = /re/;` declarations, which is a
-// name-shaped lens over a population that does not care about names: the
-// second super-linear pattern in lib/ was written inline as
-// `parts[0].match(/re/)` and the declaration scan walked past it. Narrowing to
-// "declarations plus the method calls I thought of" only moves the same
-// mistake one step along, so the scan takes any literal at all.
-//
-// A `/` that is really a division can be captured this way, but only a subject
-// that is BOTH expensive and super-linear is reported, and no such accident
-// exists across the 2118 literals in lib/. Nothing is skipped to keep it
-// quick: probing all of them costs about a tenth of a second.
-var _REGEX_SITES = [
-  new RegExp("(\\/(?:[^\\/\\\\\\n\\[]|\\\\.|\\[(?:[^\\]\\\\\\n]|\\\\.)*\\])+\\/[gimsuyd]*)", "g"),
-];
-
 // A pattern the source builds out of a string rather than writing as a
 // literal. The extractor above reads literals, so `new RegExp("\\bCOPY\\b" +
 // ...)` and the `_re("...")` table in b.guardSql were measured by nothing:
@@ -3275,8 +3258,72 @@ function _decodeEscape(tok) {
   return nx;                                                  // an escaped literal
 }
 
+// The best prefix a pattern requires, for a caller that wants one string. The
+// probe wants them all and calls the function below.
 function _literalPrefixOf(pattern, unicode) {
+  var all = _literalPrefixesOf(pattern, unicode);
+  return all.length ? all[0] : "";
+}
+
+// EVERY prefix the pattern's branches require, the ones the pattern is known
+// to accept first. Which branch is the right one cannot always be decided: an
+// assertion inside one can read the text before it, the text after it, or the
+// quantified body that the prefix by definition stops short of, so judging a
+// branch on its own, or on the pattern as far as its own group, gets
+// `^A(?:B(?<=AB)|(?<!A)C)X`, `^(?:A(?=X)|B(?!X))X` and
+// `^(?:A-X(?=z)|B-X(?!z))(z+)+$` wrong in three different directions. Three
+// attempts to decide it each got one of those shapes wrong, so the choice is
+// not made. All of them are kept and the probe seeds all of them: the branch
+// that reaches the body drives it, and the ones that cannot fail at once and
+// cost nothing.
+// Every group that offers a choice is walked, and every branch of it, one at a
+// time: group `g` takes branch `b` while every other group takes its first.
+// Reading only the first group's first four branches left two families
+// unreached, each measured by moving the branch that reaches the body through
+// every position. A fifth branch was never built, so
+// `^(?:A-X(?!z)|B-X(?!z)|C-X(?!z)|D-X(?!z)|E-X(?=z))(z+)+$` read as fast; and no
+// group after the first was ever varied, so `^A(?:x|x)L(?:P(?!z)|Q(?=z))(z+)+$`
+// was reached by nothing at all though it costs 892ms on `AxLQ`.
+//
+// The bounds come from the patterns `lib/` holds: 518 of its 597 have no such
+// group at all, the most any has is three, and the widest offers twelve
+// branches. Combinations across groups are not enumerated, which would be
+// exponential; one group varies at a time.
+var _PREFIX_GROUPS  = 4;
+var _PREFIX_BRANCHES = 12;
+
+function _literalPrefixesOf(pattern, unicode) {
+  var verified = [];
+  var rest = [];
+  var seen = {};
+  for (var g = 0; g < _PREFIX_GROUPS; g += 1) {
+    var groupExists = true;
+    for (var b = 0; b < _PREFIX_BRANCHES && groupExists; b += 1) {
+      var built = _literalPrefixWithChoice(pattern, unicode, g, b);
+      if (built === null) break;                          // no such branch
+      groupExists = built.matched || b === 0;
+      if (built.text === "") continue;
+      if (seen[built.text] === 1) continue;
+      seen[built.text] = 1;
+      // Checked against the pattern only as far as the prefix reached, since
+      // the whole pattern cannot be run: the body behind the prefix is the
+      // costly thing this is all for.
+      if (_prefixAcceptedInContext(pattern, built.upTo, built.text, unicode) !== false) {
+        verified.push(built.text);
+      } else {
+        rest.push(built.text);
+      }
+    }
+    if (!groupExists) break;                              // no group this deep
+  }
+  return verified.concat(rest);
+}
+
+function _literalPrefixWithChoice(pattern, unicode, groupIdx, branchIdx) {
   var out = "";
+  var upTo = -1;
+  var choicesSeen = 0;
+  var matched = false;
   var toks = _regexTokens(pattern, unicode);
   for (var t = 0; t < toks.length; t += 1) {
     var text = toks[t].text;
@@ -3319,13 +3366,41 @@ function _literalPrefixOf(pattern, unicode) {
         continue;
       }
       var gInner = gRaw.replace(/^\?(?::|<[A-Za-z_$][A-Za-z0-9_$]*>)/, "");
-      var gPicked = null;
+      // The text an alternative spells is not always text it accepts: the
+      // assertion in `(?!A)A` refuses the very `A` it spells. So the
+      // alternatives that accept what they spell are preferred. An assertion
+      // can also reach OUTSIDE its group, where `A(?=B)` refuses `A` on its
+      // own and accepts it in the pattern it sits in, so a candidate none of
+      // them accepts is used rather than dropped: not confirmed is not
+      // refused, and losing the prefix loses the whole probe.
+      // Every branch that reads as a literal, in order. Which one this walk
+      // takes is the caller's `choice`, and only at the first group that
+      // offers more than one; the caller checks the finished prefix.
+      // An EMPTY alternative is a branch like any other, and taking it ends the
+      // prefix where the group starts. Dropping it made `^A-(?:|B(?!z))(z+)+$`
+      // read as requiring `A-B`, which the lookahead then refuses, so nothing
+      // reached the body behind it. `A-` is what that pattern requires.
+      var gCands = [];
       var gAlts = _topLevelAlternatives(gInner, unicode);
-      for (var ga = 0; ga < gAlts.length && gPicked === null; ga += 1) {
-        gPicked = _literalOfAlternative(gAlts[ga], 0, unicode);
+      for (var ga = 0; ga < gAlts.length; ga += 1) {
+        var gCand = _literalOfAlternative(gAlts[ga], 0, unicode);
+        if (gCand !== null) gCands.push(gCand);
+      }
+      if (!gCands.length) break;
+      var gPicked = gCands[0];
+      if (gCands.length > 1) {
+        // Every other choosing group takes its first branch, so one walk
+        // varies one group and the enumeration stays linear in the two bounds.
+        if (choicesSeen === groupIdx) {
+          if (branchIdx >= gCands.length) return null;    // no such branch
+          gPicked = gCands[branchIdx];
+          matched = true;
+        }
+        choicesSeen += 1;
       }
       if (gPicked === null || gPicked === "") break;
       out += gPicked;
+      upTo = toks[gj - 1].end;
       if (out.length >= 40) break;
       t = gj - 1;
       continue;
@@ -3351,15 +3426,17 @@ function _literalPrefixOf(pattern, unicode) {
       var pHi = pm[2] === undefined ? pLo : parseInt(pm[2], 10);
       if (pLo !== pHi || pLo < 1 || pLo > 16) break;      // optional or variable
       out += lit.repeat(pLo);
+      upTo = pClose;
       if (out.length >= 40) break;
       while (t < toks.length && toks[t].end < pClose) t += 1;
       continue;
     }
     if (after !== "" && "*+?".indexOf(after) !== -1) break;
     out += lit;
+    upTo = toks[t].end;
     if (out.length >= 40) break;
   }
-  return out;
+  return { text: out, upTo: upTo, matched: matched };
 }
 
 // A character the given one-token fragment accepts, found by asking the engine
@@ -3605,6 +3682,44 @@ function _regexLiteralsIn(source, baseOffset) {
   return out;
 }
 
+// Does the pattern, read from its start up to and including `upTo`, accept the
+// prefix built so far? Asked with the surrounding context rather than of the
+// alternative alone, because an assertion can reach outside its group: in
+// `^A(?:B(?<=AB)|(?<!A)C)`, the branch that works fails on its own and the one
+// that passes on its own is refused in place.
+function _prefixAcceptedInContext(pattern, upTo, candidate, unicode) {
+  var leading = pattern.slice(0, upTo + 1);
+  if (!_isLinearToRun(leading)) return null;              // not safe to run
+  var re;
+  try { re = new RegExp("^(?:" + leading + ")", unicode ? "u" : ""); }
+  catch (_e) { return null; }
+  try { return re.test(candidate); } catch (_e2) { return null; }
+}
+
+// Is the text one this process can safely RUN? A check that runs a pattern to
+// decide whether the prefix holds can be handed the costly body it exists to
+// find, and `(?!(a+)+$)a{40}b` would hang the gate before the child process
+// that bounds such work is reached. A catch cannot interrupt backtracking, so
+// the shape is refused rather than run.
+//
+// Three attempts at "which repetitions are dangerous" were each too narrow: an
+// assertion's own parenthesis hid a quantifier behind a nested group, then a
+// nested alternation carried a costly branch with no assertion at all, then a
+// FIXED count over an ambiguous body was exponential anyway. Deciding whether
+// an arbitrary pattern is safe to run is the question this whole check exists
+// to answer, so it is not asked here. What runs is only what is linear by
+// construction: no repetition of any kind, only groups that open with `(`,
+// `(?:` or an assertion, and few enough alternations that the paths through it
+// stay countable. Everything else is left alone.
+function _isLinearToRun(text) {
+  if (/[*+]/.test(text)) return false;
+  if (text.indexOf("{") !== -1) return false;
+  if (text.indexOf("?") !== -1 && !/^(?:[^?]|\(\?(?::|<?[=!]|<[A-Za-z_$]))*$/.test(text)) return false;
+  if ((text.match(/\|/g) || []).length > 8) return false;
+  if (/\[/.test(text)) return false;                      // a class may hide a lot
+  return true;
+}
+
 // The alternatives of one group, divided at its own `|` and not at any inside
 // a nested group. A class is one token here, so a `|` written inside one
 // divides nothing either.
@@ -3718,6 +3833,33 @@ function _literalOfAlternative(alt, depth, unicode) {
 // word run, so a motif list built from word runs never contains it. The
 // alternatives are read off the group itself, and an alternative that is not
 // wholly literal is skipped: a subject cannot be built from it by repetition.
+// A character the given one-token fragment REFUSES, which is what a subject
+// needs at its end for the overall match to fail. A pattern only backtracks on
+// its way to failing, so a subject the pattern accepts costs nothing whatever
+// its body does.
+//
+// The tail used to be `!` or nothing, and both are accepted by `.` and by
+// `[^q]`, so `(.*)*$` and `([^q]+)+$` matched and returned at once. They cost
+// 230ms and 120ms on a tail their own body refuses. `!` is tried first, so a
+// body that already fails on it derives exactly the tail already in use and
+// nothing is added.
+//
+// A body that accepts everything, `[\s\S]` being the plain case, has no such
+// character and gets none. It cannot be made to fail by a tail at all.
+var _DENYING_CANDIDATES = ["!", "q", "0", "z", " ", "-", "\n"];
+
+function _charNotMatching(fragment, unicode) {
+  var re;
+  try { re = new RegExp("^(?:" + fragment + ")$", unicode ? "u" : ""); }
+  catch (_e) { return null; }
+  for (var i = 0; i < _DENYING_CANDIDATES.length; i += 1) {
+    var ok;
+    try { ok = re.test(_DENYING_CANDIDATES[i]); } catch (_e2) { return null; }
+    if (!ok) return _DENYING_CANDIDATES[i];
+  }
+  return null;
+}
+
 function _quantifiedGroupMotifs(body, unicode) {
   var out = [];
   var toks = _regexTokens(body, unicode);
@@ -3744,7 +3886,16 @@ function _quantifiedGroupMotifs(body, unicode) {
       // seven-character motif was discarded, and `(?:abcdefg|abcdefg)+$` costs
       // on nothing shorter, so the probes repeated single characters after the
       // seed and returned at once.
-      if (lit !== null && lit.length >= 2 && lit.length <= 64 &&
+      //
+      // A ONE-character alternative counts too. It was left out because the
+      // characters a repetition consumes are collected before this, but that
+      // collection asks whether the character after a token is a quantifier,
+      // so it never looks inside a quantified GROUP. With a literal in front
+      // long enough to spend the earlier budget, `^PREFIX(?:z|z)+$` was left
+      // with the letters of its own prefix and never a `z`, and it costs
+      // 120ms on one. A class alternative reduces to one character the same
+      // way, which is what `^PREFIX(?:[a-c]|[b-d])+$` repeats.
+      if (lit !== null && lit.length >= 1 && lit.length <= 64 &&
           out.indexOf(lit) === -1) {
         out.push(lit);
       }
@@ -3756,19 +3907,29 @@ function _quantifiedGroupMotifs(body, unicode) {
 // The characters a repetition actually consumes: a token with a quantifier
 // directly on it. These are what a subject has to be made of to reach a costly
 // body at all, so they are chosen before anything else the pattern spells.
-function _quantifiedChars(body, unicode) {
+// The tokens a quantifier repeats. Read once and used twice: for a character
+// the token ACCEPTS, which a subject repeats to enter the body, and for one it
+// REFUSES, which a subject ends with so the match fails.
+function _quantifiedTokens(body, unicode) {
   var out = [];
   var toks = _regexTokens(body, unicode);
   for (var t = 0; t < toks.length; t += 1) {
     var after = body.charAt(toks[t].end + 1);
     if (after !== "+" && after !== "*" && after !== "{") continue;
-    var text = toks[t].text;
+    if (out.indexOf(toks[t].text) === -1) out.push(toks[t].text);
+  }
+  return out;
+}
+
+function _quantifiedChars(body, unicode) {
+  var out = [];
+  _quantifiedTokens(body, unicode).forEach(function (text) {
     var pick = null;
     if (text.charAt(0) === "\\" || text.charAt(0) === "[") pick = _charMatching(text, unicode);
     else if (text === ".") pick = "a";
     else if (/^[A-Za-z0-9_ ]$/.test(text)) pick = text;
     if (pick !== null && out.indexOf(pick) === -1) out.push(pick);
-  }
+  });
   return out;
 }
 
@@ -3808,19 +3969,37 @@ function _probeSubjectPieces(body, unicode) {
   // `PREFIX` alone stops one character short of the body this probe exists to
   // reach. So the prefix is read off the pattern verbatim, and the word runs
   // stay only as seeds for literals further in.
-  var prefix = _literalPrefixOf(body, unicode);
+  // Every branch's prefix, not just the best one. Which branch an assertion
+  // makes reachable is not always decidable from the prefix alone, and a
+  // branch dropped is a body driven by nothing, so all of them are seeded.
+  var prefixes = _literalPrefixesOf(body, unicode);
   var runs = literalText.match(/[A-Za-z_][A-Za-z0-9_]*/g) || [];
   // The leading literal is what a subject must carry to get past the first
   // token, and its length is not a measure of that: `^xy(a+)+$` hides its body
   // behind two characters. It goes first whatever its length; the rest follow
   // longest-first, since the cap should spend itself on the specific ones.
-  var ordered = (prefix ? [prefix] : []).concat(
-    runs.slice().sort(function (a, b) { return b.length - a.length; }));
+  //
+  // The prefixes do not share the cap with the word runs. There are at most
+  // four of them, one per branch, and each is a literal the pattern REQUIRES,
+  // so a dropped one is a body driven by nothing. Two orders were tried
+  // against one budget and each starved the other side: prefixes first left
+  // `^(?!LONGWORD)(?:A|B|C|D)$|^PREFIX(z+)+$` without `PREFIX`, and
+  // alternating left `^(?:A-X(?=z)|B-X(?!z)|C-X(?!z)|D-X(?!z))(z+)+$` without
+  // `A-X`, which is the only branch that reaches its body.
+  var sortedRuns = runs.slice().sort(function (a, b) { return b.length - a.length; });
   var seeds = [];
-  ordered.forEach(function (w) {
-    if (seeds.length >= 6) return;
+  function addSeed(w) {
     if (seeds.indexOf(w) === -1) seeds.push(w);
     if (seeds.indexOf(w + " ") === -1) seeds.push(w + " ");
+  }
+  prefixes.forEach(addSeed);
+  // The runs get their own allowance rather than what the prefixes leave, since
+  // a pattern with many branches produces many prefixes and would otherwise
+  // spend the lot.
+  var runBudget = seeds.length + 12;
+  sortedRuns.forEach(function (w) {
+    if (seeds.length >= runBudget) return;
+    addSeed(w);
   });
   // A body can sit behind more than one required literal, and a subject
   // carrying only one of them stops at the next: `BEGIN\s+END(a+)+$` is
@@ -3874,7 +4053,17 @@ function _probeSubjectPieces(body, unicode) {
   // it, where the subject IS the repeated filler.
   if (seeds.indexOf("") === -1) seeds.push("");
 
-  return { seeds: seeds, fillers: fillers };
+  // What a subject ends with so the match FAILS. The empty tail is always
+  // tried, since a pattern can fail on length alone, and a character each
+  // quantified token refuses is derived rather than assumed.
+  var tails = [""];
+  _quantifiedTokens(body, unicode).forEach(function (frag) {
+    var deny = _charNotMatching(frag, unicode);
+    if (deny !== null && tails.indexOf(deny) === -1) tails.push(deny);
+  });
+  if (tails.indexOf("!") === -1) tails.push("!");
+
+  return { seeds: seeds, fillers: fillers, tails: tails };
 }
 
 function _composedRegexSourcesByLine(content) {
@@ -3932,13 +4121,38 @@ function _composedRegexSourcesByLine(content) {
     return out;
   }
 
+  // A constructor's argument is already a pattern, so its backslashes are the
+  // pattern's own. Only a slash the pattern does not escape has to gain one to
+  // survive being written between delimiters; escaping every slash turns the
+  // `\/` in `^(?:\/|/)+$` into `\\/`, which matches a backslash and a slash
+  // rather than a slash, and the two alternatives that made the pattern cost
+  // stop being the same alternative.
+  function asLiteralBody(pattern) {
+    var out = "";
+    var inClass = false;
+    for (var i = 0; i < pattern.length; i += 1) {
+      var ch = pattern.charAt(i);
+      if (ch === "\\" && i + 1 < pattern.length) {
+        out += ch + pattern.charAt(i + 1);
+        i += 1;
+        continue;
+      }
+      if (ch === "[") inClass = true;
+      else if (ch === "]") inClass = false;
+      // A slash inside a character class cannot end the literal, so a literal
+      // does not escape it there and neither does this.
+      out += (ch === "/" && !inClass) ? "\\/" : ch;
+    }
+    return out;
+  }
+
   function push(tok, decoded, flags) {
     if (decoded === null) return;
     var line = shapeMatch.positionToLineCol(content, tok.start).line;
     if (!byLine[line]) byLine[line] = [];
     // Re-spelled as a literal so the caller can slice pattern from flags the
     // way it does for one it read from the source.
-    byLine[line].push("/" + decoded.replace(/\//g, "\\/") + "/" + (flags || ""));
+    byLine[line].push("/" + asLiteralBody(decoded) + "/" + (flags || ""));
   }
 
   // Helpers in this file that wrap new RegExp with fixed flags, found the
@@ -4352,6 +4566,33 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     ["^A{2,2}X(z+)+$",       "AAX"],
     // A variable one is not, so the prefix ends there.
     ["^A{1,3}X(z+)+$",       ""],
+    // An alternative can spell text it then refuses, so the one that works is
+    // the one taken.
+    ["^(?:(?!A)A|B)PREFIX(z+)+$", "BPREFIX"],
+    ["^(?:(?=B)A|C)X(z+)+$",      "CX"],
+    // An assertion can reach outside its group, where the alternative accepts
+    // on its own nothing it accepts in place, so the candidate is kept.
+    ["^(?:A(?=B))B(z+)+$",        "AB"],
+    // An assertion carrying a quantifier is not run at all, so the candidate
+    // it spells is kept rather than measured by this check.
+    ["^(?:(?!(a+)+$)Q)X(z+)+$",   "QX"],
+    // The prefix stops at its length cap, before the `X`, and returns at once:
+    // the assertion carrying `(a+)+$` is never run against it.
+    ["^(?:(?!(a+)+$)a{40}b)X(z+)+$", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"],
+    // The quantifier sits behind a nested group, where reading to the
+    // assertion's own closing parenthesis would not find it.
+    ["^(?:(?!(?:a)(a+)+$)a{40}b)X(z+)+$", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"],
+    // A nested alternation can carry the costly branch with no assertion at all.
+    ["^(?:(?:(a+)+$|a{40}b))X(z+)+$", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"],
+    // A FIXED count over an ambiguous body is exponential too, so it is not
+    // run either.
+    ["^(?:(?!(?:a|aa){40}c)a{40}b)X(z+)+$", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"],
+    // An assertion reaching outside its own group: the branch that works fails
+    // on its own, and the one that passes on its own is refused in place.
+    ["^A(?:B(?<=AB)|(?<!A)C)X(z+)+$", "ABX"],
+    // And one reading FORWARD, where the verdicts reverse once the text after
+    // the group is there.
+    ["^(?:A(?=X)|B(?!X))X(z+)+$",     "AX"],
   ];
   for (var p = 0; p < PREFIXES.length; p += 1) {
     check("regex probe: /" + PREFIXES[p][0] + "/ requires the prefix " +
@@ -4378,6 +4619,172 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     check("regex probe: /" + SPELLINGS[sp][0] + "/ seeds no subject on its own " +
           "spelling (" + JSON.stringify(SPELLINGS[sp][1]) + ")",
           spelled === false, JSON.stringify(spSeeds));
+  }
+
+  // Where an assertion reads into the body the prefix stops short of, no
+  // verdict on the branch is available at all. Both are kept, and both are
+  // seeded, so the one that reaches the body drives it.
+  var BRANCHES = [
+    ["^(?:A-X(?=z)|B-X(?!z))(z+)+$", ["A-X", "B-X"]],
+    ["^(?:(?!A)A|B)PREFIX(z+)+$",    ["BPREFIX"]],
+  ];
+  for (var br = 0; br < BRANCHES.length; br += 1) {
+    var brSeeds = _probeSubjectPieces(BRANCHES[br][0]).seeds;
+    var missing = BRANCHES[br][1].filter(function (want) {
+      return brSeeds.indexOf(want) === -1;
+    });
+    check("regex probe: /" + BRANCHES[br][0] + "/ seeds every branch that " +
+          "could reach its body",
+          missing.length === 0, "missing=" + JSON.stringify(missing) +
+          " seeds=" + JSON.stringify(brSeeds));
+  }
+
+  // A pattern handed to the constructor as a string is re-spelled as a literal
+  // so the caller can slice pattern from flags. What comes back has to be the
+  // pattern that was written: a backslash in the argument is the pattern's
+  // own, and adding another one to it changes what the pattern matches. The
+  // first case below costs exponentially because its two alternatives are the
+  // same alternative, and it stops costing the moment one of them is read as a
+  // backslash.
+  var COMPOSED = [
+    ['var re = new RegExp("^(?:\\\\/|/)+$");',  "^(?:\\/|/)+$"],
+    ['var re = new RegExp("^a/b$");',           "^a/b$"],
+    ['var re = new RegExp("^\\\\\\\\$");',      "^\\\\$"],
+    ['var re = new RegExp("^[/]+$");',          "^[/]+$"],
+  ];
+  for (var co = 0; co < COMPOSED.length; co += 1) {
+    var harvested = _composedRegexSourcesByLine(COMPOSED[co][0])[1] || [];
+    var literal = harvested[0] || "";
+    var sliced = literal.slice(1, literal.lastIndexOf("/"));
+    var rebuilt = null;
+    try { rebuilt = new RegExp(sliced).source; } catch (_e) { rebuilt = "(not a pattern)"; }
+    check("regex probe: a constructor pattern survives being re-spelled as a " +
+          "literal (" + COMPOSED[co][1] + ")",
+          rebuilt === new RegExp(COMPOSED[co][1]).source,
+          "literal=" + JSON.stringify(literal) + " rebuilt=" + JSON.stringify(rebuilt));
+  }
+
+  // Where a substitution ends is found by counting braces, so every construct
+  // that can hold a `}` without closing one is a way of getting it wrong, and
+  // getting it wrong takes the rest of the file into the template token and
+  // leaves every pattern after it unmeasured. Each case below carries a costly
+  // pattern on the line after the template, and it is that pattern the check
+  // looks for.
+  //
+  // An OPENING brace inside a character class is the one shape the count still
+  // reads wrongly, and it is not listed. Lexing the substitution answers it,
+  // and doing that turns every gap this lexer still has into the loss of every
+  // pattern after the template rather than one mis-read token, which is a
+  // worse trade while the lexer is being completed. The framework holds no
+  // such substitution.
+  var QUOTED_BRACE = [
+    ["a closing brace in a class", "var t = `${ /[}]/.test(x) }`;\nvar re = /^(b+)+$/;\n", "/^(b+)+$/"],
+    ["an opening one in a string", "var t = `${ '{' }`;\nvar re = /^(X+)+$/;\n",           "/^(X+)+$/"],
+    ["a closing one in a string",  "var t = `${ '}' }`;\nvar re = /^(Y+)+$/;\n",           "/^(Y+)+$/"],
+    ["one in a double-quoted one", "var t = `${ \"{\" }`;\nvar re = /^(Z+)+$/;\n",         "/^(Z+)+$/"],
+    ["one past an escaped quote",  "var t = `${ '\\'}' }`;\nvar re = /^(a1+)+$/;\n",       "/^(a1+)+$/"],
+    // A quote that opens no string. Skipping from it to the next quote ran
+    // past the closing brace; a string cannot hold a raw line terminator, so
+    // one whose partner is on another line, or absent, opened nothing.
+    ["an apostrophe in a pattern",  "var t = `${ /'/.test(x) }`;\nvar re = /^(a2+)+$/;\n",   "/^(a2+)+$/"],
+    ["one in a character class",    "var t = `${ /[']/.test(x) }`;\nvar re = /^(a3+)+$/;\n", "/^(a3+)+$/"],
+    ["one in a line comment",       "var t = `${ x // it's\n }`;\nvar re = /^(a4+)+$/;\n",   "/^(a4+)+$/"],
+    ["one in a block comment",      "var t = `${ x /* it's */ }`;\nvar re = /^(a5+)+$/;\n",  "/^(a5+)+$/"],
+    ["a quote inside the other",    "var t = `${ \"don't\" }`;\nvar re = /^(a6+)+$/;\n",     "/^(a6+)+$/"],
+    // A string that legally spans lines, so the rule above must not end it
+    // there. A backslash before CRLF continues the string across BOTH of
+    // them, and U+2028 and U+2029 may sit in one raw. Each holds a brace, so
+    // reading the string wrongly makes the count take that brace as
+    // structural. The two separators are built from their codes rather than
+    // written, since neither is visible in a diff.
+    ["a line continuation",     "var t = `${ 'a{\\\nb' }`;\nvar re = /^(a7+)+$/;\n",     "/^(a7+)+$/"],
+    ["one across CRLF",         "var t = `${ 'a{\\\r\nb' }`;\nvar re = /^(a8+)+$/;\n",   "/^(a8+)+$/"],
+    ["a raw line separator",
+     "var t = `${ 'a{" + String.fromCharCode(0x2028) + "b' }`;\nvar re = /^(a9+)+$/;\n", "/^(a9+)+$/"],
+    ["a raw paragraph one",
+     "var t = `${ 'a{" + String.fromCharCode(0x2029) + "b' }`;\nvar re = /^(b1+)+$/;\n", "/^(b1+)+$/"],
+    ["a substitution inside a nested one",  "var t = `${ `${ y }` }`;\nvar re = /^(b5+)+$/;\n",  "/^(b5+)+$/"],
+    ["a line comment",          "var t = `${ x // }\n }`;\nvar re = /^(c+)+$/;\n",       "/^(c+)+$/"],
+    ["a block comment",         "var t = `${ x /* } */ }`;\nvar re = /^(d+)+$/;\n",      "/^(d+)+$/"],
+    ["a nested template",       "var t = `${ `${ y }` }`;\nvar re = /^(e+)+$/;\n",       "/^(e+)+$/"],
+    ["a string",                "var t = `${ \"}\" + x }`;\nvar re = /^(f+)+$/;\n",      "/^(f+)+$/"],
+    ["a division",              "var t = `${ a / b }`;\nvar re = /^(g+)+$/;\n",          "/^(g+)+$/"],
+    ["an object literal",       "var t = `${ {k: 1}.k }`;\nvar re = /^(h+)+$/;\n",       "/^(h+)+$/"],
+    // A substitution holds an expression, so a leading `{` is an object and the
+    // slash after it divides. Read as a statement, the object is a block and
+    // the division opens a pattern that runs past the closing brace.
+    ["an object then a division", "var t = `${ {} / 2 }`;\nvar re = /^(i+)+$/;\n",       "/^(i+)+$/"],
+    ["a filled object then one",  "var t = `${ {a:1} / 2 }`;\nvar re = /^(j+)+$/;\n",    "/^(j+)+$/"],
+    ["an identifier then one",    "var t = `${ a / 2 }`;\nvar re = /^(k+)+$/;\n",        "/^(k+)+$/"],
+    ["a paren then one",          "var t = `${ (a) / 2 }`;\nvar re = /^(l+)+$/;\n",      "/^(l+)+$/"],
+    ["an index then one",         "var t = `${ [1][0] / 2 }`;\nvar re = /^(m+)+$/;\n",   "/^(m+)+$/"],
+    ["a pattern in first place",  "var t = `${ /x/.test(s) }`;\nvar re = /^(n+)+$/;\n",  "/^(n+)+$/"],
+    // Shapes where a slash follows a closing brace, which is where reading the
+    // brace wrongly takes the slash for a pattern opener and swallows the line.
+    // Each is here because an attempt to teach the tokenizer which braces close
+    // an expression broke one of them; that attempt was withdrawn, and these
+    // stay so a later one has to keep them all passing at once.
+    ["a function expression",     "var t = `${ function(){} / 2 }`;\nvar re = /^(o+)+$/;\n",       "/^(o+)+$/"],
+    ["a class expression",        "var t = `${ class {} / 2 }`;\nvar re = /^(p+)+$/;\n",           "/^(p+)+$/"],
+    ["an async function one",     "var t = `${ async function(){} / 2 }`;\nvar re = /^(q+)+$/;\n", "/^(q+)+$/"],
+    ["a named function one",      "var t = `${ function f(){} / 2 }`;\nvar re = /^(r+)+$/;\n",     "/^(r+)+$/"],
+    ["an invoked one",            "var t = `${ (function(){ return 1; })() }`;\nvar re = /^(s+)+$/;\n", "/^(s+)+$/"],
+    // The other direction, which is what a fix for the ones above breaks: a
+    // DECLARATION ends a statement, and a statement may begin with a pattern,
+    // so the slash after its brace opens one.
+    ["no template, a declaration", "function f(){}\n/^(t+)+$/.test(x);\n",                         "/^(t+)+$/"],
+    ["no template, a class one",   "class C {}\n/^(u+)+$/.test(x);\n",                             "/^(u+)+$/"],
+    // What the matching `}` leaves behind and what the brace opens are two
+    // questions. A function body is a block inside whichever the function is,
+    // so a label in it is a label and not a property name, and one answer
+    // serving both read `label: {}` as an object and the pattern after it as
+    // division.
+    ["a label inside an expression", "var f = function(){ label: {} /^(v+)+$/.test(s); };\n",       "/^(v+)+$/"],
+    ["a label inside a declaration", "function f(){ label: {} /^(w+)+$/.test(s); }\n",              "/^(w+)+$/"],
+    ["a ternary colon inside one",   "var f = function(){ a ? b : c; };\nvar re = /^(A+)+$/;\n",    "/^(A+)+$/"],
+    // A keyword that forbids a line terminator after it has ended its
+    // statement, so the `function` below it is a declaration again.
+    ["a return, a break, a function", "function f(){ return\nfunction g(){}\n/^(x+)+$/.test(s); }\n", "/^(x+)+$/"],
+    ["a returned function expression", "function f(){ return function g(){} / 2; }\nvar re = /^(y+)+$/;\n", "/^(y+)+$/"],
+    // `{ class: 0 }` and `class C { class; }` spell property names, and neither
+    // opens a body, so a later brace must not be read as one closing.
+    ["a keyword as a property name", "var o = {x: 0, class: 0}; if (ok) {} /^(B+)+$/.test(s);\n",  "/^(B+)+$/"],
+    ["a keyword as a field name",    "class C { class; } var x = {} / 2; var re = /^(b6+)+$/;\n", "/^(b6+)+$/"],
+    ["the other one",                "var o = {function: 1}; if (ok) {} /^(C+)+$/.test(s);\n",     "/^(C+)+$/"],
+    // A word the lexer reads as a keyword and the source uses as a name.
+    ["a contextual keyword as a name", "var t = `${ of / 2 }`;\nvar re = /^(D+)+$/;\n",            "/^(D+)+$/"],
+    ["substitutions three deep",       "var t = `${ `${ `${ x }` }` }`;\nvar re = /^(F+)+$/;\n",   "/^(F+)+$/"],
+    // `export default function f(){}` is a DECLARATION, so the slash after its
+    // brace opens a pattern, while `export default { a: 1 } / 2` divides. The
+    // words in front of the keyword stack, so a reading that passes through one
+    // of them has to pass through both.
+    ["an exported default function", "export default function f(){}\n/^(G+)+$/.test(x);\n",       "/^(G+)+$/"],
+    ["an exported default class",    "export default class C {}\n/^(H+)+$/.test(x);\n",           "/^(H+)+$/"],
+    ["an exported default async one", "export default async function f(){}\n/^(I+)+$/.test(x);\n", "/^(I+)+$/"],
+    ["an exported default object",   "export default { a: 1 } / 2;\nvar re = /^(J+)+$/;\n",       "/^(J+)+$/"],
+    ["a switch default",             "switch(x){ default: function f(){} }\n/^(K+)+$/.test(s);\n", "/^(K+)+$/"],
+    ["default read as a property",   "var d = mod.default / 2;\nvar re = /^(L+)+$/;\n",           "/^(L+)+$/"],
+    // `async` modifies the `function` after it only with no line terminator
+    // between them, so a newline leaves a declaration below it.
+    ["async, then a line break",     "var f = async\nfunction g() {}\n/^(M+)+$/.test(s);\n",      "/^(M+)+$/"],
+    ["async on the same line",       "var f = async function g() {} / 2;\nvar re = /^(N+)+$/;\n", "/^(N+)+$/"],
+    ["an async arrow",               "var f = async (x) => x / 2;\nvar re = /^(O+)+$/;\n",        "/^(O+)+$/"],
+    // A brace can open inside a computed index a class is still being declared
+    // through, and it is not the class body.
+    ["an object in a computed index", "class C extends a[{} / 2] {} /^(P+)+$/.test(x);\n",        "/^(P+)+$/"],
+    ["one in a call in extends",      "class C extends f({}) {} /^(Q+)+$/.test(x);\n",           "/^(Q+)+$/"],
+    ["a plain extends",               "class C extends B {} /^(R+)+$/.test(x);\n",               "/^(R+)+$/"],
+    ["a function in an index",        "var v = a[function(){} / 2];\nvar re = /^(S+)+$/;\n",     "/^(S+)+$/"],
+    // A word this lexer reads as a keyword and the source uses as a name. The
+    // count does not read the substitution, so it is unaffected by that.
+    ["a contextual keyword in a function", "function h(){ var t = `${ of / 2 }`; }\nvar re = /^(T+)+$/;\n", "/^(T+)+$/"],
+    ["the same at the top level",          "var t = `${ of / 2 }`;\nvar re = /^(U+)+$/;\n",                 "/^(U+)+$/"],
+  ];
+  for (var qb = 0; qb < QUOTED_BRACE.length; qb += 1) {
+    var qbFound = _regexLiteralsIn(QUOTED_BRACE[qb][1], 0).map(function (r) { return r.value; });
+    check("regex probe: a pattern after a template whose substitution holds " +
+          QUOTED_BRACE[qb][0] + " is still found",
+          qbFound.indexOf(QUOTED_BRACE[qb][2]) !== -1, JSON.stringify(qbFound));
   }
 
   // A pattern written inside a template substitution is still a pattern. The
@@ -4584,6 +4991,38 @@ function testProbeSubjectsMakeACatastrophicPatternCost() {
     "^(?!X)(?:,-|,-)+$",
     "^(?:X|(?:,-|,-)+)$",
     "^(?:ab{2}|ab{2})+$",
+    // An assertion in each branch that reads the quantified body, which the
+    // prefix by definition stops short of. Only the first branch can reach the
+    // body, and nothing about the prefix alone says which one that is.
+    "^(?:A-X(?=z)|B-X(?!z))(z+)+$",
+    // Branches enough to spend the seed budget, with the costly body behind a
+    // literal in a LATER alternative. Taking every branch prefix before any
+    // word run left that literal unseeded.
+    "^(?!LONGWORD)(?:A|B|C|D)$|^PREFIX(z+)+$",
+    // An empty alternative, which is what the pattern requires: taking the
+    // other branch builds a prefix the lookahead in it then refuses.
+    "^A-(?:|B(?!z))(z+)+$",
+    // Four branches, and the only one that reaches the body is the one the
+    // prefix check cannot confirm, so it is ordered last among the prefixes.
+    "^(?:A-X(?=z)|B-X(?!z)|C-X(?!z)|D-X(?!z))(z+)+$",
+    // A FIFTH branch is the one that reaches the body, and reading four of them
+    // stopped short of it.
+    "^(?:A-X(?!z)|B-X(?!z)|C-X(?!z)|D-X(?!z)|E-X(?=z))(z+)+$",
+    // And the choice that matters in a group after the first, which no walk
+    // used to vary: this costs 892ms on `AxLQ` and was reached by nothing.
+    "^A(?:x|x)L(?:P(?!z)|Q(?=z))(z+)+$",
+    // A group repeating ONE character, behind a literal long enough to spend
+    // the earlier filler budget. The motif was discarded for being a single
+    // character, so the fillers held the prefix's own letters and never a `z`.
+    "^PREFIX(?:z|z)+$",
+    // The same where each alternative is a class, which reduces to one
+    // character the same way, and the two overlap on `b` and `c`.
+    "^PREFIX(?:[a-c]|[b-d])+$",
+    // Bodies that ACCEPT the tail the probe used to end every subject with, so
+    // the pattern matched and never backtracked. Each costs on a character its
+    // own body refuses.
+    "^PREFIX(.*)*$",
+    "^PREFIX([^q]+)+$",
   ];
   var missed = [];
   for (var i = 0; i < PATTERNS.length; i += 1) {
@@ -4604,12 +5043,14 @@ function testProbeSubjectsMakeACatastrophicPatternCost() {
       for (var fi2 = 0; fi2 < pieces.fillers.length && !costly; fi2 += 1) {
         var fill = pieces.fillers[fi2];
         if (!fill) continue;
-        for (var reps = 14; reps <= 26 && !costly; reps += 6) {
-          var subject = pieces.seeds[si] + fill.repeat(reps) + "!";
-          var t0 = process.hrtime.bigint();
-          re.test(subject);
-          var ms = Number(process.hrtime.bigint() - t0) / 1e6;
-          if (ms > 2) costly = true;
+        for (var ti2 = 0; ti2 < pieces.tails.length && !costly; ti2 += 1) {
+          for (var reps = 14; reps <= 26 && !costly; reps += 6) {
+            var subject = pieces.seeds[si] + fill.repeat(reps) + pieces.tails[ti2];
+            var t0 = process.hrtime.bigint();
+            re.test(subject);
+            var ms = Number(process.hrtime.bigint() - t0) / 1e6;
+            if (ms > 2) costly = true;
+          }
         }
       }
     }
@@ -4756,7 +5197,7 @@ function testOwnRegexesRunLinear() {
         var built = Object.create(null);
         seeds.forEach(function (seed) {
           fillers.forEach(function (f) {
-            ["!", ""].forEach(function (tail) {
+            pieces.tails.forEach(function (tail) {
               // Sizes are in CHARACTERS, which is what the cost threshold is
               // set against. A two-character motif repeated 8192 times is a
               // 16 KiB subject, and a pattern that only turns costly past the
@@ -4789,7 +5230,7 @@ function testOwnRegexesRunLinear() {
         var tuples = SUBJECTS.map(function (s) { return [s.filler, s.tail, s.label]; });
         seeds.forEach(function (seed) {
           fillers.forEach(function (f) {
-            ["!", ""].forEach(function (tail) {
+            pieces.tails.forEach(function (tail) {
               tuples.push([f, tail, JSON.stringify(seed) + " + " +
                 JSON.stringify(f) + " x N + " + JSON.stringify(tail), seed]);
             });
@@ -6588,54 +7029,6 @@ function testNoHandrolledRetryLoop() {
 
 // ---- Pattern 41: duplicate code blocks (look-alike windows) ----
 
-// Normalize a JS source line so logically-identical code shapes hash
-// the same. The transform strips identifiers (keeping keywords),
-// string / number / regex literals, and whitespace. Two functions that
-// differ only in variable / file names produce the same fingerprint.
-var _JS_KEYWORDS = new Set([
-  "var", "let", "const", "function", "return", "if", "else", "for",
-  "while", "do", "switch", "case", "default", "break", "continue",
-  "try", "catch", "finally", "throw", "new", "this", "null", "undefined",
-  "true", "false", "typeof", "instanceof", "in", "of", "delete", "void",
-  "async", "await", "class", "extends", "super", "import", "export",
-  "from", "as", "with", "yield", "static",
-  // Node CommonJS module globals — kept verbatim so require-block
-  // duplication can be detected as boilerplate (see _isBoilerplate).
-  "require", "module", "exports", "Buffer", "process", "console",
-  "Promise", "Object", "Array", "String", "Number", "Boolean", "Date",
-  "RegExp", "Error", "Math", "JSON", "Symbol", "Map", "Set", "WeakMap",
-  "WeakSet", "Reflect", "Proxy",
-]);
-
-function _normalizeJsLine(line) {
-  // Strip line comments
-  line = line.replace(/\/\/.*$/, "");
-  // Replace string literals
-  line = line.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g, "_STR");
-  // Replace regex literals (regex-context heuristic; same shape as
-  // testNoDuplicateRegexAcrossFiles).
-  line = line.replace(/(^|[=(,?:[;!&|]|\breturn\s|\bthrow\s|=>\s*)\/((?:\\.|[^/\\\n])+)\/[gimsuy]*/g,
-                      "$1_RE");
-  // Replace number literals (decimal + hex).
-  line = line.replace(/\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b|0x[0-9a-fA-F]+/g, "_NUM");
-  // Replace identifiers with _ID, keeping reserved words AND the
-  // placeholder tokens emitted earlier (`_STR` / `_NUM` / `_RE` —
-  // these match the identifier regex but must survive this pass).
-  line = line.replace(/\b[a-zA-Z_$][a-zA-Z0-9_$]*\b/g, function (name) {
-    if (name === "_STR" || name === "_NUM" || name === "_RE") return name;
-    return _JS_KEYWORDS.has(name) ? name : "_ID";
-  });
-  // Insert whitespace around operators / brackets / punctuation so the
-  // shingle tokenizer (split on whitespace) sees one token per logical
-  // language token. Without this, `require(_STR);` would tokenize as a
-  // single opaque token instead of five, and `module.exports` would
-  // tokenize as one rather than three.
-  line = line.replace(/([.(){}[\];,:?!&|^~<>=+\-*/%@])/g, " $1 ");
-  // Collapse whitespace.
-  line = line.replace(/\s+/g, " ").trim();
-  return line;
-}
-
 // The duplicate-block scan tokenizes and filters a shard ONCE and records the
 // surviving offsets as a byte per (file, size, offset); every later round reads
 // that byte instead of re-deriving the verdict. That is what lets it hold one
@@ -6756,7 +7149,6 @@ async function testNoDuplicateCodeBlocks() {
   var SHINGLE_SIZES = [60, 50, 40, 30, 22, 16, 12, 8];
   var MIN_DISTINCT_FILES = 2;          // 2+ files → advisory inventory (STRONG_MIN_FILES = 3 hard-fails)
   var MIN_DISTINCT_TOKENS = 5;
-  var _MAX_REPORTED_PER_LENGTH = 5000;
 
   var files = _libFiles();
   var REPO_ROOT_LOCAL = path.resolve(__dirname, "..", "..");
