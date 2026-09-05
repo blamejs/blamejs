@@ -1922,9 +1922,19 @@ function testTinyPsAttrParseDoesNotBacktrack() {
     b.mail.bimi.validateTinyPsSvg(benign.slice(0, CAP - 10) + "</svg>");
   });
 
+  // The 50ms term is what carries this, not the ratio: both parses finish in
+  // well under a millisecond, so the ceiling is 50ms in practice and the
+  // assertion is a hang guard against work that would run to hundreds of
+  // milliseconds if it backtracked. The benign term gives it headroom on a
+  // loaded runner without weakening the guard, which is the same shape the
+  // equivalent check in ai-input.test.js settled on; routing this through
+  // helpers.looksSuperlinear was tried there and made the check dead, since
+  // that helper declines to judge below a noise floor and sub-millisecond work
+  // is always beneath it.
+  var ceiling = Math.max(50, benignMs * 50);
   check("mail.bimi: a hostile-shaped SVG at the Tiny-PS cap parses without " +
         "backtracking (" + hostileMs.toFixed(0) + "ms)",
-        hostileMs < 50, hostileMs.toFixed(0) + "ms");
+        hostileMs < ceiling, hostileMs.toFixed(0) + "ms, ceiling " + ceiling.toFixed(1) + "ms");
   check("mail.bimi: a well-formed SVG of the same size is still fast (" +
         benignMs.toFixed(1) + "ms) — the fix is not a smaller input",
         benignMs < 50, benignMs.toFixed(1) + "ms");
