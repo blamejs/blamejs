@@ -3222,6 +3222,11 @@ var _REGEX_SITES = [
 // match. Read verbatim, so a separator inside it survives: `^api-key:(a+)+$`
 // yields `api-key:`, and a subject built from its words alone would stop at
 // the hyphen and never reach the body.
+// A group that asserts rather than consumes: `(?=`, `(?!`, `(?<=`, `(?<!`. Its
+// contents are matched against the input without any of it being taken, so
+// nothing inside it belongs in a string a subject has to carry.
+var _ASSERTION_OPENER = /^\?<?[=!]/;
+
 // The single character a complete escape token denotes, or null when it names
 // a SET, an anchor or a backreference rather than one character. `\x50` is the
 // character `P`: reading it as a class stops a required prefix at the escape,
@@ -3286,7 +3291,39 @@ function _literalPrefixOf(pattern) {
     } else if (text.charAt(0) === "[" || text === ".") {
       lit = _charMatching(text === "." ? "[^\\n]" : text);
       if (lit === null) break;
-    } else if ("([{|*+?$)]}".indexOf(text) !== -1) {
+    } else if (text === "(") {
+      // A group that is not quantified is required, so what it matches is part
+      // of the prefix. Stopping at it left `^(?:A|A)PREFIX(z+)+$` requiring
+      // nothing, and no subject reached the body behind it.
+      var gd = 1;
+      var gj = t + 1;
+      for (; gj < toks.length && gd > 0; gj += 1) {
+        if (toks[gj].text === "(") gd += 1;
+        else if (toks[gj].text === ")") gd -= 1;
+      }
+      if (gd !== 0) break;
+      var gAfter = pattern.charAt(toks[gj - 1].end + 1);
+      if (gAfter !== "" && "*+?{".indexOf(gAfter) !== -1) break;   // optional or repeatable
+      var gRaw = pattern.slice(toks[t].end + 1, toks[gj - 1].end);
+      // A lookaround consumes nothing, so what it contains is not part of what
+      // a subject must carry. Stripping it like a `?:` group put `X` in front
+      // of `^(?!X)...`, which is the one string that pattern refuses.
+      if (_ASSERTION_OPENER.test(gRaw)) {
+        t = gj - 1;
+        continue;
+      }
+      var gInner = gRaw.replace(/^\?(?::|<[A-Za-z_$][A-Za-z0-9_$]*>)/, "");
+      var gPicked = null;
+      var gAlts = _topLevelAlternatives(gInner);
+      for (var ga = 0; ga < gAlts.length && gPicked === null; ga += 1) {
+        gPicked = _literalOfAlternative(gAlts[ga], 0);
+      }
+      if (gPicked === null || gPicked === "") break;
+      out += gPicked;
+      if (out.length >= 40) break;
+      t = gj - 1;
+      continue;
+    } else if ("[{|*+?$)]}".indexOf(text) !== -1) {
       break;
     } else {
       lit = text;
@@ -3547,8 +3584,11 @@ function _literalOfAlternative(alt, depth) {
       // is excluded: a group at the end of the alternative was dropped.
       var after = j < toks.length ? toks[j].text : "";
       if (after !== "" && "*+?{".indexOf(after) !== -1) return null;  // the group itself repeats
-      var innerText = alt.slice(toks[i].end + 1, toks[j - 1].end);
-      innerText = innerText.replace(/^\?(?::|<?[=!]|<[A-Za-z_$][A-Za-z0-9_$]*>)/, "");
+      var rawInner = alt.slice(toks[i].end + 1, toks[j - 1].end);
+      // An assertion inside the alternative contributes no characters to what
+      // repeats, so it is stepped over rather than read as literal text.
+      if (_ASSERTION_OPENER.test(rawInner)) { i = j - 1; continue; }
+      var innerText = rawInner.replace(/^\?(?::|<[A-Za-z_$][A-Za-z0-9_$]*>)/, "");
       var picked = null;
       var alts = _topLevelAlternatives(innerText);
       for (var k = 0; k < alts.length && picked === null; k += 1) {
@@ -3734,13 +3774,13 @@ function _probeSubjectPieces(body) {
     if (fillers.length < 14 && fillers.indexOf(w) === -1) fillers.push(w);
   });
 
-  // A pattern that requires no literal prefix is matched from the first
-  // character, so the empty seed is a real one for it and often the only right
-  // one: the subject IS the repeated filler. Added whenever no prefix is
-  // required, not only when nothing else was found, since a word run taken
-  // from further in the pattern is not something the front of the subject has
-  // to carry.
-  if (!prefix && seeds.indexOf("") === -1) seeds.push("");
+  // The empty seed is always a candidate, and is tried last so the specific
+  // ones come first. It is the only subject that reaches a body behind an
+  // alternative the prefix did not take: for `^(?:X|(?:,-|,-)+)$` the prefix
+  // is one branch, and dropping the empty seed left the costly branch driven
+  // by nothing. It is also the whole subject for a pattern with no literal in
+  // it, where the subject IS the repeated filler.
+  if (seeds.indexOf("") === -1) seeds.push("");
 
   return { seeds: seeds, fillers: fillers };
 }
@@ -4183,6 +4223,17 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // and nothing is not a quantifier.
     ["^ABC",                 "ABC"],
     ["^A\\x42C",             "ABC"],
+    // A group that is not quantified is required, so it is part of the prefix.
+    ["^(?:A|A)PREFIX(z+)+$", "APREFIX"],
+    ["^(?:AB|CD)X(z+)+$",    "ABX"],
+    ["^(A)(B)C(z+)+$",       "ABC"],
+    // A quantified group is optional or repeatable, so it ends the prefix.
+    ["^X(?:A|A)?Y(z+)+$",    "X"],
+    // A lookaround consumes nothing, so it contributes nothing to the prefix.
+    ["^(?!X)(?:,-|,-)+$",    ""],
+    ["^(?=A)ABC",            "ABC"],
+    ["^(?!X)ABC",            "ABC"],
+    ["^A(?=B)BC",            "ABC"],
   ];
   for (var p = 0; p < PREFIXES.length; p += 1) {
     check("regex probe: /" + PREFIXES[p][0] + "/ requires the prefix " +
@@ -4223,6 +4274,22 @@ function testProbeSubjectsReachTheQuantifiedBody() {
   check("regex probe: and one inside a nested template substitution",
         _regexLiteralsIn(NESTED, 0).map(function (r) { return r.value; })
           .indexOf("/(?:b+)+$/") !== -1);
+
+  // `break` and `continue` take a label and nothing else, so a slash after one
+  // is never division. With the semicolon left to insertion, the pattern on
+  // the next line is the next statement, and reading the slash as division
+  // emitted no pattern token at all, so the linear-time check never saw it.
+  var ASI = [
+    ["while (ok) { break\n/(?:a+)+$/.test(input); }",    "/(?:a+)+$/"],
+    ["while (ok) { continue\n/(?:b+)+$/.test(input); }", "/(?:b+)+$/"],
+    ["function f() { return\n/(?:c+)+$/.test(input); }", "/(?:c+)+$/"],
+  ];
+  for (var ai = 0; ai < ASI.length; ai += 1) {
+    var asiFound = _regexLiteralsIn(ASI[ai][0], 0).map(function (r) { return r.value; });
+    check("regex probe: a pattern beginning the statement after " +
+          ASI[ai][0].slice(0, 22).replace(/\n/g, " ") + " is found",
+          asiFound.indexOf(ASI[ai][1]) !== -1, JSON.stringify(asiFound));
+  }
 
   // The brace that ends a substitution is a token, not a character. A `}`
   // written inside a string, a comment or a character class ends nothing.
@@ -4340,6 +4407,9 @@ function testProbeSubjectsMakeACatastrophicPatternCost() {
     "^\\cAPREFIX(z+)+$",
     "^(?:[\\u03A9]|[\\u03A9])+$",
     "^(?:a(?:b|b)|a(?:b|b))+$",
+    "^(?:A|A)PREFIX(z+)+$",
+    "^(?!X)(?:,-|,-)+$",
+    "^(?:X|(?:,-|,-)+)$",
   ];
   var missed = [];
   for (var i = 0; i < PATTERNS.length; i += 1) {

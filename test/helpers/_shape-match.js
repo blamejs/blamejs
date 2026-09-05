@@ -91,11 +91,15 @@ function _slashIsRegex(prevSignificant) {
     // After these keywords a `/` is part of a regex literal.
     // `else` and `do` are followed by the statement they govern, which may be
     // unbraced and may begin with a pattern: `else /re/.test(s);`.
+    // `break` and `continue` take a label and nothing else, so a slash after
+    // one is never division; with the semicolon left to insertion, the next
+    // statement can begin with a pattern on the following line.
     if (kw === "return" || kw === "typeof" || kw === "throw" ||
         kw === "new" || kw === "delete" || kw === "void" ||
         kw === "instanceof" || kw === "in" || kw === "of" ||
         kw === "case" || kw === "yield" || kw === "await" ||
-        kw === "else" || kw === "do") return true;
+        kw === "else" || kw === "do" ||
+        kw === "break" || kw === "continue") return true;
     return false;
   }
   if (prevSignificant.type === TOK_PUNCT) {
