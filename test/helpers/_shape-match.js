@@ -71,6 +71,17 @@ var PUNCT_CHARS = "{}()[];,.<>!=+-*/%&|^~?:";
 // the classic JS ambiguity; we use the standard rule: regex follows
 // any context that demands an expression — operators, keywords like
 // `return` / `typeof` / `new`, or the start of input.
+// Does the text hold a line terminator? Compared by code point rather than
+// against a character class, so the four ECMAScript terminators are named
+// here without any of them appearing in this file.
+var LINE_TERMINATOR_CODES = [0x0A, 0x0D, 0x2028, 0x2029];
+function _hasLineTerminator(text) {
+  for (var i = 0; i < text.length; i += 1) {
+    if (LINE_TERMINATOR_CODES.indexOf(text.charCodeAt(i)) !== -1) return true;
+  }
+  return false;
+}
+
 function _slashIsRegex(prevSignificant) {
   if (!prevSignificant) return true;
   if (prevSignificant.type === TOK_IDENT) {
@@ -112,6 +123,11 @@ function _slashIsRegex(prevSignificant) {
     // and a statement may begin with a pattern: `if (ok) /re/.test(s);`.
     if (p === ")") return prevSignificant.closedControlHeader === true;
     if (p === "]") return false;
+    // A POSTFIX `++` or `--` ends an expression, so the slash after it is
+    // division: `x++ / 2`. Reading it as a pattern opener swallows the rest of
+    // the line and consumes the opening slash of the next real one. A PREFIX
+    // one is followed by its operand, which may begin with a pattern.
+    if (p === "++" || p === "--") return prevSignificant.isPostfix !== true;
     return true;
   }
   return true;
@@ -283,6 +299,28 @@ function tokenize(source) {
         i += 1;
       }
       var ptok = { type: TOK_PUNCT, value: source.slice(ps, i), start: ps, end: i };
+      // `++` and `--` are POSTFIX only when there was something to operate on,
+      // no line terminator came between (one ends the statement, so the
+      // operator belongs to the next), and the paren before it did not close a
+      // control-flow header (`if (ok) ++x` is a statement, not an operand).
+      // A prefix one is followed by its operand, which may begin with a
+      // pattern, and the two forms decide the next slash differently.
+      if (ptok.value === "++" || ptok.value === "--") {
+        var operandBefore = prevSig !== null &&
+          (prevSig.type === TOK_IDENT || prevSig.type === TOK_NUMBER ||
+           prevSig.type === TOK_STRING || prevSig.type === TOK_TEMPLATE ||
+           prevSig.type === TOK_REGEX ||
+           (prevSig.type === TOK_PUNCT &&
+            (prevSig.value === "]" ||
+             (prevSig.value === ")" && prevSig.closedControlHeader !== true))));
+        var brokeLine = false;
+        for (var bk2 = tokens.length - 1; bk2 >= 0; bk2 -= 1) {
+          var bt2 = tokens[bk2];
+          if (bt2.type !== TOK_WS && bt2.type !== TOK_COMMENT) break;
+          if (_hasLineTerminator(bt2.value)) { brokeLine = true; break; }
+        }
+        ptok.isPostfix = operandBefore && !brokeLine;
+      }
       // Whether a `)` allows a pattern after it is decided at the matching
       // `(`: the paren that closes `if (ok)` is followed by the statement it
       // governs, which may begin with one, while the paren that closes

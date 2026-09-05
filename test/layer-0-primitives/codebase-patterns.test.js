@@ -3566,12 +3566,30 @@ function _topLevelAlternatives(inner) {
 function _literalOfAlternative(alt, depth) {
   if (depth > 4) return null;
   var lit = "";
+  var lastPiece = null;
   var toks = _regexTokens(alt);
   for (var i = 0; i < toks.length; i += 1) {
     var at = toks[i].text;
-    // A quantifier makes the alternative variable-length, so it is not a motif
-    // a subject can be built from by repetition.
-    if ("*+?{".indexOf(at) !== -1) return null;
+    if (at === "{") {
+      // A FIXED quantifier keeps the alternative fixed-length: `ab{2}` is the
+      // motif `abb`. Refusing every `{` dropped it, and the pattern was then
+      // driven with single characters that cost nothing.
+      var qClose = alt.indexOf("}", toks[i].end);
+      if (qClose === -1 || lastPiece === null) return null;
+      var qSpec = alt.slice(toks[i].end + 1, qClose);
+      var qm = /^(\d+)(?:,(\d+))?$/.exec(qSpec);
+      if (!qm) return null;
+      var qLo = parseInt(qm[1], 10);
+      var qHi = qm[2] === undefined ? qLo : parseInt(qm[2], 10);
+      if (qLo !== qHi || qLo < 1 || qLo > 16) return null;   // variable length
+      lit += lastPiece.repeat(qLo - 1);
+      while (i < toks.length && toks[i].end < qClose) i += 1;
+      lastPiece = null;
+      continue;
+    }
+    // A variable quantifier makes the alternative variable-length, so it is
+    // not a motif a subject can be built from by repetition.
+    if ("*+?".indexOf(at) !== -1) return null;
     if (at === "(") {
       var d = 1;
       var j = i + 1;
@@ -3617,6 +3635,7 @@ function _literalOfAlternative(alt, depth) {
     }
     if (piece === null) return null;
     lit += piece;
+    lastPiece = piece;
   }
   return lit;
 }
@@ -4190,6 +4209,9 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // inside an alternative contributes the string it matches.
     ["^(?:[\\u03A9]|[\\u03A9])+$", String.fromCharCode(0x03A9)],
     ["^(?:a(?:b|b)|a(?:b|b))+$", "ab"],
+    // A fixed quantifier keeps the alternative fixed-length.
+    ["^(?:ab{2}|ab{2})+$",       "abb"],
+    ["^(?:a{3}|a{3})+$",         "aaa"],
   ];
   for (var i = 0; i < CASES.length; i += 1) {
     var body = CASES[i][0];
@@ -4283,6 +4305,21 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     ["while (ok) { break\n/(?:a+)+$/.test(input); }",    "/(?:a+)+$/"],
     ["while (ok) { continue\n/(?:b+)+$/.test(input); }", "/(?:b+)+$/"],
     ["function f() { return\n/(?:c+)+$/.test(input); }", "/(?:c+)+$/"],
+    // A postfix increment ends an expression, so the slash after it divides;
+    // reading it as a pattern swallowed the rest of the line and ate the
+    // opening slash of the real one.
+    ["x++ / 2; var re = /(?:d+)+$/;",                    "/(?:d+)+$/"],
+    ["x-- / 2; var re = /(?:e+)+$/;",                    "/(?:e+)+$/"],
+    // A PREFIX increment is followed by its operand, which may begin with one.
+    ["var n = ++/(?:f+)+$/.lastIndex;",                  "/(?:f+)+$/"],
+    ["var n = --/(?:g+)+$/.lastIndex;",                  "/(?:g+)+$/"],
+    ["var n = (a) ++ / 2; var re = /(?:h+)+$/;",         "/(?:h+)+$/"],
+    // A paren closing a control header is followed by a statement, so the
+    // operator there is prefix; and a line terminator before one ends the
+    // statement, so that operator belongs to the next.
+    ["if (ok) ++/(?:i+)+$/.lastIndex;",                  "/(?:i+)+$/"],
+    ["x\n++/(?:j+)+$/.lastIndex;",                       "/(?:j+)+$/"],
+    ["x // c\n++/(?:k+)+$/.lastIndex;",                  "/(?:k+)+$/"],
   ];
   for (var ai = 0; ai < ASI.length; ai += 1) {
     var asiFound = _regexLiteralsIn(ASI[ai][0], 0).map(function (r) { return r.value; });
@@ -4410,6 +4447,7 @@ function testProbeSubjectsMakeACatastrophicPatternCost() {
     "^(?:A|A)PREFIX(z+)+$",
     "^(?!X)(?:,-|,-)+$",
     "^(?:X|(?:,-|,-)+)$",
+    "^(?:ab{2}|ab{2})+$",
   ];
   var missed = [];
   for (var i = 0; i < PATTERNS.length; i += 1) {
