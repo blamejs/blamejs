@@ -4124,6 +4124,26 @@ function _topLevelAlternatives(inner, unicode) {
 // can enumerate them. Passing neither keeps the older reading, which takes the
 // first branch that spells anything: that is what the required-prefix walk
 // wants, and it is not the same answer.
+// Does this branch accept the text it spells? A branch whose assertion
+// contradicts its own literal does not, which is what makes it the wrong one
+// to build a motif from.
+//
+// It runs the BRANCH, never the whole pattern, and only a branch that carries
+// no quantifier on a group — `)+`, `)*`, `){` — since those are the shapes
+// that cost, and the point of all of this is to find them rather than to run
+// them. A branch it will not run is treated as accepting, which leaves the
+// enumeration to answer for it.
+function _branchAccepts(branch, candidate, unicode) {
+  if (typeof branch !== "string" || branch.length > 64) return true;
+  if (typeof candidate !== "string" || candidate.length > 64) return true;
+  if (/\)[*+]|\)\{/.test(branch)) return true;
+  try {
+    return new RegExp("^(?:" + branch + ")$", unicode ? "u" : "").test(candidate);
+  } catch (_e) {
+    return true;                                          // not readable: not this check's business
+  }
+}
+
 function _literalOfAlternative(alt, depth, unicode, picks, meta) {
   // A backstop, not the reading. Each nested call reads the INSIDE of a group,
   // which is strictly shorter than what it was given, so the recursion is
@@ -4247,6 +4267,22 @@ function _literalOfAlternative(alt, depth, unicode, picks, meta) {
         // required-prefix walk wants when it is not enumerating.
         for (var k = 0; k < alts.length && picked === null; k += 1) {
           picked = _literalOfAlternative(alts[k], depth + 1, unicode);
+        }
+      } else if (picks === "viable") {
+        // Decide this group on its own rather than sampling combinations: take
+        // the first branch that ACCEPTS what it spells. A branch whose
+        // assertion contradicts its own literal, `(?!a)a`, refuses it, and a
+        // group is answered without reference to any other, so a vector like
+        // [0,1,0,0,0,0,1] is reached where neither the product's first few nor
+        // the all-on-one-branch readings contain it.
+        for (var vk = 0; vk < alts.length && picked === null; vk += 1) {
+          var cand = _literalOfAlternative(alts[vk], depth + 1, unicode, "viable");
+          if (cand !== null && _branchAccepts(alts[vk], cand, unicode)) picked = cand;
+        }
+        if (picked === null) {
+          for (var vf = 0; vf < alts.length && picked === null; vf += 1) {
+            picked = _literalOfAlternative(alts[vf], depth + 1, unicode, "viable");
+          }
         }
       } else if (alts.length <= 1) {
         picked = _literalOfAlternative(alts[0], depth + 1, unicode, picks, meta);
@@ -4402,6 +4438,11 @@ function _quantifiedGroupMotifs(body, unicode) {
         for (var si = 0; si < meta.widths.length; si += 1) same.push(di);
         _pushMotif(out, _literalOfAlternative(alt, 0, unicode, same, { widths: [] }));
       }
+      // And one reading that answers each group on its own, by taking the first
+      // branch that accepts what it spells. Sampling cannot reach a vector that
+      // is neither near the start of the product nor all on one branch, and a
+      // group's viability does not depend on the others.
+      _pushMotif(out, _literalOfAlternative(alt, 0, unicode, "viable"));
       var lit = _literalOfAlternative(alt, 0, unicode);
       // Bounded by what a subject can carry, not by a short fixed length. A
       // seven-character motif was discarded, and `(?:abcdefg|abcdefg)+$` costs
@@ -5088,6 +5129,17 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // combination of 128 and a cap never reaches it. Each reading with every
     // group on the same branch is built whatever the cap.
     ["^(?:" + "(?:(?!a)a|b)".repeat(7) + "-|" + "(?:(?!a)a|b)".repeat(7) + "-)+$", "bbbbbbb-"],
+    // Seven groups whose viable branches are MIXED. Sampling reaches neither
+    // this vector nor anything near it: it is not among the first combinations
+    // of the product and it is not all-on-one-branch. Each group is answered on
+    // its own, by taking the branch that accepts what it spells.
+    [(function () {
+      var vec = [0, 1, 0, 0, 0, 0, 1];
+      var unit = vec.map(function (v) {
+        return v ? "(?:(?!a)a|b)" : "(?:a|(?!b)b)";
+      }).join("") + "-";
+      return "^(?:" + unit + "|" + unit + ")+$";
+    })(), "abaaaab-"],
     // Six compounds in front of the costly one. What a quantified group
     // repeats is taken whatever precedes it, as a quantified character is.
     ["^(?:(?:a-)+|(?:b-)+|(?:c-)+|(?:d-)+|(?:e-)+|(?:f-)+|(?:z@|z@)+)$", "z@"],
@@ -5762,6 +5814,15 @@ function testProbeSubjectsMakeACatastrophicPatternCost() {
     "^(?:" + "(?:(?!a)a|b)".repeat(7) + "-|" + "(?:(?!a)a|b)".repeat(7) + "-)+$",
     // A motif wrapped in more groups than the old depth cutoff allowed.
     "^(?:(?:(?:(?:(?:(?:a-|a-))))))+$",
+    // Seven groups whose viable branches are mixed, which sampling reaches by
+    // no route.
+    (function () {
+      var vec = [0, 1, 0, 0, 0, 0, 1];
+      var unit = vec.map(function (v) {
+        return v ? "(?:(?!a)a|b)" : "(?:a|(?!b)b)";
+      }).join("") + "-";
+      return "^(?:" + unit + "|" + unit + ")+$";
+    })(),
   ];
   var missed = [];
   for (var i = 0; i < PATTERNS.length; i += 1) {
