@@ -4091,13 +4091,21 @@ function _literalOfAlternative(alt, depth, unicode) {
         lastPiece = at;
         continue;
       }
+      // Only the lower bound is read: it is the count the motif stands for,
+      // whether the quantifier is exact or a range.
       var qLo = parseInt(qm[1], 10);
-      var qHi = qm[2] === undefined ? qLo : parseInt(qm[2], 10);
       // Bounded by what a motif can be, which is the length cap below, not by
       // a smaller number: `ab{17}` is eighteen characters and is the only
       // thing `(?:ab{17}|ab{17})+$` costs on.
-      if (qLo !== qHi || qLo < 1 || qLo > 64) return null;   // variable length
-      lit += lastPiece.repeat(qLo - 1);
+      // A range does not fix the length, but its LOWER bound is a count the
+      // alternative accepts, so it stands as the representative the way one
+      // instance does for `+`, `*` and `?`. Refusing every range dropped the
+      // motif: `(?:a{2,3}b|a{2,3}b)+$` costs on `aab` repeated and was left
+      // with single characters, `a`, `2`, `3` and `b`, that it returns on at
+      // once. A lower bound of zero means the piece may be absent, and the one
+      // instance already in `lit` is a length the alternative takes.
+      if (qLo > 64) return null;                             // longer than a motif
+      if (qLo > 0) lit += lastPiece.repeat(qLo - 1);
       while (i < toks.length && toks[i].end < qClose) i += 1;
       lastPiece = null;
       continue;
@@ -4877,6 +4885,11 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // the compound survives: this costs on `a-b` repeated and returns at once
     // on either character alone.
     ["^(?:a-b+|a-b+)+$",         "a-b"],
+    // A counted range does not fix the length either, but its lower bound is a
+    // count the alternative accepts, so it stands as the representative. A
+    // lower bound of zero leaves the single instance already collected.
+    ["^(?:a{2,3}b|a{2,3}b)+$",   "aab"],
+    ["^(?:a{0,3}b|a{0,3}b)+$",   "ab"],
   ];
   for (var i = 0; i < CASES.length; i += 1) {
     var body = CASES[i][0];
@@ -5262,6 +5275,9 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     ["class of {} /(?:z1+)+$/.test(x);",                 "/(?:z1+)+$/"],
     ["function of() {} /(?:z2+)+$/.test(x);",            "/(?:z2+)+$/"],
     ["class in {} /(?:z3+)+$/.test(x);",                 "/(?:z3+)+$/"],
+    // A superclass is an expression, and an expression may begin with a
+    // pattern rather than divide.
+    ["var C = class extends /(?:z7+)+$/.constructor {}",  "/(?:z7+)+$/"],
     // Every line terminator ends a line comment, not only LF.
     ["x(); // c\rvar re = /(?:z4+)+$/;",                  "/(?:z4+)+$/"],
     ["x(); // c" + String.fromCodePoint(0x2028) + "var re = /(?:z5+)+$/;", "/(?:z5+)+$/"],
@@ -5446,6 +5462,7 @@ function testProbeSubjectsMakeACatastrophicPatternCost() {
     "^(?:a+|b+|c+|d+|e+|f+|g+|h+|(?:z+)+)$",
     // A compound motif whose last piece carries a quantifier.
     "^(?:a-b+|a-b+)+$",
+    "^(?:a{2,3}b|a{2,3}b)+$",
   ];
   var missed = [];
   for (var i = 0; i < PATTERNS.length; i += 1) {

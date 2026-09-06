@@ -183,6 +183,10 @@ function _slashIsRegex(prevSignificant) {
         kw === "case" || kw === "yield" || kw === "await" ||
         kw === "else" || kw === "do" ||
         kw === "debugger" ||
+        // A superclass is an expression, and an expression may begin with a
+        // pattern: `class extends /re/.constructor {}`. The sibling lexer in
+        // this file already listed it.
+        kw === "extends" ||
         kw === "break" || kw === "continue") return true;
     return false;
   }
