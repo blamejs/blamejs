@@ -4449,16 +4449,20 @@ function _probeSubjectPieces(body, unicode) {
   // not from word runs. A word run is letters and digits, so the motif
   // `(?:a-|a-)+$` repeats was never built and that pattern measured fast on
   // every subject. The pattern's short literal runs are tried as well.
-  // Six slots for motifs, counted from wherever the characters left off rather
-  // than from a fixed total, so a pattern with many quantified characters does
-  // not spend the motifs' room on them.
-  var motifMax = fillers.length + 6;
+  // What a quantified GROUP repeats is load-bearing in the same way a
+  // quantified character is, so it is taken under the same backstop rather
+  // than a small allowance. Six compounds in front of the costly one spent a
+  // fixed allowance and left `^(?:(?:a-)+|(?:b-)+|(?:c-)+|(?:d-)+|(?:e-)+|(?:f-)+|(?:z@|z@)+)$`
+  // without `z@`, so every subject stayed in a branch that returns at once.
   _quantifiedGroupMotifs(body, unicode).forEach(function (w) {
-    if (fillers.length < motifMax && fillers.indexOf(w) === -1) fillers.push(w);
+    if (fillers.length < _FILLER_QUANTIFIED_MAX && fillers.indexOf(w) === -1) fillers.push(w);
   });
+  // The pattern's own short literal runs are opportunistic, and keep a small
+  // allowance counted from wherever the motifs left off.
+  var runsMax = fillers.length + 6;
   runs.forEach(function (w) {
     if (w.length < 2 || w.length > 4) return;
-    if (fillers.length < motifMax && fillers.indexOf(w) === -1) fillers.push(w);
+    if (fillers.length < runsMax && fillers.indexOf(w) === -1) fillers.push(w);
   });
 
   // The empty seed is always a candidate, and is tried last so the specific
@@ -4951,6 +4955,9 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // assertion in a branch can refuse it, so every branch becomes a motif
     // rather than the first one that spells something.
     ["^(?:(?:(?!a)a|b)-|(?:(?!a)a|b)-)+$", "b-"],
+    // Six compounds in front of the costly one. What a quantified group
+    // repeats is taken whatever precedes it, as a quantified character is.
+    ["^(?:(?:a-)+|(?:b-)+|(?:c-)+|(?:d-)+|(?:e-)+|(?:f-)+|(?:z@|z@)+)$", "z@"],
   ];
   for (var i = 0; i < CASES.length; i += 1) {
     var body = CASES[i][0];
@@ -5342,6 +5349,8 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // so the position is the one before it. Read as the preceding token it
     // made every async function expression look like a declaration.
     ["var G = async function () {} / 2; var re = /(?:yb+)+$/;", "/(?:yb+)+$/"],
+    // A superclass may be a bare value keyword.
+    ["var H = class extends null {} / 2; var re = /(?:yd+)+$/;", "/(?:yd+)+$/"],
     ["async function h() {}\n/(?:yc+)+$/.test(x);",       "/(?:yc+)+$/"],
     ["function f() {}\n/(?:y7+)+$/.test(x);",            "/(?:y7+)+$/"],
     ["class K {}\n/(?:y8+)+$/.test(x);",                 "/(?:y8+)+$/"],
@@ -5543,6 +5552,8 @@ function testProbeSubjectsMakeACatastrophicPatternCost() {
     "^(?:a{0}-b|a{0}-b)+$",
     // The viable branch of a group nested inside the motif's alternative.
     "^(?:(?:(?!a)a|b)-|(?:(?!a)a|b)-)+$",
+    // Six cheap compounds in front of the costly one.
+    "^(?:(?:a-)+|(?:b-)+|(?:c-)+|(?:d-)+|(?:e-)+|(?:f-)+|(?:z@|z@)+)$",
   ];
   var missed = [];
   for (var i = 0; i < PATTERNS.length; i += 1) {

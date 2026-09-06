@@ -1156,9 +1156,13 @@ function _governingFunctionOrClass(tokens) {
     if (t.type === TOK_IDENT || t.type === TOK_NUMBER || t.type === TOK_STRING ||
         t.type === TOK_TEMPLATE ||
         (t.type === TOK_PUNCT && (t.value === "*" || t.value === "." || t.value === "?.")) ||
+        // A superclass may be any expression, including one written as a bare
+        // value keyword: `class extends null {}` is valid and is the documented
+        // way to say the class has no prototype parent.
         (t.type === TOK_KEYWORD &&
          (t.value === "extends" || t.value === "async" || t.value === "new" ||
-          t.value === "this" || t.value === "super"))) {
+          t.value === "this" || t.value === "super" || t.value === "null" ||
+          t.value === "true" || t.value === "false" || t.value === "undefined"))) {
       i -= 1;
       continue;
     }
