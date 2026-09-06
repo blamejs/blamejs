@@ -51,7 +51,22 @@ var TOK_COMMENT    = "comment";
 var TOK_WS         = "ws";
 var TOK_KEYWORD    = "keyword";
 
-var KEYWORDS = {
+// A table keyed by text taken from the source carries no prototype, so a word
+// that names an `Object.prototype` member answers from the table or not at all.
+// `KEYWORDS["constructor"]` found `Object.prototype.constructor` and every
+// identifier spelled `constructor`, `toString`, `valueOf` or `hasOwnProperty`
+// tokenized as a keyword; `class extends /re/.constructor {}` is where that
+// showed, because the walk to the class keyword stopped at the false keyword.
+// The tables that compare against 1 were shielded by that comparison rather
+// than by design, which is not a difference worth relying on.
+function _table(entries) {
+  var t = Object.create(null);
+  var keys = Object.keys(entries);
+  for (var i = 0; i < keys.length; i += 1) t[keys[i]] = entries[keys[i]];
+  return t;
+}
+
+var KEYWORDS = _table({
   "var": 1, "let": 1, "const": 1, "function": 1, "return": 1, "if": 1,
   "else": 1, "for": 1, "while": 1, "do": 1, "switch": 1, "case": 1,
   "default": 1, "break": 1, "continue": 1, "try": 1, "catch": 1,
@@ -65,7 +80,7 @@ var KEYWORDS = {
   // identifier divides, so the pattern following one was read as division and
   // never emitted. The sibling lexer in this file already listed it.
   "debugger": 1,
-};
+});
 
 // Punctuation characters that can begin a token. Multi-char operators
 // (===, !==, &&, ||, ??, =>, etc.) are recognised greedily in tokenize.
@@ -124,9 +139,9 @@ function _lineBreakBeforeEnd(tokens) {
 // The keywords ECMAScript forbids a line terminator after: one there ends the
 // statement, so what follows starts a new one. `yield` and a newline leave the
 // brace on the next line opening a BLOCK rather than an object.
-var _RESTRICTED_PRODUCTIONS = {
+var _RESTRICTED_PRODUCTIONS = _table({
   "return": 1, "throw": 1, "yield": 1, "break": 1, "continue": 1,
-};
+});
 
 function _lastSigText(tok) {
   if (!tok) return "";
@@ -814,12 +829,12 @@ function positionToLineCol(source, pos) {
 // `get`, `set`) — and the keyword sweep in codebase-patterns.test.js walks the
 // whole reserved list against the parse invariant rather than trusting this
 // comment, because `break` was missing from it and deleted a file's tail.
-var _REGEX_LEADING_KEYWORDS = {
+var _REGEX_LEADING_KEYWORDS = _table({
   "return": 1, "typeof": 1, "throw": 1, "new": 1, "delete": 1, "void": 1,
   "instanceof": 1, "in": 1, "of": 1, "case": 1, "yield": 1, "await": 1,
   "do": 1, "else": 1, "break": 1, "continue": 1, "debugger": 1,
   "try": 1, "finally": 1, "default": 1, "extends": 1,
-};
+});
 
 // A consumed regex literal is a value, and the single character it ends with —
 // `/` — is also the division operator, so the two cannot share a marker.
@@ -858,9 +873,9 @@ var _STATEMENT_POSITION = "@stmt";
 // Which case a `)` is cannot be decided from the `)`. It is decided at the
 // matching `(`, by the word in front of it, so the openers are tracked on a
 // per-frame stack and the answer read back when the paren closes.
-var _CONTROL_HEADER_KEYWORDS = {
+var _CONTROL_HEADER_KEYWORDS = _table({
   "if": 1, "while": 1, "for": 1, "with": 1,
-};
+});
 
 // Does a slash at this point DIVIDE? Every token that can end an expression is
 // listed; anything else leaves an expression position open, where a slash
@@ -926,12 +941,12 @@ function _atLineStart(emitted) {
 //
 // `//` and `/*` are the ones that matter most: fusing a division against a
 // following pattern would manufacture a comment out of two operators.
-var _FUSABLE_PUNCTUATION = {
+var _FUSABLE_PUNCTUATION = _table({
   "++": 1, "--": 1, "**": 1, "=>": 1, "==": 1, "!=": 1, "<=": 1, ">=": 1,
   "<<": 1, ">>": 1, "+=": 1, "-=": 1, "*=": 1, "/=": 1, "%=": 1, "&=": 1,
   "|=": 1, "^=": 1, "&&": 1, "||": 1, "??": 1, "?.": 1, "..": 1,
   "//": 1, "/*": 1, "*/": 1,
-};
+});
 
 function _wouldFuse(prevCh, nextCh) {
   if (prevCh === "" || nextCh === "") return false;
@@ -958,9 +973,9 @@ function _isWordStart(ch) {
 // brace became a value and a pattern statement after it was read as division.
 // A keyword that ends a statement and a keyword that introduces a body are
 // different questions, and both have to be answered for the same word.
-var _BLOCK_INTRODUCERS = {
+var _BLOCK_INTRODUCERS = _table({
   "else": 1, "do": 1, "=>": 1, "try": 1, "finally": 1,
-};
+});
 
 // Does this `{` open an object literal, or a block?
 //
@@ -992,14 +1007,14 @@ function _ternaryScope(frame) {
 // is a block: `var q = function () {} / 2` divides, and `function f() {}
 // /re/.test(x)` does not. The keyword is where the two are distinguishable —
 // by the time the body brace arrives, both look identical.
-var _EXPRESSION_BODY_KEYWORDS = { "function": 1, "class": 1 };
+var _EXPRESSION_BODY_KEYWORDS = _table({ "function": 1, "class": 1 });
 
 // Words that stand between a construct and the token that classifies it:
 // `async function` and `for await (`. Looking only at the immediately
 // preceding token reads the modifier instead of the position, which made an
 // async function expression look like a declaration and a `for await` header
 // look like a call.
-var _TRANSPARENT_WORDS = { "async": 1, "await": 1 };
+var _TRANSPARENT_WORDS = _table({ "async": 1, "await": 1 });
 
 function _seeThrough(frame, lastSig) {
   if (_TRANSPARENT_WORDS[lastSig] !== 1) return lastSig;
@@ -1128,7 +1143,7 @@ function _governingFunctionOrClass(tokens) {
   // may take. The parameter list is one; so is a superclass written as
   // `extends ns["Base"]` or `extends mixin(Base)`, which a walk that knew only
   // identifiers and dots stopped at, leaving the body unmarked.
-  var CLOSERS = { ")": "(", "]": "[", "}": "{" };
+  var CLOSERS = _table({ ")": "(", "]": "[", "}": "{" });
   var guard = 0;
   // A superclass may itself be a function or class expression, and its body is
   // a brace group this walk steps over: `class C extends function(){} {}`. The
@@ -1162,9 +1177,13 @@ function _governingFunctionOrClass(tokens) {
       i -= 1;
       continue;
     }
-    // The pieces a name or a superclass expression is made of.
+    // The pieces a name or a superclass expression is made of: any value
+    // literal, the punctuation that composes a member expression, and the
+    // keywords that can stand in one. A pattern is a value literal like the
+    // rest, and leaving it out stopped the walk on
+    // `class extends /re/.constructor {}`.
     if (t.type === TOK_IDENT || t.type === TOK_NUMBER || t.type === TOK_STRING ||
-        t.type === TOK_TEMPLATE ||
+        t.type === TOK_TEMPLATE || t.type === TOK_REGEX ||
         (t.type === TOK_PUNCT && (t.value === "*" || t.value === "." || t.value === "?.")) ||
         // A superclass may be any expression, including one written as a bare
         // value keyword: `class extends null {}` is valid and is the documented

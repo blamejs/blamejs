@@ -5418,6 +5418,13 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // steps over it and carries on to the one whose body is being classified.
     ["class C extends function(){} {}\n/(?:ye+)+$/.test(x);", "/(?:ye+)+$/"],
     ["var I = class extends class{} {} / 2; var re = /(?:yf+)+$/;", "/(?:yf+)+$/"],
+    // A word that names an `Object.prototype` member is an identifier like any
+    // other. The keyword table carried a prototype, so `constructor`,
+    // `toString` and `hasOwnProperty` all answered as keywords and the reading
+    // after them was whatever a keyword implies rather than what a name does.
+    ["var x = class extends /re/.constructor {} / 2; var q = /(?:yg+)+$/;", "/(?:yg+)+$/"],
+    ["var c = obj.constructor;\n/(?:yh+)+$/.test(s);",    "/(?:yh+)+$/"],
+    ["var n = o.hasOwnProperty / 2; var r2 = /(?:yi+)+$/;", "/(?:yi+)+$/"],
     ["async function h() {}\n/(?:yc+)+$/.test(x);",       "/(?:yc+)+$/"],
     ["function f() {}\n/(?:y7+)+$/.test(x);",            "/(?:y7+)+$/"],
     ["class K {}\n/(?:y8+)+$/.test(x);",                 "/(?:y8+)+$/"],
