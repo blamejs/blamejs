@@ -648,7 +648,7 @@ function _synthCert(opts) {
 
 function _toPem(der) {
   return "-----BEGIN CERTIFICATE-----\n" +
-    der.toString("base64").replace(/(.{64})/g, "$1\n") +
+    der.toString("base64").match(/.{1,64}/g).join("\n") +
     "\n-----END CERTIFICATE-----\n";
 }
 

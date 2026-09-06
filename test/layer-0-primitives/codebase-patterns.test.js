@@ -299,10 +299,16 @@ function _filterMarkers(matches, allowClass) {
     }
     return fileCache[file];
   }
+  // A class id ends where the next character is neither a word character nor a
+  // hyphen. `\b` alone ends it at a hyphen, so a marker naming a LONGER class
+  // that starts with this one also answered for this one: a line carrying
+  // `allow:inline-require-in-deferred` silently exempted `inline-require` too.
+  function _classEnd() { return "(?![-\\w])"; }
+  function _markerRe() { return new RegExp("allow:" + allowClass + _classEnd()); }
   function _hasFileAllow(file) {
     if (Object.prototype.hasOwnProperty.call(fileAllowCache, file)) return fileAllowCache[file];
     var lines = _readContext(file).slice(0, 50);   // file-level allow lives near top
-    var re = new RegExp("codebase-patterns:allow-file\\s+" + allowClass + "\\b");
+    var re = new RegExp("codebase-patterns:allow-file\\s+" + allowClass + _classEnd());
     var found = lines.some(function (l) { return re.test(l); });
     fileAllowCache[file] = found;
     return found;
@@ -312,9 +318,11 @@ function _filterMarkers(matches, allowClass) {
     if (!lines.length) return false;
     var same  = lines[lineNum - 1] || "";
     var above = lines[lineNum - 2] || "";
-    var twoAbove = lines[lineNum - 3] || "";
-    var re = new RegExp("allow:" + allowClass + "\\b");
-    return re.test(same) || re.test(above) || re.test(twoAbove);
+    // The line and the one above it, which is the window the convention above
+    // states. It read one line further than that, so a marker also exempted a
+    // match two lines below it, and the reference the SLSA rule guards is a
+    // `uses:` step that can sit exactly that far from another one.
+    return _markerRe().test(same) || _markerRe().test(above);
   }
   return matches.filter(function (m) {
     if (_hasFileAllow(m.file)) return false;
@@ -1846,24 +1854,36 @@ function testExemptingSkipGuardsReadStrippedSource() {
   // A CODE companion must be code. A registered `allow:<class>` marker must
   // keep working from a comment, because that is the only place it is ever
   // written.
-  function _companionExempts(requiresRe, content) {
-    if (requiresRe.test(_stripComments(content))) return true;
+  // Which KIND of companion answers matters, not just whether one does: a
+  // companion in code bounds the whole FILE, because it is there doing the
+  // work, while a marker suppresses only the LINE it is written on. Reporting
+  // a single boolean hid the difference, and the difference is the bug: the
+  // markers are stripped before the code test, so a marker can never be read as
+  // code. Without that, a marker in a comment shape this stripper does not
+  // understand survives the strip and exempts the file. A YAML `#` comment is
+  // exactly that shape, and it is where the SLSA marker lives.
+  function _companionKind(requiresRe, content) {
+    var code = _stripComments(content).replace(/allow:[A-Za-z0-9._-]+/g, "");
+    if (requiresRe.test(code)) return "code";
     var marks = requiresRe.source.match(/allow:[A-Za-z0-9._-]+/g) || [];
-    return marks.some(function (mk) { return content.indexOf(mk) !== -1; });
+    if (marks.some(function (mk) { return content.indexOf(mk) !== -1; })) return "marker";
+    return "none";
   }
   var BOTH = /maxOutputLength|allow:archive-gz-without-safedecompress/;
   var mismatches = [];
   [
-    ["a code companion in CODE exempts",
-     "var x = { maxOutputLength: 1024 };", true],
+    ["a code companion in CODE exempts the file",
+     "var x = { maxOutputLength: 1024 };", "code"],
     ["a code companion in a COMMENT does not exempt",
-     "// TODO: pass maxOutputLength here\nvar x = 1;", false],
-    ["a registered allow marker in a COMMENT still exempts",
-     "var x = 1;   // allow:archive-gz-without-safedecompress - reviewed", true],
+     "// TODO: pass maxOutputLength here\nvar x = 1;", "none"],
+    ["a registered allow marker in a COMMENT exempts its LINE",
+     "var x = 1;   // allow:archive-gz-without-safedecompress - reviewed", "marker"],
+    ["a marker in a comment shape the stripper cannot read is still a MARKER",
+     "uses: a/b@v1  # allow:archive-gz-without-safedecompress - reviewed", "marker"],
     ["neither present does not exempt",
-     "var x = 1;", false],
+     "var x = 1;", "none"],
   ].forEach(function (c) {
-    if (_companionExempts(BOTH, c[1]) !== c[2]) mismatches.push(c[0]);
+    if (_companionKind(BOTH, c[1]) !== c[2]) mismatches.push(c[0]);
   });
   _report("the requires companion reads CODE for a code companion and the raw " +
           "source for a registered allow marker",
@@ -3487,12 +3507,17 @@ function _literalPrefixOf(pattern, unicode) {
 // group after the first was ever varied, so `^A(?:x|x)L(?:P(?!z)|Q(?=z))(z+)+$`
 // was reached by nothing at all though it costs 892ms on `AxLQ`.
 //
-// The bounds come from the patterns `lib/` holds: 518 of its 597 have no such
-// group at all, the most any has is three, and the widest offers twelve
-// branches. Combinations across groups are not enumerated, which would be
-// exponential; one group varies at a time.
+// The bounds come from the patterns `lib/` holds, measured with the same
+// alternative splitter this walk uses rather than by counting bars: 517 of its
+// 597 distinct patterns have no such group at all, 67 have one, 11 have two and
+// 2 have three; the widest group offers TWENTY branches, in `lib/redact.js`,
+// and a second offers fourteen. A bound of twelve was written here from a
+// miscount and never built branches 12 through 19 of either, so the two widest
+// alternations in the framework were the two the walk could not finish reading.
+// Twenty-four leaves room above the measured maximum without inviting the
+// product of the two bounds to matter.
 var _PREFIX_GROUPS  = 4;
-var _PREFIX_BRANCHES = 12;
+var _PREFIX_BRANCHES = 24;
 
 function _literalPrefixesOf(pattern, unicode) {
   var verified = [];
@@ -3518,10 +3543,26 @@ function _literalPrefixesOf(pattern, unicode) {
     }
     if (!groupExists) break;                              // no group this deep
   }
+
+  // One more walk in which EVERY group takes the first branch the pattern still
+  // accepts. It reaches a prefix needing a later branch in several groups at
+  // once, which varying one group at a time cannot, and it is added rather than
+  // substituted because per-group choosing is wrong wherever an assertion reads
+  // forward past the prefix.
+  var greedyBuilt = _literalPrefixWithChoice(pattern, unicode, -1, 0, true);
+  if (greedyBuilt !== null && greedyBuilt.text !== "" && seen[greedyBuilt.text] !== 1) {
+    seen[greedyBuilt.text] = 1;
+    if (_prefixAcceptedInContext(pattern, greedyBuilt.upTo, greedyBuilt.text,
+                                 unicode) !== false) {
+      verified.push(greedyBuilt.text);
+    } else {
+      rest.push(greedyBuilt.text);
+    }
+  }
   return verified.concat(rest);
 }
 
-function _literalPrefixWithChoice(pattern, unicode, groupIdx, branchIdx) {
+function _literalPrefixWithChoice(pattern, unicode, groupIdx, branchIdx, greedy) {
   var out = "";
   var upTo = -1;
   var choicesSeen = 0;
@@ -3591,12 +3632,30 @@ function _literalPrefixWithChoice(pattern, unicode, groupIdx, branchIdx) {
       if (!gCands.length) break;
       var gPicked = gCands[0];
       if (gCands.length > 1) {
-        // Every other choosing group takes its first branch, so one walk
-        // varies one group and the enumeration stays linear in the two bounds.
         if (choicesSeen === groupIdx) {
           if (branchIdx >= gCands.length) return null;    // no such branch
           gPicked = gCands[branchIdx];
           matched = true;
+        } else if (greedy) {
+          // Only on the GREEDY walk does a group this call is not varying take
+          // the first branch the pattern still accepts. It is an extra walk
+          // rather than a replacement, because choosing per group is not always
+          // right: an assertion can read FORWARD past the prefix, so
+          // `^(?:A(?=X)|B(?!X))X...` refuses `A` on the prefix alone and picks
+          // `B`, which the literal `X` after the group then contradicts. The
+          // walks that take the first branch keep that case, and this one adds
+          // `^(?:(?!A)A|B)(?:(?!C)C|D)(z+)+$`, which needs a later branch in
+          // two groups at once and no single variation reaches. Neither is
+          // discarded; both are seeded.
+          var upToHere = toks[gj - 1].end;
+          for (var gc = 0; gc < gCands.length; gc += 1) {
+            if (gCands[gc] === "") continue;
+            if (_prefixAcceptedInContext(pattern, upToHere, out + gCands[gc],
+                                         unicode) !== false) {
+              gPicked = gCands[gc];
+              break;
+            }
+          }
         }
         choicesSeen += 1;
       }
@@ -4828,6 +4887,18 @@ function testProbeSubjectsReachTheQuantifiedBody() {
   // seeded, so the one that reaches the body drives it.
   var BRANCHES = [
     ["^(?:A-X(?=z)|B-X(?!z))(z+)+$", ["A-X", "B-X"]],
+    // A prefix whose viable path needs a later branch in MORE THAN ONE group.
+    // Varying one group at a time offers `BC` and `AD`, and the lookahead in
+    // each refuses its own; `BD` is what the pattern requires and no single
+    // variation reaches it. Each group takes the first branch still accepted
+    // instead, which costs no combinations.
+    ["^(?:(?!A)A|B)(?:(?!C)C|D)(z+)+$",             ["BD"]],
+    ["^(?:(?!A)A|B)(?:(?!C)C|D)(?:(?!E)E|F)(z+)+$", ["BDF"]],
+    // And the other direction, which choosing per group gets wrong on its own:
+    // the assertion reads FORWARD past the prefix, so `A` is refused on the
+    // prefix alone and `B` chosen, and the literal `X` after the group then
+    // contradicts `B`. The walk that takes the first branch keeps `AXC`.
+    ["^(?:A(?=X)|B(?!X))X(?:C(?=z)|D(?!z))(z+)+$",  ["AXC"]],
     ["^(?:(?!A)A|B)PREFIX(z+)+$",    ["BPREFIX"]],
   ];
   for (var br = 0; br < BRANCHES.length; br += 1) {
@@ -4873,13 +4944,16 @@ function testProbeSubjectsReachTheQuantifiedBody() {
   // pattern on the line after the template, and it is that pattern the check
   // looks for.
   //
-  // An OPENING brace inside a character class is the one shape the count still
-  // reads wrongly, and it is not listed. Lexing the substitution answers it,
-  // and doing that turns every gap this lexer still has into the loss of every
-  // pattern after the template rather than one mis-read token, which is a
-  // worse trade while the lexer is being completed. The framework holds no
-  // such substitution.
+  // An OPENING brace inside a character class is the shape the count reads
+  // wrongly: it counts two opens and one close and reaches the end of the file.
+  // That failure is visible, since the count returns no position at all, and
+  // the substitution is then lexed. Lexing is the FALLBACK and not the primary
+  // because a lexer that mis-reads one token inside a substitution loses every
+  // pattern after the template the same way, and this one is still incomplete;
+  // reached only after the count has given up, it can only improve on the
+  // nothing the count returned.
   var QUOTED_BRACE = [
+    ["an opening brace in a class", "const x = `${/[{]/.test(s)}`; const y = /^(c1+)+$/;", "/^(c1+)+$/"],
     ["a closing brace in a class", "var t = `${ /[}]/.test(x) }`;\nvar re = /^(b+)+$/;\n", "/^(b+)+$/"],
     ["an opening one in a string", "var t = `${ '{' }`;\nvar re = /^(X+)+$/;\n",           "/^(X+)+$/"],
     ["a closing one in a string",  "var t = `${ '}' }`;\nvar re = /^(Y+)+$/;\n",           "/^(Y+)+$/"],
@@ -5197,6 +5271,9 @@ function testProbeSubjectsMakeACatastrophicPatternCost() {
     // prefix by definition stops short of. Only the first branch can reach the
     // body, and nothing about the prefix alone says which one that is.
     "^(?:A-X(?=z)|B-X(?!z))(z+)+$",
+    // The costly body is behind a prefix that needs a later branch in two
+    // groups at once.
+    "^(?:(?!A)A|B)(?:(?!C)C|D)(z+)+$",
     // Branches enough to spend the seed budget, with the costly body behind a
     // literal in a LATER alternative. Taking every branch prefix before any
     // word run left that literal unseeded.
@@ -14023,6 +14100,10 @@ var KNOWN_ANTIPATTERNS = [
 
   { id: "line-listener-auth-step-must-be-returned", primitive: "a mail listener's SASL / authentication step is asynchronous and moves the session's stage, so a call to `_runAuthStep` / `_completeAuthenticate` / `_enterTransaction` / `runSaslStep` made as a BARE STATEMENT hands the reader nothing to wait for and the next command is read against a session that has not finished authenticating — return the call", scanScope: "lib", skipCommentLines: true, regex: /^[ \t]+(?:[A-Za-z_$][\w$.]*\.)?(?:_runAuthStep|_completeAuthenticate|_enterTransaction|runSaslStep)\s*\(/m, allowlist: ["lib/mail-server-submission.js"], reason: "v0.18.61, the same P1 class as line-listener-handler-must-return-its-async-work and found on the round AFTER it, which is why it gets its own matcher. Returning the promise chains was not enough: the authentication helpers were called as bare statements, so the value never reached the pump even where the handler returned what it had. Five sites survived the first sweep — imap `_handleAuthenticate` calling `_runAuthStep`, managesieve `_completeAuthenticate` (both the resume and the fresh-exchange arms), its `_runAuthStep` not returning `runSaslStep`, and its `_continueSaslExchange`. The consequence is worse than a plain ordering bug: with a command already buffered the reader treats it as the NEXT SASL response, so a valid authentication is abandoned by a client that merely pipelined. Allowlist names mail-server-submission.js alone, and for a reason rather than to pass: its reader is not promise-based — it holds the client's pipelined remainder on `state.commandPending` and resumes the drain when the handler answers — so a bare call there is correct PROVIDED the flag is held. Writing this detector is what found that its AUTH path did NOT hold it, unlike the sender-policy hook beside it, so two pipelined credential exchanges were verified concurrently on an unauthenticated session; `_runAuthStep` now sets the flag before its first yield and clears it on every arm. That is covered by a behavioural test rather than by this entry. For the other three listeners the allowlist is empty: these four helpers exist to change authentication state, and a caller with nothing to wait for is the bug. Proven by reverting `return mailServerNet.runSaslStep(` in mail-server-managesieve.js and watching it fire there.", },
 
+  { id: "pem-body-wrap-must-not-emit-a-trailing-newline", primitive: "wrapping a base64 body into PEM lines must join the groups (`b64.match(/.{1,64}/g).join(\"\\n\")`) rather than append a newline to each of them — `replace(/(.{64})/g, \"$1\\n\")` also appends one after the LAST group when the body's length divides evenly by the width, and the caller then adds its own before the END line, so the body carries a blank line and the PEM does not parse", scanScope: "lib", regex: /\.replace\(\s*\/\(\.\{\d+\}\)\/g\s*,\s*["'`]\$1\\n["'`]\s*\)(?!\s*\.replace\(\s*\/\\n\$\/)/, allowlist: [], reason: "0.19.3 — b.auth.saml.verifyResponse rebuilt the holder-of-key KeyInfo certificate this way. The IdP's XML carries the certificate as base64 with whatever whitespace its writer used, so the reader strips the whitespace and re-wraps at 64 columns before handing node a PEM; when the body's length was a multiple of 64 the wrap left a blank line and createPublicKey refused it, so verifyResponse answered auth-saml/hok-bad-cert on a well-formed assertion. The length depends only on the certificate, so this is not an occasional failure: an IdP whose certificate lands on a multiple of 64 fails EVERY holder-of-key login, and one in sixteen certificates does. Measured directly: of 400 certificates built across a sweep of subject lengths, the 27 whose base64 length was a multiple of 64 were exactly the 27 that would not parse, and none of them failed under the joining form. Every other PEM builder in lib/ already joins — acme.js's CSR, fido-mds3.js's JWS chain, and the DKIM and mail-auth key readers — so the shape was the single outlier rather than a convention. The lookahead spares a wrapper that strips the trailing newline afterwards, which is how test/layer-0-primitives/privacy-pass.test.js spells it. The width is read as digits rather than fixed at 64 because the defect is in appending a separator per group, not in the column count. Behavioural coverage is testHolderOfKeyCertBodyMultipleOf64 in auth-saml.test.js, which mints a certificate whose body length is a multiple of 64 and requires the confirmation to succeed." },
+
+  { id: "pem-body-wrap-must-not-emit-a-trailing-newline-in-tests", primitive: "a test that builds a PEM from base64 has the same obligation as lib/: join the wrapped groups rather than append a newline to each, or the fixture is unparseable whenever its length divides evenly by the width", scanScope: "test", regex: /\.replace\(\s*\/\(\.\{\d+\}\)\/g\s*,\s*["'`]\$1\\n["'`]\s*\)(?!\s*\.replace\(\s*\/\\n\$\/)/, allowlist: [], reason: "0.19.3 — the same shape as the lib-side rule of this name, and it was in five fixture builders: test/helpers/tls.js, which several suites use to stand up a real TLS server, plus the certificate builders in http-client, network-tls, security-assert and mtls-ca-migration. There it reads as a flake rather than a failure, because the DER ECDSA signature length varies run to run, so a suite fails on roughly one process in sixteen with a certificate the previous run accepted. test/helpers/tls.js caches its pair for the process, so when it lands on the bad length every consumer of it fails at once and the run looks like a TLS regression. Kept as its own entry because the catalog selects one file set per rule.", },
+
   { id: "growth-ratio-must-use-the-shared-measurement", primitive: "a test that divides one elapsed-millisecond reading by another to assert a growth curve must take that ratio through `helpers.looksSuperlinear` / `looksSuperlinearAsync`, which samples best-of-N, declines to judge below a floor where the shape is already ruled out, and RE-MEASURES before it fails anything — a single reading compares the runner's load as much as the code's complexity", scanScope: "test", skipCommentLines: true, regex: /\/\s*Math\.max\(\s*[A-Za-z_$][\w$]*(?:\.ms\b|Ms\b)/, requires: /looksSuperlinear(?:Async)?\s*\(/, allowlist: [], reason: "v0.18.61. Eight hand-rolled ratios were converted to the shared measurement earlier in this release BY ENUMERATION, and a ninth survived: `testFoldedDkimTagDoesNotBacktrack` drives an SMTP transaction, so the synchronous helper could not take it and what was written instead was a single unrepeated reading, `large.ms / Math.max(small.ms, 1)` against `ratio < 9`. At SMOKE_PARALLEL=64 it measured 9.41 on a scan that is linear and failed the release gate. The gap was the helper's shape, not carelessness, so the fix is `looksSuperlinearAsync` alongside it rather than a note to remember; the detector is what makes the claim complete, because the enumeration was already wrong once. Anchored on the zero-denominator guard a hand-rolled ratio needs (`/ Math.max(<something>.ms`), which the shared helper's own internals do not match since its operands carry no `.ms`. File-level, like its sibling: a suite that takes such a ratio must also call the helper. Empty allowlist — an async measurement is now covered, so there is no shape left that needs its own copy.", },
 
   { id: "a-literal-payload-decoded-to-text-must-round-trip", primitive: "a mail listener that turns a protocol LITERAL's octets into a string must first confirm they survive a UTF-8 round trip (`_decodesAsUtf8`) and refuse when they do not — `toString(\"utf8\")` substitutes U+FFFD for every byte it cannot read rather than reporting one, so the substitution happens before anything examines the value and every later check runs on a repaired copy", scanScope: "lib", skipCommentLines: true, regex: /(?:literal|pendingLiteral|pl|pa)\.(?:body|irBody)\.toString\("utf8"\)/, requires: /_decodesAsUtf8\s*\(/, allowlist: [], reason: "v0.18.61. The IMAP listener refuses a non-final literal it cannot rebuild as a quoted string, for exactly this reason; the ManageSieve listener did the same decode twice and refused neither. PUTSCRIPT accepted a script carrying a 0xFF, stored it two octets longer than the announced count with the byte replaced, and answered OK — so a Sieve script, which decides what is filed, forwarded and discarded, ran as something the account holder did not write, and RFC 5804 section 2.3's requirement to verify before accepting was satisfied against the repaired copy rather than what arrived. The AUTHENTICATE initial response is worse in kind though not in reach: a SASL token is base64, the replacement character's own bytes are outside that alphabet and are dropped by the decode, so `AAAA<ff>BBBB` and `AAAABBBB` reach the verifier as one credential. Both now ask `_decodesAsUtf8` and refuse. The claim is deliberately narrow and the check is file-level: `.toString(\"utf8\")` on an HTTP response body is conventional across the framework and harmless where a parse rejects the result anyway, so this matches only the literal-payload identifiers the mail listeners use, and asks that the file carrying one also carries the round-trip helper. Per-site coverage is the behavioural tests. Proven by deleting the helper: the requires-companion fails and it names the file.", },
@@ -21900,6 +21981,12 @@ function testKnownAntipatterns() {
       files = libFiles;
     }
     var bad = [];
+    // The marker classes this rule declares. Read from the rule, not from a
+    // file, so a file with no match cannot leave them unset.
+    var _apMarkerClasses = ap.requires
+      ? (ap.requires.source.match(/allow:[A-Za-z0-9._-]+/g) || [])
+          .map(function (mk) { return mk.slice("allow:".length); })
+      : [];
     for (var fi = 0; fi < files.length; fi++) {
       var rel = _relPath(files[fi]);
       if (allowSet[rel]) continue;
@@ -21912,7 +21999,15 @@ function testKnownAntipatterns() {
       // — those need raw content. Per-entry opt-in.
       var subject = content;
       if (ap.skipCommentLines === true) subject = _blankCommentLines(content);
-      var m = ap.regex.exec(subject);
+      // EVERY match in the file, not the first. One `exec` reported a file once
+      // and stopped looking, which is enough when the verdict is per file but
+      // not when a marker exempts a LINE: the exempt callsite was the first
+      // match, so a second unmarked one below it was never examined. A fresh
+      // regex carries the `g` flag and its own `lastIndex`, so the shared entry
+      // is not mutated and two files cannot interfere.
+      var reAll = new RegExp(ap.regex.source,
+        ap.regex.flags.indexOf("g") === -1 ? ap.regex.flags + "g" : ap.regex.flags);
+      var m = reAll.exec(subject);
       if (!m) continue;
       // Companion `requires` check — if the same file content names
       // the companion shape, the discipline is satisfied even though
@@ -21935,22 +22030,39 @@ function testKnownAntipatterns() {
       // companion be satisfied from a comment; reading it all off stripped
       // source would delete the fifteen registered allow markers. Neither
       // is right for both.
-      var _apCode = _stripComments(content);
+      // The markers are removed before the code-companion test, so a rule
+      // satisfied ONLY by a marker never reads as a companion in code. That
+      // distinction was lost on a workflow: `_stripComments` understands `//`
+      // and `/* */`, not YAML `#`, so a marker written in a `#` comment
+      // survived the strip, matched the companion test, and exempted the whole
+      // file — including any other reference in it. A genuine companion
+      // (`maxOutputLength`, `ssrfGuard.classify`) is unaffected, since it is
+      // not spelled `allow:<class>`.
+      var _apCode = _stripComments(content).replace(/allow:[A-Za-z0-9._-]+/g, "");
       var _apExempt = ap.requires ? ap.requires.test(_apCode) : false;
-      if (ap.requires && !_apExempt) {
-        var _markers = ap.requires.source.match(/allow:[A-Za-z0-9._-]+/g) || [];
-        _apExempt = _markers.some(function (mk) { return content.indexOf(mk) !== -1; });
-      }
       if (ap.requires && _apExempt) continue;
+      // A MARKER does not exempt the file, only the line it is written on.
+      // Skipping the whole file meant one legitimately exempt callsite carried
+      // every other match in it: `npm-publish.yml` has one reusable-workflow
+      // reference that cannot be SHA-pinned, and exempting the file would have
+      // covered a second one silently if anybody added it. The matches are
+      // collected and filtered per line below instead.
       // Compute line number from match index against subject — but
       // subject preserves newlines so line numbers stay accurate.
-      var lineNum = subject.slice(0, m.index).split(/\r?\n/).length;
-      bad.push({
-        file: rel,
-        line: lineNum,
-        content: "antipattern '" + ap.id + "' — use " + ap.primitive,
-      });
+      for (; m !== null; m = reAll.exec(subject)) {
+        if (m[0].length === 0) { reAll.lastIndex += 1; continue; }  // never spin
+        var lineNum = subject.slice(0, m.index).split(/\r?\n/).length;
+        bad.push({
+          file: rel,
+          line: lineNum,
+          content: "antipattern '" + ap.id + "' — use " + ap.primitive,
+        });
+      }
     }
+    // Each declared marker class exempts the LINE it is written on, which is
+    // where a suppression belongs: the reader of that line sees why it is
+    // allowed, and the next one added to the file is reported.
+    _apMarkerClasses.forEach(function (cls) { bad = _filterMarkers(bad, cls); });
     if (bad.length) {
       allBad = allBad.concat(bad);
       _report("known-antipattern '" + ap.id + "' — use " + ap.primitive, bad);

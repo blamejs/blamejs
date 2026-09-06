@@ -946,11 +946,40 @@ function _templateEnd(source, ts) {
     if (c === "`") return i + 1;
     if (c === "$" && source.charAt(i + 1) === "{") {
       var end = _countingBraceEnd(source, i + 2);
+      // Counting reaches no closing brace when one inside the substitution is
+      // quoted in a way the count cannot see, a `{` in a character class being
+      // the case that reaches here: `${/[{]/.test(s)}` counts two opens and one
+      // close and runs off the end, taking every pattern after the template
+      // with it. Lexing the substitution answers that correctly, and is the
+      // fallback rather than the primary because a lexer that mis-reads one
+      // token inside a substitution loses the rest of the file the same way,
+      // and this lexer is still incomplete. Here it can only improve: the count
+      // has already given up, so a wrong lex is no worse than the -1 it
+      // replaces.
+      if (end === -1) end = _lexedBraceEnd(source, i + 2);
       if (end === -1) return -1;
       i = end + 1;
       continue;
     }
     i += 1;
+  }
+  return -1;
+}
+
+// Where the substitution opening at `from` closes, decided by lexing its
+// contents rather than counting characters. Only reached when the count has
+// already failed, so a mis-lex costs nothing the count had not already lost.
+function _lexedBraceEnd(source, from) {
+  var toks;
+  try { toks = tokenize(source.slice(from)); } catch (_e) { return -1; }
+  var depth = 0;
+  for (var i = 0; i < toks.length; i += 1) {
+    if (toks[i].type !== TOK_PUNCT) continue;
+    if (toks[i].value === "{") depth += 1;
+    else if (toks[i].value === "}") {
+      if (depth === 0) return from + toks[i].start;
+      depth -= 1;
+    }
   }
   return -1;
 }
