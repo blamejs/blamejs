@@ -4125,7 +4125,14 @@ function _topLevelAlternatives(inner, unicode) {
 // first branch that spells anything: that is what the required-prefix walk
 // wants, and it is not the same answer.
 function _literalOfAlternative(alt, depth, unicode, picks, meta) {
-  if (depth > 4) return null;
+  // A backstop, not the reading. Each nested call reads the INSIDE of a group,
+  // which is strictly shorter than what it was given, so the recursion is
+  // bounded by the pattern's own length and this only guards against something
+  // pathological. At four it was the reading: `(?:(?:(?:(?:(?:(?:a-|a-))))))+$`
+  // is six groups deep around a motif and was answered with nothing, so the
+  // pattern was driven by single characters it returns on at once. Nesting
+  // depth is not a measure of work.
+  if (depth > _MOTIF_MAX) return null;
   var lit = "";
   var lastPiece = null;
   var toks = _regexTokens(alt, unicode);
@@ -5072,6 +5079,10 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // index shared by both reaches `ac-` and `bd-`, which their assertions
     // refuse, and never the `bc-` the alternative takes.
     ["^(?:(?:(?!a)a|b)(?:c|(?!d)d)-|(?:(?!a)a|b)(?:c|(?!d)d)-)+$", "bc-"],
+    // A motif wrapped in more groups than the old depth cutoff allowed. Each
+    // nested reading takes a strictly shorter piece of text, so the recursion
+    // is bounded by the pattern's own length; nesting depth measures no work.
+    ["^(?:(?:(?:(?:(?:(?:a-|a-))))))+$", "a-"],
     // Seven such groups, all needing the same later branch. The product counts
     // up from the first branch of every group, so that reading is the last
     // combination of 128 and a cap never reaches it. Each reading with every
@@ -5739,6 +5750,8 @@ function testProbeSubjectsMakeACatastrophicPatternCost() {
     // Seven choosing groups that all need the same later branch, which the
     // product reaches only as its last combination.
     "^(?:" + "(?:(?!a)a|b)".repeat(7) + "-|" + "(?:(?!a)a|b)".repeat(7) + "-)+$",
+    // A motif wrapped in more groups than the old depth cutoff allowed.
+    "^(?:(?:(?:(?:(?:(?:a-|a-))))))+$",
   ];
   var missed = [];
   for (var i = 0; i < PATTERNS.length; i += 1) {
