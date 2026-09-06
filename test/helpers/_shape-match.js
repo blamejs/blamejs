@@ -1170,7 +1170,11 @@ function _governingFunctionOrClass(tokens) {
   // classified, so it is stepped over too. Without this the walk returned the
   // inner `function` and read the outer class declaration as producing a value.
   var bodiesSkipped = 0;
-  while (i >= 0 && guard < 512) {
+  // Bounded by the token list itself: every step either moves `i` back or
+  // returns, so the walk ends at the start of the file. A count of its own
+  // stopped before the `class` of a superclass written as a long member
+  // expression, and the pattern after that body was then read as division.
+  while (i >= 0 && guard <= tokens.length) {
     skipTrivia();
     if (i < 0) break;
     var t = tokens[i];

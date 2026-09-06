@@ -4138,12 +4138,20 @@ function _topLevelAlternatives(inner, unicode) {
 // that cost, and the point of all of this is to find them rather than to run
 // them. A branch it will not run is treated as accepting, which leaves the
 // enumeration to answer for it.
-function _branchAccepts(branch, candidate, unicode) {
+function _branchAccepts(branch, candidate, unicode, before) {
   if (typeof branch !== "string" || branch.length > 64) return true;
   if (typeof candidate !== "string" || candidate.length > 64) return true;
   if (/\)[*+]|\)\{/.test(branch)) return true;
+  // What the groups before it produced is part of the question. A lookbehind
+  // reads it: `(?<!a)c` accepts `c` at the start of a candidate on its own and
+  // refuses it after an `a`, so a branch checked in isolation was accepted for
+  // a position it cannot occupy. The text is matched as itself, escaped, and
+  // only when short enough to be worth carrying.
+  var lead = typeof before === "string" && before.length <= 64 ? before : "";
   try {
-    return new RegExp("^(?:" + branch + ")$", unicode ? "u" : "").test(candidate);
+    var re = new RegExp("^" + lead.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") +
+                        "(?:" + branch + ")$", unicode ? "u" : "");
+    return re.test(lead + candidate);
   } catch (_e) {
     return true;                                          // not readable: not this check's business
   }
@@ -4282,7 +4290,7 @@ function _literalOfAlternative(alt, depth, unicode, picks, meta) {
         // the all-on-one-branch readings contain it.
         for (var vk = 0; vk < alts.length && picked === null; vk += 1) {
           var cand = _literalOfAlternative(alts[vk], depth + 1, unicode, "viable");
-          if (cand !== null && _branchAccepts(alts[vk], cand, unicode)) picked = cand;
+          if (cand !== null && _branchAccepts(alts[vk], cand, unicode, lit)) picked = cand;
         }
         if (picked === null) {
           for (var vf = 0; vf < alts.length && picked === null; vf += 1) {
@@ -5145,6 +5153,17 @@ function testProbeSubjectsReachTheQuantifiedBody() {
       }).join("") + "-";
       return "^(?:" + unit + "|" + unit + ")+$";
     })(), "abaaaab-"],
+    // And a last group whose branch depends on what the groups before it
+    // produced: `(?<!a)c` accepts `c` at the start of a candidate on its own
+    // and refuses it after an `a`, so a branch checked in isolation was
+    // accepted for a position it cannot occupy.
+    [(function () {
+      var vec = [0, 1, 0, 0, 0, 0];
+      var unit = vec.map(function (v) {
+        return v ? "(?:(?!a)a|b)" : "(?:a|(?!b)b)";
+      }).join("") + "(?:(?<!a)c|(?<=a)d)-";
+      return "^(?:" + unit + "|" + unit + ")+$";
+    })(), "abaaaad-"],
     // Six compounds in front of the costly one. What a quantified group
     // repeats is taken whatever precedes it, as a quantified character is.
     ["^(?:(?:a-)+|(?:b-)+|(?:c-)+|(?:d-)+|(?:e-)+|(?:f-)+|(?:z@|z@)+)$", "z@"],
@@ -5569,6 +5588,10 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // word it is spelled like, so the walk to the keyword reads through it.
     ["var J = class of {} / 2; var re = /(?:ys+)+$/;",    "/(?:ys+)+$/"],
     ["var K = function of() {} / 2; var re = /(?:yt+)+$/;", "/(?:yt+)+$/"],
+    // A superclass written as a long member expression. The walk back to the
+    // keyword is bounded by the token list, not by a count of its own.
+    ["var L = class extends ns" + ".a".repeat(255) + " {} / 2; var re = /(?:yu+)+$/;",
+     "/(?:yu+)+$/"],
     // A superclass may itself be a function or class expression, whose body is
     // a brace group. The keyword after that group owns THAT body, so the walk
     // steps over it and carries on to the one whose body is being classified.
@@ -5836,6 +5859,14 @@ function testProbeSubjectsMakeACatastrophicPatternCost() {
       var unit = vec.map(function (v) {
         return v ? "(?:(?!a)a|b)" : "(?:a|(?!b)b)";
       }).join("") + "-";
+      return "^(?:" + unit + "|" + unit + ")+$";
+    })(),
+    // And one whose last group reads what the groups before it produced.
+    (function () {
+      var vec = [0, 1, 0, 0, 0, 0];
+      var unit = vec.map(function (v) {
+        return v ? "(?:(?!a)a|b)" : "(?:a|(?!b)b)";
+      }).join("") + "(?:(?<!a)c|(?<=a)d)-";
       return "^(?:" + unit + "|" + unit + ")+$";
     })(),
   ];
