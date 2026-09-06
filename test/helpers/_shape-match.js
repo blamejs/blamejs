@@ -444,7 +444,26 @@ function tokenize(source) {
         // after `;`, after `{`, or after a keyword that introduces a block, the
         // word begins a statement and the body is a declaration's.
         var kwTok = _governingFunctionOrClass(tokens);
+        // `async` is a modifier on the keyword, not a position of its own, so
+        // the position is the one BEFORE it: `var x = async function () {}` is
+        // an expression, and reading `async` as the preceding token made it a
+        // declaration. The same table the control-header reader uses says
+        // which words are transparent this way.
         var beforeKw = kwTok === null ? null : _significantBefore(tokens, kwTok);
+        // ...but only while nothing separates it from what it modifies. With a
+        // line terminator between, `async` has ended its own statement and the
+        // `function` below begins a new one: `var f = async` then a newline
+        // then `function g() {}` is an assignment followed by a declaration.
+        var afterKwTok = kwTok;
+        var seeThroughGuard = 0;
+        while (beforeKw !== null && seeThroughGuard < 8 &&
+               (beforeKw.type === TOK_KEYWORD || beforeKw.type === TOK_IDENT) &&
+               _TRANSPARENT_WORDS[beforeKw.value] === 1 &&
+               !_lineBreakBackFrom(source, afterKwTok.start)) {
+          afterKwTok = beforeKw;
+          beforeKw = _significantBefore(tokens, beforeKw);
+          seeThroughGuard += 1;
+        }
         var kwLastSig = _lastSigText(beforeKw);
         // A restricted-production keyword with a line terminator after it has
         // ended its statement, so what follows begins a new one and the word is

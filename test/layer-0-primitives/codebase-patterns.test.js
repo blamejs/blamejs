@@ -5302,6 +5302,11 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // bracketed group whole rather than naming the forms one may take.
     ["var E = class extends ns[\"B\"] {} / 2; var re = /(?:y9+)+$/;", "/(?:y9+)+$/"],
     ["var F = class extends mix(B) {} / 2; var re = /(?:ya+)+$/;", "/(?:ya+)+$/"],
+    // `async` is a modifier on the keyword rather than a position of its own,
+    // so the position is the one before it. Read as the preceding token it
+    // made every async function expression look like a declaration.
+    ["var G = async function () {} / 2; var re = /(?:yb+)+$/;", "/(?:yb+)+$/"],
+    ["async function h() {}\n/(?:yc+)+$/.test(x);",       "/(?:yc+)+$/"],
     ["function f() {}\n/(?:y7+)+$/.test(x);",            "/(?:y7+)+$/"],
     ["class K {}\n/(?:y8+)+$/.test(x);",                 "/(?:y8+)+$/"],
     // A word after `class` or `function` is that thing's name, whatever word
