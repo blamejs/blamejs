@@ -4082,7 +4082,7 @@ function _topLevelAlternatives(inner, unicode) {
 // one. A nested group contributes the string of its own first such
 // alternative, so `a(?:b|b)` is the motif `ab`; treating the group as opaque
 // dropped the motif and left the pattern driven by single characters.
-function _literalOfAlternative(alt, depth, unicode) {
+function _literalOfAlternative(alt, depth, unicode, branchIdx) {
   if (depth > 4) return null;
   var lit = "";
   var lastPiece = null;
@@ -4164,10 +4164,24 @@ function _literalOfAlternative(alt, depth, unicode) {
       // repeats, so it is stepped over rather than read as literal text.
       if (_ASSERTION_OPENER.test(rawInner)) { i = j - 1; continue; }
       var innerText = rawInner.replace(/^\?(?::|<[A-Za-z_$][A-Za-z0-9_$]*>)/, "");
-      var picked = null;
+      // Which branch of a nested group a pattern can take is not decidable
+      // from the branch alone: `(?:(?!a)a|b)-` can only take `b`, and taking
+      // the first branch that spells a literal chose the `a` the lookahead
+      // refuses, so the motif was `a-` and the body behind `b-` was driven by
+      // nothing. So the choice is not made here either. The caller asks for one
+      // branch index at a time and keeps every motif that comes back, the way
+      // the required-prefix walk enumerates the branches of a choosing group.
       var alts = _topLevelAlternatives(innerText, unicode);
-      for (var k = 0; k < alts.length && picked === null; k += 1) {
-        picked = _literalOfAlternative(alts[k], depth + 1, unicode);
+      var picked = null;
+      if (branchIdx === undefined) {
+        // No branch asked for: the first one that reads, which is what the
+        // required-prefix walk wants when it is not enumerating.
+        for (var k = 0; k < alts.length && picked === null; k += 1) {
+          picked = _literalOfAlternative(alts[k], depth + 1, unicode);
+        }
+      } else {
+        if (branchIdx >= alts.length) return null;        // no such branch
+        picked = _literalOfAlternative(alts[branchIdx], depth + 1, unicode, branchIdx);
       }
       if (picked === null) return null;
       lit += picked;
@@ -4229,6 +4243,16 @@ function _charNotMatching(fragment, unicode) {
   return null;
 }
 
+// One motif, kept if it is long enough to be one and not already there. The
+// bound is what a subject can carry rather than a short fixed length: a
+// seven-character motif was discarded, and `(?:abcdefg|abcdefg)+$` costs on
+// nothing shorter.
+function _pushMotif(out, lit) {
+  if (lit !== null && lit.length >= 1 && lit.length <= 64 && out.indexOf(lit) === -1) {
+    out.push(lit);
+  }
+}
+
 function _quantifiedGroupMotifs(body, unicode) {
   var out = [];
   var toks = _regexTokens(body, unicode);
@@ -4250,6 +4274,14 @@ function _quantifiedGroupMotifs(body, unicode) {
     // contributed nothing.
     _topLevelAlternatives(inner, unicode).forEach(function (alt) {
       if (!alt) return;
+      // Every branch of a group nested inside this alternative, not the first
+      // one that spells something: an assertion in a branch can refuse it, and
+      // the motif has to be a string the alternative actually accepts.
+      for (var bi = 0; bi < _PREFIX_BRANCHES; bi += 1) {
+        var one = _literalOfAlternative(alt, 0, unicode, bi);
+        if (one === null) break;                          // no branch this deep
+        _pushMotif(out, one);
+      }
       var lit = _literalOfAlternative(alt, 0, unicode);
       // Bounded by what a subject can carry, not by a short fixed length. A
       // seven-character motif was discarded, and `(?:abcdefg|abcdefg)+$` costs
@@ -4915,6 +4947,10 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // Exactly zero is not a count the piece can be consumed at, so the piece
     // leaves the motif rather than standing in it: this matches `-b` repeated.
     ["^(?:a{0}-b|a{0}-b)+$",     "-b"],
+    // A group nested inside the alternative offers a choice too, and an
+    // assertion in a branch can refuse it, so every branch becomes a motif
+    // rather than the first one that spells something.
+    ["^(?:(?:(?!a)a|b)-|(?:(?!a)a|b)-)+$", "b-"],
   ];
   for (var i = 0; i < CASES.length; i += 1) {
     var body = CASES[i][0];
@@ -5505,6 +5541,8 @@ function testProbeSubjectsMakeACatastrophicPatternCost() {
     // A count of exactly zero, in a prefix and in a motif.
     "^A{0}-P(z+)+$",
     "^(?:a{0}-b|a{0}-b)+$",
+    // The viable branch of a group nested inside the motif's alternative.
+    "^(?:(?:(?!a)a|b)-|(?:(?!a)a|b)-)+$",
   ];
   var missed = [];
   for (var i = 0; i < PATTERNS.length; i += 1) {
