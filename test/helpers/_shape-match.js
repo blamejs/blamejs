@@ -1130,12 +1130,21 @@ function _governingFunctionOrClass(tokens) {
   // identifiers and dots stopped at, leaving the body unmarked.
   var CLOSERS = { ")": "(", "]": "[", "}": "{" };
   var guard = 0;
+  // A superclass may itself be a function or class expression, and its body is
+  // a brace group this walk steps over: `class C extends function(){} {}`. The
+  // keyword that follows such a group owns THAT body, not the one being
+  // classified, so it is stepped over too. Without this the walk returned the
+  // inner `function` and read the outer class declaration as producing a value.
+  var bodiesSkipped = 0;
   while (i >= 0 && guard < 512) {
     skipTrivia();
     if (i < 0) break;
     var t = tokens[i];
     guard += 1;
-    if (t.type === TOK_KEYWORD && (t.value === "function" || t.value === "class")) return t;
+    if (t.type === TOK_KEYWORD && (t.value === "function" || t.value === "class")) {
+      if (bodiesSkipped > 0) { bodiesSkipped -= 1; i -= 1; continue; }
+      return t;
+    }
     if (t.type === TOK_PUNCT && CLOSERS[t.value] !== undefined) {
       var open = CLOSERS[t.value];
       var close = t.value;
@@ -1149,6 +1158,7 @@ function _governingFunctionOrClass(tokens) {
         }
       }
       if (depth !== 0) return null;                     // unbalanced: not a header
+      if (close === "}") bodiesSkipped += 1;            // a body, so its keyword follows
       i -= 1;
       continue;
     }

@@ -3516,6 +3516,23 @@ function _literalPrefixOf(pattern, unicode) {
 // alternations in the framework were the two the walk could not finish reading.
 // Twenty-four leaves room above the measured maximum without inviting the
 // product of the two bounds to matter.
+// What a `{...}` may spell: `{n}`, `{n,m}`, and `{n,}`, which leaves the upper
+// bound open. The open form was not accepted, so `a{2,}b` read as a literal
+// brace rather than a count and `(?:a{2,}b|a{2,}b)+$` was left with a motif of
+// its own spelling, which the pattern refuses. Group 2 is undefined for `{n}`
+// and the empty string for `{n,}`, which the readers tell apart.
+var _QUANTIFIER_SPEC = /^(\d+)(?:,(\d*))?$/;
+
+// The lower and upper bound a `{...}` spells, or null when it spells no count.
+// An omitted upper bound is Infinity, which is what `{n,}` means.
+function _quantifierBounds(spec) {
+  var m = spec === null || spec === undefined ? null : _QUANTIFIER_SPEC.exec(spec);
+  if (!m) return null;
+  var lo = parseInt(m[1], 10);
+  var hi = m[2] === undefined ? lo : (m[2] === "" ? Infinity : parseInt(m[2], 10));
+  return { lo: lo, hi: hi };
+}
+
 var _PREFIX_GROUPS  = 4;
 var _PREFIX_BRANCHES = 24;
 // How much text a required prefix may carry. It bounds the walk and it bounds
@@ -3639,11 +3656,11 @@ function _literalPrefixWithChoice(pattern, unicode, groupIdx, branchIdx, greedy)
       var gQEnd = -1;
       if (gAfter === "{") {
         var gClose = pattern.indexOf("}", toks[gj - 1].end + 1);
-        var gm = gClose === -1 ? null
-          : /^(\d+)(?:,(\d+))?$/.exec(pattern.slice(toks[gj - 1].end + 2, gClose));
-        if (!gm) break;
-        var gLo = parseInt(gm[1], 10);
-        var gHi = gm[2] === undefined ? gLo : parseInt(gm[2], 10);
+        var gb = gClose === -1 ? null
+          : _quantifierBounds(pattern.slice(toks[gj - 1].end + 2, gClose));
+        if (!gb) break;
+        var gLo = gb.lo;
+        var gHi = gb.hi;
         // Same reading as the scalar case above: the lower bound is what the
         // prefix must carry, and zero means the group contributes nothing and
         // the walk carries on past it.
@@ -3743,11 +3760,11 @@ function _literalPrefixWithChoice(pattern, unicode, groupIdx, branchIdx, greedy)
       // `^A{2}PREFIX` requires `AAPREFIX`. Stopping at the brace required
       // nothing, and no subject reached the body behind it.
       var pClose = pattern.indexOf("}", toks[t].end + 1);
-      var pm = pClose === -1 ? null
-        : /^(\d+)(?:,(\d+))?$/.exec(pattern.slice(toks[t].end + 2, pClose));
-      if (!pm) break;
-      var pLo = parseInt(pm[1], 10);
-      var pHi = pm[2] === undefined ? pLo : parseInt(pm[2], 10);
+      var pb = pClose === -1 ? null
+        : _quantifierBounds(pattern.slice(toks[t].end + 2, pClose));
+      if (!pb) break;
+      var pLo = pb.lo;
+      var pHi = pb.hi;
       // A count is bounded by what the prefix can carry, not by a number
       // chosen here: `^A{17}PREFIX(z+)+$` requires seventeen of them, and a
       // cutoff at sixteen stopped before the prefix and left the body behind
@@ -4095,10 +4112,10 @@ function _literalOfAlternative(alt, depth, unicode, branchIdx) {
       // driven with single characters that cost nothing.
       var qClose = alt.indexOf("}", toks[i].end);
       var qSpec = qClose === -1 ? null : alt.slice(toks[i].end + 1, qClose);
-      var qm = qSpec === null ? null : /^(\d+)(?:,(\d+))?$/.exec(qSpec);
+      var qb = _quantifierBounds(qSpec);
       // A brace that is not a quantifier is a literal brace: `{L}` in a
       // pattern without the `u` flag is three characters, not a repetition.
-      if (!qm || lastPiece === null) {
+      if (!qb || lastPiece === null) {
         lit += at;
         lastPiece = at;
         continue;
@@ -4106,8 +4123,8 @@ function _literalOfAlternative(alt, depth, unicode, branchIdx) {
       // The lower bound is the count the motif stands for, whether the
       // quantifier is exact or a range. The upper one is read too, because a
       // quantifier of exactly zero means the piece is never consumed at all.
-      var qLo = parseInt(qm[1], 10);
-      var qHi = qm[2] === undefined ? qLo : parseInt(qm[2], 10);
+      var qLo = qb.lo;
+      var qHi = qb.hi;
       // Bounded by what a motif can be, which is the length cap below, not by
       // a smaller number: `ab{17}` is eighteen characters and is the only
       // thing `(?:ab{17}|ab{17})+$` costs on.
@@ -4168,11 +4185,11 @@ function _literalOfAlternative(alt, depth, unicode, branchIdx) {
       var nQClose = -1;
       if (after === "{") {
         var nClose = alt.indexOf("}", toks[j].end);
-        var nm = nClose === -1 ? null
-          : /^(\d+)(?:,(\d+))?$/.exec(alt.slice(toks[j].end + 1, nClose));
-        if (!nm) return null;                            // a literal brace, not a count
-        var nLo = parseInt(nm[1], 10);
-        var nHi = nm[2] === undefined ? nLo : parseInt(nm[2], 10);
+        var nb = nClose === -1 ? null
+          : _quantifierBounds(alt.slice(toks[j].end + 1, nClose));
+        if (!nb) return null;                            // a literal brace, not a count
+        var nLo = nb.lo;
+        var nHi = nb.hi;
         if (nLo > 64) return null;                       // longer than a motif
         nRepeat = nHi === 0 ? 0 : (nLo > 0 ? nLo : 1);
         nQClose = nClose;
@@ -4997,6 +5014,11 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     ["^(?:(?:ab){2}c|(?:ab){2}c)+$", "ababc"],
     ["^(?:(?:ab)+c|(?:ab)+c)+$",     "abc"],
     ["^(?:(?:ab){0}c|(?:ab){0}c)+$", "c"],
+    // `{n,}` leaves the upper bound open and is a count like any other. Read
+    // as a literal brace it made the motif the pattern's own spelling, which
+    // the pattern refuses.
+    ["^(?:a{2,}b|a{2,}b)+$",     "aab"],
+    ["^(?:a{0,}b|a{0,}b)+$",     "ab"],
   ];
   for (var i = 0; i < CASES.length; i += 1) {
     var body = CASES[i][0];
@@ -5054,6 +5076,7 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     ["^A{1,3}X(z+)+$",       "AX"],
     ["^A{2,5}X(z+)+$",       "AAX"],
     ["^A{0,3}X(z+)+$",       "X"],
+    ["^A{2,}X(z+)+$",        "AAX"],
     // An alternative can spell text it then refuses, so the one that works is
     // the one taken.
     ["^(?:(?!A)A|B)PREFIX(z+)+$", "BPREFIX"],
@@ -5390,6 +5413,11 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     ["var G = async function () {} / 2; var re = /(?:yb+)+$/;", "/(?:yb+)+$/"],
     // A superclass may be a bare value keyword.
     ["var H = class extends null {} / 2; var re = /(?:yd+)+$/;", "/(?:yd+)+$/"],
+    // A superclass may itself be a function or class expression, whose body is
+    // a brace group. The keyword after that group owns THAT body, so the walk
+    // steps over it and carries on to the one whose body is being classified.
+    ["class C extends function(){} {}\n/(?:ye+)+$/.test(x);", "/(?:ye+)+$/"],
+    ["var I = class extends class{} {} / 2; var re = /(?:yf+)+$/;", "/(?:yf+)+$/"],
     ["async function h() {}\n/(?:yc+)+$/.test(x);",       "/(?:yc+)+$/"],
     ["function f() {}\n/(?:y7+)+$/.test(x);",            "/(?:y7+)+$/"],
     ["class K {}\n/(?:y8+)+$/.test(x);",                 "/(?:y8+)+$/"],
@@ -5595,6 +5623,8 @@ function testProbeSubjectsMakeACatastrophicPatternCost() {
     "^(?:(?:a-)+|(?:b-)+|(?:c-)+|(?:d-)+|(?:e-)+|(?:f-)+|(?:z@|z@)+)$",
     // A quantified group nested inside the motif's alternative.
     "^(?:(?:ab){2}c|(?:ab){2}c)+$",
+    // A count with the upper bound left open.
+    "^(?:a{2,}b|a{2,}b)+$",
   ];
   var missed = [];
   for (var i = 0; i < PATTERNS.length; i += 1) {
