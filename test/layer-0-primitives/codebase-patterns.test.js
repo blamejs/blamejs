@@ -3556,8 +3556,10 @@ var _FILLER_QUANTIFIED_MAX = 64;
 // How many branch combinations across the groups nested inside one alternative
 // are built. The product is exponential in the number of groups, so it is
 // capped; the widest alternative in `lib/` has one such group, so this is a
-// backstop rather than the thing that decides which motifs are built.
-var _MOTIF_COMBINATIONS = 64;
+// backstop rather than the thing that decides which motifs are built. Kept
+// small because the motifs go on to become probe subjects, and sixty-four of
+// them crowded out the reading that mattered before it was reached.
+var _MOTIF_COMBINATIONS = 16;
 
 // A pattern may offer a choice at its own top level, not only inside a group,
 // and the costly branch is not always the first one. `^SAFE$|^AB-CD(z+)+$` was
@@ -3570,7 +3572,11 @@ function _literalPrefixesOf(pattern, unicode) {
   if (!alts || alts.length <= 1) return _prefixesForOneAlternative(pattern, unicode);
   var pooled = [];
   var poolSeen = {};
-  for (var a = 0; a < alts.length && a < _PREFIX_BRANCHES; a += 1) {
+  // Every alternative, not the first few. These are the pattern's own branches
+  // rather than a search space, so walking all of them is linear in the size of
+  // the pattern; capping them dropped the costly branch of a pattern that put
+  // enough cheap ones in front of it.
+  for (var a = 0; a < alts.length; a += 1) {
     var got = _prefixesForOneAlternative(alts[a], unicode);
     for (var i = 0; i < got.length; i += 1) {
       if (poolSeen[got[i]] === 1) continue;
@@ -4373,6 +4379,22 @@ function _quantifiedGroupMotifs(body, unicode) {
         }
         _pushMotif(out, _literalOfAlternative(alt, 0, unicode, picks, { widths: [] }));
       }
+      // The product counts up from the first branch of every group, so a cap
+      // leaves the LAST groups on their first branch in every combination it
+      // builds. Where all of them need the same later branch, that combination
+      // is the last one and the cap never reaches it: seven copies of
+      // `(?:(?!a)a|b)` need `bbbbbbb`, which is combination 127 of 128. Each
+      // reading with every group on the SAME branch is added whatever the cap,
+      // and there are only as many of those as the widest group is wide.
+      var widest = 0;
+      for (var mi = 0; mi < meta.widths.length; mi += 1) {
+        if (meta.widths[mi] > widest) widest = meta.widths[mi];
+      }
+      for (var di = 0; di < widest; di += 1) {
+        var same = [];
+        for (var si = 0; si < meta.widths.length; si += 1) same.push(di);
+        _pushMotif(out, _literalOfAlternative(alt, 0, unicode, same, { widths: [] }));
+      }
       var lit = _literalOfAlternative(alt, 0, unicode);
       // Bounded by what a subject can carry, not by a short fixed length. A
       // seven-character motif was discarded, and `(?:abcdefg|abcdefg)+$` costs
@@ -5050,6 +5072,11 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // index shared by both reaches `ac-` and `bd-`, which their assertions
     // refuse, and never the `bc-` the alternative takes.
     ["^(?:(?:(?!a)a|b)(?:c|(?!d)d)-|(?:(?!a)a|b)(?:c|(?!d)d)-)+$", "bc-"],
+    // Seven such groups, all needing the same later branch. The product counts
+    // up from the first branch of every group, so that reading is the last
+    // combination of 128 and a cap never reaches it. Each reading with every
+    // group on the same branch is built whatever the cap.
+    ["^(?:" + "(?:(?!a)a|b)".repeat(7) + "-|" + "(?:(?!a)a|b)".repeat(7) + "-)+$", "bbbbbbb-"],
     // Six compounds in front of the costly one. What a quantified group
     // repeats is taken whatever precedes it, as a quantified character is.
     ["^(?:(?:a-)+|(?:b-)+|(?:c-)+|(?:d-)+|(?:e-)+|(?:f-)+|(?:z@|z@)+)$", "z@"],
@@ -5485,6 +5512,13 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     ["export default /(?:yj+)+$/.test(x);",               "/(?:yj+)+$/"],
     ["switch(k){ default: /(?:yk+)+$/.test(x); }",        "/(?:yk+)+$/"],
     ["try /(?:yl+)+$/.test(x); catch(e){}",               "/(?:yl+)+$/"],
+    // A name may begin outside ASCII. Read as nothing, the character was
+    // skipped and the slash after it opened a pattern rather than dividing.
+    ["const π = 1; π / 2; const r = /(?:ym+)+$/;", "/(?:ym+)+$/"],
+    // A line continuation is a backslash and the terminator after it, and
+    // `\` + CRLF is three characters. Advancing two left the LF to end the
+    // string, so the real closing quote opened another one.
+    ["var s = \"a\\\r\nb\"; const r = /(?:yn+)+$/;",     "/(?:yn+)+$/"],
     ["async function h() {}\n/(?:yc+)+$/.test(x);",       "/(?:yc+)+$/"],
     ["function f() {}\n/(?:y7+)+$/.test(x);",            "/(?:y7+)+$/"],
     ["class K {}\n/(?:y8+)+$/.test(x);",                 "/(?:y8+)+$/"],
@@ -5694,6 +5728,17 @@ function testProbeSubjectsMakeACatastrophicPatternCost() {
     "^(?:(?:ab){2}c|(?:ab){2}c)+$",
     // A count with the upper bound left open.
     "^(?:a{2,}b|a{2,}b)+$",
+    // The costly branch behind two dozen cheap TOP-LEVEL alternatives. These
+    // are the pattern's own branches rather than a search space, so all of them
+    // are walked; capping them dropped this one.
+    (function () {
+      var a = [];
+      for (var k = 0; k < 24; k += 1) a.push("^SAFE" + (k < 10 ? "0" + k : k) + "$");
+      return a.join("|") + "|^AB-CD(z+)+$";
+    })(),
+    // Seven choosing groups that all need the same later branch, which the
+    // product reaches only as its last combination.
+    "^(?:" + "(?:(?!a)a|b)".repeat(7) + "-|" + "(?:(?!a)a|b)".repeat(7) + "-)+$",
   ];
   var missed = [];
   for (var i = 0; i < PATTERNS.length; i += 1) {

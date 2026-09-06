@@ -284,9 +284,16 @@ function tokenize(source) {
       var sQuote = ch; var ss = i; i += 1;
       while (i < n) {
         var c3 = source.charAt(i);
-        if (c3 === "\\") { i += 2; continue; }
+        // A line continuation is a backslash and the terminator after it, and
+        // `\` + CRLF is three characters rather than a continuation followed by
+        // a bare LF. Advancing two left that LF to end the string, so the real
+        // closing quote opened another one and swallowed what followed.
+        if (c3 === "\\") {
+          i += (source.charCodeAt(i + 1) === 0x0D && source.charCodeAt(i + 2) === 0x0A) ? 3 : 2;
+          continue;
+        }
         if (c3 === sQuote) { i += 1; break; }
-        if (c3 === "\n") break;                                                    // unterminated — caller deals
+        if (c3 === "\n" || c3 === "\r") break;                                     // unterminated — caller deals
         i += 1;
       }
       var stok = { type: TOK_STRING, value: source.slice(ss, i), start: ss, end: i };
@@ -354,10 +361,15 @@ function tokenize(source) {
       continue;
     }
 
-    // Identifier / keyword
-    if (/[A-Za-z_$]/.test(ch)) {
+    // Identifier / keyword. A name may begin outside ASCII, and reading only
+    // ASCII skipped the character entirely: `const p = 1; p / 2;` written with
+    // a Greek letter left the semicolon as the last token seen, so the slash
+    // after the name opened a pattern and ran to the opener of the next real
+    // one. The sibling lexer in this file already reads a name this way, by
+    // asking what is NOT part of one.
+    if (_isWordStart(ch)) {
       var is = i; i += 1;
-      while (i < n && /[A-Za-z0-9_$]/.test(source.charAt(i))) i += 1;
+      while (i < n && _isWordChar(source.charAt(i))) i += 1;
       var idVal = source.slice(is, i);
       var idType = KEYWORDS[idVal] ? TOK_KEYWORD : TOK_IDENT;
       var itok = { type: idType, value: idVal, start: is, end: i };
