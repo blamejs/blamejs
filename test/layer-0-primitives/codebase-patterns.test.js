@@ -3518,8 +3518,34 @@ function _literalPrefixOf(pattern, unicode) {
 // product of the two bounds to matter.
 var _PREFIX_GROUPS  = 4;
 var _PREFIX_BRANCHES = 24;
+// How much text a required prefix may carry. It bounds the walk and it bounds
+// what a fixed quantifier is allowed to expand to, so the two cannot disagree
+// about how long a prefix is allowed to be.
+var _PREFIX_MAX = 40;
 
+// A pattern may offer a choice at its own top level, not only inside a group,
+// and the costly branch is not always the first one. `^SAFE$|^AB-CD(z+)+$` was
+// read up to the bar and required `SAFE`, so nothing built `AB-CD` and the body
+// behind it was entered by no subject. Each top-level alternative is a pattern
+// in its own right, so each is walked as one and the prefixes are pooled.
 function _literalPrefixesOf(pattern, unicode) {
+  var alts;
+  try { alts = _topLevelAlternatives(pattern, unicode); } catch (_e) { alts = [pattern]; }
+  if (!alts || alts.length <= 1) return _prefixesForOneAlternative(pattern, unicode);
+  var pooled = [];
+  var poolSeen = {};
+  for (var a = 0; a < alts.length && a < _PREFIX_BRANCHES; a += 1) {
+    var got = _prefixesForOneAlternative(alts[a], unicode);
+    for (var i = 0; i < got.length; i += 1) {
+      if (poolSeen[got[i]] === 1) continue;
+      poolSeen[got[i]] = 1;
+      pooled.push(got[i]);
+    }
+  }
+  return pooled;
+}
+
+function _prefixesForOneAlternative(pattern, unicode) {
   var verified = [];
   var rest = [];
   var seen = {};
@@ -3599,7 +3625,26 @@ function _literalPrefixWithChoice(pattern, unicode, groupIdx, branchIdx, greedy)
       }
       if (gd !== 0) break;
       var gAfter = pattern.charAt(toks[gj - 1].end + 1);
-      if (gAfter !== "" && "*+?{".indexOf(gAfter) !== -1) break;   // optional or repeatable
+      // A FIXED quantifier on a group requires what the group matches, that
+      // many times over: `^(?:AB){2}PREFIX(z+)+$` requires `ABABPREFIX`.
+      // Breaking at the brace required nothing and left the body behind it
+      // entered by nothing, the same way a fixed quantifier on a single
+      // character did before it was expanded.
+      var gRepeat = 1;
+      var gQEnd = -1;
+      if (gAfter === "{") {
+        var gClose = pattern.indexOf("}", toks[gj - 1].end + 1);
+        var gm = gClose === -1 ? null
+          : /^(\d+)(?:,(\d+))?$/.exec(pattern.slice(toks[gj - 1].end + 2, gClose));
+        if (!gm) break;
+        var gLo = parseInt(gm[1], 10);
+        var gHi = gm[2] === undefined ? gLo : parseInt(gm[2], 10);
+        if (gLo !== gHi || gLo < 1) break;                         // optional or variable
+        gRepeat = gLo;
+        gQEnd = gClose;
+      } else if (gAfter !== "" && "*+?".indexOf(gAfter) !== -1) {
+        break;                                                     // optional or repeatable
+      }
       var gRaw = pattern.slice(toks[t].end + 1, toks[gj - 1].end);
       // A lookaround consumes nothing, so what it contains is not part of what
       // a subject must carry. Stripping it like a `?:` group put `X` in front
@@ -3660,10 +3705,16 @@ function _literalPrefixWithChoice(pattern, unicode, groupIdx, branchIdx, greedy)
         choicesSeen += 1;
       }
       if (gPicked === null || gPicked === "") break;
-      out += gPicked;
-      upTo = toks[gj - 1].end;
-      if (out.length >= 40) break;
+      // Only a REPEAT is bounded here, for the reason above: a group taken
+      // once is what the walk always appended, and one legitimate prefix in
+      // the fixtures below is 41 characters on its own.
+      if (gRepeat > 1 && gPicked.length * gRepeat > _PREFIX_MAX) break;
+      out += gRepeat === 1 ? gPicked : gPicked.repeat(gRepeat);
+      upTo = gQEnd === -1 ? toks[gj - 1].end : gQEnd;
+      if (out.length >= _PREFIX_MAX) break;
       t = gj - 1;
+      // Step past the quantifier so its digits are not read as literals.
+      while (gQEnd !== -1 && t + 1 < toks.length && toks[t + 1].end <= gQEnd) t += 1;
       continue;
     } else if ("[{|*+?$)]}".indexOf(text) !== -1) {
       break;
@@ -3685,17 +3736,27 @@ function _literalPrefixWithChoice(pattern, unicode, groupIdx, branchIdx, greedy)
       if (!pm) break;
       var pLo = parseInt(pm[1], 10);
       var pHi = pm[2] === undefined ? pLo : parseInt(pm[2], 10);
-      if (pLo !== pHi || pLo < 1 || pLo > 16) break;      // optional or variable
+      // A count is bounded by what the prefix can carry, not by a number
+      // chosen here: `^A{17}PREFIX(z+)+$` requires seventeen of them, and a
+      // cutoff at sixteen stopped before the prefix and left the body behind
+      // it entered by nothing. The repeat is measured before it is built, so a
+      // count in the millions costs nothing to refuse.
+      if (pLo !== pHi || pLo < 1) break;                  // optional or variable
+      // What the count expands to has to fit the budget. The test is on the
+      // expansion alone, not on the total: the walk appends and THEN stops at
+      // the cap, so a single piece is allowed to reach past it, and testing
+      // the total here would refuse text the walk already accepts.
+      if (lit.length * pLo > _PREFIX_MAX) break;
       out += lit.repeat(pLo);
       upTo = pClose;
-      if (out.length >= 40) break;
+      if (out.length >= _PREFIX_MAX) break;
       while (t < toks.length && toks[t].end < pClose) t += 1;
       continue;
     }
     if (after !== "" && "*+?".indexOf(after) !== -1) break;
     out += lit;
     upTo = toks[t].end;
-    if (out.length >= 40) break;
+    if (out.length >= _PREFIX_MAX) break;
   }
   return { text: out, upTo: upTo, matched: matched };
 }
@@ -4854,6 +4915,12 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // And one reading FORWARD, where the verdicts reverse once the text after
     // the group is there.
     ["^(?:A(?=X)|B(?!X))X(z+)+$",     "AX"],
+    // A fixed count is bounded by what the prefix can carry, not by a number
+    // chosen in the walk: a cutoff at sixteen stopped before this prefix.
+    ["^A{17}PREFIX(z+)+$",            "A".repeat(17) + "PREFIX"],
+    // A fixed count on a GROUP repeats what the group matches, the way one on
+    // a single character repeats that character.
+    ["^(?:AB){2}PREFIX(z+)+$",        "ABABPREFIX"],
   ];
   for (var p = 0; p < PREFIXES.length; p += 1) {
     check("regex probe: /" + PREFIXES[p][0] + "/ requires the prefix " +
@@ -5130,6 +5197,11 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // extends clause opens a class body; and `debugger` is a whole statement.
     ["class X extends B.default {} /(?:w+)+$/.test(x);", "/(?:w+)+$/"],
     ["debugger\n{} /(?:y+)+$/.test(x);",                 "/(?:y+)+$/"],
+    // And with no brace between: `debugger` ends its statement, so the slash
+    // on the next line opens a pattern rather than dividing. It was absent
+    // from the keyword table, tokenized as an identifier, and an identifier
+    // divides, so this pattern reached the gate as no token at all.
+    ["debugger\n/(?:y2+)+$/.test(x);",                   "/(?:y2+)+$/"],
     // A word after `class` or `function` is that thing's name, whatever word
     // it is spelled like, and the brace after it opens a body.
     ["class of {} /(?:z1+)+$/.test(x);",                 "/(?:z1+)+$/"],
@@ -5302,6 +5374,12 @@ function testProbeSubjectsMakeACatastrophicPatternCost() {
     // own body refuses.
     "^PREFIX(.*)*$",
     "^PREFIX([^q]+)+$",
+    // A fixed count above the walk's old cutoff, and one applied to a group.
+    "^A{17}PREFIX(z+)+$",
+    "^(?:AB){2}PREFIX(z+)+$",
+    // The costly branch as a later TOP-LEVEL alternative, where the walk used
+    // to stop at the bar and require what the first branch spells.
+    "^SAFE$|^AB-CD(z+)+$",
   ];
   var missed = [];
   for (var i = 0; i < PATTERNS.length; i += 1) {

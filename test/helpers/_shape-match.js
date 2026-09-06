@@ -60,6 +60,11 @@ var KEYWORDS = {
   "true": 1, "false": 1, "undefined": 1, "async": 1, "await": 1,
   "yield": 1, "class": 1, "extends": 1, "super": 1, "import": 1,
   "export": 1, "from": 1, "as": 1,
+  // `debugger` is a complete statement, so a pattern may begin on the line
+  // after it. Left out of this table it tokenized as an identifier, and an
+  // identifier divides, so the pattern following one was read as division and
+  // never emitted. The sibling lexer in this file already listed it.
+  "debugger": 1,
 };
 
 // Punctuation characters that can begin a token. Multi-char operators
@@ -177,6 +182,7 @@ function _slashIsRegex(prevSignificant) {
         kw === "instanceof" || kw === "in" || kw === "of" ||
         kw === "case" || kw === "yield" || kw === "await" ||
         kw === "else" || kw === "do" ||
+        kw === "debugger" ||
         kw === "break" || kw === "continue") return true;
     return false;
   }
