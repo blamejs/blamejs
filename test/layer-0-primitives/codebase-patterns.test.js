@@ -3533,7 +3533,12 @@ function _quantifierBounds(spec) {
   return { lo: lo, hi: hi };
 }
 
-var _PREFIX_GROUPS  = 4;
+// Varying one group at a time costs one walk per group per branch, which is
+// linear in the pattern, so this is a backstop rather than a reading. At four
+// the fifth choosing group of
+// `^(?:A|A)(?:A|A)(?:A|A)(?:A|A)(?:B(?!X)|C(?=X))X(z+)+$` was never varied and
+// the only prefix that reaches the body, `AAAACX`, was built by nothing.
+var _PREFIX_GROUPS  = 64;
 var _PREFIX_BRANCHES = 24;
 // How much text a required prefix may carry. It bounds the walk and it bounds
 // what a fixed quantifier is allowed to expand to, so the two cannot disagree
@@ -5247,6 +5252,10 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // And one reading FORWARD, where the verdicts reverse once the text after
     // the group is there.
     ["^(?:A(?=X)|B(?!X))X(z+)+$",     "AX"],
+    // A choosing group beyond the fourth. Varying one group at a time costs one
+    // walk per group per branch, which is linear in the pattern, so the number
+    // of groups is not a reason to stop reading.
+    ["^(?:A|A)(?:A|A)(?:A|A)(?:A|A)(?:B(?!X)|C(?=X))X(z+)+$", "AAAACX"],
     // A fixed count is bounded by what the prefix can carry, not by a number
     // chosen in the walk: a cutoff at sixteen stopped before this prefix.
     ["^A{17}PREFIX(z+)+$",            "A".repeat(17) + "PREFIX"],
@@ -5814,6 +5823,8 @@ function testProbeSubjectsMakeACatastrophicPatternCost() {
     "^(?:" + "(?:(?!a)a|b)".repeat(7) + "-|" + "(?:(?!a)a|b)".repeat(7) + "-)+$",
     // A motif wrapped in more groups than the old depth cutoff allowed.
     "^(?:(?:(?:(?:(?:(?:a-|a-))))))+$",
+    // A choosing group beyond the fourth in a required prefix.
+    "^(?:A|A)(?:A|A)(?:A|A)(?:A|A)(?:B(?!X)|C(?=X))X(z+)+$",
     // Seven groups whose viable branches are mixed, which sampling reaches by
     // no route.
     (function () {
