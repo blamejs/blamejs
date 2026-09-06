@@ -4158,7 +4158,27 @@ function _literalOfAlternative(alt, depth, unicode, branchIdx) {
       // `indexOf("")` is 0, so an empty `after` reads as a quantifier unless it
       // is excluded: a group at the end of the alternative was dropped.
       var after = j < toks.length ? toks[j].text : "";
-      if (after !== "" && "*+?{".indexOf(after) !== -1) return null;  // the group itself repeats
+      // A quantifier on the nested group is read the same way one on a single
+      // piece is: the lower bound is the count the motif stands for, exactly
+      // zero removes the group, and a variable one leaves a single instance.
+      // Refusing the whole alternative instead discarded the compound, so
+      // `(?:(?:ab){2}c|(?:ab){2}c)+$` was left with `ab` and `c` and never the
+      // `ababc` it costs on.
+      var nRepeat = 1;
+      var nQClose = -1;
+      if (after === "{") {
+        var nClose = alt.indexOf("}", toks[j].end);
+        var nm = nClose === -1 ? null
+          : /^(\d+)(?:,(\d+))?$/.exec(alt.slice(toks[j].end + 1, nClose));
+        if (!nm) return null;                            // a literal brace, not a count
+        var nLo = parseInt(nm[1], 10);
+        var nHi = nm[2] === undefined ? nLo : parseInt(nm[2], 10);
+        if (nLo > 64) return null;                       // longer than a motif
+        nRepeat = nHi === 0 ? 0 : (nLo > 0 ? nLo : 1);
+        nQClose = nClose;
+      } else if (after !== "" && "*+?".indexOf(after) !== -1) {
+        nRepeat = 1;
+      }
       var rawInner = alt.slice(toks[i].end + 1, toks[j - 1].end);
       // An assertion inside the alternative contributes no characters to what
       // repeats, so it is stepped over rather than read as literal text.
@@ -4183,9 +4203,22 @@ function _literalOfAlternative(alt, depth, unicode, branchIdx) {
         if (branchIdx >= alts.length) return null;        // no such branch
         picked = _literalOfAlternative(alts[branchIdx], depth + 1, unicode, branchIdx);
       }
-      if (picked === null) return null;
-      lit += picked;
-      i = j - 1;
+      if (nRepeat > 0) {
+        if (picked === null) return null;
+        if (picked.length * nRepeat > 64) return null;   // longer than a motif
+        lit += nRepeat === 1 ? picked : picked.repeat(nRepeat);
+      }
+      lastPiece = null;
+      // Past the group, and past the quantifier on it when there is one, so it
+      // is not read again as a quantifier on whatever the group left behind.
+      if (nQClose !== -1) {
+        while (j < toks.length && toks[j].end <= nQClose) j += 1;
+        i = j - 1;
+      } else if (after !== "" && "*+?".indexOf(after) !== -1) {
+        i = j;
+      } else {
+        i = j - 1;
+      }
       continue;
     }
     var piece = null;
@@ -4958,6 +4991,12 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // Six compounds in front of the costly one. What a quantified group
     // repeats is taken whatever precedes it, as a quantified character is.
     ["^(?:(?:a-)+|(?:b-)+|(?:c-)+|(?:d-)+|(?:e-)+|(?:f-)+|(?:z@|z@)+)$", "z@"],
+    // A quantifier on a group NESTED in the alternative, read the same way one
+    // on a single piece is: the lower bound is the count, zero removes the
+    // group, and a variable one leaves a single instance.
+    ["^(?:(?:ab){2}c|(?:ab){2}c)+$", "ababc"],
+    ["^(?:(?:ab)+c|(?:ab)+c)+$",     "abc"],
+    ["^(?:(?:ab){0}c|(?:ab){0}c)+$", "c"],
   ];
   for (var i = 0; i < CASES.length; i += 1) {
     var body = CASES[i][0];
@@ -5554,6 +5593,8 @@ function testProbeSubjectsMakeACatastrophicPatternCost() {
     "^(?:(?:(?!a)a|b)-|(?:(?!a)a|b)-)+$",
     // Six cheap compounds in front of the costly one.
     "^(?:(?:a-)+|(?:b-)+|(?:c-)+|(?:d-)+|(?:e-)+|(?:f-)+|(?:z@|z@)+)$",
+    // A quantified group nested inside the motif's alternative.
+    "^(?:(?:ab){2}c|(?:ab){2}c)+$",
   ];
   var missed = [];
   for (var i = 0; i < PATTERNS.length; i += 1) {
