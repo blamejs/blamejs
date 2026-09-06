@@ -1101,31 +1101,43 @@ function _governingFunctionOrClass(tokens) {
   function skipTrivia() {
     while (i >= 0 && (tokens[i].type === TOK_WS || tokens[i].type === TOK_COMMENT)) i -= 1;
   }
-  skipTrivia();
-  // The parameter list, walked back to its opening paren.
-  if (i >= 0 && tokens[i].type === TOK_PUNCT && tokens[i].value === ")") {
-    var depth = 0;
-    for (; i >= 0; i -= 1) {
-      if (tokens[i].type !== TOK_PUNCT) continue;
-      if (tokens[i].value === ")") depth += 1;
-      else if (tokens[i].value === "(") {
-        depth -= 1;
-        if (depth === 0) { i -= 1; break; }
-      }
-    }
-    if (depth !== 0) return null;
-  }
-  // The name, a generator star, and a class's extends clause. `extends` takes
-  // an expression, so anything up to it is skipped the same way.
+  // A bracketed group is skipped whole rather than by naming the forms one
+  // may take. The parameter list is one; so is a superclass written as
+  // `extends ns["Base"]` or `extends mixin(Base)`, which a walk that knew only
+  // identifiers and dots stopped at, leaving the body unmarked.
+  var CLOSERS = { ")": "(", "]": "[", "}": "{" };
   var guard = 0;
-  while (i >= 0 && guard < 64) {
+  while (i >= 0 && guard < 512) {
     skipTrivia();
     if (i < 0) break;
     var t = tokens[i];
-    if ((t.type === TOK_KEYWORD) && (t.value === "function" || t.value === "class")) return t;
-    if (t.type === TOK_IDENT || (t.type === TOK_PUNCT && (t.value === "*" || t.value === "."))
-        || (t.type === TOK_KEYWORD && (t.value === "extends" || t.value === "async"))) {
-      i -= 1; guard += 1; continue;
+    guard += 1;
+    if (t.type === TOK_KEYWORD && (t.value === "function" || t.value === "class")) return t;
+    if (t.type === TOK_PUNCT && CLOSERS[t.value] !== undefined) {
+      var open = CLOSERS[t.value];
+      var close = t.value;
+      var depth = 0;
+      for (; i >= 0; i -= 1) {
+        if (tokens[i].type !== TOK_PUNCT) continue;
+        if (tokens[i].value === close) depth += 1;
+        else if (tokens[i].value === open) {
+          depth -= 1;
+          if (depth === 0) break;
+        }
+      }
+      if (depth !== 0) return null;                     // unbalanced: not a header
+      i -= 1;
+      continue;
+    }
+    // The pieces a name or a superclass expression is made of.
+    if (t.type === TOK_IDENT || t.type === TOK_NUMBER || t.type === TOK_STRING ||
+        t.type === TOK_TEMPLATE ||
+        (t.type === TOK_PUNCT && (t.value === "*" || t.value === "." || t.value === "?.")) ||
+        (t.type === TOK_KEYWORD &&
+         (t.value === "extends" || t.value === "async" || t.value === "new" ||
+          t.value === "this" || t.value === "super"))) {
+      i -= 1;
+      continue;
     }
     return null;
   }

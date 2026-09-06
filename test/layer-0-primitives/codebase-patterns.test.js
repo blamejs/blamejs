@@ -5234,6 +5234,10 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     ["var C = class {} / 2; var re = /(?:y4+)+$/;",       "/(?:y4+)+$/"],
     ["var g = function* gg() {} / 2; var re = /(?:y5+)+$/;", "/(?:y5+)+$/"],
     ["var D = class X extends B {} / 2; var re = /(?:y6+)+$/;", "/(?:y6+)+$/"],
+    // A superclass is an expression, so the walk back to the keyword skips a
+    // bracketed group whole rather than naming the forms one may take.
+    ["var E = class extends ns[\"B\"] {} / 2; var re = /(?:y9+)+$/;", "/(?:y9+)+$/"],
+    ["var F = class extends mix(B) {} / 2; var re = /(?:ya+)+$/;", "/(?:ya+)+$/"],
     ["function f() {}\n/(?:y7+)+$/.test(x);",            "/(?:y7+)+$/"],
     ["class K {}\n/(?:y8+)+$/.test(x);",                 "/(?:y8+)+$/"],
     // A word after `class` or `function` is that thing's name, whatever word
