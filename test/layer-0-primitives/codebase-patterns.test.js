@@ -3522,6 +3522,11 @@ var _PREFIX_BRANCHES = 24;
 // what a fixed quantifier is allowed to expand to, so the two cannot disagree
 // about how long a prefix is allowed to be.
 var _PREFIX_MAX = 40;
+// A backstop on how many distinct quantified characters become fillers. The
+// widest pattern in `lib/` has three, so this is nowhere near what decides the
+// list; it is here so a pattern written to name hundreds cannot turn one probe
+// into hundreds of runs.
+var _FILLER_QUANTIFIED_MAX = 64;
 
 // A pattern may offer a choice at its own top level, not only inside a group,
 // and the costly branch is not always the first one. `^SAFE$|^AB-CD(z+)+$` was
@@ -4340,9 +4345,20 @@ function _probeSubjectPieces(body, unicode) {
   // with the fillers `a`, a space, `P`, `R`, `E`, `F` and never `z`, so every
   // subject failed at the prefix and the body behind it was never entered.
   var fillers = ["a", " "];
+  // A quantified character is what a costly body repeats, so dropping one
+  // drops the only subject that can reach that body. They are taken whatever
+  // the cap on the opportunistic characters below, because the cap was spent
+  // left to right and a pattern with enough cheap branches in front lost the
+  // one that matters: `^(?:a+|b+|c+|d+|e+|f+|g+|h+|(?:z+)+)$` never got a `z`,
+  // so every subject stayed in a cheap alternative and it read as fast. The
+  // bound here is a backstop far above the three that the widest pattern in
+  // `lib/` has, not the mechanism that decides which characters are used.
   _quantifiedChars(body, unicode).forEach(function (ch) {
-    if (fillers.length < 8 && fillers.indexOf(ch) === -1) fillers.push(ch);
+    if (fillers.length < _FILLER_QUANTIFIED_MAX && fillers.indexOf(ch) === -1) fillers.push(ch);
   });
+  // The characters named elsewhere in the pattern are opportunistic, and keep
+  // the room they had: six beyond the two the list starts with.
+  var extrasMax = fillers.length + 6;
   _regexTokens(body, unicode).forEach(function (tok) {
     var ch = null;
     if (tok.text.charAt(0) === "[" || tok.text.charAt(0) === "\\") {
@@ -4350,7 +4366,7 @@ function _probeSubjectPieces(body, unicode) {
     } else if (/^[A-Za-z0-9_]$/.test(tok.text)) {
       ch = tok.text;
     }
-    if (ch && fillers.length < 8 && fillers.indexOf(ch) === -1) fillers.push(ch);
+    if (ch && fillers.length < extrasMax && fillers.indexOf(ch) === -1) fillers.push(ch);
   });
   // Some ambiguity needs a MOTIF rather than a character: `(?:ab|ab)+$` costs
   // on "ab" repeated and returns at once on either letter alone.
@@ -4359,12 +4375,16 @@ function _probeSubjectPieces(body, unicode) {
   // not from word runs. A word run is letters and digits, so the motif
   // `(?:a-|a-)+$` repeats was never built and that pattern measured fast on
   // every subject. The pattern's short literal runs are tried as well.
+  // Six slots for motifs, counted from wherever the characters left off rather
+  // than from a fixed total, so a pattern with many quantified characters does
+  // not spend the motifs' room on them.
+  var motifMax = fillers.length + 6;
   _quantifiedGroupMotifs(body, unicode).forEach(function (w) {
-    if (fillers.length < 14 && fillers.indexOf(w) === -1) fillers.push(w);
+    if (fillers.length < motifMax && fillers.indexOf(w) === -1) fillers.push(w);
   });
   runs.forEach(function (w) {
     if (w.length < 2 || w.length > 4) return;
-    if (fillers.length < 14 && fillers.indexOf(w) === -1) fillers.push(w);
+    if (fillers.length < motifMax && fillers.indexOf(w) === -1) fillers.push(w);
   });
 
   // The empty seed is always a candidate, and is tried last so the specific
@@ -4836,6 +4856,10 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // A fixed quantifier in the prefix still requires its character, that many
     // times over.
     ["^A{2}PREFIX(z+)+$",        "z"],
+    // Enough cheap quantified branches in front to spend a fixed cap before
+    // reaching the costly one. The character the body repeats is taken whatever
+    // precedes it.
+    ["^(?:a+|b+|c+|d+|e+|f+|g+|h+|(?:z+)+)$", "z"],
   ];
   for (var i = 0; i < CASES.length; i += 1) {
     var body = CASES[i][0];
@@ -5386,6 +5410,9 @@ function testProbeSubjectsMakeACatastrophicPatternCost() {
     // The costly branch as a later TOP-LEVEL alternative, where the walk used
     // to stop at the bar and require what the first branch spells.
     "^SAFE$|^AB-CD(z+)+$",
+    // Cheap quantified branches in front of the costly one, enough to spend a
+    // fixed filler cap before its character is reached.
+    "^(?:a+|b+|c+|d+|e+|f+|g+|h+|(?:z+)+)$",
   ];
   var missed = [];
   for (var i = 0; i < PATTERNS.length; i += 1) {
