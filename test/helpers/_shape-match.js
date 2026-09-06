@@ -1179,6 +1179,21 @@ function _governingFunctionOrClass(tokens) {
       if (bodiesSkipped > 0) { bodiesSkipped -= 1; i -= 1; continue; }
       return t;
     }
+    // A word right after `class` or `function` is that thing's NAME, whatever
+    // word it is spelled like: `class of {}` names a class `of`. It tokenizes
+    // as a keyword, and refusing it here stopped the walk one token short of
+    // the keyword it was looking for. The brace classifier beside this already
+    // reads a name that way.
+    if (t.type === TOK_KEYWORD) {
+      var back = i - 1;
+      while (back >= 0 &&
+             (tokens[back].type === TOK_WS || tokens[back].type === TOK_COMMENT)) back -= 1;
+      if (back >= 0 && tokens[back].type === TOK_KEYWORD &&
+          (tokens[back].value === "function" || tokens[back].value === "class")) {
+        i -= 1;
+        continue;
+      }
+    }
     if (t.type === TOK_PUNCT && CLOSERS[t.value] !== undefined) {
       var open = CLOSERS[t.value];
       var close = t.value;

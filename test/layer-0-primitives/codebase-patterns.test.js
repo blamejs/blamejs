@@ -5565,6 +5565,10 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     ["var G = async function () {} / 2; var re = /(?:yb+)+$/;", "/(?:yb+)+$/"],
     // A superclass may be a bare value keyword.
     ["var H = class extends null {} / 2; var re = /(?:yd+)+$/;", "/(?:yd+)+$/"],
+    // A word right after `class` or `function` is that thing's NAME, whatever
+    // word it is spelled like, so the walk to the keyword reads through it.
+    ["var J = class of {} / 2; var re = /(?:ys+)+$/;",    "/(?:ys+)+$/"],
+    ["var K = function of() {} / 2; var re = /(?:yt+)+$/;", "/(?:yt+)+$/"],
     // A superclass may itself be a function or class expression, whose body is
     // a brace group. The keyword after that group owns THAT body, so the walk
     // steps over it and carries on to the one whose body is being classified.
