@@ -206,7 +206,12 @@ function _slashIsRegex(prevSignificant) {
     // a statement may begin with a pattern. Which it is cannot be read off the
     // brace, so it is decided at the matching `{`, the way the comment stripper
     // in this file already decides it.
-    if (p === "}") return prevSignificant.closedObject !== true;
+    if (p === "}") {
+      // The body of a function or class EXPRESSION closes a value too, so a
+      // slash after it divides just as it does after an object.
+      if (prevSignificant.closedValueBody === true) return false;
+      return prevSignificant.closedObject !== true;
+    }
     return true;
   }
   return true;
@@ -219,6 +224,10 @@ function tokenize(source) {
   var prevSig = null;
   var parenStack = [];
   var braceStack = [];
+  // Per open brace: does it open the body of a function or class EXPRESSION,
+  // whose closing brace is therefore followed by division rather than by a
+  // statement? Kept beside braceStack so the two are pushed and popped together.
+  var valueBodyStack = [];
   var frames = [{ ternary: 0, isObject: false }];
   while (i < n) {
     var ch = source.charAt(i);
@@ -419,10 +428,43 @@ function tokenize(source) {
           braceLastSig = _STATEMENT_POSITION;
         }
         var opensObject = _braceOpensObject(braceLastSig);
+        // A function or class EXPRESSION produces a value, so the brace closing
+        // its body is followed by division: `var x = function () {} / 2`. A
+        // DECLARATION's body ends a statement, and a statement may begin with a
+        // pattern. The brace cannot say which, so it is settled here at the
+        // `{`, the way the paren case is settled at the matching `(`. Reading
+        // every function body as a block made the slash after one open a
+        // pattern, which then ran to the opener of the next real one.
+        // Expression position is the same question `{` already asks about an
+        // object, so it is asked with the same function: at the start of input,
+        // after `;`, after `{`, or after a keyword that introduces a block, the
+        // word begins a statement and the body is a declaration's.
+        var kwTok = _governingFunctionOrClass(tokens);
+        var beforeKw = kwTok === null ? null : _significantBefore(tokens, kwTok);
+        var kwLastSig = _lastSigText(beforeKw);
+        // A restricted-production keyword with a line terminator after it has
+        // ended its statement, so what follows begins a new one and the word is
+        // a declaration: `return` on its own line, then `function g(){}`, whose
+        // brace closes a statement and not a value.
+        if (beforeKw !== null && beforeKw.type === TOK_KEYWORD &&
+            _RESTRICTED_PRODUCTIONS[beforeKw.value] === 1 &&
+            _lineBreakBackFrom(source, kwTok.start)) {
+          kwLastSig = _STATEMENT_POSITION;
+        }
+        // `export` and `default` introduce a DECLARATION, so the body they
+        // carry ends a statement. `default` otherwise reads as a word after
+        // which an expression follows, which is true of a `switch` label and
+        // not of `export default function f(){}`.
+        if (beforeKw !== null && beforeKw.type === TOK_KEYWORD &&
+            (beforeKw.value === "export" || beforeKw.value === "default")) {
+          kwLastSig = _STATEMENT_POSITION;
+        }
+        valueBodyStack.push(kwTok !== null && _braceOpensObject(kwLastSig));
         braceStack.push(opensObject);
         frames.push({ ternary: 0, isObject: opensObject });
       } else if (ptok.value === "}") {
         ptok.closedObject = braceStack.pop() === true;
+        ptok.closedValueBody = valueBodyStack.pop() === true;
         if (frames.length > 1) frames.pop();
       } else if (ptok.value === "?") {
         frames[frames.length - 1].ternary += 1;
@@ -1047,6 +1089,47 @@ function _countingBraceEnd(source, from) {
     k += 1;
   }
   return -1;
+}
+
+// The `function` or `class` keyword whose body the brace about to be pushed
+// opens, or null when the brace opens something else. Read by walking back
+// from the brace over what may stand between it and that keyword: a balanced
+// parameter list, the name, a generator star, and the `extends` clause of a
+// class. Anything else means the brace is not a function or class body.
+function _governingFunctionOrClass(tokens) {
+  var i = tokens.length - 1;
+  function skipTrivia() {
+    while (i >= 0 && (tokens[i].type === TOK_WS || tokens[i].type === TOK_COMMENT)) i -= 1;
+  }
+  skipTrivia();
+  // The parameter list, walked back to its opening paren.
+  if (i >= 0 && tokens[i].type === TOK_PUNCT && tokens[i].value === ")") {
+    var depth = 0;
+    for (; i >= 0; i -= 1) {
+      if (tokens[i].type !== TOK_PUNCT) continue;
+      if (tokens[i].value === ")") depth += 1;
+      else if (tokens[i].value === "(") {
+        depth -= 1;
+        if (depth === 0) { i -= 1; break; }
+      }
+    }
+    if (depth !== 0) return null;
+  }
+  // The name, a generator star, and a class's extends clause. `extends` takes
+  // an expression, so anything up to it is skipped the same way.
+  var guard = 0;
+  while (i >= 0 && guard < 64) {
+    skipTrivia();
+    if (i < 0) break;
+    var t = tokens[i];
+    if ((t.type === TOK_KEYWORD) && (t.value === "function" || t.value === "class")) return t;
+    if (t.type === TOK_IDENT || (t.type === TOK_PUNCT && (t.value === "*" || t.value === "."))
+        || (t.type === TOK_KEYWORD && (t.value === "extends" || t.value === "async"))) {
+      i -= 1; guard += 1; continue;
+    }
+    return null;
+  }
+  return null;
 }
 
 function _braceOpensObject(lastSig) {

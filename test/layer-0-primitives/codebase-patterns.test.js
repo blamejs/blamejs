@@ -5226,6 +5226,16 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // from the keyword table, tokenized as an identifier, and an identifier
     // divides, so this pattern reached the gate as no token at all.
     ["debugger\n/(?:y2+)+$/.test(x);",                   "/(?:y2+)+$/"],
+    // The body of a function or class EXPRESSION closes a value, so the slash
+    // after it divides. Read as a block, that slash opened a pattern and ran
+    // to the opener of the real one below. The DECLARATION forms keep ending a
+    // statement, so a pattern may begin on the line after them.
+    ["var x = function () {} / 2; var re = /(?:y3+)+$/;", "/(?:y3+)+$/"],
+    ["var C = class {} / 2; var re = /(?:y4+)+$/;",       "/(?:y4+)+$/"],
+    ["var g = function* gg() {} / 2; var re = /(?:y5+)+$/;", "/(?:y5+)+$/"],
+    ["var D = class X extends B {} / 2; var re = /(?:y6+)+$/;", "/(?:y6+)+$/"],
+    ["function f() {}\n/(?:y7+)+$/.test(x);",            "/(?:y7+)+$/"],
+    ["class K {}\n/(?:y8+)+$/.test(x);",                 "/(?:y8+)+$/"],
     // A word after `class` or `function` is that thing's name, whatever word
     // it is spelled like, and the brace after it opens a body.
     ["class of {} /(?:z1+)+$/.test(x);",                 "/(?:z1+)+$/"],
