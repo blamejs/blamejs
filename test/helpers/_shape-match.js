@@ -951,18 +951,19 @@ function _templateEnd(source, ts) {
     if (c === "\\") { i += 2; continue; }
     if (c === "`") return i + 1;
     if (c === "$" && source.charAt(i + 1) === "{") {
-      var end = _countingBraceEnd(source, i + 2);
-      // Counting reaches no closing brace when one inside the substitution is
-      // quoted in a way the count cannot see, a `{` in a character class being
-      // the case that reaches here: `${/[{]/.test(s)}` counts two opens and one
-      // close and runs off the end, taking every pattern after the template
-      // with it. Lexing the substitution answers that correctly, and is the
-      // fallback rather than the primary because a lexer that mis-reads one
-      // token inside a substitution loses the rest of the file the same way,
-      // and this lexer is still incomplete. Here it can only improve: the count
-      // has already given up, so a wrong lex is no worse than the -1 it
-      // replaces.
-      if (end === -1) end = _lexedBraceEnd(source, i + 2);
+      // Lexing answers this, and counting is the fallback for when it cannot.
+      // The order was the other way round on the premise that counting either
+      // gets it right or gives up, so the lexer was only needed where the count
+      // returned nothing. That premise does not hold: counting skips strings
+      // and nothing else, so a brace in a comment raises its depth and a later
+      // one closes the substitution early. In `${1 /* { */}` the count walks
+      // past the real end and accepts a `}` written in a line comment two lines
+      // down, and everything between is swallowed as template text. Being
+      // confidently wrong is worse than giving up, because the fallback never
+      // runs. Measured on the six shapes that separate them, the lexed answer
+      // is right in all six and the count is wrong in one and absent in two.
+      var end = _lexedBraceEnd(source, i + 2);
+      if (end === -1) end = _countingBraceEnd(source, i + 2);
       if (end === -1) return -1;
       i = end + 1;
       continue;
@@ -973,8 +974,9 @@ function _templateEnd(source, ts) {
 }
 
 // Where the substitution opening at `from` closes, decided by lexing its
-// contents rather than counting characters. Only reached when the count has
-// already failed, so a mis-lex costs nothing the count had not already lost.
+// contents rather than counting characters. This is the answer taken first: it
+// reads strings, comments, patterns and nested templates as the tokens they
+// are, so a brace written inside any of them closes nothing.
 function _lexedBraceEnd(source, from) {
   var toks;
   try { toks = tokenize(source.slice(from)); } catch (_e) { return -1; }
@@ -990,14 +992,13 @@ function _lexedBraceEnd(source, from) {
   return -1;
 }
 
-// Where a substitution ends, counted rather than lexed. Right whenever no
-// brace is quoted, and wrong exactly where the lexer above is right, so it is
-// the SECOND answer and not the first. It is here because a lexer that reads
-// one token wrongly inside a substitution never finds the closing brace at all
-// and takes the rest of the file into the template, where a count that is
-// wrong about a quoted brace still stops somewhere near. The lexer is known to
-// be incomplete, so the cost of each remaining gap is bounded to the
-// substitution rather than to everything after it.
+// Where a substitution ends, counted rather than lexed. It is the SECOND
+// answer, reached only when the lexer above finds no closing brace at all,
+// which is what a mis-read token there produces. A count that is wrong about a
+// quoted brace still stops somewhere near, so it bounds that loss to the
+// substitution rather than to everything after it. It skips strings and
+// nothing else, so a brace in a comment, a pattern or a nested template is
+// still counted as structural; that is why it no longer answers first.
 function _countingBraceEnd(source, from) {
   var n = source.length;
   var d = 1;

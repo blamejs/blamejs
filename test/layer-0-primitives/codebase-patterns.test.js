@@ -5227,6 +5227,12 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     ['var s = `${ /* } */ /(?:c+)+$/.test(y) }`;',    "/(?:c+)+$/", "a brace inside a comment"],
     ['var s = `\\\\${ /(?:d+)+$/.test(y) }`;',        "/(?:d+)+$/", "an escaped backslash before the opener"],
     ['var s = `${ {a:1} && /(?:e+)+$/.test(y) }`;',   "/(?:e+)+$/", "a nested object literal"],
+    // A brace in a comment RAISED the counted depth, so the count walked past
+    // the real end and took a `}` written in a line comment two lines down.
+    // The pattern wanted here is the one AFTER the template, which everything
+    // between was swallowing.
+    ['const x = `${1 /* { */}`;\nconst y = 1; // }\nconst r = /(?:f+)+$/;',
+     "/(?:f+)+$/", "a brace opened in a comment and closed in another"],
   ];
   for (var su = 0; su < SUBS.length; su += 1) {
     var got = _regexLiteralsIn(SUBS[su][0], 0).map(function (r) { return r.value; });
