@@ -3544,6 +3544,11 @@ var _PREFIX_MAX = 40;
 // list; it is here so a pattern written to name hundreds cannot turn one probe
 // into hundreds of runs.
 var _FILLER_QUANTIFIED_MAX = 64;
+// How many branch combinations across the groups nested inside one alternative
+// are built. The product is exponential in the number of groups, so it is
+// capped; the widest alternative in `lib/` has one such group, so this is a
+// backstop rather than the thing that decides which motifs are built.
+var _MOTIF_COMBINATIONS = 64;
 
 // A pattern may offer a choice at its own top level, not only inside a group,
 // and the costly branch is not always the first one. `^SAFE$|^AB-CD(z+)+$` was
@@ -4099,7 +4104,12 @@ function _topLevelAlternatives(inner, unicode) {
 // one. A nested group contributes the string of its own first such
 // alternative, so `a(?:b|b)` is the motif `ab`; treating the group as opaque
 // dropped the motif and left the pattern driven by single characters.
-function _literalOfAlternative(alt, depth, unicode, branchIdx) {
+// `picks` chooses a branch for each choosing group met, in the order they are
+// met, and `meta` reports how many there were and how wide each is so a caller
+// can enumerate them. Passing neither keeps the older reading, which takes the
+// first branch that spells anything: that is what the required-prefix walk
+// wants, and it is not the same answer.
+function _literalOfAlternative(alt, depth, unicode, picks, meta) {
   if (depth > 4) return null;
   var lit = "";
   var lastPiece = null;
@@ -4205,20 +4215,30 @@ function _literalOfAlternative(alt, depth, unicode, branchIdx) {
       // from the branch alone: `(?:(?!a)a|b)-` can only take `b`, and taking
       // the first branch that spells a literal chose the `a` the lookahead
       // refuses, so the motif was `a-` and the body behind `b-` was driven by
-      // nothing. So the choice is not made here either. The caller asks for one
-      // branch index at a time and keeps every motif that comes back, the way
-      // the required-prefix walk enumerates the branches of a choosing group.
+      // nothing. So the choice is not made here either: the caller enumerates
+      // and keeps every motif that comes back, the way the required-prefix walk
+      // enumerates the branches of a choosing group.
       var alts = _topLevelAlternatives(innerText, unicode);
       var picked = null;
-      if (branchIdx === undefined) {
+      if (picks === undefined) {
         // No branch asked for: the first one that reads, which is what the
         // required-prefix walk wants when it is not enumerating.
         for (var k = 0; k < alts.length && picked === null; k += 1) {
           picked = _literalOfAlternative(alts[k], depth + 1, unicode);
         }
+      } else if (alts.length <= 1) {
+        picked = _literalOfAlternative(alts[0], depth + 1, unicode, picks, meta);
       } else {
-        if (branchIdx >= alts.length) return null;        // no such branch
-        picked = _literalOfAlternative(alts[branchIdx], depth + 1, unicode, branchIdx);
+        // A choosing group takes the next pick and reports its width, so the
+        // caller can enumerate the combinations ACROSS several of them. The
+        // viable branch is not at the same index in each, and one index shared
+        // by all of them reaches `ac-` and `bd-` but never the `bc-` that
+        // `(?:(?!a)a|b)(?:c|(?!d)d)-` requires.
+        var slot = meta ? meta.widths.length : 0;
+        if (meta) meta.widths.push(alts.length);
+        var want = picks[slot] === undefined ? 0 : picks[slot];
+        if (want >= alts.length) return null;             // no such branch
+        picked = _literalOfAlternative(alts[want], depth + 1, unicode, picks, meta);
       }
       if (nRepeat > 0) {
         if (picked === null) return null;
@@ -4324,13 +4344,25 @@ function _quantifiedGroupMotifs(body, unicode) {
     // contributed nothing.
     _topLevelAlternatives(inner, unicode).forEach(function (alt) {
       if (!alt) return;
-      // Every branch of a group nested inside this alternative, not the first
-      // one that spells something: an assertion in a branch can refuse it, and
-      // the motif has to be a string the alternative actually accepts.
-      for (var bi = 0; bi < _PREFIX_BRANCHES; bi += 1) {
-        var one = _literalOfAlternative(alt, 0, unicode, bi);
-        if (one === null) break;                          // no branch this deep
-        _pushMotif(out, one);
+      // Every COMBINATION of branches across the groups nested inside this
+      // alternative, not the first branch that spells something: an assertion
+      // in a branch can refuse it, and the viable branch is not at the same
+      // index in each group. One reading with every group on its first branch
+      // reports how many groups there are and how wide each is; the rest are
+      // enumerated from that, under a cap on the product.
+      var meta = { widths: [] };
+      _literalOfAlternative(alt, 0, unicode, [], meta);
+      var combos = 1;
+      for (var wi = 0; wi < meta.widths.length; wi += 1) combos *= meta.widths[wi];
+      if (combos > _MOTIF_COMBINATIONS) combos = _MOTIF_COMBINATIONS;
+      for (var ci = 0; ci < combos; ci += 1) {
+        var picks = [];
+        var rest = ci;
+        for (var gi = 0; gi < meta.widths.length; gi += 1) {
+          picks.push(rest % meta.widths[gi]);
+          rest = Math.floor(rest / meta.widths[gi]);
+        }
+        _pushMotif(out, _literalOfAlternative(alt, 0, unicode, picks, { widths: [] }));
       }
       var lit = _literalOfAlternative(alt, 0, unicode);
       // Bounded by what a subject can carry, not by a short fixed length. A
@@ -5005,6 +5037,10 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // assertion in a branch can refuse it, so every branch becomes a motif
     // rather than the first one that spells something.
     ["^(?:(?:(?!a)a|b)-|(?:(?!a)a|b)-)+$", "b-"],
+    // Two nested groups whose viable branches are at DIFFERENT indexes. One
+    // index shared by both reaches `ac-` and `bd-`, which their assertions
+    // refuse, and never the `bc-` the alternative takes.
+    ["^(?:(?:(?!a)a|b)(?:c|(?!d)d)-|(?:(?!a)a|b)(?:c|(?!d)d)-)+$", "bc-"],
     // Six compounds in front of the costly one. What a quantified group
     // repeats is taken whatever precedes it, as a quantified character is.
     ["^(?:(?:a-)+|(?:b-)+|(?:c-)+|(?:d-)+|(?:e-)+|(?:f-)+|(?:z@|z@)+)$", "z@"],
@@ -5624,8 +5660,10 @@ function testProbeSubjectsMakeACatastrophicPatternCost() {
     // A count of exactly zero, in a prefix and in a motif.
     "^A{0}-P(z+)+$",
     "^(?:a{0}-b|a{0}-b)+$",
-    // The viable branch of a group nested inside the motif's alternative.
+    // The viable branch of a group nested inside the motif's alternative, and
+    // the combination two such groups require.
     "^(?:(?:(?!a)a|b)-|(?:(?!a)a|b)-)+$",
+    "^(?:(?:(?!a)a|b)(?:c|(?!d)d)-|(?:(?!a)a|b)(?:c|(?!d)d)-)+$",
     // Six cheap compounds in front of the costly one.
     "^(?:(?:a-)+|(?:b-)+|(?:c-)+|(?:d-)+|(?:e-)+|(?:f-)+|(?:z@|z@)+)$",
     // A quantified group nested inside the motif's alternative.
