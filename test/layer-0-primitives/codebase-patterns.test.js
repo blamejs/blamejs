@@ -3644,7 +3644,10 @@ function _literalPrefixWithChoice(pattern, unicode, groupIdx, branchIdx, greedy)
         if (!gm) break;
         var gLo = parseInt(gm[1], 10);
         var gHi = gm[2] === undefined ? gLo : parseInt(gm[2], 10);
-        if (gLo !== gHi || gLo < 1) break;                         // optional or variable
+        // Same reading as the scalar case above: the lower bound is what the
+        // prefix must carry, and zero means the group contributes nothing and
+        // the walk carries on past it.
+        if (gLo > gHi) break;                                      // not a quantifier
         gRepeat = gLo;
         gQEnd = gClose;
       } else if (gAfter !== "" && "*+?".indexOf(gAfter) !== -1) {
@@ -3709,12 +3712,16 @@ function _literalPrefixWithChoice(pattern, unicode, groupIdx, branchIdx, greedy)
         }
         choicesSeen += 1;
       }
-      if (gPicked === null || gPicked === "") break;
-      // Only a REPEAT is bounded here, for the reason above: a group taken
-      // once is what the walk always appended, and one legitimate prefix in
-      // the fixtures below is 41 characters on its own.
-      if (gRepeat > 1 && gPicked.length * gRepeat > _PREFIX_MAX) break;
-      out += gRepeat === 1 ? gPicked : gPicked.repeat(gRepeat);
+      // A group quantified to exactly zero matches nothing, so what its
+      // branches spell does not matter and the walk moves past it.
+      if (gRepeat > 0) {
+        if (gPicked === null || gPicked === "") break;
+        // Only a REPEAT is bounded here, for the reason above: a group taken
+        // once is what the walk always appended, and one legitimate prefix in
+        // the fixtures below is 41 characters on its own.
+        if (gRepeat > 1 && gPicked.length * gRepeat > _PREFIX_MAX) break;
+        out += gRepeat === 1 ? gPicked : gPicked.repeat(gRepeat);
+      }
       upTo = gQEnd === -1 ? toks[gj - 1].end : gQEnd;
       if (out.length >= _PREFIX_MAX) break;
       t = gj - 1;
@@ -3746,13 +3753,18 @@ function _literalPrefixWithChoice(pattern, unicode, groupIdx, branchIdx, greedy)
       // cutoff at sixteen stopped before the prefix and left the body behind
       // it entered by nothing. The repeat is measured before it is built, so a
       // count in the millions costs nothing to refuse.
-      if (pLo !== pHi || pLo < 1) break;                  // optional or variable
+      // The LOWER bound is what the prefix must carry, so a range requires its
+      // minimum and an exact count requires that count. Zero requires nothing,
+      // and the walk carries on past the quantifier rather than stopping:
+      // `^A{0}-P(z+)+$` requires `-P`, and stopping at the brace left it
+      // requiring nothing at all.
+      if (pLo > pHi) break;                               // not a quantifier
       // What the count expands to has to fit the budget. The test is on the
       // expansion alone, not on the total: the walk appends and THEN stops at
       // the cap, so a single piece is allowed to reach past it, and testing
       // the total here would refuse text the walk already accepts.
       if (lit.length * pLo > _PREFIX_MAX) break;
-      out += lit.repeat(pLo);
+      if (pLo > 0) out += lit.repeat(pLo);
       upTo = pClose;
       if (out.length >= _PREFIX_MAX) break;
       while (t < toks.length && toks[t].end < pClose) t += 1;
@@ -4091,9 +4103,11 @@ function _literalOfAlternative(alt, depth, unicode) {
         lastPiece = at;
         continue;
       }
-      // Only the lower bound is read: it is the count the motif stands for,
-      // whether the quantifier is exact or a range.
+      // The lower bound is the count the motif stands for, whether the
+      // quantifier is exact or a range. The upper one is read too, because a
+      // quantifier of exactly zero means the piece is never consumed at all.
       var qLo = parseInt(qm[1], 10);
+      var qHi = qm[2] === undefined ? qLo : parseInt(qm[2], 10);
       // Bounded by what a motif can be, which is the length cap below, not by
       // a smaller number: `ab{17}` is eighteen characters and is the only
       // thing `(?:ab{17}|ab{17})+$` costs on.
@@ -4105,7 +4119,15 @@ function _literalOfAlternative(alt, depth, unicode) {
       // once. A lower bound of zero means the piece may be absent, and the one
       // instance already in `lit` is a length the alternative takes.
       if (qLo > 64) return null;                             // longer than a motif
-      if (qLo > 0) lit += lastPiece.repeat(qLo - 1);
+      if (qHi === 0) {
+        // Exactly zero: the piece is not part of what the alternative matches,
+        // and it is already in `lit` once, so it comes back out. `a{0}-b`
+        // matches `-b`, and a motif of `a-b` is a string the alternative
+        // refuses, which drives the body with nothing.
+        lit = lit.slice(0, lit.length - lastPiece.length);
+      } else if (qLo > 0) {
+        lit += lastPiece.repeat(qLo - 1);
+      }
       while (i < toks.length && toks[i].end < qClose) i += 1;
       lastPiece = null;
       continue;
@@ -4890,6 +4912,9 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // lower bound of zero leaves the single instance already collected.
     ["^(?:a{2,3}b|a{2,3}b)+$",   "aab"],
     ["^(?:a{0,3}b|a{0,3}b)+$",   "ab"],
+    // Exactly zero is not a count the piece can be consumed at, so the piece
+    // leaves the motif rather than standing in it: this matches `-b` repeated.
+    ["^(?:a{0}-b|a{0}-b)+$",     "-b"],
   ];
   for (var i = 0; i < CASES.length; i += 1) {
     var body = CASES[i][0];
@@ -4940,8 +4965,13 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     ["^A{2}PREFIX(z+)+$",    "AAPREFIX"],
     ["^AB{3}C(z+)+$",        "ABBBC"],
     ["^A{2,2}X(z+)+$",       "AAX"],
-    // A variable one is not, so the prefix ends there.
-    ["^A{1,3}X(z+)+$",       ""],
+    // A range requires its LOWER bound, so the prefix carries that many and
+    // carries on. It used to end at the brace and require nothing, which left
+    // the body behind it entered by no subject. Zero requires nothing but is
+    // still walked past.
+    ["^A{1,3}X(z+)+$",       "AX"],
+    ["^A{2,5}X(z+)+$",       "AAX"],
+    ["^A{0,3}X(z+)+$",       "X"],
     // An alternative can spell text it then refuses, so the one that works is
     // the one taken.
     ["^(?:(?!A)A|B)PREFIX(z+)+$", "BPREFIX"],
@@ -4975,6 +5005,10 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // A fixed count on a GROUP repeats what the group matches, the way one on
     // a single character repeats that character.
     ["^(?:AB){2}PREFIX(z+)+$",        "ABABPREFIX"],
+    // A count of exactly zero requires nothing, and the walk carries on past
+    // it rather than stopping at the brace with nothing required.
+    ["^A{0}-P(z+)+$",                 "-P"],
+    ["^(?:AB){0}-P(z+)+$",            "-P"],
   ];
   for (var p = 0; p < PREFIXES.length; p += 1) {
     check("regex probe: /" + PREFIXES[p][0] + "/ requires the prefix " +
@@ -5463,6 +5497,9 @@ function testProbeSubjectsMakeACatastrophicPatternCost() {
     // A compound motif whose last piece carries a quantifier.
     "^(?:a-b+|a-b+)+$",
     "^(?:a{2,3}b|a{2,3}b)+$",
+    // A count of exactly zero, in a prefix and in a motif.
+    "^A{0}-P(z+)+$",
+    "^(?:a{0}-b|a{0}-b)+$",
   ];
   var missed = [];
   for (var i = 0; i < PATTERNS.length; i += 1) {
