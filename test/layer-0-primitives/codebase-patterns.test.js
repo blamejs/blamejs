@@ -4102,9 +4102,21 @@ function _literalOfAlternative(alt, depth, unicode) {
       lastPiece = null;
       continue;
     }
-    // A variable quantifier makes the alternative variable-length, so it is
-    // not a motif a subject can be built from by repetition.
-    if ("*+?".indexOf(at) !== -1) return null;
+    // A variable quantifier does not fix the alternative's length, but the
+    // piece it repeats is already in `lit` once, and one is a length the
+    // alternative accepts under all three: `+` takes one or more, `*` and `?`
+    // take that or nothing. So the motif keeps the single instance and drops
+    // the quantifier. Abandoning the alternative instead threw away the
+    // compound: `(?:a-b+|a-b+)+$` costs on `a-b` repeated and was left with
+    // `a` and `b` alone, each of which it returns on at once.
+    //
+    // `lastPiece` is cleared so a `{n}` after this cannot repeat a piece the
+    // quantifier has already spoken for.
+    if ("*+?".indexOf(at) !== -1) {
+      if (lit === "") return null;                      // nothing to represent
+      lastPiece = null;
+      continue;
+    }
     if (at === "(") {
       var d = 1;
       var j = i + 1;
@@ -4860,6 +4872,11 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // reaching the costly one. The character the body repeats is taken whatever
     // precedes it.
     ["^(?:a+|b+|c+|d+|e+|f+|g+|h+|(?:z+)+)$", "z"],
+    // A quantifier inside an alternative does not fix its length, but one
+    // instance of the piece it repeats is a length the alternative accepts, so
+    // the compound survives: this costs on `a-b` repeated and returns at once
+    // on either character alone.
+    ["^(?:a-b+|a-b+)+$",         "a-b"],
   ];
   for (var i = 0; i < CASES.length; i += 1) {
     var body = CASES[i][0];
@@ -5427,6 +5444,8 @@ function testProbeSubjectsMakeACatastrophicPatternCost() {
     // Cheap quantified branches in front of the costly one, enough to spend a
     // fixed filler cap before its character is reached.
     "^(?:a+|b+|c+|d+|e+|f+|g+|h+|(?:z+)+)$",
+    // A compound motif whose last piece carries a quantifier.
+    "^(?:a-b+|a-b+)+$",
   ];
   var missed = [];
   for (var i = 0; i < PATTERNS.length; i += 1) {
