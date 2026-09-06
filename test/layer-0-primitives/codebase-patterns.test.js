@@ -3538,7 +3538,16 @@ var _PREFIX_BRANCHES = 24;
 // How much text a required prefix may carry. It bounds the walk and it bounds
 // what a fixed quantifier is allowed to expand to, so the two cannot disagree
 // about how long a prefix is allowed to be.
-var _PREFIX_MAX = 40;
+// Sized from the subjects the probe builds, which repeat a piece to 8,192
+// characters, rather than set to a number a real pattern can reach. At forty a
+// prefix written out as forty-one characters was truncated, and a truncated
+// prefix is worse than none: every subject built from it fails the anchor, so
+// the body behind it is driven by nothing and the pattern reads as fast.
+var _PREFIX_MAX = 512;
+// The same bound for a motif, for the same reason: `(?:ba{64}|ba{64})+$`
+// repeats a sixty-five character unit, and discarding it for its length left
+// the pattern driven by pieces of it that it returns on at once.
+var _MOTIF_MAX = 512;
 // A backstop on how many distinct quantified characters become fillers. The
 // widest pattern in `lib/` has three, so this is nowhere near what decides the
 // list; it is here so a pattern written to name hundreds cannot turn one probe
@@ -4145,7 +4154,7 @@ function _literalOfAlternative(alt, depth, unicode, picks, meta) {
       // with single characters, `a`, `2`, `3` and `b`, that it returns on at
       // once. A lower bound of zero means the piece may be absent, and the one
       // instance already in `lit` is a length the alternative takes.
-      if (qLo > 64) return null;                             // longer than a motif
+      if (qLo > _MOTIF_MAX) return null;                     // longer than a motif
       if (qHi === 0) {
         // Exactly zero: the piece is not part of what the alternative matches,
         // and it is already in `lit` once, so it comes back out. `a{0}-b`
@@ -4200,7 +4209,7 @@ function _literalOfAlternative(alt, depth, unicode, picks, meta) {
         if (!nb) return null;                            // a literal brace, not a count
         var nLo = nb.lo;
         var nHi = nb.hi;
-        if (nLo > 64) return null;                       // longer than a motif
+        if (nLo > _MOTIF_MAX) return null;               // longer than a motif
         nRepeat = nHi === 0 ? 0 : (nLo > 0 ? nLo : 1);
         nQClose = nClose;
       } else if (after !== "" && "*+?".indexOf(after) !== -1) {
@@ -4242,7 +4251,7 @@ function _literalOfAlternative(alt, depth, unicode, picks, meta) {
       }
       if (nRepeat > 0) {
         if (picked === null) return null;
-        if (picked.length * nRepeat > 64) return null;   // longer than a motif
+        if (picked.length * nRepeat > _MOTIF_MAX) return null;   // longer than a motif
         lit += nRepeat === 1 ? picked : picked.repeat(nRepeat);
       }
       lastPiece = null;
@@ -4318,7 +4327,7 @@ function _charNotMatching(fragment, unicode) {
 // seven-character motif was discarded, and `(?:abcdefg|abcdefg)+$` costs on
 // nothing shorter.
 function _pushMotif(out, lit) {
-  if (lit !== null && lit.length >= 1 && lit.length <= 64 && out.indexOf(lit) === -1) {
+  if (lit !== null && lit.length >= 1 && lit.length <= _MOTIF_MAX && out.indexOf(lit) === -1) {
     out.push(lit);
   }
 }
@@ -4378,7 +4387,7 @@ function _quantifiedGroupMotifs(body, unicode) {
       // with the letters of its own prefix and never a `z`, and it costs
       // 120ms on one. A class alternative reduces to one character the same
       // way, which is what `^PREFIX(?:[a-c]|[b-d])+$` repeats.
-      if (lit !== null && lit.length >= 1 && lit.length <= 64 &&
+      if (lit !== null && lit.length >= 1 && lit.length <= _MOTIF_MAX &&
           out.indexOf(lit) === -1) {
         out.push(lit);
       }
@@ -5055,6 +5064,10 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // the pattern refuses.
     ["^(?:a{2,}b|a{2,}b)+$",     "aab"],
     ["^(?:a{0,}b|a{0,}b)+$",     "ab"],
+    // A unit longer than the old motif cap. It is the only string this repeats
+    // on, so discarding it for its length left the pattern driven by pieces of
+    // itself that it returns on at once.
+    ["^(?:b" + "a{64}" + "|b" + "a{64}" + ")+$", "b" + "a".repeat(64)],
   ];
   for (var i = 0; i < CASES.length; i += 1) {
     var body = CASES[i][0];
@@ -5113,6 +5126,10 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     ["^A{2,5}X(z+)+$",       "AAX"],
     ["^A{0,3}X(z+)+$",       "X"],
     ["^A{2,}X(z+)+$",        "AAX"],
+    // A prefix written out longer than the old cap. Truncating it is worse
+    // than dropping it: every subject built from a truncated prefix fails the
+    // anchor, so the body behind it is driven by nothing.
+    ["^" + "A".repeat(41) + "-P(z+)+$", "A".repeat(41) + "-P"],
     // An alternative can spell text it then refuses, so the one that works is
     // the one taken.
     ["^(?:(?!A)A|B)PREFIX(z+)+$", "BPREFIX"],
@@ -5125,15 +5142,15 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     ["^(?:(?!(a+)+$)Q)X(z+)+$",   "QX"],
     // The prefix stops at its length cap, before the `X`, and returns at once:
     // the assertion carrying `(a+)+$` is never run against it.
-    ["^(?:(?!(a+)+$)a{40}b)X(z+)+$", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"],
+    ["^(?:(?!(a+)+$)a{40}b)X(z+)+$", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabX"],
     // The quantifier sits behind a nested group, where reading to the
     // assertion's own closing parenthesis would not find it.
-    ["^(?:(?!(?:a)(a+)+$)a{40}b)X(z+)+$", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"],
+    ["^(?:(?!(?:a)(a+)+$)a{40}b)X(z+)+$", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabX"],
     // A nested alternation can carry the costly branch with no assertion at all.
-    ["^(?:(?:(a+)+$|a{40}b))X(z+)+$", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"],
+    ["^(?:(?:(a+)+$|a{40}b))X(z+)+$", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabX"],
     // A FIXED count over an ambiguous body is exponential too, so it is not
     // run either.
-    ["^(?:(?!(?:a|aa){40}c)a{40}b)X(z+)+$", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"],
+    ["^(?:(?!(?:a|aa){40}c)a{40}b)X(z+)+$", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabX"],
     // An assertion reaching outside its own group: the branch that works fails
     // on its own, and the one that passes on its own is refused in place.
     ["^A(?:B(?<=AB)|(?<!A)C)X(z+)+$", "ABX"],
