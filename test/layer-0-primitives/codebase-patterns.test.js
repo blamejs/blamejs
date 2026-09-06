@@ -5526,6 +5526,16 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // A name may begin outside ASCII. Read as nothing, the character was
     // skipped and the slash after it opened a pattern rather than dividing.
     ["const π = 1; π / 2; const r = /(?:ym+)+$/;", "/(?:ym+)+$/"],
+    // Every character the language calls whitespace is consumed as whitespace.
+    // The identifier rule admits anything that is not punctuation, so a space
+    // the reader does not name becomes the start of a NAME and the slash after
+    // it divides, which hides the pattern entirely. Written by codepoint
+    // rather than typed, so the fixture stays readable and no invisible
+    // character sits in this file.
+    ["const x = 1;" + String.fromCharCode(0x00A0) + "/(?:yo+)+$/.test(x);", "/(?:yo+)+$/"],
+    ["const x = 1;" + String.fromCharCode(0xFEFF) + "/(?:yp+)+$/.test(x);", "/(?:yp+)+$/"],
+    ["const x = 1;" + String.fromCharCode(0x000C) + "/(?:yq+)+$/.test(x);", "/(?:yq+)+$/"],
+    ["const x = 1;" + String.fromCharCode(0x3000) + "/(?:yr+)+$/.test(x);", "/(?:yr+)+$/"],
     // A line continuation is a backslash and the terminator after it, and
     // `\` + CRLF is three characters. Advancing two left the LF to end the
     // string, so the real closing quote opened another one.

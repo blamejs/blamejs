@@ -97,9 +97,19 @@ var PUNCT_CHARS = "{}()[];,.<>!=+-*/%&|^~?:";
 var LINE_TERMINATOR_CODES = [0x0A, 0x0D, 0x2028, 0x2029];
 
 // Space, tab, the two ASCII line breaks and the two Unicode ones, by code.
+// Every character the language calls whitespace, not the few that are typed
+// most often. The identifier rule below admits anything that is not
+// punctuation, so a space this does not name becomes the start of a NAME, and
+// the slash after it then divides: a no-break space before a pattern statement
+// hid the pattern from the check entirely. The set is the ECMAScript
+// WhiteSpace production, which is tab, vertical tab, form feed, the Zs
+// category, and the byte-order mark, plus the line terminators.
 function _isSpaceCode(cc) {
-  return cc === 0x20 || cc === 0x09 || cc === 0x0A || cc === 0x0D ||
-         cc === 0x2028 || cc === 0x2029;
+  if (cc === 0x20 || cc === 0x09 || cc === 0x0B || cc === 0x0C) return true;
+  if (cc === 0x0A || cc === 0x0D || cc === 0x2028 || cc === 0x2029) return true;
+  if (cc === 0xA0 || cc === 0xFEFF) return true;
+  if (cc === 0x1680 || cc === 0x202F || cc === 0x205F || cc === 0x3000) return true;
+  return cc >= 0x2000 && cc <= 0x200A;                       // the Zs run
 }
 function _hasLineTerminator(text) {
   for (var i = 0; i < text.length; i += 1) {
@@ -961,7 +971,10 @@ function _wouldFuse(prevCh, nextCh) {
 }
 
 function _isWordChar(ch) {
-  return ch !== "" && _NON_WORD.indexOf(ch) === -1;
+  // Whitespace is asked about by name rather than listed in `_NON_WORD`, which
+  // holds only the ASCII forms. Without this a no-break space reads as part of
+  // a name in both readers.
+  return ch !== "" && !_isSpaceCode(ch.charCodeAt(0)) && _NON_WORD.indexOf(ch) === -1;
 }
 
 function _isWordStart(ch) {
