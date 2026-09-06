@@ -5461,6 +5461,13 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     ["var x = class extends /re/.constructor {} / 2; var q = /(?:yg+)+$/;", "/(?:yg+)+$/"],
     ["var c = obj.constructor;\n/(?:yh+)+$/.test(s);",    "/(?:yh+)+$/"],
     ["var n = o.hasOwnProperty / 2; var r2 = /(?:yi+)+$/;", "/(?:yi+)+$/"],
+    // The tokenizer reads the keywords a pattern may follow from the same table
+    // the comment stripper does. The chain it used to carry had drifted from
+    // that table by five words, three found one at a time and two that had not
+    // been found at all.
+    ["export default /(?:yj+)+$/.test(x);",               "/(?:yj+)+$/"],
+    ["switch(k){ default: /(?:yk+)+$/.test(x); }",        "/(?:yk+)+$/"],
+    ["try /(?:yl+)+$/.test(x); catch(e){}",               "/(?:yl+)+$/"],
     ["async function h() {}\n/(?:yc+)+$/.test(x);",       "/(?:yc+)+$/"],
     ["function f() {}\n/(?:y7+)+$/.test(x);",            "/(?:y7+)+$/"],
     ["class K {}\n/(?:y8+)+$/.test(x);",                 "/(?:y8+)+$/"],

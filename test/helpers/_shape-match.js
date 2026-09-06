@@ -192,18 +192,12 @@ function _slashIsRegex(prevSignificant) {
     // `break` and `continue` take a label and nothing else, so a slash after
     // one is never division; with the semicolon left to insertion, the next
     // statement can begin with a pattern on the following line.
-    if (kw === "return" || kw === "typeof" || kw === "throw" ||
-        kw === "new" || kw === "delete" || kw === "void" ||
-        kw === "instanceof" || kw === "in" || kw === "of" ||
-        kw === "case" || kw === "yield" || kw === "await" ||
-        kw === "else" || kw === "do" ||
-        kw === "debugger" ||
-        // A superclass is an expression, and an expression may begin with a
-        // pattern: `class extends /re/.constructor {}`. The sibling lexer in
-        // this file already listed it.
-        kw === "extends" ||
-        kw === "break" || kw === "continue") return true;
-    return false;
+    // Read from the same table the other lexer in this file reads, rather than
+    // a chain of comparisons beside it. The chain had drifted from the table
+    // three times over: `debugger`, `extends` and `default` were each found
+    // missing separately, and `try` and `finally` were missing too and had not
+    // been found yet. One list answers the question for both readers now.
+    return _REGEX_LEADING_KEYWORDS[kw] === 1;
   }
   if (prevSignificant.type === TOK_PUNCT) {
     // After most punctuation a `/` is a regex. Exceptions: `)` and `]`
