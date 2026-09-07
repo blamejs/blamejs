@@ -5639,6 +5639,11 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // A dynamic import may stand in a superclass expression.
     ["var z = class extends import(\"x\").constructor {} / 2; var r4 = /(?:yx+)+$/;",
      "/(?:yx+)+$/"],
+    // A brace directly after `extends` opens an OBJECT, since the heritage
+    // expression has not been read yet: the body is the second pair. Reading
+    // the first as the body made the walk skip the class it was looking for.
+    ["function f() { var x = class extends {} {} / 2; } var r5 = /(?:yy+)+$/;",
+     "/(?:yy+)+$/"],
     ["function f() {}\n/(?:y7+)+$/.test(x);",            "/(?:y7+)+$/"],
     ["class K {}\n/(?:y8+)+$/.test(x);",                 "/(?:y8+)+$/"],
     // A word after `class` or `function` is that thing's name, whatever word

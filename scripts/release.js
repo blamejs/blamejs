@@ -1456,6 +1456,26 @@ function cmdMerge() {
   // headed by the release commit's body, which was composed at `commit` and has
   // not tracked the notes since. What main records is then a stale description
   // of the release it carries, and a commit message is read by operators.
+  // Derived from the LOCAL release notes, so the local tree has to be the tree
+  // that was reviewed. Everything above this asked the remote about the PR; the
+  // notes are read off disk. With an uncommitted edit or a stale checkout the
+  // squash commit would describe content that is not in what is being merged,
+  // and a commit message on main is read by operators as a description of it.
+  var localHead = _captureOk("reading the local head", "git", ["rev-parse", "HEAD"]).stdout.trim();
+  var prHead = _ghJson(_captureQuery("PR #" + prNum + " head", "gh",
+    ["pr", "view", prNum, "--json", "headRefOid"]), "PR #" + prNum + " head").headRefOid;
+  if (!_gitClean()) {
+    throw new Error("release: refusing to merge PR #" + prNum + " — the working tree is " +
+      "dirty, so the squash message would be built from notes that are not in the " +
+      "branch being merged. Commit or discard the changes, then re-run merge.");
+  }
+  if (localHead !== prHead) {
+    throw new Error("release: refusing to merge PR #" + prNum + " — local HEAD is " +
+      localHead.slice(0, 8) + " and the reviewed PR head is " + String(prHead).slice(0, 8) +
+      ". The squash message is built from the local release notes, which would then " +
+      "describe a tree other than the one being merged. Fetch and check the branch out " +
+      "at the PR head, then re-run merge.");
+  }
   var mergeLines = _releaseMessageLines(_readPackageVersion());
   var mergeBodyPath = path.join(ROOT, ".scratch", "release-squash-msg.txt");
   try { fs.mkdirSync(path.dirname(mergeBodyPath), { recursive: true }); } catch (_e) { /* ignore */ }

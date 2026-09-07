@@ -459,7 +459,12 @@ function tokenize(source) {
         // the body an object.
         var beforePrev = _significantBefore(tokens, prevSig);
         if (beforePrev !== null && beforePrev.type === TOK_KEYWORD &&
-            (beforePrev.value === "class" || beforePrev.value === "function")) {
+            (beforePrev.value === "class" || beforePrev.value === "function") &&
+            // ...but `extends` after `class` is the heritage keyword, not a
+            // name. What follows it is the superclass EXPRESSION, so a brace
+            // there opens an object: in `class extends {} {}` the first pair is
+            // the superclass and the second is the body.
+            !(prevSig.type === TOK_KEYWORD && prevSig.value === "extends")) {
           braceLastSig = _STATEMENT_POSITION;
         }
         var opensObject = _braceOpensObject(braceLastSig);
@@ -1162,6 +1167,11 @@ function _governingFunctionOrClass(tokens) {
   function skipTrivia() {
     while (i >= 0 && (tokens[i].type === TOK_WS || tokens[i].type === TOK_COMMENT)) i -= 1;
   }
+  // A brace DIRECTLY after `extends` is not a body: the heritage expression has
+  // not been read yet, so this one opens an object. `class extends {} {}` has
+  // its body in the second pair.
+  skipTrivia();
+  if (i >= 0 && tokens[i].type === TOK_KEYWORD && tokens[i].value === "extends") return null;
   // A bracketed group is skipped whole rather than by naming the forms one
   // may take. The parameter list is one; so is a superclass written as
   // `extends ns["Base"]` or `extends mixin(Base)`, which a walk that knew only
@@ -1215,7 +1225,12 @@ function _governingFunctionOrClass(tokens) {
         }
       }
       if (depth !== 0) return null;                     // unbalanced: not a header
-      if (close === "}") bodiesSkipped += 1;            // a body, so its keyword follows
+      // A `}` that closed an OBJECT is not a body, so no keyword follows it:
+      // in `class extends {} {}` the first pair is the superclass expression,
+      // and counting it as a body made the walk skip the `class` it was
+      // looking for. Which one a brace is was decided at its matching `{` and
+      // is recorded on the token.
+      if (close === "}" && t.closedObject !== true) bodiesSkipped += 1;
       i -= 1;
       continue;
     }
