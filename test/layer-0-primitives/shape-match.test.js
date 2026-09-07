@@ -290,6 +290,28 @@ function testNestedSubstitutionsStayLinear() {
   catch (_e4) { afterParses = false; }
   check("stripComments: a bare arrow reads the same inside an unread region",
         afterParses && afterOut.indexOf("var after = 1") !== -1);
+
+  // The code INSIDE an unread region is copied as it stands rather than read
+  // by a walk that has none of the reader's contextual rules. Answered from
+  // that walk, `await / 2` written there divided or opened a pattern depending
+  // on which rule was missing, and either answer can take the rest of the file.
+  var inner = "(await / 2, /[/*]/.test(s), 1)";
+  var wrapped = inner;
+  for (var w = 0; w < 1000; w += 1) wrapped = "`${" + wrapped + "}`";
+  var contextual = "var await = 4; var t = " + wrapped + "; var tail = 1;";
+  var contextualParses = true;
+  try { new vm.Script("(function () {\n" + contextual + "\n})"); }
+  catch (_e5) { contextualParses = false; }
+  if (!contextualParses) {
+    check("stripComments: the contextual unread case needs a stack this lacks", true);
+    return;
+  }
+  var contextualOut = sm.stripComments(contextual);
+  var contextualOk = true;
+  try { new vm.Script("(function () {\n" + contextualOut + "\n})"); }
+  catch (_e6) { contextualOk = false; }
+  check("stripComments: an unread region is copied rather than guessed at",
+        contextualOk && contextualOut.indexOf("var tail = 1") !== -1);
 }
 
 function run() {

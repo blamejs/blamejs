@@ -1558,15 +1558,16 @@ function regexSpans(src, opts) {
   return state;
 }
 
-// Does `at` fall in a range the reader did not read? A caller holds its own
-// answer for those and the table's answer everywhere else, since a table short
-// by a region is not a table saying that region holds no pattern.
-function _inUnread(unread, at) {
-  if (unread === null) return false;
+// The range covering `at` that the reader did not read, or null. A caller with
+// no answer for a region does not guess at one: reading a division as a
+// pattern opener swallows to the next slash, and reading a pattern as division
+// lets a `/*` inside it open a comment, so both guesses can lose a file.
+function _unreadRangeAt(unread, at) {
+  if (unread === null) return null;
   for (var i = 0; i < unread.length; i += 1) {
-    if (at >= unread[i][0] && at < unread[i][1]) return true;
+    if (at >= unread[i][0] && at < unread[i][1]) return unread[i];
   }
-  return false;
+  return null;
 }
 
 // The `function` or `class` keyword whose body the brace about to be pushed
@@ -1986,6 +1987,22 @@ function stripComments(src, onComment, onRegex) {
     var c = src.charAt(i);
     var d = src.charAt(i + 1);
 
+    // A region the reader could not read is copied as it stands. Answering it
+    // from this walk's own state is a guess in both directions: reading a
+    // division as a pattern opener swallows to the next slash, and reading a
+    // pattern as division lets a `/*` inside it open a comment, and either can
+    // take the rest of the file. Copying strips no comment there, which is a
+    // smaller loss than deleting the source. The range is exactly one
+    // substitution's contents, so the walk resumes at the `}` that closes it,
+    // which is where this frame expects to be.
+    var unreadHere = _unreadRangeAt(unread, i);
+    if (unreadHere !== null) {
+      out += src.slice(i, unreadHere[1]);
+      i = unreadHere[1];
+      top.lastSig = _VALUE_REGEX;                 // a substitution leaves a value
+      continue;
+    }
+
     if (mode === "code") {
       if (c === "/" && d === "/") {
         var lineStart = i;
@@ -2065,11 +2082,10 @@ function stripComments(src, onComment, onRegex) {
       // slash and deleted everything between. `spans` is null only when the
       // tokenizer could not read the source at all, and this walk answers
       // alone then rather than not at all.
-      var readHere = spans !== null && !_inUnread(unread, i);
-      if (c === "/" && (readHere ? spans[i] !== undefined
-                                 : _regexCanStartHere(lastSig))) {
+      if (c === "/" && (spans !== null ? spans[i] !== undefined
+                                       : _regexCanStartHere(lastSig))) {
         var rxStart = i;
-        if (readHere) {
+        if (spans !== null) {
           i = spans[i];
         } else {
           i += 1;
