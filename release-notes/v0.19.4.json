@@ -9,6 +9,10 @@
       "heading": "Changed",
       "items": [
         {
+          "title": "Vendored public suffix list moves to the 2026-09-07 snapshot",
+          "body": "`lib/vendor/public-suffix-list.dat` carries the list published as `2026-09-07_08-55-04_UTC`, from commit `24fdb5107983c3997144ca19e0d7e1e8fc714f03`, up from the `2026-09-05_20-59-48_UTC` snapshot 0.19.3 shipped. The domain content is identical between the two; the published stamp is what moved. `b.guardDomain` and the cookie and origin checks that read a registrable domain use it."
+        },
+        {
           "title": "Vendored PKI bundle moves to 0.6.54",
           "body": "`lib/vendor/blamejs-pki.cjs` carries `@blamejs/pki` 0.6.54, up from the 0.6.51 that shipped in 0.19.3. This is shipped code: `b.mtlsCa` and `b.auth.passkey` run it.\n\n0.6.52 opens a centrally generated private key delivered in a CMP response, undoing the two CMS layers in order and authorizing the authority before any key material is returned. 0.6.53 derives the public key of a composite ML-KEM private key across all twelve registered families, each checked byte for byte against the test vectors the draft publishes, and that derived key is the recipient the rest of the toolkit accepts. 0.6.54 completes an unsigned enrollment for a composite ML-KEM key: the challenge must still be addressed to the key the request asks for, and where the running engine cannot read that key the canonical composite encoding answers instead of a key object.\n\nThere are no API changes and nothing to do on upgrade. The bundle ships with no dependencies and no install hooks, and its recorded SHA-256 is checked against the file on every build."
         }
