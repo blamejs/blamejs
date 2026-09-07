@@ -249,6 +249,9 @@ function tokenize(source) {
   // Beside it, the word that opened each paren, so a rule can ask WHICH header
   // it is inside rather than only whether it is inside one.
   var headerWordStack = [];
+  // Per open brace: does it open the body of an ASYNC function? `await` is an
+  // operator only in there.
+  var asyncBodyStack = [];
   var braceStack = [];
   // Per open brace: does it open the body of a function or class EXPRESSION,
   // whose closing brace is therefore followed by division rather than by a
@@ -393,6 +396,11 @@ function tokenize(source) {
       if (idVal === "of" && headerWordStack[headerWordStack.length - 1] !== "for") {
         idType = TOK_IDENT;
       }
+      // `await` the same way: an operator inside an async function body, an
+      // ordinary name anywhere else in a script.
+      if (idVal === "await" && asyncBodyStack.indexOf(true) === -1) {
+        idType = TOK_IDENT;
+      }
       var itok = { type: idType, value: idVal, start: is, end: i };
       // Every keyword is also a legal property name, and one in that position
       // is a value rather than a keyword: `obj.return / 2` and `obj.else / 2`
@@ -491,6 +499,18 @@ function tokenize(source) {
         // after `;`, after `{`, or after a keyword that introduces a block, the
         // word begins a statement and the body is a declaration's.
         var kwTok = _governingFunctionOrClass(tokens);
+        // Whether this brace opens the body of an ASYNC function. `await` is an
+        // operator only in there; in a script it is an ordinary name, and
+        // `var await = 4; await / 2` divides. Read as the operator it is
+        // followed by an expression, so that slash opened a pattern.
+        var asyncHere = false;
+        if (kwTok !== null && kwTok.value === "function") {
+          var aBack = _significantBefore(tokens, kwTok);
+          asyncHere = aBack !== null && aBack.type === TOK_KEYWORD &&
+                      aBack.value === "async" &&
+                      !_hasLineTerminator(source.slice(aBack.end, kwTok.start));
+        }
+        asyncBodyStack.push(asyncHere);
         // `async` is a modifier on the keyword, not a position of its own, so
         // the position is the one BEFORE it: `var x = async function () {}` is
         // an expression, and reading `async` as the preceding token made it a
@@ -539,6 +559,7 @@ function tokenize(source) {
       } else if (ptok.value === "}") {
         ptok.closedObject = braceStack.pop() === true;
         ptok.closedValueBody = valueBodyStack.pop() === true;
+        asyncBodyStack.pop();
         if (frames.length > 1) frames.pop();
       } else if (ptok.value === "?") {
         frames[frames.length - 1].ternary += 1;

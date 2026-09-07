@@ -4239,6 +4239,10 @@ function _literalOfAlternative(alt, depth, unicode, picks, meta) {
   if (depth > _MOTIF_MAX) return null;
   var lit = "";
   var lastPiece = null;
+  // What each capturing group matched, so a backreference to it can be read as
+  // that text rather than as its number.
+  var captures = {};
+  var captureNo = 0;
   var toks = _regexTokens(alt, unicode);
   for (var i = 0; i < toks.length; i += 1) {
     var at = toks[i].text;
@@ -4382,6 +4386,13 @@ function _literalOfAlternative(alt, depth, unicode, picks, meta) {
         if (want >= alts.length) return null;             // no such branch
         picked = _literalOfAlternative(alts[want], depth + 1, unicode, picks, meta);
       }
+      // A CAPTURING group is one a backreference can name, so what it matched
+      // is remembered under its number. `(?:` and the other `(?`-forms capture
+      // nothing and are not counted.
+      if (!/^\(\?/.test(alt.slice(toks[i].end))) {
+        captureNo += 1;
+        if (picked !== null) captures[captureNo] = picked;
+      }
       if (nRepeat > 0) {
         if (picked === null) return null;
         if (picked.length * nRepeat > _MOTIF_MAX) return null;   // longer than a motif
@@ -4402,6 +4413,17 @@ function _literalOfAlternative(alt, depth, unicode, picks, meta) {
     }
     var piece = null;
     if (at.charAt(0) === "\\") {
+      // A backreference names what a capture matched, not a digit. Decoded as
+      // one, `(?:(a-|a-)\1)+$` was read as `a-1` and the `a-a-` it repeats on
+      // was built by nothing.
+      var backref = /^\\([1-9][0-9]?)$/.exec(at);
+      if (backref) {
+        var refText = captures[parseInt(backref[1], 10)];
+        if (refText === undefined) return null;           // names a capture not yet read
+        lit += refText;
+        lastPiece = null;
+        continue;
+      }
       piece = _decodeEscape(at);
       // A class inside the motif names a set, and a member of it repeats just
       // as well. Dropping the whole motif left `(?:a\d|a\d)+$` with only the
@@ -5260,6 +5282,11 @@ function testProbeSubjectsReachTheQuantifiedBody() {
       var unit = g0 + g0 + g0 + g0 + g1 + g0 + g1;
       return "^(?:" + unit + "|" + unit + ")+$";
     })(), "a-a-a-a-b-a-b-"],
+    // A backreference names what a capture matched, not a digit. A
+    // non-capturing group beside it must not be counted, or the numbering
+    // shifts and the reference names the wrong text.
+    ["^(?:(a-|a-)\\1)+$",        "a-a-"],
+    ["^(?:(?:q)(a-|a-)\\1)+$",   "qa-a-"],
     // Six compounds in front of the costly one. What a quantified group
     // repeats is taken whatever precedes it, as a quantified character is.
     ["^(?:(?:a-)+|(?:b-)+|(?:c-)+|(?:d-)+|(?:e-)+|(?:f-)+|(?:z@|z@)+)$", "z@"],
@@ -5706,6 +5733,10 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // `while` it is a name like any other.
     ["if (of / 2) {} const r6 = /(?:zc+)+$/;",            "/(?:zc+)+$/"],
     ["while (of / 2) {} const r7 = /(?:zd+)+$/;",         "/(?:zd+)+$/"],
+    // `await` the same way: an operator inside an async function body, an
+    // ordinary name anywhere else in a script.
+    ["var await = 4; await / 2; var r8 = /(?:ze+)+$/;",   "/(?:ze+)+$/"],
+    ["async function q(){ await x; return /(?:zf+)+$/.test(y); }", "/(?:zf+)+$/"],
     // A superclass written as a long member expression. The walk back to the
     // keyword is bounded by the token list, not by a count of its own.
     ["var L = class extends ns" + ".a".repeat(255) + " {} / 2; var re = /(?:yu+)+$/;",
@@ -5994,6 +6025,8 @@ function testProbeSubjectsMakeACatastrophicPatternCost() {
       }).join("") + "-";
       return "^(?:" + unit + "|" + unit + ")+$";
     })(),
+    // A backreference to a choosing capture.
+    "^(?:(a-|a-)\\1)+$",
     // And one where two groups must move together.
     (function () {
       var g0 = "(?:a(?=-)|b(?=X))-", g1 = "(?:a(?=X)|b(?=-))-";
