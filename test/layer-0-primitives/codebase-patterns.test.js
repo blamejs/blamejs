@@ -5629,6 +5629,16 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // string, so the real closing quote opened another one.
     ["var s = \"a\\\r\nb\"; const r = /(?:yn+)+$/;",     "/(?:yn+)+$/"],
     ["async function h() {}\n/(?:yc+)+$/.test(x);",       "/(?:yc+)+$/"],
+    // The terminator that separates `async` from what it modifies can sit
+    // inside a comment, so it is looked for in the text BETWEEN the two tokens
+    // rather than in the whitespace run before the second.
+    ["var f = async /*\n*/ function g() {}\n/(?:yv+)+$/.test(x);", "/(?:yv+)+$/"],
+    // A comment carrying no terminator leaves `async` a modifier, so this one
+    // is an expression and the slash after its body divides.
+    ["var g2 = async /* m */ function () {} / 2; var r3 = /(?:yw+)+$/;", "/(?:yw+)+$/"],
+    // A dynamic import may stand in a superclass expression.
+    ["var z = class extends import(\"x\").constructor {} / 2; var r4 = /(?:yx+)+$/;",
+     "/(?:yx+)+$/"],
     ["function f() {}\n/(?:y7+)+$/.test(x);",            "/(?:y7+)+$/"],
     ["class K {}\n/(?:y8+)+$/.test(x);",                 "/(?:y8+)+$/"],
     // A word after `class` or `function` is that thing's name, whatever word

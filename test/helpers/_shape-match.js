@@ -490,7 +490,11 @@ function tokenize(source) {
         while (beforeKw !== null && seeThroughGuard < 8 &&
                (beforeKw.type === TOK_KEYWORD || beforeKw.type === TOK_IDENT) &&
                _TRANSPARENT_WORDS[beforeKw.value] === 1 &&
-               !_lineBreakBackFrom(source, afterKwTok.start)) {
+               // Looked for in the text BETWEEN the two tokens rather than in
+               // the whitespace run before the second: a comment can carry the
+               // terminator, and `async /*\n*/ function` is separated where a
+               // scan that stops at the `*/` sees nothing.
+               !_hasLineTerminator(source.slice(beforeKw.end, afterKwTok.start))) {
           afterKwTok = beforeKw;
           beforeKw = _significantBefore(tokens, beforeKw);
           seeThroughGuard += 1;
@@ -502,7 +506,7 @@ function tokenize(source) {
         // brace closes a statement and not a value.
         if (beforeKw !== null && beforeKw.type === TOK_KEYWORD &&
             _RESTRICTED_PRODUCTIONS[beforeKw.value] === 1 &&
-            _lineBreakBackFrom(source, kwTok.start)) {
+            _hasLineTerminator(source.slice(beforeKw.end, kwTok.start))) {
           kwLastSig = _STATEMENT_POSITION;
         }
         // `export` and `default` introduce a DECLARATION, so the body they
@@ -1229,7 +1233,9 @@ function _governingFunctionOrClass(tokens) {
         (t.type === TOK_KEYWORD &&
          (t.value === "extends" || t.value === "async" || t.value === "new" ||
           t.value === "this" || t.value === "super" || t.value === "null" ||
-          t.value === "true" || t.value === "false" || t.value === "undefined"))) {
+          t.value === "true" || t.value === "false" || t.value === "undefined" ||
+          // `import(...)` is a call and may stand in a superclass expression.
+          t.value === "import"))) {
       i -= 1;
       continue;
     }
