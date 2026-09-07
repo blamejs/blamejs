@@ -312,6 +312,29 @@ function testNestedSubstitutionsStayLinear() {
   catch (_e6) { contextualOk = false; }
   check("stripComments: an unread region is copied rather than guessed at",
         contextualOk && contextualOut.indexOf("var tail = 1") !== -1);
+
+  // Where such a substitution ENDS is only a brace count past that depth, and
+  // the count reads a brace written inside a pattern as structural. So the
+  // range runs to the end of the source rather than to a boundary nobody can
+  // place: resuming at the counted one resumed in the wrong mode and left the
+  // source after it neither stripped nor parseable.
+  var counted = "var t = ";
+  var inner2 = "/\\{[/*]/.test(s)";
+  for (var c2 = 0; c2 < 1100; c2 += 1) inner2 = "`${" + inner2 + "}`";
+  counted += inner2 + ";\n/* note */ var tail = 1;";
+  var countedParses = true;
+  try { new vm.Script("(function () {\n" + counted + "\n})"); }
+  catch (_e7) { countedParses = false; }
+  if (!countedParses) {
+    check("stripComments: the counted-boundary case needs a stack this lacks", true);
+    return;
+  }
+  var countedOut = sm.stripComments(counted);
+  var countedOk = true;
+  try { new vm.Script("(function () {\n" + countedOut + "\n})"); }
+  catch (_e8) { countedOk = false; }
+  check("stripComments: a boundary nobody can place does not move the resume point",
+        countedOk && countedOut.indexOf("var tail = 1") !== -1);
 }
 
 function run() {

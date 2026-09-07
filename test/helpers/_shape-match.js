@@ -1423,12 +1423,15 @@ function _templateEnd(source, ts, bodyKind, spansOut, spanBase) {
       // deleted from it to the end of the file.
       if (end === -1) {
         end = _countingBraceEnd(source, i + 2);
-        // Only this substitution went unread. The spans found elsewhere in the
-        // file are still spans, and discarding them made a reader fall back
-        // over code it had already read correctly.
+        // The count says where the substitution ends by counting braces, and a
+        // brace written inside a pattern is one it counts. So the END is not
+        // trustworthy either, and a reader resuming at it resumes in the wrong
+        // mode: a `/\{[/*]/` inside a deep substitution moved the resume point
+        // and left the block comment after it standing. The unread range
+        // therefore runs to the end of the source rather than to a boundary
+        // nobody can place. The spans found BEFORE it are still spans.
         if (spansOut !== null) {
-          spansOut.unread.push([(spanBase || 0) + i + 2,
-                                (spanBase || 0) + (end === -1 ? n : end)]);
+          spansOut.unread.push([(spanBase || 0) + i + 2, Infinity]);
         }
       }
       if (end === -1) return -1;
@@ -1555,6 +1558,11 @@ function regexSpans(src, opts) {
   // level, and 800 nested substitutions took 99ms against under one for a
   // single pass.
   try { tokenize(src, settings); } catch (_e) { return null; }
+  // An open-ended range is one whose end nobody could place, which is the end
+  // of the source as far as any reader of it is concerned.
+  for (var u = 0; u < state.unread.length; u += 1) {
+    if (state.unread[u][1] === Infinity) state.unread[u][1] = src.length;
+  }
   return state;
 }
 
