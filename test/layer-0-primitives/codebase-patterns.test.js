@@ -4185,14 +4185,18 @@ function _branchAccepts(branch, candidate, unicode, before) {
 // Does the alternative accept this whole string? Run under the same guard as a
 // branch: never a text carrying a quantifier on a group, which is the shape all
 // of this exists to find rather than to execute.
+// true, false, or NULL for "not judged". The three are different and conflating
+// the last two reported three sound patterns in `lib/` as unmeasurable: their
+// alternatives carry a quantifier on a group, which this declines to run, and a
+// refusal to look is not a verdict.
 function _alternativeAccepts(alt, candidate, unicode) {
-  if (typeof alt !== "string" || alt.length > 512) return false;
-  if (typeof candidate !== "string" || candidate.length > 512) return false;
-  if (/\)[*+]|\)\{/.test(alt)) return false;
+  if (typeof alt !== "string" || alt.length > 512) return null;
+  if (typeof candidate !== "string" || candidate.length > 512) return null;
+  if (/\)[*+]|\)\{/.test(alt)) return null;
   try {
     return new RegExp("^(?:" + alt + ")$", unicode ? "u" : "").test(candidate);
   } catch (_e) {
-    return false;
+    return null;
   }
 }
 
@@ -4202,8 +4206,13 @@ function _alternativeAccepts(alt, candidate, unicode) {
 // turn until the alternative accepts the whole. The groups are independent
 // given the others, so one sweep per group settles it; the bound is the number
 // of groups times their widths, and the sweep stops the moment it is accepted.
+// Returns { text, judged }. `judged` says a real verdict was obtained for at
+// least one candidate, so "found nothing" means the alternative refused them
+// rather than that the check declined to look. Only the first is worth
+// reporting as a pattern the probe could not drive.
 function _repairedMotif(alt, unicode, widths) {
-  if (!widths || widths.length === 0) return null;
+  if (!widths || widths.length === 0) return { text: null, judged: false };
+  var judged = false;
   var total = 1;
   for (var w = 0; w < widths.length; w += 1) {
     total *= widths[w];
@@ -4223,12 +4232,15 @@ function _repairedMotif(alt, unicode, widths) {
       rest = Math.floor(rest / widths[g]);
     }
     var cand = _literalOfAlternative(alt, 0, unicode, picks, { widths: [] });
-    if (cand !== null && _alternativeAccepts(alt, cand, unicode)) return cand;
+    if (cand === null) continue;
+    var verdict = _alternativeAccepts(alt, cand, unicode);
+    if (verdict === true) return { text: cand, judged: true };
+    if (verdict === false) judged = true;
   }
-  return null;
+  return { text: null, judged: judged };
 }
 
-function _literalOfAlternative(alt, depth, unicode, picks, meta) {
+function _literalOfAlternative(alt, depth, unicode, picks, meta, capState) {
   // A backstop, not the reading. Each nested call reads the INSIDE of a group,
   // which is strictly shorter than what it was given, so the recursion is
   // bounded by the pattern's own length and this only guards against something
@@ -4240,9 +4252,11 @@ function _literalOfAlternative(alt, depth, unicode, picks, meta) {
   var lit = "";
   var lastPiece = null;
   // What each capturing group matched, so a backreference to it can be read as
-  // that text rather than as its number.
-  var captures = {};
-  var captureNo = 0;
+  // that text rather than as its number. Shared with the nested reads, since
+  // the language numbers captures across the whole pattern: in `((a-|a-))\2`
+  // the inner group is capture 2, and a table that restarted at 1 for each
+  // nested read could not resolve it.
+  var caps = capState || { texts: {}, count: 0 };
   var toks = _regexTokens(alt, unicode);
   for (var i = 0; i < toks.length; i += 1) {
     var at = toks[i].text;
@@ -4305,6 +4319,15 @@ function _literalOfAlternative(alt, depth, unicode, picks, meta) {
       continue;
     }
     if (at === "(") {
+      // The number a capture carries is settled where it OPENS, since that is
+      // how the language numbers them: in `((a-|a-))` the outer group is 1 and
+      // the inner is 2. Claimed here rather than after the group is read, which
+      // numbered the inner one first and made a reference name the wrong text.
+      var myCapture = 0;
+      if (!/^\(\?/.test(alt.slice(toks[i].end))) {
+        caps.count += 1;
+        myCapture = caps.count;
+      }
       var d = 1;
       var j = i + 1;
       for (; j < toks.length && d > 0; j += 1) {
@@ -4354,7 +4377,7 @@ function _literalOfAlternative(alt, depth, unicode, picks, meta) {
         // No branch asked for: the first one that reads, which is what the
         // required-prefix walk wants when it is not enumerating.
         for (var k = 0; k < alts.length && picked === null; k += 1) {
-          picked = _literalOfAlternative(alts[k], depth + 1, unicode);
+          picked = _literalOfAlternative(alts[k], depth + 1, unicode, undefined, undefined, caps);
         }
       } else if (picks === "viable") {
         // Decide this group on its own rather than sampling combinations: take
@@ -4364,16 +4387,16 @@ function _literalOfAlternative(alt, depth, unicode, picks, meta) {
         // [0,1,0,0,0,0,1] is reached where neither the product's first few nor
         // the all-on-one-branch readings contain it.
         for (var vk = 0; vk < alts.length && picked === null; vk += 1) {
-          var cand = _literalOfAlternative(alts[vk], depth + 1, unicode, "viable");
+          var cand = _literalOfAlternative(alts[vk], depth + 1, unicode, "viable", undefined, caps);
           if (cand !== null && _branchAccepts(alts[vk], cand, unicode, lit)) picked = cand;
         }
         if (picked === null) {
           for (var vf = 0; vf < alts.length && picked === null; vf += 1) {
-            picked = _literalOfAlternative(alts[vf], depth + 1, unicode, "viable");
+            picked = _literalOfAlternative(alts[vf], depth + 1, unicode, "viable", undefined, caps);
           }
         }
       } else if (alts.length <= 1) {
-        picked = _literalOfAlternative(alts[0], depth + 1, unicode, picks, meta);
+        picked = _literalOfAlternative(alts[0], depth + 1, unicode, picks, meta, caps);
       } else {
         // A choosing group takes the next pick and reports its width, so the
         // caller can enumerate the combinations ACROSS several of them. The
@@ -4384,15 +4407,12 @@ function _literalOfAlternative(alt, depth, unicode, picks, meta) {
         if (meta) meta.widths.push(alts.length);
         var want = picks[slot] === undefined ? 0 : picks[slot];
         if (want >= alts.length) return null;             // no such branch
-        picked = _literalOfAlternative(alts[want], depth + 1, unicode, picks, meta);
+        picked = _literalOfAlternative(alts[want], depth + 1, unicode, picks, meta, caps);
       }
       // A CAPTURING group is one a backreference can name, so what it matched
       // is remembered under its number. `(?:` and the other `(?`-forms capture
       // nothing and are not counted.
-      if (!/^\(\?/.test(alt.slice(toks[i].end))) {
-        captureNo += 1;
-        if (picked !== null) captures[captureNo] = picked;
-      }
+      if (myCapture > 0 && picked !== null) caps.texts[myCapture] = picked;
       if (nRepeat > 0) {
         if (picked === null) return null;
         if (picked.length * nRepeat > _MOTIF_MAX) return null;   // longer than a motif
@@ -4418,7 +4438,7 @@ function _literalOfAlternative(alt, depth, unicode, picks, meta) {
       // was built by nothing.
       var backref = /^\\([1-9][0-9]?)$/.exec(at);
       if (backref) {
-        var refText = captures[parseInt(backref[1], 10)];
+        var refText = caps.texts[parseInt(backref[1], 10)];
         if (refText === undefined) return null;           // names a capture not yet read
         lit += refText;
         lastPiece = null;
@@ -4555,7 +4575,15 @@ function _quantifiedGroupMotifs(body, unicode) {
       // group is tried in turn against that check until the alternative accepts
       // the whole. Every branch is answered by the same question the pattern
       // asks, rather than by a local guess.
-      _pushMotif(out, _repairedMotif(alt, unicode, meta.widths));
+      var repaired = _repairedMotif(alt, unicode, meta.widths);
+      _pushMotif(out, repaired.text);
+      // Where an alternative offers choices and NONE of the readings produced a
+      // motif it accepts, no subject built here repeats what it repeats. That
+      // is the probe unable to drive the pattern rather than the pattern being
+      // fast, and it is reported as such: the enumeration is exponential in the
+      // number of groups, so a budget will always be reachable, and answering
+      // "fast" past it is the one thing that must not happen.
+      if (repaired.text === null && repaired.judged) out.unresolved = true;
       var lit = _literalOfAlternative(alt, 0, unicode);
       // Bounded by what a subject can carry, not by a short fixed length. A
       // seven-character motif was discarded, and `(?:abcdefg|abcdefg)+$` costs
@@ -4728,7 +4756,8 @@ function _probeSubjectPieces(body, unicode) {
   // than a small allowance. Six compounds in front of the costly one spent a
   // fixed allowance and left `^(?:(?:a-)+|(?:b-)+|(?:c-)+|(?:d-)+|(?:e-)+|(?:f-)+|(?:z@|z@)+)$`
   // without `z@`, so every subject stayed in a branch that returns at once.
-  _quantifiedGroupMotifs(body, unicode).forEach(function (w) {
+  var motifs = _quantifiedGroupMotifs(body, unicode);
+  motifs.forEach(function (w) {
     if (fillers.length < _FILLER_QUANTIFIED_MAX && fillers.indexOf(w) === -1) fillers.push(w);
   });
   // The pattern's own short literal runs are opportunistic, and keep a small
@@ -4761,7 +4790,8 @@ function _probeSubjectPieces(body, unicode) {
   // no subject built here reaches the body. The caller reports the pattern as
   // one it could not measure rather than as one it drove and found fast.
   return { seeds: seeds, fillers: fillers, tails: tails,
-           overlong: prefixes.overlong === true };
+           overlong: prefixes.overlong === true,
+           unresolved: motifs.unresolved === true };
 }
 
 function _composedRegexSourcesByLine(content) {
@@ -5287,6 +5317,10 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // shifts and the reference names the wrong text.
     ["^(?:(a-|a-)\\1)+$",        "a-a-"],
     ["^(?:(?:q)(a-|a-)\\1)+$",   "qa-a-"],
+    // A capture nested in another is numbered by where it OPENS, so the outer
+    // is 1 and the inner is 2. Numbered as each group finished, the inner took
+    // the lower number and a reference named the wrong text.
+    ["^(?:((a-|a-))\\2)+$",      "a-a-"],
     // Six compounds in front of the costly one. What a quantified group
     // repeats is taken whatever precedes it, as a quantified character is.
     ["^(?:(?:a-)+|(?:b-)+|(?:c-)+|(?:d-)+|(?:e-)+|(?:f-)+|(?:z@|z@)+)$", "z@"],
@@ -5447,6 +5481,22 @@ function testProbeSubjectsReachTheQuantifiedBody() {
                             "-P(z+)+$").overlong === true);
   check("regex probe: an ordinary long prefix is still measured",
         _probeSubjectPieces("^" + "A".repeat(41) + "-P(z+)+$").overlong === false);
+
+  // The same answer for the other thing a probe can fail to build. Where an
+  // alternative offers choices and no reading produced a unit it accepts,
+  // nothing built repeats what the pattern repeats, and the enumeration is
+  // exponential so a budget is always reachable. Reported, never cleared.
+  var _wideUnit = "";
+  for (var wu = 0; wu < 12; wu += 1) _wideUnit += "(?:a(?=-)|b(?=X))-";
+  _wideUnit += "(?:a(?=X)|b(?=-))-";
+  var _widePieces = _probeSubjectPieces("^(?:" + _wideUnit + "|" + _wideUnit + ")+$");
+  var _wideWant = "";
+  for (var ww = 0; ww < 12; ww += 1) _wideWant += "a-";
+  _wideWant += "b-";
+  check("regex probe: a repeated unit no reading reaches is reported, not cleared",
+        _widePieces.fillers.indexOf(_wideWant) !== -1 || _widePieces.unresolved === true);
+  check("regex probe: an ordinary repeated unit is still measured",
+        _probeSubjectPieces("^(?:a-|a-)+$").unresolved === false);
 
   // Where an assertion reads into the body the prefix stops short of, no
   // verdict on the branch is available at all. Both are kept, and both are
@@ -5737,6 +5787,10 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // ordinary name anywhere else in a script.
     ["var await = 4; await / 2; var r8 = /(?:ze+)+$/;",   "/(?:ze+)+$/"],
     ["async function q(){ await x; return /(?:zf+)+$/.test(y); }", "/(?:zf+)+$/"],
+    // An async body is written several ways and only one of them has a keyword
+    // to find, so the walk looks for the `async` itself.
+    ["const f2 = async () => { await /(?:zg+)+$/.test(x); };", "/(?:zg+)+$/"],
+    ["var o2 = { async m() { await /(?:zh+)+$/.test(x); } };",  "/(?:zh+)+$/"],
     // A superclass written as a long member expression. The walk back to the
     // keyword is bounded by the token list, not by a count of its own.
     ["var L = class extends ns" + ".a".repeat(255) + " {} / 2; var re = /(?:yu+)+$/;",
@@ -6246,7 +6300,7 @@ function testOwnRegexesRunLinear() {
       // A required prefix longer than a subject can carry means no subject
       // built here reaches the body, so nothing that follows has driven this
       // pattern and it is reported rather than cleared.
-      var unmeasured = pieces.overlong === true;
+      var unmeasured = pieces.overlong === true || pieces.unresolved === true;
       if (_couldBacktrack(re)) {
         // Measured over there, so a pattern that never returns is killed
         // there instead of stopping this run. The child answers the same two
@@ -6312,8 +6366,12 @@ function testOwnRegexesRunLinear() {
                         (pieces.overlong === true
                           ? "the prefix it requires is longer than a subject can " +
                             "carry, so no subject built here reaches the body"
-                          : "the probe was interrupted in every round without " +
-                            "finishing its subjects") +
+                          : pieces.unresolved === true
+                            ? "no reading of the choices in its repeated part " +
+                              "produced a unit the pattern accepts, so nothing " +
+                              "built here repeats what it repeats"
+                            : "the probe was interrupted in every round without " +
+                              "finishing its subjects") +
                         ", so nothing here has cleared it";
         bad.push({ file: rel, line: li + 1, content: measured[src] });
         continue;

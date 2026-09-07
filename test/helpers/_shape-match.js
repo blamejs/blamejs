@@ -503,14 +503,7 @@ function tokenize(source) {
         // operator only in there; in a script it is an ordinary name, and
         // `var await = 4; await / 2` divides. Read as the operator it is
         // followed by an expression, so that slash opened a pattern.
-        var asyncHere = false;
-        if (kwTok !== null && kwTok.value === "function") {
-          var aBack = _significantBefore(tokens, kwTok);
-          asyncHere = aBack !== null && aBack.type === TOK_KEYWORD &&
-                      aBack.value === "async" &&
-                      !_hasLineTerminator(source.slice(aBack.end, kwTok.start));
-        }
-        asyncBodyStack.push(asyncHere);
+        asyncBodyStack.push(_opensAsyncBody(tokens, source));
         // `async` is a modifier on the keyword, not a position of its own, so
         // the position is the one BEFORE it: `var x = async function () {}` is
         // an expression, and reading `async` as the preceding token made it a
@@ -1200,6 +1193,51 @@ function _countingBraceEnd(source, from) {
 // from the brace over what may stand between it and that keyword: a balanced
 // parameter list, the name, a generator star, and the `extends` clause of a
 // class. Anything else means the brace is not a function or class body.
+// Does the brace about to be pushed open the body of an ASYNC function, in any
+// of the forms one is written? `async function f() {}` has a keyword to find,
+// and `const f = async () => {}` and `{ async m() {} }` have none, so the walk
+// looks for the `async` itself: back over the header, which is a balanced
+// parameter list, an arrow, a name and a generator star, and nothing else.
+// Marking only the keyword form left `await` an identifier inside every async
+// arrow and method.
+function _opensAsyncBody(tokens, source) {
+  var i = tokens.length - 1;
+  var after = null;
+  var guard = 0;
+  while (i >= 0 && guard <= tokens.length) {
+    guard += 1;
+    var t = tokens[i];
+    if (t.type === TOK_WS || t.type === TOK_COMMENT) { i -= 1; continue; }
+    if (t.type === TOK_KEYWORD && t.value === "async") {
+      // Only while nothing separates it from what it modifies, the same rule
+      // the brace classifier uses for the keyword form.
+      return after === null ||
+             !_hasLineTerminator(source.slice(t.end, after.start));
+    }
+    if (t.type === TOK_PUNCT && t.value === ")") {
+      var depth = 0;
+      for (; i >= 0; i -= 1) {
+        if (tokens[i].type !== TOK_PUNCT) continue;
+        if (tokens[i].value === ")") depth += 1;
+        else if (tokens[i].value === "(") { depth -= 1; if (depth === 0) break; }
+      }
+      if (depth !== 0) return false;
+      after = tokens[i];
+      i -= 1;
+      continue;
+    }
+    if (t.type === TOK_IDENT ||
+        (t.type === TOK_KEYWORD && t.value === "function") ||
+        (t.type === TOK_PUNCT && (t.value === "=>" || t.value === "*"))) {
+      after = t;
+      i -= 1;
+      continue;
+    }
+    return false;                                        // not a function header
+  }
+  return false;
+}
+
 function _governingFunctionOrClass(tokens) {
   var i = tokens.length - 1;
   function skipTrivia() {
