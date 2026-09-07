@@ -3543,16 +3543,21 @@ var _PREFIX_BRANCHES = 24;
 // How much text a required prefix may carry. It bounds the walk and it bounds
 // what a fixed quantifier is allowed to expand to, so the two cannot disagree
 // about how long a prefix is allowed to be.
-// Sized from the subjects the probe builds, which repeat a piece to 8,192
-// characters, rather than set to a number a real pattern can reach. At forty a
-// prefix written out as forty-one characters was truncated, and a truncated
-// prefix is worse than none: every subject built from it fails the anchor, so
-// the body behind it is driven by nothing and the pattern reads as fast.
-var _PREFIX_MAX = 512;
+// The largest subject the probe builds. Everything a subject is made of is
+// bounded by it, since a piece longer than the subject cannot be repeated
+// inside one at all.
+var _PROBE_SUBJECT_MAX = 8192;
+// Sized from that rather than set to a number a real pattern can reach. Every
+// number tried here was eventually too small, and the failure was always the
+// same: a truncated prefix is worse than none, because every subject built
+// from it fails the anchor, so the body behind it is driven by nothing and the
+// pattern reads as fast. Past this the probe genuinely CANNOT exercise the
+// pattern, and it says so rather than emitting a prefix it knows is short.
+var _PREFIX_MAX = _PROBE_SUBJECT_MAX;
 // The same bound for a motif, for the same reason: `(?:ba{64}|ba{64})+$`
 // repeats a sixty-five character unit, and discarding it for its length left
 // the pattern driven by pieces of it that it returns on at once.
-var _MOTIF_MAX = 512;
+var _MOTIF_MAX = _PROBE_SUBJECT_MAX;
 // A backstop on how many distinct quantified characters become fillers. The
 // widest pattern in `lib/` has three, so this is nowhere near what decides the
 // list; it is here so a pattern written to name hundreds cannot turn one probe
@@ -3581,14 +3586,17 @@ function _literalPrefixesOf(pattern, unicode) {
   // rather than a search space, so walking all of them is linear in the size of
   // the pattern; capping them dropped the costly branch of a pattern that put
   // enough cheap ones in front of it.
+  var pooledOverlong = false;
   for (var a = 0; a < alts.length; a += 1) {
     var got = _prefixesForOneAlternative(alts[a], unicode);
+    if (got.overlong) pooledOverlong = true;
     for (var i = 0; i < got.length; i += 1) {
       if (poolSeen[got[i]] === 1) continue;
       poolSeen[got[i]] = 1;
       pooled.push(got[i]);
     }
   }
+  pooled.overlong = pooledOverlong;
   return pooled;
 }
 
@@ -3596,11 +3604,13 @@ function _prefixesForOneAlternative(pattern, unicode) {
   var verified = [];
   var rest = [];
   var seen = {};
+  var overlong = false;
   for (var g = 0; g < _PREFIX_GROUPS; g += 1) {
     var groupExists = true;
     for (var b = 0; b < _PREFIX_BRANCHES && groupExists; b += 1) {
       var built = _literalPrefixWithChoice(pattern, unicode, g, b);
       if (built === null) break;                          // no such branch
+      if (built.overlong) overlong = true;
       groupExists = built.matched || b === 0;
       if (built.text === "") continue;
       if (seen[built.text] === 1) continue;
@@ -3623,6 +3633,7 @@ function _prefixesForOneAlternative(pattern, unicode) {
   // substituted because per-group choosing is wrong wherever an assertion reads
   // forward past the prefix.
   var greedyBuilt = _literalPrefixWithChoice(pattern, unicode, -1, 0, true);
+  if (greedyBuilt !== null && greedyBuilt.overlong) overlong = true;
   if (greedyBuilt !== null && greedyBuilt.text !== "" && seen[greedyBuilt.text] !== 1) {
     seen[greedyBuilt.text] = 1;
     if (_prefixAcceptedInContext(pattern, greedyBuilt.upTo, greedyBuilt.text,
@@ -3632,7 +3643,12 @@ function _prefixesForOneAlternative(pattern, unicode) {
       rest.push(greedyBuilt.text);
     }
   }
-  return verified.concat(rest);
+  // Carried on the list rather than beside it, so every caller that already
+  // treats this as an array of prefixes keeps working and the one that decides
+  // whether the pattern was measured can ask.
+  var all = verified.concat(rest);
+  all.overlong = overlong;
+  return all;
 }
 
 function _literalPrefixWithChoice(pattern, unicode, groupIdx, branchIdx, greedy) {
@@ -3640,6 +3656,7 @@ function _literalPrefixWithChoice(pattern, unicode, groupIdx, branchIdx, greedy)
   var upTo = -1;
   var choicesSeen = 0;
   var matched = false;
+  var overlong = false;
   var toks = _regexTokens(pattern, unicode);
   for (var t = 0; t < toks.length; t += 1) {
     var text = toks[t].text;
@@ -3765,7 +3782,7 @@ function _literalPrefixWithChoice(pattern, unicode, groupIdx, branchIdx, greedy)
         out += gRepeat === 1 ? gPicked : gPicked.repeat(gRepeat);
       }
       upTo = gQEnd === -1 ? toks[gj - 1].end : gQEnd;
-      if (out.length >= _PREFIX_MAX) break;
+      if (out.length >= _PREFIX_MAX) { overlong = true; break; }
       t = gj - 1;
       // Step past the quantifier so its digits are not read as literals.
       while (gQEnd !== -1 && t + 1 < toks.length && toks[t + 1].end <= gQEnd) t += 1;
@@ -3808,16 +3825,20 @@ function _literalPrefixWithChoice(pattern, unicode, groupIdx, branchIdx, greedy)
       if (lit.length * pLo > _PREFIX_MAX) break;
       if (pLo > 0) out += lit.repeat(pLo);
       upTo = pClose;
-      if (out.length >= _PREFIX_MAX) break;
+      if (out.length >= _PREFIX_MAX) { overlong = true; break; }
       while (t < toks.length && toks[t].end < pClose) t += 1;
       continue;
     }
     if (after !== "" && "*+?".indexOf(after) !== -1) break;
     out += lit;
     upTo = toks[t].end;
-    if (out.length >= _PREFIX_MAX) break;
+    if (out.length >= _PREFIX_MAX) { overlong = true; break; }
   }
-  return { text: out, upTo: upTo, matched: matched };
+  // `overlong` says the prefix was cut short by the bound rather than finished.
+  // What comes back is then not the prefix the pattern requires, and a subject
+  // built from it fails the anchor, so the caller reports the pattern as one it
+  // could not measure instead of driving the body with nothing.
+  return { text: out, upTo: upTo, matched: matched, overlong: overlong };
 }
 
 // A character the given one-token fragment accepts, found by asking the engine
@@ -4657,7 +4678,11 @@ function _probeSubjectPieces(body, unicode) {
   });
   if (tails.indexOf("!") === -1) tails.push("!");
 
-  return { seeds: seeds, fillers: fillers, tails: tails };
+  // `overlong` says the required prefix was longer than a subject can carry, so
+  // no subject built here reaches the body. The caller reports the pattern as
+  // one it could not measure rather than as one it drove and found fast.
+  return { seeds: seeds, fillers: fillers, tails: tails,
+           overlong: prefixes.overlong === true };
 }
 
 function _composedRegexSourcesByLine(content) {
@@ -5242,7 +5267,9 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     ["^A{2,}X(z+)+$",        "AAX"],
     // A prefix written out longer than the old cap. Truncating it is worse
     // than dropping it: every subject built from a truncated prefix fails the
-    // anchor, so the body behind it is driven by nothing.
+    // anchor, so the body behind it is driven by nothing. Past what a SUBJECT
+    // can carry the probe reports the pattern unmeasured rather than emitting a
+    // prefix it knows is short, which is the check below the fixtures.
     ["^" + "A".repeat(41) + "-P(z+)+$", "A".repeat(41) + "-P"],
     // An alternative can spell text it then refuses, so the one that works is
     // the one taken.
@@ -5312,6 +5339,16 @@ function testProbeSubjectsReachTheQuantifiedBody() {
           "spelling (" + JSON.stringify(SPELLINGS[sp][1]) + ")",
           spelled === false, JSON.stringify(spSeeds));
   }
+
+  // A prefix longer than a subject can carry is the one case where the probe
+  // genuinely cannot drive the pattern. It says so, rather than handing back a
+  // prefix cut to the bound: a subject built from that fails the anchor, and a
+  // pattern the gate could not measure is not one it has cleared.
+  check("regex probe: a prefix longer than a subject reports the pattern unmeasured",
+        _probeSubjectPieces("^" + "A".repeat(_PROBE_SUBJECT_MAX + 800) +
+                            "-P(z+)+$").overlong === true);
+  check("regex probe: an ordinary long prefix is still measured",
+        _probeSubjectPieces("^" + "A".repeat(41) + "-P(z+)+$").overlong === false);
 
   // Where an assertion reads into the body the prefix stops short of, no
   // verdict on the branch is available at all. Both are kept, and both are
@@ -6083,7 +6120,10 @@ function testOwnRegexesRunLinear() {
       var worst = 0, worstSubject = "", worstCost = 0;
       var blewUpAt = null;
       var measuredInChild = false;
-      var unmeasured = false;
+      // A required prefix longer than a subject can carry means no subject
+      // built here reaches the body, so nothing that follows has driven this
+      // pattern and it is reported rather than cleared.
+      var unmeasured = pieces.overlong === true;
       if (_couldBacktrack(re)) {
         // Measured over there, so a pattern that never returns is killed
         // there instead of stopping this run. The child answers the same two
@@ -6103,7 +6143,7 @@ function testOwnRegexesRunLinear() {
           blewUpAt = true;
         } else {
           measuredInChild = true;
-          unmeasured = probe.unmeasured;
+          unmeasured = unmeasured || probe.unmeasured;
           worst = probe.growth;
           worstCost = probe.cost;
           worstSubject = probe.label;
@@ -6145,9 +6185,13 @@ function testOwnRegexesRunLinear() {
       }
 
       if (unmeasured) {
-        measured[src] = src.slice(0, 60) + " could not be measured: the probe " +
-                        "was interrupted in every round without finishing its " +
-                        "subjects, so nothing here has cleared it";
+        measured[src] = src.slice(0, 60) + " could not be measured: " +
+                        (pieces.overlong === true
+                          ? "the prefix it requires is longer than a subject can " +
+                            "carry, so no subject built here reaches the body"
+                          : "the probe was interrupted in every round without " +
+                            "finishing its subjects") +
+                        ", so nothing here has cleared it";
         bad.push({ file: rel, line: li + 1, content: measured[src] });
         continue;
       }
