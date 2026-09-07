@@ -1,0 +1,31 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.19.5",
+  "date": "2026-09-07",
+  "headline": "An option that governs nothing is refused instead of accepted",
+  "summary": "`b.guardSql` declared seven options that no code read. Setting `allowMultiStatement: true` read as permission to send a stacked statement and granted none; six more named actions the guard never consulted. Each is now either governed, pinned to the one value it takes, or refused by name. No verdict changes: all 180 across the three profiles and three context modes are identical.",
+  "sections": [
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "`b.guardSql` options that governed nothing",
+          "body": "Every profile declared `rceFile`, `fdw`, `literal`, `privPivot`, `stacked`, `encoding` and `allowMultiStatement`, and no code read any of them. An operator could set one, see no error, and get no change.\n\nThree describe behaviour that is real and fixed. A stacked statement and invalid encoding refuse in every profile, and this guard permits one statement; `stacked`, `encoding` and `allowMultiStatement` are pinned to those values now, so setting another is refused at the door with the option named. `allowMultiStatement: true` is the one that read as permission, and it is refused rather than ignored.\n\nFour named groups of the OS-reach floor detectors that are not separately governed. `floor` is the one control over those 29 detectors and `allowLiterals` governs an embedded literal, so `rceFile`, `fdw`, `literal` and `privPivot` are refused by name, each error naming the option that does govern the behaviour. An unknown option is accepted across the guard family, so an operator carrying one of these forward would otherwise get silence from a guard they had just configured.\n\nNothing decides differently. The fallback a detector took when its family matched no profile key was `privPivot`, which no detector could reach; it is the floor's action now, which is what every detector already received. Every verdict over a corpus reaching each detector family, in three profiles and three context modes, is unchanged.\n\n`b.guardSql.validate`'s documented options now list every action a profile takes, including the three that are fixed."
+        },
+        {
+          "title": "A policy vocabulary can pin a value that is not a string",
+          "body": "`b.gateContract.policyVocabulary` states which values an option accepts, and the check behind it required the value to be a string before consulting the list. An option fixed at a boolean could not be stated, which is why `allowMultiStatement` was left out of the vocabulary and then accepted and ignored. Membership in the list decides it now. A value outside the list is refused as before, whatever its type."
+        }
+      ]
+    },
+    {
+      "heading": "Removed",
+      "items": [
+        {
+          "title": "Sixty-one private helpers nothing read",
+          "body": "Across 49 files, private helpers and bindings that no code reached. Five sat in security guards, where the sharper risk is a defence written and never wired; each was checked and each was superseded rather than missing. `guard-json._stripPollutionTree` duplicated the `strip` pollution policy that `safeJson.parse`'s reviver already applies. `archive-tar._parsePaxRecords` was byte-identical to the one the reader uses. `network-tls._ctLargestPowerOf2LessThan` was the recursive form of a value the iterative consistency-path check does not need. `audit._readAllAuditRowsAsc` was superseded by the live `verify()` queries. `guard-sql._profileActionFor` collapsed to the same value in all three profiles.\n\nOne mechanism went whole rather than by instance: a soft-fail helper, its accumulator and the gate that read it, in the Postgres cluster integration test. Nothing called the helper, so the gate could never fire.\n\nThe lint rule that reports these was exempting every name beginning with an underscore, which is the convention every private helper in the framework follows, so it exempted all of them. It now exempts only a binding named exactly `_`."
+        }
+      ]
+    }
+  ]
+}
