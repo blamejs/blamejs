@@ -5798,6 +5798,18 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     ["var yield = 4; yield / 2; var ra = /(?:zj+)+$/;",   "/(?:zj+)+$/"],
     ["function* g2(){ yield /(?:zk+)+$/.test(x); }",      "/(?:zk+)+$/"],
     ["var o3 = { *m(){ yield /(?:zl+)+$/.test(x); } };",  "/(?:zl+)+$/"],
+    // Both are read from the INNERMOST function body: an ordinary function
+    // nested in an async one or a generator resets the grammar.
+    ["async function o4(){ function i4(){ var await=4; await / 2; } } const rb=/(?:zm+)+$/;",
+     "/(?:zm+)+$/"],
+    ["function* o5(){ function i5(){ var y5=4; yield / 2; } } const rc=/(?:zn+)+$/;",
+     "/(?:zn+)+$/"],
+    // A method NAMED `async` is not an async method: the word sits where the
+    // name goes, with nothing between it and the parameter list.
+    ["var o6 = { async() { var await = 4; await / 2; } }; var rd = /(?:zo+)+$/;",
+     "/(?:zo+)+$/"],
+    // A parenthesised assignment target still precedes a for-of relation.
+    ["for ((x) of /(?:zp+)+$/) {}",                      "/(?:zp+)+$/"],
     // A superclass written as a long member expression. The walk back to the
     // keyword is bounded by the token list, not by a count of its own.
     ["var L = class extends ns" + ".a".repeat(255) + " {} / 2; var re = /(?:yu+)+$/;",

@@ -249,10 +249,10 @@ function tokenize(source) {
   // Beside it, the word that opened each paren, so a rule can ask WHICH header
   // it is inside rather than only whether it is inside one.
   var headerWordStack = [];
-  // Per open brace: does it open the body of an ASYNC function? `await` is an
-  // operator only in there. And of a GENERATOR, which is where `yield` is one.
-  var asyncBodyStack = [];
-  var generatorBodyStack = [];
+  // Per open brace: what kind of function body it opens, or null for anything
+  // else. `await` is an operator inside an async body and `yield` inside a
+  // generator's, both read from the INNERMOST function body.
+  var functionBodyStack = [];
   var braceStack = [];
   // Per open brace: does it open the body of a function or class EXPRESSION,
   // whose closing brace is therefore followed by division rather than by a
@@ -400,18 +400,21 @@ function tokenize(source) {
       if (idVal === "of" &&
           (headerWordStack[headerWordStack.length - 1] !== "for" ||
            prevSig === null ||
+           // An identifier, the bracket closing a destructuring pattern, or the
+           // paren closing a parenthesised assignment target: `for ((x) of y)`.
            !(prevSig.type === TOK_IDENT ||
              (prevSig.type === TOK_PUNCT &&
-              (prevSig.value === "]" || prevSig.value === "}"))))) {
+              (prevSig.value === "]" || prevSig.value === "}" ||
+               prevSig.value === ")"))))) {
         idType = TOK_IDENT;
       }
       // `await` the same way: an operator inside an async function body, an
       // ordinary name anywhere else in a script. `yield` likewise, in a
       // generator body.
-      if (idVal === "await" && asyncBodyStack.indexOf(true) === -1) {
+      if (idVal === "await" && !_innermostBodyIs(functionBodyStack, "async")) {
         idType = TOK_IDENT;
       }
-      if (idVal === "yield" && generatorBodyStack.indexOf(true) === -1) {
+      if (idVal === "yield" && !_innermostBodyIs(functionBodyStack, "generator")) {
         idType = TOK_IDENT;
       }
       var itok = { type: idType, value: idVal, start: is, end: i };
@@ -516,8 +519,7 @@ function tokenize(source) {
         // operator only in there; in a script it is an ordinary name, and
         // `var await = 4; await / 2` divides. Read as the operator it is
         // followed by an expression, so that slash opened a pattern.
-        asyncBodyStack.push(_opensAsyncBody(tokens, source));
-        generatorBodyStack.push(_opensGeneratorBody(tokens));
+        functionBodyStack.push(_functionBodyKind(tokens, source));
         // `async` is a modifier on the keyword, not a position of its own, so
         // the position is the one BEFORE it: `var x = async function () {}` is
         // an expression, and reading `async` as the preceding token made it a
@@ -566,8 +568,7 @@ function tokenize(source) {
       } else if (ptok.value === "}") {
         ptok.closedObject = braceStack.pop() === true;
         ptok.closedValueBody = valueBodyStack.pop() === true;
-        asyncBodyStack.pop();
-        generatorBodyStack.pop();
+        functionBodyStack.pop();
         if (frames.length > 1) frames.pop();
       } else if (ptok.value === "?") {
         frames[frames.length - 1].ternary += 1;
@@ -1208,27 +1209,52 @@ function _countingBraceEnd(source, from) {
 // from the brace over what may stand between it and that keyword: a balanced
 // parameter list, the name, a generator star, and the `extends` clause of a
 // class. Anything else means the brace is not a function or class body.
-// Does the brace about to be pushed open the body of an ASYNC function, in any
-// of the forms one is written? `async function f() {}` has a keyword to find,
-// and `const f = async () => {}` and `{ async m() {} }` have none, so the walk
-// looks for the `async` itself: back over the header, which is a balanced
-// parameter list, an arrow, a name and a generator star, and nothing else.
-// Marking only the keyword form left `await` an identifier inside every async
-// arrow and method.
-function _opensAsyncBody(tokens, source) {
+// What kind of function body the brace about to be pushed opens, or null when
+// it opens something else. `await` is an operator inside an async body and
+// `yield` inside a generator's, and both are ordinary names anywhere else, so
+// the question is asked of the INNERMOST function body: an ordinary function
+// nested in an async one resets the grammar, and reading any ancestor made
+// `await` an operator inside it.
+//
+// One walk answers both, back over what a function header is made of: a
+// balanced parameter list, an arrow, a name, a generator star, and the
+// modifiers. Written this way because a function body is a function body
+// whether or not it has a keyword: `async () => {}` and `{ *m() {} }` have none.
+function _functionBodyKind(tokens, source) {
   var i = tokens.length - 1;
   var after = null;
+  var sawStar = false;
+  var sawParams = false;
+  var sawName = false;
+  var sawArrow = false;
   var guard = 0;
   while (i >= 0 && guard <= tokens.length) {
     guard += 1;
     var t = tokens[i];
     if (t.type === TOK_WS || t.type === TOK_COMMENT) { i -= 1; continue; }
     if (t.type === TOK_KEYWORD && t.value === "async") {
-      // Only while nothing separates it from what it modifies, the same rule
-      // the brace classifier uses for the keyword form.
-      return after === null ||
-             !_hasLineTerminator(source.slice(t.end, after.start));
+      // `{ async() {} }` is a method NAMED async, not an async method: the word
+      // sits where the name goes, with nothing between it and the parameter
+      // list. A modifier has a name, a `function`, or an arrow after it.
+      var isModifier = sawName || sawArrow;
+      if (!sawParams) return null;                       // not a body at all
+      return { async: isModifier &&
+                      (after === null ||
+                       !_hasLineTerminator(source.slice(t.end, after.start))),
+               generator: sawStar };
     }
+    if (t.type === TOK_KEYWORD && t.value === "function") {
+      // `async` sits before the keyword in this form, so one more step back.
+      var pb = i - 1;
+      while (pb >= 0 &&
+             (tokens[pb].type === TOK_WS || tokens[pb].type === TOK_COMMENT)) pb -= 1;
+      var isAsync = pb >= 0 && tokens[pb].type === TOK_KEYWORD &&
+                    tokens[pb].value === "async" &&
+                    !_hasLineTerminator(source.slice(tokens[pb].end, t.start));
+      return { async: isAsync, generator: sawStar };
+    }
+    if (t.type === TOK_PUNCT && t.value === "*") { sawStar = true; after = t; i -= 1; continue; }
+    if (t.type === TOK_PUNCT && t.value === "=>") { sawArrow = true; after = t; i -= 1; continue; }
     if (t.type === TOK_PUNCT && t.value === ")") {
       var depth = 0;
       for (; i >= 0; i -= 1) {
@@ -1236,56 +1262,30 @@ function _opensAsyncBody(tokens, source) {
         if (tokens[i].value === ")") depth += 1;
         else if (tokens[i].value === "(") { depth -= 1; if (depth === 0) break; }
       }
-      if (depth !== 0) return false;
+      if (depth !== 0) return null;
+      sawParams = true;
       after = tokens[i];
       i -= 1;
       continue;
     }
     if (t.type === TOK_IDENT ||
-        (t.type === TOK_KEYWORD && t.value === "function") ||
-        (t.type === TOK_PUNCT && (t.value === "=>" || t.value === "*"))) {
+        (t.type === TOK_KEYWORD && t.value === "static")) {
+      if (t.type === TOK_IDENT) sawName = true;
       after = t;
       i -= 1;
       continue;
     }
-    return false;                                        // not a function header
+    // Reached the start of the header. It is a function body when a parameter
+    // list or an arrow was passed on the way; a bare block has neither.
+    return (sawParams || sawArrow) ? { async: false, generator: sawStar } : null;
   }
-  return false;
+  return null;
 }
 
-// Does the brace about to be pushed open a GENERATOR's body? `yield` is an
-// operator only in there; in a script it is an ordinary name. Read the same way
-// as the async question: back over the header, looking for the star that makes
-// a function a generator, whether written `function* g()` or `{ *m() {} }`.
-function _opensGeneratorBody(tokens) {
-  var i = tokens.length - 1;
-  var sawStar = false;
-  var guard = 0;
-  while (i >= 0 && guard <= tokens.length) {
-    guard += 1;
-    var t = tokens[i];
-    if (t.type === TOK_WS || t.type === TOK_COMMENT) { i -= 1; continue; }
-    if (t.type === TOK_PUNCT && t.value === "*") { sawStar = true; i -= 1; continue; }
-    if (t.type === TOK_KEYWORD && t.value === "function") return sawStar;
-    if (t.type === TOK_PUNCT && t.value === ")") {
-      var depth = 0;
-      for (; i >= 0; i -= 1) {
-        if (tokens[i].type !== TOK_PUNCT) continue;
-        if (tokens[i].value === ")") depth += 1;
-        else if (tokens[i].value === "(") { depth -= 1; if (depth === 0) break; }
-      }
-      if (depth !== 0) return false;
-      i -= 1;
-      continue;
-    }
-    if (t.type === TOK_IDENT ||
-        (t.type === TOK_KEYWORD && (t.value === "async" || t.value === "static"))) {
-      i -= 1;
-      continue;
-    }
-    // A method's star sits at the start of its header, with the object or
-    // class brace before it: `{ *m() {} }`.
-    return sawStar && t.type === TOK_PUNCT && t.value === "{";
+// The innermost function body's answer, or false when there is none.
+function _innermostBodyIs(stack, field) {
+  for (var i = stack.length - 1; i >= 0; i -= 1) {
+    if (stack[i] !== null && stack[i] !== undefined) return stack[i][field] === true;
   }
   return false;
 }
