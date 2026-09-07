@@ -4178,6 +4178,51 @@ function _branchAccepts(branch, candidate, unicode, before) {
   }
 }
 
+// Does the alternative accept this whole string? Run under the same guard as a
+// branch: never a text carrying a quantifier on a group, which is the shape all
+// of this exists to find rather than to execute.
+function _alternativeAccepts(alt, candidate, unicode) {
+  if (typeof alt !== "string" || alt.length > 512) return false;
+  if (typeof candidate !== "string" || candidate.length > 512) return false;
+  if (/\)[*+]|\)\{/.test(alt)) return false;
+  try {
+    return new RegExp("^(?:" + alt + ")$", unicode ? "u" : "").test(candidate);
+  } catch (_e) {
+    return false;
+  }
+}
+
+// The branch a group can take is sometimes settled by text AFTER it, which no
+// reading that decides one group in isolation can see. So the finished motif is
+// put to the alternative itself, and where it is refused each group is tried in
+// turn until the alternative accepts the whole. The groups are independent
+// given the others, so one sweep per group settles it; the bound is the number
+// of groups times their widths, and the sweep stops the moment it is accepted.
+function _repairedMotif(alt, unicode, widths) {
+  if (!widths || widths.length === 0) return null;
+  var picks = [];
+  for (var i = 0; i < widths.length; i += 1) picks.push(0);
+  var built = _literalOfAlternative(alt, 0, unicode, picks, { widths: [] });
+  if (built !== null && _alternativeAccepts(alt, built, unicode)) return built;
+  for (var g = 0; g < widths.length; g += 1) {
+    for (var b = 0; b < widths[g]; b += 1) {
+      picks[g] = b;
+      var cand = _literalOfAlternative(alt, 0, unicode, picks, { widths: [] });
+      if (cand !== null && _alternativeAccepts(alt, cand, unicode)) return cand;
+    }
+    // None of this group's branches finished it on their own. Keep the one that
+    // at least builds something and move on; a later group may be what is
+    // missing, and the sweep comes back to nothing worse than where it started.
+    picks[g] = 0;
+    for (var k = 0; k < widths[g]; k += 1) {
+      picks[g] = k;
+      if (_literalOfAlternative(alt, 0, unicode, picks, { widths: [] }) !== null) break;
+    }
+  }
+  var last = _literalOfAlternative(alt, 0, unicode, picks, { widths: [] });
+  return last !== null && _alternativeAccepts(alt, last, unicode) ? last : null;
+}
+
 function _literalOfAlternative(alt, depth, unicode, picks, meta) {
   // A backstop, not the reading. Each nested call reads the INSIDE of a group,
   // which is strictly shorter than what it was given, so the recursion is
@@ -4474,9 +4519,16 @@ function _quantifiedGroupMotifs(body, unicode) {
       }
       // And one reading that answers each group on its own, by taking the first
       // branch that accepts what it spells. Sampling cannot reach a vector that
-      // is neither near the start of the product nor all on one branch, and a
-      // group's viability does not depend on the others.
+      // is neither near the start of the product nor all on one branch.
       _pushMotif(out, _literalOfAlternative(alt, 0, unicode, "viable"));
+      // A branch can also depend on what comes AFTER its group, which nothing
+      // deciding one group at a time can see: in `(?:a(?!-)|b(?=-))-` the
+      // branch is settled by the `-` that follows. So the finished motif is
+      // checked against the whole alternative, and where it is refused each
+      // group is tried in turn against that check until the alternative accepts
+      // the whole. Every branch is answered by the same question the pattern
+      // asks, rather than by a local guess.
+      _pushMotif(out, _repairedMotif(alt, unicode, meta.widths));
       var lit = _literalOfAlternative(alt, 0, unicode);
       // Bounded by what a subject can carry, not by a short fixed length. A
       // seven-character motif was discarded, and `(?:abcdefg|abcdefg)+$` costs
@@ -5189,6 +5241,11 @@ function testProbeSubjectsReachTheQuantifiedBody() {
       }).join("") + "(?:(?<!a)c|(?<=a)d)-";
       return "^(?:" + unit + "|" + unit + ")+$";
     })(), "abaaaad-"],
+    // And one whose branches are settled by what comes AFTER their group, which
+    // nothing deciding a group in isolation can see. The finished motif is put
+    // to the alternative itself and each group tried until it accepts.
+    ["^(?:" + "(?:a(?=a)|b(?!a))".repeat(3) + "(?:a(?=b)|b(?!b))(?:a(?!-)|b(?=-))-|" +
+     "(?:a(?=a)|b(?!a))".repeat(3) + "(?:a(?=b)|b(?!b))(?:a(?!-)|b(?=-))-)+$", "aaaab-"],
     // Six compounds in front of the costly one. What a quantified group
     // repeats is taken whatever precedes it, as a quantified character is.
     ["^(?:(?:a-)+|(?:b-)+|(?:c-)+|(?:d-)+|(?:e-)+|(?:f-)+|(?:z@|z@)+)$", "z@"],
@@ -5625,6 +5682,8 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // word it is spelled like, so the walk to the keyword reads through it.
     ["var J = class of {} / 2; var re = /(?:ys+)+$/;",    "/(?:ys+)+$/"],
     ["var K = function of() {} / 2; var re = /(?:yt+)+$/;", "/(?:yt+)+$/"],
+    // The generator star stands between `function` and the name it gives.
+    ["var M = function* of() {} / 2; var re = /(?:yz+)+$/;", "/(?:yz+)+$/"],
     // A superclass written as a long member expression. The walk back to the
     // keyword is bounded by the token list, not by a count of its own.
     ["var L = class extends ns" + ".a".repeat(255) + " {} / 2; var re = /(?:yu+)+$/;",
@@ -5913,6 +5972,9 @@ function testProbeSubjectsMakeACatastrophicPatternCost() {
       }).join("") + "-";
       return "^(?:" + unit + "|" + unit + ")+$";
     })(),
+    // And one whose branches are settled by what follows their group.
+    "^(?:" + "(?:a(?=a)|b(?!a))".repeat(3) + "(?:a(?=b)|b(?!b))(?:a(?!-)|b(?=-))-|" +
+      "(?:a(?=a)|b(?!a))".repeat(3) + "(?:a(?=b)|b(?!b))(?:a(?!-)|b(?=-))-)+$",
     // And one whose last group reads what the groups before it produced.
     (function () {
       var vec = [0, 1, 0, 0, 0, 0];

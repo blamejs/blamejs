@@ -1204,8 +1204,12 @@ function _governingFunctionOrClass(tokens) {
     // reads a name that way.
     if (t.type === TOK_KEYWORD) {
       var back = i - 1;
+      // Past trivia, and past the generator star, which stands between
+      // `function` and the name it gives: `function* of() {}` names a
+      // generator `of`.
       while (back >= 0 &&
-             (tokens[back].type === TOK_WS || tokens[back].type === TOK_COMMENT)) back -= 1;
+             (tokens[back].type === TOK_WS || tokens[back].type === TOK_COMMENT ||
+              (tokens[back].type === TOK_PUNCT && tokens[back].value === "*"))) back -= 1;
       if (back >= 0 && tokens[back].type === TOK_KEYWORD &&
           (tokens[back].value === "function" || tokens[back].value === "class")) {
         i -= 1;
