@@ -13,6 +13,7 @@
  * be read as not blocking.
  */
 
+var vm = require("vm");
 var sm = require("../helpers/_shape-match");
 var helpers = require("../helpers");
 
@@ -143,7 +144,203 @@ function testTemplateRunStaysLinear() {
              label: "shape-match: tokenize over a run of templates" }));
 }
 
+// ---- regexSpans ----
+
+// The one answer to "which slashes open a pattern", for both readers in the
+// file and for the one that extracts literals.
+function testRegexSpansReadsPatterns() {
+  var read = sm.regexSpans("var re = /a+/g; var n = 4 / 2;");
+  check("regexSpans: a pattern is one span and a division is none",
+        read !== null && Object.keys(read.spans).length === 1 &&
+        read.unread.length === 0);
+  var start = Number(Object.keys(read.spans)[0]);
+  check("regexSpans: the span covers the literal and its flags",
+        "var re = /a+/g; var n = 4 / 2;".slice(start, read.spans[start]) === "/a+/g");
+
+  // A template is one token, so a pattern inside a substitution reaches no
+  // caller reading pattern tokens.
+  var inSub = sm.regexSpans("var t = `${ /a+/.test(s) }`;");
+  check("regexSpans: a pattern inside a substitution is found",
+        inSub !== null && Object.keys(inSub.spans).length === 1);
+
+  // Readable and holding no pattern is NOT the same answer as unreadable: a
+  // caller told there are none reads every slash as division.
+  var none = sm.regexSpans("var n = 4 / 2;");
+  check("regexSpans: a source with no pattern reads clean and names no region",
+        none !== null && Object.keys(none.spans).length === 0 &&
+        none.unread.length === 0);
+}
+
+// The stripper takes its slash decisions from that same table, so a pattern
+// holding a comment opener is not read as division. Left to its own reading it
+// swallowed the rest of the file.
+function testStripperKeepsPatternsHoldingCommentOpeners() {
+  var cases = [
+    "var re = /[/*]/.test(s); var after = 1;",
+    "var await = 4; var g = async x => 1; await / 2; var re = /[/*]/; var after = 1;",
+    "var await = 4; var t = `${await / 2}`; var re = /[/*]/; var after = 1;",
+    // The loop carries the label the jump names, since a `break` to a label
+    // nothing declares is an early error and pins nothing.
+    "async: while (x) { break async\n/[/*]/.test(t); var after = 1; }",
+    // A bare arrow cannot be a division operand, so what follows its body is a
+    // statement, which may begin with a pattern.
+    "var q = () => {}\n/[a/*]/.test(s); var after = 1;",
+    "var q2 = (() => {}) / 2; var re = /[/*]/; var after = 1;",
+    // The HTML-like comment forms a script accepts.
+    "<!-- comment\n/[/*]/.test(s); var after = 1;",
+  ];
+  // Each fixture is put to the parser first: one written on source no parser
+  // accepts pins nothing, and two of these did before they were corrected.
+  var unparseable = 0;
+  cases.forEach(function (src) {
+    try { new vm.Script("(function () {\n" + src + "\n})"); }
+    catch (_e) { unparseable += 1; }
+  });
+  check("stripComments: every fixture here is valid source", unparseable === 0);
+  var kept = 0;
+  cases.forEach(function (src) {
+    if (sm.stripComments(src).indexOf("var after = 1") !== -1) kept += 1;
+  });
+  check("stripComments: a slash read as an opener cannot delete the file",
+        kept === cases.length);
+}
+
+// Reading the patterns in a source costs one pass over it. Reading them back
+// out of each substitution after the fact cost a pass per nesting level, and
+// 800 nested substitutions took 99ms where the whole file takes under one.
+function testNestedSubstitutionsStayLinear() {
+  function nested(depth) {
+    var s = "x";
+    for (var i = 0; i < depth; i += 1) s = "`${" + s + "}`";
+    return "var d = " + s + ";";
+  }
+  check("regexSpans: a deeply nested substitution is still read",
+        sm.regexSpans("var d = `${`${ /a+/.test(s) }`}`;") !== null &&
+        Object.keys(sm.regexSpans("var d = `${`${ /a+/.test(s) }`}`;").spans)
+          .length === 1);
+  check("stripComments: nesting substitutions does not grow the work",
+        !helpers.looksSuperlinear(function (depth) {
+          sm.stripComments(nested(depth));
+        }, { small: 400, large: 800,
+             label: "shape-match: stripComments over nested substitutions" }));
+
+  // Past the depth the recursive read can carry, it runs out of stack and the
+  // brace COUNT finds where the substitution ends without reading inside it.
+  // The table is then short by whatever that substitution held, which is worse
+  // than no table: the caller reads every slash in there as division, and a
+  // pattern holding a `/*` opens a comment that runs to the end of the file.
+  var deep = "var t=" + "`${".repeat(1600) + "/[/*]/.test(x)" +
+             "}`".repeat(1600) + "; var after=1;";
+  var deepParses = true;
+  try { new vm.Script("(function () {\n" + deep + "\n})"); }
+  catch (_e) { deepParses = false; }
+  // Whether the read reaches that depth depends on the stack the process was
+  // given, so the claim is not that it fails: it is that the answer is never a
+  // table that quietly omits what it did not read. Either the region was read
+  // and the pattern is in the table, or the source is reported unread.
+  //
+  // A process whose stack cannot parse the fixture at all holds the reader to
+  // nothing, so that is said rather than passed over: `--stack-size=200`
+  // reaches it, the default and larger do not.
+  if (!deepParses) {
+    check("regexSpans: deep nesting is not exercised, this stack cannot parse it",
+          true);
+    return;
+  }
+  var deepRead = sm.regexSpans(deep);
+  var deepComplete = deepRead !== null &&
+    Object.keys(deepRead.spans).some(function (k) {
+      return deep.slice(Number(k), deepRead.spans[k]) === "/[/*]/";
+    });
+  check("regexSpans: an answer is complete or it names the region it did not read",
+        deepRead === null || deepComplete || deepRead.unread.length > 0);
+
+  // A region that went unread costs that region and nothing else. The patterns
+  // beside it are still found, and a reader that discarded them fell back over
+  // code it had already read.
+  var beside = "var re = /(a+)+$/;\n" + nested(1600);
+  var besideRead = sm.regexSpans(beside);
+  check("regexSpans: a pattern beside an unread region is still found",
+        besideRead === null || Object.keys(besideRead.spans).some(function (k) {
+          return beside.slice(Number(k), besideRead.spans[k]) === "/(a+)+$/";
+        }));
+  var stripped = sm.stripComments(deep);
+  var strippedParses = true;
+  try { new vm.Script("(function () {\n" + stripped + "\n})"); }
+  catch (_e2) { strippedParses = false; }
+  check("stripComments: an unread region falls back rather than deleting the file",
+        strippedParses && stripped.indexOf("var after=1") !== -1);
+
+  // Inside a region the reader could not read, the walk answers on its own, so
+  // it has to read a bare arrow's body the way the table does. Read as a
+  // value, the slash below it divided and the `/*` inside that pattern opened
+  // a comment that ran to the end of the file.
+  var afterDeep = nested(1000) +
+    "var q = () => {}\n/[a/*]/.test(s); var after = 1;";
+  var afterDeepParses = true;
+  try { new vm.Script("(function () {\n" + afterDeep + "\n})"); }
+  catch (_e3) { afterDeepParses = false; }
+  if (!afterDeepParses) {
+    check("stripComments: the fallback arrow case needs a stack this lacks", true);
+    return;
+  }
+  var afterOut = sm.stripComments(afterDeep);
+  var afterParses = true;
+  try { new vm.Script("(function () {\n" + afterOut + "\n})"); }
+  catch (_e4) { afterParses = false; }
+  check("stripComments: a bare arrow reads the same inside an unread region",
+        afterParses && afterOut.indexOf("var after = 1") !== -1);
+
+  // The code INSIDE an unread region is copied as it stands rather than read
+  // by a walk that has none of the reader's contextual rules. Answered from
+  // that walk, `await / 2` written there divided or opened a pattern depending
+  // on which rule was missing, and either answer can take the rest of the file.
+  var inner = "(await / 2, /[/*]/.test(s), 1)";
+  var wrapped = inner;
+  for (var w = 0; w < 1000; w += 1) wrapped = "`${" + wrapped + "}`";
+  var contextual = "var await = 4; var t = " + wrapped + "; var tail = 1;";
+  var contextualParses = true;
+  try { new vm.Script("(function () {\n" + contextual + "\n})"); }
+  catch (_e5) { contextualParses = false; }
+  if (!contextualParses) {
+    check("stripComments: the contextual unread case needs a stack this lacks", true);
+    return;
+  }
+  var contextualOut = sm.stripComments(contextual);
+  var contextualOk = true;
+  try { new vm.Script("(function () {\n" + contextualOut + "\n})"); }
+  catch (_e6) { contextualOk = false; }
+  check("stripComments: an unread region is copied rather than guessed at",
+        contextualOk && contextualOut.indexOf("var tail = 1") !== -1);
+
+  // Where such a substitution ENDS is only a brace count past that depth, and
+  // the count reads a brace written inside a pattern as structural. So the
+  // range runs to the end of the source rather than to a boundary nobody can
+  // place: resuming at the counted one resumed in the wrong mode and left the
+  // source after it neither stripped nor parseable.
+  var counted = "var t = ";
+  var inner2 = "/\\{[/*]/.test(s)";
+  for (var c2 = 0; c2 < 1100; c2 += 1) inner2 = "`${" + inner2 + "}`";
+  counted += inner2 + ";\n/* note */ var tail = 1;";
+  var countedParses = true;
+  try { new vm.Script("(function () {\n" + counted + "\n})"); }
+  catch (_e7) { countedParses = false; }
+  if (!countedParses) {
+    check("stripComments: the counted-boundary case needs a stack this lacks", true);
+    return;
+  }
+  var countedOut = sm.stripComments(counted);
+  var countedOk = true;
+  try { new vm.Script("(function () {\n" + countedOut + "\n})"); }
+  catch (_e8) { countedOk = false; }
+  check("stripComments: a boundary nobody can place does not move the resume point",
+        countedOk && countedOut.indexOf("var tail = 1") !== -1);
+}
+
 function run() {
+  testNestedSubstitutionsStayLinear();
+  testRegexSpansReadsPatterns();
+  testStripperKeepsPatternsHoldingCommentOpeners();
   testFindCallsSimpleIdent();
   testFindCallsMemberChain();
   testFindCallsBracketAccess();

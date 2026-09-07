@@ -1,0 +1,39 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.19.4",
+  "date": "2026-09-07",
+  "headline": "One reader decides which slashes open a pattern, so stripping comments cannot delete a file",
+  "summary": "Two readers in the test substrate each decided whether a `/` opens a pattern or divides, from their own state, and they had drifted apart. The comment stripper is the one where a wrong answer costs the most: a slash it reads as an opener swallows to the next slash, and where that span holds a `/*` the rest of the file goes with it. Both now read the same table, and the answer is checked by comparing them over the forms the gate's crossings generate rather than over a list of shapes.",
+  "sections": [
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "Vendored public suffix list moves to the 2026-09-07 snapshot",
+          "body": "`lib/vendor/public-suffix-list.dat` carries the list published as `2026-09-07_08-55-04_UTC`, from commit `24fdb5107983c3997144ca19e0d7e1e8fc714f03`, up from the `2026-09-05_20-59-48_UTC` snapshot 0.19.3 shipped. The domain content is identical between the two; the published stamp is what moved. `b.guardDomain` and the cookie and origin checks that read a registrable domain use it."
+        },
+        {
+          "title": "Vendored PKI bundle moves to 0.6.54",
+          "body": "`lib/vendor/blamejs-pki.cjs` carries `@blamejs/pki` 0.6.54, up from the 0.6.51 that shipped in 0.19.3. This is shipped code: `b.mtlsCa` and `b.auth.passkey` run it.\n\n0.6.52 opens a centrally generated private key delivered in a CMP response, undoing the two CMS layers in order and authorizing the authority before any key material is returned. 0.6.53 derives the public key of a composite ML-KEM private key across all twelve registered families, each checked byte for byte against the test vectors the draft publishes, and that derived key is the recipient the rest of the toolkit accepts. 0.6.54 completes an unsigned enrollment for a composite ML-KEM key: the challenge must still be addressed to the key the request asks for, and where the running engine cannot read that key the canonical composite encoding answers instead of a key object.\n\nThere are no API changes and nothing to do on upgrade. The bundle ships with no dependencies and no install hooks, and its recorded SHA-256 is checked against the file on every build."
+        }
+      ]
+    },
+    {
+      "heading": "Detectors",
+      "items": [
+        {
+          "title": "The comment stripper and the tokenizer give one answer",
+          "body": "`_shape-match.js` holds two readers of JavaScript. Both must decide whether a `/` opens a pattern or divides, and each carried state the other lacked: the tokenizer learned to read a function body, an arrow body, a template substitution and a contextual keyword, and the stripper did not. Put to the forms the gate's crossings generate, the two disagreed on 397 of 2,472.\n\nThe cost is not symmetric. A slash the stripper reads as an opener swallows every character to the next slash. `var await = 4; await / 2; var re = /[/*]/; var after = 1;` is valid source where `await` is an ordinary name, and stripping it produced `var await = 4; await / 2; var re = /[`: the tail of the file was gone, and what remained did not parse. The same held for a substitution reading `await` as an operator.\n\nWhich slashes open a pattern is now answered in one place, for both readers and for the reader that extracts pattern literals. That place walks into a template substitution too, to any depth, since a template is one token and a pattern written inside one reaches no caller reading pattern tokens. Over the 1,392 files in the tree the stripper's output is unchanged and all 9,072 literals are the same ones; the second copy of the substitution walk is gone.\n\nWhether they agree is now a check rather than a claim: the same crossings that drive the other sweeps are put to both readers, and any form where their answers differ is reported.\n\nThe patterns are collected while the source is read rather than looked for again afterwards. Finding where a template ends already reads each of its substitutions, so a pattern inside one is recorded there; reading them back walked every nesting level again, and 800 nested substitutions took 99ms against 1.3ms for one pass, 1,600 staying flat. Stripping the 1,378 source files in the tree, 29.8 MiB, takes 1.39s where it took 0.61s.\n\nA region the reader could not read is named rather than left out of the answer. Past the nesting depth its stack carries, a substitution's end is found by counting braces and nothing inside it is read: the patterns found elsewhere in the file are still reported, and that one range is reported as unread. The check that measures patterns for linear time reports such a region rather than reading it as a file holding none, and the comment stripper copies it as it stands rather than answering for it. Guessing there is a guess in both directions, since a division read as a pattern opener swallows to the next slash and a pattern read as division lets a `/*` inside it open a comment, and either can take the rest of the file.\n\nThe range runs to the end of the source. Where a substitution ends is then only a brace count, which counts a brace written inside a pattern as structural, so a reader resuming at it resumes in the wrong place: `/\\{[/*]/` inside such a substitution moved the resume point and left the block comment after it standing. What this costs is that comments past that point are not stripped, so a check reading the stripped source sees them as code. The framework holds no template nested anywhere near that deep."
+        },
+        {
+          "title": "A label is a label whatever word it is spelled like",
+          "body": "`break` and `continue` take a label and nothing else, so a slash after one opens a pattern. The tokenizer asked that only of an identifier, and `async`, `from` and `as` are in its keyword table, so `break async` followed by a line break and a pattern read the slash as division and swallowed from its opening slash. The rule now reads the label whatever word it is spelled like, which is how the same file already reads a class or function name."
+        },
+        {
+          "title": "A bare arrow's body ends a statement",
+          "body": "`var q = () => {} / 2` is not valid JavaScript: an arrow cannot be the left operand of a division without parentheses around it. What follows a bare arrow's body is a new statement, which may begin with a pattern, so `var q = () => {}` and then a line break and then `/re/.test(s)` emits that literal. Two fixtures pinned the unparseable form and so pinned nothing; both now pin the statement that really follows. `(() => {}) / 2` and `function () {} / 2` divide as they did, and the paren is what makes the first of those an operand."
+        }
+      ]
+    }
+  ]
+}
