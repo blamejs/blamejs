@@ -2069,14 +2069,23 @@ function testCommentStripHelper() {
      "// helpers.getChecks() + \" checks passed\"", false],
     // An arrow function and an async function expression are values, and their
     // bodies are blocks — the two bits differ, so both are pinned.
-    ["a bare arrow body still divides",
-     "var q = () => {} / 2; // helpers.getChecks() + \" checks passed\"", false],
+    //
+    // A BARE arrow is the exception: `var q = () => {} / 2` is not valid
+    // source, because an arrow cannot be a division operand without a paren
+    // around it. This pinned that unparseable form and so pinned nothing; what
+    // follows the brace is a new statement, which may begin with a pattern.
+    ["a bare arrow body opens a statement",
+     "var q = () => {}\n/[a/*]/.test(s); // helpers.getChecks() + \" checks passed\"",
+     false],
     ["a parenthesized arrow still divides",
      "var q = (() => {}) / 2; // helpers.getChecks() + \" checks passed\"", false],
     ["an async function expression still divides",
      "var q = async function () {} / 2; // helpers.getChecks() + \" checks passed\"", false],
-    ["an async arrow still divides",
-     "var q = async () => {} / 2; // helpers.getChecks() + \" checks passed\"", false],
+    // An async arrow is a bare arrow too, so `async () => {} / 2` is no more
+    // valid than the form above, and what follows its body is a statement.
+    ["an async arrow body opens a statement",
+     "var q = async () => {}\n/[a/*]/.test(s); // helpers.getChecks() + \" checks passed\"",
+     false],
     ["an async function declaration is not a value",
      "async function f() {} /[/*]/.test(x); " +
      "console.log(helpers.getChecks() + \" checks passed\");", true],
@@ -2614,10 +2623,14 @@ function testCommentStripPreservesParseability() {
     "for ([%N%] of [%R%]) {}",
     "for (let %N% = 0; %N% < 2; %N%++) { %R%; }",
   ];
-  // Every reserved word is offered as the binding name; the ones that cannot
-  // be one make source no parser accepts and are skipped, so the set this
-  // depends on is proven here rather than listed in the lexer.
-  var FOR_NAMES = RESERVED.concat(["k", "get", "set", "undefined"]);
+  // Every word the LEXER treats as a keyword is offered as the binding name,
+  // read from the lexer rather than listed beside it: `from` and `as` are
+  // keywords there and are legal binding names, and a list built from the
+  // reserved words alone could not reach them. The ones that cannot be a
+  // binding name make source no parser accepts and are skipped, so the set
+  // this depends on is proven here.
+  var FOR_NAMES = RESERVED.concat(shapeMatch.keywordWords())
+                          .concat(["k", "get", "set", "undefined"]);
   var forHits = [];
   var forForms = 0;
   FOR_HEADS.forEach(function (head) {
@@ -2739,14 +2752,14 @@ function testCommentStripPreservesParseability() {
         stripSpans[start] = end;
       });
     } catch (_e) { return; }                               // neither can read it
-    if (table === null) return;                            // the reader gave up
+    if (table === null || table.unread.length > 0) return; // a region went unread
     agreeForms += 1;
     var differs = false;
-    Object.keys(table).forEach(function (k) {
-      if (stripSpans[k] !== table[k]) differs = true;
+    Object.keys(table.spans).forEach(function (k) {
+      if (stripSpans[k] !== table.spans[k]) differs = true;
     });
     Object.keys(stripSpans).forEach(function (k) {
-      if (table[k] === undefined) differs = true;
+      if (table.spans[k] === undefined) differs = true;
     });
     if (!differs) return;
     agreeHits.push({
@@ -3027,8 +3040,24 @@ function testCommentStripPreservesParseability() {
     // A member named with a reserved word, and a call's parens.
     "var await = 4; var o = { async catch(){} }; await / 2; var re = /[/*]/; var after = 1;",
     "async function q2(){ g()\n { await /[/*]/.test(s); } } var after = 1;",
-    // A `for` header binds a name however it is spelled.
+    // A `for` header binds a name however it is spelled, including the words
+    // this lexer calls keywords that are not reserved at all.
     "for (let async of /[/*]/.exec(s) || []) {} var after = 1;",
+    "for (let from of /[/*]/.exec(s) || []) {} var after = 1;",
+    "for (let as of /[/*]/.exec(s) || []) {} var after = 1;",
+    // The HTML-like comment forms, which a script treats as line comments and
+    // which one reader knew and the other did not.
+    "<!-- comment\n/[/*]/.test(s); var after = 1;",
+    // `-->` is a comment only where it OPENS a line, and a module's first line
+    // continues the wrapper the runtime puts around the file, so this one is
+    // written on a line of its own.
+    "\n-->  comment\n/[/*]/.test(s); var after = 1;",
+    "var i = 3; while (i-->0) { g(); } var re = /[/*]/; var after = 1;",
+    // A BARE arrow cannot be a division operand, so what follows its body is a
+    // new statement and may begin with a pattern.
+    "var q = () => {}\n/[a/*]/.test(s); var after = 1;",
+    "var q2 = (() => {}) / 2; var re2 = /[/*]/; var after = 1;",
+    "var q3 = function () {} / 2; var re3 = /[/*]/; var after = 1;",
   ];
   STRIP_FORMS.forEach(function (form) {
     if (!parses(form, "strip-" + form)) {
@@ -4587,17 +4616,30 @@ function _regexLiteralsIn(source, baseOffset, bodyKind, isFragment) {
   // substitution, which is the same recursion written twice: the two agreed on
   // all 9,072 literals in the tree when they were compared, and two copies of
   // an answer are what drift.
-  var spans;
+  var read;
   try {
-    spans = shapeMatch.regexSpans(source, { bodyKind: bodyKind || null,
-                                            expressionStart: isFragment === true });
-  } catch (_e) { return out; }
-  if (spans === null) return out;                 // unreadable: nothing to report
+    read = shapeMatch.regexSpans(source, { bodyKind: bodyKind || null,
+                                           expressionStart: isFragment === true });
+  } catch (_e) { read = null; }
+  if (read === null) {
+    // The source could not be read at all. `unread` says so on the returned
+    // list, since a caller handed an empty one reads it as "this file holds no
+    // pattern" and clears it.
+    out.unread = [[0, source.length]];
+    return out;
+  }
   // Integer-like keys enumerate in ascending order, so the literals arrive in
   // the order they are written, which is the order a report reads them in.
-  Object.keys(spans).forEach(function (key) {
+  Object.keys(read.spans).forEach(function (key) {
     var start = Number(key);
-    out.push({ value: source.slice(start, spans[key]), start: baseOffset + start });
+    out.push({ value: source.slice(start, read.spans[key]),
+               start: baseOffset + start });
+  });
+  // A region nobody read is carried with them: the patterns found elsewhere in
+  // the file are still found, and the gate is told which part was not looked
+  // at rather than clearing the file on either count.
+  out.unread = read.unread.map(function (r) {
+    return [baseOffset + r[0], baseOffset + r[1]];
   });
   return out;
 }
@@ -6919,12 +6961,24 @@ function testOwnRegexesRunLinear() {
     // two `+` quantifiers measure superlinear once a probe reaches them.
     var literalByLine = {};
     try {
-      _regexLiteralsIn(content, 0).forEach(function (found) {
+      var literals = _regexLiteralsIn(content, 0);
+      literals.forEach(function (found) {
         var lnum = shapeMatch.positionToLineCol(content, found.start).line;
         if (!literalByLine[lnum]) literalByLine[lnum] = [];
         if (literalByLine[lnum].indexOf(found.value) === -1) {
           literalByLine[lnum].push(found.value);
         }
+      });
+      // A region the reader could not read holds patterns nobody measured, and
+      // an empty answer for it reads exactly like a file with none. It is
+      // reported instead, at the line it begins on.
+      (literals.unread || []).forEach(function (range) {
+        bad.push({
+          file: rel,
+          line: shapeMatch.positionToLineCol(content, range[0]).line,
+          content: "a region of this file could not be read, so any pattern " +
+            "written in it was never measured for linear time",
+        });
       });
     } catch (_e) { literalByLine = {}; }
 

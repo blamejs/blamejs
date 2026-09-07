@@ -261,6 +261,17 @@ function tokenize(source, opts) {
   // of `${{ async m(){ await /re/ } }}` were then read as statements.
   var expressionStart = opts !== null && opts !== undefined &&
                         opts.expressionStart === true;
+  // `opts.spansOut` is `{ spans, unread }`: the patterns found as start to end,
+  // and the ranges of the file that were not read. `opts.spanBase` is the offset this
+  // source sits at in the file. Finding where a template ends already
+  // tokenizes each of its substitutions, so recording the patterns during that
+  // read costs nothing; reading them back afterwards tokenized each nesting
+  // level again, and 800 nested substitutions took 99ms where one pass takes
+  // under one.
+  var spansOut = opts !== null && opts !== undefined && opts.spansOut ?
+                 opts.spansOut : null;
+  var spanBase = opts !== null && opts !== undefined && opts.spanBase ?
+                 opts.spanBase : 0;
   function _positionText(tok) {
     return tok === null && expressionStart ? "(" : _lastSigText(tok);
   }
@@ -357,6 +368,28 @@ function tokenize(source, opts) {
       continue;
     }
 
+    // The HTML-like comment forms. A script, which every file here is, treats
+    // `<!--` as a line comment and `-->` as one where it OPENS a line, and Node
+    // parses them that way. The comment stripper beside this already reads
+    // both; read as code here, the words inside one decided the next slash, and
+    // a caller taking this reading swallowed a pattern after them.
+    if (ch === "<" && source.substr(i, 4) === "<!--") {
+      var ho = i;
+      while (i < n && LINE_TERMINATOR_CODES.indexOf(source.charCodeAt(i)) === -1) i += 1;
+      tokens.push({ type: TOK_COMMENT, value: source.slice(ho, i), start: ho, end: i });
+      continue;
+    }
+    // ...only where it opens a line: anywhere else it is a decrement against a
+    // greater-than, as in `while (i-->0)`. Nothing significant may precede it
+    // on the line, which at the start of the source is trivially so.
+    if (ch === "-" && source.substr(i, 3) === "-->" &&
+        (prevSig === null || _lineBreakBeforeEnd(tokens))) {
+      var hc = i;
+      while (i < n && LINE_TERMINATOR_CODES.indexOf(source.charCodeAt(i)) === -1) i += 1;
+      tokens.push({ type: TOK_COMMENT, value: source.slice(hc, i), start: hc, end: i });
+      continue;
+    }
+
     // Block comment
     if (ch === "/" && source.charAt(i + 1) === "*") {
       var bc = i; i += 2;
@@ -414,7 +447,7 @@ function tokenize(source, opts) {
       }
       var ts = i;
       var here = _innermostBody(functionBodyStack);
-      var tEnd = _templateEnd(source, ts, here);
+      var tEnd = _templateEnd(source, ts, here, spansOut, spanBase);
       i = tEnd === -1 ? n : tEnd;
       var ttok = { type: TOK_TEMPLATE, value: source.slice(ts, i), start: ts, end: i };
       // A substitution holds an expression written in the grammar AROUND the
@@ -445,6 +478,7 @@ function tokenize(source, opts) {
       // rebuilds the pattern from this token builds one without it.
       while (i < n && /[gimsuydv]/.test(source.charAt(i))) i += 1;
       var rtok = { type: TOK_REGEX, value: source.slice(rs, i), start: rs, end: i };
+      if (spansOut !== null) spansOut.spans[spanBase + rs] = spanBase + i;
       tokens.push(rtok); prevSig = rtok;
       continue;
     }
@@ -714,7 +748,12 @@ function tokenize(source, opts) {
           beforeKw = _significantBefore(tokens, beforeKw);
           seeThroughGuard += 1;
         }
-        var kwLastSig = _lastSigText(beforeKw);
+        // Read through the same reader the brace classifier uses, so a
+        // FRAGMENT is treated as standing where an expression may: a
+        // substitution beginning `function(){} / 2` holds a function
+        // EXPRESSION, whose body closes a value, and read as a declaration
+        // that slash opened a pattern and ran past the substitution's end.
+        var kwLastSig = _positionText(beforeKw);
         // A restricted-production keyword with a line terminator after it has
         // ended its statement, so what follows begins a new one and the word is
         // a declaration: `return` on its own line, then `function g(){}`, whose
@@ -732,13 +771,14 @@ function tokenize(source, opts) {
             (beforeKw.value === "export" || beforeKw.value === "default")) {
           kwLastSig = _STATEMENT_POSITION;
         }
-        // An ARROW's body is a value the same way a function expression's is,
-        // and it has no keyword for the walk above to find: `var q = () => {}`
-        // leaves a function behind, so the slash in `() => {} / 2` divides.
-        // Read as a block, that slash opened a pattern that ran to the opening
-        // slash of the next one.
-        valueBodyStack.push(opensArrowBody ||
-                            (kwTok !== null && _braceOpensObject(kwLastSig)));
+        // An arrow's body is NOT a value for this question, though a function
+        // expression's is: `() => {} / 2` is not valid source at all, because a
+        // bare arrow cannot be a division operand. What follows the brace is a
+        // new statement, which may begin with a pattern, so
+        // `var q = () => {}` and then a line break and then `/re/.test(s)`
+        // emits that literal. Only `(() => {}) / 2` divides, and the paren
+        // around it is what makes it an operand.
+        valueBodyStack.push(kwTok !== null && _braceOpensObject(kwLastSig));
         braceStack.push(opensObject);
         // An object literal and a class body hold MEMBERS, not statements, so
         // a word there names a member however it is spelled. Without that,
@@ -1189,7 +1229,7 @@ var _STATEMENT_POSITION = "@stmt";
 // rather than trusting the list here.
 var _BINDABLE_KEYWORDS = _table({
   "async": 1, "await": 1, "yield": 1, "let": 1, "of": 1, "static": 1,
-  "get": 1, "set": 1, "undefined": 1,
+  "get": 1, "set": 1, "undefined": 1, "from": 1, "as": 1,
 });
 
 var _VALUE_KEYWORDS = _table({
@@ -1354,7 +1394,7 @@ function _seeThrough(frame, lastSig) {
 // ENDS needs it too: in `` `${await /}(a+)+$/.test(s)}` `` inside an async
 // function, a reader without it takes the `await` for a name, divides at the
 // slash, and ends the substitution at the `}` written inside the pattern.
-function _templateEnd(source, ts, bodyKind) {
+function _templateEnd(source, ts, bodyKind, spansOut, spanBase) {
   var n = source.length;
   var i = ts + 1;
   while (i < n) {
@@ -1373,8 +1413,24 @@ function _templateEnd(source, ts, bodyKind) {
       // confidently wrong is worse than giving up, because the fallback never
       // runs. Measured on the six shapes that separate them, the lexed answer
       // is right in all six and the count is wrong in one and absent in two.
-      var end = _lexedBraceEnd(source, i + 2, bodyKind);
-      if (end === -1) end = _countingBraceEnd(source, i + 2);
+      var end = _lexedBraceEnd(source, i + 2, bodyKind, spansOut,
+                               (spanBase || 0) + i + 2);
+      // The count finds where the substitution ENDS, and reads nothing inside
+      // it. A caller collecting patterns is told so rather than handed a table
+      // that is short by whatever that substitution held: at 1,600 nesting
+      // levels the recursive read runs out of stack, the count takes over, and
+      // a reader trusting the result read the pattern inside as division and
+      // deleted from it to the end of the file.
+      if (end === -1) {
+        end = _countingBraceEnd(source, i + 2);
+        // Only this substitution went unread. The spans found elsewhere in the
+        // file are still spans, and discarding them made a reader fall back
+        // over code it had already read correctly.
+        if (spansOut !== null) {
+          spansOut.unread.push([(spanBase || 0) + i + 2,
+                                (spanBase || 0) + (end === -1 ? n : end)]);
+        }
+      }
       if (end === -1) return -1;
       i = end + 1;
       continue;
@@ -1388,12 +1444,13 @@ function _templateEnd(source, ts, bodyKind) {
 // contents rather than counting characters. This is the answer taken first: it
 // reads strings, comments, patterns and nested templates as the tokens they
 // are, so a brace written inside any of them closes nothing.
-function _lexedBraceEnd(source, from, bodyKind) {
+function _lexedBraceEnd(source, from, bodyKind, spansOut, spanBase) {
   var toks;
   try {
     toks = tokenize(source.slice(from),
                     { stopAtCloseBrace: true, bodyKind: bodyKind || null,
-                      expressionStart: true });
+                      expressionStart: true,
+                      spansOut: spansOut || null, spanBase: spanBase || 0 });
   } catch (_e) { return -1; }
   var depth = 0;
   for (var i = 0; i < toks.length; i += 1) {
@@ -1464,16 +1521,6 @@ function _countingBraceEnd(source, from) {
   return -1;
 }
 
-// Where the substitution opening at `from` closes, lexed first and counted
-// only when the lexer finds no closing brace at all. `bodyKind` is the
-// function body the template sits in, which the expression inside it is
-// written in the grammar of.
-function _substitutionEndIn(text, from, bodyKind) {
-  var end = _lexedBraceEnd(text, from, bodyKind);
-  if (end === -1) end = _countingBraceEnd(text, from);
-  return end;
-}
-
 /**
  * Every pattern literal in `src`, as a table of start offset to end offset.
  *
@@ -1496,37 +1543,30 @@ function _substitutionEndIn(text, from, bodyKind) {
 // next `*/`. A nested substitution that cannot be read costs only itself, and
 // the spans found around it are still returned.
 function regexSpans(src, opts) {
-  var out = Object.create(null);
-  return _collectRegexSpans(src, 0, opts || null, out) ? out : null;
+  var state = { spans: Object.create(null), unread: [] };
+  var settings = { spansOut: state, spanBase: 0 };
+  if (opts) {
+    settings.bodyKind = opts.bodyKind || null;
+    settings.expressionStart = opts.expressionStart === true;
+  }
+  // ONE pass. Finding where a template ends already reads each of its
+  // substitutions, so the patterns inside one are recorded there rather than
+  // read back afterwards: walking them again cost a tokenize per nesting
+  // level, and 800 nested substitutions took 99ms against under one for a
+  // single pass.
+  try { tokenize(src, settings); } catch (_e) { return null; }
+  return state;
 }
 
-function _collectRegexSpans(src, base, opts, out) {
-  var toks;
-  try { toks = tokenize(src, opts); } catch (_e) { return false; }
-  for (var i = 0; i < toks.length; i += 1) {
-    var tok = toks[i];
-    if (tok.type === TOK_REGEX) {
-      out[base + tok.start] = base + tok.end;
-      continue;
-    }
-    if (tok.type !== TOK_TEMPLATE) continue;
-    var text = tok.value;
-    for (var j = 0; j < text.length - 1; j += 1) {
-      if (text.charAt(j) !== "$" || text.charAt(j + 1) !== "{") continue;
-      // `\${` is an escaped dollar and opens nothing; `\\${` is an escaped
-      // backslash and opens a substitution. What decides it is whether the run
-      // of backslashes before the `$` is odd, not whether there is one.
-      var slashes = 0;
-      for (var b = j - 1; b >= 0 && text.charAt(b) === "\\"; b -= 1) slashes += 1;
-      if (slashes % 2 === 1) continue;
-      var close = _substitutionEndIn(text, j + 2, tok.bodyKind);
-      if (close === -1) break;                    // unterminated, nothing to read
-      _collectRegexSpans(text.slice(j + 2, close), base + tok.start + j + 2,
-                         { bodyKind: tok.bodyKind, expressionStart: true }, out);
-      j = close;
-    }
+// Does `at` fall in a range the reader did not read? A caller holds its own
+// answer for those and the table's answer everywhere else, since a table short
+// by a region is not a table saying that region holds no pattern.
+function _inUnread(unread, at) {
+  if (unread === null) return false;
+  for (var i = 0; i < unread.length; i += 1) {
+    if (at >= unread[i][0] && at < unread[i][1]) return true;
   }
-  return true;
+  return false;
 }
 
 // The `function` or `class` keyword whose body the brace about to be pushed
@@ -1920,7 +1960,11 @@ function stripComments(src, onComment, onRegex) {
   // those. Null when the tokenizer threw, which leaves the walk reading
   // slashes the way it did before.
   var spans = null;
-  try { spans = regexSpans(src); } catch (_e) { spans = null; }
+  var unread = null;
+  try {
+    var read = regexSpans(src);
+    if (read !== null) { spans = read.spans; unread = read.unread; }
+  } catch (_e) { spans = null; unread = null; }
   // Each frame carries its own brace depth, because an interpolation ends at
   // the `}` that BALANCES its `${` — not at the first one. `${ {a:1}.a }` and
   // `${ JSON.stringify({a:{b:1}}) }` both close an inner object before the
@@ -2021,11 +2065,11 @@ function stripComments(src, onComment, onRegex) {
       // slash and deleted everything between. `spans` is null only when the
       // tokenizer could not read the source at all, and this walk answers
       // alone then rather than not at all.
-      if (c === "/" && (spans === null
-                          ? _regexCanStartHere(lastSig)
-                          : spans[i] !== undefined)) {
+      var readHere = spans !== null && !_inUnread(unread, i);
+      if (c === "/" && (readHere ? spans[i] !== undefined
+                                 : _regexCanStartHere(lastSig))) {
         var rxStart = i;
-        if (spans !== null) {
+        if (readHere) {
           i = spans[i];
         } else {
           i += 1;
@@ -2322,6 +2366,11 @@ module.exports = {
   // written inside a template substitution, which a caller reading pattern
   // TOKENS never sees because a template is one token.
   regexSpans:         regexSpans,
+  // The words this lexer treats as keywords. Exported so a sweep can cross the
+  // vocabulary it actually holds rather than a list written beside it: `from`
+  // and `as` are keywords here and are legal binding names, and a sweep built
+  // from the RESERVED list alone had no way to reach them.
+  keywordWords:       function () { return Object.keys(KEYWORDS); },
   // Exported for the same reason `commentRanges` is: a caller that EXCISES a
   // comment has to answer "would these two characters have fused" the way the
   // stripper does. `foo/* note */bar` becomes `foobar` without it, and
