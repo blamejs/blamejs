@@ -14,6 +14,7 @@
  */
 
 var sm = require("../helpers/_shape-match");
+var helpers = require("../helpers");
 
 var failed = 0;
 var passed = 0;
@@ -123,6 +124,25 @@ function testTokenizerHandlesRegexAfterReturn() {
         calls.length === 1);
 }
 
+// ---- template substitutions ----
+
+// Reading where a substitution ends costs the substitution, not the rest of
+// the file. It used to lex the whole remainder for each one, and each nested
+// template in that remainder lexed ITS remainder again: 1,280 one-substitution
+// templates took 11.4 seconds, growing about eightfold per doubling.
+function testTemplateRunStaysLinear() {
+  var UNIT = "var x = `a${1}`;\n";
+  check("tokenizer: a run of templates reads the same tokens either way",
+        sm.tokenize(UNIT.repeat(64)).filter(function (t) {
+          return t.type === sm.TOK_TEMPLATE;
+        }).length === 64);
+  check("tokenizer: a run of templates does not grow superlinearly",
+        !helpers.looksSuperlinear(function (n) {
+          sm.tokenize(UNIT.repeat(n));
+        }, { small: 320, large: 640,
+             label: "shape-match: tokenize over a run of templates" }));
+}
+
 function run() {
   testFindCallsSimpleIdent();
   testFindCallsMemberChain();
@@ -137,6 +157,7 @@ function run() {
   testAliasesOfFindsConstRebind();
   testTokenizerHandlesTemplateLiteral();
   testTokenizerHandlesRegexAfterReturn();
+  testTemplateRunStaysLinear();
 
   if (failed > 0) {
     console.error("\n" + failed + " check(s) FAILED, " + passed + " passed");

@@ -335,6 +335,31 @@ function _releaseBranchFor(version) {
   return "release/v" + version;
 }
 
+// The release message, derived from the release notes: a subject line, the
+// summary, and one line per item under each section heading.
+//
+// Read at the moment it is needed rather than kept. The commit body is written
+// once, at `commit`, and the notes go on changing after it: a review round adds
+// a Fixed item, a vendor bump adds a Changed one, a section is retitled. The
+// commit then names a release it no longer describes, and with the repository's
+// squash setting (`squash_merge_commit_message: COMMIT_MESSAGES`) that stale
+// body is what main records. v0.19.2 landed carrying 2 of its 3 Fixed items and
+// 1 of its 5 Changed ones for exactly that reason.
+function _releaseMessageLines(version) {
+  var rn = JSON.parse(fs.readFileSync(_releaseNotesPath(version), "utf8"));
+  var lines = [version + " — " + rn.headline, "", rn.summary];
+  if (Array.isArray(rn.sections)) {
+    rn.sections.forEach(function (s) {
+      if (!Array.isArray(s.items) || s.items.length === 0) return;
+      lines.push("", s.heading + ":");
+      s.items.forEach(function (it) {
+        lines.push("  - " + it.title);
+      });
+    });
+  }
+  return lines;
+}
+
 function _releaseNotesPath(version) {
   return path.join(ROOT, "release-notes", "v" + version + ".json");
 }
@@ -523,7 +548,7 @@ var BACKEND_LIVE_MAP = [
   },
   {
     backend:  "smtp-mail",
-    match:    ["lib/mail-send", "lib/mail-smtp", "lib/mail-require-tls",
+    match:    ["lib/mail-send", "lib/mail-require-tls",
                "lib/mail-server", "lib/network-smtp-policy", "lib/mail-dkim",
                "lib/mail-crypto", "lib/mail-deploy", "lib/mail-auth",
                "lib/mail.js"],
@@ -532,7 +557,7 @@ var BACKEND_LIVE_MAP = [
   },
   {
     backend:  "ntp",
-    match:    ["lib/ntp-check", "lib/network-nts", "lib/network-ntp"],
+    match:    ["lib/ntp-check", "lib/network-nts"],
     services: ["ntp"],
     tests:    ["ntp-check"],
   },
@@ -553,9 +578,15 @@ var BACKEND_LIVE_MAP = [
   },
   {
     backend:  "federation-keycloak",
-    match:    ["lib/oauth", "lib/saml", "lib/openid", "lib/auth.js",
-               "lib/auth-header", "lib/ciba", "lib/oid4v", "lib/jar",
-               "lib/jarm", "lib/par", "lib/dcr", "lib/scim"],
+    // These are matched as path prefixes, so they carry the directory the
+    // module is actually in. Eleven of the twelve named `lib/<name>` for a
+    // module that lives under `lib/auth/` or `lib/middleware/`, which matched
+    // nothing: every OAuth, SAML, OIDC, CIBA and SCIM change reached a merge
+    // with this backend never selected. `jarm`, `par` and `dcr` named no
+    // module at all and are gone rather than repointed.
+    match:    ["lib/auth/oauth", "lib/auth/saml", "lib/auth/openid",
+               "lib/auth/ciba", "lib/auth/oid4v", "lib/auth/jar",
+               "lib/auth-header", "lib/middleware/scim"],
     services: ["keycloak"],
     tests:    ["federation-auth"],
   },
@@ -673,12 +704,48 @@ function _assertEveryIntegrationFileIsClaimed() {
   }
 }
 
+// Owning a test is not the same as being reachable. Every `match` prefix is a
+// path prefix, so one naming a module that has moved matches nothing and the
+// entry is never selected, while the entry above still CLAIMS the test and so
+// passes that check. That is how the federation backend went unselected: its
+// twelve prefixes named `lib/<name>` for modules sitting under `lib/auth/`,
+// and every OAuth, SAML, OIDC, CIBA and SCIM change was released with the
+// Keycloak leg silently skipped. A prefix that matches no file in the repo is
+// refused here rather than reported.
+function _assertEveryMatcherMatchesAFile() {
+  // Read off the filesystem, as the sibling check above reads test/integration.
+  // Whether a path exists is not a question about git, and routing it through
+  // the capture seam would let a stub written for a diff decide it.
+  var tracked = [];
+  (function walk(dir) {
+    fs.readdirSync(dir, { withFileTypes: true }).forEach(function (e) {
+      var full = path.join(dir, e.name);
+      if (e.isDirectory()) { walk(full); return; }
+      tracked.push(path.relative(ROOT, full).split(path.sep).join("/"));
+    });
+  })(path.join(ROOT, "lib"));
+  var dead = [];
+  BACKEND_LIVE_MAP.forEach(function (entry) {
+    entry.match.forEach(function (prefix) {
+      var hit = tracked.some(function (f) { return f.indexOf(prefix) !== -1; });
+      if (!hit) dead.push(entry.backend + " -> " + prefix);
+    });
+  });
+  if (dead.length > 0) {
+    throw new Error(
+      "release: " + dead.length + " BACKEND_LIVE_MAP matcher(s) match no file under lib/, " +
+      "so the backend they belong to can never be selected:\n  " + dead.join("\n  ") + "\n" +
+      "Point each at the path the module actually has, or drop it if the module is gone.");
+  }
+}
+
 // Map the changed-file set onto the backends whose protocol surface was
 // touched. Returns a de-duplicated, deterministic list of
 // { backend, services, tests, matchedBy } entries.
 function _detectTouchedBackends(changedFiles) {
   var hits = [];
   _assertEveryIntegrationFileIsClaimed();
+  _assertEveryMatcherMatchesAFile();
   BACKEND_LIVE_MAP.forEach(function (entry) {
     var matchedBy = changedFiles.filter(function (f) {
       return entry.match.some(function (m) { return f.indexOf(m) !== -1; });
@@ -942,17 +1009,7 @@ function cmdCommit() {
   // Compose commit body from the release-notes JSON. Operators can
   // amend post-commit; the auto-generated body is meant as a sensible
   // default that mirrors the CHANGELOG entry shape.
-  var rn = JSON.parse(fs.readFileSync(_releaseNotesPath(next), "utf8"));
-  var lines = [next + " — " + rn.headline, "", rn.summary];
-  if (Array.isArray(rn.sections)) {
-    rn.sections.forEach(function (s) {
-      if (!Array.isArray(s.items) || s.items.length === 0) return;
-      lines.push("", s.heading + ":");
-      s.items.forEach(function (it) {
-        lines.push("  - " + it.title);
-      });
-    });
-  }
+  var lines = _releaseMessageLines(next);
   var msgPath = path.join(ROOT, ".scratch", "release-commit-msg.txt");
   try { fs.mkdirSync(path.dirname(msgPath), { recursive: true }); } catch (_e) { /* ignore */ }
   fs.writeFileSync(msgPath, lines.join("\n") + "\n");
@@ -1394,7 +1451,42 @@ function cmdMerge() {
     throw new Error("release: refusing to merge PR #" + prNum + " — " +
                     unresolved.length + " unresolved review thread(s)");
   }
-  _run("gh", ["pr", "merge", prNum, "--squash", "--delete-branch"]);
+  // The squash message is derived from the release notes HERE, not inherited
+  // from the branch commits. Left to GitHub it is built by concatenating them,
+  // headed by the release commit's body, which was composed at `commit` and has
+  // not tracked the notes since. What main records is then a stale description
+  // of the release it carries, and a commit message is read by operators.
+  // Derived from the LOCAL release notes, so the local tree has to be the tree
+  // that was reviewed. Everything above this asked the remote about the PR; the
+  // notes are read off disk. With an uncommitted edit or a stale checkout the
+  // squash commit would describe content that is not in what is being merged,
+  // and a commit message on main is read by operators as a description of it.
+  var localHead = _captureOk("reading the local head", "git", ["rev-parse", "HEAD"]).stdout.trim();
+  var prHead = _ghJson(_captureQuery("PR #" + prNum + " head", "gh",
+    ["pr", "view", prNum, "--json", "headRefOid"]), "PR #" + prNum + " head").headRefOid;
+  if (!_gitClean()) {
+    throw new Error("release: refusing to merge PR #" + prNum + " — the working tree is " +
+      "dirty, so the squash message would be built from notes that are not in the " +
+      "branch being merged. Commit or discard the changes, then re-run merge.");
+  }
+  if (localHead !== prHead) {
+    throw new Error("release: refusing to merge PR #" + prNum + " — local HEAD is " +
+      localHead.slice(0, 8) + " and the reviewed PR head is " + String(prHead).slice(0, 8) +
+      ". The squash message is built from the local release notes, which would then " +
+      "describe a tree other than the one being merged. Fetch and check the branch out " +
+      "at the PR head, then re-run merge.");
+  }
+  var mergeLines = _releaseMessageLines(_readPackageVersion());
+  var mergeBodyPath = path.join(ROOT, ".scratch", "release-squash-msg.txt");
+  try { fs.mkdirSync(path.dirname(mergeBodyPath), { recursive: true }); } catch (_e) { /* ignore */ }
+  fs.writeFileSync(mergeBodyPath, mergeLines.slice(2).join("\n") + "\n");
+  // Bound to the head that was checked. Between reading it and running this,
+  // the branch can move, and GitHub would then merge the new head under a
+  // subject and body describing the tree that was verified. `--match-head-commit`
+  // makes the merge itself refuse when the head is no longer that one.
+  _run("gh", ["pr", "merge", prNum, "--squash", "--delete-branch",
+              "--match-head-commit", prHead,
+              "--subject", mergeLines[0], "--body-file", mergeBodyPath]);
   _ok("PR #" + prNum + " squash-merged");
 
   _run("git", ["checkout", "main"]);

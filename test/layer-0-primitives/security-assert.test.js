@@ -62,7 +62,7 @@ function _synthCaPem(cn) {
     algId, name, validity, name, spki]);
   var der      = asn1.writeSequence([tbs, algId, asn1.writeNode(0x03, Buffer.from([0, 0, 0, 0]))]);
   return "-----BEGIN CERTIFICATE-----\n" +
-    der.toString("base64").replace(/(.{64})/g, "$1\n") +
+    der.toString("base64").match(/.{1,64}/g).join("\n") +
     "\n-----END CERTIFICATE-----\n";
 }
 

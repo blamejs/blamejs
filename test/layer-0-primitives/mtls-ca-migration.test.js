@@ -17,6 +17,7 @@ var fs         = require("fs");
 var os         = require("os");
 var path       = require("path");
 var nodeCrypto = require("node:crypto");
+var asn1       = require("../../lib/asn1-der");
 var engine     = require("../../lib/mtls-engine-default");
 var pki        = require("../../lib/vendor/blamejs-pki.cjs");
 
@@ -3985,11 +3986,108 @@ async function run() {
     await testJournalRetainedRootSkippedWhenLiveCertAbsent();
     await testMtlsCaReachableBranchCoverage();
     await testReconcileFileAbsentBranches();
+    testDnGenerationMatchesThePatternItReplaced();
   } finally {
     for (var i = 0; i < _tmpDirs.length; i++) {
       try { fs.rmSync(_tmpDirs[i], { recursive: true, force: true }); } catch (_e) { /* best-effort cleanup */ }
     }
   }
+}
+
+// `parseGeneration` reads the `OU=CAv{N}` tag by splitting the subject on its
+// RDN separators, where it used to read it with
+// `(?:^|[\r\n]|(?<!\\)[,+])\s*OU=CAv(\d+)`. Equivalence is the part that needs
+// evidence, so the pattern is kept here as the reference implementation and the
+// shipped function is required to agree with it on certificates built from the
+// pieces a DN is made of: the tag, attributes that only resemble it, values
+// carrying a separator that must not separate, and multi-valued RDNs, whose
+// members node joins with the `+` that must.
+var _DN_OIDS = { CN: "2.5.4.3", OU: "2.5.4.11", O: "2.5.4.10" };
+var _dnCertKey = null;
+
+// rdn: [[type, value], ...] — more than one pair is one multi-valued RDN.
+function _certWithSubject(rdns) {
+  if (!_dnCertKey) {
+    var kp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+    _dnCertKey = { spki: kp.publicKey.export({ type: "spki", format: "der" }),
+                   priv: kp.privateKey };
+  }
+  var sigAlgId = asn1.writeSequence([asn1.writeOid("1.2.840.10045.4.3.2")]);
+  var name = asn1.writeSequence(rdns.map(function (rdn) {
+    return asn1.writeNode(0x31, Buffer.concat(rdn.map(function (av) {
+      return asn1.writeSequence([asn1.writeOid(_DN_OIDS[av[0]]),
+        asn1.writeNode(0x0c, Buffer.from(av[1], "utf8"))]);
+    })));
+  }));
+  var tbs = asn1.writeSequence([
+    asn1.writeContextExplicit(0, asn1.writeInteger(Buffer.from([2]))),
+    asn1.writeInteger(Buffer.from([0x12, 0x34, 0x56, 0x78])),
+    sigAlgId, name,
+    asn1.writeSequence([asn1.writeNode(0x17, Buffer.from("250101000000Z", "ascii")),
+                        asn1.writeNode(0x17, Buffer.from("350101000000Z", "ascii"))]),
+    name, _dnCertKey.spki,
+  ]);
+  var der = asn1.writeSequence([tbs, sigAlgId,
+    asn1.writeBitString(nodeCrypto.sign("sha256", tbs, _dnCertKey.priv))]);
+  return "-----BEGIN CERTIFICATE-----\n" +
+    der.toString("base64").match(/.{1,64}/g).join("\n") +
+    "\n-----END CERTIFICATE-----\n";
+}
+
+function _previousParseGeneration(certPem) {
+  if (typeof certPem !== "string" && !Buffer.isBuffer(certPem)) return 0;
+  try {
+    var subj = new nodeCrypto.X509Certificate(certPem).subject || "";
+    var m = /(?:^|[\r\n]|(?<!\\)[,+])\s*OU=CAv(\d+)/.exec(subj);
+    return m ? parseInt(m[1], 10) : 1;
+  } catch (_e) { return 0; }
+}
+
+function testDnGenerationMatchesThePatternItReplaced() {
+  var PIECES = [
+    [["OU", "CAv7"]], [["OU", "CAv0"]], [["OU", "CAv12"]],
+    [["OU", "CAvX"]], [["OU", "CA"]], [["CN", "leaf"]],
+    [["O",  "OU=CAv9"]],                       // the tag, inside a value
+    [["O",  "a,b"]], [["O", "a+b"]],           // separators node escapes
+    [["OU", "  CAv3"]],                        // whitespace before the tag
+    [["OU", "CAv5"], ["CN", "x"]],             // multi-valued, tag first
+    [["CN", "x"], ["OU", "CAv6"]],             // multi-valued, tag second
+  ];
+
+  var mismatches = [];
+  var shapes = 0;
+  var stack = [[]];
+  // Every sequence of up to three RDNs, shortest first.
+  for (var depth = 1; depth <= 3; depth += 1) {
+    var next = [];
+    for (var s = 0; s < stack.length; s += 1) {
+      for (var p = 0; p < PIECES.length; p += 1) {
+        var rdns = stack[s].concat([PIECES[p]]);
+        next.push(rdns);
+        shapes += 1;
+        var pem = _certWithSubject(rdns);
+        var mine = b.mtlsCa.parseGeneration(pem);
+        var theirs = _previousParseGeneration(pem);
+        if (mine !== theirs && mismatches.length < 6) {
+          mismatches.push(JSON.stringify(new nodeCrypto.X509Certificate(pem).subject) +
+                          " -> " + mine + ", the pattern read " + theirs);
+        }
+      }
+    }
+    stack = next;
+  }
+
+  check("mtls-ca: parseGeneration answers what the pattern it replaced answered, " +
+        "across " + shapes.toLocaleString("en-US") + " certificates",
+        mismatches.length === 0, mismatches.join(" | "));
+
+  // The longest subject a well-formed Name renders: one RDN with many members,
+  // which is the densest run of separators a certificate can carry.
+  var wide = [];
+  for (var i = 0; i < 4096; i += 1) wide.push(["OU", ""]);
+  var widePem = _certWithSubject([wide]);
+  check("mtls-ca: a subject of many thousand RDN members reads the same",
+        b.mtlsCa.parseGeneration(widePem) === _previousParseGeneration(widePem));
 }
 
 module.exports = { run: run };

@@ -51,6 +51,39 @@ function testReadBearerDefaultScheme() {
         attachUser._readBearer(undefined) === null);
 }
 
+// The credential is read with a pattern built from the scheme, so the
+// linear-time gate never sees it: that gate reads patterns written as literals
+// and rebuilds the ones handed to the constructor as a string, and this one is
+// assembled from a value. The same shape was found in two patterns it CAN see,
+// and this is the third instance of it.
+//
+// The credential starts at a non-space. Spelled `(.+)`, the capture and the
+// `\s+` before it both accept a space, so a header of the scheme and a run of
+// spaces can be divided at every space, and the engine tries every division
+// before the match fails. Measured on the pattern as it was: 4.9ms at 4,096
+// characters and 73.8ms at 16,384.
+function testReadBearerRunOfSpacesStaysLinear() {
+  function run(n) {
+    // A line terminator is what the capture cannot take, so the match fails
+    // and the engine has to exhaust the divisions rather than stopping at the
+    // first. Without it the header matches at once and costs nothing.
+    attachUser._readBearer("Bearer" + " ".repeat(n) + "\n");
+  }
+  check("a run of spaces after the scheme does not grow superlinearly",
+        helpers.looksSuperlinear(run, { small: 4096, large: 16384 }) === false);
+
+  // What the pattern accepts is unchanged, apart from a credential that is
+  // nothing but spaces, which no longer reads as one.
+  check("spaces before the credential are still skipped",
+        attachUser._readBearer("Bearer      abc123") === "abc123");
+  check("a credential keeps its own inner spaces",
+        attachUser._readBearer("Bearer abc 123") === "abc 123");
+  check("a header of nothing but spaces yields no credential",
+        attachUser._readBearer("Bearer      ") === null);
+  check("and the same for a custom scheme",
+        attachUser._readBearer("DPoP      ", "DPoP") === null);
+}
+
 function testReadBearerCustomScheme() {
   check("custom Token scheme extracts the credential",
         attachUser._readBearer("Token abc123", "Token") === "abc123");
@@ -139,6 +172,7 @@ async function testTokenExtractorNullSkipsAuth() {
 
 async function run() {
   testReadBearerDefaultScheme();
+  testReadBearerRunOfSpacesStaysLinear();
   testReadBearerCustomScheme();
   testCreateValidatesOpts();
   await testCustomSchemeHeaderConsumed();

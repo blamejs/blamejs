@@ -736,6 +736,20 @@ async function testNotifyNoneAndSet() {
     check("backend got spec verbatim",
           subscribeCalls[0].spec === "(SELECTED (MessageNew FlagChange))");
 
+    // The arguments start at a non-space. Spelled `(.+)`, the capture and the
+    // `\s+` before it both accepted a space, so a command divisible at every
+    // space cost 5ms at 4,096 characters and 78ms at 16,384 before failing.
+    // What that cost is, the linear-time check in codebase-patterns measures;
+    // these two pin the parsing, which reads the same either way, so that a
+    // later change to the pattern cannot alter it unnoticed.
+    var rPad = await _sendCommand(c.socket, "a2",
+      "NOTIFY SET     (SELECTED (MessageNew))");
+    check("NOTIFY SET with padding → OK",           /^a2 OK /m.test(rPad));
+    check("padding is not part of the spec",
+          subscribeCalls[1].spec === "(SELECTED (MessageNew))");
+    var rBare = await _sendCommand(c.socket, "a3", "NOTIFY SET      ");
+    check("NOTIFY SET with only spaces → BAD",      /^a3 BAD /m.test(rBare));
+
     // A pushed FETCH carries message content too, so it is the same octet
     // question as the FETCH command — and it was a SECOND copy of the response
     // builder, so fixing the command path alone left this one corrupting.

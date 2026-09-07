@@ -23,7 +23,11 @@
 var fs   = require("fs");
 var path = require("path");
 
-// Same set as `_JS_KEYWORDS` in codebase-patterns.test.js.
+// The words a normalized line keeps verbatim. Everything else that reads as an
+// identifier becomes `_ID`, so two functions differing only in variable or file
+// names produce the same fingerprint. The Node module globals are here so a
+// require block reads as boilerplate to `isBoilerplate` rather than as a
+// duplicate.
 var JS_KEYWORDS = new Set([
   "var", "let", "const", "function", "return", "if", "else", "for",
   "while", "do", "switch", "case", "default", "break", "continue",

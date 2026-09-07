@@ -1139,6 +1139,40 @@ function testHolderOfKey(idp, client, other) {
 // SubjectConfirmationData InResponseTo to the stored AuthnRequest ID. A HoK
 // confirmation that ignored expectedInResponseTo would silently drop the
 // operator's replay defense on that path.
+// A holder-of-key KeyInfo carries the certificate as base64 with whatever
+// whitespace the IdP's XML writer used, so verifyResponse strips the whitespace
+// and re-wraps the body at 64 columns to hand node a PEM. When the body's
+// length is an exact multiple of 64 the wrapping decides where the last line
+// ends, and getting that wrong makes a well-formed assertion unreadable. The
+// length depends only on the certificate, so an IdP that lands on a multiple of
+// 64 fails every holder-of-key login rather than an occasional one.
+async function testHolderOfKeyCertBodyMultipleOf64(idp) {
+  var client = null;
+  var bodyLen = 0;
+  // The DN carries the common name, so its length moves the encoded length. A
+  // base64 body grows in fours, and one in sixteen of those is a multiple of 64.
+  for (var pad = 1; pad <= 64 && client === null; pad += 1) {
+    var candidate = await _mint("hok-" + "x".repeat(pad) + ".example", "ec");
+    var len = _certBody(candidate.certPem).length;
+    if (len % 64 === 0) { client = candidate; bodyLen = len; }
+  }
+  check("HoK: a certificate whose base64 body is a multiple of 64 was built",
+        client !== null, "no common-name length in 1..64 produced one");
+  if (client === null) return;
+
+  var sp = _mkSp(idp.certPem);
+  var subject = _hokSubject(_hokScd(_certBody(client.certPem)));
+  var resp = _mkAssertionResponse(idp, { tag: "hok-wrap64", subjectXml: subject });
+  var info = null, failedWith = null;
+  try {
+    info = sp.verifyResponse(resp.b64, { holderOfKey: { presentedCertPem: client.certPem } });
+  } catch (e) { failedWith = (e && e.code) || String(e); }
+
+  check("HoK: a " + bodyLen + "-character certificate body still confirms",
+        info !== null && info.nameId === "alice@example.com",
+        "verifyResponse refused it with " + failedWith);
+}
+
 function testHolderOfKeyInResponseTo(idp, client) {
   var sp = _mkSp(idp.certPem);
   var clientB64 = _certBody(client.certPem);
@@ -2223,6 +2257,7 @@ async function run() {
   testAssertionSignedDifferentElement(idp);
   testNoValidConfirmation(idp);
   testHolderOfKey(idp, client, otherClient);
+  await testHolderOfKeyCertBodyMultipleOf64(idp);
   testHolderOfKeyInResponseTo(idp, client);
   testConditionsAndAudience(idp);
   testVerifyResponseMissingFields(idp);
