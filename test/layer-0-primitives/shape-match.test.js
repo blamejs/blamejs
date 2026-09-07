@@ -270,6 +270,26 @@ function testNestedSubstitutionsStayLinear() {
   catch (_e2) { strippedParses = false; }
   check("stripComments: an unread region falls back rather than deleting the file",
         strippedParses && stripped.indexOf("var after=1") !== -1);
+
+  // Inside a region the reader could not read, the walk answers on its own, so
+  // it has to read a bare arrow's body the way the table does. Read as a
+  // value, the slash below it divided and the `/*` inside that pattern opened
+  // a comment that ran to the end of the file.
+  var afterDeep = nested(1000) +
+    "var q = () => {}\n/[a/*]/.test(s); var after = 1;";
+  var afterDeepParses = true;
+  try { new vm.Script("(function () {\n" + afterDeep + "\n})"); }
+  catch (_e3) { afterDeepParses = false; }
+  if (!afterDeepParses) {
+    check("stripComments: the fallback arrow case needs a stack this lacks", true);
+    return;
+  }
+  var afterOut = sm.stripComments(afterDeep);
+  var afterParses = true;
+  try { new vm.Script("(function () {\n" + afterOut + "\n})"); }
+  catch (_e4) { afterParses = false; }
+  check("stripComments: a bare arrow reads the same inside an unread region",
+        afterParses && afterOut.indexOf("var after = 1") !== -1);
 }
 
 function run() {

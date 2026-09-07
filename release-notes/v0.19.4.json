@@ -26,8 +26,8 @@
           "body": "`break` and `continue` take a label and nothing else, so a slash after one opens a pattern. The tokenizer asked that only of an identifier, and `async`, `from` and `as` are in its keyword table, so `break async` followed by a line break and a pattern read the slash as division and swallowed from its opening slash. The rule now reads the label whatever word it is spelled like, which is how the same file already reads a class or function name."
         },
         {
-          "title": "An arrow's body is a value",
-          "body": "`var q = () => {} / 2` divides: an arrow leaves a function behind the way a function expression does. The tokenizer recorded that only for a body whose keyword it could find, and an arrow has none, so the slash opened a pattern that ran to the opening slash of the next one. A parenthesised arrow and a function expression were already read correctly; the bare arrow now is too."
+          "title": "A bare arrow's body ends a statement",
+          "body": "`var q = () => {} / 2` is not valid JavaScript: an arrow cannot be the left operand of a division without parentheses around it. What follows a bare arrow's body is a new statement, which may begin with a pattern, so `var q = () => {}` and then a line break and then `/re/.test(s)` emits that literal. Two fixtures pinned the unparseable form and so pinned nothing; both now pin the statement that really follows. `(() => {}) / 2` and `function () {} / 2` divide as they did, and the paren is what makes the first of those an operand."
         }
       ]
     }

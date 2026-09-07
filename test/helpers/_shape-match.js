@@ -2110,14 +2110,17 @@ function stripComments(src, onComment, onRegex) {
         var pending     = top.fnExpr[top.fnExpr.length - 1];
         var isFnBody    = pending !== undefined && pending.depth === top.parens.length;
         if (isFnBody) top.fnExpr.pop();
-        // An arrow's body is the token immediately after the `=>`, and an
-        // arrow function is always a value: `var f = () => {} / 2` divides.
-        // The body is a block all the same, so only the closing bit changes.
-        var isArrowBody = lastSig === "=>";
+        // An arrow's body is the token immediately after the `=>`. It does NOT
+        // close a value: `var f = () => {} / 2` is not valid source, because a
+        // bare arrow cannot be the left operand of a division, and what
+        // follows the brace is a new statement that may begin with a pattern.
+        // Only `(() => {}) / 2` divides, and the paren is what makes it an
+        // operand. Read as a value, `var q = () => {}` and then a line break
+        // and then a pattern holding a `/*` divided at the pattern and opened
+        // a comment that ran to the end of the file.
         top.braces.push({
           isObject:    opensObject,
-          closesValue: opensObject || isArrowBody ||
-                       (isFnBody && pending.isExpr === true),
+          closesValue: opensObject || (isFnBody && pending.isExpr === true),
           ternary:     0,
         });
         out += c;
