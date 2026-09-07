@@ -246,6 +246,9 @@ function tokenize(source) {
   var n = source.length;
   var prevSig = null;
   var parenStack = [];
+  // Beside it, the word that opened each paren, so a rule can ask WHICH header
+  // it is inside rather than only whether it is inside one.
+  var headerWordStack = [];
   var braceStack = [];
   // Per open brace: does it open the body of a function or class EXPRESSION,
   // whose closing brace is therefore followed by division rather than by a
@@ -387,7 +390,7 @@ function tokenize(source) {
       // it is followed by an expression, so that slash opened a pattern and ran
       // to the opener of the next real one. Which parens are a control header
       // is already tracked for the `)` rule, so the innermost one answers it.
-      if (idVal === "of" && parenStack[parenStack.length - 1] !== true) {
+      if (idVal === "of" && headerWordStack[headerWordStack.length - 1] !== "for") {
         idType = TOK_IDENT;
       }
       var itok = { type: idType, value: idVal, start: is, end: i };
@@ -579,10 +582,16 @@ function tokenize(source) {
         }
         // A control keyword is also a legal property name, and `obj.if(x) / 2`
         // divides. Property position is recorded on the token itself.
+        // Which control keyword opened it, not merely that one did: `of` is a
+        // keyword in the relation position of a `for` header and an ordinary
+        // name inside an `if` or a `while`, where `if (of / 2)` divides.
+        headerWordStack.push(head !== null && head.isProperty !== true &&
+          (head.type === TOK_KEYWORD || head.type === TOK_IDENT) ? head.value : null);
         parenStack.push(head !== null && head.isProperty !== true &&
                         (head.type === TOK_KEYWORD || head.type === TOK_IDENT) &&
                         _CONTROL_HEADER_KEYWORDS[head.value] === 1);
       } else if (ptok.value === ")") {
+        headerWordStack.pop();
         ptok.closedControlHeader = parenStack.pop() === true;
       }
       tokens.push(ptok); prevSig = ptok;

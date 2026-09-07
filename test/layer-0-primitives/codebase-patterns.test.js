@@ -3570,6 +3570,10 @@ var _FILLER_QUANTIFIED_MAX = 64;
 // small because the motifs go on to become probe subjects, and sixty-four of
 // them crowded out the reading that mattered before it was reached.
 var _MOTIF_COMBINATIONS = 16;
+// How many whole combinations the repair may put to the alternative before
+// giving up. Each is one short regex test, so this is a work budget rather than
+// a reading: seven binary groups are 128 of them and finish well inside it.
+var _MOTIF_REPAIRS = 4096;
 
 // A pattern may offer a choice at its own top level, not only inside a group,
 // and the costly branch is not always the first one. `^SAFE$|^AB-CD(z+)+$` was
@@ -4200,27 +4204,28 @@ function _alternativeAccepts(alt, candidate, unicode) {
 // of groups times their widths, and the sweep stops the moment it is accepted.
 function _repairedMotif(alt, unicode, widths) {
   if (!widths || widths.length === 0) return null;
-  var picks = [];
-  for (var i = 0; i < widths.length; i += 1) picks.push(0);
-  var built = _literalOfAlternative(alt, 0, unicode, picks, { widths: [] });
-  if (built !== null && _alternativeAccepts(alt, built, unicode)) return built;
-  for (var g = 0; g < widths.length; g += 1) {
-    for (var b = 0; b < widths[g]; b += 1) {
-      picks[g] = b;
-      var cand = _literalOfAlternative(alt, 0, unicode, picks, { widths: [] });
-      if (cand !== null && _alternativeAccepts(alt, cand, unicode)) return cand;
-    }
-    // None of this group's branches finished it on their own. Keep the one that
-    // at least builds something and move on; a later group may be what is
-    // missing, and the sweep comes back to nothing worse than where it started.
-    picks[g] = 0;
-    for (var k = 0; k < widths[g]; k += 1) {
-      picks[g] = k;
-      if (_literalOfAlternative(alt, 0, unicode, picks, { widths: [] }) !== null) break;
-    }
+  var total = 1;
+  for (var w = 0; w < widths.length; w += 1) {
+    total *= widths[w];
+    if (total > _MOTIF_REPAIRS) { total = _MOTIF_REPAIRS; break; }
   }
-  var last = _literalOfAlternative(alt, 0, unicode, picks, { widths: [] });
-  return last !== null && _alternativeAccepts(alt, last, unicode) ? last : null;
+  // Whole combinations, tried until the alternative accepts one. Changing one
+  // group at a time cannot find a motif that needs TWO of them changed
+  // together, and no sweep that resets a group it could not finish with will
+  // keep the half of the answer it had: `G0G0G0G0G1G0G1` needs both of its
+  // `G1` groups moved at once. So the combination is the unit, and the
+  // question asked of each is the one the pattern asks.
+  for (var c = 0; c < total; c += 1) {
+    var picks = [];
+    var rest = c;
+    for (var g = 0; g < widths.length; g += 1) {
+      picks.push(rest % widths[g]);
+      rest = Math.floor(rest / widths[g]);
+    }
+    var cand = _literalOfAlternative(alt, 0, unicode, picks, { widths: [] });
+    if (cand !== null && _alternativeAccepts(alt, cand, unicode)) return cand;
+  }
+  return null;
 }
 
 function _literalOfAlternative(alt, depth, unicode, picks, meta) {
@@ -5246,6 +5251,15 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // to the alternative itself and each group tried until it accepts.
     ["^(?:" + "(?:a(?=a)|b(?!a))".repeat(3) + "(?:a(?=b)|b(?!b))(?:a(?!-)|b(?=-))-|" +
      "(?:a(?=a)|b(?!a))".repeat(3) + "(?:a(?=b)|b(?!b))(?:a(?!-)|b(?=-))-)+$", "aaaab-"],
+    // And one where TWO groups must move together. Changing one at a time
+    // cannot find it, and a sweep that resets a group it could not finish with
+    // throws away the half of the answer it had, so whole combinations are put
+    // to the alternative instead.
+    [(function () {
+      var g0 = "(?:a(?=-)|b(?=X))-", g1 = "(?:a(?=X)|b(?=-))-";
+      var unit = g0 + g0 + g0 + g0 + g1 + g0 + g1;
+      return "^(?:" + unit + "|" + unit + ")+$";
+    })(), "a-a-a-a-b-a-b-"],
     // Six compounds in front of the costly one. What a quantified group
     // repeats is taken whatever precedes it, as a quantified character is.
     ["^(?:(?:a-)+|(?:b-)+|(?:c-)+|(?:d-)+|(?:e-)+|(?:f-)+|(?:z@|z@)+)$", "z@"],
@@ -5688,6 +5702,10 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // ordinary name, and a name divides.
     ["var of = 4; of / 2; var re = /(?:za+)+$/;",         "/(?:za+)+$/"],
     ["for (var k of xs) /(?:zb+)+$/.test(k);",            "/(?:zb+)+$/"],
+    // ...and only a `for` header, not any control header: inside an `if` or a
+    // `while` it is a name like any other.
+    ["if (of / 2) {} const r6 = /(?:zc+)+$/;",            "/(?:zc+)+$/"],
+    ["while (of / 2) {} const r7 = /(?:zd+)+$/;",         "/(?:zd+)+$/"],
     // A superclass written as a long member expression. The walk back to the
     // keyword is bounded by the token list, not by a count of its own.
     ["var L = class extends ns" + ".a".repeat(255) + " {} / 2; var re = /(?:yu+)+$/;",
@@ -5974,6 +5992,12 @@ function testProbeSubjectsMakeACatastrophicPatternCost() {
       var unit = vec.map(function (v) {
         return v ? "(?:(?!a)a|b)" : "(?:a|(?!b)b)";
       }).join("") + "-";
+      return "^(?:" + unit + "|" + unit + ")+$";
+    })(),
+    // And one where two groups must move together.
+    (function () {
+      var g0 = "(?:a(?=-)|b(?=X))-", g1 = "(?:a(?=X)|b(?=-))-";
+      var unit = g0 + g0 + g0 + g0 + g1 + g0 + g1;
       return "^(?:" + unit + "|" + unit + ")+$";
     })(),
     // And one whose branches are settled by what follows their group.
