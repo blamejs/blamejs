@@ -240,24 +240,91 @@ function _slashIsRegex(prevSignificant) {
   return true;
 }
 
-function tokenize(source) {
+// `opts.stopAtCloseBrace` returns as soon as a `}` is read that nothing in the
+// source opened. That is where a template substitution ends, and its reader
+// hands in the whole rest of the file: without the stop, every substitution
+// tokenized the entire remainder, each nested template inside it did so again,
+// and 640 one-substitution templates took 1.46s against 2.7ms.
+function tokenize(source, opts) {
+  var stopAtCloseBrace = opts !== null && opts !== undefined &&
+                         opts.stopAtCloseBrace === true;
+  // `opts.bodyKind` is the function body this source is written INSIDE, for a
+  // caller lexing a fragment cut out of a larger file.
+  var seedBody = opts !== null && opts !== undefined && opts.bodyKind ?
+                 opts.bodyKind : null;
+  // `opts.expressionStart` says the fragment stands where an EXPRESSION may,
+  // which is where a template substitution stands. Read as the start of a
+  // file, its leading `{` opens a block rather than an object, and the members
+  // of `${{ async m(){ await /re/ } }}` were then read as statements.
+  var expressionStart = opts !== null && opts !== undefined &&
+                        opts.expressionStart === true;
+  function _positionText(tok) {
+    return tok === null && expressionStart ? "(" : _lastSigText(tok);
+  }
   var tokens = [];
   var i = 0;
   var n = source.length;
   var prevSig = null;
   var parenStack = [];
+  // Beside it again: whether each open paren holds a PARAMETER list rather
+  // than a call's arguments or a grouping.
+  var paramsStack = [];
   // Beside it, the word that opened each paren, so a rule can ask WHICH header
   // it is inside rather than only whether it is inside one.
   var headerWordStack = [];
   // Per open brace: what kind of function body it opens, or null for anything
   // else. `await` is an operator inside an async body and `yield` inside a
   // generator's, both read from the INNERMOST function body.
-  var functionBodyStack = [];
+  var functionBodyStack = seedBody === null ? [] : [seedBody];
+  // An arrow with a CONCISE body has no brace to hang that on, so the entry is
+  // pushed at the `=>` and taken off where the expression ends: at a `;` or a
+  // `,` at the arrow's own depth, or when a closing bracket carries the depth
+  // below it. Without this `const f = async x => await /re/.test(x)` left
+  // `await` a name and the slash after it divided.
+  var conciseArrows = [];
+  // Counted over `(`, `[` and `{` together, which is the nesting an expression
+  // ends inside of, and separate from the stacks that answer other questions.
+  var nestDepth = 0;
+  // A concise arrow body ends at an inserted semicolon: a line break between
+  // something that finishes an expression and something that cannot continue
+  // it. Asked from every branch that emits such a token, since which token
+  // comes next is what decides it, and asking from only one of them left the
+  // arrow's body live over whole statements.
+  function _endArrowsAtASI() {
+    if (conciseArrows.length === 0 || prevSig === null) return;
+    if (!_endsArrowBody(prevSig) || !_lineBreakBeforeEnd(tokens)) return;
+    _closeConciseArrows(nestDepth);
+  }
+  function _closeConciseArrows(atDepth) {
+    while (conciseArrows.length > 0 &&
+           conciseArrows[conciseArrows.length - 1].depth >= atDepth) {
+      conciseArrows.pop();
+      functionBodyStack.pop();
+    }
+  }
+  // A `:` ends the arrow bodies that lie inside the conditional it belongs to,
+  // and not the ones that OPENED that conditional themselves. In
+  // `ok ? x => 1 : await p` the arrow ends at the colon; in
+  // `async x => ok ? await a : await b` the same colon is inside the arrow's
+  // own body and ends nothing, and the two are told apart by how many `?` were
+  // open when the arrow was read.
+  function _closeArrowsAtColon(ternaryBefore) {
+    while (conciseArrows.length > 0) {
+      var top = conciseArrows[conciseArrows.length - 1];
+      if (top.depth < nestDepth) break;
+      if (top.depth === nestDepth && top.ternary < ternaryBefore) break;
+      conciseArrows.pop();
+      functionBodyStack.pop();
+    }
+  }
   var braceStack = [];
   // Per open brace: does it open the body of a function or class EXPRESSION,
   // whose closing brace is therefore followed by division rather than by a
   // statement? Kept beside braceStack so the two are pushed and popped together.
   var valueBodyStack = [];
+  // Per open brace: whether it opens an ARROW's body. An arrow function is not
+  // a callee, so what follows the brace that closes one begins a statement.
+  var arrowBodyStack = [];
   var frames = [{ ternary: 0, isObject: false }];
   while (i < n) {
     var ch = source.charAt(i);
@@ -313,6 +380,9 @@ function tokenize(source) {
         if (c3 === "\n" || c3 === "\r") break;                                     // unterminated — caller deals
         i += 1;
       }
+      // A string cannot continue a finished expression, so a line break before
+      // one inserts a semicolon and ends any concise arrow body open here.
+      _endArrowsAtASI();
       var stok = { type: TOK_STRING, value: source.slice(ss, i), start: ss, end: i };
       tokens.push(stok); prevSig = stok;
       continue;
@@ -333,10 +403,22 @@ function tokenize(source) {
     // is wrong about a narrower thing and wrong locally. The framework holds
     // no substitution that either reads incorrectly.
     if (ch === "`") {
+      // A template after a postfix `++` is not a tag for it, so a semicolon
+      // goes in the same way it does before a `(`.
+      if (prevSig !== null && prevSig.type === TOK_PUNCT &&
+          (prevSig.isPostfix === true || prevSig.closedArrowBody === true)) {
+        _endArrowsAtASI();
+      }
       var ts = i;
-      var tEnd = _templateEnd(source, ts);
+      var here = _innermostBody(functionBodyStack);
+      var tEnd = _templateEnd(source, ts, here);
       i = tEnd === -1 ? n : tEnd;
       var ttok = { type: TOK_TEMPLATE, value: source.slice(ts, i), start: ts, end: i };
+      // A substitution holds an expression written in the grammar AROUND the
+      // template, so a reader that lexes one on its own is handed the body it
+      // sits in. Read fresh, `async function f(s){ return `${await /re/}`; }`
+      // classified the `await` as a name and emitted nothing.
+      ttok.bodyKind = here;
       tokens.push(ttok); prevSig = ttok;
       continue;
     }
@@ -366,6 +448,8 @@ function tokenize(source) {
 
     // Number literal — simple. Includes hex, octal, binary, decimal.
     if (cc >= 48 && cc <= 57) {                                                    // 0..9
+      // A number cannot continue a finished expression either.
+      _endArrowsAtASI();
       var ns = i; i += 1;
       while (i < n && /[0-9a-fA-FxXbBoOeE._n+-]/.test(source.charAt(i))) {
         // Stop at a `-`/`+` that isn't part of an exponent
@@ -403,11 +487,41 @@ function tokenize(source) {
            // An identifier, the bracket closing a destructuring pattern, or the
            // paren closing a parenthesised assignment target: `for ((x) of y)`.
            !(prevSig.type === TOK_IDENT ||
+             // ...or a word this lexer calls a keyword that is still a legal
+             // name, since a header may bind one: `for (let async of xs)`.
+             (prevSig.type === TOK_KEYWORD &&
+              _BINDABLE_KEYWORDS[prevSig.value] === 1) ||
              (prevSig.type === TOK_PUNCT &&
               (prevSig.value === "]" || prevSig.value === "}" ||
                prevSig.value === ")"))))) {
         idType = TOK_IDENT;
       }
+      // A concise arrow body can also end without a `;` being written: a line
+      // break between something that finishes an expression and a word that
+      // begins a statement ends it, and the word belongs to the body around the
+      // arrow. `async function f(){ const g = x => 1` then a line break then
+      // `await /re/.test(s); }` reads that `await` in the async function.
+      // `let` is reserved only in strict mode. Where a declaration cannot
+      // begin it is an ordinary name, and a name ends an expression: in
+      // `y => let` the word is a reference, and the break after it ends the
+      // arrow's body. The arrow is the one position the two questions part
+      // company: a `{` after `=>` opens a body, while a WORD after it is the
+      // concise body, which is an expression.
+      var letSig = _positionText(prevSig);
+      // ...and the head of a `for` header is where a declaration begins too,
+      // though no statement does: `for (let of of /re/.exec(s)) {}` binds a
+      // name spelled `of`, and reading the `let` there as a name made that
+      // binding the relation and the relation a name.
+      var letInForHead = letSig === "(" &&
+        headerWordStack[headerWordStack.length - 1] === "for";
+      if (idVal === "let" && !letInForHead &&
+          (letSig === "=>" || !_atStatementPosition(letSig))) {
+        idType = TOK_IDENT;
+      }
+      // ...but `instanceof` and `in` are spelled like names and continue the
+      // expression rather than beginning a statement, so a break before either
+      // one ends nothing.
+      if (idVal !== "instanceof" && idVal !== "in") _endArrowsAtASI();
       // `await` the same way: an operator inside an async function body, an
       // ordinary name anywhere else in a script. `yield` likewise, in a
       // generator body.
@@ -474,6 +588,59 @@ function tokenize(source) {
       // A ternary lives inside the nearest enclosing group, so each `(` and
       // `{` opens a frame that counts its own `?`. Without that, the `:` of a
       // ternary written inside an object is taken for a property colon.
+      // A concise arrow body ends where its expression does, which is a `;` or
+      // a `,` at the arrow's own nesting depth, or a closer that carries the
+      // depth below it. Read BEFORE the closer pops anything, so an arrow left
+      // open inside a brace comes off the function-body stack ahead of the
+      // brace's own entry rather than after it.
+      // Punctuation can begin a statement after a line break, and one that
+      // does ends a concise arrow body the way a `;` does. `{` opens a block;
+      // `!` and `~` cannot follow a value, so a semicolon goes in before them;
+      // and `++` or `--` there is the PREFIX form, which the postfix rule
+      // below has already decided by the same line break. Everything else that
+      // may follow a value continues the expression instead: `x => 1` and then
+      // a break and then `(y)` is a call, and `[0]` an index.
+      if (ptok.value === "{" || ptok.value === "!" || ptok.value === "~" ||
+          ptok.value === "++" || ptok.value === "--") {
+        _endArrowsAtASI();
+      }
+      // A `(` or a `[` usually continues an expression, as a call or an index.
+      // Not after a POSTFIX `++` or `--`: `x++` is neither a callee nor
+      // something to index, so a semicolon goes in and the line below begins a
+      // statement.
+      // The same holds after the brace closing an ARROW's body: an arrow
+      // function is not a callee either, so `x => y => {}` and then a line
+      // break and then `(…)` is two statements. Only the INNER arrow's entry
+      // came off at that brace, and the outer one then ran on over the
+      // statement below.
+      if ((ptok.value === "(" || ptok.value === "[") &&
+          prevSig !== null && prevSig.type === TOK_PUNCT &&
+          (prevSig.isPostfix === true || prevSig.closedArrowBody === true)) {
+        _endArrowsAtASI();
+      }
+      // A BRACED arrow's body IS the brace, which pushes a body of its own and
+      // takes it off again at the matching `}`. The entry pushed at the arrow
+      // is the same body twice, and the second one outlived the `}`: after
+      // `const g = x => {}` it stayed until the next terminator, so a
+      // statement beginning with `(` or `[` on the line below was still read
+      // inside the arrow.
+      var opensArrowBody = ptok.value === "{" && prevSig !== null &&
+                           prevSig.type === TOK_PUNCT && prevSig.value === "=>";
+      if (opensArrowBody && conciseArrows.length > 0 &&
+          conciseArrows[conciseArrows.length - 1].depth === nestDepth) {
+        conciseArrows.pop();
+        functionBodyStack.pop();
+      }
+      var closesNothing = false;
+      if (ptok.value === ")" || ptok.value === "]" || ptok.value === "}") {
+        closesNothing = nestDepth === 0;
+        _closeConciseArrows(nestDepth);
+        nestDepth -= 1;
+      } else if (ptok.value === ";" || ptok.value === ",") {
+        _closeConciseArrows(nestDepth);
+      } else if (ptok.value === "(" || ptok.value === "[" || ptok.value === "{") {
+        nestDepth += 1;
+      }
       if (ptok.value === "(") {
         frames.push({ ternary: 0, isObject: false });
       } else if (ptok.value === ")") {
@@ -482,7 +649,7 @@ function tokenize(source) {
         // A restricted-production keyword with a line terminator after it has
         // ended its statement, so the brace opens a block whatever the keyword
         // would otherwise imply.
-        var braceLastSig = _lastSigText(prevSig);
+        var braceLastSig = _positionText(prevSig);
         if (prevSig !== null && prevSig.type === TOK_KEYWORD &&
             _RESTRICTED_PRODUCTIONS[prevSig.value] === 1 &&
             _lineBreakBeforeEnd(tokens)) {
@@ -564,28 +731,34 @@ function tokenize(source) {
         }
         valueBodyStack.push(kwTok !== null && _braceOpensObject(kwLastSig));
         braceStack.push(opensObject);
-        frames.push({ ternary: 0, isObject: opensObject });
+        // An object literal and a class body hold MEMBERS, not statements, so
+        // a word there names a member however it is spelled. Without that,
+        // `{ catch(){} }` read the method's parameter list as a control
+        // header. A method's own body brace reaches no keyword in the walk
+        // above, so only the class's own body carries the flag.
+        arrowBodyStack.push(opensArrowBody);
+        frames.push({ ternary: 0, isObject: opensObject,
+                      memberList: opensObject ||
+                        (kwTok !== null && kwTok.value === "class") });
       } else if (ptok.value === "}") {
         ptok.closedObject = braceStack.pop() === true;
         ptok.closedValueBody = valueBodyStack.pop() === true;
+        ptok.closedArrowBody = arrowBodyStack.pop() === true;
         functionBodyStack.pop();
         if (frames.length > 1) frames.pop();
       } else if (ptok.value === "?") {
         frames[frames.length - 1].ternary += 1;
       } else if (ptok.value === ":") {
         var frame = frames[frames.length - 1];
-        if (frame.ternary > 0) { frame.ternary -= 1; ptok.colonIsValue = true; }
-        else ptok.colonIsValue = frame.isObject === true;
+        if (frame.ternary > 0) {
+          _closeArrowsAtColon(frame.ternary);
+          frame.ternary -= 1;
+          ptok.colonIsValue = true;
+        } else ptok.colonIsValue = frame.isObject === true;
       }
       if (ptok.value === "++" || ptok.value === "--") {
-        var operandBefore = prevSig !== null &&
-          (prevSig.type === TOK_IDENT || prevSig.type === TOK_NUMBER ||
-           prevSig.type === TOK_STRING || prevSig.type === TOK_TEMPLATE ||
-           prevSig.type === TOK_REGEX ||
-           (prevSig.type === TOK_PUNCT &&
-            (prevSig.value === "]" ||
-             (prevSig.value === ")" && prevSig.closedControlHeader !== true))));
-        ptok.isPostfix = operandBefore && !_lineBreakBeforeEnd(tokens);
+        ptok.isPostfix = prevSig !== null && _endsExpression(prevSig) &&
+                         !_lineBreakBeforeEnd(tokens);
       }
       // Whether a `)` allows a pattern after it is decided at the matching
       // `(`: the paren that closes `if (ok)` is followed by the statement it
@@ -617,14 +790,56 @@ function tokenize(source) {
         // name inside an `if` or a `while`, where `if (of / 2)` divides.
         headerWordStack.push(head !== null && head.isProperty !== true &&
           (head.type === TOK_KEYWORD || head.type === TOK_IDENT) ? head.value : null);
+        // ...and a member list holds no statements, so a control keyword
+        // written there names a method: the parens of `{ catch(){} }` are its
+        // parameter list, and reading them as a control header made the body
+        // after them a block rather than a function's. The frame asked is the
+        // one AROUND this paren, since the paren has already opened its own.
+        var around = frames.length >= 2 ? frames[frames.length - 2] : null;
         parenStack.push(head !== null && head.isProperty !== true &&
+                        (around === null || around.memberList !== true) &&
                         (head.type === TOK_KEYWORD || head.type === TOK_IDENT) &&
                         _CONTROL_HEADER_KEYWORDS[head.value] === 1);
+        // Which parens are a PARAMETER list, for the walk that classifies the
+        // brace after them. A call's are not, and taking them for one read the
+        // bare block in `g()` then a line break then `{ await … }` as a
+        // function body, which hid the async one around it. A member's parens
+        // are one wherever the member is written; a declaration's are marked
+        // by the `function` before the name. An arrow's are reached only after
+        // its `=>`, which the walk has already seen.
+        var beforeHead = head === null ? null : _significantBefore(tokens, head);
+        var beforeStar = beforeHead !== null && beforeHead.type === TOK_PUNCT &&
+                         beforeHead.value === "*" ?
+                         _significantBefore(tokens, beforeHead) : null;
+        paramsStack.push(
+          (around !== null && around.memberList === true) ||
+          (head !== null && head.type === TOK_KEYWORD && head.value === "function") ||
+          (beforeHead !== null && beforeHead.type === TOK_KEYWORD &&
+           beforeHead.value === "function") ||
+          (beforeStar !== null && beforeStar.type === TOK_KEYWORD &&
+           beforeStar.value === "function"));
       } else if (ptok.value === ")") {
         headerWordStack.pop();
         ptok.closedControlHeader = parenStack.pop() === true;
+        ptok.closedParams = paramsStack.pop() === true;
       }
       tokens.push(ptok); prevSig = ptok;
+      // The arrow itself opens a function context, read by the same walk that
+      // reads a brace's, with the arrow in hand so the walk can see it. A
+      // BRACED arrow gets a second entry at its `{` carrying the same answer,
+      // and this one comes off at the statement end below it.
+      if (ptok.value === "=>") {
+        // An arrow always opens a body, so it pushes a body even where the
+        // walk finds no header to read: a fragment that BEGINS with one runs
+        // out of tokens, and pushing the walk's `null` there left the body
+        // around the fragment answering for the arrow's own.
+        var arrowKind = _functionBodyKind(tokens, source);
+        functionBodyStack.push(arrowKind === null ?
+                               { async: false, generator: false } : arrowKind);
+        conciseArrows.push({ depth: nestDepth,
+                             ternary: frames[frames.length - 1].ternary });
+      }
+      if (stopAtCloseBrace && closesNothing && ptok.value === "}") break;
       continue;
     }
 
@@ -945,8 +1160,35 @@ var _STATEMENT_POSITION = "@stmt";
 // Which case a `)` is cannot be decided from the `)`. It is decided at the
 // matching `(`, by the word in front of it, so the openers are tracked on a
 // per-frame stack and the answer read back when the paren closes.
+// `catch` and `switch` take a parenthesised head the same way. A slash cannot
+// follow either one, since a brace always does, so they were left out while
+// this answered the slash question alone. It now also says which parens are a
+// parameter list, and there they matter: `try{g();}catch(e){ await /re/ }`
+// inside an async function read the catch block as a function body of its own,
+// which hid the async one around it.
+// The reserved words that are VALUES, so an expression can end on one. Read
+// where a line break has to be told apart from a continuation: `x => true` and
+// then a break has finished the arrow's body, the same way `x => 1` does. The
+// keyword sweep in codebase-patterns.test.js puts the whole reserved list to
+// this rather than trusting the five words listed here.
+// The words this lexer treats as keywords that are still legal BINDING names.
+// A `for` header can bind any of them, and the word before the relation `of`
+// is that binding however it is spelled: `for (let async of …)` iterates over
+// what follows, and reading `async` as a keyword left the `of` a name and the
+// slash after it a division, which swallowed the pattern. The for-header sweep
+// in codebase-patterns.test.js crosses the whole reserved list against this
+// rather than trusting the list here.
+var _BINDABLE_KEYWORDS = _table({
+  "async": 1, "await": 1, "yield": 1, "let": 1, "of": 1, "static": 1,
+  "get": 1, "set": 1, "undefined": 1,
+});
+
+var _VALUE_KEYWORDS = _table({
+  "this": 1, "super": 1, "true": 1, "false": 1, "null": 1, "undefined": 1,
+});
+
 var _CONTROL_HEADER_KEYWORDS = _table({
-  "if": 1, "while": 1, "for": 1, "with": 1,
+  "if": 1, "while": 1, "for": 1, "with": 1, "catch": 1, "switch": 1,
 });
 
 // Does a slash at this point DIVIDE? Every token that can end an expression is
@@ -1098,7 +1340,12 @@ function _seeThrough(frame, lastSig) {
 
 // Where the template opening at `ts` ends, one past its closing backtick, or
 // -1 when no closing backtick is reached.
-function _templateEnd(source, ts) {
+// `bodyKind` is the function body the template is written inside. A
+// substitution holds an expression in that same grammar, so finding where one
+// ENDS needs it too: in `` `${await /}(a+)+$/.test(s)}` `` inside an async
+// function, a reader without it takes the `await` for a name, divides at the
+// slash, and ends the substitution at the `}` written inside the pattern.
+function _templateEnd(source, ts, bodyKind) {
   var n = source.length;
   var i = ts + 1;
   while (i < n) {
@@ -1117,7 +1364,7 @@ function _templateEnd(source, ts) {
       // confidently wrong is worse than giving up, because the fallback never
       // runs. Measured on the six shapes that separate them, the lexed answer
       // is right in all six and the count is wrong in one and absent in two.
-      var end = _lexedBraceEnd(source, i + 2);
+      var end = _lexedBraceEnd(source, i + 2, bodyKind);
       if (end === -1) end = _countingBraceEnd(source, i + 2);
       if (end === -1) return -1;
       i = end + 1;
@@ -1132,9 +1379,13 @@ function _templateEnd(source, ts) {
 // contents rather than counting characters. This is the answer taken first: it
 // reads strings, comments, patterns and nested templates as the tokens they
 // are, so a brace written inside any of them closes nothing.
-function _lexedBraceEnd(source, from) {
+function _lexedBraceEnd(source, from, bodyKind) {
   var toks;
-  try { toks = tokenize(source.slice(from)); } catch (_e) { return -1; }
+  try {
+    toks = tokenize(source.slice(from),
+                    { stopAtCloseBrace: true, bodyKind: bodyKind || null,
+                      expressionStart: true });
+  } catch (_e) { return -1; }
   var depth = 0;
   for (var i = 0; i < toks.length; i += 1) {
     if (toks[i].type !== TOK_PUNCT) continue;
@@ -1236,14 +1487,36 @@ function _functionBodyKind(tokens, source) {
       // `{ async() {} }` is a method NAMED async, not an async method: the word
       // sits where the name goes, with nothing between it and the parameter
       // list. A modifier has a name, a `function`, or an arrow after it.
-      var isModifier = sawName || sawArrow;
-      if (!sawParams) return null;                       // not a body at all
+      // ...and the arrow alone is not enough either, because `async => …`
+      // takes the word as its single PARAMETER. A modifier has something
+      // between it and the arrow; a parameter has nothing.
+      var isModifier = (sawName || sawArrow) &&
+        !(after !== null && after.type === TOK_PUNCT && after.value === "=>");
+      // With a parameter list right after it the word is the NAME, and a
+      // modifier may still stand before THAT: `{ async async() {} }` is an
+      // async method whose name is also `async`, so the walk carries on
+      // rather than answering from the name.
+      if (!isModifier && sawParams) {
+        sawName = true; after = t; i -= 1; continue;
+      }
+      // A parameter list is one way in, an arrow the other: `async x => …`
+      // takes a single parameter with no parentheses around it, and requiring
+      // the parentheses read that body as no function body at all.
+      if (!sawParams && !sawArrow) return null;          // not a body at all
       return { async: isModifier &&
                       (after === null ||
                        !_hasLineTerminator(source.slice(t.end, after.start))),
                generator: sawStar };
     }
     if (t.type === TOK_KEYWORD && t.value === "function") {
+      // ...unless the word is in the name position, where it names a member:
+      // `{ *function() { yield … } }` is a generator method called `function`,
+      // and answering from the keyword lost the star before it. An anonymous
+      // `function () {}` reaches the same answer through the name position,
+      // since the modifier before it is the same `async` either way.
+      if (sawParams && !sawName) {
+        sawName = true; after = t; i -= 1; continue;
+      }
       // `async` sits before the keyword in this form, so one more step back.
       var pb = i - 1;
       while (pb >= 0 &&
@@ -1254,8 +1527,25 @@ function _functionBodyKind(tokens, source) {
       return { async: isAsync, generator: sawStar };
     }
     if (t.type === TOK_PUNCT && t.value === "*") { sawStar = true; after = t; i -= 1; continue; }
-    if (t.type === TOK_PUNCT && t.value === "=>") { sawArrow = true; after = t; i -= 1; continue; }
+    if (t.type === TOK_PUNCT && t.value === "=>") {
+      // The FIRST arrow passed is the one whose body this is; a second means
+      // the walk has left this header and is reading the enclosing function's.
+      // In `async x => y => …` the inner arrow takes no modifier of its own,
+      // and reading the outer `async` as one made its body async.
+      if (sawArrow) return { async: false, generator: sawStar };
+      sawArrow = true; after = t; i -= 1; continue;
+    }
     if (t.type === TOK_PUNCT && t.value === ")") {
+      // The paren closing a CONTROL header is not a parameter list, and the
+      // brace after it opens a block rather than a function body. Counted as
+      // params, `async function f(){ if (x) { await /re/.test(s); } }` read the
+      // `if` block as a fresh synchronous body, which hid the async one around
+      // it and dropped the pattern the gate is there to find.
+      if (t.closedControlHeader === true) return null;
+      // ...and a CALL's parens are not one either. Which they are was decided
+      // at the matching `(`, where the word in front of it says so. An arrow's
+      // are reached only after its `=>`, which this walk has already passed.
+      if (t.closedParams !== true && !sawArrow) return null;
       var depth = 0;
       for (; i >= 0; i -= 1) {
         if (tokens[i].type !== TOK_PUNCT) continue;
@@ -1268,9 +1558,55 @@ function _functionBodyKind(tokens, source) {
       i -= 1;
       continue;
     }
-    if (t.type === TOK_IDENT ||
-        (t.type === TOK_KEYWORD && t.value === "static")) {
-      if (t.type === TOK_IDENT) sawName = true;
+    // A name stands between the modifiers and the parameter list, so the walk
+    // reads one only once it has passed a parameter list or an arrow, and only
+    // once. Read anywhere, it crossed a finished expression: in
+    // `var k = x => 1` and then a line break and then `{ await … }` it stepped
+    // over the `1` to the arrow and took the block for that arrow's body.
+    var inNamePosition = (sawParams || sawArrow) && !sawName;
+    // A COMPUTED name is a whole expression in brackets, and the modifier that
+    // makes the method a generator or async sits before it. Stopping at the
+    // `]` answered for `{ *[Symbol.iterator]() { yield … } }` before reaching
+    // the star, so the body read as an ordinary one and the pattern after the
+    // `yield` was never emitted.
+    if (t.type === TOK_PUNCT && t.value === "]" && inNamePosition) {
+      var bdepth = 0;
+      for (; i >= 0; i -= 1) {
+        if (tokens[i].type !== TOK_PUNCT) continue;
+        if (tokens[i].value === "]") bdepth += 1;
+        else if (tokens[i].value === "[") { bdepth -= 1; if (bdepth === 0) break; }
+      }
+      if (bdepth !== 0) return null;
+      sawName = true;
+      after = tokens[i];
+      i -= 1;
+      continue;
+    }
+    // A member may be NAMED with any reserved word, and the modifier sits
+    // before that name: `{ async catch() { await … } }` is an async method.
+    // Stopping at the word left the walk short of the `async`, so the body
+    // read as synchronous and the pattern after its `await` was never emitted.
+    // `async` and `function` are answered above, so a word reaching here is a
+    // name. The walk still answers "no function body" unless it passed a
+    // parameter list or an arrow, so reading a word as a name cannot invent
+    // one.
+    // `static` is a modifier, not a name, so it is stepped over without
+    // filling the name position a modifier before it still needs.
+    if (t.type === TOK_KEYWORD && t.value === "static") {
+      after = t;
+      i -= 1;
+      continue;
+    }
+    // A member may also be named with a string or a number, and with any
+    // reserved word: `{ async "s"(){} }`, `{ async 42(){} }` and
+    // `{ async catch(){} }` are all async methods. A word taken outside the
+    // name position crossed statement boundaries — in `g()` and then a line
+    // break and then `try { await … }` it stepped over the `try` and took the
+    // call's parens for a parameter list.
+    if (inNamePosition &&
+        (t.type === TOK_IDENT || t.type === TOK_STRING ||
+         t.type === TOK_NUMBER || t.type === TOK_KEYWORD)) {
+      sawName = true;
       after = t;
       i -= 1;
       continue;
@@ -1279,15 +1615,58 @@ function _functionBodyKind(tokens, source) {
     // list or an arrow was passed on the way; a bare block has neither.
     return (sawParams || sawArrow) ? { async: false, generator: sawStar } : null;
   }
+  // Running out of tokens is reaching the start of the header too, which is
+  // what a FRAGMENT does: `${function*(){ yield … }}` holds the whole header
+  // and nothing before it, and answering `null` there threw away the star the
+  // walk had already found.
+  return (sawParams || sawArrow) ? { async: false, generator: sawStar } : null;
+}
+
+// Does this token finish an expression? A value does, and so does the bracket
+// closing one; the paren closing a control header does not, because what
+// follows it is the statement that header governs. Read by the postfix rule
+// (`x` then a line break then `++y` is two statements) and by the rule that
+// ends a concise arrow body at the same kind of break.
+function _endsExpression(t) {
+  return t.type === TOK_IDENT || t.type === TOK_NUMBER ||
+         t.type === TOK_STRING || t.type === TOK_TEMPLATE ||
+         t.type === TOK_REGEX ||
+         // A reserved word written as a property is a value like any other:
+         // `obj.return` ends an expression, and `obj.return++` increments it.
+         (t.type === TOK_KEYWORD &&
+          (t.isProperty === true || _VALUE_KEYWORDS[t.value] === 1)) ||
+         (t.type === TOK_PUNCT &&
+          (t.value === "]" ||
+           ((t.value === "++" || t.value === "--") && t.isPostfix === true) ||
+           (t.value === ")" && t.closedControlHeader !== true)));
+}
+
+// Does this token finish an arrow's body? Everything that finishes an
+// expression, and also the brace closing a BRACED one, which is a statement
+// end rather than a value: `const g = x => {}` and then a line break has
+// finished the assignment as surely as a `;` would.
+function _endsArrowBody(t) {
+  // A bare `async` too. The word is a modifier only with no line terminator
+  // between it and what it modifies, and this is asked only where a line
+  // terminator was found, so an `async` here is a reference and the
+  // expression it stands in is finished.
+  return _endsExpression(t) ||
+         (t.type === TOK_KEYWORD && t.value === "async") ||
+         (t.type === TOK_PUNCT && t.value === "}");
+}
+
+// The innermost function body on the stack, or null when there is none.
+function _innermostBody(stack) {
+  for (var i = stack.length - 1; i >= 0; i -= 1) {
+    if (stack[i] !== null && stack[i] !== undefined) return stack[i];
+  }
   return null;
 }
 
 // The innermost function body's answer, or false when there is none.
 function _innermostBodyIs(stack, field) {
-  for (var i = stack.length - 1; i >= 0; i -= 1) {
-    if (stack[i] !== null && stack[i] !== undefined) return stack[i][field] === true;
-  }
-  return false;
+  var body = _innermostBody(stack);
+  return body !== null && body[field] === true;
 }
 
 function _governingFunctionOrClass(tokens) {
@@ -1321,7 +1700,11 @@ function _governingFunctionOrClass(tokens) {
     if (i < 0) break;
     var t = tokens[i];
     guard += 1;
-    if (t.type === TOK_KEYWORD && (t.value === "function" || t.value === "class")) {
+    // ...but a word after a dot NAMES a property and owns no body: in
+    // `class C extends ns.function {}` the walk answered with that property
+    // and left the class body unmarked.
+    if (t.type === TOK_KEYWORD && t.isProperty !== true &&
+        (t.value === "function" || t.value === "class")) {
       if (bodiesSkipped > 0) { bodiesSkipped -= 1; i -= 1; continue; }
       return t;
     }
@@ -1378,7 +1761,12 @@ function _governingFunctionOrClass(tokens) {
         // value keyword: `class extends null {}` is valid and is the documented
         // way to say the class has no prototype parent.
         (t.type === TOK_KEYWORD &&
-         (t.value === "extends" || t.value === "async" || t.value === "new" ||
+         // A reserved word after a dot NAMES a property, so it is a piece of
+         // the expression whatever word it is: `class C extends ns.default {}`
+         // stopped the walk at `default`, the class body went unmarked, and
+         // the methods in it were read as blocks rather than function bodies.
+         (t.isProperty === true ||
+          t.value === "extends" || t.value === "async" || t.value === "new" ||
           t.value === "this" || t.value === "super" || t.value === "null" ||
           t.value === "true" || t.value === "false" || t.value === "undefined" ||
           // `import(...)` is a call and may stand in a superclass expression.
@@ -1391,11 +1779,18 @@ function _governingFunctionOrClass(tokens) {
   return null;
 }
 
+// Does a STATEMENT begin here? Read by the brace classifier, which opens a
+// block rather than an object at one, and by the `let` rule, which reads a
+// declaration there and a name everywhere else.
+function _atStatementPosition(lastSig) {
+  if (lastSig === "") return true;                       // start of input
+  if (lastSig === _STATEMENT_POSITION) return true;
+  if (lastSig === ";" || lastSig === "{") return true;
+  return _BLOCK_INTRODUCERS[lastSig] === 1;
+}
+
 function _braceOpensObject(lastSig) {
-  if (lastSig === "") return false;                      // start of input
-  if (lastSig === _STATEMENT_POSITION) return false;
-  if (lastSig === ";" || lastSig === "{") return false;
-  if (_BLOCK_INTRODUCERS[lastSig] === 1) return false;
+  if (_atStatementPosition(lastSig)) return false;
   return !_slashDivides(lastSig);
 }
 

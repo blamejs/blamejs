@@ -2296,6 +2296,426 @@ function testCommentStripPreservesParseability() {
     });
   }
 
+  // Which reserved words END an expression is the same kind of question, asked
+  // of the same list. A concise arrow body finishes at a line break when what
+  // came before it finishes an expression, so a word missing from that set
+  // leaves the arrow's context live over the statement after it: with `true`
+  // absent, `const g = x => true` and then a break and then `await /re/`
+  // classified the `await` inside the synchronous arrow and lost the literal.
+  // Every reserved word that can stand at the end of an arrow body is put to
+  // it, so the answer cannot arrive one word at a time.
+  var endsExpressionHits = [];
+  var endsExercised = 0;
+  RESERVED.forEach(function (kw) {
+    var fixture = "async function probe2(x) { const g = y => " + kw + "\n" +
+      "await /(?:zz9+)+$/.test(x); return g; }";
+    if (!parses(fixture, "ends-expression-" + kw)) return;   // not valid source
+    endsExercised += 1;
+    var found = _regexLiteralsIn(fixture, 0).some(function (r) {
+      return r.value === "/(?:zz9+)+$/";
+    });
+    if (found) return;
+    endsExpressionHits.push({
+      file: "test/helpers/_shape-match.js", line: 1,
+      content: "`" + kw + "` ends an expression, so a line break after one ends a " +
+        "concise arrow body — the arrow's context stayed live over the statement " +
+        "after it and the pattern there was never read; classify `" + kw + "` in " +
+        "_VALUE_KEYWORDS",
+    });
+  });
+  if (endsExercised < 3) {
+    endsExpressionHits.push({
+      file: "test/layer-0-primitives/codebase-patterns.test.js", line: 1,
+      content: "expression-ending sweep exercised only " + endsExercised +
+        " reserved words that form valid source — the fixture template stopped " +
+        "parsing, so the sweep is passing because every case was skipped",
+    });
+  }
+
+  _report("a reserved word that ends an expression ends a concise arrow body",
+          endsExpressionHits);
+
+  // Which function HEADERS the lexer reads is the same kind of question again,
+  // and it arrived one shape at a time for four review rounds: a method named
+  // `catch`, one named `async`, a computed name, a name written as a string.
+  // Each was a real pattern the linear-time gate never saw, and each was found
+  // by someone else reading the diff. The forms are a small crossing, so they
+  // are swept instead of listed: a modifier, a name, a parameter list and a
+  // body, in each place a header can be written, with the operator that needs
+  // that body inside it. The engine decides which crossings are real source,
+  // so the sweep needs no list of exclusions and cannot fall out of date.
+  var HEADER_MODIFIERS = ["", "async ", "* ", "async *", "static ",
+                          "static async ", "get ", "set "];
+  var HEADER_NAMES = ["", "m", "catch", "switch", "if", "of", "await", "let",
+                      "async", "function", "class", "static", "get", "true",
+                      "[key]", "[Symbol.iterator]", "\"str\"", "42"];
+  var HEADER_PARAMS = ["()", "(a)", "(a, b)", "(a = 1)", "(a = () => 1)",
+                       "(a = async () => 1)", "({ a })", "([a])", "(...rest)"];
+  var HEADER_HOSTS = [
+    function (h) { return "var o = { " + h + " };"; },
+    function (h) { return "class C { " + h + " }"; },
+    function (h) { return "function OUTER" + h + ""; },
+  ];
+  var HEADER_MARKER = "/(?:a+)+$/";
+  var headerHits = [];
+  var headerForms = 0;
+  HEADER_MODIFIERS.forEach(function (mod) {
+    HEADER_NAMES.forEach(function (name) {
+      HEADER_PARAMS.forEach(function (params) {
+        ["await", "yield"].forEach(function (op) {
+          var header = mod + name + params + " { " + op + " " +
+                       HEADER_MARKER + ".test(s); }";
+          HEADER_HOSTS.forEach(function (host) {
+            var src = host(header);
+            if (!parses(src, "header-" + header)) return;   // not valid source
+            headerForms += 1;
+            var found = _regexLiteralsIn(src, 0).some(function (r) {
+              return r.value === HEADER_MARKER;
+            });
+            if (found) return;
+            headerHits.push({
+              file: "test/helpers/_shape-match.js", line: 1,
+              content: "the body opened by `" + header.split("{")[0].trim() +
+                "` is not read as the function body it is, so the pattern after " +
+                "its `" + op + "` is never emitted and the linear-time gate " +
+                "skips it — source: " + src,
+            });
+          });
+        });
+      });
+    });
+  });
+  // The class HEADER is its own crossing. A body is marked as holding members
+  // by finding the `class` that owns it, and that walk reads back over the
+  // superclass expression: it stopped at `ns.default`, whose reserved word
+  // names a property, and every method in that class was then read as a block.
+  var CLASS_HEADERS = [
+    "class C", "class C extends B", "class C extends null",
+    "class C extends ns.default", "class C extends a.b.default.c",
+    "class C extends ns[\"B\"]", "class C extends mixin(B)",
+    "class C extends /re/.constructor", "class C extends function(){}",
+    "class C extends class{}", "class C extends ns.function",
+    "class C extends ns.class", "class C extends ns.await.default",
+  ];
+  var CLASS_MEMBERS = [
+    { text: "async m() { await %M%.test(s); }", op: "await" },
+    { text: "*m() { yield %M%.test(s); }", op: "yield" },
+    { text: "async *m() { await %M%.test(s); }", op: "await" },
+    { text: "static async m() { await %M%.test(s); }", op: "await" },
+    { text: "async catch() { await %M%.test(s); }", op: "await" },
+  ];
+  CLASS_HEADERS.forEach(function (head) {
+    CLASS_MEMBERS.forEach(function (member) {
+      var src = head + " { " + member.text.replace("%M%", HEADER_MARKER) + " }";
+      if (!parses(src, "class-header-" + head)) return;    // not valid source
+      headerForms += 1;
+      var found = _regexLiteralsIn(src, 0).some(function (r) {
+        return r.value === HEADER_MARKER;
+      });
+      if (found) return;
+      headerHits.push({
+        file: "test/helpers/_shape-match.js", line: 1,
+        content: "the body of a member of `" + head + "` is not read as a " +
+          "function body, so the pattern after its `" + member.op + "` is " +
+          "never emitted — source: " + src,
+      });
+    });
+  });
+
+  if (headerForms < 200) {
+    headerHits.push({
+      file: "test/layer-0-primitives/codebase-patterns.test.js", line: 1,
+      content: "function-header sweep exercised only " + headerForms +
+        " forms that are valid source — the crossing stopped producing them, so " +
+        "the sweep is passing because every case was skipped",
+    });
+  }
+  _report("every function header opens the body the operator inside it needs",
+          headerHits);
+
+  // Where a concise arrow body ENDS, swept the same way and in both
+  // directions. Ending too late loses the body around the arrow, so an `await`
+  // after it reads as a name and its pattern is never emitted; ending too
+  // early leaks the arrow's own body outward, so a slash after a name opens a
+  // pattern and swallows the real one. Both directions are asked of every
+  // context an arrow can be written in.
+  var ARROW_CONTEXTS = [
+    "var g = %A%; %T%",
+    "var g = %A%\n %T%",
+    "f(%A%, %T%);",
+    "var a = [%A%, %T%];",
+    "var b = ok ? %A% : %T%;",
+    "var c = { k: %A% }; %T%",
+    "(%A%); %T%",
+    "var d = (%A%, %T%);",
+    "if (ok) { var g = %A%; } %T%",
+    "while (0) { var g = %A%; } %T%",
+    "try { var g = %A%; } catch (e) {} %T%",
+    "for (var i of [%A%]) { %T% }",
+    "label: { var g = %A%; } %T%",
+    "switch (k) { case 1: var g = %A%; break; default: %T% }",
+    "var e = { m() { var g = %A%; } }; %T%",
+    "var h = function () { var g = %A%; }; %T%",
+    "var i2 = [%A%][0]; %T%",
+    "var j = (%A%)(); %T%",
+    // ...and the code after the arrow does not have to begin with a word. A
+    // block begins with punctuation, and the rule that reads the break was
+    // asked only where a word followed it.
+    "var k2 = %A%\n { %T% }",
+    "var l2 = %A%\n { } %T%",
+    "var m2 = %A%; { %T% }",
+    // A statement can begin with punctuation other than a brace: `!`, `~` and
+    // a PREFIX `++` cannot follow a value, so a semicolon goes in before them.
+    // `%E%` is the same code written as an expression, since these hold it
+    // inside a subscript where a statement cannot go.
+    "var n2 = %A%\n ++obj[%E%];",
+    "var o2 = %A%\n --obj[%E%];",
+    "var p2 = %A%\n !obj[%E%];",
+    "var q2 = %A%\n ~obj[%E%];",
+    // ...while punctuation that CAN follow a value continues the expression,
+    // so the arrow's body runs on and the code after it is still inside it.
+    "var r2 = %A%\n [0]; %T%",
+    "var s2 = %A%\n .x; %T%",
+    // A statement can begin with a literal too, and a tagged template is the
+    // one that CONTINUES rather than beginning one.
+    "var t2 = %A%\n 2 + %E%;",
+    "var u2 = %A%\n \"s\" + %E%;",
+    "var v2 = %A%\n `t`; %T%",
+    // A BRACED arrow's body ends at its own `}`, so what follows is outside
+    // it even when the next statement begins with punctuation that would
+    // otherwise continue an expression.
+    "var w2 = %A%\n (%E%).valueOf();",
+    "var x2 = %A%\n [%E%].pop();",
+    "var y2 = %A%\n `${%E%}`;",
+  ];
+  var ARROWS_SYNC = ["x => 1", "x => {}", "() => 1", "(x) => 1", "x => y => 1",
+                     "x => ({})", "x => (1, 2)", "x => `t`", "x => true",
+                     "x => null", "x => x++", "(x = () => 1) => 2",
+                     // A nested BRACED body: only the inner arrow's context
+                     // comes off at that brace, and the outer one ran on.
+                     "x => y => {}", "x => y => z => {}", "x => { return 1; }"];
+  var ARROWS_ASYNC = ["async x => 1", "async x => {}", "async () => 1",
+                      "async (x) => 1", "async x => y => 1", "async x => ({})",
+                      "async x => true", "async x => x++",
+                      "async x => y => {}", "async x => { return 1; }"];
+  var arrowHits = [];
+  var arrowForms = 0;
+  function _sweepArrow(src, why) {
+    if (!parses(src, "arrow-end")) return;                 // not valid source
+    arrowForms += 1;
+    var found = _regexLiteralsIn(src, 0).some(function (r) {
+      return r.value === HEADER_MARKER;
+    });
+    if (found) return;
+    arrowHits.push({
+      file: "test/helpers/_shape-match.js", line: 1,
+      content: why + " — source: " + src,
+    });
+  }
+  ARROW_CONTEXTS.forEach(function (ctx) {
+    ARROWS_SYNC.forEach(function (arrow) {
+      _sweepArrow("async function outer(s) { " +
+        ctx.replace("%A%", arrow)
+           .replace("%T%", "await " + HEADER_MARKER + ".test(s);")
+           .replace("%E%", "await " + HEADER_MARKER + ".test(s)") + " }",
+        "the arrow's body outlives the arrow, so the `await` after it reads " +
+        "as a name and the pattern there is never emitted");
+    });
+    ARROWS_ASYNC.forEach(function (arrow) {
+      _sweepArrow("var await = 4; " +
+        ctx.replace("%A%", arrow)
+           .replace("%T%", "await / 2;")
+           .replace("%E%", "await / 2") +
+        " var re = " + HEADER_MARKER + ";",
+        "the async arrow's body leaks past the arrow, so the division after " +
+        "the name reads as a pattern opener and swallows the pattern after it");
+    });
+  });
+  if (arrowForms < 100) {
+    arrowHits.push({
+      file: "test/layer-0-primitives/codebase-patterns.test.js", line: 1,
+      content: "arrow-body sweep exercised only " + arrowForms +
+        " forms that are valid source — the crossing stopped producing them, so " +
+        "the sweep is passing because every case was skipped",
+    });
+  }
+  _report("a concise arrow body ends where its expression ends", arrowHits);
+
+  // A block that is NOT a function body must not be read as one, whatever
+  // stands before it. The walk that classifies a brace reads backward, so a
+  // statement ending in a call put its parentheses within reach: `g()` and
+  // then a line break and then `try { await … }` took those parens for a
+  // parameter list and read the try block as a synchronous body, which hid
+  // the async one around it. Every block form is crossed with what can
+  // precede it.
+  var BLOCK_FORMS = [
+    "try { %T% } catch (e) {}",
+    "try {} catch (e) { %T% }",
+    "try {} finally { %T% }",
+    "do { %T% } while (0);",
+    "while (0) { %T% }",
+    "for (;;) { %T% break; }",
+    "for (var k in o) { %T% }",
+    "for (var v of a) { %T% }",
+    "if (ok) { %T% }",
+    "if (ok) {} else { %T% }",
+    "switch (k) { case 1: { %T% } }",
+    "label: { %T% }",
+    "{ %T% }",
+    "with (o) { %T% }",
+  ];
+  var BLOCK_PREFIXES = ["", "g();", "g()\n", "x = 1;", "if (a) {}", "h(1, 2);",
+                        "var y = f(1)\n", "{}"];
+  var blockHits = [];
+  var blockForms = 0;
+  BLOCK_FORMS.forEach(function (form) {
+    BLOCK_PREFIXES.forEach(function (prefix) {
+      ["await", "yield"].forEach(function (op) {
+        var inner = op + " " + HEADER_MARKER + ".test(s);";
+        var src = "async function* outer(s) { " + prefix + " " +
+                  form.replace("%T%", inner) + " }";
+        if (!parses(src, "block-" + form)) return;         // not valid source
+        blockForms += 1;
+        var found = _regexLiteralsIn(src, 0).some(function (r) {
+          return r.value === HEADER_MARKER;
+        });
+        if (found) return;
+        blockHits.push({
+          file: "test/helpers/_shape-match.js", line: 1,
+          content: "the block in `" + form + "` is read as a function body of " +
+            "its own, which hides the one around it, so the pattern after its `" +
+            op + "` is never emitted — source: " + src,
+        });
+      });
+    });
+  });
+  if (blockForms < 100) {
+    blockHits.push({
+      file: "test/layer-0-primitives/codebase-patterns.test.js", line: 1,
+      content: "block-form sweep exercised only " + blockForms +
+        " forms that are valid source — the crossing stopped producing them, so " +
+        "the sweep is passing because every case was skipped",
+    });
+  }
+  _report("a block that opens no function body does not hide the one around it",
+          blockHits);
+
+  // A `for` header binds a name, and both the declaration keyword and the
+  // name it binds may be spelled like something else. `for (let of of …)`
+  // binds a name spelled `of`, and reading the `let` as a name made that
+  // binding the relation and the relation a name, which lost the pattern the
+  // header iterates over.
+  var FOR_HEADS = [
+    "for (let %N% of %R%) {}",
+    "for (var %N% of %R%) {}",
+    "for (const %N% of %R%) {}",
+    "for (let %N% in %R%) {}",
+    "for (%N% of %R%) {}",
+    "for ([%N%] of [%R%]) {}",
+    "for (let %N% = 0; %N% < 2; %N%++) { %R%; }",
+  ];
+  // Every reserved word is offered as the binding name; the ones that cannot
+  // be one make source no parser accepts and are skipped, so the set this
+  // depends on is proven here rather than listed in the lexer.
+  var FOR_NAMES = RESERVED.concat(["k", "get", "set", "undefined"]);
+  var forHits = [];
+  var forForms = 0;
+  FOR_HEADS.forEach(function (head) {
+    FOR_NAMES.forEach(function (name) {
+      var src = head.replace(/%N%/g, name)
+                    .replace("%R%", HEADER_MARKER + ".exec(s) || []");
+      if (!parses(src, "for-head-" + head)) return;        // not valid source
+      forForms += 1;
+      var found = _regexLiteralsIn(src, 0).some(function (r) {
+        return r.value === HEADER_MARKER;
+      });
+      if (found) return;
+      forHits.push({
+        file: "test/helpers/_shape-match.js", line: 1,
+        content: "the pattern this `for` header iterates over is never " +
+          "emitted, so the linear-time gate skips it — source: " + src,
+      });
+    });
+  });
+  if (forForms < 20) {
+    forHits.push({
+      file: "test/layer-0-primitives/codebase-patterns.test.js", line: 1,
+      content: "for-header sweep exercised only " + forForms +
+        " forms that are valid source — the crossing stopped producing them, so " +
+        "the sweep is passing because every case was skipped",
+    });
+  }
+  _report("a for header binds a name however the name is spelled", forHits);
+
+  // A template substitution holds an expression written in the grammar around
+  // the template, and the `}` that ends it is the one the LEXER finds rather
+  // than the first in the text. Both halves were wrong at once: every
+  // `await` and `yield` inside a substitution read as a name, and a `}`
+  // written inside a pattern there ended the substitution early. The forms are
+  // crossed with the bodies they can sit in.
+  var SUB_FORMS = [
+    "`${%O% %M%.test(s)}`",
+    "`a${%O% %M%.test(s)}b`",
+    "`${ %O% %M%.test(s) }`",
+    "`${\"}\" + (%O% %M%.test(s))}`",
+    "`${ /* } */ %O% %M%.test(s)}`",
+    "`${ [1].map(function(){ return %O% %M%.test(s); })[0] }`",
+    "`${ { k: 1 }.k, %O% %M%.test(s) }`",
+    "`${ `inner${1}`, %O% %M%.test(s) }`",
+    "`${ f(%O% %M%.test(s)) }`",
+    // A fragment that BEGINS with an arrow: the walk that reads its header
+    // runs out of tokens, and the arrow still opens a body of its own.
+    "`${x => %O% / 2 + %M%.test(s)}`",
+    "`${(x) => %O% / 2 + %M%.test(s)}`",
+    // ...and one that holds a whole function header with nothing before it.
+    "`${function*(){ %O% %M%.test(s); }}`",
+    "`${async function(){ %O% %M%.test(s); }}`",
+    "`${(function*(){ %O% %M%.test(s); })}`",
+    // ...and one that BEGINS with a brace, which stands where an expression
+    // may, so it opens an object rather than a block.
+    "`${{ async m(){ %O% %M%.test(s); } }}`",
+    "`${{ *m(){ %O% %M%.test(s); } }}`",
+    "`${{ k: (function(){ return %M%; }) }}`",
+  ];
+  // Patterns that hold the brace themselves, which only a reader that knows
+  // it is inside a pattern can pass over.
+  var SUB_MARKERS = ["/(?:a+)+$/", "/}(?:a+)+$/", "/[}](?:a+)+$/"];
+  var SUB_HOSTS = [
+    { op: "await", wrap: function (t) { return "async function f(s) { return " + t + "; }"; } },
+    { op: "yield", wrap: function (t) { return "function* g(s) { return " + t + "; }"; } },
+    { op: "await", wrap: function (t) { return "async function* h(s) { return " + t + "; }"; } },
+  ];
+  var subHits = [];
+  var subForms = 0;
+  SUB_FORMS.forEach(function (form) {
+    SUB_MARKERS.forEach(function (marker) {
+      SUB_HOSTS.forEach(function (host) {
+        var src = host.wrap(form.replace("%O%", host.op).replace("%M%", marker));
+        if (!parses(src, "substitution-" + form)) return;   // not valid source
+        subForms += 1;
+        var found = _regexLiteralsIn(src, 0).some(function (r) {
+          return r.value === marker;
+        });
+        if (found) return;
+        subHits.push({
+          file: "test/helpers/_shape-match.js", line: 1,
+          content: "the pattern inside this substitution is never emitted, so the " +
+            "linear-time gate skips it — source: " + src,
+        });
+      });
+    });
+  });
+  if (subForms < 40) {
+    subHits.push({
+      file: "test/layer-0-primitives/codebase-patterns.test.js", line: 1,
+      content: "substitution sweep exercised only " + subForms +
+        " forms that are valid source — the crossing stopped producing them, so " +
+        "the sweep is passing because every case was skipped",
+    });
+  }
+  _report("a pattern inside a template substitution is read in the body around it",
+          subHits);
+
   // Whether a pattern may follow a KEYWORD and whether one may follow the BODY
   // that keyword introduces are different questions, and answering only the
   // first is what let this regress: `try` ends a statement, so it was listed as
@@ -4018,11 +4438,18 @@ function _regexTokens(body, unicode) {
 // characters treats a `}` inside a string, a comment or a character class as
 // structural, which ends `${ "}" + /(?:a+)+$/.test(x) }` at the string and
 // truncates a pattern containing `[}]`.
-function _substitutionEnd(text, from) {
+// `bodyKind` is the function body the template sits in, needed HERE and not
+// only when the fragment is re-read: `${await /}(a+)+$/.test(s)}` in an async
+// function ends at the `}` inside the pattern for a reader that takes the
+// `await` for a name, and the fragment handed on is already truncated.
+function _substitutionEnd(text, from, bodyKind) {
   var rest = text.slice(from);
   var toks;
-  try { toks = shapeMatch.tokenize(rest); }
-  catch (_e) { toks = null; }
+  try {
+    toks = shapeMatch.tokenize(rest, { stopAtCloseBrace: true,
+                                       bodyKind: bodyKind || null,
+                                       expressionStart: true });
+  } catch (_e) { toks = null; }
   if (toks) {
     var depth = 0;
     for (var i = 0; i < toks.length; i += 1) {
@@ -4052,15 +4479,21 @@ function _substitutionEnd(text, from) {
 // caller reading TOK_REGEX. The code between `${` and its matching `}` is
 // tokenized in turn, and offsets are carried through so a line number still
 // points at the pattern.
-function _regexLiteralsIn(source, baseOffset) {
+// `bodyKind` is the function body this source sits inside, which the caller
+// has only when it is re-reading a fragment: a substitution is written in the
+// grammar around its template, so `${ await /re/ }` in an async function needs
+// that body to read the `await` as the operator it is.
+function _regexLiteralsIn(source, baseOffset, bodyKind, isFragment) {
   var out = [];
   // Both lexers in `_shape-match.js` decide which slash opens a pattern, and
   // each knows something the other does not. The tokenizer is read here
   // because the cases below pin its answers; the two are not yet one, and
   // making them one is its own change rather than a corner of this one.
   var toks;
-  try { toks = shapeMatch.tokenize(source); }
-  catch (_e) { return out; }
+  try {
+    toks = shapeMatch.tokenize(source, { bodyKind: bodyKind || null,
+                                         expressionStart: isFragment === true });
+  } catch (_e) { return out; }
   for (var i = 0; i < toks.length; i += 1) {
     var tok = toks[i];
     if (tok.type === shapeMatch.TOK_REGEX) {
@@ -4077,10 +4510,11 @@ function _regexLiteralsIn(source, baseOffset) {
       var slashes = 0;
       for (var b = j - 1; b >= 0 && text.charAt(b) === "\\"; b -= 1) slashes += 1;
       if (slashes % 2 === 1) continue;
-      var close = _substitutionEnd(text, j + 2);
+      var close = _substitutionEnd(text, j + 2, tok.bodyKind);
       if (close === -1) break;                      // unterminated, nothing to read
       var inner = text.slice(j + 2, close);
-      var nested = _regexLiteralsIn(inner, baseOffset + tok.start + j + 2);
+      var nested = _regexLiteralsIn(inner, baseOffset + tok.start + j + 2,
+                                    tok.bodyKind, true);
       for (var n = 0; n < nested.length; n += 1) out.push(nested[n]);
       j = close;
     }
@@ -4163,10 +4597,38 @@ function _topLevelAlternatives(inner, unicode) {
 // that cost, and the point of all of this is to find them rather than to run
 // them. A branch it will not run is treated as accepting, which leaves the
 // enumeration to answer for it.
+// How many paths a match run HERE may take. These matches run in the main
+// process, before the child that carries a deadline is reached, so a pattern
+// that backtracks exponentially stalls the very run that is supposed to report
+// it. A path is a few engine steps, so a million of them is a fraction of a
+// second, and the run is refused rather than started above that.
+var ACCEPT_PATH_BUDGET = 1e6;
+
+// Can this text be matched against a candidate that long within the budget?
+// A quantifier on a GROUP is refused outright: that shape multiplies with the
+// SUBJECT length rather than with the count, which is the very thing the gate
+// exists to find. What is left is quantified single tokens, and each can split
+// the candidate at most `candidate.length` ways, so the paths through k of
+// them are bounded by that raised to k. Group openers are stripped first so
+// their `?` is not read as a quantifier; anything else that looks like one is
+// counted, which can only refuse a match, never start one.
+function _boundedToRun(text, candidateLength) {
+  if (/\)[*+?]|\)\{/.test(text)) return false;
+  var bare = text.replace(/\(\?(?::|<?[=!]|<[A-Za-z_$][A-Za-z0-9_$]*>)/g, "(");
+  var quantifiers = (bare.match(/[*+?]|\{\d/g) || []).length;
+  if (quantifiers === 0) return true;
+  var span = Math.max(2, candidateLength);
+  return Math.pow(span, quantifiers) <= ACCEPT_PATH_BUDGET;
+}
+
 function _branchAccepts(branch, candidate, unicode, before) {
   if (typeof branch !== "string" || branch.length > 64) return true;
   if (typeof candidate !== "string" || candidate.length > 64) return true;
-  if (/\)[*+]|\)\{/.test(branch)) return true;
+  // Refusing a quantified GROUP is not enough: overlapping optional pieces
+  // backtrack exponentially without one, and `(?:b|b)` then thirty `a?` then
+  // `a{30}` stalls here — in the process that is meant to REPORT such a
+  // pattern, before the child under a deadline is ever reached.
+  if (!_boundedToRun(branch, candidate.length)) return true;
   // What the groups before it produced is part of the question. A lookbehind
   // reads it: `(?<!a)c` accepts `c` at the start of a candidate on its own and
   // refuses it after an `a`, so a branch checked in isolation was accepted for
@@ -4192,7 +4654,7 @@ function _branchAccepts(branch, candidate, unicode, before) {
 function _alternativeAccepts(alt, candidate, unicode) {
   if (typeof alt !== "string" || alt.length > 512) return null;
   if (typeof candidate !== "string" || candidate.length > 512) return null;
-  if (/\)[*+]|\)\{/.test(alt)) return null;
+  if (!_boundedToRun(alt, candidate.length)) return null;
   try {
     return new RegExp("^(?:" + alt + ")$", unicode ? "u" : "").test(candidate);
   } catch (_e) {
@@ -5498,6 +5960,26 @@ function testProbeSubjectsReachTheQuantifiedBody() {
   check("regex probe: an ordinary repeated unit is still measured",
         _probeSubjectPieces("^(?:a-|a-)+$").unresolved === false);
 
+  // Building a subject runs matches against pieces of the pattern under test,
+  // in THIS process, before the child that carries a deadline is reached. A
+  // pattern whose pieces backtrack exponentially therefore stalled the run
+  // that exists to report it: thirty optional characters ahead of a required
+  // run of them takes every subset, and this one had not returned after 45
+  // seconds. What may run is decided by the paths it can take, not by the
+  // presence of a quantifier on a group.
+  var _hostile = "(?:(?:b|b)" + "a?".repeat(30) + "a{30}(?!$)|z)+$";
+  var _hostileStart = Date.now();
+  _probeSubjectPieces(_hostile, false);
+  check("regex probe: building a subject cannot be made to backtrack",
+        Date.now() - _hostileStart < 5000);
+  check("regex probe: a run whose paths exceed the budget is refused",
+        _boundedToRun("a?".repeat(30) + "a{30}", 8) === false);
+  check("regex probe: a quantifier on a group is refused whatever the count",
+        _boundedToRun("(?:ab)+", 8) === false);
+  check("regex probe: ordinary quantified tokens still run",
+        _boundedToRun("[0-9]{1,3}", 8) === true &&
+        _boundedToRun("\\d+\\w*\\s?", 8) === true);
+
   // Where an assertion reads into the body the prefix stops short of, no
   // verdict on the branch is available at all. Both are kept, and both are
   // seeded, so the one that reaches the body drives it.
@@ -5810,6 +6292,137 @@ function testProbeSubjectsReachTheQuantifiedBody() {
      "/(?:zo+)+$/"],
     // A parenthesised assignment target still precedes a for-of relation.
     ["for ((x) of /(?:zp+)+$/) {}",                      "/(?:zp+)+$/"],
+    // An arrow takes a single parameter without parentheses around it, and
+    // opens a function body either way.
+    ["const f3 = async x => { await /(?:zq+)+$/.test(x); };", "/(?:zq+)+$/"],
+    // A CONCISE body has no brace to carry the context, so the arrow carries
+    // it: the body runs to the end of the expression.
+    ["const f4 = async x => await /(?:zr+)+$/.test(x);",  "/(?:zr+)+$/"],
+    ["const f5 = async () => await /(?:zs+)+$/.test(x);", "/(?:zs+)+$/"],
+    ["run(async x => await /(?:zt+)+$/.test(x), 1);",     "/(?:zt+)+$/"],
+    // ...and ends there. After the arrow's expression the enclosing body
+    // decides again, and an arrow of its own resets the grammar inside it.
+    ["async function q2(){ xs.map(x => 1); await /(?:zu+)+$/.test(y); }",
+     "/(?:zu+)+$/"],
+    ["async function q3(){ const g3 = () => 1; } var await=4; await / 2; var re2 = /(?:zv+)+$/;",
+     "/(?:zv+)+$/"],
+    ["function* g4(){ var f6 = x => yield / 2; } var re3 = /(?:zw+)+$/;",
+     "/(?:zw+)+$/"],
+    ["var xs3 = [async x => await g(x), /(?:zx+)+$/];",   "/(?:zx+)+$/"],
+    // A concise body ends without a `;` too: a line break before a word that
+    // begins a statement ends it, braced arrow or not.
+    ["async function q4(){ const g5 = x => 1\n await /(?:zy+)+$/.test(s); }",
+     "/(?:zy+)+$/"],
+    ["async function q5(){ const g6 = x => {}\n await /(?:zz+)+$/.test(s); }",
+     "/(?:zz+)+$/"],
+    // ...and at the colon of a conditional it sits inside, though not at one
+    // written inside its own body.
+    ["async function q6(){ const g7 = ok ? x => 1 : await /(?:za2+)+$/.test(s); }",
+     "/(?:za2+)+$/"],
+    ["var g8 = ok ? async x => 1 : await / 2; var re4 = /(?:zb2+)+$/;",
+     "/(?:zb2+)+$/"],
+    ["const g9 = async x => ok ? 1 : await /(?:zc2+)+$/.test(x);",
+     "/(?:zc2+)+$/"],
+    // A control header's parens are not a parameter list, so the block after
+    // one opens no function body and does not hide the one around it.
+    ["async function q7(){ if (x) { await /(?:zd2+)+$/.test(s); } }",
+     "/(?:zd2+)+$/"],
+    ["async function q8(){ for (var i=0;i<2;i++) { await /(?:ze2+)+$/.test(s); } }",
+     "/(?:ze2+)+$/"],
+    ["function* g10(){ while (x) { yield /(?:zf2+)+$/.test(s); } }",
+     "/(?:zf2+)+$/"],
+    // `catch` and `switch` take one too. A slash cannot follow either, so both
+    // were absent while the question was only about slashes.
+    ["async function q9(){ try{g();}catch(e){ await /(?:zg2+)+$/.test(s); } }",
+     "/(?:zg2+)+$/"],
+    ["async function qa(){ switch(k){ case 1: await /(?:zh2+)+$/.test(s); } }",
+     "/(?:zh2+)+$/"],
+    ["function* g11(){ try{g();}catch(e){ yield /(?:zi2+)+$/.test(s); } }",
+     "/(?:zi2+)+$/"],
+    // ...and a method's parens ARE a parameter list, so its body still opens a
+    // function context and `await` in one outside an async body is a name.
+    ["var o7={ m(){ var await=4; await / 2; } }; var re5=/(?:zj2+)+$/;",
+     "/(?:zj2+)+$/"],
+    ["try{g();}catch(e){ var await=4; await / 2; } var re6=/(?:zk2+)+$/;",
+     "/(?:zk2+)+$/"],
+    // A break before `instanceof` or `in` ends nothing: both are spelled like
+    // names and continue the expression the arrow's body is.
+    ["const gb = async x => x\n instanceof Y ? 1 : await /(?:zl2+)+$/.test(x);",
+     "/(?:zl2+)+$/"],
+    // The walk to an arrow's modifier stops at the arrow before it. A nested
+    // arrow takes no modifier from the one that encloses it.
+    ["const gc = async x => y => await / 2; var re7 = /(?:zm2+)+$/;",
+     "/(?:zm2+)+$/"],
+    ["const gd = async () => () => await / 2; var re8 = /(?:zn2+)+$/;",
+     "/(?:zn2+)+$/"],
+    // An expression can end on a value keyword or a postfix operator, and the
+    // break after either one ends a concise body just as `1` does.
+    ["async function qb(){ const ge = x => true\n await /(?:zo2+)+$/.test(s); }",
+     "/(?:zo2+)+$/"],
+    ["async function qc(){ const gf = x => null\n await /(?:zp2+)+$/.test(s); }",
+     "/(?:zp2+)+$/"],
+    ["async function qd(){ const gg = x => x++\n await /(?:zq2+)+$/.test(s); }",
+     "/(?:zq2+)+$/"],
+    // `let` is reserved only in strict mode; where no declaration can begin it
+    // is a name, and a name ends an expression.
+    ["async function qe(){ const gh = y => let\n await /(?:zr2+)+$/.test(s); }",
+     "/(?:zr2+)+$/"],
+    // ...and where one CAN begin it is still the declaration keyword.
+    ["let re9 = 1;\nlet ra2 = /(?:zs2+)+$/;",             "/(?:zs2+)+$/"],
+    // `async` can be the arrow's PARAMETER rather than its modifier, and a
+    // parameter has nothing between it and the arrow.
+    ["const gi = async => await / 2; var rb2 = /(?:zt2+)+$/;",
+     "/(?:zt2+)+$/"],
+    ["const gj = async x => await /(?:zu2+)+$/.test(x);",  "/(?:zu2+)+$/"],
+    // A member list holds no statements, so a control keyword written there
+    // names a method and the parens after it are a parameter list.
+    ["async function qf(){ var o8={catch(){var await=4; await / 2;}}; var rc2=/(?:zv2+)+$/; }",
+     "/(?:zv2+)+$/"],
+    ["async function qg(){ class D{switch(){var await=4; await / 2;}} var rd2=/(?:zw2+)+$/; }",
+     "/(?:zw2+)+$/"],
+    // A substitution is written in the grammar AROUND its template, so the
+    // reader that lexes one on its own is handed the body it sits in.
+    ["async function qh(s){ return `${await /(?:zx2+)+$/.test(s)}`; }",
+     "/(?:zx2+)+$/"],
+    ["function* g12(s){ return `${yield /(?:zy2+)+$/.test(s)}`; }",
+     "/(?:zy2+)+$/"],
+    ["var await=4; var t2 = `${await / 2}`; var re10 = /(?:zz2+)+$/;",
+     "/(?:zz2+)+$/"],
+    // A computed member name is a whole expression, and the modifier that
+    // makes the method a generator or async stands before it.
+    ["const ob = { *[Symbol.iterator]() { yield /(?:za3+)+$/.test(s); } };",
+     "/(?:za3+)+$/"],
+    ["const oc = { async [key]() { await /(?:zb3+)+$/.test(s); } };",
+     "/(?:zb3+)+$/"],
+    ["var await=4; const od = { [key]() { await / 2; } }; var re11 = /(?:zc3+)+$/;",
+     "/(?:zc3+)+$/"],
+    // A member may be named `function` too, and the modifier stands before
+    // that name like any other.
+    ["var oe = { *function() { yield /(?:zd3+)+$/.test(s); } };", "/(?:zd3+)+$/"],
+    ["var of2 = { async *function() { await /(?:ze3+)+$/.test(s); } };",
+     "/(?:ze3+)+$/"],
+    // ...while an anonymous function expression is still one.
+    ["var og = async function () { await /(?:zf3+)+$/.test(s); };", "/(?:zf3+)+$/"],
+    // A CALL's parens are not a parameter list, so the block after one is not
+    // a function body: `g()` and a line break and a bare block is two
+    // statements, and the body around them still decides.
+    ["async function qi(){ g()\n try { await /(?:zg3+)+$/.test(s); } catch(e){} }",
+     "/(?:zg3+)+$/"],
+    ["async function qj(){ g()\n { await /(?:zh3+)+$/.test(s); } }",
+     "/(?:zh3+)+$/"],
+    ["var await=4; g()\n { await / 2; } var re12 = /(?:zi3+)+$/;",
+     "/(?:zi3+)+$/"],
+    // A reserved word written as a property is a value, so it ends an
+    // expression; a bare `async` before a line break is a reference, since a
+    // modifier cannot be separated from what it modifies by one.
+    ["async function qk(){ const gk = x => obj.return\n await /(?:zj3+)+$/.test(s); }",
+     "/(?:zj3+)+$/"],
+    ["async function ql(){ const gl = x => async\n await /(?:zk3+)+$/.test(s); }",
+     "/(?:zk3+)+$/"],
+    // Where a substitution ENDS is read in the body around the template too,
+    // or a `}` written inside a pattern there ends it early.
+    ["async function qm(s){ return `${await /}(?:zl3+)+$/.test(s)}`; }",
+     "/}(?:zl3+)+$/"],
     // A superclass written as a long member expression. The walk back to the
     // keyword is bounded by the token list, not by a count of its own.
     ["var L = class extends ns" + ".a".repeat(255) + " {} / 2; var re = /(?:yu+)+$/;",
@@ -5872,7 +6485,10 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // it is spelled like, and the brace after it opens a body.
     ["class of {} /(?:z1+)+$/.test(x);",                 "/(?:z1+)+$/"],
     ["function of() {} /(?:z2+)+$/.test(x);",            "/(?:z2+)+$/"],
-    ["class in {} /(?:z3+)+$/.test(x);",                 "/(?:z3+)+$/"],
+    // `in` stood here, which no parser accepts as a class name, so the answer
+    // was pinned on source that cannot be written. `await` can be one, and it
+    // asks the same question of a word the async reader also has to place.
+    ["class await {} /(?:z3+)+$/.test(x);",              "/(?:z3+)+$/"],
     // A superclass is an expression, and an expression may begin with a
     // pattern rather than divide.
     ["var C = class extends /(?:z7+)+$/.constructor {}",  "/(?:z7+)+$/"],
