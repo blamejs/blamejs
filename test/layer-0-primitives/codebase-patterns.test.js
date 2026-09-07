@@ -5791,6 +5791,13 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     // to find, so the walk looks for the `async` itself.
     ["const f2 = async () => { await /(?:zg+)+$/.test(x); };", "/(?:zg+)+$/"],
     ["var o2 = { async m() { await /(?:zh+)+$/.test(x); } };",  "/(?:zh+)+$/"],
+    // `of` is the relation of a for-of header, not anything inside a `for`:
+    // in a traditional header's initializer it is a name.
+    ["for (of / 2; false;) {} const r9 = /(?:zi+)+$/;",   "/(?:zi+)+$/"],
+    // `yield` is an operator in a generator body and a name outside one.
+    ["var yield = 4; yield / 2; var ra = /(?:zj+)+$/;",   "/(?:zj+)+$/"],
+    ["function* g2(){ yield /(?:zk+)+$/.test(x); }",      "/(?:zk+)+$/"],
+    ["var o3 = { *m(){ yield /(?:zl+)+$/.test(x); } };",  "/(?:zl+)+$/"],
     // A superclass written as a long member expression. The walk back to the
     // keyword is bounded by the token list, not by a count of its own.
     ["var L = class extends ns" + ".a".repeat(255) + " {} / 2; var re = /(?:yu+)+$/;",

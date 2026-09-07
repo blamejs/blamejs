@@ -250,8 +250,9 @@ function tokenize(source) {
   // it is inside rather than only whether it is inside one.
   var headerWordStack = [];
   // Per open brace: does it open the body of an ASYNC function? `await` is an
-  // operator only in there.
+  // operator only in there. And of a GENERATOR, which is where `yield` is one.
   var asyncBodyStack = [];
+  var generatorBodyStack = [];
   var braceStack = [];
   // Per open brace: does it open the body of a function or class EXPRESSION,
   // whose closing brace is therefore followed by division rather than by a
@@ -393,12 +394,24 @@ function tokenize(source) {
       // it is followed by an expression, so that slash opened a pattern and ran
       // to the opener of the next real one. Which parens are a control header
       // is already tracked for the `)` rule, so the innermost one answers it.
-      if (idVal === "of" && headerWordStack[headerWordStack.length - 1] !== "for") {
+      // ...and only in the RELATION of one. `for (of / 2; false;)` puts it in
+      // the initializer of a traditional header, where it is a name, so the
+      // token before it has to be the binding target the relation follows.
+      if (idVal === "of" &&
+          (headerWordStack[headerWordStack.length - 1] !== "for" ||
+           prevSig === null ||
+           !(prevSig.type === TOK_IDENT ||
+             (prevSig.type === TOK_PUNCT &&
+              (prevSig.value === "]" || prevSig.value === "}"))))) {
         idType = TOK_IDENT;
       }
       // `await` the same way: an operator inside an async function body, an
-      // ordinary name anywhere else in a script.
+      // ordinary name anywhere else in a script. `yield` likewise, in a
+      // generator body.
       if (idVal === "await" && asyncBodyStack.indexOf(true) === -1) {
+        idType = TOK_IDENT;
+      }
+      if (idVal === "yield" && generatorBodyStack.indexOf(true) === -1) {
         idType = TOK_IDENT;
       }
       var itok = { type: idType, value: idVal, start: is, end: i };
@@ -504,6 +517,7 @@ function tokenize(source) {
         // `var await = 4; await / 2` divides. Read as the operator it is
         // followed by an expression, so that slash opened a pattern.
         asyncBodyStack.push(_opensAsyncBody(tokens, source));
+        generatorBodyStack.push(_opensGeneratorBody(tokens));
         // `async` is a modifier on the keyword, not a position of its own, so
         // the position is the one BEFORE it: `var x = async function () {}` is
         // an expression, and reading `async` as the preceding token made it a
@@ -553,6 +567,7 @@ function tokenize(source) {
         ptok.closedObject = braceStack.pop() === true;
         ptok.closedValueBody = valueBodyStack.pop() === true;
         asyncBodyStack.pop();
+        generatorBodyStack.pop();
         if (frames.length > 1) frames.pop();
       } else if (ptok.value === "?") {
         frames[frames.length - 1].ternary += 1;
@@ -1234,6 +1249,43 @@ function _opensAsyncBody(tokens, source) {
       continue;
     }
     return false;                                        // not a function header
+  }
+  return false;
+}
+
+// Does the brace about to be pushed open a GENERATOR's body? `yield` is an
+// operator only in there; in a script it is an ordinary name. Read the same way
+// as the async question: back over the header, looking for the star that makes
+// a function a generator, whether written `function* g()` or `{ *m() {} }`.
+function _opensGeneratorBody(tokens) {
+  var i = tokens.length - 1;
+  var sawStar = false;
+  var guard = 0;
+  while (i >= 0 && guard <= tokens.length) {
+    guard += 1;
+    var t = tokens[i];
+    if (t.type === TOK_WS || t.type === TOK_COMMENT) { i -= 1; continue; }
+    if (t.type === TOK_PUNCT && t.value === "*") { sawStar = true; i -= 1; continue; }
+    if (t.type === TOK_KEYWORD && t.value === "function") return sawStar;
+    if (t.type === TOK_PUNCT && t.value === ")") {
+      var depth = 0;
+      for (; i >= 0; i -= 1) {
+        if (tokens[i].type !== TOK_PUNCT) continue;
+        if (tokens[i].value === ")") depth += 1;
+        else if (tokens[i].value === "(") { depth -= 1; if (depth === 0) break; }
+      }
+      if (depth !== 0) return false;
+      i -= 1;
+      continue;
+    }
+    if (t.type === TOK_IDENT ||
+        (t.type === TOK_KEYWORD && (t.value === "async" || t.value === "static"))) {
+      i -= 1;
+      continue;
+    }
+    // A method's star sits at the start of its header, with the object or
+    // class brace before it: `{ *m() {} }`.
+    return sawStar && t.type === TOK_PUNCT && t.value === "{";
   }
   return false;
 }
