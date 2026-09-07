@@ -382,6 +382,14 @@ function tokenize(source) {
       while (i < n && _isWordChar(source.charAt(i))) i += 1;
       var idVal = source.slice(is, i);
       var idType = KEYWORDS[idVal] ? TOK_KEYWORD : TOK_IDENT;
+      // `of` is a keyword only in a `for (x of y)` header; anywhere else it is
+      // an ordinary name, and `var of = 4; of / 2` divides. Read as the keyword
+      // it is followed by an expression, so that slash opened a pattern and ran
+      // to the opener of the next real one. Which parens are a control header
+      // is already tracked for the `)` rule, so the innermost one answers it.
+      if (idVal === "of" && parenStack[parenStack.length - 1] !== true) {
+        idType = TOK_IDENT;
+      }
       var itok = { type: idType, value: idVal, start: is, end: i };
       // Every keyword is also a legal property name, and one in that position
       // is a value rather than a keyword: `obj.return / 2` and `obj.else / 2`

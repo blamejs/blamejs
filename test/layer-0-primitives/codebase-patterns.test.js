@@ -5684,6 +5684,10 @@ function testProbeSubjectsReachTheQuantifiedBody() {
     ["var K = function of() {} / 2; var re = /(?:yt+)+$/;", "/(?:yt+)+$/"],
     // The generator star stands between `function` and the name it gives.
     ["var M = function* of() {} / 2; var re = /(?:yz+)+$/;", "/(?:yz+)+$/"],
+    // `of` is a keyword only in a `for (x of y)` header. Anywhere else it is an
+    // ordinary name, and a name divides.
+    ["var of = 4; of / 2; var re = /(?:za+)+$/;",         "/(?:za+)+$/"],
+    ["for (var k of xs) /(?:zb+)+$/.test(k);",            "/(?:zb+)+$/"],
     // A superclass written as a long member expression. The walk back to the
     // keyword is bounded by the token list, not by a count of its own.
     ["var L = class extends ns" + ".a".repeat(255) + " {} / 2; var re = /(?:yu+)+$/;",

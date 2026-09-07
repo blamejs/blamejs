@@ -1480,7 +1480,12 @@ function cmdMerge() {
   var mergeBodyPath = path.join(ROOT, ".scratch", "release-squash-msg.txt");
   try { fs.mkdirSync(path.dirname(mergeBodyPath), { recursive: true }); } catch (_e) { /* ignore */ }
   fs.writeFileSync(mergeBodyPath, mergeLines.slice(2).join("\n") + "\n");
+  // Bound to the head that was checked. Between reading it and running this,
+  // the branch can move, and GitHub would then merge the new head under a
+  // subject and body describing the tree that was verified. `--match-head-commit`
+  // makes the merge itself refuse when the head is no longer that one.
   _run("gh", ["pr", "merge", prNum, "--squash", "--delete-branch",
+              "--match-head-commit", prHead,
               "--subject", mergeLines[0], "--body-file", mergeBodyPath]);
   _ok("PR #" + prNum + " squash-merged");
 
