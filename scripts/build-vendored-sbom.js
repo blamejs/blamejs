@@ -55,9 +55,9 @@ var FRAMEWORK_SUPPLIER = {
 // GITHUB_SERVER_URL + GITHUB_REPOSITORY + GITHUB_RUN_ID are populated
 // by Actions; absent locally the externalRef is omitted.
 function _githubActionsRunUrl() {
-  var server = process.env.GITHUB_SERVER_URL;                       // allow:raw-process-env — read by env-driven script
-  var repo   = process.env.GITHUB_REPOSITORY;                       // allow:raw-process-env — read by env-driven script
-  var runId  = process.env.GITHUB_RUN_ID;                           // allow:raw-process-env — read by env-driven script
+  var server = process.env.GITHUB_SERVER_URL;
+  var repo   = process.env.GITHUB_REPOSITORY;
+  var runId  = process.env.GITHUB_RUN_ID;
   if (typeof server === "string" && server.length > 0 &&
       typeof repo === "string" && repo.length > 0 &&
       typeof runId === "string" && runId.length > 0) {

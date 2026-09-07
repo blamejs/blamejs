@@ -51,7 +51,22 @@ var TOK_COMMENT    = "comment";
 var TOK_WS         = "ws";
 var TOK_KEYWORD    = "keyword";
 
-var KEYWORDS = {
+// A table keyed by text taken from the source carries no prototype, so a word
+// that names an `Object.prototype` member answers from the table or not at all.
+// `KEYWORDS["constructor"]` found `Object.prototype.constructor` and every
+// identifier spelled `constructor`, `toString`, `valueOf` or `hasOwnProperty`
+// tokenized as a keyword; `class extends /re/.constructor {}` is where that
+// showed, because the walk to the class keyword stopped at the false keyword.
+// The tables that compare against 1 were shielded by that comparison rather
+// than by design, which is not a difference worth relying on.
+function _table(entries) {
+  var t = Object.create(null);
+  var keys = Object.keys(entries);
+  for (var i = 0; i < keys.length; i += 1) t[keys[i]] = entries[keys[i]];
+  return t;
+}
+
+var KEYWORDS = _table({
   "var": 1, "let": 1, "const": 1, "function": 1, "return": 1, "if": 1,
   "else": 1, "for": 1, "while": 1, "do": 1, "switch": 1, "case": 1,
   "default": 1, "break": 1, "continue": 1, "try": 1, "catch": 1,
@@ -60,7 +75,12 @@ var KEYWORDS = {
   "true": 1, "false": 1, "undefined": 1, "async": 1, "await": 1,
   "yield": 1, "class": 1, "extends": 1, "super": 1, "import": 1,
   "export": 1, "from": 1, "as": 1,
-};
+  // `debugger` is a complete statement, so a pattern may begin on the line
+  // after it. Left out of this table it tokenized as an identifier, and an
+  // identifier divides, so the pattern following one was read as division and
+  // never emitted. The sibling lexer in this file already listed it.
+  "debugger": 1,
+});
 
 // Punctuation characters that can begin a token. Multi-char operators
 // (===, !==, &&, ||, ??, =>, etc.) are recognised greedily in tokenize.
@@ -71,9 +91,97 @@ var PUNCT_CHARS = "{}()[];,.<>!=+-*/%&|^~?:";
 // the classic JS ambiguity; we use the standard rule: regex follows
 // any context that demands an expression — operators, keywords like
 // `return` / `typeof` / `new`, or the start of input.
+// Does the text hold a line terminator? Compared by code point rather than
+// against a character class, so the four ECMAScript terminators are named
+// here without any of them appearing in this file.
+var LINE_TERMINATOR_CODES = [0x0A, 0x0D, 0x2028, 0x2029];
+
+// Space, tab, the two ASCII line breaks and the two Unicode ones, by code.
+// Every character the language calls whitespace, not the few that are typed
+// most often. The identifier rule below admits anything that is not
+// punctuation, so a space this does not name becomes the start of a NAME, and
+// the slash after it then divides: a no-break space before a pattern statement
+// hid the pattern from the check entirely. The set is the ECMAScript
+// WhiteSpace production, which is tab, vertical tab, form feed, the Zs
+// category, and the byte-order mark, plus the line terminators.
+function _isSpaceCode(cc) {
+  if (cc === 0x20 || cc === 0x09 || cc === 0x0B || cc === 0x0C) return true;
+  if (cc === 0x0A || cc === 0x0D || cc === 0x2028 || cc === 0x2029) return true;
+  if (cc === 0xA0 || cc === 0xFEFF) return true;
+  if (cc === 0x1680 || cc === 0x202F || cc === 0x205F || cc === 0x3000) return true;
+  return cc >= 0x2000 && cc <= 0x200A;                       // the Zs run
+}
+function _hasLineTerminator(text) {
+  for (var i = 0; i < text.length; i += 1) {
+    if (LINE_TERMINATOR_CODES.indexOf(text.charCodeAt(i)) !== -1) return true;
+  }
+  return false;
+}
+
+// The token, as the single-character form the brace classifier reads. That
+// classifier takes the last significant TEXT rather than a token, so a value
+// token is handed the character its kind is spelled with.
+// The significant token before the given one, skipping whitespace and
+// comments. Used where one token alone does not say what a word is: a name
+// after `class` is a name whatever it is spelled like.
+function _significantBefore(tokens, tok) {
+  var seenIt = false;
+  for (var i = tokens.length - 1; i >= 0; i -= 1) {
+    var t = tokens[i];
+    if (t.type === TOK_WS || t.type === TOK_COMMENT) continue;
+    if (!seenIt) { seenIt = (t === tok); continue; }
+    return t;
+  }
+  return null;
+}
+
+// Was there a line terminator between the last significant token and here?
+// Reads back over the whitespace and comments the caller skipped.
+function _lineBreakBeforeEnd(tokens) {
+  for (var i = tokens.length - 1; i >= 0; i -= 1) {
+    var t = tokens[i];
+    if (t.type !== TOK_WS && t.type !== TOK_COMMENT) return false;
+    if (_hasLineTerminator(t.value)) return true;
+  }
+  return false;
+}
+
+// The keywords ECMAScript forbids a line terminator after: one there ends the
+// statement, so what follows starts a new one. `yield` and a newline leave the
+// brace on the next line opening a BLOCK rather than an object.
+var _RESTRICTED_PRODUCTIONS = _table({
+  "return": 1, "throw": 1, "yield": 1, "break": 1, "continue": 1,
+});
+
+function _lastSigText(tok) {
+  if (!tok) return "";
+  if (tok.type === TOK_NUMBER) return "0";
+  if (tok.type === TOK_STRING) return "\"";
+  if (tok.type === TOK_TEMPLATE) return "`";
+  if (tok.type === TOK_REGEX) return "0";                 // a value, so a brace after it opens an object
+  // A colon either separates a property from its value or closes a ternary,
+  // and both are followed by a value; or it ends a label or a `case`, and
+  // those are followed by a STATEMENT. Handing the raw colon to the brace
+  // classifier read `label: {}` as an object.
+  if (tok.value === ":" && tok.colonIsValue !== true) return _STATEMENT_POSITION;
+  // A keyword written as a property name is a VALUE, not the keyword: the
+  // brace after `class X extends B.default {}` opens a class body, and handing
+  // the classifier the word `default` answered for a keyword nobody wrote.
+  if (tok.isProperty === true) return "0";
+  // `debugger` is a complete statement, so the brace after it opens a BLOCK.
+  // It sits in the regex-leading set, which the brace classifier reads as "a
+  // value may follow", and that is the one place the two questions differ.
+  if (tok.value === "debugger") return _STATEMENT_POSITION;
+  return tok.value;
+}
+
 function _slashIsRegex(prevSignificant) {
   if (!prevSignificant) return true;
   if (prevSignificant.type === TOK_IDENT) {
+    // A word after `break` or `continue` is the LABEL those take, and nothing
+    // divides a label, so a slash after one opens a pattern the way it does
+    // after the bare keyword.
+    if (prevSignificant.isBreakLabel === true) return true;
     // After an identifier we don't know whether it's a variable name
     // (division) or an unparenthesised expression-tail. Be conservative:
     // identifiers preceded only by `return`, `typeof`, etc. resolve via
@@ -85,13 +193,21 @@ function _slashIsRegex(prevSignificant) {
       prevSignificant.type === TOK_TEMPLATE ||
       prevSignificant.type === TOK_REGEX) return false;
   if (prevSignificant.type === TOK_KEYWORD) {
+    // A keyword in property position is a value, so a slash after it divides.
+    if (prevSignificant.isProperty === true) return false;
     var kw = prevSignificant.value;
     // After these keywords a `/` is part of a regex literal.
-    if (kw === "return" || kw === "typeof" || kw === "throw" ||
-        kw === "new" || kw === "delete" || kw === "void" ||
-        kw === "instanceof" || kw === "in" || kw === "of" ||
-        kw === "case" || kw === "yield" || kw === "await") return true;
-    return false;
+    // `else` and `do` are followed by the statement they govern, which may be
+    // unbraced and may begin with a pattern: `else /re/.test(s);`.
+    // `break` and `continue` take a label and nothing else, so a slash after
+    // one is never division; with the semicolon left to insertion, the next
+    // statement can begin with a pattern on the following line.
+    // Read from the same table the other lexer in this file reads, rather than
+    // a chain of comparisons beside it. The chain had drifted from the table
+    // three times over: `debugger`, `extends` and `default` were each found
+    // missing separately, and `try` and `finally` were missing too and had not
+    // been found yet. One list answers the question for both readers now.
+    return _REGEX_LEADING_KEYWORDS[kw] === 1;
   }
   if (prevSignificant.type === TOK_PUNCT) {
     // After most punctuation a `/` is a regex. Exceptions: `)` and `]`
@@ -99,7 +215,26 @@ function _slashIsRegex(prevSignificant) {
     // is division. (Object-literal `}` is statement-end and would be a
     // regex — but the bounded grammar we care about uses semicolons.)
     var p = prevSignificant.value;
-    if (p === ")" || p === "]") return false;
+    // The paren that closed a control-flow header is followed by a statement,
+    // and a statement may begin with a pattern: `if (ok) /re/.test(s);`.
+    if (p === ")") return prevSignificant.closedControlHeader === true;
+    if (p === "]") return false;
+    // A POSTFIX `++` or `--` ends an expression, so the slash after it is
+    // division: `x++ / 2`. Reading it as a pattern opener swallows the rest of
+    // the line and consumes the opening slash of the next real one. A PREFIX
+    // one is followed by its operand, which may begin with a pattern.
+    if (p === "++" || p === "--") return prevSignificant.isPostfix !== true;
+    // A `}` that closed an OBJECT closed an expression, so the slash after it
+    // divides: `var n = {} / 2`. One that closed a block ended a statement, and
+    // a statement may begin with a pattern. Which it is cannot be read off the
+    // brace, so it is decided at the matching `{`, the way the comment stripper
+    // in this file already decides it.
+    if (p === "}") {
+      // The body of a function or class EXPRESSION closes a value too, so a
+      // slash after it divides just as it does after an object.
+      if (prevSignificant.closedValueBody === true) return false;
+      return prevSignificant.closedObject !== true;
+    }
     return true;
   }
   return true;
@@ -110,16 +245,24 @@ function tokenize(source) {
   var i = 0;
   var n = source.length;
   var prevSig = null;
+  var parenStack = [];
+  var braceStack = [];
+  // Per open brace: does it open the body of a function or class EXPRESSION,
+  // whose closing brace is therefore followed by division rather than by a
+  // statement? Kept beside braceStack so the two are pushed and popped together.
+  var valueBodyStack = [];
+  var frames = [{ ternary: 0, isObject: false }];
   while (i < n) {
     var ch = source.charAt(i);
     var cc = source.charCodeAt(i);
 
-    // Whitespace
-    if (ch === " " || ch === "\t" || ch === "\n" || ch === "\r") {
+    // Whitespace. The two Unicode line terminators count: a token that skips
+    // them as unknown leaves no whitespace between the statements they
+    // separate, so a reader asking whether a line break came between finds
+    // none and reads two statements as one.
+    if (_isSpaceCode(cc)) {
       var ws = i;
-      while (i < n) {
-        var c2 = source.charAt(i);
-        if (c2 !== " " && c2 !== "\t" && c2 !== "\n" && c2 !== "\r") break;
+      while (i < n && _isSpaceCode(source.charCodeAt(i))) {
         i += 1;
       }
       tokens.push({ type: TOK_WS, value: source.slice(ws, i), start: ws, end: i });
@@ -129,7 +272,10 @@ function tokenize(source) {
     // Line comment
     if (ch === "/" && source.charAt(i + 1) === "/") {
       var lc = i;
-      while (i < n && source.charAt(i) !== "\n") i += 1;
+      // Every line terminator ends a line comment, not only LF. Stopping at LF
+      // alone swallowed the rest of a CR-terminated file as one comment, and
+      // whatever followed, including a pattern, was never seen.
+      while (i < n && LINE_TERMINATOR_CODES.indexOf(source.charCodeAt(i)) === -1) i += 1;
       tokens.push({ type: TOK_COMMENT, value: source.slice(lc, i), start: lc, end: i });
       continue;
     }
@@ -148,9 +294,16 @@ function tokenize(source) {
       var sQuote = ch; var ss = i; i += 1;
       while (i < n) {
         var c3 = source.charAt(i);
-        if (c3 === "\\") { i += 2; continue; }
+        // A line continuation is a backslash and the terminator after it, and
+        // `\` + CRLF is three characters rather than a continuation followed by
+        // a bare LF. Advancing two left that LF to end the string, so the real
+        // closing quote opened another one and swallowed what followed.
+        if (c3 === "\\") {
+          i += (source.charCodeAt(i + 1) === 0x0D && source.charCodeAt(i + 2) === 0x0A) ? 3 : 2;
+          continue;
+        }
         if (c3 === sQuote) { i += 1; break; }
-        if (c3 === "\n") break;                                                    // unterminated — caller deals
+        if (c3 === "\n" || c3 === "\r") break;                                     // unterminated — caller deals
         i += 1;
       }
       var stok = { type: TOK_STRING, value: source.slice(ss, i), start: ss, end: i };
@@ -158,35 +311,24 @@ function tokenize(source) {
       continue;
     }
 
-    // Template literal — backtick. Substitutions ${ ... } can recurse;
-    // for the bounded use here we track brace-depth inside the substitution
-    // and resume the template after the matching `}`.
+    // Template literal — backtick. Where a substitution ends is found by
+    // counting braces, which is wrong about a brace written inside a string, a
+    // comment, a nested template or a character class.
+    //
+    // Lexing the substitution instead answers those correctly and is the
+    // change this file does NOT make. What sits between `${` and its `}` is
+    // code, so a lexer is the right instrument, but this lexer is incomplete
+    // in ways that are known and being worked through one at a time, and
+    // reading a substitution with it turns each remaining gap from one
+    // mis-read token into the loss of every pattern after the template: a
+    // scan that runs past the closing brace ends the template at some later
+    // backtick, and nothing about that is detectable from the result. Counting
+    // is wrong about a narrower thing and wrong locally. The framework holds
+    // no substitution that either reads incorrectly.
     if (ch === "`") {
-      var ts = i; i += 1;
-      var depth = 0;
-      while (i < n) {
-        var c4 = source.charAt(i);
-        if (depth === 0) {
-          if (c4 === "\\") { i += 2; continue; }
-          if (c4 === "`") { i += 1; break; }
-          if (c4 === "$" && source.charAt(i + 1) === "{") {
-            depth = 1; i += 2; continue;
-          }
-          i += 1; continue;
-        }
-        // inside ${...} — track nested braces but skip nested strings/templates
-        if (c4 === "{") { depth += 1; i += 1; continue; }
-        if (c4 === "}") { depth -= 1; i += 1; continue; }
-        if (c4 === "'" || c4 === '"') {
-          var nQ = c4; i += 1;
-          while (i < n && source.charAt(i) !== nQ) {
-            if (source.charAt(i) === "\\") i += 2; else i += 1;
-          }
-          if (i < n) i += 1;
-          continue;
-        }
-        i += 1;
-      }
+      var ts = i;
+      var tEnd = _templateEnd(source, ts);
+      i = tEnd === -1 ? n : tEnd;
       var ttok = { type: TOK_TEMPLATE, value: source.slice(ts, i), start: ts, end: i };
       tokens.push(ttok); prevSig = ttok;
       continue;
@@ -206,7 +348,10 @@ function tokenize(source) {
         i += 1;
       }
       // Trailing flags
-      while (i < n && /[gimsuyd]/.test(source.charAt(i))) i += 1;
+      // `v` is a flag Node accepts, and stopping before it ends the token
+      // early: the flag is then read as an identifier, and a caller that
+      // rebuilds the pattern from this token builds one without it.
+      while (i < n && /[gimsuydv]/.test(source.charAt(i))) i += 1;
       var rtok = { type: TOK_REGEX, value: source.slice(rs, i), start: rs, end: i };
       tokens.push(rtok); prevSig = rtok;
       continue;
@@ -226,13 +371,33 @@ function tokenize(source) {
       continue;
     }
 
-    // Identifier / keyword
-    if (/[A-Za-z_$]/.test(ch)) {
+    // Identifier / keyword. A name may begin outside ASCII, and reading only
+    // ASCII skipped the character entirely: `const p = 1; p / 2;` written with
+    // a Greek letter left the semicolon as the last token seen, so the slash
+    // after the name opened a pattern and ran to the opener of the next real
+    // one. The sibling lexer in this file already reads a name this way, by
+    // asking what is NOT part of one.
+    if (_isWordStart(ch)) {
       var is = i; i += 1;
-      while (i < n && /[A-Za-z0-9_$]/.test(source.charAt(i))) i += 1;
+      while (i < n && _isWordChar(source.charAt(i))) i += 1;
       var idVal = source.slice(is, i);
       var idType = KEYWORDS[idVal] ? TOK_KEYWORD : TOK_IDENT;
       var itok = { type: idType, value: idVal, start: is, end: i };
+      // Every keyword is also a legal property name, and one in that position
+      // is a value rather than a keyword: `obj.return / 2` and `obj.else / 2`
+      // both divide. Recorded here, where the preceding token is known.
+      if (prevSig !== null && prevSig.type === TOK_PUNCT &&
+          (prevSig.value === "." || prevSig.value === "?.")) {
+        itok.isProperty = true;
+      }
+      // The word after `break` or `continue` is the label they jump to, but
+      // only on the same line: these forbid a line terminator before the
+      // label, so one there ends the statement and the word starts the next.
+      if (prevSig !== null && prevSig.type === TOK_KEYWORD &&
+          (prevSig.value === "break" || prevSig.value === "continue") &&
+          !_lineBreakBeforeEnd(tokens)) {
+        itok.isBreakLabel = true;
+      }
       tokens.push(itok); prevSig = itok;
       continue;
     }
@@ -260,6 +425,153 @@ function tokenize(source) {
         i += 1;
       }
       var ptok = { type: TOK_PUNCT, value: source.slice(ps, i), start: ps, end: i };
+      // `++` and `--` are POSTFIX only when there was something to operate on,
+      // no line terminator came between (one ends the statement, so the
+      // operator belongs to the next), and the paren before it did not close a
+      // control-flow header (`if (ok) ++x` is a statement, not an operand).
+      // A prefix one is followed by its operand, which may begin with a
+      // pattern, and the two forms decide the next slash differently.
+      // Whether a `}` closed an object or a block is decided at the matching
+      // `{`, by the same classifier the comment stripper uses. Two answers to
+      // one structural question drift, and this one had drifted: every `}` read
+      // as a statement end, so `var n = {} / 2` had its division read as a
+      // pattern opener, which then swallowed the next real one.
+      // A ternary lives inside the nearest enclosing group, so each `(` and
+      // `{` opens a frame that counts its own `?`. Without that, the `:` of a
+      // ternary written inside an object is taken for a property colon.
+      if (ptok.value === "(") {
+        frames.push({ ternary: 0, isObject: false });
+      } else if (ptok.value === ")") {
+        if (frames.length > 1) frames.pop();
+      } else if (ptok.value === "{") {
+        // A restricted-production keyword with a line terminator after it has
+        // ended its statement, so the brace opens a block whatever the keyword
+        // would otherwise imply.
+        var braceLastSig = _lastSigText(prevSig);
+        if (prevSig !== null && prevSig.type === TOK_KEYWORD &&
+            _RESTRICTED_PRODUCTIONS[prevSig.value] === 1 &&
+            _lineBreakBeforeEnd(tokens)) {
+          braceLastSig = _STATEMENT_POSITION;
+        }
+        // A word right after `class` or `function` is that thing's NAME, not
+        // the word it is spelled like: `class of {}` names a class `of`, and
+        // the brace opens its body. Reading the name as the keyword `of` made
+        // the body an object.
+        var beforePrev = _significantBefore(tokens, prevSig);
+        if (beforePrev !== null && beforePrev.type === TOK_KEYWORD &&
+            (beforePrev.value === "class" || beforePrev.value === "function")) {
+          braceLastSig = _STATEMENT_POSITION;
+        }
+        var opensObject = _braceOpensObject(braceLastSig);
+        // A function or class EXPRESSION produces a value, so the brace closing
+        // its body is followed by division: `var x = function () {} / 2`. A
+        // DECLARATION's body ends a statement, and a statement may begin with a
+        // pattern. The brace cannot say which, so it is settled here at the
+        // `{`, the way the paren case is settled at the matching `(`. Reading
+        // every function body as a block made the slash after one open a
+        // pattern, which then ran to the opener of the next real one.
+        // Expression position is the same question `{` already asks about an
+        // object, so it is asked with the same function: at the start of input,
+        // after `;`, after `{`, or after a keyword that introduces a block, the
+        // word begins a statement and the body is a declaration's.
+        var kwTok = _governingFunctionOrClass(tokens);
+        // `async` is a modifier on the keyword, not a position of its own, so
+        // the position is the one BEFORE it: `var x = async function () {}` is
+        // an expression, and reading `async` as the preceding token made it a
+        // declaration. The same table the control-header reader uses says
+        // which words are transparent this way.
+        var beforeKw = kwTok === null ? null : _significantBefore(tokens, kwTok);
+        // ...but only while nothing separates it from what it modifies. With a
+        // line terminator between, `async` has ended its own statement and the
+        // `function` below begins a new one: `var f = async` then a newline
+        // then `function g() {}` is an assignment followed by a declaration.
+        var afterKwTok = kwTok;
+        var seeThroughGuard = 0;
+        while (beforeKw !== null && seeThroughGuard < 8 &&
+               (beforeKw.type === TOK_KEYWORD || beforeKw.type === TOK_IDENT) &&
+               _TRANSPARENT_WORDS[beforeKw.value] === 1 &&
+               // Looked for in the text BETWEEN the two tokens rather than in
+               // the whitespace run before the second: a comment can carry the
+               // terminator, and `async /*\n*/ function` is separated where a
+               // scan that stops at the `*/` sees nothing.
+               !_hasLineTerminator(source.slice(beforeKw.end, afterKwTok.start))) {
+          afterKwTok = beforeKw;
+          beforeKw = _significantBefore(tokens, beforeKw);
+          seeThroughGuard += 1;
+        }
+        var kwLastSig = _lastSigText(beforeKw);
+        // A restricted-production keyword with a line terminator after it has
+        // ended its statement, so what follows begins a new one and the word is
+        // a declaration: `return` on its own line, then `function g(){}`, whose
+        // brace closes a statement and not a value.
+        if (beforeKw !== null && beforeKw.type === TOK_KEYWORD &&
+            _RESTRICTED_PRODUCTIONS[beforeKw.value] === 1 &&
+            _hasLineTerminator(source.slice(beforeKw.end, kwTok.start))) {
+          kwLastSig = _STATEMENT_POSITION;
+        }
+        // `export` and `default` introduce a DECLARATION, so the body they
+        // carry ends a statement. `default` otherwise reads as a word after
+        // which an expression follows, which is true of a `switch` label and
+        // not of `export default function f(){}`.
+        if (beforeKw !== null && beforeKw.type === TOK_KEYWORD &&
+            (beforeKw.value === "export" || beforeKw.value === "default")) {
+          kwLastSig = _STATEMENT_POSITION;
+        }
+        valueBodyStack.push(kwTok !== null && _braceOpensObject(kwLastSig));
+        braceStack.push(opensObject);
+        frames.push({ ternary: 0, isObject: opensObject });
+      } else if (ptok.value === "}") {
+        ptok.closedObject = braceStack.pop() === true;
+        ptok.closedValueBody = valueBodyStack.pop() === true;
+        if (frames.length > 1) frames.pop();
+      } else if (ptok.value === "?") {
+        frames[frames.length - 1].ternary += 1;
+      } else if (ptok.value === ":") {
+        var frame = frames[frames.length - 1];
+        if (frame.ternary > 0) { frame.ternary -= 1; ptok.colonIsValue = true; }
+        else ptok.colonIsValue = frame.isObject === true;
+      }
+      if (ptok.value === "++" || ptok.value === "--") {
+        var operandBefore = prevSig !== null &&
+          (prevSig.type === TOK_IDENT || prevSig.type === TOK_NUMBER ||
+           prevSig.type === TOK_STRING || prevSig.type === TOK_TEMPLATE ||
+           prevSig.type === TOK_REGEX ||
+           (prevSig.type === TOK_PUNCT &&
+            (prevSig.value === "]" ||
+             (prevSig.value === ")" && prevSig.closedControlHeader !== true))));
+        ptok.isPostfix = operandBefore && !_lineBreakBeforeEnd(tokens);
+      }
+      // Whether a `)` allows a pattern after it is decided at the matching
+      // `(`: the paren that closes `if (ok)` is followed by the statement it
+      // governs, which may begin with one, while the paren that closes
+      // `(a + b)` is followed by division. The comment stripper in this file
+      // already decides it that way, and reading it two ways is how the two
+      // answers drift.
+      if (ptok.value === "(") {
+        // `for await (` puts a transparent word between the keyword and the
+        // paren, so the word before is read through the same way the comment
+        // stripper reads it. Looking only at the token next to the paren
+        // classifies `for await` as a call.
+        var head = prevSig;
+        if (head !== null && (head.type === TOK_KEYWORD || head.type === TOK_IDENT) &&
+            _TRANSPARENT_WORDS[head.value] === 1) {
+          for (var bk = tokens.length - 1; bk >= 0; bk -= 1) {
+            var bt = tokens[bk];
+            if (bt.type === TOK_WS || bt.type === TOK_COMMENT) continue;
+            if ((bt.type === TOK_KEYWORD || bt.type === TOK_IDENT) &&
+                _TRANSPARENT_WORDS[bt.value] === 1) continue;
+            head = bt;
+            break;
+          }
+        }
+        // A control keyword is also a legal property name, and `obj.if(x) / 2`
+        // divides. Property position is recorded on the token itself.
+        parenStack.push(head !== null && head.isProperty !== true &&
+                        (head.type === TOK_KEYWORD || head.type === TOK_IDENT) &&
+                        _CONTROL_HEADER_KEYWORDS[head.value] === 1);
+      } else if (ptok.value === ")") {
+        ptok.closedControlHeader = parenStack.pop() === true;
+      }
       tokens.push(ptok); prevSig = ptok;
       continue;
     }
@@ -537,12 +849,12 @@ function positionToLineCol(source, pos) {
 // `get`, `set`) — and the keyword sweep in codebase-patterns.test.js walks the
 // whole reserved list against the parse invariant rather than trusting this
 // comment, because `break` was missing from it and deleted a file's tail.
-var _REGEX_LEADING_KEYWORDS = {
+var _REGEX_LEADING_KEYWORDS = _table({
   "return": 1, "typeof": 1, "throw": 1, "new": 1, "delete": 1, "void": 1,
   "instanceof": 1, "in": 1, "of": 1, "case": 1, "yield": 1, "await": 1,
   "do": 1, "else": 1, "break": 1, "continue": 1, "debugger": 1,
   "try": 1, "finally": 1, "default": 1, "extends": 1,
-};
+});
 
 // A consumed regex literal is a value, and the single character it ends with —
 // `/` — is also the division operator, so the two cannot share a marker.
@@ -581,9 +893,9 @@ var _STATEMENT_POSITION = "@stmt";
 // Which case a `)` is cannot be decided from the `)`. It is decided at the
 // matching `(`, by the word in front of it, so the openers are tracked on a
 // per-frame stack and the answer read back when the paren closes.
-var _CONTROL_HEADER_KEYWORDS = {
+var _CONTROL_HEADER_KEYWORDS = _table({
   "if": 1, "while": 1, "for": 1, "with": 1,
-};
+});
 
 // Does a slash at this point DIVIDE? Every token that can end an expression is
 // listed; anything else leaves an expression position open, where a slash
@@ -649,12 +961,12 @@ function _atLineStart(emitted) {
 //
 // `//` and `/*` are the ones that matter most: fusing a division against a
 // following pattern would manufacture a comment out of two operators.
-var _FUSABLE_PUNCTUATION = {
+var _FUSABLE_PUNCTUATION = _table({
   "++": 1, "--": 1, "**": 1, "=>": 1, "==": 1, "!=": 1, "<=": 1, ">=": 1,
   "<<": 1, ">>": 1, "+=": 1, "-=": 1, "*=": 1, "/=": 1, "%=": 1, "&=": 1,
   "|=": 1, "^=": 1, "&&": 1, "||": 1, "??": 1, "?.": 1, "..": 1,
   "//": 1, "/*": 1, "*/": 1,
-};
+});
 
 function _wouldFuse(prevCh, nextCh) {
   if (prevCh === "" || nextCh === "") return false;
@@ -663,7 +975,10 @@ function _wouldFuse(prevCh, nextCh) {
 }
 
 function _isWordChar(ch) {
-  return ch !== "" && _NON_WORD.indexOf(ch) === -1;
+  // Whitespace is asked about by name rather than listed in `_NON_WORD`, which
+  // holds only the ASCII forms. Without this a no-break space reads as part of
+  // a name in both readers.
+  return ch !== "" && !_isSpaceCode(ch.charCodeAt(0)) && _NON_WORD.indexOf(ch) === -1;
 }
 
 function _isWordStart(ch) {
@@ -681,9 +996,9 @@ function _isWordStart(ch) {
 // brace became a value and a pattern statement after it was read as division.
 // A keyword that ends a statement and a keyword that introduces a body are
 // different questions, and both have to be answered for the same word.
-var _BLOCK_INTRODUCERS = {
+var _BLOCK_INTRODUCERS = _table({
   "else": 1, "do": 1, "=>": 1, "try": 1, "finally": 1,
-};
+});
 
 // Does this `{` open an object literal, or a block?
 //
@@ -715,18 +1030,218 @@ function _ternaryScope(frame) {
 // is a block: `var q = function () {} / 2` divides, and `function f() {}
 // /re/.test(x)` does not. The keyword is where the two are distinguishable —
 // by the time the body brace arrives, both look identical.
-var _EXPRESSION_BODY_KEYWORDS = { "function": 1, "class": 1 };
+var _EXPRESSION_BODY_KEYWORDS = _table({ "function": 1, "class": 1 });
 
 // Words that stand between a construct and the token that classifies it:
 // `async function` and `for await (`. Looking only at the immediately
 // preceding token reads the modifier instead of the position, which made an
 // async function expression look like a declaration and a `for await` header
 // look like a call.
-var _TRANSPARENT_WORDS = { "async": 1, "await": 1 };
+var _TRANSPARENT_WORDS = _table({ "async": 1, "await": 1 });
 
 function _seeThrough(frame, lastSig) {
   if (_TRANSPARENT_WORDS[lastSig] !== 1) return lastSig;
   return frame.beforeWord[lastSig] === undefined ? "" : frame.beforeWord[lastSig];
+}
+
+// Where the template opening at `ts` ends, one past its closing backtick, or
+// -1 when no closing backtick is reached.
+function _templateEnd(source, ts) {
+  var n = source.length;
+  var i = ts + 1;
+  while (i < n) {
+    var c = source.charAt(i);
+    if (c === "\\") { i += 2; continue; }
+    if (c === "`") return i + 1;
+    if (c === "$" && source.charAt(i + 1) === "{") {
+      // Lexing answers this, and counting is the fallback for when it cannot.
+      // The order was the other way round on the premise that counting either
+      // gets it right or gives up, so the lexer was only needed where the count
+      // returned nothing. That premise does not hold: counting skips strings
+      // and nothing else, so a brace in a comment raises its depth and a later
+      // one closes the substitution early. In `${1 /* { */}` the count walks
+      // past the real end and accepts a `}` written in a line comment two lines
+      // down, and everything between is swallowed as template text. Being
+      // confidently wrong is worse than giving up, because the fallback never
+      // runs. Measured on the six shapes that separate them, the lexed answer
+      // is right in all six and the count is wrong in one and absent in two.
+      var end = _lexedBraceEnd(source, i + 2);
+      if (end === -1) end = _countingBraceEnd(source, i + 2);
+      if (end === -1) return -1;
+      i = end + 1;
+      continue;
+    }
+    i += 1;
+  }
+  return -1;
+}
+
+// Where the substitution opening at `from` closes, decided by lexing its
+// contents rather than counting characters. This is the answer taken first: it
+// reads strings, comments, patterns and nested templates as the tokens they
+// are, so a brace written inside any of them closes nothing.
+function _lexedBraceEnd(source, from) {
+  var toks;
+  try { toks = tokenize(source.slice(from)); } catch (_e) { return -1; }
+  var depth = 0;
+  for (var i = 0; i < toks.length; i += 1) {
+    if (toks[i].type !== TOK_PUNCT) continue;
+    if (toks[i].value === "{") depth += 1;
+    else if (toks[i].value === "}") {
+      if (depth === 0) return from + toks[i].start;
+      depth -= 1;
+    }
+  }
+  return -1;
+}
+
+// Where a substitution ends, counted rather than lexed. It is the SECOND
+// answer, reached only when the lexer above finds no closing brace at all,
+// which is what a mis-read token there produces. A count that is wrong about a
+// quoted brace still stops somewhere near, so it bounds that loss to the
+// substitution rather than to everything after it. It skips strings and
+// nothing else, so a brace in a comment, a pattern or a nested template is
+// still counted as structural; that is why it no longer answers first.
+function _countingBraceEnd(source, from) {
+  var n = source.length;
+  var d = 1;
+  var k = from;
+  while (k < n) {
+    var c = source.charAt(k);
+    // A brace written in a string is not structural. The places left where one
+    // can be written and close nothing are a comment, a nested template and a
+    // character class, and none of them can be found here.
+    //
+    // Skipping a `//`, a `/*` or a backtick reads each of them correctly and
+    // reads `/[//]/`, `/[/*]/` and a backtick in a class incorrectly, because
+    // whether the scan is INSIDE a pattern is the question it cannot answer.
+    // Every such refinement is defeated by the same construct written inside a
+    // pattern, so the count stays as narrow as it can be and the gaps are
+    // listed rather than half-closed.
+    //
+    // A quote is not always opening a string: `/'/`, `[']` and `// it's` all
+    // hold one that opens nothing, and skipping to the next quote from there
+    // ran past the closing brace. What settles it without lexing is that a
+    // string literal cannot hold a raw CR or LF, so a quote whose partner is
+    // on another line, or absent, was not opening one. U+2028 and U+2029 are
+    // NOT in that set: a string may hold either of them raw, so finding one
+    // says nothing about whether a string is open.
+    if (c === "'" || c === '"') {
+      var j = k + 1;
+      var closed = false;
+      while (j < n) {
+        var sc = source.charAt(j);
+        if (sc === "\\") {
+          // A line continuation, and `\` + CRLF is one of them rather than a
+          // continuation followed by a bare LF that ends the string.
+          j += (source.charCodeAt(j + 1) === 0x0D && source.charCodeAt(j + 2) === 0x0A)
+            ? 3 : 2;
+          continue;
+        }
+        if (sc === c) { closed = true; break; }
+        var scc = source.charCodeAt(j);
+        if (scc === 0x0A || scc === 0x0D) break;
+        j += 1;
+      }
+      if (closed) { k = j + 1; continue; }
+    }
+    if (c === "{") d += 1;
+    else if (c === "}") { d -= 1; if (d === 0) return k; }
+    k += 1;
+  }
+  return -1;
+}
+
+// The `function` or `class` keyword whose body the brace about to be pushed
+// opens, or null when the brace opens something else. Read by walking back
+// from the brace over what may stand between it and that keyword: a balanced
+// parameter list, the name, a generator star, and the `extends` clause of a
+// class. Anything else means the brace is not a function or class body.
+function _governingFunctionOrClass(tokens) {
+  var i = tokens.length - 1;
+  function skipTrivia() {
+    while (i >= 0 && (tokens[i].type === TOK_WS || tokens[i].type === TOK_COMMENT)) i -= 1;
+  }
+  // A bracketed group is skipped whole rather than by naming the forms one
+  // may take. The parameter list is one; so is a superclass written as
+  // `extends ns["Base"]` or `extends mixin(Base)`, which a walk that knew only
+  // identifiers and dots stopped at, leaving the body unmarked.
+  var CLOSERS = _table({ ")": "(", "]": "[", "}": "{" });
+  var guard = 0;
+  // A superclass may itself be a function or class expression, and its body is
+  // a brace group this walk steps over: `class C extends function(){} {}`. The
+  // keyword that follows such a group owns THAT body, not the one being
+  // classified, so it is stepped over too. Without this the walk returned the
+  // inner `function` and read the outer class declaration as producing a value.
+  var bodiesSkipped = 0;
+  // Bounded by the token list itself: every step either moves `i` back or
+  // returns, so the walk ends at the start of the file. A count of its own
+  // stopped before the `class` of a superclass written as a long member
+  // expression, and the pattern after that body was then read as division.
+  while (i >= 0 && guard <= tokens.length) {
+    skipTrivia();
+    if (i < 0) break;
+    var t = tokens[i];
+    guard += 1;
+    if (t.type === TOK_KEYWORD && (t.value === "function" || t.value === "class")) {
+      if (bodiesSkipped > 0) { bodiesSkipped -= 1; i -= 1; continue; }
+      return t;
+    }
+    // A word right after `class` or `function` is that thing's NAME, whatever
+    // word it is spelled like: `class of {}` names a class `of`. It tokenizes
+    // as a keyword, and refusing it here stopped the walk one token short of
+    // the keyword it was looking for. The brace classifier beside this already
+    // reads a name that way.
+    if (t.type === TOK_KEYWORD) {
+      var back = i - 1;
+      while (back >= 0 &&
+             (tokens[back].type === TOK_WS || tokens[back].type === TOK_COMMENT)) back -= 1;
+      if (back >= 0 && tokens[back].type === TOK_KEYWORD &&
+          (tokens[back].value === "function" || tokens[back].value === "class")) {
+        i -= 1;
+        continue;
+      }
+    }
+    if (t.type === TOK_PUNCT && CLOSERS[t.value] !== undefined) {
+      var open = CLOSERS[t.value];
+      var close = t.value;
+      var depth = 0;
+      for (; i >= 0; i -= 1) {
+        if (tokens[i].type !== TOK_PUNCT) continue;
+        if (tokens[i].value === close) depth += 1;
+        else if (tokens[i].value === open) {
+          depth -= 1;
+          if (depth === 0) break;
+        }
+      }
+      if (depth !== 0) return null;                     // unbalanced: not a header
+      if (close === "}") bodiesSkipped += 1;            // a body, so its keyword follows
+      i -= 1;
+      continue;
+    }
+    // The pieces a name or a superclass expression is made of: any value
+    // literal, the punctuation that composes a member expression, and the
+    // keywords that can stand in one. A pattern is a value literal like the
+    // rest, and leaving it out stopped the walk on
+    // `class extends /re/.constructor {}`.
+    if (t.type === TOK_IDENT || t.type === TOK_NUMBER || t.type === TOK_STRING ||
+        t.type === TOK_TEMPLATE || t.type === TOK_REGEX ||
+        (t.type === TOK_PUNCT && (t.value === "*" || t.value === "." || t.value === "?.")) ||
+        // A superclass may be any expression, including one written as a bare
+        // value keyword: `class extends null {}` is valid and is the documented
+        // way to say the class has no prototype parent.
+        (t.type === TOK_KEYWORD &&
+         (t.value === "extends" || t.value === "async" || t.value === "new" ||
+          t.value === "this" || t.value === "super" || t.value === "null" ||
+          t.value === "true" || t.value === "false" || t.value === "undefined" ||
+          // `import(...)` is a call and may stand in a superclass expression.
+          t.value === "import"))) {
+      i -= 1;
+      continue;
+    }
+    return null;
+  }
+  return null;
 }
 
 function _braceOpensObject(lastSig) {
@@ -741,13 +1256,33 @@ function _regexCanStartHere(lastSig) {
   return !_slashDivides(lastSig);
 }
 
+// Reading back from `at` over the whitespace before it, was any of it a line
+// terminator? Answers whether a semicolon was inserted between the previous
+// word and this one.
+function _lineBreakBackFrom(src, at) {
+  for (var i = at - 1; i >= 0; i -= 1) {
+    var cc = src.charCodeAt(i);
+    if (LINE_TERMINATOR_CODES.indexOf(cc) !== -1) return true;
+    if (cc !== 0x20 && cc !== 0x09 && cc !== 0x0B && cc !== 0x0C) return false;
+  }
+  return false;
+}
+
 // `onComment(start, end, kind)` is called for every comment the walk skips,
 // with `end` exclusive and `kind` one of "line", "block", "html-open",
 // "html-close". It exists so a caller that wants the RANGES rather than the
 // stripped text asks this lexer instead of writing a second one: two answers to
 // "where are the comments" drift, and the one that drifts is whichever is not
 // the one the gates already trust.
-function stripComments(src, onComment) {
+//
+// `onRegex(start, end, text)` is the same arrangement for pattern literals.
+// This walk already has to know which slash opens one, since a `/*` inside a
+// pattern opens no comment, and it carries the state that decides it: which
+// brace closed a value, whether a colon ended a label, whether a keyword's
+// line ended before the word after it. A caller that asks a second lexer the
+// same question gets a second answer, and the one that drifts is the one the
+// gates do not already trust.
+function stripComments(src, onComment, onRegex) {
   // A mode STACK, not nested ad-hoc loops.
   //
   // Comment stripping is lexing, and the constructs nest: an interpolation
@@ -871,6 +1406,7 @@ function stripComments(src, onComment) {
         }
         while (i < n && /[a-z]/.test(src.charAt(i))) i += 1;   // flags
         out += src.slice(rxStart, i);
+        if (typeof onRegex === "function") onRegex(rxStart, i, src.slice(rxStart, i));
         top.lastSig = _VALUE_REGEX;               // a pattern is a value
         continue;
       }
@@ -1082,9 +1618,19 @@ function stripComments(src, onComment) {
           top.lastSig = _VALUE_MEMBER;
           continue;
         }
+        // A word after `break` or `continue` is the LABEL they take, but only
+        // on the same line: both forbid a line terminator before the label, so
+        // one there ends the statement and this word begins the next.
         if (lastSig === "break" || lastSig === "continue") {
-          top.lastSig = _STATEMENT_POSITION;
-          continue;
+          if (!_lineBreakBackFrom(src, wStart)) {
+            top.lastSig = _STATEMENT_POSITION;      // the word is the label
+            continue;
+          }
+          // The line terminator ended the jump statement, so this word begins
+          // a new one and is read from statement position. Leaving the jump
+          // keyword in place made `break` + newline + `function f() {}` an
+          // expression, and the pattern after its brace read as division.
+          lastSig = _STATEMENT_POSITION;
         }
         if (_TRANSPARENT_WORDS[word] === 1) top.beforeWord[word] = lastSig;
         if (_EXPRESSION_BODY_KEYWORDS[word] === 1) {

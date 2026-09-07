@@ -165,7 +165,7 @@ function _selfSignedCert() {
   var certDer = asn1.writeSequence([tbs, sigAlgId, asn1.writeBitString(sig)]);
   _cachedSelfSigned = {
     certPem: "-----BEGIN CERTIFICATE-----\n" +
-      certDer.toString("base64").replace(/(.{64})/g, "$1\n") +
+      certDer.toString("base64").match(/.{1,64}/g).join("\n") +
       "\n-----END CERTIFICATE-----\n",
     keyPem: kp.privateKey.export({ type: "pkcs8", format: "pem" }),
   };

@@ -269,6 +269,173 @@ async function testClamavCleanVerdict() {
     sock._writes.length > 0 && sock._writes[0].toString("ascii").indexOf("zINSTREAM") === 0);
 }
 
+// A reply that never says FOUND is where the classifier used to spend its
+// time. It read the threat name with a lazy run between two whitespace
+// quantifiers, and `.` matches a space, so every way of splitting one run of
+// spaces between them is a candidate the engine tries before it can answer
+// "no". The daemon's reply is capped at 50 MiB, so the size of that search is
+// the daemon's to choose: 2,400 spaces already cost 1.8 seconds, and 8,192
+// did not finish inside five.
+//
+// Measured as growth rather than against a clock: what makes this a defect is
+// that four times the reply costs far more than four times the work, and a
+// budget would pass or fail on how busy the machine is.
+async function testClamavLongReplyWithoutFoundStaysLinear() {
+  var audit = _fakeAudit();
+  async function scanReplyOf(spaces) {
+    var reply = Buffer.from("stream: " + " ".repeat(spaces) + "\n", "ascii");
+    var h = _clamHandle(audit);
+    await h.scan(Buffer.from("body"), { _socket: _fakeSocket(reply) });
+  }
+  // The async form answers with { superlinear, ratio }, where its synchronous
+  // sibling answers with a boolean.
+  var growth = await helpers.looksSuperlinearAsync(scanReplyOf, {
+    small: 4096, large: 16384, threshold: 9, reps: 2, confirmReps: 2,
+  });
+  check("clamav: a long reply with no FOUND does not blow up the classifier",
+        growth.superlinear === false, "ratio=" + String(growth.ratio));
+
+  // And it still answers. A reply that says nothing about a threat is an
+  // error verdict, not a hang.
+  var h2 = _clamHandle(audit);
+  var rv = await h2.scan(Buffer.from("body"), {
+    _socket: _fakeSocket(Buffer.from("stream: " + " ".repeat(8192) + "\n", "ascii")),
+  });
+  check("clamav: and the long no-FOUND reply still returns a verdict",
+        rv && typeof rv.verdict === "string", String(rv && rv.verdict));
+}
+
+// The one-pass reader has to answer what the pattern it replaced answered,
+// for every reply shape short enough that the pattern could answer at all.
+async function testClamavReplyReaderMatchesThePatternItReplaced() {
+  var audit = _fakeAudit();
+  var OLD = /stream:\s+(.+?)\s+FOUND\b/;
+
+  var shapes = [
+    "stream: OK\n",
+    "stream: Eicar-Test-Signature FOUND\n",
+    "stream: OK\nstream: Eicar-Test-Signature FOUND\n",
+    "stream: A stream: B FOUND\n",
+    "stream:\n  Threat FOUND\n",
+    "stream: Threat\nFOUND\n",
+    "stream: FOUNDx\n",
+    "stream: name FOUNDER\n",
+    "stream: name FOUND",
+    "stream:name FOUND\n",
+    "stream:  \t name  \t FOUND\n",
+    "stream: FOUND\n",
+    "stream:  FOUND FOUND\n",
+    "prefix stream: x y FOUND tail\n",
+    "stream: a\nstream: b FOUND\n",
+    "stream: \nFOUND\n",
+    "ERROR\n",
+  ];
+  // Whitespace is whatever JavaScript calls whitespace, and a line break is
+  // whatever `.` refuses to cross. A reply is decoded as UTF-8, so a name
+  // wrapped in a non-breaking space reaches the classifier as one.
+  var NBSP = String.fromCharCode(0x00A0);
+  var LSEP = String.fromCharCode(0x2028);
+  shapes.push("stream:" + NBSP + "Threat" + NBSP + "FOUND\n");
+  shapes.push("stream: Threat" + NBSP + " FOUND\n");
+  shapes.push("stream:" + LSEP + "Threat FOUND\n");
+  shapes.push("stream: A" + LSEP + "B FOUND\n");
+  shapes.push("stream:" + String.fromCharCode(0x3000) + "Threat FOUND\n");
+
+  // A label inside a candidate that is later abandoned. The name the reply
+  // ends up carrying starts after the break, so the inner label is the one
+  // that names it.
+  shapes.push("stream: prefix stream:\nEicar FOUND\n");
+  shapes.push("stream: a stream: b stream:\nEicar FOUND\n");
+  shapes.push("stream: a stream: b\nEicar FOUND\n");
+  shapes.push("stream: prefix stream:\nFOUND\n");
+  shapes.push("stream: prefix stream:" + NBSP + "\nEicar FOUND\n");
+
+  // A threat literally named FOUND, and the tab that only the wider set of
+  // spaces reaches, where which token names the threat is what differs.
+  shapes.push("stream:   FOUND FOUND\n");
+  shapes.push("stream:\n \tFOUND\nFOUND\n");
+  shapes.push("stream:\t\t\tFOUND\n");
+  shapes.push("stream: \t FOUND FOUND\n");
+  shapes.push("stream:   FOUND\nstream: X FOUND\n");
+
+  // Every sequence of up to five of the pieces these replies are made of.
+  // Enumerated rather than sampled, so the two readers are compared on the
+  // whole space these pieces can build rather than on a chosen part of it.
+  // Five is what it takes to reach a label, three spaces and FOUND, where the
+  // spaces divide into a separator, a name and a second separator.
+  var ALPHA = ["stream:", "FOUND", "x", " ", "\n"];
+  var frontier = [""];
+  for (var w = 0; w < 5; w += 1) {
+    var next = [];
+    for (var f = 0; f < frontier.length; f += 1) {
+      for (var a = 0; a < ALPHA.length; a += 1) {
+        var built = frontier[f] + ALPHA[a];
+        next.push(built);
+        shapes.push(built);
+      }
+    }
+    frontier = next;
+  }
+
+  // The label, the verdict token and the two kinds of space, to a depth that
+  // reaches a reply carrying two verdict tokens: which one names the threat
+  // is decided by how the spaces before the first one divide.
+  var TIGHT = ["stream:", "FOUND", " ", "\n"];
+  var tightFrontier = [""];
+  for (var t = 0; t < 7; t += 1) {
+    var tightNext = [];
+    for (var tf = 0; tf < tightFrontier.length; tf += 1) {
+      for (var ta = 0; ta < TIGHT.length; ta += 1) {
+        var tightBuilt = tightFrontier[tf] + TIGHT[ta];
+        tightNext.push(tightBuilt);
+        shapes.push(tightBuilt);
+      }
+    }
+    tightFrontier = tightNext;
+  }
+
+  // The same pieces with the whitespace that only JavaScript's `\s` covers,
+  // over the shorter sequences the two readers can still be compared on.
+  var WIDE = ["stream:", "FOUND", "x", NBSP, LSEP, "\n"];
+  var wideFrontier = [""];
+  for (var ww = 0; ww < 4; ww += 1) {
+    var wideNext = [];
+    for (var wf = 0; wf < wideFrontier.length; wf += 1) {
+      for (var wa = 0; wa < WIDE.length; wa += 1) {
+        var wideBuilt = wideFrontier[wf] + WIDE[wa];
+        wideNext.push(wideBuilt);
+        shapes.push(wideBuilt);
+      }
+    }
+    wideFrontier = wideNext;
+  }
+
+  var disagreed = [];
+  for (var s = 0; s < shapes.length; s += 1) {
+    var m = shapes[s].match(OLD);
+    var expected = m ? m[1] : null;
+    var h = _clamHandle(audit);
+    // Encoded the way a reply arrives and is read back, so a shape carrying a
+    // non-ASCII space reaches the classifier as that space rather than as a
+    // replacement character.
+    var rv = await h.scan(Buffer.from("body"), {
+      _socket: _fakeSocket(Buffer.from(shapes[s], "utf8")),
+    });
+    // The reply is stripped of its trailing EOL before the read, so the
+    // comparison runs against the same text the classifier sees.
+    var stripped = shapes[s].replace(/[\r\n\0]+$/, "");
+    var m2 = stripped.match(OLD);
+    var want = m2 ? m2[1] : null;
+    var got = rv.verdict === "infected" ? rv.threats[0] : null;
+    if (got !== want) disagreed.push(JSON.stringify(shapes[s]) + " want=" +
+      JSON.stringify(want) + " got=" + JSON.stringify(got));
+    void expected;
+  }
+  check("clamav: the reply reader agrees with the pattern it replaced on " +
+        shapes.length + " shapes",
+        disagreed.length === 0, disagreed.slice(0, 3).join(" | "));
+}
+
 async function testClamavInfectedVerdict() {
   var audit = _fakeAudit();
   var h = _clamHandle(audit);
@@ -429,6 +596,8 @@ function run(cb) {
     .then(testScanIcapInfectedVerdict)
     .then(testScanArchiveEntriesGate)
     .then(testClamavCleanVerdict)
+    .then(testClamavLongReplyWithoutFoundStaysLinear)
+    .then(testClamavReplyReaderMatchesThePatternItReplaced)
     .then(testClamavInfectedVerdict)
     .then(testClamavErrorReplyVerdict)
     .then(testClamavUnrecognizedReplyFailsClosed)

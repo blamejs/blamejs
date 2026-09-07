@@ -51,7 +51,7 @@ function selfSignedPair(opts) {
   _cached = {
     commonName: commonName,
     cert: "-----BEGIN CERTIFICATE-----\n" +
-      certDer.toString("base64").replace(/(.{64})/g, "$1\n") +
+      certDer.toString("base64").match(/.{1,64}/g).join("\n") +
       "\n-----END CERTIFICATE-----\n",
     key: kp.privateKey.export({ type: "pkcs8", format: "pem" }),
   };
