@@ -1,0 +1,26 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.19.4",
+  "date": "2026-09-07",
+  "headline": "One reader decides which slashes open a pattern, so stripping comments cannot delete a file",
+  "summary": "Two readers in the test substrate each decided whether a `/` opens a pattern or divides, from their own state, and they had drifted apart. The comment stripper is the one where a wrong answer costs the most: a slash it reads as an opener swallows to the next slash, and where that span holds a `/*` the rest of the file goes with it. Both now read the same table, and the answer is checked by comparing them over the forms the gate's crossings generate rather than over a list of shapes.",
+  "sections": [
+    {
+      "heading": "Detectors",
+      "items": [
+        {
+          "title": "The comment stripper and the tokenizer give one answer",
+          "body": "`_shape-match.js` holds two readers of JavaScript. Both must decide whether a `/` opens a pattern or divides, and each carried state the other lacked: the tokenizer learned to read a function body, an arrow body, a template substitution and a contextual keyword, and the stripper did not. Put to the forms the gate's crossings generate, the two disagreed on 397 of 2,472.\n\nThe cost is not symmetric. A slash the stripper reads as an opener swallows every character to the next slash. `var await = 4; await / 2; var re = /[/*]/; var after = 1;` is valid source where `await` is an ordinary name, and stripping it produced `var await = 4; await / 2; var re = /[`: the tail of the file was gone, and what remained did not parse. The same held for a substitution reading `await` as an operator.\n\nWhich slashes open a pattern is now answered in one place, for both readers and for the reader that extracts pattern literals. That place walks into a template substitution too, to any depth, since a template is one token and a pattern written inside one reaches no caller reading pattern tokens. Over the 1,392 files in the tree the stripper's output is unchanged and all 9,072 literals are the same ones; the second copy of the substitution walk is gone.\n\nWhether they agree is now a check rather than a claim: the same crossings that drive the other sweeps are put to both readers, and any form where their answers differ is reported.\n\nStripping the 1,378 source files in the tree, 29.8 MiB, takes 1.51s where it took 0.61s. A source the reader cannot read at all is reported as unread rather than as holding no pattern, since a caller told there are none reads every slash as division."
+        },
+        {
+          "title": "A label is a label whatever word it is spelled like",
+          "body": "`break` and `continue` take a label and nothing else, so a slash after one opens a pattern. The tokenizer asked that only of an identifier, and `async`, `from` and `as` are in its keyword table, so `break async` followed by a line break and a pattern read the slash as division and swallowed from its opening slash. The rule now reads the label whatever word it is spelled like, which is how the same file already reads a class or function name."
+        },
+        {
+          "title": "An arrow's body is a value",
+          "body": "`var q = () => {} / 2` divides: an arrow leaves a function behind the way a function expression does. The tokenizer recorded that only for a body whose keyword it could find, and an arrow has none, so the slash opened a pattern that ran to the opening slash of the next one. A parenthesised arrow and a function expression were already read correctly; the bare arrow now is too."
+        }
+      ]
+    }
+  ]
+}

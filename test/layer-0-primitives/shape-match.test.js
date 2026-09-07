@@ -143,7 +143,53 @@ function testTemplateRunStaysLinear() {
              label: "shape-match: tokenize over a run of templates" }));
 }
 
+// ---- regexSpans ----
+
+// The one answer to "which slashes open a pattern", for both readers in the
+// file and for the one that extracts literals.
+function testRegexSpansReadsPatterns() {
+  var table = sm.regexSpans("var re = /a+/g; var n = 4 / 2;");
+  check("regexSpans: a pattern is one span and a division is none",
+        table !== null && Object.keys(table).length === 1);
+  var start = Number(Object.keys(table)[0]);
+  check("regexSpans: the span covers the literal and its flags",
+        "var re = /a+/g; var n = 4 / 2;".slice(start, table[start]) === "/a+/g");
+
+  // A template is one token, so a pattern inside a substitution reaches no
+  // caller reading pattern tokens.
+  var inSub = sm.regexSpans("var t = `${ /a+/.test(s) }`;");
+  check("regexSpans: a pattern inside a substitution is found",
+        inSub !== null && Object.keys(inSub).length === 1);
+
+  // Readable and holding no pattern is NOT the same answer as unreadable: a
+  // caller told there are none reads every slash as division.
+  var none = sm.regexSpans("var n = 4 / 2;");
+  check("regexSpans: a source with no pattern is an empty table, not null",
+        none !== null && Object.keys(none).length === 0);
+}
+
+// The stripper takes its slash decisions from that same table, so a pattern
+// holding a comment opener is not read as division. Left to its own reading it
+// swallowed the rest of the file.
+function testStripperKeepsPatternsHoldingCommentOpeners() {
+  var cases = [
+    "var re = /[/*]/.test(s); var after = 1;",
+    "var await = 4; var g = async x => 1; await / 2; var re = /[/*]/; var after = 1;",
+    "var await = 4; var t = `${await / 2}`; var re = /[/*]/; var after = 1;",
+    "outer: while (x) { break async\n/[/*]/.test(t); var after = 1; }",
+    "var q = () => {} / 2; var re = /[/*]/; var after = 1;",
+  ];
+  var kept = 0;
+  cases.forEach(function (src) {
+    if (sm.stripComments(src).indexOf("var after = 1") !== -1) kept += 1;
+  });
+  check("stripComments: a slash read as an opener cannot delete the file",
+        kept === cases.length);
+}
+
 function run() {
+  testRegexSpansReadsPatterns();
+  testStripperKeepsPatternsHoldingCommentOpeners();
   testFindCallsSimpleIdent();
   testFindCallsMemberChain();
   testFindCallsBracketAccess();

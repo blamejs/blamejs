@@ -2647,6 +2647,7 @@ function testCommentStripPreservesParseability() {
   }
   _report("a for header binds a name however the name is spelled", forHits);
 
+
   // A template substitution holds an expression written in the grammar around
   // the template, and the `}` that ends it is the one the LEXER finds rather
   // than the first in the text. Both halves were wrong at once: every
@@ -2715,6 +2716,91 @@ function testCommentStripPreservesParseability() {
   }
   _report("a pattern inside a template substitution is read in the body around it",
           subHits);
+
+  // The two lexers in `_shape-match.js` must give ONE answer to "which slashes
+  // open a pattern". They each decided it from their own state and drifted:
+  // the tokenizer learned to read a function body, an arrow body and a
+  // contextual keyword and the stripper did not, so on the forms these
+  // crossings generate they disagreed 397 times. A wrong answer in the
+  // stripper costs the most, since a slash it reads as an opener swallows to
+  // the next slash and takes the rest of the file wherever that span holds a
+  // `/*`. Asked of the same forms the crossings above generate rather than of
+  // a list, so a rule added to one reader and not the other is caught here.
+  var agreeHits = [];
+  var agreeForms = 0;
+  function _sweepAgreement(src) {
+    if (!parses(src, "lexer-agreement")) return;           // not valid source
+    var table;
+    var stripSpans;
+    try {
+      table = shapeMatch.regexSpans(src);
+      stripSpans = Object.create(null);
+      shapeMatch.stripComments(src, null, function (start, end) {
+        stripSpans[start] = end;
+      });
+    } catch (_e) { return; }                               // neither can read it
+    if (table === null) return;                            // the reader gave up
+    agreeForms += 1;
+    var differs = false;
+    Object.keys(table).forEach(function (k) {
+      if (stripSpans[k] !== table[k]) differs = true;
+    });
+    Object.keys(stripSpans).forEach(function (k) {
+      if (table[k] === undefined) differs = true;
+    });
+    if (!differs) return;
+    agreeHits.push({
+      file: "test/helpers/_shape-match.js", line: 1,
+      content: "the two lexers disagree about which slashes open a pattern, so " +
+        "the comment stripper swallows a span the tokenizer does not read and " +
+        "the source after it can be deleted — source: " + src,
+    });
+  }
+  HEADER_MODIFIERS.forEach(function (mod) {
+    HEADER_NAMES.forEach(function (name) {
+      ["await", "yield"].forEach(function (op) {
+        var header = mod + name + "(a) { " + op + " " + HEADER_MARKER + ".test(s); }";
+        HEADER_HOSTS.forEach(function (host) { _sweepAgreement(host(header)); });
+      });
+    });
+  });
+  ARROW_CONTEXTS.forEach(function (ctx) {
+    ARROWS_SYNC.concat(ARROWS_ASYNC).forEach(function (arrow) {
+      _sweepAgreement("var await = 4; " +
+        ctx.replace("%A%", arrow).replace("%T%", "await / 2;")
+           .replace("%E%", "await / 2") + " var re = " + HEADER_MARKER + ";");
+    });
+  });
+  BLOCK_FORMS.forEach(function (form) {
+    BLOCK_PREFIXES.forEach(function (prefix) {
+      _sweepAgreement("async function* outer(s) { " + prefix + " " +
+        form.replace("%T%", "await " + HEADER_MARKER + ".test(s);") + " }");
+    });
+  });
+  SUB_FORMS.forEach(function (form) {
+    SUB_MARKERS.forEach(function (marker) {
+      SUB_HOSTS.forEach(function (host) {
+        _sweepAgreement(host.wrap(form.replace("%O%", host.op)
+                                      .replace("%M%", marker)));
+      });
+    });
+  });
+  FOR_HEADS.forEach(function (head) {
+    FOR_NAMES.forEach(function (name) {
+      _sweepAgreement(head.replace(/%N%/g, name)
+                          .replace("%R%", HEADER_MARKER + ".exec(s) || []"));
+    });
+  });
+  if (agreeForms < 500) {
+    agreeHits.push({
+      file: "test/layer-0-primitives/codebase-patterns.test.js", line: 1,
+      content: "lexer-agreement sweep exercised only " + agreeForms +
+        " forms that are valid source — the crossing stopped producing them, so " +
+        "the sweep is passing because every case was skipped",
+    });
+  }
+  _report("both lexers give one answer to which slashes open a pattern",
+          agreeHits);
 
   // Whether a pattern may follow a KEYWORD and whether one may follow the BODY
   // that keyword introduces are different questions, and answering only the
@@ -2912,6 +2998,57 @@ function testCommentStripPreservesParseability() {
         "closing brace reads as a value",
     });
   });
+  // Whether a `/` opens a pattern is asked by both lexers in the file, and a
+  // wrong answer HERE costs more than a wrong answer in the tokenizer: a slash
+  // read as an opener swallows to the next slash, and where that span holds a
+  // `/*` the comment stripper deletes the rest of the file. The tokenizer
+  // learned to read a function body, an arrow body and a contextual keyword;
+  // this walk did not, and asked separately the two disagreed on 397 of the
+  // 2,472 forms the crossings generate.
+  //
+  // Each form below is stripped and then put to the parser, with a marked
+  // statement after the span so a silent truncation is visible.
+  var STRIP_FORMS = [
+    // `await` is a name outside an async body, so the slash after it divides.
+    "var await = 4; var g = async x => 1; await / 2; var re = /[/*]/; var after = 1;",
+    "var await = 4; var g = async x => {}; await / 2; var re = /[/*]/; var after = 1;",
+    "var await = 4; var g = async () => 1; await / 2; var re = /[/*]/; var after = 1;",
+    "var await = 4; var g = async x => y => 1; await / 2; var re = /[/*]/; var after = 1;",
+    "var await = 4; var g = async x => x++; await / 2; var re = /[/*]/; var after = 1;",
+    "var await = 4; var g = async x => 1\n await / 2; var re = /[/*]/; var after = 1;",
+    "var yield = 4; var g = function* () {}; yield / 2; var re = /[/*]/; var after = 1;",
+    // ...and an operator inside one, so the slash after it opens a pattern.
+    "async function q(){ await /[/*]/.test(s); } var after = 1;",
+    "function* g2(){ yield /[/*]/.test(s); } var after = 1;",
+    // A substitution is read in the grammar around its template.
+    "var await = 4; var t = `${await / 2}`; var re = /[/*]/; var after = 1;",
+    "async function f(s) { return `${await /[/*]/.test(s)}`; } var after = 1;",
+    "function* g3(s) { return `${yield /[/*]/.test(s)}`; } var after = 1;",
+    // A member named with a reserved word, and a call's parens.
+    "var await = 4; var o = { async catch(){} }; await / 2; var re = /[/*]/; var after = 1;",
+    "async function q2(){ g()\n { await /[/*]/.test(s); } } var after = 1;",
+    // A `for` header binds a name however it is spelled.
+    "for (let async of /[/*]/.exec(s) || []) {} var after = 1;",
+  ];
+  STRIP_FORMS.forEach(function (form) {
+    if (!parses(form, "strip-" + form)) {
+      keywordHits.push({
+        file: "test/layer-0-primitives/codebase-patterns.test.js", line: 1,
+        content: "strip fixture is not valid source, so it pins nothing: " + form,
+      });
+      return;
+    }
+    var stripped = _stripComments(form);
+    if (parses(stripped, "strip-" + form) && /var after = 1/.test(stripped)) return;
+    keywordHits.push({
+      file: "test/helpers/_shape-match.js", line: 1,
+      content: "stripping comments changed this source: a slash was read the way " +
+        "the other lexer in this file does not read it, so the span it opened " +
+        "swallowed the `/*` after it and the source past that point is gone — " +
+        "source: " + form,
+    });
+  });
+
   hits = hits.concat(keywordHits);
 
   _report("stripping comments never changes whether a file parses", hits);
@@ -4433,46 +4570,6 @@ function _regexTokens(body, unicode) {
   return out;
 }
 
-// Where the substitution opened at `from` closes. The brace that ends it is a
-// PUNCT token, so the search is over tokens rather than characters: counting
-// characters treats a `}` inside a string, a comment or a character class as
-// structural, which ends `${ "}" + /(?:a+)+$/.test(x) }` at the string and
-// truncates a pattern containing `[}]`.
-// `bodyKind` is the function body the template sits in, needed HERE and not
-// only when the fragment is re-read: `${await /}(a+)+$/.test(s)}` in an async
-// function ends at the `}` inside the pattern for a reader that takes the
-// `await` for a name, and the fragment handed on is already truncated.
-function _substitutionEnd(text, from, bodyKind) {
-  var rest = text.slice(from);
-  var toks;
-  try {
-    toks = shapeMatch.tokenize(rest, { stopAtCloseBrace: true,
-                                       bodyKind: bodyKind || null,
-                                       expressionStart: true });
-  } catch (_e) { toks = null; }
-  if (toks) {
-    var depth = 0;
-    for (var i = 0; i < toks.length; i += 1) {
-      if (toks[i].type !== shapeMatch.TOK_PUNCT) continue;
-      var v = toks[i].value;
-      if (v === "{") depth += 1;
-      else if (v === "}") {
-        if (depth === 0) return from + toks[i].start;
-        depth -= 1;
-      }
-    }
-  }
-  // A tokenizer that cannot read the remainder leaves the character count as
-  // the answer, which is right whenever no brace is quoted.
-  var d = 1;
-  for (var k = from; k < text.length; k += 1) {
-    var c = text.charAt(k);
-    if (c === "{") d += 1;
-    else if (c === "}") { d -= 1; if (d === 0) return k; }
-  }
-  return -1;
-}
-
 // Every regex literal in the source, including the ones inside a template
 // substitution. The lexer emits a whole template as one token, so a pattern
 // written in `${ /(?:a+)+$/.test(s) }` is inside that token and reaches no
@@ -4485,40 +4582,23 @@ function _substitutionEnd(text, from, bodyKind) {
 // that body to read the `await` as the operator it is.
 function _regexLiteralsIn(source, baseOffset, bodyKind, isFragment) {
   var out = [];
-  // Both lexers in `_shape-match.js` decide which slash opens a pattern, and
-  // each knows something the other does not. The tokenizer is read here
-  // because the cases below pin its answers; the two are not yet one, and
-  // making them one is its own change rather than a corner of this one.
-  var toks;
+  // One reader answers which slashes open a pattern, and it is the one the
+  // comment stripper asks too. This held its own copy of the walk into a
+  // substitution, which is the same recursion written twice: the two agreed on
+  // all 9,072 literals in the tree when they were compared, and two copies of
+  // an answer are what drift.
+  var spans;
   try {
-    toks = shapeMatch.tokenize(source, { bodyKind: bodyKind || null,
-                                         expressionStart: isFragment === true });
+    spans = shapeMatch.regexSpans(source, { bodyKind: bodyKind || null,
+                                            expressionStart: isFragment === true });
   } catch (_e) { return out; }
-  for (var i = 0; i < toks.length; i += 1) {
-    var tok = toks[i];
-    if (tok.type === shapeMatch.TOK_REGEX) {
-      out.push({ value: tok.value, start: baseOffset + tok.start });
-      continue;
-    }
-    if (tok.type !== shapeMatch.TOK_TEMPLATE) continue;
-    var text = tok.value;
-    for (var j = 0; j < text.length - 1; j += 1) {
-      if (text.charAt(j) !== "$" || text.charAt(j + 1) !== "{") continue;
-      // `\${` is an escaped dollar and opens nothing; `\\${` is an escaped
-      // backslash and opens a substitution. What decides it is whether the run
-      // of backslashes before the `$` is odd, not whether there is one.
-      var slashes = 0;
-      for (var b = j - 1; b >= 0 && text.charAt(b) === "\\"; b -= 1) slashes += 1;
-      if (slashes % 2 === 1) continue;
-      var close = _substitutionEnd(text, j + 2, tok.bodyKind);
-      if (close === -1) break;                      // unterminated, nothing to read
-      var inner = text.slice(j + 2, close);
-      var nested = _regexLiteralsIn(inner, baseOffset + tok.start + j + 2,
-                                    tok.bodyKind, true);
-      for (var n = 0; n < nested.length; n += 1) out.push(nested[n]);
-      j = close;
-    }
-  }
+  if (spans === null) return out;                 // unreadable: nothing to report
+  // Integer-like keys enumerate in ascending order, so the literals arrive in
+  // the order they are written, which is the order a report reads them in.
+  Object.keys(spans).forEach(function (key) {
+    var start = Number(key);
+    out.push({ value: source.slice(start, spans[key]), start: baseOffset + start });
+  });
   return out;
 }
 

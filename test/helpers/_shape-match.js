@@ -177,11 +177,14 @@ function _lastSigText(tok) {
 
 function _slashIsRegex(prevSignificant) {
   if (!prevSignificant) return true;
+  // A word after `break` or `continue` is the LABEL those take, and nothing
+  // divides a label, so a slash after one opens a pattern the way it does
+  // after the bare keyword. Whatever word the label is spelled like: asked
+  // only of an identifier, `break async` and `break from` fell through to the
+  // keyword reading, which divides, and the pattern on the line below was
+  // swallowed from its opening slash.
+  if (prevSignificant.isBreakLabel === true) return true;
   if (prevSignificant.type === TOK_IDENT) {
-    // A word after `break` or `continue` is the LABEL those take, and nothing
-    // divides a label, so a slash after one opens a pattern the way it does
-    // after the bare keyword.
-    if (prevSignificant.isBreakLabel === true) return true;
     // After an identifier we don't know whether it's a variable name
     // (division) or an unparenthesised expression-tail. Be conservative:
     // identifiers preceded only by `return`, `typeof`, etc. resolve via
@@ -729,7 +732,13 @@ function tokenize(source, opts) {
             (beforeKw.value === "export" || beforeKw.value === "default")) {
           kwLastSig = _STATEMENT_POSITION;
         }
-        valueBodyStack.push(kwTok !== null && _braceOpensObject(kwLastSig));
+        // An ARROW's body is a value the same way a function expression's is,
+        // and it has no keyword for the walk above to find: `var q = () => {}`
+        // leaves a function behind, so the slash in `() => {} / 2` divides.
+        // Read as a block, that slash opened a pattern that ran to the opening
+        // slash of the next one.
+        valueBodyStack.push(opensArrowBody ||
+                            (kwTok !== null && _braceOpensObject(kwLastSig)));
         braceStack.push(opensObject);
         // An object literal and a class body hold MEMBERS, not statements, so
         // a word there names a member however it is spelled. Without that,
@@ -1455,6 +1464,71 @@ function _countingBraceEnd(source, from) {
   return -1;
 }
 
+// Where the substitution opening at `from` closes, lexed first and counted
+// only when the lexer finds no closing brace at all. `bodyKind` is the
+// function body the template sits in, which the expression inside it is
+// written in the grammar of.
+function _substitutionEndIn(text, from, bodyKind) {
+  var end = _lexedBraceEnd(text, from, bodyKind);
+  if (end === -1) end = _countingBraceEnd(text, from);
+  return end;
+}
+
+/**
+ * Every pattern literal in `src`, as a table of start offset to end offset.
+ *
+ * ONE answer to "which slashes open a pattern", for every reader that needs
+ * one. The two lexers in this file each decided it from their own state and
+ * drifted: the tokenizer learned to read a function body, an arrow body and a
+ * contextual keyword, and the comment stripper did not, so on the forms the
+ * codebase-patterns crossings generate they disagreed 397 times. A wrong
+ * answer in the stripper costs more than a wrong one in the tokenizer, since
+ * a slash it reads as an opener swallows to the next slash and takes the rest
+ * of the file with it wherever that span holds a `/*`.
+ *
+ * A template is one token, so a pattern written inside a substitution reaches
+ * no caller reading pattern tokens. The code between `${` and its matching
+ * brace is read in turn, to any depth, and the offsets are carried through.
+ */
+// NULL when the source could not be read at all, which is not the same answer
+// as "it holds no pattern": a caller told there are none reads every slash as
+// division, and a `/*` inside a pattern then opens a comment that runs to the
+// next `*/`. A nested substitution that cannot be read costs only itself, and
+// the spans found around it are still returned.
+function regexSpans(src, opts) {
+  var out = Object.create(null);
+  return _collectRegexSpans(src, 0, opts || null, out) ? out : null;
+}
+
+function _collectRegexSpans(src, base, opts, out) {
+  var toks;
+  try { toks = tokenize(src, opts); } catch (_e) { return false; }
+  for (var i = 0; i < toks.length; i += 1) {
+    var tok = toks[i];
+    if (tok.type === TOK_REGEX) {
+      out[base + tok.start] = base + tok.end;
+      continue;
+    }
+    if (tok.type !== TOK_TEMPLATE) continue;
+    var text = tok.value;
+    for (var j = 0; j < text.length - 1; j += 1) {
+      if (text.charAt(j) !== "$" || text.charAt(j + 1) !== "{") continue;
+      // `\${` is an escaped dollar and opens nothing; `\\${` is an escaped
+      // backslash and opens a substitution. What decides it is whether the run
+      // of backslashes before the `$` is odd, not whether there is one.
+      var slashes = 0;
+      for (var b = j - 1; b >= 0 && text.charAt(b) === "\\"; b -= 1) slashes += 1;
+      if (slashes % 2 === 1) continue;
+      var close = _substitutionEndIn(text, j + 2, tok.bodyKind);
+      if (close === -1) break;                    // unterminated, nothing to read
+      _collectRegexSpans(text.slice(j + 2, close), base + tok.start + j + 2,
+                         { bodyKind: tok.bodyKind, expressionStart: true }, out);
+      j = close;
+    }
+  }
+  return true;
+}
+
 // The `function` or `class` keyword whose body the brace about to be pushed
 // opens, or null when the brace opens something else. Read by walking back
 // from the brace over what may stand between it and that keyword: a balanced
@@ -1841,6 +1915,12 @@ function stripComments(src, onComment, onRegex) {
   var out   = "";
   var i     = 0;
   var n     = src.length;
+  // Read once for the whole source, since this walk visits a substitution's
+  // code at the offsets it occupies in the file and the table is keyed by
+  // those. Null when the tokenizer threw, which leaves the walk reading
+  // slashes the way it did before.
+  var spans = null;
+  try { spans = regexSpans(src); } catch (_e) { spans = null; }
   // Each frame carries its own brace depth, because an interpolation ends at
   // the `}` that BALANCES its `${` — not at the first one. `${ {a:1}.a }` and
   // `${ JSON.stringify({a:{b:1}}) }` both close an inner object before the
@@ -1933,20 +2013,34 @@ function stripComments(src, onComment, onRegex) {
       // version ate everything after `/^curl\//i` in the bot-guard agent list,
       // and inside an interpolation a `}` in a regex ended the `${` early and
       // left the following comment as template text.
-      if (c === "/" && _regexCanStartHere(lastSig)) {
+      // Whether this slash opens a pattern is read from the one place that
+      // answers it, and so is where the pattern ends. Deciding it here from
+      // this walk's own state is what let the two lexers drift: it does not
+      // track a function body, an arrow body or a contextual keyword, so
+      // `var await = 4; await / 2` opened a pattern that ran to the next
+      // slash and deleted everything between. `spans` is null only when the
+      // tokenizer could not read the source at all, and this walk answers
+      // alone then rather than not at all.
+      if (c === "/" && (spans === null
+                          ? _regexCanStartHere(lastSig)
+                          : spans[i] !== undefined)) {
         var rxStart = i;
-        i += 1;
-        var inClass = false;
-        while (i < n) {
-          var r = src.charAt(i);
-          if (r === "\\") { i += 2; continue; }
-          if (r === "\n") break;                  // unterminated: not a regex
-          if (inClass) { if (r === "]") inClass = false; }
-          else if (r === "[") inClass = true;
-          else if (r === "/") { i += 1; break; }
+        if (spans !== null) {
+          i = spans[i];
+        } else {
           i += 1;
+          var inClass = false;
+          while (i < n) {
+            var r = src.charAt(i);
+            if (r === "\\") { i += 2; continue; }
+            if (r === "\n") break;                // unterminated: not a regex
+            if (inClass) { if (r === "]") inClass = false; }
+            else if (r === "[") inClass = true;
+            else if (r === "/") { i += 1; break; }
+            i += 1;
+          }
+          while (i < n && /[a-z]/.test(src.charAt(i))) i += 1; // flags
         }
-        while (i < n && /[a-z]/.test(src.charAt(i))) i += 1;   // flags
         out += src.slice(rxStart, i);
         if (typeof onRegex === "function") onRegex(rxStart, i, src.slice(rxStart, i));
         top.lastSig = _VALUE_REGEX;               // a pattern is a value
@@ -2224,6 +2318,10 @@ module.exports = {
   tokenize:           tokenize,
   stripComments:      stripComments,
   commentRanges:      commentRanges,
+  // The one answer to "which slashes open a pattern", including the patterns
+  // written inside a template substitution, which a caller reading pattern
+  // TOKENS never sees because a template is one token.
+  regexSpans:         regexSpans,
   // Exported for the same reason `commentRanges` is: a caller that EXCISES a
   // comment has to answer "would these two characters have fused" the way the
   // stripper does. `foo/* note */bar` becomes `foobar` without it, and
