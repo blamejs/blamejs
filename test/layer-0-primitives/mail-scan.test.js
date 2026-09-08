@@ -437,6 +437,17 @@ async function testClamavErrorVerdictsCarryTheirReason() {
           JSON.stringify(rvT));
   }
 
+  // A TERMINATED reply is complete, so how the socket closed afterwards must
+  // not change what it means. A reply this reader does not recognise is
+  // `clamav-unparsed-reply` on a clean end, and it is the same on a reset.
+  var hUnp = _clamHandle(audit);
+  var unpReset = await hUnp.scan(Buffer.from("body"), {
+    _socket: _fakeResetAfterReplySocket(
+      Buffer.from("something the reader does not know\n", "ascii")),
+  }).catch(function (e) { return { errorCode: e.code }; });
+  check("clamav reset: a terminated unrecognised reply reads the same as on a clean end",
+        unpReset.errorCode === "mail-scan/clamav-unparsed-reply", JSON.stringify(unpReset));
+
   // A reset with NOTHING buffered stays a transport failure. `scan` routes a
   // rejection through `_failTo`, so it reaches the caller as an error verdict
   // carrying the transport code rather than as a throw.
