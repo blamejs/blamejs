@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.19.4",
-  "createdAt": "2026-09-07T22:04:55.018Z",
+  "frameworkVersion": "0.19.5",
+  "createdAt": "2026-09-08T00:15:48.658Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -36641,10 +36641,6 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
-                "fdw": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
                 "floor": {
                   "type": "primitive",
                   "valueType": "string"
@@ -36652,18 +36648,6 @@
                 "gdprRedact": {
                   "type": "primitive",
                   "valueType": "boolean"
-                },
-                "literal": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "privPivot": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "rceFile": {
-                  "type": "primitive",
-                  "valueType": "string"
                 },
                 "recon": {
                   "type": "primitive",
@@ -36702,23 +36686,7 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
-                "fdw": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
                 "floor": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "literal": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "privPivot": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "rceFile": {
                   "type": "primitive",
                   "valueType": "string"
                 },
@@ -36759,23 +36727,7 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
-                "fdw": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
                 "floor": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "literal": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "privPivot": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "rceFile": {
                   "type": "primitive",
                   "valueType": "string"
                 },
@@ -36816,23 +36768,7 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
-                "fdw": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
                 "floor": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "literal": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "privPivot": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "rceFile": {
                   "type": "primitive",
                   "valueType": "string"
                 },
@@ -36883,10 +36819,6 @@
               "type": "primitive",
               "valueType": "string"
             },
-            "fdw": {
-              "type": "primitive",
-              "valueType": "string"
-            },
             "floor": {
               "type": "primitive",
               "valueType": "string"
@@ -36894,10 +36826,6 @@
             "gdprRedact": {
               "type": "primitive",
               "valueType": "boolean"
-            },
-            "literal": {
-              "type": "primitive",
-              "valueType": "string"
             },
             "maxBytes": {
               "type": "primitive",
@@ -36908,14 +36836,6 @@
               "valueType": "number"
             },
             "mode": {
-              "type": "primitive",
-              "valueType": "string"
-            },
-            "privPivot": {
-              "type": "primitive",
-              "valueType": "string"
-            },
-            "rceFile": {
               "type": "primitive",
               "valueType": "string"
             },
@@ -36984,7 +36904,40 @@
         },
         "POLICY_VOCABULARY": {
           "type": "object",
-          "members": {}
+          "members": {
+            "allowMultiStatement": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "comment": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "encoding": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "floor": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "recon": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "setop": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "stacked": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
+            "timing": {
+              "type": "instance",
+              "ctorName": "Array"
+            }
+          }
         },
         "PROFILES": {
           "type": "object",
@@ -37008,23 +36961,7 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
-                "fdw": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
                 "floor": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "literal": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "privPivot": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "rceFile": {
                   "type": "primitive",
                   "valueType": "string"
                 },
@@ -37065,23 +37002,7 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
-                "fdw": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
                 "floor": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "literal": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "privPivot": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "rceFile": {
                   "type": "primitive",
                   "valueType": "string"
                 },
@@ -37122,23 +37043,7 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
-                "fdw": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
                 "floor": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "literal": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "privPivot": {
-                  "type": "primitive",
-                  "valueType": "string"
-                },
-                "rceFile": {
                   "type": "primitive",
                   "valueType": "string"
                 },
@@ -37159,6 +37064,27 @@
                   "valueType": "string"
                 }
               }
+            }
+          }
+        },
+        "RETIRED_OPTS": {
+          "type": "object",
+          "members": {
+            "fdw": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "literal": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "privPivot": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "rceFile": {
+              "type": "primitive",
+              "valueType": "string"
             }
           }
         },

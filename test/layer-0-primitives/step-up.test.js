@@ -16,12 +16,6 @@ function rejects(label, fn, pattern) {
   check("threw on " + label, threw && (pattern.test ? pattern.test(msg) : msg.indexOf(pattern) !== -1));
 }
 
-async function _rejectsAsync(label, fn, pattern) {
-  var threw = false; var msg = "";
-  try { await fn(); } catch (e) { threw = true; msg = e.message; }
-  check("threw on " + label, threw && (pattern.test ? pattern.test(msg) : msg.indexOf(pattern) !== -1));
-}
-
 function _mockReq(headers, user, urlPath) {
   return {
     headers: headers || {},

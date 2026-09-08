@@ -409,11 +409,24 @@ async function testAsyncSafeSleepBasic() {
 }
 
 async function testAsyncSafeSleepZeroResolvesImmediately() {
-  var t0 = Date.now();
-  await b.safeAsync.sleep(0);
-  await b.safeAsync.sleep(-5);
-  var elapsed = Date.now() - t0;
-  check("sleep: ms<=0 resolves immediately", elapsed < 20);
+  // Measured against a sleep that DOES wait, and each side taken as the best of
+  // several samples. Nothing here does any work, so the only thing separating
+  // the readings is scheduling: a fixed ceiling of 20ms was a ceiling on how
+  // long the runner may deschedule this process, and at SMOKE_PARALLEL=64 it
+  // holds it longer than that with nothing wrong. Comparing single readings
+  // instead only moves the ceiling to 40ms, since one stall lands in one
+  // measurement; `bestMsAsync` takes the lowest of several, which a stall
+  // cannot be present in all of.
+  var immediate = await helpers.bestMsAsync(async function () {
+    await b.safeAsync.sleep(0);
+    await b.safeAsync.sleep(-5);
+  }, 5);
+  var waited = await helpers.bestMsAsync(function () {
+    return b.safeAsync.sleep(40);
+  }, 3);
+  check("sleep: ms<=0 resolves immediately",
+    immediate < waited,
+    "immediate=" + immediate.toFixed(1) + "ms waited=" + waited.toFixed(1) + "ms");
 }
 
 async function testAsyncSafeSleepBadArg() {

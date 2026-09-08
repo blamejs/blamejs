@@ -32,6 +32,8 @@
  * Or via smoke:   node test/smoke.js
  */
 
+var fs      = require("fs");
+var path    = require("path");
 var helpers = require("../helpers");
 var b       = helpers.b;
 var check   = helpers.check;
@@ -73,6 +75,115 @@ function throwsCode(label, fn, code) {
   try { fn(); } catch (e) { threw = e; }
   check(label + " throws", threw !== null);
   check(label + " code " + code, threw && threw.code === code);
+}
+
+// ---- every declared knob governs something, or is refused ----
+
+// A profile key an operator can set and nothing reads is a knob that does
+// nothing: the setting is accepted, the behaviour does not change, and nothing
+// says so. `allowMultiStatement` read as the option that permits a stacked
+// statement and permitted nothing; six more named actions no code consulted.
+function testEveryProfileKeyIsConsulted() {
+  var declared = Object.create(null);
+  Object.keys(b.guardSql.PROFILES).forEach(function (name) {
+    Object.keys(b.guardSql.PROFILES[name]).forEach(function (k) { declared[k] = true; });
+  });
+
+  // What the module consults, read off the module rather than listed here: the
+  // resolved profile is merged into `opts`, so a key is consulted when it is
+  // read from either. Two statements about one thing drift; this compares them.
+  var src = fs.readFileSync(
+    path.join(__dirname, "..", "..", "lib", "guard-sql.js"), "utf8");
+  var consulted = Object.create(null);
+  var re = /\b(?:opts|profile)\.([A-Za-z][A-Za-z0-9_]*)/g;
+  var m;
+  while ((m = re.exec(src)) !== null) consulted[m[1]] = true;
+
+  // A key the module never reads is fine only when the vocabulary pins it to
+  // one value, which is how this family states "declared, and fixed": setting
+  // it otherwise is refused rather than ignored.
+  var fixed = Object.create(null);
+  Object.keys(b.guardSql.POLICY_VOCABULARY || {}).forEach(function (k) {
+    if (b.guardSql.POLICY_VOCABULARY[k].length === 1) fixed[k] = true;
+  });
+  var inert = Object.keys(declared).filter(function (k) {
+    return !consulted[k] && !fixed[k];
+  });
+  check("guard-sql: every declared profile key is consulted or pinned" +
+        (inert.length ? " (inert: " + inert.join(", ") + ")" : ""),
+        inert.length === 0);
+
+  // ...and a pinned one really is refused at any other value.
+  throwsCode("validate: allowMultiStatement cannot be turned on",
+    function () {
+      return b.guardSql.validate("x = 1", { allowMultiStatement: true });
+    },
+    "sql/bad-opt");
+  throwsCode("validate: stacked cannot be relaxed",
+    function () { return b.guardSql.validate("x = 1", { stacked: "audit" }); },
+    "sql/bad-opt");
+  throwsCode("validate: encoding cannot be relaxed",
+    function () { return b.guardSql.validate("x = 1", { encoding: "audit" }); },
+    "sql/bad-opt");
+
+  // ...and each of the ones that governed nothing is refused by name rather
+  // than accepted and ignored. An unknown option is accepted across the whole
+  // guard family, so silence is what an operator would otherwise get.
+  // Asked of EVERY entry point that takes options. Asked of `validate` alone,
+  // the exported `resolveOpts` still accepted a retired name and handed it
+  // back, so one of the guard's configuration doors stayed open.
+  var doors = [
+    ["validate", function (o) { return b.guardSql.validate("x = 1", o); }],
+    ["sanitize", function (o) { return b.guardSql.sanitize("x = 1", o); }],
+    ["resolveOpts", function (o) { return b.guardSql.resolveOpts(o); }],
+    ["gate", function (o) { return b.guardSql.gate(o); }],
+    ["buildProfile", function (o) {
+      return b.guardSql.buildProfile({ baseProfile: "strict", overrides: o });
+    }],
+  ];
+  Object.keys(b.guardSql.RETIRED_OPTS).forEach(function (name) {
+    doors.forEach(function (door) {
+      var opts = {};
+      opts[name] = "refuse";
+      // `buildProfile` composes a profile rather than resolving one, so it is
+      // the door that carries a retired name INTO a resolver; the resolver is
+      // what must refuse it.
+      if (door[0] === "buildProfile") {
+        var built = door[1](opts);
+        throwsCode("validate: a built profile carrying " + name,
+          function () { return b.guardSql.validate("x = 1", { profile: built }); },
+          "sql/bad-opt");
+        return;
+      }
+      throwsCode(door[0] + ": retired option " + name,
+        function () { return door[1](opts); },
+        "sql/bad-opt");
+    });
+  });
+  check("guard-sql: no retired name is also a live one",
+        Object.keys(b.guardSql.RETIRED_OPTS).every(function (k) {
+          return declared[k] !== true;
+        }));
+
+  // Every detector's family maps to a key the profiles declare, so a detector
+  // added with a new family cannot fall through to a default nobody set.
+  var families = Object.create(null);
+  (src.match(/family:\s*"([a-z]+)"/g) || []).forEach(function (hit) {
+    families[hit.replace(/.*"([a-z]+)".*/, "$1")] = true;
+  });
+  var unmapped = Object.keys(families).filter(function (f) { return !declared[f]; });
+  check("guard-sql: every detector family names a declared profile key" +
+        (unmapped.length ? " (unmapped: " + unmapped.join(", ") + ")" : ""),
+        unmapped.length === 0);
+}
+
+// A stacked statement is refused in every profile, which is what the module
+// documents. The option that read as permitting one never did.
+function testStackedNeverRelaxes() {
+  ["strict", "balanced", "permissive"].forEach(function (name) {
+    var r = b.guardSql.validate("SELECT 1; DROP TABLE t", { profile: name });
+    check("guard-sql: " + name + " refuses a stacked statement", r.ok === false);
+  });
 }
 
 // ---- opts validation — entry-point throws (Tier-A: bad config = throw) ----
@@ -571,6 +682,8 @@ async function run() {
   testTrustedSchemaShapeAndCost();
   await testGateDispositions();
   testSurfaceAndPostures();
+  testEveryProfileKeyIsConsulted();
+  testStackedNeverRelaxes();
 }
 
 module.exports = { run: run };

@@ -70,19 +70,6 @@ function _capturingAudit() {
   };
 }
 
-function _capturingObservability() {
-  var counters = Object.create(null);
-  return {
-    counters: counters,
-    obs: {
-      event: function (name, evt) {
-        counters[name] = (counters[name] || 0) + 1;
-        return evt;
-      },
-    },
-  };
-}
-
 // ---- Per-kind harness ----
 
 async function _runContentGuard(g) {

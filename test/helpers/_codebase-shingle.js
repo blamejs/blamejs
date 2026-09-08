@@ -14,10 +14,10 @@
  * a combination, folds it into the cluster table, and releases it
  * before asking for the next one.
  *
- * KEEP IN SYNC: the helpers below are the verbatim copies of the
- * functions previously inlined in codebase-patterns.test.js. Do not
- * fork the logic — change once here and the worker + the test stay
- * consistent.
+ * The helpers below are the only copy. They were inlined in
+ * codebase-patterns.test.js as well until that copy went unread and was
+ * removed; the worker and the test both call these, so a change here
+ * reaches both.
  */
 
 var fs   = require("fs");

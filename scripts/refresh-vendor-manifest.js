@@ -104,6 +104,20 @@ function _rfc3339Now() {
 }
 
 function main() {
+  // This script takes no arguments and always writes. Reading none meant a
+  // flag was accepted and ignored, so `--check` looked like a dry run and
+  // rewrote the manifest, stamping `refreshedAt` on every package for a
+  // re-hash that had just happened rather than one the caller asked for. The
+  // hashes were unchanged, which is what made it easy to miss: the only
+  // evidence was eight timestamps and a dirty working tree.
+  var extra = process.argv.slice(2);
+  if (extra.length > 0) {
+    process.stderr.write("[refresh-vendor-manifest] takes no arguments, got " +
+      JSON.stringify(extra) + ". It always rewrites " + MANIFEST_PATH +
+      "; there is no check mode. Verification is the smoke gate at " +
+      "test/layer-0-primitives/vendor-manifest.test.js.\n");
+    process.exit(2);
+  }
   var raw = fs.readFileSync(MANIFEST_PATH, "utf8");
   _refuseMojibake(raw);
   var manifest = JSON.parse(raw);

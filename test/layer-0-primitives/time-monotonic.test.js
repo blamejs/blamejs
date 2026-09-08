@@ -717,13 +717,26 @@ async function testElapsedTimeIgnoresTheWallClock() {
 
   // And it measures real elapsed time, not zero.
   var sw2 = b.time.stopwatch();
+  // A second stopwatch started alongside and never reset. It is the yardstick
+  // the reset one is compared against below.
+  var unreset = b.time.stopwatch();
   await helpers.passiveObserve(40, "stopwatch: a real interval to measure");
   check("stopwatch measures an interval that actually passed",
     sw2.ms() >= 30, "elapsed=" + sw2.ms());
-  check("reset() starts it again", (function () {
-    sw2.reset();
-    return sw2.ms() < 25;
-  })(), "afterReset=" + sw2.ms());
+  // Asserted against the unreset stopwatch rather than a fixed number of
+  // milliseconds. `sw2.ms() < 25` said the same thing on an idle machine and
+  // failed at SMOKE_PARALLEL=64 reading 40.28ms, because the only thing between
+  // `reset()` and `ms()` is scheduling, and under that load there is plenty.
+  // The reading after a reset is smaller than one taken from a clock that has
+  // been running since before the interval, whatever the machine is doing:
+  // `unreset` is read second, so any stall between the two readings only
+  // widens the gap.
+  sw2.reset();
+  var afterReset = sw2.ms();
+  var sinceStart = unreset.ms();
+  check("reset() starts it again",
+    afterReset < sinceStart,
+    "afterReset=" + afterReset + " unreset=" + sinceStart);
   check("monotonicMs is not a timestamp — it counts from an arbitrary point",
     b.time.monotonicMs() < Date.now() / 2);
 }

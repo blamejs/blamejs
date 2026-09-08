@@ -19394,22 +19394,6 @@ function _loadGitleaksAllowlist() {
   return { stopwords: stopwords, regexes: regexes };
 }
 
-function _shannonEntropy(s) {
-  if (!s || s.length === 0) return 0;
-  var counts = Object.create(null);
-  for (var i = 0; i < s.length; i += 1) {
-    var c = s.charAt(i);
-    counts[c] = (counts[c] || 0) + 1;
-  }
-  var entropy = 0;
-  var keys = Object.keys(counts);
-  for (var k = 0; k < keys.length; k += 1) {
-    var p = counts[keys[k]] / s.length;
-    entropy -= p * (Math.log(p) / Math.LN2);
-  }
-  return entropy;
-}
-
 // Curated list of identifier names that have historically tripped CI
 // gitleaks (generic-api-key + related rules) at entropy 3.5+. Each
 // entry is a public framework parameter / property name that operators

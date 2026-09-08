@@ -39,7 +39,6 @@ var setupTestDbForMW         = helpers.setupTestDbForMW;
 var teardownMW               = helpers.teardownMW;
 var listenOnRandomPort       = helpers.listenOnRandomPort;
 var _makeFakeDriver          = helpers._makeFakeDriver;
-var _makeSqliteDriver        = helpers._makeSqliteDriver;
 var _makeFakeServiceAccount  = helpers._makeFakeServiceAccount;
 var _mockReq                 = helpers._mockReq;
 var _mockRes                 = helpers._mockRes;
@@ -1867,14 +1866,6 @@ async function testMiddlewareCsrfProtect() {
     var http = require("http");
 
     var EXPECTED = b.forms.generateCsrfToken();
-
-    function _captureBody(req) {
-      return new Promise(function (resolve) {
-        var chunks = [];
-        req.on("data", function (c) { chunks.push(c); });
-        req.on("end", function () { resolve(Buffer.concat(chunks).toString("utf8")); });
-      });
-    }
 
     var bodyParser = b.middleware.bodyParser();
     var protect = b.middleware.csrfProtect({

@@ -233,17 +233,6 @@ function _dropOwned() {
   }).join("\n"));
 }
 
-// Soft findings — a recorded lib-bug surfaced live that must NOT halt the
-// rest of the suite (the remaining sections are independent coverage). Each
-// is printed at the end and makes the file exit non-zero, so the release
-// gate still fails until the bug is fixed.
-var _softFindings = [];
-function _softCheck(label, ok) {
-  if (ok) { check(label, true); return; }
-  _softFindings.push(label);
-  console.error("[SOFT-FAIL] " + label);
-}
-
 async function run() {
   var pg = await services.requireService("postgres");
   if (!pg.ok) throw new Error("postgres unreachable: " + pg.reason);
@@ -275,12 +264,6 @@ async function run() {
     _dropOwned();
   }
 
-  // Surface any recorded soft findings as a hard suite failure so the
-  // release gate stays red until the live-surfaced lib bug is fixed.
-  if (_softFindings.length > 0) {
-    throw new Error("data-layer-cluster-pg: " + _softFindings.length +
-      " live-surfaced lib bug(s):\n  - " + _softFindings.join("\n  - "));
-  }
 }
 
 // ======================================================================

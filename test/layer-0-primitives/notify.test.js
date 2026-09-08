@@ -15,7 +15,6 @@
 var helpers = require("../helpers");
 var b         = helpers.b;
 var check     = helpers.check;
-var _mockReq  = helpers._mockReq;
 
 // ---- Surface ----
 

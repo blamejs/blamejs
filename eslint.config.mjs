@@ -118,9 +118,16 @@ const COMMON_RULES = {
   "no-loss-of-precision":      "error",
 
   // Hygiene rules — code clarity, dead-code removal.
+  //
+  // A leading underscore means PRIVATE in this codebase, not deliberately
+  // unused, and every private helper in lib/, test/ and scripts/ carries one.
+  // Ignoring that prefix therefore exempted the whole of them from the only
+  // check that looks for dead code, and 61 unread bindings had accumulated
+  // behind it, 42 of them in shipped lib/. A bare `_` is still available for a
+  // binding that exists to be discarded.
   "no-unused-vars":            ["error", {
     args:                      "none",
-    varsIgnorePattern:         "^_",
+    varsIgnorePattern:         "^_$",
     caughtErrors:              "all",
     caughtErrorsIgnorePattern: "^_",
     destructuredArrayIgnorePattern: "^_",
@@ -141,6 +148,9 @@ export default [
       "examples/wiki/public/dist/**",
       "**/data/**",
       "**/data-e2e/**",
+      // `*.tmp.*` is gitignored, so a file matching it is a local working copy
+      // rather than source, and is not held to the source rules.
+      "**/*.tmp.*",
       "**/.git/**",
       ".test-output/**",
       ".scratch/**",

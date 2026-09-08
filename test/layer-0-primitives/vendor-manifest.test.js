@@ -443,11 +443,35 @@ async function runBrowserBuilds() {
         surfaceWrong.length === 0);
 }
 
+// The refresher always writes, and it read no arguments, so a flag was accepted
+// and ignored: `--check` looked like a dry run and rewrote the manifest,
+// stamping `refreshedAt` on every package for a re-hash nobody asked for. The
+// hashes were unchanged, so the only evidence was eight timestamps and a dirty
+// working tree. It refuses an argument now, and this holds it to that: the
+// manifest on disk must be byte-identical afterwards.
+function runRefresherRejectsArguments() {
+  var script = path.join(REPO_ROOT, "scripts", "refresh-vendor-manifest.js");
+  var before = fs.readFileSync(path.join(REPO_ROOT, MANIFEST_PATH));
+
+  ["--check", "--dry-run", "lib/vendor/MANIFEST.json"].forEach(function (arg) {
+    var r = childProcess.spawnSync(process.execPath, [script, arg],
+                                   { cwd: REPO_ROOT, encoding: "utf8" });
+    check("refresh-vendor-manifest refuses " + JSON.stringify(arg),
+          r.status !== 0, "status=" + r.status);
+    check("refresh-vendor-manifest says so on stderr for " + JSON.stringify(arg),
+          /takes no arguments/.test(r.stderr || ""), JSON.stringify(r.stderr || "").slice(0, 120));
+    var after = fs.readFileSync(path.join(REPO_ROOT, MANIFEST_PATH));
+    check("refresh-vendor-manifest leaves the manifest untouched for " + JSON.stringify(arg),
+          before.equals(after));
+  });
+}
+
 // One entry point, so a runner that only knows `run()` still drives the browser
 // checks — a second export the smoke list did not know about would leave them
 // running nowhere.
 async function runAll() {
   run();
+  runRefresherRejectsArguments();
   await runBrowserBuilds();
 }
 

@@ -26,8 +26,6 @@ function _newSp() {
 
 function _stripQuery(url) { return url.split("?")[1]; }
 function _samlReq(query)  { return decodeURIComponent(query.split("&")[0].slice("SAMLRequest=".length)); }
-function _samlResp(query) { return decodeURIComponent(query.split("&")[0].slice("SAMLResponse=".length)); }
-
 function testBuildLogoutRequestShape() {
   var sp = _newSp();
   var lr = sp.buildLogoutRequest({ nameId: "alice", sessionIndex: "_s" });

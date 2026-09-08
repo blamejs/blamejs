@@ -82,7 +82,7 @@ async function testConsumerBreakClosesCursor() {
     batchSize: 10,
   });
   var count = 0;
-  for await (var _row of stream) {
+  for await (var _ of stream) {
     count += 1;
     if (count === 2) break;        // early-break must close cursor
   }
