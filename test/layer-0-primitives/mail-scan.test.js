@@ -305,6 +305,47 @@ async function testClamavLongReplyWithoutFoundStaysLinear() {
         rv && typeof rv.verdict === "string", String(rv && rv.verdict));
 }
 
+// Every error verdict says which error it was. A refusal on size will never
+// succeed on retry; a daemon fault clears when the daemon returns; a reply the
+// reader could not classify is neither. All three used to arrive as a bare
+// `verdict: "error"` with nothing to tell them apart.
+async function testClamavErrorVerdictsCarryTheirReason() {
+  var audit = _fakeAudit();
+  var cases = [
+    { name:  "size limit",
+      reply: "INSTREAM size limit exceeded. ERROR\n",
+      code:  "mail-scan/clamav-size-limit" },
+    { name:  "daemon fault",
+      reply: "ERROR\n",
+      code:  "mail-scan/clamav-error" },
+    { name:  "unclassifiable reply",
+      reply: "something the reader does not know\n",
+      code:  "mail-scan/clamav-unparsed-reply" },
+  ];
+  for (var i = 0; i < cases.length; i += 1) {
+    var c = cases[i];
+    var h = _clamHandle(audit);
+    var rv = await h.scan(Buffer.from("body"), {
+      _socket: _fakeSocket(Buffer.from(c.reply, "ascii")),
+    });
+    check("clamav error reason: " + c.name + " verdict is error",
+          rv.verdict === "error", JSON.stringify(rv));
+    check("clamav error reason: " + c.name + " names itself",
+          rv.errorCode === c.code, JSON.stringify(rv.errorCode));
+    check("clamav error reason: " + c.name + " carries the daemon's words",
+          typeof rv.errorMessage === "string" && rv.errorMessage.length > 0,
+          JSON.stringify(rv.errorMessage));
+  }
+
+  // The reply is the daemon's text, so it is bounded before an operator logs it.
+  var hBig = _clamHandle(audit);
+  var big = await hBig.scan(Buffer.from("body"), {
+    _socket: _fakeSocket(Buffer.from("ERROR " + "x".repeat(5000) + "\n", "ascii")),
+  });
+  check("clamav error reason: a long daemon reply is truncated, not carried whole",
+        big.errorMessage.length <= 203, String(big.errorMessage.length));
+}
+
 // The one-pass reader has to answer what the pattern it replaced answered,
 // for every reply shape short enough that the pattern could answer at all.
 async function testClamavReplyReaderMatchesThePatternItReplaced() {
@@ -597,6 +638,7 @@ function run(cb) {
     .then(testScanArchiveEntriesGate)
     .then(testClamavCleanVerdict)
     .then(testClamavLongReplyWithoutFoundStaysLinear)
+    .then(testClamavErrorVerdictsCarryTheirReason)
     .then(testClamavReplyReaderMatchesThePatternItReplaced)
     .then(testClamavInfectedVerdict)
     .then(testClamavErrorReplyVerdict)

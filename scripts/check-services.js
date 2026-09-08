@@ -55,6 +55,7 @@ var BASE_SERVICES = [
   { name: "syslog",       port:  5514, kind: "tcp",   label: "tcp",                 group: "plain" },
   { name: "ntp",          port: 12300, kind: "sntp",  label: "SNTPv4 query",        group: "plain" },
   { name: "mailpit",      port:  1025, kind: "smtp",  label: "SMTP 220 banner",     group: "plain" },
+  { name: "clamav",       port:  3310, kind: "tcp",   label: "tcp (clamd INSTREAM)", group: "plain" },
   { name: "coredns-udp",  port:  1053, kind: "dns-udp", label: "DNS A query (UDP)", group: "plain" },
   { name: "coredns-tcp",  port:  1053, kind: "tcp",   label: "tcp",                 group: "plain" },
   { name: "coredns-health",port:  8054,kind: "http",  label: "GET /health",

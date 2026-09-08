@@ -127,6 +127,7 @@ module.exports = {
   // between the suites that assert it).
   bestMs:                _growth.bestMs,
   looksSuperlinear:      _growth.looksSuperlinear,
+  superlinearRatio:      _growth.superlinearRatio,
   bestMsAsync:           _growth.bestMsAsync,
   looksSuperlinearAsync: _growth.looksSuperlinearAsync,
 

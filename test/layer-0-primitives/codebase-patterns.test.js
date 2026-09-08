@@ -171,10 +171,11 @@ function _libFiles() { return _walk(LIB_ROOT); }
 // `scanScope: "test"` in their KNOWN_ANTIPATTERNS entry to route here.
 //
 // Scope: every `*.test.js` under `test/` + non-underscore-prefixed
-// `test/helpers/*.js` + `test/smoke.js` itself + every test file
-// under `examples/*/test/` (the wiki integration suite ships its own
-// `test/`). examples/*/node_modules/ is excluded so vendored deps
-// don't leak into the test-discipline scope.
+// `test/helpers/*.js` + every non-underscore `.js` directly under `test/`
+// (smoke.js and the six layer files it runs) + every test file under
+// `examples/*/test/` (the wiki integration suite ships its own `test/`).
+// examples/*/node_modules/ is excluded so vendored deps don't leak into the
+// test-discipline scope.
 function _testFiles() {
   var all = _walk(TEST_ROOT);
   try {
@@ -190,7 +191,12 @@ function _testFiles() {
     // Exclude examples/*/node_modules/ and per-example .test-output.
     if (/^examples\/[^/]+\/node_modules\//.test(rel)) return false;
     if (/^examples\/.*\/\.test-output\//.test(rel)) return false;
-    if (/^test\/smoke\.js$/.test(rel)) return true;
+    // Every non-underscore `.js` directly under test/, not smoke.js alone.
+    // The six layer files smoke.js runs (00-primitives.js through
+    // 50-integration.js) are neither `*.test.js` nor helpers, so naming only
+    // smoke.js left 27,844 lines of live test code outside the reach of every
+    // scanScope:"test" rule, and each of those rules reported clean over it.
+    if (/^test\/[^_][^/]*\.js$/.test(rel)) return true;
     if (/^examples\/[^/]+\/test\/.*\.js$/.test(rel)) return true;
     return /\.test\.js$/.test(rel) || /\/helpers\/[^_].*\.js$/.test(rel);
   });
@@ -15680,7 +15686,7 @@ var KNOWN_ANTIPATTERNS = [
 
   { id: "pem-body-wrap-must-not-emit-a-trailing-newline-in-tests", primitive: "a test that builds a PEM from base64 has the same obligation as lib/: join the wrapped groups rather than append a newline to each, or the fixture is unparseable whenever its length divides evenly by the width", scanScope: "test", regex: /\.replace\(\s*\/\(\.\{\d+\}\)\/g\s*,\s*["'`]\$1\\n["'`]\s*\)(?!\s*\.replace\(\s*\/\\n\$\/)/, allowlist: [], reason: "0.19.3 — the same shape as the lib-side rule of this name, and it was in five fixture builders: test/helpers/tls.js, which several suites use to stand up a real TLS server, plus the certificate builders in http-client, network-tls, security-assert and mtls-ca-migration. There it reads as a flake rather than a failure, because the DER ECDSA signature length varies run to run, so a suite fails on roughly one process in sixteen with a certificate the previous run accepted. test/helpers/tls.js caches its pair for the process, so when it lands on the bad length every consumer of it fails at once and the run looks like a TLS regression. Kept as its own entry because the catalog selects one file set per rule.", },
 
-  { id: "growth-ratio-must-use-the-shared-measurement", primitive: "a test that divides one elapsed-millisecond reading by another to assert a growth curve must take that ratio through `helpers.looksSuperlinear` / `looksSuperlinearAsync`, which samples best-of-N, declines to judge below a floor where the shape is already ruled out, and RE-MEASURES before it fails anything — a single reading compares the runner's load as much as the code's complexity", scanScope: "test", skipCommentLines: true, regex: /\/\s*Math\.max\(\s*[A-Za-z_$][\w$]*(?:\.ms\b|Ms\b)/, requires: /looksSuperlinear(?:Async)?\s*\(/, allowlist: [], reason: "v0.18.61. Eight hand-rolled ratios were converted to the shared measurement earlier in this release BY ENUMERATION, and a ninth survived: `testFoldedDkimTagDoesNotBacktrack` drives an SMTP transaction, so the synchronous helper could not take it and what was written instead was a single unrepeated reading, `large.ms / Math.max(small.ms, 1)` against `ratio < 9`. At SMOKE_PARALLEL=64 it measured 9.41 on a scan that is linear and failed the release gate. The gap was the helper's shape, not carelessness, so the fix is `looksSuperlinearAsync` alongside it rather than a note to remember; the detector is what makes the claim complete, because the enumeration was already wrong once. Anchored on the zero-denominator guard a hand-rolled ratio needs (`/ Math.max(<something>.ms`), which the shared helper's own internals do not match since its operands carry no `.ms`. File-level, like its sibling: a suite that takes such a ratio must also call the helper. Empty allowlist — an async measurement is now covered, so there is no shape left that needs its own copy.", },
+  { id: "growth-ratio-must-use-the-shared-measurement", primitive: "a test that divides one elapsed-millisecond reading by another to assert a growth curve must take that ratio through `helpers.looksSuperlinear` / `looksSuperlinearAsync`, which samples best-of-N, declines to judge below a floor where the shape is already ruled out, and RE-MEASURES before it fails anything — a single reading compares the runner's load as much as the code's complexity", scanScope: "test", skipCommentLines: true, regex: /(?:\.ms|\.ns|Ms|Ns)\b\s*\/(?!\s*[\d.])\s*[^;\n]{0,40}?(?:\.ms|\.ns|Ms|Ns)\b|(?:\.ms|\.ns|Ms|Ns)\b[^;\n]{0,60}?[<>]=?[^;\n]{0,60}?(?:\.ms|\.ns|Ms|Ns)\b\s*\*/, requires: /looksSuperlinear(?:Async)?\s*\(|superlinearRatio\s*\(/, allowlist: [], reason: "v0.18.61. Eight hand-rolled ratios were converted to the shared measurement earlier in this release BY ENUMERATION, and a ninth survived: `testFoldedDkimTagDoesNotBacktrack` drives an SMTP transaction, so the synchronous helper could not take it and what was written instead was a single unrepeated reading, `large.ms / Math.max(small.ms, 1)` against `ratio < 9`. At SMOKE_PARALLEL=64 it measured 9.41 on a scan that is linear and failed the release gate. The gap was the helper's shape, not carelessness, so the fix is `looksSuperlinearAsync` alongside it rather than a note to remember; the detector is what makes the claim complete, because the enumeration was already wrong once. Anchored on the zero-denominator guard a hand-rolled ratio needs (`/ Math.max(<something>.ms`), which the shared helper's own internals do not match since its operands carry no `.ms`. File-level, like its sibling: a suite that takes such a ratio must also call the helper. Empty allowlist — an async measurement is now covered, so there is no shape left that needs its own copy.", },
 
   { id: "a-literal-payload-decoded-to-text-must-round-trip", primitive: "a mail listener that turns a protocol LITERAL's octets into a string must first confirm they survive a UTF-8 round trip (`_decodesAsUtf8`) and refuse when they do not — `toString(\"utf8\")` substitutes U+FFFD for every byte it cannot read rather than reporting one, so the substitution happens before anything examines the value and every later check runs on a repaired copy", scanScope: "lib", skipCommentLines: true, regex: /(?:literal|pendingLiteral|pl|pa)\.(?:body|irBody)\.toString\("utf8"\)/, requires: /_decodesAsUtf8\s*\(/, allowlist: [], reason: "v0.18.61. The IMAP listener refuses a non-final literal it cannot rebuild as a quoted string, for exactly this reason; the ManageSieve listener did the same decode twice and refused neither. PUTSCRIPT accepted a script carrying a 0xFF, stored it two octets longer than the announced count with the byte replaced, and answered OK — so a Sieve script, which decides what is filed, forwarded and discarded, ran as something the account holder did not write, and RFC 5804 section 2.3's requirement to verify before accepting was satisfied against the repaired copy rather than what arrived. The AUTHENTICATE initial response is worse in kind though not in reach: a SASL token is base64, the replacement character's own bytes are outside that alphabet and are dropped by the decode, so `AAAA<ff>BBBB` and `AAAABBBB` reach the verifier as one credential. Both now ask `_decodesAsUtf8` and refuse. The claim is deliberately narrow and the check is file-level: `.toString(\"utf8\")` on an HTTP response body is conventional across the framework and harmless where a parse rejects the result anyway, so this matches only the literal-payload identifiers the mail listeners use, and asks that the file carrying one also carries the round-trip helper. Per-site coverage is the behavioural tests. Proven by deleting the helper: the requires-companion fails and it names the file.", },
 
@@ -17709,7 +17715,18 @@ var KNOWN_ANTIPATTERNS = [
     // 200-char window keeps the regex bounded; longer Promise bodies
     // that do real work between Promise-open and setTimeout don't
     // fit the direct-sleep antipattern anyway.
-    regex: /new\s+Promise\s*\(\s*(?:function\s*[\w$]*\s*\([^)]*\)\s*\{|\([^)]*\)\s*=>\s*\{?|[\w$]+\s*=>\s*\{?)[\s\S]{0,200}?setTimeout\s*\(/,
+    // The executor must take a resolve parameter. Without that, an
+    // intentionally never-settling `new Promise(function () {})` matched
+    // whenever an unrelated `setTimeout` followed it within the tempered
+    // window -- the abort-signal tests schedule exactly that, and the timer
+    // there fires an abort rather than settling the promise.
+    // The timer must resolve the promise DIRECTLY -- `setTimeout(resolve, N)`,
+    // the resolve parameter passed as the callback. A timer given a callback
+    // instead is a watchdog on an event wait (`child.once("exit", ...)` with a
+    // kill timer that is cleared when the event arrives), which settles on the
+    // event and not on the clock. Those are the shape this rule asks for, so
+    // matching them told the reader to replace a correct wait.
+    regex: /new\s+Promise\s*\(\s*(?:function\s*[\w$]*\s*\(\s*([\w$]+)[^)]*\)\s*\{|\(\s*([\w$]+)[^)]*\)\s*=>\s*\{?|([\w$]+)\s*=>\s*\{?)[\s\S]{0,200}?setTimeout\s*\(\s*(?:\1|\2|\3)\s*,/,
     skipCommentLines: true,
     allowlist: [
       // ===== Structural FPs (stay allowlisted) =====
@@ -23537,8 +23554,18 @@ function testKnownAntipatterns() {
     } else if (ap.scanScope === "workflows") {
       if (workflowFiles === null) workflowFiles = _workflowFiles();
       files = workflowFiles;
-    } else {
+    } else if (ap.scanScope === undefined || ap.scanScope === "lib") {
       files = libFiles;
+    } else {
+      // A scope no walker serves used to fall through to lib/, so the rule
+      // ran against a tree it never named and reported clean over the one it
+      // did. `_scriptFiles` and `_exampleAppFiles` exist and no scanScope
+      // reaches them, which is exactly the shape that would fall through.
+      throw new Error(
+        "codebase-patterns: rule '" + ap.id + "' declares scanScope '" +
+        ap.scanScope + "', which no walker serves. Route it to a walker or " +
+        "drop the key; falling through would scan lib/ and report clean over " +
+        "the tree the rule names.");
     }
     var bad = [];
     // The marker classes this rule declares. Read from the rule, not from a

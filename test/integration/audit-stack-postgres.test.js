@@ -434,7 +434,9 @@ async function _testAuditRecordAndChain(liveQueryAll) {
   var more = await b.audit.record({ action: "system.boot", outcome: "success" });
   check("counter primer read MAX(monotonicCounter) from live Postgres on a " +
         "fresh chain-writer (continued at 5, did not restart at 1)",
-        more.monotonicCounter === 5);
+        more.monotonicCounter === 5,
+        "monotonicCounter=" + JSON.stringify(more.monotonicCounter) +
+        " rows_in_pg=" + _psql("SELECT count(*) AS n FROM _blamejs_audit_log;").trim());
   var count2 = _psql("SELECT count(*) AS n FROM _blamejs_audit_log;");
   check("5 audit rows now present after primer-continued append",
         /\b5\b/.test(count2.trim()));

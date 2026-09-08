@@ -68,6 +68,63 @@ function testBelowTheFloorThereIsNoVerdict() {
         growth.looksSuperlinear(function () { _spin(0.05); }, FAST) === false);
 }
 
+// A ratio divides a reading at the large size by a reading at the small one.
+// Taken in two blocks -- every large sample, then every small one -- the two
+// occupy different windows, so a load that is heavy during the first and light
+// during the second is carried into the ratio as if it were growth. That is
+// what failed a release gate: a folded DKIM tag scanned linearly measured
+// 10.05x for 4x the input, under 64-way parallelism against the docker stack,
+// and re-measuring did not rule it out because the load was sustained across
+// both attempts.
+//
+// Modelled here without a real load: the overhead is heavy for the first two
+// calls of every group of four and absent for the next two. Read in two blocks
+// at two reps, that is exactly heavy for both large samples and absent for both
+// small ones, and it repeats on the confirming pass, so re-measuring returns
+// the same wrong answer. Sustained load is what the note above records
+// defeating re-measurement. Interleaved, one large and one small sample fall
+// in each half, and the pair from the quiet half is the pair the minimum keeps.
+function _loadOnTheFirstHalfOfEachGroup(heavyMs) {
+  var seen = 0;
+  return function (n) {
+    var extra = (seen % 4) < 2 ? heavyMs : 0;
+    seen += 1;
+    _spin(n / 20 + extra);                            // linear work plus the load
+  };
+}
+
+function testALoadExcursionIsNotReadAsGrowth() {
+  // Linear work: 200ms at the large size, 50ms at the small, a true ratio of 4.
+  // 400ms of load on the large readings alone lifts it to 12, over the
+  // threshold of 9, and lands the same way on the confirming pass.
+  var verdict = growth.looksSuperlinear(_loadOnTheFirstHalfOfEachGroup(400), FAST);
+  check("growth: a load that falls on one size only is not growth",
+        verdict === false, "verdict=" + verdict);
+}
+
+// ...and the interleaving must not cost the true positive it exists to find.
+function testInterleavingStillCatchesACurve() {
+  check("growth: a quadratic curve under the same fading load is still caught",
+        growth.looksSuperlinear(function (n) {
+          var k = n / SMALL;
+          _spin(k * k * 50);
+        }, FAST) === true);
+}
+
+// The order is the fix, so it is asserted directly: a caller sees the sizes
+// alternate rather than arrive in two blocks.
+function testTheSizesAreInterleaved() {
+  var order = [];
+  growth.looksSuperlinear(function (n) { order.push(n); _spin(n / 20); }, FAST);
+  var blocks = 0;
+  for (var i = 1; i < order.length; i += 1) {
+    if (order[i] !== order[i - 1]) blocks += 1;
+  }
+  check("growth: the two sizes alternate rather than arriving in blocks",
+        order.length >= 4 && blocks >= order.length - 2,
+        JSON.stringify(order));
+}
+
 async function testAsyncSeparatesLinearFromQuadratic() {
   var lin = await growth.looksSuperlinearAsync(async function (n) { _linear(n); }, FAST);
   check("growth async: a linear curve is not superlinear",
@@ -104,6 +161,9 @@ async function testARejectedSampleIsNotMeasuredAsFast() {
 async function run() {
   testSyncSeparatesLinearFromQuadratic();
   testBelowTheFloorThereIsNoVerdict();
+  testALoadExcursionIsNotReadAsGrowth();
+  testInterleavingStillCatchesACurve();
+  testTheSizesAreInterleaved();
   await testAsyncSeparatesLinearFromQuadratic();
   await testARejectedSampleIsNotMeasuredAsFast();
 }

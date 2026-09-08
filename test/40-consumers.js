@@ -1064,8 +1064,7 @@ async function testQueueShutdown() {
 
     var processed = 0;
     var consumer = b.queue.consume("shutdown-job", async function (_job) {
-      // Long-running handler
-      await new Promise(function (r) { setTimeout(r, 200); });
+      await helpers.passiveObserve(200, "queue: the handler is still running at shutdown");
       processed += 1;
     }, { concurrency: 2, pollIntervalMs: 30, fastPollMs: 10, leaseDurationMs: 5000 });
 

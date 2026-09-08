@@ -55,26 +55,51 @@ function bestMs(fn, reps) {
  * Returns true only when the growth reproduces on a second, longer measurement.
  * A contended runner preempted between two samples reads superlinear on an
  * implementation that is not; a real curve reads superlinear every time.
+ *
+ * `superlinearRatio` below is the same measurement reporting the number it
+ * measured, for a caller that wants the reading in its failure message. That
+ * is the whole reason the two hand-rolled ratios in the SQL guard's cost tests
+ * existed, so it is a view on this measurement rather than a second one.
  */
 function looksSuperlinear(run, opts) {
+  return superlinearRatio(run, opts).superlinear;
+}
+
+// { superlinear, ratio } -- the verdict and the reading behind it. `ratio` is
+// null when the work finished under the floor, where no ratio is taken.
+function superlinearRatio(run, opts) {
   opts = opts || {};
   var threshold = opts.threshold === undefined ? 3 : opts.threshold;
   var floorMs   = opts.floorMs === undefined ? 25 : opts.floorMs;
   var reps      = opts.reps || 3;
   var confirm   = opts.confirmReps || 9;
 
+  // One sample of each size per round, rather than every large sample and then
+  // every small one. Taken in two blocks the readings occupy different windows,
+  // so load that is heavier during one than the other is divided into the ratio
+  // as if it were growth: a linear scan measured 10.05x for 4x the input under
+  // a loaded box and failed a release gate, and re-measuring returned the same
+  // answer because the load was still there. Interleaved, a quiet round gives
+  // both terms a clean reading, and the minimum keeps it.
   function ratio(n) {
-    var large = bestMs(function () { run(opts.large); }, n);
+    var large = Infinity;
+    var small = Infinity;
+    for (var i = 0; i < n; i += 1) {
+      large = Math.min(large, bestMs(function () { run(opts.large); }, 1));
+      small = Math.min(small, bestMs(function () { run(opts.small); }, 1));
+    }
     if (large < floorMs) return null;                 // fast enough to rule out
-    var small = bestMs(function () { run(opts.small); }, n);
     return large / Math.max(small, 0.05);             // 0.05ms: timer floor
   }
 
   var first = ratio(reps);
-  if (first === null || first <= threshold) return false;
+  if (first === null || first <= threshold) return { superlinear: false, ratio: first };
   // Looks superlinear. Confirm before failing anything.
   var second = ratio(confirm);
-  return second !== null && second > threshold;
+  return {
+    superlinear: second !== null && second > threshold,
+    ratio:       second === null ? first : second,
+  };
 }
 
 // The same measurement where the work is asynchronous -- a protocol round
@@ -115,10 +140,18 @@ async function looksSuperlinearAsync(run, opts) {
   var reps      = opts.reps || 2;
   var confirm   = opts.confirmReps || 4;
 
+  // Interleaved for the reason the synchronous form above is, and this is the
+  // form the reading that failed the gate came from.
   async function ratio(n) {
-    var large = await bestMsAsync(function () { return run(opts.large); }, n);
+    var large = Infinity;
+    var small = Infinity;
+    for (var i = 0; i < n; i += 1) {
+      large = Math.min(large,
+        await bestMsAsync(function () { return run(opts.large); }, 1));
+      small = Math.min(small,
+        await bestMsAsync(function () { return run(opts.small); }, 1));
+    }
     if (large < floorMs) return null;                 // fast enough to rule out
-    var small = await bestMsAsync(function () { return run(opts.small); }, n);
     return large / Math.max(small, 0.05);             // 0.05ms: timer floor
   }
 
@@ -134,6 +167,7 @@ async function looksSuperlinearAsync(run, opts) {
 module.exports = {
   bestMs:                bestMs,
   looksSuperlinear:      looksSuperlinear,
+  superlinearRatio:      superlinearRatio,
   bestMsAsync:           bestMsAsync,
   looksSuperlinearAsync: looksSuperlinearAsync,
 };
