@@ -41,6 +41,25 @@ function _fakeSocket(scriptedResponse) {
   return sock;
 }
 
+// A socket that delivers a complete reply and then RESETS instead of ending.
+// clamd closes as soon as a stream passes StreamMaxLength, while the transport
+// is still writing chunks, so the reply can be followed by ECONNRESET with no
+// "end" event at all.
+function _fakeResetAfterReplySocket(scriptedResponse, errCode) {
+  var sock = new EventEmitter();
+  sock.write = function () { return true; };
+  sock.end = function () {
+    setImmediate(function () {
+      if (scriptedResponse) sock.emit("data", scriptedResponse);
+      var err = new Error("read ECONNRESET");
+      err.code = errCode || "ECONNRESET";
+      sock.emit("error", err);
+    });
+  };
+  sock.destroy = function () { sock.emit("close"); };
+  return sock;
+}
+
 // A socket that never replies — end() is a no-op, so the only way the
 // scan promise settles is the lib's own wall-clock timeout timer.
 function _fakeSilentSocket() {
@@ -176,6 +195,38 @@ async function testScanIcapCleanVerdictViaInjectedSocket() {
     seen.indexOf("mail.scan.request") !== -1);
   check("audit emitted mail.scan.clean",
     seen.indexOf("mail.scan.clean") !== -1);
+}
+
+// A reset ICAP scan is a transport failure, and deliberately not the recovery
+// the clamav transport does.
+//
+// A clamd reply is a self-delimiting token, so a truncated one matches nothing
+// and the reader declines it. An ICAP response declares an encapsulated body
+// length that `safeIcap.parse` does not verify against the bytes present, so
+// headers followed by a reset parse as a complete 200 with an empty body and
+// would report a CLEAN scan of a message that was never fully scanned. Fail
+// open on an interrupted scan is worse than the futile retry that recovering
+// the clamav size-limit reply avoids.
+async function testScanIcapResetIsATransportFailureNotACleanVerdict() {
+  var headersOnly = Buffer.from(
+    "ICAP/1.0 200 OK\r\n" +
+    "Encapsulated: res-hdr=0, res-body=100\r\n" +
+    "\r\n", "ascii");
+  var cases = [
+    { name: "headers declaring a body that never arrived", bytes: headersOnly },
+    { name: "no response at all",                          bytes: null },
+    { name: "a truncated status line",
+      bytes: Buffer.from("ICAP/1.0 20", "ascii") },
+  ];
+  for (var i = 0; i < cases.length; i += 1) {
+    var h = mailScan.create({ host: "av.example.test", port: 1344, audit: _fakeAudit() });
+    var rv = await h.scan(Buffer.from("body"), {
+      _socket: _fakeResetAfterReplySocket(cases[i].bytes),
+    }).catch(function (e) { return { errorCode: e.code }; });
+    check("ICAP reset: " + cases[i].name + " is a transport failure, not clean",
+          rv.errorCode === "mail-scan/transport" && rv.verdict !== "clean",
+          JSON.stringify(rv));
+  }
 }
 
 async function testScanIcapInfectedVerdict() {
@@ -336,6 +387,65 @@ async function testClamavErrorVerdictsCarryTheirReason() {
           typeof rv.errorMessage === "string" && rv.errorMessage.length > 0,
           JSON.stringify(rv.errorMessage));
   }
+
+  // A reply that arrived is a verdict, whether or not the socket closed
+  // cleanly afterwards. clamd resets the connection as soon as a stream passes
+  // StreamMaxLength, so the size-limit reply can be followed by ECONNRESET with
+  // no "end" event. Discarding it there hands the caller a transport error and
+  // invites the retry that the size-limit code exists to prevent.
+  var resetCases = [
+    { name:  "size limit",
+      reply: "INSTREAM size limit exceeded. ERROR\n",
+      code:  "mail-scan/clamav-size-limit" },
+    { name:  "infected",
+      reply: "stream: Eicar-Test-Signature FOUND\n",
+      code:  null },
+  ];
+  for (var ri = 0; ri < resetCases.length; ri += 1) {
+    var rc = resetCases[ri];
+    var hr = _clamHandle(audit);
+    var rvReset = await hr.scan(Buffer.from("body"), {
+      _socket: _fakeResetAfterReplySocket(Buffer.from(rc.reply, "ascii")),
+    }).catch(function (e) { return { _threw: e.code || e.message }; });
+    if (rc.code === null) {
+      check("clamav reset: " + rc.name + " survives a reset with no end event",
+            rvReset.verdict === "infected", JSON.stringify(rvReset));
+    } else {
+      check("clamav reset: " + rc.name + " survives a reset with no end event",
+            rvReset.errorCode === rc.code, JSON.stringify(rvReset));
+    }
+  }
+
+  // An UNTERMINATED reply is a fragment, not a verdict. clamd ends a reply with
+  // NUL or a newline, so bytes without one are a reply the reset cut in half.
+  // `stream: OK.` is the prefix of an infected reply whose signature name
+  // begins "OK.", and the clean matcher's word boundary accepts it, so
+  // recovering it would report a clean scan of a message never fully scanned.
+  var truncatedCases = [
+    "stream: OK.",
+    "stream: Eicar-Test-Signature FOUN",
+    "INSTREAM size limit exceeded. ERRO",
+  ];
+  for (var ti = 0; ti < truncatedCases.length; ti += 1) {
+    var hT = _clamHandle(audit);
+    var rvT = await hT.scan(Buffer.from("body"), {
+      _socket: _fakeResetAfterReplySocket(Buffer.from(truncatedCases[ti], "ascii")),
+    }).catch(function (e) { return { errorCode: e.code }; });
+    check("clamav reset: an unterminated reply stays a transport failure (" +
+          JSON.stringify(truncatedCases[ti]) + ")",
+          rvT.errorCode === "mail-scan/transport" && rvT.verdict !== "clean",
+          JSON.stringify(rvT));
+  }
+
+  // A reset with NOTHING buffered stays a transport failure. `scan` routes a
+  // rejection through `_failTo`, so it reaches the caller as an error verdict
+  // carrying the transport code rather than as a throw.
+  var hEmpty = _clamHandle(audit);
+  var emptyReset = await hEmpty.scan(Buffer.from("body"), {
+    _socket: _fakeResetAfterReplySocket(null),
+  }).catch(function (e) { return { _threw: e.code }; });
+  check("clamav reset: a reset with no reply is still a transport failure",
+        emptyReset.errorCode === "mail-scan/transport", JSON.stringify(emptyReset));
 
   // The reply is the daemon's text, so it is bounded before an operator logs it.
   var hBig = _clamHandle(audit);
@@ -639,6 +749,7 @@ function run(cb) {
   return Promise.resolve()
     .then(testScanIcapCleanVerdictViaInjectedSocket)
     .then(testScanIcapInfectedVerdict)
+    .then(testScanIcapResetIsATransportFailureNotACleanVerdict)
     .then(testScanArchiveEntriesGate)
     .then(testClamavCleanVerdict)
     .then(testClamavLongReplyWithoutFoundStaysLinear)
