@@ -342,8 +342,12 @@ async function testClamavErrorVerdictsCarryTheirReason() {
   var big = await hBig.scan(Buffer.from("body"), {
     _socket: _fakeSocket(Buffer.from("ERROR " + "x".repeat(5000) + "\n", "ascii")),
   });
-  check("clamav error reason: a long daemon reply is truncated, not carried whole",
-        big.errorMessage.length <= 203, String(big.errorMessage.length));
+  // 200 is the documented cap, so 200 is what the field may hold. The ellipsis
+  // is part of the excerpt rather than something added past the limit.
+  check("clamav error reason: a long daemon reply is truncated to the documented cap",
+        big.errorMessage.length <= 200, String(big.errorMessage.length));
+  check("clamav error reason: and the truncation is visible in the value",
+        /\.\.\.$/.test(big.errorMessage), JSON.stringify(big.errorMessage.slice(-8)));
 }
 
 // The one-pass reader has to answer what the pattern it replaced answered,
