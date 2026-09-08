@@ -14,7 +14,7 @@
         },
         {
           "title": "An ICAP error verdict from `b.mail.scan` now names its error",
-          "body": "`errorCode` and `errorMessage` were added to clamav-instream error verdicts in 0.19.6, and an ICAP error verdict carried neither, so a caller handling `verdict: \"error\"` had to know which backend answered before it could find out what went wrong. An ICAP response whose status is neither 200 nor 204 now reports `mail-scan/icap-status` with the status line, and still carries the parsed `icapResponse` alongside it. A clean or infected verdict carries no error fields, as before."
+          "body": "`errorCode` and `errorMessage` were added to clamav-instream error verdicts in 0.19.6, and an ICAP error verdict carried neither, so a caller handling `verdict: \"error\"` had to know which backend answered before it could find out what went wrong. An ICAP response the reader classifies as neither clean nor infected now reports `mail-scan/icap-status` with the status line, and still carries the parsed `icapResponse` alongside it. A clean or infected verdict carries no error fields, as before."
         },
         {
           "title": "Vendored `@blamejs/pki` moves to 0.6.55",

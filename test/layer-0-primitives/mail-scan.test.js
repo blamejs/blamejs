@@ -226,6 +226,24 @@ async function testEveryErrorVerdictNamesItsError() {
         icapRv.icapResponse && icapRv.icapResponse.statusCode === 500,
         JSON.stringify(icapRv.icapResponse && icapRv.icapResponse.statusCode));
 
+  // A threat found in the response is `infected` whatever the status carried
+  // it, so a blocked-mail 403 takes the infected path and gets no error fields.
+  // The opts block says "neither clean nor infected" for exactly this reason;
+  // saying "any status but 200 or 204" would promise the error path for
+  // blocked mail.
+  var hBlocked = mailScan.create({ host: "av.example.test", port: 1344, audit: _fakeAudit() });
+  var blocked = await hBlocked.scan(Buffer.from("body"), {
+    _socket: _fakeSocket(Buffer.from(
+      "ICAP/1.0 403 Forbidden\r\n" +
+      "X-Infection-Found: Type=0; Resolution=2; Threat=EICAR-Test-File\r\n" +
+      "Encapsulated: res-hdr=0, res-body=0\r\n\r\n", "ascii")),
+  });
+  check("error fields: a blocked 403 carrying a threat is infected, not an error",
+        blocked.verdict === "infected", JSON.stringify(blocked.verdict));
+  check("error fields: and an infected verdict carries no error fields",
+        blocked.errorCode === undefined && blocked.errorMessage === undefined,
+        JSON.stringify({ code: blocked.errorCode, msg: blocked.errorMessage }));
+
   // A clean or infected ICAP verdict carries no error fields.
   var hOk = mailScan.create({ host: "av.example.test", port: 1344, audit: _fakeAudit() });
   var okRv = await hOk.scan(Buffer.from("body"), {
