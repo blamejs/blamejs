@@ -24092,11 +24092,20 @@ function testEveryObjectStoreBackendMapsNotFound() {
     var rel = "lib/object-store/" + name;
     var src = fs.readFileSync(path.join(dir, name), "utf8");
     var bodies = _topLevelFunctionBodies(src);
+    // An HTTP backend must go through the SHARED mapper, which is what carries
+    // `statusCode` onto the mapped error. A hand-rolled `_err("objectstore/
+    // not-found", ...)` produces the right code and drops the status, which is
+    // what sigv4's head did. The local filesystem backend has no HTTP status to
+    // preserve and builds its own.
+    var isHttpBackend = /require\(["']\.\/http-request["']\)/.test(src);
+    var mapper = isHttpBackend
+      ? /rethrowObjectError/
+      : /objectstore\/not-found|rethrowObjectError/;
 
     READS.forEach(function (fn) {
       var body = bodies[fn];
       if (!body) return;                      // backend does not offer this read
-      var maps = /objectstore\/not-found|rethrowObjectError/.test(body.text);
+      var maps = mapper.test(body.text);
       // A one-liner that forwards to a sibling read is covered by that sibling.
       var delegates = READS.some(function (other) {
         return other !== fn && new RegExp("\\b" + other + "\\s*\\(").test(body.text);
