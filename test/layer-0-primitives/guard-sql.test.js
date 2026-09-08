@@ -457,6 +457,10 @@ function testCopyFileVersusStdStreams() {
     b.guardSql.validate("COPY t TO " + " ".repeat(n) + "STDIN", opFloor);
   }
   [4000, 16000].forEach(function (n) {
+    // Un-swallowed first. Both measurement helpers treat a throw as a legitimate
+    // answer and record the time it took, so a validator that started failing on
+    // these inputs would read as a very fast run and pass every check below.
+    _copyRun(n);
     var ms = helpers.bestMs(function () { _copyRun(n); }, 7);
     check("copy-file: a " + n + "-space run stays cheap (" + ms.toFixed(2) + "ms)",
           ms < 250);
@@ -528,6 +532,8 @@ function testTrustedSchemaShapeAndCost() {
   // therefore the closest to the real cost; taking several makes it likely at
   // least one of each size ran without interruption.
   [4000, 16000].forEach(function (n) {
+    // Un-swallowed first, for the reason in the copy-file block above.
+    _pragmaRun(n);
     var ms = helpers.bestMs(function () { _pragmaRun(n); }, 7);
     check("trusted-schema: a " + n + "-space run stays cheap (" + ms.toFixed(2) + "ms)",
           ms < 250);

@@ -3,7 +3,7 @@
   "version": "0.19.6",
   "date": "2026-09-07",
   "headline": "A scan error says which error it was",
-  "summary": "`b.mail.scan` on the clamav-instream backend answered every failure with `{ verdict: \"error\", threats: [] }` and nothing else, so a message too large for the daemon to scan and a daemon that was down arrived identically. A refusal on size will never succeed on retry and a fault clears when the daemon returns, so the two call for different handling. Error verdicts now carry `errorCode` and `errorMessage`.",
+  "summary": "`b.mail.scan` on the clamav-instream backend answered every failure with `{ verdict: \"error\", threats: [] }` and nothing else, so a message too large for the daemon to scan and a daemon that was down arrived identically. A refusal on size will never succeed on retry and a fault clears when the daemon returns, so the two call for different handling. A clamav-instream error verdict now carries `errorCode` and `errorMessage`. An ICAP error verdict is unchanged and still reports its reason through `icapResponse`.",
   "sections": [
     {
       "heading": "Added",

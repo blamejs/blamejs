@@ -207,6 +207,32 @@ async function testScanIcapCleanVerdictViaInjectedSocket() {
 // would report a CLEAN scan of a message that was never fully scanned. Fail
 // open on an interrupted scan is worse than the futile retry that recovering
 // the clamav size-limit reply avoids.
+// The opts block says `errorCode` / `errorMessage` name the error on a
+// clamav-instream error verdict and on a scan the framework itself failed, and
+// that an ICAP error verdict carries neither because `icapResponse` already
+// reports the status. Both halves are asserted, because a claim about which
+// verdicts carry a field is only checkable from both sides.
+async function testErrorFieldsAreClamavAndFailurePathsOnly() {
+  var icapError = Buffer.from(
+    "ICAP/1.0 500 Internal Server Error\r\nISTag: \"x\"\r\n\r\n", "ascii");
+  var hIcap = mailScan.create({ host: "av.example.test", port: 1344, audit: _fakeAudit() });
+  var icapRv = await hIcap.scan(Buffer.from("body"), { _socket: _fakeSocket(icapError) });
+  check("error fields: an ICAP status error is an error verdict",
+        icapRv.verdict === "error", JSON.stringify(icapRv.verdict));
+  check("error fields: and it reports its reason through icapResponse, not errorCode",
+        icapRv.errorCode === undefined && icapRv.icapResponse.statusCode === 500,
+        JSON.stringify({ errorCode: icapRv.errorCode,
+                         status: icapRv.icapResponse && icapRv.icapResponse.statusCode }));
+
+  var hClam = _clamHandle(_fakeAudit());
+  var clamRv = await hClam.scan(Buffer.from("body"), {
+    _socket: _fakeSocket(Buffer.from("INSTREAM size limit exceeded. ERROR\n", "ascii")),
+  });
+  check("error fields: a clamav error verdict carries both fields",
+        clamRv.errorCode === "mail-scan/clamav-size-limit" &&
+        typeof clamRv.errorMessage === "string", JSON.stringify(clamRv));
+}
+
 async function testScanIcapResetIsATransportFailureNotACleanVerdict() {
   var headersOnly = Buffer.from(
     "ICAP/1.0 200 OK\r\n" +
@@ -761,6 +787,7 @@ function run(cb) {
     .then(testScanIcapCleanVerdictViaInjectedSocket)
     .then(testScanIcapInfectedVerdict)
     .then(testScanIcapResetIsATransportFailureNotACleanVerdict)
+    .then(testErrorFieldsAreClamavAndFailurePathsOnly)
     .then(testScanArchiveEntriesGate)
     .then(testClamavCleanVerdict)
     .then(testClamavLongReplyWithoutFoundStaysLinear)
