@@ -530,6 +530,7 @@ var VALID_ALLOW_CLASSES = {
   "inline-require": 1,
   "internal-binding-in-prose": 1,
   "internal-narrative-comment": 1,
+  "truncated-comment-block": 1,
   "leftmost-domain-informational": 1,
   "list-without-pagination": 1,
   "math-random-noncrypto-jitter-sampling": 1,
@@ -24052,6 +24053,66 @@ function testDenyPathComposesDenyResponse() {
 //               terse markers like D-M4 / AUTH-32) are NOT matched.
 //               Allowlist a false positive with `// allow:internal-
 //               narrative-comment`. ----
+// A comment block in lib/ reads as whole sentences.
+//
+// The 0.19.0 sweep removed 60,297 comments, and where it removed SOME lines of
+// a multi-line block it left the rest as a fragment: seventeen blocks ended on
+// a dangling "the" / "a" / "so", or opened mid-clause on a closing paren with
+// no opener. lib/ ships in the tarball, so a half-sentence is operator-visible.
+//
+// Blocks, not lines. A dangling word is only wrong at the END of a block; the
+// same word mid-block is an ordinary line wrap, which is why a line-level
+// KNOWN_ANTIPATTERNS regex cannot express this.
+function testLibCommentBlocksAreWholeSentences() {
+  // class: truncated-comment-block
+  var DANGLING = /\b(?:the|a|an|and|or|so|but|which|that|to|of|for|with|from|is|are|was|were|its|their|this|these|those|because|since|when|while|as|at|by|on|in|into|than|then)$/i;
+  var files = _libFiles();
+  var bad = [];
+
+  files.forEach(function (full) {
+    var rel = _relPath(full);
+    // `\r?\n`, because `split("\n")` leaves a `\r` on every line of a CRLF
+    // file and `\r` is a line terminator, so `(.*)$` below cannot reach past
+    // it and the comment matcher sees nothing at all in those files.
+    var lines = fs.readFileSync(full, "utf8").split(/\r?\n/);
+    var block = [];
+
+    function flush() {
+      if (block.length === 0) return;
+      var first = block[0];
+      var last = block[block.length - 1];
+      // Tag, directive and marker lines are not prose.
+      var isDirective = /^@|^allow:|eslint|c8 ignore|SPDX|^-|^\||^\d+\.|:$|^[A-Za-z_$][\w$]*\(/.test(first.text);
+      if (!isDirective) {
+        if (last.text.length > 0 && DANGLING.test(last.text)) {
+          bad.push({
+            file: rel, line: last.n, content: "comment block ends mid-sentence on `" +
+              last.text.split(/\s+/).pop() + "`: \"" + last.text.slice(-60) + "\"",
+          });
+        } else if (/^[a-z][a-z-]*\)/.test(first.text) && first.text.indexOf("(") === -1) {
+          bad.push({
+            file: rel, line: first.n, content: "comment block opens mid-clause: \"" +
+              first.text.slice(0, 60) + "\"",
+          });
+        }
+      }
+      block = [];
+    }
+
+    lines.forEach(function (line, i) {
+      var m = /^\s*\/\/ ?(.*)$/.exec(line);
+      if (m) block.push({ n: i + 1, text: m[1].trim() });
+      else flush();
+    });
+    flush();
+  });
+
+  bad = _filterMarkers(bad, "truncated-comment-block");
+  _report("a comment block in lib/ reads as whole sentences (a block left ending on " +
+          "\"the\" / \"a\" / \"so\", or opening on a stray closing paren, is the residue of " +
+          "an edit that removed part of it)", bad);
+}
+
 function testNoInternalNarrativeComments() {
   // class: internal-narrative-comment
   var NARRATIVE = [
@@ -24362,6 +24423,7 @@ async function run() {
   testCaptureStatusChecked();
   testSfvCitationMatchesReferencingProtocol();
   testNoInternalNarrativeComments();
+  testLibCommentBlocksAreWholeSentences();
   testNoOrphanAllowClass();
   testDeclaredClassIsHonored();
   testEveryScanScopeReachesFiles();

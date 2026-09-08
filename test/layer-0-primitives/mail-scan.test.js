@@ -207,22 +207,33 @@ async function testScanIcapCleanVerdictViaInjectedSocket() {
 // would report a CLEAN scan of a message that was never fully scanned. Fail
 // open on an interrupted scan is worse than the futile retry that recovering
 // the clamav size-limit reply avoids.
-// The opts block says `errorCode` / `errorMessage` name the error on a
-// clamav-instream error verdict and on a scan the framework itself failed, and
-// that an ICAP error verdict carries neither because `icapResponse` already
-// reports the status. Both halves are asserted, because a claim about which
-// verdicts carry a field is only checkable from both sides.
-async function testErrorFieldsAreClamavAndFailurePathsOnly() {
+// EVERY error verdict names its error, whichever backend produced it. A caller
+// handling `verdict: "error"` should not have to know which transport answered
+// to find out what went wrong. ICAP keeps `icapResponse` as well, which carries
+// more than a code can.
+async function testEveryErrorVerdictNamesItsError() {
   var icapError = Buffer.from(
     "ICAP/1.0 500 Internal Server Error\r\nISTag: \"x\"\r\n\r\n", "ascii");
   var hIcap = mailScan.create({ host: "av.example.test", port: 1344, audit: _fakeAudit() });
   var icapRv = await hIcap.scan(Buffer.from("body"), { _socket: _fakeSocket(icapError) });
   check("error fields: an ICAP status error is an error verdict",
         icapRv.verdict === "error", JSON.stringify(icapRv.verdict));
-  check("error fields: and it reports its reason through icapResponse, not errorCode",
-        icapRv.errorCode === undefined && icapRv.icapResponse.statusCode === 500,
-        JSON.stringify({ errorCode: icapRv.errorCode,
-                         status: icapRv.icapResponse && icapRv.icapResponse.statusCode }));
+  check("error fields: an ICAP error verdict names its error too",
+        icapRv.errorCode === "mail-scan/icap-status" &&
+        /500/.test(String(icapRv.errorMessage)),
+        JSON.stringify({ errorCode: icapRv.errorCode, errorMessage: icapRv.errorMessage }));
+  check("error fields: and it still carries the parsed response",
+        icapRv.icapResponse && icapRv.icapResponse.statusCode === 500,
+        JSON.stringify(icapRv.icapResponse && icapRv.icapResponse.statusCode));
+
+  // A clean or infected ICAP verdict carries no error fields.
+  var hOk = mailScan.create({ host: "av.example.test", port: 1344, audit: _fakeAudit() });
+  var okRv = await hOk.scan(Buffer.from("body"), {
+    _socket: _fakeSocket(Buffer.from("ICAP/1.0 204 No Content\r\nISTag: \"c\"\r\n\r\n", "ascii")),
+  });
+  check("error fields: a clean ICAP verdict carries no error fields",
+        okRv.verdict === "clean" && okRv.errorCode === undefined,
+        JSON.stringify({ verdict: okRv.verdict, errorCode: okRv.errorCode }));
 
   var hClam = _clamHandle(_fakeAudit());
   var clamRv = await hClam.scan(Buffer.from("body"), {
@@ -787,7 +798,7 @@ function run(cb) {
     .then(testScanIcapCleanVerdictViaInjectedSocket)
     .then(testScanIcapInfectedVerdict)
     .then(testScanIcapResetIsATransportFailureNotACleanVerdict)
-    .then(testErrorFieldsAreClamavAndFailurePathsOnly)
+    .then(testEveryErrorVerdictNamesItsError)
     .then(testScanArchiveEntriesGate)
     .then(testClamavCleanVerdict)
     .then(testClamavLongReplyWithoutFoundStaysLinear)

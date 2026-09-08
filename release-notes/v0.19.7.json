@@ -1,0 +1,26 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.19.7",
+  "date": "2026-09-08",
+  "headline": "A missing object is `objectstore/not-found` on every backend",
+  "summary": "`b.storage.exists` returns `false` when the backend reports `objectstore/not-found` and propagates anything else, so a transient outage is never read as absence. Only the local and S3 backends produced that code: on Azure Blob and GCS a missing key surfaced as a raw HTTP failure, so `exists` threw where it documents `false`. Every backend now reports a missing key the same way.",
+  "sections": [
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "`b.storage.exists` threw on Azure Blob and GCS instead of returning `false`",
+          "body": "`exists` calls the backend's `head` and returns `false` on `objectstore/not-found`. The local and S3/sigv4 backends mapped a missing key to that code; Azure Blob and GCS re-threw the transport's own error, carrying `statusCode: 404`. An operator gating a downstream write on `exists` got an exception rather than a boolean, on two of the four shipped backends.\n\nA 404 on a `get`, `getResponse` or `head` is now `objectstore/not-found` on every HTTP backend, mapped in one place rather than four. The mapped error still carries `statusCode: 404`, so a caller that reads the status instead of the code is unaffected. Nothing else is remapped: any other status propagates exactly as before, which is what keeps a 503 from being read as absence.\n\nThe same gap was present on the S3/sigv4 `get` path, where only `head` had ever mapped it."
+        },
+        {
+          "title": "An ICAP error verdict from `b.mail.scan` now names its error",
+          "body": "`errorCode` and `errorMessage` were added to clamav-instream error verdicts in 0.19.6, and an ICAP error verdict carried neither, so a caller handling `verdict: \"error\"` had to know which backend answered before it could find out what went wrong. An ICAP response whose status is neither 200 nor 204 now reports `mail-scan/icap-status` with the status line, and still carries the parsed `icapResponse` alongside it. A clean or infected verdict carries no error fields, as before."
+        },
+        {
+          "title": "Seventeen comments in the shipped source were half-sentences",
+          "body": "The 0.19.0 comment sweep removed lines from multi-line comment blocks and, where it removed only part of one, left the remainder behind. Seventeen blocks in `lib/` ended mid-sentence or opened mid-clause. `lib/` ships in the package, so these were visible to anyone reading the installed source. Each is now a complete statement or is gone."
+        }
+      ]
+    }
+  ]
+}

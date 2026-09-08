@@ -89,6 +89,25 @@ async function run() {
   check("list no longer surfaces the deleted key",
     !afterDelete.items.some(function (it) { return it.key === key; }));
 
+  // A missing key is `objectstore/not-found` on every backend, because
+  // `b.storage.exists` is documented to return false on exactly that code and
+  // to propagate anything else. A backend that reports a missing blob as a raw
+  // HTTP failure turns a documented false into a thrown outage.
+  var missKey = key + "-does-not-exist";
+  var headMiss = null;
+  try { await be.head(missKey); } catch (e) { headMiss = e; }
+  check("head on a missing blob throws objectstore/not-found",
+    headMiss !== null && headMiss.code === "objectstore/not-found",
+    JSON.stringify({ code: headMiss && headMiss.code,
+                     status: headMiss && headMiss.statusCode }));
+
+  var getMiss = null;
+  try { await be.get(missKey); } catch (e) { getMiss = e; }
+  check("get on a missing blob throws objectstore/not-found",
+    getMiss !== null && getMiss.code === "objectstore/not-found",
+    JSON.stringify({ code: getMiss && getMiss.code,
+                     status: getMiss && getMiss.statusCode }));
+
   await ops.delete(container);
   check("deleteContainer accepted", true);
 }

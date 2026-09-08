@@ -111,6 +111,58 @@ function testInterleavingStillCatchesACurve() {
         }, FAST) === true);
 }
 
+// The confirming pass decides, and it is allowed to lose a real curve.
+//
+// Measured under 64 spinners on 32 cores, contention pulls a ratio toward 1: a
+// quadratic's true 16 read 4.37-6.16 on the rounds the verdict missed. Keeping
+// the HIGHER of the two passes recovers those, and was tried. It was rejected,
+// because contention does not add the same time to both sizes — the sibling
+// test below shows a first-pass spike reading 12 on linear work, which a
+// maximum can never reject. A missed curve costs a slower test; an unrejectable
+// false positive fails a release on a busy machine.
+//
+// Pinned so the trade is not re-litigated: quadratic work whose SECOND pass
+// carries enough overhead to flatten it reads NOT superlinear, on purpose.
+function _quadraticThenContendedConfirm() {
+  var calls = 0;
+  var passOneCalls = FAST.reps * 2;
+  return function (n) {
+    var k = n / SMALL;
+    var contended = calls >= passOneCalls;
+    calls += 1;
+    // 400ms on both sizes compresses 16 toward 1 without inverting the curve.
+    _spin(k * k * 50 + (contended ? 400 : 0));
+  };
+}
+
+function testTheConfirmingPassIsAllowedToLoseACurve() {
+  var verdict = growth.superlinearRatio(_quadraticThenContendedConfirm(), FAST);
+  check("growth: a confirming pass flattened by load decides, and loses the curve",
+        verdict.superlinear === false, JSON.stringify(verdict));
+}
+
+// The other half of that trade, and the reason for it. Contention does not add
+// the same time to both sizes: when it lands on the first pass's large samples
+// alone, linear work reads 12 there and 4 on the confirm, and a verdict that
+// kept the higher of the two could never be talked out of the false positive.
+// That is the direction that fails releases, so the confirm stays decisive.
+function _linearWithLoadOnTheFirstPassLargeOnly(heavyMs) {
+  var calls = 0;
+  var passOneCalls = FAST.reps * 2;
+  return function (n) {
+    var inFirstPass = calls < passOneCalls;
+    var isLarge = n === LARGE;
+    calls += 1;
+    _spin(n / 20 + (inFirstPass && isLarge ? heavyMs : 0));
+  };
+}
+
+function testAConfirmingPassCanStillRejectAFirstPassSpike() {
+  var verdict = growth.superlinearRatio(_linearWithLoadOnTheFirstPassLargeOnly(400), FAST);
+  check("growth: a first-pass spike on one size alone is still rejected by the confirm",
+        verdict.superlinear === false, JSON.stringify(verdict));
+}
+
 // The order is the fix, so it is asserted directly: a caller sees the sizes
 // alternate rather than arrive in two blocks.
 function testTheSizesAreInterleaved() {
@@ -163,6 +215,8 @@ async function run() {
   testBelowTheFloorThereIsNoVerdict();
   testALoadExcursionIsNotReadAsGrowth();
   testInterleavingStillCatchesACurve();
+  testTheConfirmingPassIsAllowedToLoseACurve();
+  testAConfirmingPassCanStillRejectAFirstPassSpike();
   testTheSizesAreInterleaved();
   await testAsyncSeparatesLinearFromQuadratic();
   await testARejectedSampleIsNotMeasuredAsFast();
