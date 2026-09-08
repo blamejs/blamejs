@@ -94,7 +94,13 @@ function superlinearRatio(run, opts) {
 
   var first = ratio(reps);
   if (first === null || first <= threshold) return { superlinear: false, ratio: first };
-  // Looks superlinear. Confirm before failing anything.
+  // Looks superlinear. Confirm before failing anything, and let the CONFIRM
+  // decide. Keeping the higher of the two readings was measured and rejected:
+  // contention does not add the same time to both sizes, so a spike on the
+  // first pass's large samples reads 12 on linear work, and a verdict that
+  // keeps the maximum can never be talked out of it. That turns a busy machine
+  // into a failing release gate, which is the error this whole helper exists to
+  // avoid. A real curve lost to a contended confirm is the cheaper mistake.
   var second = ratio(confirm);
   return {
     superlinear: second !== null && second > threshold,
@@ -157,6 +163,7 @@ async function looksSuperlinearAsync(run, opts) {
 
   var first = await ratio(reps);
   if (first === null || first <= threshold) return { superlinear: false, ratio: first };
+  // The confirm decides, for the reason the synchronous form gives.
   var second = await ratio(confirm);
   return {
     superlinear: second !== null && second > threshold,

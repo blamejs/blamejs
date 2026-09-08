@@ -195,12 +195,26 @@ async function _runRoundTrip(issuer) {
         !afterDelete.items.some(function (it) { return it.key === key; }));
 
   // get on the deleted key surfaces a 404 — the framework rejects with
-  // an ObjectStoreError carrying statusCode 404 (not a silent empty).
+  // an ObjectStoreError carrying `objectstore/not-found`.
+  //
+  // The code, not the status. `b.storage.exists` returns false on exactly
+  // `objectstore/not-found` and propagates everything else, so a backend that
+  // reports a missing object as a raw HTTP failure turns a documented false
+  // into a thrown outage. Accepting "404 OR not-found" here passed whichever
+  // the backend produced and so could never see the difference.
   var notFound = null;
   try { await backend.get(key); } catch (e) { notFound = e; }
-  check("get on deleted key throws (404 surfaced, not swallowed)",
-        notFound && (notFound.statusCode === 404 ||
-                     /404|not.?found/i.test(String(notFound.message || notFound.code || ""))));
+  check("get on deleted key throws objectstore/not-found",
+        notFound && notFound.code === "objectstore/not-found",
+        JSON.stringify({ code: notFound && notFound.code,
+                         status: notFound && notFound.statusCode }));
+
+  var headMissing = null;
+  try { await backend.head(key); } catch (e) { headMissing = e; }
+  check("head on deleted key throws objectstore/not-found",
+        headMissing && headMissing.code === "objectstore/not-found",
+        JSON.stringify({ code: headMissing && headMissing.code,
+                         status: headMissing && headMissing.statusCode }));
 
   // ---- bucket delete-missing path (correct against fake-gcs: 404 → false) ----
   var delMissing = await ops.delete("blamejs-gcs-never-existed-" + Date.now());

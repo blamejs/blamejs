@@ -12,6 +12,17 @@
  * per-IP rate-limits, tenant scoping, STARTTLS / implicit-TLS postures,
  * DKIM-required modes, recipient policy, size and line limits, DATA
  * smuggling refusals, idle-timeout, and close() drain.
+ *
+ * SMOKE_RUN_SOLO, for the folded-DKIM growth probe below. That probe compares
+ * the time to scan 400,000 bytes against 100,000, and the larger sample is on
+ * the clock about four times as long, so it is about four times as likely to be
+ * interrupted by a scheduler event. Under SMOKE_PARALLEL=64 that bias is toward
+ * the LARGE reading and it inflates the ratio: the same assertion read 9.41 and
+ * then 9.24 against a bound of 9, on a scan that is linear, and failed a
+ * release gate both times. Taking the best of several samples per size and
+ * interleaving the two sizes each narrowed it and neither removed it, because
+ * the exposure difference is a property of the two sizes rather than of the
+ * order they are sampled in. A quiet box is what the reading needs.
  */
 
 var helpers = require("../helpers");
