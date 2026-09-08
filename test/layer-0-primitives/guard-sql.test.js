@@ -393,6 +393,14 @@ function testMigrationMode() {
     { contextMode: "migration" }, "copy-program");
 }
 
+// The reading behind a growth verdict, for the failure message. A run that
+// finished under the floor has no ratio: the shape is ruled out on size alone.
+function _ratioDetail(verdict) {
+  return verdict.ratio === null
+    ? "under the floor, no ratio taken"
+    : "ratio=" + verdict.ratio.toFixed(2);
+}
+
 // ---- COPY file access vs the client-streaming forms ----
 
 function testCopyFileVersusStdStreams() {
@@ -438,36 +446,38 @@ function testCopyFileVersusStdStreams() {
   // before the whitespace is consumed keeps it flat. The budget is generous
   // enough not to flake on a loaded runner and still an order of magnitude
   // under the shape it guards against.
-  // Measured as the MINIMUM of several runs, in nanoseconds. One
-  // millisecond-resolution sample of a sub-millisecond operation is mostly
-  // timer granularity, and a single descheduled run then reads as growth: this
-  // assertion failed at "4000=1ms 16000=65ms" on a box running two other
-  // suites, where the same input measures flat once it gets the CPU.
-  // Contention can only ADD time, so the minimum is the sample closest to the
-  // work actually done, and a real quadratic still shows in it.
-  function _minNs(sql, reps) {
-    var best = Infinity;
-    for (var i = 0; i < reps; i += 1) {
-      var t0 = process.hrtime.bigint();
-      b.guardSql.validate(sql, opFloor);
-      var ns = Number(process.hrtime.bigint() - t0);
-      if (ns < best) best = ns;
-    }
-    return best;
+  // Measured as the MINIMUM of several runs. One millisecond-resolution sample
+  // of a sub-millisecond operation is mostly timer granularity, and a single
+  // descheduled run then reads as growth: this assertion failed at "4000=1ms
+  // 16000=65ms" on a box running two other suites, where the same input
+  // measures flat once it gets the CPU. Contention can only ADD time, so the
+  // minimum is the sample closest to the work actually done, and a real
+  // quadratic still shows in it.
+  function _copyRun(n) {
+    b.guardSql.validate("COPY t TO " + " ".repeat(n) + "STDIN", opFloor);
   }
-  var runs = [4000, 16000].map(function (n) {
-    return { n: n, ns: _minNs("COPY t TO " + " ".repeat(n) + "STDIN", 7) };
-  });
-  runs.forEach(function (r) {
-    check("copy-file: a " + r.n + "-space run stays cheap (" +
-          (r.ns / 1e6).toFixed(2) + "ms)", r.ns < 250 * 1e6);
+  [4000, 16000].forEach(function (n) {
+    // Un-swallowed first. Both measurement helpers treat a throw as a legitimate
+    // answer and record the time it took, so a validator that started failing on
+    // these inputs would read as a very fast run and pass every check below.
+    _copyRun(n);
+    var ms = helpers.bestMs(function () { _copyRun(n); }, 7);
+    check("copy-file: a " + n + "-space run stays cheap (" + ms.toFixed(2) + "ms)",
+          ms < 250);
   });
   // Quadratic growth would show as a ratio near 16 across a 4x length increase.
   // The floor keeps a fast-and-flat pair from failing on the ratio alone.
+  //
+  // Through the shared measurement rather than a ratio taken here: it samples
+  // one of each size per round rather than every large reading and then every
+  // small one, so load that is heavier during one block than the other is not
+  // divided into the ratio as if it were growth. Taken in blocks, that is what
+  // read 10.05x on a linear scan and failed a release gate.
+  var copyGrowth = helpers.superlinearRatio(_copyRun, {
+    small: 4000, large: 16000, threshold: 6, floorMs: 2, reps: 7, confirmReps: 7,
+  });
   check("copy-file: cost does not grow quadratically with the whitespace run",
-        runs[1].ns <= Math.max(2 * 1e6, runs[0].ns * 6),
-        runs[0].n + "=" + (runs[0].ns / 1e6).toFixed(2) + "ms " +
-        runs[1].n + "=" + (runs[1].ns / 1e6).toFixed(2) + "ms");
+        copyGrowth.superlinear === false, _ratioDetail(copyGrowth));
 }
 
 // ---- PRAGMA trusted_schema: same verdicts, without the quadratic ----
@@ -507,16 +517,13 @@ function testTrustedSchemaShapeAndCost() {
   // number, and a RATIO of two measurements taken moments apart on the same
   // machine is load-robust in a way an absolute bound is not: contention
   // scales both of them together.
-  function _msFor(n) {
-    var sql = "PRAGMA trusted_schema" + " ".repeat(n) + "!";
-    var started = process.hrtime.bigint();
-    b.guardSql.validate(sql, opFloor);
-    return Number(process.hrtime.bigint() - started) / 1e6;
+  function _pragmaRun(n) {
+    b.guardSql.validate("PRAGMA trusted_schema" + " ".repeat(n) + "!", opFloor);
   }
   // One untimed pass per size first: the first call through a code path pays
   // for lazy requires and JIT warm-up, which would land entirely on the
   // smaller run and depress the very baseline the ratio needs.
-  [4000, 16000].forEach(_msFor);
+  [4000, 16000].forEach(_pragmaRun);
   // MINIMUM of several samples, not one. A single sample per size is not
   // load-robust either: under SMOKE_PARALLEL=64 the scheduler preempts one run
   // and not the other, and this read ratio=37.84 — above even the quadratic
@@ -524,22 +531,21 @@ function testTrustedSchemaShapeAndCost() {
   // two measurements together. The minimum is the least-preempted sample and
   // therefore the closest to the real cost; taking several makes it likely at
   // least one of each size ran without interruption.
-  function _bestOf(n, samples) {
-    var best = Infinity;
-    for (var i = 0; i < samples; i++) best = Math.min(best, _msFor(n));
-    return best;
-  }
-  var runs = [4000, 16000].map(function (n) { return { n: n, ms: _bestOf(n, 7) }; });
-  runs.forEach(function (r) {
-    check("trusted-schema: a " + r.n + "-space run stays cheap (" + r.ms.toFixed(2) + "ms)", r.ms < 250);
+  [4000, 16000].forEach(function (n) {
+    // Un-swallowed first, for the reason in the copy-file block above.
+    _pragmaRun(n);
+    var ms = helpers.bestMs(function () { _pragmaRun(n); }, 7);
+    check("trusted-schema: a " + n + "-space run stays cheap (" + ms.toFixed(2) + "ms)",
+          ms < 250);
   });
   // 4x the input. Linear predicts ~4x the time, quadratic ~16x. 8x sits
-  // between them with room for measurement noise on a loaded machine.
+  // between them with room for measurement noise on a loaded machine. Through
+  // the shared measurement for the reason the copy-file check above is.
+  var pragmaGrowth = helpers.superlinearRatio(_pragmaRun, {
+    small: 4000, large: 16000, threshold: 8, floorMs: 2, reps: 7, confirmReps: 7,
+  });
   check("trusted-schema: cost does not grow quadratically with the run",
-        runs[1].ms <= runs[0].ms * 8,
-        runs[0].n + "=" + runs[0].ms.toFixed(3) + "ms " +
-        runs[1].n + "=" + runs[1].ms.toFixed(3) + "ms " +
-        "ratio=" + (runs[1].ms / (runs[0].ms || Number.MIN_VALUE)).toFixed(2));
+        pragmaGrowth.superlinear === false, _ratioDetail(pragmaGrowth));
 }
 
 // ---- OS-reach floor — refuses at EVERY profile (incl. permissive) ----

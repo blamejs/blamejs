@@ -302,6 +302,29 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  # clamd for b.mail.scan's INSTREAM transport. The image carries its
+  # signature database, and the freshclam daemon is off so a run needs no
+  # network. clamd loads the database into memory before it accepts a
+  # connection, which is what the start period covers.
+  clamav:
+    image: clamav/clamav:stable
+    container_name: blamejs-test-clamav
+    ports:
+      - "127.0.0.1:3310:3310"
+      - "[::1]:3310:3310"
+    environment:
+      CLAMAV_NO_FRESHCLAMD: "true"
+      CLAMAV_NO_MILTERD: "true"
+    volumes:
+      - ./docker/clamav/clamd.conf:/etc/clamav/clamd.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "clamdcheck.sh >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 180s
+    restart: unless-stopped
+
   # NTP host port: 12300 instead of 123 because Windows reserves
   # privileged ports (<1024) for SYSTEM. Tests override
   # ntpCheck.querySingle(server, { port: 12300 }) to hit this fixture.

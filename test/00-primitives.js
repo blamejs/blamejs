@@ -283,7 +283,7 @@ async function testAsyncSafeMutexSerializes() {
   async function task(label, durMs) {
     return m.runExclusive(async function () {
       order.push(label + ":enter");
-      await new Promise(function (r) { setTimeout(r, durMs); });
+      await helpers.passiveObserve(durMs, "Mutex: " + label + " holds the lock");
       order.push(label + ":exit");
     });
   }
@@ -327,7 +327,7 @@ async function testAsyncSafeSemaphoreBoundedConcurrency() {
     return s.runWith(async function () {
       concurrent += 1;
       if (concurrent > maxConcurrent) maxConcurrent = concurrent;
-      await new Promise(function (r) { setTimeout(r, 10); });
+      await helpers.passiveObserve(10, "Semaphore: a permit is held");
       concurrent -= 1;
     });
   }
@@ -351,7 +351,7 @@ async function testAsyncSafeOnceSingleFlight() {
   var calls = 0;
   var once = new b.safeAsync.Once(async function () {
     calls += 1;
-    await new Promise(function (r) { setTimeout(r, 10); });
+    await helpers.passiveObserve(10, "Once: the single flight is in progress");
     return "result-" + calls;
   });
   var results = await Promise.all([once.invoke(), once.invoke(), once.invoke()]);
@@ -3207,7 +3207,7 @@ async function _statusOnly(port, urlPath, reqHeaders, method) {
   // pipe's res.end fires. Wait for the server's stream "end" listener to
   // have run + any queued microtasks (cache.set inside _consumeBandwidth)
   // before the test inspects emission state.
-  await new Promise(function (r) { setTimeout(r, 30); });
+  await helpers.passiveObserve(30, "static: server post-flush handlers drain");
   return resp;
 }
 
@@ -14024,7 +14024,7 @@ async function testHandlerBoundedShutdown() {
   var h = b.handlers.create({
     name:  "test-shutdown",
     flush: async function () {
-      await new Promise(function (r) { setTimeout(r, 100); });
+      await helpers.passiveObserve(100, "handler: flush outlasts the shutdown budget");
     },
     retry: { maxAttempts: 1, baseDelayMs: 1 },
     onError: function () { /* swallow */ },
@@ -14039,7 +14039,7 @@ async function testHandlerBoundedShutdown() {
 async function testHandlerStats() {
   var h = b.handlers.create({
     name:  "test-stats",
-    flush: async function () { await new Promise(function (r) { setTimeout(r, 5); }); },
+    flush: async function () { await helpers.passiveObserve(5, "handler: a flush is in progress"); },
   });
   for (var i = 0; i < 5; i++) h.emit({ id: i });
   await h.drain();
@@ -14501,7 +14501,7 @@ async function testAtomicFileLock() {
         var current;
         try { current = parseInt((await b.atomicFile.read(p)).toString("utf8"), 10) || 0; }
         catch (_e) { current = 0; }
-        await new Promise(function (r) { setTimeout(r, 20); });   // simulate work
+        await helpers.passiveObserve(20, "atomicFile: the lock is held while work runs");
         await b.atomicFile.write(p, String(current + 1));
         counter += 1;
       });
@@ -20537,10 +20537,25 @@ module.exports = {
             var closePayload = Buffer.alloc(2);
             closePayload.writeUInt16BE(1000, 0);
             stream.write(ws.serializeFrame(ws.OPCODE_CLOSE, closePayload));
-            await new Promise(function (resolve) {
-              stream.once("close", resolve);
-              setTimeout(resolve, 200);
+            // The 200ms fallback this replaces resolved whether or not any of
+            // this happened. The server answers a CLOSE with a CLOSE and ends
+            // its side; the stream stays open until the client ends its own,
+            // which is what HTTP/2 asks for and not something to wait out.
+            await helpers.waitUntil(function () { return stream.readableEnded === true; }, {
+              timeoutMs: 5000,
+              label:     "h2 WebSocket: server half-closes after the CLOSE frame",
             });
+            check("h2 WebSocket: server answers the close with a CLOSE frame",
+                  echoFrames.some(function (f) { return f.opcode === ws.OPCODE_CLOSE; }),
+                  JSON.stringify(echoFrames.map(function (f) { return f.opcode; })));
+
+            stream.end();
+            await helpers.waitUntil(function () { return stream.closed === true; }, {
+              timeoutMs: 5000,
+              label:     "h2 WebSocket: stream closes once both sides have ended",
+            });
+            check("h2 WebSocket: clean close shuts the stream down",
+                  stream.closed === true);
           },
         },
         {

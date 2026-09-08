@@ -68,6 +68,7 @@ var DEFAULTS = {
   syslog:       "tcp://127.0.0.1:5514",
   ntp:          "ntp://127.0.0.1:12300",
   mailpit:      "smtp://127.0.0.1:1025",
+  clamav:       "tcp://127.0.0.1:3310",
 
   // ---- backends, plain (IPv6) ----
   redisV6:      "redis://[::1]:6379",
@@ -80,6 +81,7 @@ var DEFAULTS = {
   syslogV6:     "tcp://[::1]:5514",
   ntpV6:        "ntp://[::1]:12300",
   mailpitV6:    "smtp://[::1]:1025",
+  clamavV6:     "tcp://[::1]:3310",
 
   // ---- backends, TLS (IPv4) ----
   redisTls:     "rediss://127.0.0.1:6380",

@@ -556,6 +556,15 @@ var BACKEND_LIVE_MAP = [
     tests:    ["mail-smtp", "mail-dkim", "mail-crypto-smime", "mail-listeners"],
   },
   {
+    backend:  "clamav-scan",
+    // `lib/mail-scan.js` is not covered by the smtp-mail entry above, which
+    // names eight mail modules and not this one, so every change to the
+    // ICAP and INSTREAM transports reached a merge on unit coverage alone.
+    match:    ["lib/mail-scan"],
+    services: ["clamav"],
+    tests:    ["mail-scan-clamav"],
+  },
+  {
     backend:  "ntp",
     match:    ["lib/ntp-check", "lib/network-nts"],
     services: ["ntp"],
