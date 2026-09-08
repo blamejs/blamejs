@@ -129,12 +129,36 @@ function testEveryProfileKeyIsConsulted() {
   // ...and each of the ones that governed nothing is refused by name rather
   // than accepted and ignored. An unknown option is accepted across the whole
   // guard family, so silence is what an operator would otherwise get.
+  // Asked of EVERY entry point that takes options. Asked of `validate` alone,
+  // the exported `resolveOpts` still accepted a retired name and handed it
+  // back, so one of the guard's configuration doors stayed open.
+  var doors = [
+    ["validate", function (o) { return b.guardSql.validate("x = 1", o); }],
+    ["sanitize", function (o) { return b.guardSql.sanitize("x = 1", o); }],
+    ["resolveOpts", function (o) { return b.guardSql.resolveOpts(o); }],
+    ["gate", function (o) { return b.guardSql.gate(o); }],
+    ["buildProfile", function (o) {
+      return b.guardSql.buildProfile({ baseProfile: "strict", overrides: o });
+    }],
+  ];
   Object.keys(b.guardSql.RETIRED_OPTS).forEach(function (name) {
-    var opts = { profile: "strict" };
-    opts[name] = "refuse";
-    throwsCode("validate: retired option " + name,
-      function () { return b.guardSql.validate("x = 1", opts); },
-      "sql/bad-opt");
+    doors.forEach(function (door) {
+      var opts = {};
+      opts[name] = "refuse";
+      // `buildProfile` composes a profile rather than resolving one, so it is
+      // the door that carries a retired name INTO a resolver; the resolver is
+      // what must refuse it.
+      if (door[0] === "buildProfile") {
+        var built = door[1](opts);
+        throwsCode("validate: a built profile carrying " + name,
+          function () { return b.guardSql.validate("x = 1", { profile: built }); },
+          "sql/bad-opt");
+        return;
+      }
+      throwsCode(door[0] + ": retired option " + name,
+        function () { return door[1](opts); },
+        "sql/bad-opt");
+    });
   });
   check("guard-sql: no retired name is also a live one",
         Object.keys(b.guardSql.RETIRED_OPTS).every(function (k) {

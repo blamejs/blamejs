@@ -19,6 +19,15 @@
       ]
     },
     {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "Vendored public suffix list moves to the 2026-09-07 20:57 snapshot",
+          "body": "`lib/vendor/public-suffix-list.dat` carries the list published as `2026-09-07_20-57-11_UTC`, from commit `9fc6745c5d3f678a59af9c24de72e5eb3c300e2c`. The domain content is identical to the snapshot 0.19.4 shipped; the published stamp is what moved. `b.guardDomain` and the cookie and origin checks that read a registrable domain use it."
+        }
+      ]
+    },
+    {
       "heading": "Removed",
       "items": [
         {
