@@ -531,6 +531,7 @@ var VALID_ALLOW_CLASSES = {
   "internal-binding-in-prose": 1,
   "internal-narrative-comment": 1,
   "truncated-comment-block": 1,
+  "objectstore-notfound-parity": 1,
   "leftmost-domain-informational": 1,
   "list-without-pagination": 1,
   "math-random-noncrypto-jitter-sampling": 1,
@@ -24063,6 +24064,83 @@ function testDenyPathComposesDenyResponse() {
 // Blocks, not lines. A dangling word is only wrong at the END of a block; the
 // same word mid-block is an ordinary line wrap, which is why a line-level
 // KNOWN_ANTIPATTERNS regex cannot express this.
+// Every object-store backend answers a missing key with the SAME code.
+//
+// `b.storage.exists` returns false on exactly `objectstore/not-found` and
+// propagates anything else, so a backend that reports a missing object as a raw
+// HTTP failure turns a documented `false` into a thrown outage. That shipped:
+// `head` mapped it on local and sigv4 and not on azure-blob or gcs, and after
+// those two were fixed the same gap was still open in `http-put`, which is the
+// fifth backend `storage.init` accepts and the one an enumeration by eye
+// missed.
+//
+// The population comes from the DIRECTORY, so a backend added later is in scope
+// without anyone remembering to add it here.
+function testEveryObjectStoreBackendMapsNotFound() {
+  // class: objectstore-notfound-parity
+  var READS = ["get", "getResponse", "head"];
+  var dir = path.resolve(__dirname, "..", "..", "lib", "object-store");
+  var bad = [];
+
+  fs.readdirSync(dir).forEach(function (name) {
+    // index.js routes, http-request.js IS the shared mapper, and the
+    // *-bucket-ops files address buckets rather than objects.
+    if (!/\.js$/.test(name)) return;
+    if (name === "index.js" || name === "http-request.js") return;
+    if (/-bucket-ops\.js$/.test(name)) return;
+
+    var rel = "lib/object-store/" + name;
+    var src = fs.readFileSync(path.join(dir, name), "utf8");
+    var bodies = _topLevelFunctionBodies(src);
+
+    READS.forEach(function (fn) {
+      var body = bodies[fn];
+      if (!body) return;                      // backend does not offer this read
+      var maps = /objectstore\/not-found|rethrowObjectError/.test(body.text);
+      // A one-liner that forwards to a sibling read is covered by that sibling.
+      var delegates = READS.some(function (other) {
+        return other !== fn && new RegExp("\\b" + other + "\\s*\\(").test(body.text);
+      });
+      if (maps || delegates) return;
+      bad.push({
+        file: rel, line: body.line,
+        content: fn + "() does not map a missing key to `objectstore/not-found` " +
+          "(route its rejection through sharedRequest.rethrowObjectError) — " +
+          "b.storage.exists returns false on that code alone",
+      });
+    });
+  });
+
+  bad = _filterMarkers(bad, "objectstore-notfound-parity");
+  _report("every object-store backend reports a missing key as `objectstore/not-found`", bad);
+}
+
+// { name: { text, line } } for each `function name(` / `async function name(`
+// declared at one indent level, by brace matching.
+function _topLevelFunctionBodies(src) {
+  var out = Object.create(null);
+  var re = /\n[ \t]*(?:async[ \t]+)?function[ \t]+([A-Za-z_$][\w$]*)[ \t]*\(/g;
+  var m;
+  while ((m = re.exec(src)) !== null) {
+    var open = src.indexOf("{", m.index + m[0].length - 1);
+    if (open === -1) continue;
+    var depth = 0;
+    var i = open;
+    for (; i < src.length; i += 1) {
+      var c = src.charAt(i);
+      if (c === "{") depth += 1;
+      else if (c === "}") { depth -= 1; if (depth === 0) break; }
+    }
+    if (!out[m[1]]) {
+      out[m[1]] = {
+        text: src.slice(open, i + 1),
+        line: src.slice(0, m.index + 1).split(/\r?\n/).length,
+      };
+    }
+  }
+  return out;
+}
+
 function testLibCommentBlocksAreWholeSentences() {
   // class: truncated-comment-block
   var DANGLING = /\b(?:the|a|an|and|or|so|but|which|that|to|of|for|with|from|is|are|was|were|its|their|this|these|those|because|since|when|while|as|at|by|on|in|into|than|then)$/i;
@@ -24424,6 +24502,7 @@ async function run() {
   testSfvCitationMatchesReferencingProtocol();
   testNoInternalNarrativeComments();
   testLibCommentBlocksAreWholeSentences();
+  testEveryObjectStoreBackendMapsNotFound();
   testNoOrphanAllowClass();
   testDeclaredClassIsHonored();
   testEveryScanScopeReachesFiles();
