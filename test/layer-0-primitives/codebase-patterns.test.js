@@ -12329,17 +12329,28 @@ function testNodeFloorDeclarationsAgree() {
   }
   var minor = floor.split(".").slice(0, 2).join(".");
 
-  // Any other package.json in the tree that declares a floor answers to this one.
-  var manifests = _walkAllSource(path.join(root, "examples"))
-    .filter(function (f) { return path.basename(f) === "package.json"; });
-  try {
-    fs.readdirSync(path.join(root, "examples"), { withFileTypes: true })
-      .forEach(function (e) {
-        if (!e.isDirectory()) return;
-        var p = path.join(root, "examples", e.name, "package.json");
-        if (fs.existsSync(p) && manifests.indexOf(p) === -1) manifests.push(p);
-      });
-  } catch (_e2) { /* no examples tree */ }
+  // Any other package.json in the tree that declares a floor answers to this
+  // one. This needs its own walk: the source walker collects `.js` only, so
+  // filtering its output for a manifest name returns the empty set and the gate
+  // reads as a pass over a tree it never opened.
+  var manifests = [];
+  (function walkManifests(dir, depth) {
+    if (depth > 6) return;
+    var entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+    catch (_e2) { return; }
+    for (var i = 0; i < entries.length; i += 1) {
+      var e = entries[i];
+      var full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        if (e.name === "node_modules" || e.name === ".git" ||
+            e.name === "data" || e.name === "data-e2e") continue;
+        walkManifests(full, depth + 1);
+      } else if (e.name === "package.json") {
+        manifests.push(full);
+      }
+    }
+  })(path.join(root, "examples"), 0);
   manifests.forEach(function (p) {
     var m;
     try { m = JSON.parse(fs.readFileSync(p, "utf8")); }
@@ -12424,10 +12435,17 @@ function testWorkflowNodeVersionMatchesEngines() {
       var line = lines[li];
       var pin = /node-version:\s*['"]?(\d+(?:\.\d+){0,2})['"]?/.exec(line);
       if (pin) {
+        // setup-node takes a version spec, so `24` allows any 24.x while
+        // `24.19` constrains the job to 24.19.x. Compare through exactly the
+        // components the pin states: by major alone for `24`, and through the
+        // minor for `24.19`, which is how a pin below the floor is caught.
         var pinned = pin[1];
-        var full   = pinned.split(".").length === 3;
-        var agrees = full ? pinned === floor
-                          : pinned.split(".")[0] === floor.split(".")[0];
+        var given  = pinned.split(".");
+        var want   = floor.split(".");
+        var agrees = true;
+        for (var ci = 0; ci < given.length; ci += 1) {
+          if (given[ci] !== want[ci]) { agrees = false; break; }
+        }
         if (!agrees) {
           bad.push({
             file:    rel,

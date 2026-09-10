@@ -538,6 +538,42 @@ function testAceLabelsCarryPayload() {
           b.guardDomain.validate("xn--mnchen-3ya.de", { profile: profile }).ok === true);
   });
 
+  // UTS 46 counts the ideographic and fullwidth stops as label separators, so a
+  // name using one has the same labels as a name using the ASCII dot. Splitting
+  // on the ASCII one alone hid every label after the first of these from the
+  // per-label rules, and the malformed A-label rode in behind it.
+  ["。", "．", "｡"].forEach(function (sep) {
+    check("guardDomain refuses a malformed A-label after U+" +
+          sep.charCodeAt(0).toString(16).toUpperCase(),
+          b.guardDomain.validate("example" + sep + "xn--a.com",
+            { profile: "balanced" }).ok === false);
+    check("guardDomain keeps a clean name using U+" +
+          sep.charCodeAt(0).toString(16).toUpperCase(),
+          b.guardDomain.validate("example" + sep + "com",
+            { profile: "balanced" }).ok === true);
+  });
+
+  // Normalizing at entry rather than at the label split is what keeps the
+  // whole-domain rules working: the IP-literal and special-use checks read the
+  // name before it is split, so a separator handled only during label
+  // validation would let these through with no issue at all.
+  check("guardDomain refuses an IPv4 literal written with U+3002",
+        b.guardDomain.validate("127。0。0。1", { profile: "strict" }).ok === false);
+  check("guardDomain refuses a special-use suffix written with U+3002",
+        b.guardDomain.validate("foo。localhost", { profile: "strict" }).ok === false);
+  // A terminal separator is the FQDN marker in whichever spelling it arrives.
+  check("guardDomain accepts a trailing U+3002 as the FQDN marker",
+        b.guardDomain.validate("example.com。", { profile: "balanced" }).ok ===
+        b.guardDomain.validate("example.com.", { profile: "balanced" }).ok);
+
+  // sanitize() produces the comparison key, so equivalent spellings have to
+  // reduce to one. It runs its own transform, which normalization has to reach
+  // as well or an accepted name keeps a terminal marker the contract strips.
+  ["Example.Com。", "Example.Com.", "Example。Com", "example.com"].forEach(function (d) {
+    check("guardDomain.sanitize(" + JSON.stringify(d) + ") = example.com",
+          b.guardDomain.sanitize(d, { profile: "strict" }) === "example.com");
+  });
+
   // A non-string or empty input is not a domain, so it does not carry one.
   check("aceLabelsCarryPayload('') = false",
         b.guardDomain.aceLabelsCarryPayload("") === false);
