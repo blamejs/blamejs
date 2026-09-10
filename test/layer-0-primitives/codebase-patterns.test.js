@@ -12333,9 +12333,10 @@ function testNodeFloorDeclarationsAgree() {
   // one. This needs its own walk: the source walker collects `.js` only, so
   // filtering its output for a manifest name returns the empty set and the gate
   // reads as a pass over a tree it never opened.
+  // `isDirectory()` on a readdir entry does not follow a symlink, so the walk
+  // cannot enter one and needs no depth counter to stay finite.
   var manifests = [];
-  (function walkManifests(dir, depth) {
-    if (depth >= 6) return;
+  (function walkManifests(dir) {
     var entries;
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
     catch (_e2) { return; }
@@ -12345,20 +12346,22 @@ function testNodeFloorDeclarationsAgree() {
       if (e.isDirectory()) {
         if (e.name === "node_modules" || e.name === ".git" ||
             e.name === "data" || e.name === "data-e2e") continue;
-        walkManifests(full, depth + 1);
+        walkManifests(full);
       } else if (e.name === "package.json") {
         manifests.push(full);
       }
     }
-  })(path.join(root, "examples"), 0);
+  })(path.join(root, "examples"));
   manifests.forEach(function (p) {
     var m;
     try { m = JSON.parse(fs.readFileSync(p, "utf8")); }
     catch (_e3) { return; }
     var e = (m.engines && m.engines.node) || "";
     if (!e) return;
-    var f = (e.match(/(\d+\.\d+\.\d+)/) || [])[1];
-    if (f && f !== floor) {
+    // The framework floor is a minimum, so a package asking for a NEWER Node
+    // than the framework is consistent. Only one asking for less is not.
+    var f = (e.match(/(\d+(?:\.\d+){0,2})/) || [])[1];
+    if (f && !_pinCanReachFloor(f, floor)) {
       bad.push({
         file:    _relPath(p),
         line:    1,
