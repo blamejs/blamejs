@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.19.7",
-  "createdAt": "2026-09-08T11:07:43.968Z",
+  "frameworkVersion": "0.20.0",
+  "createdAt": "2026-09-10T03:21:48.586Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -22553,6 +22553,10 @@
               }
             }
           }
+        },
+        "aceLabelsCarryPayload": {
+          "type": "function",
+          "arity": 1
         },
         "buildProfile": {
           "type": "function",

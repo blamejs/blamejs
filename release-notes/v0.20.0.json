@@ -1,0 +1,56 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.20.0",
+  "date": "2026-09-09",
+  "headline": "The supported Node version is now 24.21.0",
+  "summary": "`engines.node` rises from `>=24.19.0` to `>=24.21.0`, the current patch level of the active LTS line. 24.21.0 carries OpenSSL 3.5.8 and the NSS 3.126 root store, both of which the framework's TLS paths read directly. Operators on 24.19.x or 24.20.x should upgrade Node before taking this release; npm will otherwise refuse the install on an engine mismatch.",
+  "sections": [
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "`engines.node` requires 24.21.0",
+          "body": "The floor moves to Node 24.21.0. It ships OpenSSL 3.5.8 and updates the bundled root certificates to NSS 3.126, so the trust store behind outbound TLS, certificate validation and the mail transports comes from that release. It also corrects a crash in `dns.setServers()` when a resolver is given port 0, tightens port-range validation in the same call, and stops `dgram` discarding bind errors when a callback is supplied.\n\nThe framework's own behaviour is unchanged by those three. `b.network.dns.setServers()` already refuses a resolver port outside [1,65535], including 0, before the call reaches Node, and the framework's UDP sockets bind implicitly and attach an error listener rather than passing a bind callback. The floor moves for the OpenSSL and root-store updates.\n\nCI, the publish workflow and the release-container workflow now install 24.21.0, and the README and SECURITY.md requirement lines state it."
+        }
+      ]
+    },
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "An `xn--` label with no Punycode payload is refused on every runtime",
+          "body": "`b.safeUrl`, `b.mail.toAscii()` and `b.publicSuffix` read the runtime's URL machinery as a verdict on whether a host is well-formed. It maps rather than validates, and its answer for a payload-less ACE label moved between Node releases. On 24.21.0 `url.domainToASCII(\"xn--\")` returns `\"xn--\"` unchanged and `new URL(\"https://xn--/\")` is accepted with hostname `xn--`; on 26 the first returns the empty string and the second throws.\n\nThe effect was that the same input was accepted on one runtime and refused on the other. On 24.21.0 `b.mail.toAscii(\"xn--\")` returned `\"xn--\"`, `b.publicSuffix` accepted it as a real domain after it passed the letter-digit-hyphen check, and `b.safeUrl.format(\"https://xn--/\")` returned the URL instead of throwing. An operator's host validation depended on which Node they were running.\n\nThe framework now decides this itself. An `xn--` label must carry a payload that decodes to something other than itself, which refuses `xn--`, `xn--a`, `xn--zz` and `xn--.de` while leaving every well-formed A-label untouched. `b.mail.toAscii()` returns `null`, `b.publicSuffix` throws `public-suffix/invalid-domain`, and `b.safeUrl.parse()` and `b.safeUrl.format()` throw a typed `SafeUrlError`, identically on 24.21.0 and 26. The rule has one implementation, the new `b.guardDomain.aceLabelsCarryPayload()`, in the module that already refused a bare `xn--` in its own gate.\n\nHosts reached through the other URL entry points are unaffected: the origin and host comparisons in CSRF protection, the SSRF guard and the WebSocket origin check match against expected values, so a malformed host fails them on both runtimes.\n\nThis was found by the release's own Node bump. The container leg runs the pinned floor, and two tests that pass on 26 failed on 24.21.0."
+        },
+        {
+          "title": "Two marker reasons in `lib/` ended mid-sentence",
+          "body": "`lib/network-tls.js` and `lib/pqc-agent.js` each carry a suppression marker whose reason is the prose a reader weighs when re-checking why the exemption holds. Both ended on a dangling word, so neither stated its reason. The TLS one now records that the ECH feature probe's lookup aborts, so it negotiates nothing and has no posture to apply; the certificate one records that the context it builds is discarded and never serves a handshake."
+        },
+        {
+          "title": "A marker reason named a primitive that does not carry the pattern",
+          "body": "The ISO-8601 instant literal is shared by three primitives. The reasons in `lib/ai-model-manifest.js` and `lib/metrics.js` named `mail-server-imap` as the third, which does not carry it. The three are `ai-model-manifest`, `metrics` text-render and `content-credentials`, and `lib/content-credentials.js` carried the literal with no reason at all. All three now state the same reason, and it is the operative one: none of the three imports `safe-schema`, whose `DATETIME_RE` also admits a numeric offset, so sharing that would pull a validation module into a hot-path sink for a 50-byte literal."
+        }
+      ]
+    },
+    {
+      "heading": "Detectors",
+      "items": [
+        {
+          "title": "CI cannot drift off the supported Node version",
+          "body": "The Node floor is written out in the workflow pins and again in the step names beside them, and nothing held those to `engines.node`. Raising the floor without them would test the framework on a runtime it no longer supports, and publish from one, with nothing reporting the gap. A new check compares every pinned `node-version` and every `Set up Node <version>` label against the floor. A bare major such as `'24'` resolves to the newest of that line and is left alone."
+        },
+        {
+          "title": "The marker checks now read the file that defines the markers",
+          "body": "The check that every `// allow:<class>` marker names a registered class skipped `codebase-patterns.test.js` entirely, on the stated grounds that the file holds the class registry and the regexes naming classes. It reads only the `//` comment portion of a line, and both of those live in code, so neither was ever in scope. The file is the largest in the repository, and the skip had hidden four stale mentions: a placeholder written in marker syntax, and two names that a rename retired, `dynamic-require` and `seal-without-aad`. All four are corrected and the file is now scanned."
+        },
+        {
+          "title": "A rule left on a retired class name is reported again",
+          "body": "When a suppression class is renamed, the old name is recorded as retired so that every rule and marker using it has to be re-verified rather than silently keeping the old exemption. The check that compares the registry against the rules returned early on a retired name, and the check that hunts retired names does not read the file the rules live in, so a rule left on an old name after a rename was reported by neither. It is now reported, naming the token and its rename. No rule was using one."
+        },
+        {
+          "title": "Comment prose can no longer drift into a suppression marker",
+          "body": "A marker is honored when it appears anywhere on the offending line or the line above it. Line-wrapping a sentence that names a class can therefore land that name at the start of a comment line, directly above scanned code, where nothing distinguishes it from a deliberate exemption. One such line sat above a scan call and named a class that had been retired months earlier. A second wrap split a class name across a line break, so the marker a reader copies out of the documentation named no detector. A new check reports both shapes. It does not require markers to sit at the start of a comment, because many legitimate ones follow a sentence within one."
+        }
+      ]
+    }
+  ]
+}

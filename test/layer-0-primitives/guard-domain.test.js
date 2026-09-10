@@ -502,7 +502,38 @@ function testPolicyVocabularyIsEnforced() {
   helpers.assertPolicyVocabulary(b.guardDomain, LEGAL, { label: "domain", sample: "example.com" });
 }
 
+function testAceLabelsCarryPayload() {
+  // `url.domainToASCII` maps rather than validates, and its answer for a
+  // payload-less ACE label differs by Node version: 24.21.0 returns the label
+  // unchanged where 26 returns "". A caller testing only for "" accepts `xn--`
+  // on one runtime and refuses it on the other, so the framework decides it.
+  [
+    ["xn--",              false],
+    ["xn--a",             false],
+    ["xn--zz",            false],
+    ["xn--.de",           false],
+    ["xn--a.example.com", false],
+    ["xn--mnchen-3ya",    true],
+    ["xn--mnchen-3ya.de", true],
+    ["xn--fiqs8s",        true],
+    ["example.com",       true],
+    ["abc",               true],
+  ].forEach(function (row) {
+    check("aceLabelsCarryPayload(" + JSON.stringify(row[0]) + ") = " + row[1],
+          b.guardDomain.aceLabelsCarryPayload(row[0]) === row[1]);
+  });
+  // A non-string or empty input is not a domain, so it does not carry one.
+  check("aceLabelsCarryPayload('') = false",
+        b.guardDomain.aceLabelsCarryPayload("") === false);
+  check("aceLabelsCarryPayload(null) = false",
+        b.guardDomain.aceLabelsCarryPayload(null) === false);
+  // The uppercase ACE prefix is the same label.
+  check("aceLabelsCarryPayload('XN--') = false",
+        b.guardDomain.aceLabelsCarryPayload("XN--") === false);
+}
+
 async function run() {
+  testAceLabelsCarryPayload();
   testLabelShapesAgreeWithThePatternsTheyReplaced();
   testSanitize();
   testIpv4PermissiveForms();
