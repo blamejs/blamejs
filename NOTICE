@@ -68,7 +68,7 @@ Used for:    FIPS 203 ML-KEM (ml_kem_512 / ml_kem_768 / ml_kem_1024),
              reference implementation.
 --------------------------------------------------------------------------------
 Component:   @blamejs/pki
-Version:     0.6.55
+Version:     0.7.0
 Source:      https://github.com/blamejs/pki
 License:     Apache-2.0
 Copyright:   Copyright (c) blamejs contributors
@@ -85,7 +85,7 @@ Used for:    Pure-JS mTLS CA (default engine). Self-signed CA generation
              bundle lib/vendor/blamejs-pki.cjs.
 --------------------------------------------------------------------------------
 Component:   SecLists — 10k-most-common.txt
-Version:     master snapshot (bundled 2026-05-02)
+Version:     master snapshot (bundled 2026-09-09)
 Source:      https://github.com/danielmiessler/SecLists
              https://github.com/danielmiessler/SecLists/blob/master/Passwords/Common-Credentials/10k-most-common.txt
 License:     CC-BY-3.0
@@ -101,7 +101,7 @@ Used for:    Top-10000 most-common (breach-derived) passwords. Loaded by
              baseline.
 --------------------------------------------------------------------------------
 Component:   publicsuffix-list (Mozilla Public Suffix List)
-Version:     master snapshot (bundled 2026-09-07)
+Version:     master snapshot (bundled 2026-09-09)
 Source:      https://publicsuffix.org/list/public_suffix_list.dat
 License:     MPL-2.0
 Copyright:   Copyright (c) Mozilla Foundation and Public Suffix List contributors

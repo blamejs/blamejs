@@ -32,6 +32,19 @@
       ]
     },
     {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "Vendored `@blamejs/pki` moves to 0.7.0",
+          "body": "`lib/vendor/blamejs-pki.cjs` carries 0.7.0, refreshed through `scripts/vendor-update.sh` with the `MANIFEST.json` SHA-256 hashes regenerated alongside it.\n\nIt fixes a verification flaw in `pki.sigstore.verifyBundle`. A bundle supplied as an object had its fields read more than once, and a field that answered differently across those reads let one transparency-log body be bound to the signature while a different one was proven, so a signature the log never recorded could be attested by an authentic entry for something else and still verify. A bundle supplied as JSON text was never affected. The same release holds an object bundle to being plain data: an accessor field is refused rather than called, and the size and depth limits that bound the text route now bound the object route under the same numbers.\n\nIt also adds RFC 8879 zstd certificate compression to `pki.tls`, which is available on this release's Node floor. Each algorithm is offered only where the running Node faults on a truncated frame rather than returning the prefix, and 24.21.0 does."
+        },
+        {
+          "title": "Vendored data files refreshed",
+          "body": "The Public Suffix List and the SecLists common-password corpus are refreshed to their 2026-09-08 upstream state and re-signed. `b.publicSuffix` and the password-strength checks read the newer data; no API changes."
+        }
+      ]
+    },
+    {
       "heading": "Detectors",
       "items": [
         {
