@@ -12327,7 +12327,6 @@ function testNodeFloorDeclarationsAgree() {
          content: "engines.node '" + engines + "' has no x.y.z floor to compare against" }]);
     return;
   }
-  var minor = floor.split(".").slice(0, 2).join(".");
 
   // Any other package.json in the tree that declares a floor answers to this
   // one. This needs its own walk: the source walker collects `.js` only, so
@@ -12358,10 +12357,10 @@ function testNodeFloorDeclarationsAgree() {
     catch (_e3) { return; }
     var e = (m.engines && m.engines.node) || "";
     if (!e) return;
-    // The framework floor is a minimum, so a package asking for a NEWER Node
-    // than the framework is consistent. Only one asking for less is not.
-    var f = (e.match(/(\d+(?:\.\d+){0,2})/) || [])[1];
-    if (f && !_pinCanReachFloor(f, floor)) {
+    // An engines range is not a setup-node spec: `24` there ADMITS 24.0.0, and
+    // an alternation admits whatever its loosest arm does. So the comparison is
+    // against the lowest version the range accepts, over every alternative.
+    if (!_rangeFloorAtLeast(e, floor)) {
       bad.push({
         file:    _relPath(p),
         line:    1,
@@ -12383,9 +12382,12 @@ function testNodeFloorDeclarationsAgree() {
       var lines = text.split(/\r?\n/);
       for (var i = 0; i < lines.length; i += 1) {
         if (lines[i].indexOf(row[1]) === -1) continue;
-        var stated = (lines[i].match(/Node\.js\s+(\d+\.\d+)/) ||
-                      lines[i].match(/>=(\d+\.\d+)/) || [])[1];
-        if (stated && stated !== minor) {
+        // Read every component the line states. Truncating to major.minor let
+        // `Node.js 24.21+` stand against a 24.21.1 floor, which it does not
+        // satisfy: that wording admits 24.21.0.
+        var stated = (lines[i].match(/Node\.js\s+(\d+(?:\.\d+){0,2})/) ||
+                      lines[i].match(/>=(\d+(?:\.\d+){0,2})/) || [])[1];
+        if (stated && _cmpVersion(stated, floor) < 0) {
           bad.push({
             file:    row[0],
             line:    i + 1,
@@ -12413,6 +12415,35 @@ function _pinCanReachFloor(pinned, floor) {
     var w = Number(want[i]);
     if (g > w) return true;
     if (g < w) return false;
+  }
+  return true;
+}
+
+// Compare two dotted versions, padding an unstated component with 0. Returns
+// negative when a is below b.
+function _cmpVersion(a, b) {
+  var x = String(a).split(".");
+  var y = String(b).split(".");
+  for (var i = 0; i < 3; i += 1) {
+    var xa = Number(x[i] || 0);
+    var yb = Number(y[i] || 0);
+    if (xa !== yb) return xa - yb;
+  }
+  return 0;
+}
+
+// The lowest version an engines range accepts, taken over every alternative,
+// compared against the floor. `24` accepts 24.0.0; `>=26 || >=18` accepts 18.
+function _rangeFloorAtLeast(range, floor) {
+  var arms = String(range).split("||");
+  for (var i = 0; i < arms.length; i += 1) {
+    var found = arms[i].match(/(\d+(?:\.\d+){0,2})/g);
+    if (!found || !found.length) return false;
+    var lowest = null;
+    for (var j = 0; j < found.length; j += 1) {
+      if (lowest === null || _cmpVersion(found[j], lowest) < 0) lowest = found[j];
+    }
+    if (_cmpVersion(lowest, floor) < 0) return false;
   }
   return true;
 }
