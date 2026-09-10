@@ -594,9 +594,9 @@ var RETIRED_ALLOW_TOKENS = {
 // The classes the rules actually honor, read from the rules rather than from a
 // list beside them. A marker is consumed two ways: a bespoke check filters on
 // the class by name, or a rule TESTS for the marker with a pattern, which
-// covers both a `requires` regex and an inline `/allow:x/.test(line)`.
+// covers both a `requires` regex and an inline `/allow:<class>/.test(line)`.
 //
-// Which text is a pattern is asked of the lexer. Matching `allow:x` across the
+// Which text is a pattern is asked of the lexer. Matching `allow:<class>` across the
 // raw source reads it out of prose as well: a class named in a rule's `reason`
 // string is described, not consumed, and counting those registers an exemption
 // no rule reads.
@@ -662,11 +662,24 @@ function testAllowClassRegistryMatchesTheRules() {
   // the registry omits fails the build as unregistered on the contributor who
   // followed the rule's own header to it; a class the registry lists that no
   // rule reads is accepted and does nothing.
+  //
+  // A retired token returned early here, and testNoRetiredTokenUsedAnywhere does
+  // not read this file, so a rule left on the old name after a rename was
+  // reported by neither. A rename exists to force a re-verify, and a rule still
+  // honoring the old token keeps the old blessing under it.
   var consumed = _consumedAllowClasses();
   var bad = [];
   Object.keys(consumed).forEach(function (cls) {
     if (Object.prototype.hasOwnProperty.call(VALID_ALLOW_CLASSES, cls)) return;
-    if (Object.prototype.hasOwnProperty.call(RETIRED_ALLOW_TOKENS, cls)) return;
+    if (Object.prototype.hasOwnProperty.call(RETIRED_ALLOW_TOKENS, cls)) {
+      bad.push({
+        file:    "test/layer-0-primitives/codebase-patterns.test.js",
+        line:    0,
+        content: "allow-class '" + cls + "' is honored by a rule in this file but " +
+                 "was retired: " + RETIRED_ALLOW_TOKENS[cls],
+      });
+      return;
+    }
     bad.push({
       file:    "test/layer-0-primitives/codebase-patterns.test.js",
       line:    0,
@@ -899,9 +912,10 @@ function testNoOrphanAllowClass() {
     // The example app's gate holds its own marker machinery, and its prose
     // names markers in order to explain them.
     if (rel === "examples/wiki/test/codebase-patterns.test.js") continue;
-    // Skip THIS file: it holds the marker machinery + the registry itself,
-    // where `allow:` appears in regexes and the VALID_ALLOW_CLASSES keys.
-    if (rel === "test/layer-0-primitives/codebase-patterns.test.js") continue;
+    // This file holds the marker machinery and the registry, which was the
+    // stated reason for skipping it whole. Both live in code, and only the `//`
+    // comment portion is read, so neither was ever in scope. The skip hid four
+    // stale mentions, two of them naming tokens the 2026-06-26 rename retired.
     var content;
     try { content = fs.readFileSync(files[fi], "utf8"); }
     catch (_e) { continue; }
@@ -948,6 +962,58 @@ function testNoOrphanAllowClass() {
     }
   }
   _report("every // allow:<class> marker names a registered detector class", bad);
+}
+
+function testAllowMarkerTokenIntact() {
+  // class: allow-marker-prose-wrap (no marker)
+  // A marker matches anywhere on the offending line or the one above it, so
+  // prose naming a class beside scanned code reads as a suppression. Position
+  // alone cannot decide intent, because real markers throughout lib/ sit
+  // mid-comment after a sentence. What this catches is the shape wrapping
+  // produces by accident: the class name opens the line, where nothing
+  // distinguishes it from a deliberate marker. A paragraph ended that way
+  // directly above a _scan() call, naming a token that had already been retired.
+  // Wrapping mid-token splits the name instead, and the half a reader copies out
+  // of the prose names no detector.
+  var files = _libFiles().concat(_testFiles()).concat(_scriptFiles())
+    .concat(_exampleAppFiles());
+  var bad = [];
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    var lines = content.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li++) {
+      var line    = lines[li];
+      var hashIdx = line.indexOf("//");
+      if (hashIdx === -1) continue;
+      var comment = line.slice(hashIdx);
+      if (/allow:[A-Za-z0-9-]*-[ \t]*$/.test(comment)) {
+        bad.push({
+          file:    rel,
+          line:    li + 1,
+          content: "a class name is split across the line break, so the half a " +
+                   "reader copies out of the prose names no detector",
+        });
+        continue;
+      }
+      // A trailing marker after code is unambiguous; only a standalone comment
+      // line can be mistaken for one.
+      if (!/^[ \t]*$/.test(line.slice(0, hashIdx))) continue;
+      var pm = /^\/\/[ \t]*allow:([A-Za-z0-9-]+)[ \t]+[A-Za-z(]/.exec(comment);
+      if (pm) {
+        bad.push({
+          file:    rel,
+          line:    li + 1,
+          content: "prose wrapped the class '" + pm[1] + "' into marker position, " +
+                   "where it suppresses that detector for the line below; rewrap " +
+                   "so the class name does not open the line",
+        });
+      }
+    }
+  }
+  _report("no comment wraps an allow-class into marker position or splits it", bad);
 }
 
 function testNoRawByteLiterals() {
@@ -3172,12 +3238,9 @@ function testNoTierTerminologyInLib() {
 // literal that STARTS a SQL statement, and a hardcoded `_blamejs_*`
 // literal, in any DB-touching lib file outside the migration backlog.
 //
-// Files still carrying hand-rolled SQL live on HAND_ROLLED_SQL_BACKLOG
-// until migrated onto b.sql; remove a file from the backlog as it is
-// migrated, and any residual hand-rolled SQL in it then fails the gate
-// (so the migration runs to completion and can't silently stall). A new
-// DB file that hand-rolls SQL without being on the backlog fails
-// immediately. Only DB-touching files (a SQL execution sink or a
+// Every DB file composes b.sql; the migration backlog that once listed the
+// hold-outs reached empty and was removed, so any hand-rolled SQL now fails
+// the gate wherever it appears. Only DB-touching files (a SQL execution sink or a
 // `_blamejs_` literal) are scanned, so non-SQL `SELECT`/`WITH` text in
 // guard-html / forms / i18n etc. never false-positives.
 //
@@ -3220,9 +3283,15 @@ var HAND_ROLLED_SQL_PERMANENT = {
 // table DDL through createVirtualTable; the composite-PK flags table, the
 // ON-DELETE-CASCADE FK back to messages, and the per-folder quota
 // accumulator (`col = col + EXCLUDED.col`) compose createTable /
-// upsert.doUpdate. The backlog is now empty.
-var HAND_ROLLED_SQL_BACKLOG = {
-};
+// upsert.doUpdate.
+//
+// The backlog reached empty and the map is GONE rather than left at `{}`, so
+// there is no key to add. An empty allowlist beside a gate is an invitation:
+// the next file that will not compose b.sql gets waved through in one line, and
+// the migration this list recorded is undone without a review ever seeing SQL.
+// A file that genuinely cannot use the builder joins HAND_ROLLED_SQL_PERMANENT
+// with a reason, which is four entries and all of them the SQL primitives
+// themselves.
 function testNoHandRolledSql() {
   // A DB-touching file: composes a SQL execution sink or hardcodes a
   // framework table name. Only these are scanned (no non-SQL FPs).
@@ -3251,7 +3320,7 @@ function testNoHandRolledSql() {
   var files = _libFiles();
   for (var i = 0; i < files.length; i++) {
     var rel = _relPath(files[i]);
-    if (HAND_ROLLED_SQL_PERMANENT[rel] || HAND_ROLLED_SQL_BACKLOG[rel]) continue;
+    if (HAND_ROLLED_SQL_PERMANENT[rel]) continue;
     var content;
     try { content = fs.readFileSync(files[i], "utf8"); }
     catch (_e) { continue; }
@@ -8157,8 +8226,8 @@ function testNoRawForwardedProtoHostRead() {
   // / cors / bot-guard / dpop all do; dpop was the consumer this rule was added
   // for (it read XFP/XFH via a bare trustForwardedHeaders boolean → htu
   // confusion). span-http-server reads both for the url.scheme/server.address
-  // telemetry span attributes (display-only, not a trust sink) and carries an
-  // allow:raw-xfp marker.
+  // telemetry span attributes (display-only, not a trust sink) and carries a
+  // raw-xfp-telemetry-only marker.
   var matches = _scan(/req\.headers\s*\[\s*["']x-forwarded-(?:proto|host)["']\s*\]/i);
   // request-helpers.js IS the canonical reader (the primitive home).
   matches = matches.filter(function (m) { return m.file !== "lib/request-helpers.js"; });
@@ -12220,7 +12289,7 @@ function testReadmeNodeRequirementMatchesEngines() {
     bad.push({ file: "README.md", line: 1,
       content: "no '**Requirements:**' line naming the supported Node version" });
   } else {
-    // The line reads "Node.js 24.19+ (...)". Compare on major.minor: the
+    // The line reads "Node.js 24.21+ (...)". Compare on major.minor: the
     // README states the supported line, not every patch of it.
     var stated = (readme.split("\n")[line].match(/Node\.js\s+(\d+\.\d+)/) || [])[1];
     var wanted = floor.split(".").slice(0, 2).join(".");
@@ -12232,6 +12301,214 @@ function testReadmeNodeRequirementMatchesEngines() {
     }
   }
   _report("README states the supported Node version", bad);
+}
+
+function testNodeFloorDeclarationsAgree() {
+  // class: node-floor-drift (no marker)
+  // The floor is declared in more places than the manifest: a second
+  // package.json under examples/, and the requirement line contributors and
+  // operators read. Raising it by grepping for the CURRENT value finds only the
+  // places already on it, so the ones still carrying an OLDER floor stay behind
+  // and keep advertising a runtime the framework no longer supports.
+  var root = path.resolve(__dirname, "..", "..");
+  var bad = [];
+  var pkg;
+  try { pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")); }
+  catch (_e) {
+    _report("every declared Node floor matches engines.node",
+      [{ file: "package.json", line: 1, content: "unreadable / not JSON" }]);
+    return;
+  }
+  var engines = (pkg.engines && pkg.engines.node) || "";
+  var floor   = (engines.match(/(\d+\.\d+\.\d+)/) || [])[1];
+  if (!floor) {
+    _report("every declared Node floor matches engines.node",
+      [{ file: "package.json", line: 1,
+         content: "engines.node '" + engines + "' has no x.y.z floor to compare against" }]);
+    return;
+  }
+
+  // Any other package.json in the tree that declares a floor answers to this
+  // one. This needs its own walk: the source walker collects `.js` only, so
+  // filtering its output for a manifest name returns the empty set and the gate
+  // reads as a pass over a tree it never opened.
+  // `isDirectory()` on a readdir entry does not follow a symlink, so the walk
+  // cannot enter one and needs no depth counter to stay finite.
+  var manifests = [];
+  (function walkManifests(dir) {
+    var entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+    catch (_e2) { return; }
+    for (var i = 0; i < entries.length; i += 1) {
+      var e = entries[i];
+      var full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        if (e.name === "node_modules" || e.name === ".git" ||
+            e.name === "data" || e.name === "data-e2e") continue;
+        walkManifests(full);
+      } else if (e.name === "package.json") {
+        manifests.push(full);
+      }
+    }
+  })(path.join(root, "examples"));
+  manifests.forEach(function (p) {
+    var m;
+    try { m = JSON.parse(fs.readFileSync(p, "utf8")); }
+    catch (_e3) { return; }
+    var e = (m.engines && m.engines.node) || "";
+    if (!e) return;
+    // An engines range is not a setup-node spec: `24` there ADMITS 24.0.0, and
+    // an alternation admits whatever its loosest arm does. So the comparison is
+    // against the lowest version the range accepts, over every alternative.
+    if (!_rangeFloorAtLeast(e, floor)) {
+      bad.push({
+        file:    _relPath(p),
+        line:    1,
+        content: "engines.node '" + e + "' is below the framework floor " + engines +
+                 ", so this package advertises a runtime its own dependency refuses",
+      });
+    }
+  });
+
+  // The requirement line a person reads before installing a runtime.
+  [["CONTRIBUTING.md", "**Requirements:**"],
+   ["SECURITY.md", "engines.node` floor is"],
+   ["ROADMAP.md", "currently `>="],
+   ["examples/wiki/README.md", "the engine pin in"]]
+    .forEach(function (row) {
+      var text;
+      try { text = fs.readFileSync(path.join(root, row[0]), "utf8"); }
+      catch (_e4) { return; }
+      var lines = text.split(/\r?\n/);
+      for (var i = 0; i < lines.length; i += 1) {
+        if (lines[i].indexOf(row[1]) === -1) continue;
+        // Read every component the line states. Truncating to major.minor let
+        // `Node.js 24.21+` stand against a 24.21.1 floor, which it does not
+        // satisfy: that wording admits 24.21.0.
+        var stated = (lines[i].match(/Node\.js\s+(\d+(?:\.\d+){0,2})/) ||
+                      lines[i].match(/>=(\d+(?:\.\d+){0,2})/) || [])[1];
+        if (stated && _cmpVersion(stated, floor) < 0) {
+          bad.push({
+            file:    row[0],
+            line:    i + 1,
+            content: "states Node " + stated + " but engines.node requires " + engines,
+          });
+        }
+        break;
+      }
+    });
+
+  _report("every declared Node floor matches engines.node", bad);
+}
+
+// engines.node states a MINIMUM, and setup-node takes a version spec, so the
+// question is whether the pin can reach the floor rather than whether it equals
+// it. An unstated component is open: `24` reaches 24.anything and satisfies a
+// 24.21.0 floor, `24.19` tops out inside 24.19.x and cannot, and `24.22.0` and
+// `26` are both above it.
+function _pinCanReachFloor(pinned, floor) {
+  var given = pinned.split(".");
+  var want  = floor.split(".");
+  for (var i = 0; i < want.length; i += 1) {
+    if (i >= given.length) return true;          // unstated: reaches upward
+    var g = Number(given[i]);
+    var w = Number(want[i]);
+    if (g > w) return true;
+    if (g < w) return false;
+  }
+  return true;
+}
+
+// Compare two dotted versions, padding an unstated component with 0. Returns
+// negative when a is below b.
+function _cmpVersion(a, b) {
+  var x = String(a).split(".");
+  var y = String(b).split(".");
+  for (var i = 0; i < 3; i += 1) {
+    var xa = Number(x[i] || 0);
+    var yb = Number(y[i] || 0);
+    if (xa !== yb) return xa - yb;
+  }
+  return 0;
+}
+
+// Whether every version an engines range accepts is at or above the floor.
+// A comparator decides which side of its version a range admits, so reading the
+// numbers and ignoring the operator gets `<=26.0.0` backwards: its only token is
+// above the floor while the range admits every release below it. Rather than
+// reimplement semver, this accepts only the `>=x.y.z` form the manifests use
+// and refuses anything else as a range it cannot reason about.
+function _rangeFloorAtLeast(range, floor) {
+  var arms = String(range).split("||");
+  for (var i = 0; i < arms.length; i += 1) {
+    var m = /^\s*>=\s*(\d+(?:\.\d+){0,2})\s*$/.exec(arms[i]);
+    if (!m) return false;
+    if (_cmpVersion(m[1], floor) < 0) return false;
+  }
+  return true;
+}
+
+function testWorkflowNodeVersionMatchesEngines() {
+  // class: ci-node-version-drift (no marker)
+  // The README gate above holds one consumer of engines.node. CI is the other,
+  // and the larger one: the floor is written out in workflow pins and again in
+  // the step names beside them. Raising the floor without them tests the
+  // framework on a runtime it no longer supports, and publishes from one, with
+  // nothing reporting the gap. A bare major (`node-version: '24'`) resolves to
+  // the newest of that line, so it is held to the floor's major rather than to
+  // the exact patch. Skipping it would let a fuzz workflow sit on 24 through a
+  // move to 26 with this gate still green.
+  var root = path.resolve(__dirname, "..", "..");
+  var bad = [];
+  var pkg;
+  try { pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")); }
+  catch (_e) {
+    _report("CI workflows pin the Node version engines.node requires",
+      [{ file: "package.json", line: 1, content: "unreadable / not JSON" }]);
+    return;
+  }
+  var engines = (pkg.engines && pkg.engines.node) || "";
+  var floor   = (engines.match(/(\d+\.\d+\.\d+)/) || [])[1];
+  if (!floor) {
+    _report("CI workflows pin the Node version engines.node requires",
+      [{ file: "package.json", line: 1,
+         content: "engines.node '" + engines + "' has no x.y.z floor to compare against" }]);
+    return;
+  }
+
+  var files = _workflowFiles();
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e2) { continue; }
+    var lines = content.split(/\r?\n/);
+    for (var li = 0; li < lines.length; li++) {
+      var line = lines[li];
+      var pin = /node-version:\s*['"]?(\d+(?:\.\d+){0,2})['"]?/.exec(line);
+      if (pin) {
+        var pinned = pin[1];
+        if (!_pinCanReachFloor(pinned, floor)) {
+          bad.push({
+            file:    rel,
+            line:    li + 1,
+            content: "workflow pins Node " + pinned + " but engines.node requires " +
+                     engines + ", so CI runs the framework on a runtime it does not support",
+          });
+        }
+      }
+      var named = /Set up Node (\d+(?:\.\d+){0,2})/.exec(line);
+      if (named && !_pinCanReachFloor(named[1], floor)) {
+        bad.push({
+          file:    rel,
+          line:    li + 1,
+          content: "step name says Node " + named[1] + " but engines.node requires " +
+                   engines + ", so the label names a version below the floor",
+        });
+      }
+    }
+  }
+  _report("CI workflows pin the Node version engines.node requires", bad);
 }
 
 function testReadmeVendorTableMatchesManifest() {
@@ -14402,8 +14679,8 @@ var KNOWN_ANTIPATTERNS = [
     // load-operator-file core: bust the require cache for the path, then
     // `try { <var> = require(path) }` and throw a typed error on failure — the
     // dynamic `require()` of operator-supplied code (the security-sensitive bit,
-    // marked allow:dynamic-require). Consolidated to moduleLoader.requireFresh(
-    // absPath, onLoadError) so the dynamic require lives behind ONE audited
+    // marked dynamic-require-operator-module). Consolidated to
+    // moduleLoader.requireFresh(absPath, onLoadError) so it lives behind ONE audited
     // marker; each caller keeps its own path construction + typed error +
     // export validation (mod.up / seed shape). db-schema's inline loop require
     // (no cache-bust, untyped Error) and cli.js's plugin-load (`return require`,
@@ -19689,7 +19966,7 @@ function testNoInlineRequireInDeferred() {
 // true })` + `cryptoField.sealRow`). Direct `vault.seal()` use is
 // only correct for whole-value envelopes the operator never copies
 // between rows (audit chain entries, single-tenant secrets, etc.) —
-// document with `// allow:seal-without-aad — <reason>` per call site.
+// document with `// allow:seal-without-aad-by-design — <reason>` per call site.
 function testSealWithoutAad() {
   // Grep for `vault.seal(` direct calls in files that call
   // `cryptoField.registerTable` — those files are constructing
@@ -24052,8 +24329,8 @@ function testDenyPathComposesDenyResponse() {
 //               own checkout. Genuinely operator-meaningful references
 //               (RFC / CVE / NIST / CWE, "since vX.Y.Z", established
 //               terse markers like D-M4 / AUTH-32) are NOT matched.
-//               Allowlist a false positive with `// allow:internal-
-//               narrative-comment`. ----
+//               Allowlist a false positive with an
+//               `internal-narrative-comment` marker. ----
 // A comment block in lib/ reads as whole sentences.
 //
 // The 0.19.0 sweep removed 60,297 comments, and where it removed SOME lines of
@@ -24168,15 +24445,22 @@ function testLibCommentBlocksAreWholeSentences() {
       if (block.length === 0) return;
       var first = block[0];
       var last = block[block.length - 1];
-      // Tag, directive and marker lines are not prose.
-      var isDirective = /^@|^allow:|eslint|c8 ignore|SPDX|^-|^\||^\d+\.|:$|^[A-Za-z_$][\w$]*\(/.test(first.text);
+      // Tag and directive lines are not prose.
+      //
+      // An `allow:<class>` marker is exempt from the OPENS-mid-clause test,
+      // since it opens on its class by construction, but NOT from the ends-
+      // mid-sentence one: the reason after the dash is what a reviewer weighs
+      // when re-verifying the class, and two of them had been cut in half.
+      var isMarker   = /^allow:/.test(first.text);
+      var isDirective = /^@|eslint|c8 ignore|SPDX|^-|^\||^\d+\.|:$|^[A-Za-z_$][\w$]*\(/.test(first.text);
       if (!isDirective) {
         if (last.text.length > 0 && DANGLING.test(last.text)) {
           bad.push({
             file: rel, line: last.n, content: "comment block ends mid-sentence on `" +
               last.text.split(/\s+/).pop() + "`: \"" + last.text.slice(-60) + "\"",
           });
-        } else if (/^[a-z][a-z-]*\)/.test(first.text) && first.text.indexOf("(") === -1) {
+        } else if (!isMarker && /^[a-z][a-z-]*\)/.test(first.text) &&
+                   first.text.indexOf("(") === -1) {
           bad.push({
             file: rel, line: first.n, content: "comment block opens mid-clause: \"" +
               first.text.slice(0, 60) + "\"",
@@ -24513,6 +24797,7 @@ async function run() {
   testLibCommentBlocksAreWholeSentences();
   testEveryObjectStoreBackendMapsNotFound();
   testNoOrphanAllowClass();
+  testAllowMarkerTokenIntact();
   testDeclaredClassIsHonored();
   testEveryScanScopeReachesFiles();
   testAllowClassRegistryMatchesTheRules();
@@ -24617,6 +24902,8 @@ async function run() {
   testVendorComponentsAttributedInNotice();
   testReadmeVendorTableMatchesManifest();
   testReadmeNodeRequirementMatchesEngines();
+  testWorkflowNodeVersionMatchesEngines();
+  testNodeFloorDeclarationsAgree();
   testOutboundTlsMergesSharedPosture();
   testSecureContextsAdvertiseCertificateCompression();
   testDocumentedScriptFlagsExist();

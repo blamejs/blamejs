@@ -402,11 +402,15 @@ function testMarkdownExtractorsAgreeWithThePatternsTheyReplaced() {
                    " want " + expected + " got " + actual);
       }
     }
-    // Extractors: compare the URLs found, in order.
+    // Extractors: compare the URLs found, in order. A label may contain a line
+    // ending, which the pattern never matched, so a link whose label holds one
+    // is the walk's alone; those are asserted as refusals further down.
     var reLinks = Array.from(doc.matchAll(INLINE_LINK_RE)).map(function (m) {
       return m[1] + "|" + m[3];
     });
-    var gotLinks = api.inlineLinks(doc).map(function (l) { return l.bang + "|" + l.url; });
+    var gotLinks = api.inlineLinks(doc).filter(function (l) {
+      return doc.slice(l.index, l.urlStart).indexOf("\n") === -1;
+    }).map(function (l) { return l.bang + "|" + l.url; });
     compare("inline-links", JSON.stringify(reLinks), JSON.stringify(gotLinks));
 
     var reAuto = Array.from(doc.matchAll(AUTOLINK_RE)).map(function (m) { return m[1]; });
@@ -568,7 +572,467 @@ function testNestedAutolinkIsNotHiddenByAnOuterCandidate() {
         !(safe.issues || []).some(function (i) { return i.kind === "autolink-scheme"; }));
 }
 
+function testLinkLabelWithBracketsStillReachesTheDestination() {
+  // Both scanners took the first `]` as the end of a label. A label may hold
+  // balanced brackets, and a backslash escapes the next character, so a linked
+  // image, an inner bracketed run, or an escaped bracket closed the label early
+  // and the outer destination was never extracted: the scheme policy never saw
+  // it, validate() reported nothing, and sanitize() returned the input intact.
+  var hostile = [
+    "[![alt](img.png)](javascript:alert(1))",
+    "[a [b] c](javascript:alert(1))",
+    "[a\\]b](javascript:alert(1))",
+    "[a\\[b](javascript:alert(1))",
+    "[a [b] c]: javascript:alert(1)",
+    "[a\\]b]: javascript:alert(1)",
+  ];
+  ["strict", "balanced", "permissive"].forEach(function (profile) {
+    hostile.forEach(function (md) {
+      var r = b.guardMarkdown.validate(md, { profile: profile });
+      check("guardMarkdown refuses " + JSON.stringify(md) + " at " + profile,
+            r.ok === false);
+    });
+  });
+  // The same shapes with a safe destination are ordinary links.
+  [
+    "[![x](i.png)](https://ok.example/)",
+    "[a [b] c](https://ok.example/)",
+    "[a\\]b](https://ok.example/)",
+    "[a [b] c]: https://ok.example/",
+  ].forEach(function (md) {
+    check("guardMarkdown keeps " + JSON.stringify(md),
+          b.guardMarkdown.validate(md, { profile: "strict" }).ok === true);
+  });
+  // A policy of "allow" graded the reference-definition and autolink rules and
+  // also switched them off: at permissive `[ref]: javascript:...` and
+  // `<javascript:...>` passed with no issue while the inline rule stayed
+  // critical. The knob still sets severity; a dangerous scheme is always
+  // reported.
+  check("referenceLinkPolicy 'allow' still refuses a dangerous scheme",
+        b.guardMarkdown.validate("[r]: javascript:alert(1)",
+          { profile: "permissive", referenceLinkPolicy: "allow" }).ok === false);
+  check("autolinkSchemePolicy 'allow' still refuses a dangerous scheme",
+        b.guardMarkdown.validate("<javascript:alert(1)>",
+          { profile: "permissive", autolinkSchemePolicy: "allow" }).ok === false);
+  // The inline-link and image rules carried the same escape.
+  check("dangerousSchemePolicy 'allow' still refuses a dangerous inline link",
+        b.guardMarkdown.validate("[x](javascript:alert(1))",
+          { profile: "permissive", dangerousSchemePolicy: "allow" }).ok === false);
+  check("imageSchemePolicy 'allow' still refuses a dangerous image source",
+        b.guardMarkdown.validate("![x](javascript:alert(1))",
+          { profile: "permissive", imageSchemePolicy: "allow" }).ok === false);
+  // An unmatched `[` earlier on the line must not hide a link after it. A
+  // depth-tracking scan that skipped to the newline on no match did exactly
+  // that, and the first-`]` scan it replaced had caught this shape by accident.
+  check("guardMarkdown refuses a hostile link after a stray `[` on the line",
+        b.guardMarkdown.validate("[ [x](javascript:alert(1))",
+          { profile: "strict" }).ok === false);
+  check("guardMarkdown refuses a hostile link after an escaped `\\[`",
+        b.guardMarkdown.validate("\\[ [x](javascript:alert(1))",
+          { profile: "strict" }).ok === false);
+  // Brackets are matched in one pass and looked up, not rescanned from every
+  // `[`. A run of unmatched openers is the adversarial shape: rescanning from
+  // each one is quadratic, and a guard on request data must not be.
+  var growth = require("../helpers/growth");
+  function scanNested(size) {
+    var md = new Array(size + 1).join("[") + "x](javascript:alert(1))";
+    // permissive carries the largest link and image caps, so extraction is not
+    // truncated and a quadratic term cannot hide behind the cap.
+    b.guardMarkdown.validate(md, { profile: "permissive" });
+  }
+  check("guardMarkdown link scan stays linear in the number of `[`",
+        growth.looksSuperlinear(scanNested,
+          { small: 4000, large: 16000, threshold: 8 }) === false);
+  // Matched nested brackets whose destinations sit at DECREASING offsets: each
+  // link's URL starts earlier than the last, so a forward-only cache on the URL
+  // scanner misses every time and rescans overlapping suffixes. A 32 KB input
+  // of this shape took two seconds. The run end is memoized by position, so an
+  // index is scanned once however the destinations are ordered.
+  function scanNestedDestinations(size) {
+    var md = new Array(size + 1).join("[") + "x]" +
+             new Array(size).join("](a") + ")";
+    // permissive carries the largest link and image caps, so extraction is not
+    // truncated and a quadratic term cannot hide behind the cap.
+    b.guardMarkdown.validate(md, { profile: "permissive" });
+  }
+  check("guardMarkdown stays linear when nested destinations start at decreasing offsets",
+        growth.looksSuperlinear(scanNestedDestinations,
+          { small: 2000, large: 8000, threshold: 8 }) === false);
+  // The same overlap with entity-encoded control padding as the shared suffix.
+  // A plain prefix decides the scheme in constant time, but padding forces the
+  // normalizing path, and normalizing each overlapping suffix in full is
+  // quadratic: 2.7 seconds at n=8000. The scheme is now read by position
+  // through a memoized skip of what normalization strips, so the shared
+  // padding is walked once for all of the links that start inside it.
+  function scanPaddedDestinations(size) {
+    var md = new Array(size + 1).join("[") + "x]" +
+             new Array(size).join("](&#1;a") + ")";
+    b.guardMarkdown.validate(md, { profile: "permissive" });
+  }
+  check("guardMarkdown stays linear when overlapping destinations share entity padding",
+        growth.looksSuperlinear(scanPaddedDestinations,
+          { small: 2000, large: 8000, threshold: 8 }) === false);
+  // Nested links that all end at one endpoint, followed by a long run of
+  // whitespace before the closing paren. Whether a link closes there is a
+  // function of the endpoint alone, but it was recomputed per link, and each
+  // recomputation skipped the whole run: 2000 links over 1 MiB took seconds.
+  // The answer is memoized per endpoint, so the run is skipped once.
+  var SPACE_TAIL = new Array(256 * 1024 + 1).join(" ");
+  function scanSharedEndpoint(size) {
+    var md = new Array(size + 1).join("[") + "x]" +
+             new Array(size).join("](a") + SPACE_TAIL + ")";
+    b.guardMarkdown.validate(md, { profile: "balanced" });
+  }
+  check("guardMarkdown stays linear when nested links share an endpoint before a long tail",
+        growth.looksSuperlinear(scanSharedEndpoint,
+          { small: 500, large: 2000, threshold: 8 }) === false);
+  // Reading the scheme by position has to reach the same verdict the whole-
+  // string normalization did, on every padding and encoding it strips.
+  [
+    "[x](&#1;&#1;&#1;javascript:alert(1))",
+    "[x](" + String.fromCharCode(1, 1) + "javascript:alert(1))",
+    "[x](j&Tab;avascript:alert(1))",
+    "[x](j&NewLine;avascript:alert(1))",
+    "[x](&#x6A;avascript:alert(1))",
+    "[x](&#106;&#97;vascript:alert(1))",
+    "[x](" + String.fromCharCode(0x200B) + "javascript:alert(1))",
+    "[x]( javascript:alert(1))",
+    "[x](JAVASCRIPT:alert(1))",
+  ].forEach(function (md) {
+    check("guardMarkdown refuses a padded or encoded scheme " + JSON.stringify(md),
+          b.guardMarkdown.validate(md, { profile: "permissive" }).ok === false);
+  });
+  [
+    "[x](https://ok.example/)",
+    "[x](&#x68;ttps://ok.example/)",
+    "[x](&#1;https://ok.example/)",
+    "[x](/relative/path)",
+    "[x](mailto:a@ok.example)",
+  ].forEach(function (md) {
+    check("guardMarkdown keeps a safe destination " + JSON.stringify(md),
+          b.guardMarkdown.validate(md, { profile: "permissive" }).ok === true);
+  });
+  // sanitize() is the output path, so a refusal there has to hold too.
+  var threw = false;
+  try { b.guardMarkdown.sanitize("[![alt](img.png)](javascript:alert(1))", { profile: "strict" }); }
+  catch (e) { threw = !!(e && e.isGuardMarkdownError); }
+  check("guardMarkdown.sanitize refuses the linked-image bypass", threw);
+}
+
+async function testEncodedAndZeroWidthSchemesAreRefused() {
+  // The whole-string decoder runs numeric references in one pass and named
+  // references in a second pass over the result, so a numeric reference that
+  // yields an ampersand completes a named reference with the text after it.
+  // Reading by position has to reproduce that order, or `&#38;colon;` reads as
+  // an ampersand plus text where the renderer reads a colon.
+  ["strict", "balanced", "permissive"].forEach(function (profile) {
+    ["[x](javascript&#38;colon;alert(1))", "[x](j&#38;Tab;avascript:alert(1))"]
+      .forEach(function (md) {
+        check("guardMarkdown refuses " + JSON.stringify(md) + " at " + profile,
+              b.guardMarkdown.validate(md, { profile: profile }).ok === false);
+      });
+  });
+  // The first pass does not rescan what it produced, so an ampersand from a
+  // numeric reference followed by another numeric reference stays literal and
+  // the destination is not a scheme. The positional reader agrees.
+  check("guardMarkdown keeps [x](javascript&#38;#58;alert(1)), which decodes to no scheme",
+        b.guardMarkdown.validate("[x](javascript&#38;#58;alert(1))",
+          { profile: "permissive" }).ok === true);
+  // The positional reader stands in for whole-string normalization, so its
+  // verdict is checked against that normalization rather than against a
+  // hardcoded answer: the expected value is computed from the reference path
+  // in this test, for the shapes where the two are easiest to get to differ.
+  var cc = b.codepointClass;
+  var SCHEMES = ["javascript", "vbscript", "livescript", "mocha", "view-source",
+                 "data", "jar", "blob", "feed", "tel", "facetime", "facetime-audio"];
+  function referenceSaysDangerous(url) {
+    var s = cc.stripUrlSchemeWhitespace(cc.decodeMarkupEntities(url.trim())).toLowerCase();
+    return SCHEMES.some(function (name) {
+      if (s.slice(0, name.length) !== name) return false;
+      var j = name.length;
+      while (j < s.length && cc.inRanges(s.charCodeAt(j), cc.WHITESPACE_RANGES)) j += 1;
+      return s.charAt(j) === ":";
+    });
+  }
+  [
+    "java&nbsp;script:alert(1)",
+    "javascript&co&#108;on;alert(1)",
+    "javascript&#38;co&#108;on;alert(1)",
+    "javascript&amp;colon;alert(1)",
+    "javascript&#38;colon;alert(1)",
+    "javascript&#38;&#99;&#111;&#108;&#111;&#110;&#59;alert(1)",
+    "&#0000106;avascript:alert(1)",
+    "javascript&#38;#58;alert(1)",
+    "j&#38;Tab;avascript:alert(1)",
+    // Whitespace between the name and its colon is skipped without bound by
+    // the reference, so a run of it must not consume the bounded prefix; a
+    // run inside the name is kept and is not a scheme.
+    "javascript" + new Array(41).join("&#32;") + ":alert(1)",
+    "javascript" + new Array(41).join("&nbsp;") + ":alert(1)",
+    "java" + new Array(41).join("&#32;") + "script:alert(1)",
+    "javascript&#9;&#9;&#9;:alert(1)",
+  ].forEach(function (url) {
+    var expectOk = !referenceSaysDangerous(url);
+    check("positional scheme reading agrees with whole-string normalization on " +
+          JSON.stringify(url) + " (ok=" + expectOk + ")",
+          b.guardMarkdown.validate("[x](" + url + ")", { profile: "permissive" }).ok === expectOk);
+  });
+  // The bracket index is bounded before it is built. A document of brackets
+  // and nothing else once built an index proportional to its length, and past
+  // V8's map limit threw instead of answering. Over the cap the index is not
+  // built and the document is refused, so a hostile link among the brackets
+  // cannot ride through an unextracted scan as a clean verdict.
+  var flood = new Array(70001).join("[]");
+  var capped = b.guardMarkdown.validate(flood, { profile: "permissive" });
+  check("guardMarkdown refuses a document past the bracket opener cap",
+        capped.ok === false &&
+        capped.issues.some(function (i) { return i.kind === "delimiter-cap"; }));
+  check("guardMarkdown refuses a hostile link hidden past the bracket opener cap",
+        b.guardMarkdown.validate(flood + "[x](javascript:alert(1))",
+          { profile: "permissive" }).ok === false);
+  var under = new Array(60001).join("[]");
+  check("guardMarkdown accepts a bracket-only document under the cap",
+        b.guardMarkdown.validate(under, { profile: "permissive" }).ok === true);
+  // Brackets inside a code span are literal to CommonMark and take no part in
+  // label matching. A matcher that paired them let a backtick-quoted `[` in an
+  // image label take the closing bracket, so the image was extracted as a
+  // plain link and never counted against maxImages; a quoted `]` likewise
+  // closed an outer label early and hid its destination.
+  var tick = String.fromCharCode(0x60);
+  var spanImage = "![a " + tick + "[" + tick + " b](https://example.com/a.png)";
+  var twoImages = b.guardMarkdown.validate(spanImage + "\n" + spanImage + "\n",
+    { profile: "strict", maxImages: 1 });
+  check("an image whose label holds a code-span bracket still counts toward maxImages",
+        twoImages.ok === false &&
+        twoImages.issues.some(function (i) { return i.kind === "image-cap"; }));
+  [
+    "[x " + tick + "]" + tick + " ](javascript:alert(1))",
+    "[![a](i.png) " + tick + "]" + tick + "](javascript:alert(1))",
+  ].forEach(function (md) {
+    check("guardMarkdown refuses a hostile link whose label quotes a bracket in a code span " +
+          JSON.stringify(md),
+          b.guardMarkdown.validate(md, { profile: "permissive" }).ok === false);
+  });
+  check("guardMarkdown keeps a benign link whose label is a bracket in a code span",
+        b.guardMarkdown.validate("[" + tick + "[" + tick + "](https://ok.example/)",
+          { profile: "strict" }).ok === true);
+  // A backtick run with no closing run of the same length is literal text, not
+  // the start of a code span. A matcher that treated every run as an opener
+  // ignored every bracket after a stray backtick, so a hostile link that
+  // followed one was never extracted: validate() passed it and sanitize()
+  // returned it unchanged.
+  var stray = "[a " + tick + " b](javascript:alert(1))";
+  check("guardMarkdown refuses a hostile link after an unmatched backtick",
+        b.guardMarkdown.validate(stray, { profile: "strict" }).ok === false);
+  var strayThrew = false;
+  try { b.guardMarkdown.sanitize(stray, { profile: "strict" }); }
+  catch (e) { strayThrew = e.code === "markdown.link-scheme"; }
+  check("guardMarkdown sanitize refuses a hostile link after an unmatched backtick",
+        strayThrew);
+  [
+    "[a " + tick + tick + " b " + tick + " c](javascript:alert(1))",
+    "[x " + tick + " a " + tick + tick + " b " + tick + " c " + tick + tick + "](javascript:alert(1))",
+  ].forEach(function (md) {
+    check("guardMarkdown refuses a hostile link whose label holds unmatched backtick runs " +
+          JSON.stringify(md),
+          b.guardMarkdown.validate(md, { profile: "strict" }).ok === false);
+  });
+  // Pairing backtick runs is one pass over the line, so a document that is
+  // nothing but code spans costs the same per byte as one with none.
+  var growth = require("../helpers/growth");
+  function scanBacktickPairs(n) {
+    var parts = new Array(n + 1).join(tick + " " + tick + " ");
+    b.guardMarkdown.validate(parts, { profile: "permissive" });
+  }
+  check("guardMarkdown stays linear on a document of back-to-back code spans",
+        growth.looksSuperlinear(scanBacktickPairs,
+          { small: 4000, large: 16000, threshold: 8 }) === false);
+  // A code span binds tighter than a link in CommonMark, but a link-first
+  // renderer reads a backtick inside a destination as part of the URL, so a
+  // span fabricated from that backtick hid the hostile link after it. Links
+  // and reference definitions are extracted both with and without code spans
+  // and every match found either way is inspected. An escaped backtick cannot
+  // open a span but does close one, as in cmark, whose closer scan is raw.
+  var bs = String.fromCharCode(0x5C);
+  [
+    "[a](https://foo/" + tick + ") [x](javascript:a) " + tick,
+    "[x " + bs + tick + " ](javascript:alert(1)) " + tick,
+    "[x " + tick + "a" + bs + tick + " ](javascript:alert(1)) " + tick,
+  ].forEach(function (md) {
+    check("guardMarkdown refuses a hostile link a fabricated code span would hide " +
+          JSON.stringify(md),
+          b.guardMarkdown.validate(md, { profile: "strict" }).ok === false);
+  });
+  var hiddenRef = "[a](https://foo/" + tick + ")\n\n[r]: javascript:alert(1)\n\n[x][r] " + tick;
+  var hiddenRefResult = b.guardMarkdown.validate(hiddenRef, { profile: "strict" });
+  check("guardMarkdown refuses a reference definition a fabricated code span would hide",
+        hiddenRefResult.ok === false &&
+        hiddenRefResult.issues.some(function (i) { return i.kind === "reference-link-scheme"; }));
+  check("guardMarkdown keeps a benign link whose label is an escaped backtick",
+        b.guardMarkdown.validate("[" + bs + tick + "](https://ok.example/)",
+          { profile: "strict" }).ok === true);
+  check("guardMarkdown keeps a benign link followed by a code span",
+        b.guardMarkdown.validate("[a](https://ok.example/) " + tick + "code" + tick,
+          { profile: "strict" }).ok === true);
+  // Unmatched runs of many distinct lengths stay pending while later spans
+  // pair, and clearing a pending opener by deleting its map entry cost a
+  // rehash proportional to the pending count on every span: 4 MB of this
+  // shape took five seconds. Pending openers are cleared in place instead.
+  function scanPendingLengths(n) {
+    var parts = ["["];
+    var lengths = Math.max(2, Math.round(n / 250));
+    for (var len = 2; len <= lengths; len += 1) parts.push(new Array(len + 1).join(tick) + " ");
+    parts.push(new Array(n + 1).join(tick + "x" + tick + " "));
+    b.guardMarkdown.validate(parts.join(""), { profile: "permissive" });
+  }
+  check("guardMarkdown stays linear on code spans after many unmatched run lengths",
+        growth.looksSuperlinear(scanPendingLengths,
+          { small: 25000, large: 100000, threshold: 8 }) === false);
+  // Code spans are exactly CommonMark's. An earlier opener that finds a closer
+  // wins over any pair inside it, so a greedy pairing that emitted the inner
+  // pair first left the enclosing span unapplied and a quoted bracket live.
+  // An escaped backtick removes one backtick from an opener candidate, while a
+  // closer is matched on the raw run. Labels and spans cross a line ending but
+  // not a blank line, which ends the paragraph.
+  var spanImage2 = "![a " + tick + " " + tick + tick + "x" + tick + tick + " [ " + tick + "](https://a)";
+  var twoImages2 = b.guardMarkdown.validate(spanImage2 + "\n" + spanImage2 + "\n",
+    { profile: "strict", maxImages: 1 });
+  check("an image whose label holds an enclosing code span still counts toward maxImages",
+        twoImages2.ok === false &&
+        twoImages2.issues.some(function (i) { return i.kind === "image-cap"; }));
+  [
+    "[x " + tick + tick + " ] " + tick + " b " + tick + " c " + tick + tick + " ](javascript:alert(1))",
+    "[x " + bs + tick + tick + " ] " + tick + " ](javascript:alert(1))",
+    "[x " + tick + tick + " ] " + bs + tick + tick + " ](javascript:alert(1))",
+    "[x\ny](javascript:alert(1))",
+    "![x\ny](javascript:alert(1))",
+    "[x " + tick + "\n]" + tick + " ](javascript:alert(1))",
+    "[x " + tick + "\n\n[y](javascript:alert(1)) " + tick,
+  ].forEach(function (md) {
+    check("guardMarkdown refuses a hostile link whose bracket a code span or line ending hid " +
+          JSON.stringify(md),
+          b.guardMarkdown.validate(md, { profile: "strict" }).ok === false);
+  });
+  var twoLineRef = b.guardMarkdown.validate("[r\nq]: javascript:alert(1)\n\n[x][r q]",
+    { profile: "strict" });
+  check("guardMarkdown refuses a reference definition whose label spans two lines",
+        twoLineRef.ok === false &&
+        twoLineRef.issues.some(function (i) { return i.kind === "reference-link-scheme"; }));
+  [
+    "[x\n\ny](javascript:alert(1))",
+    "[x " + tick + "\n\n](javascript:alert(1)) " + tick,
+  ].forEach(function (md) {
+    check("guardMarkdown reads no link across a blank line " + JSON.stringify(md),
+          b.guardMarkdown.validate(md, { profile: "strict" }).ok === true);
+  });
+  check("guardMarkdown keeps a benign two-line label",
+        b.guardMarkdown.validate("[x\ny](https://ok.example/)", { profile: "strict" }).ok === true);
+  check("guardMarkdown keeps a benign label holding an enclosing code span with an inner pair",
+        b.guardMarkdown.validate("[" + tick + tick + " a " + tick + " b " + tick + " " + tick + tick +
+          "](https://ok.example/)", { profile: "strict" }).ok === true);
+  // A document over the opener cap was never inspected, so the gate refuses
+  // it under every profile rather than serving or sanitizing it.
+  var floodGate = b.guardMarkdown.gate({ profile: "permissive" });
+  var floodVerdict = await floodGate.check({
+    contentType: "text/markdown",
+    bytes:       Buffer.from(flood + "[x](javascript:alert(1))", "utf8"),
+  });
+  check("guardMarkdown gate refuses a document over the bracket opener cap",
+        floodVerdict.ok === false && floodVerdict.action === "refuse");
+  // Autolinks and raw HTML tags bind tighter than links, as code spans do, so
+  // a bracket inside one is literal. A matcher that paired it let an autolink
+  // holding `[` in an image label take the image's closing bracket, so the
+  // image escaped the cap, and a `]` inside a tag attribute or a comment
+  // closed a label early and hid its destination. The first construct in text
+  // order wins: a backtick inside an autolink is literal, and an autolink
+  // inside a code span is literal.
+  var autoImage = "![<https://example.com/[>](https://example.com/image.png)";
+  var twoAutoImages = b.guardMarkdown.validate(autoImage + "\n" + autoImage + "\n",
+    { profile: "permissive", maxImages: 1 });
+  check("an image whose label holds an autolink bracket still counts toward maxImages",
+        twoAutoImages.ok === false &&
+        twoAutoImages.issues.some(function (i) { return i.kind === "image-cap"; }));
+  [
+    "[x <https://a/]> ](javascript:alert(1))",
+    "[x <span title=\"]\"> ](javascript:alert(1))",
+    "[x <a title=\"< ]\"> ](javascript:alert(1))",
+    "[x <!-- ] --> ](javascript:alert(1))",
+    "[x <https://a/" + tick + "]> ](javascript:alert(1)) " + tick,
+    "[x " + tick + "<https://a/]>" + tick + " ](javascript:alert(1))",
+  ].forEach(function (md) {
+    var r = b.guardMarkdown.validate(md, { profile: "permissive" });
+    check("guardMarkdown refuses a hostile link whose bracket an autolink or tag hid " +
+          JSON.stringify(md),
+          r.ok === false && r.issues.some(function (i) { return i.kind === "link-scheme"; }));
+  });
+  [
+    "[<https://a/[>](https://ok.example/)",
+    "[x <b>bold</b>](https://ok.example/)",
+    "[x </b ]> ](https://ok.example/)",
+    "[x < span ]> ](https://ok.example/)",
+  ].forEach(function (md) {
+    check("guardMarkdown keeps a benign link around an autolink or tag " + JSON.stringify(md),
+          b.guardMarkdown.validate(md, { profile: "permissive" }).ok === true);
+  });
+  // A tag that never closes is scanned once, however many tag starts follow
+  // inside its quoted values, so a flood of them stays linear.
+  function scanNestedTagStarts(n) {
+    b.guardMarkdown.validate("[" + new Array(n + 1).join("<a b=\"<c d=\" e=\""),
+      { profile: "permissive" });
+  }
+  check("guardMarkdown stays linear on a flood of unclosed nested tag starts",
+        growth.looksSuperlinear(scanNestedTagStarts,
+          { small: 10000, large: 40000, threshold: 8 }) === false);
+  // Two readings can assign different destinations to one opener. Both are
+  // inspected, but the construct is one construct, so the caps are not spent
+  // twice on it and a document with one image is not refused at maxImages 1.
+  var dualImage = "![a " + tick + "](https://inner.example)" + tick + " ](https://outer.example)";
+  check("one image read two ways counts once against maxImages",
+        b.guardMarkdown.validate(dualImage, { profile: "strict", maxImages: 1 }).ok === true);
+  check("one link read two ways counts once against maxLinks",
+        b.guardMarkdown.validate("[a " + tick + "](https://inner.example)" + tick +
+          " ](https://outer.example)", { profile: "strict", maxLinks: 1 }).ok === true);
+  check("one reference definition read two ways counts once against maxRefDefs",
+        b.guardMarkdown.validate("[a " + tick + "]: https://inner.example\n" + tick +
+          " ]: https://outer.example\n\n[x][a]",
+          { profile: "strict", maxRefDefs: 1 }).ok === true);
+  [
+    "[a " + tick + "](javascript:alert(1))" + tick + " ](https://outer.example)",
+    "[a " + tick + "](https://inner.example)" + tick + " ](javascript:alert(1))",
+  ].forEach(function (md) {
+    check("guardMarkdown inspects both destinations one opener is read with " +
+          JSON.stringify(md),
+          b.guardMarkdown.validate(md, { profile: "strict" }).ok === false);
+  });
+  var dualRefHostile = b.guardMarkdown.validate("[a " + tick + "]: javascript:alert(1)\n" +
+    tick + " ]: https://outer.example\n\n[x][a]", { profile: "strict" });
+  check("guardMarkdown inspects both destinations one reference label is read with",
+        dualRefHostile.ok === false &&
+        dualRefHostile.issues.some(function (i) { return i.kind === "reference-link-scheme"; }));
+  var twoImages3 = b.guardMarkdown.validate(spanImage + "\n" + spanImage + "\n",
+    { profile: "strict", maxImages: 2 });
+  check("two distinct images still count separately",
+        twoImages3.ok === true);
+  // A zero-width character inside the scheme of a reference definition is
+  // stripped by normalization and by a browser, so the plain-prefix shortcut
+  // must not treat it as plain text. validate() folded it away and hid the
+  // gap; the gate's disposition exposed it as sanitize rather than refuse.
+  var zw = String.fromCharCode(0x200B);
+  var refDef = "[r]: java" + zw + "script:alert(1)\n\n[x][r]\n";
+  check("guardMarkdown refuses a zero-width character inside a reference scheme",
+        b.guardMarkdown.validate(refDef, { profile: "balanced" }).ok === false);
+  var gate = b.guardMarkdown.gate({ profile: "balanced" });
+  var verdict = await gate.check({
+    contentType: "text/markdown",
+    bytes:       Buffer.from(refDef, "utf8"),
+  });
+  check("the balanced gate refuses that reference rather than sanitizing it",
+        verdict.action === "refuse");
+}
+
 async function run() {
+  await testEncodedAndZeroWidthSchemesAreRefused();
+  testLinkLabelWithBracketsStillReachesTheDestination();
   testMarkdownExtractorsAgreeWithThePatternsTheyReplaced();
   testGuardMarkdownSurface();
   testGuardMarkdownRegistryParity();

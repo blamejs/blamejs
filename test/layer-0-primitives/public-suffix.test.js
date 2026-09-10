@@ -202,6 +202,20 @@ function testPslConformanceDepartures() {
     check("organizationalDomain(" + JSON.stringify(bad) + ") throws invalid-domain",
           code === "public-suffix/invalid-domain");
   });
+
+  // 3. An `xn--` label with no decodable payload. domainToASCII answers this
+  //    differently across runtimes: Node 26 maps these to "" and the empty
+  //    check above catches them, while Node 24.21 hands the label back
+  //    unchanged, where it passes the LDH check and reads as a real domain.
+  //    The framework decides it, so the verdict does not move with the runtime.
+  ["xn--", "xn--a", "xn--zz", "xn--.de", "xn--a.example.com"].forEach(function (bad) {
+    var code = null;
+    try { b.publicSuffix.organizationalDomain(bad); } catch (e) { code = e.code; }
+    check("organizationalDomain(" + JSON.stringify(bad) + ") throws invalid-domain",
+          code === "public-suffix/invalid-domain");
+  });
+  check("a well-formed A-label is still accepted",
+        b.publicSuffix.organizationalDomain("shishi.xn--fiqs8s") === "shishi.xn--fiqs8s");
 }
 
 function testExceptionRule() {

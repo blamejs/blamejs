@@ -162,7 +162,6 @@ async function testMalformedNonceClaimRefused() {
 // in-flight client one rotation behind is not kicked off (RFC 9449 §8).
 async function testNoncePreviousAcceptedAcrossRotation() {
   var key = _ecPem();
-  var t0 = Date.now();
   var mw = b.middleware.dpop({
     replayStore: _ns(),
     requireNonce: true,
@@ -174,10 +173,13 @@ async function testNoncePreviousAcceptedAcrossRotation() {
   var r1 = await _call(mw, _req());
   var n1 = r1.cap.headers["dpop-nonce"];
   check("rotation: first nonce issued", typeof n1 === "string" && n1.length > 0);
+  var issuedAt = Date.now();
 
-  // Let the rotation window elapse (poll, don't sleep). One waitUntil poll is
-  // ~25ms, comfortably past the 10ms window.
-  await helpers.waitUntil(function () { return Date.now() - t0 >= 40; }, {
+  // Let the rotation window elapse (poll, don't sleep), measured from after
+  // the first nonce was issued. The window opens at issue time, so a wait
+  // anchored before the first call is already satisfied when that call is
+  // slower than the wait, and the second access then lands inside the window.
+  await helpers.waitUntil(function () { return Date.now() - issuedAt >= 40; }, {
     timeoutMs: 5000,
     label: "dpop nonce rotation: rotate window (10ms) elapsed",
   });

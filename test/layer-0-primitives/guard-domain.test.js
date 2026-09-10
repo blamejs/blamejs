@@ -502,7 +502,98 @@ function testPolicyVocabularyIsEnforced() {
   helpers.assertPolicyVocabulary(b.guardDomain, LEGAL, { label: "domain", sample: "example.com" });
 }
 
+function testAceLabelsCarryPayload() {
+  // `url.domainToASCII` maps rather than validates, and its answer for a
+  // payload-less ACE label differs by Node version: 24.21.0 returns the label
+  // unchanged where 26 returns "". A caller testing only for "" accepts `xn--`
+  // on one runtime and refuses it on the other, so the framework decides it.
+  [
+    ["xn--",              false],
+    ["xn--a",             false],
+    ["xn--zz",            false],
+    ["xn--.de",           false],
+    ["xn--a.example.com", false],
+    ["xn--mnchen-3ya",    true],
+    ["xn--mnchen-3ya.de", true],
+    ["xn--fiqs8s",        true],
+    ["example.com",       true],
+    ["abc",               true],
+  ].forEach(function (row) {
+    check("aceLabelsCarryPayload(" + JSON.stringify(row[0]) + ") = " + row[1],
+          b.guardDomain.aceLabelsCarryPayload(row[0]) === row[1]);
+  });
+  // The predicate is not enough on its own: validate() and sanitize() are the
+  // APIs callers reach for, and an undecodable payload has to be refused there
+  // under every profile, the way safeUrl / mail / publicSuffix now refuse it.
+  ["strict", "balanced", "permissive"].forEach(function (profile) {
+    ["xn--a.example.com", "xn--zz.example.com", "xn--.example.com"].forEach(function (d) {
+      check("guardDomain.validate(" + JSON.stringify(d) + ") refused at " + profile,
+            b.guardDomain.validate(d, { profile: profile }).ok === false);
+    });
+  });
+  // strict refuses every A-label as a homograph class, so the well-formed one
+  // survives only where the profile admits A-labels at all.
+  ["balanced", "permissive"].forEach(function (profile) {
+    check("guardDomain.validate keeps a well-formed A-label at " + profile,
+          b.guardDomain.validate("xn--mnchen-3ya.de", { profile: profile }).ok === true);
+  });
+
+  // UTS 46 counts the ideographic and fullwidth stops as label separators, so a
+  // name using one has the same labels as a name using the ASCII dot. Splitting
+  // on the ASCII one alone hid every label after the first of these from the
+  // per-label rules, and the malformed A-label rode in behind it.
+  ["。", "．", "｡"].forEach(function (sep) {
+    check("guardDomain refuses a malformed A-label after U+" +
+          sep.charCodeAt(0).toString(16).toUpperCase(),
+          b.guardDomain.validate("example" + sep + "xn--a.com",
+            { profile: "balanced" }).ok === false);
+    check("guardDomain keeps a clean name using U+" +
+          sep.charCodeAt(0).toString(16).toUpperCase(),
+          b.guardDomain.validate("example" + sep + "com",
+            { profile: "balanced" }).ok === true);
+  });
+
+  // Normalizing at entry rather than at the label split is what keeps the
+  // whole-domain rules working: the IP-literal and special-use checks read the
+  // name before it is split, so a separator handled only during label
+  // validation would let these through with no issue at all.
+  check("guardDomain refuses an IPv4 literal written with U+3002",
+        b.guardDomain.validate("127。0。0。1", { profile: "strict" }).ok === false);
+  check("guardDomain refuses a special-use suffix written with U+3002",
+        b.guardDomain.validate("foo。localhost", { profile: "strict" }).ok === false);
+  // A terminal separator is the FQDN marker in whichever spelling it arrives.
+  check("guardDomain accepts a trailing U+3002 as the FQDN marker",
+        b.guardDomain.validate("example.com。", { profile: "balanced" }).ok ===
+        b.guardDomain.validate("example.com.", { profile: "balanced" }).ok);
+
+  // sanitize() produces the comparison key, so equivalent spellings have to
+  // reduce to one. It runs its own transform, which normalization has to reach
+  // as well or an accepted name keeps a terminal marker the contract strips.
+  ["Example.Com。", "Example.Com.", "Example。Com", "example.com"].forEach(function (d) {
+    check("guardDomain.sanitize(" + JSON.stringify(d) + ") = example.com",
+          b.guardDomain.sanitize(d, { profile: "strict" }) === "example.com");
+  });
+
+  // A non-string or empty input is not a domain, so it does not carry one.
+  check("aceLabelsCarryPayload('') = false",
+        b.guardDomain.aceLabelsCarryPayload("") === false);
+  check("aceLabelsCarryPayload(null) = false",
+        b.guardDomain.aceLabelsCarryPayload(null) === false);
+  // The uppercase ACE prefix is the same label. The mapper lowercases a prefix
+  // it could not decode, so `XN--A` comes back as `xn--a`: comparing with case
+  // reads that normalization as a successful decoding and admits the label.
+  ["XN--", "XN--A", "XN--ZZ"].forEach(function (l) {
+    check("aceLabelsCarryPayload(" + JSON.stringify(l) + ") = false",
+          b.guardDomain.aceLabelsCarryPayload(l) === false);
+    check("guardDomain.validate refuses " + l + ".example.com at balanced",
+          b.guardDomain.validate(l + ".example.com", { profile: "balanced" }).ok === false);
+  });
+  check("an uppercase well-formed A-label still carries its payload",
+        b.guardDomain.aceLabelsCarryPayload("XN--MNCHEN-3YA") === true);
+}
+
 async function run() {
+  testAceLabelsCarryPayload();
   testLabelShapesAgreeWithThePatternsTheyReplaced();
   testSanitize();
   testIpv4PermissiveForms();

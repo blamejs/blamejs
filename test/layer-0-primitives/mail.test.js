@@ -1820,10 +1820,23 @@ function testFeedbackId() {
 
 function testToAsciiPunycodeEmptyReturnsNull() {
   // A bare space / bare "xn--" prefix reaches nodeUrl.domainToASCII (no URL
-  // delimiter to short-circuit on) which yields "" — the length-0 guard maps
-  // that to null rather than surfacing an empty ACE label.
+  // delimiter to short-circuit on). Whether that yields "" or the label back
+  // unchanged depends on the runtime: Node 26 returns "" and the length-0 guard
+  // maps it to null, while Node 24.21 returns "xn--" and the guard never fires.
+  // The framework decides this itself, so the answer is the same on both.
   check("toAscii(' ') → null (empty ACE)", b.mail.toAscii(" ") === null);
   check("toAscii('xn--') → null (empty ACE)", b.mail.toAscii("xn--") === null);
+  // An ACE prefix with a payload too short to decode is the same class, and is
+  // what the length-0 guard alone never covered on either runtime.
+  check("toAscii('xn--a') → null (undecodable ACE)", b.mail.toAscii("xn--a") === null);
+  check("toAscii('xn--zz') → null (undecodable ACE)", b.mail.toAscii("xn--zz") === null);
+  check("toAscii('xn--.de') → null (empty ACE label in a dotted name)",
+        b.mail.toAscii("xn--.de") === null);
+  // A well-formed A-label still round-trips.
+  check("toAscii('xn--mnchen-3ya.de') survives",
+        b.mail.toAscii("xn--mnchen-3ya.de") === "xn--mnchen-3ya.de");
+  check("toAscii('münchen.de') → A-label",
+        b.mail.toAscii("münchen.de") === "xn--mnchen-3ya.de");
 }
 
 // ---------------------------------------------------------------------------
