@@ -922,20 +922,59 @@ function testDecodeEntityAtAndUrlSchemeStrippable() {
   check("decodeNamedEntityAt returns null for a numeric reference",
         cc.decodeNamedEntityAt("&#38;", 0) === null);
   // The whole-string decoder runs numeric references first and named
-  // references over the result, so to the second pass a name whose letters,
-  // closing semicolon, or leading ampersand were written numerically is the
-  // same name. The per-position reader recognizes exactly those.
+  // references over the result, so to the second pass a name whose letters
+  // or closing semicolon were written numerically is the same name. The
+  // named reader recognizes exactly those behind a literal ampersand.
   [
     ["&co&#108;on;",                             ":", 12],
     ["&colon&#59;",                              ":", 11],
-    ["&#38;colon;",                              ":", 11],
-    ["&#38;&#99;&#111;&#108;&#111;&#110;&#59;",  ":", 39],
-    ["&#x26;colon;",                             ":", 12],
   ].forEach(function (row) {
     var at = cc.decodeNamedEntityAt(row[0], 0);
     check("decodeNamedEntityAt(" + JSON.stringify(row[0]) + ") decodes the assembled name",
           at !== null && at.text === row[1] && at.next === row[2]);
   });
+  // A numeric reference at the index is not a named reference, whatever it
+  // decodes to, so the named reader never consumes one; the composition of
+  // a numeric ampersand with the name after it is decodeReferenceAt's.
+  ["&#38;colon;", "&#38;&#99;&#111;&#108;&#111;&#110;&#59;", "&#x26;colon;", "&#38;x"]
+    .forEach(function (s) {
+      check("decodeNamedEntityAt(" + JSON.stringify(s) + ") returns null for a numeric opener",
+            cc.decodeNamedEntityAt(s, 0) === null);
+    });
+  [
+    ["&colon;x",                                 ":", 7],
+    ["&#38;colon;",                              ":", 11],
+    ["&#38;&#99;&#111;&#108;&#111;&#110;&#59;",  ":", 39],
+    ["&#x26;colon;",                             ":", 12],
+    ["&co&#108;on;",                             ":", 12],
+    ["&#99;x",                                   "c", 5],
+    ["&#38;x",                                   "&", 5],
+    ["&#38;#38;",                                "&", 5],
+    ["&amp;colon;",                              "&", 5],
+    ["&zzzz;",                                   "&zzzz;", 6],
+    ["&#38;zzzz;",                               "&zzzz;", 10],
+    ["&zz&#122;z;",                              "&zzzz;", 11],
+    ["&zzzz&#59;",                               "&zzzz;", 10],
+  ].forEach(function (row) {
+    var ref = cc.decodeReferenceAt(row[0], 0);
+    check("decodeReferenceAt(" + JSON.stringify(row[0]) + ") reads the reference as the whole-string decoder does",
+          ref !== null && ref.text === row[1] && ref.next === row[2]);
+  });
+  // An unknown name passes through with its numeric pieces decoded, which is
+  // what the whole-string decoder leaves behind after its numeric pass, so a
+  // positional walk over the whole input reproduces that output exactly.
+  ["&#38;zzzz;", "&zz&#122;z;", "&zzzz&#59;", "&zzzz;"].forEach(function (s) {
+    var ref = cc.decodeReferenceAt(s, 0);
+    check("decodeReferenceAt(" + JSON.stringify(s) + ") agrees with decodeMarkupEntities on an unknown name",
+          ref !== null && ref.next === s.length && ref.text === cc.decodeMarkupEntities(s));
+  });
+  [["&zz&#122;z;", 11], ["&zzzz&#59;", 10]].forEach(function (row) {
+    var named = cc.decodeNamedEntityAt(row[0], 0);
+    check("decodeNamedEntityAt(" + JSON.stringify(row[0]) + ") decodes the numeric pieces of an unknown name",
+          named !== null && named.text === "&zzzz;" && named.next === row[1]);
+  });
+  check("decodeReferenceAt returns null where no reference begins",
+        cc.decodeReferenceAt("&x", 0) === null && cc.decodeReferenceAt("a&#38;", 0) === null);
   // A named reference is never rescanned, so an ampersand it produced does not
   // begin a name: `&amp;colon;` is an ampersand, then literal text.
   var amp = cc.decodeNamedEntityAt("&amp;colon;", 0);

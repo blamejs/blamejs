@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.20.0",
-  "createdAt": "2026-09-10T18:42:06.580Z",
+  "createdAt": "2026-09-10T20:42:13.868Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -7136,6 +7136,10 @@
         "decodeNumericEntities": {
           "type": "function",
           "arity": 1
+        },
+        "decodeReferenceAt": {
+          "type": "function",
+          "arity": 2
         },
         "detectCharThreats": {
           "type": "function",

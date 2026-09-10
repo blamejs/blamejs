@@ -983,6 +983,36 @@ async function testEncodedAndZeroWidthSchemesAreRefused() {
   check("guardMarkdown stays linear on a flood of unclosed nested tag starts",
         growth.looksSuperlinear(scanNestedTagStarts,
           { small: 10000, large: 40000, threshold: 8 }) === false);
+  // Two readings can assign different destinations to one opener. Both are
+  // inspected, but the construct is one construct, so the caps are not spent
+  // twice on it and a document with one image is not refused at maxImages 1.
+  var dualImage = "![a " + tick + "](https://inner.example)" + tick + " ](https://outer.example)";
+  check("one image read two ways counts once against maxImages",
+        b.guardMarkdown.validate(dualImage, { profile: "strict", maxImages: 1 }).ok === true);
+  check("one link read two ways counts once against maxLinks",
+        b.guardMarkdown.validate("[a " + tick + "](https://inner.example)" + tick +
+          " ](https://outer.example)", { profile: "strict", maxLinks: 1 }).ok === true);
+  check("one reference definition read two ways counts once against maxRefDefs",
+        b.guardMarkdown.validate("[a " + tick + "]: https://inner.example\n" + tick +
+          " ]: https://outer.example\n\n[x][a]",
+          { profile: "strict", maxRefDefs: 1 }).ok === true);
+  [
+    "[a " + tick + "](javascript:alert(1))" + tick + " ](https://outer.example)",
+    "[a " + tick + "](https://inner.example)" + tick + " ](javascript:alert(1))",
+  ].forEach(function (md) {
+    check("guardMarkdown inspects both destinations one opener is read with " +
+          JSON.stringify(md),
+          b.guardMarkdown.validate(md, { profile: "strict" }).ok === false);
+  });
+  var dualRefHostile = b.guardMarkdown.validate("[a " + tick + "]: javascript:alert(1)\n" +
+    tick + " ]: https://outer.example\n\n[x][a]", { profile: "strict" });
+  check("guardMarkdown inspects both destinations one reference label is read with",
+        dualRefHostile.ok === false &&
+        dualRefHostile.issues.some(function (i) { return i.kind === "reference-link-scheme"; }));
+  var twoImages3 = b.guardMarkdown.validate(spanImage + "\n" + spanImage + "\n",
+    { profile: "strict", maxImages: 2 });
+  check("two distinct images still count separately",
+        twoImages3.ok === true);
   // A zero-width character inside the scheme of a reference definition is
   // stripped by normalization and by a browser, so the plain-prefix shortcut
   // must not treat it as plain text. validate() folded it away and hid the
