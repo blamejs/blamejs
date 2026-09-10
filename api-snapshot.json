@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.20.0",
-  "createdAt": "2026-09-10T14:09:14.432Z",
+  "createdAt": "2026-09-10T18:42:06.580Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -7121,9 +7121,17 @@
           "type": "function",
           "arity": 2
         },
+        "decodeEntityAt": {
+          "type": "function",
+          "arity": 2
+        },
         "decodeMarkupEntities": {
           "type": "function",
           "arity": 1
+        },
+        "decodeNamedEntityAt": {
+          "type": "function",
+          "arity": 2
         },
         "decodeNumericEntities": {
           "type": "function",
@@ -7218,6 +7226,10 @@
           "arity": 4
         },
         "isUnreserved": {
+          "type": "function",
+          "arity": 1
+        },
+        "isUrlSchemeStrippable": {
           "type": "function",
           "arity": 1
         },

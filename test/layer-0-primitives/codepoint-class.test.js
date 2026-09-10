@@ -873,7 +873,109 @@ function testEntityDecodersMatchARegexReference() {
         urlDiffs.length === 0, urlDiffs.join(" | "));
 }
 
+function testDecodeEntityAtAndUrlSchemeStrippable() {
+  var cc = codepointClass;
+  // One reference at a time, with the index just past it.
+  var hex = cc.decodeEntityAt("&#x6A;s", 0);
+  check("decodeEntityAt decodes a hex reference", hex.text === "j" && hex.next === 6);
+  var dec = cc.decodeEntityAt("&#106;", 0);
+  check("decodeEntityAt decodes a decimal reference", dec.text === "j" && dec.next === 6);
+  var tab = cc.decodeEntityAt("&Tab;", 0);
+  check("decodeEntityAt decodes a named reference",
+        tab.text === String.fromCharCode(9) && tab.next === 5);
+  var ctrl = cc.decodeEntityAt("a&#1;", 1);
+  check("decodeEntityAt reads the reference at the given index",
+        ctrl.text.charCodeAt(0) === 1 && ctrl.next === 5);
+  var bare = cc.decodeEntityAt("&#1", 0);
+  check("decodeEntityAt accepts a numeric reference without its semicolon",
+        bare.text.charCodeAt(0) === 1 && bare.next === 3);
+  check("decodeEntityAt returns null where no reference begins",
+        cc.decodeEntityAt("&x", 0) === null && cc.decodeEntityAt("a&#1;", 0) === null);
+  // The per-position reader decodes each reference to the character the
+  // whole-string decoders produce, before any stripping, and consumes exactly
+  // the reference's own bytes.
+  [
+    ["&#x6A;",    "j"],
+    ["&#106;",    "j"],
+    ["&colon;",   ":"],
+    ["&sol;",     "/"],
+    ["&#x20;",    " "],
+    ["&Tab;",     String.fromCharCode(9)],
+    ["&NewLine;", String.fromCharCode(10)],
+    ["&#1;",      String.fromCharCode(1)],
+  ].forEach(function (row) {
+    var at = cc.decodeEntityAt(row[0], 0);
+    check("decodeEntityAt(" + JSON.stringify(row[0]) + ") decodes to the expected character",
+          at !== null && at.text === row[1] && at.next === row[0].length);
+  });
+  // The named-only reader is what completes a reference an ampersand from a
+  // numeric reference began, in the order the whole-string decoder runs.
+  var named = cc.decodeNamedEntityAt("&colon;x", 0);
+  check("decodeNamedEntityAt decodes a named reference",
+        named !== null && named.text === ":" && named.next === 7);
+  var namedTab = cc.decodeNamedEntityAt("&Tab;", 0);
+  check("decodeNamedEntityAt decodes &Tab;",
+        namedTab !== null && namedTab.text === String.fromCharCode(9) && namedTab.next === 5);
+  var offset = cc.decodeNamedEntityAt("a&colon;", 1);
+  check("decodeNamedEntityAt reads the reference at the given index",
+        offset !== null && offset.text === ":" && offset.next === 8);
+  check("decodeNamedEntityAt returns null for a numeric reference",
+        cc.decodeNamedEntityAt("&#38;", 0) === null);
+  // The whole-string decoder runs numeric references first and named
+  // references over the result, so to the second pass a name whose letters,
+  // closing semicolon, or leading ampersand were written numerically is the
+  // same name. The per-position reader recognizes exactly those.
+  [
+    ["&co&#108;on;",                             ":", 12],
+    ["&colon&#59;",                              ":", 11],
+    ["&#38;colon;",                              ":", 11],
+    ["&#38;&#99;&#111;&#108;&#111;&#110;&#59;",  ":", 39],
+    ["&#x26;colon;",                             ":", 12],
+  ].forEach(function (row) {
+    var at = cc.decodeNamedEntityAt(row[0], 0);
+    check("decodeNamedEntityAt(" + JSON.stringify(row[0]) + ") decodes the assembled name",
+          at !== null && at.text === row[1] && at.next === row[2]);
+  });
+  // A named reference is never rescanned, so an ampersand it produced does not
+  // begin a name: `&amp;colon;` is an ampersand, then literal text.
+  var amp = cc.decodeNamedEntityAt("&amp;colon;", 0);
+  check("decodeNamedEntityAt reads &amp; as an ampersand and stops there",
+        amp !== null && amp.text === "&" && amp.next === 5);
+  // Nor does the first pass rescan its own output: an ampersand from a numeric
+  // reference followed by another numeric reference is not a name.
+  check("decodeNamedEntityAt returns null for &#38;#38;",
+        cc.decodeNamedEntityAt("&#38;#38;", 0) === null);
+  check("decodeNamedEntityAt returns null for a one-letter name",
+        cc.decodeNamedEntityAt("&x;", 0) === null);
+  check("decodeNamedEntityAt returns null past the longest name",
+        cc.decodeNamedEntityAt("&abcdefgh;", 0) === null);
+  var unknown = cc.decodeNamedEntityAt("&zzzz;", 0);
+  check("decodeNamedEntityAt passes an unknown name through verbatim",
+        unknown !== null && unknown.text === "&zzzz;" && unknown.next === 6);
+  check("decodeNamedEntityAt returns null where no reference begins",
+        cc.decodeNamedEntityAt("&x", 0) === null && cc.decodeNamedEntityAt("a&colon;", 0) === null);
+  // Strippable means: a lone such character normalizes to nothing.
+  var yes = [0x00, 0x01, 0x09, 0x0A, 0x0D, 0x1F, 0x20, 0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF];
+  var no  = [0x6A, 0x3A, 0x21, 0x2F, 0xA0, 0x41];
+  yes.forEach(function (cp) {
+    check("isUrlSchemeStrippable(U+" + cp.toString(16).toUpperCase() + ") is true",
+          cc.isUrlSchemeStrippable(cp) === true);
+  });
+  no.forEach(function (cp) {
+    check("isUrlSchemeStrippable(U+" + cp.toString(16).toUpperCase() + ") is false",
+          cc.isUrlSchemeStrippable(cp) === false);
+  });
+  yes.concat(no).forEach(function (cp) {
+    var lone = String.fromCodePoint(cp);
+    var gone = cc.stripUrlSchemeWhitespace(cc.decodeMarkupEntities(lone)) === "";
+    check("isUrlSchemeStrippable(U+" + cp.toString(16).toUpperCase() +
+          ") agrees with the normalization it stands in for",
+          cc.isUrlSchemeStrippable(cp) === gone);
+  });
+}
+
 async function run() {
+  testDecodeEntityAtAndUrlSchemeStrippable();
   testIsForbiddenControlChar();
   testFirstControlCharOffset();
   testFirstLineInjectionCharOffset();

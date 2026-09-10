@@ -579,9 +579,17 @@ function testAceLabelsCarryPayload() {
         b.guardDomain.aceLabelsCarryPayload("") === false);
   check("aceLabelsCarryPayload(null) = false",
         b.guardDomain.aceLabelsCarryPayload(null) === false);
-  // The uppercase ACE prefix is the same label.
-  check("aceLabelsCarryPayload('XN--') = false",
-        b.guardDomain.aceLabelsCarryPayload("XN--") === false);
+  // The uppercase ACE prefix is the same label. The mapper lowercases a prefix
+  // it could not decode, so `XN--A` comes back as `xn--a`: comparing with case
+  // reads that normalization as a successful decoding and admits the label.
+  ["XN--", "XN--A", "XN--ZZ"].forEach(function (l) {
+    check("aceLabelsCarryPayload(" + JSON.stringify(l) + ") = false",
+          b.guardDomain.aceLabelsCarryPayload(l) === false);
+    check("guardDomain.validate refuses " + l + ".example.com at balanced",
+          b.guardDomain.validate(l + ".example.com", { profile: "balanced" }).ok === false);
+  });
+  check("an uppercase well-formed A-label still carries its payload",
+        b.guardDomain.aceLabelsCarryPayload("XN--MNCHEN-3YA") === true);
 }
 
 async function run() {

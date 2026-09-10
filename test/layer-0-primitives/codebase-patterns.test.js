@@ -12432,18 +12432,18 @@ function _cmpVersion(a, b) {
   return 0;
 }
 
-// The lowest version an engines range accepts, taken over every alternative,
-// compared against the floor. `24` accepts 24.0.0; `>=26 || >=18` accepts 18.
+// Whether every version an engines range accepts is at or above the floor.
+// A comparator decides which side of its version a range admits, so reading the
+// numbers and ignoring the operator gets `<=26.0.0` backwards: its only token is
+// above the floor while the range admits every release below it. Rather than
+// reimplement semver, this accepts only the `>=x.y.z` form the manifests use
+// and refuses anything else as a range it cannot reason about.
 function _rangeFloorAtLeast(range, floor) {
   var arms = String(range).split("||");
   for (var i = 0; i < arms.length; i += 1) {
-    var found = arms[i].match(/(\d+(?:\.\d+){0,2})/g);
-    if (!found || !found.length) return false;
-    var lowest = null;
-    for (var j = 0; j < found.length; j += 1) {
-      if (lowest === null || _cmpVersion(found[j], lowest) < 0) lowest = found[j];
-    }
-    if (_cmpVersion(lowest, floor) < 0) return false;
+    var m = /^\s*>=\s*(\d+(?:\.\d+){0,2})\s*$/.exec(arms[i]);
+    if (!m) return false;
+    if (_cmpVersion(m[1], floor) < 0) return false;
   }
   return true;
 }
