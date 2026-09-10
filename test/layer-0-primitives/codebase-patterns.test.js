@@ -12335,7 +12335,7 @@ function testNodeFloorDeclarationsAgree() {
   // reads as a pass over a tree it never opened.
   var manifests = [];
   (function walkManifests(dir, depth) {
-    if (depth > 6) return;
+    if (depth >= 6) return;
     var entries;
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
     catch (_e2) { return; }
@@ -12396,6 +12396,24 @@ function testNodeFloorDeclarationsAgree() {
   _report("every declared Node floor matches engines.node", bad);
 }
 
+// engines.node states a MINIMUM, and setup-node takes a version spec, so the
+// question is whether the pin can reach the floor rather than whether it equals
+// it. An unstated component is open: `24` reaches 24.anything and satisfies a
+// 24.21.0 floor, `24.19` tops out inside 24.19.x and cannot, and `24.22.0` and
+// `26` are both above it.
+function _pinCanReachFloor(pinned, floor) {
+  var given = pinned.split(".");
+  var want  = floor.split(".");
+  for (var i = 0; i < want.length; i += 1) {
+    if (i >= given.length) return true;          // unstated: reaches upward
+    var g = Number(given[i]);
+    var w = Number(want[i]);
+    if (g > w) return true;
+    if (g < w) return false;
+  }
+  return true;
+}
+
 function testWorkflowNodeVersionMatchesEngines() {
   // class: ci-node-version-drift (no marker)
   // The README gate above holds one consumer of engines.node. CI is the other,
@@ -12435,18 +12453,8 @@ function testWorkflowNodeVersionMatchesEngines() {
       var line = lines[li];
       var pin = /node-version:\s*['"]?(\d+(?:\.\d+){0,2})['"]?/.exec(line);
       if (pin) {
-        // setup-node takes a version spec, so `24` allows any 24.x while
-        // `24.19` constrains the job to 24.19.x. Compare through exactly the
-        // components the pin states: by major alone for `24`, and through the
-        // minor for `24.19`, which is how a pin below the floor is caught.
         var pinned = pin[1];
-        var given  = pinned.split(".");
-        var want   = floor.split(".");
-        var agrees = true;
-        for (var ci = 0; ci < given.length; ci += 1) {
-          if (given[ci] !== want[ci]) { agrees = false; break; }
-        }
-        if (!agrees) {
+        if (!_pinCanReachFloor(pinned, floor)) {
           bad.push({
             file:    rel,
             line:    li + 1,
@@ -12455,13 +12463,13 @@ function testWorkflowNodeVersionMatchesEngines() {
           });
         }
       }
-      var named = /Set up Node (\d+\.\d+\.\d+)/.exec(line);
-      if (named && named[1] !== floor) {
+      var named = /Set up Node (\d+(?:\.\d+){0,2})/.exec(line);
+      if (named && !_pinCanReachFloor(named[1], floor)) {
         bad.push({
           file:    rel,
           line:    li + 1,
           content: "step name says Node " + named[1] + " but engines.node requires " +
-                   engines + ", so the label names a version the step does not install",
+                   engines + ", so the label names a version below the floor",
         });
       }
     }
