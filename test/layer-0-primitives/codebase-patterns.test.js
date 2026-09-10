@@ -12303,6 +12303,85 @@ function testReadmeNodeRequirementMatchesEngines() {
   _report("README states the supported Node version", bad);
 }
 
+function testNodeFloorDeclarationsAgree() {
+  // class: node-floor-drift (no marker)
+  // The floor is declared in more places than the manifest: a second
+  // package.json under examples/, and the requirement line contributors and
+  // operators read. Raising it by grepping for the CURRENT value finds only the
+  // places already on it, so the ones still carrying an OLDER floor stay behind
+  // and keep advertising a runtime the framework no longer supports.
+  var root = path.resolve(__dirname, "..", "..");
+  var bad = [];
+  var pkg;
+  try { pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")); }
+  catch (_e) {
+    _report("every declared Node floor matches engines.node",
+      [{ file: "package.json", line: 1, content: "unreadable / not JSON" }]);
+    return;
+  }
+  var engines = (pkg.engines && pkg.engines.node) || "";
+  var floor   = (engines.match(/(\d+\.\d+\.\d+)/) || [])[1];
+  if (!floor) {
+    _report("every declared Node floor matches engines.node",
+      [{ file: "package.json", line: 1,
+         content: "engines.node '" + engines + "' has no x.y.z floor to compare against" }]);
+    return;
+  }
+  var minor = floor.split(".").slice(0, 2).join(".");
+
+  // Any other package.json in the tree that declares a floor answers to this one.
+  var manifests = _walkAllSource(path.join(root, "examples"))
+    .filter(function (f) { return path.basename(f) === "package.json"; });
+  try {
+    fs.readdirSync(path.join(root, "examples"), { withFileTypes: true })
+      .forEach(function (e) {
+        if (!e.isDirectory()) return;
+        var p = path.join(root, "examples", e.name, "package.json");
+        if (fs.existsSync(p) && manifests.indexOf(p) === -1) manifests.push(p);
+      });
+  } catch (_e2) { /* no examples tree */ }
+  manifests.forEach(function (p) {
+    var m;
+    try { m = JSON.parse(fs.readFileSync(p, "utf8")); }
+    catch (_e3) { return; }
+    var e = (m.engines && m.engines.node) || "";
+    if (!e) return;
+    var f = (e.match(/(\d+\.\d+\.\d+)/) || [])[1];
+    if (f && f !== floor) {
+      bad.push({
+        file:    _relPath(p),
+        line:    1,
+        content: "engines.node '" + e + "' is below the framework floor " + engines +
+                 ", so this package advertises a runtime its own dependency refuses",
+      });
+    }
+  });
+
+  // The requirement line a person reads before installing a runtime.
+  [["CONTRIBUTING.md", "**Requirements:**"], ["SECURITY.md", "engines.node` floor is"]]
+    .forEach(function (row) {
+      var text;
+      try { text = fs.readFileSync(path.join(root, row[0]), "utf8"); }
+      catch (_e4) { return; }
+      var lines = text.split(/\r?\n/);
+      for (var i = 0; i < lines.length; i += 1) {
+        if (lines[i].indexOf(row[1]) === -1) continue;
+        var stated = (lines[i].match(/Node\.js\s+(\d+\.\d+)/) ||
+                      lines[i].match(/>=(\d+\.\d+)/) || [])[1];
+        if (stated && stated !== minor) {
+          bad.push({
+            file:    row[0],
+            line:    i + 1,
+            content: "states Node " + stated + " but engines.node requires " + engines,
+          });
+        }
+        break;
+      }
+    });
+
+  _report("every declared Node floor matches engines.node", bad);
+}
+
 function testWorkflowNodeVersionMatchesEngines() {
   // class: ci-node-version-drift (no marker)
   // The README gate above holds one consumer of engines.node. CI is the other,
@@ -24753,6 +24832,7 @@ async function run() {
   testReadmeVendorTableMatchesManifest();
   testReadmeNodeRequirementMatchesEngines();
   testWorkflowNodeVersionMatchesEngines();
+  testNodeFloorDeclarationsAgree();
   testOutboundTlsMergesSharedPosture();
   testSecureContextsAdvertiseCertificateCompression();
   testDocumentedScriptFlagsExist();

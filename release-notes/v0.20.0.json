@@ -3,7 +3,7 @@
   "version": "0.20.0",
   "date": "2026-09-09",
   "headline": "The supported Node version is now 24.21.0",
-  "summary": "`engines.node` rises from `>=24.19.0` to `>=24.21.0`, the current patch level of the active LTS line. 24.21.0 carries OpenSSL 3.5.8 and the NSS 3.126 root store, both of which the framework's TLS paths read directly. Operators on 24.19.x or 24.20.x should upgrade Node before taking this release; npm will otherwise refuse the install on an engine mismatch.",
+  "summary": "`engines.node` rises from `>=24.19.0` to `>=24.21.0`, the current patch level of the active LTS line. 24.21.0 carries OpenSSL 3.5.8 and the NSS 3.126 root store, both of which the framework's TLS paths read directly. Operators on 24.19.x or 24.20.x should upgrade Node before taking this release. npm treats `engines` as advisory unless `engine-strict` is set, so an install on a lower version prints a warning and then completes, leaving the framework running on a runtime it does not support. Set `engine-strict=true` to have the mismatch refused instead.",
   "sections": [
     {
       "heading": "Changed",
