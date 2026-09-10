@@ -522,6 +522,22 @@ function testAceLabelsCarryPayload() {
     check("aceLabelsCarryPayload(" + JSON.stringify(row[0]) + ") = " + row[1],
           b.guardDomain.aceLabelsCarryPayload(row[0]) === row[1]);
   });
+  // The predicate is not enough on its own: validate() and sanitize() are the
+  // APIs callers reach for, and an undecodable payload has to be refused there
+  // under every profile, the way safeUrl / mail / publicSuffix now refuse it.
+  ["strict", "balanced", "permissive"].forEach(function (profile) {
+    ["xn--a.example.com", "xn--zz.example.com", "xn--.example.com"].forEach(function (d) {
+      check("guardDomain.validate(" + JSON.stringify(d) + ") refused at " + profile,
+            b.guardDomain.validate(d, { profile: profile }).ok === false);
+    });
+  });
+  // strict refuses every A-label as a homograph class, so the well-formed one
+  // survives only where the profile admits A-labels at all.
+  ["balanced", "permissive"].forEach(function (profile) {
+    check("guardDomain.validate keeps a well-formed A-label at " + profile,
+          b.guardDomain.validate("xn--mnchen-3ya.de", { profile: profile }).ok === true);
+  });
+
   // A non-string or empty input is not a domain, so it does not carry one.
   check("aceLabelsCarryPayload('') = false",
         b.guardDomain.aceLabelsCarryPayload("") === false);

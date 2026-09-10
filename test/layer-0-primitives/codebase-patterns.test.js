@@ -12358,7 +12358,10 @@ function testNodeFloorDeclarationsAgree() {
   });
 
   // The requirement line a person reads before installing a runtime.
-  [["CONTRIBUTING.md", "**Requirements:**"], ["SECURITY.md", "engines.node` floor is"]]
+  [["CONTRIBUTING.md", "**Requirements:**"],
+   ["SECURITY.md", "engines.node` floor is"],
+   ["ROADMAP.md", "currently `>="],
+   ["examples/wiki/README.md", "the engine pin in"]]
     .forEach(function (row) {
       var text;
       try { text = fs.readFileSync(path.join(root, row[0]), "utf8"); }
@@ -12389,7 +12392,9 @@ function testWorkflowNodeVersionMatchesEngines() {
   // the step names beside them. Raising the floor without them tests the
   // framework on a runtime it no longer supports, and publishes from one, with
   // nothing reporting the gap. A bare major (`node-version: '24'`) resolves to
-  // the newest of that line and is left alone; only a pinned x.y.z is compared.
+  // the newest of that line, so it is held to the floor's major rather than to
+  // the exact patch. Skipping it would let a fuzz workflow sit on 24 through a
+  // move to 26 with this gate still green.
   var root = path.resolve(__dirname, "..", "..");
   var bad = [];
   var pkg;
@@ -12417,14 +12422,20 @@ function testWorkflowNodeVersionMatchesEngines() {
     var lines = content.split(/\r?\n/);
     for (var li = 0; li < lines.length; li++) {
       var line = lines[li];
-      var pin  = /node-version:\s*['"]?(\d+\.\d+\.\d+)['"]?/.exec(line);
-      if (pin && pin[1] !== floor) {
-        bad.push({
-          file:    rel,
-          line:    li + 1,
-          content: "workflow pins Node " + pin[1] + " but engines.node requires " +
-                   engines + ", so CI runs the framework on a runtime it does not support",
-        });
+      var pin = /node-version:\s*['"]?(\d+(?:\.\d+){0,2})['"]?/.exec(line);
+      if (pin) {
+        var pinned = pin[1];
+        var full   = pinned.split(".").length === 3;
+        var agrees = full ? pinned === floor
+                          : pinned.split(".")[0] === floor.split(".")[0];
+        if (!agrees) {
+          bad.push({
+            file:    rel,
+            line:    li + 1,
+            content: "workflow pins Node " + pinned + " but engines.node requires " +
+                     engines + ", so CI runs the framework on a runtime it does not support",
+          });
+        }
       }
       var named = /Set up Node (\d+\.\d+\.\d+)/.exec(line);
       if (named && named[1] !== floor) {

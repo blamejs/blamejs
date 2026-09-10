@@ -23,7 +23,7 @@ windows in [LTS-CALENDAR.md](LTS-CALENDAR.md) govern anything below.
   proven byte-parity with the vendored implementations without breaking existing
   key material.
 - **Node LTS tracking.** Raise the minimum engine as Node LTS lines advance
-  (currently `>=24.18`), adopting stabilized platform capabilities (native PQC,
+  (currently `>=24.21.0`), adopting stabilized platform capabilities (native PQC,
   `node:sqlite`, native WebSocket) only when they reach parity with what the
   framework already ships and without regressing the security defaults.
 - **Supply-chain assurance.** Maintain SLSA L3 provenance, Sigstore-signed SBOMs,
