@@ -946,6 +946,89 @@ function testGuardCsvDenylistJudgesEveryCallInACell() {
   });
 }
 
+function testGuardCsvDenylistReadsAQualifiedName() {
+  // Excel writes a newer function under its `_xlfn.` namespace, and a
+  // worksheet function under `_xlws.`; the denylist compared the whole
+  // qualified word, so `=_xlfn.WEBSERVICE(...)` was served prefixed.
+  function kinds(doc) {
+    return b.guardCsv.validate(doc, { profile: "strict" }).issues.map(function (i) { return i.kind; });
+  }
+  [
+    'a\r\n=_xlfn.WEBSERVICE("http://x/")\r\n',
+    'a\r\n=_xlws.WEBSERVICE("http://x/")\r\n',
+    'a\r\n=SUM(_xlfn.HYPERLINK(A1))\r\n',
+    'a\r\n=_XLFN.webservice("http://x/")\r\n',
+    'a\r\n=_xlfn._xlws.WEBSERVICE("http://x/")\r\n',
+    'a\r\n=WEBSERVICE\t("http://x/")\r\n',
+    'a\r\n"=WEBSERVICE\n(""http://x/"")"\r\n',
+  ].forEach(function (doc) {
+    check("a qualified or spaced denylisted call is a finding " + JSON.stringify(doc),
+          kinds(doc).indexOf("dangerous-function") !== -1, JSON.stringify(kinds(doc)));
+    var threw = null;
+    try { b.guardCsv.sanitize(doc, { profile: "strict" }); } catch (e) { threw = e; }
+    check("sanitize refuses it " + JSON.stringify(doc),
+          threw !== null && threw.code === "csv.dangerous-function", threw ? threw.code : "returned");
+  });
+  check("a name that merely ends in a denylisted word is not that function",
+        kinds("a\r\n=MYWEBSERVICE(1)\r\n").indexOf("dangerous-function") === -1);
+  // A dot can belong to the function's own name (`NORM.DIST`, `SQL.REQUEST`),
+  // so an operator's dotted entry is matched whole, under a namespace too.
+  var dotted = { profile: "strict", dangerousFunctions: ["SQL.REQUEST"] };
+  ["a\r\n=SQL.REQUEST(1)\r\n", "a\r\n=_xlfn.SQL.REQUEST(1)\r\n", "a\r\n=SUM(sql.request(1))\r\n"].forEach(function (doc) {
+    var ks = b.guardCsv.validate(doc, dotted).issues.map(function (i) { return i.kind; });
+    check("a dotted denylist entry matches " + JSON.stringify(doc), ks.indexOf("dangerous-function") !== -1, JSON.stringify(ks));
+  });
+  check("a dotted denylist entry does not match its last segment alone",
+        b.guardCsv.validate("a\r\n=REQUEST(1)\r\n", dotted).issues
+          .map(function (i) { return i.kind; }).indexOf("dangerous-function") === -1);
+  var normOpts = { formulaInjectionPolicy: "allowlist", formulasAllowlist: ["NORM.DIST"] };
+  check("a dotted allowlist entry preserves the call",
+        b.guardCsv.escapeCell("=NORM.DIST(1)", normOpts) === "=NORM.DIST(1)");
+  check("a namespaced allowlisted call is prefixed, since its leading word is not a name",
+        b.guardCsv.escapeCell("=_xlfn.NORM.DIST(1)", normOpts) !== "=_xlfn.NORM.DIST(1)");
+  check("an unknown qualifier does not make an allowlisted call",
+        b.guardCsv.escapeCell("=SUM(FOO.SUM(1))", { formulaInjectionPolicy: "allowlist", formulasAllowlist: ["SUM"] })
+          !== "=SUM(FOO.SUM(1))");
+  check("a qualified allowlisted call is still mitigated under allowlist",
+        b.guardCsv.escapeCell("=_xlfn.SUM(1)", { formulaInjectionPolicy: "allowlist", formulasAllowlist: ["SUM"] })
+          !== "=_xlfn.SUM(1)");
+}
+
+function testGuardCsvSanitizeParsesUnderTheGuardsOwnCaps() {
+  // The disarm step re-parses through b.csv.parse, whose own defaults (16 MiB,
+  // 1 MiB per field) are not the guard's caps (1 GiB, 64 KiB per cell), so a
+  // large export within the guard's limits failed with the parser's error
+  // only when a formula cell required mitigation.
+  var wide = "x".repeat(1536 * 1024);
+  var served = b.guardCsv.sanitize("a,b\r\n=1," + wide + "\r\n",
+    { profile: "strict", maxCellBytes: 2 * 1024 * 1024 });
+  check("a cell under the guard's maxCellBytes but over the parser's default is served",
+        served.indexOf(wide) !== -1 && served.indexOf("'=1") !== -1);
+  var threw = null;
+  try { b.guardCsv.sanitize("a,b\r\n=1," + "y".repeat(2048) + "\r\n", { profile: "strict", maxCellBytes: 1024 }); }
+  catch (e) { threw = e; }
+  check("a cell over the guard's maxCellBytes is refused with the guard's code",
+        threw !== null && threw.code === "csv.cell-too-large" && threw instanceof b.guardCsv.GuardCsvError,
+        threw ? threw.code : "returned");
+  threw = null;
+  try { b.guardCsv.sanitize("a\r\n=1\r\n2\r\n3\r\n", { profile: "strict", maxRows: 2 }); }
+  catch (e) { threw = e; }
+  check("a document over the guard's maxRows is refused with the guard's code",
+        threw !== null && threw.code === "csv.too-many-rows", threw ? threw.code : "returned");
+  threw = null;
+  try { b.guardCsv.sanitize("a,b\r\n=1,\"open\r\n", { profile: "strict" }); }
+  catch (e) { threw = e; }
+  check("a document the emitted dialect cannot parse is refused as undisarmable, with the guard's error",
+        threw !== null && threw.code === "csv.formula-injection" && threw instanceof b.guardCsv.GuardCsvError,
+        threw ? threw.code + " " + threw.constructor.name : "returned");
+  var row = "a".repeat(60 * 1024) + "\r\n";
+  var big = "h\r\n=1\r\n" + row.repeat(Math.ceil((b.csv.DEFAULTS_PARSE.maxBytes + 4096) / row.length));
+  var bigOut = null;
+  try { bigOut = b.guardCsv.sanitize(big, { profile: "strict" }); } catch (e) { bigOut = e; }
+  check("a document over the parser's default maxBytes but under maxTotalBytes is served",
+        typeof bigOut === "string" && bigOut.indexOf("'=1") !== -1, bigOut && bigOut.code);
+}
+
 function testGuardCsvAllowlistResidualJudgesEveryCall() {
   // Under `allowlist`, a formula cell that only another delimiter's reading
   // exposes cannot be re-serialized away; the residual check exempted it on
@@ -1845,6 +1928,8 @@ async function run() {
   await testGuardCsvFormulaBehindEmptyQuotedSection();
   testGuardCsvAllowlistJudgesEveryCall();
   testGuardCsvDenylistJudgesEveryCallInACell();
+  testGuardCsvDenylistReadsAQualifiedName();
+  testGuardCsvSanitizeParsesUnderTheGuardsOwnCaps();
   testGuardCsvAllowlistResidualJudgesEveryCall();
   testGuardCsvAmplificationCapCoversTheDisarmedOutput();
   testGuardCsvDangerousFunctionDeny();
