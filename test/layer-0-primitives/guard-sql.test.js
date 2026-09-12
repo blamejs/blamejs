@@ -362,6 +362,93 @@ function testFragmentMode() {
     "mysql-load-file");
 }
 
+// The guard takes no dialect, so a region is inert only where every engine
+// agrees it is, and a literal ends at the earliest point any engine ends it.
+// Three places where the masker was more generous than that, each one hiding
+// live SQL from every detector including the floor.
+function testMaskerIsConservativeAcrossDialects() {
+  var BS = String.fromCharCode(0x5C);
+  var MIG = "CREATE TABLE t (a int); ";
+
+  // `#` opens a comment in MySQL and is an operator elsewhere; MySQL opens a
+  // `--` comment only when whitespace follows, so `1--1` is arithmetic there.
+  // Either way the engines disagree about whether the rest of the line is code
+  // or a comment, and neither reading can be masked without hiding live SQL
+  // from the other: masking hid `COPY t TO PROGRAM` from PostgreSQL, and NOT
+  // masking let a quote inside the comment open a literal that hid a stacked
+  // DROP from SQLite. The ambiguity itself is the finding.
+  refusesWith("'#' is refused as dialect-ambiguous comment syntax",
+    "SELECT 3 # 1 AS a; COPY t TO PROGRAM 'true'",
+    { contextMode: "migration", profile: "strict" }, "ambiguous-comment");
+  refusesWith("a quote inside a '#' comment cannot hide a statement",
+    "SELECT 1 #x'\n; DROP TABLE users; -- '",
+    { contextMode: "operator-sql", profile: "strict" }, "ambiguous-comment");
+  refusesWith("'--' with no following whitespace is refused",
+    MIG + "SELECT 1--1; SELECT LOAD_FILE('/etc/passwd') AS f",
+    { contextMode: "migration", profile: "strict" }, "ambiguous-comment");
+  refusesWith("a quote inside a '--x' comment cannot hide a statement",
+    "SELECT 1 --x'\n; DROP TABLE users; -- '",
+    { contextMode: "operator-sql", profile: "strict" }, "ambiguous-comment");
+  // Syntax every engine reads the same way is unaffected.
+  passesClean("'--' followed by a space is still a comment",
+    MIG + "SELECT 1-- 1; SELECT LOAD_FILE('/etc/passwd') AS f",
+    { contextMode: "migration", profile: "strict", allowComments: true });
+  passesClean("a block comment is still a comment",
+    "SELECT a /* note */ FROM t",
+    { contextMode: "operator-sql", profile: "strict", allowComments: true });
+
+  // MySQL ends a literal one character later than SQLite and than PostgreSQL
+  // with standard-conforming strings, so a backslash inside a literal makes
+  // the statement mean different things to different engines. Masking it under
+  // either reading hides live SQL from the other, so the ambiguity itself is
+  // the finding: `SELECT '\''; SELECT VERSION()` hid a stacked statement from
+  // MySQL's reading, and `SELECT '\'; DROP TABLE victim; -- '` hid one from
+  // SQLite's.
+  refusesWith("a backslash in a literal is refused as dialect-ambiguous",
+    "SELECT '" + BS + "''; SELECT VERSION(), 'MARKER'",
+    { contextMode: "operator-sql", profile: "strict" }, "ambiguous-literal-escape");
+  refusesWith("the double-quoted twin is refused",
+    'SELECT "a' + BS + '""; SELECT VERSION(), ' + "'MARKER2'",
+    { contextMode: "operator-sql", profile: "strict" }, "ambiguous-literal-escape");
+  refusesWith("the SQLite-reading twin is refused",
+    "SELECT '" + BS + "'; DROP TABLE victim; -- '",
+    { contextMode: "operator-sql", profile: "strict" }, "ambiguous-literal-escape");
+  // MySQL consumes a doubled backslash as one escaped backslash, so a run of
+  // even length leaves the quote after it closing the literal on every engine.
+  // Only an odd run moves the boundary, and flagging both refused ordinary
+  // literals ending in a backslash.
+  passesClean("an even backslash run closes the literal everywhere",
+    "SELECT c FROM t WHERE c = 'a" + BS + BS + "'",
+    { contextMode: "operator-sql", profile: "strict" });
+  passesClean("so does a run of four",
+    "SELECT c FROM t WHERE c = 'a" + BS + BS + BS + BS + "'",
+    { contextMode: "operator-sql", profile: "strict" });
+  refusesWith("a run of three still disagrees across engines",
+    "SELECT c FROM t WHERE c = 'a" + BS + BS + BS + "'; DROP TABLE t; -- '",
+    { contextMode: "operator-sql", profile: "strict" }, "ambiguous-literal-escape");
+
+  // A form feed is whitespace to an engine, so it must not hide the verb.
+  var FF = String.fromCharCode(0x0C);
+  refusesWith("a DO block behind a form feed is inspected",
+    FF + "DO $$ BEGIN RAISE NOTICE 'x'; END $$",
+    { contextMode: "operator-sql", profile: "strict" }, "procedural-exec");
+  refusesWith("a GRANT behind a form feed is inspected",
+    "SELECT 1;" + FF + "GRANT SELECT ON t TO someone",
+    { contextMode: "migration", profile: "strict" }, "migration-verb");
+
+  // And ordinary SQL is untouched by all of it.
+  [
+    "SELECT a FROM t WHERE b = 1",
+    "SELECT 'hello' FROM t",
+    "SELECT 'it''s' FROM t",
+    "SELECT 'a" + BS + "b' FROM t",
+    "SELECT 'a # b' FROM t",
+  ].forEach(function (sql) {
+    passesClean("ordinary SQL stays clean: " + JSON.stringify(sql),
+      sql, { contextMode: "operator-sql", profile: "strict" });
+  });
+}
+
 // ---- operator-sql mode ----
 
 function testOperatorSqlMode() {
@@ -677,6 +764,7 @@ async function run() {
   testOversizeCap();
   testIdentifierHygiene();
   testLeadingVerbFloor();
+  testMaskerIsConservativeAcrossDialects();
   testSmugglingFloor();
   testFragmentMode();
   testOperatorSqlMode();

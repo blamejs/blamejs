@@ -773,6 +773,47 @@ function testEntityDecodersMatchARegexReference() {
   // 29-entry table tests the typing, and the walk and the pattern would
   // disagree on a typo rather than on a defect.
   var NAMED_ASCII = codepointClass.NAMED_ENTITY_ASCII;
+
+  // The table is the named-entity ASCII subset, so every value in it has to be
+  // a single ASCII character. Two were not, and both named a character the
+  // HTML table assigns a different code point: `hyphen` is U+2010 HYPHEN and
+  // not U+002D HYPHEN-MINUS (which has no named reference at all), and `nbsp`
+  // is U+00A0 and not a plain space. Decoding `hyphen` to U+002D manufactured
+  // a scheme out of a character that cannot form one, so
+  // `[a](view&hyphen;source:x)` was refused while `[a](view<U+2010>source:x)`,
+  // the thing a browser actually produces, was accepted.
+  // Every entry has to carry the code point the HTML named-character-reference
+  // table assigns that name. Two did not: `hyphen` decoded to U+002D
+  // HYPHEN-MINUS (which has no named reference at all) instead of U+2010
+  // HYPHEN, and `nbsp` to a plain space instead of U+00A0. Decoding `hyphen`
+  // to U+002D manufactured a scheme out of a character that cannot form one,
+  // so `[a](view&hyphen;source:x)` was refused while the spelling a browser
+  // actually produces was accepted.
+  var HTML_NAMED_VALUE = {
+    Tab: 0x0009, NewLine: 0x000A, colon: 0x003A, semi: 0x003B, period: 0x002E,
+    sol: 0x002F, bsol: 0x005C, num: 0x0023, excl: 0x0021, quest: 0x003F,
+    lpar: 0x0028, rpar: 0x0029, lsqb: 0x005B, rsqb: 0x005D, lcub: 0x007B,
+    rcub: 0x007D, quot: 0x0022, apos: 0x0027, lt: 0x003C, gt: 0x003E,
+    amp: 0x0026, commat: 0x0040, dollar: 0x0024, percnt: 0x0025, ast: 0x002A,
+    plus: 0x002B, lowbar: 0x005F, hyphen: 0x2010, nbsp: 0x00A0,
+  };
+  Object.keys(NAMED_ASCII).forEach(function (name) {
+    var v = NAMED_ASCII[name];
+    var want = HTML_NAMED_VALUE[name];
+    check("NAMED_ENTITY_ASCII[" + name + "] carries the code point HTML assigns it",
+          want !== undefined && typeof v === "string" && v.length === 1 &&
+          v.charCodeAt(0) === want,
+          JSON.stringify(v) + " want U+" +
+          (want === undefined ? "(unlisted)" : want.toString(16).toUpperCase()));
+  });
+  // And the entity spelling has to decode to the character it stands for, so
+  // a consumer scanning the decoded text reaches the same verdict either way.
+  [["hyphen", 0x2010], ["nbsp", 0x00A0]].forEach(function (row) {
+    check("decodeMarkupEntities(&" + row[0] + ";) is the character it names",
+          codepointClass.decodeMarkupEntities("&" + row[0] + ";") ===
+          String.fromCharCode(row[1]));
+  });
+
   function referenceMarkup(value) {
     var s = referenceNumeric(String(value == null ? "" : value));
     s = s.replace(/&([A-Za-z][A-Za-z0-9]+);/g, function (m, name) {
@@ -973,6 +1014,43 @@ function testDecodeEntityAtAndUrlSchemeStrippable() {
     check("decodeNamedEntityAt(" + JSON.stringify(row[0]) + ") decodes the numeric pieces of an unknown name",
           named !== null && named.text === "&zzzz;" && named.next === row[1]);
   });
+  // The two positional readers differ, and the docs have to say which one a
+  // walk should use. decodeEntityAt reads one reference in isolation;
+  // decodeReferenceAt models decodeMarkupEntities' two passes, so only the
+  // second reproduces the whole-string result when a numeric reference yields
+  // the ampersand that opens a named one.
+  function walkWith(fn, s) {
+    var out = "", i = 0;
+    while (i < s.length) {
+      if (s.charCodeAt(i) === 0x26) {
+        var h = fn(s, i);
+        if (h) { out += h.text; i = h.next; continue; }
+      }
+      out += s.charAt(i);
+      i += 1;
+    }
+    return out;
+  }
+  [
+    "javascript&#38;colon;alert(1)",
+    "&co&#108;on;",
+    "&#38;colon;",
+    "&colon;",
+    "&#x6A;s",
+    "&amp;colon;",
+    "&zzzz;",
+    "&#38;zzzz;",
+  ].forEach(function (s) {
+    check("a walk with decodeReferenceAt equals decodeMarkupEntities for " +
+          JSON.stringify(s),
+          walkWith(cc.decodeReferenceAt, s) === cc.decodeMarkupEntities(s),
+          walkWith(cc.decodeReferenceAt, s) + " vs " + cc.decodeMarkupEntities(s));
+  });
+  check("decodeEntityAt reads one reference in isolation, so a walk with it " +
+        "does not model the two-pass decoder",
+        walkWith(cc.decodeEntityAt, "&#38;colon;") === "&colon;" &&
+        cc.decodeMarkupEntities("&#38;colon;") === ":");
+
   check("decodeReferenceAt returns null where no reference begins",
         cc.decodeReferenceAt("&x", 0) === null && cc.decodeReferenceAt("a&#38;", 0) === null);
   // A named reference is never rescanned, so an ampersand it produced does not

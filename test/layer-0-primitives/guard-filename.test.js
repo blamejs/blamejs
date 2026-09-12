@@ -920,6 +920,70 @@ function testShapeDetectorsAgreeWithThePatternsTheyReplaced() {
 // to `audit` — a supported override, and what `permissive` is closest to —
 // served the name unchanged. The classes are refused before any policy is
 // consulted.
+// The sanitize block names the classes its security floor always throws on.
+// That sentence and the code are two statements of one fact, so a test has to
+// compare them: a class named there must throw at every profile and both
+// modes, and a class the code does not refuse must not be named there.
+//
+// NTFS ADS was named there while the code had deliberately moved it out of the
+// floor and in with the other Windows-specific rules. At the permissive
+// profile `reservedCharPolicy` is "strip", so the colons became "_" before the
+// ADS branch ran and sanitize returned "report.txt_hidden_$DATA" where the
+// block promised a throw. The output is safe and validate still reports
+// ntfs-ads/critical, but the sentence an operator reads was wrong.
+var FLOOR_CLASSES = [
+  { phrase: "path-traversal", code: "filename.traversal",
+    inputs: ["../../etc/passwd", "..\\..\\windows\\system32\\config\\sam"] },
+  { phrase: "percent-encoded", code: "filename.traversal",
+    inputs: ["%2e%2e%2fetc%2fpasswd"] },
+  { phrase: "null-byte", code: "filename.null-byte",
+    inputs: ["invoice.pdf" + String.fromCharCode(0) + ".exe"] },
+  { phrase: "UNC path", code: "filename.unc",
+    inputs: ["\\\\attacker\\share\\payload.dll"] },
+  { phrase: "overlong UTF-8", code: "filename.overlong-utf8",
+    inputs: [Buffer.from([0x66, 0xC0, 0xAE, 0xC0, 0xAE, 0x2F, 0x78]),
+             Buffer.from([0x61, 0xC0, 0xAF, 0x62])] },
+];
+
+// Named in the block once but refused only by a policy an operator can opt out
+// of, so it is not floor and the block must not say it is.
+var NOT_FLOOR_PHRASES = ["alternate data stream"];
+
+function testSanitizeFloorMatchesItsOwnDocumentation() {
+  var src = fs.readFileSync(
+    path.join(__dirname, "..", "..", "lib", "guard-filename.js"), "utf8");
+  // The file carries CRLF, so anchor on \r?\n rather than \n alone.
+  var block = /The security floor ALWAYS throws[\s\S]{0,600}?\r?\n \*\r?\n/.exec(src);
+  check("sanitize documents a security floor", block !== null);
+  if (block === null) return;
+  var prose = block[0].replace(/\r?\n \* ?/g, " ");
+
+  FLOOR_CLASSES.forEach(function (c) {
+    check("sanitize floor prose names " + c.phrase,
+          prose.indexOf(c.phrase) !== -1, prose);
+  });
+  NOT_FLOOR_PHRASES.forEach(function (p) {
+    check("sanitize floor prose does not name " + p +
+          " (refused by an opt-outable policy, not by the floor)",
+          prose.indexOf(p) === -1, prose);
+  });
+
+  ["strict", "balanced", "permissive"].forEach(function (profile) {
+    ["enforce", "strip"].forEach(function (mode) {
+      FLOOR_CLASSES.forEach(function (c) {
+        c.inputs.forEach(function (input) {
+          var threw = null;
+          try { b.guardFilename.sanitize(input, { profile: profile, mode: mode }); }
+          catch (e) { threw = e; }
+          check("floor " + c.phrase + " throws at " + profile + "/" + mode,
+                threw !== null && threw.code === c.code,
+                threw ? threw.code : "returned without throwing");
+        });
+      });
+    });
+  });
+}
+
 async function testGuardFilenameFloorIgnoresPolicyOverrides() {
   // The overrides that remain expressible. `traversalPolicy` and
   // `nullBytePolicy` no longer accept a non-reject value at all — the floor is
@@ -982,7 +1046,7 @@ async function testGuardFilenameFloorIgnoresPolicyOverrides() {
   // the gate is repairing to a rule nothing else in the guard implements.
   var mixed = [
     ["permissive", "dir/file?.txt"],
-    ["permissive", "ab/c?.txt"],
+    ["permissive", "a" + String.fromCharCode(7) + "b/c?.txt"],
     ["balanced",   "rep\u200Bort.txt"],
   ];
   for (var m = 0; m < mixed.length; m += 1) {
@@ -1130,6 +1194,7 @@ function testAdsPolicyIsScopedToExtractionAndSaysSo() {
 }
 
 async function run() {
+  testSanitizeFloorMatchesItsOwnDocumentation();
   testAdsPolicyIsScopedToExtractionAndSaysSo();
   await testGuardFilenameDoubleExtensionFollowsItsPolicy();
   await testGuardFilenameFloorIgnoresPolicyOverrides();

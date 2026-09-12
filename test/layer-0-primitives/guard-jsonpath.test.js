@@ -55,8 +55,66 @@ function testSanitize() {
     "jsonpath.filter-expression");
 }
 
+// RFC 9535 writes a filter selector as `?` followed by a logical expression;
+// the parentheses of the older syntax are optional. The detector searched for
+// the two characters `?(`, so `[?@.price<10]` passed clean at every profile
+// while `[?(@.price<10)]` was critical, and b.jsonPath.query returns the same
+// result for both. The descendant segment is `..` whatever selector follows,
+// and the counter required a `*`, so twenty named descents scored zero.
+function testDetectorsMatchTheConstructNotOneSpelling() {
+  var DATA = { store: { book: [{ price: 5, title: "cheap" }, { price: 50, title: "dear" }] } };
+  var parenLess = "$.store.book[?@.price<10].title";
+  var parened = "$.store.book[?(@.price<10)].title";
+  check("both filter spellings evaluate to the same thing",
+        JSON.stringify(b.jsonPath.query(DATA, parenLess)) ===
+        JSON.stringify(b.jsonPath.query(DATA, parened)));
+  // A selector list puts one selector after another in a single bracketed
+  // segment, so a filter can begin after a comma as well as after the opening
+  // bracket. Anchoring only on `[` lost `$[0,?(!@.x)]`, which b.jsonPath.query
+  // evaluates.
+  [parenLess, parened, "$[? @.a]", "$[0,?(!@.x)]", "$[0, ?@.x]",
+   "$['a',?@.x]", "$[?@.x,1]"].forEach(function (expr) {
+    ["strict", "balanced", "permissive"].forEach(function (profile) {
+      var rv = b.guardJsonpath.validate(expr, { profile: profile });
+      check("filter expression refused at " + profile + " for " + JSON.stringify(expr),
+            rv.ok === false &&
+            rv.issues.some(function (i) { return i.kind === "filter-expression"; }),
+            JSON.stringify(rv.issues.map(function (i) { return i.kind; })));
+    });
+  });
+
+  var many = "$..a..b..c..d..e..f..g..h..i..j..k..l..m..n..o..p..q..r..s..t";
+  ["strict", "balanced"].forEach(function (profile) {
+    var rv = b.guardJsonpath.validate(many, { profile: profile });
+    check("named recursive descents count toward the cap at " + profile,
+          rv.issues.some(function (i) { return i.kind === "recursive-descent-cap"; }),
+          JSON.stringify(rv.issues.map(function (i) { return i.kind; })));
+  });
+  check("wildcard descents still counted",
+        b.guardJsonpath.validate("$..[*]..[*]..[*]", { profile: "strict" })
+          .issues.some(function (i) { return i.kind === "recursive-descent-cap"; }));
+  check("permissive allows recursive descent by policy",
+        b.guardJsonpath.validate(many, { profile: "permissive" }).ok === true);
+
+  // Ordinary paths, including a single descent and a quoted name holding no
+  // filter, stay accepted. A quoted member name is data, so selector
+  // characters inside one are not selector syntax: widening the two scanners
+  // to match the construct made them read the brackets and dots inside a
+  // quoted name as operators and refuse ordinary property lookups.
+  ["$.store.book[0].title", "$.a.b.c", "$['quoted name'].x", "$..author",
+   "$.store.book[*].title", '$["[?"]', "$['[?']", '$["a..b..c..d"]',
+   '$["x"]["y"]', '$["a.b"].c', "$['a,b'].c", '$["x,?y"]',
+   "$[0,1,2]"].forEach(function (expr) {
+    check("ordinary path accepted " + JSON.stringify(expr),
+          b.guardJsonpath.validate(expr, { profile: "strict" }).ok === true,
+          JSON.stringify(b.guardJsonpath.validate(expr, { profile: "strict" })
+            .issues.map(function (i) { return i.kind; })));
+  });
+}
+
 async function run() {
   testSanitize();
+  testDetectorsMatchTheConstructNotOneSpelling();
 }
 
 module.exports = { run: run };

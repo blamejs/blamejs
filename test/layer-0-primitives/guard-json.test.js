@@ -73,6 +73,44 @@ function testGuardJsonPrototypePollution() {
   check("nested prototype key detected",
         rv3.issues.some(function (i) { return i.kind === "prototype-pollution-key"; }));
 
+  // A key is what the parser sees, not what the source shows. JSON allows
+  // \uXXXX inside a key, so `{"__proto__":…}` parses to `__proto__`
+  // while the source holds no such text. Both key detectors read the raw
+  // slice, so one escaped character hid the key from the pollution scan and
+  // from the duplicate-key rescan, and the gate served the payload.
+  var BS = String.fromCharCode(0x5C);
+  function u(ch) { return BS + "u" + ch.charCodeAt(0).toString(16).padStart(4, "0"); }
+  function escapeAll(s) {
+    var o = "";
+    for (var q = 0; q < s.length; q += 1) o += u(s.charAt(q));
+    return o;
+  }
+  [
+    ['{"' + escapeAll("__proto__") + '":{"polluted":true}}', "fully escaped"],
+    ['{"__prot' + u("o") + '__":{"polluted":true}}', "one escaped character"],
+    ['{"' + u("c") + 'onstructor":{"x":1}}', "escaped constructor"],
+    ['{"x":{"' + escapeAll("prototype") + '":1}}', "escaped nested prototype"],
+  ].forEach(function (row) {
+    var rv = b.guardJson.validate(row[0], { profile: "strict" });
+    check("escaped pollution key detected (" + row[1] + ")",
+          rv.ok === false &&
+          rv.issues.some(function (i) { return i.kind === "prototype-pollution-key"; }),
+          row[0]);
+  });
+  var escDup = b.guardJson.validate('{"role":"user","' + escapeAll("role") + '":"admin"}',
+                                    { profile: "strict" });
+  check("escaped duplicate key detected",
+        escDup.ok === false &&
+        escDup.issues.some(function (i) { return i.kind === "duplicate-key"; }));
+  // A short escape is a different character, so it must not be folded together
+  // with the letter it escapes, and a malformed escape must not throw.
+  check("an escaped-quote key is not a pollution key",
+        b.guardJson.validate('{"a' + BS + '"b":1}', { profile: "strict" })
+          .issues.every(function (i) { return i.kind !== "prototype-pollution-key"; }));
+  check("a malformed unicode escape does not throw",
+        typeof b.guardJson.validate('{"' + BS + 'uZZZZ":1}',
+          { profile: "strict" }).ok === "boolean");
+
   // Audit-level under permissive.
   var rv4 = b.guardJson.validate('{"__proto__":{"x":1}}',
                                  { profile: "permissive" });

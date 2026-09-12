@@ -2680,6 +2680,38 @@ async function run() {
   await testDefineGuardSanitizeAmplification();
   await testResidualBranches();
   testDefineParser();
+  testMakeIssueReporter();
+}
+
+function testMakeIssueReporter() {
+  var issues = [];
+  var report = GC.makeIssueReporter(issues);
+  for (var i = 0; i < 100000; i += 1) {
+    report({ kind: "a", severity: "critical", ruleId: "x.a" });
+  }
+  check("makeIssueReporter keeps MAX_ISSUES_PER_KIND of one kind",
+        issues.length === GC.MAX_ISSUES_PER_KIND, "kept " + issues.length);
+  report({ kind: "b", severity: "high", ruleId: "x.b" });
+  check("a different kind is still appended after another is capped",
+        issues.length === GC.MAX_ISSUES_PER_KIND + 1);
+  check("the first issue of a kind is the one kept",
+        issues[0].kind === "a" && issues[issues.length - 1].kind === "b");
+
+  var tight = [];
+  var reportTight = GC.makeIssueReporter(tight, 2);
+  reportTight({ kind: "k" }); reportTight({ kind: "k" }); reportTight({ kind: "k" });
+  check("an explicit cap is honored", tight.length === 2);
+
+  // Control: the reporter appends to the array it was given, so the guard's
+  // own `issues` array is what fills; a reporter over a fresh array would
+  // pass the cap assertion while the guard reported nothing at all.
+  var mine = [];
+  GC.makeIssueReporter(mine)({ kind: "z" });
+  check("the reporter writes into the caller's array", mine.length === 1);
+
+  var threw = false;
+  try { GC.makeIssueReporter([], 0); } catch (e) { threw = e instanceof TypeError; }
+  check("a cap below one is refused", threw);
 }
 
 module.exports = { run: run };

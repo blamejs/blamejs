@@ -568,7 +568,90 @@ function testEmptyTagAllowlistPermitsNothing() {
         JSON.stringify(absent.issues.map(function (i) { return i.kind; })));
 }
 
+// Three places where the tokenizer's model of a tag was more generous than the
+// HTML tokenizer's, each one hiding live markup from every detector.
+function testTokenizerMatchesTheHtmlTokenizer() {
+  // A quote opens a quoted value only directly after "=". Treating one inside
+  // an UNQUOTED value as an opener made the tag scan run to end of input, so
+  // the script after it was never tokenized at all.
+  [
+    "<p x=a'b><script>alert(1)</script>",
+    '<p x=a"b><script>alert(1)</script>',
+  ].forEach(function (html) {
+    ["strict", "balanced", "permissive"].forEach(function (profile) {
+      var rv = b.guardHtml.validate(html, { profile: profile });
+      check("markup after a quote in an unquoted value is inspected at " +
+            profile + " " + JSON.stringify(html), rv.ok === false,
+            JSON.stringify(rv.issues.map(function (i) { return i.kind; })));
+    });
+  });
+  // A ">" inside a genuinely quoted value still does not end the tag.
+  check("a quoted value may hold a closing angle bracket",
+        b.guardHtml.validate('<img alt="a > b" src=x>', { profile: "balanced" }).ok === true);
+
+  // A "/" in attribute-name position is a parse error a browser recovers from,
+  // and every attribute after it stayed live while the guard dropped them.
+  ["strict", "balanced", "permissive"].forEach(function (profile) {
+    var rv = b.guardHtml.validate(
+      "<div class=a /onfocus=alert(1) tabindex=1 autofocus>x</div>",
+      { profile: profile });
+    check("an event handler after a stray / is inspected at " + profile,
+          rv.ok === false,
+          JSON.stringify(rv.issues.map(function (i) { return i.kind; })));
+  });
+
+  // text/html has no CDATA section. `<![CDATA[` is a bogus comment that ends
+  // at the FIRST ">", so markup after that point is live in the browser while
+  // the guard was skipping to "]]>".
+  ["strict", "balanced", "permissive"].forEach(function (profile) {
+    var rv = b.guardHtml.validate("<![CDATA[x]><img src=x onerror=alert(1)>]]>",
+      { profile: profile });
+    check("markup after a bogus-comment CDATA is inspected at " + profile,
+          rv.ok === false,
+          JSON.stringify(rv.issues.map(function (i) { return i.kind; })));
+  });
+
+  // A void element opens nothing, so it must not add depth, and a browser
+  // reads `</br>` as another line break rather than as closing anything, so a
+  // void end tag must not remove depth either. A trailing slash does not close
+  // a container in text/html, so `<div/>` still nests.
+  check("a flat run of void elements is not nesting",
+        b.guardHtml.validate(new Array(301).join("<br>"), { profile: "strict" }).ok === true);
+  check("a void end tag does not unwind real nesting",
+        b.guardHtml.validate(new Array(151).join("<div><br></br>") +
+          new Array(151).join("</div>"), { profile: "strict" })
+          .issues.some(function (i) { return i.kind === "depth-cap"; }));
+  check("a slash-terminated container still counts toward depth",
+        b.guardHtml.validate(new Array(21).join("<div/>"),
+          { profile: "strict", maxTagDepth: 2 })
+          .issues.some(function (i) { return i.kind === "depth-cap"; }));
+  check("a balanced document is still accepted",
+        b.guardHtml.validate(new Array(301).join("<p></p>"), { profile: "strict" }).ok === true);
+  // Whitespace around "=" is ordinary, so the attribute must still be read.
+  [
+    '<a href = "javascript:alert(1)">x</a>',
+    '<a href= "javascript:alert(1)">x</a>',
+    '<a  onclick = "alert(1)" >x</a>',
+  ].forEach(function (html) {
+    check("an attribute spaced around = is still inspected " + JSON.stringify(html),
+          b.guardHtml.validate(html, { profile: "balanced" }).ok === false);
+  });
+
+  // And ordinary markup is untouched by all three.
+  [
+    "<p>hello</p>",
+    '<a href="https://ok.example/">x</a>',
+    "<div class=box>x</div>",
+    '<img src="a.png" alt="a">',
+    "<p title='it is'>x</p>",
+  ].forEach(function (html) {
+    check("ordinary markup still accepted " + JSON.stringify(html),
+          b.guardHtml.validate(html, { profile: "balanced" }).ok === true);
+  });
+}
+
 async function run() {
+  testTokenizerMatchesTheHtmlTokenizer();
   testEmptyTagAllowlistPermitsNothing();
   testHtmlScreensAgreeWithThePatternsTheyReplaced();
   testGuardHtmlSurface();
@@ -591,10 +674,58 @@ async function run() {
   testGuardHtmlEscape();
   testGuardHtmlBadProfile();
   testGuardHtmlCompliancePosture();
+  testCssEscapedTokensAreStillDangerous();
   testGdprPostureMatchesBalancedTier();
   await testGuardHtmlGateClean();
   await testGuardHtmlGateRefuse();
   await testGuardHtmlGateSanitize();
+}
+
+function testCssEscapedTokensAreStillDangerous() {
+  var BS = String.fromCharCode(92);
+  // CSS lets any character in a property value or identifier be written as a
+  // backslash escape, so a scan that matches the literal word sees nothing
+  // while a renderer sees the keyword.
+  function flagged(guard, tag, style) {
+    var doc = guard === "guardSvg"
+      ? '<svg xmlns="http://www.w3.org/2000/svg"><' + tag + ' style="' + style + '"/></svg>'
+      : "<" + tag + ' style="' + style + '">x</' + tag + ">";
+    return b[guard].validate(doc, { profile: "balanced" })
+      .issues.some(function (i) { return i.kind === "css-injection"; });
+  }
+  var missed = [];
+  [
+    BS + "6a avascript:alert(1)",
+    "background:u" + BS + "72l(javascript:alert(1))",
+    "width:e" + BS + "78 pression(alert(1))",
+    BS + "40 import url(x)",
+    "behavio" + BS + "72 :url(x)",
+    "background:javascript:alert(1)",
+  ].forEach(function (style) {
+    ["guardHtml", "guardSvg"].forEach(function (guard) {
+      var tag = guard === "guardSvg" ? "rect" : "div";
+      if (!flagged(guard, tag, style)) missed.push(guard + " " + style);
+    });
+  });
+  check("a CSS-escaped dangerous token is flagged in both guards",
+        missed.length === 0, missed.slice(0, 3).join(" | "));
+
+  // Control: an ordinary declaration, and one whose backslash escapes an
+  // ordinary character, must stay quiet.
+  var noisy = [];
+  [
+    "fill:red;stroke-width:2",
+    "color:red;margin:0",
+    "content:'" + BS + "201C'",
+    "font-family:My" + BS + " Font",
+  ].forEach(function (style) {
+    ["guardHtml", "guardSvg"].forEach(function (guard) {
+      var tag = guard === "guardSvg" ? "rect" : "div";
+      if (flagged(guard, tag, style)) noisy.push(guard + " " + style);
+    });
+  });
+  check("an ordinary declaration is not flagged", noisy.length === 0,
+        noisy.slice(0, 3).join(" | "));
 }
 
 module.exports = { run: run };

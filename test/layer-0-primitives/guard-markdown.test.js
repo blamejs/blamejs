@@ -339,6 +339,7 @@ function testMarkdownExtractorsAgreeWithThePatternsTheyReplaced() {
   var INLINE_LINK_RE = /(!?)\[([^\]\n]*)\]\(\s*([^)\s]+)\s*(?:"[^"]*")?\s*\)/g;
   var AUTOLINK_RE    = /<((?:[a-zA-Z][a-zA-Z0-9+.-]{0,32}):[^\s>]+)>/g;
   var REF_DEF_RE     = /^\s{0,3}\[([^\]\n]+)\]:\s*([^\s]+)/gm;
+  var REF_DEF_ANY_INDENT_RE = /^[ \t>]*\[([^\]\n]+)\]:\s*([^\s]+)/gm;
   var CODE_FENCE_LANG_RE = /^(?:```|~~~)([^\n]*)\n/gm;
   var RAW_HTML_TAG_RE = /<\s*\/?\s*[A-Za-z][\w-]*[\s\S]*?>/;
   var DANGEROUS_TAG_RE = /<\s*\/?\s*(script|iframe|object|embed|applet|form|input|button|textarea|select|option|meta|link|base|frame|frameset|noscript|noembed|svg|math|video|audio|source|track|style|template|portal|marquee)\b/i;
@@ -417,9 +418,21 @@ function testMarkdownExtractorsAgreeWithThePatternsTheyReplaced() {
     var gotAuto = api.autolinks(doc).map(function (a) { return a.url; });
     compare("autolinks", JSON.stringify(reAuto), JSON.stringify(gotAuto));
 
+    // The pattern allowed a definition three columns of indent, which is the
+    // rule at the top level of a document. Inside a list item or a block quote
+    // the budget is relative to that container, so the same absolute cutoff
+    // drops a definition that a renderer resolves. The walk has no block
+    // structure to measure against and reads a definition at any indent, so
+    // what it finds is a superset: every URL the pattern found, in order, and
+    // sometimes one the pattern's cutoff hid. A missing URL is a URL whose
+    // scheme is never screened, so the subset direction is the one asserted.
     var reRefs = Array.from(doc.matchAll(REF_DEF_RE)).map(function (m) { return m[2]; });
     var gotRefs = api.refDefs(doc).map(function (r) { return r.url; });
-    compare("ref-defs", JSON.stringify(reRefs), JSON.stringify(gotRefs));
+    var missing = reRefs.filter(function (u) { return gotRefs.indexOf(u) === -1; });
+    compare("ref-defs-subset", JSON.stringify([]), JSON.stringify(missing));
+    var reRefsAnyIndent = Array.from(doc.matchAll(REF_DEF_ANY_INDENT_RE))
+      .map(function (m) { return m[2]; });
+    compare("ref-defs", JSON.stringify(reRefsAnyIndent), JSON.stringify(gotRefs));
 
     // The pattern needed a newline after the fence line, so a fence on the
     // last line was invisible to it; the walk sees that one too. Compare the
@@ -686,6 +699,20 @@ function testLinkLabelWithBracketsStillReachesTheDestination() {
   check("guardMarkdown stays linear when nested links share an endpoint before a long tail",
         growth.looksSuperlinear(scanSharedEndpoint,
           { small: 500, large: 2000, threshold: 8 }) === false);
+  // Every parenthesized title opener resolves to the one closing paren, and
+  // the whitespace run after that closer was rescanned once per opener. The
+  // document is accepted, so the cost is paid for a request that passes.
+  function scanSharedTitleCloser(size) {
+    var md = "[x](" + new Array(size + 1).join("(") + " t)" +
+             new Array(size + 1).join(" ") + "x";
+    b.guardMarkdown.validate(md, { profile: "balanced" });
+  }
+  check("guardMarkdown stays linear when title openers share a closer before a space run",
+        growth.looksSuperlinear(scanSharedTitleCloser,
+          { small: 8000, large: 32000, threshold: 8 }) === false);
+  check("the shared-closer document is accepted",
+        b.guardMarkdown.validate("[x](" + "(".repeat(200) + " t)" + " ".repeat(200) + "x",
+          { profile: "balanced" }).issues.length === 0);
   // Reading the scheme by position has to reach the same verdict the whole-
   // string normalization did, on every padding and encoding it strips.
   [
@@ -983,6 +1010,107 @@ async function testEncodedAndZeroWidthSchemesAreRefused() {
   check("guardMarkdown stays linear on a flood of unclosed nested tag starts",
         growth.looksSuperlinear(scanNestedTagStarts,
           { small: 10000, large: 40000, threshold: 8 }) === false);
+  // The two readings are unioned by appending the second to the first, so the
+  // combined list was not in document order. The scheme reader walks it by
+  // position through a forward-only index of what survives normalization, and
+  // a backwards step made that index rescan from the start: a document that
+  // alternates a plain link with one whose opener sits inside a code span,
+  // each destination carrying zero-width padding so the positional path is
+  // taken, went 118 ms to 7112 ms over an 8x size step while the same links
+  // without the code spans stayed linear. The union is sorted back into
+  // document order.
+  function paddedUrl() {
+    var pad = String.fromCharCode(0x200B);
+    var o = "";
+    for (var q = 0; q < 20; q += 1) o += "a" + pad;
+    return "https:" + pad + "//" + o;
+  }
+  function scanInterleavedUnion(n) {
+    var s = "";
+    for (var q = 0; q < n; q += 1) {
+      s += "[a](" + paddedUrl() + ")\n";
+      s += tick + "[" + tick + "b](" + paddedUrl() + ")\n";
+    }
+    b.guardMarkdown.validate(s, { profile: "permissive" });
+  }
+  check("guardMarkdown stays linear when both link readings interleave",
+        growth.looksSuperlinear(scanInterleavedUnion,
+          { small: 500, large: 2000, threshold: 8 }) === false);
+  // CommonMark gives a link title three delimiter pairs. The scanner knew only
+  // the double quote, so with a `'…'` or `(…)` title no closing paren was
+  // found, the opener was dropped, and the destination was never handed to the
+  // scheme check at all: `[x](javascript:1 'y')` validated clean and sanitize
+  // returned it unchanged at every profile, while its double-quoted twin was
+  // critical. A `<…>` destination may also hold spaces, which the run scanner
+  // stops on, so it is read to its own closing bracket.
+  [
+    ["[x](javascript:1 'y')", "link-scheme"],
+    ["[x](javascript:1 (y))", "link-scheme"],
+    ["![x](javascript:1 'y')", "image-scheme"],
+    ["[x](data:text/html;base64,PHNjcmlwdD4= 'y')", "link-scheme"],
+    ["[x](<javascript:alert(1) >)", "link-scheme"],
+    ["[x](<javascript: alert(1)>)", "link-scheme"],
+  ].forEach(function (row) {
+    ["strict", "balanced", "permissive"].forEach(function (profile) {
+      var r = b.guardMarkdown.validate(row[0], { profile: profile });
+      check("guardMarkdown inspects the destination of " + JSON.stringify(row[0]) +
+            " at " + profile,
+            r.ok === false &&
+            r.issues.some(function (i) { return i.kind === row[1]; }));
+    });
+  });
+  [
+    "[x](https://ok.example/ 'Title')",
+    "[x](https://ok.example/ (Title))",
+    "[x](https://ok.example/a_(b)_c)",
+  ].forEach(function (md) {
+    check("guardMarkdown keeps a benign titled link " + JSON.stringify(md),
+          b.guardMarkdown.validate(md, { profile: "strict" }).ok === true);
+  });
+  // Accepting `(` as a title delimiter put a `)` search inside the loop that
+  // steps backwards through a destination, so an unterminated destination made
+  // of parentheses rescanned the same suffix from every position: 400 KB took
+  // 1.58 s. The next index of each delimiter is filled from the right once.
+  function scanParenDestination(n) {
+    b.guardMarkdown.validate("[x](https:" + new Array(n + 1).join("("),
+      { profile: "permissive" });
+  }
+  check("guardMarkdown stays linear on an unterminated parenthesized destination",
+        growth.looksSuperlinear(scanParenDestination,
+          { small: 50000, large: 200000, threshold: 8 }) === false);
+  // The info string reaches a class attribute in renderers that interpolate it,
+  // and the rule only fired on a fence at column 0. CommonMark allows up to
+  // three columns of indent and a fence inside a block quote; four columns
+  // opens an indented code block, where the backticks are literal text. A tab
+  // advances to the next stop of four, so a tab-led line is that code block
+  // and is covered by testBlockIndentationIsMeasuredInColumns.
+  var infoFence = "```js\" onerror=\"alert(1)\nbody\n```\n";
+  [" ", "   ", "> ", ">> ", ">   "].forEach(function (lead) {
+    var r = b.guardMarkdown.validate(lead + infoFence, { profile: "strict" });
+    check("guardMarkdown inspects the info string of a fence led by " +
+          JSON.stringify(lead),
+          r.ok === false &&
+          r.issues.some(function (i) { return i.kind === "code-fence-lang"; }));
+  });
+  check("guardMarkdown reads no fence in a four-space indented code block",
+        b.guardMarkdown.validate("    " + infoFence, { profile: "strict" }).ok === true);
+  // A named reference has to reach the same verdict as the character it names.
+  // `&hyphen;` decoded to U+002D HYPHEN-MINUS instead of U+2010 HYPHEN, so it
+  // manufactured `view-source:` out of a character that cannot form a scheme
+  // and refused `[a](view&hyphen;source:x)` while accepting the spelling a
+  // browser actually produces.
+  [["hyphen", 0x2010], ["nbsp", 0x00A0]].forEach(function (row) {
+    var entity = "[a](view&" + row[0] + ";source:x)";
+    var literal = "[a](view" + String.fromCharCode(row[1]) + "source:x)";
+    ["strict", "permissive"].forEach(function (profile) {
+      check("guardMarkdown reads &" + row[0] + "; as the character it names at " + profile,
+            b.guardMarkdown.validate(entity, { profile: profile }).ok ===
+            b.guardMarkdown.validate(literal, { profile: profile }).ok);
+    });
+  });
+  check("guardMarkdown still refuses a colon written as a named reference",
+        b.guardMarkdown.validate("[a](javascript&colon;alert(1))",
+          { profile: "permissive" }).ok === false);
   // Two readings can assign different destinations to one opener. Both are
   // inspected, but the construct is one construct, so the caps are not spent
   // twice on it and a document with one image is not refused at maxImages 1.
@@ -1058,7 +1186,58 @@ async function run() {
   testGuardMarkdownSanitizeRefusesCritical();
   testGuardMarkdownSanitizeRefusesBadInput();
   testGuardMarkdownCompliancePosture();
+  testBlockIndentationIsMeasuredInColumns();
   await testGuardMarkdownGate();
+}
+
+function testBlockIndentationIsMeasuredInColumns() {
+  var TAB = String.fromCharCode(9);
+  function kinds(src, profile) {
+    return b.guardMarkdown.validate(src, { profile: profile || "balanced" })
+      .issues.map(function (i) { return i.kind; });
+  }
+  function isFence(src) { return kinds(src).indexOf("code-fence-lang") !== -1; }
+
+  // A tab advances to the next column stop of four, so a line opening with one
+  // is indented code and the three characters after it are not a fence.
+  check("a tab before a fence marker is indented code",
+        !isFence(TAB + '~~~foo"bar'), JSON.stringify(kinds(TAB + '~~~foo"bar')));
+  check("four spaces before a fence marker is indented code",
+        !isFence('    ~~~foo"bar'));
+  check("three spaces before a fence marker still opens a fence",
+        isFence('   ~~~foo"bar'));
+  check("an unindented tilde fence still opens a fence", isFence('~~~foo"bar'));
+  check("an unindented backtick fence still opens a fence", isFence('```foo"bar'));
+  check("a fence inside a block quote still opens a fence", isFence('> ```foo"bar'));
+
+  // A reference definition's indent budget is relative to the block that
+  // contains it, and this guard has no block-structure model. It reads a
+  // definition at any indentation rather than deciding from a column count
+  // that one inside a list or a block quote is code.
+  function refKinds(src) {
+    return b.guardMarkdown.validate(src, { profile: "strict" })
+      .issues.map(function (i) { return i.kind; });
+  }
+  var def = "[x]: javascript:alert(1)";
+  [
+    { name: "unindented", src: def },
+    { name: "three spaces", src: "   " + def },
+    { name: "four spaces", src: "    " + def },
+    { name: "a tab", src: TAB + def },
+    { name: "inside a list item", src: "- item\n\n" + TAB + def + "\n\n[x]" },
+    { name: "inside a block quote", src: "> " + def },
+    { name: "after blank lines", src: "\n\n\n" + def },
+  ].forEach(function (c) {
+    check("a reference definition " + c.name + " is read",
+          refKinds(c.src).indexOf("reference-link-scheme") !== -1,
+          JSON.stringify(refKinds(c.src)));
+  });
+
+  var refused = false;
+  try {
+    b.guardMarkdown.sanitize("- item\n\n" + TAB + def + "\n\n[x]", { profile: "strict" });
+  } catch (e) { refused = e.code === "markdown.reference-link-scheme"; }
+  check("sanitize refuses a dangerous definition rather than preserving it", refused);
 }
 
 module.exports = { run: run };
