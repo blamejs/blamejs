@@ -1082,6 +1082,28 @@ async function testEncodedAndZeroWidthSchemesAreRefused() {
     check("guardMarkdown keeps a benign titled link " + JSON.stringify(md),
           b.guardMarkdown.validate(md, { profile: "strict" }).ok === true);
   });
+  // A backslash escapes the delimiter inside a title, so `"a\"b"` is one title
+  // and the link closes after it. Taking the escaped copy as the close dropped
+  // the link, and its destination, from the scheme check.
+  var BSL = String.fromCharCode(92);
+  var escapedTitles = [];
+  [
+    '[x](javascript:alert%281%29 "a' + BSL + '"b")',
+    "[x](javascript:alert%281%29 'a" + BSL + "'b')",
+    "[x](javascript:alert%281%29 (a" + BSL + ")b))",
+    '[x](javascript:alert%281%29 "a' + BSL + BSL + BSL + '"b")',
+  ].forEach(function (md) {
+    var ks = b.guardMarkdown.validate(md, { profile: "strict" })
+      .issues.map(function (i) { return i.kind; });
+    if (ks.indexOf("link-scheme") === -1) escapedTitles.push(md);
+  });
+  check("an escaped delimiter inside a title does not close it",
+        escapedTitles.length === 0, escapedTitles.join(" | "));
+  check("a doubled backslash before the delimiter is a literal backslash",
+        b.guardMarkdown.validate('[x](https://ok "a' + BSL + BSL + '")', { profile: "strict" }).ok);
+  check("a benign title with escaped quotes is accepted",
+        b.guardMarkdown.validate('[x](https://ok "say ' + BSL + '"hi' + BSL + '"")',
+                                 { profile: "strict" }).ok);
   // Accepting `(` as a title delimiter put a `)` search inside the loop that
   // steps backwards through a destination, so an unterminated destination made
   // of parentheses rescanned the same suffix from every position: 400 KB took

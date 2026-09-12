@@ -1404,9 +1404,23 @@ function testExpansionAgreesWithBruteForceExpansion() {
     doc.rendered.forEach(function (id) { if (!found) visit(id, []); });
     return found;
   }
+  // The amplification allowance is drawn from the references that take part
+  // in rendering: the roots, plus every reference inside a definition reached
+  // from a root. A definition nothing reaches contributes none, so padding a
+  // document with dormant references cannot lift the cap.
   function useCountOf(doc) {
+    var byId = edgesOf(doc);
+    var seen = new Set();
+    var stack = doc.rendered.slice();
     var n = doc.rendered.length;
-    doc.defs.forEach(function (d) { n += d.refs.length; });
+    while (stack.length > 0) {
+      var id = stack.pop();
+      if (seen.has(id)) continue;
+      seen.add(id);
+      var kids = byId.get(id) || [];
+      n += kids.length;
+      for (var i = 0; i < kids.length; i += 1) stack.push(kids[i]);
+    }
     return n;
   }
   function predict(doc, profile) {
@@ -2153,6 +2167,20 @@ function testPrefixedHrefIsReadEverywhereHrefIs() {
     }
   });
   check("no href spelling shadows another", shadowed.length === 0, shadowed.join(" | "));
+  // Both spellings naming the same fragment is the backward-compatible form
+  // every exporter writes, and a renderer instantiates the target once. Two
+  // edges per level had turned a nine-link chain into a thousand instances.
+  function bothSpellings(levels) {
+    var s = '<g id="g0"><circle r="1"/></g>';
+    for (var i = 1; i <= levels; i += 1) {
+      s += '<g id="g' + i + '"><use href="#g' + (i - 1) + '" xlink:href="#g' + (i - 1) + '"/></g>';
+    }
+    return "<svg" + NS + "><defs>" + s + '</defs><use href="#g' + levels + '" xlink:href="#g' + levels + '"/></svg>';
+  }
+  check("href and xlink:href naming one target are one reference",
+        kinds(bothSpellings(9), "balanced").indexOf("use-depth-cap") === -1);
+  check("and a chain past maxUseDepth with both spellings is still refused",
+        kinds(bothSpellings(20), "balanced").indexOf("use-depth-cap") !== -1);
 
   var missed = [];
   ["a", "image"].forEach(function (tag) {
@@ -2265,6 +2293,29 @@ function testExpansionCountsTheElementsEachReferenceClones() {
   check("a plain document of 5000 elements is served",
         !capped('<svg xmlns="http://www.w3.org/2000/svg">' +
           '<rect width="1" height="1"/>'.repeat(5000) + "</svg>"));
+
+  // The amplification allowance is drawn from references that render, so a
+  // definition nothing reaches cannot pad it. Counting every reference in the
+  // source let 2,730 dormant patterns raise the budget over a 21,845-instance
+  // graph.
+  function fourWay(levels) {
+    var s = '<g id="g0"><circle r="1"/></g>';
+    for (var i = 1; i <= levels; i += 1) {
+      s += '<g id="g' + i + '">' + ('<use href="#g' + (i - 1) + '"/>').repeat(4) + "</g>";
+    }
+    return s;
+  }
+  var padding = "";
+  for (var p = 0; p < 2730; p += 1) padding += '<pattern href="#missing' + p + '"/>';
+  check("a seven-level four-way graph is refused",
+        capped('<svg xmlns="http://www.w3.org/2000/svg"><defs>' + fourWay(7) +
+          '</defs><use href="#g7"/></svg>'));
+  check("dormant references do not lift the amplification cap",
+        capped('<svg xmlns="http://www.w3.org/2000/svg"><defs>' + fourWay(7) + padding +
+          '</defs><use href="#g7"/></svg>'));
+  check("nor at the permissive profile",
+        capped('<svg xmlns="http://www.w3.org/2000/svg"><defs>' + fourWay(7) + padding +
+          '</defs><use href="#g7"/></svg>', "permissive"));
 }
 
 function testSvgTagScanSharesTheTokenizerStates() {
