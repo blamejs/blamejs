@@ -713,6 +713,21 @@ function testLinkLabelWithBracketsStillReachesTheDestination() {
   check("the shared-closer document is accepted",
         b.guardMarkdown.validate("[x](" + "(".repeat(200) + " t)" + " ".repeat(200) + "x",
           { profile: "balanced" }).issues.length === 0);
+  // The delimiter lookup that made the walk above linear must not be a table
+  // the size of the document. Three of those on a 64 MiB permissive body are
+  // 768 MiB. This is a memory assertion; a timing one passes either way. A
+  // typed array's backing store is counted in `arrayBuffers`, not `heapUsed`:
+  // measured against the build that allocated the tables, this 4 MiB document
+  // moved arrayBuffers by 48 MiB and heapUsed by 4.5 MiB, and the fixed build
+  // moves arrayBuffers by 0 and heapUsed by the same 4.5 MiB. An assertion on
+  // heapUsed passed against both.
+  var filler = "lorem ipsum dolor sit amet ".repeat(4 * 1024 * 1024 / 27);
+  var wide = filler + "\n[a](u \"t\") [b](u 't') [c](u (t))\n";
+  var before = process.memoryUsage().arrayBuffers;
+  b.guardMarkdown.validate(wide, { profile: "permissive" });
+  var grewMiB = (process.memoryUsage().arrayBuffers - before) / (1024 * 1024);
+  check("title-delimiter lookups do not allocate per character of the document",
+        grewMiB < 8, "a 4 MiB document grew arrayBuffers by " + grewMiB.toFixed(1) + " MiB");
   // Reading the scheme by position has to reach the same verdict the whole-
   // string normalization did, on every padding and encoding it strips.
   [
