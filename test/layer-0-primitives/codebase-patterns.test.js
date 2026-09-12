@@ -24543,8 +24543,19 @@ function testLibCommentBlocksAreWholeSentences() {
       // when re-verifying the class, and two of them had been cut in half.
       var isMarker   = /^allow:/.test(first.text);
       var isDirective = /^@|eslint|c8 ignore|SPDX|^-|^\||^\d+\.|:$|^[A-Za-z_$][\w$]*\(/.test(first.text);
+      // A block whose last line ends on a comma or a semicolon, or that opens
+      // a parenthesis it never closes, ends mid-sentence whatever its last word
+      // is: a sweep that dropped a marker's continuation line left eleven of
+      // those, most of them ending on a noun the word list cannot see.
+      var opens = 0;
+      var closes = 0;
+      block.forEach(function (l) {
+        opens += (l.text.match(/\(/g) || []).length;
+        closes += (l.text.match(/\)/g) || []).length;
+      });
+      var cut = /[,;]$/.test(last.text) || opens > closes;
       if (!isDirective) {
-        if (last.text.length > 0 && DANGLING.test(last.text)) {
+        if (last.text.length > 0 && (DANGLING.test(last.text) || cut)) {
           bad.push({
             file: rel, line: last.n, content: "comment block ends mid-sentence on `" +
               last.text.split(/\s+/).pop() + "`: \"" + last.text.slice(-60) + "\"",
@@ -24553,6 +24564,14 @@ function testLibCommentBlocksAreWholeSentences() {
                    first.text.indexOf("(") === -1) {
           bad.push({
             file: rel, line: first.n, content: "comment block opens mid-clause: \"" +
+              first.text.slice(0, 60) + "\"",
+          });
+        } else if (!isMarker && /\ballow:[a-z0-9-]+/.test(first.text)) {
+          // A marker sits at the start of its comment line; prose before it on
+          // a block's first line is the tail of a sentence the lines above
+          // once carried ("honored. allow:hand-rolled-sql ...").
+          bad.push({
+            file: rel, line: first.n, content: "comment block opens on the tail of a sentence before its allow marker: \"" +
               first.text.slice(0, 60) + "\"",
           });
         }

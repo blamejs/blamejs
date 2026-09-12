@@ -692,9 +692,12 @@ function testLinkLabelWithBracketsStillReachesTheDestination() {
   // DECREASING offsets: each span went in at the front of a sorted array,
   // which is quadratic in the number of links (0.8 s of shifting at 64,000).
   // The span index grows room at its front, so a span below every other is
-  // one write. The index is measured on its own as well, past the size where
-  // the shifting showed, since a document of that many links allocates enough
-  // that a loaded machine reads its growth as noise.
+  // one write. The index is measured on its own below, past the size where
+  // the shifting showed, and that is the reading that separates the two
+  // indexes (57x against 4x). This end-to-end reading measures 4x for 4x the
+  // input on a quiet box and sits at the helper's floor, so under a 64-way
+  // smoke its large sample inflates past a bound of 8 on linear work; the
+  // bound is 12, which a quadratic term still crosses.
   function scanPaddedDestinations(size) {
     var md = new Array(size + 1).join("[") + "x]" +
              new Array(size).join("](&#1;a") + ")";
@@ -702,7 +705,7 @@ function testLinkLabelWithBracketsStillReachesTheDestination() {
   }
   check("guardMarkdown stays linear when overlapping destinations share entity padding",
         growth.looksSuperlinear(scanPaddedDestinations,
-          { small: 2000, large: 8000, threshold: 8 }) === false);
+          { small: 2000, large: 8000, threshold: 12 }) === false);
   function fillSpanIndexFromTheFront(size) {
     var index = b.guardMarkdown._spanIndexForTest();
     for (var at = size * 4; at > 0; at -= 4) index.add(at, at + 2, at + 3);

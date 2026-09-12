@@ -1,0 +1,36 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.20.2",
+  "date": "2026-09-12",
+  "headline": "Every review marker states its whole reason, and the vendored PKI bundle moves to 0.7.39",
+  "summary": "A comment sweep in 0.19.0 removed the line before or after eighteen `allow:` review markers and five `drop-silent` statements, leaving each a half-sentence in shipped source. All twenty-three are whole sentences again, the comment gate now fails a block that ends on a comma or a semicolon, opens a parenthesis it never closes, or opens on the tail of a sentence before its marker, and the vendored `@blamejs/pki` bundle rises to 0.7.39. Upgrading requires no code change.",
+  "sections": [
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "Twenty-three comments in `lib/` are whole sentences again",
+          "body": "The 0.19.0 comment sweep kept a line that carries an `allow:` review marker or a `drop-silent` statement and removed the lines around it. Where the reason ran onto the next line the shipped file carried half of it: `crypto-field.js` ended its marker on \"operator\", `dsr.js` opened a parenthesis it never closed, and `app-shutdown.js`, `audit.js`, `db-declare-row-policy.js`, `metrics.js`, `middleware/attach-user.js`, `middleware/span-http-server.js`, `middleware/idempotency-key.js` and `network-smtp-policy.js` each ended on a comma, a semicolon or a noun the rest of the sentence was meant to follow. Where the marker's line began with the tail of the sentence the lines before it had carried, the shipped file opened on it: three markers in `audit-tools.js` began \"clusterStorage rewrites it.\" or \"columns + binds 'audit'.\", and one each in `audit.js`, `break-glass.js`, `crypto-field.js` and `db.js` began \"honored.\", \"keying.)\", \"through.\" and \"literal names ARE the contract.\". Five `drop-silent` statements in `error-page.js`, `http-client.js`, `pqc-agent.js`, `safe-decompress.js` and `session-device-binding.js` were cut the same way. Each is one sentence on one line now, with the same claim it made before the sweep; every marker's claim was re-read against the code it annotates and holds."
+        }
+      ]
+    },
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "Vendored `@blamejs/pki` moves to 0.7.39",
+          "body": "The vendored bundle rises from 0.7.37 to 0.7.39. `pki.lint.certificate` grades six more RFC 5280 rules (policy mapping to or from anyPolicy, unique identifiers present, and four more its parser had read past), `pki.schema.x509.parse` returns `issuerUniqueID` and `subjectUniqueID`, and `pki.schema.ocsp.parseRequest` and `parseResponse` refuse a CertID whose issuer hashes are not the length of the digest they name, with the digest lengths shared through `pki.constants.NAMES.DIGEST_OCTETS`. The package continues to declare no dependencies and no install, prepare or prepublish scripts."
+        }
+      ]
+    },
+    {
+      "heading": "Detectors",
+      "items": [
+        {
+          "title": "A comment block that ends on `,` or `;`, opens a parenthesis it never closes, or opens on the tail of a sentence before its marker fails the whole-sentence gate",
+          "body": "The gate that keeps `lib/` comments whole sentences judged a block's last word against a list of function words, so a block cut after a noun passed, and it exempted a marker line from the opens-mid-clause test wherever the marker sat on the line. It now also fails a block whose last line ends on a comma or a semicolon, one that opens a parenthesis it never closes, and one whose first line carries prose before its `allow:` marker. On the tree before this release it reported eighteen of the twenty-three blocks above and nothing else; the other five ended on a noun and were found by comparing each marker with its text before the sweep."
+        }
+      ]
+    }
+  ]
+}
