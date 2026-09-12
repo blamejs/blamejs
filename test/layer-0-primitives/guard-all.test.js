@@ -822,20 +822,30 @@ async function testGuardFamilyGateAgreesWithValidateOnAnEmptyValue() {
 function testGuardFamilyRefusesAMalformedNumericCap() {
   var MALFORMED = [["a string", "8mb"], ["Infinity", Infinity],
                    ["a fraction", 1.5], ["a negative", -1], ["NaN", NaN]];
+  // A ratio or a threshold is a positive NUMBER, declared by the guard as one
+  // (`POSITIVE_NUMBER_OPTS`), so a fraction is a value on it and everything
+  // else stays refused. Deriving "integer cap" from a whole-number default held
+  // guardCsv's amplification cap to integers, and a fractional default was
+  // skipped by this sweep entirely, so guardText's cap took an Infinity.
   var probedGuards = 0;
   var probedCaps = 0;
+  var probedNumbers = 0;
   b.guardAll.allGuards().forEach(function (g) {
     if (typeof g.resolveOpts !== "function") return;
     var base;
     try { base = g.resolveOpts({}); } catch (_e) { return; }
+    var numbers = Array.isArray(g.POSITIVE_NUMBER_OPTS) ? g.POSITIVE_NUMBER_OPTS : [];
     var caps = Object.keys(base).filter(function (k) {
-      return typeof base[k] === "number" && Number.isInteger(base[k]) && base[k] > 0;
+      return typeof base[k] === "number" && base[k] > 0 &&
+             (Number.isInteger(base[k]) || numbers.indexOf(k) !== -1);
     });
     if (caps.length === 0) return;
     probedGuards += 1;
     caps.forEach(function (cap) {
-      probedCaps += 1;
+      var isNumber = numbers.indexOf(cap) !== -1;
+      if (isNumber) probedNumbers += 1; else probedCaps += 1;
       var accepted = MALFORMED.filter(function (pair) {
+        if (isNumber && pair[0] === "a fraction") return false;
         var o = {};
         o[cap] = pair[1];
         try { g.resolveOpts(o); return true; }
@@ -844,13 +854,21 @@ function testGuardFamilyRefusesAMalformedNumericCap() {
       check("guard " + g.NAME + ": " + cap + " refuses a malformed value" +
             (accepted.length ? " (accepted " + accepted.join(", ") + ")" : ""),
             accepted.length === 0);
+      if (isNumber) {
+        var o2 = {};
+        o2[cap] = 1.5;
+        var kept = false;
+        try { kept = g.resolveOpts(o2)[cap] === 1.5; } catch (_e2) { kept = false; }
+        check("guard " + g.NAME + ": " + cap + " is a number, so a fraction is a value", kept);
+      }
     });
   });
   // A control, so the sweep cannot pass by surveying nothing: the failure this
   // was written for spanned 27 guards, and a probe that reached two would have
   // reported clean.
   check("malformed-cap sweep reached the whole family (" + probedGuards +
-        " guards, " + probedCaps + " caps)", probedGuards >= 20 && probedCaps >= 40);
+        " guards, " + probedCaps + " caps, " + probedNumbers + " numbers)",
+        probedGuards >= 20 && probedCaps >= 40 && probedNumbers >= 3);
   // The same resolver must still ACCEPT a well-formed override, or the sweep
   // above passes for a resolver that simply refuses everything.
   var markdown = b.guardAll.allGuards().filter(function (g) { return g.NAME === "markdown"; })[0];
@@ -877,7 +895,8 @@ function testGuardFamilyRefusesAMalformedNumericCap() {
     try { base = g.resolveOpts({}); } catch (_e) { return; }
     Object.keys(base).forEach(function (k) {
       if (!(typeof base[k] === "number" && Number.isInteger(base[k]) && base[k] > 0)) return;
-      var declared = Array.isArray(g.INT_OPTS) && g.INT_OPTS.indexOf(k) !== -1;
+      var declared = (Array.isArray(g.INT_OPTS) && g.INT_OPTS.indexOf(k) !== -1) ||
+                     (Array.isArray(g.POSITIVE_NUMBER_OPTS) && g.POSITIVE_NUMBER_OPTS.indexOf(k) !== -1);
       var o = {};
       o[k] = 0;
       var accepted = true;

@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.20.2",
-  "createdAt": "2026-09-12T16:36:01.610Z",
+  "frameworkVersion": "0.20.3",
+  "createdAt": "2026-09-12T23:03:27.697Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -19857,6 +19857,10 @@
             }
           }
         },
+        "POSITIVE_NUMBER_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "PROFILES": {
           "type": "object",
           "members": {
@@ -20362,6 +20366,10 @@
             }
           }
         },
+        "POSITIVE_NUMBER_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "PROFILES": {
           "type": "object",
           "members": {
@@ -20862,6 +20870,10 @@
               "ctorName": "Array"
             }
           }
+        },
+        "POSITIVE_NUMBER_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
         },
         "PROFILES": {
           "type": "object",
@@ -21479,6 +21491,10 @@
               "ctorName": "Array"
             }
           }
+        },
+        "POSITIVE_NUMBER_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
         },
         "PROFILES": {
           "type": "object",
@@ -22309,6 +22325,10 @@
               "ctorName": "Array"
             }
           }
+        },
+        "POSITIVE_NUMBER_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
         },
         "PROFILES": {
           "type": "object",
@@ -23361,6 +23381,10 @@
               "ctorName": "Array"
             }
           }
+        },
+        "POSITIVE_NUMBER_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
         },
         "PROFILES": {
           "type": "object",
@@ -24457,6 +24481,10 @@
             }
           }
         },
+        "POSITIVE_NUMBER_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "PROFILES": {
           "type": "object",
           "members": {
@@ -25264,6 +25292,10 @@
             }
           }
         },
+        "POSITIVE_NUMBER_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "PROFILES": {
           "type": "object",
           "members": {
@@ -26024,6 +26056,10 @@
               "ctorName": "Array"
             }
           }
+        },
+        "POSITIVE_NUMBER_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
         },
         "PROFILES": {
           "type": "object",
@@ -27141,6 +27177,10 @@
               "ctorName": "Array"
             }
           }
+        },
+        "POSITIVE_NUMBER_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
         },
         "PROFILES": {
           "type": "object",
@@ -28398,6 +28438,10 @@
           "type": "instance",
           "ctorName": "Array"
         },
+        "POSITIVE_NUMBER_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "PROFILES": {
           "type": "object",
           "members": {
@@ -29094,6 +29138,10 @@
               "ctorName": "Array"
             }
           }
+        },
+        "POSITIVE_NUMBER_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
         },
         "PROFILES": {
           "type": "object",
@@ -29895,6 +29943,10 @@
               "ctorName": "Array"
             }
           }
+        },
+        "POSITIVE_NUMBER_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
         },
         "PROFILES": {
           "type": "object",
@@ -32172,6 +32224,10 @@
             }
           }
         },
+        "POSITIVE_NUMBER_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "PROFILES": {
           "type": "object",
           "members": {
@@ -32995,6 +33051,10 @@
             }
           }
         },
+        "POSITIVE_NUMBER_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "PROFILES": {
           "type": "object",
           "members": {
@@ -33687,6 +33747,10 @@
             }
           }
         },
+        "POSITIVE_NUMBER_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "PROFILES": {
           "type": "object",
           "members": {
@@ -34353,6 +34417,10 @@
               "ctorName": "Array"
             }
           }
+        },
+        "POSITIVE_NUMBER_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
         },
         "PROFILES": {
           "type": "object",
@@ -35365,6 +35433,10 @@
             }
           }
         },
+        "POSITIVE_NUMBER_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "PROFILES": {
           "type": "object",
           "members": {
@@ -36115,6 +36187,10 @@
               "ctorName": "Array"
             }
           }
+        },
+        "POSITIVE_NUMBER_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
         },
         "PROFILES": {
           "type": "object",
@@ -36970,6 +37046,10 @@
               "ctorName": "Array"
             }
           }
+        },
+        "POSITIVE_NUMBER_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
         },
         "PROFILES": {
           "type": "object",
@@ -37855,6 +37935,10 @@
             }
           }
         },
+        "POSITIVE_NUMBER_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "PROFILES": {
           "type": "object",
           "members": {
@@ -38532,6 +38616,10 @@
             }
           }
         },
+        "POSITIVE_NUMBER_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "PROFILES": {
           "type": "object",
           "members": {
@@ -39132,6 +39220,10 @@
             }
           }
         },
+        "POSITIVE_NUMBER_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "PROFILES": {
           "type": "object",
           "members": {
@@ -39728,6 +39820,10 @@
               "ctorName": "Array"
             }
           }
+        },
+        "POSITIVE_NUMBER_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
         },
         "PROFILES": {
           "type": "object",
@@ -40492,6 +40588,10 @@
             }
           }
         },
+        "POSITIVE_NUMBER_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
         "PROFILES": {
           "type": "object",
           "members": {
@@ -41236,6 +41336,10 @@
               "ctorName": "Array"
             }
           }
+        },
+        "POSITIVE_NUMBER_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
         },
         "PROFILES": {
           "type": "object",
@@ -42049,6 +42153,10 @@
               "ctorName": "Array"
             }
           }
+        },
+        "POSITIVE_NUMBER_OPTS": {
+          "type": "instance",
+          "ctorName": "Array"
         },
         "PROFILES": {
           "type": "object",

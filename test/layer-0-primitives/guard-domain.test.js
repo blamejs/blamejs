@@ -330,6 +330,20 @@ function testDgaEntropy() {
     { profile: "strict", dgaMinLabelLen: 1, dgaPolicy: "reject" });
   check("guardDomain.validate 1-char label entropy=0 -> no dga issue",
     tiny.ok === true && hasIssue(tiny.issues, "dga-entropy") === false);
+
+  // The threshold is compared with `>=`, so a NaN, an Infinity or a string
+  // silently switched the heuristic off while the option stayed declared.
+  [NaN, Infinity, "3.8", -1, 0, null].forEach(function (bad) {
+    var threw = null;
+    try { b.guardDomain.validate("x7q2m9k4p1z8w3.example.com", { profile: "strict", dgaEntropyThreshold: bad }); }
+    catch (e) { threw = e; }
+    check("guardDomain.validate refuses dgaEntropyThreshold " + String(bad),
+      threw !== null && threw.code === "domain/bad-opt", threw ? threw.code : "accepted");
+  });
+  var frac = b.guardDomain.validate("x7q2m9k4p1z8w3.example.com",
+    { profile: "strict", dgaEntropyThreshold: 2.5 });
+  check("guardDomain.validate takes a fractional threshold",
+    frac.ok === false && hasIssue(frac.issues, "dga-entropy", "high"));
 }
 
 // Trailing-dot FQDN marker: normalized silently by default, but surfaced as an
