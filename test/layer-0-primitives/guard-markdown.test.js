@@ -1085,7 +1085,8 @@ async function testEncodedAndZeroWidthSchemesAreRefused() {
   // Accepting `(` as a title delimiter put a `)` search inside the loop that
   // steps backwards through a destination, so an unterminated destination made
   // of parentheses rescanned the same suffix from every position: 400 KB took
-  // 1.58 s. The next index of each delimiter is filled from the right once.
+  // 1.58 s. Each delimiter keeps one scanned interval, so a query inside it
+  // is answered without a scan and a query below it extends it.
   function scanParenDestination(n) {
     b.guardMarkdown.validate("[x](https:" + new Array(n + 1).join("("),
       { profile: "permissive" });
@@ -1093,6 +1094,17 @@ async function testEncodedAndZeroWidthSchemesAreRefused() {
   check("guardMarkdown stays linear on an unterminated parenthesized destination",
         growth.looksSuperlinear(scanParenDestination,
           { small: 50000, large: 200000, threshold: 8 }) === false);
+  // The per-position memos behind that walk must not hold a heap entry per
+  // character either: keyed as Maps they cost 141 bytes per input character,
+  // which is 9 GB at the permissive size cap. Measured without a collection
+  // the walk now costs about 8 bytes per character of collectible garbage,
+  // so a bound of 32 separates the two by a wide margin either way.
+  var wideParen = "[x](https:" + new Array(2000001).join("(");
+  var heapBefore = process.memoryUsage().heapUsed;
+  b.guardMarkdown.validate(wideParen, { profile: "permissive" });
+  var perChar = (process.memoryUsage().heapUsed - heapBefore) / wideParen.length;
+  check("the link walk does not hold a heap entry per input character",
+        perChar < 32, perChar.toFixed(1) + " bytes per character");
   // The info string reaches a class attribute in renderers that interpolate it,
   // and the rule only fired on a fence at column 0. CommonMark allows up to
   // three columns of indent and a fence inside a block quote; four columns
@@ -1224,6 +1236,28 @@ function testBlockIndentationIsMeasuredInColumns() {
   check("an unindented tilde fence still opens a fence", isFence('~~~foo"bar'));
   check("an unindented backtick fence still opens a fence", isFence('```foo"bar'));
   check("a fence inside a block quote still opens a fence", isFence('> ```foo"bar'));
+  // One space after `>` belongs to the marker, not to the indentation, so
+  // `>` followed by four spaces is one marker space and three of indent, which
+  // is still a fence. Counting all four made it indented code and let the
+  // info string past the check.
+  check("a block-quote marker's optional space is not fence indentation",
+        isFence('>    ```foo"bar'));
+  check("nor for nested markers", isFence('>>    ```foo"bar'));
+  // A tab after the marker expands to the next stop of four; one of its
+  // columns is the marker's space and the rest are indentation.
+  check("a tab after the marker leaves two columns of indent, so a fence follows",
+        isFence(">" + TAB + '```foo"bar'));
+  check("a tab after the marker plus three spaces is five columns: indented code",
+        !isFence(">" + TAB + '   ```foo"bar'));
+  check("a tab after the marker plus one space is three columns: a fence",
+        isFence(">" + TAB + ' ```foo"bar'));
+  check("a fifth space after the marker is indented code", !isFence('>     ```foo"bar'));
+  // The columns a tab leaves over indent the NEXT marker, which consumes
+  // them; they do not carry through to the fence.
+  check("nested markers each with a tab still open a fence",
+        isFence(">" + TAB + ">" + TAB + '~~~foo"bar'));
+  check("nested markers with a tab then three spaces are indented code",
+        !isFence(">" + TAB + ">" + TAB + '   ~~~foo"bar'));
 
   // A reference definition's indent budget is relative to the block that
   // contains it, and this guard has no block-structure model. It reads a
