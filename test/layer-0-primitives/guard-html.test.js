@@ -744,6 +744,27 @@ function testTagScanFollowsTheTokenizerStates() {
   check("whitespace around = still opens a quoted value",
         kinds('<p title = "a>b">x</p>').indexOf("dangerous-tag") === -1);
 
+  // A `/` in name position enters the self-closing state: `>` right after it
+  // ends the tag, and anything else is reconsumed before an attribute name,
+  // where `=` starts a NAME and the quotes after it are name data. A `/`
+  // inside an unquoted value is value data.
+  var slashed = [];
+  [
+    "<div \" /='\"><script>alert(1)</script>",
+    "<div /='\"><script>alert(1)</script>",
+    "<div x /=\"><script>alert(1)</script>",
+    "<div x=\"a\"/='><script>alert(1)</script>",
+    "<div//='><script>alert(1)</script>",
+  ].forEach(function (doc) {
+    if (kinds(doc).indexOf("dangerous-tag") === -1) slashed.push(doc);
+  });
+  check("an = reconsumed after a self-closing slash starts a name, not a value",
+        slashed.length === 0, slashed.join(" | "));
+  check("a slash inside an unquoted value is value data",
+        kinds("<a href=/x/>y</a>").indexOf("dangerous-tag") === -1);
+  check("a slash then > still ends the tag",
+        kinds('<p title="a>b"/>x').indexOf("dangerous-tag") === -1);
+
   // Recovery past a `/` or `=` in name position runs to the end of the tag.
   // A round cap left every attribute past it unread, and a browser reads them.
   var unread = [];

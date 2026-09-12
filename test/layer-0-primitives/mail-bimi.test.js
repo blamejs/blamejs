@@ -433,6 +433,73 @@ async function _generateTestChain(opts) {
   };
 }
 
+// pki.x509.sign refuses a pre-encoded extension whose extnValue is not one
+// DER value, which is exactly the certificate the scanner's fallback exists
+// for. This chain's leaf carries such a value the way a CA that skips the
+// check would issue it: the leaf is signed with a placeholder extnValue of
+// the same length, the placeholder is replaced in the signed TBSCertificate,
+// and the TBS is signed again with the CA key.
+var OID_ECDSA_WITH_SHA256 = "1.2.840.10045.4.3.2";
+var PEM_LINE = 64;
+
+function _pemOf(der) {
+  var b64 = der.toString("base64");
+  var lines = [];
+  for (var i = 0; i < b64.length; i += PEM_LINE) lines.push(b64.slice(i, i + PEM_LINE));
+  return "-----BEGIN CERTIFICATE-----\n" + lines.join("\n") + "\n-----END CERTIFICATE-----\n";
+}
+
+function _derIntegerOf(bytes) {
+  var hex = bytes.toString("hex");
+  return build.integer(BigInt("0x" + (hex === "" ? "0" : hex)));
+}
+
+async function _generateTestChainWithRawLogotype(innerDer) {
+  var caKeys = await _genKey();
+  var leafKeys = await _genKey();
+  var now = new Date();
+  var notAfter = new Date(now.getTime() + YEAR_MS);
+  var caSpki = await _spki(caKeys.publicKey);
+  var caKeyPem = await _keyPem(caKeys.privateKey);
+  var leafSpki = await _spki(leafKeys.publicKey);
+  var rootPem = await pki.x509.sign({
+    subject:          "BIMI Test Root",
+    subjectPublicKey: caSpki,
+    serialNumber:     "0x01",
+    notBefore:        now,
+    notAfter:         notAfter,
+    extensions: {
+      basicConstraints: { cA: true, pathLen: 1, critical: true },
+      keyUsage:         ["keyCertSign", "cRLSign"], keyUsageCritical: true,
+    },
+  }, { key: caKeyPem }, { pem: true });
+  if (innerDer.length < 2 || innerDer.length > 129) throw new Error("placeholder needs a short-form length");
+  var placeholder = Buffer.concat([Buffer.from([0x04, innerDer.length - 2]),
+                                   Buffer.alloc(innerDer.length - 2, 0x5A)]);
+  var leafDer = await pki.x509.sign({
+    subject:          "example.com",
+    subjectPublicKey: leafSpki,
+    serialNumber:     "0x02",
+    notBefore:        now,
+    notAfter:         notAfter,
+    extensions:       _buildLeafExtensions({ logotypeExt: _logotypeExtensionRaw(placeholder) }),
+  }, { cert: rootPem, key: caKeyPem });
+  var parts = pki.asn1.decode(leafDer).children;
+  var tbs = Buffer.from(parts[0].bytes);
+  var sigAlg = Buffer.from(parts[1].bytes);
+  if (!sigAlg.equals(build.sequence([build.oid(OID_ECDSA_WITH_SHA256)]))) {
+    throw new Error("the leaf was not signed with ecdsa-with-SHA256: " + sigAlg.toString("hex"));
+  }
+  var at = tbs.indexOf(placeholder);
+  if (at === -1 || tbs.indexOf(placeholder, at + 1) !== -1) throw new Error("placeholder not found once in the TBS");
+  var patched = Buffer.concat([tbs.slice(0, at), innerDer, tbs.slice(at + placeholder.length)]);
+  var raw = Buffer.from(await subtle.sign({ name: "ECDSA", hash: "SHA-256" }, caKeys.privateKey, patched));
+  var half = raw.length / 2;
+  var sigDer = build.sequence([_derIntegerOf(raw.slice(0, half)), _derIntegerOf(raw.slice(half))]);
+  var cert = build.sequence([build.raw(patched), build.raw(sigAlg), build.bitString(sigDer)]);
+  return { rootPem: rootPem, leafPem: _pemOf(cert) };
+}
+
 // _generateThreeLevelChain — root -> intermediate -> leaf, so the fetched
 // PEM body carries [leaf, intermediate] and the trust anchor is the root.
 // Drives the intermediate-walk branch of the chain verifier.
@@ -1521,7 +1588,7 @@ async function testFetchAndVerifyMarkLogotypeTruncatedSequence() {
   // length still overruns the octets that follow it, which is what makes the
   // full sequence-decode fail and the fallback run — the point of this test.
   var inner = Buffer.from([0x30, 0x08, 0x04, 0x05, 0x3C, 0x73, 0x76, 0x67, 0x3E, 0xFF]);
-  var chain = await _generateTestChain({ logotypeExt: _logotypeExtensionRaw(inner) });
+  var chain = await _generateTestChainWithRawLogotype(inner);
   var rv = await b.mail.bimi.fetchAndVerifyMark({
     domain:          "example.com",
     vmcUrl:          "https://example.com/cert.pem",
@@ -1755,7 +1822,7 @@ async function testFetchAndVerifyMarkLogotypeUnparseableInner() {
   // the single-node readNode fallback (truncated child TLV) — the scanner
   // returns null via the inner catch.
   var badInner = Buffer.from([0x30, 0x03, 0x04, 0x05, 0x41]);
-  var chain = await _generateTestChain({ logotypeExt: _logotypeExtensionRaw(badInner) });
+  var chain = await _generateTestChainWithRawLogotype(badInner);
   var rv = await b.mail.bimi.fetchAndVerifyMark({
     domain:          "example.com",
     vmcUrl:          "https://example.com/cert.pem",
