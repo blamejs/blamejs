@@ -14,7 +14,29 @@
         },
         {
           "title": "`b.guardCsv.sanitize` disarms a formula cell or refuses it",
-          "body": "`sanitize()` stripped characters and returned the document, so a formula cell came back as written, under `formulaInjectionPolicy: \"reject\"` too, and a denylisted `=WEBSERVICE(...)` came back as written at every profile, while the function's own documentation promised it never returns a class the operator asked it to refuse. It now refuses a formula cell under `reject`, a denylisted function, and mixed line endings under `dialectPolicy: \"strict\"`, each with the finding's rule id. Under a prefixing policy it disarms a formula cell the way the gate does: the document is re-parsed, re-serialized with the prefix inside a quoted field, and read again under every delimiter; a cell that is still a formula under one of those readings is refused rather than served. The gate serves what `sanitize` returns.\n\nThe mitigated form of a denylisted function is still the denylisted function. `\"'=WEBSERVICE(...)\"` and, under `prefix-tab`, `\"<TAB>=WEBSERVICE(...)\"` validated clean; Excel drops the leading apostrophe when it saves and re-opens the file, and the gate refuses a denylisted call even prefixed. The denylist walk reads through the guard's own prefixes now."
+          "body": "`sanitize()` stripped characters and returned the document, so a formula cell came back as written, under `formulaInjectionPolicy: \"reject\"` too, and a denylisted `=WEBSERVICE(...)` came back as written at every profile, while the function's own documentation promised it never returns a class the operator asked it to refuse. It now refuses a formula cell under `reject`, a denylisted function, and mixed line endings under `dialectPolicy: \"strict\"`, each with the finding's rule id. Under a prefixing policy it disarms a formula cell the way the gate does: the document is re-parsed, re-serialized with the prefix inside a quoted field, and read again under every delimiter; a cell that is still a formula under one of those readings is refused rather than served. The gate serves what `sanitize` returns.\n\nThe mitigated form of a denylisted function is still the denylisted function. `\"'=WEBSERVICE(...)\"` and, under `prefix-tab`, `\"<TAB>=WEBSERVICE(...)\"` validated clean; Excel drops the leading apostrophe when it saves and re-opens the file, and the gate refuses a denylisted call even prefixed. The denylist walk reads through the guard's own prefixes now, in either order with the leading whitespace it also reads through."
+        },
+        {
+          "title": "A denylisted call anywhere in a formula cell is refused",
+          "body": "The denylist read the one word after the trigger, so `=SUM(HYPERLINK(A1))`, `=1+WEBSERVICE(\"http://x/\")`, `=(WEBSERVICE(...))`, `=\"x\"&WEBSERVICE(...)` and `= WEBSERVICE(...)` validated with only the formula finding, which a prefixing policy sanitizes rather than refuses, and `sanitize()` served them prefixed. The walk now reads the whole cell as the consumer decodes it under each delimiter reading, including the text after a closing quote, and reports the first denylisted call it finds anywhere in the cell, outside a string, a quoted sheet name or a structured reference. A name that begins after a digit or a letter is still read as a call: no evaluator runs `=1HYPERLINK(...)`, and refusing it costs no formula that runs.\n\nUnder `formulaInjectionPolicy: \"allowlist\"`, a formula cell that only another delimiter's reading exposes cannot be re-serialized away, and the residual check exempted such a cell on its leading call alone, so `safe;=SUM(FOO(A1))` was served to a semicolon reader with only `SUM` allowlisted. The residual is now served only when every call in it is allowlisted, the rule `escapeCell` already applied to the cells it can rewrite."
+        }
+      ]
+    },
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "`POSITIVE_NUMBER_OPTS` on every guard, and `positiveNumberOpts` on `b.gateContract.defineGuard` and `resolveProfileAndPosture`",
+          "body": "A guard's ratio and threshold options are declared the way its integer caps are declared in `INT_OPTS`. The resolver holds each one to a positive finite number, with fractions allowed, and exempts it from the integer checks. `b.guardCsv` and `b.guardText` declare `sanitizeAmplificationCap`; `b.guardDomain` declares `dgaEntropyThreshold`. A guard built by `defineGuard` that names a `sanitizeAmplificationCap` field declares it without being asked."
+        }
+      ]
+    },
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "A ratio or threshold option refuses a value it cannot compare against",
+          "body": "`sanitizeAmplificationCap` on `b.guardCsv` and `b.guardText` and `dgaEntropyThreshold` on `b.guardDomain` accepted `Infinity`, `NaN`, a string, a negative number and zero. Each comparison against such a value is false, so an infinite cap removed the limit and a `NaN` threshold switched the DGA heuristic off while the option stayed set. Each now throws the guard's `bad-opt` error at the call that sets it. The integer caps already refused these shapes, and the check that did so was derived from the shape of an option's default, which is why a fractional default was never checked and a whole-number default would have refused the fraction a ratio takes."
         }
       ]
     },
@@ -24,6 +46,14 @@
         {
           "title": "The profiles' formula mitigation is `prefix-quote`",
           "body": "`strict`, `balanced` and `permissive` prefixed a formula-shaped cell with a TAB inside the quoted field. A TAB is the delimiter of a tab-separated reader, and such a reader of a comma document with more than one column takes the quote and comma before the TAB as text and splits at the TAB: `b.csv.parse` with `delimiter: \"\\t\"` reads `\"alice\",\"<TAB>=cmd|x\"` as the cells `alice,\"` and `=cmd|x\"`, a live formula. The single-quote prefix holds under every delimiter reading and is the mitigation OWASP lists first. OWASP also notes that Excel drops it when it saves and re-opens the file, so the TAB prefix remains selectable as `formulaInjectionPolicy: \"prefix-tab\"` for tab-separated output, where it holds. A document sanitized under `prefix-tab` that a tab-separated reading would still evaluate is refused rather than served as disarmed.\n\n`|` is no longer a formula trigger: no spreadsheet evaluator opens a formula on it and it is on no published list, so a cell such as `|x` is emitted as it is and is not a finding. A leading TAB, CR or LF is read through to the character after it, as an importer that trims leading whitespace evaluates what follows: `<TAB>=cmd` is a formula and `<TAB>hello` is text, which also stops a tab-separated file whose first cell is an empty quoted section from being refused under the comma reading. Text after a closing quote is read as part of the cell, as the parsers read it."
+        },
+        {
+          "title": "Vendored `@blamejs/pki` moves to 0.7.40",
+          "body": "The vendored bundle rises from 0.7.39 to 0.7.40. `pki.pkcs12.build` refuses a `{ key, cert }` pair whose key is not the private half of the certificate's public key, and a key bag and a certificate bag sharing a `localKeyId` whose key is not that certificate's, across every safe of the store, proving the pair with the private material rather than the public components a private key carries about itself; a store carrying one `localKeyId` on two key bags, more than 1024 certificate bags under one key, or more than 1024 safes is refused. A finite-field Diffie-Hellman key pair is proven by the public value its exponent generates in either encoding (PKCS #3 or X9.42), held to a 4096-bit group whose modulus and stated order are prime, and a store links at most 8 such pairs. The package continues to declare no dependencies and no install, prepare or prepublish scripts."
+        },
+        {
+          "title": "`b.guardCsv`'s `sanitizeAmplificationCap` is measured on the served output and defaults to 4",
+          "body": "The cap was measured on the character-stripped text before the formula re-serialization, so an operator's cap did not bound the one transform that grows a document. It is measured on what `sanitize()` returns now. The re-serialization quotes every cell, which grows a document of one-character cells 2.25x and one of blank rows 3.25x, so the default moves from 1.5 to 4; a document that grows past the cap is refused with `csv/sanitize-amplified`, and the gate refuses rather than serves it. An operator who set the cap below 2 will see short-celled documents with a formula cell refused where they were served."
         }
       ]
     }

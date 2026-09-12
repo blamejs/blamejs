@@ -1860,6 +1860,64 @@ async function testDefineGuardSanitizeAmplification() {
     guard.sanitize("okvalue", {}) === "okvalue");
 }
 
+// The amplification cap is a ratio. The resolver derived "positive-integer
+// cap" from a default's shape, so a ratio whose default is a whole number was
+// held to integers and a fraction was refused, while a ratio whose default is
+// a fraction was not checked at all: `Infinity`, `NaN`, a string or a negative
+// number made every `measured > cap` comparison false and removed the limit.
+function testDefineGuardAmplificationCapIsARatio() {
+  var guard = GC.defineGuard({
+    name: "gcratio", kind: "content", errorName: "GcCoverageRatioError",
+    profiles: { strict: {}, balanced: {}, permissive: {} },
+    defaults: { maxGrowth: 4, maxBytes: 64 },
+    intOpts: ["maxBytes"],
+    detect: function () { return []; },
+    inputContract: "text",
+    sanitizeAmplificationCap: "maxGrowth",
+    sanitizeTransform: function (subject) { return subject + subject; },
+  });
+  check("a fractional cap under a whole-number default is accepted",
+        guard.resolveOpts({ maxGrowth: 1.5 }).maxGrowth === 1.5);
+  var threw = null;
+  try { guard.sanitize("ab", { maxGrowth: 1.5 }); } catch (e) { threw = e; }
+  check("the fractional cap governs", threw !== null && threw.code === "gcratio/sanitize-amplified",
+        threw ? threw.code : "returned");
+  check("a cap the output fits under serves", guard.sanitize("ab", { maxGrowth: 2 }) === "abab");
+  [Infinity, NaN, "2", 0, -1, null, true].forEach(function (bad) {
+    var refused = null;
+    try { guard.resolveOpts({ maxGrowth: bad }); } catch (e) { refused = e; }
+    check("a cap of " + String(bad) + " is refused at resolve",
+          refused !== null && refused.code === "gcratio/bad-opt", refused ? refused.code : "accepted");
+  });
+  // An option named in both lists is a number at every entry point: the
+  // generated validate carried its own copy of the integer check.
+  var both = GC.defineGuard({
+    name: "gcboth", kind: "content", errorName: "GcCoverageBothError",
+    profiles: { strict: {}, balanced: {}, permissive: {} },
+    defaults: { growth: 4 },
+    intOpts: ["growth"],
+    positiveNumberOpts: ["growth"],
+    detect: function () { return []; },
+    inputContract: "text",
+    sanitizeAmplificationCap: "growth",
+    sanitizeTransform: function (subject) { return subject; },
+  });
+  var viaValidate = null;
+  try { viaValidate = both.validate("ab", { growth: 1.5 }); } catch (e) { viaValidate = e; }
+  check("validate takes the fraction resolveOpts takes",
+        viaValidate !== null && viaValidate.ok === true, viaValidate && viaValidate.code);
+  var textBad = null;
+  try { b.guardText.sanitize("abc", { sanitizeAmplificationCap: Infinity }); } catch (e) { textBad = e; }
+  check("guardText refuses an infinite cap",
+        textBad !== null && textBad.code === "text/bad-opt", textBad ? textBad.code : "accepted");
+  var csvBad = null;
+  try { b.guardCsv.sanitize("a,b", { sanitizeAmplificationCap: "4" }); } catch (e) { csvBad = e; }
+  check("guardCsv refuses a string cap",
+        csvBad !== null && csvBad.code === "csv/bad-opt", csvBad ? csvBad.code : "accepted");
+  check("guardCsv accepts a fractional cap",
+        b.guardCsv.resolveOpts({ sanitizeAmplificationCap: 1.5 }).sanitizeAmplificationCap === 1.5);
+}
+
 function testDefineParser() {
   var parser = GC.defineParser({
     name: "gcparser", entry: function (line) { return { ok: line.length > 0 }; },
@@ -2678,6 +2736,7 @@ async function run() {
   await testDefineGuardIdentifierKind();
   await testDefineGuardDerivedDefaults();
   await testDefineGuardSanitizeAmplification();
+  testDefineGuardAmplificationCapIsARatio();
   await testResidualBranches();
   testDefineParser();
   testMakeIssueReporter();
