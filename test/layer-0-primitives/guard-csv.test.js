@@ -1855,6 +1855,26 @@ function testSpreadsheetReferencesAreNotFunctionCalls() {
   check("a genuinely empty cell is still not a formula",
         b.guardCsv.validate("h,k\r\na,,b\r\n", { profile: "balanced", formulaInjectionPolicy: "reject" })
           .issues.every(function (i) { return i.kind !== "formula-prefix-cell"; }));
+  // The delimiter after a closing quote ends the cell whether or not it is
+  // also a trigger character: `""` followed by a tab is an empty TSV cell.
+  var quotedEmpty = [];
+  [
+    ['""' + TAB + "hello\r\n", TAB],
+    ['""|hello\r\n', "|"],
+    ['"",hello\r\n', ","],
+    ['h' + TAB + 'k\r\n"a"' + TAB + '""' + TAB + "b\r\n", TAB],
+  ].forEach(function (c) {
+    var ks = b.guardCsv.validate(c[0], { profile: "balanced", formulaInjectionPolicy: "reject", delimiter: c[1] })
+      .issues.map(function (i) { return i.kind; });
+    if (ks.indexOf("formula-prefix-cell") !== -1) quotedEmpty.push(JSON.stringify(c[0]));
+  });
+  check("an empty quoted cell before a trigger-shaped delimiter is not a formula",
+        quotedEmpty.length === 0, quotedEmpty.join(" | "));
+  check("and the cell after it is still read",
+        b.guardCsv.validate('""' + TAB + "=cmd\r\n", { profile: "balanced", formulaInjectionPolicy: "reject", delimiter: TAB })
+          .issues.some(function (i) { return i.kind === "formula-prefix-cell"; }));
+  check("sanitize leaves the empty quoted cell alone",
+        b.guardCsv.sanitize('""' + TAB + "hello\r\n", { profile: "balanced", delimiter: TAB }) === '""' + TAB + "hello\r\n");
 
   // A cell of unmatched openers must not rescan its own suffix at each one.
   var growth = require("../helpers/growth");

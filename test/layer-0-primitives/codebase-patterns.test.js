@@ -11695,11 +11695,11 @@ async function testNoDuplicateCodeBlocks() {
     },
     {
       // A run of frozen lookup tables — shape-only. The shingle begins in the
-      // last lines of guard-svg's _recordUseReference and runs into the six
+      // last lines of guard-svg's _animationHosts and runs into the six
       // `Object.freeze({...})` and string constants declared after it, which
       // is the same token run a module opens with when it declares its
       // vocabulary as frozen tables:
-      //   guard-svg _recordUseReference — then URL_FUNC_NAME, the CSS
+      //   guard-svg _animationHosts — then URL_FUNC_NAME, the CSS
       //                             constants, ANIMATION_VALUE_ATTRS and
       //                             HREF_TEMPLATE_TAGS.
       //   guard-imap-command / guard-pop3-command <top> — the command and
@@ -11713,7 +11713,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-imap-command.js:<top>",
         "lib/guard-pop3-command.js:<top>",
         "lib/guard-sql.js:<top>",
-        "lib/guard-svg.js:_recordUseReference",
+        "lib/guard-svg.js:_animationHosts",
         "lib/safe-ical.js:<top>",
       ],
     },

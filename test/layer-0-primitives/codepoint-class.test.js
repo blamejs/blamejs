@@ -1297,6 +1297,21 @@ function testFoldedSearchAndRangeRuns() {
   check("b.codepointClass.isAsciiHexDigit agrees with [0-9A-Fa-f] across ASCII",
         hexDiffs.length === 0, JSON.stringify(hexDiffs.slice(0, 5)));
 
+  // ---- isAsciiWhitespace ----
+  var ASCII_WS_RE = /[\t\n\f\r ]/;
+  var wsDiffs = [];
+  for (var wc = 0; wc < 0x80; wc += 1) {
+    if (CP.isAsciiWhitespace(wc) !== ASCII_WS_RE.test(String.fromCharCode(wc))) wsDiffs.push(wc);
+  }
+  check("b.codepointClass.isAsciiWhitespace agrees with [\\t\\n\\f\\r ] across ASCII",
+        wsDiffs.length === 0, JSON.stringify(wsDiffs.slice(0, 5)));
+  check("isAsciiWhitespace holds exactly five characters",
+        [0x09, 0x0A, 0x0C, 0x0D, 0x20].every(CP.isAsciiWhitespace) &&
+        ![0x0B, 0x1C, 0x1F, 0x85, 0xA0, 0x1680, 0x2003, 0x2028, 0x3000, 0xFEFF].some(CP.isAsciiWhitespace));
+  check("isAsciiWhitespace is the ASCII subset of the markup space ranges",
+        [0x09, 0x0A, 0x0C, 0x0D, 0x20].every(function (c) { return CP.inRanges(c, CP.WHITESPACE_RANGES); }) &&
+        [0xA0, 0x2003, 0x3000].every(function (c) { return CP.inRanges(c, CP.WHITESPACE_RANGES) && !CP.isAsciiWhitespace(c); }));
+
   // ---- isRunOfRanges ----
   var PRINTABLE = [0x0009, [0x0020, 0x007E]];
   var PRINTABLE_RE = /^[\t\x20-\x7e]*$/;

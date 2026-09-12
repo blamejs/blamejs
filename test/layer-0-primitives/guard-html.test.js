@@ -723,6 +723,22 @@ function testTagScanFollowsTheTokenizerStates() {
         kinds("<p x ='b><script>alert(1)</script>").indexOf("dangerous-tag") === -1);
   check("a handler after a quoted value with no space between is read",
         kinds('<a href="x"onclick=alert(1)>y</a>').indexOf("event-handler") !== -1);
+
+  // The tokenizer's whitespace is ASCII only: tab, line feed, form feed,
+  // carriage return and space. A no-break space or any other Unicode space
+  // after `=` is the first character of an unquoted value, so a quote after
+  // it is data and the tag closes at the `>`.
+  var unicodeSpaces = [];
+  [0xA0, 0x2003, 0x3000].forEach(function (cp) {
+    var doc = "<p x=" + String.fromCharCode(cp) + "'><script>alert(1)</script>";
+    if (kinds(doc).indexOf("dangerous-tag") === -1) unicodeSpaces.push("U+" + cp.toString(16));
+  });
+  check("a Unicode space after = starts an unquoted value", unicodeSpaces.length === 0,
+        unicodeSpaces.join(", "));
+  check("an ASCII space, tab or form feed after = still opens a quoted value",
+        kinds('<p x= "a>b">y</p>').indexOf("dangerous-tag") === -1 &&
+        kinds('<p x=\t"a>b">y</p>').indexOf("dangerous-tag") === -1 &&
+        kinds('<p x=\f"a>b">y</p>').indexOf("dangerous-tag") === -1);
   check("a quoted value holding > still does not end the tag",
         kinds('<p title="a>b">x</p>').indexOf("dangerous-tag") === -1);
   check("whitespace around = still opens a quoted value",

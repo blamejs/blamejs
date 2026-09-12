@@ -909,6 +909,7 @@ async function run() {
   testPrefixedHrefIsReadEverywhereHrefIs();
   testAnimatedPaintValuesAreReferences();
   testExpansionCountsTheElementsEachReferenceClones();
+  testInheritedReferencesCountEveryElementThatPaintsThem();
   testSvgTagScanSharesTheTokenizerStates();
   testReferenceScanStaysLinear();
   testWideTagIsRefusedRatherThanThrown();
@@ -2316,6 +2317,179 @@ function testExpansionCountsTheElementsEachReferenceClones() {
   check("nor at the permissive profile",
         capped('<svg xmlns="http://www.w3.org/2000/svg"><defs>' + fourWay(7) + padding +
           '</defs><use href="#g7"/></svg>', "permissive"));
+}
+
+function testInheritedReferencesCountEveryElementThatPaintsThem() {
+  // A paint reference on a container is painted by every element inside it,
+  // so it costs what the same reference written on each of them costs. The
+  // reference on the group was one edge in the graph while its thousand
+  // rectangles each painted the pattern.
+  function issue(svg, opts) {
+    return b.guardSvg.validate(svg, Object.assign({ profile: "balanced" }, opts || {}))
+      .issues.filter(function (i) { return i.kind === "use-depth-cap"; })[0] || null;
+  }
+  function capped(svg, opts) { return issue(svg, opts) !== null; }
+  function rects(n, attr) {
+    return ('<rect width="1" height="1"' + (attr || "") + "/>").repeat(n);
+  }
+  var pattern = '<g id="g100">' + rects(100) + '</g>' +
+    '<pattern id="p" width="10" height="10">' + '<use href="#g100"/>'.repeat(17) + "</pattern>";
+  var gradient = '<linearGradient id="lg"><stop offset="0"/><stop offset="1"/></linearGradient>';
+  function doc(body, defs) {
+    return '<svg xmlns="http://www.w3.org/2000/svg"><defs>' +
+      (defs === undefined ? pattern : defs) + "</defs>" + body + "</svg>";
+  }
+
+  check("the reference written on each of 1000 rectangles is refused",
+        capped(doc("<g>" + rects(1000, ' fill="url(#p)"') + "</g>")));
+  var served = [];
+  [
+    ["fill on the group", '<g fill="url(#p)">' + rects(1000) + "</g>"],
+    ["stroke on the group", '<g stroke="url(#p)">' + rects(1000) + "</g>"],
+    ["fill in the style attribute", '<g style="fill:url(#p)">' + rects(1000) + "</g>"],
+    ["fill two groups up", '<g fill="url(#p)"><g><g>' + rects(1000) + "</g></g></g>"],
+    ["fill on an identified group", '<g id="host" fill="url(#p)">' + rects(1000) + "</g>"],
+    ["fill on the group of one thousand use elements",
+     '<g fill="url(#p)">' + '<use href="#one"/>'.repeat(1000) + "</g>",
+     pattern + '<rect id="one" width="1" height="1"/>'],
+    ["fill on the use element",
+     '<use fill="url(#p)" href="#big"/>', pattern + '<g id="big">' + rects(1000) + "</g>"],
+    ["fill on a group holding one use of a big group",
+     '<g fill="url(#p)"><use href="#big"/></g>', pattern + '<g id="big">' + rects(1000) + "</g>"],
+  ].forEach(function (c) { if (!capped(doc(c[1], c[2]))) served.push(c[0]); });
+  check("a reference inherited by 1000 rectangles is refused wherever it is declared",
+        served.length === 0, served.join(", "));
+  check("a reference on the root element is inherited by the whole document",
+        capped('<svg xmlns="http://www.w3.org/2000/svg" fill="url(#p)"><defs>' + pattern +
+          "</defs>" + rects(1000) + "</svg>"));
+
+  // An animation sets the property on its parent, or on the element its href
+  // names, and the reference is inherited from there.
+  var animated = [];
+  [
+    ["on the parent group",
+     '<g><animate attributeName="fill" to="url(#p)"/>' + rects(1000) + "</g>"],
+    ["on the element the href names",
+     '<g id="host">' + rects(1000) + '</g><animate href="#host" attributeName="fill" to="url(#p)"/>'],
+    ["on a parent that also declares a reference",
+     '<g fill="url(#lg)"><animate attributeName="fill" to="url(#p)"/>' + rects(1000) + "</g>",
+     pattern + gradient],
+  ].forEach(function (c) {
+    if (!capped(doc(c[1], c[2]), { profile: "permissive" })) animated.push(c[0]);
+  });
+  check("an animated reference is inherited by the animated element's content",
+        animated.length === 0, animated.join(", "));
+  var styleAnimation = {
+    profile: "permissive",
+    allowedAttrNames: b.guardSvg.PROFILES.permissive.allowedAttrNames.concat(["style"]),
+  };
+  check("an animated style attribute is read as declarations",
+        capped(doc('<g><animate attributeName="style" to="fill:url(#p)"/>' + rects(1000) + "</g>"),
+               styleAnimation));
+  check("and one naming a filter applies it once",
+        !capped(doc('<g><animate attributeName="style" to="filter:url(#f)"/>' + rects(4000) + "</g>",
+                    '<filter id="f">' + "<feOffset/>".repeat(30) + "</filter>"), styleAnimation));
+
+  // A stylesheet rule applies to every element its selector matches, which
+  // the guard does not evaluate, so a reference in a stylesheet is read as
+  // painted by every element in the document.
+  var sheet = { allowedTags: b.guardSvg.PROFILES.balanced.allowedTags.concat(["style"]) };
+  check("a stylesheet reference is painted by every element",
+        capped(doc("<style>rect{fill:url(#p)}</style>" + rects(1000)), sheet));
+  check("a stylesheet naming a gradient is served",
+        !capped(doc("<style>rect{fill:url(#lg)}</style>" + rects(1000), gradient), sheet));
+  check("a stylesheet takes the style attribute's danger check",
+        b.guardSvg.validate(doc("<style>rect{fill:url(javascript:alert(1))}</style><rect/>", ""), sheet)
+          .issues.some(function (i) { return i.kind === "css-injection"; }));
+  check("and a plain stylesheet is served when the tag is allowed",
+        b.guardSvg.validate(doc("<style>rect{fill:red}</style><rect/>", ""), sheet).ok);
+  var repaired = b.guardSvg.sanitize(
+    doc("<style>rect{fill:url(javascript:alert(1))}</style><rect/>", ""), sheet);
+  check("sanitize drops a dangerous stylesheet the way it drops a dangerous style attribute",
+        repaired.indexOf("javascript") === -1 && repaired.indexOf("<style>") !== -1, repaired);
+  check("sanitize keeps a plain stylesheet when the tag is allowed",
+        b.guardSvg.sanitize(doc("<style>rect{fill:red}</style><rect/>", ""), sheet)
+          .indexOf("<style>rect{fill:red}</style>") !== -1);
+  var dropped = b.guardSvg.sanitize(doc("<style>rect{fill:red}</style><rect/>", ""));
+  check("sanitize drops a stylesheet's text with the tag when the tag is not allowed",
+        dropped.indexOf("fill:red") === -1 && dropped.indexOf("<rect") !== -1, dropped);
+
+  // Controls: the inherited paint an illustration actually carries, and the
+  // properties that are not inherited. `clip-path`, `mask` and `filter`
+  // apply to the group's composited result once, so a thirty-primitive
+  // filter on four thousand rectangles is thirty primitives.
+  var thirty = '<filter id="f">' + "<feOffset/>".repeat(30) + "</filter>";
+  var refused = [];
+  [
+    ["a gradient on a group of 5000", '<g fill="url(#lg)">' + rects(5000) + "</g>", gradient],
+    ["a three-primitive filter on a group of 5000",
+     '<g filter="url(#f)">' + rects(5000) + "</g>",
+     '<filter id="f"><feGaussianBlur stdDeviation="1"/><feOffset/><feMerge><feMergeNode/></feMerge></filter>'],
+    ["a thirty-primitive filter on a group of 4000", '<g filter="url(#f)">' + rects(4000) + "</g>", thirty],
+    ["the same filter in the style attribute", '<g style="filter:url(#f)">' + rects(4000) + "</g>", thirty],
+    ["a thirty-element mask on a group of 4000",
+     '<g mask="url(#m)">' + rects(4000) + "</g>", '<mask id="m">' + rects(30) + "</mask>"],
+    ["a thirty-element clip path on a group of 4000",
+     '<g clip-path="url(#c)">' + rects(4000) + "</g>", '<clipPath id="c">' + rects(30) + "</clipPath>"],
+    ["an animated filter on a group of 4000",
+     '<g><animate attributeName="filter" to="url(#f)"/>' + rects(4000) + "</g>", thirty],
+    ["a clip path on a group of 5000",
+     '<g clip-path="url(#c)">' + rects(5000) + "</g>",
+     '<clipPath id="c"><rect width="1" height="1"/><circle r="1"/></clipPath>'],
+    ["a ten-element pattern on a group of 50",
+     '<g fill="url(#small)">' + rects(50) + "</g>",
+     '<pattern id="small" width="10" height="10">' + rects(10) + "</pattern>"],
+    ["an animated gradient on a group of 1000",
+     '<g><animate attributeName="fill" to="url(#lg)"/>' + rects(1000) + "</g>", gradient],
+    // An inner declaration overrides the outer one, so a rectangle under
+    // three nested pattern fills paints at most three patterns, never a
+    // pattern of patterns.
+    ["three nested pattern fills over one rectangle",
+     '<g fill="url(#a)"><g fill="url(#b)"><g fill="url(#c)">' + rects(1) + "</g></g></g>",
+     ["a", "b", "c"].map(function (id) {
+       return '<pattern id="' + id + '" width="10" height="10">' + rects(100) + "</pattern>";
+     }).join("")],
+    ["three nested pattern fills over fifty rectangles",
+     '<g fill="url(#a)"><g fill="url(#b)"><g fill="url(#c)">' + rects(50) + "</g></g></g>",
+     ["a", "b", "c"].map(function (id) {
+       return '<pattern id="' + id + '" width="10" height="10">' + rects(100) + "</pattern>";
+     }).join("")],
+  ].forEach(function (c) {
+    if (capped(doc(c[1], c[2]), { profile: "permissive" })) refused.push(c[0]);
+  });
+  check("ordinary inherited paint stays served", refused.length === 0, refused.join(", "));
+
+  // The two spellings reach one verdict on either side of the budget.
+  var disagree = [];
+  [[10, 1], [50, 2], [100, 17], [1000, 17]].forEach(function (c) {
+    var defs = '<g id="t">' + rects(100) + '</g><pattern id="p" width="10" height="10">' +
+      '<use href="#t"/>'.repeat(c[1]) + "</pattern>";
+    var explicit = capped(doc("<g>" + rects(c[0], ' fill="url(#p)"') + "</g>", defs));
+    var inherited = capped(doc('<g fill="url(#p)">' + rects(c[0]) + "</g>", defs));
+    if (explicit !== inherited) disagree.push(c.join("x") + " explicit=" + explicit + " inherited=" + inherited);
+  });
+  check("the inherited and the explicit spelling reach one verdict", disagree.length === 0, disagree.join("; "));
+
+  // The count the refusal reports never falls below the explicit spelling's.
+  function instances(svg) {
+    var found = issue(svg);
+    var m = found === null ? null : /expand to (\d+) rendered instances from (\d+)/.exec(found.snippet);
+    return m === null ? null : { instances: Number(m[1]), references: Number(m[2]) };
+  }
+  var explicitCount = instances(doc("<g>" + rects(100, ' fill="url(#p)"') + "</g>"));
+  var inheritedCount = instances(doc('<g fill="url(#p)">' + rects(100) + "</g>"));
+  check("both spellings report their instance count",
+        explicitCount !== null && inheritedCount !== null);
+  check("the inherited spelling counts at least the explicit spelling's instances",
+        explicitCount !== null && inheritedCount !== null &&
+        inheritedCount.instances >= explicitCount.instances &&
+        inheritedCount.references >= explicitCount.references,
+        JSON.stringify([explicitCount, inheritedCount]));
+  check("the container itself is the only element the inherited spelling adds",
+        explicitCount !== null && inheritedCount !== null &&
+        inheritedCount.instances === explicitCount.instances + 18 &&
+        inheritedCount.references === explicitCount.references + 1,
+        JSON.stringify([explicitCount, inheritedCount]));
 }
 
 function testSvgTagScanSharesTheTokenizerStates() {

@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.20.1",
-  "createdAt": "2026-09-12T05:12:44.282Z",
+  "createdAt": "2026-09-12T06:29:30.568Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -7206,6 +7206,10 @@
           "arity": 1
         },
         "isAsciiLetter": {
+          "type": "function",
+          "arity": 1
+        },
+        "isAsciiWhitespace": {
           "type": "function",
           "arity": 1
         },
