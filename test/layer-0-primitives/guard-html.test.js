@@ -701,6 +701,28 @@ function testTagScanFollowsTheTokenizerStates() {
   });
   check("a quote inside an unquoted value does not open a quoted value",
         hidden.length === 0, hidden.join(" | "));
+
+  // Once a value has ended, or before any attribute name, `=` is a parse
+  // error that starts an attribute NAME, and a quote after it is name data.
+  // The tag name is its own state too: `<p ='b>` is a tag named p with an
+  // attribute named ='b, not a value opener. Each of these closes at the `>`.
+  var swallowed = [];
+  [
+    "<p x=a ='b><script>alert(1)</script>",
+    "<p x=\"a\"='b><script>alert(1)</script>",
+    "<p x='a' ='b><script>alert(1)</script>",
+    "<p ='b><script>alert(1)</script>",
+  ].forEach(function (doc) {
+    if (kinds(doc).indexOf("dangerous-tag") === -1) swallowed.push(doc);
+  });
+  check("an = that starts an attribute name does not open a value",
+        swallowed.length === 0, swallowed.join(" | "));
+  // Control: after a name and whitespace, `=` does open a value, so this
+  // quote runs to the end of the input in a browser as well.
+  check("a name, whitespace, = and a quote still open a quoted value",
+        kinds("<p x ='b><script>alert(1)</script>").indexOf("dangerous-tag") === -1);
+  check("a handler after a quoted value with no space between is read",
+        kinds('<a href="x"onclick=alert(1)>y</a>').indexOf("event-handler") !== -1);
   check("a quoted value holding > still does not end the tag",
         kinds('<p title="a>b">x</p>').indexOf("dangerous-tag") === -1);
   check("whitespace around = still opens a quoted value",
