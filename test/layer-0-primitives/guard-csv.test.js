@@ -494,6 +494,28 @@ function testGuardCsvCellScannerHonorsTheConfiguredQuote() {
   check("output escaped under a custom quote passes its own validate",
         (mv.issues || []).every(function (i) { return i.ruleId !== "csv.formula-injection"; }));
 
+  // Under quote:' the guard's own `'` prefix is written as a doubled quote,
+  // so a serialized denylisted call reads `'''=WEBSERVICE()'` and decodes to
+  // `'=WEBSERVICE()`. The denylist walk read the raw doubled quote as an
+  // escape and stopped, so the prefixed call validated clean and was served.
+  var apos = { profile: "strict", quote: "'" };
+  ["a\r\n'''=WEBSERVICE(\"http://x/\")'\r\n", "a\r\n'''\t=WEBSERVICE(\"http://x/\")'\r\n",
+   "a\r\n'\t''=WEBSERVICE(\"http://x/\")'\r\n"].forEach(function (encoded) {
+    var kinds = b.guardCsv.validate(encoded, apos).issues.map(function (i) { return i.kind; });
+    check("a prefixed denylisted call under quote:' is a finding " + JSON.stringify(encoded),
+          kinds.indexOf("dangerous-function") !== -1, JSON.stringify(kinds));
+    var threw = null;
+    try { b.guardCsv.sanitize(encoded, apos); } catch (e) { threw = e; }
+    check("sanitize refuses it under quote:' " + JSON.stringify(encoded),
+          threw !== null && threw.code === "csv.dangerous-function", threw ? threw.code : "returned");
+  });
+  var round = b.guardCsv.serialize([['=WEBSERVICE("http://x/")']], apos);
+  check("the guard's own quote:' output of a denylisted call is refused by its validate",
+        b.guardCsv.validate(round, apos).issues.some(function (i) { return i.kind === "dangerous-function"; }),
+        JSON.stringify(round));
+  check("a doubled quote that decodes to a plain text quote is not a formula",
+        b.guardCsv.validate("a\r\n\"\"\"=1\"\r\n", { profile: "strict" }).issues.length === 0);
+
   // The default quote is unchanged: there the same bytes really are one
   // unterminated quoted field, with no second cell to flag.
   var d = b.guardCsv.validate(doc, { profile: "strict" });
@@ -1294,6 +1316,12 @@ function testGuardCsvValidateMixedLineEndings() {
   check("trim keeps a trailing TAB delimiter with spaces after it",
         b.guardCsv.sanitize("a\tb\r\nx\t  \r\n", { profile: "strict", delimiter: "\t" }) === "a\tb\r\nx\t\r\n");
   check("trim still strips a TAB under a comma dialect", trimmed("a,b\t\r\n") === "a,b\r\n");
+  // The formula re-serialization applied the per-cell trim of serialize()
+  // after the record-tail trim had already run, so a formula cell anywhere in
+  // the document trimmed the inside of every quoted cell.
+  var disarmed = trimmed("=1,\"keep  \"\r\n");
+  check("a disarmed document keeps the whitespace inside its quoted cells",
+        disarmed.indexOf("\"keep  \"") !== -1, JSON.stringify(disarmed));
 }
 
 function testGuardCsvSanitizeStripsBidi() {
