@@ -24566,6 +24566,14 @@ function testLibCommentBlocksAreWholeSentences() {
             file: rel, line: first.n, content: "comment block opens mid-clause: \"" +
               first.text.slice(0, 60) + "\"",
           });
+        } else if (!isMarker && /\ballow:[a-z0-9-]+/.test(first.text)) {
+          // A marker sits at the start of its comment line; prose before it on
+          // a block's first line is the tail of a sentence the lines above
+          // once carried ("honored. allow:hand-rolled-sql ...").
+          bad.push({
+            file: rel, line: first.n, content: "comment block opens on the tail of a sentence before its allow marker: \"" +
+              first.text.slice(0, 60) + "\"",
+          });
         }
       }
       block = [];
