@@ -1248,6 +1248,52 @@ function testGuardCsvValidateMixedLineEndings() {
   var rv = b.guardCsv.validate("a,b\r\nc,d\nfoo,bar\r\n", { profile: "strict", dialectPolicy: "strict" });
   check("validate strict dialect: mixed line endings flagged",
         rv.issues.some(function (i) { return i.kind === "dialect-mixed-line-endings"; }));
+  // A line break inside a quoted field is cell content under the configured
+  // delimiter, not a record terminator, so a CRLF document carrying one is
+  // one dialect; the count read every CR and LF in the text.
+  function mixed(doc, opts) {
+    return b.guardCsv.validate(doc, opts || { profile: "strict" }).issues
+      .some(function (i) { return i.kind === "dialect-mixed-line-endings"; });
+  }
+  check("a quoted LF in a CRLF document is not a mixed line ending",
+        mixed("a,b\r\nx,\"hello\nworld\"\r\n") === false);
+  check("a quoted LF at a row start is not a mixed line ending",
+        mixed("a,b\r\n\"x\ny\",z\r\n") === false);
+  check("a quoted CR is not a mixed line ending",
+        mixed("a,b\n\"x\ry\",z\n") === false);
+  check("a quote in the middle of a cell is text, so the LF after it is a record end",
+        mixed("a,b\r\nx\"y\nz\",w\r\n") === true);
+  check("an unquoted LF among CRLF records is still mixed",
+        mixed("a,b\r\nx,y\nz,w\r\n") === true);
+  check("the configured delimiter decides where a cell starts",
+        mixed("a;b\r\nx;\"hello\nworld\"\r\n", { profile: "strict", delimiter: ";" }) === false &&
+        mixed("a;b\r\nx;\"hello\nworld\"\r\n") === true);
+  var served = b.guardCsv.sanitize("a,b\r\nx,\"hello\nworld\"\r\n", { profile: "strict" });
+  check("sanitize serves a CRLF document with a quoted LF", served.indexOf("hello\nworld") !== -1,
+        JSON.stringify(served));
+  var info = b.guardCsv.detect("a,b\r\nx,\"hello\nworld\"\r\n");
+  check("detect reads a quoted LF as content", info.lineEnding === "\r\n" && info.dialect === "consistent",
+        JSON.stringify(info));
+  // The same walk governs `trailingWhitespacePolicy: "trim"`, which split
+  // the text on LF alone: on a CRLF document the CR was the last character of
+  // every line, so nothing was trimmed, and inside a quoted multi-line cell
+  // the content was trimmed while the junk after its closing quote was kept.
+  function trimmed(doc) { return b.guardCsv.sanitize(doc, { profile: "strict" }); }
+  check("trim strips the tail of a CRLF record", trimmed("a,b  \r\nc,d \t\r\n") === "a,b\r\nc,d\r\n",
+        JSON.stringify(trimmed("a,b  \r\nc,d \t\r\n")));
+  check("trim strips the tail of an LF record", trimmed("a,b  \nc,d \t\n") === "a,b\nc,d\n");
+  check("trim strips the tail of a CR record", trimmed("a,b  \rc,d\r") === "a,b\rc,d\r");
+  check("trim strips the tail of the last record without a terminator", trimmed("a,b  \r\nc,d  ") === "a,b\r\nc,d");
+  check("trim leaves the inside of a quoted cell alone and strips the junk after it",
+        trimmed("a,b\r\nx,\"hello  \nworld  \"  \r\n") === "a,b\r\nx,\"hello  \nworld  \"\r\n",
+        JSON.stringify(trimmed("a,b\r\nx,\"hello  \nworld  \"  \r\n")));
+  // A TAB that is the configured delimiter is structure, not whitespace: an
+  // empty last column must survive the trim.
+  var tsv = b.guardCsv.sanitize("name\tvalue\r\nalice\t\r\n", { profile: "strict", delimiter: "\t" });
+  check("trim keeps a trailing TAB delimiter", tsv === "name\tvalue\r\nalice\t\r\n", JSON.stringify(tsv));
+  check("trim keeps a trailing TAB delimiter with spaces after it",
+        b.guardCsv.sanitize("a\tb\r\nx\t  \r\n", { profile: "strict", delimiter: "\t" }) === "a\tb\r\nx\t\r\n");
+  check("trim still strips a TAB under a comma dialect", trimmed("a,b\t\r\n") === "a,b\r\n");
 }
 
 function testGuardCsvSanitizeStripsBidi() {

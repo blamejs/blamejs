@@ -39,6 +39,10 @@
           "body": "The disarm step re-parses through `b.csv.parse`, whose defaults (16 MiB of input, 1 MiB per field) are not the guard's (`maxTotalBytes` 1 GiB, `maxCellBytes` 64 KiB), so an export within the guard's limits failed with the parser's `csv/too-large` when, and only when, a formula cell required mitigation. The parser now runs under `maxTotalBytes`, `maxRows` and `maxCellBytes`, a cap it hits is reported as the guard's own `csv.total-too-large`, `csv.too-many-rows` or `csv.cell-too-large`, and a document the emitted dialect cannot parse is refused as `csv.formula-injection` rather than surfacing another module's error."
         },
         {
+          "title": "A line break inside a quoted cell is content, for the dialect rule and for the trailing-whitespace trim",
+          "body": "`dialect-mixed-line-endings` counted every CR and LF in the text, so a CRLF document carrying a multi-line quoted cell, which `b.csv.parse` reads as one record, was refused as a mixed dialect; `b.guardCsv.detect` reported the same document as `mixed`. Both read record ends under the configured delimiter and quote now: a line break inside a quoted cell is content, and a quote in the middle of an unquoted cell is text, so the line break after it is still a record end. `trailingWhitespacePolicy: \"trim\"` split the text on LF alone, so on a CRLF document, the guard's own default line ending, the CR was the last character of every line and nothing was trimmed, while inside a quoted multi-line cell the content was trimmed and the junk after its closing quote was kept. The trim now strips the horizontal whitespace at the end of each record, under CRLF, LF or CR, and leaves the inside of a quoted cell alone."
+        },
+        {
           "title": "`b.guardCsv.serialize` resolves its options once per document",
           "body": "Every cell merged the guard's defaults into a fresh options object before it was escaped. A 17 MiB export of three million cells spent 20 seconds in that merge; it now serializes in under one."
         },
