@@ -909,6 +909,7 @@ async function run() {
   testPrefixedHrefIsReadEverywhereHrefIs();
   testAnimatedPaintValuesAreReferences();
   testExpansionCountsTheElementsEachReferenceClones();
+  testSvgTagScanSharesTheTokenizerStates();
   testReferenceScanStaysLinear();
   testWideTagIsRefusedRatherThanThrown();
   testEmptySvgTagAllowlistPermitsNothing();
@@ -2264,6 +2265,24 @@ function testExpansionCountsTheElementsEachReferenceClones() {
   check("a plain document of 5000 elements is served",
         !capped('<svg xmlns="http://www.w3.org/2000/svg">' +
           '<rect width="1" height="1"/>'.repeat(5000) + "</svg>"));
+}
+
+function testSvgTagScanSharesTheTokenizerStates() {
+  // The SVG guard reads tags through the same scanner the HTML guard does,
+  // so the unquoted-value and recovery rules hold here too.
+  function kinds(doc) {
+    return b.guardSvg.validate(doc, { profile: "strict" }).issues.map(function (i) { return i.kind; });
+  }
+  check("a quote inside an unquoted value does not swallow the following script",
+        kinds('<svg xmlns="http://www.w3.org/2000/svg"><rect x=a=\'b><script>alert(1)</script></svg>')
+          .some(function (k) { return k === "dangerous-tag" || k === "non-allowlisted-tag"; }));
+  var unread = [];
+  [65, 200, 5000].forEach(function (n) {
+    var doc = '<svg xmlns="http://www.w3.org/2000/svg"><rect ' + "/".repeat(n) + " onload=alert(1)/></svg>";
+    if (kinds(doc).indexOf("event-handler") === -1) unread.push(String(n));
+  });
+  check("a handler after any number of separators is read", unread.length === 0,
+        "unread after " + unread.join(", ") + " separators");
 }
 
 function testWideTagIsRefusedRatherThanThrown() {

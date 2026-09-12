@@ -675,10 +675,52 @@ async function run() {
   testGuardHtmlBadProfile();
   testGuardHtmlCompliancePosture();
   testCssEscapedTokensAreStillDangerous();
+  testTagScanFollowsTheTokenizerStates();
   testGdprPostureMatchesBalancedTier();
   await testGuardHtmlGateClean();
   await testGuardHtmlGateRefuse();
   await testGuardHtmlGateSanitize();
+}
+
+function testTagScanFollowsTheTokenizerStates() {
+  function kinds(doc) {
+    return b.guardHtml.validate(doc, { profile: "strict" }).issues.map(function (i) { return i.kind; });
+  }
+  // After `=` the tokenizer is in "before attribute value": a quote there
+  // opens a quoted value, and anything else opens an UNQUOTED value that runs
+  // to whitespace or `>`. Inside an unquoted value a second `=` and a quote
+  // are data, so `x=a='b` ends at the `>` and the script that follows is live.
+  var hidden = [];
+  [
+    "<p x=a='b><script>alert(1)</script>",
+    "<p x=a=\"b><script>alert(1)</script>",
+    "<p x=a=b='c><img src=x onerror=alert(1)>",
+  ].forEach(function (doc) {
+    var ks = kinds(doc);
+    if (ks.indexOf("dangerous-tag") === -1 && ks.indexOf("event-handler") === -1) hidden.push(doc);
+  });
+  check("a quote inside an unquoted value does not open a quoted value",
+        hidden.length === 0, hidden.join(" | "));
+  check("a quoted value holding > still does not end the tag",
+        kinds('<p title="a>b">x</p>').indexOf("dangerous-tag") === -1);
+  check("whitespace around = still opens a quoted value",
+        kinds('<p title = "a>b">x</p>').indexOf("dangerous-tag") === -1);
+
+  // Recovery past a `/` or `=` in name position runs to the end of the tag.
+  // A round cap left every attribute past it unread, and a browser reads them.
+  var unread = [];
+  [65, 200, 5000].forEach(function (n) {
+    var doc = "<div " + "/".repeat(n) + " onfocus=alert(1) tabindex=1 autofocus>x</div>";
+    if (kinds(doc).indexOf("event-handler") === -1) unread.push(String(n));
+  });
+  check("a handler after any number of separators is read", unread.length === 0,
+        "unread after " + unread.join(", ") + " separators");
+  var growth = require("../helpers/growth");
+  check("recovery stays linear in the separator count",
+        !growth.looksSuperlinear(function (n) {
+          b.guardHtml.validate("<div " + "/".repeat(n) + " onfocus=alert(1)>x</div>",
+                               { profile: "strict" });
+        }, { small: 20000, large: 80000, threshold: 8 }));
 }
 
 function testCssEscapedTokensAreStillDangerous() {

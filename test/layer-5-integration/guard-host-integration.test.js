@@ -95,6 +95,9 @@ function testEveryGuardBoundsIssuesPerKind() {
       doc: "=HYPERLINK(1),a\n".repeat(N) },
     { name: "guardJson pollution keys", guard: "guardJson", profile: "balanced",
       doc: "[" + Array.from({ length: N }, function () { return '{"__proto__":1}'; }).join(",") + "]" },
+    // The tree scan raises its caps per node, so it must stop at the first.
+    { name: "guardJson node-count cap", guard: "guardJson", profile: "strict",
+      doc: "[" + Array.from({ length: 100000 }, function () { return "0"; }).join(",") + "]" },
     { name: "guardYaml dangerous tags", guard: "guardYaml", profile: "balanced",
       doc: "- !!python/object x\n".repeat(N) },
     { name: "guardMarkdown dangerous links", guard: "guardMarkdown", profile: "balanced",
