@@ -70,7 +70,86 @@ function _capturingAudit() {
   };
 }
 
+// A guard that reports one issue per offending attribute, cell, key or tag
+// allocates one object per offense. Inside the size cap that is hundreds of
+// thousands of objects for a body the verdict decided on the first of them.
+// Every content guard routes its findings through one reporter that keeps
+// MAX_ISSUES_PER_KIND of each kind, so this drives each with a document of
+// many offenses and reads the count per kind.
+function testEveryGuardBoundsIssuesPerKind() {
+  var N = 20000;
+  var cap = b.gateContract.MAX_ISSUES_PER_KIND;
+  var cases = [
+    { name: "guardSvg non-allowlisted attributes", guard: "guardSvg", profile: "strict",
+      doc: '<svg xmlns="http://www.w3.org/2000/svg"><rect ' + "a ".repeat(N) + "/></svg>" },
+    { name: "guardSvg event handlers", guard: "guardSvg", profile: "balanced",
+      doc: '<svg xmlns="http://www.w3.org/2000/svg"><rect ' +
+        Array.from({ length: N }, function (_, i) { return "onx" + i + "=1"; }).join(" ") + "/></svg>" },
+    { name: "guardSvg dangerous schemes", guard: "guardSvg", profile: "balanced",
+      doc: '<svg xmlns="http://www.w3.org/2000/svg">' + '<a href="javascript:1"/>'.repeat(N) + "</svg>" },
+    { name: "guardHtml event handlers", guard: "guardHtml", profile: "balanced",
+      doc: "<div " + Array.from({ length: N }, function (_, i) { return "onx" + i + "=1"; }).join(" ") + ">x</div>" },
+    { name: "guardHtml dangerous schemes", guard: "guardHtml", profile: "balanced",
+      doc: '<a href="javascript:1">x</a>'.repeat(N) },
+    { name: "guardCsv dangerous functions", guard: "guardCsv", profile: "balanced",
+      doc: "=HYPERLINK(1),a\n".repeat(N) },
+    { name: "guardJson pollution keys", guard: "guardJson", profile: "balanced",
+      doc: "[" + Array.from({ length: N }, function () { return '{"__proto__":1}'; }).join(",") + "]" },
+    // The tree scan raises its caps per node, so it must stop at the first.
+    { name: "guardJson node-count cap", guard: "guardJson", profile: "strict",
+      doc: "[" + Array.from({ length: 100000 }, function () { return "0"; }).join(",") + "]" },
+    { name: "guardYaml dangerous tags", guard: "guardYaml", profile: "balanced",
+      doc: "- !!python/object x\n".repeat(N) },
+    { name: "guardMarkdown dangerous links", guard: "guardMarkdown", profile: "balanced",
+      doc: "[x](javascript:1)\n".repeat(N) },
+  ];
+  cases.forEach(function (c) {
+    var r = b[c.guard].validate(c.doc, { profile: c.profile });
+    var byKind = Object.create(null);
+    r.issues.forEach(function (i) { byKind[i.kind] = (byKind[i.kind] || 0) + 1; });
+    var worst = 0;
+    Object.keys(byKind).forEach(function (k) { if (byKind[k] > worst) worst = byKind[k]; });
+    check("[" + c.name + "] reports at most " + cap + " issues of one kind",
+          worst <= cap, JSON.stringify(byKind));
+    check("[" + c.name + "] is still refused", r.ok === false);
+  });
+}
+
 // ---- Per-kind harness ----
+
+var GATE_PROFILES = ["strict", "balanced", "permissive"];
+
+// A content gate returns the repaired body in `sanitized`. Reading any other
+// field returns null for every sanitize verdict, which makes the assertions
+// below pass without ever looking at what the gate would serve.
+function _gateBody(verdict) {
+  if (Buffer.isBuffer(verdict.sanitized)) return verdict.sanitized.toString("utf8");
+  if (typeof verdict.sanitized === "string") return verdict.sanitized;
+  if (Buffer.isBuffer(verdict.bytes)) return verdict.bytes.toString("utf8");
+  if (typeof verdict.text === "string") return verdict.text;
+  return null;
+}
+
+function _criticalKinds(validateFn, text, profile) {
+  var after;
+  try { after = validateFn(text, { profile: profile }); }
+  catch (_e) { return []; }
+  return (after.issues || [])
+    .filter(function (i) { return i.severity === "critical"; })
+    .map(function (i) { return i.kind; });
+}
+
+function _gateBodyCarriesNoCritical(verdict, validateFn, profile) {
+  var body = _gateBody(verdict);
+  if (body === null) return true;
+  return _criticalKinds(validateFn, body, profile).length === 0;
+}
+
+function _gateDoesNotServeCritical(verdict, validateFn, profile, hostileText) {
+  if (verdict.action !== "serve") return true;
+  if (_gateBody(verdict) !== null && _gateBody(verdict) !== hostileText) return true;
+  return _criticalKinds(validateFn, hostileText, profile).length === 0;
+}
 
 async function _runContentGuard(g) {
   var fx = g.INTEGRATION_FIXTURES;
@@ -126,6 +205,34 @@ async function _runContentGuard(g) {
   check("[" + g.NAME + "] exceptFor: audit creation row records skip",
         creationRow &&
         creationRow.metadata.skipped.some(function (s) { return s.name === g.NAME; }));
+
+  // 3b. Whatever body the gate hands back must not still carry a critical
+  // issue. `action !== "serve"` above passes when the action is "sanitize"
+  // and the sanitized body still holds the payload, which is the shape that
+  // reached an operator in b.guardMarkdown: sanitize returned its input.
+  // Every profile, since the loosened policies live in balanced/permissive.
+  var repaired = 0;
+  var repairedRead = 0;
+  for (var pi = 0; pi < GATE_PROFILES.length; pi += 1) {
+    var profile = GATE_PROFILES[pi];
+    var pv = await g.gate({ profile: profile }).check({
+      contentType: fx.contentType, bytes: fx.hostileBytes,
+    });
+    if (pv.action === "sanitize") {
+      repaired += 1;
+      if (_gateBody(pv) !== null) repairedRead += 1;
+    }
+    check("[" + g.NAME + "/" + profile + "] gate body carries no critical issue",
+          _gateBodyCarriesNoCritical(pv, g.validate, profile));
+    check("[" + g.NAME + "/" + profile + "] gate does not serve a critical payload unchanged",
+          _gateDoesNotServeCritical(pv, g.validate, profile,
+            fx.hostileBytes.toString("utf8")));
+  }
+  // The two checks above pass vacuously when the body cannot be read, which is
+  // what reading the wrong field produces. A refusal has no body by design, so
+  // the claim is only about a verdict that hands back a repaired one.
+  check("[" + g.NAME + "] every sanitize verdict returned a body to inspect",
+        repairedRead === repaired, repairedRead + " of " + repaired);
 
   // 4. b.staticServe.create({ contentSafety }) GET round-trip.
   await _runStaticServeRoundTrip(g, fx);
@@ -599,6 +706,7 @@ async function testStaticServeOptOutEmitAudit() {
 // ---- Run ----
 
 async function run() {
+  testEveryGuardBoundsIssuesPerKind();
   await testGuardHostIntegrationAdaptive();
   await testFileUploadDefaultOn();
   await testFileUploadOptOutEmitAudit();

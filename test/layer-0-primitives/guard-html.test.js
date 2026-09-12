@@ -568,7 +568,90 @@ function testEmptyTagAllowlistPermitsNothing() {
         JSON.stringify(absent.issues.map(function (i) { return i.kind; })));
 }
 
+// Three places where the tokenizer's model of a tag was more generous than the
+// HTML tokenizer's, each one hiding live markup from every detector.
+function testTokenizerMatchesTheHtmlTokenizer() {
+  // A quote opens a quoted value only directly after "=". Treating one inside
+  // an UNQUOTED value as an opener made the tag scan run to end of input, so
+  // the script after it was never tokenized at all.
+  [
+    "<p x=a'b><script>alert(1)</script>",
+    '<p x=a"b><script>alert(1)</script>',
+  ].forEach(function (html) {
+    ["strict", "balanced", "permissive"].forEach(function (profile) {
+      var rv = b.guardHtml.validate(html, { profile: profile });
+      check("markup after a quote in an unquoted value is inspected at " +
+            profile + " " + JSON.stringify(html), rv.ok === false,
+            JSON.stringify(rv.issues.map(function (i) { return i.kind; })));
+    });
+  });
+  // A ">" inside a genuinely quoted value still does not end the tag.
+  check("a quoted value may hold a closing angle bracket",
+        b.guardHtml.validate('<img alt="a > b" src=x>', { profile: "balanced" }).ok === true);
+
+  // A "/" in attribute-name position is a parse error a browser recovers from,
+  // and every attribute after it stayed live while the guard dropped them.
+  ["strict", "balanced", "permissive"].forEach(function (profile) {
+    var rv = b.guardHtml.validate(
+      "<div class=a /onfocus=alert(1) tabindex=1 autofocus>x</div>",
+      { profile: profile });
+    check("an event handler after a stray / is inspected at " + profile,
+          rv.ok === false,
+          JSON.stringify(rv.issues.map(function (i) { return i.kind; })));
+  });
+
+  // text/html has no CDATA section. `<![CDATA[` is a bogus comment that ends
+  // at the FIRST ">", so markup after that point is live in the browser while
+  // the guard was skipping to "]]>".
+  ["strict", "balanced", "permissive"].forEach(function (profile) {
+    var rv = b.guardHtml.validate("<![CDATA[x]><img src=x onerror=alert(1)>]]>",
+      { profile: profile });
+    check("markup after a bogus-comment CDATA is inspected at " + profile,
+          rv.ok === false,
+          JSON.stringify(rv.issues.map(function (i) { return i.kind; })));
+  });
+
+  // A void element opens nothing, so it must not add depth, and a browser
+  // reads `</br>` as another line break rather than as closing anything, so a
+  // void end tag must not remove depth either. A trailing slash does not close
+  // a container in text/html, so `<div/>` still nests.
+  check("a flat run of void elements is not nesting",
+        b.guardHtml.validate(new Array(301).join("<br>"), { profile: "strict" }).ok === true);
+  check("a void end tag does not unwind real nesting",
+        b.guardHtml.validate(new Array(151).join("<div><br></br>") +
+          new Array(151).join("</div>"), { profile: "strict" })
+          .issues.some(function (i) { return i.kind === "depth-cap"; }));
+  check("a slash-terminated container still counts toward depth",
+        b.guardHtml.validate(new Array(21).join("<div/>"),
+          { profile: "strict", maxTagDepth: 2 })
+          .issues.some(function (i) { return i.kind === "depth-cap"; }));
+  check("a balanced document is still accepted",
+        b.guardHtml.validate(new Array(301).join("<p></p>"), { profile: "strict" }).ok === true);
+  // Whitespace around "=" is ordinary, so the attribute must still be read.
+  [
+    '<a href = "javascript:alert(1)">x</a>',
+    '<a href= "javascript:alert(1)">x</a>',
+    '<a  onclick = "alert(1)" >x</a>',
+  ].forEach(function (html) {
+    check("an attribute spaced around = is still inspected " + JSON.stringify(html),
+          b.guardHtml.validate(html, { profile: "balanced" }).ok === false);
+  });
+
+  // And ordinary markup is untouched by all three.
+  [
+    "<p>hello</p>",
+    '<a href="https://ok.example/">x</a>',
+    "<div class=box>x</div>",
+    '<img src="a.png" alt="a">',
+    "<p title='it is'>x</p>",
+  ].forEach(function (html) {
+    check("ordinary markup still accepted " + JSON.stringify(html),
+          b.guardHtml.validate(html, { profile: "balanced" }).ok === true);
+  });
+}
+
 async function run() {
+  testTokenizerMatchesTheHtmlTokenizer();
   testEmptyTagAllowlistPermitsNothing();
   testHtmlScreensAgreeWithThePatternsTheyReplaced();
   testGuardHtmlSurface();
@@ -591,10 +674,159 @@ async function run() {
   testGuardHtmlEscape();
   testGuardHtmlBadProfile();
   testGuardHtmlCompliancePosture();
+  testCssEscapedTokensAreStillDangerous();
+  testTagScanFollowsTheTokenizerStates();
   testGdprPostureMatchesBalancedTier();
   await testGuardHtmlGateClean();
   await testGuardHtmlGateRefuse();
   await testGuardHtmlGateSanitize();
+}
+
+function testTagScanFollowsTheTokenizerStates() {
+  function kinds(doc) {
+    return b.guardHtml.validate(doc, { profile: "strict" }).issues.map(function (i) { return i.kind; });
+  }
+  // After `=` the tokenizer is in "before attribute value": a quote there
+  // opens a quoted value, and anything else opens an UNQUOTED value that runs
+  // to whitespace or `>`. Inside an unquoted value a second `=` and a quote
+  // are data, so `x=a='b` ends at the `>` and the script that follows is live.
+  var hidden = [];
+  [
+    "<p x=a='b><script>alert(1)</script>",
+    "<p x=a=\"b><script>alert(1)</script>",
+    "<p x=a=b='c><img src=x onerror=alert(1)>",
+  ].forEach(function (doc) {
+    var ks = kinds(doc);
+    if (ks.indexOf("dangerous-tag") === -1 && ks.indexOf("event-handler") === -1) hidden.push(doc);
+  });
+  check("a quote inside an unquoted value does not open a quoted value",
+        hidden.length === 0, hidden.join(" | "));
+
+  // Once a value has ended, or before any attribute name, `=` is a parse
+  // error that starts an attribute NAME, and a quote after it is name data.
+  // The tag name is its own state too: `<p ='b>` is a tag named p with an
+  // attribute named ='b, not a value opener. Each of these closes at the `>`.
+  var swallowed = [];
+  [
+    "<p x=a ='b><script>alert(1)</script>",
+    "<p x=\"a\"='b><script>alert(1)</script>",
+    "<p x='a' ='b><script>alert(1)</script>",
+    "<p ='b><script>alert(1)</script>",
+  ].forEach(function (doc) {
+    if (kinds(doc).indexOf("dangerous-tag") === -1) swallowed.push(doc);
+  });
+  check("an = that starts an attribute name does not open a value",
+        swallowed.length === 0, swallowed.join(" | "));
+  // Control: after a name and whitespace, `=` does open a value, so this
+  // quote runs to the end of the input in a browser as well.
+  check("a name, whitespace, = and a quote still open a quoted value",
+        kinds("<p x ='b><script>alert(1)</script>").indexOf("dangerous-tag") === -1);
+  check("a handler after a quoted value with no space between is read",
+        kinds('<a href="x"onclick=alert(1)>y</a>').indexOf("event-handler") !== -1);
+
+  // The tokenizer's whitespace is ASCII only: tab, line feed, form feed,
+  // carriage return and space. A no-break space or any other Unicode space
+  // after `=` is the first character of an unquoted value, so a quote after
+  // it is data and the tag closes at the `>`.
+  var unicodeSpaces = [];
+  [0xA0, 0x2003, 0x3000].forEach(function (cp) {
+    var doc = "<p x=" + String.fromCharCode(cp) + "'><script>alert(1)</script>";
+    if (kinds(doc).indexOf("dangerous-tag") === -1) unicodeSpaces.push("U+" + cp.toString(16));
+  });
+  check("a Unicode space after = starts an unquoted value", unicodeSpaces.length === 0,
+        unicodeSpaces.join(", "));
+  check("an ASCII space, tab or form feed after = still opens a quoted value",
+        kinds('<p x= "a>b">y</p>').indexOf("dangerous-tag") === -1 &&
+        kinds('<p x=\t"a>b">y</p>').indexOf("dangerous-tag") === -1 &&
+        kinds('<p x=\f"a>b">y</p>').indexOf("dangerous-tag") === -1);
+  check("a quoted value holding > still does not end the tag",
+        kinds('<p title="a>b">x</p>').indexOf("dangerous-tag") === -1);
+  check("whitespace around = still opens a quoted value",
+        kinds('<p title = "a>b">x</p>').indexOf("dangerous-tag") === -1);
+
+  // A `/` in name position enters the self-closing state: `>` right after it
+  // ends the tag, and anything else is reconsumed before an attribute name,
+  // where `=` starts a NAME and the quotes after it are name data. A `/`
+  // inside an unquoted value is value data.
+  var slashed = [];
+  [
+    "<div \" /='\"><script>alert(1)</script>",
+    "<div /='\"><script>alert(1)</script>",
+    "<div x /=\"><script>alert(1)</script>",
+    "<div x=\"a\"/='><script>alert(1)</script>",
+    "<div//='><script>alert(1)</script>",
+  ].forEach(function (doc) {
+    if (kinds(doc).indexOf("dangerous-tag") === -1) slashed.push(doc);
+  });
+  check("an = reconsumed after a self-closing slash starts a name, not a value",
+        slashed.length === 0, slashed.join(" | "));
+  check("a slash inside an unquoted value is value data",
+        kinds("<a href=/x/>y</a>").indexOf("dangerous-tag") === -1);
+  check("a slash then > still ends the tag",
+        kinds('<p title="a>b"/>x').indexOf("dangerous-tag") === -1);
+
+  // Recovery past a `/` or `=` in name position runs to the end of the tag.
+  // A round cap left every attribute past it unread, and a browser reads them.
+  var unread = [];
+  [65, 200, 5000].forEach(function (n) {
+    var doc = "<div " + "/".repeat(n) + " onfocus=alert(1) tabindex=1 autofocus>x</div>";
+    if (kinds(doc).indexOf("event-handler") === -1) unread.push(String(n));
+  });
+  check("a handler after any number of separators is read", unread.length === 0,
+        "unread after " + unread.join(", ") + " separators");
+  var growth = require("../helpers/growth");
+  check("recovery stays linear in the separator count",
+        !growth.looksSuperlinear(function (n) {
+          b.guardHtml.validate("<div " + "/".repeat(n) + " onfocus=alert(1)>x</div>",
+                               { profile: "strict" });
+        }, { small: 20000, large: 80000, threshold: 8 }));
+}
+
+function testCssEscapedTokensAreStillDangerous() {
+  var BS = String.fromCharCode(92);
+  // CSS lets any character in a property value or identifier be written as a
+  // backslash escape, so a scan that matches the literal word sees nothing
+  // while a renderer sees the keyword.
+  function flagged(guard, tag, style) {
+    var doc = guard === "guardSvg"
+      ? '<svg xmlns="http://www.w3.org/2000/svg"><' + tag + ' style="' + style + '"/></svg>'
+      : "<" + tag + ' style="' + style + '">x</' + tag + ">";
+    return b[guard].validate(doc, { profile: "balanced" })
+      .issues.some(function (i) { return i.kind === "css-injection"; });
+  }
+  var missed = [];
+  [
+    BS + "6a avascript:alert(1)",
+    "background:u" + BS + "72l(javascript:alert(1))",
+    "width:e" + BS + "78 pression(alert(1))",
+    BS + "40 import url(x)",
+    "behavio" + BS + "72 :url(x)",
+    "background:javascript:alert(1)",
+  ].forEach(function (style) {
+    ["guardHtml", "guardSvg"].forEach(function (guard) {
+      var tag = guard === "guardSvg" ? "rect" : "div";
+      if (!flagged(guard, tag, style)) missed.push(guard + " " + style);
+    });
+  });
+  check("a CSS-escaped dangerous token is flagged in both guards",
+        missed.length === 0, missed.slice(0, 3).join(" | "));
+
+  // Control: an ordinary declaration, and one whose backslash escapes an
+  // ordinary character, must stay quiet.
+  var noisy = [];
+  [
+    "fill:red;stroke-width:2",
+    "color:red;margin:0",
+    "content:'" + BS + "201C'",
+    "font-family:My" + BS + " Font",
+  ].forEach(function (style) {
+    ["guardHtml", "guardSvg"].forEach(function (guard) {
+      var tag = guard === "guardSvg" ? "rect" : "div";
+      if (flagged(guard, tag, style)) noisy.push(guard + " " + style);
+    });
+  });
+  check("an ordinary declaration is not flagged", noisy.length === 0,
+        noisy.slice(0, 3).join(" | "));
 }
 
 module.exports = { run: run };

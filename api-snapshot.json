@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.20.0",
-  "createdAt": "2026-09-10T20:42:13.868Z",
+  "frameworkVersion": "0.20.1",
+  "createdAt": "2026-09-12T13:36:52.214Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -7206,6 +7206,10 @@
           "arity": 1
         },
         "isAsciiLetter": {
+          "type": "function",
+          "arity": 1
+        },
+        "isAsciiWhitespace": {
           "type": "function",
           "arity": 1
         },
@@ -18393,6 +18397,10 @@
           "type": "instance",
           "ctorName": "Array"
         },
+        "MAX_ISSUES_PER_KIND": {
+          "type": "primitive",
+          "valueType": "number"
+        },
         "MODES": {
           "type": "instance",
           "ctorName": "Array"
@@ -18517,6 +18525,10 @@
         "lookupCompliancePosture": {
           "type": "function",
           "arity": 4
+        },
+        "makeIssueReporter": {
+          "type": "function",
+          "arity": 2
         },
         "makePostureAccessor": {
           "type": "function",
@@ -42370,6 +42382,67 @@
     "htmlBalance": {
       "type": "object",
       "members": {
+        "VOID_TAGS": {
+          "type": "object",
+          "members": {
+            "area": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "base": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "br": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "col": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "embed": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "hr": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "img": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "input": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "link": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "meta": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "param": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "source": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "track": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "wbr": {
+              "type": "primitive",
+              "valueType": "number"
+            }
+          }
+        },
         "check": {
           "type": "function",
           "arity": 1

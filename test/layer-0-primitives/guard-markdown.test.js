@@ -338,7 +338,19 @@ function testMarkdownExtractorsAgreeWithThePatternsTheyReplaced() {
 
   var INLINE_LINK_RE = /(!?)\[([^\]\n]*)\]\(\s*([^)\s]+)\s*(?:"[^"]*")?\s*\)/g;
   var AUTOLINK_RE    = /<((?:[a-zA-Z][a-zA-Z0-9+.-]{0,32}):[^\s>]+)>/g;
-  var REF_DEF_RE     = /^\s{0,3}\[([^\]\n]+)\]:\s*([^\s]+)/gm;
+  // The destination may follow one line ending, never a blank line. The two
+  // Unicode line separators are built from their code points so the source
+  // holds no invisible characters.
+  var ONE_LINE_ENDING = "(?:\\r\\n|\\r|\\n|" + String.fromCharCode(0x2028) + "|" +
+                        String.fromCharCode(0x2029) + ")?";
+  var REF_DEF_RE     = new RegExp("^ {0,3}\\[([^\\]\\n]+)\\]:[ \\t]*" + ONE_LINE_ENDING +
+                                  "[ \\t]*([^\\s]+)", "gm");
+  // The container prefixes a definition may follow at the top level of a
+  // document: block quote markers and list markers, each after up to three
+  // spaces, then up to three spaces of leaf indentation.
+  var REF_DEF_CONTAINER_RE = new RegExp(
+    "^(?: {0,3}(?:>[ ]?|[-+*][ \\t]|\\d{1,9}[.)][ \\t]))* {0,3}\\[([^\\]\\n]+)\\]:[ \\t]*" +
+    ONE_LINE_ENDING + "[ \\t]*([^\\s]+)", "gm");
   var CODE_FENCE_LANG_RE = /^(?:```|~~~)([^\n]*)\n/gm;
   var RAW_HTML_TAG_RE = /<\s*\/?\s*[A-Za-z][\w-]*[\s\S]*?>/;
   var DANGEROUS_TAG_RE = /<\s*\/?\s*(script|iframe|object|embed|applet|form|input|button|textarea|select|option|meta|link|base|frame|frameset|noscript|noembed|svg|math|video|audio|source|track|style|template|portal|marquee)\b/i;
@@ -360,17 +372,18 @@ function testMarkdownExtractorsAgreeWithThePatternsTheyReplaced() {
     "<https://x>", "<javascript:alert(1)>", "<not a link>", "<a>", "<>",
     "<" + "a".repeat(40) + ":x>", "<mailto:a@b>", "<x:>",
     "[ref]: https://x", "   [ref]: https://x", "    [ref]: https://x",
-    "[ref]:https://x", "[]: x", "[a]: ", "line\n[ref]: javascript:x",
+    "[ref]:https://x", "[]: x", "[a]: ", "line\n\n[ref]: javascript:x",
     // The destination may sit on the next line — the whitespace after the
     // colon includes the line break, so a line-by-line walk loses the URL and
     // never screens its scheme.
     "[x]:\njavascript:alert(1)", "[x]:\n  https://ok", "[x]:\n\nhttps://ok",
     "[a]: one\n[b]: two", "[a]:\n", "[a]:",
     // A lone CR starts a line for a `^` under the `m` flag, and so do the two
-    // Unicode line separators — a scan that only knows LF misses these.
-    "x\r[ref]: javascript:y", "x\r```<script>\ny",
-    "x" + String.fromCharCode(0x2028) + "[ref]: javascript:y",
-    "x\r\n[ref]: javascript:y", "x\r\n```<script>\ny",
+    // Unicode line separators — a scan that only knows LF misses these. Two
+    // of them make the blank line a definition needs after a paragraph.
+    "x\r\r[ref]: javascript:y", "x\r```<script>\ny",
+    "x" + String.fromCharCode(0x2028, 0x2028) + "[ref]: javascript:y",
+    "x\r\n\r\n[ref]: javascript:y", "x\r\n```<script>\ny",
     "```js\ncode\n```", "~~~py\ncode\n~~~", "```<script>\nx\n```",
     "```\nx\n```", "```js", "text\n```sh\nx\n```",
     "<script>x</script>", "< script >x", "<scriptx>", "<div>", "<DIV>",
@@ -417,9 +430,20 @@ function testMarkdownExtractorsAgreeWithThePatternsTheyReplaced() {
     var gotAuto = api.autolinks(doc).map(function (a) { return a.url; });
     compare("autolinks", JSON.stringify(reAuto), JSON.stringify(gotAuto));
 
+    // The pattern allowed a definition three columns of indent, which is the
+    // rule at the top level of a document. A definition also follows the
+    // container markers on its line, each with its own three-column budget,
+    // and the walk reads those where the pattern stopped at the first marker.
+    // Every URL the pattern found is found by the walk, and over these
+    // single-container documents the container pattern says exactly what the
+    // walk finds.
     var reRefs = Array.from(doc.matchAll(REF_DEF_RE)).map(function (m) { return m[2]; });
     var gotRefs = api.refDefs(doc).map(function (r) { return r.url; });
-    compare("ref-defs", JSON.stringify(reRefs), JSON.stringify(gotRefs));
+    var missing = reRefs.filter(function (u) { return gotRefs.indexOf(u) === -1; });
+    compare("ref-defs-subset", JSON.stringify([]), JSON.stringify(missing));
+    var reRefsContainer = Array.from(doc.matchAll(REF_DEF_CONTAINER_RE))
+      .map(function (m) { return m[2]; });
+    compare("ref-defs", JSON.stringify(reRefsContainer), JSON.stringify(gotRefs));
 
     // The pattern needed a newline after the fence line, so a fence on the
     // last line was invisible to it; the walk sees that one too. Compare the
@@ -663,7 +687,14 @@ function testLinkLabelWithBracketsStillReachesTheDestination() {
   // normalizing path, and normalizing each overlapping suffix in full is
   // quadratic: 2.7 seconds at n=8000. The scheme is now read by position
   // through a memoized skip of what normalization strips, so the shared
-  // padding is walked once for all of the links that start inside it.
+  // padding is walked once for all of the links that start inside it. The
+  // memo is one span per destination, and the destinations arrive at
+  // DECREASING offsets: each span went in at the front of a sorted array,
+  // which is quadratic in the number of links (0.8 s of shifting at 64,000).
+  // The span index grows room at its front, so a span below every other is
+  // one write. The index is measured on its own as well, past the size where
+  // the shifting showed, since a document of that many links allocates enough
+  // that a loaded machine reads its growth as noise.
   function scanPaddedDestinations(size) {
     var md = new Array(size + 1).join("[") + "x]" +
              new Array(size).join("](&#1;a") + ")";
@@ -672,6 +703,21 @@ function testLinkLabelWithBracketsStillReachesTheDestination() {
   check("guardMarkdown stays linear when overlapping destinations share entity padding",
         growth.looksSuperlinear(scanPaddedDestinations,
           { small: 2000, large: 8000, threshold: 8 }) === false);
+  function fillSpanIndexFromTheFront(size) {
+    var index = b.guardMarkdown._spanIndexForTest();
+    for (var at = size * 4; at > 0; at -= 4) index.add(at, at + 2, at + 3);
+  }
+  check("the span index takes a span below every other in constant time",
+        growth.looksSuperlinear(fillSpanIndexFromTheFront,
+          { small: 8000, large: 64000, threshold: 12 }) === false);
+  var spans = b.guardMarkdown._spanIndexForTest();
+  spans.add(40, 44, 45);
+  spans.add(10, 12, 13);
+  spans.add(20, 22, 23);
+  spans.add(13, 19, 23);
+  check("the span index answers a position inside a span with the span's value after front inserts",
+        spans.find(41) === 45 && spans.find(11) === 13 && spans.find(15) === 23 &&
+        spans.find(22) === 23 && spans.find(9) === undefined && spans.find(30) === undefined);
   // Nested links that all end at one endpoint, followed by a long run of
   // whitespace before the closing paren. Whether a link closes there is a
   // function of the endpoint alone, but it was recomputed per link, and each
@@ -686,6 +732,35 @@ function testLinkLabelWithBracketsStillReachesTheDestination() {
   check("guardMarkdown stays linear when nested links share an endpoint before a long tail",
         growth.looksSuperlinear(scanSharedEndpoint,
           { small: 500, large: 2000, threshold: 8 }) === false);
+  // Every parenthesized title opener resolves to the one closing paren, and
+  // the whitespace run after that closer was rescanned once per opener. The
+  // document is accepted, so the cost is paid for a request that passes.
+  function scanSharedTitleCloser(size) {
+    var md = "[x](" + new Array(size + 1).join("(") + " t)" +
+             new Array(size + 1).join(" ") + "x";
+    b.guardMarkdown.validate(md, { profile: "balanced" });
+  }
+  check("guardMarkdown stays linear when title openers share a closer before a space run",
+        growth.looksSuperlinear(scanSharedTitleCloser,
+          { small: 8000, large: 32000, threshold: 8 }) === false);
+  check("the shared-closer document is accepted",
+        b.guardMarkdown.validate("[x](" + "(".repeat(200) + " t)" + " ".repeat(200) + "x",
+          { profile: "balanced" }).issues.length === 0);
+  // The delimiter lookup that made the walk above linear must not be a table
+  // the size of the document. Three of those on a 64 MiB permissive body are
+  // 768 MiB. This is a memory assertion; a timing one passes either way. A
+  // typed array's backing store is counted in `arrayBuffers`, not `heapUsed`:
+  // measured against the build that allocated the tables, this 4 MiB document
+  // moved arrayBuffers by 48 MiB and heapUsed by 4.5 MiB, and the fixed build
+  // moves arrayBuffers by 0 and heapUsed by the same 4.5 MiB. An assertion on
+  // heapUsed passed against both.
+  var filler = "lorem ipsum dolor sit amet ".repeat(4 * 1024 * 1024 / 27);
+  var wide = filler + "\n[a](u \"t\") [b](u 't') [c](u (t))\n";
+  var before = process.memoryUsage().arrayBuffers;
+  b.guardMarkdown.validate(wide, { profile: "permissive" });
+  var grewMiB = (process.memoryUsage().arrayBuffers - before) / (1024 * 1024);
+  check("title-delimiter lookups do not allocate per character of the document",
+        grewMiB < 8, "a 4 MiB document grew arrayBuffers by " + grewMiB.toFixed(1) + " MiB");
   // Reading the scheme by position has to reach the same verdict the whole-
   // string normalization did, on every padding and encoding it strips.
   [
@@ -983,6 +1058,141 @@ async function testEncodedAndZeroWidthSchemesAreRefused() {
   check("guardMarkdown stays linear on a flood of unclosed nested tag starts",
         growth.looksSuperlinear(scanNestedTagStarts,
           { small: 10000, large: 40000, threshold: 8 }) === false);
+  // The two readings are unioned by appending the second to the first, so the
+  // combined list was not in document order. The scheme reader walks it by
+  // position through a forward-only index of what survives normalization, and
+  // a backwards step made that index rescan from the start: a document that
+  // alternates a plain link with one whose opener sits inside a code span,
+  // each destination carrying zero-width padding so the positional path is
+  // taken, went 118 ms to 7112 ms over an 8x size step while the same links
+  // without the code spans stayed linear. The union is sorted back into
+  // document order.
+  function paddedUrl() {
+    var pad = String.fromCharCode(0x200B);
+    var o = "";
+    for (var q = 0; q < 20; q += 1) o += "a" + pad;
+    return "https:" + pad + "//" + o;
+  }
+  function scanInterleavedUnion(n) {
+    var s = "";
+    for (var q = 0; q < n; q += 1) {
+      s += "[a](" + paddedUrl() + ")\n";
+      s += tick + "[" + tick + "b](" + paddedUrl() + ")\n";
+    }
+    b.guardMarkdown.validate(s, { profile: "permissive" });
+  }
+  check("guardMarkdown stays linear when both link readings interleave",
+        growth.looksSuperlinear(scanInterleavedUnion,
+          { small: 500, large: 2000, threshold: 8 }) === false);
+  // CommonMark gives a link title three delimiter pairs. The scanner knew only
+  // the double quote, so with a `'…'` or `(…)` title no closing paren was
+  // found, the opener was dropped, and the destination was never handed to the
+  // scheme check at all: `[x](javascript:1 'y')` validated clean and sanitize
+  // returned it unchanged at every profile, while its double-quoted twin was
+  // critical. A `<…>` destination may also hold spaces, which the run scanner
+  // stops on, so it is read to its own closing bracket.
+  [
+    ["[x](javascript:1 'y')", "link-scheme"],
+    ["[x](javascript:1 (y))", "link-scheme"],
+    ["![x](javascript:1 'y')", "image-scheme"],
+    ["[x](data:text/html;base64,PHNjcmlwdD4= 'y')", "link-scheme"],
+    ["[x](<javascript:alert(1) >)", "link-scheme"],
+    ["[x](<javascript: alert(1)>)", "link-scheme"],
+  ].forEach(function (row) {
+    ["strict", "balanced", "permissive"].forEach(function (profile) {
+      var r = b.guardMarkdown.validate(row[0], { profile: profile });
+      check("guardMarkdown inspects the destination of " + JSON.stringify(row[0]) +
+            " at " + profile,
+            r.ok === false &&
+            r.issues.some(function (i) { return i.kind === row[1]; }));
+    });
+  });
+  [
+    "[x](https://ok.example/ 'Title')",
+    "[x](https://ok.example/ (Title))",
+    "[x](https://ok.example/a_(b)_c)",
+  ].forEach(function (md) {
+    check("guardMarkdown keeps a benign titled link " + JSON.stringify(md),
+          b.guardMarkdown.validate(md, { profile: "strict" }).ok === true);
+  });
+  // A backslash escapes the delimiter inside a title, so `"a\"b"` is one title
+  // and the link closes after it. Taking the escaped copy as the close dropped
+  // the link, and its destination, from the scheme check.
+  var BSL = String.fromCharCode(92);
+  var escapedTitles = [];
+  [
+    '[x](javascript:alert%281%29 "a' + BSL + '"b")',
+    "[x](javascript:alert%281%29 'a" + BSL + "'b')",
+    "[x](javascript:alert%281%29 (a" + BSL + ")b))",
+    '[x](javascript:alert%281%29 "a' + BSL + BSL + BSL + '"b")',
+  ].forEach(function (md) {
+    var ks = b.guardMarkdown.validate(md, { profile: "strict" })
+      .issues.map(function (i) { return i.kind; });
+    if (ks.indexOf("link-scheme") === -1) escapedTitles.push(md);
+  });
+  check("an escaped delimiter inside a title does not close it",
+        escapedTitles.length === 0, escapedTitles.join(" | "));
+  check("a doubled backslash before the delimiter is a literal backslash",
+        b.guardMarkdown.validate('[x](https://ok "a' + BSL + BSL + '")', { profile: "strict" }).ok);
+  check("a benign title with escaped quotes is accepted",
+        b.guardMarkdown.validate('[x](https://ok "say ' + BSL + '"hi' + BSL + '"")',
+                                 { profile: "strict" }).ok);
+  // Accepting `(` as a title delimiter put a `)` search inside the loop that
+  // steps backwards through a destination, so an unterminated destination made
+  // of parentheses rescanned the same suffix from every position: 400 KB took
+  // 1.58 s. Each delimiter keeps one scanned interval, so a query inside it
+  // is answered without a scan and a query below it extends it.
+  function scanParenDestination(n) {
+    b.guardMarkdown.validate("[x](https:" + new Array(n + 1).join("("),
+      { profile: "permissive" });
+  }
+  check("guardMarkdown stays linear on an unterminated parenthesized destination",
+        growth.looksSuperlinear(scanParenDestination,
+          { small: 50000, large: 200000, threshold: 8 }) === false);
+  // The per-position memos behind that walk must not hold a heap entry per
+  // character either: keyed as Maps they cost 141 bytes per input character,
+  // which is 9 GB at the permissive size cap. Measured without a collection
+  // the walk now costs about 8 bytes per character of collectible garbage,
+  // so a bound of 32 separates the two by a wide margin either way.
+  var wideParen = "[x](https:" + new Array(2000001).join("(");
+  var heapBefore = process.memoryUsage().heapUsed;
+  b.guardMarkdown.validate(wideParen, { profile: "permissive" });
+  var perChar = (process.memoryUsage().heapUsed - heapBefore) / wideParen.length;
+  check("the link walk does not hold a heap entry per input character",
+        perChar < 32, perChar.toFixed(1) + " bytes per character");
+  // The info string reaches a class attribute in renderers that interpolate it,
+  // and the rule only fired on a fence at column 0. CommonMark allows up to
+  // three columns of indent and a fence inside a block quote; four columns
+  // opens an indented code block, where the backticks are literal text. A tab
+  // advances to the next stop of four, so a tab-led line is that code block
+  // and is covered by testBlockIndentationIsMeasuredInColumns.
+  var infoFence = "```js\" onerror=\"alert(1)\nbody\n```\n";
+  [" ", "   ", "> ", ">> ", ">   "].forEach(function (lead) {
+    var r = b.guardMarkdown.validate(lead + infoFence, { profile: "strict" });
+    check("guardMarkdown inspects the info string of a fence led by " +
+          JSON.stringify(lead),
+          r.ok === false &&
+          r.issues.some(function (i) { return i.kind === "code-fence-lang"; }));
+  });
+  check("guardMarkdown reads no fence in a four-space indented code block",
+        b.guardMarkdown.validate("    " + infoFence, { profile: "strict" }).ok === true);
+  // A named reference has to reach the same verdict as the character it names.
+  // `&hyphen;` decoded to U+002D HYPHEN-MINUS instead of U+2010 HYPHEN, so it
+  // manufactured `view-source:` out of a character that cannot form a scheme
+  // and refused `[a](view&hyphen;source:x)` while accepting the spelling a
+  // browser actually produces.
+  [["hyphen", 0x2010], ["nbsp", 0x00A0]].forEach(function (row) {
+    var entity = "[a](view&" + row[0] + ";source:x)";
+    var literal = "[a](view" + String.fromCharCode(row[1]) + "source:x)";
+    ["strict", "permissive"].forEach(function (profile) {
+      check("guardMarkdown reads &" + row[0] + "; as the character it names at " + profile,
+            b.guardMarkdown.validate(entity, { profile: profile }).ok ===
+            b.guardMarkdown.validate(literal, { profile: profile }).ok);
+    });
+  });
+  check("guardMarkdown still refuses a colon written as a named reference",
+        b.guardMarkdown.validate("[a](javascript&colon;alert(1))",
+          { profile: "permissive" }).ok === false);
   // Two readings can assign different destinations to one opener. Both are
   // inspected, but the construct is one construct, so the caps are not spent
   // twice on it and a document with one image is not refused at maxImages 1.
@@ -1058,7 +1268,620 @@ async function run() {
   testGuardMarkdownSanitizeRefusesCritical();
   testGuardMarkdownSanitizeRefusesBadInput();
   testGuardMarkdownCompliancePosture();
+  testBlockIndentationIsMeasuredInColumns();
+  testContainerMarkersPrecedeADefinitionOrFence();
+  testADefinitionScanThatFailsLeavesItsLinesToTheBlockReader();
   await testGuardMarkdownGate();
+}
+
+function testBlockIndentationIsMeasuredInColumns() {
+  var TAB = String.fromCharCode(9);
+  function kinds(src, profile) {
+    return b.guardMarkdown.validate(src, { profile: profile || "balanced" })
+      .issues.map(function (i) { return i.kind; });
+  }
+  function isFence(src) { return kinds(src).indexOf("code-fence-lang") !== -1; }
+
+  // A tab advances to the next column stop of four, so a line opening with one
+  // is indented code and the three characters after it are not a fence.
+  check("a tab before a fence marker is indented code",
+        !isFence(TAB + '~~~foo"bar'), JSON.stringify(kinds(TAB + '~~~foo"bar')));
+  check("four spaces before a fence marker is indented code",
+        !isFence('    ~~~foo"bar'));
+  check("three spaces before a fence marker still opens a fence",
+        isFence('   ~~~foo"bar'));
+  check("an unindented tilde fence still opens a fence", isFence('~~~foo"bar'));
+  check("an unindented backtick fence still opens a fence", isFence('```foo"bar'));
+  check("a fence inside a block quote still opens a fence", isFence('> ```foo"bar'));
+  // One space after `>` belongs to the marker, not to the indentation, so
+  // `>` followed by four spaces is one marker space and three of indent, which
+  // is still a fence. Counting all four made it indented code and let the
+  // info string past the check.
+  check("a block-quote marker's optional space is not fence indentation",
+        isFence('>    ```foo"bar'));
+  check("nor for nested markers", isFence('>>    ```foo"bar'));
+  // A tab after the marker expands to the next stop of four; one of its
+  // columns is the marker's space and the rest are indentation.
+  check("a tab after the marker leaves two columns of indent, so a fence follows",
+        isFence(">" + TAB + '```foo"bar'));
+  check("a tab after the marker plus three spaces is five columns: indented code",
+        !isFence(">" + TAB + '   ```foo"bar'));
+  check("a tab after the marker plus one space is three columns: a fence",
+        isFence(">" + TAB + ' ```foo"bar'));
+  check("a fifth space after the marker is indented code", !isFence('>     ```foo"bar'));
+  // The columns a tab leaves over indent the NEXT marker, which consumes
+  // them; they do not carry through to the fence.
+  check("nested markers each with a tab still open a fence",
+        isFence(">" + TAB + ">" + TAB + '~~~foo"bar'));
+  check("nested markers with a tab then three spaces are indented code",
+        !isFence(">" + TAB + ">" + TAB + '   ~~~foo"bar'));
+
+  // A reference definition's indent budget is relative to the block that
+  // contains it. At the top level four columns is indented code; inside a
+  // list item the item's content column is where counting starts.
+  function refKinds(src) {
+    return b.guardMarkdown.validate(src, { profile: "strict" })
+      .issues.map(function (i) { return i.kind; });
+  }
+  var def = "[x]: javascript:alert(1)";
+  [
+    { name: "unindented", src: def },
+    { name: "three spaces", src: "   " + def },
+    { name: "inside a list item", src: "- item\n\n" + TAB + def + "\n\n[x]" },
+    { name: "inside a block quote", src: "> " + def },
+    { name: "after blank lines", src: "\n\n\n" + def },
+  ].forEach(function (c) {
+    check("a reference definition " + c.name + " is read",
+          refKinds(c.src).indexOf("reference-link-scheme") !== -1,
+          JSON.stringify(refKinds(c.src)));
+  });
+  [
+    { name: "four spaces", src: "    " + def },
+    { name: "a tab", src: TAB + def },
+  ].forEach(function (c) {
+    check("a reference definition after " + c.name + " at the top level is code",
+          refKinds(c.src).indexOf("reference-link-scheme") === -1,
+          JSON.stringify(refKinds(c.src)));
+  });
+
+  var refused = false;
+  try {
+    b.guardMarkdown.sanitize("- item\n\n" + TAB + def + "\n\n[x]", { profile: "strict" });
+  } catch (e) { refused = e.code === "markdown.reference-link-scheme"; }
+  check("sanitize refuses a dangerous definition rather than preserving it", refused);
+}
+
+function testContainerMarkersPrecedeADefinitionOrFence() {
+  // A definition or a fence sits after the container markers on its line: a
+  // block quote marker, a list item marker, or both, each after at most three
+  // columns of indentation relative to the previous marker's content. The
+  // reader skipped `>` and whitespace only, so a definition on a list marker
+  // line was never read while every renderer resolves it.
+  var TAB = String.fromCharCode(9);
+  function kinds(src) {
+    return b.guardMarkdown.validate(src, { profile: "strict" })
+      .issues.map(function (i) { return i.kind; });
+  }
+  function reads(src) { return kinds(src).indexOf("reference-link-scheme") !== -1; }
+  function fences(src) { return kinds(src).indexOf("code-fence-lang") !== -1; }
+  var def = "[x]: javascript:alert(1)";
+  var use = "\n\n[x]";
+
+  var missed = [];
+  [
+    ["a bullet", "- " + def],
+    ["a star bullet", "* " + def],
+    ["a plus bullet", "+ " + def],
+    ["an ordered marker", "1. " + def],
+    ["a parenthesized ordered marker", "9) " + def],
+    ["a nine-digit ordered marker", "123456789. " + def],
+    ["a bullet inside a block quote", "> - " + def],
+    ["a block quote inside a bullet", "- > " + def],
+    ["an indented bullet", "   - " + def],
+    ["a bullet followed by a tab", "-" + TAB + def],
+    ["nested bullets", "- - " + def],
+    ["a marker with two spaces", "1.  " + def],
+    ["a marker with four spaces", "-    " + def],
+    ["a bullet after a nested quote", ">> - " + def],
+  ].forEach(function (c) { if (!reads(c[1] + use)) missed.push(c[0]); });
+  check("a definition on a list marker line is read after the marker",
+        missed.length === 0, missed.join(", "));
+
+  // A list item that is open holds a later line at any indentation the item
+  // can contain, so the top-level four-column rule does not apply to it.
+  var unheld = [];
+  [
+    ["four spaces after a blank line", "- item\n\n    " + def],
+    ["two spaces after a blank line", "- item\n\n  " + def],
+    ["after an indented paragraph", "- item\n\n  para\n\n    " + def],
+    ["after a lazy paragraph continuation", "- item\nparagraph\n\n    " + def],
+    ["inside a quoted list", "> - item\n>\n>     " + def],
+    ["under an ordered item", "1. item\n\n     " + def],
+    ["under a nested item", "- a\n  - b\n\n      " + def],
+    ["after a fenced block in the item", "- item\n\n  ```\n  x\n\n  ```\n    " + def],
+    ["under a quoted item after a quoted blank", "> - item\n>\n>   " + def],
+    // Six spaces under an item's paragraph is that paragraph's text, so the
+    // unindented line after it is lazy continuation and the item stays open.
+    ["after a deeply indented paragraph continuation", "- item\n      text\npara\n\n    " + def],
+  ].forEach(function (c) { if (!reads(c[1] + use)) unheld.push(c[0]); });
+  check("a definition an open list item holds is read at the item's indentation",
+        unheld.length === 0, unheld.join(", "));
+
+  // Four columns past the innermost container is indented code, and a list
+  // closed by a blank line and a line indented less than its content is closed.
+  var overread = [];
+  [
+    ["four spaces at the top level", "    " + def],
+    ["a tab at the top level", TAB + def],
+    ["five spaces after a quote marker", ">     " + def],
+    ["a quote marker after four spaces", "    > " + def],
+    ["five spaces after a bullet", "-     " + def],
+    ["four spaces after a nested quote", ">>     " + def],
+    ["after a list closed by a one-space paragraph", "- item\n\n para\n\n    " + def],
+    ["after a list closed by a paragraph", "- item\n\nparagraph\n\n    " + def],
+    ["after a list closed by a heading", "- item\n\n# h\n\n    " + def],
+    ["after a heading directly under an item", "- item\n# h\n\n    " + def],
+    ["after a quote directly under an item", "- item\n>\n\n    " + def],
+    ["after an empty item and a blank line", "-\n\n    " + def],
+    // A code block cannot be lazily continued, so the unindented line after
+    // an item holding only code closes the item.
+    ["after a code-only item and an unindented line", "-     code\npara\n\n    " + def],
+    ["in a quote with no list", "> a\n>     " + def],
+  ].forEach(function (c) { if (reads(c[1] + use)) overread.push(c[0]); });
+  check("a definition four columns inside its container is code",
+        overread.length === 0, overread.join(", "));
+
+  // The same prefixes precede a fence.
+  var missedFence = [];
+  [
+    ["a bullet", '- ```foo"'],
+    ["an ordered marker", '1. ```foo"'],
+    ["a bullet inside a quote", '> - ```foo"'],
+    ["four spaces in an open item", '- item\n\n    ```foo"'],
+    ["four spaces on the line after a marker", '- item\n    ```foo"'],
+  ].forEach(function (c) { if (!fences(c[1])) missedFence.push(c[0]); });
+  check("a fence after a container marker is read", missedFence.length === 0, missedFence.join(", "));
+  var overFence = [];
+  [
+    ["four spaces at the top level", '    ```foo"'],
+    ["a quote marker after four spaces", '    > ```foo"'],
+    ["five spaces after a quote marker", '>     ```foo"'],
+    ["five spaces after a bullet", '-     ```foo"'],
+    ["six spaces in an open item", '- item\n\n      ```foo"'],
+  ].forEach(function (c) { if (fences(c[1])) overFence.push(c[0]); });
+  check("a fence four columns inside its container is code", overFence.length === 0, overFence.join(", "));
+
+  // A definition cannot interrupt a paragraph: on the line after paragraph
+  // text, with no container opened or closed between them, it is that
+  // paragraph's continuation text.
+  var continued = [];
+  [
+    ["a paragraph", "para\n" + def],
+    ["a two-line paragraph", "para\nmore\n" + def],
+    ["an item's paragraph", "- item\n" + def],
+    ["an item's paragraph, indented", "- item\n  " + def],
+    ["a quoted paragraph, lazily", "> quoted\n" + def],
+    ["a quoted paragraph", "> quoted\n> " + def],
+    ["a quoted item's paragraph", "> - item\n> " + def],
+    ["a lazy continuation line", "- item\nlazy\n" + def],
+  ].forEach(function (c) { if (reads(c[1] + use)) continued.push(c[0]); });
+  check("a definition directly under paragraph text is the paragraph's text",
+        continued.length === 0, continued.join(", "));
+  var ended = [];
+  [
+    ["a blank line", "para\n\n" + def],
+    ["a heading", "# h\n" + def],
+    ["a thematic break", "***\n" + def],
+    ["a closing fence", "```\ncode\n```\n" + def],
+    ["another definition", "[y]: https://ok\n" + def],
+    ["a quote the definition leaves", "- > quoted\n> " + def],
+    ["a new quote", "para\n> " + def],
+    ["a new item", "para\n- " + def],
+    ["an item the definition closes", "- item\n\n" + def],
+    ["indented code", "    code\n" + def],
+    ["a table row", "| a |\n" + def],
+    ["an HTML line", "<div>\n\n" + def],
+  ].forEach(function (c) { if (!reads(c[1] + use)) ended.push(c[0]); });
+  check("a definition after a line that ends a paragraph is read",
+        ended.length === 0, ended.join(", "));
+
+  // A list marker interrupts a paragraph only as a bullet or a `1.` with
+  // content, and a `-` or `=` run under paragraph text is a setext underline.
+  // A line the paragraph's container does not hold is judged by the outer
+  // container instead, where it does start a list.
+  var interrupted = [];
+  [
+    ["a 9) marker under a paragraph", "text\n9) " + def],
+    ["an empty bullet under a paragraph", "text\n-\n" + def],
+    ["a 10) marker under a lazy continuation", "> quoted\ntext\n10) item\n" + def],
+    ["a dash underline under a paragraph", "text\n- \n  " + def + "\n\n[x]"],
+  ].forEach(function (c) {
+    var expectRead = c[0].indexOf("underline") !== -1 || c[0].indexOf("empty bullet") !== -1;
+    if (reads(c[1] + use) !== expectRead) interrupted.push(c[0]);
+  });
+  check("a marker that cannot interrupt a paragraph is paragraph text",
+        interrupted.length === 0, interrupted.join(", "));
+  check("a 9) marker outside the item that holds the paragraph starts a list",
+        reads("- item\n9) " + def + use));
+  check("a 10) marker outside the quote that holds the paragraph starts a list",
+        reads("> quoted\ntext\n10) item\n> " + def + use));
+
+  // Fenced code and HTML blocks hold no definitions. A fence closes on a
+  // closing fence of its container, or when that container closes; a raw
+  // HTML block ends on any of the four closing tags; a block-level tag runs
+  // to the next blank line.
+  var inside = [];
+  [
+    ["a backtick fence", "```\n" + def + "\n```"],
+    ["a tilde fence", "~~~\n" + def + "\n~~~"],
+    ["a fence whose closer is shorter", "````\n" + def + "\n```\n"],
+    ["a fence inside an item", "- ```\n  " + def + "\n  ```"],
+    ["a fence inside a quote", "> ```\n> " + def + "\n> ```"],
+    ["a div block", "<div>\n" + def],
+    ["a comment block", "<!--\n" + def + "\n-->"],
+    ["a pre block", "<pre>\n" + def + "\n</pre>"],
+    ["a processing instruction", "<?php\n" + def + "\n?>"],
+    ["a cdata section", "<![CDATA[\n" + def + "\n]]>"],
+    ["a closing block tag", "</div>\n" + def],
+  ].forEach(function (c) { if (reads(c[1] + use)) inside.push(c[0]); });
+  check("a definition inside a fenced or HTML block is content",
+        inside.length === 0, inside.join(", "));
+  var after = [];
+  [
+    ["a closed fence", "```\ncode\n```\n" + def],
+    ["a fence its item closed", "- ```\n  code\n" + def],
+    ["a fence its quote closed", "> ```\n> code\n\n" + def],
+    ["a raw block closed by another raw tag", "<pre>\ncode\n</script>\n" + def],
+    ["a div block ended by a blank line", "<div>\n\n" + def],
+    ["a comment closed on its own line", "<!-- c -->\n" + def],
+    ["a fence-shaped line inside a tilde fence", "~~~\n```\n~~~\n" + def],
+    ["a lone inline tag line", "<b>\n\n" + def],
+  ].forEach(function (c) { if (!reads(c[1] + use)) after.push(c[0]); });
+  check("a definition after a fenced or HTML block is read", after.length === 0, after.join(", "));
+  // A definition's title may sit on the line after its destination, and may
+  // span lines; the definition after it is still a definition.
+  var titled = [];
+  [
+    ["a title on the next line", '[safe]: https://ok\n  "title"\n' + def],
+    ["a single-quoted title on the next line", "[safe]: https://ok\n  'title'\n" + def],
+    ["a parenthesized title on the next line", "[safe]: https://ok\n  (title)\n" + def],
+    ["a title spanning two lines", '[safe]: https://ok\n"two\nlines"\n' + def],
+    ["a title with an escaped quote", '[safe]: https://ok\n"a\\"b"\n' + def],
+    ["a title on the destination's line", '[safe]: https://ok "title"\n' + def],
+    ["a title inside a quote", '> [safe]: https://ok\n> "title"\n> ' + def],
+    ["a two-line title inside a quote", '> [safe]: https://ok\n> "two\n> lines"\n> ' + def],
+    ["a title inside an item", '- [safe]: https://ok\n  "title"\n  ' + def],
+    ["a definition after a quoted blank inside a would-be title",
+     '> [safe]: https://ok\n> "open\n>\n> ' + def + '\n> close"'],
+  ].forEach(function (c) { if (!reads(c[1] + use)) titled.push(c[0]); });
+  check("a definition after a titled definition is read", titled.length === 0, titled.join(", "));
+  check("a would-be title followed by text is a paragraph the definition cannot interrupt",
+        !reads('[safe]: https://ok\n"title" more\n' + def + use));
+  check("a would-be title over a blank line is not a title",
+        reads('[safe]: https://ok\n"open\n\n' + def + use));
+  var broken = [];
+  [
+    ["a heading", '[safe]: https://ok "open\n# h\n' + def + '\nclose"'],
+    ["a thematic break", '[safe]: https://ok\n"open\n***\n' + def + '\nclose"'],
+    ["a new quote", '[safe]: https://ok\n"open\n> ' + def + '\nclose"'],
+    ["a bullet", '[safe]: https://ok\n"open\n- ' + def + '\nclose"'],
+    ["an HTML block", '[safe]: https://ok\n"open\n<div>\n\n' + def + '\nclose"'],
+  ].forEach(function (c) { if (!reads(c[1] + use)) broken.push(c[0]); });
+  check("a would-be title that a block start cuts is not a title", broken.length === 0, broken.join(", "));
+  check("an unterminated title leaves text an underline can head",
+        reads('[safe]: https://ok "open\n===\n' + def + '\nclose"' + use));
+  check("a malformed lone tag is paragraph text, not an HTML block",
+        reads("<b invalid=>\n> " + def + use));
+  check("a well-formed lone tag with attributes is an HTML block",
+        !reads('<b class="x" data-y=z>\n' + def + use));
+  check("a lone tag opening a new quote starts an HTML block there",
+        reads("text\n> <b>\n" + def + use));
+  // A `>` that opens a new quote, a thematic break that outranks a bullet,
+  // and a lone tag line that opens an HTML block all end a paragraph.
+  check("a new quote's indented code does not continue the paragraph before it",
+        reads("para\n>     code\n" + def + use));
+  check("a bullet followed by dashes is a thematic break, not an item",
+        reads("- ---\n    para\n " + def + use));
+  check("a lone tag line inside a quote is an HTML block that no line continues lazily",
+        reads("> <b>\n> para\n" + def + use));
+  check("a lone tag line at the top level is an HTML block",
+        !reads("<b>\n" + def + use));
+  check("a tag followed by text is paragraph text",
+        !reads("<b>x</b> text\n" + def + use));
+  check("a lone tag line cannot interrupt a paragraph",
+        !reads("text\n<b>\n" + def + use));
+  // Renderers differ on what follows a definition-only paragraph: cmark
+  // extracts the definition when the paragraph closes, so a marker that
+  // cannot interrupt a paragraph is text there, while markdown-it consumes
+  // the definition as its own block and starts a list. The guard reads what
+  // either resolves. An underline needs paragraph text in both.
+  check("an empty bullet after a definition starts a list for one renderer, so the definition after it is read",
+        reads("[safe]: https://ok\n- \n" + def + use));
+  check("a 9) marker after a definition starts a list for one renderer",
+        reads("[safe]: https://ok\n9) " + def + use));
+  check("an equals run after a definition-only paragraph is text",
+        !reads("[safe]: https://ok\n===\n" + def + use));
+  check("a dash run after a definition-only paragraph is a thematic break",
+        reads("[safe]: https://ok\n---\n" + def + use));
+  check("an equals run after text and a definition is an underline",
+        reads("text\n[safe]: https://ok\n===\n" + def + use));
+  // A declaration block opens on `<!` and an UPPERCASE letter; `<!a` is text.
+  check("a lowercase letter after <! does not open a declaration block",
+        reads("<!a\n\n" + def + use));
+  check("an uppercase letter after <! does",
+        !reads("<!DOCTYPE html\n" + def + "\n>" + use));
+  // An autolink line or an inline tag with text is paragraph text, not an
+  // HTML block, so the fence after it is a fence.
+  check("a fence after an autolink line has its info string checked",
+        fences('<https://example.com>\n```foo"\nx\n```'));
+  check("and a definition inside that fence is content",
+        !reads('<https://example.com>\n```\n' + def + '\n```' + use));
+  check("a fence after an inline tag with text is a fence",
+        fences('<b>x</b> text\n```foo"\nx\n```'));
+  check("a four-backtick fence's info string starts after the run",
+        !fences('````js\ncode\n````'));
+  check("a fence-shaped line inside a tilde fence is not a fence",
+        !fences('~~~\n```foo"\n~~~'));
+
+  // The container reader is linear in the document: many lines of nested
+  // markers, and a marker chain as deep as the line is long.
+  var growth = require("../helpers/growth");
+  function scanNestedLines(size) {
+    var lines = [];
+    for (var i = 0; i < size; i += 1) lines.push("> - > - > " + (i % 3 === 0 ? "" : "  ") + "[a]: https://ok");
+    b.guardMarkdown.validate(lines.join("\n"), { profile: "permissive" });
+  }
+  check("the container reader stays linear in the number of lines",
+        growth.looksSuperlinear(scanNestedLines, { small: 2000, large: 8000, threshold: 8 }) === false);
+  function scanDeepChains(size) {
+    var chain = new Array(size + 1).join("> ");
+    var lines = [];
+    for (var i = 0; i < 64; i += 1) lines.push(chain + (i % 2 === 0 ? "[a]: https://ok" : ""));
+    b.guardMarkdown.validate(lines.join("\n"), { profile: "permissive" });
+  }
+  check("the container reader stays linear in marker depth",
+        growth.looksSuperlinear(scanDeepChains, { small: 500, large: 2000, threshold: 8 }) === false);
+  // A chain of bullets is tested for a thematic break at every marker; the
+  // suffix is scanned once for all of them.
+  function scanBulletChain(size) {
+    b.guardMarkdown.validate(new Array(size + 1).join("- ") + "text", { profile: "strict" });
+  }
+  check("the container reader stays linear in bullets on one line",
+        growth.looksSuperlinear(scanBulletChain, { small: 2000, large: 8000, threshold: 8 }) === false);
+
+  // An angle-bracketed destination may hold spaces and runs to its closing
+  // bracket, so what follows it is read as the title or the line's end.
+  check("a definition after an angle-bracketed destination with a space is read",
+        reads("[safe]: <./a b>\n" + def + use));
+  check("an angle-bracketed executable destination is a definition finding",
+        kinds("[x]: <javascript:alert(1) >\n\n[x]").indexOf("reference-link-scheme") !== -1);
+  // markdown-it consumes a definition as its own block: a code-indented line
+  // after it is code, a shallower line after one in a quote leaves the quote,
+  // and its title scan runs through an equals line and an outdented line.
+  var mditShapes = [];
+  [
+    ["a code-indented line after a titled definition", '[a]: /url "title"\n    [a]: /url "\n' + def],
+    ["a shallower line after a quoted definition", "> [a]: /url\n(title\n> " + def],
+    ["a title spanning an equals line and an outdented line", '- [a]: /url "\n    ===\ntitle"\n' + def],
+  ].forEach(function (c) { if (!reads(c[1] + use)) mditShapes.push(c[0]); });
+  check("a definition one renderer's reference block exposes is read",
+        mditShapes.length === 0, mditShapes.join(", "));
+  // A parenthesized title may not hold an unescaped `(`, a destination may not
+  // hold unbalanced parentheses, and the fence pass sees definitions too.
+  check("a would-be title holding an unescaped parenthesis is not a title",
+        reads("[a]: /url\n    (title\n" + def + use));
+  check("a destination with unbalanced parentheses is not a destination",
+        reads("[a]:\n(title\n===\n" + def + use));
+  check("a fence after an item a definition-only paragraph allows is read",
+        fences('[a]: /url\n-\n  ~~~\n~~~foo"\n'));
+  // With HTML enabled, markdown-it lets a lone tag open an HTML block after a
+  // reference block; and its title scan absorbs code-indented and outdented
+  // lines through a quote until the closing delimiter.
+  check("a lone tag after a quoted definition ends the quote for a renderer with HTML on",
+        reads('> [a]: /url "title"\n> <b>\n' + def + use));
+  check("an open title absorbs a code-indented line and a quoted line until it closes",
+        reads('> [a]: /url "\n    -\n> =\n"\n' + def + use));
+
+  // Line endings: a CRLF document holds the same structure as an LF one.
+  check("a CRLF list item still holds its definition",
+        reads("- item\r\nparagraph\r\n\r\n    " + def + "\r\n\r\n[x]"));
+  check("and a CRLF top-level code block is still code",
+        !reads("para\r\n\r\n    " + def + "\r\n\r\n[x]"));
+  check("and a CR-separated paragraph still continues",
+        !reads("para\r" + def + "\r\r[x]"));
+
+  // sanitize refuses the marker-line definition the way it refuses any other.
+  var refused = false;
+  try { b.guardMarkdown.sanitize("- " + def + use, { profile: "strict" }); }
+  catch (e) { refused = e.code === "markdown.reference-link-scheme"; }
+  check("sanitize refuses a definition on a marker line", refused);
+}
+
+function testADefinitionScanThatFailsLeavesItsLinesToTheBlockReader() {
+  // A definition may span lines: a label to its closing bracket, a destination
+  // on the next line, a title opened on the destination line or the one after
+  // it and closed lines later. The reader took those lines as the definition's
+  // while the scan was open; when the scan failed, the lines it had absorbed
+  // were never read again as blocks, so a setext underline, a fence, or a
+  // fresh definition among them was lost. Every renderer re-reads them.
+  function kinds(src) {
+    return b.guardMarkdown.validate(src, { profile: "strict" })
+      .issues.map(function (i) { return i.kind; });
+  }
+  function reads(src) { return kinds(src).indexOf("reference-link-scheme") !== -1; }
+  function fences(src) { return kinds(src).indexOf("code-fence-lang") !== -1; }
+  var def = "[x]: javascript:alert(1)";
+  var use = "\n\n[x]";
+
+  // A title that opens on the line after the destination and never closes:
+  // the definition stands at its destination, and the lines after it are
+  // blocks again. For a renderer with a reference block the quote has ended,
+  // so `(foo` and `===` make a heading and the definition after it resolves.
+  check("a failed next-line title leaves an underline to head the text it absorbed",
+        reads("> [a]: /url\n(foo\n===\n" + def + use));
+  check("and the same without the quote",
+        reads("[a]: /url\n(foo\n===\n" + def + use));
+  // A title that opens on the destination line and never closes fails the
+  // whole definition: the line is paragraph text, an underline heads it, and
+  // the definition after the heading resolves.
+  check("a failed same-line title leaves the definition line as text an underline heads",
+        reads('[safe]: https://ok "open\n===\n' + def + use));
+  check("a closed title with trailing text on a later line fails the same way",
+        reads('[safe]: https://ok "open\nclose" x\n===\n' + def + use));
+  // A label that spans lines is read line by line: a fence between its lines
+  // interrupts the paragraph, so the fence's info string is inspected.
+  check("a fence inside a would-be multiline label is a fence",
+        fences('[foo\n~~~bad"\nbar]: /url'));
+  check("and a backtick fence too",
+        fences('[foo\n```bad"\nbar]: /url'));
+  check("a fence after a label line whose destination sits on the next line is a fence",
+        fences('[foo]:\n~~~bad"\n/url'));
+  // A definition start among the absorbed lines is a definition on replay.
+  check("a definition among lines a failed title absorbed is read",
+        reads('[a]: /url\n"open\n\n' + def + use));
+  check("a definition a failed multiline label absorbed is read",
+        reads("[foo\n***\n" + def + "\nbar]: /url" + use));
+  check("a definition after a label whose destination line is a list marker is read",
+        reads("[foo]:\n- " + def + use));
+  // Lines a scan absorbs and then keeps: no replay changes a title that closes.
+  check("a title that closes lines later still hides the definition inside it",
+        !reads('[a]: /url "\n' + def + '\n"' + use));
+  check("a multiline label that closes with a destination is one definition",
+        reads("[fo\no]: javascript:alert(1)\n\n[fo o]"));
+  // A scan open at the end of the document fails the same way as one a block
+  // interrupts.
+  check("a title left open at the end of input leaves the definition standing",
+        kinds("[x]\n\n[x]: javascript:alert(1)\n\"open").indexOf("reference-link-scheme") !== -1);
+  check("a label left open at the end of input is text",
+        !reads("[x]\n\n[x\njavascript:alert(1)"));
+
+  // A definition or a title line that continues a quote's paragraph lazily
+  // belongs to the quote, so a code-indented definition on the quote's next
+  // line is the paragraph's next definition.
+  check("a definition after a lazy destination line keeps the quote's depth",
+        reads("> [a]:\n<b>\n>     " + def + use));
+  check("a chained definition on a lazy line keeps the quote's depth",
+        reads('    ===\n> [a]: /url\n[a]: /url "title"\n>     ' + def + use));
+  // An angle bracket that never closes is not a destination, so the line is
+  // paragraph text that a dash underline heads.
+  check("an unterminated angle destination leaves paragraph text an underline heads",
+        reads("[s]: <a\n-\n    - deep\n   " + def + use));
+  // A bracket pair holding a nested pair is not a label: the line is text an
+  // underline heads, though the destination after it is still inspected.
+  check("a nested-bracket line is text an underline heads",
+        reads("[a [b]]: /u\n===\n" + def + use));
+  check("and its own destination is still inspected",
+        reads("[a [b]]: javascript:alert(1)\n\n[a [b]]"));
+
+  // markdown-it reads a GFM table: a header row with a pipe, a delimiter row
+  // of dashes, then rows until a blank line or a line that opens a block, and
+  // any list marker opens a block there.
+  check("a 9) marker after a table's rows is a list and holds a definition",
+        reads("| a |\n| - |\n9) " + def + use));
+  check("a table interrupts a paragraph",
+        reads("text\n| a |\n| - |\n9) " + def + use));
+  check("a table ends a title scan, and a marker after its rows is a list",
+        reads('[a]: /url "\n| a |\n| - |\n"\nrow\n9) ' + def + use));
+  check("a code-indented line after a table is code, not the table's paragraph",
+        reads('| - |\n| - |\n[y]: /u\n"open\n    ~~~\n ' + def + ' "open\nclose"' + use));
+  check("a header whose cell count differs from the delimiter's is text",
+        !reads("| a | b |\n|-|\n9) " + def + use));
+  // A quote's lazy line is tested for a block start by the quotes inside it
+  // with its indentation erased: a code-indented marker two quotes deep closes
+  // them and is code outside, so the next line starts fresh.
+  check("a code-indented marker under two quotes closes them",
+        reads("> > x\n    -\n" + def + use));
+  check("but under one quote it continues the paragraph",
+        !reads("> x\n    -\n" + def + use));
+  check("a code-indented fence under two quotes ends a title scan and closes them",
+        reads('>> [a]: /v "\n    ~~~\n' + def + '\n"' + use));
+  // A renderer with tables off reads the header and delimiter rows as a
+  // setext heading, and a tab-indented `>` then continues the quote.
+  check("a would-be table is a heading for a renderer without tables",
+        reads("> -|\n> --\n\t> " + def + use));
+  // A Unicode line separator is not a CommonMark line ending: a renderer
+  // reads `text<LS>~~~` as one paragraph line, so no fence opens and the
+  // definition after the blank line resolves. The document is also read with
+  // the separator as a line ending, so a definition only that reading sees is
+  // still inspected.
+  var LS = String.fromCharCode(0x2028);
+  var PS = String.fromCharCode(0x2029);
+  check("a fence marker after a Unicode line separator does not open a fence",
+        reads("text" + LS + "~~~\n\n" + def + use));
+  check("nor after a paragraph separator",
+        reads("text" + PS + "```\n\n" + def + use));
+  check("a definition after two Unicode line separators is still read",
+        reads("x" + LS + LS + def + use));
+  check("a fence's info string after a Unicode line separator is still read",
+        fences("x" + LS + '```foo"\ncode\n```'));
+  // A line not indented enough for its item: a break, a heading or a fence
+  // there closes the item's paragraph for markdown-it and is code where it
+  // lands; a list marker there continues the paragraph.
+  check("an under-indented break after an indented item closes its paragraph",
+        reads("  9) x\n    ***\n" + def + use));
+  check("an under-indented marker after an indented item is the paragraph's text",
+        !reads("  9) x\n    - deep\n" + def + use));
+  check("and a later item of that list holds a fence",
+        fences('  9) x\n    - deep\n| - | - |\n  9) ```foo"\ncode\n```'));
+  // A code-indented line after a lazy line continues the quote's paragraph
+  // at any depth; a marker on a shallower line then opens a list.
+  check("a code-indented lazy line keeps the paragraph, and a marker after it is a list",
+        reads('>> c\n<!-- c -->\n \t x\n"\n9) ' + def + use));
+  // A fenced block's backticks are not code-span delimiters: with a bracket
+  // between two runs the definition is read both ways, and the fence a marker
+  // after it opens is inspected.
+  check("a definition between backtick runs still lets a marker open a fence",
+        fences('  ```\n````\n[y]: /u\n9) ```foo"\ncode\n```'));
+
+  // A line that is not a lazy continuation closes every container deeper than
+  // its own depth, list items included, so a later quote at that depth starts
+  // with no item open: four spaces there are indented code, which no line
+  // continues lazily.
+  check("a quote reopened after a marker line holds no stale item",
+        reads("> > - x\n9) x\n> >     x\n  " + def + "\n[x]"));
+
+  // The rollback replays absorbed lines, so the reader must stay linear when
+  // scans absorb many lines, when scan spans nest through the three title
+  // delimiters, and when a deep container stack precedes many failed scans.
+  // A run of lazy lines under a deep item chain looks its landing item up by
+  // binary search, so it stays linear too.
+  var growth = require("../helpers/growth");
+  function scanLazyLinesUnderItems(size) {
+    b.guardMarkdown.validate(new Array(size + 1).join("- ") + "x\n" + new Array(size + 1).join("x\n"),
+                             { profile: "permissive" });
+  }
+  check("lazy lines under a deep item chain stay linear",
+        growth.looksSuperlinear(scanLazyLinesUnderItems, { small: 2000, large: 8000, threshold: 8 }) === false);
+  function scanAbsorbedLines(size) {
+    var lines = ['[a]: /url "'];
+    for (var i = 0; i < size; i += 1) lines.push("x");
+    lines.push("", def, "", "[x]");
+    b.guardMarkdown.validate(lines.join("\n"), { profile: "permissive" });
+  }
+  check("a scan that absorbs many lines before failing stays linear",
+        growth.looksSuperlinear(scanAbsorbedLines, { small: 2000, large: 8000, threshold: 8 }) === false);
+  function scanNestedSpans(size) {
+    var openers = ['"', "'", "("];
+    var lines = [];
+    for (var i = 0; i < size; i += 1) lines.push("[a" + i + "]: /url " + openers[i % 3]);
+    b.guardMarkdown.validate(lines.join("\n") + use, { profile: "permissive" });
+  }
+  check("scans whose spans nest through the title delimiters stay linear",
+        growth.looksSuperlinear(scanNestedSpans, { small: 2000, large: 8000, threshold: 8 }) === false);
+  function scanFailedNextLineTitles(size) {
+    var lines = [];
+    for (var i = 0; i < size; i += 1) lines.push("[a" + i + "]: /url", "(", "x", "");
+    b.guardMarkdown.validate(lines.join("\n") + use, { profile: "permissive" });
+  }
+  check("many failed next-line titles stay linear",
+        growth.looksSuperlinear(scanFailedNextLineTitles, { small: 2000, large: 8000, threshold: 8 }) === false);
+  function scanDeepThenFailedScans(size) {
+    var lines = [new Array(401).join("> ") + "x"];
+    for (var i = 0; i < size; i += 1) lines.push("- [a" + i + "]: /url", "(", "");
+    b.guardMarkdown.validate(lines.join("\n") + use, { profile: "permissive" });
+  }
+  check("failed scans after a deep container stack stay linear",
+        growth.looksSuperlinear(scanDeepThenFailedScans, { small: 1000, large: 4000, threshold: 8 }) === false);
 }
 
 module.exports = { run: run };
