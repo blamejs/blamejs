@@ -24543,8 +24543,19 @@ function testLibCommentBlocksAreWholeSentences() {
       // when re-verifying the class, and two of them had been cut in half.
       var isMarker   = /^allow:/.test(first.text);
       var isDirective = /^@|eslint|c8 ignore|SPDX|^-|^\||^\d+\.|:$|^[A-Za-z_$][\w$]*\(/.test(first.text);
+      // A block whose last line ends on a comma or a semicolon, or that opens
+      // a parenthesis it never closes, ends mid-sentence whatever its last word
+      // is: a sweep that dropped a marker's continuation line left eleven of
+      // those, most of them ending on a noun the word list cannot see.
+      var opens = 0;
+      var closes = 0;
+      block.forEach(function (l) {
+        opens += (l.text.match(/\(/g) || []).length;
+        closes += (l.text.match(/\)/g) || []).length;
+      });
+      var cut = /[,;]$/.test(last.text) || opens > closes;
       if (!isDirective) {
-        if (last.text.length > 0 && DANGLING.test(last.text)) {
+        if (last.text.length > 0 && (DANGLING.test(last.text) || cut)) {
           bad.push({
             file: rel, line: last.n, content: "comment block ends mid-sentence on `" +
               last.text.split(/\s+/).pop() + "`: \"" + last.text.slice(-60) + "\"",
