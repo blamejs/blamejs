@@ -2379,6 +2379,25 @@ function testInheritedReferencesCountEveryElementThatPaintsThem() {
   });
   check("an animated reference is inherited by the animated element's content",
         animated.length === 0, animated.join(", "));
+  // An animation nested inside a `<use>` targets that `<use>`, so its
+  // reference is painted by what the `<use>` instantiates and by nothing
+  // else in the document: two thousand unrelated rectangles beside a `<use>`
+  // of one rectangle whose nested animation names a 100-rectangle pattern
+  // paint 100 rectangles, not 200,000.
+  var nestedInUse = '<use href="#one"><animate attributeName="fill" to="url(#p)"/></use>' +
+    rects(2000);
+  var oneRect = pattern + '<rect id="one" width="1" height="1"/>';
+  check("an animation nested in a use element targets the use element",
+        !capped(doc(nestedInUse, oneRect), { profile: "permissive" }));
+  check("and the same animation naming the use element by href is read the same way",
+        !capped(doc('<use id="u" href="#one"/><animate href="#u" attributeName="fill" to="url(#p)"/>' +
+                    rects(2000), oneRect), { profile: "permissive" }));
+  check("an animation nested in a use element of a big group still multiplies by the group",
+        capped(doc('<use href="#big"><animate attributeName="fill" to="url(#p)"/></use>',
+                   pattern + '<g id="big">' + rects(1000) + "</g>"), { profile: "permissive" }));
+  check("a stray use end tag does not close the enclosing group",
+        capped(doc('<g><use href="#one"/></use><animate attributeName="fill" to="url(#p)"/>' +
+                   rects(1000) + "</g>", oneRect), { profile: "permissive" }));
   var styleAnimation = {
     profile: "permissive",
     allowedAttrNames: b.guardSvg.PROFILES.permissive.allowedAttrNames.concat(["style"]),

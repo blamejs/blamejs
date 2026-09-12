@@ -687,7 +687,14 @@ function testLinkLabelWithBracketsStillReachesTheDestination() {
   // normalizing path, and normalizing each overlapping suffix in full is
   // quadratic: 2.7 seconds at n=8000. The scheme is now read by position
   // through a memoized skip of what normalization strips, so the shared
-  // padding is walked once for all of the links that start inside it.
+  // padding is walked once for all of the links that start inside it. The
+  // memo is one span per destination, and the destinations arrive at
+  // DECREASING offsets: each span went in at the front of a sorted array,
+  // which is quadratic in the number of links (0.8 s of shifting at 64,000).
+  // The span index grows room at its front, so a span below every other is
+  // one write. The index is measured on its own as well, past the size where
+  // the shifting showed, since a document of that many links allocates enough
+  // that a loaded machine reads its growth as noise.
   function scanPaddedDestinations(size) {
     var md = new Array(size + 1).join("[") + "x]" +
              new Array(size).join("](&#1;a") + ")";
@@ -696,6 +703,21 @@ function testLinkLabelWithBracketsStillReachesTheDestination() {
   check("guardMarkdown stays linear when overlapping destinations share entity padding",
         growth.looksSuperlinear(scanPaddedDestinations,
           { small: 2000, large: 8000, threshold: 8 }) === false);
+  function fillSpanIndexFromTheFront(size) {
+    var index = b.guardMarkdown._spanIndexForTest();
+    for (var at = size * 4; at > 0; at -= 4) index.add(at, at + 2, at + 3);
+  }
+  check("the span index takes a span below every other in constant time",
+        growth.looksSuperlinear(fillSpanIndexFromTheFront,
+          { small: 8000, large: 64000, threshold: 12 }) === false);
+  var spans = b.guardMarkdown._spanIndexForTest();
+  spans.add(40, 44, 45);
+  spans.add(10, 12, 13);
+  spans.add(20, 22, 23);
+  spans.add(13, 19, 23);
+  check("the span index answers a position inside a span with the span's value after front inserts",
+        spans.find(41) === 45 && spans.find(11) === 13 && spans.find(15) === 23 &&
+        spans.find(22) === 23 && spans.find(9) === undefined && spans.find(30) === undefined);
   // Nested links that all end at one endpoint, followed by a long run of
   // whitespace before the closing paren. Whether a link closes there is a
   // function of the endpoint alone, but it was recomputed per link, and each

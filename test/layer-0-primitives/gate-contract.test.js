@@ -2702,6 +2702,24 @@ function testMakeIssueReporter() {
   reportTight({ kind: "k" }); reportTight({ kind: "k" }); reportTight({ kind: "k" });
   check("an explicit cap is honored", tight.length === 2);
 
+  // The cap counts one kind AT ONE SEVERITY. A guard that reports a kind as
+  // a warning per instance and as critical for the instance that decides
+  // the verdict must not have the critical one dropped behind the warnings:
+  // the verdict is the existence of any refusing issue, and a cap per kind
+  // alone lost it.
+  var mixed = [];
+  var reportMixed = GC.makeIssueReporter(mixed, 2);
+  reportMixed({ kind: "k", severity: "warn" });
+  reportMixed({ kind: "k", severity: "warn" });
+  reportMixed({ kind: "k", severity: "critical" });
+  reportMixed({ kind: "k", severity: "high" });
+  reportMixed({ kind: "k", severity: "critical" });
+  reportMixed({ kind: "k", severity: "critical" });
+  check("a refusing issue of a capped kind is kept and refuses",
+        GC.aggregateIssues(mixed).ok === false);
+  check("the cap holds per kind and severity",
+        mixed.length === 5 && mixed.filter(function (i) { return i.severity === "critical"; }).length === 2);
+
   // Control: the reporter appends to the array it was given, so the guard's
   // own `issues` array is what fills; a reporter over a fresh array would
   // pass the cap assertion while the guard reported nothing at all.
