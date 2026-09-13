@@ -94,6 +94,24 @@ function testGuardYamlDangerousTagIsDecodedTheWayAParserResolvesIt() {
   var lit = b.guardYaml.validate("a: !!python%2fobject y\n", { profile: "strict" });
   check("a percent-escaped path separator inside a python tag is still dangerous",
         lit.issues.some(function (x) { return x.kind === "dangerous-tag"; }));
+  // A tag name is case-sensitive: `!!Python/object` and `!!NewType` resolve to
+  // tags no parser has a constructor for, so they are custom tags, not the
+  // lowercase deserialization tags. A decoded uppercase letter is judged the
+  // same way (`%50` is `P`, not `p`).
+  [
+    ["a: !!Python/object x\n", false],
+    ["a: !!NewType x\n", false],
+    ["a: !!%50ython/object x\n", false],
+    ["a: !!Ruby/object:Gem x\n", false],
+    ["a: !!python/object x\n", true],
+    ["a: !!new [1]\n", true],
+  ].forEach(function (pair) {
+    var ks = b.guardYaml.validate(pair[0], { profile: "strict" }).issues
+      .map(function (x) { return x.kind; });
+    var isDanger = ks.indexOf("dangerous-tag") !== -1;
+    check("case-sensitive tag match on " + JSON.stringify(pair[0].trim()) +
+          " dangerous=" + isDanger, isDanger === pair[1], JSON.stringify(ks));
+  });
   // A verbatim tag `!<...>` with no closing `>` must not rescan the rest of
   // the document at each opener: once one `!<` finds no `>`, none can.
   var growth = require("../helpers/growth");

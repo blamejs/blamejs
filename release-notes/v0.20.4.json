@@ -22,8 +22,8 @@
       "heading": "Changed",
       "items": [
         {
-          "title": "Vendored `@blamejs/pki` moves to 0.7.43",
-          "body": "The vendored bundle rises from 0.7.42 to 0.7.43. `pki.cmp.build` fills a header `transactionID` or `senderNonce` the caller omits with sixteen random bytes so a message built without them verifies on receipt, binds a KEM-protected message's derivation to the filled `transactionID`, and refuses a `senderNonce` shorter than 128 bits; `pki.scep.build` refuses a `transactionId` carrying a character outside the RFC 8894 PrintableString set with `scep/bad-input`. The package continues to declare no dependencies and no install, prepare or prepublish scripts."
+          "title": "Vendored `@blamejs/pki` moves to 0.7.45",
+          "body": "The vendored bundle rises from 0.7.42 to 0.7.45. `pki.jose.verify` refuses, with `jose/private-key-material`, a JWS whose protected header embeds a JWK carrying any private member (`d`, the RSA CRT parameters, the symmetric `k`, or an AKP `priv`) before the signature is checked. `pki.cmp.build` fills an omitted header `transactionID` or `senderNonce` with sixteen random bytes, fills an omitted `sender` under signature protection with the signer certificate's subject (RFC 9483), binds a KEM-protected message's derivation to the filled `transactionID`, and refuses a `senderNonce` shorter than 128 bits; `pki.scep.build` refuses a `transactionId` carrying a character outside the RFC 8894 PrintableString set with `scep/bad-input`. The package continues to declare no dependencies and no install, prepare or prepublish scripts."
         }
       ]
     }
