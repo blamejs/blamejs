@@ -1,0 +1,27 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.20.7",
+  "date": "2026-09-13",
+  "headline": "`b.guardGraphql` measures query depth across resolved fragment spreads",
+  "summary": "The GraphQL depth cap counted the selection-set nesting within each query definition in isolation, but the executor resolves `...fragment` spreads before it runs the query. A shallow operation whose fragment chain resolves deep passed the guard and reached the executor at its true depth. `b.guardGraphql` now resolves fragment spreads and inline fragments before measuring depth, so the cap sees the depth the executor will, and refuses a fragment spread that resolves back to itself as unbounded depth. Upgrading requires no code change; a query that amplifies its depth through fragments is now refused at the same cap as its inlined equivalent.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "Depth cap resolves fragment spreads",
+          "body": "The depth cap counted the selection-set nesting within each operation and fragment definition separately, so a fragment chain (an operation spreading `f1`, which spreads `f2`, ending in a deeply-nested fragment) reached an effective resolved depth far past `maxDepth` while no single definition nested past a few levels. The guard now walks the operation expanding each `...fragment` spread at its site and merging inline fragments, so the measured depth is the depth the executor resolves, and refuses it as `graphql.depth-exceeded` exactly as it already refused the inline-equivalent query. A fragment spread that resolves back to itself has unbounded resolved depth and is refused rather than passed to a resolver that would loop on it. The walker is iterative, so a deeply-nested query within the byte cap yields a depth finding rather than exhausting the call stack."
+        }
+      ]
+    },
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "Alias-bomb count is the distinct aliases in one selection set",
+          "body": "The alias-bomb cap counted every colon following an identifier, which included field-argument colons (`field(after: $x)`) and repeated alias names, so a field-argument-heavy selection set could be refused though it declares few aliases. The count is now the distinct alias names in a selection set, skipping arguments, and aliases in separate selection sets or in mutually-exclusive inline-fragment type conditions are not summed, which stops the over-refusal of argument-heavy and polymorphic queries while still refusing a genuine alias bomb concentrated in one selection set."
+        }
+      ]
+    }
+  ]
+}
