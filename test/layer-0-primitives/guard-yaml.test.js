@@ -129,6 +129,41 @@ function testGuardYamlDangerousTagIsDecodedTheWayAParserResolvesIt() {
     check("verbatim tag resolution on " + JSON.stringify(pair[0].trim()) +
           " dangerous=" + isDanger, isDanger === pair[1], JSON.stringify(ks));
   });
+  // An escaped spelling of a safe core tag resolves to the same core tag as
+  // the plain form, so it is classified the same way (a core-tag finding
+  // under strict, not a custom tag). The resolved suffix, not the raw token,
+  // drives every classification.
+  [
+    "a: !!%73tr x\n",
+    "a: !<tag:yaml.org,2002:%73tr> x\n",
+    "a: !<tag:yaml.org,2002:str> x\n",
+  ].forEach(function (doc) {
+    var ks = b.guardYaml.validate(doc, { profile: "strict" }).issues
+      .map(function (x) { return x.kind; });
+    check("an escaped safe core tag is a core-tag, not custom: " + JSON.stringify(doc.trim()),
+          ks.indexOf("core-tag") !== -1 && ks.indexOf("custom-tag") === -1, JSON.stringify(ks));
+  });
+  // A `%TAG` directive could rebind `!!`, but a directive is unsupported: the
+  // guard refuses any document carrying one before a parser resolves its
+  // tags, at every profile. Tag classification therefore only decides an
+  // outcome for a directive-free document, where `!!` is unconditionally the
+  // core namespace, so the guard reads `!!` as core and the directive ban
+  // refuses the rest.
+  var remapped = "%TAG !! tag:example.com,2000:app/\n---\na: !!%70ython/object x\n";
+  ["strict", "balanced", "permissive"].forEach(async function (p) {
+    var v = await b.guardYaml.gate({ profile: p })
+      .check({ bytes: Buffer.from(remapped, "utf8") });
+    check("a document carrying a %TAG directive is refused at " + p, v.action === "refuse", v.action);
+  });
+  var rks = b.guardYaml.validate(remapped, { profile: "strict" }).issues
+    .map(function (x) { return x.kind; });
+  check("the directive itself is the refusing finding",
+        rks.indexOf("parse-failed") !== -1, JSON.stringify(rks));
+  // In a directive-free document the core `!!` handle resolves the Python tag.
+  var plain = b.guardYaml.validate("a: !!%70ython/object x\n", { profile: "strict" }).issues
+    .map(function (x) { return x.kind; });
+  check("the default !! handle resolves the core deserialization tag",
+        plain.indexOf("dangerous-tag") !== -1, JSON.stringify(plain));
   // A verbatim tag `!<...>` with no closing `>` must not rescan the rest of
   // the document at each opener: once one `!<` finds no `>`, none can.
   var growth = require("../helpers/growth");
