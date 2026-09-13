@@ -390,6 +390,47 @@ function testCodexHeadLookupFailsClosed() {
   });
 }
 
+// A CLEAN Codex review (no findings) posts no formal review node, only a
+// summary comment citing the git-ABBREVIATED head sha (7 chars). Matching the
+// comment against a fixed 10-char head prefix never hits, so the 10-minute
+// wait timed out on every no-findings release. The cited sha is a PREFIX of
+// the head, so a prefix match counts it.
+function testCodexCleanReviewCitesAbbreviatedSha() {
+  var HEAD = "4e197605e4e2cf6aa0643648fd0dff8e076f8228";
+  var ABBREV = HEAD.slice(0, 7);
+  function respond(cmd, args) {
+    if (args.indexOf("headRefOid") !== -1) return _okResult(HEAD);
+    if (args.indexOf("graphql") !== -1) return _okResult("[]");            // no formal review node
+    if (args.indexOf("comments") !== -1) {
+      return _okResult(JSON.stringify([{
+        author: { login: "chatgpt-codex-connector" },
+        body: "## Codex Review Summary\n\n| Code Review | Completed | `" + ABBREV + "` | PR opened |",
+      }]));
+    }
+    return _failResult("unexpected call");
+  }
+  withQuietConsole(function () {
+    withCapture(respond, function () {
+      check("a clean Codex review citing the 7-char abbrev counts as reviewed",
+        release._codexReviewedHead("736") === true);
+    });
+  });
+  // A comment citing an UNRELATED 7-char hex token must NOT count.
+  withQuietConsole(function () {
+    withCapture(function (cmd, args) {
+      if (args.indexOf("headRefOid") !== -1) return _okResult(HEAD);
+      if (args.indexOf("graphql") !== -1) return _okResult("[]");
+      return _okResult(JSON.stringify([{
+        author: { login: "chatgpt-codex-connector" },
+        body: "reviewed `deadbee` earlier",
+      }]));
+    }, function () {
+      check("a comment citing an unrelated sha does not count as reviewing this head",
+        release._codexReviewedHead("736") === false);
+    });
+  });
+}
+
 // ---- the Codex wait absorbs a blip but never calls it "not reviewed" -----
 
 // Run `body` with the poll cadence collapsed so the branching is testable
@@ -646,6 +687,7 @@ function run() {
   testWikiTouchedReadsBothDiffs();
   testSmokeAbortsBeforeTouchingWikiData();
   testCodexHeadLookupFailsClosed();
+  testCodexCleanReviewCitesAbbreviatedSha();
   testCodexWaitAbsorbsATransientBlip();
   testCodexWaitAbortsOnAStableFailure();
   testCodexWaitTimeoutSaysUnknownNotNo();
