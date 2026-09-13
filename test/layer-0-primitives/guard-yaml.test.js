@@ -112,6 +112,23 @@ function testGuardYamlDangerousTagIsDecodedTheWayAParserResolvesIt() {
     check("case-sensitive tag match on " + JSON.stringify(pair[0].trim()) +
           " dangerous=" + isDanger, isDanger === pair[1], JSON.stringify(ks));
   });
+  // A verbatim tag is a whole URI, which a parser (js-yaml, PyYAML) decodes
+  // before resolving, so an escaped core prefix still names the core family;
+  // but a `!`-led verbatim URI is a LOCAL tag, a distinct namespace no
+  // deserialization constructor is registered under.
+  [
+    ["a: !<tag%3Ayaml.org,2002:python/object/apply:os.system> x\n", true],
+    ["a: !<tag:yaml.org,2002:%65val> 1\n", true],
+    ["a: !<!python/object/apply:os.system> x\n", false],
+    ["a: !<!eval> 1\n", false],
+    ["a: !<https://example.com/python/object> x\n", false],
+  ].forEach(function (pair) {
+    var ks = b.guardYaml.validate(pair[0], { profile: "strict" }).issues
+      .map(function (x) { return x.kind; });
+    var isDanger = ks.indexOf("dangerous-tag") !== -1;
+    check("verbatim tag resolution on " + JSON.stringify(pair[0].trim()) +
+          " dangerous=" + isDanger, isDanger === pair[1], JSON.stringify(ks));
+  });
   // A verbatim tag `!<...>` with no closing `>` must not rescan the rest of
   // the document at each opener: once one `!<` finds no `>`, none can.
   var growth = require("../helpers/growth");
