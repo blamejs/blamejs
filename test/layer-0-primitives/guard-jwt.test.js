@@ -129,6 +129,42 @@ function testValidateAlgNone() {
     rv.issues.some(function (i) { return i.kind === "alg-none"; }));
 }
 
+// A JOSE header parameter MUST be unique (RFC 7515 §4); libraries diverge on a
+// duplicate (first-wins vs last-wins), so `{"alg":"none","alg":"ES256"}` is an
+// algorithm-confusion smuggle: a last-wins reader (JSON.parse, and this guard)
+// sees ES256 and passes it, while a first-wins verifier sees none and accepts
+// it unsigned. guardJson already refuses duplicate keys; the JWT header is
+// JSON, so the guard refuses a duplicate header/payload param too.
+function testValidateDuplicateHeaderParam() {
+  function tok(headerJson, payloadJson) {
+    return b64url(headerJson) + "." + b64url(payloadJson || JSON.stringify(OK_PAYLOAD)) + ".sig";
+  }
+  var dupAlg = tok('{"alg":"none","alg":"ES256","typ":"JWT"}');
+  var rv = b.guardJwt.validate(dupAlg, { profile: "strict" });
+  check("guardJwt.validate duplicate alg ok=false", rv.ok === false);
+  check("guardJwt.validate duplicate alg -> duplicate-key",
+    rv.issues.some(function (i) { return i.kind === "duplicate-key"; }),
+    JSON.stringify(rv.issues.map(function (i) { return i.kind; })));
+  // The reverse order (last-wins none) is already caught as alg-none, and the
+  // duplicate is also flagged.
+  var dupAlg2 = tok('{"alg":"ES256","alg":"none"}');
+  var rv2 = b.guardJwt.validate(dupAlg2, { profile: "strict" });
+  check("guardJwt.validate duplicate alg (reverse) still refuses",
+    rv2.ok === false && rv2.issues.some(function (i) { return i.kind === "duplicate-key"; }));
+  // A non-duplicate header is unaffected.
+  var clean = tok('{"alg":"ES256","typ":"JWT","kid":"k1"}');
+  var rv3 = b.guardJwt.validate(clean, { profile: "strict" });
+  check("guardJwt.validate distinct header params -> no duplicate finding",
+    !rv3.issues.some(function (i) { return i.kind === "duplicate-key"; }));
+  // A duplicate in the payload is a claim-smuggle too.
+  var dupPayload = tok('{"alg":"ES256","typ":"JWT"}',
+    '{"iss":"a","iss":"b","exp":9999999999,"iat":1700000000}');
+  var rv4 = b.guardJwt.validate(dupPayload, { profile: "strict" });
+  check("guardJwt.validate duplicate payload claim -> duplicate-key",
+    rv4.issues.some(function (i) { return i.kind === "duplicate-key"; }),
+    JSON.stringify(rv4.issues.map(function (i) { return i.kind; })));
+}
+
 // ---- payload-decode fail-open (root: an undecodable / non-object payload
 //      silently skipped the required-claims + exp/nbf/iat sanity checks,
 //      so a token missing every required claim passed at strict — the
@@ -454,6 +490,7 @@ async function run() {
   testKidSafe();
   testSanitize();
   testValidateAlgNone();
+  testValidateDuplicateHeaderParam();
   testValidatePayloadDecode();
   testSanitizePayloadDecode();
   await testGatePayloadDecode();
