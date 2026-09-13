@@ -122,6 +122,11 @@ function testGuardYamlDangerousTagIsDecodedTheWayAParserResolvesIt() {
     ["a: !<!python/object/apply:os.system> x\n", false],
     ["a: !<!eval> 1\n", false],
     ["a: !<https://example.com/python/object> x\n", false],
+    // A verbatim core tag inside a flow collection: the commas in the URI are
+    // part of the tag, not collection delimiters.
+    ["a: [!<tag:yaml.org,2002:python/object/apply:os.system> x]\n", true],
+    ["{a: !<tag:yaml.org,2002:python/object> 1}\n", true],
+    ["a: [!<tag:yaml.org,2002:str> x]\n", false],
   ].forEach(function (pair) {
     var ks = b.guardYaml.validate(pair[0], { profile: "strict" }).issues
       .map(function (x) { return x.kind; });
