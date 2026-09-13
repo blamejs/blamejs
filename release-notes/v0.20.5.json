@@ -1,0 +1,18 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.20.5",
+  "date": "2026-09-12",
+  "headline": "`b.guardSql` reads a comment as a separator, so one placed before a dangerous function name no longer hides it",
+  "summary": "The raw-SQL guard's normalizer removed a comment by joining the text on either side of it into one token when both sides were identifier characters, modeling a claim that `LOAD/**/_FILE` reads as `LOAD_FILE`. A real engine does the opposite: a comment is whitespace, a token separator, so MySQL rejects `LOAD/**/_FILE` and reads `SELECT/**/LOAD_FILE(...)` as a call to `LOAD_FILE`. The guard's join turned `SELECT/**/LOAD_FILE` into the single token `SELECTLOAD_FILE`, and the `LOAD_FILE` the engine runs was hidden from the dangerous-function detector; the same shape hid `pg_read_file` from Postgres. A comment is now a separator everywhere, matching every engine and refusing what any of them would run. Upgrading requires no code change; a raw SQL fragment or statement that reached a dangerous built-in past a comment is now refused.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "`b.guardSql` treats a comment as a token separator, not a joiner",
+          "body": "The normalizer, which strips comments before the keyword detectors run, removed a `/* */`, `--` or `#` comment by concatenating the surrounding text when the characters on both sides were identifier characters. This modeled a comment as fusing two identifier fragments into one token, but no engine does that: a comment is whitespace. MySQL rejects `SELECT LOAD/**/_FILE('/x')` (it reads `LOAD` then `_FILE`, not `LOAD_FILE`) and accepts `SELECT/**/LOAD_FILE('/x')` (it reads `SELECT` then `LOAD_FILE`); both MySQL and Postgres PREPARE `SELECT/**/LOAD_FILE(...)` and `SELECT/**/pg_read_file(...)` as live calls to those file-reading built-ins. The guard's join produced `SELECTLOAD_FILE` from the first, so the `LOAD_FILE`/`pg_read_file` the engine runs was buried inside a longer token and no dangerous-function finding fired, at every profile. The normalizer now replaces every comment with a single space, so a dangerous function name preceded or abutted by a comment is read as its own token and refused; a comment placed inside what would be an identifier (`LOAD/**/_FILE`) is now two tokens, as every engine reads it, rather than being fused into a keyword the engine never sees. Verified against live MySQL 8.4 and Postgres 18 (statements PREPAREd non-executing): every comment-placed call to a dangerous built-in the engines accept is now refused."
+        }
+      ]
+    }
+  ]
+}

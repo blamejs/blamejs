@@ -356,9 +356,27 @@ function testFragmentMode() {
   // never fires a detector (operator-sql so no fragment embedded-literal).
   passesClean("mask: keyword inside a literal does not fire a detector",
     "SELECT 'pg_read_file'", { contextMode: "operator-sql", profile: "strict" });
-  // Intra-keyword comment collapse: LOAD/**/_FILE fuses to LOAD_FILE.
-  refusesWith("mask: comment-split LOAD/**/_FILE collapses and fires",
-    "SELECT LOAD/**/_FILE('/x')", { contextMode: "operator-sql", profile: "permissive" },
+  // A comment is a token SEPARATOR in every engine (whitespace), never a
+  // joiner: MySQL rejects `LOAD/**/_FILE` (it reads `LOAD` `_FILE`, not
+  // LOAD_FILE) and accepts `SELECT/**/LOAD_FILE` (it reads `SELECT`
+  // `LOAD_FILE`). The normalizer must not fuse the tokens around a comment, or
+  // a comment placed just before a dangerous function name hides it: both
+  // MySQL and Postgres PREPARE `SELECT/**/LOAD_FILE(...)` /
+  // `SELECT/**/pg_read_file(...)` as a live call, so the guard must fire.
+  refusesWith("mask: comment before a function name still fires (mysql)",
+    "SELECT/**/LOAD_FILE('/x')", { contextMode: "operator-sql", profile: "permissive" },
+    "mysql-load-file");
+  refusesWith("mask: comment before a function name still fires (pg)",
+    "SELECT/**/pg_read_file('/x')", { contextMode: "operator-sql", profile: "permissive" },
+    "pg-read-file");
+  refusesWith("mask: comment abutting a name, no space either side",
+    "a/**/pg_read_file('/x')", { contextMode: "operator-sql", profile: "permissive" },
+    "pg-read-file");
+  // The comment-INSIDE-a-name form is two tokens to every engine (MySQL
+  // rejects it), so it no longer fuses into a dangerous keyword; a `--` line
+  // comment before the name fires the same way a block comment does.
+  refusesWith("mask: line comment before a function name still fires",
+    "SELECT -- c\nLOAD_FILE('/x')", { contextMode: "operator-sql", profile: "permissive" },
     "mysql-load-file");
 }
 
