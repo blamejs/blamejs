@@ -172,6 +172,22 @@ function testFragmentDepthAmplification() {
   check("shallow fragment reuse is not over-refused (ok=true)", rvShallow.ok === true);
 }
 
+// ---- unreferenced fragment depth is still measured -----------------------
+//
+// A deeply-nested fragment that no operation spreads is still constructed by a
+// GraphQL parser before validation can reject it as unused, so its nesting is a
+// parse-time depth cost. The depth check measures every definition, not only
+// the operations, so a shallow operation cannot hide a deep unused fragment.
+function testUnreferencedFragmentDepth() {
+  var open = "";
+  var close = "";
+  for (var i = 0; i < 12; i += 1) { open += "n" + i + " { "; close = " }" + close; }
+  var q = "{ a }\nfragment unused on T { " + open + "leaf" + close + " }\n";
+  var rv = b.guardGraphql.validate({ query: q }, { profile: "strict" });
+  check("unreferenced deep fragment is measured for depth (ok=false)", rv.ok === false);
+  check("unreferenced deep fragment fires depth-exceeded", hasRule(rv, "graphql.depth-exceeded"));
+}
+
 // ---- alias breadth is counted per selection set --------------------------
 //
 // The alias-bomb cap counts the distinct aliases in one selection set. A bomb
@@ -290,6 +306,21 @@ function testShapeWalkerRobustness() {
     { profile: "strict", zeroWidthPolicy: "allow" });
   check("BOM-separated spread is resolved for depth (ok=false)", rvBom.ok === false);
   check("BOM-separated spread fires depth-exceeded", hasRule(rvBom, "graphql.depth-exceeded"));
+
+  // Deeply-nested inline fragments have execution depth 1 but require deep
+  // recursive parsing downstream; the syntactic nesting cap refuses them.
+  var inlineNest = "{" + repeat("... {", 12) + " id " + repeat("}", 12) + "}";
+  var rvInlineNest = b.guardGraphql.validate({ query: inlineNest }, { profile: "strict" });
+  check("deeply-nested inline fragments refuse on syntactic depth (ok=false)", rvInlineNest.ok === false);
+  check("deeply-nested inline fragments fire depth-exceeded",
+    hasRule(rvInlineNest, "graphql.depth-exceeded"));
+
+  // Nested argument object literals also require deep parsing, so the syntactic
+  // cap refuses them though the field's execution depth is one.
+  var argNest = "{ f(a: " + repeat("{ k: ", 12) + "1" + repeat(" }", 12) + ") }";
+  var rvArgNest = b.guardGraphql.validate({ query: argNest }, { profile: "strict" });
+  check("nested argument objects refuse on syntactic depth (ok=false)", rvArgNest.ok === false);
+  check("nested argument objects fire depth-exceeded", hasRule(rvArgNest, "graphql.depth-exceeded"));
 }
 
 function repeat(s, n) {
@@ -489,6 +520,7 @@ async function run() {
   testSanitize();
   testStringEvasionDepthBomb();
   testFragmentDepthAmplification();
+  testUnreferencedFragmentDepth();
   testAliasCountingPerSelectionSet();
   testFragmentResolutionRobustness();
   testShapeWalkerRobustness();
