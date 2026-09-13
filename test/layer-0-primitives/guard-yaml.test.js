@@ -53,10 +53,67 @@ function testGuardYamlDangerousTags() {
   }
 }
 
+function testGuardYamlDangerousTagIsDecodedTheWayAParserResolvesIt() {
+  // A tag shorthand's suffix is percent-encoded, and a real parser (js-yaml,
+  // the `yaml` package, PyYAML) decodes it once before resolving the tag:
+  // `!!%70ython/object/apply:os.system` resolves to the python
+  // deserialization tag. The guard read the surface `!!` and required a
+  // letter after it, so an escaped suffix and the verbatim `!<...>` form both
+  // served clean.
+  var esc = [
+    "a: !!%70ython/object/apply:os.system [echo]\n",   // %70 -> p
+    "a: !!%65val 1\n",                                  // %65 -> e (eval)
+    "a: !!%6e%65w [1]\n",                               // new
+    "a: !!%72uby/object:Gem\n",                         // ruby
+    "a: !!%6as/function \"x\"\n",                       // js
+    "a: !<tag:yaml.org,2002:python/object/apply:os.system> [echo]\n",
+    "a: !<tag:yaml.org,2002:%65xec> 1\n",
+  ];
+  for (var i = 0; i < esc.length; i += 1) {
+    var rv = b.guardYaml.validate(esc[i], { profile: "strict" });
+    check("a decoded deserialization tag is dangerous: " + JSON.stringify(esc[i].trim()),
+          rv.ok === false && rv.issues.some(function (x) { return x.kind === "dangerous-tag"; }),
+          JSON.stringify(rv.issues.map(function (x) { return x.kind; })));
+  }
+  // The gate refuses it at every profile: a deserialization tag is not a
+  // custom tag that audit-mode would serve.
+  ["strict", "balanced", "permissive"].forEach(async function (p) {
+    var v = await b.guardYaml.gate({ profile: p })
+      .check({ bytes: Buffer.from("a: !!%70ython/object/apply:os.system [echo]\n", "utf8") });
+    check("gate refuses a decoded deserialization tag at " + p, v.action === "refuse", v.action);
+  });
+  // Decoding is a single pass, as the parser does it: `%2570` -> `%70`
+  // (literal), which is not the python tag, so it is not a false dangerous
+  // finding.
+  var dbl = b.guardYaml.validate("a: !!%2570ython/x y\n", { profile: "strict" });
+  check("a double-escaped suffix is not the python tag",
+        !dbl.issues.some(function (x) { return x.kind === "dangerous-tag"; }),
+        JSON.stringify(dbl.issues.map(function (x) { return x.kind; })));
+  // A percent that is not a well-formed escape is a literal, as the URI rule
+  // reads it: `!!py%thon` still names python.
+  var lit = b.guardYaml.validate("a: !!python%2fobject y\n", { profile: "strict" });
+  check("a percent-escaped path separator inside a python tag is still dangerous",
+        lit.issues.some(function (x) { return x.kind === "dangerous-tag"; }));
+  // A verbatim tag `!<...>` with no closing `>` must not rescan the rest of
+  // the document at each opener: once one `!<` finds no `>`, none can.
+  var growth = require("../helpers/growth");
+  check("the tag scan stays linear over unterminated verbatim openers",
+        !growth.looksSuperlinear(function (n) {
+          b.guardYaml.validate("a: " + "!<".repeat(n), { profile: "permissive" });
+        }, { small: 100000, large: 400000, threshold: 8 }));
+}
+
 function testGuardYamlCustomTag() {
   var rv = b.guardYaml.validate("!Foo bar\n", { profile: "strict" });
   check("custom tag refused under strict",
         rv.issues.some(function (issue) { return issue.kind === "custom-tag"; }));
+  // A percent-escaped tag that decodes to something outside the denylist is a
+  // custom tag, not clean: the guard used to serve it because the escape hid
+  // the `!`-tag from the scanner entirely.
+  var esc = b.guardYaml.validate("a: !!%73ecret/thing v\n", { profile: "strict" });
+  check("a percent-escaped custom tag is still a tag finding",
+        esc.issues.some(function (issue) { return issue.kind === "custom-tag"; }),
+        JSON.stringify(esc.issues.map(function (i) { return i.kind; })));
 }
 
 function testGuardYamlAlias() {
@@ -683,6 +740,7 @@ async function run() {
   testGuardYamlSurface();
   testGuardYamlRegistryParity();
   testGuardYamlDangerousTags();
+  testGuardYamlDangerousTagIsDecodedTheWayAParserResolvesIt();
   testGuardYamlCustomTag();
   testGuardYamlAlias();
   testGuardYamlAliasExplosion();
