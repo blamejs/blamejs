@@ -53,10 +53,142 @@ function testGuardYamlDangerousTags() {
   }
 }
 
+function testGuardYamlDangerousTagIsDecodedTheWayAParserResolvesIt() {
+  // A tag shorthand's suffix is percent-encoded, and a real parser (js-yaml,
+  // the `yaml` package, PyYAML) decodes it once before resolving the tag:
+  // `!!%70ython/object/apply:os.system` resolves to the python
+  // deserialization tag. The guard read the surface `!!` and required a
+  // letter after it, so an escaped suffix and the verbatim `!<...>` form both
+  // served clean.
+  var esc = [
+    "a: !!%70ython/object/apply:os.system [echo]\n",   // %70 -> p
+    "a: !!%65val 1\n",                                  // %65 -> e (eval)
+    "a: !!%6e%65w [1]\n",                               // new
+    "a: !!%72uby/object:Gem\n",                         // ruby
+    "a: !!%6as/function \"x\"\n",                       // js
+    "a: !<tag:yaml.org,2002:python/object/apply:os.system> [echo]\n",
+    "a: !<tag:yaml.org,2002:%65xec> 1\n",
+  ];
+  for (var i = 0; i < esc.length; i += 1) {
+    var rv = b.guardYaml.validate(esc[i], { profile: "strict" });
+    check("a decoded deserialization tag is dangerous: " + JSON.stringify(esc[i].trim()),
+          rv.ok === false && rv.issues.some(function (x) { return x.kind === "dangerous-tag"; }),
+          JSON.stringify(rv.issues.map(function (x) { return x.kind; })));
+  }
+  // The gate refuses it at every profile: a deserialization tag is not a
+  // custom tag that audit-mode would serve.
+  ["strict", "balanced", "permissive"].forEach(async function (p) {
+    var v = await b.guardYaml.gate({ profile: p })
+      .check({ bytes: Buffer.from("a: !!%70ython/object/apply:os.system [echo]\n", "utf8") });
+    check("gate refuses a decoded deserialization tag at " + p, v.action === "refuse", v.action);
+  });
+  // Decoding is a single pass, as the parser does it: `%2570` -> `%70`
+  // (literal), which is not the python tag, so it is not a false dangerous
+  // finding.
+  var dbl = b.guardYaml.validate("a: !!%2570ython/x y\n", { profile: "strict" });
+  check("a double-escaped suffix is not the python tag",
+        !dbl.issues.some(function (x) { return x.kind === "dangerous-tag"; }),
+        JSON.stringify(dbl.issues.map(function (x) { return x.kind; })));
+  // A percent that is not a well-formed escape is a literal, as the URI rule
+  // reads it: `!!py%thon` still names python.
+  var lit = b.guardYaml.validate("a: !!python%2fobject y\n", { profile: "strict" });
+  check("a percent-escaped path separator inside a python tag is still dangerous",
+        lit.issues.some(function (x) { return x.kind === "dangerous-tag"; }));
+  // A tag name is case-sensitive: `!!Python/object` and `!!NewType` resolve to
+  // tags no parser has a constructor for, so they are custom tags, not the
+  // lowercase deserialization tags. A decoded uppercase letter is judged the
+  // same way (`%50` is `P`, not `p`).
+  [
+    ["a: !!Python/object x\n", false],
+    ["a: !!NewType x\n", false],
+    ["a: !!%50ython/object x\n", false],
+    ["a: !!Ruby/object:Gem x\n", false],
+    ["a: !!python/object x\n", true],
+    ["a: !!new [1]\n", true],
+  ].forEach(function (pair) {
+    var ks = b.guardYaml.validate(pair[0], { profile: "strict" }).issues
+      .map(function (x) { return x.kind; });
+    var isDanger = ks.indexOf("dangerous-tag") !== -1;
+    check("case-sensitive tag match on " + JSON.stringify(pair[0].trim()) +
+          " dangerous=" + isDanger, isDanger === pair[1], JSON.stringify(ks));
+  });
+  // A verbatim tag is a whole URI, which a parser (js-yaml, PyYAML) decodes
+  // before resolving, so an escaped core prefix still names the core family;
+  // but a `!`-led verbatim URI is a LOCAL tag, a distinct namespace no
+  // deserialization constructor is registered under.
+  [
+    ["a: !<tag%3Ayaml.org,2002:python/object/apply:os.system> x\n", true],
+    ["a: !<tag:yaml.org,2002:%65val> 1\n", true],
+    ["a: !<!python/object/apply:os.system> x\n", false],
+    ["a: !<!eval> 1\n", false],
+    ["a: !<https://example.com/python/object> x\n", false],
+    // A verbatim core tag inside a flow collection: the commas in the URI are
+    // part of the tag, not collection delimiters.
+    ["a: [!<tag:yaml.org,2002:python/object/apply:os.system> x]\n", true],
+    ["{a: !<tag:yaml.org,2002:python/object> 1}\n", true],
+    ["a: [!<tag:yaml.org,2002:str> x]\n", false],
+  ].forEach(function (pair) {
+    var ks = b.guardYaml.validate(pair[0], { profile: "strict" }).issues
+      .map(function (x) { return x.kind; });
+    var isDanger = ks.indexOf("dangerous-tag") !== -1;
+    check("verbatim tag resolution on " + JSON.stringify(pair[0].trim()) +
+          " dangerous=" + isDanger, isDanger === pair[1], JSON.stringify(ks));
+  });
+  // An escaped spelling of a safe core tag resolves to the same core tag as
+  // the plain form, so it is classified the same way (a core-tag finding
+  // under strict, not a custom tag). The resolved suffix, not the raw token,
+  // drives every classification.
+  [
+    "a: !!%73tr x\n",
+    "a: !<tag:yaml.org,2002:%73tr> x\n",
+    "a: !<tag:yaml.org,2002:str> x\n",
+  ].forEach(function (doc) {
+    var ks = b.guardYaml.validate(doc, { profile: "strict" }).issues
+      .map(function (x) { return x.kind; });
+    check("an escaped safe core tag is a core-tag, not custom: " + JSON.stringify(doc.trim()),
+          ks.indexOf("core-tag") !== -1 && ks.indexOf("custom-tag") === -1, JSON.stringify(ks));
+  });
+  // A `%TAG` directive could rebind `!!`, but a directive is unsupported: the
+  // guard refuses any document carrying one before a parser resolves its
+  // tags, at every profile. Tag classification therefore only decides an
+  // outcome for a directive-free document, where `!!` is unconditionally the
+  // core namespace, so the guard reads `!!` as core and the directive ban
+  // refuses the rest.
+  var remapped = "%TAG !! tag:example.com,2000:app/\n---\na: !!%70ython/object x\n";
+  ["strict", "balanced", "permissive"].forEach(async function (p) {
+    var v = await b.guardYaml.gate({ profile: p })
+      .check({ bytes: Buffer.from(remapped, "utf8") });
+    check("a document carrying a %TAG directive is refused at " + p, v.action === "refuse", v.action);
+  });
+  var rks = b.guardYaml.validate(remapped, { profile: "strict" }).issues
+    .map(function (x) { return x.kind; });
+  check("the directive itself is the refusing finding",
+        rks.indexOf("parse-failed") !== -1, JSON.stringify(rks));
+  // In a directive-free document the core `!!` handle resolves the Python tag.
+  var plain = b.guardYaml.validate("a: !!%70ython/object x\n", { profile: "strict" }).issues
+    .map(function (x) { return x.kind; });
+  check("the default !! handle resolves the core deserialization tag",
+        plain.indexOf("dangerous-tag") !== -1, JSON.stringify(plain));
+  // A verbatim tag `!<...>` with no closing `>` must not rescan the rest of
+  // the document at each opener: once one `!<` finds no `>`, none can.
+  var growth = require("../helpers/growth");
+  check("the tag scan stays linear over unterminated verbatim openers",
+        !growth.looksSuperlinear(function (n) {
+          b.guardYaml.validate("a: " + "!<".repeat(n), { profile: "permissive" });
+        }, { small: 100000, large: 400000, threshold: 8 }));
+}
+
 function testGuardYamlCustomTag() {
   var rv = b.guardYaml.validate("!Foo bar\n", { profile: "strict" });
   check("custom tag refused under strict",
         rv.issues.some(function (issue) { return issue.kind === "custom-tag"; }));
+  // A percent-escaped tag that decodes to something outside the denylist is a
+  // custom tag, not clean: the guard used to serve it because the escape hid
+  // the `!`-tag from the scanner entirely.
+  var esc = b.guardYaml.validate("a: !!%73ecret/thing v\n", { profile: "strict" });
+  check("a percent-escaped custom tag is still a tag finding",
+        esc.issues.some(function (issue) { return issue.kind === "custom-tag"; }),
+        JSON.stringify(esc.issues.map(function (i) { return i.kind; })));
 }
 
 function testGuardYamlAlias() {
@@ -683,6 +815,7 @@ async function run() {
   testGuardYamlSurface();
   testGuardYamlRegistryParity();
   testGuardYamlDangerousTags();
+  testGuardYamlDangerousTagIsDecodedTheWayAParserResolvesIt();
   testGuardYamlCustomTag();
   testGuardYamlAlias();
   testGuardYamlAliasExplosion();

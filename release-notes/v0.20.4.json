@@ -1,0 +1,31 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.20.4",
+  "date": "2026-09-12",
+  "headline": "`b.guardYaml` resolves a tag the way a parser does before it judges it",
+  "summary": "A YAML tag shorthand's suffix is percent-encoded, and a parser decodes it once before it resolves the tag: `!!%70ython/object/apply:os.system` is the PyYAML deserialization tag, and `!<tag:yaml.org,2002:python/object/apply:os.system>` is the same tag written out. The guard compared the raw source text against `!!python/`, and its scanner required a letter after the `!!`, so an escaped suffix and the verbatim form both passed strict validation with no finding and the gate served them. The guard now reads the tag as a parser resolves it, and the same escape no longer slips past the source-level tag ban in `b.parse`. Upgrading requires no code change.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "`b.guardYaml` judges a tag by the name a parser resolves it to",
+          "body": "The deserialization-tag denylist (`!!python/`, `!!java.`, `!!ruby/`, `!!perl/`, `!!js/`, `!!cs/`, `!!net/`, `!!system.`, and the `!!apply` / `!!new` / `!!eval` / `!!exec` family) matched the raw `!!` shorthand, and the tag scanner recognized a tag only when an ASCII letter followed the `!!`. A tag suffix is percent-encoded for characters outside the URI set, and js-yaml, PyYAML and the `yaml` package all decode it once before resolving the tag, so `!!%70ython/object/apply:os.system` (with `%70` for `p`), `!!%65val`, `!!%6e%65w` and the verbatim `!<tag:yaml.org,2002:python/object/apply:os.system>` each resolve to a tag the guard means to refuse, yet each validated clean and was served at every profile.\n\nThe guard now reads the whole tag token, including a percent-escaped or verbatim form, decodes the suffix once as a parser does, and matches the resolved name against the denylist; a decoded deserialization tag is refused at every profile, and a percent-escaped tag that resolves to any other name is the custom-tag finding it would be if written plainly. A differential against js-yaml and the `yaml` package over 60,000 documents finds no tag that resolves to a denylisted family and validates clean."
+        },
+        {
+          "title": "`b.parse` refuses a percent-escaped tag as it refuses a plain one",
+          "body": "The source-level YAML parser refuses a document that carries a tag, because a tag directs a downstream parser to construct a typed value. It recognized a tag only when a letter or `<` followed the handle, so `!!%73tr` passed where `!!str` was refused. It now recognizes a percent-escaped suffix as a tag, so the two are refused alike."
+        }
+      ]
+    },
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "Vendored `@blamejs/pki` moves to 0.7.45",
+          "body": "The vendored bundle rises from 0.7.42 to 0.7.45. `pki.jose.verify` refuses, with `jose/private-key-material`, a JWS whose protected header embeds a JWK carrying any private member (`d`, the RSA CRT parameters, the symmetric `k`, or an AKP `priv`) before the signature is checked. `pki.cmp.build` fills an omitted header `transactionID` or `senderNonce` with sixteen random bytes, fills an omitted `sender` under signature protection with the signer certificate's subject (RFC 9483), binds a KEM-protected message's derivation to the filled `transactionID`, and refuses a `senderNonce` shorter than 128 bits; `pki.scep.build` refuses a `transactionId` carrying a character outside the RFC 8894 PrintableString set with `scep/bad-input`. The package continues to declare no dependencies and no install, prepare or prepublish scripts."
+        }
+      ]
+    }
+  ]
+}
