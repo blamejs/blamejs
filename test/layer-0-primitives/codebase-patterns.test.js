@@ -11583,6 +11583,11 @@ async function testNoDuplicateCodeBlocks() {
       // norway-implicit-bool for yaml) onto entirely different policy options.
       // Extracting the delegation would leave each guard's real content — the
       // kind-to-policy map — exactly where it is.
+      //
+      // The byte / token / tree scanners (_detectMagicMimes, _isScopeToken,
+      // _hasPdfMagic, guard-graphql's _measureQueryShape) share only a bounded
+      // index-increment loop idiom; each scans a different structure toward a
+      // different verdict, so there is no shared primitive to extract.
       mode:  "family-subset",
       files: [
         "lib/guard-auth.js:gate",
