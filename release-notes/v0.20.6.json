@@ -1,0 +1,27 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.20.6",
+  "date": "2026-09-13",
+  "headline": "`b.guardJwt` refuses a JWT that repeats a header parameter or a claim",
+  "summary": "A JWT header and claims set are JSON, where a repeated member name is kept last by `JSON.parse` and read first by some verifiers, so a token with two `alg` values reads as one algorithm to the guard and another to a first-wins verifier, the algorithm-confusion smuggling shape. `b.guardJson` already refuses duplicate keys; `b.guardJwt` now refuses a JWT whose decoded header or payload repeats a member, reusing the same detector, exposed as `b.guardJson.detectDuplicateKeys`. Upgrading requires no code change; a token carrying a duplicate header parameter or claim is now refused at every profile.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "`b.guardJwt` refuses a duplicate JOSE header parameter or claim",
+          "body": "RFC 7515 §4 and RFC 7519 §4 require the member names of the JOSE header and the JWT claims set to be unique, but a JWT is accepted by many verifiers when they are not, and JSON readers disagree on which value wins: `JSON.parse` keeps the last, some streaming readers keep the first. A token whose header is `{\"alg\":\"none\",\"alg\":\"ES256\"}` therefore reads as `ES256` (signature required) to a last-wins verifier and as `none` (no signature) to a first-wins one, the algorithm-confusion smuggling shape behind the `alg=none` CVE family. The guard decodes the header and payload and refuses a token that repeats any member name at one object level, with `jwt.duplicate-key`, at every profile. The detection is `b.guardJson`'s existing duplicate-key scan, so an escaped-equivalent key (`\"alg\"` and `\"\\u0061lg\"`) collapses and is caught the same way the guard already catches an escaped `alg=none`."
+        }
+      ]
+    },
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "`b.guardJson.detectDuplicateKeys`",
+          "body": "`detectDuplicateKeys(jsonText)` returns the key names a JSON source string repeats at the same object nesting level, reading only key positions so a repeated key inside a string value is not counted. It is the scan behind `b.guardJson`'s `duplicate-key` finding, exposed so a sibling guard whose payload is JSON, such as `b.guardJwt`'s JOSE header and claims, refuses the same smuggling shape rather than reimplementing it."
+        }
+      ]
+    }
+  ]
+}

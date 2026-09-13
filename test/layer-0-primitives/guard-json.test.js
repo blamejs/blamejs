@@ -463,6 +463,21 @@ function testGuardJsonClean() {
   check("clean JSON → ok=true with no issues", rv.ok === true && rv.issues.length === 0);
 }
 
+// The duplicate-key detector is exposed so a sibling guard whose payload is
+// JSON (guardJwt's JOSE header/claims) can refuse the same smuggling shape.
+function testDetectDuplicateKeysPrimitive() {
+  check("detectDuplicateKeys: a repeated key is reported",
+    b.guardJson.detectDuplicateKeys('{"a":1,"a":2}').join(",") === "a");
+  check("detectDuplicateKeys: distinct keys report nothing",
+    b.guardJson.detectDuplicateKeys('{"a":1,"b":2}').length === 0);
+  check("detectDuplicateKeys: a repeat is scoped to one object level",
+    b.guardJson.detectDuplicateKeys('{"a":{"x":1},"b":{"x":2}}').length === 0);
+  check("detectDuplicateKeys: a key repeated inside a string value is not a key",
+    b.guardJson.detectDuplicateKeys('{"a":"b\\":1,\\"b"}').length === 0);
+  check("detectDuplicateKeys: an escaped-equivalent key still collapses",
+    b.guardJson.detectDuplicateKeys('{"a":1,"\\u0061":2}').join(",") === "a");
+}
+
 async function testGuardJsonGate() {
   var g = b.guardJson.gate({ profile: "strict" });
   var clean = await g.check({
@@ -569,6 +584,7 @@ async function run() {
   testGuardJsonBidi();
   testGuardJsonNullByte();
   testGuardJsonClean();
+  testDetectDuplicateKeysPrimitive();
   await testValidJsonIsNotRefusedForTheContentOfItsStrings();
   testJson5ShapesAreFoundWhereverTheySit();
   testGuardJsonCompliancePosture();

@@ -9710,7 +9710,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-domain.js:_shannonEntropy",
         "lib/guard-graphql.js:<top>",
         "lib/guard-jsonpath.js:<top>",
-        "lib/guard-jwt.js:_b64urlDecodeJson",
+        "lib/guard-jwt.js:_duplicateKeysOf",
         "lib/guard-mime.js:<top>",
         "lib/guard-oauth.js:<top>",
         "lib/guard-regex.js:<top>",

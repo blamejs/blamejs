@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.20.5",
-  "createdAt": "2026-09-13T04:46:32.343Z",
+  "frameworkVersion": "0.20.6",
+  "createdAt": "2026-09-13T07:28:59.588Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -28707,6 +28707,10 @@
           "arity": 1
         },
         "compliancePosture": {
+          "type": "function",
+          "arity": 1
+        },
+        "detectDuplicateKeys": {
           "type": "function",
           "arity": 1
         },
