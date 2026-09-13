@@ -1169,11 +1169,22 @@ function _codexReviewedHead(prNum) {
   var cv = _captureQuery("PR #" + prNum + " comment list", "gh",
                          ["pr", "view", prNum, "--json", "comments", "--jq", ".comments"]);
   var comments = _ghJson(cv, "PR #" + prNum + " comment list");
-  var headPrefix = head.slice(0, 10);
   return (comments || []).some(function (c) {
     return c && c.author && _isCodexLogin(c.author.login) &&
-           typeof c.body === "string" && c.body.indexOf(headPrefix) !== -1;
+           typeof c.body === "string" && _citesHead(c.body, head);
   });
+}
+
+// Codex cites the git-ABBREVIATED head sha (7 chars by default) in its summary
+// comment, not the full 40. A cited hex token counts only when it is a prefix
+// of THIS head, so an unrelated sha in the body cannot pass the gate.
+function _citesHead(body, head) {
+  var re = /[0-9a-f]{7,40}/g;
+  var m;
+  while ((m = re.exec(body)) !== null) {
+    if (head.indexOf(m[0]) === 0) return true;
+  }
+  return false;
 }
 
 // Block until Codex has reviewed the current head (fail-closed on timeout).
