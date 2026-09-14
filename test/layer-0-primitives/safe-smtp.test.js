@@ -12,6 +12,7 @@ var check   = helpers.check;
 function testSurface() {
   check("findDotTerminator is fn", typeof b.safeSmtp.findDotTerminator === "function");
   check("dotUnstuff is fn",        typeof b.safeSmtp.dotUnstuff === "function");
+  check("dotStuffForWire is fn",   typeof b.safeSmtp.dotStuffForWire === "function");
   check("SafeSmtpError is fn",     typeof b.safeSmtp.SafeSmtpError === "function");
 }
 
@@ -79,6 +80,26 @@ function testDotUnstuffReverses() {
   var clear = b.safeSmtp.dotUnstuff(wire);
   check("'..' at line start reduced to '.'",
     clear.toString("utf8") === "hello\r\n.secret line\r\nworld\r\n");
+}
+
+// dotStuffForWire canonicalizes bare-LF / bare-CR line endings to CRLF BEFORE
+// stuffing, so a body stored with non-canonical endings does not emit a lone
+// "." line un-stuffed — the POP3 RETR/TOP egress smuggling shape. dotStuff on
+// its own stuffs only at a canonical CRLF boundary.
+function testDotStuffForWireCanonicalizes() {
+  var w = function (s) { return b.safeSmtp.dotStuffForWire(Buffer.from(s, "latin1")).toString("latin1"); };
+  check("bare-LF lone dot canonicalized + stuffed", w("hello\n.\nrest") === "hello\r\n..\r\nrest", JSON.stringify(w("hello\n.\nrest")));
+  check("bare-CR lone dot canonicalized + stuffed", w("hello\r.\rrest") === "hello\r\n..\r\nrest", JSON.stringify(w("hello\r.\rrest")));
+  check("canonical CRLF lone dot stuffed unchanged", w("hello\r\n.\r\nrest") === "hello\r\n..\r\nrest");
+  check("leading dot at buffer start stuffed", w(".sig\r\nrest") === "..sig\r\nrest");
+  check("empty buffer round-trips", w("") === "");
+  var mixed = b.safeSmtp.dotStuffForWire(Buffer.from("a\n.\rb\r\n.\nc", "latin1")).toString("latin1");
+  check("no un-stuffed lone-dot line at any boundary", mixed.split(/\r?\n/).indexOf(".") === -1, JSON.stringify(mixed));
+  var clear = b.safeSmtp.dotUnstuff(b.safeSmtp.dotStuffForWire(Buffer.from("hello\n.\nrest", "latin1"))).toString("latin1");
+  check("dotUnstuff recovers the canonical clear body", clear === "hello\r\n.\r\nrest", JSON.stringify(clear));
+  var threw = false;
+  try { b.safeSmtp.dotStuffForWire("nope"); } catch (e) { threw = !!(e && e.code === "safe-smtp/bad-input"); }
+  check("dotStuffForWire refuses a non-Buffer", threw);
 }
 
 // RFC 5321 §4.5.2 has the sender stuff a leading dot on ANY line of the body,
@@ -228,6 +249,7 @@ function run() {
   testFindDotTerminatorMissing();
   testFindDotTerminatorStrictCrlf();
   testDotUnstuffReverses();
+  testDotStuffForWireCanonicalizes();
   testDotUnstuffHandlesTheFirstLine();
   testDotUnstuffPassthrough();
   testDotUnstuffLengthInvariant();

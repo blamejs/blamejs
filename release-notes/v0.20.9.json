@@ -1,0 +1,27 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.20.9",
+  "date": "2026-09-14",
+  "headline": "POP3 RETR and TOP dot-stuff a stored body against the CRLF endings a client parses",
+  "summary": "`b.mail.server.pop3` built its `RETR` and `TOP` multiline responses by dot-stuffing the stored message bytes with `b.safeSmtp.dotStuff`, which doubles a line-initial `.` only where the preceding line ended in a canonical CRLF. A message stored with bare-LF or bare-CR line endings, the form a Maildir or mbox maildrop keeps, therefore emitted any line consisting of a single `.` un-stuffed. A client that treats a bare LF or CR as a line boundary reads that `.` as the end of the message and the bytes after it as unrequested response lines, truncating the message and letting a sender who mails such a body smuggle content into the client stream. `RETR` and `TOP` now canonicalize the body to CRLF before dot-stuffing through the new `b.safeSmtp.dotStuffForWire`, so every line ending is CRLF and every line-initial `.` is doubled.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "POP3 RETR/TOP dot-stuff a stored body against the line endings a client parses",
+          "body": "A POP3 server transmits a message as CRLF-terminated lines and byte-stuffs any line beginning with the termination octet `.` (RFC 1939 §3). `b.mail.server.pop3` dot-stuffed the stored bytes with `b.safeSmtp.dotStuff`, which stuffs a line-initial `.` only where the preceding line ended in a canonical CRLF. A body stored with bare-LF or bare-CR line endings, the common Maildir and mbox form, left a line consisting of a lone `.` un-stuffed, so the RETR or TOP response carried a `.` line at a non-canonical boundary. A client that splits lines on a bare LF or CR, as several do for historical POP3 and mbox compatibility, reads that line as the end-of-message terminator: it truncates the message and parses everything the server sends after it as further response lines. This is the retrieval-side analog of the SMTP DATA-body smuggling refused in 0.20.8. RETR and TOP now canonicalize the body to CRLF before dot-stuffing, so the response is well-formed and every line-initial `.` is doubled."
+        }
+      ]
+    },
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "`b.safeSmtp.dotStuffForWire` canonicalizes line endings before dot-stuffing",
+          "body": "`b.safeSmtp.dotStuffForWire(buf)` canonicalizes every line ending in a message body to CRLF and then applies RFC 5321 §4.5.2 / RFC 1939 §3 dot-stuffing. `b.safeSmtp.dotStuff` on its own stuffs a line-initial `.` only at a canonical CRLF boundary and documents that its caller must canonicalize or refuse bare-LF first; this primitive composes that canonicalization with the stuffing, for a caller serving a stored body over the wire such as a POP3 RETR or TOP response."
+        }
+      ]
+    }
+  ]
+}

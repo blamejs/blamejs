@@ -195,6 +195,53 @@ async function testAuthenticatedTransaction() {
   } finally { tls.destroy(); sock.destroy(); await s.srv.close(); }
 }
 
+// ---- RETR/TOP egress: dot-stuff against the line ending the peer parses ----
+// A body stored with BARE-LF line endings (standard Maildir/mbox) containing a
+// lone "." line is the POP3 egress analog of SMTP DATA-body smuggling: dotStuff
+// doubles a line-initial "." only at a canonical CRLF boundary, so the "." after
+// a bare LF is emitted un-stuffed and a lenient MUA (poplib splits on bare \n,
+// breaks on a "." line) reads it as end-of-message — truncation + smuggling of
+// the rest of the response into the client stream. RETR and TOP must canonicalize
+// the body to CRLF before dot-stuffing so every line-initial "." is doubled.
+function _smugglingStore() {
+  var body = Buffer.from("Subject: s\r\n\r\nhello\n.\nSMUGGLED-COMMAND\r\n", "latin1");
+  return {
+    openPop3Drop:   async function () { return { dropId: "d", count: 1, totalBytes: body.length }; },
+    commitPop3Drop: async function () { return { deleted: 0 }; },
+    listMessages:   async function () { return [{ msgNum: 1, size: body.length, uid: "u1", uidl: "u1" }]; },
+    getMessage:     async function () { return { size: body.length, rawBytes: body }; },
+    markDelete:     async function () { return; },
+  };
+}
+
+async function testRetrTopCanonicalizeBeforeDotStuff() {
+  function assertNoSmuggle(resp, label) {
+    var firstNl = resp.indexOf("\r\n");
+    var termIdx = resp.lastIndexOf("\r\n.\r\n");
+    var bodyRegion = resp.slice(firstNl + 2, termIdx);
+    // A lenient MUA splits on a bare LF and honors a lone "." line as the end.
+    check(label + ": no un-stuffed lone-dot line at any boundary",
+      bodyRegion.split(/\r?\n/).indexOf(".") === -1, JSON.stringify(bodyRegion));
+    var stripped = bodyRegion.replace(/\r\n/g, "");
+    check(label + ": egress body is canonical CRLF (no bare LF or CR)",
+      stripped.indexOf("\n") === -1 && stripped.indexOf("\r") === -1, JSON.stringify(bodyRegion));
+  }
+  var s = await _makeServer({ mailStore: _smugglingStore() });
+  var sock = nodeNet.connect(s.port, "127.0.0.1");
+  sock.on("error", function () {});
+  await _readReply(sock);
+  await _send(sock, "STLS");
+  var tls = nodeTls.connect({ socket: sock, ca: s.caPem, servername: "localhost" });
+  tls.on("error", function () {});
+  await new Promise(function (r, j) { tls.once("secureConnect", r); tls.once("error", j); });
+  try {
+    await _send(tls, "USER alice");
+    await _send(tls, "PASS good");
+    assertNoSmuggle(await _send(tls, "RETR 1", true), "RETR");
+    assertNoSmuggle(await _send(tls, "TOP 1 5", true), "TOP");
+  } finally { tls.destroy(); sock.destroy(); await s.srv.close(); }
+}
+
 // ---- AUTH PLAIN mechanism over TLS ----
 // The AUTHORIZATION-state guards read `state.stage` and `state.actor`, and the
 // stage moves only after an async verify resolves. The drain loop dispatched
@@ -1348,6 +1395,7 @@ async function run() {
   testTenantScopeCreateValidation();
   await testPlaintextDispatch();
   await testAuthenticatedTransaction();
+  await testRetrTopCanonicalizeBeforeDotStuff();
   await testPipelinedCredentialsCannotRaceTheAuthGuard();
   await testPipelinedAuthVerbsCannotRaceEither();
   await testPipelinedBacklogIsBounded();
