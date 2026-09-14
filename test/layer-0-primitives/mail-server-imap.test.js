@@ -516,6 +516,83 @@ async function testFetchChangedSinceParses() {
   } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
 }
 
+// RFC 3501/9051 §4.3 quoted-string: a backslash escapes the next `"` or `\`.
+// `_unquote` stripped the surrounding quotes but never reversed that escaping,
+// so a mailbox name carrying `\` or `"` reached the backend corrupted (a `\`
+// doubled, an escaped `"` kept its backslash). The backend then keys, creates,
+// or ACLs the wrong name.
+async function testSelectUnescapesQuotedMailboxName() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("SELECT unescapes quoted mailbox (skipped)", true); return; }
+  var stub = _makeStubMailStore();
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: stub, profile: "permissive",
+    auth: {
+      mechanisms: ["PLAIN", "LOGIN"],
+      verify: function () { return Promise.resolve({ ok: true, actor: { id: "u1", mailboxes: ["INBOX"] } }); },
+    },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    await _sendCommand(c.socket, "a0", "LOGIN test test");
+    var sel = stub.calls.select;
+    // Wire "a\\b" is the RFC-escaped form of the name a<backslash>b.
+    await _sendCommand(c.socket, "a1", "SELECT \"a\\\\b\"");
+    check("SELECT un-escapes a backslash in a quoted mailbox name",
+      sel.length > 0 && sel[sel.length - 1].mailbox === "a\\b", JSON.stringify(sel));
+    // Wire "a\"b" is the RFC-escaped form of the name a<quote>b.
+    await _sendCommand(c.socket, "a2", "SELECT \"a\\\"b\"");
+    check("SELECT un-escapes an escaped quote in a quoted mailbox name",
+      sel.length > 1 && sel[sel.length - 1].mailbox === "a\"b", JSON.stringify(sel));
+    // An unsupported escape (a backslash before a non-special) is malformed per
+    // RFC 3501 §4.3; reject it rather than silently alias mailbox "foobar".
+    var before = sel.length;
+    var badReply = await _sendCommand(c.socket, "a3", "SELECT \"foo\\bar\"");
+    check("SELECT rejects an unsupported quoted-string escape",
+      /^a3 BAD/m.test(badReply), JSON.stringify(badReply));
+    check("the malformed escape did not select a different mailbox",
+      sel.length === before, JSON.stringify(sel.slice(before)));
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+// An APPEND date-time is a quoted string; an unsupported escape in it (e.g.
+// "bad\q") makes it un-unquotable. The command must be rejected, not stored with
+// the invalid date silently dropped to a null internalDate.
+async function testAppendRejectsMalformedQuotedDate() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("APPEND malformed date (skipped)", true); return; }
+  var stub = _makeStubMailStore();
+  var appended = false;
+  stub.appendMessage = function () { appended = true; return Promise.resolve({ uid: 1, uidValidity: 1 }); };
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: stub, profile: "permissive",
+    auth: { mechanisms: ["LOGIN"], verify: function () { return Promise.resolve({ ok: true, actor: { id: "u1" } }); } },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    await _sendCommand(c.socket, "a0", "LOGIN test test");
+    var seen = "";
+    function collect(chunk) { seen += chunk.toString("utf8"); }
+    c.socket.on("data", collect);
+    var body = "x";
+    c.socket.write("a1 APPEND INBOX \"bad\\q\" {" + body.length + "}\r\n");
+    await helpers.waitUntil(function () { return seen.indexOf("+") !== -1 || /^a1 /m.test(seen); },
+      { timeoutMs: 5000, label: "imap append malformed date: continuation or reply" });
+    if (!/^a1 /m.test(seen)) {
+      c.socket.write(body);
+      c.socket.write("\r\n");
+      await helpers.waitUntil(function () { return /^a1 /m.test(seen); },
+        { timeoutMs: 5000, label: "imap append malformed date: tagged reply" });
+    }
+    check("APPEND rejects a malformed quoted date-time", /^a1 BAD/m.test(seen), JSON.stringify(seen));
+    check("the malformed date did not reach the backend", appended === false);
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
 // RFC 9051 §4.3 makes a literal a counted sequence of OCTETS, and §6.4.5 makes
 // `BODY[]` the message. Assembling the response as a JavaScript string and
 // handing it to `socket.write` encodes it as UTF-8 on the way out, so a message
@@ -3514,6 +3591,8 @@ async function run() {
     await testCapabilityAdvertisesCondstore();
     await testEnableCondstore();
     await testFetchChangedSinceParses();
+    await testSelectUnescapesQuotedMailboxName();
+    await testAppendRejectsMalformedQuotedDate();
     await testFetchWritesTheOctetsTheBackendReturned();
     await testStoreUnchangedSinceConflict();
     await testFetchChangedSinceImpliesCondstore();
