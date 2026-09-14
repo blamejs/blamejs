@@ -13,6 +13,7 @@ function testSurface() {
   check("findDotTerminator is fn", typeof b.safeSmtp.findDotTerminator === "function");
   check("dotUnstuff is fn",        typeof b.safeSmtp.dotUnstuff === "function");
   check("dotStuffForWire is fn",   typeof b.safeSmtp.dotStuffForWire === "function");
+  check("canonicalizeEol is fn",   typeof b.safeSmtp.canonicalizeEol === "function");
   check("SafeSmtpError is fn",     typeof b.safeSmtp.SafeSmtpError === "function");
 }
 
@@ -100,6 +101,23 @@ function testDotStuffForWireCanonicalizes() {
   var threw = false;
   try { b.safeSmtp.dotStuffForWire("nope"); } catch (e) { threw = !!(e && e.code === "safe-smtp/bad-input"); }
   check("dotStuffForWire refuses a non-Buffer", threw);
+}
+
+// canonicalizeEol rewrites every line ending to CRLF (bare LF and bare CR both
+// become CRLF; an existing CRLF is unchanged). It is what RETR uses to size the
+// message as the peer receives it, and what dotStuffForWire runs before stuffing.
+function testCanonicalizeEol() {
+  var c = function (s) { return b.safeSmtp.canonicalizeEol(Buffer.from(s, "latin1")).toString("latin1"); };
+  check("bare LF → CRLF", c("a\nb") === "a\r\nb");
+  check("bare CR → CRLF", c("a\rb") === "a\r\nb");
+  check("existing CRLF unchanged", c("a\r\nb") === "a\r\nb");
+  check("mixed endings all → CRLF", c("a\nb\rc\r\nd") === "a\r\nb\r\nc\r\nd");
+  check("trailing bare LF → CRLF", c("a\n") === "a\r\n");
+  check("empty → empty", c("") === "");
+  check("no line ending unchanged", c("abc") === "abc");
+  var threw = false;
+  try { b.safeSmtp.canonicalizeEol("nope"); } catch (e) { threw = !!(e && e.code === "safe-smtp/bad-input"); }
+  check("canonicalizeEol refuses a non-Buffer", threw);
 }
 
 // RFC 5321 §4.5.2 has the sender stuff a leading dot on ANY line of the body,
@@ -250,6 +268,7 @@ function run() {
   testFindDotTerminatorStrictCrlf();
   testDotUnstuffReverses();
   testDotStuffForWireCanonicalizes();
+  testCanonicalizeEol();
   testDotUnstuffHandlesTheFirstLine();
   testDotUnstuffPassthrough();
   testDotUnstuffLengthInvariant();

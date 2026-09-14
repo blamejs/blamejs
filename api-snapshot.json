@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.20.9",
-  "createdAt": "2026-09-14T18:35:10.578Z",
+  "createdAt": "2026-09-14T19:46:56.892Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -54498,6 +54498,10 @@
         "SafeSmtpError": {
           "type": "function",
           "arity": 4
+        },
+        "canonicalizeEol": {
+          "type": "function",
+          "arity": 1
         },
         "createBodyScanner": {
           "type": "function",

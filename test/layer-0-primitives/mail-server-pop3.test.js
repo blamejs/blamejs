@@ -203,8 +203,9 @@ async function testAuthenticatedTransaction() {
 // breaks on a "." line) reads it as end-of-message — truncation + smuggling of
 // the rest of the response into the client stream. RETR and TOP must canonicalize
 // the body to CRLF before dot-stuffing so every line-initial "." is doubled.
+var SMUGGLE_BODY = "Subject: s\r\n\r\nhello\n.\nSMUGGLED-COMMAND\r\n";
 function _smugglingStore() {
-  var body = Buffer.from("Subject: s\r\n\r\nhello\n.\nSMUGGLED-COMMAND\r\n", "latin1");
+  var body = Buffer.from(SMUGGLE_BODY, "latin1");
   return {
     openPop3Drop:   async function () { return { dropId: "d", count: 1, totalBytes: body.length }; },
     commitPop3Drop: async function () { return { deleted: 0 }; },
@@ -237,7 +238,15 @@ async function testRetrTopCanonicalizeBeforeDotStuff() {
   try {
     await _send(tls, "USER alice");
     await _send(tls, "PASS good");
-    assertNoSmuggle(await _send(tls, "RETR 1", true), "RETR");
+    var retr = await _send(tls, "RETR 1", true);
+    assertNoSmuggle(retr, "RETR");
+    // RETR must advertise the octet count of the message it actually delivers
+    // (the canonicalized, pre-dot-stuffing body), not the stored bare-LF length.
+    var m = /^\+OK (\d+) octets/.exec(retr);
+    var expectOctets = b.safeSmtp.canonicalizeEol(Buffer.from(SMUGGLE_BODY, "latin1")).length;
+    check("RETR advertises the canonical delivered octet count",
+      !!m && parseInt(m[1], 10) === expectOctets,
+      (m ? m[1] : "no +OK") + " vs expected " + expectOctets);
     assertNoSmuggle(await _send(tls, "TOP 1 5", true), "TOP");
   } finally { tls.destroy(); sock.destroy(); await s.srv.close(); }
 }

@@ -10,7 +10,7 @@
       "items": [
         {
           "title": "POP3 RETR/TOP dot-stuff a stored body against the line endings a client parses",
-          "body": "A POP3 server transmits a message as CRLF-terminated lines and byte-stuffs any line beginning with the termination octet `.` (RFC 1939 §3). `b.mail.server.pop3` dot-stuffed the stored bytes with `b.safeSmtp.dotStuff`, which stuffs a line-initial `.` only where the preceding line ended in a canonical CRLF. A body stored with bare-LF or bare-CR line endings, the common Maildir and mbox form, left a line consisting of a lone `.` un-stuffed, so the RETR or TOP response carried a `.` line at a non-canonical boundary. A client that splits lines on a bare LF or CR, as several do for historical POP3 and mbox compatibility, reads that line as the end-of-message terminator: it truncates the message and parses everything the server sends after it as further response lines. This is the retrieval-side analog of the SMTP DATA-body smuggling refused in 0.20.8. RETR and TOP now canonicalize the body to CRLF before dot-stuffing, so the response is well-formed and every line-initial `.` is doubled."
+          "body": "A POP3 server transmits a message as CRLF-terminated lines and byte-stuffs any line beginning with the termination octet `.` (RFC 1939 §3). `b.mail.server.pop3` dot-stuffed the stored bytes with `b.safeSmtp.dotStuff`, which stuffs a line-initial `.` only where the preceding line ended in a canonical CRLF. A body stored with bare-LF or bare-CR line endings, the common Maildir and mbox form, left a line consisting of a lone `.` un-stuffed, so the RETR or TOP response carried a `.` line at a non-canonical boundary. A client that splits lines on a bare LF or CR, as several do for historical POP3 and mbox compatibility, reads that line as the end-of-message terminator: it truncates the message and parses everything the server sends after it as further response lines. This is the retrieval-side analog of the SMTP DATA-body smuggling refused in 0.20.8. RETR and TOP now canonicalize the body to CRLF before dot-stuffing, so the response is well-formed and every line-initial `.` is doubled. RETR also advertises the octet count of the message it delivers, the canonicalized body, rather than the stored byte length, so a client that reads the advertised count sees the size it receives."
         }
       ]
     },
@@ -20,6 +20,10 @@
         {
           "title": "`b.safeSmtp.dotStuffForWire` canonicalizes line endings before dot-stuffing",
           "body": "`b.safeSmtp.dotStuffForWire(buf)` canonicalizes every line ending in a message body to CRLF and then applies RFC 5321 §4.5.2 / RFC 1939 §3 dot-stuffing. `b.safeSmtp.dotStuff` on its own stuffs a line-initial `.` only at a canonical CRLF boundary and documents that its caller must canonicalize or refuse bare-LF first; this primitive composes that canonicalization with the stuffing, for a caller serving a stored body over the wire such as a POP3 RETR or TOP response."
+        },
+        {
+          "title": "`b.safeSmtp.canonicalizeEol` rewrites line endings to CRLF",
+          "body": "`b.safeSmtp.canonicalizeEol(buf)` rewrites every line ending in a buffer to canonical CRLF: a bare LF and a bare CR each become CRLF, an existing CRLF is unchanged. It brings a stored message body to the wire form a POP3 or SMTP multiline response requires before dot-stuffing, and gives the octet count the peer receives."
         }
       ]
     }
