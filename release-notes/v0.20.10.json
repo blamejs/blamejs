@@ -1,0 +1,18 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.20.10",
+  "date": "2026-09-14",
+  "headline": "IMAP un-escapes a quoted mailbox name, so a name containing a backslash or quote is not corrupted",
+  "summary": "`b.mail.server.imap` parsed a quoted mailbox name (and other quoted arguments) by stripping the surrounding double quotes but never reversing the RFC 3501 §4.3 backslash escaping the client applied. A name containing a backslash arrived at the mailStore with the backslash doubled, and a name containing a double quote arrived with its escaping backslash still attached, so SELECT, STATUS, APPEND, and the metadata commands operated on a different name than the client sent. The parser now un-escapes a backslash-escaped character, so the mailStore receives the name the client meant.",
+  "sections": [
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "IMAP quoted mailbox names are un-escaped per RFC 3501 §4.3",
+          "body": "An IMAP quoted-string escapes a `\"` or `\\` in its content with a backslash (RFC 3501 §4.3). `b.mail.server.imap` removed the surrounding quotes but left the escaping in place, so a mailbox name such as `a\\b` reached the mailStore as `a\\\\b` and `a\"b` reached it with the backslash still on the quote. SELECT, STATUS, APPEND, CATENATE, and GETMETADATA/SETMETADATA therefore keyed, created, or applied ACLs to a name that differed from the one the client sent. The parser now reverses the escaping, delivering the name the client intended. A mailbox name that embeds a literal double quote is still refused by the verbs that extract it with a plain quoted-string pattern; those names, which are unusual, are a separate conformance follow-up."
+        }
+      ]
+    }
+  ]
+}

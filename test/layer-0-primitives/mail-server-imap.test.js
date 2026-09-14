@@ -516,6 +516,39 @@ async function testFetchChangedSinceParses() {
   } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
 }
 
+// RFC 3501/9051 §4.3 quoted-string: a backslash escapes the next `"` or `\`.
+// `_unquote` stripped the surrounding quotes but never reversed that escaping,
+// so a mailbox name carrying `\` or `"` reached the backend corrupted (a `\`
+// doubled, an escaped `"` kept its backslash). The backend then keys, creates,
+// or ACLs the wrong name.
+async function testSelectUnescapesQuotedMailboxName() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("SELECT unescapes quoted mailbox (skipped)", true); return; }
+  var stub = _makeStubMailStore();
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: stub, profile: "permissive",
+    auth: {
+      mechanisms: ["PLAIN", "LOGIN"],
+      verify: function () { return Promise.resolve({ ok: true, actor: { id: "u1", mailboxes: ["INBOX"] } }); },
+    },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    await _sendCommand(c.socket, "a0", "LOGIN test test");
+    var sel = stub.calls.select;
+    // Wire "a\\b" is the RFC-escaped form of the name a<backslash>b.
+    await _sendCommand(c.socket, "a1", "SELECT \"a\\\\b\"");
+    check("SELECT un-escapes a backslash in a quoted mailbox name",
+      sel.length > 0 && sel[sel.length - 1].mailbox === "a\\b", JSON.stringify(sel));
+    // Wire "a\"b" is the RFC-escaped form of the name a<quote>b.
+    await _sendCommand(c.socket, "a2", "SELECT \"a\\\"b\"");
+    check("SELECT un-escapes an escaped quote in a quoted mailbox name",
+      sel.length > 1 && sel[sel.length - 1].mailbox === "a\"b", JSON.stringify(sel));
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
 // RFC 9051 §4.3 makes a literal a counted sequence of OCTETS, and §6.4.5 makes
 // `BODY[]` the message. Assembling the response as a JavaScript string and
 // handing it to `socket.write` encodes it as UTF-8 on the way out, so a message
@@ -3514,6 +3547,7 @@ async function run() {
     await testCapabilityAdvertisesCondstore();
     await testEnableCondstore();
     await testFetchChangedSinceParses();
+    await testSelectUnescapesQuotedMailboxName();
     await testFetchWritesTheOctetsTheBackendReturned();
     await testStoreUnchangedSinceConflict();
     await testFetchChangedSinceImpliesCondstore();
