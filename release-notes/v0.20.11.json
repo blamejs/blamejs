@@ -1,0 +1,27 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.20.11",
+  "date": "2026-09-14",
+  "headline": "Sieve removes the leading dot from a text: block's first line, and ManageSieve refuses control bytes inside quoted script names",
+  "summary": "Two mail-scripting parsers mis-read hostile input. `b.safeSieve` removed RFC 5228 §2.4.2 dot-stuffing from every body line of a `text:` multi-line string except the first, so a first line beginning with a doubled dot kept its extra dot and the decoded script diverged from what a conformant Sieve engine executes. And `b.guardManageSieveCommand` skipped its control-byte screen inside a quoted string, so a control byte (ESC, DEL, or a C0) in a quoted script name passed on the wire, unlike the IMAP, POP3, and SMTP command guards. Both are fixed: the first `text:` body line is de-stuffed on the same rule as the rest, and a control byte anywhere on a ManageSieve command line, quoted or not, is refused.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "ManageSieve refuses control bytes inside a quoted script name",
+          "body": "`b.guardManageSieveCommand.validate` scans a command line for forbidden control bytes but skipped the scan inside a quoted string, so an ESC, DEL, or other C0 control byte in a quoted script name (for GETSCRIPT, PUTSCRIPT, RENAMESCRIPT, SETACTIVE, or DELETESCRIPT) passed the guard. The IMAP, POP3, and SMTP command guards scan the whole line and refuse such bytes; ManageSieve was the outlier. An accepted control byte reached the operator's storage-backend key, the audit metadata, and the byte-for-byte LISTSCRIPTS echo, where an ESC is a terminal or log escape-sequence injection (CWE-117 / CWE-150). The guard now refuses a control byte anywhere on the line, whether inside a quoted string or not."
+        }
+      ]
+    },
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "Sieve text: dot-stuffing is removed from the first body line too",
+          "body": "RFC 5228 §2.4.2 requires a Sieve `text:` multi-line string to have the extra leading period removed from every body line that begins with two periods, including the first. `b.safeSieve.parse` removed it only from the second line onward, so a first body line such as `..Junk` decoded to `..Junk` instead of `.Junk`, and the decoded string, which drives `fileinto` folders, `redirect` addresses, and match keys, differed from what a deployed Sieve engine such as Dovecot or Cyrus runs. The first body line is now de-stuffed on the same rule as the rest; a single leading period is still preserved."
+        }
+      ]
+    }
+  ]
+}

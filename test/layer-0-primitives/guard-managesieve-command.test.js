@@ -231,6 +231,19 @@ function testBadInputRefused() {
   expectThrow("refuses C0 control byte (0x01)", function () {
     guardManageSieveCommand.validate("CAPABILITY\x01", { tls: true });
   }, "guard-managesieve-command/bad-byte");
+  // Control bytes are refused INSIDE a quoted string too, not only outside it —
+  // the sibling IMAP/POP3/SMTP guards scan the whole line, and a control byte in a
+  // quoted script-name would otherwise reach the mailStore key, the audit trail,
+  // and the LISTSCRIPTS echo (log/terminal-escape injection).
+  expectThrow("refuses ESC (0x1b) inside a quoted script-name", function () {
+    guardManageSieveCommand.validate('GETSCRIPT "a\x1bb"', { tls: true });
+  }, "guard-managesieve-command/bad-byte");
+  expectThrow("refuses DEL (0x7f) inside a quoted script-name", function () {
+    guardManageSieveCommand.validate('GETSCRIPT "a\x7fb"', { tls: true });
+  }, "guard-managesieve-command/bad-byte");
+  expectThrow("refuses C0 (0x01) inside a quoted PUTSCRIPT name", function () {
+    guardManageSieveCommand.validate('PUTSCRIPT "a\x01b" {5+}', { tls: true });
+  }, "guard-managesieve-command/bad-byte");
   expectThrow("refuses missing AUTHENTICATE mechanism", function () {
     guardManageSieveCommand.validate("AUTHENTICATE", { tls: true });
   }, "guard-managesieve-command/missing-mechanism");

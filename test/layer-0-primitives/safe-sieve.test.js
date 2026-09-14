@@ -87,6 +87,31 @@ function testMultilineString() {
     ast.commands[1].args.positional[0].v === "My\r\nFolder");
 }
 
+// RFC 5228 §2.4.2 dot-stuffing removal applies to EVERY body line, including the
+// first. A leading `..` on the first body line must decode to `.`, not stay `..`
+// (the SMTP/POP3 dot-stuffing class) — else the decoded script diverges from what
+// a conformant Sieve engine executes (match keys, fileinto folders, addresses).
+function testMultilineFirstLineDotStuffed() {
+  var first = b.safeSieve.parse(
+    'require ["fileinto"];\r\n' +
+    'fileinto text:\r\n..Junk\r\n.\r\n;\r\n');
+  check("first body line is de-stuffed (..Junk -> .Junk)",
+    first.commands[1].args.positional[0].v === ".Junk",
+    JSON.stringify(first.commands[1].args.positional[0].v));
+  var triple = b.safeSieve.parse(
+    'require ["fileinto"];\r\n' +
+    'fileinto text:\r\n...Deep\r\nplain\r\n..mid\r\n.\r\n;\r\n');
+  check("first-line ...Deep -> ..Deep and interior ..mid -> .mid",
+    triple.commands[1].args.positional[0].v === "..Deep\r\nplain\r\n.mid",
+    JSON.stringify(triple.commands[1].args.positional[0].v));
+  var single = b.safeSieve.parse(
+    'require ["fileinto"];\r\n' +
+    'fileinto text:\r\n.Junk\r\n.\r\n;\r\n');
+  check("a single leading dot is preserved (.Junk stays .Junk)",
+    single.commands[1].args.positional[0].v === ".Junk",
+    JSON.stringify(single.commands[1].args.positional[0].v));
+}
+
 function testCompliancePosture() {
   check("posture hipaa → strict",   b.safeSieve.compliancePosture("hipaa") === "strict");
   check("posture pci-dss → strict", b.safeSieve.compliancePosture("pci-dss") === "strict");
@@ -113,6 +138,7 @@ function run() {
   testStringTooLarge();
   testNestingCap();
   testMultilineString();
+  testMultilineFirstLineDotStuffed();
   testCompliancePosture();
   testErrorClassExported();
 }
