@@ -1,0 +1,27 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.20.8",
+  "date": "2026-09-14",
+  "headline": "The SMTP DATA-body smuggling check covers every non-canonical dot-terminator",
+  "summary": "`b.guardSmtpCommand.detectBodySmuggling`, which the MX and submission listeners run on every DATA chunk and BDAT body, refused a `.`-alone-line terminated by `\\n.\\n`, `\\r\\n.\\n`, `\\n.\\r\\n`, or `\\r.\\r`, but let three more slip through: `\\r.\\n`, `\\n.\\r`, and `\\r\\n.\\r`. The last is the `<CR><LF>.<CR>` shape Exim accepted in the CVE-2023-51766 disclosure, so a hostile sender could still terminate a message in a way a lenient downstream relay reads as end-of-data and smuggle a second message after it. The check now refuses any `.`-alone-line whose surrounding line endings are not both canonical CRLF, matched across chunk boundaries, while still passing a lone bare LF or CR that is not such a terminator so a binary BDAT body is not refused for its content.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "SMTP DATA-body smuggling detection covers every non-canonical dot-terminator",
+          "body": "SMTP smuggling (CVE-2023-51764 / -51765 / -51766) terminates a message with a `.` on a line whose line endings are not the canonical `\\r\\n.\\r\\n`, so a downstream relay that accepts the non-canonical form as end-of-data resumes parsing the next bytes as a second, unauthorized message. `b.guardSmtpCommand.detectBodySmuggling`, run by `b.mail.server.mx` and `b.mail.server.submission` on every DATA chunk and BDAT body, enumerated only four of the seven shapes and missed `\\r.\\n`, `\\n.\\r`, and `\\r\\n.\\r` (the `<CR><LF>.<CR>` form named in the CVE-2023-51766 Exim disclosure). It now refuses a `.`-alone-line whenever the line ending before or after the dot is a bare LF or bare CR rather than a canonical CRLF, deciding the same verdict whether the terminator arrives whole or split across two DATA chunks. A lone bare LF or CR that does not form such a dot-terminator is still accepted, so a binary BDAT body is not refused for carrying those bytes."
+        }
+      ]
+    },
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "`b.guardTemplate` documents that it does not screen Pug source-code lines",
+          "body": "`b.guardTemplate` refuses delimited template markers, including Pug `#{...}` / `!{...}` interpolation. Its docblock now records the boundary of that screen: an indentation-based engine (Pug, HAML) also compiles a buffered `=` / `!=` line, an unbuffered `-` line, a control keyword, an attribute expression, and a mixin call as code, and that code is un-delimited and syntactically indistinguishable from ordinary prose (a domain, a Markdown link, an `x = y` assignment), so a marker scan cannot flag it without refusing that prose. Untrusted input must therefore never be compiled as a Pug or HAML template, whatever this guard reports."
+        }
+      ]
+    }
+  ]
+}

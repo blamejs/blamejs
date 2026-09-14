@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.20.7",
-  "createdAt": "2026-09-13T10:13:11.019Z",
+  "frameworkVersion": "0.20.8",
+  "createdAt": "2026-09-14T15:21:26.368Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -36622,7 +36622,7 @@
         },
         "detectBodySmuggling": {
           "type": "function",
-          "arity": 3
+          "arity": 4
         },
         "gate": {
           "type": "function",

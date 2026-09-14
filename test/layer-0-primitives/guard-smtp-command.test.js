@@ -213,6 +213,63 @@ function testGateRefuseSmuggling() {
   });
 }
 
+// A `.` alone on its line is an SMTP end-of-data marker; it smuggles a second
+// message past a lenient relay when its surrounding line endings are not both
+// canonical CRLF. Every such non-canonical variant (`<LF>.<LF>`, `<CRLF>.<LF>`,
+// `<LF>.<CRLF>`, `<CR>.<CR>`, `<CR>.<LF>`, `<LF>.<CR>`, `<CRLF>.<CR>`) is
+// refused; the canonical `<CRLF>.<CRLF>` terminator and a lone bare LF / CR
+// that is not such a dot-line (a binary BDAT body carries those) are not.
+function testDetectBodySmugglingVariants() {
+  var det = b.guardSmtpCommand.detectBodySmuggling;
+  function S(s) { return det(Buffer.from(s, "latin1"), true); }
+  check("smuggling LF.LF",     S("abc\n.\n") === true);
+  check("smuggling CRLF.LF",   S("abc\r\n.\n") === true);
+  check("smuggling LF.CRLF",   S("abc\n.\r\n") === true);
+  check("smuggling CR.CR",     S("abc\r.\r") === true);
+  check("smuggling CR.LF",     S("abc\r.\n") === true);
+  check("smuggling LF.CR",     S("abc\n.\rX") === true);
+  check("smuggling CRLF.CR",   S("abc\r\n.\rX") === true);
+  check("dot-line at body start with bare LF", S(".\n") === true);
+  check("lone bare LF (no dot-line) not flagged", S("abc\ndef") === false);
+  check("lone bare CR (no dot-line) not flagged", S("abc\rdef") === false);
+  check("canonical CRLF.CRLF terminator is not smuggling", S("abc\r\n.\r\n") === false);
+  check("empty-body .CRLF at start is canonical", S(".\r\n") === false);
+  check("clean CRLF body is not smuggling", S("line one\r\nline two\r\n") === false);
+  check("plain text is not smuggling", S("hello world") === false);
+  // Continuation buffer (isBodyStart false): a dot-line at offset 1 is still
+  // scanned, and a leading `.` preceded by a CR in the prior chunk is a bare CR.
+  check("continuation dot-line at offset 1", det(Buffer.from("\n.\n", "latin1"), false) === true);
+  check("continuation leading dot after prior CR", det(Buffer.from(".\n", "latin1"), false, true) === true);
+}
+
+// The streaming scanner must reach the same verdict as a whole-body scan for
+// every split point: a smuggling terminator or a canonical one straddling a
+// chunk boundary is neither missed nor falsely flagged.
+function testBodySmugglingCrossChunk() {
+  function scanSplit(bytes, at) {
+    var buf = Buffer.from(bytes, "latin1");
+    var scanner = b.safeSmtp.createBodyScanner();
+    var s1 = scanner.push(buf.subarray(0, at));
+    var s2 = scanner.push(buf.subarray(at));
+    return s1.smuggling || s2.smuggling;
+  }
+  var cases = {
+    "abc\r\n.\r\ndef": false,
+    "abc\n.\ndef":     true,
+    "abc\r.\ndef":     true,
+    "abc\n.\rXdef":    true,
+    "abc\r\n.\rXdef":  true,
+    "abc\r\n.\ndef":   true,
+  };
+  Object.keys(cases).forEach(function (s) {
+    var whole = b.guardSmtpCommand.detectBodySmuggling(Buffer.from(s, "latin1"), true);
+    check("whole-body matches expected: " + JSON.stringify(s), whole === cases[s]);
+    for (var at = 0; at <= s.length; at += 1) {
+      check("split at " + at + " agrees: " + JSON.stringify(s), scanSplit(s, at) === cases[s]);
+    }
+  });
+}
+
 function testCompliancePosture() {
   check("hipaa → strict",     b.guardSmtpCommand.compliancePosture("hipaa") === "strict");
   check("pci-dss → strict",   b.guardSmtpCommand.compliancePosture("pci-dss") === "strict");
@@ -258,6 +315,8 @@ async function run() {
   testRefusesMailWithoutFrom();
   await testGateServe();
   await testGateRefuseSmuggling();
+  testDetectBodySmugglingVariants();
+  testBodySmugglingCrossChunk();
   testCompliancePosture();
   testPostureBindsStrict();
   testRegisteredInGuardAll();
