@@ -104,6 +104,10 @@ function testDotStuffForWireCanonicalizes() {
   // dotStuff returns the SAME buffer when no line begins with a dot — no copy.
   var noDots = Buffer.from("plain\r\nlines\r\nhere\r\n", "latin1");
   check("dotStuff returns input unchanged when nothing needs stuffing", b.safeSmtp.dotStuff(noDots) === noDots);
+  // dotStuffForWire fuses canonicalization + stuffing in one pass: a canonical
+  // no-dot body is returned unchanged (no intermediate buffer, no copy).
+  var cleanWire = Buffer.from("clean\r\nbody\r\n", "latin1");
+  check("dotStuffForWire returns input unchanged for a canonical no-dot body", b.safeSmtp.dotStuffForWire(cleanWire) === cleanWire);
 }
 
 // canonicalizeEol rewrites every line ending to CRLF (bare LF and bare CR both
