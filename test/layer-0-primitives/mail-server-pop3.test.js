@@ -195,6 +195,111 @@ async function testAuthenticatedTransaction() {
   } finally { tls.destroy(); sock.destroy(); await s.srv.close(); }
 }
 
+// ---- RETR/TOP egress: dot-stuff against the line ending the peer parses ----
+// A body stored with BARE-LF line endings (standard Maildir/mbox) containing a
+// lone "." line is the POP3 egress analog of SMTP DATA-body smuggling: dotStuff
+// doubles a line-initial "." only at a canonical CRLF boundary, so the "." after
+// a bare LF is emitted un-stuffed and a lenient MUA (poplib splits on bare \n,
+// breaks on a "." line) reads it as end-of-message — truncation + smuggling of
+// the rest of the response into the client stream. RETR and TOP must canonicalize
+// the body to CRLF before dot-stuffing so every line-initial "." is doubled.
+var SMUGGLE_BODY = "Subject: s\r\n\r\nhello\n.\nSMUGGLED-COMMAND\r\n";
+// A compliant store reports the canonical (CRLF) wire size — what RETR delivers
+// and LIST/STAT advertise — even though the stored bytes are bare-LF.
+var SMUGGLE_WIRE_SIZE = b.safeSmtp.canonicalizeEol(Buffer.from(SMUGGLE_BODY, "latin1")).length;
+function _smugglingStore() {
+  var body = Buffer.from(SMUGGLE_BODY, "latin1");
+  return {
+    openPop3Drop:   async function () { return { dropId: "d", count: 1, totalBytes: SMUGGLE_WIRE_SIZE }; },
+    commitPop3Drop: async function () { return { deleted: 0 }; },
+    listMessages:   async function () { return [{ msgNum: 1, size: SMUGGLE_WIRE_SIZE, uid: "u1", uidl: "u1" }]; },
+    getMessage:     async function () { return { size: SMUGGLE_WIRE_SIZE, rawBytes: body }; },
+    markDelete:     async function () { return; },
+  };
+}
+
+async function testRetrTopCanonicalizeBeforeDotStuff() {
+  function assertNoSmuggle(resp, label) {
+    var firstNl = resp.indexOf("\r\n");
+    var termIdx = resp.lastIndexOf("\r\n.\r\n");
+    var bodyRegion = resp.slice(firstNl + 2, termIdx);
+    // A lenient MUA splits on a bare LF and honors a lone "." line as the end.
+    check(label + ": no un-stuffed lone-dot line at any boundary",
+      bodyRegion.split(/\r?\n/).indexOf(".") === -1, JSON.stringify(bodyRegion));
+    var stripped = bodyRegion.replace(/\r\n/g, "");
+    check(label + ": egress body is canonical CRLF (no bare LF or CR)",
+      stripped.indexOf("\n") === -1 && stripped.indexOf("\r") === -1, JSON.stringify(bodyRegion));
+  }
+  var s = await _makeServer({ mailStore: _smugglingStore() });
+  var sock = nodeNet.connect(s.port, "127.0.0.1");
+  sock.on("error", function () {});
+  await _readReply(sock);
+  await _send(sock, "STLS");
+  var tls = nodeTls.connect({ socket: sock, ca: s.caPem, servername: "localhost" });
+  tls.on("error", function () {});
+  await new Promise(function (r, j) { tls.once("secureConnect", r); tls.once("error", j); });
+  try {
+    await _send(tls, "USER alice");
+    await _send(tls, "PASS good");
+    // STAT, LIST, and RETR advertise the SAME canonical wire size, and RETR/TOP
+    // deliver a canonical CRLF body of that size with no un-stuffed lone-dot line.
+    var stat = await _send(tls, "STAT");
+    check("STAT advertises the canonical wire size",
+      new RegExp("^\\+OK 1 " + SMUGGLE_WIRE_SIZE + "\\b").test(stat), JSON.stringify(stat));
+    var list = await _send(tls, "LIST 1");
+    check("LIST advertises the canonical wire size",
+      new RegExp("^\\+OK 1 " + SMUGGLE_WIRE_SIZE + "\\b").test(list), JSON.stringify(list));
+    var retr = await _send(tls, "RETR 1", true);
+    assertNoSmuggle(retr, "RETR");
+    var m = /^\+OK (\d+) octets/.exec(retr);
+    check("RETR advertises the canonical wire size (consistent with STAT/LIST)",
+      !!m && parseInt(m[1], 10) === SMUGGLE_WIRE_SIZE,
+      (m ? m[1] : "no +OK") + " vs " + SMUGGLE_WIRE_SIZE);
+    assertNoSmuggle(await _send(tls, "TOP 1 5", true), "TOP");
+  } finally { tls.destroy(); sock.destroy(); await s.srv.close(); }
+}
+
+// A stored body without a trailing CRLF is normalized on the wire: RETR appends
+// a final CRLF so the terminator sits on its own line. The mailStore reports that
+// CRLF-included wire size (per the composition contract), so STAT and RETR stay
+// consistent with the octets RETR actually delivers.
+async function testUnterminatedBodySizeCountsAppendedCrlf() {
+  var raw = Buffer.from("Subject: x\r\n\r\nno trailing newline", "latin1");
+  var wireSize = b.safeSmtp.canonicalizeEol(raw).length + 2;  // + the appended final CRLF
+  function store() {
+    return {
+      openPop3Drop:   async function () { return { dropId: "d", count: 1, totalBytes: wireSize }; },
+      commitPop3Drop: async function () { return { deleted: 0 }; },
+      listMessages:   async function () { return [{ msgNum: 1, size: wireSize, uid: "u1", uidl: "u1" }]; },
+      getMessage:     async function () { return { size: wireSize, rawBytes: raw }; },
+      markDelete:     async function () { return; },
+    };
+  }
+  var s = await _makeServer({ mailStore: store() });
+  var sock = nodeNet.connect(s.port, "127.0.0.1");
+  sock.on("error", function () {});
+  await _readReply(sock);
+  await _send(sock, "STLS");
+  var tls = nodeTls.connect({ socket: sock, ca: s.caPem, servername: "localhost" });
+  tls.on("error", function () {});
+  await new Promise(function (r, j) { tls.once("secureConnect", r); tls.once("error", j); });
+  try {
+    await _send(tls, "USER alice");
+    await _send(tls, "PASS good");
+    var stat = await _send(tls, "STAT");
+    check("STAT counts the appended final CRLF", new RegExp("^\\+OK 1 " + wireSize + "\\b").test(stat), JSON.stringify(stat));
+    var retr = await _send(tls, "RETR 1", true);
+    var m = /^\+OK (\d+) octets/.exec(retr);
+    check("RETR advertises the wire size including the appended CRLF",
+      !!m && parseInt(m[1], 10) === wireSize, (m ? m[1] : "none") + " vs " + wireSize);
+    var firstNl = retr.indexOf("\r\n");
+    var termIdx = retr.lastIndexOf("\r\n.\r\n");
+    var delivered = retr.slice(firstNl + 2, termIdx + 2);  // message content + its final CRLF
+    check("RETR delivers exactly the advertised octets, ending in CRLF",
+      delivered.length === wireSize && delivered.slice(-2) === "\r\n", JSON.stringify(delivered));
+  } finally { tls.destroy(); sock.destroy(); await s.srv.close(); }
+}
+
 // ---- AUTH PLAIN mechanism over TLS ----
 // The AUTHORIZATION-state guards read `state.stage` and `state.actor`, and the
 // stage moves only after an async verify resolves. The drain loop dispatched
@@ -1348,6 +1453,8 @@ async function run() {
   testTenantScopeCreateValidation();
   await testPlaintextDispatch();
   await testAuthenticatedTransaction();
+  await testRetrTopCanonicalizeBeforeDotStuff();
+  await testUnterminatedBodySizeCountsAppendedCrlf();
   await testPipelinedCredentialsCannotRaceTheAuthGuard();
   await testPipelinedAuthVerbsCannotRaceEither();
   await testPipelinedBacklogIsBounded();

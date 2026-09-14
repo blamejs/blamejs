@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.20.8",
-  "createdAt": "2026-09-14T15:21:26.368Z",
+  "frameworkVersion": "0.20.9",
+  "createdAt": "2026-09-14T20:02:26.694Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -54499,11 +54499,19 @@
           "type": "function",
           "arity": 4
         },
+        "canonicalizeEol": {
+          "type": "function",
+          "arity": 1
+        },
         "createBodyScanner": {
           "type": "function",
           "arity": 0
         },
         "dotStuff": {
+          "type": "function",
+          "arity": 1
+        },
+        "dotStuffForWire": {
           "type": "function",
           "arity": 1
         },
