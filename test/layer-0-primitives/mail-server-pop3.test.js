@@ -204,13 +204,16 @@ async function testAuthenticatedTransaction() {
 // the rest of the response into the client stream. RETR and TOP must canonicalize
 // the body to CRLF before dot-stuffing so every line-initial "." is doubled.
 var SMUGGLE_BODY = "Subject: s\r\n\r\nhello\n.\nSMUGGLED-COMMAND\r\n";
+// A compliant store reports the canonical (CRLF) wire size — what RETR delivers
+// and LIST/STAT advertise — even though the stored bytes are bare-LF.
+var SMUGGLE_WIRE_SIZE = b.safeSmtp.canonicalizeEol(Buffer.from(SMUGGLE_BODY, "latin1")).length;
 function _smugglingStore() {
   var body = Buffer.from(SMUGGLE_BODY, "latin1");
   return {
-    openPop3Drop:   async function () { return { dropId: "d", count: 1, totalBytes: body.length }; },
+    openPop3Drop:   async function () { return { dropId: "d", count: 1, totalBytes: SMUGGLE_WIRE_SIZE }; },
     commitPop3Drop: async function () { return { deleted: 0 }; },
-    listMessages:   async function () { return [{ msgNum: 1, size: body.length, uid: "u1", uidl: "u1" }]; },
-    getMessage:     async function () { return { size: body.length, rawBytes: body }; },
+    listMessages:   async function () { return [{ msgNum: 1, size: SMUGGLE_WIRE_SIZE, uid: "u1", uidl: "u1" }]; },
+    getMessage:     async function () { return { size: SMUGGLE_WIRE_SIZE, rawBytes: body }; },
     markDelete:     async function () { return; },
   };
 }
@@ -238,15 +241,20 @@ async function testRetrTopCanonicalizeBeforeDotStuff() {
   try {
     await _send(tls, "USER alice");
     await _send(tls, "PASS good");
+    // STAT, LIST, and RETR advertise the SAME canonical wire size, and RETR/TOP
+    // deliver a canonical CRLF body of that size with no un-stuffed lone-dot line.
+    var stat = await _send(tls, "STAT");
+    check("STAT advertises the canonical wire size",
+      new RegExp("^\\+OK 1 " + SMUGGLE_WIRE_SIZE + "\\b").test(stat), JSON.stringify(stat));
+    var list = await _send(tls, "LIST 1");
+    check("LIST advertises the canonical wire size",
+      new RegExp("^\\+OK 1 " + SMUGGLE_WIRE_SIZE + "\\b").test(list), JSON.stringify(list));
     var retr = await _send(tls, "RETR 1", true);
     assertNoSmuggle(retr, "RETR");
-    // RETR must advertise the octet count of the message it actually delivers
-    // (the canonicalized, pre-dot-stuffing body), not the stored bare-LF length.
     var m = /^\+OK (\d+) octets/.exec(retr);
-    var expectOctets = b.safeSmtp.canonicalizeEol(Buffer.from(SMUGGLE_BODY, "latin1")).length;
-    check("RETR advertises the canonical delivered octet count",
-      !!m && parseInt(m[1], 10) === expectOctets,
-      (m ? m[1] : "no +OK") + " vs expected " + expectOctets);
+    check("RETR advertises the canonical wire size (consistent with STAT/LIST)",
+      !!m && parseInt(m[1], 10) === SMUGGLE_WIRE_SIZE,
+      (m ? m[1] : "no +OK") + " vs " + SMUGGLE_WIRE_SIZE);
     assertNoSmuggle(await _send(tls, "TOP 1 5", true), "TOP");
   } finally { tls.destroy(); sock.destroy(); await s.srv.close(); }
 }
