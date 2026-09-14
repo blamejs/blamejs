@@ -301,6 +301,33 @@ async function testBdatRefusesSmuggledBody() {
     } finally { await zeroBundle.srv.close({ timeoutMs: 1000 }); }                                      // allow:raw-time-literal — test-only short drain
   }
 
+  // A canonical `\r\n.` then a bare CR at the very end of the body is the
+  // CVE-2023-51766 `<CR><LF>.<CR>` terminator a lenient downstream reads as
+  // end-of-data. BDAT hands the whole body over at once, so the screen reads
+  // it as a final buffer and refuses the trailing bare-CR dot-line.
+  var trailBundle = await _makePermissiveServer();
+  if (trailBundle) {
+    var tInfo = await trailBundle.srv.listen({ port: 0, address: "127.0.0.1" });
+    try {
+      var tBody = Buffer.concat([
+        Buffer.from("From: sender@example.com\r\nTo: recipient@example.com\r\n\r\nbody", "latin1"),
+        Buffer.from([0x0D, 0x0A, 0x2E, 0x0D]),                                                          // "\r\n.\r"
+      ]);
+      var t = nodeNet.connect(tInfo.port, "127.0.0.1");
+      await new Promise(function (r) { t.once("connect", r); });
+      await _readGreeting(t);
+      await _sendCommand(t, "EHLO client.example.com");
+      await _sendCommand(t, "MAIL FROM:<sender@example.com>");
+      await _sendCommand(t, "RCPT TO:<recipient@example.com>");
+      var tReply = await _sendBdat(t, tBody, true);
+      check("BDAT: a trailing bare-CR dot terminator is refused 554",
+            /^554 /m.test(tReply), JSON.stringify(tReply));
+      check("BDAT: the trailing bare-CR body never reached the agent",
+            trailBundle.handoffs.length === 0, String(trailBundle.handoffs.length));
+      t.destroy();
+    } finally { await trailBundle.srv.close({ timeoutMs: 1000 }); }                                      // allow:raw-time-literal — test-only short drain
+  }
+
   // Control: an ordinary body still goes through on the same path, so the
   // screen refuses a smuggling shape rather than refusing BDAT.
   var ok = await _makePermissiveServer();

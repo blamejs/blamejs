@@ -78,10 +78,17 @@ function testDetectSmugglingShape() {
   check("bare-LF dot-line flagged as smuggling",
     b.guardSmtpCommand.detectBodySmuggling(smuggled) === true);
 
-  // Mid-body bare-LF without dot — not the smuggling shape.
+  // Mid-body bare-LF without a dot-line is not the smuggling shape; a binary
+  // BDAT body carries such bytes legitimately, so it is not refused.
   var mixed = Buffer.from("hello\nthere\r\n.\r\n", "utf8");
   check("bare-LF without dot terminator not flagged",
     b.guardSmtpCommand.detectBodySmuggling(mixed) === false);
+
+  // Every non-canonical dot-terminator variant is refused (was partially missed).
+  ["hello\r.\n", "hello\n.\rX", "hello\r\n.\rX"].forEach(function (s) {
+    check("dot-terminator variant refused: " + JSON.stringify(s),
+      b.guardSmtpCommand.detectBodySmuggling(Buffer.from(s, "utf8")) === true);
+  });
 }
 
 function testFindDotTerminator() {
