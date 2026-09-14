@@ -101,6 +101,9 @@ function testDotStuffForWireCanonicalizes() {
   var threw = false;
   try { b.safeSmtp.dotStuffForWire("nope"); } catch (e) { threw = !!(e && e.code === "safe-smtp/bad-input"); }
   check("dotStuffForWire refuses a non-Buffer", threw);
+  // dotStuff returns the SAME buffer when no line begins with a dot — no copy.
+  var noDots = Buffer.from("plain\r\nlines\r\nhere\r\n", "latin1");
+  check("dotStuff returns input unchanged when nothing needs stuffing", b.safeSmtp.dotStuff(noDots) === noDots);
 }
 
 // canonicalizeEol rewrites every line ending to CRLF (bare LF and bare CR both
@@ -115,6 +118,10 @@ function testCanonicalizeEol() {
   check("trailing bare LF → CRLF", c("a\n") === "a\r\n");
   check("empty → empty", c("") === "");
   check("no line ending unchanged", c("abc") === "abc");
+  // Already-canonical input is returned as the SAME buffer — no allocation, so a
+  // large CRLF message (the common case) is not copied into an oversized buffer.
+  var canonBuf = Buffer.from("already\r\ncanonical\r\nbody\r\n", "latin1");
+  check("already-canonical input returned unchanged (no copy)", b.safeSmtp.canonicalizeEol(canonBuf) === canonBuf);
   var threw = false;
   try { b.safeSmtp.canonicalizeEol("nope"); } catch (e) { threw = !!(e && e.code === "safe-smtp/bad-input"); }
   check("canonicalizeEol refuses a non-Buffer", threw);
