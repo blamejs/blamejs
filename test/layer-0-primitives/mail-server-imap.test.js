@@ -545,6 +545,50 @@ async function testSelectUnescapesQuotedMailboxName() {
     await _sendCommand(c.socket, "a2", "SELECT \"a\\\"b\"");
     check("SELECT un-escapes an escaped quote in a quoted mailbox name",
       sel.length > 1 && sel[sel.length - 1].mailbox === "a\"b", JSON.stringify(sel));
+    // An unsupported escape (a backslash before a non-special) is malformed per
+    // RFC 3501 §4.3; reject it rather than silently alias mailbox "foobar".
+    var before = sel.length;
+    var badReply = await _sendCommand(c.socket, "a3", "SELECT \"foo\\bar\"");
+    check("SELECT rejects an unsupported quoted-string escape",
+      /^a3 BAD/m.test(badReply), JSON.stringify(badReply));
+    check("the malformed escape did not select a different mailbox",
+      sel.length === before, JSON.stringify(sel.slice(before)));
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+// An APPEND date-time is a quoted string; an unsupported escape in it (e.g.
+// "bad\q") makes it un-unquotable. The command must be rejected, not stored with
+// the invalid date silently dropped to a null internalDate.
+async function testAppendRejectsMalformedQuotedDate() {
+  var ctx;
+  try { ctx = await _makeTestTlsContext(); }
+  catch (_e) { check("APPEND malformed date (skipped)", true); return; }
+  var stub = _makeStubMailStore();
+  var appended = false;
+  stub.appendMessage = function () { appended = true; return Promise.resolve({ uid: 1, uidValidity: 1 }); };
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: stub, profile: "permissive",
+    auth: { mechanisms: ["LOGIN"], verify: function () { return Promise.resolve({ ok: true, actor: { id: "u1" } }); } },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    await _sendCommand(c.socket, "a0", "LOGIN test test");
+    var seen = "";
+    function collect(chunk) { seen += chunk.toString("utf8"); }
+    c.socket.on("data", collect);
+    var body = "x";
+    c.socket.write("a1 APPEND INBOX \"bad\\q\" {" + body.length + "}\r\n");
+    await helpers.waitUntil(function () { return seen.indexOf("+") !== -1 || /^a1 /m.test(seen); },
+      { timeoutMs: 5000, label: "imap append malformed date: continuation or reply" });
+    if (!/^a1 /m.test(seen)) {
+      c.socket.write(body);
+      c.socket.write("\r\n");
+      await helpers.waitUntil(function () { return /^a1 /m.test(seen); },
+        { timeoutMs: 5000, label: "imap append malformed date: tagged reply" });
+    }
+    check("APPEND rejects a malformed quoted date-time", /^a1 BAD/m.test(seen), JSON.stringify(seen));
+    check("the malformed date did not reach the backend", appended === false);
     c.socket.destroy();
   } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
 }
@@ -3548,6 +3592,7 @@ async function run() {
     await testEnableCondstore();
     await testFetchChangedSinceParses();
     await testSelectUnescapesQuotedMailboxName();
+    await testAppendRejectsMalformedQuotedDate();
     await testFetchWritesTheOctetsTheBackendReturned();
     await testStoreUnchangedSinceConflict();
     await testFetchChangedSinceImpliesCondstore();
