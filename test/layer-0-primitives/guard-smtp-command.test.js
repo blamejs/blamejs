@@ -240,6 +240,20 @@ function testDetectBodySmugglingVariants() {
   // scanned, and a leading `.` preceded by a CR in the prior chunk is a bare CR.
   check("continuation dot-line at offset 1", det(Buffer.from("\n.\n", "latin1"), false) === true);
   check("continuation leading dot after prior CR", det(Buffer.from(".\n", "latin1"), false, true) === true);
+  // A trailing `.` then bare CR after a canonical `\r\n.` is the ambiguous
+  // split of a canonical `\r\n.\r\n`: a streaming caller (moreComing omitted
+  // or true) must defer it so valid mail chunked at the CR is not rejected;
+  // only an explicit final buffer (moreComing false) reads it as a bare CR.
+  check("trailing CRLF.CR deferred for legacy 3-arg caller",
+    det(Buffer.from("abc\r\n.\r", "latin1"), true) === false);
+  check("trailing CRLF.CR deferred when moreComing true",
+    det(Buffer.from("abc\r\n.\r", "latin1"), true, false, true) === false);
+  check("trailing CRLF.CR flagged when final buffer",
+    det(Buffer.from("abc\r\n.\r", "latin1"), true, false, false) === true);
+  // A bare CR or LF before the dot is unambiguous smuggling; a trailing bare
+  // CR after it is flagged at once, with no dependence on moreComing.
+  check("trailing CR.CR flagged for legacy 3-arg caller",
+    det(Buffer.from("abc\r.\r", "latin1"), true) === true);
 }
 
 // The streaming scanner must reach the same verdict as a whole-body scan for
