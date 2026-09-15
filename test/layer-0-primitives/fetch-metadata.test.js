@@ -215,7 +215,26 @@ async function testLayeredStricterGateRuns() {
         s1.next === false && s2.next === true);
 }
 
+// The safe-method exemption uppercases the configured methods but compared the
+// raw req.method; HTTP/2 delivers the method verbatim, so a non-canonical case
+// skipped the whole Sec-Fetch gate. It must be normalized.
+async function testMethodCaseIsNormalized() {
+  var mw = b.middleware.fetchMetadata({ allowSameSite: false });
+  var cases = ["Post", "post"];
+  for (var i = 0; i < cases.length; i++) {
+    var req = _bodyReq(cases[i], { "sec-fetch-site": "same-site", "sec-fetch-mode": "cors", "sec-fetch-dest": "empty" }, "");
+    var r = await _run(mw, req, _bodyRes());
+    check("fetch-metadata: non-canonical-case protected method " + JSON.stringify(cases[i]) + " does not bypass the gate",
+          r.next === false && r.status === 403, (r.next ? "next" : "denied") + " " + (r.status || ""));
+  }
+  // CONTROL: a safe method (any case) stays exempt.
+  var getReq = _bodyReq("get", { "sec-fetch-site": "same-site", "sec-fetch-mode": "cors", "sec-fetch-dest": "empty" }, "");
+  var rg = await _run(mw, getReq, _bodyRes());
+  check("fetch-metadata: a safe method stays exempt", rg.next === true, rg.next ? "next" : "denied");
+}
+
 async function run() {
+  await testMethodCaseIsNormalized();
   await testDefaultUnchanged();
   await testDeniedDestWebIdentity();
   await testStorageAccessGate();

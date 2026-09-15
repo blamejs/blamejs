@@ -503,7 +503,32 @@ async function testTheOriginBaselineIsBuiltFromTheHttp2Authority() {
     r3.outcome === "denied" && r3.status === 403, r3.outcome + " " + (r3.status || ""));
 }
 
+// The safe-method exemption uppercases the configured methods but compared the
+// raw req.method. HTTP/2 delivers the method verbatim (h1 rejects a non-canonical
+// case), so a "Post"/"post" state-changing request skipped the whole gate. It
+// must be normalized so a protected method is gated whatever its case.
+async function testMethodCaseIsNormalized() {
+  var token = b.forms.generateCsrfToken();
+  var cases = ["Post", "post", "pOsT"];
+  for (var i = 0; i < cases.length; i++) {
+    var forged = _mockReq({
+      method:  cases[i],
+      url:     "/submit",
+      headers: { host: "example.com", cookie: "csrf=" + token + "; session=abc" },
+    });
+    var r = await _runCsrf({ cookie: true }, forged);
+    check("csrf: non-canonical-case protected method " + JSON.stringify(cases[i]) + " does not bypass the gate",
+      r.outcome === "denied" && r.status === 403,
+      r.outcome + " " + (r.status || ""));
+  }
+  // CONTROL: a genuinely safe method stays exempt (lowercase too).
+  var safe = _mockReq({ method: "get", url: "/x", headers: { host: "example.com", cookie: "csrf=" + token } });
+  var rs = await _runCsrf({ cookie: true }, safe);
+  check("csrf: a safe method (any case) stays exempt", rs.outcome === "next", rs.outcome);
+}
+
 async function run() {
+  await testMethodCaseIsNormalized();
   await testTheOriginBaselineIsBuiltFromTheHttp2Authority();
   await testRequireOriginDenialNamesItsReason();
   await testSuccessPathDoubleSubmit();

@@ -191,7 +191,34 @@ function testRequirePositiveFiniteInt() {
     /<= 65535/.test(msg || "") && /number 70000/.test(msg || ""));
 }
 
+// finiteTimestamp coerces a stored timing value for a fail-CLOSED expiry
+// compare. A raw `Number(x) < now` is NaN-blind (NaN < now === false → a
+// malformed timestamp reads as NOT expired); mapping non-finite to -Infinity
+// makes such a value read as already past.
+function testFiniteTimestamp() {
+  check("finiteTimestamp(1758000000000) passes a finite number through",
+        nb.finiteTimestamp(1758000000000) === 1758000000000);
+  check("finiteTimestamp('1758000000000') coerces a numeric string",
+        nb.finiteTimestamp("1758000000000") === 1758000000000);
+  check("finiteTimestamp(undefined) → -Infinity",  nb.finiteTimestamp(undefined) === -Infinity);
+  check("finiteTimestamp(null) is 0 (Number(null))", nb.finiteTimestamp(null) === 0);
+  check("finiteTimestamp(NaN) → -Infinity",         nb.finiteTimestamp(NaN) === -Infinity);
+  check("finiteTimestamp(Infinity) → -Infinity",    nb.finiteTimestamp(Infinity) === -Infinity);
+  check("finiteTimestamp('2026-01-01T00:00:00Z') → -Infinity (non-numeric)",
+        nb.finiteTimestamp("2026-01-01T00:00:00Z") === -Infinity);
+  check("finiteTimestamp('nope') → -Infinity",      nb.finiteTimestamp("nope") === -Infinity);
+
+  // The bug this closes: the old raw compare treats a non-numeric expiresAt as
+  // live; the new one treats it as expired.
+  var now = 1758000000000;
+  check("CONTROL old behavior: Number(ISO) < now is false (fail-open)",
+        (Number("2026-01-01T00:00:00Z") < now) === false);
+  check("FIX: finiteTimestamp(ISO) < now is true (fail-closed / expired)",
+        (nb.finiteTimestamp("2026-01-01T00:00:00Z") < now) === true);
+}
+
 async function run() {
+  testFiniteTimestamp();
   testHelperPredicate();
   testRequirePositiveFiniteInt();
   testConsumersRejectInfinity();
