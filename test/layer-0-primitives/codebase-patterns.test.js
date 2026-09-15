@@ -12800,6 +12800,31 @@ function testStateStampScanningDeferred() {
 //      patterns split across lines still match.
 var KNOWN_ANTIPATTERNS = [
   {
+    id: "an-imap-name-split-must-span-a-quoted-string-escape",
+    primitive: "b.mail.server.imap.create",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // Anchored on the atom-or-quoted mailbox-name alternation the split verbs
+    // use — `(\S+|"[^"]...`. A first-quote-terminated class stops at a `\"`
+    // inside the name; the escape-aware `(\S+|"(?:\\.|[^"\\])...` is the fixed
+    // shape and does not match. The optional date-time capture `("[^"]+")` has
+    // no `(\S+|` before it and never holds a quote, so it is not matched.
+    regex: /\(\\S\+\|"\[\^"\]/,
+    allowlist: [],
+    fixtures: {
+      fires: [
+        'var m = args.match(/^(\\S+|"[^"]+")\\s+\\(([^)]+)\\)$/);',
+        'var match = args.match(/^(\\S+|"[^"]*")\\s+\\((.+)\\)$/);',
+      ],
+      quiet: [
+        'var m = args.match(/^(\\S+|"(?:\\\\.|[^"\\\\])+")\\s+\\(([^)]+)\\)$/);',
+        'var dt = args.match(/(?:\\s+("[^"]+"))?$/);',
+        'var m = trimmed.match(/^(\\S+)\\s+(\\S.*)$/);',
+      ],
+    },
+    reason: "RFC 3501 §4.3 lets a quoted string carry a double quote as `\\\"`. The IMAP verbs that split a leading mailbox name from the arguments after it — STATUS, GETMETADATA, SETMETADATA, APPEND, APPEND CATENATE, and SELECT ... QRESYNC — did it with the alternation `(\\S+|\"[^\"]*\")`, an atom or a first-quote-terminated string. That class stops at the `\\\"` inside the name, and because each regex is anchored to the trailing structure with `$`, the match then fails and the command comes back BAD. A mailbox name with both a space and a quote (`\"a\\\"b c\"` on the wire, the name `a\"b c`) is a name _validateMailboxName accepts, so a conformant client could neither STATUS nor APPEND it. `\\S+` alone already carries a no-space name that contains a quote, so the gap is specifically the spaced quoted name. The fixed form spans the escape: `(\\S+|\"(?:\\\\.|[^\"\\\\])*\")`, keeping the site's own `*`/`+`, and then _unquote decodes it. The alternation `\\\\.|[^\"\\\\]` is disjoint on its first character, so the quoted run stays linear. Anchored on `(\\S+|\"[^\"]` because that atom-or-quoted alternation is the exact split idiom; SELECT unquotes the whole remainder and never uses it, and the optional date-time capture `(\"[^\"]+\")` is not a name and never holds a quote, so neither is matched. Empty allowlist: no IMAP name-split needs the first-quote-terminated class, and a verb added with it is the one to catch.",
+  },
+  {
     id: "a-collected-array-is-appended-not-spread-as-arguments",
     primitive: "b.markupTokenizer.parseAttrsRecovering",
     scanScope: "lib",

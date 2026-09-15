@@ -3574,6 +3574,52 @@ async function testUidExpungeReachesAConsumerSuppliedHandler() {
   } finally { sock.destroy(); await s.srv.close(); }
 }
 
+// RFC 3501 §4.3 quoted strings carry an embedded double quote as `\"`. The verbs
+// that split a leading quoted mailbox name from the arguments after it (STATUS,
+// GETMETADATA, SETMETADATA, APPEND, APPEND CATENATE, SELECT ... QRESYNC) must span
+// that escape. A name with both a space and a quote — the wire form `"a\"b c"` for
+// the name `a"b c` — is a valid mailbox name (_validateMailboxName accepts it), so
+// the split has to decode it and hand the backend `a"b c` rather than reject the
+// command. A first-quote-terminated capture stops at the `\"` and the anchored
+// match fails, so the command comes back BAD.
+async function testQuotedMailboxNameWithEscapedQuote() {
+  var getMetaMailbox = [];
+  var store = _baseStore({
+    getMetadata: function (_actor, _mailbox, names) {
+      getMetaMailbox.push(_mailbox);
+      return Promise.resolve(names.map(function (n) { return { entry: n, value: "v" }; }));
+    },
+  });
+  var s = await _makeServer({ profile: "permissive", mailStore: store });
+  var sock = await _authConn(s);
+  try {
+    var st = await _cmd(sock, "a1", 'STATUS "a\\"b c" (MESSAGES)');
+    check("STATUS accepts a quoted name with an escaped quote (not BAD)",
+      /^a1 OK STATUS completed/m.test(st), JSON.stringify(st));
+    check("STATUS hands the backend the decoded name",
+      store.calls.status.length === 1 && store.calls.status[0].name === 'a"b c',
+      JSON.stringify(store.calls.status));
+    check("STATUS re-quotes the escaped quote in its untagged echo",
+      st.indexOf('* STATUS "a\\"b c" (') !== -1, JSON.stringify(st));
+
+    var gm = await _cmd(sock, "a2", 'GETMETADATA "a\\"b c" (/private/comment)');
+    check("GETMETADATA accepts a quoted name with an escaped quote (not BAD)",
+      /^a2 OK /m.test(gm), JSON.stringify(gm));
+    check("GETMETADATA hands the backend the decoded name",
+      getMetaMailbox.length === 1 && getMetaMailbox[0] === 'a"b c',
+      JSON.stringify(getMetaMailbox));
+    check("GETMETADATA re-quotes the name in its untagged METADATA echo",
+      gm.indexOf('* METADATA "a\\"b c" (') !== -1, JSON.stringify(gm));
+
+    var ap = await _appendLiteral(sock, "a3", 'APPEND "a\\"b c" {4+}', Buffer.from("data"), true);
+    check("APPEND accepts a quoted name with an escaped quote (not BAD)",
+      /^a3 OK/m.test(ap), JSON.stringify(ap));
+    check("APPEND hands the backend the decoded name",
+      store.calls.append.length === 1 && store.calls.append[0].name === 'a"b c',
+      JSON.stringify(store.calls.append));
+  } finally { sock.destroy(); await s.srv.close(); }
+}
+
 async function run() {
   var wtt = helpers.withTestTimeout;
   await helpers.withDrain("mail-server-imap", async function () {
@@ -3633,6 +3679,7 @@ async function run() {
     await wtt("login",                  testLogin);
     await wtt("select/examine",         testSelectExamine);
     await wtt("list/status",            testListStatus);
+    await wtt("quoted name esc-quote",  testQuotedMailboxNameWithEscapedQuote);
     await wtt("append",                 testAppend);
     await wtt("selected commands",      testSelectedCommands);
     await wtt("idle",                   testIdle);
