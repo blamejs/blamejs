@@ -1,0 +1,35 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.20.15",
+  "date": "2026-09-15",
+  "headline": "Object-store keys with a `.` or `..` path segment are refused across every remote backend",
+  "summary": "An object key containing a `.` or `..` path segment could resolve outside the configured bucket or container. Each backend percent-encoded the key per `/`-separated segment, joined the segments into a URL path, and parsed the result as a URL, and URL parsing collapses `.`/`..` dot segments. In path-style S3 addressing a key such as `../../other-bucket/object` reached a different bucket on the same endpoint, with a valid signature; virtual-hosted addressing rewrote the delivered key. Such keys are now refused across the SigV4, Google Cloud Storage, and Azure Blob backends, matching the filesystem and generic-HTTP backends. Three presigned-URL correctness fixes ship alongside.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "Object keys that would escape the bucket or container are refused",
+          "body": "The object-store backends built the request path by percent-encoding each `/`-separated key segment and joining them, then parsing the result as a URL. A `.` or `..` segment survived the encoding and was then collapsed by the URL parser, so a key such as `../../other-bucket/object` resolved above the configured bucket: path-style S3 reached a different bucket on the same endpoint, and virtual-hosted addressing rewrote the delivered key. Because the request signature was computed over the already-resolved path, the server honored it rather than rejecting it. The SigV4, GCS, and Azure Blob object and presigned-URL paths, and the S3 object-lock retention and legal-hold operations, now refuse a key with a `.` or `..` path segment (or a null byte) with `objectstore/invalid-key`, the contract the filesystem and generic-HTTP backends already enforced. Keys with a dot inside a segment (`report.v2/data..bak`) are unaffected."
+        },
+        {
+          "title": "Presigned URLs and upload policies refuse a contentType with CR, LF, or NUL",
+          "body": "A presigned URL or upload policy folds the caller-supplied `contentType` into the request signature and hands it back in the header map or form fields the caller is told to send. A CR, LF, or NUL in that value is a header-injection vector at that boundary and desyncs the sent value from the signed one. `presignedUploadUrl`, `presignedDownloadUrl`, and `presignedUploadPolicy` on the SigV4, GCS, and Azure Blob backends now refuse such a `contentType` with `objectstore/invalid-content-type`, matching the refusal already applied to presigned response-header overrides."
+        }
+      ]
+    },
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "SigV4 wire query encoding matches the signature for `*` and `~`",
+          "body": "The query sent on a SigV4 request encoded `*` and `~` differently from the canonical form the signature was computed over: `*` was left bare instead of `%2A`, and `~` was `%7E` instead of bare. A request whose query carried either character (a `list` prefix, a presigned response-header override) was rejected by the server with a signature mismatch. The wire query is now aligned to the canonical encoding on those characters, so the requests are accepted; a bare subresource token such as `?uploads` is unchanged."
+        },
+        {
+          "title": "Presigned-URL expiry refuses non-integer and non-finite values",
+          "body": "`expiresIn` is bounded to 1 through 604800 seconds, but `NaN` passed the numeric bound (both comparisons are false) and a fractional value produced a fractional `X-Amz-Expires`. `expiresIn` must now be an integer within the range; `NaN`, `Infinity`, and fractional values are refused with `objectstore/invalid-expires`."
+        }
+      ]
+    }
+  ]
+}
