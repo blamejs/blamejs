@@ -655,7 +655,9 @@ function testConnectionFragmentedMessage() {
 // exhaustion DoS. The fragment COUNT must be capped too.
 function testConnectionZeroLengthFragmentFloodIsBounded() {
   var socket = makeSocket();
-  var conn = new ws.WebSocketConnection(socket, { closeGraceMs: 10, maxMessageBytes: 256 });
+  // maxFragments: 4 makes the cap small so the flood aborts within a few frames;
+  // the default cap is a generous floor that keeps finely-fragmented messages valid.
+  var conn = new ws.WebSocketConnection(socket, { closeGraceMs: 10, maxMessageBytes: 256, maxFragments: 4 });
   try {
     conn.on("message", function () {});
     socket.emit("data", clientFrame(ws.OPCODE_TEXT, "x", { fin: false }));
