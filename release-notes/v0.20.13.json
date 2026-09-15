@@ -1,0 +1,27 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.20.13",
+  "date": "2026-09-15",
+  "headline": "WebSocket bounds the number of fragments in a message and rejects RSV1 on control frames",
+  "summary": "A WebSocket message was reassembled under a byte cap applied to the running total, but a continuation frame with an empty payload never advances that total. A peer that opened a fragmented message and then streamed empty continuation frames without setting the final bit grew the buffered-fragment array without bound, exhausting memory. Both the server and the client now cap the fragment count per message in addition to the byte total. The server also rejects a control frame that sets the RSV1 bit, per RFC 7692 §6.1.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "WebSocket caps a message's fragment count, not only its byte size",
+          "body": "`b.websocket` reassembled a fragmented message under the `maxMessageBytes` cap applied to the running byte total. A continuation frame carrying an empty payload does not advance that total, so a peer that opened a fragmented message and then streamed empty (or one-byte) continuation frames without ever setting the FIN bit grew the array of buffered fragments without bound, exhausting process memory (CWE-770). The heartbeat does not intervene because the attacker interleaves valid PONG frames. The server (`b.websocket`) and the WebSocket client (`b.wsClient`) now cap the number of fragments per message in addition to the byte total. The server refuses an over-cap message with a 1009 close; the client raises a message-too-big error and closes the connection, the same way it already handles a message that exceeds `maxMessageBytes`. The cap defaults to a generous ceiling (derived from `maxMessageBytes`, with a floor that keeps finely-fragmented small messages valid) and is configurable through the `maxFragments` option. A message split into a reasonable number of fragments is unaffected."
+        }
+      ]
+    },
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "WebSocket rejects the RSV1 bit on a control frame",
+          "body": "RFC 7692 §6.1 forbids the RSV1 (per-message-deflate) bit on a control frame, even when permessage-deflate is negotiated for the connection. The server accepted a PING, PONG, or CLOSE frame that set RSV1; it now fails the connection with a protocol-error close (1002). Control-frame payloads were never routed through decompression, so this is a conformance fix with no exploit path."
+        }
+      ]
+    }
+  ]
+}
