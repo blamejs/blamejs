@@ -3608,6 +3608,8 @@ async function testQuotedMailboxNameWithEscapedQuote() {
     check("GETMETADATA hands the backend the decoded name",
       getMetaMailbox.length === 1 && getMetaMailbox[0] === 'a"b c',
       JSON.stringify(getMetaMailbox));
+    check("GETMETADATA re-quotes the name in its untagged METADATA echo",
+      gm.indexOf('* METADATA "a\\"b c" (') !== -1, JSON.stringify(gm));
 
     var ap = await _appendLiteral(sock, "a3", 'APPEND "a\\"b c" {4+}', Buffer.from("data"), true);
     check("APPEND accepts a quoted name with an escaped quote (not BAD)",
