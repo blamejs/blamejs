@@ -14,7 +14,7 @@
         },
         {
           "title": "CORS refuses a global- or sticky-flagged RegExp origin",
-          "body": "`b.middleware.cors` matched a RegExp origin entry with `pattern.test(origin)`. A pattern carrying the global (`g`) or sticky (`y`) flag makes `.test()` stateful — it advances `lastIndex` between calls — so the same origin can match on one request and not the next, making a credentialed CORS decision unreliable. `cors` now refuses such a pattern at construction with `cors/stateful-pattern`; an unflagged RegExp origin is unchanged."
+          "body": "`b.middleware.cors` matched a RegExp origin entry with `pattern.test(origin)`. A pattern carrying the global (`g`) or sticky (`y`) flag makes `.test()` stateful (it advances `lastIndex` between calls), so the same origin can match on one request and not the next, making a credentialed CORS decision unreliable. `cors` now refuses such a pattern at construction with `cors/stateful-pattern`; an unflagged RegExp origin is unchanged."
         }
       ]
     }
