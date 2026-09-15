@@ -46,6 +46,26 @@ function _swallow(ret) {
   if (ret && typeof ret.then === "function") ret.catch(function () {});
 }
 
+async function _acode(p) {
+  try { await p; return "OK"; }
+  catch (e) { return e && e.code; }
+}
+
+function _makeGcs() {
+  var pair = nodeCrypto.generateKeyPairSync("rsa", {
+    modulusLength:      2048,
+    publicKeyEncoding:  { type: "spki",  format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
+  return gcs.create({
+    bucket:         "mybucket",
+    serviceAccount: {
+      client_email: "test-sa@test-project.iam.gserviceaccount.com",
+      private_key:  pair.privateKey,
+    },
+  });
+}
+
 // ---- the shared mechanism: sigv4.encodeObjectKeyPath ----
 
 function testEncodeObjectKeyPathRejectsDotSegments() {
@@ -87,6 +107,8 @@ function testSigv4PresignRejectsTraversal() {
         _code(function () { store.presignedDownloadUrl({ key: "../../otherbucket/secret", expiresIn: 300 }); }) === "objectstore/invalid-key");
   check("sigv4 presignedUploadUrl refuses a traversal key",
         _code(function () { store.presignedUploadUrl({ key: "../secret", expiresIn: 300 }); }) === "objectstore/invalid-key");
+  check("sigv4 presignedUploadPolicy refuses a traversal key",
+        _code(function () { store.presignedUploadPolicy({ key: "../secret", maxBytes: 1024, expiresIn: 300 }); }) === "objectstore/invalid-key");
 
   // CONTROL: a legit key presigns to a path UNDER the configured bucket.
   var ok = store.presignedDownloadUrl({ key: "dir/file.txt", expiresIn: 300 });
@@ -128,18 +150,7 @@ function testAzureRejectsTraversal() {
 // ---- gcs (GOOG4-RSA) presign ----
 
 function testGcsPresignRejectsTraversal() {
-  var pair = nodeCrypto.generateKeyPairSync("rsa", {
-    modulusLength:      2048,
-    publicKeyEncoding:  { type: "spki",  format: "pem" },
-    privateKeyEncoding: { type: "pkcs8", format: "pem" },
-  });
-  var g = gcs.create({
-    bucket:         "mybucket",
-    serviceAccount: {
-      client_email: "test-sa@test-project.iam.gserviceaccount.com",
-      private_key:  pair.privateKey,
-    },
-  });
+  var g = _makeGcs();
   check("gcs presignedDownloadUrl refuses a traversal key",
         _code(function () { g.presignedDownloadUrl({ key: "../../otherbucket/object", expiresIn: 300 }); }) === "objectstore/invalid-key");
   check("gcs presignedUploadUrl refuses a traversal key",
@@ -149,6 +160,26 @@ function testGcsPresignRejectsTraversal() {
   var ok = g.presignedDownloadUrl({ key: "dir/file.txt", expiresIn: 300 });
   check("gcs legit key presigns under the bucket",
         ok.url.indexOf("/mybucket/dir/file.txt") !== -1, ok.url);
+}
+
+// ---- gcs direct operations (encodeURIComponent whole key) ----
+// encodeURIComponent(".") is ".", so an unguarded /o/. normalizes to /o/ and the
+// direct op addresses the wrong route. The guard runs at the method entry, before
+// the network token fetch, so a bad key rejects with no network I/O.
+
+async function testGcsDirectRejectsTraversal() {
+  var g = _makeGcs();
+  var buf = Buffer.from("x", "utf8");
+  check("gcs put refuses a '.' key",
+        (await _acode(g.put(".", buf))) === "objectstore/invalid-key");
+  check("gcs get refuses a '..' key",
+        (await _acode(g.get(".."))) === "objectstore/invalid-key");
+  check("gcs head refuses a '.' key",
+        (await _acode(g.head("."))) === "objectstore/invalid-key");
+  check("gcs delete refuses a traversal key",
+        (await _acode(g.delete("../../otherbucket/object"))) === "objectstore/invalid-key");
+  check("gcs presignedUploadPolicy refuses a traversal key",
+        _code(function () { g.presignedUploadPolicy({ key: "../secret", maxBytes: 1024, expiresIn: 300 }); }) === "objectstore/invalid-key");
 }
 
 // ---- sigv4 bucket-ops (object-lock / retention / legal-hold) ----
@@ -190,6 +221,7 @@ async function run() {
   testSigv4PresignRejectsTraversal();
   testAzureRejectsTraversal();
   testGcsPresignRejectsTraversal();
+  await testGcsDirectRejectsTraversal();
   testBucketOpsRejectsTraversal();
 }
 
