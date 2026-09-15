@@ -363,8 +363,29 @@ async function testCorsPnaPreflightAllowedWhenOptedIn() {
         out.res._sent.headers["access-control-allow-private-network"] === "true");
 }
 
+// A RegExp origin with the global (g) or sticky (y) flag makes `.test()` stateful
+// across calls (it advances lastIndex), so credentialed CORS matching would flip
+// unpredictably between requests. Such a pattern must be refused at construction.
+function testCorsRejectsStatefulRegexOrigin() {
+  var threwG = false;
+  try { b.middleware.cors({ origins: [/\.example\.com$/g] }); }
+  catch (e) { threwG = !!(e && e.code === "cors/stateful-pattern"); }
+  check("cors: a global-flagged RegExp origin is refused (stateful .test())", threwG);
+
+  var threwY = false;
+  try { b.middleware.cors({ origins: [new RegExp("\\.example\\.com$", "y")] }); }
+  catch (e) { threwY = !!(e && e.code === "cors/stateful-pattern"); }
+  check("cors: a sticky-flagged RegExp origin is refused", threwY);
+
+  var okPlain = false;
+  try { b.middleware.cors({ origins: [/\.example\.com$/] }); okPlain = true; }
+  catch (_e) { okPlain = false; }
+  check("cors: a plain (unflagged) RegExp origin is still accepted", okPlain);
+}
+
 async function run() {
   await testCorsSameOriginPostPassesWithoutAllowList();
+  testCorsRejectsStatefulRegexOrigin();
   await testCorsCrossOriginPostStillRefused();
   await testCorsExplicitSiteOriginAcceptsThatOrigin();
   await testCorsExplicitSiteOriginRejectsInferredOrigin();

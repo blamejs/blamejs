@@ -1,0 +1,22 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.20.14",
+  "date": "2026-09-15",
+  "headline": "`safeSql.quoteIdentifier` doubles its quote character, and CORS refuses a stateful (g/y-flagged) RegExp origin",
+  "summary": "Two public security primitives had input-handling correctness gaps. `b.safeSql.quoteIdentifier` wrapped a name in quotes without doubling the quote character inside it, so a caller that admitted a quote through a custom validation pattern could break out of the quoting. `b.middleware.cors` accepted a RegExp origin carrying the global (g) or sticky (y) flag, which makes `.test()` stateful across requests and origin matching unreliable. Both are fixed.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "safeSql.quoteIdentifier doubles the dialect quote character",
+          "body": "`b.safeSql.quoteIdentifier` validated a name and then wrapped it in double quotes (SQLite/Postgres) or backticks (MySQL) verbatim, without doubling any occurrence of that quote character inside the name, as standard SQL identifier quoting requires. The default identifier shape excludes quote characters, so the built-in query builder (`b.sql`, `b.db`) was never exposed; but a caller passing a custom `opts.pattern` that admits a `\"` or backtick could produce a quoted identifier that breaks out of the quotes. `quoteIdentifier` now doubles the dialect quote character inside the name (`\"`→`\"\"`, backtick→doubled backtick), so it quotes safely regardless of the pattern that admitted the name. `b.safeSql.quoteQualified` and `b.safeSql.quoteList` delegate to it and are covered."
+        },
+        {
+          "title": "CORS refuses a global- or sticky-flagged RegExp origin",
+          "body": "`b.middleware.cors` matched a RegExp origin entry with `pattern.test(origin)`. A pattern carrying the global (`g`) or sticky (`y`) flag makes `.test()` stateful — it advances `lastIndex` between calls — so the same origin can match on one request and not the next, making a credentialed CORS decision unreliable. `cors` now refuses such a pattern at construction with `cors/stateful-pattern`; an unflagged RegExp origin is unchanged."
+        }
+      ]
+    }
+  ]
+}
