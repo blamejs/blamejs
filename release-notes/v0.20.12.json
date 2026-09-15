@@ -1,0 +1,18 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.20.12",
+  "date": "2026-09-14",
+  "headline": "IMAP accepts a quoted mailbox name that contains an escaped double quote",
+  "summary": "RFC 3501 §4.3 carries a double quote inside a quoted string as `\\\"`. The IMAP commands that split a leading mailbox name from the arguments after it matched the name with a class that stopped at the first quote, so a mailbox name holding both a space and a double quote was rejected with BAD even though it is a valid name. The name is now read across the escape and passed to the mail store intact.",
+  "sections": [
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "IMAP reads a quoted mailbox name across an escaped quote",
+          "body": "STATUS, GETMETADATA, SETMETADATA, APPEND, APPEND CATENATE, and SELECT with QRESYNC each split a leading mailbox name from the arguments that follow it. The name was matched with a quoted-string class that stopped at the first double quote, so an RFC 3501 §4.3 escaped quote (`\\\"`) inside the name ended the match early; with the rest of the command still to match, the command was rejected with BAD. A mailbox name that contains both a space and a double quote, such as the wire form `\"a\\\"b c\"` for the name `a\"b c`, is a name `b.mail.server.imap` already accepts, so a conformant client could neither query nor append to it. The six commands now read the quoted name across the escape and hand the mail store the decoded name; a name without a space was already carried whole by the atom form, so only spaced quoted names change."
+        }
+      ]
+    }
+  ]
+}
