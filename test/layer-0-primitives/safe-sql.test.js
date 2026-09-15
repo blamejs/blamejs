@@ -153,11 +153,30 @@ function testNormalizeForScan() {
         b.safeSql.normalizeForScan("UPDATE`t` SET a = ?") === "UPDATE `t` SET a = ?");
 }
 
+// quoteIdentifier must SAFELY quote: double the dialect quote char inside the
+// name, not merely trust the (overridable) validateIdentifier pattern to have
+// excluded it. A caller passing a permissive pattern that admits a `"`/backtick
+// must not be able to break out of the quotes.
+function testQuoteIdentifierDoublesQuoteChar() {
+  var pgPat = { pattern: /^[\w".]+$/, allowReserved: true };
+  check("quoteIdentifier doubles a double-quote inside a pg/sqlite identifier",
+    b.safeSql.quoteIdentifier('a"b', "postgres", pgPat) === '"a""b"',
+    b.safeSql.quoteIdentifier('a"b', "postgres", pgPat));
+  var bt = String.fromCharCode(96);
+  var myPat = { pattern: new RegExp("^[\\w" + bt + ".]+$"), allowReserved: true };
+  check("quoteIdentifier doubles a backtick inside a mysql identifier",
+    b.safeSql.quoteIdentifier("a" + bt + "b", "mysql", myPat) === bt + "a" + bt + bt + "b" + bt,
+    b.safeSql.quoteIdentifier("a" + bt + "b", "mysql", myPat));
+  check("quoteIdentifier leaves an ordinary identifier unchanged",
+    b.safeSql.quoteIdentifier("users", "postgres") === '"users"');
+}
+
 async function run() {
   testDefaultIdentifierShape();
   testMaxIdentifierLength();
   testSafeSqlError();
   testNormalizeForScan();
+  testQuoteIdentifierDoublesQuoteChar();
 }
 
 module.exports = { run: run };
