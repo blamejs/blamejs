@@ -648,6 +648,47 @@ function testConnectionFragmentedMessage() {
   } finally { teardown(conn, socket); }
 }
 
+// A fragmented message is bounded by maxMessageBytes, but that is a BYTE cap:
+// a zero-length continuation frame never advances the byte total, so a peer
+// that opens a fragmented message and then streams empty continuation frames
+// (fin never set) grows the reassembly buffer array without bound — a memory-
+// exhaustion DoS. The fragment COUNT must be capped too.
+function testConnectionZeroLengthFragmentFloodIsBounded() {
+  var socket = makeSocket();
+  var conn = new ws.WebSocketConnection(socket, { closeGraceMs: 10, maxMessageBytes: 256 });
+  try {
+    conn.on("message", function () {});
+    socket.emit("data", clientFrame(ws.OPCODE_TEXT, "x", { fin: false }));
+    for (var i = 0; i < 500 && conn.readyState === "open"; i += 1) {
+      socket.emit("data", clientFrame(ws.OPCODE_CONTINUATION, Buffer.alloc(0), { fin: false }));
+    }
+    check("conn: a flood of zero-length continuation frames is refused, not accumulated",
+          conn.readyState !== "open", "readyState=" + conn.readyState);
+    var closeF = serverFrames(socket).filter(function (f) { return f.opcode === ws.OPCODE_CLOSE; })[0];
+    check("conn: the fragment-flood abort sends CLOSE 1009 (message too big)",
+          closeF && closeF.payload.readUInt16BE(0) === 1009,
+          closeF ? String(closeF.payload.readUInt16BE(0)) : "no-close-frame");
+  } finally { teardown(conn, socket); }
+}
+
+// RFC 7692 §6.1: an endpoint MUST NOT set RSV1 on a control frame, even when
+// permessage-deflate is negotiated (RSV1 is only meaningful on the first frame
+// of a data message). A control frame carrying RSV1 must fail the connection.
+function testControlFrameRsv1Refused() {
+  var socket = makeSocket();
+  var conn = new ws.WebSocketConnection(socket, { closeGraceMs: 10,
+    permessageDeflate: { clientMaxWindowBits: 15 } });
+  try {
+    socket.emit("data", clientFrame(ws.OPCODE_PING, Buffer.from("x"), { rsv1: true }));
+    check("conn: a control frame with RSV1 set is refused (RFC 7692 §6.1)",
+          conn.readyState !== "open", "readyState=" + conn.readyState);
+    var closeF = serverFrames(socket).filter(function (f) { return f.opcode === ws.OPCODE_CLOSE; })[0];
+    check("conn: RSV1-on-control abort sends CLOSE 1002 (protocol error)",
+          closeF && closeF.payload.readUInt16BE(0) === 1002,
+          closeF ? String(closeF.payload.readUInt16BE(0)) : "no-close-frame");
+  } finally { teardown(conn, socket); }
+}
+
 function testConnectionPingPong() {
   var socket = makeSocket();
   var conn = new ws.WebSocketConnection(socket, { closeGraceMs: 10 });
@@ -1346,6 +1387,8 @@ async function run() {
   // Connection — inbound frames
   testConnectionReceiveMessages();
   testConnectionFragmentedMessage();
+  testConnectionZeroLengthFragmentFloodIsBounded();
+  testControlFrameRsv1Refused();
   testConnectionPingPong();
   testConnectionAbortBranches();
   testConnectionCloseHandshake();

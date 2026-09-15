@@ -478,6 +478,27 @@ async function _runTests() {
   await _sleep(50);
   serverFlood.close();
 
+  // ---- fragment-COUNT guard on RECEIVE: tiny continuations ----
+  // The byte cap never advances meaningfully on tiny continuation frames, so
+  // without a count cap a peer streaming them (FIN never set) grows the
+  // reassembly array without bound. maxMessageBytes 256 → cap 4 fragments; 40
+  // one-byte continuations trip the count cap while the byte total stays far
+  // under 256, isolating the count cap from the byte cap.
+  var serverFcap = await _makeServer({ floodFragments: { partBytes: 1, count: 40 } });
+  var portFcap = serverFcap.address().port;
+  var cFcap = _trackedConnect("ws://127.0.0.1:" + portFcap, {
+    maxMessageBytes: 256,
+    reconnect: false, audit: false, allowInternal: true,
+  });
+  var fcapErr = null;
+  cFcap.on("error", function (e) { fcapErr = e; });
+  await _sleep(400);
+  check("receive: tiny-continuation flood is refused by the fragment-count cap",
+    fcapErr !== null && /fragment count/.test(fcapErr.message || ""));
+  try { cFcap.close(); } catch (_e) { /* already torn down */ }
+  await _sleep(50);
+  serverFcap.close();
+
   // ---- url + readyState getters ----
   var server8 = await _makeServer({});
   var port8 = server8.address().port;
