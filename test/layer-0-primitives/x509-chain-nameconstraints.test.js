@@ -354,6 +354,22 @@ async function run() {
   check("fail-closed: resolveChain (S/MIME predicate) rejects a leaf with duplicate SAN extensions",
         dupSanRc.ok === false && dupSanRc.reason === "nameconstraint");
 
+  // A dNSName is an IA5String (ASCII). A byte above 0x7f is a malformed encoding
+  // that latin1 would decode into a matching suffix; validate ASCII and fail closed.
+  var nonAsciiDns = asn1.writeSequence([asn1.writeNode(0x82, Buffer.concat([Buffer.from([0xff]), Buffer.from(".example.com", "latin1")]))]);
+  var nonAscii = _rawChain({ rootNc: permitExample, leafSan: nonAsciiDns });
+  var nonAsciiRc = x509Chain.resolveChain(nonAscii.leaf, [nonAscii.leaf], [nonAscii.root], { issued: smimeIssued });
+  check("fail-closed: a non-ASCII dNSName is rejected",
+        nonAsciiRc.ok === false && nonAsciiRc.reason === "nameconstraint");
+
+  // GeneralNames is SIZE (1..MAX); an empty SAN SEQUENCE (30 00) is malformed.
+  var emptySan = _rawChain({ rootNc: permitExample, leafSan: asn1.writeSequence([]) });
+  check("fail-closed: an empty SAN SEQUENCE is rejected (nameConstraintsSatisfied)",
+        x509Chain.nameConstraintsSatisfied([emptySan.leaf, emptySan.root]) === false);
+  var emptySanRc = x509Chain.resolveChain(emptySan.leaf, [emptySan.leaf], [emptySan.root], { issued: smimeIssued });
+  check("fail-closed: resolveChain (S/MIME predicate) rejects an empty SAN SEQUENCE",
+        emptySanRc.ok === false && emptySanRc.reason === "nameconstraint");
+
   // No constraints anywhere → accepted.
   var none = await _mintConstrainedChain({ leafSan: [{ dNSName: "anything.example" }] });
   check("no nameConstraints in the chain → accepted",
