@@ -219,6 +219,41 @@ async function testVerifyExpired() {
   check("verify: expired token throws", threw);
 }
 
+// verify checks iat-future and exp but omitted nbf (not-before); every sibling
+// verifier checks it. An issuer-signed VC with a future nbf must be refused as
+// not-yet-valid, not accepted (reachable via oid4vp.verifyResponse).
+async function testVerifyNotYetValidNbf() {
+  var issuer = _newKeyPair();
+  var futureSec = Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60; // +1 year
+  var sd = sdJwtVc.issue({
+    issuer:   "https://issuer", vct: "x",
+    claims:   { nbf: futureSec, a: 1 },   // nbf lands as a plain payload claim
+    issuerKey: issuer.privateKey,
+  });
+  check("nbf test setup: payload carries a future nbf", sd.payload.nbf === futureSec);
+
+  var threw = null;
+  try {
+    await sdJwtVc.verify(sd.token, {
+      issuerKeyResolver: async function () { return issuer.publicKey; },
+    });
+  } catch (e) { threw = e; }
+  check("verify: a not-yet-valid (future nbf) credential is refused",
+        threw && threw.code === "auth-sd-jwt-vc/not-yet-valid",
+        threw ? threw.code : "accepted (fail-open)");
+
+  // CONTROL: a past nbf (already active) still verifies.
+  var pastSec = Math.floor(Date.now() / 1000) - 3600;
+  var sd2 = sdJwtVc.issue({
+    issuer: "https://issuer", vct: "x", claims: { nbf: pastSec, a: 1 },
+    issuerKey: issuer.privateKey,
+  });
+  var ok = await sdJwtVc.verify(sd2.token, {
+    issuerKeyResolver: async function () { return issuer.publicKey; },
+  });
+  check("verify: a past-nbf (active) credential still verifies", ok.valid === true);
+}
+
 async function testVerifyVctMismatch() {
   var issuer = _newKeyPair();
   var sd = sdJwtVc.issue({
@@ -1707,6 +1742,7 @@ async function run() {
   await testVerifyHappyPath();
   await testVerifyBadIssuerSignature();
   await testVerifyExpired();
+  await testVerifyNotYetValidNbf();
   await testVerifyVctMismatch();
   await testVerifyDisclosureMismatch();
   await testPresentSubsetThenVerify();
