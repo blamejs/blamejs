@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.20.21",
-  "createdAt": "2026-09-16T09:49:46.858Z",
+  "frameworkVersion": "0.20.22",
+  "createdAt": "2026-09-16T13:33:32.352Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -57447,6 +57447,10 @@
         "issuerValidlyIssued": {
           "type": "function",
           "arity": 2
+        },
+        "nameConstraintsSatisfied": {
+          "type": "function",
+          "arity": 1
         },
         "pathLenSatisfied": {
           "type": "function",
