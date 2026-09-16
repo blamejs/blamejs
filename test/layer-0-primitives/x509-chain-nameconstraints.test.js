@@ -382,6 +382,18 @@ async function run() {
   check("fail-closed: resolveChain (S/MIME predicate) rejects an empty dNSName constraint base",
         emptyBaseRc.ok === false);
 
+  // A SAN dNSName must be valid DNS syntax: an empty leading label (.example.com)
+  // or an embedded NUL (evil\0.example.com) is a parser differential and fails closed.
+  var leadingDot = _rawChain({ rootNc: permitExample, leafSan: asn1.writeSequence([asn1.writeNode(0x82, Buffer.from(".example.com", "latin1"))]) });
+  var leadingDotRc = x509Chain.resolveChain(leadingDot.leaf, [leadingDot.leaf], [leadingDot.root], { issued: smimeIssued });
+  check("fail-closed: a SAN dNSName with an empty leading label is rejected",
+        leadingDotRc.ok === false && leadingDotRc.reason === "nameconstraint");
+  var nulName = Buffer.concat([Buffer.from("evil", "latin1"), Buffer.from([0x00]), Buffer.from(".example.com", "latin1")]);
+  var nulDns = _rawChain({ rootNc: permitExample, leafSan: asn1.writeSequence([asn1.writeNode(0x82, nulName)]) });
+  var nulDnsRc = x509Chain.resolveChain(nulDns.leaf, [nulDns.leaf], [nulDns.root], { issued: smimeIssued });
+  check("fail-closed: a SAN dNSName with an embedded NUL is rejected",
+        nulDnsRc.ok === false && nulDnsRc.reason === "nameconstraint");
+
   // No constraints anywhere → accepted.
   var none = await _mintConstrainedChain({ leafSan: [{ dNSName: "anything.example" }] });
   check("no nameConstraints in the chain → accepted",
