@@ -424,6 +424,18 @@ async function run() {
   check("fail-closed: a dNSName constraint base with a space is rejected (nameConstraintsSatisfied)",
         x509Chain.nameConstraintsSatisfied([spaceBaseChain.leaf, spaceBaseChain.root]) === false);
 
+  // An iPAddress constraint mask must be a contiguous CIDR prefix; a non-prefix
+  // mask (ff00ff00) is malformed and must fail closed, not match a wider range.
+  var nonCidr = asn1.writeSequence([
+    asn1.writeContextImplicit(0, asn1.writeSequence([asn1.writeNode(0x87, Buffer.from([10, 0, 2, 0, 0xff, 0x00, 0xff, 0x00]))]), { constructed: true }),
+  ]);
+  var nonCidrChain = _rawChain({ rootNc: nonCidr, leafSan: asn1.writeSequence([asn1.writeNode(0x87, Buffer.from([10, 99, 2, 88]))]) });
+  check("fail-closed: a non-CIDR iPAddress constraint mask is rejected (nameConstraintsSatisfied)",
+        x509Chain.nameConstraintsSatisfied([nonCidrChain.leaf, nonCidrChain.root]) === false);
+  var nonCidrRc = x509Chain.resolveChain(nonCidrChain.leaf, [nonCidrChain.leaf], [nonCidrChain.root], { issued: smimeIssued });
+  check("fail-closed: resolveChain (S/MIME predicate) rejects a non-CIDR iPAddress mask",
+        nonCidrRc.ok === false);
+
   // No constraints anywhere → accepted.
   var none = await _mintConstrainedChain({ leafSan: [{ dNSName: "anything.example" }] });
   check("no nameConstraints in the chain → accepted",
