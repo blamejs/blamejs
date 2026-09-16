@@ -1,0 +1,18 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.20.17",
+  "date": "2026-09-15",
+  "headline": "`b.auth.sdJwtVc.verify` refuses a credential whose `nbf` (not-before) is in the future",
+  "summary": "`b.auth.sdJwtVc.verify` validated a credential's `exp` (expiry) but did not check `nbf` (not-before), so an issuer-signed SD-JWT verifiable credential presented before its activation time verified as valid. It now refuses such a credential with `auth-sd-jwt-vc/not-yet-valid`, matching the not-before check the other token verifiers already apply.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "sdJwtVc.verify enforces the not-before (nbf) claim",
+          "body": "`b.auth.sdJwtVc.verify` checked `iat` (not in the future) and `exp` (not expired) but had no `nbf` (not-before) check, so an issuer-signed credential carrying a future `nbf` verified as valid before its activation time, including when reached through `b.auth.oid4vp` presentation verification. A credential whose `nbf` is more than the clock-skew tolerance in the future is now refused with `auth-sd-jwt-vc/not-yet-valid`, matching the not-before enforcement already in the JWT, external-JWT, and OIDC ID-token verifiers. A credential with no `nbf`, or one within the skew window, is unaffected."
+        }
+      ]
+    }
+  ]
+}
