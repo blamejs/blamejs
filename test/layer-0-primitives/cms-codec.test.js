@@ -101,6 +101,24 @@ function testSignedDataSlhDsa() {
     b.cms.decode(sd).contentType === "1.2.840.113549.1.7.2");
 }
 
+// Trailing bytes after the top-level ContentInfo must be rejected (signature
+// malleability / parser-differential), not silently ignored.
+function testDecodeRefusesTrailingBytes() {
+  var kp   = pqcSoftware.slh_dsa_shake_256f.keygen();
+  var cert = _minimalCertDer();
+  var sd   = b.cms.encodeSignedData({
+    encapContent: Buffer.from("trailing-test payload"),
+    signers: [{ certificate: cert, secretKey: kp.secretKey, sigAlg: "SLH-DSA-SHAKE-256f" }],
+  });
+  check("decode: exact CMS bytes decode (control)",
+    b.cms.decode(sd).contentType === "1.2.840.113549.1.7.2");
+  var padded = Buffer.concat([sd, Buffer.from([0x00, 0x00])]);
+  var threw = null;
+  try { b.cms.decode(padded); } catch (e) { threw = e; }
+  check("decode: refuses trailing bytes after the top-level DER",
+    threw && threw.code === "cms/trailing-data", threw ? threw.code : "ACCEPTED");
+}
+
 function testEnvelopedDataRoundtrip() {
   var kp = pqcSoftware.ml_kem_1024.keygen();
   var ed = b.cms.encodeEnvelopedData({
@@ -801,6 +819,7 @@ function run() {
   testRefuseEnvelopedDataBadRecipientType();
   testRefuseEnvelopedDataNoRecipients();
   testDecodeRefusesNonSequence();
+  testDecodeRefusesTrailingBytes();
   testDecodeRefusesOversize();
   testDecodeRefusesNonBuffer();
   testCmsCodecErrorClassExported();
