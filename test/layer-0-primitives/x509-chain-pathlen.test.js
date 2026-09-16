@@ -214,6 +214,72 @@ async function run() {
         !twoRootErr || (twoRootErr.code !== "fido-mds3/chain-pathlen-exceeded" &&
                         twoRootErr.code !== "fido-mds3/chain-not-anchored"));
 
+  // A self-issued CA rollover certificate whose subject and issuer are the same
+  // entity but differ only in capitalization (RFC 5280 §7.1 treats them as equal)
+  // must NOT consume path length. RED before DN normalization: string equality
+  // counts it as an intermediate and rejects a chain a pathLen:0 root permits.
+  var now = new Date();
+  var notAfter = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000);
+  var alg = { name: "ECDSA", namedCurve: "P-256" };
+  var rk = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+  var rkSpki = await _spki(rk.publicKey);
+  var rollRootPem = await pki.x509.sign({
+    subject: "Rollover CA", subjectPublicKey: rkSpki, serialNumber: "01",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: true, pathLen: 0, critical: true }, keyUsage: ["keyCertSign"], keyUsageCritical: true },
+  }, { key: rk.privateKey }, { pem: true });
+  // Self-issued rollover: subject lowercase, issuer mixed-case, same key.
+  var rolloverPem = await pki.x509.sign({
+    subject: "rollover ca", subjectPublicKey: rkSpki, serialNumber: "02",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: true, critical: true }, keyUsage: ["keyCertSign"], keyUsageCritical: true },
+  }, { name: "Rollover CA", publicKey: rkSpki, key: rk.privateKey }, { pem: true });
+  var lk = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+  var lkSpki = await _spki(lk.publicKey);
+  var rollLeafPem = await pki.x509.sign({
+    subject: "roll-leaf.example", subjectPublicKey: lkSpki, serialNumber: "03",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: false, critical: true }, keyUsage: ["digitalSignature"], keyUsageCritical: true },
+  }, { name: "rollover ca", publicKey: rkSpki, key: rk.privateKey }, { pem: true });
+  var rollChain = [rollLeafPem, rolloverPem, rollRootPem].map(function (p) {
+    return new nodeCrypto.X509Certificate(p);
+  });
+  check("self-issued rollover with case-differing DN does not consume path length",
+        x509Chain.pathLenSatisfied(rollChain) === true);
+
+  // P1 regression: DN comparison must preserve RDN boundaries. A single-RDN
+  // subject "CN=A O=B" must NOT be treated as equal to a two-RDN issuer rendered
+  // "CN=A\nO=B", or a non-self-issued intermediate would be miscounted as
+  // self-issued and skip the path-length decrement (a fail-open). Node renders
+  // multiple RDNs newline-separated; collapsing that newline is the bug.
+  var mrk = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+  var mrkSpki = await _spki(mrk.publicKey);
+  var twoRdnName = [{ commonName: "A" }, { organizationName: "B" }];
+  var mergeRootPem = await pki.x509.sign({
+    subject: twoRdnName, subjectPublicKey: mrkSpki, serialNumber: "01",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: true, pathLen: 0, critical: true }, keyUsage: ["keyCertSign"], keyUsageCritical: true },
+  }, { key: mrk.privateKey }, { pem: true });
+  var mik = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+  var mikSpki = await _spki(mik.publicKey);
+  var mergeInterPem = await pki.x509.sign({
+    subject: [{ commonName: "A O=B" }], subjectPublicKey: mikSpki, serialNumber: "02",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: true, critical: true }, keyUsage: ["keyCertSign"], keyUsageCritical: true },
+  }, { name: twoRdnName, publicKey: mrkSpki, key: mrk.privateKey }, { pem: true });
+  var mlk = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+  var mlkSpki = await _spki(mlk.publicKey);
+  var mergeLeafPem = await pki.x509.sign({
+    subject: [{ commonName: "merge-leaf" }], subjectPublicKey: mlkSpki, serialNumber: "03",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: false, critical: true }, keyUsage: ["digitalSignature"], keyUsageCritical: true },
+  }, { name: [{ commonName: "A O=B" }], publicKey: mikSpki, key: mik.privateKey }, { pem: true });
+  var mergeChain = [mergeLeafPem, mergeInterPem, mergeRootPem].map(function (p) {
+    return new nodeCrypto.X509Certificate(p);
+  });
+  check("RDN-boundary merge: a single-RDN subject is not conflated with a two-RDN issuer",
+        x509Chain.pathLenSatisfied(mergeChain) === false);
+
   console.log("OK — x509 pathLen enforcement (" + helpers.getChecks() + " checks)");
 }
 
