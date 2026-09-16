@@ -155,6 +155,27 @@ function testIssueValidation() {
   } catch (_e) { threwBadDisclosed = true; }
   check("issue: selectivelyDisclosed includes unknown claim throws",
         threwBadDisclosed);
+
+  // A claim the verifier reads from the plain payload for a security gate
+  // (iss / iat / nbf / exp / cnf / vct / status) MUST NOT be selectively
+  // disclosable: the holder could omit the disclosure, leaving only its digest
+  // in _sd, so the verifier never sees the claim and skips the gate (e.g. a
+  // revoked credential whose `status` disclosure is dropped). SD-JWT-VC
+  // §3.2.2.2 makes these always-plain; issue refuses them here.
+  ["status", "exp", "cnf", "iss"].forEach(function (name) {
+    var claims = { given_name: "Alice" };
+    claims[name] = name === "cnf" ? { jwk: { kty: "EC" } } : (name === "exp" ? 1 : "x");
+    var threw = null;
+    try {
+      sdJwtVc.issue({
+        issuer: "https://x", vct: "y", claims: claims,
+        selectivelyDisclosed: [name],
+        issuerKey: _newKeyPair().privateKey,
+      });
+    } catch (e) { threw = e; }
+    check("issue: refuses selectively-disclosing the protected claim '" + name + "'",
+          !!threw && /protected-claim-not-disclosable/.test(threw.code || ""));
+  });
 }
 
 // ---- verify ----
@@ -1399,20 +1420,28 @@ async function testVerifyDisclosureReplay() {
 }
 
 async function testVerifyProtectedClaimShadow() {
-  // An issuer that selectively-discloses a spec-protected claim name
-  // (e.g. iss) produces a disclosure whose digest is in _sd; the verifier
-  // must refuse it rather than let it shadow the signed claim.
+  // A non-conformant issuer that selectively-discloses a spec-protected claim
+  // name (e.g. iss) produces a disclosure whose digest is in _sd; the verifier
+  // must refuse it rather than let it shadow the signed claim. issue() refuses
+  // to MINT such a credential (protected-claim-not-disclosable), so craft it by
+  // hand to exercise verify's shadow defense against a foreign issuer.
   var issuer = _newKeyPair();
-  var sd = sdJwtVc.issue({
-    issuer: "https://i", vct: "x",
-    claims: { iss: "shadow-attempt", role: "user" },
-    selectivelyDisclosed: ["iss"],
-    issuerKey: issuer.privateKey, algorithm: "ES256",
-  });
+  var nowSec = Math.floor(Date.now() / 1000);
+  var disc = sdJwtVc.disclosure.encode("iss", "shadow-attempt");
+  var digest = nodeCrypto.createHash("sha256").update(disc, "ascii").digest().toString("base64url");
+  var hdr = Buffer.from(JSON.stringify({ alg: "ES256", typ: "vc+sd-jwt" }), "utf8").toString("base64url");
+  var pl  = Buffer.from(JSON.stringify({
+    iss: "https://i", vct: "x", iat: nowSec, exp: nowSec + 3600,          // allow:raw-byte-literal — 1h validity in seconds
+    role: "user", _sd: [digest], _sd_alg: "sha-256",
+  }), "utf8").toString("base64url");
+  var input = hdr + "." + pl;
+  var sig = nodeCrypto.sign("sha256", Buffer.from(input, "ascii"),
+    { key: issuer.privateKey, dsaEncoding: "ieee-p1363" }).toString("base64url");
+  var token = input + "." + sig + "~" + disc + "~";
   await _expectThrow("verify: protected-claim-shadow disclosure refused",
     "auth-sd-jwt-vc/protected-claim-shadow",
     function () {
-      return sdJwtVc.verify(sd.token, {
+      return sdJwtVc.verify(token, {
         issuerKeyResolver: async function () { return issuer.publicKey; },
       });
     });
