@@ -191,6 +191,34 @@ function testRequirePositiveFiniteInt() {
     /<= 65535/.test(msg || "") && /number 70000/.test(msg || ""));
 }
 
+// isFiniteNumericDate / requireFiniteNumericDate — the RFC 7519 NumericDate
+// guard the JWT/JOSE/VC verifiers route their exp / iat / nbf through so a
+// non-finite claim (JSON `1e400` → Infinity) can't slip past a typeof-only
+// check and read as never-expiring.
+function testFiniteNumericDate() {
+  check("isFiniteNumericDate(1758000000)",   nb.isFiniteNumericDate(1758000000) === true);
+  check("isFiniteNumericDate(1758000000.5)", nb.isFiniteNumericDate(1758000000.5) === true);   // NumericDate may be fractional
+  check("isFiniteNumericDate(0)",            nb.isFiniteNumericDate(0) === true);
+  check("isFiniteNumericDate(-1)",           nb.isFiniteNumericDate(-1) === true);
+  check("isFiniteNumericDate(Infinity)",     nb.isFiniteNumericDate(Infinity) === false);
+  check("isFiniteNumericDate(-Infinity)",    nb.isFiniteNumericDate(-Infinity) === false);
+  check("isFiniteNumericDate(NaN)",          nb.isFiniteNumericDate(NaN) === false);
+  check("isFiniteNumericDate('1758000000')", nb.isFiniteNumericDate("1758000000") === false);
+  check("isFiniteNumericDate(null)",         nb.isFiniteNumericDate(null) === false);
+  check("isFiniteNumericDate(undefined)",    nb.isFiniteNumericDate(undefined) === false);
+
+  check("requireFiniteNumericDate returns a finite value",
+    nb.requireFiniteNumericDate(1758000000, "exp", _ErrK, "n/bad") === 1758000000);
+  _expect("requireFiniteNumericDate THROWS on Infinity",
+    function () { nb.requireFiniteNumericDate(Infinity, "exp", _ErrK, "n/bad"); }, "n/bad");
+  _expect("requireFiniteNumericDate THROWS on NaN",
+    function () { nb.requireFiniteNumericDate(NaN, "exp", _ErrK, "n/bad"); }, "n/bad");
+  _expect("requireFiniteNumericDate THROWS on a numeric string",
+    function () { nb.requireFiniteNumericDate("1758000000", "exp", _ErrK, "n/bad"); }, "n/bad");
+  _expect("requireFiniteNumericDate THROWS on undefined",
+    function () { nb.requireFiniteNumericDate(undefined, "exp", _ErrK, "n/bad"); }, "n/bad");
+}
+
 // finiteTimestamp coerces a stored timing value for a fail-CLOSED expiry
 // compare. A raw `Number(x) < now` is NaN-blind (NaN < now === false → a
 // malformed timestamp reads as NOT expired); mapping non-finite to -Infinity
@@ -219,6 +247,7 @@ function testFiniteTimestamp() {
 
 async function run() {
   testFiniteTimestamp();
+  testFiniteNumericDate();
   testHelperPredicate();
   testRequirePositiveFiniteInt();
   testConsumersRejectInfinity();

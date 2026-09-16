@@ -245,6 +245,12 @@ async function scenarioVerifyIdToken(base, routes) {
   await athrows("verifyIdToken: expired token refused",
     function () { return oa.verifyIdToken(mkToken(CID, { exp: nowS - 100, iat: nowS - 200 })); },
     "auth-oauth/expired");
+
+  // A non-finite exp (JSON `1e400` → Infinity) must not read as never-expiring.
+  var infExpIdTok = _signEs256RawPayload(PRIV, { alg: "ES256", typ: "JWT", kid: KID },
+    '{"iss":"https://idp.example","aud":"' + CID + '","iat":' + nowS + ',"exp":1e400}');
+  await athrows("verifyIdToken: non-finite exp (1e400) refused, not never-expiring",
+    function () { return oa.verifyIdToken(infExpIdTok); }, "auth-oauth/expired");
   await athrows("verifyIdToken: iat-in-future refused",
     function () { return oa.verifyIdToken(mkToken(CID, { iat: nowS + 100000, exp: nowS + 200000 })); },
     "auth-oauth/iat-future");
@@ -1329,6 +1335,15 @@ function _signEs256(privateKey, header, payload) {
   return input + "." + sig.toString("base64url");
 }
 
+// As _signEs256 but the payload segment is a verbatim JSON string — lets a
+// test embed a numeric literal (e.g. `1e400`, which decodes to Infinity) that
+// JSON.stringify of a JS object would collapse to null.
+function _signEs256RawPayload(privateKey, header, rawPayloadJson) {
+  var input = _b64urlJson(header) + "." + Buffer.from(rawPayloadJson, "utf8").toString("base64url");
+  var sig = crypto.sign("sha256", Buffer.from(input, "ascii"), { key: privateKey, dsaEncoding: "ieee-p1363" });
+  return input + "." + sig.toString("base64url");
+}
+
 // Flip one signature byte on a compact JWS (keeps length so verify RETURNS
 // false rather than throwing).
 function _tamperJws(jws) {
@@ -1454,6 +1469,17 @@ async function scenarioAttestationVerify() {
   var popExpired = _signEs256(instKp.privateKey, { alg: "ES256", typ: "oauth-client-attestation-pop+jwt" }, { aud: AUD, jti: "j2", iat: now, exp: now - 1000 });
   await arejects("verifyClientAttestation: PoP with exp in the past refused",
                  function () { return X.verifyClientAttestation(att, popExpired, vopts); }, "auth-oauth/attestation-pop-expired");
+
+  // A non-finite exp (JSON `1e400` → Infinity) must not read as never-expiring:
+  // Infinity + skew < now is false, so a typeof-only guard silently accepts it.
+  var infExpAtt = _signEs256RawPayload(attKp.privateKey, { alg: "ES256", typ: "oauth-client-attestation+jwt" },
+    '{"sub":"wallet","cnf":{"jwk":' + JSON.stringify(instPub) + '},"iat":' + now + ',"exp":1e400}');
+  await arejects("verifyClientAttestation: attestation non-finite exp (1e400) refused, not never-expiring",
+                 function () { return X.verifyClientAttestation(infExpAtt, pop, vopts); }, "auth-oauth/attestation-expired");
+  var infExpPop = _signEs256RawPayload(instKp.privateKey, { alg: "ES256", typ: "oauth-client-attestation-pop+jwt" },
+    '{"aud":"' + AUD + '","jti":"inf-pop","iat":' + now + ',"exp":1e400}');
+  await arejects("verifyClientAttestation: PoP non-finite exp (1e400) refused, not never-expiring",
+                 function () { return X.verifyClientAttestation(att, infExpPop, vopts); }, "auth-oauth/attestation-pop-expired");
   await arejects("verifyClientAttestation: server challenge unmatched by PoP refused (draft §8 step 5/6)",
                  function () { return X.verifyClientAttestation(att, pop, { attesterJwk: attPub, expectedAudience: AUD, challenge: "srv-nonce" }); },
                  "auth-oauth/attestation-pop-challenge-mismatch");

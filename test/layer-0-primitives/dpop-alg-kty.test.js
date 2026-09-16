@@ -55,6 +55,24 @@ async function run() {
   var rv = await b.auth.dpop.verify(goodProof, { htm: "POST", htu: "https://api.example.com/r" });
   check("dpop.verify: matching ES256/EC proof still verifies", rv && rv.header.jwk.kty === "EC");
 
+  // A non-finite `now` (e.g. NaN from a bad Date.parse arithmetic) must not
+  // silently disable the iat freshness window: Math.abs(NaN - iat) > window is
+  // false, so a stale proof would pass. verify guards iatWindowSec and iat with
+  // isFinite but not opts.now (jwt-external.js:412 is the correct reference).
+  var nowSec = Math.floor(Date.now() / 1000);
+  var staleProof = await b.auth.dpop.buildProof({
+    htm: "POST", htu: "https://api.example.com/r", privateKey: ec.privateKey, iat: nowSec - 100000,
+  });
+  var ctrlErr = null;
+  try { await b.auth.dpop.verify(staleProof, { htm: "POST", htu: "https://api.example.com/r", now: Date.now() }); }
+  catch (e) { ctrlErr = e; }
+  check("dpop.verify: finite now rejects a stale proof (freshness-window control)",
+        ctrlErr && /iat-out-of-window/.test(ctrlErr.code || ""));
+  var nanErr = null;
+  try { await b.auth.dpop.verify(staleProof, { htm: "POST", htu: "https://api.example.com/r", now: NaN }); }
+  catch (e) { nanErr = e; }
+  check("dpop.verify: non-finite now (NaN) does not disable the iat freshness window", !!nanErr);
+
   console.log("OK — dpop alg/kty cross-check (" + helpers.getChecks() + " checks)");
 }
 

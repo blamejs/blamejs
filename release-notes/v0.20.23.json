@@ -1,0 +1,35 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.20.23",
+  "date": "2026-09-16",
+  "headline": "Token and credential verifiers reject a non-finite expiry and an unknown critical header",
+  "summary": "A JSON number literal that overflows the double range (for example `1e400`) decodes to Infinity, and the JWT/JOSE, OpenID Connect, OpenID Federation, OpenID4VCI client-attestation, SD-JWT-VC, DPoP, and step-up-grant verifiers gated expiry with a plain numeric type check. Infinity is a number, so an `exp` of that shape passed the check and the `exp < now` comparison was always false: the token or statement never expired. The verifiers now require a finite RFC 7519 NumericDate for `exp` (and for the claims each freshness check reads), so a non-finite value is refused instead of read as never-expiring. The SD-JWT-VC key-binding JWT now refuses an unrecognized `crit` header, matching the issuer credential JWT and the OpenID4VCI proof JWT. `b.auth.dpop.verify` no longer lets a non-finite `now` disable the proof freshness window, and `b.auth.openidFederation.verifyEntityStatement` now applies its documented `now` override.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "A non-finite expiry no longer reads as never-expiring",
+          "body": "`b.auth.jwt.verifyExternal`, `b.auth.oauth` (ID token and client-attestation / attestation-PoP verification), `b.auth.openidFederation.verifyEntityStatement`, `b.auth.sdJwtVc.verify`, and `b.auth.stepUp.grant.verify` gated `exp` with a `typeof value === \"number\"` check. A JSON `1e400` literal decodes to Infinity, which is a number, so the value passed the check and `exp + skew < now` evaluated to false — the token or statement was accepted at any time. Each verifier now requires `exp` (and the timestamp claims its freshness checks read) to be a finite NumericDate and refuses a non-finite value. A well-formed token with a finite `exp` is unaffected."
+        },
+        {
+          "title": "SD-JWT-VC key-binding JWT refuses an unrecognized crit header",
+          "body": "`b.auth.sdJwtVc.verify` (and `b.auth.oid4vp.verifyResponse`, which composes it) read the key-binding JWT header without checking `crit`. The issuer credential JWT and the OpenID4VCI proof JWT already refuse a JWS that declares an unsupported critical extension (RFC 7515 §4.1.11); the key-binding JWT now does the same, throwing `auth-sd-jwt-vc/unknown-crit`."
+        },
+        {
+          "title": "A non-finite now no longer disables the DPoP freshness window",
+          "body": "`b.auth.dpop.verify` accepts a caller-supplied `now`. A non-finite value (for example a NaN produced by upstream date arithmetic) made the `Math.abs(now - iat) > window` comparison false, so a proof of any age passed the `iat` freshness check. `verify` now falls back to the current time when `now` is not a finite number, matching `b.auth.jwt.verifyExternal`."
+        }
+      ]
+    },
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "b.auth.openidFederation.verifyEntityStatement applies its now override",
+          "body": "The documented `now` option was ignored; the freshness check always read the wall clock. It now uses `now` when supplied (falling back to the current time when it is absent or non-finite), so a statement can be verified as of a specific time."
+        }
+      ]
+    }
+  ]
+}

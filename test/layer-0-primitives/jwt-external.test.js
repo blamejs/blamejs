@@ -507,6 +507,29 @@ async function testJwsSignKeyImport() {
     _hdrAlg(b.auth.jws.sign({ sub: "u" }, { privateKey: _rsaKp().privateKey, alg: "RS512" })) === "RS512");
 }
 
+// A verify-path timestamp claim that decodes to a non-finite number
+// (a JSON `1e400` literal parses to Infinity) must be rejected, not treated
+// as never-expiring — Infinity + skew < now is false, so a typeof-only guard
+// silently skips the expiry test.
+async function testNonFiniteExpRejected() {
+  var keys = _rsaPair();
+  var jwk = Object.assign({}, keys.publicKey, { kid: "k1" });
+  var nowSec = Math.floor(Date.now() / 1000);                                    // allow:raw-byte-literal — seconds-per-ms
+  var headerB64  = _b64url(JSON.stringify({ alg: "RS256", kid: "k1" }));
+  var payloadB64 = _b64url('{"sub":"u1","iat":' + nowSec + ',"exp":1e400}');
+  var input = headerB64 + "." + payloadB64;
+  var sig = nodeCrypto.sign("sha256", Buffer.from(input, "ascii"),
+    { key: keys.privateKey, padding: nodeCrypto.constants.RSA_PKCS1_PADDING });
+  var token = input + "." + _b64url(sig);
+
+  var threw = null;
+  try {
+    await b.auth.jwt.verifyExternal(token, { algorithms: ["RS256"], jwks: [jwk] });
+  } catch (e) { threw = e; }
+  check("non-finite exp (1e400 → Infinity) rejected, not accepted as never-expiring",
+        threw && /(expired|missing-exp|malformed)/.test(threw.code || ""));
+}
+
 async function run() {
   testSurface();
   await testAlgorithmsRequired();
@@ -516,6 +539,7 @@ async function run() {
   await testRoundTripRs256();
   await testAudMismatch();
   await testExpired();
+  await testNonFiniteExpRejected();
   await testJwsSignSurface();
   await testJwsSignRoundTrip();
   await testJwsSignRefusals();
