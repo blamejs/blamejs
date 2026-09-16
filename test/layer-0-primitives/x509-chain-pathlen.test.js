@@ -165,8 +165,16 @@ async function run() {
   // Fail closed on a malformed chain.
   check("fail-closed: a chain with a missing cert returns false",
         x509Chain.pathLenSatisfied([null, unconstrained.certs[1]]) === false);
-  check("degenerate: a single-cert chain has no CA link to constrain",
+  check("degenerate: a single VALID-cert chain has no CA link to constrain",
         x509Chain.pathLenSatisfied([unconstrained.certs[0]]) === true);
+  // Malformed short inputs must fail closed, not short-circuit to true.
+  check("fail-closed: non-array input", x509Chain.pathLenSatisfied(null) === false &&
+        x509Chain.pathLenSatisfied({}) === false);
+  check("fail-closed: a single null-entry chain ([null]) returns false",
+        x509Chain.pathLenSatisfied([null]) === false);
+  check("fail-closed: a single non-cert entry returns false",
+        x509Chain.pathLenSatisfied([{}]) === false);
+  check("empty chain has no CA link to constrain", x509Chain.pathLenSatisfied([]) === true);
 
   // ---- Consumer path: b.auth.fidoMds3.fetch must refuse a BLOB whose x5c is an
   // over-long chain (root pathLen:0 -> intermediate -> leaf). The leaf GENUINELY

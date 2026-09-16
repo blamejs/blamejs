@@ -93,9 +93,11 @@ function _makeCert(opts) {
 
   var extsList = [];
   if (opts.ca) {
+    var bcChildren = [asn1.writeBoolean(true)];                                // cA TRUE
+    if (typeof opts.pathLen === "number") bcChildren.push(asn1.writeInteger(Buffer.from([opts.pathLen])));
     extsList.push(asn1.writeSequence([
       asn1.writeOid(OID_BASIC_CONSTRAINTS), asn1.writeBoolean(true),
-      asn1.writeOctetString(asn1.writeSequence([asn1.writeBoolean(true)])),   // cA TRUE
+      asn1.writeOctetString(asn1.writeSequence(bcChildren)),
     ]));
   } else if (opts.basicConstraintsFalse) {
     extsList.push(asn1.writeSequence([
@@ -610,6 +612,33 @@ function testChainVerify() {
   check("invalid opts.at Date refused", e4 && e4.code === "tsa/bad-at");
 }
 
+// A token chain root(pathLen:0) → intermediate CA → leaf-TSA exceeds the root's
+// path-length limit. Every issuer link verifies, so before pathLen enforcement
+// verifyToken accepted it. RED before the fix routed _verifyChain through
+// x509Chain.pathLenSatisfied.
+function testChainPathLen() {
+  var data = Buffer.from("pathlen-test");
+  function chainFor(pl) {
+    var root = _makeCert({ cn: "PL Root", serial: Buffer.from([0x01]), ca: true, pathLen: pl, ekuOids: null });
+    var interm = _makeCert({ cn: "PL Interm", serial: Buffer.from([0x02]), ca: true, ekuOids: null,
+      issuerName: root.subjectName, issuerKey: root.key });
+    var leaf = _makeCert({ cn: "PL Leaf TSA", serial: Buffer.from([0x03]), basicConstraintsFalse: true,
+      issuerName: interm.subjectName, issuerKey: interm.key });
+    var token = _makeToken({ certDer: leaf.certDer, extraCertDer: interm.certDer, key: leaf.key,
+      issuer: leaf.issuer, serial: leaf.serial, imprintHash: _imprintOf(data, "SHA-512") });
+    return { token: token, rootPem: new nodeCrypto.X509Certificate(root.certDer).toString() };
+  }
+  var over = chainFor(0);
+  var e = null;
+  try { b.tsa.verifyToken(over.token, { data: data, hashAlg: "SHA-512", trustAnchorsPem: [over.rootPem] }); }
+  catch (err) { e = err; }
+  check("tsa: a chain exceeding the root pathLen:0 is REJECTED", e && e.code === "tsa/chain-pathlen-exceeded");
+
+  var okc = chainFor(1);
+  var out = b.tsa.verifyToken(okc.token, { data: data, hashAlg: "SHA-512", trustAnchorsPem: [okc.rootPem] });
+  check("tsa: a chain within the root pathLen:1 is accepted", out.policy === "1.2.3.4.1");
+}
+
 // Multi-cert chain: signer → intermediate CA → root anchor. Exercises the
 // walk-up through the token's intermediates and the cA-enforced anchor
 // termination, plus the validity-window check driven by opts.at.
@@ -856,6 +885,7 @@ async function run() {
   testTstInfoParsing();
   testCandidateSigners();
   testChainVerify();
+  testChainPathLen();
   testTsaTrustAnchorRequiredByDefault();
   testChainWalkAndValidity();
   testParseResponseBranches();
