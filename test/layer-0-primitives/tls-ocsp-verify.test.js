@@ -151,6 +151,82 @@ function testNoIssuerCertDerStaysSerialBound() {
   check("no issuerCertDer: serial-only bind still resolves (ok=true)", rv.ok === true);
 }
 
+// A well-formed OCSPResponse followed by extra bytes must be refused, not read
+// as the leading structure with the remainder ignored. The signature covers
+// only tbsResponseData, so trailing bytes forge no status, but a parser that
+// silently drops them is one a caller cannot reason about — the same DER
+// strictness enforced for CMS/TSA. RED before the fix: parseResponse reads the
+// leading response and returns it; evaluate reports ok:true.
+function testParseRejectsTrailingData() {
+  var fx = helpers.buildOcspResponse({
+    producedAtMs: Date.parse("2025-06-15T00:00:00Z"),
+    nextUpdateMs: Date.parse("2025-06-16T00:00:00Z"),
+  });
+  var withTrailer = Buffer.concat([fx.der, Buffer.from([0, 0, 0, 0, 0, 0, 0, 0])]);
+  var threw = null;
+  try { b.network.tls.ocsp.parseResponse(withTrailer); }
+  catch (e) { threw = e; }
+  check("parseResponse(response + trailing bytes) throws ocsp-trailing-data",
+        threw && /ocsp-trailing-data/.test(threw.code || ""));
+}
+
+function testEvaluateRejectsTrailingData() {
+  var now = Date.parse("2025-06-15T00:00:01Z");
+  var fx = helpers.buildOcspResponse({
+    producedAtMs: now - 1000,
+    nextUpdateMs: now + 86400000,
+  });
+  var withTrailer = Buffer.concat([fx.der, Buffer.from([0, 0, 0, 0, 0, 0, 0, 0])]);
+  var rv = b.network.tls.ocsp.evaluate(withTrailer, {
+    issuerPem: fx.issuerPem, serialHex: fx.serialHex, now: now,
+  });
+  check("evaluate(response + trailing bytes) → ok:false, status:'parse-error'",
+        rv.ok === false && rv.status === "parse-error");
+}
+
+// A tuning knob added to evaluate is a silent lie if the high-level wrappers
+// that call evaluate rebuild its options and drop the knob. ocsp.fetch must
+// forward opts.maxAgeMs so a caller can widen the age at which a no-nextUpdate
+// response is accepted. Drives the real fetch consumer path through a stubbed
+// responder. RED before the fix: fetch rebuilds the evaluate options without
+// maxAgeMs, so an 8-day-old no-nextUpdate response is refused with
+// tls/ocsp-not-good even though the widened window would accept it.
+async function testFetchForwardsMaxAgeMs() {
+  var httpClient = require("../../lib/http-client");
+  var pair = helpers.selfSignedPair();
+  var built = helpers.buildOcspResponse({
+    keyPair:         pair.keyPair,
+    certIdIssuerDer: pair.certDer,
+    serial:          Buffer.from([0x12, 0x34, 0x56, 0x78]),   // matches the cert serial
+    thisUpdateMs:    Date.now() - 8 * 86400000,               // 8 days old, NO nextUpdate
+  });
+  var origRequest = httpClient.request;
+  httpClient.request = async function () { return { status: 200, body: built.der }; };
+
+  var widened = null, widenedErr = null, dfltErr = null;
+  try {
+    try {
+      widened = await b.network.tls.ocsp.fetch({
+        leafPem: pair.cert, issuerPem: pair.cert, responderUrl: "http://ocsp.test/",
+        serialHex: "12345678", nonce: false, maxAgeMs: 30 * 86400000,
+      });
+    } catch (e) { widenedErr = e; }
+    // Control: the same response WITHOUT the override is refused at the 24h default.
+    try {
+      await b.network.tls.ocsp.fetch({
+        leafPem: pair.cert, issuerPem: pair.cert, responderUrl: "http://ocsp.test/",
+        serialHex: "12345678", nonce: false,
+      });
+    } catch (e) { dfltErr = e; }
+  } finally {
+    httpClient.request = origRequest;
+  }
+  check("fetch forwards maxAgeMs: widened window accepts the no-nextUpdate response",
+        widened && widened.evaluation && widened.evaluation.ok === true, widenedErr);
+  check("fetch default (no maxAgeMs): the same 8-day-old response is refused",
+        dfltErr && /ocsp-not-good/.test(dfltErr.code || ""));
+}
+
 async function run() {
   testSurface();
   testParseRejectsBadInput();
@@ -164,6 +240,9 @@ async function run() {
   testCertIdIssuerMatchAccepted();
   testCrossIssuerCertIdRefused();
   testNoIssuerCertDerStaysSerialBound();
+  testParseRejectsTrailingData();
+  testEvaluateRejectsTrailingData();
+  await testFetchForwardsMaxAgeMs();
 }
 
 module.exports = { run: run };

@@ -130,12 +130,86 @@ function testInfinityClockSkewDoesNotDisableFreshness() {
   check("negative skew: stale response still rejected", rvNeg.ok === false);
 }
 
+// A response that OMITS nextUpdate has no stated expiry. RFC 6960 §4.2.2.1
+// then puts no upper bound on how old thisUpdate may be, so a signature-valid
+// "good" from before the certificate was revoked stays convincing forever —
+// the same replay the nextUpdate window closes for responses that carry one.
+// evaluate bounds the age from thisUpdate (default 24h) when nextUpdate is
+// absent. RED before the fix: an 8-day-old no-nextUpdate response is ok:true.
+function testRejectsStaleNoNextUpdate() {
+  var fx = helpers.buildOcspResponse({
+    producedAtMs: FIXED_NOW,
+    thisUpdateMs: FIXED_NOW - 8 * 86400000,   // 8 days ago, no nextUpdate
+  });
+  var rv = b.network.tls.ocsp.evaluate(fx.der, {
+    issuerPem: fx.issuerPem, serialHex: fx.serialHex, now: FIXED_NOW,
+  });
+  check("no-nextUpdate stale: rejected (ok=false)", rv.ok === false);
+  check("no-nextUpdate stale: signature still verified (reached the age gate)",
+        rv.signatureValid === true);
+  check("no-nextUpdate stale: rejected for the age/nextUpdate reason, not 'missing thisUpdate'",
+        /nextUpdate|older than the maximum|age/i.test((rv.errors || []).join(" ; ")) &&
+        !/missing thisUpdate/i.test((rv.errors || []).join(" ; ")));
+}
+
+// A caller may widen the accepted age for a no-nextUpdate responder it trusts
+// via opts.maxAgeMs. A 3-day-old response under a 7-day bound is accepted.
+function testMaxAgeOverrideAcceptsWithinWindow() {
+  var fx = helpers.buildOcspResponse({
+    producedAtMs: FIXED_NOW,
+    thisUpdateMs: FIXED_NOW - 3 * 86400000,   // 3 days ago, no nextUpdate
+  });
+  var rv = b.network.tls.ocsp.evaluate(fx.der, {
+    issuerPem: fx.issuerPem, serialHex: fx.serialHex, now: FIXED_NOW,
+    maxAgeMs: 7 * 86400000,
+  });
+  check("maxAge override (7d): 3-day-old no-nextUpdate accepted", rv.ok === true);
+}
+
+// A caller may also tighten it. A 2-hour-old no-nextUpdate response under a
+// 1-hour bound is refused. RED before the fix: no age bound exists, so a
+// no-nextUpdate response is accepted regardless of maxAgeMs.
+function testMaxAgeOverrideRefusesBeyondWindow() {
+  var fx = helpers.buildOcspResponse({
+    producedAtMs: FIXED_NOW,
+    thisUpdateMs: FIXED_NOW - 2 * 3600000,    // 2 hours ago, no nextUpdate
+  });
+  var rv = b.network.tls.ocsp.evaluate(fx.der, {
+    issuerPem: fx.issuerPem, serialHex: fx.serialHex, now: FIXED_NOW,
+    maxAgeMs: 3600000,                        // 1 hour
+  });
+  check("maxAge override (1h): 2-hour-old no-nextUpdate refused", rv.ok === false);
+  check("maxAge override (1h): refused for the age reason",
+        /older than the maximum|age|nextUpdate/i.test((rv.errors || []).join(" ; ")));
+}
+
+// The age bound applies ONLY when nextUpdate is absent: a response that STATES
+// a future nextUpdate is honored for its stated validity even when thisUpdate
+// is well past the default max age. Guards against the fix over-refusing a
+// long-validity response that carries an explicit, unexpired nextUpdate.
+function testPresentNextUpdateNotBoundedByMaxAge() {
+  var fx = helpers.buildOcspResponse({
+    producedAtMs: FIXED_NOW,
+    thisUpdateMs: FIXED_NOW - 8 * 86400000,   // 8 days ago
+    nextUpdateMs: FIXED_NOW + 86400000,       // but valid for another day
+  });
+  var rv = b.network.tls.ocsp.evaluate(fx.der, {
+    issuerPem: fx.issuerPem, serialHex: fx.serialHex, now: FIXED_NOW,
+  });
+  check("present-nextUpdate: old thisUpdate accepted while nextUpdate is unexpired",
+        rv.ok === true);
+}
+
 async function run() {
   testRejectsStaleResponse();
   testAcceptsFreshResponse();
   testRejectsFutureThisUpdate();
   testAcceptsFreshNoNextUpdate();
   testInfinityClockSkewDoesNotDisableFreshness();
+  testRejectsStaleNoNextUpdate();
+  testMaxAgeOverrideAcceptsWithinWindow();
+  testMaxAgeOverrideRefusesBeyondWindow();
+  testPresentNextUpdateNotBoundedByMaxAge();
 }
 
 module.exports = { run: run };
