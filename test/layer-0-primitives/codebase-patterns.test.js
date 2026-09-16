@@ -9362,6 +9362,25 @@ async function testNoDuplicateCodeBlocks() {
   // shape.
   var KNOWN_CLUSTERS = [
     {
+      // X.509 chain-walker result mapping — the extraction already happened:
+      // all three route chain building through the shared x509Chain.resolveChain
+      // primitive and then translate its { ok, invalidCert, reason } result to
+      // their own error taxonomy. tsa throws TsaError with tsa/* codes, mdoc
+      // throws MdocError with mdoc/* codes, and mail-crypto-smime throws
+      // MailCryptoError with mail-crypto/smime/* codes, each with module-specific
+      // operator prose. The shingle is the RFC 5280 citation text (§4.2.1.9 for
+      // pathLenConstraint, §4.2.1.10 for nameConstraints) plus the result-branch
+      // order, which any faithful mapping of the same primitive result repeats.
+      // Collapsing it further would parametrize away each module's distinct error
+      // class and code namespace, which callers catch on, for no shared behaviour.
+      mode:  "family-subset",
+      files: [
+        "lib/mail-crypto-smime.js:_verifyTrustChain",
+        "lib/mdoc.js:_verifyChain",
+        "lib/tsa.js:_verifyChain",
+      ],
+    },
+    {
       // mailServerNet.wireLineSocket CALL SITES — the extraction already
       // happened. What repeats is the option object handed to the shared
       // primitive, which is its call syntax rather than shared behaviour: each

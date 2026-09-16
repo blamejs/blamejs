@@ -1,0 +1,27 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.20.22",
+  "date": "2026-09-16",
+  "headline": "X.509 chain validation enforces dNSName and iPAddress nameConstraints",
+  "summary": "A CA certificate can carry basicConstraints nameConstraints (RFC 5280 §4.2.1.10) that restrict the names any certificate below it may bear, but node's X509Certificate does not evaluate them and neither does checkIssued, so a sub-CA restricted to one domain could still vouch for a leaf outside it. The chain-validating consumers now reject such a chain through the new `b.x509Chain.nameConstraintsSatisfied`, which accumulates each CA's permittedSubtrees and excludedSubtrees down the path and checks every certificate's subjectAltName against them.",
+  "sections": [
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "b.x509Chain.nameConstraintsSatisfied enforces RFC 5280 name constraints",
+          "body": "`b.x509Chain.nameConstraintsSatisfied(chain)` takes an ordered chain (leaf first, trust anchor last) and returns whether every certificate's subjectAltName satisfies the nameConstraints of the CAs above it. dNSName subtrees use the RFC 5280 add-labels rule (base `example.com` is satisfied by `example.com` and `host.example.com`, not `notexample.com`; a leading-dot base `.example.com` matches subdomains only), and iPAddress subtrees use the address/mask CIDR. Permitted subtrees accumulate as an intersection and excluded subtrees as a union. A malformed nameConstraints or subjectAltName extension, or a constraint of a subtree form this release does not evaluate (directoryName, rfc822Name, URI, otherName), fails closed."
+        }
+      ]
+    },
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "Certificate chains are rejected when a leaf falls outside a CA's nameConstraints",
+          "body": "basicConstraints nameConstraints (RFC 5280 §4.2.1.10) restrict the subject names a CA may certify below it, but were enforced nowhere: node's `X509Certificate` and `checkIssued` ignore the extension, so an intermediate permitted only `example.com` could issue a leaf with subjectAltName `evil.com` and the chain verified. The chain-validating consumers (`b.tsa.verifyToken`, `b.mdoc`, `b.mail.crypto.smime`, `b.mail.bimi`, `b.auth.fidoMds3`, `b.contentCredentials`) now reject a leaf whose dNSName or iPAddress subjectAltName is outside a CA's permittedSubtrees or inside its excludedSubtrees, with the constraints accumulating down the chain. Constraint and name forms not yet evaluated, and malformed extensions, fail closed rather than being ignored."
+        }
+      ]
+    }
+  ]
+}
