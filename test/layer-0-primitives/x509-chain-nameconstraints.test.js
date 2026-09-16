@@ -407,6 +407,23 @@ async function run() {
   check("fail-closed: resolveChain (S/MIME predicate) rejects a malformed dNSName constraint base",
         badBaseRc.ok === false);
 
+  // An ignored GeneralName type with a wrong constructed bit (a primitive [4]
+  // directoryName, which must be constructed) is a malformed encoding, not an
+  // ignorable name — fail closed rather than skip it.
+  var primitiveDirName = _rawChain({ rootNc: permitExample, leafSan: asn1.writeSequence([asn1.writeNode(0x84, Buffer.from("x", "latin1"))]) });
+  var primitiveDirNameRc = x509Chain.resolveChain(primitiveDirName.leaf, [primitiveDirName.leaf], [primitiveDirName.root], { issued: smimeIssued });
+  check("fail-closed: a primitive [4] directoryName in the SAN is rejected",
+        primitiveDirNameRc.ok === false && primitiveDirNameRc.reason === "nameconstraint");
+
+  // A dNSName label with a space (or other non-LDH punctuation) is invalid: it
+  // never matches a normal SAN, so a malformed constraint base must fail closed.
+  var spaceBase = asn1.writeSequence([
+    asn1.writeContextImplicit(1, asn1.writeSequence([asn1.writeNode(0x82, Buffer.from("bad .example.com", "latin1"))]), { constructed: true }),
+  ]);
+  var spaceBaseChain = _rawChain({ rootNc: spaceBase, leafSan: asn1.writeSequence([asn1.writeNode(0x82, Buffer.from("host.example.com", "latin1"))]) });
+  check("fail-closed: a dNSName constraint base with a space is rejected (nameConstraintsSatisfied)",
+        x509Chain.nameConstraintsSatisfied([spaceBaseChain.leaf, spaceBaseChain.root]) === false);
+
   // No constraints anywhere → accepted.
   var none = await _mintConstrainedChain({ leafSan: [{ dNSName: "anything.example" }] });
   check("no nameConstraints in the chain → accepted",
