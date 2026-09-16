@@ -55,6 +55,7 @@ function _rawChain(opts) {
   var leafBc = asn1.writeSequence([asn1.writeOid("2.5.29.19"), asn1.writeBoolean(true), asn1.writeOctetString(asn1.writeSequence([]))]);
   var leafExts = [leafBc];
   if (leafSanDer) leafExts.push(asn1.writeSequence([asn1.writeOid("2.5.29.17"), asn1.writeOctetString(leafSanDer)]));
+  if (opts.leafSan2) leafExts.push(asn1.writeSequence([asn1.writeOid("2.5.29.17"), asn1.writeOctetString(opts.leafSan2)]));
   var root = _cert(rootName, rootName, rootKp, rootKp, rootExts);
   var leaf = _cert(_name("raw-nc-leaf.example"), rootName, leafKp, rootKp, leafExts);
   return { root: root, leaf: leaf };
@@ -340,6 +341,18 @@ async function run() {
   var badWrapRc = x509Chain.resolveChain(badWrap.leaf, [badWrap.leaf], [badWrap.root], { issued: smimeIssued });
   check("fail-closed: a SAN with a primitive (non-constructed) SEQUENCE wrapper is rejected",
         badWrapRc.ok === false && badWrapRc.reason === "nameconstraint");
+
+  // Duplicate subjectAltName extensions are invalid (RFC 5280 §4.2): a parser
+  // that reads only the first would miss a forbidden name in the second. Fail
+  // closed rather than evaluate only the first SAN.
+  var firstSan = asn1.writeSequence([asn1.writeNode(0x82, Buffer.from("host.example.com", "latin1"))]);
+  var secondSan = asn1.writeSequence([asn1.writeNode(0x82, Buffer.from("evil.com", "latin1"))]);
+  var dupSan = _rawChain({ rootNc: permitExample, leafSan: firstSan, leafSan2: secondSan });
+  check("fail-closed: duplicate SAN extensions are rejected (nameConstraintsSatisfied)",
+        x509Chain.nameConstraintsSatisfied([dupSan.leaf, dupSan.root]) === false);
+  var dupSanRc = x509Chain.resolveChain(dupSan.leaf, [dupSan.leaf], [dupSan.root], { issued: smimeIssued });
+  check("fail-closed: resolveChain (S/MIME predicate) rejects a leaf with duplicate SAN extensions",
+        dupSanRc.ok === false && dupSanRc.reason === "nameconstraint");
 
   // No constraints anywhere → accepted.
   var none = await _mintConstrainedChain({ leafSan: [{ dNSName: "anything.example" }] });
