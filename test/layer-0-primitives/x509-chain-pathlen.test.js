@@ -21,6 +21,21 @@ var check   = helpers.check;
 var nodeCrypto = require("crypto");
 var pki  = require("../../lib/vendor/blamejs-pki.cjs");
 var x509Chain = require("../../lib/x509-chain");
+var asn1 = require("../../lib/asn1-der");
+
+// Raw X.509 Name DER holding a single CN of the given ASN.1 string type + bytes,
+// for exercising non-UTF8 directory-string decoding. pki.x509.sign accepts raw
+// Name DER for subject/issuer.
+function _rawCn(stringTag, valueBytes) {
+  return asn1.writeSequence([
+    asn1.writeSet([
+      asn1.writeSequence([
+        asn1.writeOid("2.5.4.3"),
+        asn1.writeNode(stringTag, Buffer.from(valueBytes)),
+      ]),
+    ]),
+  ]);
+}
 
 async function _spki(publicKey) {
   return Buffer.from(await pki.webcrypto.subtle.exportKey("spki", publicKey));
@@ -214,10 +229,10 @@ async function run() {
         !twoRootErr || (twoRootErr.code !== "fido-mds3/chain-pathlen-exceeded" &&
                         twoRootErr.code !== "fido-mds3/chain-not-anchored"));
 
-  // A self-issued CA rollover certificate whose subject and issuer are the same
-  // entity but differ only in capitalization (RFC 5280 §7.1 treats them as equal)
-  // must NOT consume path length. RED before DN normalization: string equality
-  // counts it as an intermediate and rejects a chain a pathLen:0 root permits.
+  // A self-issued CA rollover whose subject and issuer are the same entity but
+  // differ only in capitalization (RFC 5280 §7.1 treats them as equal) must NOT
+  // consume path length. RED if names are compared by raw bytes: the rollover is
+  // counted and a chain a pathLen:0 root permits is rejected.
   var now = new Date();
   var notAfter = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000);
   var alg = { name: "ECDSA", namedCurve: "P-256" };
@@ -228,7 +243,7 @@ async function run() {
     notBefore: now, notAfter: notAfter,
     extensions: { basicConstraints: { cA: true, pathLen: 0, critical: true }, keyUsage: ["keyCertSign"], keyUsageCritical: true },
   }, { key: rk.privateKey }, { pem: true });
-  // Self-issued rollover: subject lowercase, issuer mixed-case, same key.
+  // Self-issued: subject and issuer are the same entity, differing only in case.
   var rolloverPem = await pki.x509.sign({
     subject: "rollover ca", subjectPublicKey: rkSpki, serialNumber: "02",
     notBefore: now, notAfter: notAfter,
@@ -279,6 +294,67 @@ async function run() {
   });
   check("RDN-boundary merge: a single-RDN subject is not conflated with a two-RDN issuer",
         x509Chain.pathLenSatisfied(mergeChain) === false);
+
+  // A self-issued rollover whose issuer value has insignificant leading whitespace
+  // (RFC 5280 §7.1) must still be recognized: comparing the DECODED value handles
+  // it. RED if names are compared as raw bytes or node's escaped display strings.
+  var esk = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+  var eskSpki = await _spki(esk.publicKey);
+  var escRootPem = await pki.x509.sign({
+    subject: [{ commonName: "Esc CA" }], subjectPublicKey: eskSpki, serialNumber: "01",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: true, pathLen: 0, critical: true }, keyUsage: ["keyCertSign"], keyUsageCritical: true },
+  }, { key: esk.privateKey }, { pem: true });
+  var escInterPem = await pki.x509.sign({
+    subject: [{ commonName: "Esc CA" }], subjectPublicKey: eskSpki, serialNumber: "02",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: true, critical: true }, keyUsage: ["keyCertSign"], keyUsageCritical: true },
+  }, { name: [{ commonName: " Esc CA" }], publicKey: eskSpki, key: esk.privateKey }, { pem: true });
+  var elk = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+  var elkSpki = await _spki(elk.publicKey);
+  var escLeafPem = await pki.x509.sign({
+    subject: [{ commonName: "esc-leaf" }], subjectPublicKey: elkSpki, serialNumber: "03",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: false, critical: true }, keyUsage: ["digitalSignature"], keyUsageCritical: true },
+  }, { name: [{ commonName: "Esc CA" }], publicKey: eskSpki, key: esk.privateKey }, { pem: true });
+  var escChain = [escLeafPem, escInterPem, escRootPem].map(function (p) {
+    return new nodeCrypto.X509Certificate(p);
+  });
+  check("self-issued rollover with escaped leading whitespace does not consume path length",
+        x509Chain.pathLenSatisfied(escChain) === true);
+
+  // P1 regression: non-UTF8 directory strings must not decode lossily. A
+  // TeletexString (tag 0x14) CN of byte 0xE9 (é) and one of 0xE8 (è) are DISTINCT
+  // names; decoding both as UTF-8 collapses them to U+FFFD and wrongly classifies
+  // the intermediate as self-issued (a fail-open). The intermediate here is NOT
+  // self-issued, so it must consume path length and the chain must be REJECTED.
+  var T61 = 0x14;
+  var tk = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+  var tkSpki = await _spki(tk.publicKey);
+  var t61RootPem = await pki.x509.sign({
+    subject: _rawCn(T61, [0xe9]), subjectPublicKey: tkSpki, serialNumber: "01",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: true, pathLen: 0, critical: true }, keyUsage: ["keyCertSign"], keyUsageCritical: true },
+  }, { key: tk.privateKey }, { pem: true });
+  var tik = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+  var tikSpki = await _spki(tik.publicKey);
+  var t61InterPem = await pki.x509.sign({
+    subject: _rawCn(T61, [0xe8]), subjectPublicKey: tikSpki, serialNumber: "02",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: true, critical: true }, keyUsage: ["keyCertSign"], keyUsageCritical: true },
+  }, { name: _rawCn(T61, [0xe9]), publicKey: tkSpki, key: tk.privateKey }, { pem: true });
+  var tlk = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+  var tlkSpki = await _spki(tlk.publicKey);
+  var t61LeafPem = await pki.x509.sign({
+    subject: [{ commonName: "t61-leaf" }], subjectPublicKey: tlkSpki, serialNumber: "03",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: false, critical: true }, keyUsage: ["digitalSignature"], keyUsageCritical: true },
+  }, { name: _rawCn(T61, [0xe8]), publicKey: tikSpki, key: tik.privateKey }, { pem: true });
+  var t61Chain = [t61LeafPem, t61InterPem, t61RootPem].map(function (p) {
+    return new nodeCrypto.X509Certificate(p);
+  });
+  check("TeletexString names é and è are distinct: the intermediate consumes path length (rejected)",
+        x509Chain.pathLenSatisfied(t61Chain) === false);
 
   console.log("OK — x509 pathLen enforcement (" + helpers.getChecks() + " checks)");
 }
