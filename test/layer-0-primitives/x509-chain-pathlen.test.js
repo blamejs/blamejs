@@ -521,6 +521,16 @@ async function run() {
   check("resolveChain: null leaf fails closed", x509Chain.resolveChain(null, [], []).ok === false);
   check("resolveChain: non-array pool/anchors are tolerated (fail closed)",
         x509Chain.resolveChain(bt.leaf, null, null).ok === false);
+  // Malformed anchor and pool entries must be skipped, never dereferenced: a
+  // null anchor left after a parse failure must not crash the resolver.
+  check("resolveChain: a null anchor entry is skipped, a valid one still accepted",
+        x509Chain.resolveChain(bt.leaf, [bt.sub, bt.issuerPermissive], [null, bt.root]).ok === true);
+  check("resolveChain: only a null anchor → fails closed, no throw",
+        x509Chain.resolveChain(bt.leaf, [bt.sub, bt.issuerPermissive], [null]).ok === false);
+  check("resolveChain: a non-cert anchor entry ({}) is skipped, no throw",
+        x509Chain.resolveChain(bt.leaf, [bt.sub, bt.issuerPermissive], [{}, bt.root]).ok === true);
+  check("resolveChain: a null pool entry alongside valid ones is tolerated",
+        x509Chain.resolveChain(bt.leaf, [null, bt.sub, bt.issuerPermissive], [bt.root]).ok === true);
 
   console.log("OK — x509 pathLen enforcement (" + helpers.getChecks() + " checks)");
 }
