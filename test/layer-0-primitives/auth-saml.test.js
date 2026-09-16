@@ -541,7 +541,7 @@ function testLogoutResponseRoundTrip() {
   // buildLogoutResponse produces the redirect; extract + parse the SAMLResponse.
   var built = sp.buildLogoutResponse({ inResponseTo: "_orig-1", destination: IDP_SLO_URL });
   var samlResp = decodeURIComponent(built.redirectUrl.split("?")[1].split("&")[0].slice("SAMLResponse=".length));
-  var parsed = sp.parseLogoutResponse(samlResp, { expectedInResponseTo: "_orig-1" });
+  var parsed = sp.parseLogoutResponse(samlResp, { expectedInResponseTo: "_orig-1", allowUnsigned: true });
   check("parseLogoutResponse: default status → success true", parsed.success === true);
   check("parseLogoutResponse: InResponseTo round-trips", parsed.inResponseTo === "_orig-1");
   check("parseLogoutResponse: issuer is the SP entityId", parsed.issuer === SP_ENTITY_ID);
@@ -549,7 +549,7 @@ function testLogoutResponseRoundTrip() {
   check("parseLogoutResponse: non-string input → no-saml-response",
     _codeOf(function () { sp.parseLogoutResponse(null); }) === "auth-saml/no-saml-response");
   check("parseLogoutResponse: expectedInResponseTo mismatch → inresponseto-mismatch",
-    _codeOf(function () { sp.parseLogoutResponse(samlResp, { expectedInResponseTo: "_different" }); })
+    _codeOf(function () { sp.parseLogoutResponse(samlResp, { expectedInResponseTo: "_different", allowUnsigned: true }); })
       === "auth-saml/inresponseto-mismatch");
 
   // A non-Success statusCode surfaces success=false.
@@ -559,7 +559,7 @@ function testLogoutResponseRoundTrip() {
   });
   var failResp = decodeURIComponent(failBuilt.redirectUrl.split("?")[1].split("&")[0].slice("SAMLResponse=".length));
   check("parseLogoutResponse: non-Success statusCode → success false",
-    sp.parseLogoutResponse(failResp).success === false);
+    sp.parseLogoutResponse(failResp, { allowUnsigned: true }).success === false);
 }
 
 // ---------------------------------------------------------------------------
@@ -597,7 +597,7 @@ function testParseLogoutRequestPostValidation() {
   check("parseLogoutRequestPost: non-string input → bad-input",
     _codeOf(function () { sp.parseLogoutRequestPost(42); }) === "auth-saml/bad-input");
   check("parseLogoutRequestPost: wrong root element → wrong-root",
-    _codeOf(function () { sp.parseLogoutRequestPost(b64("<samlp:Foo " + P_NS + "/>")); }) === "auth-saml/wrong-root");
+    _codeOf(function () { sp.parseLogoutRequestPost(b64("<samlp:Foo " + P_NS + "/>"), { allowUnsigned: true }); }) === "auth-saml/wrong-root");
 }
 
 function testLogoutRequestSoapShape() {
@@ -618,7 +618,7 @@ function testParseLogoutResponseSoap() {
   var envelope = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" +
     "<soapenv:Envelope xmlns:soapenv=\"http://schemas.xmlsoap.org/soap/envelope/\">" +
     "<soapenv:Body>" + lr.raw + "</soapenv:Body></soapenv:Envelope>";
-  var parsed = sp.parseLogoutResponseSoap(envelope);
+  var parsed = sp.parseLogoutResponseSoap(envelope, { allowUnsigned: true });
   check("parseLogoutResponseSoap: unwraps Body + reports success", parsed.success === true);
   check("parseLogoutResponseSoap: InResponseTo recovered", parsed.inResponseTo === "_orig-soap");
 
@@ -1462,7 +1462,7 @@ function testSloPostBindings() {
 
   var noNameId = "<samlp:LogoutRequest xmlns:samlp=\"" + SAML_P + "\" xmlns:saml=\"" + SAML_A + "\" ID=\"_x\"><saml:Issuer>i</saml:Issuer></samlp:LogoutRequest>";
   check("SLO POST: LogoutRequest without NameID -> no-nameid",
-    _codeOf(function () { sp.parseLogoutRequestPost(b64(noNameId)); }) === "auth-saml/no-nameid");
+    _codeOf(function () { sp.parseLogoutRequestPost(b64(noNameId), { allowUnsigned: true }); }) === "auth-saml/no-nameid");
 }
 
 function testSloRedirectAndParse() {
@@ -1506,15 +1506,15 @@ function testSloRedirectAndParse() {
   var respQuery = sp.buildLogoutResponse({ inResponseTo: "_x", destination: IDP_SLO_URL }).redirectUrl.split("?")[1];
   var respOnly = decodeURIComponent(respQuery.split("&")[0].slice("SAMLResponse=".length));
   check("SLO: parseLogoutRequest given a LogoutResponse -> not-logout-request",
-    _codeOf(function () { sp.parseLogoutRequest(respOnly); }) === "auth-saml/not-logout-request");
+    _codeOf(function () { sp.parseLogoutRequest(respOnly, { allowUnsigned: true }); }) === "auth-saml/not-logout-request");
   var reqQuery = sp.buildLogoutRequest({ nameId: "a", sessionIndex: "_s" }).redirectUrl.split("?")[1];
   var reqOnly = decodeURIComponent(reqQuery.split("&")[0].slice("SAMLRequest=".length));
   check("SLO: parseLogoutResponse given a LogoutRequest -> not-logout-response",
-    _codeOf(function () { sp.parseLogoutResponse(reqOnly); }) === "auth-saml/not-logout-response");
+    _codeOf(function () { sp.parseLogoutResponse(reqOnly, { allowUnsigned: true }); }) === "auth-saml/not-logout-response");
   var noNameIdReq = zlib.deflateRawSync(Buffer.from(
     "<samlp:LogoutRequest xmlns:samlp=\"" + SAML_P + "\" xmlns:saml=\"" + SAML_A + "\" ID=\"_x\"><saml:Issuer>i</saml:Issuer></samlp:LogoutRequest>", "utf8")).toString("base64");
   check("SLO: parseLogoutRequest LogoutRequest without NameID -> no-nameid",
-    _codeOf(function () { sp.parseLogoutRequest(noNameIdReq); }) === "auth-saml/no-nameid");
+    _codeOf(function () { sp.parseLogoutRequest(noNameIdReq, { allowUnsigned: true }); }) === "auth-saml/no-nameid");
 
   // SOAP parse-side branches.
   check("SLO SOAP: unparseable envelope -> bad-soap",
@@ -1522,7 +1522,7 @@ function testSloRedirectAndParse() {
   var soapWrongInner = "<soapenv:Envelope xmlns:soapenv=\"http://schemas.xmlsoap.org/soap/envelope/\"><soapenv:Body>" +
     "<samlp:Foo xmlns:samlp=\"" + SAML_P + "\"></samlp:Foo></soapenv:Body></soapenv:Envelope>";
   check("SLO SOAP: body element is not a LogoutResponse -> wrong-root",
-    _codeOf(function () { sp.parseLogoutResponseSoap(soapWrongInner); }) === "auth-saml/wrong-root");
+    _codeOf(function () { sp.parseLogoutResponseSoap(soapWrongInner, { allowUnsigned: true }); }) === "auth-saml/wrong-root");
   var lrResp = sp.buildLogoutResponse({ inResponseTo: "_o", destination: IDP_SLO_URL }).raw;
   var soapUnsigned = "<soapenv:Envelope xmlns:soapenv=\"http://schemas.xmlsoap.org/soap/envelope/\"><soapenv:Body>" + lrResp + "</soapenv:Body></soapenv:Envelope>";
   check("SLO SOAP: verify requested but LogoutResponse unsigned -> no-signature",
@@ -2071,7 +2071,7 @@ function testParseLogoutRequestBranches() {
     "<LogoutRequest xmlns=\"" + SAML_P + "\" xmlns:saml=\"" + SAML_A + "\" ID=\"_x\" " +
     "IssueInstant=\"" + iso(0) + "\" Destination=\"" + IDP_SLO_URL + "\">" +
     "<saml:Issuer>" + IDP_ENTITY_ID + "</saml:Issuer><saml:NameID>alice@idp</saml:NameID></LogoutRequest>";
-  var p1 = sp.parseLogoutRequest(defl(defNs));
+  var p1 = sp.parseLogoutRequest(defl(defNs), { allowUnsigned: true });
   check("parseLogoutRequest: default-ns LogoutRequest root recognized", p1.nameId === "alice@idp");
   check("parseLogoutRequest: absent SessionIndex -> sessionIndex null", p1.sessionIndex === null);
   check("parseLogoutRequest: Issuer echoed", p1.issuer === IDP_ENTITY_ID);
@@ -2080,7 +2080,7 @@ function testParseLogoutRequestBranches() {
   var noIssuer =
     "<samlp:LogoutRequest xmlns:samlp=\"" + SAML_P + "\" xmlns:saml=\"" + SAML_A + "\" ID=\"_x\">" +
     "<saml:NameID>bob@idp</saml:NameID></samlp:LogoutRequest>";
-  var p2 = sp.parseLogoutRequest(defl(noIssuer));
+  var p2 = sp.parseLogoutRequest(defl(noIssuer), { allowUnsigned: true });
   check("parseLogoutRequest: absent Issuer -> issuer null", p2.issuer === null && p2.nameId === "bob@idp");
 }
 
@@ -2094,7 +2094,7 @@ function testParseLogoutResponseBranches() {
     "InResponseTo=\"_o\" Destination=\"" + IDP_SLO_URL + "\">" +
     "<saml:Issuer>" + IDP_ENTITY_ID + "</saml:Issuer>" +
     "<Status><StatusCode Value=\"" + SUCCESS + "\"/></Status></LogoutResponse>";
-  var p1 = sp.parseLogoutResponse(defl(defNs));
+  var p1 = sp.parseLogoutResponse(defl(defNs), { allowUnsigned: true });
   check("parseLogoutResponse: default-ns root + unprefixed Status resolve -> success",
     p1.success === true && p1.issuer === IDP_ENTITY_ID && p1.inResponseTo === "_o");
 
@@ -2103,7 +2103,7 @@ function testParseLogoutResponseBranches() {
   var minimal =
     "<samlp:LogoutResponse xmlns:samlp=\"" + SAML_P + "\" xmlns:saml=\"" + SAML_A + "\" ID=\"_x\" " +
     "InResponseTo=\"_o\" Destination=\"" + IDP_SLO_URL + "\"></samlp:LogoutResponse>";
-  var p2 = sp.parseLogoutResponse(defl(minimal));
+  var p2 = sp.parseLogoutResponse(defl(minimal), { allowUnsigned: true });
   check("parseLogoutResponse: absent StatusCode -> statusCode null, success false",
     p2.statusCode === null && p2.success === false);
   check("parseLogoutResponse: absent Issuer -> issuer null", p2.issuer === null);
@@ -2115,7 +2115,7 @@ function testParseLogoutRequestPostBranches() {
   var xml =
     "<samlp:LogoutRequest xmlns:samlp=\"" + SAML_P + "\" xmlns:saml=\"" + SAML_A + "\" ID=\"_x\">" +
     "<saml:NameID>alice@idp</saml:NameID></samlp:LogoutRequest>";
-  var parsed = sp.parseLogoutRequestPost(b64(xml));
+  var parsed = sp.parseLogoutRequestPost(b64(xml), { allowUnsigned: true });
   check("parseLogoutRequestPost: NameID recovered", parsed.nameId === "alice@idp");
   check("parseLogoutRequestPost: absent SessionIndex -> null", parsed.sessionIndex === null);
   check("parseLogoutRequestPost: absent Issuer -> null", parsed.issuer === null);
@@ -2132,7 +2132,7 @@ function testParseLogoutResponseSoapBranches() {
     "<!--between-envelope-and-body--><soapenv:Body>" +
     "<samlp:LogoutResponse xmlns:samlp=\"" + SAML_P + "\" xmlns:saml=\"" + SAML_A + "\" ID=\"_x\" InResponseTo=\"_o\"></samlp:LogoutResponse>" +
     "</soapenv:Body></soapenv:Envelope>";
-  var p1 = sp.parseLogoutResponseSoap(soapNoStatus);
+  var p1 = sp.parseLogoutResponseSoap(soapNoStatus, { allowUnsigned: true });
   check("parseLogoutResponseSoap: comment before Body skipped; InResponseTo recovered", p1.inResponseTo === "_o");
   check("parseLogoutResponseSoap: absent Status -> statusCode null, success false",
     p1.statusCode === null && p1.success === false);
@@ -2144,7 +2144,7 @@ function testParseLogoutResponseSoapBranches() {
     "<soapenv:Envelope xmlns:soapenv=\"http://schemas.xmlsoap.org/soap/envelope/\"><soapenv:Body>" +
     "<samlp:LogoutResponse xmlns:samlp=\"" + SAML_P + "\" xmlns:saml=\"" + SAML_A + "\" ID=\"_x\" InResponseTo=\"_o\">" +
     "<samlp:Status></samlp:Status></samlp:LogoutResponse></soapenv:Body></soapenv:Envelope>";
-  var p2 = sp.parseLogoutResponseSoap(soapEmptyStatus);
+  var p2 = sp.parseLogoutResponseSoap(soapEmptyStatus, { allowUnsigned: true });
   check("parseLogoutResponseSoap: Status without a StatusCode -> statusCode null, success false",
     p2.statusCode === null && p2.success === false);
 }

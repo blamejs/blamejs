@@ -5,12 +5,15 @@
  * b.auth.saml.sp SLO — verification-config fail-closed.
  *
  * Every Single-Logout parse path (HTTP-Redirect, HTTP-POST, SOAP)
- * takes an optional idpVerifyKey + idpVerifyAlg pair to authenticate
- * the inbound LogoutRequest / LogoutResponse against the IdP key. A
- * HALF-supplied pair (key without alg, or alg without key) is an
- * operator configuration mistake — it must fail CLOSED (throw), never
- * silently skip signature verification and accept a forged, unsigned
- * message.
+ * authenticates the inbound LogoutRequest / LogoutResponse against the
+ * IdP key (idpVerifyKey + idpVerifyAlg). Verification is mandatory by
+ * default: a parse with no verify key configured refuses the message
+ * (a forged unsigned LogoutRequest would otherwise force-logout any
+ * user). An operator accepts unsigned messages only by passing
+ * allowUnsigned:true explicitly. A HALF-supplied pair (key without alg,
+ * or alg without key) is an operator configuration mistake — it must
+ * fail CLOSED (throw), never silently skip signature verification and
+ * accept a forged, unsigned message.
  *
  * Regression guard for the fail-open where the HTTP-POST / SOAP paths
  * gated verification on `key || alg` but the underlying helper returned
@@ -151,14 +154,59 @@ function testPostRoundtripStillVerifies() {
     parsed.nameId === "alice@idp");
 }
 
-function testPostUnsignedNoVerifyRequested() {
-  // Neither key nor alg → verification not requested; an unsigned
-  // LogoutRequest parses (the documented optional-verification path).
+function testPostUnsignedRefusedByDefault() {
+  // Neither key nor alg → verification not configured. By default the parse
+  // MUST refuse (a forged unsigned LogoutRequest would force-logout any user);
+  // it no longer silently accepts the message.
+  var sp = _newSp();
+  var lr = sp.buildLogoutRequestPost({ nameId: "attacker@evil", sessionIndex: "_s" });
+  var code = _codeOf(function () { sp.parseLogoutRequestPost(lr.samlRequest); });
+  check("POST unsigned + no verify-config refused by default",
+    code === "auth-saml/slo-verification-required");
+}
+
+function testPostUnsignedAllowUnsignedOptOut() {
+  // The operator opts into unsigned acceptance explicitly.
   var sp = _newSp();
   var lr = sp.buildLogoutRequestPost({ nameId: "bob@idp", sessionIndex: "_s" });
-  var parsed = sp.parseLogoutRequestPost(lr.samlRequest);
-  check("POST unsigned parse with no verify-config recovers nameId",
+  var parsed = sp.parseLogoutRequestPost(lr.samlRequest, { allowUnsigned: true });
+  check("POST unsigned parses with explicit allowUnsigned:true opt-out",
     parsed.nameId === "bob@idp");
+}
+
+function testRedirectLogoutRequestUnsignedRefusedByDefault() {
+  var sp = _newSp();
+  var lr = sp.buildLogoutRequest({ nameId: "attacker@evil", sessionIndex: "_s" });
+  var q = _stripQuery(lr.redirectUrl);
+  var code = _codeOf(function () { sp.parseLogoutRequest(_samlReq(q), { queryString: q }); });
+  check("redirect parseLogoutRequest unsigned + no key refused by default",
+    code === "auth-saml/slo-verification-required");
+}
+
+function testRedirectLogoutRequestAllowUnsignedOptOut() {
+  var sp = _newSp();
+  var lr = sp.buildLogoutRequest({ nameId: "carol@idp", sessionIndex: "_s" });
+  var q = _stripQuery(lr.redirectUrl);
+  var parsed = sp.parseLogoutRequest(_samlReq(q), { queryString: q, allowUnsigned: true });
+  check("redirect parseLogoutRequest parses with allowUnsigned:true",
+    parsed.nameId === "carol@idp");
+}
+
+function testRedirectLogoutResponseUnsignedRefusedByDefault() {
+  var sp = _newSp();
+  var lr = sp.buildLogoutResponse({ inResponseTo: "_orig-id-123", destination: "https://idp.example/slo" });
+  var q = _stripQuery(lr.redirectUrl);
+  var code = _codeOf(function () { sp.parseLogoutResponse(_samlResp(q), { queryString: q }); });
+  check("redirect parseLogoutResponse unsigned + no key refused by default",
+    code === "auth-saml/slo-verification-required");
+}
+
+function testSoapLogoutResponseUnsignedRefusedByDefault() {
+  var sp = _newSp();
+  var soap = _forgedSoapLogoutResponse(sp);
+  var code = _codeOf(function () { sp.parseLogoutResponseSoap(soap); });
+  check("SOAP parseLogoutResponseSoap unsigned + no key refused by default",
+    code === "auth-saml/slo-verification-required");
 }
 
 function run() {
@@ -169,7 +217,12 @@ function run() {
   testRedirectLogoutRequestAlgWithoutKeyFailsClosed();
   testRedirectLogoutResponseAlgWithoutKeyFailsClosed();
   testPostRoundtripStillVerifies();
-  testPostUnsignedNoVerifyRequested();
+  testPostUnsignedRefusedByDefault();
+  testPostUnsignedAllowUnsignedOptOut();
+  testRedirectLogoutRequestUnsignedRefusedByDefault();
+  testRedirectLogoutRequestAllowUnsignedOptOut();
+  testRedirectLogoutResponseUnsignedRefusedByDefault();
+  testSoapLogoutResponseUnsignedRefusedByDefault();
 }
 
 if (require.main === module) {
