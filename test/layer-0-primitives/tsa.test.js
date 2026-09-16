@@ -68,7 +68,8 @@ function _makeCert(opts) {
   opts = opts || {};
   var keyType = opts.keyType || "rsa";
   var kp;
-  if (keyType === "ec") kp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  if (opts.kp) kp = opts.kp;
+  else if (keyType === "ec") kp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
   else if (keyType === "ed25519") kp = nodeCrypto.generateKeyPairSync("ed25519");
   else kp = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
   var spki = kp.publicKey.export({ type: "spki", format: "der" });
@@ -93,9 +94,14 @@ function _makeCert(opts) {
 
   var extsList = [];
   if (opts.ca) {
+    var bcChildren = [asn1.writeBoolean(true)];                                // cA TRUE
+    if (typeof opts.pathLen === "number") bcChildren.push(asn1.writeInteger(Buffer.from([opts.pathLen])));
+    // rawPathLen injects the pathLenConstraint INTEGER content bytes verbatim
+    // (no minimal/sign fixups) to exercise a malformed negative constraint.
+    else if (Buffer.isBuffer(opts.rawPathLen)) bcChildren.push(asn1.writeNode(0x02, opts.rawPathLen));
     extsList.push(asn1.writeSequence([
       asn1.writeOid(OID_BASIC_CONSTRAINTS), asn1.writeBoolean(true),
-      asn1.writeOctetString(asn1.writeSequence([asn1.writeBoolean(true)])),   // cA TRUE
+      asn1.writeOctetString(asn1.writeSequence(bcChildren)),
     ]));
   } else if (opts.basicConstraintsFalse) {
     extsList.push(asn1.writeSequence([
@@ -610,6 +616,85 @@ function testChainVerify() {
   check("invalid opts.at Date refused", e4 && e4.code === "tsa/bad-at");
 }
 
+// A token chain root(pathLen:0) → intermediate CA → leaf-TSA exceeds the root's
+// path-length limit. Every issuer link verifies, so before pathLen enforcement
+// verifyToken accepted it. RED before the fix routed _verifyChain through
+// x509Chain.pathLenSatisfied.
+function testChainPathLen() {
+  var data = Buffer.from("pathlen-test");
+  function chainFor(pl) {
+    var root = _makeCert({ cn: "PL Root", serial: Buffer.from([0x01]), ca: true, pathLen: pl, ekuOids: null });
+    var interm = _makeCert({ cn: "PL Interm", serial: Buffer.from([0x02]), ca: true, ekuOids: null,
+      issuerName: root.subjectName, issuerKey: root.key });
+    var leaf = _makeCert({ cn: "PL Leaf TSA", serial: Buffer.from([0x03]), basicConstraintsFalse: true,
+      issuerName: interm.subjectName, issuerKey: interm.key });
+    var token = _makeToken({ certDer: leaf.certDer, extraCertDer: interm.certDer, key: leaf.key,
+      issuer: leaf.issuer, serial: leaf.serial, imprintHash: _imprintOf(data, "SHA-512") });
+    return { token: token, rootPem: new nodeCrypto.X509Certificate(root.certDer).toString() };
+  }
+  var over = chainFor(0);
+  var e = null;
+  try { b.tsa.verifyToken(over.token, { data: data, hashAlg: "SHA-512", trustAnchorsPem: [over.rootPem] }); }
+  catch (err) { e = err; }
+  check("tsa: a chain exceeding the root pathLen:0 is REJECTED", e && e.code === "tsa/chain-pathlen-exceeded");
+
+  var okc = chainFor(1);
+  var out = b.tsa.verifyToken(okc.token, { data: data, hashAlg: "SHA-512", trustAnchorsPem: [okc.rootPem] });
+  check("tsa: a chain within the root pathLen:1 is accepted", out.policy === "1.2.3.4.1");
+}
+
+// The token's certificates carry two interchangeable issuers for the sub CA —
+// same subject and public key, one with pathLen:0 and one with pathLen:1 —
+// listed strict-first. A greedy walk commits to the pathLen:0 issuer, which the
+// sub CA overruns, and rejects the token though the pathLen:1 issuer completes a
+// within-limit path. The walk must try the alternative issuer, not the first
+// match alone.
+function testChainBacktrack() {
+  var data = Buffer.from("backtrack-test");
+  var root = _makeCert({ cn: "BT Root", serial: Buffer.from([0x01]), ca: true, ekuOids: null });
+  var issuerKp = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var issuerStrict = _makeCert({ cn: "BT Issuer", serial: Buffer.from([0x0a]), ca: true, pathLen: 0,
+    ekuOids: null, kp: issuerKp, issuerName: root.subjectName, issuerKey: root.key });
+  var issuerPermissive = _makeCert({ cn: "BT Issuer", serial: Buffer.from([0x0b]), ca: true, pathLen: 1,
+    ekuOids: null, kp: issuerKp, issuerName: root.subjectName, issuerKey: root.key });
+  var subCa = _makeCert({ cn: "BT Sub CA", serial: Buffer.from([0x0c]), ca: true, ekuOids: null,
+    issuerName: issuerStrict.subjectName, issuerKey: issuerKp.privateKey });
+  var leaf = _makeCert({ cn: "BT Leaf TSA", serial: Buffer.from([0x0d]), basicConstraintsFalse: true,
+    issuerName: subCa.subjectName, issuerKey: subCa.key });
+  var token = _makeToken({ certDer: leaf.certDer,
+    extraCertDer: Buffer.concat([subCa.certDer, issuerStrict.certDer, issuerPermissive.certDer]),
+    key: leaf.key, issuer: leaf.issuer, serial: leaf.serial, imprintHash: _imprintOf(data, "SHA-512") });
+  var rootPem = new nodeCrypto.X509Certificate(root.certDer).toString();
+  var out = b.tsa.verifyToken(token, { data: data, hashAlg: "SHA-512", trustAnchorsPem: [rootPem] });
+  check("tsa: a strict issuer listed before an interchangeable permissive one does not preempt a within-limit path",
+        out.policy === "1.2.3.4.1");
+}
+
+// A CA whose basicConstraints encodes pathLenConstraint as a negative ASN.1
+// INTEGER (0xFF = -1) is a malformed critical extension. The chain must fail
+// closed. On node 24.21.0 and 26.x, X509Certificate.ca is false for such a cert
+// (OpenSSL rejects the malformed extension), so the root is not a usable CA and
+// the chain is refused as untrusted-chain before any path-length evaluation.
+// pathLenSatisfied additionally reads the pathLenConstraint as a fail-closed
+// value for a negative INTEGER, so the refusal holds independent of the platform
+// parser: either rejection code is a pass, an accepted token is the failure.
+function testChainNegativePathLen() {
+  var data = Buffer.from("neg-pathlen-test");
+  var root = _makeCert({ cn: "Neg Root", serial: Buffer.from([0x01]), ca: true, rawPathLen: Buffer.from([0xff]), ekuOids: null });
+  var interm = _makeCert({ cn: "Neg Interm", serial: Buffer.from([0x02]), ca: true, ekuOids: null,
+    issuerName: root.subjectName, issuerKey: root.key });
+  var leaf = _makeCert({ cn: "Neg Leaf TSA", serial: Buffer.from([0x03]), basicConstraintsFalse: true,
+    issuerName: interm.subjectName, issuerKey: interm.key });
+  var token = _makeToken({ certDer: leaf.certDer, extraCertDer: interm.certDer, key: leaf.key,
+    issuer: leaf.issuer, serial: leaf.serial, imprintHash: _imprintOf(data, "SHA-512") });
+  var rootPem = new nodeCrypto.X509Certificate(root.certDer).toString();
+  var e = null;
+  try { b.tsa.verifyToken(token, { data: data, hashAlg: "SHA-512", trustAnchorsPem: [rootPem] }); }
+  catch (err) { e = err; }
+  check("tsa: a negative basicConstraints pathLenConstraint is refused, not treated as permissive",
+        e && (e.code === "tsa/untrusted-chain" || e.code === "tsa/chain-pathlen-exceeded"));
+}
+
 // Multi-cert chain: signer → intermediate CA → root anchor. Exercises the
 // walk-up through the token's intermediates and the cA-enforced anchor
 // termination, plus the validity-window check driven by opts.at.
@@ -856,6 +941,9 @@ async function run() {
   testTstInfoParsing();
   testCandidateSigners();
   testChainVerify();
+  testChainPathLen();
+  testChainBacktrack();
+  testChainNegativePathLen();
   testTsaTrustAnchorRequiredByDefault();
   testChainWalkAndValidity();
   testParseResponseBranches();
