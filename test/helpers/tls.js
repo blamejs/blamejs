@@ -54,6 +54,8 @@ function selfSignedPair(opts) {
       certDer.toString("base64").match(/.{1,64}/g).join("\n") +
       "\n-----END CERTIFICATE-----\n",
     key: kp.privateKey.export({ type: "pkcs8", format: "pem" }),
+    keyPair: kp,
+    certDer: certDer,
   };
   return _cached;
 }
