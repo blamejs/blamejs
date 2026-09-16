@@ -139,8 +139,13 @@ function testCrossIssuerCertIdRefused() {
         /issuerNameHash|issuerKeyHash|wrong-issuer/i.test((rv.errors || []).join(" ; ")));
 }
 
-// Without issuerCertDer the binding is not enforced (serial-only legacy path).
-function testNoIssuerCertDerStaysSerialBound() {
+// Without issuerCertDer the CertID issuerKeyHash is bound against opts.issuerPem's
+// key: the RFC 6960 §4.1.1 binding is mandatory, not opt-in. A response whose
+// CertID names a DIFFERENT issuer key than the responder that signed it (issuerPem)
+// is refused, closing the serial-only replay across a shared responder or a
+// colliding serial. RED before the fix: the binding was skipped without
+// issuerCertDer, so the cross-key response resolved ok:true on serial alone.
+function testNoIssuerCertDerStillBindsOnKey() {
   var otherIssuer = helpers.synthCertForOcsp(Buffer.from([0x02]), Buffer.from("Evil CA"),
                                Buffer.from("evil-ca-key-bytes-bbbbbbbbbbbbbb"));
   var fx = helpers.buildOcspResponse({ serial: _OCSP_SERIAL, certIdIssuerDer: otherIssuer,
@@ -148,7 +153,24 @@ function testNoIssuerCertDerStaysSerialBound() {
   var rv = b.network.tls.ocsp.evaluate(fx.der, {
     issuerPem: fx.issuerPem, serialHex: _OCSP_SERIAL.toString("hex"), now: _OCSP_NOW,
   });
-  check("no issuerCertDer: serial-only bind still resolves (ok=true)", rv.ok === true);
+  check("no issuerCertDer: cross-key CertID is refused (mandatory key binding)", rv.ok === false);
+  check("no issuerCertDer: signature still verified (reached the binding)",
+        rv.signatureValid === true);
+  check("no issuerCertDer: refused for the issuerKeyHash reason",
+        /issuerKeyHash|wrong-issuer/i.test((rv.errors || []).join(" ; ")));
+}
+
+// Positive control — without issuerCertDer, a CertID whose issuerKeyHash matches
+// opts.issuerPem's key (the builder derives the default from the signing key) is
+// accepted. Guards the mandatory binding against over-refusing the common
+// non-delegated case where issuerPem IS the issuer.
+function testNoIssuerCertDerMatchingKeyAccepted() {
+  var fx = helpers.buildOcspResponse({ serial: _OCSP_SERIAL,
+                              producedAtMs: _OCSP_NOW - 1000, nextUpdateMs: _OCSP_NOW + 86400000 });
+  var rv = b.network.tls.ocsp.evaluate(fx.der, {
+    issuerPem: fx.issuerPem, serialHex: _OCSP_SERIAL.toString("hex"), now: _OCSP_NOW,
+  });
+  check("no issuerCertDer + matching key: accepted", rv.ok === true);
 }
 
 // A well-formed OCSPResponse followed by extra bytes must be refused, not read
@@ -239,7 +261,8 @@ async function run() {
   await testRequireGoodRequiresIssuerPem();
   testCertIdIssuerMatchAccepted();
   testCrossIssuerCertIdRefused();
-  testNoIssuerCertDerStaysSerialBound();
+  testNoIssuerCertDerStillBindsOnKey();
+  testNoIssuerCertDerMatchingKeyAccepted();
   testParseRejectsTrailingData();
   testEvaluateRejectsTrailingData();
   await testFetchForwardsMaxAgeMs();

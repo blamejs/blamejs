@@ -141,10 +141,21 @@ function buildOcspResponse(opts) {
       asn1.writeInteger(opts.serial),
     ]);
   } else {
+    // With no explicit issuerKeyHash and the default SHA-1 CertID hash, derive
+    // the key hash from the SIGNING key so the response binds to opts.issuerPem
+    // (the responder that signed it) — what the verifier's mandatory RFC 6960
+    // §4.1.1 issuerKeyHash check recomputes when no issuerCertDer is supplied.
+    var defaultKeyHash = null;
+    if (!opts.issuerKeyHash && opts.certIdHashOid === OID_SHA1) {
+      var signerSpki = kp.publicKey.export({ type: "spki", format: "der" });
+      var signerSpkiKids = asn1.readSequence(asn1.readNode(signerSpki).value);
+      defaultKeyHash = nodeCrypto.createHash("sha1")
+        .update(asn1.readBitString(signerSpkiKids[1])).digest();
+    }
     certId = asn1.writeSequence([
       asn1.writeSequence([asn1.writeOid(opts.certIdHashOid), asn1.writeNull()]),
       asn1.writeOctetString(opts.issuerNameHash || Buffer.alloc(20, 0xaa)),
-      asn1.writeOctetString(opts.issuerKeyHash || Buffer.alloc(20, 0xbb)),
+      asn1.writeOctetString(opts.issuerKeyHash || defaultKeyHash || Buffer.alloc(20, 0xbb)),
       asn1.writeInteger(opts.serial),
     ]);
   }
