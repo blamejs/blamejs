@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.20.25",
-  "createdAt": "2026-09-16T19:48:39.947Z",
+  "frameworkVersion": "0.20.26",
+  "createdAt": "2026-09-16T22:30:26.820Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -44933,6 +44933,10 @@
             "canonHeaderRelaxed": {
               "type": "function",
               "arity": 2
+            },
+            "canonicalizeSignedHeaders": {
+              "type": "function",
+              "arity": 4
             },
             "create": {
               "type": "function",

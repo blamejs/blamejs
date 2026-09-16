@@ -1782,6 +1782,83 @@ function testDkimBootstrapEd25519PublishesRawKey() {
   check("bootstrap ed25519: published p= is a 32-byte key", Buffer.from(rawB64, "base64").length === 32);
 }
 
+// RFC 6376 §5.4.2: a header name repeated in h= (oversigning) binds header
+// instances BOTTOM-UP, one per occurrence; an entry past the header's count is
+// the null input. Oversigning is the defense against a prepended spoofed copy
+// of a signed header. A last-match resolution binds every occurrence to the
+// same bottom instance, so an injected top copy is never bound → fail-open.
+async function testDkimOversignBindsInjectedHeader() {
+  var kp = _rsaKeypair();
+  var signer = b.mail.dkim.create({
+    domain: "example.com", selector: "s-oversign", privateKey: kp.privateKey,   // unique selector — avoid key-cache collision with other tests
+    headersToSign: ["from", "to", "subject", "subject", "date"],   // oversign Subject
+  });
+  var rfc822 = [
+    "From: alice@example.com",
+    "To: bob@example.org",
+    "Subject: Legit meeting notes",
+    "Date: Tue, 30 Apr 2026 12:00:00 +0000",
+    "",
+    "Body.",
+  ].join("\r\n");
+  var signed = signer.sign(rfc822);
+  var b64 = _spkiPemToB64(kp.publicKey);
+  var dnsLookup = async function () { return [["v=DKIM1; k=rsa; p=" + b64]]; };
+
+  var rvClean = await b.mail.dkim.verify(signed, { dnsLookup: dnsLookup });
+  check("dkim oversign: unmodified oversigned message verifies (round-trip)",
+        rvClean[0] && rvClean[0].result === "pass", JSON.stringify(rvClean[0]));
+
+  // Prepend a spoofed Subject above the legit one (at the DKIM-Signature /
+  // body-header boundary, keeping the folded DKIM-Signature intact). Oversigning
+  // must bind the injected instance (the 2nd h=subject, null at signing), so the
+  // signature — not a parse error — must fail.
+  var dkimPart = signed.slice(0, signed.length - rfc822.length);
+  var tampered = dkimPart + "Subject: SPOOFED wire $9999\r\n" + rfc822;
+  var rvSpoof = await b.mail.dkim.verify(tampered, { dnsLookup: dnsLookup });
+  check("dkim oversign: a prepended spoofed Subject is bound and the signature is refused",
+        rvSpoof[0] && rvSpoof[0].result === "fail", JSON.stringify(rvSpoof[0]));
+}
+
+// RFC 6376 §5.4: the DKIM-Signature being verified is never a candidate for its
+// own h= header selection — it is canonicalized separately with b= emptied.
+// Other DKIM-Signature instances (from prior signers) ARE ordinary signed
+// headers. A second signer that oversigns dkim-signature sees, at signing time,
+// only the prior signature (its own does not yet exist); the verifier's pool
+// then carries one more dkim-signature instance than the signer counted, so an
+// untouched, validly signed message must still verify — the verifier has to
+// drop its own instance from the h= pool while keeping the others.
+async function testDkimOversignDkimSigExcludesSelfFromPool() {
+  var kp = _rsaKeypair();
+  var rfc822 = [
+    "From: alice@example.com",
+    "To: bob@example.org",
+    "Subject: Quarterly figures",
+    "Date: Tue, 30 Apr 2026 12:00:00 +0000",
+    "",
+    "Body.",
+  ].join("\r\n");
+  var b64 = _spkiPemToB64(kp.publicKey);
+  var dnsLookup = async function () { return [["v=DKIM1; k=rsa; p=" + b64]]; };
+
+  var first = b.mail.dkim.create({
+    domain: "example.com", selector: "s-selfexcl-1", privateKey: kp.privateKey,
+    headersToSign: ["from", "to", "subject", "date"],
+  }).sign(rfc822);
+  // Second signer oversigns the existing DKIM-Signature: one real instance at
+  // signing, the second h=dkim-signature is the null input.
+  var second = b.mail.dkim.create({
+    domain: "example.com", selector: "s-selfexcl-2", privateKey: kp.privateKey,
+    headersToSign: ["from", "dkim-signature", "dkim-signature"],
+  }).sign(first);
+
+  var rv = await b.mail.dkim.verify(second, { dnsLookup: dnsLookup });
+  var results = rv.map(function (r) { return r && r.result; });
+  check("dkim oversign-dkim-sig: every signature on the untouched message verifies",
+        rv.length === 2 && results[0] === "pass" && results[1] === "pass",
+        JSON.stringify(results));
+}
+
 async function run() {
   testDkimSurfaceAndValidation();
   testDkimCanonicalization();
@@ -1792,6 +1869,8 @@ async function run() {
   testDkimSignerRejectsBadInput();
   testDkimRejectsLTagBodyLength();
   await testDkimVerifyHappyPath();
+  await testDkimOversignBindsInjectedHeader();
+  await testDkimOversignDkimSigExcludesSelfFromPool();
   await testDkimVerifyKeyRecordTagsAreCaseSensitive();
   await testDkimRoundTripsNonUtf8Octets();
   await testDkimVerifyEd25519RawKeyRfc8463();

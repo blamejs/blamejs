@@ -625,6 +625,35 @@ async function testArcSealsTheOctetsItWasGiven() {
         rvText.chainStatus + " ams=" + (rvText.hops[0] || {}).amsResult);
 }
 
+// RFC 6376 §5.4.2 (via RFC 8617): ARC signing selects the header instances an
+// h= name refers to bottom-up, one per occurrence, the same way the verifier
+// does. arc.verify delegates the ARC-Message-Signature to the DKIM verifier, so
+// a last-match ARC signer that binds every repeated name to the bottom instance
+// hashes a different input than the bottom-up verifier reads, and an untouched
+// oversigned message fails its own round-trip.
+async function testArcOversignHeaderRoundTrips() {
+  var nodeCrypto = require("crypto");
+  var kp = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var pem = kp.privateKey.export({ format: "pem", type: "pkcs8" });
+  var spkiB64 = kp.publicKey.export({ type: "spki", format: "der" }).toString("base64");
+
+  var rfc822 =
+    "From: alice@example.com\r\nTo: bob@example.com\r\nSubject: Legit subject\r\n" +
+    "Date: Wed, 06 May 2026 12:00:00 +0000\r\nMessage-ID: <over@example.com>\r\n\r\nbody\r\n";
+  var hop = b.mail.arc.sign({
+    rfc822: rfc822, instance: 1, authservId: "relay-oversign.example",
+    domain: "relay-oversign.example", selector: "arc", privateKey: pem,
+    algorithm: "rsa-sha256", cv: "none", authResults: "spf=pass",
+    headersToSign: ["From", "Subject", "Subject", "Date"],   // oversign Subject
+  });
+  var rv = await b.mail.arc.verify(hop.rfc822,
+    { dnsLookup: _arcKeyRoundtripDns("relay-oversign.example", [["v=DKIM1; k=rsa; p=" + spkiB64]]) });
+  check("arc oversign: an untouched oversigned message verifies (signer/verifier agree)",
+        rv.chainStatus === "pass" && rv.hops[0] && rv.hops[0].amsResult === "pass",
+        rv.chainStatus + " ams=" + (rv.hops[0] || {}).amsResult +
+        " " + JSON.stringify((rv.hops[0] || {}).amsErrors || []));
+}
+
 // `arc.evaluate` answers the same question as `arc.verify` plus a trust
 // decision, so the two must never disagree about whether the chain passes.
 // They did: evaluate resolved the message to the wire form and then handed that
@@ -4875,6 +4904,7 @@ async function run() {
   await testArcVerifyNone();
   await testArcTagNamesAreCaseSensitive();
   await testArcSealsTheOctetsItWasGiven();
+  await testArcOversignHeaderRoundTrips();
   await testArcSeparatesATransientLookupFromABadSeal();
   await testArcEvaluateAgreesWithVerify();
   await testArcVerifyBadSignatures();
