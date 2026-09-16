@@ -356,6 +356,34 @@ async function run() {
   check("TeletexString names é and è are distinct: the intermediate consumes path length (rejected)",
         x509Chain.pathLenSatisfied(t61Chain) === false);
 
+  // A self-issued rollover whose names are Unicode-compatibility-equivalent
+  // (RFC 5280 §7.1 applies NFKC): a full-width "ＣＡ" and "CA" are the same name,
+  // so the rollover must NOT consume path length. RED without NFKC normalization.
+  var uk = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+  var ukSpki = await _spki(uk.publicKey);
+  var uRootPem = await pki.x509.sign({
+    subject: [{ commonName: "CA" }], subjectPublicKey: ukSpki, serialNumber: "01",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: true, pathLen: 0, critical: true }, keyUsage: ["keyCertSign"], keyUsageCritical: true },
+  }, { key: uk.privateKey }, { pem: true });
+  var uInterPem = await pki.x509.sign({
+    subject: [{ commonName: "ＣＡ" }], subjectPublicKey: ukSpki, serialNumber: "02",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: true, critical: true }, keyUsage: ["keyCertSign"], keyUsageCritical: true },
+  }, { name: [{ commonName: "CA" }], publicKey: ukSpki, key: uk.privateKey }, { pem: true });
+  var ulk = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+  var ulkSpki = await _spki(ulk.publicKey);
+  var uLeafPem = await pki.x509.sign({
+    subject: [{ commonName: "u-leaf" }], subjectPublicKey: ulkSpki, serialNumber: "03",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: false, critical: true }, keyUsage: ["digitalSignature"], keyUsageCritical: true },
+  }, { name: [{ commonName: "ＣＡ" }], publicKey: ukSpki, key: uk.privateKey }, { pem: true });
+  var uChain = [uLeafPem, uInterPem, uRootPem].map(function (p) {
+    return new nodeCrypto.X509Certificate(p);
+  });
+  check("Unicode-compatibility-equivalent (NFKC) self-issued rollover does not consume path length",
+        x509Chain.pathLenSatisfied(uChain) === true);
+
   console.log("OK — x509 pathLen enforcement (" + helpers.getChecks() + " checks)");
 }
 
