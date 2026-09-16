@@ -1,0 +1,31 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.20.26",
+  "date": "2026-09-16",
+  "headline": "DKIM binds every oversigned header instance, closing a signed-header injection bypass",
+  "summary": "DKIM signing and verification resolved each name in the signature's `h=` tag to the last (bottom-most) matching header field, so a name listed more than once in `h=` (oversigning, the RFC 6376 defense against a prepended duplicate of a signed header) bound the same instance every time. An attacker could prepend a spoofed copy of an oversigned header (Subject, Reply-To, and so on) to a validly signed message and it still verified as DKIM-pass, and the spoofed value flowed through to the DMARC decision. Signing and verification now consume repeated `h=` names bottom-up, one header instance per occurrence, per RFC 6376 §5.4.2: an injected instance is bound and the signature fails. The same change makes blamejs's oversigned signatures interoperate with conforming verifiers.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "Oversigned (repeated h=) DKIM header names bind their instances bottom-up",
+          "body": "`b.mail.dkim.verify` and `b.mail.dkim` signing resolved each `h=` entry with a last-match lookup, so listing a header name more than once in `h=` (oversigning) selected the same bottom-most instance for every occurrence. Oversigning is the RFC 6376 §5.4.2 mechanism that binds a header more times than it appears, so an added copy is covered by the signature; with last-match it bound nothing extra, and an attacker who prepended a spoofed copy of an oversigned header to an otherwise-valid message kept a DKIM-pass result (and, through `b.mail.inbound.verify`, a DMARC-pass and delivery on the spoofed header). Signing and verification now share one resolver that consumes repeated `h=` names from the bottom of the header block upward, one instance per occurrence, treating an occurrence beyond the header's count as the null input. An injected instance is bound to the signature and fails verification. A message that does not oversign is unaffected."
+        }
+      ]
+    },
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "Oversigned signatures interoperate with conforming verifiers",
+          "body": "Because signing used the same last-match resolution, blamejs-produced oversigned signatures did not verify at an RFC-conforming verifier, and blamejs rejected a conforming oversigned signature. With bottom-up per-occurrence consumption on both sides, oversigned mail now crosses the boundary in both directions. Verification also excludes the DKIM-Signature it is checking from that header's own `h=` selection (RFC 6376 §5.4) while keeping every other signature instance, so a message that oversigns the `dkim-signature` header verifies."
+        },
+        {
+          "title": "ARC message signing shares the corrected header selection",
+          "body": "`b.mail.arc.sign` resolved each repeated `headersToSign` name to the last matching header, and ARC-Message-Signature verification runs through the DKIM verifier. Now that the verifier consumes repeated names bottom-up, ARC signing uses the same resolver, so an oversigned ARC seal binds each header instance and an unmodified oversigned message verifies."
+        }
+      ]
+    }
+  ]
+}
