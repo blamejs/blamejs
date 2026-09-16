@@ -164,25 +164,45 @@ function buildOcspResponse(opts) {
   }
 
   var timeTag = typeof opts.timeTag === "number" ? opts.timeTag : 0x18;
-  var srChildren = [certId, _certStatusNode(opts)];
+  // The certStatus + thisUpdate + nextUpdate suffix, shared by the primary entry
+  // and any additionalIssuersDer entries.
+  var srTail = [_certStatusNode(opts)];
   if (!opts.omitThisUpdate) {
-    srChildren.push(typeof opts.rawThisUpdate === "string"
+    srTail.push(typeof opts.rawThisUpdate === "string"
       ? asn1.writeNode(timeTag, Buffer.from(opts.rawThisUpdate, "ascii"))
       : generalizedTime(opts.thisUpdateMs));
   }
   if (typeof opts.rawNextUpdate === "string") {
-    srChildren.push(asn1.writeContextExplicit(0,
+    srTail.push(asn1.writeContextExplicit(0,
       asn1.writeNode(timeTag, Buffer.from(opts.rawNextUpdate, "ascii"))));
   } else if (opts.rawNextUpdate !== null && typeof opts.nextUpdateMs === "number") {
-    srChildren.push(asn1.writeContextExplicit(0, generalizedTime(opts.nextUpdateMs)));
+    srTail.push(asn1.writeContextExplicit(0, generalizedTime(opts.nextUpdateMs)));
   }
-  var singleResponse = asn1.writeSequence(srChildren);
+  var singleResponse = asn1.writeSequence([certId].concat(srTail));
+
+  // Extra SingleResponse entries for OTHER issuers reusing the same serial,
+  // placed BEFORE the primary entry so the requested issuer is not first — for
+  // exercising selection by the full CertID rather than by serial alone.
+  var responseEntries = [];
+  if (Array.isArray(opts.additionalIssuersDer)) {
+    opts.additionalIssuersDer.forEach(function (issDer) {
+      var h = _hashesFor(issDer, opts.certIdHashOid);
+      var acid = asn1.writeSequence([
+        asn1.writeSequence([asn1.writeOid(opts.certIdHashOid), asn1.writeNull()]),
+        asn1.writeOctetString(h.nameHash),
+        asn1.writeOctetString(h.keyHash),
+        asn1.writeInteger(opts.serial),
+      ]);
+      responseEntries.push(asn1.writeSequence([acid].concat(srTail)));
+    });
+  }
+  responseEntries.push(singleResponse);
 
   var tbsChildren = [
     asn1.writeContextExplicit(2, asn1.writeOctetString(Buffer.alloc(20, 0xcc))),   // responderID [2] KeyHash
     generalizedTime(opts.producedAtMs),
   ];
-  if (!opts.omitResponses) tbsChildren.push(asn1.writeSequence([singleResponse]));
+  if (!opts.omitResponses) tbsChildren.push(asn1.writeSequence(responseEntries));
   if (opts.nonce) {
     var extnValue = opts.nonceWrapped ? asn1.writeOctetString(opts.nonce) : opts.nonce;
     tbsChildren.push(asn1.writeContextExplicit(1, asn1.writeSequence([

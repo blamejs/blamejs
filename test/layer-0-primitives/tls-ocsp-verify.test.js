@@ -196,6 +196,31 @@ function testNoIssuerCertDerSharedKeyDifferentNameRefused() {
         /issuerNameHash|wrong-issuer/i.test((rv.errors || []).join(" ; ")));
 }
 
+// When a BasicOCSPResponse carries entries for two issuers that reuse the same
+// serial, selection must match the FULL CertID (serial + issuer name + key),
+// not the first serial match. The requested issuer's entry appearing second
+// must still be found. RED before the fix: the loop stops at the first serial
+// match (the other issuer) and the binding then rejects the whole response as
+// wrong-issuer, so acceptance depends on response ordering.
+function testMultiIssuerSameSerialSelectsByFullCertId() {
+  var kpY = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var kpX = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var issuerY = helpers.ocspSelfSignedIssuerPem(kpY, "Issuer Y", Buffer.from([0x0d]));
+  var issuerX = helpers.ocspSelfSignedIssuerPem(kpX, "Issuer X", Buffer.from([0x0c]));
+  // Response signed by Y, entry for X first, entry for Y second, same serial.
+  var fx = helpers.buildOcspResponse({
+    keyPair: kpY, certIdIssuerDer: issuerY.der, serial: _OCSP_SERIAL,
+    additionalIssuersDer: [issuerX.der],
+    producedAtMs: _OCSP_NOW - 1000, nextUpdateMs: _OCSP_NOW + 86400000,
+  });
+  var rv = b.network.tls.ocsp.evaluate(fx.der, {
+    issuerPem: issuerY.pem, issuerCertDer: issuerY.der,
+    serialHex: _OCSP_SERIAL.toString("hex"), now: _OCSP_NOW,
+  });
+  check("multi-issuer same-serial: the requested issuer's second entry is selected",
+        rv.ok === true && rv.certStatus === "good");
+}
+
 // A bare public-key issuerPem cannot supply the issuer name, so without
 // issuerCertDer the binding cannot be completed and the response is refused.
 function testBareKeyIssuerPemWithoutIssuerCertDerRefused() {
@@ -303,6 +328,7 @@ async function run() {
   testNoIssuerCertDerMatchingKeyAccepted();
   testNoIssuerCertDerSharedKeyDifferentNameRefused();
   testBareKeyIssuerPemWithoutIssuerCertDerRefused();
+  testMultiIssuerSameSerialSelectsByFullCertId();
   testParseRejectsTrailingData();
   testEvaluateRejectsTrailingData();
   await testFetchForwardsMaxAgeMs();
