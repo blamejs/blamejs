@@ -531,6 +531,19 @@ async function run() {
         x509Chain.resolveChain(bt.leaf, [bt.sub, bt.issuerPermissive], [{}, bt.root]).ok === true);
   check("resolveChain: a null pool entry alongside valid ones is tolerated",
         x509Chain.resolveChain(bt.leaf, [null, bt.sub, bt.issuerPermissive], [bt.root]).ok === true);
+  // A certificate-like object that is not an X509Certificate must be rejected:
+  // {raw: Buffer.alloc(0)} passes a raw-buffer check but has no fingerprint, so
+  // undefined === undefined would otherwise read as a self-anchor match.
+  var fakeCert = { raw: Buffer.alloc(0) };
+  check("resolveChain: a fake cert-like leaf and anchor are rejected (fail closed)",
+        x509Chain.resolveChain(fakeCert, [], [fakeCert]).ok === false);
+  var fakeWithFp = { raw: Buffer.alloc(4), fingerprint256: "abcd", ca: true };
+  check("resolveChain: a fake object with a fingerprint is still rejected (not an X509Certificate)",
+        x509Chain.resolveChain(fakeWithFp, [], [fakeWithFp]).ok === false);
+  check("resolveChain: a fake anchor alongside a real one is skipped",
+        x509Chain.resolveChain(bt.leaf, [bt.sub, bt.issuerPermissive], [fakeCert, bt.root]).ok === true);
+  check("pathLenSatisfied: a fake cert-like entry fails closed",
+        x509Chain.pathLenSatisfied([fakeCert, fakeCert]) === false);
 
   console.log("OK — x509 pathLen enforcement (" + helpers.getChecks() + " checks)");
 }
