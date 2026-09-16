@@ -394,6 +394,19 @@ async function run() {
   check("fail-closed: a SAN dNSName with an embedded NUL is rejected",
         nulDnsRc.ok === false && nulDnsRc.reason === "nameconstraint");
 
+  // A malformed dNSName CONSTRAINT base (doubled dot) must fail closed, not be
+  // added as an ineffective subtree that silently disables the restriction. The
+  // single leading-dot subtree form stays valid (tested above).
+  var badBase = asn1.writeSequence([
+    asn1.writeContextImplicit(1, asn1.writeSequence([asn1.writeNode(0x82, Buffer.from("bad..example.com", "latin1"))]), { constructed: true }),
+  ]);
+  var badBaseChain = _rawChain({ rootNc: badBase, leafSan: asn1.writeSequence([asn1.writeNode(0x82, Buffer.from("host.example.com", "latin1"))]) });
+  check("fail-closed: a malformed dNSName constraint base is rejected (nameConstraintsSatisfied)",
+        x509Chain.nameConstraintsSatisfied([badBaseChain.leaf, badBaseChain.root]) === false);
+  var badBaseRc = x509Chain.resolveChain(badBaseChain.leaf, [badBaseChain.leaf], [badBaseChain.root], { issued: smimeIssued });
+  check("fail-closed: resolveChain (S/MIME predicate) rejects a malformed dNSName constraint base",
+        badBaseRc.ok === false);
+
   // No constraints anywhere → accepted.
   var none = await _mintConstrainedChain({ leafSan: [{ dNSName: "anything.example" }] });
   check("no nameConstraints in the chain → accepted",
