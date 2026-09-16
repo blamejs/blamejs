@@ -12,6 +12,35 @@
 var helpers = require("../helpers");
 var b       = helpers.b;
 var check   = helpers.check;
+var nodeCrypto = require("crypto");
+var pki     = require("../../lib/vendor/blamejs-pki.cjs");
+
+// Mints a real ECDSA chain [leaf, root] (root a self-signed CA that signed the
+// leaf), returning cert.raw DER buffers. A DANE-TA (RFC 7672 §3.1.1) match must
+// validate a signature path to the anchor, so a fixture that merely name-matches
+// is no longer sufficient.
+async function _mintDaneTaChain() {
+  var alg = { name: "ECDSA", namedCurve: "P-256" };
+  var now = new Date();
+  var notAfter = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000);
+  async function spki(pub) { return Buffer.from(await pki.webcrypto.subtle.exportKey("spki", pub)); }
+  var rootKeys = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+  var rootSpki = await spki(rootKeys.publicKey);
+  var rootPem = await pki.x509.sign({
+    subject: "SP DANE Root CA", subjectPublicKey: rootSpki,
+    serialNumber: "01", notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: true, critical: true }, keyUsage: ["keyCertSign", "cRLSign"], keyUsageCritical: true },
+  }, { key: rootKeys.privateKey }, { pem: true });
+  var leafKeys = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+  var leafSpki = await spki(leafKeys.publicKey);
+  var leafPem = await pki.x509.sign({
+    subject: "leaf.sp-dane.example", subjectPublicKey: leafSpki,
+    serialNumber: "99", notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: false, critical: true }, keyUsage: ["digitalSignature"], keyUsageCritical: true },
+  }, { name: "SP DANE Root CA", publicKey: rootSpki, key: rootKeys.privateKey }, { pem: true });
+  function der(pem) { return new nodeCrypto.X509Certificate(pem).raw; }
+  return { leafDer: der(leafPem), rootDer: der(rootPem) };
+}
 
 function testSurface() {
   check("network.smtp.mtaSts exposed", typeof b.network.smtp.mtaSts === "object");
@@ -107,15 +136,16 @@ function testDaneVerifyChainDaneEeSha256() {
         rv.ok === true && rv.matches[0].mtype === "SHA-256");
 }
 
-function testDaneVerifyChainDaneTaMatchesIntermediate() {
-  var nc = require("crypto");
-  var leaf = Buffer.from("leaf-bytes", "utf8");
-  var intermediate = Buffer.from("ca-bytes", "utf8");
-  var sha256Hex = nc.createHash("sha256").update(intermediate).digest("hex");
+async function testDaneVerifyChainDaneTaMatchesIntermediate() {
+  // The pinned DANE-TA anchor (cert[1]) cryptographically signed the leaf, so a
+  // validated path exists (RFC 7672 §3.1.1) and the non-leaf match is accepted.
+  var c = await _mintDaneTaChain();
+  var sha256Hex = nodeCrypto.createHash("sha256").update(c.rootDer).digest("hex");
   var rec = { usage: 2, selector: 0, mtype: 1, dataHex: sha256Hex };
-  var rv = b.network.smtp.dane.verifyChain([leaf, intermediate], [rec]);
-  check("dane.verifyChain DANE-TA matches non-leaf cert in chain",
-        rv.ok === true && rv.matches[0].usage === "DANE-TA" && rv.matches[0].certIndex === 1);
+  var rv = b.network.smtp.dane.verifyChain([c.leafDer, c.rootDer], [rec]);
+  check("dane.verifyChain DANE-TA matches a non-leaf anchor via a validated path",
+        rv.ok === true && rv.matches[0].usage === "DANE-TA" && rv.matches[0].certIndex === 1,
+        JSON.stringify(rv));
 }
 
 function testDaneVerifyChainPkixModeRejectedByDefault() {
@@ -257,7 +287,7 @@ async function run() {
   testDaneVerifyChainNoMatch();
   testDaneVerifyChainDaneEeFullCert();
   testDaneVerifyChainDaneEeSha256();
-  testDaneVerifyChainDaneTaMatchesIntermediate();
+  await testDaneVerifyChainDaneTaMatchesIntermediate();
   testDaneVerifyChainPkixModeRejectedByDefault();
   testTlsRptRecordShape();
   await testTlsRptFetchPolicyParsesRua();

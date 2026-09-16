@@ -28,6 +28,7 @@ var zlib       = require("zlib");
 var nodeDns    = require("node:dns");
 var C          = require("../../lib/constants");
 var asn1       = require("../../lib/asn1-der");
+var pki        = require("../../lib/vendor/blamejs-pki.cjs");
 var httpClientMod = require("../../lib/http-client");
 
 // ---- small local helpers -------------------------------------------------
@@ -926,63 +927,116 @@ function testVerifyChainPkixModesRejectedByDefault() {
         rvTa.ok === false && rvTa.errors[0] && rvTa.errors[0].reason === "pkix-modes-not-allowed");
 }
 
-function testVerifyChainDaneTaSyntheticUnverified() {
-  // usage=2 against non-DER buffers: the TLSA hash-matches the non-leaf
-  // cert, but the ASN.1 chain-order extraction fails, so the match is
-  // accepted-but-flagged chainOrderUnverified (synthetic/test inputs only).
-  var leaf = Buffer.from("leaf-synthetic", "utf8");
-  var ca   = Buffer.from("ca-synthetic", "utf8");
-  var caSha = nodeCrypto.createHash("sha256").update(ca).digest("hex");
-  var rv = b.network.smtp.dane.verifyChain([leaf, ca], [{ usage: 2, selector: 0, mtype: 1, dataHex: caSha }]);
-  check("verifyChain: DANE-TA on non-DER buffers → match flagged chainOrderUnverified",
-        rv.ok === true && rv.matches[0].usage === "DANE-TA" &&
-        rv.matches[0].certIndex === 1 && rv.matches[0].chainOrderUnverified === true);
+// Mints a real ECDSA chain leaf-first: root (self-signed CA) → optional
+// intermediate → leaf, each link cryptographically signed by its issuer, so a
+// DANE-TA (RFC 7672 §3.1.1) match must validate a signature path, not a name.
+// opts.intermediate adds an intermediate CA. opts.forgeLeafIssuer signs the leaf
+// with a foreign key while stamping the given issuer NAME onto it (the classic
+// DANE-TA fail-open: the issuer DN copies the trust anchor's subject DN but the
+// anchor did not sign the leaf).
+async function _mintDaneTaChain(opts) {
+  opts = opts || {};
+  var alg = { name: "ECDSA", namedCurve: "P-256" };
+  var now = new Date();
+  var notAfter = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000);
+  async function spki(pub) { return Buffer.from(await pki.webcrypto.subtle.exportKey("spki", pub)); }
+
+  var rootName = "DANE Test Root CA";
+  var rootKeys = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+  var rootSpki = await spki(rootKeys.publicKey);
+  var rootPem = await pki.x509.sign({
+    subject: rootName, subjectPublicKey: rootSpki,
+    serialNumber: "01", notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: true, critical: true }, keyUsage: ["keyCertSign", "cRLSign"], keyUsageCritical: true },
+  }, { key: rootKeys.privateKey }, { pem: true });
+
+  var issuerName = rootName, issuerSpki = rootSpki, issuerKey = rootKeys.privateKey;
+  var interPem = null;
+  if (opts.intermediate) {
+    var interKeys = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+    var interSpki = await spki(interKeys.publicKey);
+    interPem = await pki.x509.sign({
+      subject: "DANE Test Intermediate", subjectPublicKey: interSpki,
+      serialNumber: "02", notBefore: now, notAfter: notAfter,
+      extensions: { basicConstraints: { cA: true, critical: true }, keyUsage: ["keyCertSign"], keyUsageCritical: true },
+    }, { name: issuerName, publicKey: issuerSpki, key: issuerKey }, { pem: true });
+    issuerName = "DANE Test Intermediate"; issuerSpki = interSpki; issuerKey = interKeys.privateKey;
+  }
+
+  var leafSignerSpki = issuerSpki, leafSignerKey = issuerKey, leafIssuerName = issuerName;
+  if (opts.forgeLeafIssuer) {
+    var foreignKeys = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+    leafSignerSpki = await spki(foreignKeys.publicKey);
+    leafSignerKey = foreignKeys.privateKey;
+    leafIssuerName = opts.forgeLeafIssuer;
+  }
+  var leafKeys = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+  var leafSpki = await spki(leafKeys.publicKey);
+  var leafPem = await pki.x509.sign({
+    subject: "leaf.dane.example", subjectPublicKey: leafSpki,
+    serialNumber: "99", notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: false, critical: true }, keyUsage: ["digitalSignature"], keyUsageCritical: true },
+  }, { name: leafIssuerName, publicKey: leafSignerSpki, key: leafSignerKey }, { pem: true });
+
+  function der(pem) { return new nodeCrypto.X509Certificate(pem).raw; }
+  return {
+    leafDer:  der(leafPem),
+    interDer: interPem ? der(interPem) : null,
+    rootDer:  der(rootPem),
+    rootName: rootName,
+  };
 }
 
-function testVerifyChainDaneTaChainOrderVerified() {
-  // Real DER: the matched DANE-TA cert's Subject equals the leaf's Issuer,
-  // so the RFC 7672 §3.1.1 chain-order check passes and the match is NOT
-  // flagged unverified.
-  var caName   = _derName("Test Root CA");
-  var leafName = _derName("leaf.example.com");
-  var leaf = _derCert(caName, leafName);                                          // issuer=CA, subject=leaf
-  var ta   = _derCert(caName, caName);                                            // self-issued root
-  var taSha = nodeCrypto.createHash("sha256").update(ta).digest("hex");
-  var rv = b.network.smtp.dane.verifyChain([leaf, ta], [{ usage: 2, selector: 0, mtype: 1, dataHex: taSha }]);
-  check("verifyChain: DANE-TA ordered chain → verified match",
+function _sha256Hex(buf) { return nodeCrypto.createHash("sha256").update(buf).digest("hex"); }
+
+async function testVerifyChainDaneTaValidatedPath() {
+  // Genuine chain: the leaf is cryptographically signed by the DANE-TA the TLSA
+  // record pins, so a validated signature path exists → verified DANE-TA match.
+  var c = await _mintDaneTaChain();
+  var rv = b.network.smtp.dane.verifyChain([c.leafDer, c.rootDer],
+    [{ usage: 2, selector: 0, mtype: 1, dataHex: _sha256Hex(c.rootDer) }]);
+  check("verifyChain: DANE-TA with a validated signature path → verified match",
         rv.ok === true && rv.matches.length === 1 &&
         rv.matches[0].usage === "DANE-TA" && rv.matches[0].certIndex === 1 &&
-        rv.matches[0].chainOrderUnverified === undefined);
+        rv.matches[0].chainOrderUnverified === undefined, JSON.stringify(rv));
 }
 
-function testVerifyChainDaneTaChainOrderMismatch() {
-  // Real DER where the hash-matching cert's Subject does NOT equal the
-  // leaf's Issuer: the match is refused and a chain-order-mismatch error
-  // is recorded (a cert that merely hash-matches is not accepted as the
-  // trust anchor unless it is actually the parent).
-  var caName    = _derName("Real Issuer CA");
-  var leafName  = _derName("leaf.example.com");
-  var otherName = _derName("Unrelated Subject");
-  var leaf = _derCert(caName, leafName);                                          // leaf.issuer = caName
-  var rogue = _derCert(caName, otherName);                                        // subject != caName
-  var rogueSha = nodeCrypto.createHash("sha256").update(rogue).digest("hex");
-  var rv = b.network.smtp.dane.verifyChain([leaf, rogue], [{ usage: 2, selector: 0, mtype: 1, dataHex: rogueSha }]);
-  check("verifyChain: DANE-TA out-of-order chain → refused with chain-order-mismatch",
+async function testVerifyChainDaneTaForgedIssuerRefused() {
+  // The DANE-TA fail-open: the leaf's Issuer DN copies the trust anchor's
+  // Subject DN, but the anchor did NOT sign the leaf (a foreign key did). A
+  // name-equality check accepts it; a signature-path check (RFC 7672 §3.1.1)
+  // must reject it.
+  var c = await _mintDaneTaChain({ forgeLeafIssuer: "DANE Test Root CA" });
+  var rv = b.network.smtp.dane.verifyChain([c.leafDer, c.rootDer],
+    [{ usage: 2, selector: 0, mtype: 1, dataHex: _sha256Hex(c.rootDer) }]);
+  check("verifyChain: DANE-TA whose leaf is not signed by the matched anchor → refused",
         rv.ok === false && rv.matches.length === 0 &&
-        rv.errors[0] && rv.errors[0].reason === "dane-ta-chain-order-mismatch");
+        rv.errors.some(function (e) { return e.reason === "dane-ta-path-not-validated"; }),
+        JSON.stringify(rv));
 }
 
-function testVerifyChainDaneTaSkipsNonMatchingCert() {
-  // A three-cert chain where the TLSA record matches only the last cert:
-  // the non-matching intermediate is skipped and the loop continues up the
-  // chain until the trust anchor matches.
-  var leaf  = Buffer.from("leaf-3chain", "utf8");
-  var inter = Buffer.from("intermediate-3chain", "utf8");
-  var ta    = Buffer.from("trust-anchor-3chain", "utf8");
-  var taSha = nodeCrypto.createHash("sha256").update(ta).digest("hex");
-  var rv = b.network.smtp.dane.verifyChain([leaf, inter, ta], [{ usage: 2, selector: 0, mtype: 1, dataHex: taSha }]);
-  check("verifyChain: DANE-TA skips non-matching intermediate, matches anchor",
-        rv.ok === true && rv.matches[0].usage === "DANE-TA" && rv.matches[0].certIndex === 2);
+async function testVerifyChainDaneTaUnparseableFailsClosed() {
+  // A non-DER (unparseable) cert in a usage-2 chain cannot have its path
+  // validated, so the match fails closed — never accepted-but-flagged.
+  var leaf = Buffer.from("leaf-not-a-cert", "utf8");
+  var ca   = Buffer.from("ca-not-a-cert", "utf8");
+  var rv = b.network.smtp.dane.verifyChain([leaf, ca],
+    [{ usage: 2, selector: 0, mtype: 1, dataHex: _sha256Hex(ca) }]);
+  check("verifyChain: DANE-TA on an unparseable chain → fails closed (no chainOrderUnverified accept)",
+        rv.ok === false && rv.matches.length === 0 &&
+        rv.errors.some(function (e) { return /unparseable/.test(e.reason || ""); }),
+        JSON.stringify(rv));
+}
+
+async function testVerifyChainDaneTaThreeCertPath() {
+  // Three-cert chain leaf → intermediate → root, TLSA pinning the root: the
+  // validated path runs through the intermediate to the matched anchor.
+  var c = await _mintDaneTaChain({ intermediate: true });
+  var rv = b.network.smtp.dane.verifyChain([c.leafDer, c.interDer, c.rootDer],
+    [{ usage: 2, selector: 0, mtype: 1, dataHex: _sha256Hex(c.rootDer) }]);
+  check("verifyChain: DANE-TA validated path through an intermediate to the anchor",
+        rv.ok === true && rv.matches.length === 1 &&
+        rv.matches[0].usage === "DANE-TA" && rv.matches[0].certIndex === 2, JSON.stringify(rv));
 }
 
 function testVerifyChainSpkiSelectorRealDer() {
@@ -1164,10 +1218,10 @@ async function run() {
   testVerifyChainDaneEeSha512();
   testVerifyChainDaneEeFullNoMatchAndBadDataHex();
   testVerifyChainSpkiSelectorNoBytes();
-  testVerifyChainDaneTaSyntheticUnverified();
-  testVerifyChainDaneTaChainOrderVerified();
-  testVerifyChainDaneTaChainOrderMismatch();
-  testVerifyChainDaneTaSkipsNonMatchingCert();
+  await testVerifyChainDaneTaValidatedPath();
+  await testVerifyChainDaneTaForgedIssuerRefused();
+  await testVerifyChainDaneTaUnparseableFailsClosed();
+  await testVerifyChainDaneTaThreeCertPath();
   testVerifyChainSpkiSelectorRealDer();
   testVerifyChainSelectorAndMtypeFallthroughs();
   testVerifyChainMalformedDerFailsClosed();

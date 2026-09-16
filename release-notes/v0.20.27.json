@@ -1,0 +1,18 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.20.27",
+  "date": "2026-09-16",
+  "headline": "DANE-TA trust anchors are validated by signature path, not name equality",
+  "summary": "SMTP DANE verification accepted a TLSA usage 2 (DANE-TA) record when the matched trust-anchor certificate's Subject byte-equaled the presented leaf's Issuer, a name comparison rather than a signature check. An active attacker on the delivery path could present a leaf whose Issuer field copied the pinned anchor's Subject but that the anchor never signed, and the chain was accepted; a certificate whose Issuer or Subject could not be parsed was accepted with a flag set but still reported valid. In trust-anchor mode the TLS stack's own chain validation is turned off and this check is the sole authority, so the leaf was effectively unauthenticated. DANE-TA now requires a cryptographically validated path from the leaf to the matched anchor (each link's signature verified against its issuer's key, the anchor and intermediates confirmed as CAs), reusing the same path resolver as the X.509 chain primitives, and fails closed when a certificate cannot be parsed.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "DANE-TA (TLSA usage 2) requires a validated certificate path to the matched anchor",
+          "body": "`b.network.smtp.dane.verifyChain` accepted a DANE-TA match when the matched anchor's Subject DN byte-equaled the leaf's Issuer DN, and accepted a chain with an unparseable Issuer or Subject as a flagged-but-valid match. Neither verified that the anchor actually signed the presented chain. Because SMTP DANE turns off the TLS library's chain validation in trust-anchor mode (`b.mail` sets it when a DANE-TA or DANE-EE record is in play), that name comparison was the only thing standing between a delivery and a substituted certificate, so an on-path attacker could present a leaf carrying the anchor's name and have it accepted (RFC 7672 §3.1.1). Verification now builds a certification path from the leaf to the matched anchor and accepts the match only when every link's signature verifies against its issuer's public key and each issuer is a CA, using the same resolver as `b.x509Chain.resolveChain`. A certificate that cannot be parsed fails closed rather than being accepted with a flag. DANE-EE (usage 3), which pins the leaf directly, and the opt-in PKIX modes (usage 0 and 1), which defer to an external validator, are unchanged."
+        }
+      ]
+    }
+  ]
+}
