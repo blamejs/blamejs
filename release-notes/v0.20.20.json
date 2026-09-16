@@ -3,14 +3,14 @@
   "version": "0.20.20",
   "date": "2026-09-16",
   "headline": "OCSP evaluation always binds a response to the issuer of the certificate under validation",
-  "summary": "The RFC 6960 §4.1.1 CertID issuer binding in `b.network.tls.ocsp.evaluate` was enforced only when the caller supplied `issuerCertDer`; without it the response matched on serial number alone. A serial is unique only per issuer, so a signature-valid `good` for one issuer's certificate could be accepted for a different issuer's certificate with a colliding serial. The binding is now mandatory: with `issuerCertDer` the issuerNameHash and issuerKeyHash are checked against the issuer certificate; without it the issuerKeyHash is checked against `issuerPem`'s public key.",
+  "summary": "The RFC 6960 §4.1.1 CertID issuer binding in `b.network.tls.ocsp.evaluate` was enforced only when the caller supplied `issuerCertDer`; without it the response matched on serial number alone. A serial is unique only per issuer, so a signature-valid `good` for one issuer's certificate could be accepted for a different issuer's certificate with a colliding serial. The binding is now mandatory and always checks both the issuer name and key hashes, derived from `issuerCertDer` when given, otherwise from the issuer certificate in `issuerPem`.",
   "sections": [
     {
       "heading": "Security",
       "items": [
         {
           "title": "The OCSP CertID issuer binding is mandatory, not opt-in",
-          "body": "`b.network.tls.ocsp.evaluate` ran the RFC 6960 §4.1.1 issuerNameHash/issuerKeyHash binding only when `opts.issuerCertDer` was supplied. Without it, a response was matched to the certificate under validation on serial number alone. Because a serial number is unique only within one issuer, a signature-valid `good` produced for one issuer's certificate could be replayed as proof for a different issuer's certificate that happened to share the serial, for example a responder trusted across several CAs or a shared responder key. Evaluation now always binds the matched response to the issuer: when `issuerCertDer` is given, the full name and key hashes are checked against that issuer certificate; when it is absent, the issuerKeyHash is checked against the public key of `opts.issuerPem` (the responder that signed the response). `b.network.tls.ocsp.fetch` is unaffected because it already derives the issuer certificate from `issuerPem`."
+          "body": "`b.network.tls.ocsp.evaluate` ran the RFC 6960 §4.1.1 issuerNameHash/issuerKeyHash binding only when `opts.issuerCertDer` was supplied. Without it, a response was matched to the certificate under validation on serial number alone. Because a serial number is unique only within one issuer, a signature-valid `good` produced for one issuer's certificate could be replayed as proof for a different issuer's certificate that happened to share the serial, for example a responder trusted across several CAs or a shared responder key. Evaluation now always binds the matched response to the issuer and checks both the issuerNameHash and the issuerKeyHash: from `issuerCertDer` when it is given, otherwise from the issuer certificate parsed from `opts.issuerPem`. Checking the name as well as the key is required because two issuers can reuse one public key under different subject names. `b.network.tls.ocsp.fetch` is unaffected because it already derives the issuer certificate from `issuerPem`."
         }
       ]
     },
@@ -18,8 +18,8 @@
       "heading": "Migration",
       "items": [
         {
-          "title": "Supply issuerCertDer to ocsp.evaluate and ocsp.requireGood for a delegated responder",
-          "body": "A caller that verifies an OCSP response signed by a delegated responder (a cert whose key differs from the issuing CA's key) must now pass `opts.issuerCertDer` with the issuing CA certificate to `evaluate` or `requireGood`, so the binding can name the real issuer. A caller whose `issuerPem` is the issuing CA itself needs no change: the issuerKeyHash binds against it automatically. Callers that previously relied on serial-only matching without an issuer identity will now be refused with an issuerKeyHash mismatch."
+          "title": "evaluate and requireGood need the issuer certificate, not a bare public key",
+          "body": "`b.network.tls.ocsp.evaluate` and `requireGood` now bind against the issuer's name and key, so the issuer identity must be available. Pass `opts.issuerCertDer` with the issuing CA certificate, or pass an `opts.issuerPem` that is the issuer certificate rather than a bare public key. A caller that verifies a response signed by a delegated responder must pass `opts.issuerCertDer` with the issuing CA certificate so the binding names the real issuer. A bare-public-key `issuerPem` with no `issuerCertDer` can no longer be bound and is refused; callers that previously relied on serial-only matching are now refused with a wrong-issuer or missing-issuer-identity error."
         }
       ]
     }

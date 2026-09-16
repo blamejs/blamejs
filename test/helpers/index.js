@@ -110,6 +110,7 @@ module.exports = {
   // framework's iterative proof walk against real trees and real proofs.
   merkle:             _merkle,
   synthCertForOcsp:   _ocsp.synthCert,
+  ocspSelfSignedIssuerPem: _ocsp.selfSignedIssuerPem,
 
   // OTel fake (for tracing + observability tests)
   makeFakeOtelApi:    _otel.makeFakeOtelApi,

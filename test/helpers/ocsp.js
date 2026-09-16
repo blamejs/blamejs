@@ -127,7 +127,21 @@ function buildOcspResponse(opts) {
   if (typeof opts.thisUpdateMs !== "number") opts.thisUpdateMs = opts.producedAtMs;
 
   var kp = opts.keyPair || nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
-  var issuerPem = kp.publicKey.export({ type: "spki", format: "pem" });
+  // issuerPem is a REAL issuer certificate for the signing key: the verifier
+  // reads its subject name + key for the mandatory RFC 6960 §4.1.1 CertID
+  // binding, and a response signed by this key verifies against it.
+  var issuerCertDer = _realIssuerCertDer(kp, Buffer.from("OCSP Test Issuer", "ascii"),
+                                         Buffer.from([0x01]));
+  var issuerPem = _derToCertPem(issuerCertDer);
+
+  // Default the CertID to bind against this issuer cert (name + key) so a
+  // response the caller expects to be good passes the mandatory binding without
+  // opts.issuerCertDer. An explicit certIdIssuerDer / hash / non-SHA-1 opt opts
+  // out (leaving the filler-hash path below for wrong-issuer refusal fixtures).
+  if (opts.certIdIssuerDer === undefined && !opts.issuerNameHash &&
+      !opts.issuerKeyHash && opts.certIdHashOid === OID_SHA1) {
+    opts.certIdIssuerDer = issuerCertDer;
+  }
 
   // CertID — either derived from a real issuer cert (so the binding check can
   // pass) or assembled from explicit hashes (so it can be made to fail).
@@ -141,21 +155,10 @@ function buildOcspResponse(opts) {
       asn1.writeInteger(opts.serial),
     ]);
   } else {
-    // With no explicit issuerKeyHash and the default SHA-1 CertID hash, derive
-    // the key hash from the SIGNING key so the response binds to opts.issuerPem
-    // (the responder that signed it) — what the verifier's mandatory RFC 6960
-    // §4.1.1 issuerKeyHash check recomputes when no issuerCertDer is supplied.
-    var defaultKeyHash = null;
-    if (!opts.issuerKeyHash && opts.certIdHashOid === OID_SHA1) {
-      var signerSpki = kp.publicKey.export({ type: "spki", format: "der" });
-      var signerSpkiKids = asn1.readSequence(asn1.readNode(signerSpki).value);
-      defaultKeyHash = nodeCrypto.createHash("sha1")
-        .update(asn1.readBitString(signerSpkiKids[1])).digest();
-    }
     certId = asn1.writeSequence([
       asn1.writeSequence([asn1.writeOid(opts.certIdHashOid), asn1.writeNull()]),
       asn1.writeOctetString(opts.issuerNameHash || Buffer.alloc(20, 0xaa)),
-      asn1.writeOctetString(opts.issuerKeyHash || defaultKeyHash || Buffer.alloc(20, 0xbb)),
+      asn1.writeOctetString(opts.issuerKeyHash || Buffer.alloc(20, 0xbb)),
       asn1.writeInteger(opts.serial),
     ]);
   }
@@ -207,12 +210,13 @@ function buildOcspResponse(opts) {
   ]);
 
   return {
-    der:       der,
-    issuerPem: issuerPem,
-    serial:    opts.serial,
-    serialHex: opts.serial.toString("hex"),
-    keyPair:   kp,
-    certIdDer: certId,
+    der:           der,
+    issuerPem:     issuerPem,
+    issuerCertDer: issuerCertDer,
+    serial:        opts.serial,
+    serialHex:     opts.serial.toString("hex"),
+    keyPair:       kp,
+    certIdDer:     certId,
   };
 }
 
@@ -240,8 +244,46 @@ function _hashesFor(issuerCertDer, hashOid) {
   return { nameHash: asn1.readOctetString(kids[1]), keyHash: asn1.readOctetString(kids[2]) };
 }
 
+// A REAL, node-parseable self-signed X.509 cert embedding the given keypair's
+// public key (so a response signed by that key verifies against this cert used
+// as issuerPem, and the verifier can read its subject name for the RFC 6960
+// §4.1.1 CertID name binding). Unlike synthCert (which embeds arbitrary key
+// bytes and is shape-only), this parses with new crypto.X509Certificate(pem).
+function _realIssuerCertDer(kp, cnBytes, serialBytes) {
+  var spkiDer  = kp.publicKey.export({ type: "spki", format: "der" });
+  var sigAlgId = asn1.writeSequence([asn1.writeOid(OID_ECDSA_SHA256)]);
+  var cnrdn    = asn1.writeSequence([asn1.writeOid("2.5.4.3"), asn1.writeNode(0x0c, cnBytes)]);
+  var name     = asn1.writeSequence([asn1.writeNode(0x31, cnrdn)]);
+  var validity = asn1.writeSequence([
+    asn1.writeNode(0x17, Buffer.from("250101000000Z", "ascii")),
+    asn1.writeNode(0x17, Buffer.from("350101000000Z", "ascii")),
+  ]);
+  var version = asn1.writeContextExplicit(0, asn1.writeInteger(Buffer.from([2])));
+  var tbs = asn1.writeSequence([version, asn1.writeInteger(serialBytes), sigAlgId,
+                                name, validity, name, spkiDer]);
+  var sig = nodeCrypto.sign("sha256", tbs, kp.privateKey);
+  return asn1.writeSequence([tbs, sigAlgId, asn1.writeBitString(sig)]);
+}
+
+// selfSignedIssuerPem(keyPair?, cn?, serial?) → { pem, der, keyPair }
+//   A real issuer cert for use as opts.issuerPem. Pass a shared keyPair with
+//   two different cn values to build two issuers that reuse one public key.
+function selfSignedIssuerPem(keyPair, cn, serial) {
+  var kp  = keyPair || nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var der = _realIssuerCertDer(kp, Buffer.from(cn || "OCSP Test Issuer", "ascii"),
+                               serial || Buffer.from([0x01]));
+  return { pem: _derToCertPem(der), der: der, keyPair: kp };
+}
+
+function _derToCertPem(der) {
+  return "-----BEGIN CERTIFICATE-----\n" +
+    der.toString("base64").match(/.{1,64}/g).join("\n") +
+    "\n-----END CERTIFICATE-----\n";
+}
+
 module.exports = {
-  buildOcspResponse: buildOcspResponse,
-  synthCert:         synthCert,
-  generalizedTime:   generalizedTime,
+  buildOcspResponse:    buildOcspResponse,
+  synthCert:            synthCert,
+  generalizedTime:      generalizedTime,
+  selfSignedIssuerPem:  selfSignedIssuerPem,
 };
