@@ -1,0 +1,18 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.20.21",
+  "date": "2026-09-16",
+  "headline": "X.509 chain validation enforces the basicConstraints pathLenConstraint",
+  "summary": "node's X509Certificate does not expose a CA certificate's basicConstraints pathLenConstraint, so a certificate chain whose links each verified could still exceed a CA's stated path length: a CA with pathLen:0 vouching for an intermediate that in turn issues the end-entity. The framework's certificate-chain walkers now enforce the constraint through a new `b.x509Chain.pathLenSatisfied`, which reads pathLenConstraint from each certificate's DER and applies the RFC 5280 path-length rule.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "Certificate chains are rejected when they exceed a CA's pathLenConstraint",
+          "body": "A CA certificate's basicConstraints pathLenConstraint (RFC 5280 §4.2.1.9) limits how many intermediate CAs may appear below it in a valid path. node's `X509Certificate` exposes the cA flag but not pathLenConstraint, so `X509Certificate.checkIssued` and the framework's per-link issuer test accepted a chain that violated it, for example a root asserting pathLen:0 that issued an intermediate CA which then issued the end-entity. The chain-validating consumers (`b.auth.fidoMds3`, `b.contentCredentials`, `b.mail.bimi`, `b.mail.crypto.smime`) now reject such a chain. The check is the new `b.x509Chain.pathLenSatisfied(chain)`, which reads pathLenConstraint from each certificate's DER and applies the RFC 5280 §6.1.4 path-length rule over the ordered chain; a certificate that asserts no pathLenConstraint imposes no limit, and a chain too short to contain an intermediate is unaffected."
+        }
+      ]
+    }
+  ]
+}
