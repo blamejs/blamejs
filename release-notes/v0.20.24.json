@@ -1,0 +1,27 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.20.24",
+  "date": "2026-09-16",
+  "headline": "SAML Single-Logout messages must be signature-verified by default",
+  "summary": "The SAML Single-Logout parse methods (`parseLogoutRequest`, `parseLogoutResponse`, `parseLogoutRequestPost`, `parseLogoutResponseSoap`) verified the inbound message against the IdP key only when `idpVerifyKey` was supplied. With no key configured they parsed the message without any signature check, so a forged, unsigned LogoutRequest was accepted and its NameID surfaced — letting any party on the path force-log-out a chosen user. Verification is now mandatory by default: a parse with no `idpVerifyKey` configured is refused with `auth-saml/slo-verification-required`. An operator that intentionally accepts unsigned SLO messages opts in explicitly with `allowUnsigned: true`. The login path (`verifyResponse`) already required a signature and is unchanged.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "Unsigned Single-Logout messages are refused unless verification is configured",
+          "body": "Every SAML SLO parse path — `sp.parseLogoutRequest`, `sp.parseLogoutResponse`, `sp.parseLogoutRequestPost`, `sp.parseLogoutResponseSoap` — gated signature verification on the presence of `idpVerifyKey`. With no key configured the message was parsed and its NameID / InResponseTo returned without any signature check, so a forged unsigned LogoutRequest verified and could terminate a chosen user's session (a forced-logout / denial-of-service). Verification is now on by default: a parse with no `idpVerifyKey` throws `auth-saml/slo-verification-required`. A half-configured pair (key without alg, or alg without key) still fails closed as before. The single-sign-on path (`verifyResponse`) always required a signature and is unaffected."
+        }
+      ]
+    },
+    {
+      "heading": "Migration",
+      "items": [
+        {
+          "title": "SAML SLO parse methods require a verify key by default",
+          "body": "If you call `sp.parseLogoutRequest`, `sp.parseLogoutResponse`, `sp.parseLogoutRequestPost`, or `sp.parseLogoutResponseSoap`, supply `idpVerifyKey` (the IdP's public key) and `idpVerifyAlg` so the inbound message's signature is verified — the recommended configuration. If you intentionally accept unsigned SLO messages (for example an IdP that does not sign them, with integrity provided by another layer), pass `allowUnsigned: true` explicitly on the parse call. A call with neither now throws `auth-saml/slo-verification-required` instead of returning the parsed message."
+        }
+      ]
+    }
+  ]
+}
