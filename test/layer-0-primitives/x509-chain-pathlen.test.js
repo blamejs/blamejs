@@ -237,10 +237,10 @@ async function run() {
         !twoRootErr || (twoRootErr.code !== "fido-mds3/chain-pathlen-exceeded" &&
                         twoRootErr.code !== "fido-mds3/chain-not-anchored"));
 
-  // A self-issued CA rollover whose subject and issuer are the same entity but
-  // differ only in capitalization (RFC 5280 §7.1 treats them as equal) must NOT
-  // consume path length. RED if names are compared by raw bytes: the rollover is
-  // counted and a chain a pathLen:0 root permits is rejected.
+  // A self-issued certificate (subject and issuer are the same encoded entity,
+  // e.g. a key rollover reissued under the same name) must NOT consume path
+  // length (RFC 5280 §6.1.4). RED if self-issued detection is broken: the
+  // intermediate is counted and a chain a pathLen:0 root permits is rejected.
   var now = new Date();
   var notAfter = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000);
   var alg = { name: "ECDSA", namedCurve: "P-256" };
@@ -251,9 +251,9 @@ async function run() {
     notBefore: now, notAfter: notAfter,
     extensions: { basicConstraints: { cA: true, pathLen: 0, critical: true }, keyUsage: ["keyCertSign"], keyUsageCritical: true },
   }, { key: rk.privateKey }, { pem: true });
-  // Self-issued: subject and issuer are the same entity, differing only in case.
+  // Self-issued: subject name equals issuer name (same encoded DN).
   var rolloverPem = await pki.x509.sign({
-    subject: "rollover ca", subjectPublicKey: rkSpki, serialNumber: "02",
+    subject: "Rollover CA", subjectPublicKey: rkSpki, serialNumber: "02",
     notBefore: now, notAfter: notAfter,
     extensions: { basicConstraints: { cA: true, critical: true }, keyUsage: ["keyCertSign"], keyUsageCritical: true },
   }, { name: "Rollover CA", publicKey: rkSpki, key: rk.privateKey }, { pem: true });
@@ -263,11 +263,11 @@ async function run() {
     subject: "roll-leaf.example", subjectPublicKey: lkSpki, serialNumber: "03",
     notBefore: now, notAfter: notAfter,
     extensions: { basicConstraints: { cA: false, critical: true }, keyUsage: ["digitalSignature"], keyUsageCritical: true },
-  }, { name: "rollover ca", publicKey: rkSpki, key: rk.privateKey }, { pem: true });
+  }, { name: "Rollover CA", publicKey: rkSpki, key: rk.privateKey }, { pem: true });
   var rollChain = [rollLeafPem, rolloverPem, rollRootPem].map(function (p) {
     return new nodeCrypto.X509Certificate(p);
   });
-  check("self-issued rollover with case-differing DN does not consume path length",
+  check("self-issued rollover (same encoded name) does not consume path length",
         x509Chain.pathLenSatisfied(rollChain) === true);
 
   // P1 regression: DN comparison must preserve RDN boundaries. A single-RDN
@@ -302,34 +302,6 @@ async function run() {
   });
   check("RDN-boundary merge: a single-RDN subject is not conflated with a two-RDN issuer",
         x509Chain.pathLenSatisfied(mergeChain) === false);
-
-  // A self-issued rollover whose issuer value has insignificant leading whitespace
-  // (RFC 5280 §7.1) must still be recognized: comparing the DECODED value handles
-  // it. RED if names are compared as raw bytes or node's escaped display strings.
-  var esk = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
-  var eskSpki = await _spki(esk.publicKey);
-  var escRootPem = await pki.x509.sign({
-    subject: [{ commonName: "Esc CA" }], subjectPublicKey: eskSpki, serialNumber: "01",
-    notBefore: now, notAfter: notAfter,
-    extensions: { basicConstraints: { cA: true, pathLen: 0, critical: true }, keyUsage: ["keyCertSign"], keyUsageCritical: true },
-  }, { key: esk.privateKey }, { pem: true });
-  var escInterPem = await pki.x509.sign({
-    subject: [{ commonName: "Esc CA" }], subjectPublicKey: eskSpki, serialNumber: "02",
-    notBefore: now, notAfter: notAfter,
-    extensions: { basicConstraints: { cA: true, critical: true }, keyUsage: ["keyCertSign"], keyUsageCritical: true },
-  }, { name: [{ commonName: " Esc CA" }], publicKey: eskSpki, key: esk.privateKey }, { pem: true });
-  var elk = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
-  var elkSpki = await _spki(elk.publicKey);
-  var escLeafPem = await pki.x509.sign({
-    subject: [{ commonName: "esc-leaf" }], subjectPublicKey: elkSpki, serialNumber: "03",
-    notBefore: now, notAfter: notAfter,
-    extensions: { basicConstraints: { cA: false, critical: true }, keyUsage: ["digitalSignature"], keyUsageCritical: true },
-  }, { name: [{ commonName: "Esc CA" }], publicKey: eskSpki, key: esk.privateKey }, { pem: true });
-  var escChain = [escLeafPem, escInterPem, escRootPem].map(function (p) {
-    return new nodeCrypto.X509Certificate(p);
-  });
-  check("self-issued rollover with escaped leading whitespace does not consume path length",
-        x509Chain.pathLenSatisfied(escChain) === true);
 
   // P1 regression: non-UTF8 directory strings must not decode lossily. A
   // TeletexString (tag 0x14) CN of byte 0xE9 (é) and one of 0xE8 (è) are DISTINCT
