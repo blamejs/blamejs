@@ -384,6 +384,38 @@ async function run() {
   check("Unicode-compatibility-equivalent (NFKC) self-issued rollover does not consume path length",
         x509Chain.pathLenSatisfied(uChain) === true);
 
+  // The comparison must NOT conflate distinct code points. Case folding via
+  // uppercase-then-lowercase would collapse "I" and "ı" (U+0131 dotless-i, which
+  // uppercases to "I") to the same name and wrongly exempt a non-self-issued
+  // intermediate from the count (a fail-open). These names are distinct, so the
+  // intermediate consumes path length and the chain must be REJECTED.
+  var dk = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+  var dkSpki = await _spki(dk.publicKey);
+  var dRootPem = await pki.x509.sign({
+    subject: [{ commonName: "I" }], subjectPublicKey: dkSpki, serialNumber: "01",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: true, pathLen: 0, critical: true }, keyUsage: ["keyCertSign"], keyUsageCritical: true },
+  }, { key: dk.privateKey }, { pem: true });
+  var dik = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+  var dikSpki = await _spki(dik.publicKey);
+  var dInterPem = await pki.x509.sign({
+    subject: [{ commonName: "ı" }], subjectPublicKey: dikSpki, serialNumber: "02",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: true, critical: true }, keyUsage: ["keyCertSign"], keyUsageCritical: true },
+  }, { name: [{ commonName: "I" }], publicKey: dkSpki, key: dk.privateKey }, { pem: true });
+  var dlk = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+  var dlkSpki = await _spki(dlk.publicKey);
+  var dLeafPem = await pki.x509.sign({
+    subject: [{ commonName: "d-leaf" }], subjectPublicKey: dlkSpki, serialNumber: "03",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: false, critical: true }, keyUsage: ["digitalSignature"], keyUsageCritical: true },
+  }, { name: [{ commonName: "ı" }], publicKey: dikSpki, key: dik.privateKey }, { pem: true });
+  var dChain = [dLeafPem, dInterPem, dRootPem].map(function (p) {
+    return new nodeCrypto.X509Certificate(p);
+  });
+  check("distinct names I and ı (dotless-i) are not conflated: intermediate consumes path length (rejected)",
+        x509Chain.pathLenSatisfied(dChain) === false);
+
   console.log("OK — x509 pathLen enforcement (" + helpers.getChecks() + " checks)");
 }
 
