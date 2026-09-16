@@ -1,0 +1,22 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.20.19",
+  "date": "2026-09-15",
+  "headline": "OCSP evaluation bounds the age of a response that omits nextUpdate and rejects trailing DER bytes",
+  "summary": "Two hardening fixes in the OCSP response verifier. A response that omits the optional nextUpdate field carried no expiry, so a signature-valid `good` predating a revocation could be replayed indefinitely; evaluation now bounds such a response to a maximum age measured from thisUpdate (default 24 hours, override with maxAgeMs). And the OCSP response decoder ignored bytes appended after the top-level structure; it now rejects trailing data, matching the CMS and timestamp decoders.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "OCSP evaluation bounds the age of a response that omits nextUpdate",
+          "body": "`b.network.tls.ocsp.evaluate` enforced the nextUpdate expiry window only when the response stated one. RFC 6960 §4.2.2.1 allows a responder to omit nextUpdate, and for such a response the verifier checked only that thisUpdate was not in the future, placing no upper bound on how old the response could be. A signature-valid `good` produced before a certificate was revoked could then be replayed forever. Evaluation now refuses a response that omits nextUpdate once thisUpdate is older than a maximum age, 24 hours by default, which a caller can widen or tighten with the new `maxAgeMs` option. A response that states a nextUpdate is unaffected and remains valid for its stated window."
+        },
+        {
+          "title": "OCSP response decoding rejects trailing DER bytes",
+          "body": "`b.network.tls.ocsp.parseResponse` and `evaluate` parsed the first top-level DER structure and ignored any bytes after it, so an OCSP response could be padded with arbitrary trailing bytes and still parse. Decoding now requires the DER to be fully consumed and refuses trailing data (`tls/ocsp-trailing-data`), through the same `asn1.readNodeStrict` step used by the CMS and timestamp decoders. The signature covers only tbsResponseData, so trailing bytes forged no status; the padded form is now rejected so it cannot defeat a byte-exact equality or deduplication assumption or a stricter downstream parser."
+        }
+      ]
+    }
+  ]
+}

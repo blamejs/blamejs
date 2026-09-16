@@ -151,6 +151,39 @@ function testNoIssuerCertDerStaysSerialBound() {
   check("no issuerCertDer: serial-only bind still resolves (ok=true)", rv.ok === true);
 }
 
+// A well-formed OCSPResponse followed by extra bytes must be refused, not read
+// as the leading structure with the remainder ignored. The signature covers
+// only tbsResponseData, so trailing bytes forge no status, but a parser that
+// silently drops them is one a caller cannot reason about — the same DER
+// strictness enforced for CMS/TSA. RED before the fix: parseResponse reads the
+// leading response and returns it; evaluate reports ok:true.
+function testParseRejectsTrailingData() {
+  var fx = helpers.buildOcspResponse({
+    producedAtMs: Date.parse("2025-06-15T00:00:00Z"),
+    nextUpdateMs: Date.parse("2025-06-16T00:00:00Z"),
+  });
+  var withTrailer = Buffer.concat([fx.der, Buffer.from([0, 0, 0, 0, 0, 0, 0, 0])]);
+  var threw = null;
+  try { b.network.tls.ocsp.parseResponse(withTrailer); }
+  catch (e) { threw = e; }
+  check("parseResponse(response + trailing bytes) throws ocsp-trailing-data",
+        threw && /ocsp-trailing-data/.test(threw.code || ""));
+}
+
+function testEvaluateRejectsTrailingData() {
+  var now = Date.parse("2025-06-15T00:00:01Z");
+  var fx = helpers.buildOcspResponse({
+    producedAtMs: now - 1000,
+    nextUpdateMs: now + 86400000,
+  });
+  var withTrailer = Buffer.concat([fx.der, Buffer.from([0, 0, 0, 0, 0, 0, 0, 0])]);
+  var rv = b.network.tls.ocsp.evaluate(withTrailer, {
+    issuerPem: fx.issuerPem, serialHex: fx.serialHex, now: now,
+  });
+  check("evaluate(response + trailing bytes) → ok:false, status:'parse-error'",
+        rv.ok === false && rv.status === "parse-error");
+}
+
 async function run() {
   testSurface();
   testParseRejectsBadInput();
@@ -164,6 +197,8 @@ async function run() {
   testCertIdIssuerMatchAccepted();
   testCrossIssuerCertIdRefused();
   testNoIssuerCertDerStaysSerialBound();
+  testParseRejectsTrailingData();
+  testEvaluateRejectsTrailingData();
 }
 
 module.exports = { run: run };
