@@ -127,7 +127,21 @@ function buildOcspResponse(opts) {
   if (typeof opts.thisUpdateMs !== "number") opts.thisUpdateMs = opts.producedAtMs;
 
   var kp = opts.keyPair || nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
-  var issuerPem = kp.publicKey.export({ type: "spki", format: "pem" });
+  // issuerPem is a REAL issuer certificate for the signing key: the verifier
+  // reads its subject name + key for the mandatory RFC 6960 §4.1.1 CertID
+  // binding, and a response signed by this key verifies against it.
+  var issuerCertDer = _realIssuerCertDer(kp, Buffer.from("OCSP Test Issuer", "ascii"),
+                                         Buffer.from([0x01]));
+  var issuerPem = _derToCertPem(issuerCertDer);
+
+  // Default the CertID to bind against this issuer cert (name + key) so a
+  // response the caller expects to be good passes the mandatory binding without
+  // opts.issuerCertDer. An explicit certIdIssuerDer / hash / non-SHA-1 opt opts
+  // out (leaving the filler-hash path below for wrong-issuer refusal fixtures).
+  if (opts.certIdIssuerDer === undefined && !opts.issuerNameHash &&
+      !opts.issuerKeyHash && opts.certIdHashOid === OID_SHA1) {
+    opts.certIdIssuerDer = issuerCertDer;
+  }
 
   // CertID — either derived from a real issuer cert (so the binding check can
   // pass) or assembled from explicit hashes (so it can be made to fail).
@@ -150,25 +164,45 @@ function buildOcspResponse(opts) {
   }
 
   var timeTag = typeof opts.timeTag === "number" ? opts.timeTag : 0x18;
-  var srChildren = [certId, _certStatusNode(opts)];
+  // The certStatus + thisUpdate + nextUpdate suffix, shared by the primary entry
+  // and any additionalIssuersDer entries.
+  var srTail = [_certStatusNode(opts)];
   if (!opts.omitThisUpdate) {
-    srChildren.push(typeof opts.rawThisUpdate === "string"
+    srTail.push(typeof opts.rawThisUpdate === "string"
       ? asn1.writeNode(timeTag, Buffer.from(opts.rawThisUpdate, "ascii"))
       : generalizedTime(opts.thisUpdateMs));
   }
   if (typeof opts.rawNextUpdate === "string") {
-    srChildren.push(asn1.writeContextExplicit(0,
+    srTail.push(asn1.writeContextExplicit(0,
       asn1.writeNode(timeTag, Buffer.from(opts.rawNextUpdate, "ascii"))));
   } else if (opts.rawNextUpdate !== null && typeof opts.nextUpdateMs === "number") {
-    srChildren.push(asn1.writeContextExplicit(0, generalizedTime(opts.nextUpdateMs)));
+    srTail.push(asn1.writeContextExplicit(0, generalizedTime(opts.nextUpdateMs)));
   }
-  var singleResponse = asn1.writeSequence(srChildren);
+  var singleResponse = asn1.writeSequence([certId].concat(srTail));
+
+  // Extra SingleResponse entries for OTHER issuers reusing the same serial,
+  // placed BEFORE the primary entry so the requested issuer is not first — for
+  // exercising selection by the full CertID rather than by serial alone.
+  var responseEntries = [];
+  if (Array.isArray(opts.additionalIssuersDer)) {
+    opts.additionalIssuersDer.forEach(function (issDer) {
+      var h = _hashesFor(issDer, opts.certIdHashOid);
+      var acid = asn1.writeSequence([
+        asn1.writeSequence([asn1.writeOid(opts.certIdHashOid), asn1.writeNull()]),
+        asn1.writeOctetString(h.nameHash),
+        asn1.writeOctetString(h.keyHash),
+        asn1.writeInteger(opts.serial),
+      ]);
+      responseEntries.push(asn1.writeSequence([acid].concat(srTail)));
+    });
+  }
+  responseEntries.push(singleResponse);
 
   var tbsChildren = [
     asn1.writeContextExplicit(2, asn1.writeOctetString(Buffer.alloc(20, 0xcc))),   // responderID [2] KeyHash
     generalizedTime(opts.producedAtMs),
   ];
-  if (!opts.omitResponses) tbsChildren.push(asn1.writeSequence([singleResponse]));
+  if (!opts.omitResponses) tbsChildren.push(asn1.writeSequence(responseEntries));
   if (opts.nonce) {
     var extnValue = opts.nonceWrapped ? asn1.writeOctetString(opts.nonce) : opts.nonce;
     tbsChildren.push(asn1.writeContextExplicit(1, asn1.writeSequence([
@@ -196,12 +230,13 @@ function buildOcspResponse(opts) {
   ]);
 
   return {
-    der:       der,
-    issuerPem: issuerPem,
-    serial:    opts.serial,
-    serialHex: opts.serial.toString("hex"),
-    keyPair:   kp,
-    certIdDer: certId,
+    der:           der,
+    issuerPem:     issuerPem,
+    issuerCertDer: issuerCertDer,
+    serial:        opts.serial,
+    serialHex:     opts.serial.toString("hex"),
+    keyPair:       kp,
+    certIdDer:     certId,
   };
 }
 
@@ -229,8 +264,46 @@ function _hashesFor(issuerCertDer, hashOid) {
   return { nameHash: asn1.readOctetString(kids[1]), keyHash: asn1.readOctetString(kids[2]) };
 }
 
+// A REAL, node-parseable self-signed X.509 cert embedding the given keypair's
+// public key (so a response signed by that key verifies against this cert used
+// as issuerPem, and the verifier can read its subject name for the RFC 6960
+// §4.1.1 CertID name binding). Unlike synthCert (which embeds arbitrary key
+// bytes and is shape-only), this parses with new crypto.X509Certificate(pem).
+function _realIssuerCertDer(kp, cnBytes, serialBytes) {
+  var spkiDer  = kp.publicKey.export({ type: "spki", format: "der" });
+  var sigAlgId = asn1.writeSequence([asn1.writeOid(OID_ECDSA_SHA256)]);
+  var cnrdn    = asn1.writeSequence([asn1.writeOid("2.5.4.3"), asn1.writeNode(0x0c, cnBytes)]);
+  var name     = asn1.writeSequence([asn1.writeNode(0x31, cnrdn)]);
+  var validity = asn1.writeSequence([
+    asn1.writeNode(0x17, Buffer.from("250101000000Z", "ascii")),
+    asn1.writeNode(0x17, Buffer.from("350101000000Z", "ascii")),
+  ]);
+  var version = asn1.writeContextExplicit(0, asn1.writeInteger(Buffer.from([2])));
+  var tbs = asn1.writeSequence([version, asn1.writeInteger(serialBytes), sigAlgId,
+                                name, validity, name, spkiDer]);
+  var sig = nodeCrypto.sign("sha256", tbs, kp.privateKey);
+  return asn1.writeSequence([tbs, sigAlgId, asn1.writeBitString(sig)]);
+}
+
+// selfSignedIssuerPem(keyPair?, cn?, serial?) → { pem, der, keyPair }
+//   A real issuer cert for use as opts.issuerPem. Pass a shared keyPair with
+//   two different cn values to build two issuers that reuse one public key.
+function selfSignedIssuerPem(keyPair, cn, serial) {
+  var kp  = keyPair || nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var der = _realIssuerCertDer(kp, Buffer.from(cn || "OCSP Test Issuer", "ascii"),
+                               serial || Buffer.from([0x01]));
+  return { pem: _derToCertPem(der), der: der, keyPair: kp };
+}
+
+function _derToCertPem(der) {
+  return "-----BEGIN CERTIFICATE-----\n" +
+    der.toString("base64").match(/.{1,64}/g).join("\n") +
+    "\n-----END CERTIFICATE-----\n";
+}
+
 module.exports = {
-  buildOcspResponse: buildOcspResponse,
-  synthCert:         synthCert,
-  generalizedTime:   generalizedTime,
+  buildOcspResponse:    buildOcspResponse,
+  synthCert:            synthCert,
+  generalizedTime:      generalizedTime,
+  selfSignedIssuerPem:  selfSignedIssuerPem,
 };

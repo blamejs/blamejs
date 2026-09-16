@@ -8,6 +8,7 @@
  * parser's malformed-input rejection + the surface contract.
  */
 
+var nodeCrypto = require("node:crypto");
 var helpers    = require("../helpers");
 var b          = helpers.b;
 var check      = helpers.check;
@@ -139,8 +140,13 @@ function testCrossIssuerCertIdRefused() {
         /issuerNameHash|issuerKeyHash|wrong-issuer/i.test((rv.errors || []).join(" ; ")));
 }
 
-// Without issuerCertDer the binding is not enforced (serial-only legacy path).
-function testNoIssuerCertDerStaysSerialBound() {
+// Without issuerCertDer the CertID issuerKeyHash is bound against opts.issuerPem's
+// key: the RFC 6960 §4.1.1 binding is mandatory, not opt-in. A response whose
+// CertID names a DIFFERENT issuer key than the responder that signed it (issuerPem)
+// is refused, closing the serial-only replay across a shared responder or a
+// colliding serial. RED before the fix: the binding was skipped without
+// issuerCertDer, so the cross-key response resolved ok:true on serial alone.
+function testNoIssuerCertDerStillBindsOnKey() {
   var otherIssuer = helpers.synthCertForOcsp(Buffer.from([0x02]), Buffer.from("Evil CA"),
                                Buffer.from("evil-ca-key-bytes-bbbbbbbbbbbbbb"));
   var fx = helpers.buildOcspResponse({ serial: _OCSP_SERIAL, certIdIssuerDer: otherIssuer,
@@ -148,7 +154,86 @@ function testNoIssuerCertDerStaysSerialBound() {
   var rv = b.network.tls.ocsp.evaluate(fx.der, {
     issuerPem: fx.issuerPem, serialHex: _OCSP_SERIAL.toString("hex"), now: _OCSP_NOW,
   });
-  check("no issuerCertDer: serial-only bind still resolves (ok=true)", rv.ok === true);
+  check("no issuerCertDer: cross-key CertID is refused (mandatory key binding)", rv.ok === false);
+  check("no issuerCertDer: signature still verified (reached the binding)",
+        rv.signatureValid === true);
+  check("no issuerCertDer: refused for the issuerKeyHash reason",
+        /issuerKeyHash|wrong-issuer/i.test((rv.errors || []).join(" ; ")));
+}
+
+// Positive control — without issuerCertDer, a CertID whose issuerKeyHash matches
+// opts.issuerPem's key (the builder derives the default from the signing key) is
+// accepted. Guards the mandatory binding against over-refusing the common
+// non-delegated case where issuerPem IS the issuer.
+function testNoIssuerCertDerMatchingKeyAccepted() {
+  var fx = helpers.buildOcspResponse({ serial: _OCSP_SERIAL,
+                              producedAtMs: _OCSP_NOW - 1000, nextUpdateMs: _OCSP_NOW + 86400000 });
+  var rv = b.network.tls.ocsp.evaluate(fx.der, {
+    issuerPem: fx.issuerPem, serialHex: _OCSP_SERIAL.toString("hex"), now: _OCSP_NOW,
+  });
+  check("no issuerCertDer + matching key: accepted", rv.ok === true);
+}
+
+// The issuerKeyHash alone does not distinguish two issuers that reuse one public
+// key under different subject names (a re-keyed or cross-signed CA). Without
+// issuerCertDer the binding must also check issuerNameHash, derived from the
+// issuer certificate in opts.issuerPem — a bare public key cannot supply the
+// name and must be refused. RED before the name check: a response whose CertID
+// names issuer A is accepted while validating a certificate from issuer B that
+// shares A's key, because the keyHash matches and the name is not checked.
+function testNoIssuerCertDerSharedKeyDifferentNameRefused() {
+  var kp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var issuerA = helpers.ocspSelfSignedIssuerPem(kp, "Issuer A", Buffer.from([0x0a]));
+  var issuerB = helpers.ocspSelfSignedIssuerPem(kp, "Issuer B", Buffer.from([0x0b]));
+  var fx = helpers.buildOcspResponse({ keyPair: kp, certIdIssuerDer: issuerA.der, serial: _OCSP_SERIAL,
+                              producedAtMs: _OCSP_NOW - 1000, nextUpdateMs: _OCSP_NOW + 86400000 });
+  var rv = b.network.tls.ocsp.evaluate(fx.der, {
+    issuerPem: issuerB.pem, serialHex: _OCSP_SERIAL.toString("hex"), now: _OCSP_NOW,
+  });
+  check("shared-key different-name issuer: refused (name binding, not key alone)",
+        rv.ok === false);
+  check("shared-key different-name issuer: refused for the wrong-issuer reason",
+        /issuerNameHash|wrong-issuer/i.test((rv.errors || []).join(" ; ")));
+}
+
+// When a BasicOCSPResponse carries entries for two issuers that reuse the same
+// serial, selection must match the FULL CertID (serial + issuer name + key),
+// not the first serial match. The requested issuer's entry appearing second
+// must still be found. RED before the fix: the loop stops at the first serial
+// match (the other issuer) and the binding then rejects the whole response as
+// wrong-issuer, so acceptance depends on response ordering.
+function testMultiIssuerSameSerialSelectsByFullCertId() {
+  var kpY = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var kpX = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var issuerY = helpers.ocspSelfSignedIssuerPem(kpY, "Issuer Y", Buffer.from([0x0d]));
+  var issuerX = helpers.ocspSelfSignedIssuerPem(kpX, "Issuer X", Buffer.from([0x0c]));
+  // Response signed by Y, entry for X first, entry for Y second, same serial.
+  var fx = helpers.buildOcspResponse({
+    keyPair: kpY, certIdIssuerDer: issuerY.der, serial: _OCSP_SERIAL,
+    additionalIssuersDer: [issuerX.der],
+    producedAtMs: _OCSP_NOW - 1000, nextUpdateMs: _OCSP_NOW + 86400000,
+  });
+  var rv = b.network.tls.ocsp.evaluate(fx.der, {
+    issuerPem: issuerY.pem, issuerCertDer: issuerY.der,
+    serialHex: _OCSP_SERIAL.toString("hex"), now: _OCSP_NOW,
+  });
+  check("multi-issuer same-serial: the requested issuer's second entry is selected",
+        rv.ok === true && rv.certStatus === "good");
+}
+
+// A bare public-key issuerPem cannot supply the issuer name, so without
+// issuerCertDer the binding cannot be completed and the response is refused.
+function testBareKeyIssuerPemWithoutIssuerCertDerRefused() {
+  var kp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var issuerA = helpers.ocspSelfSignedIssuerPem(kp, "Issuer A", Buffer.from([0x0a]));
+  var fx = helpers.buildOcspResponse({ keyPair: kp, certIdIssuerDer: issuerA.der, serial: _OCSP_SERIAL,
+                              producedAtMs: _OCSP_NOW - 1000, nextUpdateMs: _OCSP_NOW + 86400000 });
+  var barePem = kp.publicKey.export({ type: "spki", format: "pem" });
+  var rv = b.network.tls.ocsp.evaluate(fx.der, {
+    issuerPem: barePem, serialHex: _OCSP_SERIAL.toString("hex"), now: _OCSP_NOW,
+  });
+  check("bare-key issuerPem without issuerCertDer: refused (no issuer name to bind)",
+        rv.ok === false);
 }
 
 // A well-formed OCSPResponse followed by extra bytes must be refused, not read
@@ -239,7 +324,11 @@ async function run() {
   await testRequireGoodRequiresIssuerPem();
   testCertIdIssuerMatchAccepted();
   testCrossIssuerCertIdRefused();
-  testNoIssuerCertDerStaysSerialBound();
+  testNoIssuerCertDerStillBindsOnKey();
+  testNoIssuerCertDerMatchingKeyAccepted();
+  testNoIssuerCertDerSharedKeyDifferentNameRefused();
+  testBareKeyIssuerPemWithoutIssuerCertDerRefused();
+  testMultiIssuerSameSerialSelectsByFullCertId();
   testParseRejectsTrailingData();
   testEvaluateRejectsTrailingData();
   await testFetchForwardsMaxAgeMs();
