@@ -70,7 +70,8 @@ function _mint(priv, kid, claims, mopts) {
   var alg    = mopts.alg || "ES256";
   var header = { typ: mopts.headerTyp || "entity-statement+jwt", alg: mopts.headerAlg || alg };
   if (!mopts.noKid) header.kid = kid;
-  var input  = _b64url(JSON.stringify(header)) + "." + _b64url(JSON.stringify(claims));
+  var claimsPart = mopts.rawClaimsJson !== undefined ? mopts.rawClaimsJson : JSON.stringify(claims);
+  var input  = _b64url(JSON.stringify(header)) + "." + _b64url(claimsPart);
   var sig;
   if (alg === "PS256") {
     sig = nodeCrypto.sign("sha256", Buffer.from(input, "ascii"), {
@@ -231,6 +232,24 @@ function testVerifySignatureAndTime() {
       var c = _cfg("https://x", e); delete c.iss; delete c.sub;
       b.auth.openidFederation.verifyEntityStatement(_mint(e.priv, "k", c), e.jwks);
     }, /missing-iss-sub/);
+
+  // A statement whose exp decodes to a non-finite number (JSON `1e400` →
+  // Infinity) must not be treated as never-expiring: Infinity < now-skew is
+  // false, so a typeof-only guard would accept it forever.
+  _throws("verify: non-finite exp (1e400) → expired, not never-expiring",
+    function () {
+      var raw = '{"iss":"https://x","sub":"https://x","iat":' + _NOW + ',"exp":1e400}';
+      b.auth.openidFederation.verifyEntityStatement(_mint(e.priv, "k", null, { rawClaimsJson: raw }), e.jwks);
+    }, /expired/);
+
+  // The documented `now` override must actually govern the freshness check:
+  // a statement valid at real time is expired as of a supplied later clock.
+  _throws("verify: honors vopts.now (expired as of the supplied clock)",
+    function () {
+      var c = _cfg("https://x", e);                                              // iat=_NOW, exp=_NOW+3600
+      b.auth.openidFederation.verifyEntityStatement(_mint(e.priv, "k", c), e.jwks,
+        { now: (_NOW + 100000) * 1000 });
+    }, /expired/);
 }
 
 // ---- applyMetadataPolicy: guards + every OIDF §6.2 operator ---------------

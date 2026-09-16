@@ -8,6 +8,7 @@
 
 var b = require("../..");
 var check = require("../helpers/check").check;
+var nodeCrypto = require("node:crypto");
 
 function rejects(label, fn, pattern) {
   var threw = false;
@@ -263,6 +264,20 @@ async function run() {
     function () { b.auth.stepUp.grant.setSigningKey("not-a-buffer"); }, /Buffer/);
   rejects("setSigningKey: too short",
     function () { b.auth.stepUp.grant.setSigningKey(Buffer.alloc(16)); }, />= 32 bytes/);
+
+  // A grant whose exp decodes to a non-finite number (JSON `1e400` → Infinity)
+  // must not read as never-expiring: Infinity < now is false, so a typeof-only
+  // guard silently accepts it. Craft a MAC-valid token with a raw exp literal.
+  b.auth.stepUp.grant._resetForTests();
+  var _gk = nodeCrypto.randomBytes(64);
+  b.auth.stepUp.grant.setSigningKey(_gk);
+  var _gnow = Math.floor(Date.now() / 1000);
+  var _gpB64 = Buffer.from('{"sub":"u1","scope":"s","iat":' + _gnow + ',"exp":1e400}', "utf8").toString("base64url");
+  var _gmac = nodeCrypto.createHmac("sha3-512", _gk).update(_gpB64).digest().toString("base64url");
+  var vInf = b.auth.stepUp.grant.verify(_gpB64 + "." + _gmac);
+  check("grant.verify: non-finite exp (1e400 → Infinity) → expired, not never-expiring",
+        vInf.ok === false && vInf.error === "expired");
+  b.auth.stepUp.grant._resetForTests();
 
   // ---- middleware: happy path ----
   var mw = b.middleware.requireStepUp({

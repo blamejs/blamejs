@@ -1731,6 +1731,55 @@ async function testKbMissingAttestationRequired() {
 
 // ---- Run all ----
 
+// An issuer VC whose exp decodes to a non-finite number (JSON `1e400` →
+// Infinity) must not be treated as never-expiring: Infinity < now-skew is
+// false, so a typeof-only guard silently accepts it forever.
+async function testVerifyNonFiniteExp() {
+  var issuer = _newKeyPair();
+  var nowSec = Math.floor(Date.now() / 1000);
+  var hdr = Buffer.from(JSON.stringify({ alg: "ES256", typ: "vc+sd-jwt" }), "utf8").toString("base64url");
+  var pl  = Buffer.from('{"iss":"https://issuer","vct":"x","iat":' + nowSec + ',"exp":1e400}', "utf8").toString("base64url");
+  var input = hdr + "." + pl;
+  var sig = nodeCrypto.sign("sha256", Buffer.from(input, "ascii"),
+    { key: issuer.privateKey, dsaEncoding: "ieee-p1363" }).toString("base64url");
+  var threw = null;
+  try {
+    await sdJwtVc.verify(input + "." + sig + "~",
+      { issuerKeyResolver: async function () { return issuer.publicKey; } });
+  } catch (e) { threw = e; }
+  check("verify: non-finite exp (1e400 → Infinity) → expired, not never-expiring",
+        !!threw && /(expired|missing-exp)/.test(threw.code || ""));
+}
+
+// The KB-JWT is the one JWS position in verify() that did not refuse an
+// unrecognized `crit` header; the issuer JWT (testVerifyCritRefusedAndEmptyAllowed)
+// and the oid4vci proof JWT both do. RFC 7515 §4.1.11 requires refusal.
+async function testVerifyKbCritRefused() {
+  var issuer = _newKeyPair();
+  var holder = _newKeyPair();
+  var sd = sdJwtVc.issue({ issuer: "https://issuer", vct: "x", claims: { given_name: "Alice" },
+    selectivelyDisclosed: ["given_name"], issuerKey: issuer.privateKey, holderKey: _jwk(holder.publicKey) });
+  var pres = sdJwtVc.present({ sdJwt: sd.token, disclosedClaimNames: ["given_name"],
+    audience: "https://verifier", nonce: "n-crit", holderKey: holder.privateKey, algorithm: "ES256" });
+  // Re-sign the KB-JWT with a crit header, keeping its payload so sd_hash/aud/
+  // nonce stay valid — only the crit refusal should fire.
+  var segs = pres.presentation.split("~");
+  var kbPayloadB64 = segs[segs.length - 1].split(".")[1];
+  var critHeader = Buffer.from(JSON.stringify({ typ: "kb+jwt", alg: "ES256", crit: ["unknown-ext"] }), "utf8").toString("base64url");
+  var kbInput = critHeader + "." + kbPayloadB64;
+  var kbSig = nodeCrypto.sign("sha256", Buffer.from(kbInput, "ascii"),
+    { key: holder.privateKey, dsaEncoding: "ieee-p1363" }).toString("base64url");
+  segs[segs.length - 1] = kbInput + "." + kbSig;
+  var threw = null;
+  try {
+    await sdJwtVc.verify(segs.join("~"), {
+      issuerKeyResolver: async function () { return issuer.publicKey; },
+      audience: "https://verifier", nonce: "n-crit", requireKeyBinding: true });
+  } catch (e) { threw = e; }
+  check("verify: KB-JWT with crit refused (RFC 7515 §4.1.11)",
+        !!threw && /crit/.test(threw.code || ""));
+}
+
 async function run() {
   testDisclosureEncodeDecode();
   testDisclosureValueComplexShape();
@@ -1742,6 +1791,8 @@ async function run() {
   await testVerifyHappyPath();
   await testVerifyBadIssuerSignature();
   await testVerifyExpired();
+  await testVerifyNonFiniteExp();
+  await testVerifyKbCritRefused();
   await testVerifyNotYetValidNbf();
   await testVerifyVctMismatch();
   await testVerifyDisclosureMismatch();
