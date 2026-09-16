@@ -202,7 +202,22 @@ function testCmsDecodeRefusesNonMinimalLength() {
         b.cms.decode(canonical).contentType === "1.2.840.113549.1.7.1");
 }
 
+// readNodeStrict is the top-level decoder contract: it must consume the WHOLE
+// buffer, refusing trailing bytes after the first TLV (DER malleability).
+function testReadNodeStrictRejectsTrailing() {
+  var buf = Buffer.from([0x30, 0x03, 0x02, 0x01, 0x05]); // SEQUENCE { INTEGER 5 }
+  var node = asn1.readNodeStrict(buf);
+  check("readNodeStrict: accepts an exactly-consumed DER node",
+        node.tag === asn1.TAG.SEQUENCE && node.totalLength === buf.length);
+  var padded = Buffer.from([0x30, 0x03, 0x02, 0x01, 0x05, 0x00]); // + 1 trailing byte
+  var threw = null;
+  try { asn1.readNodeStrict(padded); } catch (e) { threw = e; }
+  check("readNodeStrict: rejects trailing bytes after the top-level node",
+        threw && threw.code === "asn1/trailing-data", threw ? threw.code : "ACCEPTED");
+}
+
 async function run() {
+  testReadNodeStrictRejectsTrailing();
   testReadNodeShortFormLength();
   testReadOid();
   testOidFirstSubidMultibyte();

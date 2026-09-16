@@ -813,7 +813,36 @@ function testTsaTrustAnchorRequiredByDefault() {
         outTr && outTr.issuerTrusted === true);
 }
 
+// RFC 5652 §11.1 makes the contentType signed-attr mandatory when signedAttrs
+// are present; the check was guarded on its PRESENCE, so a token omitting it
+// passed (asymmetric with the S/MIME verifier, which refuses it).
+function testTsaContentTypeAttrRequired() {
+  var data = Buffer.from("tsa-ct-attr");
+  var noCt = _validTokenFor(data, { omitContentTypeAttr: true }).token;
+  var e = null;
+  try { b.tsa.verifyToken(noCt, { allowUntrustedIssuer: true, data: data, hashAlg: "SHA-512" }); } catch (err) { e = err; }
+  check("tsa: token missing the contentType signed-attr is refused",
+        e && e.code === "tsa/no-content-type-attr", e ? e.code : "ACCEPTED (fail-open)");
+  // CONTROL: a token WITH contentType verifies.
+  var out = b.tsa.verifyToken(_validTokenFor(data).token, { allowUntrustedIssuer: true, data: data, hashAlg: "SHA-512" });
+  check("tsa: control token with contentType verifies", out.genTime instanceof Date);
+}
+
+// Trailing bytes after the top-level DER must be rejected (token malleability /
+// parser-differential), not silently ignored.
+function testTsaRejectsTrailingDer() {
+  var data = Buffer.from("tsa-trailing");
+  var token = _validTokenFor(data).token;
+  var padded = Buffer.concat([token, Buffer.from([0x00, 0x00, 0x00])]);
+  var e = null;
+  try { b.tsa.verifyToken(padded, { allowUntrustedIssuer: true, data: data, hashAlg: "SHA-512" }); } catch (err) { e = err; }
+  check("tsa: token with trailing DER bytes is refused",
+        e && e.code === "tsa/trailing-data", e ? e.code : "ACCEPTED (fail-open)");
+}
+
 async function run() {
+  testTsaContentTypeAttrRequired();
+  testTsaRejectsTrailingDer();
   testSurface();
   testBuildRequest();
   testBuildRequestExtras();

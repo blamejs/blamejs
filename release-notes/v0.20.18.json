@@ -1,0 +1,22 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.20.18",
+  "date": "2026-09-15",
+  "headline": "TSA and CMS verification reject trailing DER bytes, and the timestamp verifier requires the contentType signed attribute",
+  "summary": "Two hardening fixes in the CMS and RFC 3161 timestamp verification paths. The timestamp verifier accepted a token whose signed attributes omitted the mandatory `contentType` attribute; it now requires it, matching the S/MIME verifier. And the CMS and timestamp DER decoders silently ignored bytes appended after the top-level structure; they now reject trailing data, so a signature or timestamp token cannot be padded.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "Timestamp verification requires the contentType signed attribute",
+          "body": "`b.tsa.verifyToken` refused a signed `contentType` attribute that disagreed with `id-ct-TSTInfo`, but accepted a token whose signed attributes omitted the attribute entirely. RFC 5652 §11.1 makes `contentType` mandatory when signed attributes are present, and the S/MIME verifier already enforced it. `verifyToken` now refuses a token missing the `contentType` attribute with `tsa/no-content-type-attr`. The token stayed bound to the caller's data through the messageImprint and messageDigest checks regardless, so this is a conformance and consistency fix rather than a substitution bypass."
+        },
+        {
+          "title": "CMS and timestamp decoders reject trailing DER bytes",
+          "body": "`b.cms.decode` and the timestamp token and response decoders parsed the first top-level DER structure and ignored any bytes after it, so a CMS signature or an RFC 3161 timestamp token could be padded with arbitrary trailing bytes and still parse. The decoders now require the DER to be fully consumed and refuse trailing data (`cms/trailing-data`, `tsa/trailing-data`), through a shared `asn1.readNodeStrict` decode step. The bytes covered by the signature were never affected; the padded form is now rejected so it cannot defeat a byte-exact equality or deduplication assumption or a stricter downstream parser."
+        }
+      ]
+    }
+  ]
+}
