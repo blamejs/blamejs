@@ -112,6 +112,60 @@ async function _mintPathChain(opts) {
   };
 }
 
+// Mint a chain whose sub CA has two interchangeable issuers — same subject and
+// key, one pathLen:0 and one pathLen:1 — both issued by the root:
+//   leaf -> sub CA -> { issuerStrict(pathLen:0) | issuerPermissive(pathLen:1) } -> root
+// A greedy walk that commits to the first matching issuer rejects the chain when
+// the strict issuer is chosen; the permissive one completes a within-limit path.
+async function _mintBacktrackChain() {
+  var now = new Date();
+  var notAfter = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000);
+  var alg = { name: "ECDSA", namedCurve: "P-256" };
+
+  var rootKeys = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+  var rootSpki = await _spki(rootKeys.publicKey);
+  var rootPem = await pki.x509.sign({
+    subject: "BT Root CA", subjectPublicKey: rootSpki, serialNumber: "01",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: true, critical: true }, keyUsage: ["keyCertSign", "cRLSign"], keyUsageCritical: true },
+  }, { key: rootKeys.privateKey }, { pem: true });
+
+  var issuerKeys = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+  var issuerSpki = await _spki(issuerKeys.publicKey);
+  function _signIssuer(pathLen, serial) {
+    return pki.x509.sign({
+      subject: "BT Issuer CA", subjectPublicKey: issuerSpki, serialNumber: serial,
+      notBefore: now, notAfter: notAfter,
+      extensions: { basicConstraints: { cA: true, pathLen: pathLen, critical: true }, keyUsage: ["keyCertSign"], keyUsageCritical: true },
+    }, { name: "BT Root CA", publicKey: rootSpki, key: rootKeys.privateKey }, { pem: true });
+  }
+  var issuerStrictPem = await _signIssuer(0, "0x0a");
+  var issuerPermissivePem = await _signIssuer(1, "0x0b");
+
+  var subKeys = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+  var subSpki = await _spki(subKeys.publicKey);
+  var subPem = await pki.x509.sign({
+    subject: "BT Sub CA", subjectPublicKey: subSpki, serialNumber: "0x0c",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: true, critical: true }, keyUsage: ["keyCertSign"], keyUsageCritical: true },
+  }, { name: "BT Issuer CA", publicKey: issuerSpki, key: issuerKeys.privateKey }, { pem: true });
+
+  var leafKeys = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+  var leafSpki = await _spki(leafKeys.publicKey);
+  var leafPem = await pki.x509.sign({
+    subject: "bt-leaf.example", subjectPublicKey: leafSpki, serialNumber: "0x0d",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: false, critical: true }, keyUsage: ["digitalSignature"], keyUsageCritical: true },
+  }, { name: "BT Sub CA", publicKey: subSpki, key: subKeys.privateKey }, { pem: true });
+
+  function _c(pem) { return new nodeCrypto.X509Certificate(pem); }
+  return {
+    leaf: _c(leafPem), sub: _c(subPem),
+    issuerStrict: _c(issuerStrictPem), issuerPermissive: _c(issuerPermissivePem),
+    root: _c(rootPem),
+  };
+}
+
 function _b64url(buf) { return Buffer.from(buf).toString("base64url"); }
 function _mds3Blob(payload, leafKeyPem, chainPemsLeafFirst) {
   var x5c = chainPemsLeafFirst.map(function (pem) {
@@ -364,6 +418,35 @@ async function run() {
   check("Unicode-compatibility-equivalent (NFKC) self-issued rollover does not consume path length",
         x509Chain.pathLenSatisfied(uChain) === true);
 
+  // A self-issued rollover whose names differ only in case: "CN=CA" issued
+  // "CN=ca" under the same key. RFC 5280 §7.1 caseIgnoreMatch makes these the
+  // same name, so the rollover must NOT consume path length. RED without
+  // case-folding: the intermediate is counted and a pathLen:0 root rejects it.
+  var ck = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+  var ckSpki = await _spki(ck.publicKey);
+  var cRootPem = await pki.x509.sign({
+    subject: [{ commonName: "CA" }], subjectPublicKey: ckSpki, serialNumber: "01",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: true, pathLen: 0, critical: true }, keyUsage: ["keyCertSign"], keyUsageCritical: true },
+  }, { key: ck.privateKey }, { pem: true });
+  var cInterPem = await pki.x509.sign({
+    subject: [{ commonName: "ca" }], subjectPublicKey: ckSpki, serialNumber: "02",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: true, critical: true }, keyUsage: ["keyCertSign"], keyUsageCritical: true },
+  }, { name: [{ commonName: "CA" }], publicKey: ckSpki, key: ck.privateKey }, { pem: true });
+  var clk = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+  var clkSpki = await _spki(clk.publicKey);
+  var cLeafPem = await pki.x509.sign({
+    subject: [{ commonName: "c-leaf" }], subjectPublicKey: clkSpki, serialNumber: "03",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: false, critical: true }, keyUsage: ["digitalSignature"], keyUsageCritical: true },
+  }, { name: [{ commonName: "ca" }], publicKey: ckSpki, key: ck.privateKey }, { pem: true });
+  var cChain = [cLeafPem, cInterPem, cRootPem].map(function (p) {
+    return new nodeCrypto.X509Certificate(p);
+  });
+  check("case-variant (CN=CA / CN=ca) self-issued rollover does not consume path length",
+        x509Chain.pathLenSatisfied(cChain) === true);
+
   // The comparison must NOT conflate distinct code points. Case folding via
   // uppercase-then-lowercase would collapse "I" and "ı" (U+0131 dotless-i, which
   // uppercases to "I") to the same name and wrongly exempt a non-self-issued
@@ -395,6 +478,49 @@ async function run() {
   });
   check("distinct names I and ı (dotless-i) are not conflated: intermediate consumes path length (rejected)",
         x509Chain.pathLenSatisfied(dChain) === false);
+
+  // ---- resolveChain: path-building with backtracking over interchangeable
+  // issuers. A greedy walk that commits to the first matching issuer over-refuses
+  // a chain a within-limit alternative issuer would complete.
+  check("b.x509Chain.resolveChain is exposed", typeof x509Chain.resolveChain === "function");
+  var bt = await _mintBacktrackChain();
+  check("resolveChain: backtracks past a strict interchangeable issuer to a within-limit path",
+        x509Chain.resolveChain(bt.leaf, [bt.sub, bt.issuerStrict, bt.issuerPermissive], [bt.root]).ok === true);
+  check("resolveChain: issuer order does not matter (permissive listed first)",
+        x509Chain.resolveChain(bt.leaf, [bt.sub, bt.issuerPermissive, bt.issuerStrict], [bt.root]).ok === true);
+  var strictOnly = x509Chain.resolveChain(bt.leaf, [bt.sub, bt.issuerStrict], [bt.root]);
+  check("resolveChain: only the strict issuer present → rejected, reason pathlen",
+        strictOnly.ok === false && strictOnly.reason === "pathlen");
+  check("resolveChain: only the permissive issuer present → accepted",
+        x509Chain.resolveChain(bt.leaf, [bt.sub, bt.issuerPermissive], [bt.root]).ok === true);
+  var noAnchor = x509Chain.resolveChain(bt.leaf, [bt.sub, bt.issuerPermissive], []);
+  check("resolveChain: no matching anchor → reason untrusted",
+        noAnchor.ok === false && noAnchor.reason === "untrusted");
+  var directOk = x509Chain.resolveChain(bt.sub, [bt.issuerPermissive], [bt.root]);
+  check("resolveChain: a short valid path is accepted", directOk.ok === true && directOk.reason === "anchored");
+
+  // validAt is a soft gate: a node that fails it can never be on an accepted
+  // path, and the first such certificate is reported for the caller's own error.
+  var badLeaf = x509Chain.resolveChain(bt.leaf, [bt.sub, bt.issuerPermissive], [bt.root],
+    { validAt: function (c) { return c.fingerprint256 !== bt.leaf.fingerprint256; } });
+  check("resolveChain: a leaf failing validAt is reported as invalidCert",
+        badLeaf.ok === false && badLeaf.invalidCert === bt.leaf);
+  var badSub = x509Chain.resolveChain(bt.leaf, [bt.sub, bt.issuerPermissive], [bt.root],
+    { validAt: function (c) { return c.fingerprint256 !== bt.sub.fingerprint256; } });
+  check("resolveChain: an intermediate failing validAt blocks the path and is reported",
+        badSub.ok === false && badSub.invalidCert === bt.sub);
+
+  // maxDepth cuts a path before the anchor; depthLimited reports the cut.
+  var depthCut = x509Chain.resolveChain(bt.leaf, [bt.sub, bt.issuerPermissive], [bt.root], { maxDepth: 2 });
+  check("resolveChain: maxDepth cuts a longer path and sets depthLimited",
+        depthCut.ok === false && depthCut.depthLimited === true);
+  // maxVisits bounds the search: a budget too small to reach the anchor fails closed.
+  var capped = x509Chain.resolveChain(bt.leaf, [bt.sub, bt.issuerPermissive], [bt.root], { maxVisits: 1 });
+  check("resolveChain: an exhausted visit budget fails closed", capped.ok === false);
+
+  check("resolveChain: null leaf fails closed", x509Chain.resolveChain(null, [], []).ok === false);
+  check("resolveChain: non-array pool/anchors are tolerated (fail closed)",
+        x509Chain.resolveChain(bt.leaf, null, null).ok === false);
 
   console.log("OK — x509 pathLen enforcement (" + helpers.getChecks() + " checks)");
 }

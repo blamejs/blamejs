@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.20.21",
-  "createdAt": "2026-09-16T07:21:15.094Z",
+  "createdAt": "2026-09-16T09:49:46.858Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -57451,6 +57451,10 @@
         "pathLenSatisfied": {
           "type": "function",
           "arity": 1
+        },
+        "resolveChain": {
+          "type": "function",
+          "arity": 4
         }
       }
     },

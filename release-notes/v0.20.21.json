@@ -3,14 +3,32 @@
   "version": "0.20.21",
   "date": "2026-09-16",
   "headline": "X.509 chain validation enforces the basicConstraints pathLenConstraint",
-  "summary": "node's X509Certificate does not expose a CA certificate's basicConstraints pathLenConstraint, so a certificate chain whose links each verified could still exceed a CA's stated path length: a CA with pathLen:0 vouching for an intermediate that in turn issues the end-entity. The framework's certificate-chain walkers now enforce the constraint through a new `b.x509Chain.pathLenSatisfied`, which reads pathLenConstraint from each certificate's DER and applies the RFC 5280 path-length rule.",
+  "summary": "node's X509Certificate does not expose a CA certificate's basicConstraints pathLenConstraint, so a certificate chain whose links each verified could still exceed a CA's stated path length: a CA with pathLen:0 vouching for an intermediate that in turn issues the end-entity. The framework's certificate-chain walkers now enforce the constraint through the new `b.x509Chain.pathLenSatisfied`, which reads pathLenConstraint from each certificate's DER and applies the RFC 5280 path-length rule. The token- and message-carried walkers also route through the new `b.x509Chain.resolveChain`, which builds the path by trying every candidate issuer, so a valid path is not rejected when a stricter interchangeable issuer appears first in the certificate bag.",
   "sections": [
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "b.x509Chain.resolveChain builds a certification path with path-length enforcement",
+          "body": "`b.x509Chain.resolveChain(leaf, pool, anchors, opts)` searches for a path from a leaf certificate through a pool of candidate issuers to a trust anchor. Every node passes the caller's `validAt` predicate, every link passes `issued` (default `b.x509Chain.issuerValidlyIssued`), and the assembled path satisfies `pathLenSatisfied`. When one candidate issuer overruns a path-length constraint the search tries the remaining candidates. The result reports `reason` (\"anchored\", \"pathlen\", or \"untrusted\") and the first certificate that failed `validAt`. `maxDepth` caps the path length and `maxVisits` caps the search to bound work on a crafted certificate bag."
+        }
+      ]
+    },
     {
       "heading": "Security",
       "items": [
         {
           "title": "Certificate chains are rejected when they exceed a CA's pathLenConstraint",
-          "body": "A CA certificate's basicConstraints pathLenConstraint (RFC 5280 §4.2.1.9) limits how many intermediate CAs may appear below it in a valid path. node's `X509Certificate` exposes the cA flag but not pathLenConstraint, so `X509Certificate.checkIssued` and the framework's per-link issuer test accepted a chain that violated it, for example a root asserting pathLen:0 that issued an intermediate CA which then issued the end-entity. The chain-validating consumers (`b.auth.fidoMds3`, `b.contentCredentials`, `b.mail.bimi`, `b.mail.crypto.smime`) now reject such a chain. The check is the new `b.x509Chain.pathLenSatisfied(chain)`, which reads pathLenConstraint from each certificate's DER and applies the RFC 5280 §6.1.4 path-length rule over the ordered chain; a certificate that asserts no pathLenConstraint imposes no limit, and a chain too short to contain an intermediate is unaffected."
+          "body": "A CA certificate's basicConstraints pathLenConstraint (RFC 5280 §4.2.1.9) limits how many intermediate CAs may appear below it in a valid path. node's `X509Certificate` exposes the cA flag but not pathLenConstraint, so `X509Certificate.checkIssued` and the framework's per-link issuer test accepted a chain that violated it, for example a root asserting pathLen:0 that issued an intermediate CA which then issued the end-entity. The chain-validating consumers (`b.tsa.verifyToken`, `b.mdoc`, `b.auth.fidoMds3`, `b.contentCredentials`, `b.mail.bimi`, `b.mail.crypto.smime`) now reject such a chain. The check is the new `b.x509Chain.pathLenSatisfied(chain)`, which reads pathLenConstraint from each certificate's DER and applies the RFC 5280 §6.1.4 path-length rule over the ordered chain; a certificate that asserts no pathLenConstraint imposes no limit, and a chain too short to contain an intermediate is unaffected."
+        }
+      ]
+    },
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "A valid path is no longer rejected when an interchangeable issuer appears first",
+          "body": "When a timestamp token or mdoc certificate bag carried more than one issuer for a certificate (for example a CA reissued with a different pathLenConstraint), `b.tsa.verifyToken`, `b.mdoc`, `b.mail.bimi`, and `b.mail.crypto.smime` committed to the first matching issuer. A stricter issuer listed before an interchangeable one that would complete a within-limit path caused the token to be rejected. These walkers now build the path through `b.x509Chain.resolveChain`, which tries the alternative issuers."
         }
       ]
     }

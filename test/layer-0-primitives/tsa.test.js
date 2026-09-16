@@ -68,7 +68,8 @@ function _makeCert(opts) {
   opts = opts || {};
   var keyType = opts.keyType || "rsa";
   var kp;
-  if (keyType === "ec") kp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  if (opts.kp) kp = opts.kp;
+  else if (keyType === "ec") kp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
   else if (keyType === "ed25519") kp = nodeCrypto.generateKeyPairSync("ed25519");
   else kp = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
   var spki = kp.publicKey.export({ type: "spki", format: "der" });
@@ -639,6 +640,33 @@ function testChainPathLen() {
   check("tsa: a chain within the root pathLen:1 is accepted", out.policy === "1.2.3.4.1");
 }
 
+// The token's certificates carry two interchangeable issuers for the sub CA —
+// same subject and public key, one with pathLen:0 and one with pathLen:1 —
+// listed strict-first. A greedy walk commits to the pathLen:0 issuer, which the
+// sub CA overruns, and rejects the token though the pathLen:1 issuer completes a
+// within-limit path. The walk must try the alternative issuer, not the first
+// match alone.
+function testChainBacktrack() {
+  var data = Buffer.from("backtrack-test");
+  var root = _makeCert({ cn: "BT Root", serial: Buffer.from([0x01]), ca: true, ekuOids: null });
+  var issuerKp = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var issuerStrict = _makeCert({ cn: "BT Issuer", serial: Buffer.from([0x0a]), ca: true, pathLen: 0,
+    ekuOids: null, kp: issuerKp, issuerName: root.subjectName, issuerKey: root.key });
+  var issuerPermissive = _makeCert({ cn: "BT Issuer", serial: Buffer.from([0x0b]), ca: true, pathLen: 1,
+    ekuOids: null, kp: issuerKp, issuerName: root.subjectName, issuerKey: root.key });
+  var subCa = _makeCert({ cn: "BT Sub CA", serial: Buffer.from([0x0c]), ca: true, ekuOids: null,
+    issuerName: issuerStrict.subjectName, issuerKey: issuerKp.privateKey });
+  var leaf = _makeCert({ cn: "BT Leaf TSA", serial: Buffer.from([0x0d]), basicConstraintsFalse: true,
+    issuerName: subCa.subjectName, issuerKey: subCa.key });
+  var token = _makeToken({ certDer: leaf.certDer,
+    extraCertDer: Buffer.concat([subCa.certDer, issuerStrict.certDer, issuerPermissive.certDer]),
+    key: leaf.key, issuer: leaf.issuer, serial: leaf.serial, imprintHash: _imprintOf(data, "SHA-512") });
+  var rootPem = new nodeCrypto.X509Certificate(root.certDer).toString();
+  var out = b.tsa.verifyToken(token, { data: data, hashAlg: "SHA-512", trustAnchorsPem: [rootPem] });
+  check("tsa: a strict issuer listed before an interchangeable permissive one does not preempt a within-limit path",
+        out.policy === "1.2.3.4.1");
+}
+
 // Multi-cert chain: signer → intermediate CA → root anchor. Exercises the
 // walk-up through the token's intermediates and the cA-enforced anchor
 // termination, plus the validity-window check driven by opts.at.
@@ -886,6 +914,7 @@ async function run() {
   testCandidateSigners();
   testChainVerify();
   testChainPathLen();
+  testChainBacktrack();
   testTsaTrustAnchorRequiredByDefault();
   testChainWalkAndValidity();
   testParseResponseBranches();
