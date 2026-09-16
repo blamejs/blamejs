@@ -12825,6 +12825,33 @@ var KNOWN_ANTIPATTERNS = [
     reason: "RFC 3501 §4.3 lets a quoted string carry a double quote as `\\\"`. The IMAP verbs that split a leading mailbox name from the arguments after it — STATUS, GETMETADATA, SETMETADATA, APPEND, APPEND CATENATE, and SELECT ... QRESYNC — did it with the alternation `(\\S+|\"[^\"]*\")`, an atom or a first-quote-terminated string. That class stops at the `\\\"` inside the name, and because each regex is anchored to the trailing structure with `$`, the match then fails and the command comes back BAD. A mailbox name with both a space and a quote (`\"a\\\"b c\"` on the wire, the name `a\"b c`) is a name _validateMailboxName accepts, so a conformant client could neither STATUS nor APPEND it. `\\S+` alone already carries a no-space name that contains a quote, so the gap is specifically the spaced quoted name. The fixed form spans the escape: `(\\S+|\"(?:\\\\.|[^\"\\\\])*\")`, keeping the site's own `*`/`+`, and then _unquote decodes it. The alternation `\\\\.|[^\"\\\\]` is disjoint on its first character, so the quoted run stays linear. Anchored on `(\\S+|\"[^\"]` because that atom-or-quoted alternation is the exact split idiom; SELECT unquotes the whole remainder and never uses it, and the optional date-time capture `(\"[^\"]+\")` is not a name and never holds a quote, so neither is matched. Empty allowlist: no IMAP name-split needs the first-quote-terminated class, and a verb added with it is the one to catch.",
   },
   {
+    id: "a-method-exemption-must-normalize-req-method-case",
+    primitive: "b.middleware.csrfProtect",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // A safe-method exemption keyed on a raw `req.method` membership check.
+    // `methods` is uppercased at construction, but `req.method` arrives verbatim
+    // over HTTP/2, so `.indexOf(req.method)` / `.includes(req.method)` lets a
+    // non-canonical case (`Post`) miss the protected list and skip the gate. The
+    // fixed form compares `String(req.method || "").toUpperCase()`, which this
+    // does not match. Exact-equality checks (`req.method === "GET"`) reject on
+    // mismatch (fail-closed) and are a different, safe shape.
+    regex: /\.(?:indexOf|includes)\(\s*req\.method\s*\)/,
+    allowlist: [],
+    fixtures: {
+      fires: [
+        'if (methods.indexOf(req.method) === -1) return next();',
+        'if (!methods.includes(req.method)) return next();',
+      ],
+      quiet: [
+        'if (methods.indexOf(String(req.method || "").toUpperCase()) === -1) return next();',
+        'var m = (req.method || "").toUpperCase();',
+        'if (req.method !== "GET" && req.method !== "HEAD") return next();',
+      ],
+    },
+    reason: "b.middleware.csrfProtect and b.middleware.fetchMetadata exempt safe methods with `if (methods.indexOf(req.method) === -1) return next();`, where `methods` is uppercased at construction but `req.method` was compared raw. HTTP/1.1's llhttp rejects a non-canonical method case (400), but HTTP/2 delivers `req.method` verbatim, so a `Post`/`post` state-changing request skipped the whole gate (Origin + token / Sec-Fetch checks, both after the exemption line). The shipped router is case-sensitive and 404s such a request, but these are public standalone middlewares whose contract is that state-changing requests are gated under any downstream dispatch. Fixed by normalizing: `methods.indexOf(String(req.method || \"\").toUpperCase())`. This fires on a raw `.indexOf(req.method)` / `.includes(req.method)` membership check; the normalized form and exact-equality comparisons (fail-closed) are not matched. Empty allowlist: a method-based security exemption must normalize case, so any new raw compare is the one to catch.",
+  },
+  {
     id: "a-collected-array-is-appended-not-spread-as-arguments",
     primitive: "b.markupTokenizer.parseAttrsRecovering",
     scanScope: "lib",
