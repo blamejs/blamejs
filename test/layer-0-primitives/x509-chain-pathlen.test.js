@@ -27,10 +27,17 @@ var asn1 = require("../../lib/asn1-der");
 // for exercising non-UTF8 directory-string decoding. pki.x509.sign accepts raw
 // Name DER for subject/issuer.
 function _rawCn(stringTag, valueBytes) {
+  return _rawAttr("2.5.4.3", stringTag, valueBytes);
+}
+
+// Raw X.509 Name DER holding a single attribute of the given OID + ASN.1 string
+// type + bytes, for exercising attribute types without a case-ignore matching
+// rule (an unknown/custom OID must be compared byte-for-byte, not case-folded).
+function _rawAttr(oid, stringTag, valueBytes) {
   return asn1.writeSequence([
     asn1.writeSet([
       asn1.writeSequence([
-        asn1.writeOid("2.5.4.3"),
+        asn1.writeOid(oid),
         asn1.writeNode(stringTag, Buffer.from(valueBytes)),
       ]),
     ]),
@@ -478,6 +485,118 @@ async function run() {
   });
   check("distinct names I and ı (dotless-i) are not conflated: intermediate consumes path length (rejected)",
         x509Chain.pathLenSatisfied(dChain) === false);
+
+  // Case folding applies ONLY to attributes with a case-ignore matching rule.
+  // An unknown/custom OID (1.2.3.4) has none, so "ABC" and "abc" are DISTINCT
+  // names and must be compared byte-for-byte. RED if case folding is applied
+  // unconditionally: the intermediate (issuer 1.2.3.4=ABC, subject 1.2.3.4=abc)
+  // is wrongly treated as self-issued, skips the count, and a pathLen:0 root ->
+  // intermediate -> leaf chain is ACCEPTED (a fail-open).
+  var PRINTABLE = 0x13;
+  var xk = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+  var xkSpki = await _spki(xk.publicKey);
+  var xRootPem = await pki.x509.sign({
+    subject: _rawAttr("1.2.3.4", PRINTABLE, Buffer.from("ABC", "latin1")), subjectPublicKey: xkSpki, serialNumber: "01",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: true, pathLen: 0, critical: true }, keyUsage: ["keyCertSign"], keyUsageCritical: true },
+  }, { key: xk.privateKey }, { pem: true });
+  var xik = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+  var xikSpki = await _spki(xik.publicKey);
+  var xInterPem = await pki.x509.sign({
+    subject: _rawAttr("1.2.3.4", PRINTABLE, Buffer.from("abc", "latin1")), subjectPublicKey: xikSpki, serialNumber: "02",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: true, critical: true }, keyUsage: ["keyCertSign"], keyUsageCritical: true },
+  }, { name: _rawAttr("1.2.3.4", PRINTABLE, Buffer.from("ABC", "latin1")), publicKey: xkSpki, key: xk.privateKey }, { pem: true });
+  var xlk = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+  var xlkSpki = await _spki(xlk.publicKey);
+  var xLeafPem = await pki.x509.sign({
+    subject: [{ commonName: "unk-leaf" }], subjectPublicKey: xlkSpki, serialNumber: "03",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: false, critical: true }, keyUsage: ["digitalSignature"], keyUsageCritical: true },
+  }, { name: _rawAttr("1.2.3.4", PRINTABLE, Buffer.from("abc", "latin1")), publicKey: xikSpki, key: xik.privateKey }, { pem: true });
+  var xChain = [xLeafPem, xInterPem, xRootPem].map(function (p) {
+    return new nodeCrypto.X509Certificate(p);
+  });
+  check("unknown-OID attribute is compared byte-for-byte: ABC vs abc are distinct, intermediate consumes path length (rejected)",
+        x509Chain.pathLenSatisfied(xChain) === false);
+  // Control: byte-identical unknown-OID names ARE self-issued (a legitimate
+  // key-rollover reissue keeps the encoding identical), so pathLen is not consumed.
+  var xRollPem = await pki.x509.sign({
+    subject: _rawAttr("1.2.3.4", PRINTABLE, Buffer.from("ABC", "latin1")), subjectPublicKey: xkSpki, serialNumber: "04",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: true, critical: true }, keyUsage: ["keyCertSign"], keyUsageCritical: true },
+  }, { name: _rawAttr("1.2.3.4", PRINTABLE, Buffer.from("ABC", "latin1")), publicKey: xkSpki, key: xk.privateKey }, { pem: true });
+  var xRollLeafPem = await pki.x509.sign({
+    subject: [{ commonName: "roll-unk-leaf" }], subjectPublicKey: xlkSpki, serialNumber: "05",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: false, critical: true }, keyUsage: ["digitalSignature"], keyUsageCritical: true },
+  }, { name: _rawAttr("1.2.3.4", PRINTABLE, Buffer.from("ABC", "latin1")), publicKey: xkSpki, key: xk.privateKey }, { pem: true });
+  var xRollChain = [xRollLeafPem, xRollPem, xRootPem].map(function (p) {
+    return new nodeCrypto.X509Certificate(p);
+  });
+  check("unknown-OID byte-identical self-issued rollover does not consume path length",
+        x509Chain.pathLenSatisfied(xRollChain) === true);
+
+  // The legacy DN emailAddress attribute (1.2.840.113549.1.9.1, PKCS#9) has a
+  // case-ignore matching rule (RFC 5280 §7.1), so a self-issued rollover reissued
+  // as ca@example.com under CA@example.com is the same name and must NOT consume
+  // path length. RED if emailAddress is compared byte-for-byte.
+  var IA5 = 0x16;
+  var EMAIL_OID = "1.2.840.113549.1.9.1";
+  var ek = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+  var ekSpki = await _spki(ek.publicKey);
+  var eRootPem = await pki.x509.sign({
+    subject: _rawAttr(EMAIL_OID, IA5, Buffer.from("CA@example.com", "latin1")), subjectPublicKey: ekSpki, serialNumber: "01",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: true, pathLen: 0, critical: true }, keyUsage: ["keyCertSign"], keyUsageCritical: true },
+  }, { key: ek.privateKey }, { pem: true });
+  var eRollPem = await pki.x509.sign({
+    subject: _rawAttr(EMAIL_OID, IA5, Buffer.from("ca@example.com", "latin1")), subjectPublicKey: ekSpki, serialNumber: "02",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: true, critical: true }, keyUsage: ["keyCertSign"], keyUsageCritical: true },
+  }, { name: _rawAttr(EMAIL_OID, IA5, Buffer.from("CA@example.com", "latin1")), publicKey: ekSpki, key: ek.privateKey }, { pem: true });
+  var elk = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+  var elkSpki = await _spki(elk.publicKey);
+  var eLeafPem = await pki.x509.sign({
+    subject: [{ commonName: "email-leaf" }], subjectPublicKey: elkSpki, serialNumber: "03",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: false, critical: true }, keyUsage: ["digitalSignature"], keyUsageCritical: true },
+  }, { name: _rawAttr(EMAIL_OID, IA5, Buffer.from("ca@example.com", "latin1")), publicKey: ekSpki, key: ek.privateKey }, { pem: true });
+  var eChain = [eLeafPem, eRollPem, eRootPem].map(function (p) {
+    return new nodeCrypto.X509Certificate(p);
+  });
+  check("emailAddress case-variant self-issued rollover does not consume path length",
+        x509Chain.pathLenSatisfied(eChain) === true);
+
+  // userId (0.9.2342.19200300.100.1.1, RFC 4519) also uses caseIgnoreMatch: a
+  // rollover reissued as uid "Admin" -> "admin" is the same name. Representative
+  // of the full RFC 4519 case-ignore attribute set; RED if userId is byte-compared.
+  var UTF8 = 0x0c;
+  var UID_OID = "0.9.2342.19200300.100.1.1";
+  var uidk = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+  var uidkSpki = await _spki(uidk.publicKey);
+  var uidRootPem = await pki.x509.sign({
+    subject: _rawAttr(UID_OID, UTF8, Buffer.from("Admin", "utf8")), subjectPublicKey: uidkSpki, serialNumber: "01",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: true, pathLen: 0, critical: true }, keyUsage: ["keyCertSign"], keyUsageCritical: true },
+  }, { key: uidk.privateKey }, { pem: true });
+  var uidRollPem = await pki.x509.sign({
+    subject: _rawAttr(UID_OID, UTF8, Buffer.from("admin", "utf8")), subjectPublicKey: uidkSpki, serialNumber: "02",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: true, critical: true }, keyUsage: ["keyCertSign"], keyUsageCritical: true },
+  }, { name: _rawAttr(UID_OID, UTF8, Buffer.from("Admin", "utf8")), publicKey: uidkSpki, key: uidk.privateKey }, { pem: true });
+  var uidlk = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
+  var uidlkSpki = await _spki(uidlk.publicKey);
+  var uidLeafPem = await pki.x509.sign({
+    subject: [{ commonName: "uid-leaf" }], subjectPublicKey: uidlkSpki, serialNumber: "03",
+    notBefore: now, notAfter: notAfter,
+    extensions: { basicConstraints: { cA: false, critical: true }, keyUsage: ["digitalSignature"], keyUsageCritical: true },
+  }, { name: _rawAttr(UID_OID, UTF8, Buffer.from("admin", "utf8")), publicKey: uidkSpki, key: uidk.privateKey }, { pem: true });
+  var uidChain = [uidLeafPem, uidRollPem, uidRootPem].map(function (p) {
+    return new nodeCrypto.X509Certificate(p);
+  });
+  check("userId case-variant self-issued rollover does not consume path length",
+        x509Chain.pathLenSatisfied(uidChain) === true);
 
   // ---- resolveChain: path-building with backtracking over interchangeable
   // issuers. A greedy walk that commits to the first matching issuer over-refuses
