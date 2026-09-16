@@ -1780,6 +1780,59 @@ async function testVerifyKbCritRefused() {
         !!threw && /crit/.test(threw.code || ""));
 }
 
+// A credential that carries a `status` claim (Token Status List) is revocable.
+// A verifier with no statusListResolver cannot check revocation, so it must
+// refuse rather than accept a possibly-revoked credential.
+function _mintStatusCred(issuer, nowSec) {
+  var hdr = Buffer.from(JSON.stringify({ alg: "ES256", typ: "vc+sd-jwt" }), "utf8").toString("base64url");
+  var pl  = Buffer.from(JSON.stringify({
+    iss: "https://issuer", vct: "x", iat: nowSec, exp: nowSec + 3600,          // allow:raw-byte-literal — 1h validity in seconds
+    status: { status_list: { idx: 5, uri: "https://issuer/status/1" } },
+  }), "utf8").toString("base64url");
+  var input = hdr + "." + pl;
+  var sig = nodeCrypto.sign("sha256", Buffer.from(input, "ascii"),
+    { key: issuer.privateKey, dsaEncoding: "ieee-p1363" }).toString("base64url");
+  return input + "." + sig + "~";
+}
+
+async function testVerifyStatusNoResolverRefused() {
+  var issuer = _newKeyPair();
+  var token = _mintStatusCred(issuer, Math.floor(Date.now() / 1000));
+  var threw = null;
+  try {
+    await sdJwtVc.verify(token, { issuerKeyResolver: async function () { return issuer.publicKey; } });
+  } catch (e) { threw = e; }
+  check("verify: status claim + no statusListResolver → status-check-required (revocable cred can't be accepted unchecked)",
+        !!threw && /status-check-required/.test(threw.code || ""));
+}
+
+async function testVerifyStatusRevokedRejected() {
+  var issuer = _newKeyPair();
+  var token = _mintStatusCred(issuer, Math.floor(Date.now() / 1000));
+  var seen = null;
+  var threw = null;
+  try {
+    await sdJwtVc.verify(token, {
+      issuerKeyResolver:  async function () { return issuer.publicKey; },
+      statusListResolver: async function (ref) { seen = ref; return 1; },   // 1 = invalid/revoked
+    });
+  } catch (e) { threw = e; }
+  check("verify: revoked credential (status resolver → 1) → rejected",
+        !!threw && /revoked/.test(threw.code || ""));
+  check("verify: statusListResolver received the credential's {idx, uri}",
+        seen && seen.idx === 5 && seen.uri === "https://issuer/status/1");
+}
+
+async function testVerifyStatusValidAccepted() {
+  var issuer = _newKeyPair();
+  var token = _mintStatusCred(issuer, Math.floor(Date.now() / 1000));
+  var result = await sdJwtVc.verify(token, {
+    issuerKeyResolver:  async function () { return issuer.publicKey; },
+    statusListResolver: async function () { return 0; },   // 0 = STATUS_VALID
+  });
+  check("verify: valid credential (status resolver → 0) → accepted", result && result.valid === true);
+}
+
 async function run() {
   testDisclosureEncodeDecode();
   testDisclosureValueComplexShape();
@@ -1793,6 +1846,9 @@ async function run() {
   await testVerifyExpired();
   await testVerifyNonFiniteExp();
   await testVerifyKbCritRefused();
+  await testVerifyStatusNoResolverRefused();
+  await testVerifyStatusRevokedRejected();
+  await testVerifyStatusValidAccepted();
   await testVerifyNotYetValidNbf();
   await testVerifyVctMismatch();
   await testVerifyDisclosureMismatch();
