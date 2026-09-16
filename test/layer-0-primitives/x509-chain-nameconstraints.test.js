@@ -436,6 +436,19 @@ async function run() {
   check("fail-closed: resolveChain (S/MIME predicate) rejects a non-CIDR iPAddress mask",
         nonCidrRc.ok === false);
 
+  // A skipped GeneralName must still be well-formed: an empty otherName (a0 00),
+  // which must carry an OID and value, is a malformed SAN and fails closed even
+  // though a permitted dNSName is also present.
+  var emptyOther = _rawChain({
+    rootNc: permitExample,
+    leafSan: asn1.writeSequence([asn1.writeNode(0x82, Buffer.from("host.example.com", "latin1")), Buffer.from([0xa0, 0x00])]),
+  });
+  check("fail-closed: an empty otherName in the SAN is rejected (nameConstraintsSatisfied)",
+        x509Chain.nameConstraintsSatisfied([emptyOther.leaf, emptyOther.root]) === false);
+  var emptyOtherRc = x509Chain.resolveChain(emptyOther.leaf, [emptyOther.leaf], [emptyOther.root], { issued: smimeIssued });
+  check("fail-closed: resolveChain (S/MIME predicate) rejects an empty otherName in the SAN",
+        emptyOtherRc.ok === false && emptyOtherRc.reason === "nameconstraint");
+
   // No constraints anywhere → accepted.
   var none = await _mintConstrainedChain({ leafSan: [{ dNSName: "anything.example" }] });
   check("no nameConstraints in the chain → accepted",
