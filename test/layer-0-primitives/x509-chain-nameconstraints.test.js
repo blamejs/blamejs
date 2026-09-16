@@ -370,6 +370,18 @@ async function run() {
   check("fail-closed: resolveChain (S/MIME predicate) rejects an empty SAN SEQUENCE",
         emptySanRc.ok === false && emptySanRc.reason === "nameconstraint");
 
+  // A zero-length dNSName constraint base is not valid DNS syntax; it must not be
+  // treated as a wildcard that permits every name. Fail closed.
+  var emptyDnsPermit = asn1.writeSequence([
+    asn1.writeContextImplicit(0, asn1.writeSequence([asn1.writeNode(0x82, Buffer.alloc(0))]), { constructed: true }),
+  ]);
+  var emptyBase = _rawChain({ rootNc: emptyDnsPermit, leafSan: asn1.writeSequence([asn1.writeNode(0x82, Buffer.from("evil.com", "latin1"))]) });
+  check("fail-closed: an empty dNSName permitted base does not permit every name (nameConstraintsSatisfied)",
+        x509Chain.nameConstraintsSatisfied([emptyBase.leaf, emptyBase.root]) === false);
+  var emptyBaseRc = x509Chain.resolveChain(emptyBase.leaf, [emptyBase.leaf], [emptyBase.root], { issued: smimeIssued });
+  check("fail-closed: resolveChain (S/MIME predicate) rejects an empty dNSName constraint base",
+        emptyBaseRc.ok === false);
+
   // No constraints anywhere → accepted.
   var none = await _mintConstrainedChain({ leafSan: [{ dNSName: "anything.example" }] });
   check("no nameConstraints in the chain → accepted",
