@@ -473,6 +473,49 @@ async function testVerifyResponseAudienceOverride() {
         rReject.valid === false && rReject.errors.length > 0);
 }
 
+// A presented credential carrying a `status` claim (Token Status List) is
+// revocable: verifyResponse must refuse it when the verifier has no
+// statusListResolver, check it (revoked → refused) when one is supplied, and
+// accept it only when the resolver reports valid — proving the resolver is
+// threaded through to the composed sd-jwt-vc.verify.
+async function testVerifyResponseStatusCheck() {
+  var VCT = "https://vct/identity";
+  var dcql = { credentials: [
+    { id: "id-card", format: "vc+sd-jwt", meta: { vct_values: [VCT] },
+      claims: [{ path: ["given_name"] }] },
+  ] };
+  var holderJwk = HOLDER_KP.publicKey.export({ format: "jwk" });
+  var sd = b.auth.sdJwtVc.issue({
+    issuer: "https://issuer", vct: VCT,
+    claims: { given_name: "Alice", status: { status_list: { idx: 7, uri: "https://issuer/status" } } },
+    selectivelyDisclosed: ["given_name"],           // `status` stays a plain (always-present) claim
+    issuerKey: ISSUER_KP.privateKey, algorithm: "ES256", holderKey: holderJwk,
+  });
+  function _present(v, req) {
+    return b.auth.sdJwtVc.present({
+      sdJwt: sd.token, disclosedClaimNames: ["given_name"],
+      audience: CLIENT_ID, nonce: req.nonce, holderKey: HOLDER_KP.privateKey, algorithm: "ES256",
+    }).presentation;
+  }
+
+  var vNo = _mkVerifier();
+  var rNo = vNo.createRequest({ dcql: dcql });
+  var resNo = await vNo.verifyResponse({ vpToken: { "id-card": _present(vNo, rNo) }, dcql: dcql, nonce: rNo.nonce });
+  check("oid4vp verifyResponse: status-bearing credential refused without statusListResolver",
+        resNo.valid === false && resNo.errors.length > 0);
+
+  var vRev = _mkVerifier({ statusListResolver: async function () { return 1; } });
+  var rRev = vRev.createRequest({ dcql: dcql });
+  var resRev = await vRev.verifyResponse({ vpToken: { "id-card": _present(vRev, rRev) }, dcql: dcql, nonce: rRev.nonce });
+  check("oid4vp verifyResponse: revoked credential (resolver → 1) refused", resRev.valid === false);
+
+  var vOk = _mkVerifier({ statusListResolver: async function () { return 0; } });
+  var rOk = vOk.createRequest({ dcql: dcql });
+  var resOk = await vOk.verifyResponse({ vpToken: { "id-card": _present(vOk, rOk) }, dcql: dcql, nonce: rOk.nonce });
+  check("oid4vp verifyResponse: valid credential (resolver → 0) accepted — resolver threaded through",
+        resOk.valid === true && !!resOk.matched["id-card"]);
+}
+
 async function run() {
   testVerifierCreateValidation();
   testDcqlValidatorRefusals();
@@ -483,6 +526,7 @@ async function run() {
   await testVerifyResponseFailClosed();
   await testVerifyResponseVctEnforcement();
   await testVerifyResponseAudienceOverride();
+  await testVerifyResponseStatusCheck();
 }
 
 module.exports = { run: run };
