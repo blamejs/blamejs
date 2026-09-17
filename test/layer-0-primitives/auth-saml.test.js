@@ -86,7 +86,7 @@ function defl(xml) { return zlib.deflateRawSync(Buffer.from(xml, "utf8")).toStri
 async function _mintRsaCert(cn) {
   var pki = require("../../lib/vendor/blamejs-pki.cjs");
   var keys = await nodeCrypto.webcrypto.subtle.generateKey(
-    { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048,                                           // allow:raw-byte-literal — RFC 8301 §3.1 RSA bit floor
+    { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048,                                           // allow:raw-byte-literal — RFC 8301 §3.2 RSA key size
       publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
     true, ["sign", "verify"]);
   var spki  = Buffer.from(await nodeCrypto.webcrypto.subtle.exportKey("spki", keys.publicKey));
@@ -762,7 +762,7 @@ async function _mint(cn, alg) {
   var pki = require("../../lib/vendor/blamejs-pki.cjs");
   var genAlg = alg === "ec"
     ? { name: "ECDSA", namedCurve: "P-256" }
-    : { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048,                                          // allow:raw-byte-literal — RFC 8301 §3.1 RSA bit floor
+    : { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048,                                          // allow:raw-byte-literal — RFC 8301 §3.2 RSA key size
         publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" };
   var keys = await nodeCrypto.webcrypto.subtle.generateKey(genAlg, true, ["sign", "verify"]);
   var spki  = Buffer.from(await nodeCrypto.webcrypto.subtle.exportKey("spki", keys.publicKey));
@@ -1327,7 +1327,7 @@ function _encData(o) {
 
 function testEncryptedAssertion(idp) {
   var sp = _mkSp(idp.certPem);
-  var spKp = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });                     // allow:raw-byte-literal — RFC 8301 §3.1 RSA bit floor
+  var spKp = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });                     // allow:raw-byte-literal — RFC 8301 §3.2 RSA key size
   var spPriv = spKp.privateKey.export({ type: "pkcs8", format: "pem" });
   var spPub = spKp.publicKey.export({ type: "spki", format: "pem" });
   function wrap(cek) { return nodeCrypto.publicEncrypt({ key: spPub, padding: nodeCrypto.constants.RSA_PKCS1_OAEP_PADDING, oaepHash: "sha256" }, cek).toString("base64"); }
@@ -1417,7 +1417,7 @@ function _ed25519Raw() {
 
 function testSloPostBindings() {
   var sp = _mkSp(FAKE_CERT);
-  var rsa = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });                       // allow:raw-byte-literal — RFC 8301 §3.1 RSA bit floor
+  var rsa = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });                       // allow:raw-byte-literal — RFC 8301 §3.2 RSA key size
   var skPem = rsa.privateKey.export({ type: "pkcs8", format: "pem" });
   var pkPem = rsa.publicKey.export({ type: "spki", format: "pem" });
   var ed = _ed25519Raw();
@@ -1722,7 +1722,7 @@ function testEmbeddedXmlDsigStructural() {
 
   // no-signature-value: a validly-signed post whose SignatureValue is blanked
   // (the digest still matches, so the branch after the digest gate fires).
-  var rsa = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });                       // allow:raw-byte-literal — RFC 8301 §3.1 RSA bit floor
+  var rsa = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });                       // allow:raw-byte-literal — RFC 8301 §3.2 RSA key size
   var skPem = rsa.privateKey.export({ type: "pkcs8", format: "pem" });
   var pkPem = rsa.publicKey.export({ type: "spki", format: "pem" });
   var post = sp.buildLogoutRequestPost({ nameId: "a@idp", signingKey: skPem, signingAlg: "rsa-sha256" });
@@ -1760,7 +1760,7 @@ function testEmbeddedXmlDsigStructural() {
 
 function testEncryptedExtra(idp) {
   var sp = _mkSp(idp.certPem);
-  var rsa = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });                       // allow:raw-byte-literal — RFC 8301 §3.1 RSA bit floor
+  var rsa = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });                       // allow:raw-byte-literal — RFC 8301 §3.2 RSA key size
   var spPriv = rsa.privateKey.export({ type: "pkcs8", format: "pem" });
   var spPub = rsa.publicKey.export({ type: "spki", format: "pem" });
   function wrap(cek) { return nodeCrypto.publicEncrypt({ key: spPub, padding: nodeCrypto.constants.RSA_PKCS1_OAEP_PADDING, oaepHash: "sha256" }, cek).toString("base64"); }
@@ -1824,7 +1824,7 @@ function testEncryptedAssertionPqc(idp) {
   var mlkemKp = b.crypto.generateEncryptionKeyPair();       // { publicKey: ml-kem-1024, privateKey, ec... }
 
   // RSA keypair for the mixed RSA-transport + XChaCha-content case.
-  var rsa = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });                       // allow:raw-byte-literal — RFC 8301 §3.1 RSA bit floor
+  var rsa = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });                       // allow:raw-byte-literal — RFC 8301 §3.2 RSA key size
   var rsaPriv = rsa.privateKey.export({ type: "pkcs8", format: "pem" });
   var rsaPub = rsa.publicKey.export({ type: "spki", format: "pem" });
   function wrapRsa(cek) {
@@ -1987,7 +1987,7 @@ function testForeignNamespaceConditions(idp) {
 
 function testSloBuildBranches() {
   var sp = _fakeSp();
-  var rsa = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });                       // allow:raw-byte-literal — RFC 8301 §3.1 RSA bit floor
+  var rsa = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });                       // allow:raw-byte-literal — RFC 8301 §3.2 RSA key size
 
   // buildLogoutRequest: an explicit idpSloUrl already carrying a query -> the
   // '&' join arm (and the bopts.idpSloUrl branch of the URL fallback).
@@ -2156,7 +2156,7 @@ function testParseLogoutResponseSoapBranches() {
 
 function testEncryptedMoreAlgs(idp) {
   var sp = _mkSp(idp.certPem);
-  var spKp = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });                      // allow:raw-byte-literal — RFC 8301 §3.1 RSA bit floor
+  var spKp = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });                      // allow:raw-byte-literal — RFC 8301 §3.2 RSA key size
   var spPriv = spKp.privateKey.export({ type: "pkcs8", format: "pem" });
   var spPub = spKp.publicKey.export({ type: "spki", format: "pem" });
   var clear = _buildAssertion(idp, { tag: "encalg" }).full;

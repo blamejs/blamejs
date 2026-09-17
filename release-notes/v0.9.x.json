@@ -253,7 +253,7 @@
             },
             {
               "title": "`b.mail.dkim.bootstrap({ domain, selector, algorithm? })`",
-              "body": "Turnkey DKIM keypair + DNS TXT record + ready-to-use signer for operators deploying outbound mail. Returns `{ privateKeyPem, publicKeyPem, dnsName, dnsTxtValue, dnsRecord, signer() }`. Default algorithm is `ed25519-sha256` (RFC 8463 §2); operators with receivers that don't support Ed25519 pass `algorithm: \"rsa-sha256\"` (RFC 6376, default 2048-bit per RFC 8301 §3.1 guidance; refused < 1024). `algorithm: \"dual\"` mints both keypairs and the signer emits two DKIM-Signature headers per RFC 8463 §3 dual-signing pattern for max receiver compat. DNS TXT records that exceed 255 octets are split per RFC 1035 §3.3.14."
+              "body": "Turnkey DKIM keypair + DNS TXT record + ready-to-use signer for operators deploying outbound mail. Returns `{ privateKeyPem, publicKeyPem, dnsName, dnsTxtValue, dnsRecord, signer() }`. Default algorithm is `ed25519-sha256` (RFC 8463 §2); operators with receivers that don't support Ed25519 pass `algorithm: \"rsa-sha256\"` (RFC 6376, default 2048-bit, the size RFC 8301 §3.2 recommends; refused < 1024). `algorithm: \"dual\"` mints both keypairs and the signer emits two DKIM-Signature headers per RFC 8463 §3 dual-signing pattern for max receiver compat. DNS TXT records that exceed 255 octets are split per RFC 1035 §3.3.14."
             },
             {
               "title": "`b.mail.server.tls.context({ certFile, keyFile, vault?, watch? })`",

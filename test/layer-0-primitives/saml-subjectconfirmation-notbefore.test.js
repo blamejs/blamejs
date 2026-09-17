@@ -46,7 +46,7 @@ var ACS_URL       = "https://sp.example/saml/acs";
 // check.
 async function _mintRsaCert(cn) {
   var keys = await nodeCrypto.webcrypto.subtle.generateKey(
-    { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048,                                           // allow:raw-byte-literal — RFC 8301 §3.1 RSA bit floor
+    { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048,                                           // allow:raw-byte-literal — RFC 8301 §3.2 RSA key size
       publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
     true, ["sign", "verify"]);
   var spki  = Buffer.from(await nodeCrypto.webcrypto.subtle.exportKey("spki", keys.publicKey));

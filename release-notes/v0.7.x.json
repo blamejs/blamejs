@@ -2404,7 +2404,7 @@
             },
             {
               "title": "RSA modulus-size enforcement",
-              "body": "RSA keys < 1024 bits hard-fail per RFC 8301 §3.1; keys < 2048 bits emit a `rsa-key-weak` warning so operators can quarantine while transitioning. Reads `keyObj.asymmetricKeyDetails.modulusLength` from `node:crypto`."
+              "body": "RSA keys < 1024 bits hard-fail per RFC 8301 §3.2; keys < 2048 bits emit a `rsa-key-weak` warning so operators can quarantine while transitioning. Reads `keyObj.asymmetricKeyDetails.modulusLength` from `node:crypto`."
             },
             {
               "title": "`l=` body-length warning on verify",

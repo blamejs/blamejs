@@ -28,6 +28,10 @@
         {
           "title": "b.mailStore records Cc and Reply-To, and fetchByObjectId returns them",
           "body": "The messages table stored `To` and neither `Cc` nor `Reply-To`, and the store keeps no raw message bytes, so a client composing a reply from the store alone addressed it to `From` even when the author had set `Reply-To` (RFC 5322 §3.6.2), and a reply-all dropped everyone on `Cc`. `appendMessage` now writes sealed `cc_addrs` and `reply_to` columns, sealed the same way as `to_addrs`, and `fetchByObjectId` (and `b.mail.agent` `fetch`) returns `cc` and `replyTo` next to `to`. Each field holds every instance of its header joined with `\", \"`, the same shape as `to`, and an empty string when the message has none. `Bcc` is not recorded. `create()` adds the two columns to a store created by an earlier version. Messages appended before the upgrade return `cc: null` and `replyTo: null`, because the store has no copy of their headers to fill the columns from."
+        },
+        {
+          "title": "The RSA key-size floor is cited to RFC 8301 §3.2, including in refusal messages",
+          "body": "The RSA floor in `b.mail.dkim`, `b.mail.crypto.pgp` and `b.mail.crypto.smime` was attributed to RFC 8301 §3.1, which covers signing algorithms, and to `draft-ietf-dmarc-rfc8301bis`, which does not resolve. RFC 8301 §3.2 is the key-size section: signers MUST use RSA keys of at least 1024 bits and SHOULD use at least 2048. The refusal messages from `b.mail.dkim.verify`, `b.mail.dkim.bootstrap`, `b.mail.crypto.pgp.sign`, `b.mail.crypto.pgp.verify` and `b.mail.crypto.smime.checkCert` now cite §3.2 and state 2048 as the framework's floor following that recommendation; the error codes and the 2048-bit value are unchanged. `b.mail.crypto.pgp` and `b.mail.crypto.smime` take their floor from `b.mail.dkim.RSA_MIN_BITS` instead of keeping their own copies. Code that matched the old message text needs to match the new text."
         }
       ]
     },
