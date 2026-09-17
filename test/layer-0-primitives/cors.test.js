@@ -292,6 +292,33 @@ function testCorsConfigValidationThrows() {
   var ok = b.middleware.cors({});
   check("no opts: returns a function (default behaviour)", typeof ok === "function");
 
+  // A RegExp origin is applied with .test(origin) — an UNANCHORED substring
+  // match — and a match reflects the raw Origin into Access-Control-Allow-Origin.
+  // An unanchored or over-broad pattern (with credentials) is the classic "CORS
+  // via regex" credential-reflection hole (PortSwigger; Fetch §3.2.3). create()
+  // must refuse a RegExp that is not anchored end-to-end or that matches an
+  // arbitrary origin, so the dangerous config never builds.
+  var unanchored = null;
+  try { b.middleware.cors({ origins: [/example\.com/], credentials: true }); }
+  catch (e) { unanchored = e; }
+  check("cors: an unanchored RegExp origin throws cors/unanchored-pattern at create()",
+        unanchored && unanchored.code === "cors/unanchored-pattern",
+        unanchored && (unanchored.code + " :: " + unanchored.message));
+
+  var endOnly = null;
+  try { b.middleware.cors({ origins: [/example\.com$/] }); }
+  catch (e) { endOnly = e; }
+  check("cors: a RegExp origin anchored at one end only throws cors/unanchored-pattern",
+        endOnly && endOnly.code === "cors/unanchored-pattern",
+        endOnly && endOnly.code);
+
+  var catchAll = null;
+  try { b.middleware.cors({ origins: [/^https:\/\/.*$/], credentials: true }); }
+  catch (e) { catchAll = e; }
+  check("cors: an anchored catch-all RegExp origin throws cors/overbroad-pattern",
+        catchAll && catchAll.code === "cors/overbroad-pattern",
+        catchAll && (catchAll.code + " :: " + catchAll.message));
+
   // Allowlist canonicalization — case + default-port differences match.
   var threwOnUnparseableOrigin = null;
   try { b.middleware.cors({ origins: ["not-a-url"] }); }
@@ -378,9 +405,56 @@ function testCorsRejectsStatefulRegexOrigin() {
   check("cors: a sticky-flagged RegExp origin is refused", threwY);
 
   var okPlain = false;
-  try { b.middleware.cors({ origins: [/\.example\.com$/] }); okPlain = true; }
+  try { b.middleware.cors({ origins: [/^https:\/\/.+\.example\.com$/] }); okPlain = true; }
   catch (_e) { okPlain = false; }
-  check("cors: a plain (unflagged) RegExp origin is still accepted", okPlain);
+  check("cors: a plain (unflagged) anchored RegExp origin is still accepted", okPlain);
+}
+
+// A properly anchored, host-scoped RegExp origin still builds and behaves: it
+// matches a real subdomain and rejects an attacker origin that merely contains
+// the host as a substring (the look-alike the unanchored form would reflect).
+async function testCorsAnchoredRegexOriginMatchesHostScoped() {
+  var mw = b.middleware.cors({
+    origins:     [/^https:\/\/([a-z0-9-]+\.)?example\.com$/],
+    credentials: true,
+  });
+  var good = await _drive(mw, _req({
+    method: "GET", headers: { origin: "https://app.example.com" },
+  }));
+  check("cors: anchored host-scoped RegExp matches a real subdomain (reflects it)",
+        good.res._sent.headers["access-control-allow-origin"] === "https://app.example.com",
+        JSON.stringify(good.res._sent.headers["access-control-allow-origin"]));
+  var evil = await _drive(mw, _req({
+    method: "GET", headers: { origin: "https://example.com.attacker.test" },
+  }));
+  check("cors: anchored host-scoped RegExp rejects a look-alike attacker origin",
+        evil.res._sent.headers["access-control-allow-origin"] === undefined &&
+        (evil.res._sent.statusCode === 403 || evil.nextCalled === false),
+        "acao=" + evil.res._sent.headers["access-control-allow-origin"] +
+        " status=" + evil.res._sent.statusCode + " next=" + evil.nextCalled);
+
+  // Alternation must not let a branch be only half-anchored. /^A|B$/ has a
+  // start-anchored first branch and an end-anchored second branch; a char-only
+  // "starts with ^, ends with $" check passes it, yet .test() on the raw
+  // pattern would substring-match https://trusted.example.attacker.test on the
+  // first branch. Matching must consume the WHOLE origin, so the attacker
+  // origin is not reflected, while both intended origins still match.
+  var alt = b.middleware.cors({
+    origins:     [/^https:\/\/trusted\.example|https:\/\/other\.example$/],
+    credentials: true,
+  });
+  var altEvil = await _drive(alt, _req({
+    method: "GET", headers: { origin: "https://trusted.example.attacker.test" },
+  }));
+  check("cors: an alternation branch cannot substring-match an attacker origin",
+        altEvil.res._sent.headers["access-control-allow-origin"] === undefined &&
+        (altEvil.res._sent.statusCode === 403 || altEvil.nextCalled === false),
+        "acao=" + altEvil.res._sent.headers["access-control-allow-origin"]);
+  var altGood = await _drive(alt, _req({
+    method: "GET", headers: { origin: "https://trusted.example" },
+  }));
+  check("cors: an anchored alternation still matches its intended origins",
+        altGood.res._sent.headers["access-control-allow-origin"] === "https://trusted.example");
 }
 
 async function run() {
@@ -397,6 +471,7 @@ async function run() {
   await testCorsNullOriginRelaxedRequiresSameOrigin();
   await testCorsNullOriginWithoutFetchSiteRefused();
   testCorsConfigValidationThrows();
+  await testCorsAnchoredRegexOriginMatchesHostScoped();
   await testCorsAllowlistCanonicalization();
   await testCorsPnaPreflightDefaultRefused();
   await testCorsPnaPreflightAllowedWhenOptedIn();

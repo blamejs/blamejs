@@ -640,6 +640,20 @@ function testValidatePattern() {
 
   var custom = b.forms.validate({ fields: [{ type: "text", name: "code", pattern: /^[a-z]+$/, errorMessages: { pattern: "letters only" } }] }, { code: "9" });
   check("pattern: custom errorMessages.pattern used", custom.valid === false && custom.errors.code === "letters only");
+
+  // The pattern is rendered verbatim as the HTML5 `pattern=` attribute, which
+  // the browser anchors (^(?:…)$ over the whole value). Server-side validation
+  // must anchor identically, or an unanchored pattern accepts input the browser
+  // rejects — a client/server divergence and a validation bypass (Hard Rule #4).
+  var overLong = b.forms.validate({ fields: [{ type: "text", name: "pin", pattern: /[0-9]{4}/ }] }, { pin: "12345" });
+  check("pattern: an unanchored pattern still matches the WHOLE value (12345 vs 4 digits → invalid)",
+        overLong.valid === false, JSON.stringify(overLong.errors));
+  var exact = b.forms.validate({ fields: [{ type: "text", name: "pin", pattern: /[0-9]{4}/ }] }, { pin: "1234" });
+  check("pattern: a whole-value match still passes (1234 vs 4 digits → valid)", exact.valid === true);
+  var inject = b.forms.validate({ fields: [{ type: "text", name: "code", pattern: /[a-z]{3}/ }] }, { code: "abc; DROP TABLE users" });
+  check("pattern: a substring match no longer passes (trailing payload → invalid)", inject.valid === false);
+  var ci = b.forms.validate({ fields: [{ type: "text", name: "code", pattern: /[a-z]{3}/i }] }, { code: "ABC" });
+  check("pattern: the i flag is preserved when anchoring (ABC vs /[a-z]{3}/i → valid)", ci.valid === true);
 }
 
 function testValidateEnum() {
