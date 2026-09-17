@@ -170,7 +170,7 @@ function testRoundtripSignedRsaSha256() {
   // signs the SAMLRequest and parses it back through the matching
   // public-key path; signature verification must round-trip.
   var sp = _newSp();
-  var kp = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });                    // allow:raw-byte-literal — RFC 8301 §3.1 RSA bit floor
+  var kp = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });                    // allow:raw-byte-literal — RFC 8301 §3.2 RSA key size
   var skPem = kp.privateKey.export({ type: "pkcs8", format: "pem" });
   var pkPem = kp.publicKey.export({ type: "spki", format: "pem" });
   var lr = sp.buildLogoutRequest({

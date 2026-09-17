@@ -15,7 +15,8 @@
  *     references + deferral conditions + escape hatch (per the
  *     project's defer-with-condition rule),
  *   - checkCert() refuses SHA-1 / MD5 cert signatures (SHAttered SHA-1
- *     collision; RFC 8551 §2.5) and < 2048-bit RSA (RFC 8301 §3.1).
+ *     collision; RFC 8551 §2.5) and < 2048-bit RSA (the framework floor,
+ *     following the RFC 8301 §3.2 recommendation).
  *
  * Run standalone: `node test/layer-0-primitives/mail-crypto-smime.test.js`
  * Or via smoke:   `node test/smoke.js`
@@ -236,8 +237,8 @@ function testSmimeCheckCertRefusesSmallRsa() {
   try { smime.checkCert({ certPem: certPem }); } catch (e) { threw = e; }
   check("checkCert refuses RSA < 2048 bits",
     threw && threw.code === "mail-crypto/smime/rsa-too-small");
-  check("checkCert small-RSA refusal names RFC 8301",
-    threw && /RFC 8301/.test(threw.message));
+  check("checkCert small-RSA refusal cites RFC 8301 §3.2",
+    threw && /RFC 8301 §3\.2/.test(threw.message) && !/§3\.1|8301bis/.test(threw.message), threw && threw.message);
 }
 
 // ---- checkCert: input validation ----

@@ -827,6 +827,29 @@ function testPositiveFiniteOptRejections() {
   // `value === null` short-circuit at the top of _positiveFiniteOrDefault.
   var eNull = threw(function () { b.cert.create(mk({ renew: { intervalMs: null, minDaysBeforeExpiry: null }, ocsp: { refreshMs: null } })); });
   check("null interval/window/refresh → default (no throw)", !eNull);
+
+  // The OCSP CertID hash is forwarded from cert.create.ocsp into the stapling
+  // fetch (SHA-256 default). The manager must accept certIdHashAlg so an
+  // operator on a SHA-1-only responder can reach the escape hatch through b.cert.
+  var eHashAlg = threw(function () { b.cert.create(mk({ ocsp: { certIdHashAlg: "sha1" } })); });
+  check("ocsp.certIdHashAlg is an accepted cert.create.ocsp option", !eHashAlg, eHashAlg && eHashAlg.code);
+
+  // A refresh swallows its own failure into an audit event, so an unsupported
+  // CertID hash must be refused at create time or the manager boots and never
+  // obtains a staple.
+  ["sha265", "SHA256", "md5", "", 256, "constructor", "toString"].forEach(function (bad) {
+    var eBad = threw(function () { b.cert.create(mk({ ocsp: { certIdHashAlg: bad } })); });
+    check("ocsp.certIdHashAlg " + JSON.stringify(bad) + " → cert/bad-ocsp-certid-hash-alg at create",
+      eBad && eBad.code === "cert/bad-ocsp-certid-hash-alg", eBad && eBad.code);
+  });
+  b.network.tls.ocsp.CERTID_HASH_ALGS.forEach(function (good) {
+    var eGood = threw(function () { b.cert.create(mk({ ocsp: { certIdHashAlg: good } })); });
+    check("ocsp.certIdHashAlg " + good + " accepted at create", !eGood, eGood && eGood.code);
+  });
+  var eUndef = threw(function () { b.cert.create(mk({ ocsp: { certIdHashAlg: undefined } })); });
+  check("ocsp.certIdHashAlg undefined → default (no throw)", !eUndef, eUndef && eUndef.code);
+  var eNullAlg = threw(function () { b.cert.create(mk({ ocsp: { certIdHashAlg: null } })); });
+  check("ocsp.certIdHashAlg null → default (no throw)", !eNullAlg, eNullAlg && eNullAlg.code);
 }
 
 // ---- Manifest size + per-cert shape rejections (uncovered guard rows) ----
@@ -1412,13 +1435,23 @@ async function testOcspStaplingRefresh() {
       throw new Error("mock OCSP responder unreachable");
     });
     var mgrB = mk(tmpB);
+    var warnLines = [];
+    var realConsoleError = console.error;
+    console.error = function () { warnLines.push(Array.prototype.join.call(arguments, " ")); };
     try {
       await mgrB.start();
       await helpers.waitUntil(function () { return fetchCalls >= 1; },
         { timeoutMs: 5000, label: "ocsp: responder invoked" });
       check("ocsp: responder failure is fail-soft (no staple, no crash)",
         mgrB.getContext("main").ocspResponse === null);
-    } finally { await mgrB.stop(); restoreB(); }
+      // The manager runs with audit: false here, so a warning is the only
+      // record an operator gets of a staple that is not being refreshed.
+      var warned = await helpers.waitUntil(function () {
+        return warnLines.some(function (l) { return /OCSP/.test(l) && /mock OCSP responder unreachable/.test(l); });
+      }, { timeoutMs: 5000, label: "ocsp: refresh failure logged" }).then(function () { return true; }, function () { return false; });
+      check("ocsp: a failed staple refresh logs a warning naming the cert and the error", warned,
+        warnLines.join(" | "));
+    } finally { console.error = realConsoleError; await mgrB.stop(); restoreB(); }
 
     // (c) Responder throws an Error with an EMPTY message — the
     // refresh-failed audit's `(e && e.message) || String(e)` takes its

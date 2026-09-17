@@ -19,6 +19,7 @@ var check   = helpers.check;
 var nodeCrypto = require("crypto");
 
 var mailCrypto = require("../../lib/mail-crypto");
+var mailDkim   = require("../../lib/mail-dkim");
 var pgp        = mailCrypto.pgp;
 var pq         = require("../../lib/pqc-software");
 
@@ -88,11 +89,17 @@ function testPgpSignInputValidation() {
     { message: "hi", privateKeyPem: kp.privateKey, creationTime: NaN },
     /mail-crypto\/pgp\/bad-creation-time/);
 
-  // RSA < 2048 — refused per RFC 8301 §3.1 (mail-surface cross-posture).
+  // RSA below the framework floor (the RFC 8301 §3.2 recommended size).
   var smallRsa = _rsaKeypair(1024);
   shouldThrow("rejects RSA < 2048 bits",
     { message: "hi", privateKeyPem: smallRsa.privateKey },
     /mail-crypto\/pgp\/rsa-too-small/);
+  var signRefusal = null;
+  try { pgp.sign({ message: "hi", privateKeyPem: smallRsa.privateKey }); } catch (e) { signRefusal = e; }
+  check("pgp.sign RSA refusal cites RFC 8301 §3.2 and states the DKIM floor",
+    signRefusal && /RFC 8301 §3\.2/.test(signRefusal.message) && !/§3\.1|8301bis/.test(signRefusal.message) &&
+    signRefusal.message.indexOf("minimum is " + mailDkim.RSA_MIN_BITS) !== -1,
+    signRefusal && signRefusal.message);
 }
 
 // ---- Ed25519 sign + verify round-trip ----
@@ -160,6 +167,13 @@ function testPgpRsaRoundTrip() {
   check("rsa verify ok=true",                  verify.ok === true);
   check("rsa verify reports hashAlg sha256",   verify.hashAlg === "sha256");
   check("rsa verify reports fingerprint",      verify.signerFingerprint === rv.fingerprint);
+
+  var smallPub = _rsaKeypair(1024).publicKey;
+  var verifySmall = pgp.verify({ message: message, armored: rv.armored, publicKeyPem: smallPub });
+  check("rsa verify refuses a key below the floor and cites RFC 8301 §3.2",
+    verifySmall.ok === false && verifySmall.code === "mail-crypto/pgp/rsa-too-small" &&
+    /RFC 8301 §3\.2/.test(verifySmall.reason) && !/§3\.1|8301bis/.test(verifySmall.reason),
+    verifySmall.reason);
 }
 
 // Minimal parse of an ASCII-armored detached signature down to the RSA
@@ -296,6 +310,19 @@ function testPgpDocBlockNamesEfail() {
     src.indexOf("RFC 3156") !== -1);
   check("doc block names RFC 8301 (RSA bit floor)",
     src.indexOf("RFC 8301") !== -1);
+
+  // RFC 8301 §3.1 is "Signing and Verification Algorithms"; key sizes are
+  // §3.2. draft-ietf-dmarc-rfc8301bis does not resolve.
+  var mis = [];
+  ["mail-dkim.js", "mail-crypto-pgp.js", "mail-crypto-smime.js", "mail-crypto.js"].forEach(function (f) {
+    var text = fs.readFileSync(path.join(__dirname, "..", "..", "lib", f), "utf8");
+    if (/RFC 8301 §3\.1/.test(text)) mis.push(f + " cites RFC 8301 §3.1");
+    if (/8301bis/.test(text)) mis.push(f + " cites 8301bis");
+    if (/bulk-sender/.test(text)) mis.push(f + " states an uncited bulk-sender rejection");
+  });
+  check("RSA key-size floor is cited to RFC 8301 §3.2 across the mail crypto surfaces" +
+    (mis.length ? " (" + mis.join("; ") + ")" : ""), mis.length === 0);
+  check("S/MIME uses the DKIM RSA floor", mailCrypto.smime.RSA_MIN_BITS === mailDkim.RSA_MIN_BITS);
 }
 
 // ---- Deferred encrypt/decrypt surface — verify the deferral is

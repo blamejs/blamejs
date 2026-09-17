@@ -312,6 +312,84 @@ async function testFetchForwardsMaxAgeMs() {
         dfltErr && /ocsp-not-good/.test(dfltErr.code || ""));
 }
 
+// buildRequest defaults the CertID hash to SHA-256 with a certIdHashAlg opt for
+// SHA-1-only responders; that opt is inert unless ocsp.fetch forwards it into
+// buildRequest. Assert the OUTGOING request DER carries the chosen hash OID.
+async function testFetchForwardsCertIdHashAlg() {
+  var httpClient = require("../../lib/http-client");
+  var pair = helpers.selfSignedPair();
+  var built = helpers.buildOcspResponse({
+    keyPair: pair.keyPair, certIdIssuerDer: pair.certDer, serial: Buffer.from([0x12, 0x34, 0x56, 0x78]),
+  });
+  var SHA256_OID_DER = Buffer.from([0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01]);
+  var SHA1_OID_DER   = Buffer.from([0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a]);
+  var origRequest = httpClient.request;
+  var sent = [];
+  httpClient.request = async function (reqOpts) {
+    sent.push(reqOpts && Buffer.isBuffer(reqOpts.body) ? reqOpts.body : Buffer.from((reqOpts && reqOpts.body) || []));
+    return { status: 200, body: built.der };
+  };
+  try {
+    sent.length = 0;
+    try {
+      await b.network.tls.ocsp.fetch({ leafPem: pair.cert, issuerPem: pair.cert,
+        responderUrl: "http://ocsp.test/", serialHex: "12345678", nonce: false });
+    } catch (_e) { /* the outgoing request is what we assert on */ }
+    check("fetch default sends a SHA-256 CertID",
+          sent.length === 1 && sent[0].includes(SHA256_OID_DER) && !sent[0].includes(SHA1_OID_DER));
+
+    sent.length = 0;
+    try {
+      await b.network.tls.ocsp.fetch({ leafPem: pair.cert, issuerPem: pair.cert,
+        responderUrl: "http://ocsp.test/", serialHex: "12345678", nonce: false, certIdHashAlg: "sha1" });
+    } catch (_e) { /* ditto */ }
+    check("fetch forwards certIdHashAlg:'sha1' into the outgoing CertID",
+          sent.length === 1 && sent[0].includes(SHA1_OID_DER) && !sent[0].includes(SHA256_OID_DER));
+  } finally {
+    httpClient.request = origRequest;
+  }
+}
+
+// RFC 9919 §3.1.1 has clients send a SHA-256 CertID, and a responder that
+// indexes revocation only by SHA-1 CertIDs cannot answer one. The failure names
+// the hash that was sent and the option that sends SHA-1, so an operator on such
+// a responder is not left with a bare "not good".
+async function testFetchFailureNamesCertIdHash() {
+  var httpClient = require("../../lib/http-client");
+  var pair = helpers.selfSignedPair();
+  var UNAUTHORIZED_DER = Buffer.from([0x30, 0x03, 0x0a, 0x01, 0x06]);
+  var origRequest = httpClient.request;
+  var reply = { status: 200, body: UNAUTHORIZED_DER };
+  httpClient.request = async function () { return reply; };
+  async function failure(extra) {
+    try {
+      await b.network.tls.ocsp.fetch(Object.assign({ leafPem: pair.cert, issuerPem: pair.cert,
+        responderUrl: "http://ocsp.test/", serialHex: "12345678", nonce: false }, extra || {}));
+    } catch (e) { return e; }
+    return null;
+  }
+  try {
+    var dflt = await failure();
+    check("fetch: an unauthorized reply to the default request is tls/ocsp-not-good",
+          dflt && dflt.code === "tls/ocsp-not-good", dflt && dflt.code);
+    check("fetch: the failure names the SHA-256 CertID and certIdHashAlg: \"sha1\"",
+          dflt && /sha256/.test(dflt.message) && /certIdHashAlg: "sha1"/.test(dflt.message), dflt && dflt.message);
+
+    var legacy = await failure({ certIdHashAlg: "sha1" });
+    check("fetch: a SHA-1 request that fails does not suggest switching to SHA-1",
+          legacy && legacy.code === "tls/ocsp-not-good" && !/certIdHashAlg: "sha1"/.test(legacy.message),
+          legacy && legacy.message);
+
+    reply = { status: 400, body: Buffer.alloc(0) };
+    var badStatus = await failure();
+    check("fetch: an HTTP error reply to the default request names certIdHashAlg: \"sha1\" too",
+          badStatus && badStatus.code === "tls/ocsp-fetch-bad-status" &&
+          /certIdHashAlg: "sha1"/.test(badStatus.message), badStatus && badStatus.message);
+  } finally {
+    httpClient.request = origRequest;
+  }
+}
+
 async function run() {
   testSurface();
   testParseRejectsBadInput();
@@ -332,6 +410,8 @@ async function run() {
   testParseRejectsTrailingData();
   testEvaluateRejectsTrailingData();
   await testFetchForwardsMaxAgeMs();
+  await testFetchForwardsCertIdHashAlg();
+  await testFetchFailureNamesCertIdHash();
 }
 
 module.exports = { run: run };

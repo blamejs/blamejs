@@ -584,7 +584,7 @@ async function testDkimVerifyKeyCacheHit() {
 }
 
 async function testDkimVerifySmallKeyRejected() {
-  // Key < 1024 bits must be rejected per RFC 8301 §3.1.
+  // Key < 1024 bits must be rejected per RFC 8301 §3.2.
   var smallKp = nodeCrypto.generateKeyPairSync("rsa", {
     modulusLength: 512,
     publicKeyEncoding:  { type: "spki",  format: "pem" },
@@ -657,13 +657,19 @@ async function testDkimBootstrap() {
            { domain: "example.com", selector: "s1", algorithm: "rsa-sha1" }, "dkim/bad-algorithm");
   throwBad("bootstrap: refuses RSA < 1024 bits per RFC 8301",
            { domain: "example.com", selector: "s1", algorithm: "rsa-sha256", rsaBits: 512 }, "dkim/bad-rsa-bits");
+  var bitsErr = null;
+  try { b.mail.dkim.bootstrap({ domain: "example.com", selector: "s1", algorithm: "rsa-sha256", rsaBits: 512 }); }
+  catch (e) { bitsErr = e; }
+  check("bootstrap: the rsaBits refusal cites RFC 8301 §3.2 and no unresolvable draft",
+    bitsErr && /RFC 8301 §3\.2/.test(bitsErr.message) && !/§3\.1|8301bis|bulk-sender/.test(bitsErr.message),
+    bitsErr && bitsErr.message);
 }
 
 // ---- Audit findings 2026-05-15 — MAIL-7/11/12/20/21/41/52/65 coverage ----
 
 async function testDkimVerifyRejectsSubBulkSenderRsa() {
-  // MAIL-21 — Google + Yahoo Feb 2024 bulk-sender policy floor is 2048
-  // bits. A 1024-bit RSA key (RFC 8301 historical floor) must fail
+  // The framework's verify floor is 2048 bits, the size RFC 8301 §3.2
+  // recommends. A 1024-bit RSA key (the §3.2 requirement) must fail
   // verify by default; only operator opt-down via minRsaBits restores.
   var kp = nodeCrypto.generateKeyPairSync("rsa", {
     modulusLength: 1024,
@@ -676,8 +682,11 @@ async function testDkimVerifyRejectsSubBulkSenderRsa() {
   var b64 = _spkiPemToB64(kp.publicKey);
   var dnsLookup = async function () { return [["v=DKIM1; k=rsa; p=" + b64]]; };
   var rv = await b.mail.dkim.verify(signed, { dnsLookup: dnsLookup });
-  check("MAIL-21: 1024-bit RSA refused by default (bulk-sender floor 2048)",
+  check("MAIL-21: 1024-bit RSA refused by default (framework floor 2048)",
         rv[0] && rv[0].result === "fail" && /too small/.test((rv[0].errors || []).join(",")));
+  var smallKeyError = (rv[0] && rv[0].errors || []).join(",");
+  check("MAIL-21: the refusal cites RFC 8301 §3.2 and no unresolvable draft",
+        /RFC 8301 §3\.2/.test(smallKeyError) && !/§3\.1|8301bis|bulk-sender/.test(smallKeyError), smallKeyError);
 
   // Operator opt-down accepts the same signature for legacy migration.
   b.mail.dkim._resetDkimKeyCacheForTest();

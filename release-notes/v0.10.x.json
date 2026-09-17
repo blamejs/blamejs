@@ -1133,7 +1133,7 @@
             },
             {
               "title": "`b.mail.crypto.pgp` — RFC 9580 v4 OpenPGP detached-signature sign + verify",
-              "body": "Hand-rolled v4 signature packets via `node:crypto` only — no third-party crypto vendored. Ed25519Legacy (pub-alg 22) + RSA (pub-alg 1, EMSA-PKCS1-v1_5 + SHA-256). ASCII armor with CRC-24 + BEGIN/END framing per §6. RFC 3156 multipart/signed wrapper. Hash-left-16 fast-fail per §5.2.4. Fingerprint pinning enforces issuer-fpr subpacket equality (key-substitution defense). Refuses RSA < 2048 bits per RFC 8301 §3.1. EFAIL (CVE-2017-17688 / CVE-2017-17689) threat model documented. PGP encrypt + decrypt and v6 signatures are deferred-with-condition (reopens when operator demand or ≥2 major impls ship v6 verify-by-default)."
+              "body": "Hand-rolled v4 signature packets via `node:crypto` only — no third-party crypto vendored. Ed25519Legacy (pub-alg 22) + RSA (pub-alg 1, EMSA-PKCS1-v1_5 + SHA-256). ASCII armor with CRC-24 + BEGIN/END framing per §6. RFC 3156 multipart/signed wrapper. Hash-left-16 fast-fail per §5.2.4. Fingerprint pinning enforces issuer-fpr subpacket equality (key-substitution defense). Refuses RSA < 2048 bits, the size RFC 8301 §3.2 recommends. EFAIL (CVE-2017-17688 / CVE-2017-17689) threat model documented. PGP encrypt + decrypt and v6 signatures are deferred-with-condition (reopens when operator demand or ≥2 major impls ship v6 verify-by-default)."
             },
             {
               "title": "`b.mail.crypto.smime` — RFC 8551 S/MIME 4.0 v1",
@@ -1166,7 +1166,7 @@
           "items": [
             {
               "title": "Mail-auth hardening — DKIM `l=` removed, dual-permerror SPF, DMARC report bounds, ARC `i=` monotonic",
-              "body": "DKIM — `b.mail.dkim.verify` refuses `l=` body-length tag (RFC 6376 §3.5 deprecated; downgrade attack class), enforces strict canonical/simple body algorithm match, refuses RSA < 2048 (RFC 8301 §3.1). SPF — dual-permerror posture (refuses both `+all` and missing-record states as a permerror under strict). DMARC — aggregate-report parser bounds (max 1 MiB raw / 8 MiB unzipped; refuses external XML entities). ARC — chain-validation `i=` strict-monotonic-increment enforcement, instance count cap of 50 (CVE-2023-44388 class)."
+              "body": "DKIM — `b.mail.dkim.verify` refuses `l=` body-length tag (RFC 6376 §3.5 deprecated; downgrade attack class), enforces strict canonical/simple body algorithm match, refuses RSA < 2048 (the size RFC 8301 §3.2 recommends). SPF — dual-permerror posture (refuses both `+all` and missing-record states as a permerror under strict). DMARC — aggregate-report parser bounds (max 1 MiB raw / 8 MiB unzipped; refuses external XML entities). ARC — chain-validation `i=` strict-monotonic-increment enforcement, instance count cap of 50 (CVE-2023-44388 class)."
             },
             {
               "title": "Mail-protocol close-out — STARTTLS upgrade helper + smuggling detect + dot-stuffing + close-state guards",

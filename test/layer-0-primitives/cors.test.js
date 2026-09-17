@@ -292,6 +292,84 @@ function testCorsConfigValidationThrows() {
   var ok = b.middleware.cors({});
   check("no opts: returns a function (default behaviour)", typeof ok === "function");
 
+  // Reflecting a pattern-matched origin WITH credentials leaks authenticated
+  // responses to any host the RegExp admits, and no finite check can prove an
+  // arbitrary RegExp is host-specific (a /.*\.com$/ trusts every registrable
+  // .com). So a RegExp origin paired with credentials:true is refused outright;
+  // credentialed CORS uses exact string origins (Fetch §3.2.3; OWASP).
+  var regexCreds = null;
+  try { b.middleware.cors({ origins: [/^https:\/\/([a-z0-9-]+\.)?example\.com$/], credentials: true }); }
+  catch (e) { regexCreds = e; }
+  check("cors: a RegExp origin with credentials:true throws cors/regex-origin-with-credentials",
+        regexCreds && regexCreds.code === "cors/regex-origin-with-credentials",
+        regexCreds && (regexCreds.code + " :: " + regexCreds.message));
+
+  // The refusal reads credentials the SAME way the runtime does (!!opts), so a
+  // truthy non-boolean value cannot skip the guard while still enabling
+  // Access-Control-Allow-Credentials at runtime.
+  var regexCredsTruthy = null;
+  try { b.middleware.cors({ origins: [/^https:\/\/.*\.com$/], credentials: 1 }); }
+  catch (e) { regexCredsTruthy = e; }
+  check("cors: a RegExp origin with a truthy non-boolean credentials also throws",
+        regexCredsTruthy && regexCredsTruthy.code === "cors/regex-origin-with-credentials",
+        regexCredsTruthy && regexCredsTruthy.code);
+
+  // For credentials:false, a RegExp origin is applied with .test(origin). An
+  // unanchored or over-broad pattern still reflects a look-alike attacker origin
+  // (without credentials), so create() must require whole-origin anchoring and
+  // reject catch-alls (PortSwigger "CORS via regex"; Fetch §3.2.3).
+  var unanchored = null;
+  try { b.middleware.cors({ origins: [/example\.com/] }); }
+  catch (e) { unanchored = e; }
+  check("cors: an unanchored RegExp origin throws cors/unanchored-pattern at create()",
+        unanchored && unanchored.code === "cors/unanchored-pattern",
+        unanchored && (unanchored.code + " :: " + unanchored.message));
+
+  var endOnly = null;
+  try { b.middleware.cors({ origins: [/example\.com$/] }); }
+  catch (e) { endOnly = e; }
+  check("cors: a RegExp origin anchored at one end only throws cors/unanchored-pattern",
+        endOnly && endOnly.code === "cors/unanchored-pattern",
+        endOnly && endOnly.code);
+
+  var catchAll = null;
+  try { b.middleware.cors({ origins: [/^https:\/\/.*$/] }); }
+  catch (e) { catchAll = e; }
+  check("cors: an anchored HTTPS catch-all RegExp origin throws cors/overbroad-pattern",
+        catchAll && catchAll.code === "cors/overbroad-pattern",
+        catchAll && (catchAll.code + " :: " + catchAll.message));
+
+  // The canary probes every scheme CORS canonicalizes, not just https.
+  var catchAllHttp = null;
+  try { b.middleware.cors({ origins: [/^http:\/\/.*$/] }); }
+  catch (e) { catchAllHttp = e; }
+  check("cors: an anchored HTTP catch-all RegExp origin throws cors/overbroad-pattern",
+        catchAllHttp && catchAllHttp.code === "cors/overbroad-pattern",
+        catchAllHttp && (catchAllHttp.code + " :: " + catchAllHttp.message));
+
+  // The probes cross the origin grammar (scheme x host-form x port), so a
+  // catch-all that requires a port, or an IPv6/IPv4 host, is caught too.
+  var catchAllPort = null;
+  try { b.middleware.cors({ origins: [/^https:\/\/.*:\d+$/] }); }
+  catch (e) { catchAllPort = e; }
+  check("cors: a port-requiring catch-all RegExp origin throws cors/overbroad-pattern",
+        catchAllPort && catchAllPort.code === "cors/overbroad-pattern",
+        catchAllPort && catchAllPort.code);
+
+  var catchAllV6 = null;
+  try { b.middleware.cors({ origins: [/^https:\/\/\[.*\]$/] }); }
+  catch (e) { catchAllV6 = e; }
+  check("cors: an IPv6-host catch-all RegExp origin throws cors/overbroad-pattern",
+        catchAllV6 && catchAllV6.code === "cors/overbroad-pattern",
+        catchAllV6 && catchAllV6.code);
+
+  // Control — a host-specific pattern that also allows an optional port is NOT
+  // over-broad and still builds (the probes use a different host).
+  var okWithPort = false;
+  try { b.middleware.cors({ origins: [/^https:\/\/app\.example\.com(:\d+)?$/] }); okWithPort = true; }
+  catch (_e) { okWithPort = false; }
+  check("cors: a host-specific pattern allowing an optional port still builds", okWithPort);
+
   // Allowlist canonicalization — case + default-port differences match.
   var threwOnUnparseableOrigin = null;
   try { b.middleware.cors({ origins: ["not-a-url"] }); }
@@ -378,9 +456,56 @@ function testCorsRejectsStatefulRegexOrigin() {
   check("cors: a sticky-flagged RegExp origin is refused", threwY);
 
   var okPlain = false;
-  try { b.middleware.cors({ origins: [/\.example\.com$/] }); okPlain = true; }
+  try { b.middleware.cors({ origins: [/^https:\/\/.+\.example\.com$/] }); okPlain = true; }
   catch (_e) { okPlain = false; }
-  check("cors: a plain (unflagged) RegExp origin is still accepted", okPlain);
+  check("cors: a plain (unflagged) anchored RegExp origin is still accepted", okPlain);
+}
+
+// A properly anchored, host-scoped RegExp origin still builds and behaves: it
+// matches a real subdomain and rejects an attacker origin that merely contains
+// the host as a substring (the look-alike the unanchored form would reflect).
+async function testCorsAnchoredRegexOriginMatchesHostScoped() {
+  var mw = b.middleware.cors({
+    origins:     [/^https:\/\/([a-z0-9-]+\.)?example\.com$/],
+    credentials: false,
+  });
+  var good = await _drive(mw, _req({
+    method: "GET", headers: { origin: "https://app.example.com" },
+  }));
+  check("cors: anchored host-scoped RegExp matches a real subdomain (reflects it)",
+        good.res._sent.headers["access-control-allow-origin"] === "https://app.example.com",
+        JSON.stringify(good.res._sent.headers["access-control-allow-origin"]));
+  var evil = await _drive(mw, _req({
+    method: "GET", headers: { origin: "https://example.com.attacker.test" },
+  }));
+  check("cors: anchored host-scoped RegExp rejects a look-alike attacker origin",
+        evil.res._sent.headers["access-control-allow-origin"] === undefined &&
+        (evil.res._sent.statusCode === 403 || evil.nextCalled === false),
+        "acao=" + evil.res._sent.headers["access-control-allow-origin"] +
+        " status=" + evil.res._sent.statusCode + " next=" + evil.nextCalled);
+
+  // Alternation must not let a branch be only half-anchored. /^A|B$/ has a
+  // start-anchored first branch and an end-anchored second branch; a char-only
+  // "starts with ^, ends with $" check passes it, yet .test() on the raw
+  // pattern would substring-match https://trusted.example.attacker.test on the
+  // first branch. Matching must consume the WHOLE origin, so the attacker
+  // origin is not reflected, while both intended origins still match.
+  var alt = b.middleware.cors({
+    origins:     [/^https:\/\/trusted\.example|https:\/\/other\.example$/],
+    credentials: false,
+  });
+  var altEvil = await _drive(alt, _req({
+    method: "GET", headers: { origin: "https://trusted.example.attacker.test" },
+  }));
+  check("cors: an alternation branch cannot substring-match an attacker origin",
+        altEvil.res._sent.headers["access-control-allow-origin"] === undefined &&
+        (altEvil.res._sent.statusCode === 403 || altEvil.nextCalled === false),
+        "acao=" + altEvil.res._sent.headers["access-control-allow-origin"]);
+  var altGood = await _drive(alt, _req({
+    method: "GET", headers: { origin: "https://trusted.example" },
+  }));
+  check("cors: an anchored alternation still matches its intended origins",
+        altGood.res._sent.headers["access-control-allow-origin"] === "https://trusted.example");
 }
 
 async function run() {
@@ -397,6 +522,7 @@ async function run() {
   await testCorsNullOriginRelaxedRequiresSameOrigin();
   await testCorsNullOriginWithoutFetchSiteRefused();
   testCorsConfigValidationThrows();
+  await testCorsAnchoredRegexOriginMatchesHostScoped();
   await testCorsAllowlistCanonicalization();
   await testCorsPnaPreflightDefaultRefused();
   await testCorsPnaPreflightAllowedWhenOptedIn();
