@@ -328,6 +328,30 @@ function testCorsConfigValidationThrows() {
         catchAllHttp && catchAllHttp.code === "cors/overbroad-pattern",
         catchAllHttp && (catchAllHttp.code + " :: " + catchAllHttp.message));
 
+  // The probes cross the origin grammar (scheme x host-form x port), so a
+  // catch-all that requires a port, or an IPv6/IPv4 host, is caught too — not
+  // just a portless reg-name host.
+  var catchAllPort = null;
+  try { b.middleware.cors({ origins: [/^https:\/\/.*:\d+$/], credentials: true }); }
+  catch (e) { catchAllPort = e; }
+  check("cors: a port-requiring catch-all RegExp origin throws cors/overbroad-pattern",
+        catchAllPort && catchAllPort.code === "cors/overbroad-pattern",
+        catchAllPort && catchAllPort.code);
+
+  var catchAllV6 = null;
+  try { b.middleware.cors({ origins: [/^https:\/\/\[.*\]$/], credentials: true }); }
+  catch (e) { catchAllV6 = e; }
+  check("cors: an IPv6-host catch-all RegExp origin throws cors/overbroad-pattern",
+        catchAllV6 && catchAllV6.code === "cors/overbroad-pattern",
+        catchAllV6 && catchAllV6.code);
+
+  // Control — a host-specific pattern that also allows an optional port is NOT
+  // over-broad and still builds (the probes use a different host).
+  var okWithPort = false;
+  try { b.middleware.cors({ origins: [/^https:\/\/app\.example\.com(:\d+)?$/], credentials: true }); okWithPort = true; }
+  catch (_e) { okWithPort = false; }
+  check("cors: a host-specific pattern allowing an optional port still builds", okWithPort);
+
   // Allowlist canonicalization — case + default-port differences match.
   var threwOnUnparseableOrigin = null;
   try { b.middleware.cors({ origins: ["not-a-url"] }); }
