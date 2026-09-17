@@ -292,14 +292,34 @@ function testCorsConfigValidationThrows() {
   var ok = b.middleware.cors({});
   check("no opts: returns a function (default behaviour)", typeof ok === "function");
 
-  // A RegExp origin is applied with .test(origin) — an UNANCHORED substring
-  // match — and a match reflects the raw Origin into Access-Control-Allow-Origin.
-  // An unanchored or over-broad pattern (with credentials) is the classic "CORS
-  // via regex" credential-reflection hole (PortSwigger; Fetch §3.2.3). create()
-  // must refuse a RegExp that is not anchored end-to-end or that matches an
-  // arbitrary origin, so the dangerous config never builds.
+  // Reflecting a pattern-matched origin WITH credentials leaks authenticated
+  // responses to any host the RegExp admits, and no finite check can prove an
+  // arbitrary RegExp is host-specific (a /.*\.com$/ trusts every registrable
+  // .com). So a RegExp origin paired with credentials:true is refused outright;
+  // credentialed CORS uses exact string origins (Fetch §3.2.3; OWASP).
+  var regexCreds = null;
+  try { b.middleware.cors({ origins: [/^https:\/\/([a-z0-9-]+\.)?example\.com$/], credentials: true }); }
+  catch (e) { regexCreds = e; }
+  check("cors: a RegExp origin with credentials:true throws cors/regex-origin-with-credentials",
+        regexCreds && regexCreds.code === "cors/regex-origin-with-credentials",
+        regexCreds && (regexCreds.code + " :: " + regexCreds.message));
+
+  // The refusal reads credentials the SAME way the runtime does (!!opts), so a
+  // truthy non-boolean value cannot skip the guard while still enabling
+  // Access-Control-Allow-Credentials at runtime.
+  var regexCredsTruthy = null;
+  try { b.middleware.cors({ origins: [/^https:\/\/.*\.com$/], credentials: 1 }); }
+  catch (e) { regexCredsTruthy = e; }
+  check("cors: a RegExp origin with a truthy non-boolean credentials also throws",
+        regexCredsTruthy && regexCredsTruthy.code === "cors/regex-origin-with-credentials",
+        regexCredsTruthy && regexCredsTruthy.code);
+
+  // For credentials:false, a RegExp origin is applied with .test(origin). An
+  // unanchored or over-broad pattern still reflects a look-alike attacker origin
+  // (without credentials), so create() must require whole-origin anchoring and
+  // reject catch-alls (PortSwigger "CORS via regex"; Fetch §3.2.3).
   var unanchored = null;
-  try { b.middleware.cors({ origins: [/example\.com/], credentials: true }); }
+  try { b.middleware.cors({ origins: [/example\.com/] }); }
   catch (e) { unanchored = e; }
   check("cors: an unanchored RegExp origin throws cors/unanchored-pattern at create()",
         unanchored && unanchored.code === "cors/unanchored-pattern",
@@ -313,33 +333,31 @@ function testCorsConfigValidationThrows() {
         endOnly && endOnly.code);
 
   var catchAll = null;
-  try { b.middleware.cors({ origins: [/^https:\/\/.*$/], credentials: true }); }
+  try { b.middleware.cors({ origins: [/^https:\/\/.*$/] }); }
   catch (e) { catchAll = e; }
   check("cors: an anchored HTTPS catch-all RegExp origin throws cors/overbroad-pattern",
         catchAll && catchAll.code === "cors/overbroad-pattern",
         catchAll && (catchAll.code + " :: " + catchAll.message));
 
-  // The canary must probe every scheme CORS canonicalizes, not just https —
-  // an http-only catch-all is equally a credential-reflection hole.
+  // The canary probes every scheme CORS canonicalizes, not just https.
   var catchAllHttp = null;
-  try { b.middleware.cors({ origins: [/^http:\/\/.*$/], credentials: true }); }
+  try { b.middleware.cors({ origins: [/^http:\/\/.*$/] }); }
   catch (e) { catchAllHttp = e; }
   check("cors: an anchored HTTP catch-all RegExp origin throws cors/overbroad-pattern",
         catchAllHttp && catchAllHttp.code === "cors/overbroad-pattern",
         catchAllHttp && (catchAllHttp.code + " :: " + catchAllHttp.message));
 
   // The probes cross the origin grammar (scheme x host-form x port), so a
-  // catch-all that requires a port, or an IPv6/IPv4 host, is caught too — not
-  // just a portless reg-name host.
+  // catch-all that requires a port, or an IPv6/IPv4 host, is caught too.
   var catchAllPort = null;
-  try { b.middleware.cors({ origins: [/^https:\/\/.*:\d+$/], credentials: true }); }
+  try { b.middleware.cors({ origins: [/^https:\/\/.*:\d+$/] }); }
   catch (e) { catchAllPort = e; }
   check("cors: a port-requiring catch-all RegExp origin throws cors/overbroad-pattern",
         catchAllPort && catchAllPort.code === "cors/overbroad-pattern",
         catchAllPort && catchAllPort.code);
 
   var catchAllV6 = null;
-  try { b.middleware.cors({ origins: [/^https:\/\/\[.*\]$/], credentials: true }); }
+  try { b.middleware.cors({ origins: [/^https:\/\/\[.*\]$/] }); }
   catch (e) { catchAllV6 = e; }
   check("cors: an IPv6-host catch-all RegExp origin throws cors/overbroad-pattern",
         catchAllV6 && catchAllV6.code === "cors/overbroad-pattern",
@@ -348,7 +366,7 @@ function testCorsConfigValidationThrows() {
   // Control — a host-specific pattern that also allows an optional port is NOT
   // over-broad and still builds (the probes use a different host).
   var okWithPort = false;
-  try { b.middleware.cors({ origins: [/^https:\/\/app\.example\.com(:\d+)?$/], credentials: true }); okWithPort = true; }
+  try { b.middleware.cors({ origins: [/^https:\/\/app\.example\.com(:\d+)?$/] }); okWithPort = true; }
   catch (_e) { okWithPort = false; }
   check("cors: a host-specific pattern allowing an optional port still builds", okWithPort);
 
@@ -449,7 +467,7 @@ function testCorsRejectsStatefulRegexOrigin() {
 async function testCorsAnchoredRegexOriginMatchesHostScoped() {
   var mw = b.middleware.cors({
     origins:     [/^https:\/\/([a-z0-9-]+\.)?example\.com$/],
-    credentials: true,
+    credentials: false,
   });
   var good = await _drive(mw, _req({
     method: "GET", headers: { origin: "https://app.example.com" },
@@ -474,7 +492,7 @@ async function testCorsAnchoredRegexOriginMatchesHostScoped() {
   // origin is not reflected, while both intended origins still match.
   var alt = b.middleware.cors({
     origins:     [/^https:\/\/trusted\.example|https:\/\/other\.example$/],
-    credentials: true,
+    credentials: false,
   });
   var altEvil = await _drive(alt, _req({
     method: "GET", headers: { origin: "https://trusted.example.attacker.test" },
