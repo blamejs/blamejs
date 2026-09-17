@@ -315,9 +315,18 @@ function testCorsConfigValidationThrows() {
   var catchAll = null;
   try { b.middleware.cors({ origins: [/^https:\/\/.*$/], credentials: true }); }
   catch (e) { catchAll = e; }
-  check("cors: an anchored catch-all RegExp origin throws cors/overbroad-pattern",
+  check("cors: an anchored HTTPS catch-all RegExp origin throws cors/overbroad-pattern",
         catchAll && catchAll.code === "cors/overbroad-pattern",
         catchAll && (catchAll.code + " :: " + catchAll.message));
+
+  // The canary must probe every scheme CORS canonicalizes, not just https —
+  // an http-only catch-all is equally a credential-reflection hole.
+  var catchAllHttp = null;
+  try { b.middleware.cors({ origins: [/^http:\/\/.*$/], credentials: true }); }
+  catch (e) { catchAllHttp = e; }
+  check("cors: an anchored HTTP catch-all RegExp origin throws cors/overbroad-pattern",
+        catchAllHttp && catchAllHttp.code === "cors/overbroad-pattern",
+        catchAllHttp && (catchAllHttp.code + " :: " + catchAllHttp.message));
 
   // Allowlist canonicalization — case + default-port differences match.
   var threwOnUnparseableOrigin = null;
