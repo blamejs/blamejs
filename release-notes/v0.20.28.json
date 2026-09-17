@@ -1,0 +1,18 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.20.28",
+  "date": "2026-09-17",
+  "headline": "`b.auth.passkey.verifyRegistration` can require an attestation, not only anchor one",
+  "summary": "`requireAttestationAnchor` refuses a certificate chain that does not terminate at a trusted root, but a `none` or self attestation carries no chain, so it was accepted regardless. A relying party that wanted to register only authenticators whose model is attested had to read `registrationInfo.attestationType` after the fact and reject `None`/`Self` itself, which is easy to forget. A new opt-in `requireAttestation: true` refuses a credential whose attestation type is `None` or `Self` at the verification chokepoint, so the check cannot be skipped. It permits `Basic`, `AttCA`, and `AnonCA` attestations and composes with `requireAttestationAnchor` and `attestationRoots` (require an attestation, and require its chain to anchor). It is off by default: platform and synced passkeys legitimately use `none`/self, so requiring attestation is a deployment choice.",
+  "sections": [
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "requireAttestation option on b.auth.passkey.verifyRegistration",
+          "body": "Set `requireAttestation: true` to refuse a registration whose attestation type is `None` or `Self` (thrown as `auth-passkey/attestation-required`). These types carry no proof of the authenticator model, so `requireAttestationAnchor` (which validates certificate chains) never applied to them and an unattested credential verified as long as the ceremony bindings held. High-assurance deployments that must register only model-attested authenticators can now enforce that at verification time instead of post-processing `registrationInfo.attestationType`. The option permits `Basic`/`AttCA`/`AnonCA` and composes with `requireAttestationAnchor` + `attestationRoots`. It stays off by default because platform and synced passkeys use `none`/self attestation; enabling it is a per-deployment policy decision."
+        }
+      ]
+    }
+  ]
+}
