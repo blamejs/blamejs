@@ -43,6 +43,61 @@ function testMergeVaryUnit() {
   expect("the caller's object is not changed", input, { Vary: "Origin" });
   check("requestHelpers.mergeVary joins an earlier Vary with the header object's Vary" +
         (wrong.length ? " (" + wrong.join("; ") + ")" : ""), wrong.length === 0);
+
+  // RFC 9110 section 12.5.5: the wildcard form stands alone. A cache that
+  // reads "*, Accept" cannot apply the never-reuse the wildcard asks for.
+  var starWrong = [];
+  function star(label, run, want) {
+    var r = res(undefined);
+    var got = run(r);
+    if (got !== want) starWrong.push(label + " -> " + JSON.stringify(got));
+  }
+  star("appendVary onto an earlier star", function (r) {
+    r.setHeader("Vary", "*");
+    b.requestHelpers.appendVary(r, "Accept");
+    return r.getHeader("Vary");
+  }, "*");
+  star("appendVary onto a list that carries a star", function (r) {
+    r.setHeader("Vary", "Cookie, *");
+    b.requestHelpers.appendVary(r, "Accept");
+    return r.getHeader("Vary");
+  }, "*");
+  star("appendVary of a star onto a list", function (r) {
+    r.setHeader("Vary", "Cookie, Accept");
+    b.requestHelpers.appendVary(r, "*");
+    return r.getHeader("Vary");
+  }, "*");
+  star("appendVary of a star onto no earlier Vary", function (r) {
+    b.requestHelpers.appendVary(r, "*");
+    return r.getHeader("Vary");
+  }, "*");
+  star("appendVary is still idempotent on a star", function (r) {
+    r.setHeader("Vary", "*");
+    b.requestHelpers.appendVary(r, "*");
+    return r.getHeader("Vary");
+  }, "*");
+  star("noCache onto an earlier star", function (r) {
+    r.setHeader("Vary", "*");
+    b.middleware.noCache()({ url: "/", headers: {} }, r, function () {});
+    return r.getHeader("Vary");
+  }, "*");
+  star("compression's own appender onto a list that carries a star", function (r) {
+    return b.middleware._modules.compression._appendVary("Cookie, *", "Accept-Encoding");
+  }, "*");
+  star("compression's own appender adding a star", function (r) {
+    return b.middleware._modules.compression._appendVary("Cookie", "*");
+  }, "*");
+  var avv = b.requestHelpers.appendVaryValue;
+  star("appendVaryValue joins two tokens", function () { return avv("Cookie", "Accept"); }, "Cookie, Accept");
+  star("appendVaryValue reports nothing to add", function () { return avv("cookie", "Cookie"); }, null);
+  star("appendVaryValue with no earlier value", function () { return avv(undefined, "Accept"); }, "Accept");
+  star("appendVaryValue reads an array", function () { return avv(["Cookie", "Accept"], "Origin"); }, "Cookie, Accept, Origin");
+  star("appendVaryValue collapses a list carrying a star", function () { return avv("Cookie, *", "Accept"); }, "*");
+  star("appendVaryValue adding a star", function () { return avv("Cookie", "*"); }, "*");
+  star("appendVaryValue on a bare star", function () { return avv("*", "Accept"); }, null);
+  star("appendVaryValue refuses a non-string token", function () { return avv("Cookie", 7); }, null);
+  check("a Vary wildcard stays alone however a token is added" +
+        (starWrong.length ? " (" + starWrong.join("; ") + ")" : ""), starWrong.length === 0);
 }
 
 async function testWritersKeepAnEarlierVary() {

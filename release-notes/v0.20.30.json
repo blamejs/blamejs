@@ -70,6 +70,10 @@
       "heading": "Fixed",
       "items": [
         {
+          "title": "A Vary wildcard stays alone when a token is added",
+          "body": "`b.requestHelpers.appendVary` appended the new token to the list it parsed without looking for `*`, so a `Vary: *` already on the response became `*, Accept` when `b.middleware.sse` added `Accept`, and `*, Cookie, Authorization` under `b.middleware.noCache`. RFC 9110 section 12.5.5 gives the wildcard its never-reuse meaning only when it stands alone, so a cache reading that list could store and reuse the response. `b.middleware.compression` carried its own appender, which collapsed the wildcard only when it was the whole earlier value, so `Cookie, *` grew an `Accept-Encoding`. Both now go through the new `b.requestHelpers.appendVaryValue(existing, value)`, which reports the merged value, `null` when the token is already carried, and `*` alone whenever either side carries the wildcard."
+        },
+        {
           "title": "b.jsonSchema enum and const equality is symmetric",
           "body": "Object equality compared the enumerable keys of one side with the own keys of the other, so an object with a non-enumerable own property could equal a second object while the second did not equal the first. Both sides now compare enumerable own keys, which is also the equality `uniqueItems` uses."
         },

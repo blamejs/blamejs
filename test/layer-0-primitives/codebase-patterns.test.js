@@ -15387,6 +15387,20 @@ var KNOWN_ANTIPATTERNS = [
     reason: "b.middleware.sse merged Vary: Accept into the response with appendVary and then passed its configured headers to writeHead, so opts.headers { Vary: \"Origin\" } sent only Origin. The same replacement happened in b.render (every writer, opts.headers), b.middleware.openapiServe / asyncapiServe (their own Vary: Origin), b.middleware.noCache (setHeader Vary Cookie, Authorization), b.middleware.compression (Accept-Encoding appended to the handler's header object only), and the deny, static, tus and error-page writers that pass a header variable. The same objects also carried a Cache-Control that replaced the no-store b.middleware.noCache had set: b.render.json(res, body, { headers: { \"Cache-Control\": \"public, max-age=3600\" } }) sent the public value on an authenticated route. Every writer now passes its final object through finalizeHeaders, which merges Vary and keeps an existing no-store. request-helpers.js is the helpers' home.",
   },
   {
+    id: "vary-token-appender-hand-rolled",
+    primitive: "b.requestHelpers.appendVaryValue(existing, value) (lib/request-helpers.js): the one answer to \"add this token to a Vary value\". It reports the merged value, `null` when the token is already carried, and `*` alone whenever either side carries the wildcard, because RFC 9110 section 12.5.5 gives `*` its never-reuse meaning only when it stands alone.",
+    scanScope: "lib",
+    // Anchors on a Vary-named function that builds its own token list: the
+    // temper cannot cross a function-closing brace at column 0, so the
+    // `.join(` it finds is inside that function. A file that routes through
+    // the shared helper carries `appendVaryValue` and is exempt.
+    regex: /function\s+[A-Za-z_$]*[Vv]ary[\w$]*\s*\([^)]*\)\s*\{(?:(?!\n\})[\s\S]){0,800}?\.join\(/,
+    requires: /appendVaryValue/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "b.requestHelpers.appendVary pushed the new token onto the parsed list without looking for the wildcard, so a `Vary: *` an earlier middleware had set became `*, Accept` when b.middleware.sse added Accept and `*, Cookie, Authorization` under b.middleware.noCache; a cache reading that list cannot apply the never-reuse `*` asks for. b.middleware.compression kept its own appender, which collapsed the wildcard only when it was the entire earlier value, so `Cookie, *` grew an `Accept-Encoding`. One question had three answers: mergeVary collapsed the wildcard, appendVary ignored it, compression half-handled it. Both appenders now go through appendVaryValue.",
+  },
+  {
     id: "record-version-check-hand-rolled",
     primitive: "b.structuredFields.recordVersionMatches(record, name, value, grammar) (lib/structured-fields.js) answers whether a DNS TXT record opens with the version tag its RFC defines, under that RFC's grammar: SPF `v=spf1` ended by SP or end of record (RFC 7208 4.5), DMARC `v` *WSP `=` *WSP `DMARC1` then *WSP `;` or end (RFC 9989), MTA-STS `v=STSv1` and TLS-RPT `v=TLSRPTv1` followed by *WSP `;` (RFC 8461 3.1, RFC 8460 3). Selecting a record with `indexOf(\"v=...\")`, `startsWith(\"v=...\")` or `/^v=.../` re-spells it and gets the edges wrong: a prefix test accepts `v=spf10` and `v=DMARC10`, an anywhere-test accepts a record that carries the tag later, and a case-folding regex accepts a lowercased token the grammar spells case-sensitively.",
     // Anchors on a string-search call whose argument opens with `v=` (with or

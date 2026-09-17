@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.20.30",
-  "createdAt": "2026-09-17T22:07:51.855Z",
+  "createdAt": "2026-09-17T22:57:35.090Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -52369,6 +52369,10 @@
           }
         },
         "appendVary": {
+          "type": "function",
+          "arity": 2
+        },
+        "appendVaryValue": {
           "type": "function",
           "arity": 2
         },
