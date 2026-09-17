@@ -7,6 +7,7 @@
 
 var b = require("../..");
 var check = require("../helpers/check").check;
+var growth = require("../helpers/growth");
 
 function rejects(label, fn, pattern) {
   var threw = false; var msg = "";
@@ -280,6 +281,46 @@ function run() {
   check("middleware: body has paths",            parsedBody.paths["/health"] != null);
 
   check("middleware.forceRebuild is fn",         typeof mw.forceRebuild === "function");
+
+  // ---- schemaWalk: shared, cyclic and deep inputs ----
+  // A schema built in code can reuse one object at every level; copying it once
+  // per path writes 2^depth nodes into the document.
+  function sharedJson(d) {
+    var x = { type: "string" };
+    for (var i = 0; i < d; i += 1) x = { type: "object", properties: { a: x, b: x } };
+    return x;
+  }
+  var walkGrew = growth.looksSuperlinear(function (d) { b.openapi.schemaWalk(sharedJson(d)); },
+    { small: 18, large: 21, threshold: 4, floorMs: 5 });
+  check("schemaWalk: a schema reusing one object at every level does not expand per path", !walkGrew);
+  if (!walkGrew) {
+    var sharedErr = null;
+    try { b.openapi.schemaWalk(sharedJson(40)); } catch (e) { sharedErr = e; }
+    check("schemaWalk: a 40-level shared schema is refused with openapi/schema-too-large",
+      sharedErr && sharedErr.code === "openapi/schema-too-large", sharedErr && (sharedErr.code || sharedErr.message));
+    var sharedSafe = b.safeSchema.string();
+    for (var ss = 0; ss < 40; ss += 1) sharedSafe = b.safeSchema.object({ a: sharedSafe, b: sharedSafe });
+    var sharedSafeErr = null;
+    try { b.openapi.schemaWalk(sharedSafe); } catch (e) { sharedSafeErr = e; }
+    check("schemaWalk: a 40-level shared safeSchema is refused with openapi/schema-too-large",
+      sharedSafeErr && sharedSafeErr.code === "openapi/schema-too-large", sharedSafeErr && (sharedSafeErr.code || sharedSafeErr.message));
+  }
+  var cyclic = { type: "object", properties: {} };
+  cyclic.properties.self = cyclic;
+  var cyclicErr = null;
+  try { b.openapi.schemaWalk(cyclic); } catch (e) { cyclicErr = e; }
+  check("schemaWalk: a cyclic schema is refused with openapi/schema-cycle, not a stack overflow",
+    cyclicErr && cyclicErr.code === "openapi/schema-cycle", cyclicErr && (cyclicErr.code || cyclicErr.name));
+  var chain = { type: "string" };
+  for (var ch = 0; ch < 5000; ch += 1) chain = { type: "object", properties: { n: chain } };
+  var chainErr = null;
+  try { b.openapi.schemaWalk(chain); } catch (e) { chainErr = e; }
+  check("schemaWalk: a 5000-level schema is refused with openapi/schema-too-deep, not a stack overflow",
+    chainErr && chainErr.code === "openapi/schema-too-deep", chainErr && (chainErr.code || chainErr.name));
+  var reused = { type: "string", minLength: 1 };
+  var twice = b.openapi.schemaWalk({ type: "object", properties: { a: reused, b: reused } });
+  check("schemaWalk: a subschema used twice is copied into both places",
+    twice.properties.a.minLength === 1 && twice.properties.b.minLength === 1 && twice.properties.a !== reused);
 
   // ---- schemaWalk: safeSchema input ----
   var s = b.safeSchema;

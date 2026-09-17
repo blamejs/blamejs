@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.20.29",
-  "createdAt": "2026-09-17T07:52:06.587Z",
+  "frameworkVersion": "0.20.30",
+  "createdAt": "2026-09-17T10:37:04.970Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -6405,6 +6405,10 @@
         "isTargetedHeader": {
           "type": "function",
           "arity": 1
+        },
+        "keepNoStore": {
+          "type": "function",
+          "arity": 2
         },
         "parse": {
           "type": "function",
@@ -35660,6 +35664,10 @@
         "assertSafe": {
           "type": "function",
           "arity": 5
+        },
+        "assertStateless": {
+          "type": "function",
+          "arity": 4
         },
         "buildProfile": {
           "type": "function",

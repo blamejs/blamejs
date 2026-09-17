@@ -992,6 +992,14 @@ function testMakeSkipMatcher() {
   check("makeSkipMatcher: falls back to req.originalUrl", shouldSkip({ originalUrl: "/healthz" }) === true);
   check("makeSkipMatcher: missing path → '/' (no skip)", shouldSkip({}) === false);
 
+  // The matcher screens the entries it was given. An entry added to the
+  // caller's array afterwards is not screened, so it must not be matched.
+  var operatorPaths = ["/healthz"];
+  var copied = b.requestHelpers.makeSkipMatcher({ skipPaths: operatorPaths }, "test.makeSkipMatcher");
+  operatorPaths.push(/^\/admin/);
+  check("makeSkipMatcher: an entry pushed into the skipPaths array after create is not matched",
+        copied({ pathname: "/admin/users" }) === false);
+
   // SEGMENT-BOUNDARY (not raw startsWith) — the guard-bypass fix. "/healthz"
   // must NOT skip the sibling "/healthzzz", but MUST skip the descendant.
   check("makeSkipMatcher: segment boundary — sibling NOT skipped", shouldSkip({ pathname: "/healthzzz" }) === false);

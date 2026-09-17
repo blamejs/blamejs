@@ -188,8 +188,24 @@ async function testQueryLimitKeepsNewest() {
   check("queryLimit keeps newest events (alert not dropped by cap)", summary.hitCount >= 1);
 }
 
+// The default classifier reads ALERT_PATTERNS and CRITICAL_PATTERNS on every
+// event, so the exported arrays are frozen: a push, a replaced entry or a
+// truncation would change how every later event is classified.
+function testExportedPatternsFrozen() {
+  var r = b.auditDailyReview;
+  check("ALERT_PATTERNS is frozen", Object.isFrozen(r.ALERT_PATTERNS));
+  check("CRITICAL_PATTERNS is frozen", Object.isFrozen(r.CRITICAL_PATTERNS));
+  check("SEVERITY_ORDER is frozen", Object.isFrozen(r.SEVERITY_ORDER));
+  check("POSTURES_REQUIRING_NOTIFY is frozen", Object.isFrozen(r.POSTURES_REQUIRING_NOTIFY));
+  check("each ALERT_PATTERNS and CRITICAL_PATTERNS RegExp is frozen",
+        r.ALERT_PATTERNS.concat(r.CRITICAL_PATTERNS).every(Object.isFrozen));
+  check("a frozen pattern still classifies an event",
+        r.CRITICAL_PATTERNS[0].test("audit.tamper.detected") && r.ALERT_PATTERNS[0].test("auth.failed"));
+}
+
 async function run() {
   testSurface();
+  testExportedPatternsFrozen();
   await testRunSummary();
   await testNotifyTriggered();
   testPostureRequiresNotify();

@@ -7587,13 +7587,65 @@ function testRegexModulesContainNoRegexes() {
   _report("the regex screen and the linear matcher contain no regexes", bad);
 }
 
-function testOperatorRegexScreenedForReDoS() {
+// A file is a candidate when it runs a RegExp it did not write: a value it
+// type-checks with `instanceof RegExp` and then runs, a property named like a
+// pattern (`col.regex.test(`, `opts.pattern.test(`), a function parameter run
+// with `.test(`, or a local copied from an options object and run. The last
+// three exist because `safe-schema` `.regex(re)`, `guard-csv` `col.regex` and
+// `request-id` `formatRegex` ran operator patterns without ever writing
+// `instanceof RegExp`, and the gate never saw them. A candidate must screen the
+// pattern with `assertSafe` and refuse the g and y flags with
+// `assertStateless`, since either flag starts the next `test()` at the
+// lastIndex the previous call left.
+function _operatorRegexRunForms(code) {
+  var forms = [];
+  if (/instanceof RegExp/.test(code) && /\.(?:test|exec|match)\s*\(/.test(code)) {
+    forms.push({ why: "type-checks a RegExp and runs a regex", needle: "instanceof RegExp" });
+  }
+  var held = /\b[A-Za-z_$][\w$]*\.(?:[\w$]*(?:[Rr]egex|[Rr]eg[Ee]xp|[Pp]attern)|re|rx|matcher)\s*\.\s*(?:test|exec)\s*\(/.exec(code);
+  if (held) forms.push({ why: "runs a pattern held on an object", needle: held[0] });
+  var params = {};
+  var fnRe = /function\s*[\w$]*\s*\(([^)]*)\)/g;
+  var fm;
+  while ((fm = fnRe.exec(code)) !== null) {
+    fm[1].split(",").forEach(function (p) { p = p.trim(); if (p) params[p] = true; });
+  }
+  var fromOpts = {};
+  var optsAssign = /\b(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:opts|options|config|cfg)\.[\w$]+/g;
+  var oa;
+  while ((oa = optsAssign.exec(code)) !== null) fromOpts[oa[1]] = true;
+  var bareRun = /(^|[^.\w$/])([A-Za-z_$][\w$]*)\s*\.\s*(test|exec)\s*\(/g;
+  var bm;
+  while ((bm = bareRun.exec(code)) !== null) {
+    if (bm[3] === "test" && params[bm[2]]) {
+      forms.push({ why: "runs a function parameter as a regex", needle: bm[2] + ".test(" });
+      break;
+    }
+    if (fromOpts[bm[2]]) {
+      forms.push({ why: "runs a value copied from an options object as a regex", needle: bm[2] + "." + bm[3] + "(" });
+      break;
+    }
+  }
+  return forms;
+}
+
+// `b.middleware.noCache` puts `Cache-Control: no-store` on a response, and a
+// framework writer that then wrote its own default (`private, no-cache`,
+// `public, max-age=...`) replaced it, so an individualized page could be
+// stored by the browser. Every lib write of Cache-Control is either a string
+// literal carrying no-store or goes through `cdnCacheControl.keepNoStore`,
+// which keeps an earlier no-store. Only noCache itself writes an arbitrary
+// value, the one its operator configured.
+function testCacheControlDefaultsKeepNoStore() {
   var ALLOW = {
-    "lib/dev.js": "ignore RegExp matched against an fs.watch filename in the operator's local source tree; dev-loop only, hard-refused under NODE_ENV=production",
-    "lib/parsers/safe-env.js": "keyShape RegExp matched against env-var keys parsed from the operator's .env config at boot, not request input",
-    "lib/safe-json.js": "JSON Schema `pattern` is part of the operator-owned schema (the documented trust boundary), not request data — same stance as the dynamic-regex detector's safe-json exclusion",
-    "lib/regex-linear.js": "the inverse case, not a trusted-input one: the RegExp handed in is READ (its .source and .flags) and never executed — this module exists so an operator pattern can run WITHOUT the backtracking engine, and screening it with assertSafe would refuse the very shapes it is built to run safely, such as (a+)+$",
+    "lib/middleware/no-cache.js": "the middleware that sets no-store; it writes its configured cacheControl value",
   };
+  var WRITE = /(?:["']Cache-Control["']\s*:|setHeader\s*\(\s*["']Cache-Control["']\s*,)\s*/gi;
+  function valueKeepsNoStore(rest) {
+    if (/^cdnCacheControl\.keepNoStore\s*\(/.test(rest)) return true;
+    var literal = /^(["'])((?:(?!\1)[^\\]|\\.)*)\1\s*[,)}\n]/.exec(rest);
+    return !!(literal && /(^|[\s,])no-store($|[\s,])/i.test(literal[2]));
+  }
   var files = _libFiles();
   var bad = [];
   for (var fi = 0; fi < files.length; fi++) {
@@ -7602,25 +7654,72 @@ function testOperatorRegexScreenedForReDoS() {
     var content;
     try { content = fs.readFileSync(files[fi], "utf8"); }
     catch (_e) { continue; }
-    if (!/instanceof RegExp/.test(content)) continue;             // accepts an operator RegExp opt
-    if (!/\.(?:test|exec|match)\s*\(/.test(content)) continue;    // and executes a regex
-    // Comment-stripped: `assertSafe(` means this file SCREENED its regex, and
-    // a mention of it in a comment would otherwise exempt the file from the
-    // ReDoS gate while doing nothing of the kind.
-    if (/\bassertSafe\s*\(/.test(_stripComments(content))) continue;
     var lines = content.split(/\r?\n/);
     for (var li = 0; li < lines.length; li++) {
-      if (/instanceof RegExp/.test(lines[li])) {
+      if (/^\s*(\*|\/\/)/.test(lines[li])) continue;
+      WRITE.lastIndex = 0;
+      var m;
+      while ((m = WRITE.exec(lines[li])) !== null) {
+        if (valueKeepsNoStore(lines[li].slice(m.index + m[0].length) + "\n")) continue;
         bad.push({
           file:    rel,
           line:    li + 1,
-          content: "accepts an operator-supplied RegExp + executes a regex but never calls b.guardRegex.assertSafe — screen the operator pattern for ReDoS at config time, or add the file to this detector's ALLOW map with a reason if the regex is matched against trusted (non-request) input",
+          content: "writes a Cache-Control that replaces an earlier no-store; send cdnCacheControl.keepNoStore(res, <default>) or a literal carrying no-store",
         });
-        break;
       }
     }
   }
-  _report("a primitive accepting + executing an operator-supplied RegExp must ReDoS-screen it via b.guardRegex.assertSafe (or be allowlisted as matched-against-trusted-input)",
+  _report("a framework Cache-Control default keeps a no-store already on the response (b.cdnCacheControl.keepNoStore)",
+    bad);
+}
+
+function testOperatorRegexScreenedForReDoS() {
+  var UNSCREENED = {
+    "lib/dev.js": "ignore RegExp matched against an fs.watch filename in the operator's local source tree; dev-loop only, hard-refused under NODE_ENV=production",
+    "lib/safe-json.js": "JSON Schema `pattern` is part of the operator-owned schema (the documented trust boundary), not request data — same stance as the dynamic-regex detector's safe-json exclusion",
+    "lib/regex-linear.js": "the inverse case, not a trusted-input one: the RegExp handed in is READ (its .source and .flags) and never executed — this module exists so an operator pattern can run WITHOUT the backtracking engine, and screening it with assertSafe would refuse the very shapes it is built to run safely, such as (a+)+$",
+    "lib/ai-input.js": "the RegExps it runs are the module's own PATTERNS table; no option adds to it",
+    "lib/guard-sql.js": "the RegExps it runs are the module's own DETECTORS table; no option adds to it",
+  };
+  var STATEFUL_OK = {
+    "lib/forms.js": "validate() runs a fresh `^(?:source)$` RegExp built per call with the g, y and m flags removed; the operator's object is never run",
+    "lib/safe-json.js": "the pattern is rebuilt from its source with the g and y flags removed before it is cached and run",
+    "lib/flag-targeting.js": "the operator supplies a pattern STRING, compiled with no flags",
+    "lib/regex-linear.js": "the RegExp handed in is read, never run; the compiled matcher starts every test at position 0",
+    "lib/structured-fields.js": "parseTagList uses an operator RegExp only as a String.prototype.split separator; split builds its own splitter from the pattern and neither reads nor writes the caller's lastIndex (measured with g, y and gy flags and lastIndex 3)",
+    "lib/ai-input.js": "the RegExps it runs are the module's own PATTERNS table",
+    "lib/guard-sql.js": "the RegExps it runs are the module's own DETECTORS table",
+  };
+  var files = _libFiles();
+  var bad = [];
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    // Comment-stripped: a mention of `assertSafe(` in a comment would otherwise
+    // exempt the file while screening nothing.
+    var code = _stripComments(content);
+    var forms = _operatorRegexRunForms(code);
+    if (forms.length === 0) continue;
+    var at = content.indexOf(forms[0].needle);
+    var line = at === -1 ? 1 : content.slice(0, at).split("\n").length;
+    if (!UNSCREENED[rel] && !/\bassertSafe\s*\(/.test(code)) {
+      bad.push({
+        file:    rel,
+        line:    line,
+        content: forms[0].why + " but never calls b.guardRegex.assertSafe — screen the operator pattern for ReDoS when it is accepted, or add the file to UNSCREENED with a reason if the pattern is matched only against trusted input",
+      });
+    }
+    if (!STATEFUL_OK[rel] && !/\bassertStateless\s*\(/.test(code)) {
+      bad.push({
+        file:    rel,
+        line:    line,
+        content: forms[0].why + " but never calls b.guardRegex.assertStateless — refuse the g and y flags when the pattern is accepted, or add the file to STATEFUL_OK with a reason if the operator's RegExp object is never the one run",
+      });
+    }
+  }
+  _report("a primitive running an operator-supplied RegExp screens it with b.guardRegex.assertSafe and refuses the g and y flags with b.guardRegex.assertStateless",
     bad);
 }
 
@@ -20722,9 +20821,10 @@ function testValidateOptsAcceptedKeysAreRead() {
    "redisMaxReconnectAttempts"].forEach(function (k) {
     ALLOW["lib/cache.js::opts." + k] = true;
   });
-  // flag-providers: passed-through spec metadata — the whole spec is
-  // stored (flags[key] = opts.flags[key]) and returned via
-  // provider.get()/evaluate(); operator tooling reads the fields.
+  // flag-providers: passed-through spec metadata — _validateFlagSpec
+  // returns a copy of the whole spec with the validated rules, which the
+  // provider stores and returns via provider.get(); operator tooling
+  // reads the fields.
   ["description", "tags", "kind"].forEach(function (k) {
     ALLOW["lib/flag-providers.js::spec." + k] = true;
   });
@@ -25038,6 +25138,7 @@ async function run() {
   testQuotedIdentifiersMatchTheQueryBuilder();
   testRegexModulesContainNoRegexes();
   testOperatorRegexScreenedForReDoS();
+  testCacheControlDefaultsKeepNoStore();
   testModuleLoadListMatchesNativeModuleNaming();
   testCompetingConsumerClaimUsesSkipLocked();
   testCacheCounterUsesAtomicUpdate();

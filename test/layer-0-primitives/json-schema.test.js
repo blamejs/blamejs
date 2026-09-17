@@ -735,7 +735,170 @@ function testSharedSchemaGraphIsWalkedOncePerObject() {
         "is still refused", refused !== null, String(refused && refused.code));
 }
 
+// Validation walked every path through the schema and the instance. A schema of
+// linear size whose definitions each reach the next twice, or an ordinary
+// recursive schema whose alternatives descend into the same child, costs
+// branches^depth for one validate() call. Each shape below is measured for
+// growth first, and its deep verdict is only checked when growth is flat, so a
+// regression fails here instead of hanging the run.
+function testValidationCostFollowsInputSize() {
+  function ref(i) { return { $ref: "#/$defs/d" + i }; }
+  function defsDiamond(n, level, leaf) {
+    var defs = {};
+    for (var i = 0; i < n; i += 1) defs["d" + i] = level(i);
+    defs["d" + n] = leaf;
+    return { $defs: defs, $ref: "#/$defs/d0" };
+  }
+  var diamonds = [
+    { label: "allOf", build: function (n) { return defsDiamond(n, function (i) { return { allOf: [ref(i + 1), ref(i + 1)] }; }, { type: "string" }); }, instance: "aaa", valid: true },
+    { label: "anyOf with a failing leaf", build: function (n) { return defsDiamond(n, function (i) { return { anyOf: [ref(i + 1), ref(i + 1)] }; }, { type: "number" }); }, instance: "aaa", valid: false },
+    { label: "oneOf", build: function (n) { return defsDiamond(n, function (i) { return { oneOf: [ref(i + 1), ref(i + 1)] }; }, { type: "string" }); }, instance: "aaa", valid: false },
+    { label: "if/else", build: function (n) { return defsDiamond(n, function (i) { return { if: ref(i + 1), else: ref(i + 1) }; }, { type: "number" }); }, instance: "aaa", valid: false },
+    { label: "not/not plus allOf", build: function (n) { return defsDiamond(n, function (i) { return { not: { not: ref(i + 1) }, allOf: [ref(i + 1)] }; }, { type: "string" }); }, instance: "aaa", valid: true },
+    { label: "$ref beside allOf", build: function (n) { return defsDiamond(n, function (i) { return { $ref: "#/$defs/d" + (i + 1), allOf: [ref(i + 1)] }; }, { type: "string" }); }, instance: "aaa", valid: true },
+    { label: "dependentSchemas", build: function (n) { return defsDiamond(n, function (i) { return { dependentSchemas: { a: ref(i + 1), b: ref(i + 1) } }; }, { type: "object" }); }, instance: { a: 1, b: 2 }, valid: true },
+    { label: "unevaluatedProperties under allOf", build: function (n) { return defsDiamond(n, function (i) { return { allOf: [ref(i + 1), ref(i + 1)], unevaluatedProperties: false }; }, { properties: { a: true, b: true } }); }, instance: { a: 1, b: 2 }, valid: true },
+    { label: "$dynamicRef", build: function (n) {
+      var defs = {};
+      for (var i = 0; i < n; i += 1) {
+        defs["d" + i] = { $dynamicAnchor: "a" + i, allOf: [{ $dynamicRef: "#a" + (i + 1) }, { $dynamicRef: "#a" + (i + 1) }] };
+      }
+      defs["d" + n] = { $dynamicAnchor: "a" + n, type: "string" };
+      return { $defs: defs, $dynamicRef: "#a0" };
+    }, instance: "aaa", valid: true },
+  ];
+  var grew = [];
+  diamonds.forEach(function (shape) {
+    if (helpers.looksSuperlinear(function (n) { b.jsonSchema.validate(shape.build(n), shape.instance); },
+        { small: 8, large: 16, threshold: 8, floorMs: 5 })) grew.push(shape.label);
+  });
+  check("jsonSchema: a schema that reaches one definition twice per level costs its size" +
+        (grew.length ? " (grew: " + grew.join("; ") + ")" : ""), grew.length === 0);
+  if (grew.length === 0) {
+    var wrong = [];
+    diamonds.forEach(function (shape) {
+      var r = b.jsonSchema.validate(shape.build(60), shape.instance);
+      if (r.valid !== shape.valid) wrong.push(shape.label + " valid=" + r.valid);
+    });
+    check("jsonSchema: 60-level diamonds return the verdict the shallow ones do" +
+          (wrong.length ? " (" + wrong.join("; ") + ")" : ""), wrong.length === 0);
+  }
+
+  var expr = b.jsonSchema.compile({
+    $defs: {
+      Expr: { oneOf: [{ $ref: "#/$defs/Add" }, { $ref: "#/$defs/Sub" }, { $ref: "#/$defs/Mul" }, { $ref: "#/$defs/Num" }] },
+      Add: { type: "object", required: ["op", "left", "right"], additionalProperties: false,
+        properties: { op: { const: "+" }, left: { $ref: "#/$defs/Expr" }, right: { $ref: "#/$defs/Expr" } } },
+      Sub: { type: "object", required: ["op", "left", "right"], additionalProperties: false,
+        properties: { op: { const: "-" }, left: { $ref: "#/$defs/Expr" }, right: { $ref: "#/$defs/Expr" } } },
+      Mul: { type: "object", required: ["op", "left", "right"], additionalProperties: false,
+        properties: { op: { const: "*" }, left: { $ref: "#/$defs/Expr" }, right: { $ref: "#/$defs/Expr" } } },
+      Num: { type: "number" },
+    },
+    $ref: "#/$defs/Expr",
+  });
+  var folder = b.jsonSchema.compile({
+    $defs: {
+      Node: { anyOf: [{ $ref: "#/$defs/Folder" }, { $ref: "#/$defs/Link" }] },
+      Folder: { type: "object", properties: { kind: { const: "folder" }, child: { $ref: "#/$defs/Node" } } },
+      Link: { type: "object", properties: { kind: { const: "link" }, child: { $ref: "#/$defs/Node" } } },
+    },
+    $ref: "#/$defs/Node",
+  });
+  function exprInstance(d, leaf) { var x = leaf; for (var i = 0; i < d; i += 1) x = { op: "+", left: x, right: 1 }; return x; }
+  function folderInstance(d, leafKind) { var x = { kind: leafKind }; for (var i = 0; i < d; i += 1) x = { kind: "folder", child: x }; return x; }
+  var instanceGrew = [];
+  if (helpers.looksSuperlinear(function (d) { expr.validate(b.safeJson.parse(JSON.stringify(exprInstance(d, "x")))); },
+      { small: 5, large: 10, threshold: 8, floorMs: 5 })) instanceGrew.push("expression oneOf, invalid leaf");
+  if (helpers.looksSuperlinear(function (d) { folder.validate(folderInstance(d, "folder")); },
+      { small: 8, large: 16, threshold: 8, floorMs: 5 })) instanceGrew.push("folder/link anyOf");
+  check("jsonSchema: an ordinary recursive schema costs the depth of the instance, not branches^depth" +
+        (instanceGrew.length ? " (grew: " + instanceGrew.join("; ") + ")" : ""), instanceGrew.length === 0);
+  if (instanceGrew.length === 0) {
+    check("jsonSchema: a 40-level valid expression validates", expr.validate(exprInstance(40, 1)).valid === true);
+    var badExpr = expr.validate(exprInstance(40, "x"));
+    check("jsonSchema: a 40-level expression with a bad leaf is invalid and reports errors",
+          badExpr.valid === false && badExpr.errors.length > 0 && badExpr.errors.length <= 100);
+    check("jsonSchema: a 40-level folder chain validates", folder.validate(folderInstance(40, "folder")).valid === true);
+  }
+
+  // An instance built in code can reuse one array at every level, which no
+  // reference count on the schema can see. The ceiling refuses it with this
+  // validator's error instead of walking 2^depth paths.
+  var list = b.jsonSchema.compile({ type: "array", items: { $ref: "#" } });
+  function sharedArrays(d) { var x = []; for (var i = 0; i < d; i += 1) x = [x, x]; return x; }
+  var refusal = null;
+  var t0 = process.hrtime.bigint();
+  try { list.validate(sharedArrays(24)); } catch (e) { refusal = e; }
+  var refusalMs = Number(process.hrtime.bigint() - t0) / 1e6;
+  check("jsonSchema: an instance that reuses one array at every level is refused with json-schema/evaluation-limit (" +
+        refusalMs.toFixed(0) + "ms)", refusal !== null && refusal.code === "json-schema/evaluation-limit",
+        String(refusal && (refusal.code || refusal.message)));
+  var deepList = [];
+  for (var dl = 0; dl < 60; dl += 1) deepList = [deepList, [], [[]]];
+  var deepListErr = null;
+  var deepListValid = false;
+  try { deepListValid = list.validate(deepList).valid === true; } catch (e) { deepListErr = e; }
+  check("jsonSchema: an ordinary 60-level array is not refused by the ceiling",
+        deepListValid && deepListErr === null, String(deepListErr && (deepListErr.code || deepListErr.message)));
+  var wide = [];
+  for (var wi = 0; wi < 50000; wi += 1) wide.push([[], []]);
+  var wideErr = null;
+  var wideValid = false;
+  try { wideValid = list.validate(wide).valid === true; } catch (e) { wideErr = e; }
+  check("jsonSchema: a valid 50000-element array of arrays is not refused by the ceiling",
+        wideValid && wideErr === null, String(wideErr && (wideErr.code || wideErr.message)));
+
+  var uniq = b.jsonSchema.compile({ type: "array", uniqueItems: true });
+  function numbers(n) { var a = []; for (var i = 0; i < n; i += 1) a.push(i); return a; }
+  function objects(n) { var a = []; for (var i = 0; i < n; i += 1) a.push({ k: i, tag: "t" }); return a; }
+  var uniqGrew = [];
+  if (helpers.looksSuperlinear(function (n) { uniq.validate(numbers(n)); },
+      { small: 16000, large: 64000, threshold: 8, floorMs: 5 })) uniqGrew.push("numbers");
+  if (helpers.looksSuperlinear(function (n) { uniq.validate(objects(n)); },
+      { small: 4000, large: 16000, threshold: 8, floorMs: 5 })) uniqGrew.push("objects");
+  check("jsonSchema: uniqueItems costs the length of the array, not its square" +
+        (uniqGrew.length ? " (grew: " + uniqGrew.join("; ") + ")" : ""), uniqGrew.length === 0);
+}
+
+// uniqueItems and enum/const answer the same question, "are these two values
+// equal?", and they must give the same answer for every pair, in both orders.
+function testUniqueItemsAgreesWithEnumEquality() {
+  var shared = { s: 1 };
+  var hidden = Object.defineProperty({ y: 1 }, "x", { value: 1, enumerable: false });
+  var fn = function () { return 1; };
+  var values = [
+    0, -0, 1, 1.5, NaN, Infinity, -Infinity, "", "1", "a", true, false, null, undefined,
+    [], [1], [1, 2], [2, 1], [[1]], [undefined], [null],
+    {}, { a: 1 }, { a: 1, b: 2 }, { b: 2, a: 1 }, { a: { b: [1, { c: 2 }] } }, { a: undefined },
+    shared, { s: 1 }, [shared, shared], [{ s: 1 }, { s: 1 }],
+    { x: 1 }, hidden, fn, [fn], { f: fn },
+  ];
+  var uniq = b.jsonSchema.compile({ uniqueItems: true });
+  var disagreements = [];
+  for (var i = 0; i < values.length; i += 1) {
+    for (var j = 0; j < values.length; j += 1) {
+      var ab = b.jsonSchema.compile({ enum: [values[i]] }).isValid(values[j]);
+      var ba = b.jsonSchema.compile({ enum: [values[j]] }).isValid(values[i]);
+      var duplicate = uniq.isValid([values[i], values[j]]) === false;
+      if (ab !== ba || ab !== duplicate) {
+        disagreements.push(i + "," + j + " enum=" + ab + "/" + ba + " duplicate=" + duplicate);
+      }
+    }
+  }
+  check("jsonSchema: enum equality is symmetric and uniqueItems agrees with it for every pair" +
+        (disagreements.length ? " (" + disagreements.slice(0, 6).join("; ") + ")" : ""),
+        disagreements.length === 0);
+
+  var arr = [{ x: 1 }, { y: 2 }, { y: 2 }, { x: 1 }];
+  var r = b.jsonSchema.validate({ uniqueItems: true }, arr);
+  check("jsonSchema: uniqueItems reports the first duplicate pair by lowest first index (0, 3)",
+        r.valid === false && /indices 0, 3/.test(r.errors[0].message), r.errors[0] && r.errors[0].message);
+}
+
 async function run() {
+  testValidationCostFollowsInputSize();
+  testUniqueItemsAgreesWithEnumEquality();
   testPatternIsScreenedForRedos();
   testSharedSchemaGraphIsWalkedOncePerObject();
   testSurface();

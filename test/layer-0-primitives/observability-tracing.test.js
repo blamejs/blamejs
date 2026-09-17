@@ -538,6 +538,17 @@ function testSpanHttpServerRejectsReDoSIgnorePath() {
   } catch (e) { threw = true; code = e.code; }
   check("spanHttpServer: ReDoS ignorePaths RegExp refused", threw);
   check("spanHttpServer: ReDoS refusal code", code === "span-http/unsafe-pattern");
+
+  // ignorePaths is screened when the middleware is created. An entry added to
+  // the caller's array afterwards is not screened, so it must not be matched.
+  var operatorPaths = ["/healthz"];
+  var mw = b.middleware.spanHttpServer({ tracer: tracer, ignorePaths: operatorPaths });
+  operatorPaths.push(/^\/api/);
+  var req = { method: "GET", url: "/api/x", headers: {}, socket: {} };
+  var res = { headersSent: false, statusCode: 200, on: function () {}, getHeader: function () {} };
+  mw(req, res, function () {});
+  check("spanHttpServer: an entry pushed into the ignorePaths array after create is not matched",
+        typeof req.span === "object");
 }
 
 // ---- traceLogCorrelation middleware ----
