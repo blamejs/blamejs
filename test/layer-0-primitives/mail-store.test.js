@@ -291,6 +291,96 @@ async function testSealedColumnsActuallySealed() {
   } finally { _teardown(fx); }
 }
 
+// A reply goes to Reply-To when the author set one (RFC 5322 §3.6.2) and a
+// reply-all goes to To plus Cc. A store that records only To leaves a consumer
+// composing either from the store alone with the wrong recipients.
+async function testCcAndReplyToRoundTrip() {
+  var fx = await _setupStore("cc-replyto");
+  try {
+    var store = b.mailStore.create({ backend: fx.db });
+    var meta = store.appendMessage("INBOX", _msg([
+      "From: alice@example.com",
+      "To: bob@example.com",
+      "Cc: carol@example.com, dave@example.com",
+      "Cc: erin@example.com",
+      "Reply-To: support@example.com",
+      "Subject: Ticket",
+      "Message-Id: <cc1@example.com>",
+    ], "body"));
+    var fetched = store.fetchByObjectId("INBOX", meta.objectid);
+    check("cc: every Cc header is recorded, joined like To",
+          fetched.cc === "carol@example.com, dave@example.com, erin@example.com", fetched.cc);
+    check("replyTo: Reply-To is recorded", fetched.replyTo === "support@example.com", fetched.replyTo);
+    check("to: still recorded", fetched.to === "bob@example.com", fetched.to);
+
+    var plain = store.appendMessage("INBOX", _msg([
+      "From: alice@example.com", "To: bob@example.com", "Message-Id: <cc2@example.com>",
+    ], "body"));
+    var fetchedPlain = store.fetchByObjectId("INBOX", plain.objectid);
+    check("cc: a message without Cc records an empty string", fetchedPlain.cc === "", fetchedPlain.cc);
+    check("replyTo: a message without Reply-To records an empty string",
+          fetchedPlain.replyTo === "", fetchedPlain.replyTo);
+
+    var dup = store.appendMessage("INBOX", _msg([
+      "From: alice@example.com", "To: bob@example.com",
+      "Reply-To: first@example.com", "Reply-To: second@example.com",
+      "Message-Id: <cc3@example.com>",
+    ], "body"));
+    check("replyTo: a repeated Reply-To records every instance rather than picking one",
+          store.fetchByObjectId("INBOX", dup.objectid).replyTo === "first@example.com, second@example.com");
+
+    var raw = fx.db.prepare(
+      "SELECT to_addrs, cc_addrs, reply_to FROM " + store._tablePrefix + "_messages WHERE objectid = ?"
+    ).get(meta.objectid);
+    ["to_addrs", "cc_addrs", "reply_to"].forEach(function (col) {
+      check("sealed: " + col + " column starts with vault:",
+            typeof raw[col] === "string" && raw[col].indexOf("vault:") === 0, raw[col]);
+    });
+  } finally { _teardown(fx); }
+}
+
+// `CREATE TABLE IF NOT EXISTS` leaves a store created by an earlier version with
+// its old column set, so the new columns have to be added when the store is
+// opened, and rows appended before that report the two fields as not recorded.
+async function testCcAndReplyToColumnsAddedToExistingStore() {
+  var fx = await _setupStore("cc-upgrade");
+  try {
+    var first = b.mailStore.create({ backend: fx.db });
+    var table = first._tablePrefix + "_messages";
+    var old = first.appendMessage("INBOX", _msg([
+      "From: alice@example.com", "To: bob@example.com", "Cc: carol@example.com",
+      "Reply-To: support@example.com", "Subject: Before upgrade", "Message-Id: <old@example.com>",
+    ], "old body"));
+    fx.db.prepare("ALTER TABLE \"" + table + "\" DROP COLUMN \"cc_addrs\"").run();
+    fx.db.prepare("ALTER TABLE \"" + table + "\" DROP COLUMN \"reply_to\"").run();
+
+    var reopened = b.mailStore.create({ backend: fx.db });
+    var cols = fx.db.prepare("PRAGMA table_info(\"" + table + "\")").all().map(function (c) { return c.name; });
+    check("upgrade: cc_addrs column added on create", cols.indexOf("cc_addrs") !== -1, cols.join(","));
+    check("upgrade: reply_to column added on create", cols.indexOf("reply_to") !== -1, cols.join(","));
+
+    var oldFetched = reopened.fetchByObjectId("INBOX", old.objectid);
+    check("upgrade: a row appended before the columns existed keeps its other fields",
+          oldFetched.subject === "Before upgrade" && oldFetched.to === "bob@example.com");
+    check("upgrade: cc is null for a row appended before it was recorded", oldFetched.cc === null, oldFetched.cc);
+    check("upgrade: replyTo is null for a row appended before it was recorded",
+          oldFetched.replyTo === null, oldFetched.replyTo);
+
+    var fresh = reopened.appendMessage("INBOX", _msg([
+      "From: alice@example.com", "To: bob@example.com", "Cc: carol@example.com",
+      "Reply-To: support@example.com", "Message-Id: <new@example.com>",
+    ], "new body"));
+    var freshFetched = reopened.fetchByObjectId("INBOX", fresh.objectid);
+    check("upgrade: a row appended after the upgrade records Cc and Reply-To",
+          freshFetched.cc === "carol@example.com" && freshFetched.replyTo === "support@example.com");
+
+    var eAgain = null;
+    try { b.mailStore.create({ backend: fx.db }); } catch (e) { eAgain = e; }
+    check("upgrade: opening a store that already has the columns does not fail", eAgain === null,
+          eAgain && (eAgain.code || eAgain.message));
+  } finally { _teardown(fx); }
+}
+
 async function testRefusesBadInput() {
   var fx = await _setupStore("bad");
   try {
@@ -718,6 +808,8 @@ async function run() {
   await testQuota();
   await testLegalHold();
   await testSealedColumnsActuallySealed();
+  await testCcAndReplyToRoundTrip();
+  await testCcAndReplyToColumnsAddedToExistingStore();
   await testRefusesBadInput();
   await testCustomFolder();
   await testMoveMessages();

@@ -73,6 +73,14 @@ async function testFoldersFetch() {
     check("fetch: unseals subject", fetched.subject === "hi");
     check("fetch: returns modseq",  fetched.modseq === 1);
 
+    var replyMeta = fx.store.appendMessage("INBOX", _msg([
+      "From: a@x", "To: b@y", "Cc: c@y, d@y", "Reply-To: desk@x", "Subject: ticket",
+      "Message-Id: <reply@x>",
+    ], "body"));
+    var forReply = await agent.fetch({ actor: actor, folder: "INBOX", objectId: replyMeta.objectid });
+    check("fetch: returns the Cc recipients a reply-all needs", forReply.cc === "c@y, d@y", forReply.cc);
+    check("fetch: returns the Reply-To address a reply goes to", forReply.replyTo === "desk@x", forReply.replyTo);
+
     var miss = await agent.fetch({ actor: actor, folder: "INBOX", objectId: "obj_nope" });
     check("fetch: miss returns null", miss === null);
   } finally { _teardown(fx); }

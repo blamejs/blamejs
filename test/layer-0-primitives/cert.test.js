@@ -1435,13 +1435,23 @@ async function testOcspStaplingRefresh() {
       throw new Error("mock OCSP responder unreachable");
     });
     var mgrB = mk(tmpB);
+    var warnLines = [];
+    var realConsoleError = console.error;
+    console.error = function () { warnLines.push(Array.prototype.join.call(arguments, " ")); };
     try {
       await mgrB.start();
       await helpers.waitUntil(function () { return fetchCalls >= 1; },
         { timeoutMs: 5000, label: "ocsp: responder invoked" });
       check("ocsp: responder failure is fail-soft (no staple, no crash)",
         mgrB.getContext("main").ocspResponse === null);
-    } finally { await mgrB.stop(); restoreB(); }
+      // The manager runs with audit: false here, so a warning is the only
+      // record an operator gets of a staple that is not being refreshed.
+      var warned = await helpers.waitUntil(function () {
+        return warnLines.some(function (l) { return /OCSP/.test(l) && /mock OCSP responder unreachable/.test(l); });
+      }, { timeoutMs: 5000, label: "ocsp: refresh failure logged" }).then(function () { return true; }, function () { return false; });
+      check("ocsp: a failed staple refresh logs a warning naming the cert and the error", warned,
+        warnLines.join(" | "));
+    } finally { console.error = realConsoleError; await mgrB.stop(); restoreB(); }
 
     // (c) Responder throws an Error with an EMPTY message — the
     // refresh-failed audit's `(e && e.message) || String(e)` takes its
