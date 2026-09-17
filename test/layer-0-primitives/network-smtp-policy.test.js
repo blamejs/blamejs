@@ -676,11 +676,29 @@ function testParseReportGunzipFailure() {
 
 var _STS_ENFORCE = "version: STSv1\nmode: enforce\nmx: MX1.Example.COM\nmx: mx2.example.com\n";
 
+// Runs fn with Date.now moved offsetMs into the future; the policy cache reads
+// Date.now on every lookup.
+async function _atClockOffset(offsetMs, fn) {
+  var realNow = Date.now;
+  Date.now = function () { return realNow() + offsetMs; };
+  try { return await fn(); }
+  finally { Date.now = realNow; }
+}
+
+// Whether a cached policy for domain is still applied offsetMs from now, with
+// the _mta-sts TXT record gone so no live policy can be discovered.
+async function _stsCachedAt(domain, offsetMs) {
+  var rv = await _atClockOffset(offsetMs, function () {
+    return b.network.smtp.mtaSts.fetch(domain, { dnsLookup: async function () { return []; } });
+  });
+  return rv !== null;
+}
+
 async function testMtaStsFetchSuccessAndMaxAgeClamp() {
   // A published _mta-sts TXT (v=STSv1 with an id) satisfies the RFC 8461
   // §3.1 precondition, so fetch pulls + parses the HTTPS policy and caches
-  // it. max_age within the [1h, ~1y] window is honored verbatim as the
-  // cache TTL.
+  // it. max_age within the [1h, ~1y] window is how long the cached policy
+  // stays valid.
   var body = _STS_ENFORCE + "max_age: 604800\n";                                 // 7 days, in-window
   var rv = await withFakeHttpRequest(
     async function () { return { statusCode: 200, headers: {}, body: Buffer.from(body, "utf8") }; },
@@ -695,34 +713,38 @@ async function testMtaStsFetchSuccessAndMaxAgeClamp() {
         rv.mx.length === 2 && rv.mx[0] === "mx1.example.com");
   check("mtaSts.fetch: policy id carried from the _mta-sts TXT", rv.id === "WITHIN01");
   check("mtaSts.fetch: fetchedAt stamped", typeof rv.fetchedAt === "number" && rv.fetchedAt > 0);
-  check("mtaSts.fetch: in-window max_age honored as cache TTL",
-        rv._cacheTtlMs === 604800 * C.TIME.seconds(1));
+  check("mtaSts.fetch: in-window max_age keeps the cached policy until it elapses",
+        await _stsCachedAt("within.example", C.TIME.days(7) - C.TIME.minutes(1)) === true &&
+        await _stsCachedAt("within.example", C.TIME.days(7) + C.TIME.minutes(1)) === false);
 }
 
 async function testMtaStsFetchMaxAgeCeilingClamp() {
   // max_age above the RFC 8461 §3.2 ceiling (~1 year) clamps to the ceiling.
   var body = _STS_ENFORCE + "max_age: 999999999\n";
-  var rv = await withFakeHttpRequest(
+  await withFakeHttpRequest(
     async function () { return { statusCode: 200, headers: {}, body: Buffer.from(body, "utf8") }; },
     function () {
       return b.network.smtp.mtaSts.fetch("ceil.example", {
         dnsLookup: async function () { return [["v=STSv1; id=CEIL01"]]; },
       });
     });
-  check("mtaSts.fetch: over-ceiling max_age clamps to ~1y", rv._cacheTtlMs === C.TIME.weeks(52));
+  check("mtaSts.fetch: over-ceiling max_age clamps to ~1y",
+        await _stsCachedAt("ceil.example", C.TIME.weeks(52) - C.TIME.minutes(1)) === true &&
+        await _stsCachedAt("ceil.example", C.TIME.weeks(52) + C.TIME.minutes(1)) === false);
 }
 
 async function testMtaStsFetchMaxAgeAbsentUsesDefault() {
   // No max_age line → parsed.max_age null → default framework TTL (60 min).
-  var rv = await withFakeHttpRequest(
+  await withFakeHttpRequest(
     async function () { return { statusCode: 200, headers: {}, body: Buffer.from(_STS_ENFORCE, "utf8") }; },
     function () {
       return b.network.smtp.mtaSts.fetch("noage.example", {
-        dnsLookup: async function () { return [["v=STSv1;"]]; },                 // no id= → policy id null
+        dnsLookup: async function () { return [["v=STSv1; id=NOAGE01"]]; },
       });
     });
-  check("mtaSts.fetch: absent max_age → default cache TTL", rv._cacheTtlMs === C.TIME.minutes(60));
-  check("mtaSts.fetch: TXT without id= → policy id null", rv.id === null);
+  check("mtaSts.fetch: absent max_age → default cache TTL",
+        await _stsCachedAt("noage.example", C.TIME.minutes(59)) === true &&
+        await _stsCachedAt("noage.example", C.TIME.minutes(61)) === false);
 }
 
 async function testMtaStsFetchTxtRecordShapes() {
@@ -739,6 +761,139 @@ async function testMtaStsFetchTxtRecordShapes() {
     });
   check("mtaSts.fetch: mixed TXT (non-string skipped, string record read) → id extracted",
         rv && rv.id === "MIXED42" && rv.mode === "enforce");
+}
+
+// RFC 8461 §3.1: records that do not begin with "v=STSv1" followed by *WSP ";"
+// are discarded; if the number left is not one, or the record lacks the
+// required id=1*32(ALPHA / DIGIT), there is no policy and the HTTPS policy is
+// not fetched.
+async function testMtaStsTxtRecordSelection() {
+  var CASES = [
+    { records: ["v=STSv1; id=GOOD01"],                         want: true },
+    { records: ["v=STSv1 ; id=GOOD02"],                        want: true },
+    { records: ["v=STSv1; id=GOOD03", "v=STSv10; id=OTHER"],   want: true },
+    { records: ["x v=STSv1; id=BAD01"],                        want: false },
+    { records: ["v=STSv10; id=BAD02"],                         want: false },
+    { records: ["V=STSV1; id=BAD03"],                          want: false },
+    { records: ["v=STSv1"],                                    want: false },
+    { records: ["v=STSv1; id=TWO01", "v=STSv1; id=TWO02"],     want: false },
+    { records: ["v=STSv1; mode=x"],                            want: false },
+    { records: ["v=STSv1; id=" + "A".repeat(33)],              want: false },
+  ];
+  var wrong = [];
+  for (var i = 0; i < CASES.length; i += 1) {
+    var fetched = 0;
+    var records = CASES[i].records;
+    var rv = await withFakeHttpRequest(
+      async function () {
+        fetched += 1;
+        return { statusCode: 200, headers: {}, body: Buffer.from(_STS_ENFORCE + "max_age: 86400\n", "utf8") };
+      },
+      function () {
+        return b.network.smtp.mtaSts.fetch("select" + i + ".example", {
+          dnsLookup: async function () { return records.map(function (r) { return [r]; }); },
+        });
+      });
+    var got = rv !== null && fetched === 1;
+    if (got !== CASES[i].want) wrong.push(JSON.stringify(records) + " -> " + (got ? "policy" : "none"));
+  }
+  check("mtaSts.fetch selects exactly one v=STSv1 record carrying a valid id" +
+        (wrong.length ? " (" + wrong.join("; ") + ")" : ""), wrong.length === 0);
+}
+
+// RFC 8461 §3.3: when no live policy can be discovered through DNS or fetched
+// over HTTPS and a valid cached policy exists, the sender MUST apply the cached
+// policy. Removing or breaking the _mta-sts TXT answer, or blocking the policy
+// host, must not turn off a policy fetched earlier.
+async function testMtaStsAppliesCachedPolicyWithoutLivePolicy() {
+  var fetches = 0;
+  function serve(statusCode, body) {
+    return async function () {
+      fetches += 1;
+      return { statusCode: statusCode, headers: {}, body: Buffer.from(body, "utf8") };
+    };
+  }
+  function unreachable() {
+    return async function () { fetches += 1; throw new Error("connect ECONNREFUSED"); };
+  }
+  function txt(records) {
+    return async function () { return records.map(function (r) { return [r]; }); };
+  }
+  async function dnsDown() {
+    var e = new Error("query timed out");
+    e.code = "ETIMEOUT";
+    throw e;
+  }
+  async function outcome(domain, dnsLookup, responder) {
+    try {
+      var rv = await withFakeHttpRequest(responder, function () {
+        return b.network.smtp.mtaSts.fetch(domain, { dnsLookup: dnsLookup });
+      });
+      return rv === null ? "none" : rv.mode + "/" + rv.id;
+    } catch (e) {
+      return "threw " + e.code;
+    }
+  }
+  var ENFORCE = _STS_ENFORCE + "max_age: 86400\n";
+  var TESTING = "version: STSv1\nmode: testing\nmx: mx1.example.com\nmax_age: 86400\n";
+  var wrong = [];
+  function expect(label, got, want) {
+    if (got !== want) wrong.push(label + " -> " + got + " (want " + want + ")");
+  }
+
+  var d = "cached.example";
+  expect("first fetch", await outcome(d, txt(["v=STSv1; id=A1"]), serve(200, ENFORCE)), "enforce/A1");
+  expect("TXT record removed", await outcome(d, txt([]), serve(200, TESTING)), "enforce/A1");
+  expect("TXT lookup fails", await outcome(d, dnsDown, serve(200, TESTING)), "enforce/A1");
+  expect("two TXT records", await outcome(d, txt(["v=STSv1; id=X1", "v=STSv1; id=X2"]), serve(200, TESTING)), "enforce/A1");
+  expect("new id, policy host unreachable", await outcome(d, txt(["v=STSv1; id=A2"]), unreachable()), "enforce/A1");
+  var afterMiss = fetches;
+  expect("same new id again after the failed fetch", await outcome(d, txt(["v=STSv1; id=A2"]), unreachable()), "enforce/A1");
+  expect("a failed fetch is not retried for the same id", String(fetches - afterMiss), "0");
+  expect("new id, policy 404", await outcome(d, txt(["v=STSv1; id=A3"]), serve(404, "")), "enforce/A1");
+  expect("new id, policy 500", await outcome(d, txt(["v=STSv1; id=A4"]), serve(500, "")), "enforce/A1");
+  expect("new id, unparseable policy",
+    await outcome(d, txt(["v=STSv1; id=A5"]), serve(200, "version: STSv9\nmode: enforce\n")), "enforce/A1");
+  var before = fetches;
+  expect("same id while cached", await outcome(d, txt(["v=STSv1; id=A1"]), serve(200, TESTING)), "enforce/A1");
+  expect("same id while cached fetches nothing", String(fetches - before), "0");
+  expect("new id, new policy", await outcome(d, txt(["v=STSv1; id=A6"]), serve(200, TESTING)), "testing/A6");
+  expect("TXT record removed after the update", await outcome(d, txt([]), serve(200, ENFORCE)), "testing/A6");
+
+  var n = "never-cached.example";
+  expect("no cache, TXT record removed", await outcome(n, txt([]), serve(200, ENFORCE)), "none");
+  expect("no cache, policy host unreachable", await outcome(n, txt(["v=STSv1; id=N1"]), unreachable()), "none");
+  expect("no cache, policy 500", await outcome(n, txt(["v=STSv1; id=N2"]), serve(500, "")), "threw smtp/mta-sts-fetch-failed");
+
+  check("mtaSts.fetch applies a valid cached policy when no live policy is available" +
+        (wrong.length ? " (" + wrong.join("; ") + ")" : ""), wrong.length === 0);
+}
+
+// RFC 8460 §3: tlsrpt-version = %s"v=TLSRPTv1" followed by *WSP ";"; records
+// that do not begin that way are discarded, and if the number left is not one
+// the domain does not implement TLSRPT.
+async function testTlsRptRecordSelection() {
+  var RUA = "rua=mailto:tlsrpt@example.com";
+  var CASES = [
+    { records: ["v=TLSRPTv1; " + RUA],                               want: true },
+    { records: ["v=TLSRPTv1 ;" + RUA],                               want: true },
+    { records: ["v=TLSRPTv1; " + RUA, "v=TLSRPTv10; " + RUA],        want: true },
+    { records: ["V=TLSRPTV1; " + RUA],                               want: false },
+    { records: ["v=TLSRPTv10; " + RUA],                              want: false },
+    { records: ["v=TLSRPTv1-x; " + RUA],                             want: false },
+    { records: ["v=TLSRPTv1; " + RUA, "v=TLSRPTv1; " + RUA],         want: false },
+  ];
+  var wrong = [];
+  for (var i = 0; i < CASES.length; i += 1) {
+    var records = CASES[i].records;
+    var rv = await b.network.smtp.tlsRpt.fetchPolicy("example.com", {
+      dnsLookup: async function () { return records.map(function (r) { return [r]; }); },
+    });
+    var got = rv !== null;
+    if (got !== CASES[i].want) wrong.push(JSON.stringify(records) + " -> " + (got ? "policy" : "none"));
+  }
+  check("tlsRpt.fetchPolicy selects exactly one v=TLSRPTv1 record" +
+        (wrong.length ? " (" + wrong.join("; ") + ")" : ""), wrong.length === 0);
 }
 
 async function testMtaStsFetch404ReturnsNull() {
@@ -1193,6 +1348,9 @@ async function run() {
   await testMtaStsFetchMaxAgeCeilingClamp();
   await testMtaStsFetchMaxAgeAbsentUsesDefault();
   await testMtaStsFetchTxtRecordShapes();
+  await testMtaStsTxtRecordSelection();
+  await testMtaStsAppliesCachedPolicyWithoutLivePolicy();
+  await testTlsRptRecordSelection();
   await testMtaStsFetch404ReturnsNull();
   await testMtaStsFetchNon2xxThrows();
   await testMtaStsFetchHttpThrowIsOpportunisticNull();

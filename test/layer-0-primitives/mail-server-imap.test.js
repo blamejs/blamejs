@@ -2403,6 +2403,8 @@ async function testSelectExamine() {
     check("SELECT quoted mailbox → OK", /^a3 OK/m.test(await _cmd(sock, "a3", "SELECT " + '"' + "INBOX" + '"')));
     check("SELECT empty name → BAD refused", /^a4 BAD Mailbox name refused/m.test(await _cmd(sock, "a4", "SELECT")));
     check("SELECT path-traversal (..) → BAD refused", /^a5 BAD Mailbox name refused/m.test(await _cmd(sock, "a5", "SELECT ../etc")));
+    check("SELECT C1 control (U+009B) in the name → untagged BAD at the command gate",
+      /^\* BAD .*control byte 0x9b/m.test(await _cmdT(sock, "a5c", "SELECT in" + String.fromCharCode(0x9b) + "box", /^\* BAD/m)));
     check("SELECT trailing-slash → BAD refused", /^a6 BAD Mailbox name refused/m.test(await _cmd(sock, "a6", "SELECT foo/")));
     var longName = new Array(1101).join("a");
     check("SELECT overlong name → BAD refused", /^a7 BAD Mailbox name refused/m.test(await _cmd(sock, "a7", "SELECT " + longName)));

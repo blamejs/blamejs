@@ -77,7 +77,7 @@ var CORPUS_SUBJECTS = [
   "\\", "\\c", "\\c1", "\\c_",
   // The controls those legacy `\c` forms name, spelled as escapes rather than
   // written into the file as the bytes themselves.
-  "", "", "", "",
+  "\u0001", "\u0011", "\u0019", "\u001F",
   "xZZ", "x4", "p{L}", "P", "kx", "q", "acb",
   // A final sigma reaches its class through neither of its own cases, and an
   // astral character is one code point under `u` and two units without it.
@@ -650,7 +650,7 @@ function testCompilingOneClassCannotWidenAnother() {
     { widener: "[\\d:]",  probe: "[\\d]", subject: ":" },
     { widener: "[\\w{]",  probe: "\\w",   subject: "{" },
     { widener: "[\\s!]",  probe: "\\s",   subject: "!" },
-    { widener: "[\\s\\u0008]", probe: "\\s", subject: "" },
+    { widener: "[\\s\\u0008]", probe: "\\s", subject: "\u0008" },
   ];
   pairs.forEach(function (p) {
     var before = b.regexLinear.compile(p.probe).test(p.subject);

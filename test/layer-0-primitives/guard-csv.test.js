@@ -1168,7 +1168,7 @@ function testGuardCsvBidiStrip() {
 function testGuardCsvControlCharReject() {
   var threw = null;
   try {
-    b.guardCsv.serialize([["bellhere"]], { profile: "strict" });
+    b.guardCsv.serialize([["bell\u0007here"]], { profile: "strict" });
   } catch (e) { threw = e; }
   check("control char: strict profile throws on U+0007",
         threw && /control character/.test(threw.message));

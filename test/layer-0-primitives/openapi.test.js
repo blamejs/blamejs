@@ -455,6 +455,26 @@ function run() {
   check("yaml: empty object inline",             yspecial.indexOf("emptyObj: {}") !== -1);
   check("yaml: nested array",                    yspecial.indexOf("- 1") !== -1);
 
+  // A key or value holding a line break, or a character YAML 1.2 does not
+  // allow unescaped (C0 other than TAB, DEL, C1, U+2028, U+2029, U+FEFF), is
+  // written double-quoted with that character escaped. The document keeps its
+  // structure and parses back to the same values.
+  var yamlWrong = [];
+  [0x0a, 0x0d, 0x01, 0x1b, 0x7f, 0x85, 0x9b, 0x2028, 0x2029, 0xfeff].forEach(function (cp) {
+    var c = String.fromCharCode(cp);
+    var label = "U+" + cp.toString(16).toUpperCase();
+    var inner = {};
+    inner["k" + c + "ey"] = "v" + c;
+    var doc = { plain: "line1" + c + "line2", nested: inner, list: ["a" + c + "b"] };
+    var out = b.openapi.toYaml(doc);
+    if (cp !== 0x0a && out.indexOf(c) !== -1) yamlWrong.push(label + " written unescaped");
+    var back = null;
+    try { back = b.parsers.yaml.parse(out); } catch (_e) { back = null; }
+    if (JSON.stringify(back) !== JSON.stringify(doc)) yamlWrong.push(label + " did not parse back");
+  });
+  check("yaml: line breaks and non-printable characters are escaped in keys and values",
+    yamlWrong.length === 0, yamlWrong.join("; "));
+
   rejects("toYaml: bad input",
     function () { b.openapi.toYaml(null); }, /non-null object/);
 

@@ -189,6 +189,35 @@ async function testPerCallTtlOverride() {
   await c.close();
 }
 
+// A per-call options argument that is not an object carries no ttlMs, so a
+// bare number passed as the TTL was ignored and the entry got the instance
+// default. wrap and set refuse it.
+async function testPerCallOptsMustBeAnObject() {
+  var c = b.cache.create({ namespace: "opts-shape", ttlMs: b.constants.TIME.minutes(5) });
+  var oneSecond = b.constants.TIME.seconds(1);
+  async function codeOf(fn) {
+    try { await fn(); return "ok"; } catch (e) { return e.code; }
+  }
+  function compute() { return Promise.resolve(1); }
+  var refused = [
+    await codeOf(function () { return c.wrap("a", compute, oneSecond); }),
+    await codeOf(function () { return c.wrap("b", compute, String(oneSecond)); }),
+    await codeOf(function () { return c.set("c", 1, oneSecond); }),
+    await codeOf(function () { return c.set("d", 1, [oneSecond]); }),
+  ];
+  check("cache.wrap and cache.set refuse per-call opts that are not an object",
+        refused.every(function (code) { return code === "cache/bad-opt"; }), refused.join(","));
+  var accepted = [
+    await codeOf(function () { return c.wrap("e", compute); }),
+    await codeOf(function () { return c.wrap("f", compute, { ttlMs: oneSecond }); }),
+    await codeOf(function () { return c.set("g", 1); }),
+    await codeOf(function () { return c.set("h", 1, { ttlMs: oneSecond }); }),
+  ];
+  check("cache.wrap and cache.set accept omitted or object opts",
+        accepted.every(function (code) { return code === "ok"; }), accepted.join(","));
+  await c.close();
+}
+
 async function testInfinityTtl() {
   var clk = b.testing.fakeClock(1_000_000);
   var c = b.cache.create({
@@ -1456,6 +1485,7 @@ async function run() {
   await testGetSetDel();
   await testTtlExpiration();
   await testPerCallTtlOverride();
+  await testPerCallOptsMustBeAnObject();
   await testInfinityTtl();
   await testZeroTtl();
   await testLruEvictionOnSize();

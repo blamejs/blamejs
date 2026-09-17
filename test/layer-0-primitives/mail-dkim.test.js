@@ -472,6 +472,105 @@ async function testDkimVerifyKeyRecordTagsAreCaseSensitive() {
     rvLower[0] && rvLower[0].result === "pass", JSON.stringify(rvLower[0]));
 }
 
+// RFC 6376 §3.6.1: v= is optional, but when present it MUST be the first tag
+// and MUST be "DKIM1"; a record beginning with a v= tag of any other value is
+// discarded. A selector answering with several TXT records is verified with
+// the first one that survives and carries p=.
+async function testDkimKeyRecordVersionTag() {
+  var kp = _rsaKeypair();
+  var b64 = _spkiPemToB64(kp.publicKey);
+  var CASES = [
+    { selector: "ver-none",   records: ["k=rsa; p=" + b64],                                   want: "pass" },
+    { selector: "ver-dkim1",  records: ["v=DKIM1; k=rsa; p=" + b64],                          want: "pass" },
+    { selector: "ver-dkim2",  records: ["v=DKIM2; k=rsa; p=" + b64],                          want: "not-pass" },
+    { selector: "ver-dkim10", records: ["v=DKIM10; k=rsa; p=" + b64],                         want: "not-pass" },
+    { selector: "ver-late",   records: ["k=rsa; v=DKIM1; p=" + b64],                          want: "not-pass" },
+    { selector: "ver-choose", records: ["v=DKIM2; k=rsa; p=AAAA", "v=DKIM1; k=rsa; p=" + b64], want: "pass" },
+  ];
+  var wrong = [];
+  for (var i = 0; i < CASES.length; i += 1) {
+    var signed = await _signedMessage(kp, "example.com", CASES[i].selector);
+    var records = CASES[i].records;
+    var rv = await b.mail.dkim.verify(signed, {
+      dnsLookup: async function () { return records.map(function (r) { return [r]; }); },
+    });
+    var got = rv[0] && rv[0].result === "pass" ? "pass" : "not-pass";
+    if (got !== CASES[i].want) wrong.push(CASES[i].selector + " -> " + (rv[0] && rv[0].result));
+  }
+  check("dkim.verify uses only key records whose v= tag is absent or first and DKIM1" +
+        (wrong.length ? " (" + wrong.join("; ") + ")" : ""), wrong.length === 0);
+}
+
+// RFC 6376 §3.2: a tag name MUST NOT occur more than once in a tag-list, and a
+// tag-list that repeats one is invalid as a whole. A DKIM-Signature that
+// repeats a tag is permerror, and a key record that repeats one is not used.
+async function testDkimRepeatedTagInvalidatesTagList() {
+  var dkim = b.mail.dkim;
+  dkim._resetDkimKeyCacheForTest();
+  var kp = _rsaKeypair();
+  var b64 = _spkiPemToB64(kp.publicKey);
+  var wrong = [];
+
+  var body = "Hello\r\n";
+  var bh = nodeCrypto.createHash("sha256")
+    .update(Buffer.from(dkim._canonBodyRelaxedForTest(body), "utf8")).digest("base64");
+  var fromValue = " Alice <alice@example.com>";
+  async function verifySigned(tags) {
+    var unsignedSigValue = tags.concat(["bh=" + bh, "b="]).join("; ");
+    var canonHeaders =
+      dkim._canonHeaderRelaxedForTest("From", fromValue) +
+      dkim._canonHeaderRelaxedForTest("DKIM-Signature", unsignedSigValue).replace(/\r\n$/, "");
+    var sig = nodeCrypto.createSign("RSA-SHA256").update(canonHeaders)
+      .sign(kp.privateKey).toString("base64");
+    var message = "From:" + fromValue + "\r\n" +
+      "DKIM-Signature: " + unsignedSigValue.replace(/b=$/, "b=" + sig) + "\r\n\r\n" + body;
+    var rv = await dkim.verify(message, {
+      dnsLookup: async function () { return [["v=DKIM1; k=rsa; p=" + b64]]; },
+    });
+    return rv[0] ? rv[0].result : "no-result";
+  }
+  var base = ["v=1", "a=rsa-sha256", "c=relaxed/relaxed", "d=repeat.example"];
+  var single = await verifySigned(base.concat(["s=rep1", "h=from"]));
+  if (single !== "pass") wrong.push("signature with each tag once -> " + single + " (want pass)");
+  var repeatedS = await verifySigned(base.concat(["s=decoy", "s=rep2", "h=from"]));
+  if (repeatedS !== "permerror") wrong.push("signature repeating s= -> " + repeatedS + " (want permerror)");
+  var repeatedH = await verifySigned(base.concat(["s=rep3", "h=from", "h=from"]));
+  if (repeatedH !== "permerror") wrong.push("signature repeating h= -> " + repeatedH + " (want permerror)");
+
+  // RFC 6376 §3.5 gives b= the base64string grammar. Text after the signature
+  // (here a folded " d=other.example") is not base64 and makes the signature
+  // permerror instead of being dropped by a lenient decoder.
+  var unsignedTail = base.concat(["s=rep4", "h=from", "bh=" + bh, "b="]).join("; ");
+  var tailHeaders =
+    dkim._canonHeaderRelaxedForTest("From", fromValue) +
+    dkim._canonHeaderRelaxedForTest("DKIM-Signature", unsignedTail).replace(/\r\n$/, "");
+  var tailSig = nodeCrypto.createSign("RSA-SHA256").update(tailHeaders).sign(kp.privateKey).toString("base64");
+  var tailMessage = "From:" + fromValue + "\r\n" +
+    "DKIM-Signature: " + unsignedTail.replace(/b=$/, "b=" + tailSig + " d=other.example") + "\r\n\r\n" + body;
+  var rvTail = await dkim.verify(tailMessage, {
+    dnsLookup: async function () { return [["v=DKIM1; k=rsa; p=" + b64]]; },
+  });
+  var tailResult = rvTail[0] ? rvTail[0].result : "no-result";
+  if (tailResult !== "permerror") wrong.push("b= with text after the signature -> " + tailResult + " (want permerror)");
+
+  var KEY_CASES = [
+    { selector: "rep-p",          records: ["k=rsa; p=AAAA; p=" + b64],                   want: "not-pass" },
+    { selector: "rep-k",          records: ["k=ed25519; k=rsa; p=" + b64],                want: "not-pass" },
+    { selector: "rep-then-valid", records: ["k=rsa; p=AAAA; p=" + b64, "k=rsa; p=" + b64], want: "pass" },
+  ];
+  for (var i = 0; i < KEY_CASES.length; i += 1) {
+    var signed = await _signedMessage(kp, "example.com", KEY_CASES[i].selector);
+    var records = KEY_CASES[i].records;
+    var rv = await dkim.verify(signed, {
+      dnsLookup: async function () { return records.map(function (r) { return [r]; }); },
+    });
+    var got = rv[0] && rv[0].result === "pass" ? "pass" : "not-pass";
+    if (got !== KEY_CASES[i].want) wrong.push("key record " + KEY_CASES[i].selector + " -> " + (rv[0] && rv[0].result));
+  }
+  check("dkim.verify treats a tag-list that repeats a tag name as invalid" +
+        (wrong.length ? " (" + wrong.join("; ") + ")" : ""), wrong.length === 0);
+}
+
 // The end-to-end claim: a message whose octets are not valid UTF-8 signs and
 // verifies, and the signature covers the octets the sender actually wrote.
 //
@@ -1881,6 +1980,8 @@ async function run() {
   await testDkimOversignBindsInjectedHeader();
   await testDkimOversignDkimSigExcludesSelfFromPool();
   await testDkimVerifyKeyRecordTagsAreCaseSensitive();
+  await testDkimKeyRecordVersionTag();
+  await testDkimRepeatedTagInvalidatesTagList();
   await testDkimRoundTripsNonUtf8Octets();
   await testDkimVerifyEd25519RawKeyRfc8463();
   await testDkimEd25519KFamilyConfusionRefused();

@@ -48,6 +48,65 @@ function testSpfBadRecord() {
         threw && /spf-bad-version/.test(threw.code || ""));
 }
 
+function _dnsWith(host0, records) {
+  return async function (host) {
+    if (host === host0) return records.map(function (r) { return [r]; });
+    var err = new Error("ENOTFOUND");
+    err.code = "ENOTFOUND";
+    throw err;
+  };
+}
+
+// RFC 7208 §4.5: a TXT record is an SPF record only when its version section
+// is exactly "v=spf1", ended by a space or the end of the record.
+async function testSpfVersionSectionIsExact() {
+  var CASES = [
+    { records: ["v=spf1 -all"],                 want: "fail" },
+    { records: ["v=spf10 +all"],                want: "none" },
+    { records: ["v=spf1x +all"],                want: "none" },
+    { records: ["v=spf1 -all", "v=spf10 +all"], want: "fail" },
+    { records: ["v=spf1"],                      want: "neutral" },
+  ];
+  var wrong = [];
+  for (var i = 0; i < CASES.length; i += 1) {
+    var rv = await b.mail.spf.verify({ ip: "192.0.2.1", mailFrom: "a@example.com", helo: "mx.example.com",
+      dnsLookup: _dnsWith("example.com", CASES[i].records) });
+    if (rv.result !== CASES[i].want) wrong.push(JSON.stringify(CASES[i].records) + " -> " + rv.result);
+  }
+  check("spf.verify selects only records whose version section is exactly v=spf1" +
+        (wrong.length ? " (" + wrong.join("; ") + ")" : ""), wrong.length === 0);
+  var threw = null;
+  try { b.mail.spf.parseRecord("v=spf10 +all"); } catch (e) { threw = e; }
+  check("spf.parseRecord refuses a v=spf10 record", threw && /spf-bad-version/.test(threw.code || ""));
+}
+
+// RFC 9989 §4.8: dmarc-version = "v" equals %s"DMARC1", equals = *WSP "=" *WSP,
+// followed by *WSP ";" or the end of the record. §4.10.1 discards records that
+// do not start that way before counting the rest.
+async function testDmarcVersionTagSelection() {
+  var SPOOF = { from: "ceo@victim.example", spf: { result: "fail", domain: "attacker.invalid" }, dkim: [] };
+  var CASES = [
+    { records: ["v=DMARC1; p=reject"],                      want: "reject" },
+    { records: ["v = DMARC1; p=reject"],                    want: "reject" },
+    { records: ["V=DMARC1; p=reject"],                      want: "reject" },
+    { records: ["v=DMARC1 ; p=reject"],                     want: "reject" },
+    { records: ["v=DMARC1; p=reject", "v=DMARC10; p=none"], want: "reject" },
+    { records: ["v=DMARC10; p=reject"],                     want: "none" },
+    { records: ["v=DMARC1x; p=reject"],                     want: "none" },
+    { records: ["v=dmarc1; p=reject"],                      want: "none" },
+    { records: ["p=reject; v=DMARC1"],                      want: "none" },
+  ];
+  var wrong = [];
+  for (var i = 0; i < CASES.length; i += 1) {
+    var rv = await b.mail.dmarc.evaluate(Object.assign({}, SPOOF,
+      { dnsLookup: _dnsWith("_dmarc.victim.example", CASES[i].records) }));
+    var got = rv.result === "none" ? "none" : (rv.policy && rv.policy.p);
+    if (got !== CASES[i].want) wrong.push(JSON.stringify(CASES[i].records) + " -> " + rv.result + "/" + got);
+  }
+  check("dmarc.evaluate selects records by the RFC 9989 version tag" +
+        (wrong.length ? " (" + wrong.join("; ") + ")" : ""), wrong.length === 0);
+}
+
 async function testSpfVerifyMockedDns() {
   // Mock dnsLookup that resolves "example.com" SPF record.
   var dnsLookup = async function (host, type) {
@@ -542,6 +601,209 @@ async function testArcTagNamesAreCaseSensitive() {
   var upper = await b.mail.arc.verify("ARC-Seal: I=1;" + tail);
   check("arc.verify: an upper-case i= tag is not an instance number",
         upper.hopCount === 0 && upper.chainStatus === "none", JSON.stringify(upper));
+}
+
+// RFC 8617 reads ARC-Message-Signature and ARC-Seal with the RFC 6376 §3.2
+// tag-list, in which a repeated tag name makes the whole list invalid. A chain
+// carrying such a header fails as invalid instead of being read with one of the
+// repeated values (the instance grouping read the first i= and the signature
+// check read the last).
+async function testArcRepeatedTagFailsChain() {
+  var aar = "ARC-Authentication-Results: i=1; mx.example.com; spf=pass smtp.mailfrom=example.com\r\n";
+  var ams = "ARC-Message-Signature: i=1; a=rsa-sha256; c=relaxed/relaxed; d=example.com; s=arc; h=from; bh=AAAA; b=AAAA\r\n";
+  var as  = "ARC-Seal: i=1; a=rsa-sha256; cv=none; d=example.com; s=arc; b=AAAA\r\n";
+  var tail = "From: alice@example.com\r\n\r\nbody\r\n";
+  var dnsLookup = async function () { var e = new Error("ENOTFOUND"); e.code = "ENOTFOUND"; throw e; };
+  var CASES = [
+    { label: "no repeated tag", msg: as + ams + aar + tail, invalid: false },
+    { label: "ARC-Seal repeats s=", invalid: true,
+      msg: "ARC-Seal: i=1; a=rsa-sha256; cv=none; d=example.com; s=arc; s=other; b=AAAA\r\n" + ams + aar + tail },
+    { label: "ARC-Seal repeats i=", invalid: true,
+      msg: "ARC-Seal: i=1; a=rsa-sha256; cv=none; d=example.com; s=arc; i=2; b=AAAA\r\n" + ams + aar + tail },
+    { label: "ARC-Message-Signature repeats h=", invalid: true,
+      msg: as + "ARC-Message-Signature: i=1; a=rsa-sha256; c=relaxed/relaxed; d=example.com; s=arc; h=from; h=to; bh=AAAA; b=AAAA\r\n" + aar + tail },
+  ];
+  var wrong = [];
+  for (var i = 0; i < CASES.length; i += 1) {
+    var rv = await b.mail.arc.verify(CASES[i].msg, { dnsLookup: dnsLookup });
+    var invalid = rv.chainStatus === "fail" && rv.reason === "invalid-tag-list";
+    if (invalid !== CASES[i].invalid) wrong.push(CASES[i].label + " -> " + rv.chainStatus + "/" + rv.reason);
+  }
+  check("arc.verify fails a chain whose seal or message signature repeats a tag name" +
+        (wrong.length ? " (" + wrong.join("; ") + ")" : ""), wrong.length === 0);
+}
+
+// RFC 8617 §3.9 and §4.1: every ARC header opens with
+// `instance [CFWS] ";"`, where instance = [CFWS] %s"i" [CFWS] "=" [CFWS]
+// position. CFWS is RFC 5322 folding whitespace and comments (nested, with
+// quoted-pairs). One reader answers for arc.verify, arc.evaluate and arc.sign,
+// so the table drives it directly and the last rows drive arc.verify, where a
+// header whose instance is not read makes the chain incomplete.
+async function testArcInstanceGrammar() {
+  var read = arcSign._arcHeaderInstance;
+  var bs = String.fromCharCode(0x5c);
+  var AAR = "arc-authentication-results";
+  var ROWS = [
+    [AAR, "i=1; relay.example; spf=pass", 1],
+    [AAR, "i=1 (forwarded); relay.example; spf=pass", 1],
+    [AAR, "(hop) i = 1 ; relay.example", 1],
+    [AAR, "i=(one)1; relay.example", 1],
+    [AAR, "i (tag) = 2; relay.example", 2],
+    [AAR, "i=1 (a (nested) b); relay.example", 1],
+    [AAR, "i=1 (a" + bs + ")b); relay.example", 1],
+    [AAR, "i=\r\n 2; relay.example", 2],
+    [AAR, "\r\n\t(c)\r\n i=3\r\n ; relay.example", 3],
+    [AAR, "i=1 (unterminated; relay.example", null],
+    [AAR, "i=1 a; relay.example", null],
+    [AAR, "I=1; relay.example", null],
+    [AAR, "relay.example; spf=pass; i=1", null],
+    [AAR, "i=1", null],
+    [AAR, "i=; relay.example", null],
+    [AAR, "i=0; relay.example", null],
+    [AAR, "i=1" + bs + "; relay.example", null],
+    ["arc-seal", "i=1 (x); a=rsa-sha256; cv=none; d=example.com; s=arc; b=AAAA", 1],
+    ["arc-seal", "a=rsa-sha256; i=1; cv=none; d=example.com; s=arc; b=AAAA", null],
+    ["arc-message-signature", "(c) i=4; a=rsa-sha256; d=example.com; s=arc; h=from; bh=AAAA; b=AAAA", 4],
+  ];
+  var wrong = [];
+  ROWS.forEach(function (row) {
+    var got = read(row[0], row[1]);
+    if (got.invalid || got.instance !== row[2]) {
+      wrong.push(row[0] + " " + JSON.stringify(row[1]) + " -> " + JSON.stringify(got) + " (want " + row[2] + ")");
+    }
+  });
+  var seal = "ARC-Seal: i=1; a=rsa-sha256; cv=none; d=example.com; s=arc; b=AAAA\r\n" +
+             "ARC-Message-Signature: i=1; a=rsa-sha256; c=relaxed/relaxed; d=example.com; s=arc; h=from; bh=AAAA; b=AAAA\r\n";
+  var tail = "From: alice@example.com\r\n\r\nbody\r\n";
+  var dns = async function () { var e = new Error("ENOTFOUND"); e.code = "ENOTFOUND"; throw e; };
+  var commented = await b.mail.arc.verify(seal + "ARC-Authentication-Results: i=1 (forwarded); relay.example; spf=pass\r\n" + tail, { dnsLookup: dns });
+  if (commented.reason !== "signature-verification-failed") {
+    wrong.push("arc.verify with a commented AAR instance -> " + commented.chainStatus + "/" + commented.reason);
+  }
+  var trailing = await b.mail.arc.verify(seal + "ARC-Authentication-Results: relay.example; spf=pass; i=1\r\n" + tail, { dnsLookup: dns });
+  if (trailing.reason !== "incomplete-or-non-contiguous") {
+    wrong.push("arc.verify with the AAR instance last -> " + trailing.chainStatus + "/" + trailing.reason);
+  }
+  check("ARC headers are grouped by an instance read with the RFC 8617 instance grammar" +
+        (wrong.length ? " (" + wrong.join("; ") + ")" : ""), wrong.length === 0);
+}
+
+// A prior hop's ARC-Authentication-Results may be folded onto a continuation
+// line (`ARC-Authentication-Results:` CRLF ` i=1; ...`). arc.verify unfolds it,
+// so arc.sign has to read the same instance; otherwise it leaves that AAR out of
+// the next seal's signing input and the two-hop chain fails.
+async function testArcSignReadsFoldedPriorAar() {
+  var nodeCrypto = require("crypto");
+  var kp = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var pem = kp.privateKey.export({ format: "pem", type: "pkcs8" });
+  var spki = kp.publicKey.export({ type: "spki", format: "der" }).toString("base64");
+  var hop1 = _arcSignOneHop("relay-fold1.example", pem, "rsa-sha256");
+  var original = String(hop1.rfc822);
+  var folded = original.replace("ARC-Authentication-Results: i=1;", "ARC-Authentication-Results:\r\n i=1;");
+  var dns = async function (qname) {
+    if (qname === "arc._domainkey.relay-fold1.example" || qname === "arc._domainkey.relay-fold2.example") {
+      return [["v=DKIM1; k=rsa; p=" + spki]];
+    }
+    var e = new Error("ENOTFOUND"); e.code = "ENOTFOUND"; throw e;
+  };
+  var one = await b.mail.arc.verify(folded, { dnsLookup: dns });
+  var hop2 = b.mail.arc.sign({
+    rfc822: folded, instance: 2, authservId: "relay-fold2.example", domain: "relay-fold2.example",
+    selector: "arc", privateKey: pem, algorithm: "rsa-sha256", cv: "pass", authResults: "arc=pass",
+    headersToSign: ["From", "To", "Subject", "Date", "Message-ID"],
+  });
+  var two = await b.mail.arc.verify(hop2.rfc822, { dnsLookup: dns });
+  check("arc.sign seals over a folded prior ARC-Authentication-Results and the two-hop chain verifies",
+        folded !== original && one.chainStatus === "pass" && two.chainStatus === "pass",
+        JSON.stringify({ folded: folded !== original, hop1: one.chainStatus, hop2: two.chainStatus, reason: two.reason }));
+}
+
+// arc.evaluate reports a trusted sealer only for the domain whose key verified
+// the seal. It read the sealer domain with its own pattern (the first `d=`
+// after a delimiter) while the seal was verified with the last `d=` tag, so a
+// sealer holding only attacker.example's key could be reported as
+// trusted.example: once by writing `d=trusted.example; d=attacker.example`, and
+// once by putting ` d=trusted.example` after the signature inside `b=`.
+async function testArcTrustedSealerIsTheVerifiedDomain() {
+  var nodeCrypto = require("crypto");
+  var dkim = b.mail.dkim;
+  var kp = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var pem = kp.privateKey.export({ format: "pem", type: "pkcs8" });
+  var spkiB64 = kp.publicKey.export({ type: "spki", format: "der" }).toString("base64");
+  var hop = b.mail.arc.sign({
+    rfc822: "From: ceo@trusted.example\r\nTo: bob@example.com\r\nSubject: wire the funds\r\n" +
+            "Date: Wed, 06 May 2026 12:00:00 +0000\r\nMessage-ID: <sealer@attacker.example>\r\n\r\nplease\r\n",
+    instance: 1, authservId: "attacker.example", domain: "attacker.example", selector: "arc",
+    privateKey: pem, algorithm: "rsa-sha256", cv: "none", authResults: "spf=pass",
+    headersToSign: ["From", "To", "Subject", "Date", "Message-ID"],
+  });
+  var signed = String(hop.rfc822);
+  var headerEnd = signed.indexOf("\r\n\r\n");
+  var lines = signed.slice(0, headerEnd).replace(/\r\n[ \t]+/g, " ").split("\r\n");
+  function valueOf(name) {
+    for (var i = 0; i < lines.length; i += 1) {
+      var at = lines[i].indexOf(":");
+      if (lines[i].slice(0, at).toLowerCase() === name) return lines[i].slice(at + 1).trim();
+    }
+    return null;
+  }
+  var aar = valueOf("arc-authentication-results");
+  var ams = valueOf("arc-message-signature");
+  var as  = valueOf("arc-seal");
+  function resealed(unsignedSeal, placeSig) {
+    var input = dkim.canonHeaderRelaxed("ARC-Authentication-Results", aar) +
+      dkim.canonHeaderRelaxed("ARC-Message-Signature", ams) +
+      dkim.canonHeaderRelaxed("ARC-Seal", dkim._stripBTagValue(unsignedSeal)).replace(/\r\n$/, "");
+    var sig = nodeCrypto.sign("sha256", Buffer.from(input, "latin1"), kp.privateKey).toString("base64");
+    var seal = placeSig(unsignedSeal, sig);
+    return lines.map(function (l) {
+      return l.toLowerCase().indexOf("arc-seal:") === 0 ? "ARC-Seal: " + seal : l;
+    }).join("\r\n") + signed.slice(headerEnd);
+  }
+  var repeatedD = resealed(
+    as.replace(/\bb=[^;]*$/, "b=").replace("d=attacker.example", "d=trusted.example; d=attacker.example"),
+    function (u, sig) { return u.replace(/b=$/, "b=" + sig); });
+  var withoutD = as.replace(/\bb=[^;]*$/, "").replace(/d=attacker\.example;\s*/, "").replace(/;\s*$/, "");
+  var domainInsideB = resealed(withoutD + "; b=; d=attacker.example",
+    function (u, sig) { return u.replace("b=;", "b=" + sig + " d=trusted.example;"); });
+  // RFC 6376 §3.2: a verifier ignores an unknown tag, so a signed seal may carry
+  // one whose value holds " d=trusted.example" ahead of the real d= tag.
+  var domainInsideUnknownTag = resealed(
+    as.replace(/\bb=[^;]*$/, "b=").replace("d=attacker.example", "x-note=relay d=trusted.example; d=attacker.example"),
+    function (u, sig) { return u.replace(/b=$/, "b=" + sig); });
+  async function dnsLookup(name) {
+    if (name === "arc._domainkey.attacker.example") return [["v=DKIM1; k=rsa; p=" + spkiB64]];
+    var e = new Error("ENOTFOUND " + name); e.code = "ENOTFOUND"; throw e;
+  }
+  var wrong = [];
+  var honest = await b.mail.arc.evaluate(signed, { trustedSealers: ["attacker.example"], dnsLookup: dnsLookup });
+  if (!(honest.chainStatus === "pass" && honest.trusted === true && honest.trustedDomain === "attacker.example")) {
+    wrong.push("honest seal trusted as its own domain -> " + honest.chainStatus + "/" + honest.trusted + "/" + honest.trustedDomain);
+  }
+  // [label, message, chainStatus the verifier must report]
+  var cases = [
+    ["repeated d=", repeatedD, "fail"],
+    ["d= inside b=", domainInsideB, "fail"],
+    ["d= inside an unknown tag", domainInsideUnknownTag, "pass"],
+  ];
+  for (var c = 0; c < cases.length; c += 1) {
+    var rv = await b.mail.arc.evaluate(cases[c][1], { trustedSealers: ["trusted.example"], dnsLookup: dnsLookup });
+    if (rv.trusted !== false || rv.trustedDomain !== null || rv.chainStatus !== cases[c][2]) {
+      wrong.push(cases[c][0] + " -> chain " + rv.chainStatus + " (want " + cases[c][2] + "), trusted " +
+                 rv.trusted + " as " + rv.trustedDomain);
+    }
+  }
+  check("arc.evaluate trusts a sealer only as the domain that verified the seal" +
+        (wrong.length ? " (" + wrong.join("; ") + ")" : ""), wrong.length === 0);
+
+  // cv= is read from the same parsed seal: RFC 8617 §4.1.3 allows only none,
+  // pass and fail, so a signed seal carrying cv=nonesuch is not cv=none.
+  var badCv = resealed(as.replace(/\bb=[^;]*$/, "b=").replace("cv=none", "cv=nonesuch"),
+    function (u, sig) { return u.replace(/b=$/, "b=" + sig); });
+  var rvCv = await b.mail.arc.verify(badCv, { dnsLookup: dnsLookup });
+  check("arc.verify reads cv= from the parsed seal: cv=nonesuch fails the chain",
+        rvCv.chainStatus === "fail" && /invalid-cv-at-i=1/.test(rvCv.reason || ""),
+        rvCv.chainStatus + "/" + rvCv.reason);
 }
 
 async function testArcVerifyNone() {
@@ -1253,18 +1515,14 @@ async function testArcRealRoundtripVerifiesPass() {
 }
 
 async function testArcFinalArInstanceForgery() {
-  // arcEvaluate surfaces finalAr — "the receiver's view of upstream auth
-  // results" — for downstream policy. The instance tag (i=) of every ARC
-  // header MUST be parsed identically by the indexing pass (which drives the
-  // AMS/AS crypto checks) and by the finalAr extraction. When the sealer's AMS
-  // h= omits arc-authentication-results (RFC-permitted; the verifier supports
-  // it), an attacker holding no key can inject a SECOND
-  // ARC-Authentication-Results whose instance is written so the strict indexer
-  // ignores it ("i = 1" with a space) while a looser finalAr parser still
-  // consumes it — forging the upstream auth-results on a chain that still
-  // verifies pass. finalAr must come from the same strictly-indexed hop the
-  // crypto validated. RED before the unification: attacked.finalAr carries
-  // "FORGED"; the chain still reports pass.
+  // arcEvaluate surfaces finalAr, the receiver's view of upstream auth
+  // results, for downstream policy. When the sealer's AMS h= omits
+  // arc-authentication-results (RFC-permitted; the verifier supports it), an
+  // attacker holding no key can inject a SECOND ARC-Authentication-Results for
+  // the same instance. finalAr comes from the hop arc.verify grouped, never from
+  // a second read of the headers. RFC 8617 §4.1.1 allows FWS around the "=" of
+  // the instance tag, so "i = 1" names instance 1: the injected header is a
+  // duplicate instance, the chain fails, and finalAr carries neither copy.
   var nodeCrypto = require("crypto");
   var arcKey = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
   var arcKeyPem = arcKey.privateKey.export({ format: "pem", type: "pkcs8" });
@@ -1305,20 +1563,27 @@ async function testArcFinalArInstanceForgery() {
         typeof clean.finalAr === "string" && /spf=pass/.test(clean.finalAr) &&
         clean.finalAr.indexOf("FORGED") === -1);
 
-  // Inject a SECOND ARC-Authentication-Results AFTER the genuine one, using
-  // "i = 1" (the space the strict indexer rejects) so the crypto pass never
-  // sees it but a loose finalAr parser would.
-  var FORGED = "ARC-Authentication-Results: i = 1; attacker.example; dkim=pass header.d=victim.example (FORGED)\r\n";
   var idx = hop1.rfc822.indexOf("ARC-Authentication-Results:");
   var aarEnd = hop1.rfc822.indexOf("\r\n", idx) + 2;
-  var injected = hop1.rfc822.slice(0, aarEnd) + FORGED + hop1.rfc822.slice(aarEnd);
-
-  var attacked = await b.mail.arc.evaluate(injected, { dnsLookup: dnsLookup, trustedSealers: ["relay-fa.example"] });
-  check("arc.evaluate: an injected loose-i= AAR does not change the crypto verdict (still pass)",
-        attacked.chainStatus === "pass");
-  check("arc.evaluate: finalAr is NOT forged by an injected loose-i= AAR",
-        typeof attacked.finalAr === "string" &&
-        attacked.finalAr.indexOf("FORGED") === -1 && /spf=pass/.test(attacked.finalAr));
+  var INJECTIONS = [
+    { label: "spaced i = 1 after the genuine AAR", at: aarEnd,
+      header: "ARC-Authentication-Results: i = 1; attacker.example; dkim=pass header.d=victim.example (FORGED)\r\n" },
+    { label: "i=1 before the genuine AAR", at: idx,
+      header: "ARC-Authentication-Results: i=1; attacker.example; dkim=pass header.d=victim.example (FORGED)\r\n" },
+  ];
+  var wrong = [];
+  for (var j = 0; j < INJECTIONS.length; j += 1) {
+    var inj = INJECTIONS[j];
+    var injected = hop1.rfc822.slice(0, inj.at) + inj.header + hop1.rfc822.slice(inj.at);
+    var attacked = await b.mail.arc.evaluate(injected, { dnsLookup: dnsLookup, trustedSealers: ["relay-fa.example"] });
+    if (!(attacked.chainStatus === "fail" && attacked.reason === "duplicate-instance" &&
+          attacked.trusted === false && attacked.finalAr === null)) {
+      wrong.push(inj.label + " -> " + attacked.chainStatus + "/" + attacked.reason +
+                 " trusted=" + attacked.trusted + " finalAr=" + JSON.stringify(attacked.finalAr));
+    }
+  }
+  check("arc.evaluate: an injected second AAR fails the chain and never becomes finalAr" +
+        (wrong.length ? " (" + wrong.join("; ") + ")" : ""), wrong.length === 0);
 }
 
 function testArcSignExcludeAarFromAms() {
@@ -4850,6 +5115,8 @@ async function run() {
   testArcHeaderParserGolden();
   testSpfParse();
   testSpfBadRecord();
+  await testSpfVersionSectionIsExact();
+  await testDmarcVersionTagSelection();
   await testSpfVerifyMockedDns();
   await testSpfMechanismA();
   await testSpfMechanismADualCidr();
@@ -4903,6 +5170,10 @@ async function run() {
   await testArcVerifyMissing();
   await testArcVerifyNone();
   await testArcTagNamesAreCaseSensitive();
+  await testArcRepeatedTagFailsChain();
+  await testArcTrustedSealerIsTheVerifiedDomain();
+  await testArcSignReadsFoldedPriorAar();
+  await testArcInstanceGrammar();
   await testArcSealsTheOctetsItWasGiven();
   await testArcOversignHeaderRoundTrips();
   await testArcSeparatesATransientLookupFromABadSeal();
@@ -5720,19 +5991,25 @@ async function testArcEvaluatePassButUntrusted() {
 }
 
 async function testArcEvaluateFinalArNullWhenTopAarUnindexed() {
-  // A chain whose only ARC-Authentication-Results uses a loose "i = 1" (space)
-  // that the strict instance reader rejects → the top hop has no indexed AAR →
-  // finalAr is null (the `|| null` fallback), and the chain fails structurally.
-  var msg = "ARC-Seal: i=1; a=rsa-sha256; cv=none; d=example.com; s=arc; b=AAAA\r\n" +
-            "ARC-Message-Signature: i=1; a=rsa-sha256; c=relaxed/relaxed; d=example.com; s=arc; bh=AAAA; h=from; b=AAAA\r\n" +
-            "ARC-Authentication-Results: i = 1; example.com; spf=pass\r\n" +
-            "From: alice@example.com\r\n\r\nbody\r\n";
-  var rv = await b.mail.arc.evaluate(msg, {
-    dnsLookup: async function () { return _enotfound(); },
-    trustedSealers: ["example.com"],
-  });
-  check("arc.evaluate: top hop with an unindexable loose-i= AAR → finalAr null + chain fail",
-        rv.finalAr === null && rv.chainStatus === "fail");
+  // RFC 8617 §4.1.1 puts the instance first in an ARC-Authentication-Results
+  // (`arc-info = instance [CFWS] ";" authres-payload`). A chain whose only AAR
+  // carries i= after the payload has no indexed AAR for the top hop → finalAr
+  // is null (the `|| null` fallback), and the chain fails structurally. The
+  // same AAR with FWS around "=" ("i = 1") is indexed, so the chain reaches the
+  // signature checks and finalAr is that AAR.
+  var seal = "ARC-Seal: i=1; a=rsa-sha256; cv=none; d=example.com; s=arc; b=AAAA\r\n" +
+             "ARC-Message-Signature: i=1; a=rsa-sha256; c=relaxed/relaxed; d=example.com; s=arc; bh=AAAA; h=from; b=AAAA\r\n";
+  var tail = "From: alice@example.com\r\n\r\nbody\r\n";
+  var opts = { dnsLookup: async function () { return _enotfound(); }, trustedSealers: ["example.com"] };
+  var late = await b.mail.arc.evaluate(seal + "ARC-Authentication-Results: example.com; spf=pass; i=1\r\n" + tail, opts);
+  check("arc.evaluate: top hop whose AAR does not lead with i= → finalAr null + chain fail",
+        late.finalAr === null && late.chainStatus === "fail" && late.reason === "incomplete-or-non-contiguous",
+        JSON.stringify({ finalAr: late.finalAr, chain: late.chainStatus, reason: late.reason }));
+  var spaced = await b.mail.arc.evaluate(seal + "ARC-Authentication-Results: i = 1; example.com; spf=pass\r\n" + tail, opts);
+  check("arc.evaluate: an AAR written i = 1 is indexed as instance 1",
+        spaced.chainStatus === "fail" && spaced.breakAt === 1 &&
+        spaced.finalAr === "i = 1; example.com; spf=pass",
+        JSON.stringify({ finalAr: spaced.finalAr, chain: spaced.chainStatus, breakAt: spaced.breakAt }));
 }
 
 function testAuthResultsEmitMissingMethodResult() {

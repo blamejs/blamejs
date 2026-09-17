@@ -36,19 +36,23 @@ function testIsForbiddenControlChar() {
   check("isForbiddenControlChar: CR permitted with allowCr", f(0x0d, { allowCr: true }) === false);
   check("isForbiddenControlChar: LF still forbidden with allowCr only", f(0x0a, { allowCr: true }) === true);
   // forbidTab — the stricter identifier / key / name contexts forbid TAB too,
-  // making the predicate exactly `code < 0x20 || code === 0x7f`.
+  // making the predicate exactly `code < 0x20 || code === 0x7f` plus C1.
   check("isForbiddenControlChar: TAB forbidden with forbidTab", f(0x09, { forbidTab: true }) === true);
   check("isForbiddenControlChar: NUL still forbidden with forbidTab", f(0x00, { forbidTab: true }) === true);
   check("isForbiddenControlChar: DEL still forbidden with forbidTab", f(0x7f, { forbidTab: true }) === true);
   check("isForbiddenControlChar: space ok with forbidTab", f(0x20, { forbidTab: true }) === false);
   check("isForbiddenControlChar: 'A' ok with forbidTab", f(0x41, { forbidTab: true }) === false);
-  // forbidTab is byte-equivalent to the open-coded `code < 0x20 || code === 0x7f`
-  // across every codepoint (the routed name/key validators rely on this).
+  // forbidTab is equivalent to `code < 0x20 || code === 0x7f || C1` across
+  // every codepoint, and adding allowC1 takes away exactly the C1 block.
   var forbidTabParity = true;
+  var allowC1Parity = true;
   for (var cp = 0; cp <= 0x200; cp += 1) {
-    if (f(cp, { forbidTab: true }) !== (cp < 0x20 || cp === 0x7f)) { forbidTabParity = false; break; }
+    var inC1 = cp >= 0x80 && cp <= 0x9f;
+    if (f(cp, { forbidTab: true }) !== (cp < 0x20 || cp === 0x7f || inC1)) forbidTabParity = false;
+    if (f(cp, { forbidTab: true, allowC1: true }) !== (cp < 0x20 || cp === 0x7f)) allowC1Parity = false;
   }
-  check("isForbiddenControlChar: forbidTab === (code < 0x20 || code === 0x7f)", forbidTabParity);
+  check("isForbiddenControlChar: forbidTab === (code < 0x20 || code === 0x7f || C1)", forbidTabParity);
+  check("isForbiddenControlChar: forbidTab + allowC1 === (code < 0x20 || code === 0x7f)", allowC1Parity);
   check("firstControlCharOffset: TAB forbidden with forbidTab → offset",
         codepointClass.firstControlCharOffset("a\tb", { forbidTab: true }) === 1);
   check("firstControlCharOffset: TAB allowed by default → -1",
@@ -1091,7 +1095,175 @@ function testDecodeEntityAtAndUrlSchemeStrippable() {
   });
 }
 
+// The C1 block, U+0080 to U+009F (general category Cc), carries the same
+// vectors as C0: U+009B is the one-character form of ESC [, and U+0085 NEXT
+// LINE is a line break under Unicode line breaking. CTRL_RANGES and
+// isForbiddenControlChar both cover it, so every check that refuses control
+// characters refuses it too. The callers that read a latin1 byte string, where
+// 0x80-0x9F are bytes of a longer UTF-8 sequence (HTTP obs-text), and the TOML
+// parser, whose grammar allows C1, pass allowC1 and keep accepting it.
+async function testC1ControlsAreScreened() {
+  var b = helpers.b;
+  var ch = String.fromCharCode;
+  var CSI = ch(0x9b);
+  var NEL = ch(0x85);
+  var wrong = [];
+  function expect(label, ok) { if (!ok) wrong.push(label); }
+  function codeOf(fn) {
+    try { fn(); return null; } catch (e) { return e.code || e.message; }
+  }
+  var f = codepointClass.isForbiddenControlChar;
+  var ranges = codepointClass.CTRL_RANGES;
+  expect("CTRL_RANGES covers U+0080", codepointClass.firstInRanges("a" + ch(0x80), ranges) === 1);
+  expect("CTRL_RANGES covers U+009F", codepointClass.firstInRanges("a" + ch(0x9f), ranges) === 1);
+  expect("CTRL_RANGES leaves U+00A0", codepointClass.firstInRanges("a" + ch(0xa0), ranges) === -1);
+  expect("isForbiddenControlChar refuses 0x80, 0x85, 0x9b and 0x9f",
+    f(0x80) && f(0x85) && f(0x9b) && f(0x9f));
+  expect("isForbiddenControlChar leaves 0xa0", f(0xa0) === false);
+  expect("isForbiddenControlChar leaves 0x85 and 0x9b with allowC1",
+    f(0x85, { allowC1: true }) === false && f(0x9b, { allowC1: true }) === false);
+  expect("isForbiddenControlChar still refuses NUL and DEL with allowC1",
+    f(0x00, { allowC1: true }) && f(0x7f, { allowC1: true }));
+  expect("firstControlCharOffset finds U+009B", codepointClass.firstControlCharOffset("ab" + CSI) === 2);
+
+  var csiText = b.guardText.validate("a" + CSI + "31mb", { profile: "balanced" });
+  expect("guardText.validate refuses U+009B",
+    csiText.ok === false && csiText.issues.some(function (i) { return i.kind === "control-char"; }));
+  var nelText = b.guardText.validate("a" + NEL + "b", { profile: "balanced" });
+  expect("guardText.validate refuses U+0085",
+    nelText.ok === false && nelText.issues.some(function (i) { return i.kind === "control-char"; }));
+  var cleaned = b.guardText.sanitize("a" + CSI + "31mb" + NEL + "c", { profile: "balanced" });
+  expect("guardText.sanitize removes U+009B and U+0085",
+    typeof cleaned === "string" && cleaned.indexOf(CSI) === -1 && cleaned.indexOf(NEL) === -1);
+  expect("guardFilename.sanitize refuses U+009B",
+    codeOf(function () { b.guardFilename.sanitize("re" + CSI + "port.txt"); }) === "filename.control");
+  var csv = b.guardCsv.validate("x\na" + CSI + "b\n", { profile: "strict" });
+  expect("guardCsv.validate refuses U+009B in a cell",
+    csv.ok === false && csv.issues.some(function (i) { return i.kind === "control-char"; }));
+
+  expect("guardMailMove refuses U+009B in a folder name", codeOf(function () {
+    b.guardMailMove.validate({ actor: { id: "u1" }, fromFolder: "IN" + CSI + "BOX", toFolder: "Archive", objectIds: ["abc"] });
+  }) === "mail-move/control-char-in-name");
+  expect("guardMailSieve refuses U+009B in a script name", codeOf(function () {
+    b.guardMailSieve.validate({ kind: "put", actor: { id: "u1" }, name: "my" + CSI + "filter", script: "keep;" },
+      { ownedNames: ["my" + CSI + "filter"] });
+  }) === "mail-sieve/bad-name-char");
+  expect("guardIdempotencyKey refuses U+009B", codeOf(function () {
+    b.guardIdempotencyKey.validate("key" + CSI + "x");
+  }) === "idempotency-key/control-char");
+  expect("safeJsonPath.validateKey refuses U+009B", codeOf(function () {
+    b.safeJsonPath.validateKey("ro" + CSI + "le");
+  }) === "safe-jsonpath/key-control-char");
+  expect("auth.stepUp.buildChallenge refuses U+009B in the realm", codeOf(function () {
+    b.auth.stepUp.buildChallenge({ requirement: { acr: "loa3" }, realm: "billing" + CSI });
+  }) === "auth-step-up/bad-challenge");
+  var sql = b.guardSql.validate("SELECT \"a" + CSI + "b\" FROM t", { profile: "strict" });
+  expect("guardSql flags U+009B in a quoted identifier",
+    sql.ok === false && sql.issues.some(function (i) { return i.kind === "identifier-hazard"; }));
+  var ai = b.ai.input.classify("hello" + CSI + "x", { audit: false });
+  expect("ai.input.classify counts U+009B as a control character", ai.features.ctrlCount === 1);
+  expect("guardJwt.kidSafe refuses U+009B", codeOf(function () {
+    b.guardJwt.kidSafe("tenant" + CSI + "1");
+  }) === "jwt.kid-control");
+  expect("guardMailCompose refuses U+009B in a subject", codeOf(function () {
+    b.guardMailCompose.validate({ from: "alice@example.com", to: ["bob@example.com"],
+      subject: "hi" + CSI + "31m", body: { text: "hi" } });
+  }) === "mail-compose/control-char-in-header");
+  expect("guardMailSieve refuses U+009B in a script", codeOf(function () {
+    b.guardMailSieve.validate({ kind: "put", actor: { id: "u1" }, name: "f", script: "keep;" + CSI },
+      { ownedNames: ["f"] });
+  }) === "mail-sieve/control-char-in-script");
+  expect("guardMessageId refuses U+009B", codeOf(function () {
+    b.guardMessageId.validate("<abc" + CSI + "@example.com>");
+  }) === "message-id/control-char");
+  var md = b.guardMarkdown.render("[x](https://example.com/" + CSI + ")");
+  expect("guardMarkdown.render leaves no U+009B in a rendered link",
+    typeof md === "string" && md.indexOf(CSI) === -1);
+
+  expect("safeIcal.parse refuses U+009B in a property value", codeOf(function () {
+    b.safeIcal.parse("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Example//1.0//EN\r\n" +
+      "BEGIN:VEVENT\r\nUID:abc@example.com\r\nDTSTAMP:20260101T120000Z\r\n" +
+      "DTSTART:20260101T130000Z\r\nSUMMARY:Team" + CSI + "31m\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n");
+  }) === "safe-ical/control-char-in-value");
+  expect("safeVcard.parse refuses U+0085 in a property value", codeOf(function () {
+    b.safeVcard.parse("BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Alice" + NEL + "Example\r\nEND:VCARD\r\n");
+  }) === "safe-vcard/control-char-in-value");
+  expect("safeMime.parse refuses U+009B in a header value", codeOf(function () {
+    b.safeMime.parse(Buffer.from("From: a@example.com\r\nSubject: hi" + CSI + "31m\r\n\r\nbody", "utf8"));
+  }) === "safe-mime/control-char-in-header");
+  expect("safeRedirect.resolve falls back on U+009B", b.safeRedirect.resolve("/next" + CSI) === "/");
+  expect("mail.feedbackId refuses U+009B", codeOf(function () {
+    b.mail.feedbackId({ campaignId: "wk26" + CSI, customerId: "acme", mailType: "marketing", senderId: "pool-1" });
+  }) === "mail/bad-feedback-id-field");
+  expect("mail.deploy.autoDiscoverXml refuses U+009B in the email", codeOf(function () {
+    b.mail.deploy.autoDiscoverXml({ email: "alice" + CSI + "@example.com",
+      imap: { host: "imap.example.com", port: 993, ssl: true } });
+  }) === "mail-deploy/bad-email");
+  expect("mail.deploy.autoConfigXml refuses U+009B in the domain", codeOf(function () {
+    b.mail.deploy.autoConfigXml({ domain: "exam" + CSI + "ple.com",
+      imap: { host: "imap.example.com", port: 993, socketType: "SSL" } });
+  }) === "mail-deploy/bad-domain");
+  expect("mail.deploy.autoConfigXml refuses U+009B in the JMAP URL", codeOf(function () {
+    b.mail.deploy.autoConfigXml({ domain: "example.com",
+      jmap: { url: "https://jmap.example.com/" + CSI } });
+  }) === "mail-deploy/bad-jmap-url");
+  expect("middleware.bearerAuth refuses U+009B in the realm", codeOf(function () {
+    b.middleware.bearerAuth({ verify: function () { return null; }, realm: "api" + CSI });
+  }) === "auth-bearer/bad-realm");
+  expect("requestHelpers.extractBearer refuses U+009B in the token",
+    b.requestHelpers.extractBearer({ headers: { authorization: "Bearer abc" + CSI + "def" } }) === null);
+  expect("guardDsn.parse refuses U+009B in a field", codeOf(function () {
+    b.guardDsn.parse("Reporting-MTA: dns; mail.example.com\r\n\r\n" +
+      "Final-Recipient: rfc822; alice" + CSI + "@example.com\r\nAction: failed\r\nStatus: 5.1.1\r\n");
+  }) === "guard-dsn/control-char");
+  var listId = b.guardListId.validate("<news" + CSI + ".example.com>");
+  expect("guardListId refuses U+009B as a control character",
+    listId.action === "refuse" && /control|C1/.test(listId.reason));
+  var unsub = b.guardListUnsubscribe.validate({ listUnsubscribe: "<https://example.com/unsub" + CSI + ">" });
+  expect("guardListUnsubscribe refuses U+009B as a control character",
+    unsub.action === "refuse" && /control/.test(unsub.reason));
+  expect("guardSmtpCommand refuses U+009B in an SMTPUTF8 mailbox", codeOf(function () {
+    b.guardSmtpCommand.validate("MAIL FROM:<al" + CSI + "ice@example.com>", { profile: "balanced" });
+  }) === "guard-smtp-command/control-char");
+  expect("guardImapCommand refuses U+009B", codeOf(function () {
+    b.guardImapCommand.validate("A002 SELECT IN" + CSI + "BOX");
+  }) === "guard-imap-command/bad-byte");
+  expect("guardPop3Command refuses U+009B", codeOf(function () {
+    b.guardPop3Command.validate("USER al" + CSI + "ice", { tls: true });
+  }) === "guard-pop3-command/bad-byte");
+  expect("guardManageSieveCommand refuses U+009B in a quoted script name", codeOf(function () {
+    b.guardManageSieveCommand.validate("HAVESPACE \"my" + CSI + "script\" 100", { tls: true });
+  }) === "guard-managesieve-command/bad-byte");
+  expect("externalDb relation extraction drops a name carrying U+009B",
+    b.externalDb._extractTargetRelation("SELECT * FROM \"pay" + CSI + "roll\"") === null);
+  var spam = b.mail.spamScore.create({ scorer: function () {
+    return Promise.resolve({ score: 1, reasons: ["BAYES" + CSI + "31m"] });
+  } });
+  var spamCode = null;
+  try { await spam.score({ rawBytes: Buffer.from("body") }); } catch (e) { spamCode = e.code; }
+  expect("mail.spamScore refuses U+009B in a scorer reason", spamCode === "mail-spam-score/control-byte");
+  var local = b.localHttp.create({ socketPath: "/x.sock", hostHeader: "d" });
+  var localCode = null;
+  try { await local.request({ path: "/a" + CSI }); } catch (e) { localCode = e.code; }
+  expect("localHttp.request refuses U+009B in the path", localCode === "local-http/bad-path");
+
+  // Byte-level readers: a latin1 view of UTF-8 bytes carries 0x80-0x9F as
+  // continuation bytes (U+0105 is C4 85), and TOML 1.0 allows C1 in strings.
+  var obsText = ch(0x63, 0x61, 0x66, 0xc3, 0xa9, 0x20, 0xc4, 0x85);
+  expect("structuredFields.containsControlBytes leaves UTF-8 bytes read as latin1",
+    b.structuredFields.containsControlBytes(obsText) === false);
+  expect("structuredFields.refuseControlBytes leaves UTF-8 bytes read as latin1", codeOf(function () {
+    b.structuredFields.refuseControlBytes(obsText, { ErrorClass: Error, useNativeError: true, code: "probe/x", label: "probe" });
+  }) === null);
+  var toml = b.parsers.toml.parse("k = \"a" + NEL + "b\"\n");
+  expect("parsers.toml keeps U+0085 in a basic string", toml.k === "a" + NEL + "b");
+
+  check("C1 controls are screened wherever decoded text is screened for controls" +
+        (wrong.length ? " (missing: " + wrong.join("; ") + ")" : ""), wrong.length === 0);
+}
+
 async function run() {
+  await testC1ControlsAreScreened();
   testDecodeEntityAtAndUrlSchemeStrippable();
   testIsForbiddenControlChar();
   testFirstControlCharOffset();
@@ -1114,10 +1286,12 @@ async function run() {
 // disagreed: isForbiddenControlChar has always said DEL is one, while the
 // range table the policy paths read left it out — so `controlPolicy: "reject"`
 // accepted DEL. CTRL_RANGES is the table those paths read now, and this pins
-// the two together across the whole C0 + C1 span rather than at DEL alone.
+// the two together across the whole C0 + C1 span rather than at DEL alone,
+// and pins allowC1 to removing exactly the C1 block and nothing else.
 function testRangeTablesAgreeWithTheirPredicates() {
   var disagree = [];
-  for (var cp = 0x00; cp <= 0x9F; cp += 1) {
+  var byteReaders = [];
+  for (var cp = 0x00; cp <= 0xA0; cp += 1) {
     // TAB, LF and CR are the predicate's opt-dependent cases — the table has
     // no opts, so they are compared through the predicate's own defaults
     // elsewhere rather than here.
@@ -1129,9 +1303,15 @@ function testRangeTablesAgreeWithTheirPredicates() {
       disagree.push("U+" + cp.toString(16).toUpperCase() +
                     " predicate=" + byPredicate + " table=" + byTable);
     }
+    var inC1 = cp >= 0x80 && cp <= 0x9F;
+    if (codepointClass.isForbiddenControlChar(cp, { allowC1: true }) !== (byTable && !inC1)) {
+      byteReaders.push("U+" + cp.toString(16).toUpperCase());
+    }
   }
   check("CTRL_RANGES and isForbiddenControlChar agree on every C0/C1 codepoint",
         disagree.length === 0, disagree.slice(0, 6).join("; "));
+  check("isForbiddenControlChar with allowC1 differs from CTRL_RANGES only on the C1 block",
+        byteReaders.length === 0, byteReaders.slice(0, 6).join("; "));
 
   check("CTRL_RANGES covers DEL",
         codepointClass.firstInRanges(String.fromCharCode(0x7F), codepointClass.CTRL_RANGES) !== -1);

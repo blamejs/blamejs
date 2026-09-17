@@ -72,6 +72,7 @@ async function testAssemblyIdGating() {
       try { await fn(); } catch (e) { threw = e; }
       check(label, threw && threw.code === "storage/invalid-argument");
     }
+    var csi = String.fromCharCode(0x9b);
     await expectThrow("empty assemblyId refused",
       function () { return cs.saveChunk({ assemblyId: "", chunkIndex: 0, data: Buffer.from("x") }); });
     await expectThrow("slash assemblyId refused",
@@ -80,6 +81,8 @@ async function testAssemblyIdGating() {
       function () { return cs.saveChunk({ assemblyId: "a\\b", chunkIndex: 0, data: Buffer.from("x") }); });
     await expectThrow("NUL assemblyId refused",
       function () { return cs.saveChunk({ assemblyId: "a\x00b", chunkIndex: 0, data: Buffer.from("x") }); });
+    await expectThrow("C1 control (U+009B CSI) assemblyId refused",
+      function () { return cs.saveChunk({ assemblyId: "a" + csi + "b", chunkIndex: 0, data: Buffer.from("x") }); });
     await expectThrow("dot-prefix assemblyId refused",
       function () { return cs.saveChunk({ assemblyId: ".secret", chunkIndex: 0, data: Buffer.from("x") }); });
     await expectThrow("path-traversal assemblyId refused",

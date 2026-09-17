@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.20.30",
-  "createdAt": "2026-09-17T10:37:04.970Z",
+  "createdAt": "2026-09-17T14:06:08.786Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -6892,6 +6892,10 @@
           "valueType": "string"
         },
         "C0_CTRL_RANGES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "C1_CTRL_RANGES": {
           "type": "instance",
           "ctorName": "Array"
         },
@@ -55995,6 +55999,10 @@
         "parseTagList": {
           "type": "function",
           "arity": 2
+        },
+        "recordVersionMatches": {
+          "type": "function",
+          "arity": 4
         },
         "refuseControlBytes": {
           "type": "function",

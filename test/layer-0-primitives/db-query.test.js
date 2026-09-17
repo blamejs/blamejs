@@ -223,7 +223,7 @@ async function testWhereOperatorAndJsonbGuards() {
         /invalid JSON string/.test(
           _codeOf(function () { new Query(db, "t").where("meta", "@>", "{not json"); })));
   check("@> rejects an object with a control-char string leaf",
-        _threw(function () { new Query(db, "t").where("meta", "@>", { a: "" }); }));
+        _threw(function () { new Query(db, "t").where("meta", "@>", { a: "\u0001" }); }));
 
   // JSONB key-existence operators.
   check("? accepts a string key", !_threw(function () { new Query(db, "t").where("meta", "?", "k"); }));
