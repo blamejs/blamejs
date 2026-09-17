@@ -827,6 +827,29 @@ function testPositiveFiniteOptRejections() {
   // `value === null` short-circuit at the top of _positiveFiniteOrDefault.
   var eNull = threw(function () { b.cert.create(mk({ renew: { intervalMs: null, minDaysBeforeExpiry: null }, ocsp: { refreshMs: null } })); });
   check("null interval/window/refresh → default (no throw)", !eNull);
+
+  // The OCSP CertID hash is forwarded from cert.create.ocsp into the stapling
+  // fetch (SHA-256 default). The manager must accept certIdHashAlg so an
+  // operator on a SHA-1-only responder can reach the escape hatch through b.cert.
+  var eHashAlg = threw(function () { b.cert.create(mk({ ocsp: { certIdHashAlg: "sha1" } })); });
+  check("ocsp.certIdHashAlg is an accepted cert.create.ocsp option", !eHashAlg, eHashAlg && eHashAlg.code);
+
+  // A refresh swallows its own failure into an audit event, so an unsupported
+  // CertID hash must be refused at create time or the manager boots and never
+  // obtains a staple.
+  ["sha265", "SHA256", "md5", "", 256, "constructor", "toString"].forEach(function (bad) {
+    var eBad = threw(function () { b.cert.create(mk({ ocsp: { certIdHashAlg: bad } })); });
+    check("ocsp.certIdHashAlg " + JSON.stringify(bad) + " → cert/bad-ocsp-certid-hash-alg at create",
+      eBad && eBad.code === "cert/bad-ocsp-certid-hash-alg", eBad && eBad.code);
+  });
+  b.network.tls.ocsp.CERTID_HASH_ALGS.forEach(function (good) {
+    var eGood = threw(function () { b.cert.create(mk({ ocsp: { certIdHashAlg: good } })); });
+    check("ocsp.certIdHashAlg " + good + " accepted at create", !eGood, eGood && eGood.code);
+  });
+  var eUndef = threw(function () { b.cert.create(mk({ ocsp: { certIdHashAlg: undefined } })); });
+  check("ocsp.certIdHashAlg undefined → default (no throw)", !eUndef, eUndef && eUndef.code);
+  var eNullAlg = threw(function () { b.cert.create(mk({ ocsp: { certIdHashAlg: null } })); });
+  check("ocsp.certIdHashAlg null → default (no throw)", !eNullAlg, eNullAlg && eNullAlg.code);
 }
 
 // ---- Manifest size + per-cert shape rejections (uncovered guard rows) ----

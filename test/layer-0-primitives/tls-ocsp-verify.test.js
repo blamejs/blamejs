@@ -312,6 +312,44 @@ async function testFetchForwardsMaxAgeMs() {
         dfltErr && /ocsp-not-good/.test(dfltErr.code || ""));
 }
 
+// buildRequest defaults the CertID hash to SHA-256 with a certIdHashAlg opt for
+// SHA-1-only responders; that opt is inert unless ocsp.fetch forwards it into
+// buildRequest. Assert the OUTGOING request DER carries the chosen hash OID.
+async function testFetchForwardsCertIdHashAlg() {
+  var httpClient = require("../../lib/http-client");
+  var pair = helpers.selfSignedPair();
+  var built = helpers.buildOcspResponse({
+    keyPair: pair.keyPair, certIdIssuerDer: pair.certDer, serial: Buffer.from([0x12, 0x34, 0x56, 0x78]),
+  });
+  var SHA256_OID_DER = Buffer.from([0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01]);
+  var SHA1_OID_DER   = Buffer.from([0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a]);
+  var origRequest = httpClient.request;
+  var sent = [];
+  httpClient.request = async function (reqOpts) {
+    sent.push(reqOpts && Buffer.isBuffer(reqOpts.body) ? reqOpts.body : Buffer.from((reqOpts && reqOpts.body) || []));
+    return { status: 200, body: built.der };
+  };
+  try {
+    sent.length = 0;
+    try {
+      await b.network.tls.ocsp.fetch({ leafPem: pair.cert, issuerPem: pair.cert,
+        responderUrl: "http://ocsp.test/", serialHex: "12345678", nonce: false });
+    } catch (_e) { /* the outgoing request is what we assert on */ }
+    check("fetch default sends a SHA-256 CertID",
+          sent.length === 1 && sent[0].includes(SHA256_OID_DER) && !sent[0].includes(SHA1_OID_DER));
+
+    sent.length = 0;
+    try {
+      await b.network.tls.ocsp.fetch({ leafPem: pair.cert, issuerPem: pair.cert,
+        responderUrl: "http://ocsp.test/", serialHex: "12345678", nonce: false, certIdHashAlg: "sha1" });
+    } catch (_e) { /* ditto */ }
+    check("fetch forwards certIdHashAlg:'sha1' into the outgoing CertID",
+          sent.length === 1 && sent[0].includes(SHA1_OID_DER) && !sent[0].includes(SHA256_OID_DER));
+  } finally {
+    httpClient.request = origRequest;
+  }
+}
+
 async function run() {
   testSurface();
   testParseRejectsBadInput();
@@ -332,6 +370,7 @@ async function run() {
   testParseRejectsTrailingData();
   testEvaluateRejectsTrailingData();
   await testFetchForwardsMaxAgeMs();
+  await testFetchForwardsCertIdHashAlg();
 }
 
 module.exports = { run: run };

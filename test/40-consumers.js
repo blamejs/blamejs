@@ -1762,8 +1762,10 @@ async function testMiddlewareBotGuard() {
 async function testMiddlewareCors() {
   await setupTestDbForMW();
   try {
+    // Credentialed CORS uses exact string origins (a RegExp origin with
+    // credentials is refused — it could reflect an attacker-registrable host).
     var mw = b.middleware.cors({
-      origins:     ["https://app.example.com", /^https:\/\/.+\.staging\.example\.com$/],
+      origins:     ["https://app.example.com"],
       credentials: true,
     });
 
@@ -1776,10 +1778,13 @@ async function testMiddlewareCors() {
     check("cors: ACAO set",                               res._captured().headers["access-control-allow-origin"] === "https://app.example.com");
     check("cors: ACAC set when credentials:true",        res._captured().headers["access-control-allow-credentials"] === "true");
 
-    // Regex origin → match
+    // A non-credentialed RegExp origin still matches (anchored, whole-origin).
+    var mwRegex = b.middleware.cors({
+      origins: [/^https:\/\/.+\.staging\.example\.com$/],
+    });
     var req2 = _mockReq({ headers: { origin: "https://feature-1.staging.example.com" } });
     var res2 = _mockRes();
-    mw(req2, res2, function () {});
+    mwRegex(req2, res2, function () {});
     check("cors: regex origin matched",                   res2._captured().headers["access-control-allow-origin"] === "https://feature-1.staging.example.com");
 
     // Disallowed origin → 403 (refuseUnknown default)

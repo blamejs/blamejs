@@ -22,7 +22,13 @@
 var nodeCrypto = require("node:crypto");
 var asn1       = require("../../lib/asn1-der");
 
-var OID_SHA1             = "1.3.14.3.2.26";
+var OID_SHA256           = "2.16.840.1.101.3.4.2.1";
+var OCSP_CERTID_OID_TO_NODE = {
+  "1.3.14.3.2.26":          "sha1",
+  "2.16.840.1.101.3.4.2.1": "sha256",
+  "2.16.840.1.101.3.4.2.2": "sha384",
+  "2.16.840.1.101.3.4.2.3": "sha512",
+};
 var OID_ECDSA_SHA256     = "1.2.840.10045.4.3.2";
 var OID_OCSP_BASIC       = "1.3.6.1.5.5.7.48.1.1";
 var OID_OCSP_NONCE       = "1.3.6.1.5.5.7.48.1.2";
@@ -121,7 +127,7 @@ function buildOcspResponse(opts) {
     certStatus:     "good",
     producedAtMs:   Date.parse("2025-06-15T00:00:00Z"),
     serial:         Buffer.from([0x12, 0x34, 0x56, 0x78]),
-    certIdHashOid:  OID_SHA1,
+    certIdHashOid:  OID_SHA256,
     signatureAlgOid: OID_ECDSA_SHA256,
   }, opts || {});
   if (typeof opts.thisUpdateMs !== "number") opts.thisUpdateMs = opts.producedAtMs;
@@ -139,7 +145,7 @@ function buildOcspResponse(opts) {
   // opts.issuerCertDer. An explicit certIdIssuerDer / hash / non-SHA-1 opt opts
   // out (leaving the filler-hash path below for wrong-issuer refusal fixtures).
   if (opts.certIdIssuerDer === undefined && !opts.issuerNameHash &&
-      !opts.issuerKeyHash && opts.certIdHashOid === OID_SHA1) {
+      !opts.issuerKeyHash && OCSP_CERTID_OID_TO_NODE[opts.certIdHashOid]) {
     opts.certIdIssuerDer = issuerCertDer;
   }
 
@@ -244,12 +250,19 @@ function buildOcspResponse(opts) {
 // recomputes. Uses the framework's own request builder so the two agree by
 // construction rather than by a second implementation here.
 function _hashesFor(issuerCertDer, hashOid) {
+  var certIdHashAlg = OCSP_CERTID_OID_TO_NODE[hashOid];
+  if (!certIdHashAlg) {
+    throw new Error("buildOcspResponse: certIdIssuerDer derivation covers only " +
+                    "sha1/sha256/sha384/sha512 (what buildRequest emits); pass explicit " +
+                    "issuerNameHash/issuerKeyHash instead");
+  }
   var b = require("../../index.js");
   var req = b.network.tls.ocsp.buildRequest({
     leafCertDer:   synthCert(Buffer.from([0x01]), Buffer.from("Leaf"),
                              Buffer.from("leaf-key-bytes-aaaaaaaaaaaaaaaa")),
     issuerCertDer: issuerCertDer,
     nonce:         false,
+    certIdHashAlg: certIdHashAlg,
   });
   var reqTop  = asn1.readNode(req.requestDer);
   var reqTbs  = asn1.readSequence(reqTop.value)[0];
@@ -257,10 +270,6 @@ function _hashesFor(issuerCertDer, hashOid) {
   var reqOne  = asn1.readSequence(reqList.value)[0];
   var certId  = asn1.readSequence(reqOne.value)[0];
   var kids    = asn1.readSequence(certId.value);
-  if (hashOid !== OID_SHA1) {
-    throw new Error("buildOcspResponse: certIdIssuerDer derivation only covers SHA-1 " +
-                    "(what buildRequest emits); pass explicit issuerNameHash/issuerKeyHash instead");
-  }
   return { nameHash: asn1.readOctetString(kids[1]), keyHash: asn1.readOctetString(kids[2]) };
 }
 

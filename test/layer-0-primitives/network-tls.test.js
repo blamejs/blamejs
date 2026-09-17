@@ -1356,6 +1356,46 @@ function testOcspBuildRequest() {
   var custom = nt.ocsp.buildRequest({ leafCertDer: leaf, issuerCertDer: issuer, nonceLen: 32 });
   check("buildRequest nonceLen:32 honored", custom.nonce.length === 32);
 
+  // The CertID lookup hash defaults to SHA-256, not SHA-1 (CodeQL #139/#140).
+  // The DER-encoded hashAlgorithm OID appears only in the CertID, so presence of
+  // the SHA-256 OID and absence of the SHA-1 OID confirms the algorithm.
+  var SHA256_OID_DER = Buffer.from([0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01]);
+  var SHA1_OID_DER   = Buffer.from([0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a]);
+  check("buildRequest CertID uses SHA-256 by default (not SHA-1)",
+        withNonce.requestDer.includes(SHA256_OID_DER) && !withNonce.requestDer.includes(SHA1_OID_DER));
+
+  // Interop escape hatch: an operator on a SHA-1-only responder can opt down.
+  var legacy = nt.ocsp.buildRequest({ leafCertDer: leaf, issuerCertDer: issuer, certIdHashAlg: "sha1" });
+  check("buildRequest certIdHashAlg:'sha1' emits the SHA-1 CertID OID",
+        legacy.requestDer.includes(SHA1_OID_DER) && !legacy.requestDer.includes(SHA256_OID_DER));
+
+  var sha384 = nt.ocsp.buildRequest({ leafCertDer: leaf, issuerCertDer: issuer, certIdHashAlg: "sha384" });
+  check("buildRequest certIdHashAlg:'sha384' honored",
+        sha384.requestDer.includes(Buffer.from([0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02])));
+
+  var nullAlg = nt.ocsp.buildRequest({ leafCertDer: leaf, issuerCertDer: issuer, certIdHashAlg: null });
+  check("buildRequest certIdHashAlg:null selects the SHA-256 default",
+        nullAlg.requestDer.includes(SHA256_OID_DER) && !nullAlg.requestDer.includes(SHA1_OID_DER));
+
+  ["md5", "SHA256", "", 0, false, "constructor", "toString", "__proto__", "hasOwnProperty"].forEach(function (bad) {
+    var eHash = null;
+    try { nt.ocsp.buildRequest({ leafCertDer: leaf, issuerCertDer: issuer, certIdHashAlg: bad }); } catch (e) { eHash = e; }
+    check("buildRequest certIdHashAlg " + JSON.stringify(bad) + " throws ocsp-bad-certid-hash-alg",
+          eHash && eHash.code === "tls/ocsp-bad-certid-hash-alg", eHash && (eHash.code || eHash.message));
+  });
+
+  // The exported list is what cert.create validates against, so it must name
+  // exactly the values buildRequest accepts.
+  check("ocsp.CERTID_HASH_ALGS is a frozen array",
+        Array.isArray(nt.ocsp.CERTID_HASH_ALGS) && Object.isFrozen(nt.ocsp.CERTID_HASH_ALGS));
+  check("ocsp.CERTID_HASH_ALGS names sha256, sha384, sha512 and sha1",
+        JSON.stringify(nt.ocsp.CERTID_HASH_ALGS.slice().sort()) === JSON.stringify(["sha1", "sha256", "sha384", "sha512"]));
+  nt.ocsp.CERTID_HASH_ALGS.forEach(function (alg) {
+    var eListed = null;
+    try { nt.ocsp.buildRequest({ leafCertDer: leaf, issuerCertDer: issuer, certIdHashAlg: alg }); } catch (e) { eListed = e; }
+    check("buildRequest accepts listed CertID hash " + alg, !eListed, eListed && eListed.code);
+  });
+
   var e1 = null;
   try { nt.ocsp.buildRequest({ leafCertDer: "x", issuerCertDer: issuer }); } catch (e) { e1 = e; }
   check("buildRequest bad leafCertDer throws ocsp-bad-input", e1 && e1.code === "tls/ocsp-bad-input");
