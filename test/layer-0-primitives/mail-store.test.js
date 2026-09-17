@@ -378,6 +378,42 @@ async function testCcAndReplyToColumnsAddedToExistingStore() {
     try { b.mailStore.create({ backend: fx.db }); } catch (e) { eAgain = e; }
     check("upgrade: opening a store that already has the columns does not fail", eAgain === null,
           eAgain && (eAgain.code || eAgain.message));
+
+    // Two processes opening the same pre-upgrade store can both read the old
+    // column list before either adds the columns. The second one's ALTER then
+    // finds the column present, and that must not stop it from starting.
+    fx.db.prepare("ALTER TABLE \"" + table + "\" DROP COLUMN \"cc_addrs\"").run();
+    fx.db.prepare("ALTER TABLE \"" + table + "\" DROP COLUMN \"reply_to\"").run();
+    var staleRead = false;
+    var racingBackend = {
+      prepare: function (text) {
+        var stmt = fx.db.prepare(text);
+        if (!staleRead && /^PRAGMA table_info/i.test(text)) {
+          staleRead = true;
+          var staleRows = stmt.all();
+          fx.db.prepare("ALTER TABLE \"" + table + "\" ADD COLUMN \"cc_addrs\" TEXT").run();
+          fx.db.prepare("ALTER TABLE \"" + table + "\" ADD COLUMN \"reply_to\" TEXT").run();
+          return { all: function () { return staleRows; } };
+        }
+        return stmt;
+      },
+    };
+    var eRace = null;
+    var raced = null;
+    try { raced = b.mailStore.create({ backend: racingBackend }); } catch (e) { eRace = e; }
+    check("upgrade: a store whose columns another process added after this one read the table still opens",
+          eRace === null && raced !== null && staleRead, eRace && (eRace.code || eRace.message));
+    var eRealFailure = null;
+    var brokenBackend = {
+      prepare: function (text) {
+        if (/^ALTER TABLE/i.test(text)) throw new Error("database is locked");
+        return fx.db.prepare(text);
+      },
+    };
+    fx.db.prepare("ALTER TABLE \"" + table + "\" DROP COLUMN \"reply_to\"").run();
+    try { b.mailStore.create({ backend: brokenBackend }); } catch (e) { eRealFailure = e; }
+    check("upgrade: an ALTER that fails for any other reason is not swallowed",
+          eRealFailure !== null && /database is locked/.test(eRealFailure.message), eRealFailure && eRealFailure.message);
   } finally { _teardown(fx); }
 }
 
