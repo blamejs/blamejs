@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) blamejs contributors
 "use strict";
+// SMOKE_RUN_SOLO: growth checks here compare wall-clock time across input sizes, which a CPU shared with the smoke pool distorts.
 /**
  * Layer 0 — b.jsonPath (RFC 9535 JSONPath query).
  * Oracle: a representative subset of the official

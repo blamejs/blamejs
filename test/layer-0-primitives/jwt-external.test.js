@@ -20,6 +20,7 @@
 var helpers = require("../helpers");
 var b           = helpers.b;
 var check       = helpers.check;
+var C           = b.constants;
 var nodeCrypto  = require("crypto");
 
 function _b64url(buf) {
@@ -182,6 +183,67 @@ async function testRoundTripRs256() {
   });
   check("valid RS256 token round-trips with kid match",
         rv && rv.claims && rv.claims.sub === "u1");
+}
+
+// jwksUri keys are cached for jwksCacheMs (default 10 minutes); a later
+// verification inside that window reuses them and one after it fetches the
+// JWKS again. A jwksCacheMs that is not a non-negative finite integer is
+// refused.
+async function testJwksUriCacheDuration() {
+  var httpClientMod = require("../../lib/http-client");
+  var keys = _rsaPair();
+  var jwk = Object.assign({}, keys.publicKey, { kid: "k1", use: "sig", alg: "RS256" });
+  var fetches = 0;
+  var realRequest = httpClientMod.request;
+  var realNow = Date.now;
+  httpClientMod.request = async function () {
+    fetches += 1;
+    return { statusCode: 200, headers: {}, body: Buffer.from(JSON.stringify({ keys: [jwk] }), "utf8") };
+  };
+  async function verifyAt(uri, offsetMs, extra) {
+    Date.now = function () { return realNow() + offsetMs; };
+    try {
+      var nowSec = Math.floor(Date.now() / C.TIME.seconds(1));
+      var token = _signJwt(keys.privateKey, { alg: "RS256", kid: "k1" },
+        { sub: "u1", exp: nowSec + C.TIME.minutes(5) / C.TIME.seconds(1) });
+      await b.auth.jwt.verifyExternal(token, Object.assign({ algorithms: ["RS256"], jwksUri: uri }, extra || {}));
+    } finally {
+      Date.now = realNow;
+    }
+  }
+  var wrong = [];
+  try {
+    var shortUri = "https://idp.example.com/jwks-short";
+    await verifyAt(shortUri, 0, { jwksCacheMs: C.TIME.minutes(1) });
+    await verifyAt(shortUri, C.TIME.seconds(30), { jwksCacheMs: C.TIME.minutes(1) });
+    if (fetches !== 1) wrong.push("jwksCacheMs 1 min: " + fetches + " fetches inside the window (want 1)");
+    await verifyAt(shortUri, C.TIME.minutes(2), { jwksCacheMs: C.TIME.minutes(1) });
+    if (fetches !== 2) wrong.push("jwksCacheMs 1 min: " + fetches + " fetches after the window (want 2)");
+
+    fetches = 0;
+    var defaultUri = "https://idp.example.com/jwks-default";
+    await verifyAt(defaultUri, 0);
+    await verifyAt(defaultUri, C.TIME.minutes(9));
+    if (fetches !== 1) wrong.push("default: " + fetches + " fetches inside 10 min (want 1)");
+    await verifyAt(defaultUri, C.TIME.minutes(11));
+    if (fetches !== 2) wrong.push("default: " + fetches + " fetches after 10 min (want 2)");
+
+    var bad = [];
+    var badValues = [-1, "60000", Infinity, 1.5];
+    for (var i = 0; i < badValues.length; i += 1) {
+      try {
+        await verifyAt("https://idp.example.com/jwks-bad" + i, 0, { jwksCacheMs: badValues[i] });
+        bad.push(String(badValues[i]) + " accepted");
+      } catch (e) {
+        if (e.code !== "auth-jwt-external/bad-jwks-cache-ms") bad.push(String(badValues[i]) + " -> " + e.code);
+      }
+    }
+    if (bad.length) wrong.push("bad jwksCacheMs: " + bad.join(", "));
+  } finally {
+    httpClientMod.request = realRequest;
+  }
+  check("verifyExternal caches jwksUri keys for jwksCacheMs" +
+        (wrong.length ? " (" + wrong.join("; ") + ")" : ""), wrong.length === 0);
 }
 
 async function testAudMismatch() {
@@ -537,6 +599,7 @@ async function run() {
   await testNoKeySource();
   await testConflictingKeySource();
   await testRoundTripRs256();
+  await testJwksUriCacheDuration();
   await testAudMismatch();
   await testExpired();
   await testNonFiniteExpRejected();

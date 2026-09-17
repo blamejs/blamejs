@@ -57,7 +57,7 @@ function testRefuses() {
     function () { b.guardMessageId.validate("<a\x00b@x>"); },
     "message-id/control-char");
   expectRefused("refuses DEL",
-    function () { b.guardMessageId.validate("<ab@x>"); },
+    function () { b.guardMessageId.validate("<a\u007Fb@x>"); },
     "message-id/control-char");
   expectRefused("refuses RTLO bidi (CVE-2021-42574 class)",
     function () { b.guardMessageId.validate("<a‮b@x>"); },

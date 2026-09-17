@@ -5,6 +5,10 @@
  * b.middleware.noCache — RFC 9111 §5.2.2.5 Cache-Control: no-store middleware.
  */
 
+var fs      = require("fs");
+var http    = require("http");
+var os      = require("os");
+var path    = require("path");
 var helpers = require("../helpers");
 var b       = helpers.b;
 var check   = helpers.check;
@@ -83,6 +87,179 @@ function testBadOpts() {
         threw && /no-cache\/bad-when/.test(threw.code || ""));
 }
 
+// Each writer below has its own Cache-Control default that is weaker than
+// no-store. With b.middleware.noCache run first, the header the client receives
+// still carries no-store, and a writer whose default carries no-transform keeps
+// that directive too.
+async function testNoStoreSurvivesFrameworkWriters() {
+  var stubEngine = { render: function () { return "<p>page</p>"; } };
+  var staticDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-nocache-static-"));
+  fs.writeFileSync(path.join(staticDir, "hello.txt"), "hello world");
+  var staticServe = b.staticServe.create({ root: staticDir });
+  var jmap = b.mail.server.jmap.create({
+    mailStore: {
+      appendMessage: function () {},
+      subscribePush: function () { return Promise.resolve(function () {}); },
+    },
+    accountsFor: async function () { return {}; },
+    methods: {},
+  });
+  function middlewareRow(mw) {
+    return function (req, res) {
+      return mw(req, res, function () { res.statusCode = 404; res.end("fell through"); });
+    };
+  }
+  var ROWS = [
+    { name: "b.render.json", path: "/r", run: function (req, res) { b.render.json(res, { ok: true }); } },
+    { name: "b.render.text", path: "/r", run: function (req, res) { b.render.text(res, "ok"); } },
+    { name: "b.render.htmlString", path: "/r", run: function (req, res) { b.render.htmlString(res, "<p>x</p>"); } },
+    { name: "b.render.redirect", path: "/r", run: function (req, res) { b.render.redirect(res, "/next"); } },
+    { name: "b.render.stream", path: "/r", run: function (req, res) { return b.render.stream(res, ["a", "b"]); } },
+    { name: "b.render.create().html", path: "/r",
+      run: function (req, res) { b.render.create({ engine: stubEngine }).html(res, "page", {}); } },
+    { name: "b.middleware.sse", path: "/events", noTransform: true,
+      run: function (req, res) { return b.middleware.sse(async function () {}, { heartbeatMs: false })(req, res); } },
+    { name: "b.middleware.openapiServe", path: "/openapi.json",
+      run: middlewareRow(b.middleware.openapiServe({
+        document: b.openapi.create({ info: { title: "T", version: "1.0.0" } }) })) },
+    { name: "b.middleware.asyncapiServe", path: "/asyncapi.json",
+      run: middlewareRow(b.middleware.asyncapiServe({
+        document: b.asyncapi.create({ info: { title: "T", version: "1.0.0" } }) })) },
+    { name: "b.middleware.securityTxt", path: "/.well-known/security.txt",
+      run: middlewareRow(b.middleware.securityTxt({
+        contact: ["mailto:security@example.com"], expires: "2099-01-01T00:00:00Z" })) },
+    { name: "b.middleware.assetlinks", path: "/.well-known/assetlinks.json",
+      run: middlewareRow(b.middleware.assetlinks({ statements: [{
+        relation: ["delegate_permission/common.handle_all_urls"],
+        target: { namespace: "android_app", package_name: "com.example.app",
+                  sha256_cert_fingerprints: ["AB:CD:EF:01:23:45:67:89"] },
+      }] })) },
+    { name: "b.middleware.webAppManifest", path: "/manifest.webmanifest",
+      run: middlewareRow(b.middleware.webAppManifest({ name: "Example App", start_url: "/", display: "standalone",
+        icons: [{ src: "/icons/192.png", sizes: "192x192", type: "image/png" }] })) },
+    { name: "b.middleware.protectedResourceMetadata", path: "/.well-known/oauth-protected-resource",
+      run: middlewareRow(b.middleware.protectedResourceMetadata({
+        resource: "https://api.example.com", authorizationServers: ["https://idp.example.com"] })) },
+    { name: "b.a2a.middleware.agentCard", path: "/.well-known/agent.json",
+      run: middlewareRow(b.a2a.middleware.agentCard({ card: { card: { agent: "test" }, signature: "sig" } })) },
+    { name: "b.mail.server.jmap eventSourceHandler", path: "/jmap/eventsource?types=Email&closeafter=no&ping=60",
+      run: function (req, res) { req.user = { id: "u1" }; jmap.eventSourceHandler(req, res); } },
+    { name: "b.sse.create", path: "/stream", noTransform: true,
+      run: function (req, res) { b.sse.create(req, res, { heartbeatMs: 0, audit: false }).close(); } },
+    { name: "b.openapi.create().middleware", path: "/openapi.json",
+      run: middlewareRow(b.openapi.create({ info: { title: "T", version: "1.0.0" } }).middleware()) },
+    { name: "b.router.serveStatic", path: "/hello.txt",
+      run: function (req, res) {
+        req.pathname = "/hello.txt";
+        return b.router.serveStatic(staticDir)(req, res, function () { res.statusCode = 404; res.end("fell through"); });
+      } },
+    { name: "b.staticServe.create", path: "/hello.txt", run: middlewareRow(staticServe) },
+  ];
+  var noCache = b.middleware.noCache();
+  var server = http.createServer(function (req, res) {
+    var row = ROWS[Number(req.headers["x-row"])];
+    noCache(req, res, function () {});
+    Promise.resolve().then(function () { return row.run(req, res); }).catch(function (e) {
+      row.threw = e;
+      if (!res.headersSent) res.statusCode = 500;
+      if (!res.writableEnded) res.end();
+    });
+  });
+  var port = await helpers.listenOnRandomPort(server);
+  var failed = [];
+  try {
+    for (var i = 0; i < ROWS.length; i += 1) {
+      var got = await new Promise(function (resolve) {
+        var request = http.get({ host: "127.0.0.1", port: port, path: ROWS[i].path, headers: { "x-row": String(i) } },
+          function (response) {
+            resolve({ status: response.statusCode, cacheControl: response.headers["cache-control"] || "" });
+            response.destroy();
+          });
+        request.setTimeout(5000, function () { request.destroy(new Error("no response within 5 s")); });
+        request.on("error", function (e) { resolve({ status: 599, cacheControl: "request failed: " + e.message }); });
+      });
+      if (ROWS[i].threw) got.status = 598;
+      var parsed = b.cdnCacheControl.parse(got.cacheControl) || {};
+      var ok = got.status < 400 && parsed.noStore === true && (!ROWS[i].noTransform || parsed.noTransform === true);
+      if (!ok) failed.push(ROWS[i].name + " sent " + got.status + " \"" + got.cacheControl + "\"");
+    }
+    var staticRow = ROWS.length - 1;
+    var first = await new Promise(function (resolve, reject) {
+      http.get({ host: "127.0.0.1", port: port, path: "/hello.txt", headers: { "x-row": String(staticRow) } },
+        function (response) { response.resume(); resolve(response.headers.etag); }).on("error", reject);
+    });
+    var revalidated = await new Promise(function (resolve, reject) {
+      http.get({ host: "127.0.0.1", port: port, path: "/hello.txt",
+                 headers: { "x-row": String(staticRow), "if-none-match": first } },
+        function (response) {
+          response.resume();
+          resolve({ status: response.statusCode, cacheControl: response.headers["cache-control"] || "" });
+        }).on("error", reject);
+    });
+    var revalidatedParsed = b.cdnCacheControl.parse(revalidated.cacheControl) || {};
+    if (revalidated.status !== 304 || revalidatedParsed.noStore !== true) {
+      failed.push("b.staticServe.create 304 sent " + revalidated.status + " \"" + revalidated.cacheControl + "\"");
+    }
+  } finally {
+    await new Promise(function (resolve) { server.close(resolve); server.closeAllConnections(); });
+    fs.rmSync(staticDir, { recursive: true, force: true });
+  }
+  check("noCache: every framework writer keeps no-store" +
+        (failed.length ? " (replaced by: " + failed.join("; ") + ")" : ""), failed.length === 0);
+
+  // A Cache-Control the caller passes to a writer cannot remove the no-store
+  // the middleware set: the response is still keyed to a signed-in user. A
+  // route that must be cacheable is kept out of the middleware's scope with
+  // its `when` predicate instead.
+  var CALLER_HEADER = { "Cache-Control": "public, max-age=3600" };
+  var CALLER_ROWS = [
+    { name: "b.render.json", run: function (req, res) { b.render.json(res, { ok: true }, { headers: CALLER_HEADER }); } },
+    { name: "b.render.text", run: function (req, res) { b.render.text(res, "ok", { headers: CALLER_HEADER }); } },
+    { name: "b.render.htmlString", run: function (req, res) { b.render.htmlString(res, "<p>x</p>", { headers: CALLER_HEADER }); } },
+    { name: "b.render.redirect", run: function (req, res) { b.render.redirect(res, "/next", { headers: CALLER_HEADER }); } },
+    { name: "b.render.stream", run: function (req, res) { return b.render.stream(res, ["a"], { headers: CALLER_HEADER }); } },
+    { name: "b.render.create().html", run: function (req, res) {
+      b.render.create({ engine: stubEngine }).html(res, "page", {}, { headers: CALLER_HEADER }); } },
+    { name: "b.middleware.sse", noTransform: true, run: function (req, res) {
+      return b.middleware.sse(async function () {}, { heartbeatMs: false, headers: CALLER_HEADER })(req, res); } },
+    { name: "lower-case caller header", run: function (req, res) {
+      b.render.json(res, { ok: true }, { headers: { "cache-control": "public, max-age=3600" } }); } },
+  ];
+  var callerFailed = [];
+  var callerServer = http.createServer(function (req, res) {
+    var row = CALLER_ROWS[Number(req.headers["x-row"])];
+    noCache(req, res, function () {});
+    Promise.resolve().then(function () { return row.run(req, res); }).catch(function (e) {
+      row.threw = e;
+      if (!res.headersSent) res.statusCode = 500;
+      if (!res.writableEnded) res.end();
+    });
+  });
+  var callerPort = await helpers.listenOnRandomPort(callerServer);
+  try {
+    for (var ci = 0; ci < CALLER_ROWS.length; ci += 1) {
+      var sent = await new Promise(function (resolve) {
+        var rq = http.get({ host: "127.0.0.1", port: callerPort, path: "/r", headers: { "x-row": String(ci) } },
+          function (response) {
+            resolve({ status: response.statusCode, cacheControl: response.headers["cache-control"] || "" });
+            response.destroy();
+          });
+        rq.setTimeout(5000, function () { rq.destroy(new Error("no response within 5 s")); });
+        rq.on("error", function (e) { resolve({ status: 599, cacheControl: "request failed: " + e.message }); });
+      });
+      var sentParsed = b.cdnCacheControl.parse(sent.cacheControl) || {};
+      if (CALLER_ROWS[ci].threw) sent.status = 598;
+      if (sent.status >= 400 || sentParsed.noStore !== true) {
+        callerFailed.push(CALLER_ROWS[ci].name + " sent " + sent.status + " \"" + sent.cacheControl + "\"");
+      }
+    }
+  } finally {
+    await new Promise(function (resolve) { callerServer.close(resolve); callerServer.closeAllConnections(); });
+  }
+  check("noCache: a Cache-Control the caller passes to a writer does not remove no-store" +
+        (callerFailed.length ? " (removed by: " + callerFailed.join("; ") + ")" : ""), callerFailed.length === 0);
+}
+
 async function run() {
   testSurface();
   testDefaultHeaders();
@@ -90,6 +267,7 @@ async function run() {
   testCustomCacheControlAndVary();
   testSkipExisting();
   testBadOpts();
+  await testNoStoreSurvivesFrameworkWriters();
 }
 
 module.exports = { run: run };

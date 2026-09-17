@@ -5,6 +5,7 @@
  * b.middleware.sse — Server-Sent Events.
  */
 
+var http    = require("http");
 var helpers = require("../helpers");
 var b     = helpers.b;
 var check = helpers.check;
@@ -13,16 +14,25 @@ var sseModule   = require("../../lib/middleware/sse");
 var EventEmitter = require("events");
 var auditModule = require("../../lib/audit");
 
-// Mock ServerResponse — captures writeHead + write + end.
+// Mock ServerResponse — captures writeHead + write + end. Like node:http, it
+// refuses setHeader once writeHead has sent the head.
 function _mockRes() {
   var headers = {};
   var status = null;
   var chunks = [];
   var ended = false;
   var listeners = {};
+  var headSent = false;
   return {
-    writeHead: function (s, h) { status = s; if (h) Object.assign(headers, h); },
-    setHeader: function (k, v) { headers[k] = v; },
+    writeHead: function (s, h) { status = s; if (h) Object.assign(headers, h); headSent = true; },
+    setHeader: function (k, v) {
+      if (headSent) {
+        var err = new Error("Cannot set headers after they are sent to the client");
+        err.code = "ERR_HTTP_HEADERS_SENT";
+        throw err;
+      }
+      headers[k] = v;
+    },
     getHeader: function (k) { return headers[k]; },
     write:     function (c)   { chunks.push(c); return true; },
     end:       function ()    { ended = true; },
@@ -44,7 +54,62 @@ function _mockReq() {
   return { method: "GET", url: "/events", headers: {}, once: function () {} };
 }
 
+// The middleware over a real node:http response: the head carries Vary: Accept
+// alongside a Vary an earlier middleware set, and every event reaches the client.
+async function testSseOverRealResponse() {
+  var mw = b.middleware.sse(async function (channel) {
+    channel.send({ id: 1, event: "tick", data: { n: 1 } });
+    channel.send({ data: "plain" });
+    channel.close();
+  }, { heartbeatMs: false });
+  var handlerError = null;
+  var server = http.createServer(function (req, res) {
+    res.setHeader("Vary", "Cookie");
+    mw(req, res).catch(function (e) { handlerError = e; if (!res.writableEnded) res.end(); });
+  });
+  var port = await helpers.listenOnRandomPort(server);
+  var got = await new Promise(function (resolve, reject) {
+    http.get({ host: "127.0.0.1", port: port, path: "/events" }, function (response) {
+      var body = "";
+      response.setEncoding("utf8");
+      response.on("data", function (chunk) { body += chunk; });
+      response.on("end", function () { resolve({ headers: response.headers, body: body }); });
+    }).on("error", reject);
+  });
+  await new Promise(function (resolve) { server.close(resolve); });
+  check("sse over node:http: the middleware does not throw", handlerError === null,
+        handlerError && handlerError.message);
+  check("sse over node:http: Vary keeps the earlier value and adds Accept",
+        got.headers.vary === "Cookie, Accept", got.headers.vary);
+  check("sse over node:http: both events reach the client",
+        /id: 1\nevent: tick\ndata: {"n":1}\n\n/.test(got.body) && /data: plain\n\n/.test(got.body), got.body);
+
+  // A Vary in opts.headers joins the earlier Vary and Accept instead of
+  // replacing them, whatever case the configured header name uses.
+  var configured = [["Vary", "Origin"], ["vary", "Origin, Cookie"]];
+  for (var i = 0; i < configured.length; i += 1) {
+    var extra = {};
+    extra[configured[i][0]] = configured[i][1];
+    var mw2 = b.middleware.sse(async function (channel) { channel.close(); }, { heartbeatMs: false, headers: extra });
+    var server2 = http.createServer(function (req, res) {
+      res.setHeader("Vary", "Cookie");
+      mw2(req, res).catch(function () { if (!res.writableEnded) res.end(); });
+    });
+    var port2 = await helpers.listenOnRandomPort(server2);
+    var vary = await new Promise(function (resolve, reject) {
+      http.get({ host: "127.0.0.1", port: port2, path: "/events" }, function (response) {
+        response.resume();
+        response.on("end", function () { resolve(response.headers.vary); });
+      }).on("error", reject);
+    });
+    await new Promise(function (resolve) { server2.close(resolve); });
+    check("sse over node:http: opts.headers " + configured[i][0] + ": " + configured[i][1] +
+          " merges with the earlier Vary and Accept", vary === "Cookie, Accept, Origin", vary);
+  }
+}
+
 async function run() {
+  await testSseOverRealResponse();
   // ---- Surface ----
   check("b.middleware.sse is fn",          typeof b.middleware.sse === "function");
   check("b.sse is object",                 typeof b.sse === "object");

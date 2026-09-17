@@ -748,6 +748,35 @@ async function testFetchCacheHitAndForceBypass() {
   });
 }
 
+// A cached BLOB is served only until its nextUpdate: a non-force fetch after
+// that date downloads the BLOB again instead of returning metadata (and status
+// reports) the service has already replaced.
+async function testFetchCacheEndsAtNextUpdate() {
+  var TIME = b.constants.TIME;
+  var pair = await _makeSelfSignedRsaCert();
+  var entries = [{ aaguid: "01234567-89ab-cdef-0123-456789abcdef", statusReports: [] }];
+  var first = _makeBlob({ no: 1, nextUpdate: _futureDateString(2), entries: entries }, pair.keyPem, pair.certPem);
+  var second = _makeBlob({ no: 2, nextUpdate: _futureDateString(6), entries: entries }, pair.keyPem, pair.certPem);
+  var calls = 0;
+  var realNow = Date.now;
+  async function fetchAt(fm, offsetMs) {
+    Date.now = function () { return realNow() + offsetMs; };
+    try { return await fm.fetch({ url: "https://next-update.invalid/mds3", caCertificate: pair.certPem }); }
+    finally { Date.now = realNow; }
+  }
+  var seen = [];
+  await _withMockedHttp(async function () {
+    calls += 1;
+    return { statusCode: 200, headers: {}, body: Buffer.from(calls === 1 ? first : second, "ascii") };
+  }, async function (fm) {
+    seen.push((await fetchAt(fm, 0)).no + "/" + calls);
+    seen.push((await fetchAt(fm, TIME.hours(1))).no + "/" + calls);
+    seen.push((await fetchAt(fm, TIME.days(3))).no + "/" + calls);
+  });
+  check("fetch serves a cached BLOB until its nextUpdate and refetches after it",
+        seen.join(",") === "1/1,1/1,2/2", seen.join(","));
+}
+
 async function testFetchRejectsNonHttps() {
   var threw = null;
   try { await b.auth.fidoMds3.fetch({ url: "http://insecure.example/mds3" }); }
@@ -1296,6 +1325,7 @@ async function run() {
     await testFetchNetworkFailure();
     await testFetchBadCaCertificate();
     await testFetchCacheHitAndForceBypass();
+    await testFetchCacheEndsAtNextUpdate();
     await testFetchRejectsNonHttps();
     await testFetchRejectsEmptyUrl();
     await testFetchRejectsBadTimeout();

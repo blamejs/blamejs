@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) blamejs contributors
 "use strict";
+// SMOKE_RUN_SOLO: growth checks here compare wall-clock time across input sizes, which a CPU shared with the smoke pool distorts.
 /**
  * guard-csv — CSV content-safety primitive (b.guardCsv) + the
  * gate-contract foundation (b.gateContract).
@@ -1168,7 +1169,7 @@ function testGuardCsvBidiStrip() {
 function testGuardCsvControlCharReject() {
   var threw = null;
   try {
-    b.guardCsv.serialize([["bellhere"]], { profile: "strict" });
+    b.guardCsv.serialize([["bell\u0007here"]], { profile: "strict" });
   } catch (e) { threw = e; }
   check("control char: strict profile throws on U+0007",
         threw && /control character/.test(threw.message));
@@ -1741,6 +1742,38 @@ function testGuardCsvSchemaColumnsNotArray() {
         threw && threw.code === "csv.bad-schema");
 }
 
+// A column regex runs against every row a schema serializes. It is screened
+// for ReDoS when the schema is built, and a g or y flag is refused there: such
+// a regex carries lastIndex from one row to the next.
+function testGuardCsvSchemaRegexScreened() {
+  function codeOf(fn) {
+    try { fn(); return null; } catch (e) { return e.code; }
+  }
+  check("schema: a column regex with a nested quantifier throws csv.unsafe-pattern",
+        codeOf(function () { b.guardCsv.schema({ columns: [{ name: "id", type: "string", regex: /^(a+)+$/ }] }); }) ===
+        "csv.unsafe-pattern");
+  check("schema: a g-flagged column regex throws csv.stateful-pattern",
+        codeOf(function () { b.guardCsv.schema({ columns: [{ name: "id", type: "string", regex: /^[a-z]+$/g }] }); }) ===
+        "csv.stateful-pattern");
+  check("schema: a y-flagged column regex throws csv.stateful-pattern",
+        codeOf(function () { b.guardCsv.schema({ columns: [{ name: "id", type: "string", regex: /^[a-z]+$/y }] }); }) ===
+        "csv.stateful-pattern");
+  check("schema: a column regex that is not a RegExp throws csv.bad-schema",
+        codeOf(function () { b.guardCsv.schema({ columns: [{ name: "id", type: "string", regex: "^[a-z]+$" }] }); }) ===
+        "csv.bad-schema");
+  var bound = b.guardCsv.schema({ columns: [{ name: "id", type: "string", regex: /^[a-z]+$/ }] });
+  var rows = [{ id: "abc" }, { id: "def" }, { id: "ghi" }];
+  check("schema: a screened column regex accepts every matching row",
+        codeOf(function () { bound.serialize(rows); }) === null);
+  var operatorColumn = { name: "id", type: "string", regex: /^[a-z]+$/ };
+  var fromOperator = b.guardCsv.schema({ columns: [operatorColumn] });
+  operatorColumn.regex = /^[0-9]+$/;
+  check("schema: changing the caller's column object after schema() does not change validation",
+        codeOf(function () { fromOperator.serialize([{ id: "abc" }]); }) === null);
+  check("schema: the returned columns and each column are frozen",
+        Object.isFrozen(bound.columns) && Object.isFrozen(bound.columns[0]));
+}
+
 function testGuardCsvSchemaNullableAndCode() {
   // nullable:true column accepts a null value (pass-through branch).
   var nullableEmitter = b.guardCsv.schema({ columns: [{ name: "age", type: "number", nullable: true }] });
@@ -2047,6 +2080,7 @@ async function run() {
   testGuardCsvEscapeCellBigint();
   testGuardCsvEscapeCellApostrophePolicies();
   testGuardCsvSchemaColumnsNotArray();
+  testGuardCsvSchemaRegexScreened();
   testGuardCsvSchemaNullableAndCode();
   testGuardCsvSchemaTypeViolations();
   testGuardCsvSchemaRange();

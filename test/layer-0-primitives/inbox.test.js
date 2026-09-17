@@ -108,6 +108,13 @@ async function testByteCapMultibyte() {
   } catch (e) { threw = e; }
   check("inbox byte-cap: multibyte metadata over byte cap refused",
     threw && threw.code === "inbox/bad-receive");
+
+  var c1Threw = null;
+  try {
+    await inbox.recordReceive({ messageId: "id" + String.fromCharCode(0x9b) + "1", source: "kafka:test" }, fake.xdb);
+  } catch (e) { c1Threw = e; }
+  check("inbox: a messageId carrying a C1 control (U+009B) is refused",
+    c1Threw && c1Threw.code === "inbox/bad-receive");
 }
 
 async function run() {

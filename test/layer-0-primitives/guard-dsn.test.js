@@ -195,7 +195,7 @@ function testRefusesControlChar() {
     b.guardDsn.parse([
       "Reporting-MTA: dns; mail.example.com",
       "",
-      "Final-Recipient: rfc822; aliceinjected@example.com",
+      "Final-Recipient: rfc822; alice\u0001injected@example.com",
       "Action: failed",
       "Status: 5.1.1",
       "",

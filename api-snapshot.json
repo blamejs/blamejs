@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.20.29",
-  "createdAt": "2026-09-17T07:52:06.587Z",
+  "frameworkVersion": "0.20.30",
+  "createdAt": "2026-09-17T22:57:35.090Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -6406,6 +6406,10 @@
           "type": "function",
           "arity": 1
         },
+        "keepNoStore": {
+          "type": "function",
+          "arity": 2
+        },
         "parse": {
           "type": "function",
           "arity": 1
@@ -6888,6 +6892,10 @@
           "valueType": "string"
         },
         "C0_CTRL_RANGES": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "C1_CTRL_RANGES": {
           "type": "instance",
           "ctorName": "Array"
         },
@@ -35661,6 +35669,10 @@
           "type": "function",
           "arity": 5
         },
+        "assertStateless": {
+          "type": "function",
+          "arity": 4
+        },
         "buildProfile": {
           "type": "function",
           "arity": 1
@@ -52360,6 +52372,10 @@
           "type": "function",
           "arity": 2
         },
+        "appendVaryValue": {
+          "type": "function",
+          "arity": 2
+        },
         "captureResponseStatus": {
           "type": "function",
           "arity": 2
@@ -52380,6 +52396,10 @@
           "type": "function",
           "arity": 1
         },
+        "finalizeHeaders": {
+          "type": "function",
+          "arity": 2
+        },
         "ipKey": {
           "type": "function",
           "arity": 2
@@ -52393,6 +52413,10 @@
           "arity": 3
         },
         "makeSkipMatcher": {
+          "type": "function",
+          "arity": 2
+        },
+        "mergeVary": {
           "type": "function",
           "arity": 2
         },
@@ -55987,6 +56011,10 @@
         "parseTagList": {
           "type": "function",
           "arity": 2
+        },
+        "recordVersionMatches": {
+          "type": "function",
+          "arity": 4
         },
         "refuseControlBytes": {
           "type": "function",

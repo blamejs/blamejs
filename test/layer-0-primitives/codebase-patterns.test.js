@@ -1410,10 +1410,26 @@ function testNoStaleDefers() {
 // To embed NUL semantically, use the JS source escape `\u0000` (the
 // six-char sequence backslash + u + 0+0+0+0) — JS regex parses that
 // to a NUL char without ESLint complaining.
-function testNoLiteralNulBytesInSource() {
+//
+// NUL is one member of the class. Every other raw control character has
+// the same two properties: the editor renders it as nothing or as a
+// space, so a reviewer reading the diff cannot see the fixture byte the
+// test sends, and an Edit whose old_string is copied from that rendering
+// never matches it. A C1 control (U+0080-U+009F) is worse: U+009B is a
+// single-character CSI and U+0085 is a line break in some readers. The
+// gate refuses, decoded as UTF-8, every C0 control other than TAB / LF /
+// CR, DEL, and every C1 control in lib/, test/, scripts/ and examples/.
+// Write the backslash-u escape with four hex digits instead, or build the
+// string with String.fromCharCode.
+function testNoRawControlCharactersInSource() {
   var fs   = require("node:fs");
   var path = require("node:path");
+  var root = path.resolve(__dirname, "..", "..");
   var hits = [];
+  function isRawControl(code) {
+    if (code < 0x20) return code !== 0x09 && code !== 0x0a && code !== 0x0d;
+    return code === 0x7f || (code >= 0x80 && code <= 0x9f);
+  }
   function walk(dir) {
     var entries = fs.readdirSync(dir, { withFileTypes: true });
     for (var i = 0; i < entries.length; i += 1) {
@@ -1422,28 +1438,53 @@ function testNoLiteralNulBytesInSource() {
       var full = path.join(dir, e.name);
       if (e.isDirectory()) walk(full);
       else if (e.isFile() && /\.js$/.test(e.name)) {
-        var b = fs.readFileSync(full);
-        for (var j = 0; j < b.length; j += 1) {
-          if (b[j] === 0) {
-            // Locate the line for a useful error.
-            var line = 1;
-            for (var k = 0; k < j; k += 1) if (b[k] === 0x0a) line += 1;
+        var text = fs.readFileSync(full, "utf8");
+        var line = 1;
+        for (var j = 0; j < text.length; j += 1) {
+          var code = text.charCodeAt(j);
+          if (code === 0x0a) { line += 1; continue; }
+          if (isRawControl(code)) {
+            var hex = code.toString(16).toUpperCase();
+            while (hex.length < 4) hex = "0" + hex;
             hits.push({
-              file: path.relative(path.resolve(__dirname, "..", ".."), full).replace(/\\/g, "/"),
+              file: path.relative(root, full).replace(/\\/g, "/"),
               line: line,
-              content: "literal NUL byte at byte " + j + " (use \\u0000 escape in source)",
+              content: "raw control character U+" + hex + " (write the \\u" + hex + " escape in source)",
             });
-            break;
           }
         }
       }
     }
   }
-  walk(path.resolve(__dirname, "..", "..", "lib"));
-  walk(path.resolve(__dirname, "..", "..", "test"));
-  walk(path.resolve(__dirname, "..", "..", "scripts"));
-  _report("no literal NUL (0x00) bytes in source files (use \\u0000 escape; CI ESLint catches it but Windows local lint may not)",
+  walk(path.join(root, "lib"));
+  walk(path.join(root, "test"));
+  walk(path.join(root, "scripts"));
+  walk(path.join(root, "examples"));
+  _report("no raw control characters (C0 other than TAB/LF/CR, DEL, C1) in source files (write the backslash-u escape; CI ESLint catches NUL but Windows local lint may not)",
     hits);
+}
+
+// A growth check compares wall-clock time at two input sizes. In the smoke
+// pool the file shares the CPU with 63 other workers, and a larger sample is
+// interrupted more often than a smaller one, so linear work reads as
+// superlinear: in node:24-alpine with 64 busy processes on 32 cores, the
+// json-schema uniqueItems probe read 13.8 to 35.1 against a bound of 8 on a
+// scan that reads 4.5 to 5.5 on an idle box, and failed the container smoke
+// twice. A test file that calls the growth helper declares SMOKE_RUN_SOLO in
+// its head, which makes test/smoke.js run it alone.
+function testGrowthChecksRunSolo() {
+  var soloFile = require("../helpers/solo-file");
+  var repoRoot = path.resolve(__dirname, "..", "..");
+  var hits = [];
+  _testFiles().forEach(function (full) {
+    var rel = path.relative(repoRoot, full).replace(/\\/g, "/");
+    if (/^test\/helpers\//.test(rel)) return;
+    var text = fs.readFileSync(full, "utf8");
+    if (!/\b(?:looksSuperlinear|looksSuperlinearAsync|superlinearRatio)\s*\(/.test(text)) return;
+    if (soloFile.isSoloFile(full)) return;
+    hits.push({ file: rel, line: 1, content: "calls the growth helper without SMOKE_RUN_SOLO in its first " + soloFile.HEAD_BYTES + " bytes" });
+  });
+  _report("test files that measure growth run alone in smoke (SMOKE_RUN_SOLO)", hits);
 }
 
 // release-named-test-file is now an inline KNOWN_ANTIPATTERNS entry
@@ -7587,13 +7628,65 @@ function testRegexModulesContainNoRegexes() {
   _report("the regex screen and the linear matcher contain no regexes", bad);
 }
 
-function testOperatorRegexScreenedForReDoS() {
+// A file is a candidate when it runs a RegExp it did not write: a value it
+// type-checks with `instanceof RegExp` and then runs, a property named like a
+// pattern (`col.regex.test(`, `opts.pattern.test(`), a function parameter run
+// with `.test(`, or a local copied from an options object and run. The last
+// three exist because `safe-schema` `.regex(re)`, `guard-csv` `col.regex` and
+// `request-id` `formatRegex` ran operator patterns without ever writing
+// `instanceof RegExp`, and the gate never saw them. A candidate must screen the
+// pattern with `assertSafe` and refuse the g and y flags with
+// `assertStateless`, since either flag starts the next `test()` at the
+// lastIndex the previous call left.
+function _operatorRegexRunForms(code) {
+  var forms = [];
+  if (/instanceof RegExp/.test(code) && /\.(?:test|exec|match)\s*\(/.test(code)) {
+    forms.push({ why: "type-checks a RegExp and runs a regex", needle: "instanceof RegExp" });
+  }
+  var held = /\b[A-Za-z_$][\w$]*\.(?:[\w$]*(?:[Rr]egex|[Rr]eg[Ee]xp|[Pp]attern)|re|rx|matcher)\s*\.\s*(?:test|exec)\s*\(/.exec(code);
+  if (held) forms.push({ why: "runs a pattern held on an object", needle: held[0] });
+  var params = {};
+  var fnRe = /function\s*[\w$]*\s*\(([^)]*)\)/g;
+  var fm;
+  while ((fm = fnRe.exec(code)) !== null) {
+    fm[1].split(",").forEach(function (p) { p = p.trim(); if (p) params[p] = true; });
+  }
+  var fromOpts = {};
+  var optsAssign = /\b(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:opts|options|config|cfg)\.[\w$]+/g;
+  var oa;
+  while ((oa = optsAssign.exec(code)) !== null) fromOpts[oa[1]] = true;
+  var bareRun = /(^|[^.\w$/])([A-Za-z_$][\w$]*)\s*\.\s*(test|exec)\s*\(/g;
+  var bm;
+  while ((bm = bareRun.exec(code)) !== null) {
+    if (bm[3] === "test" && params[bm[2]]) {
+      forms.push({ why: "runs a function parameter as a regex", needle: bm[2] + ".test(" });
+      break;
+    }
+    if (fromOpts[bm[2]]) {
+      forms.push({ why: "runs a value copied from an options object as a regex", needle: bm[2] + "." + bm[3] + "(" });
+      break;
+    }
+  }
+  return forms;
+}
+
+// `b.middleware.noCache` puts `Cache-Control: no-store` on a response, and a
+// framework writer that then wrote its own default (`private, no-cache`,
+// `public, max-age=...`) replaced it, so an individualized page could be
+// stored by the browser. Every lib write of Cache-Control is either a string
+// literal carrying no-store or goes through `cdnCacheControl.keepNoStore`,
+// which keeps an earlier no-store. Only noCache itself writes an arbitrary
+// value, the one its operator configured.
+function testCacheControlDefaultsKeepNoStore() {
   var ALLOW = {
-    "lib/dev.js": "ignore RegExp matched against an fs.watch filename in the operator's local source tree; dev-loop only, hard-refused under NODE_ENV=production",
-    "lib/parsers/safe-env.js": "keyShape RegExp matched against env-var keys parsed from the operator's .env config at boot, not request input",
-    "lib/safe-json.js": "JSON Schema `pattern` is part of the operator-owned schema (the documented trust boundary), not request data — same stance as the dynamic-regex detector's safe-json exclusion",
-    "lib/regex-linear.js": "the inverse case, not a trusted-input one: the RegExp handed in is READ (its .source and .flags) and never executed — this module exists so an operator pattern can run WITHOUT the backtracking engine, and screening it with assertSafe would refuse the very shapes it is built to run safely, such as (a+)+$",
+    "lib/middleware/no-cache.js": "the middleware that sets no-store; it writes its configured cacheControl value",
   };
+  var WRITE = /(?:["']Cache-Control["']\s*:|setHeader\s*\(\s*["']Cache-Control["']\s*,)\s*/gi;
+  function valueKeepsNoStore(rest) {
+    if (/^cdnCacheControl\.keepNoStore\s*\(/.test(rest)) return true;
+    var literal = /^(["'])((?:(?!\1)[^\\]|\\.)*)\1\s*[,)}\n]/.exec(rest);
+    return !!(literal && /(^|[\s,])no-store($|[\s,])/i.test(literal[2]));
+  }
   var files = _libFiles();
   var bad = [];
   for (var fi = 0; fi < files.length; fi++) {
@@ -7602,25 +7695,72 @@ function testOperatorRegexScreenedForReDoS() {
     var content;
     try { content = fs.readFileSync(files[fi], "utf8"); }
     catch (_e) { continue; }
-    if (!/instanceof RegExp/.test(content)) continue;             // accepts an operator RegExp opt
-    if (!/\.(?:test|exec|match)\s*\(/.test(content)) continue;    // and executes a regex
-    // Comment-stripped: `assertSafe(` means this file SCREENED its regex, and
-    // a mention of it in a comment would otherwise exempt the file from the
-    // ReDoS gate while doing nothing of the kind.
-    if (/\bassertSafe\s*\(/.test(_stripComments(content))) continue;
     var lines = content.split(/\r?\n/);
     for (var li = 0; li < lines.length; li++) {
-      if (/instanceof RegExp/.test(lines[li])) {
+      if (/^\s*(\*|\/\/)/.test(lines[li])) continue;
+      WRITE.lastIndex = 0;
+      var m;
+      while ((m = WRITE.exec(lines[li])) !== null) {
+        if (valueKeepsNoStore(lines[li].slice(m.index + m[0].length) + "\n")) continue;
         bad.push({
           file:    rel,
           line:    li + 1,
-          content: "accepts an operator-supplied RegExp + executes a regex but never calls b.guardRegex.assertSafe — screen the operator pattern for ReDoS at config time, or add the file to this detector's ALLOW map with a reason if the regex is matched against trusted (non-request) input",
+          content: "writes a Cache-Control that replaces an earlier no-store; send cdnCacheControl.keepNoStore(res, <default>) or a literal carrying no-store",
         });
-        break;
       }
     }
   }
-  _report("a primitive accepting + executing an operator-supplied RegExp must ReDoS-screen it via b.guardRegex.assertSafe (or be allowlisted as matched-against-trusted-input)",
+  _report("a framework Cache-Control default keeps a no-store already on the response (b.cdnCacheControl.keepNoStore)",
+    bad);
+}
+
+function testOperatorRegexScreenedForReDoS() {
+  var UNSCREENED = {
+    "lib/dev.js": "ignore RegExp matched against an fs.watch filename in the operator's local source tree; dev-loop only, hard-refused under NODE_ENV=production",
+    "lib/safe-json.js": "JSON Schema `pattern` is part of the operator-owned schema (the documented trust boundary), not request data — same stance as the dynamic-regex detector's safe-json exclusion",
+    "lib/regex-linear.js": "the inverse case, not a trusted-input one: the RegExp handed in is READ (its .source and .flags) and never executed — this module exists so an operator pattern can run WITHOUT the backtracking engine, and screening it with assertSafe would refuse the very shapes it is built to run safely, such as (a+)+$",
+    "lib/ai-input.js": "the RegExps it runs are the module's own PATTERNS table; no option adds to it",
+    "lib/guard-sql.js": "the RegExps it runs are the module's own DETECTORS table; no option adds to it",
+  };
+  var STATEFUL_OK = {
+    "lib/forms.js": "validate() runs a fresh `^(?:source)$` RegExp built per call with the g, y and m flags removed; the operator's object is never run",
+    "lib/safe-json.js": "the pattern is rebuilt from its source with the g and y flags removed before it is cached and run",
+    "lib/flag-targeting.js": "the operator supplies a pattern STRING, compiled with no flags",
+    "lib/regex-linear.js": "the RegExp handed in is read, never run; the compiled matcher starts every test at position 0",
+    "lib/structured-fields.js": "parseTagList uses an operator RegExp only as a String.prototype.split separator; split builds its own splitter from the pattern and neither reads nor writes the caller's lastIndex (measured with g, y and gy flags and lastIndex 3)",
+    "lib/ai-input.js": "the RegExps it runs are the module's own PATTERNS table",
+    "lib/guard-sql.js": "the RegExps it runs are the module's own DETECTORS table",
+  };
+  var files = _libFiles();
+  var bad = [];
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    // Comment-stripped: a mention of `assertSafe(` in a comment would otherwise
+    // exempt the file while screening nothing.
+    var code = _stripComments(content);
+    var forms = _operatorRegexRunForms(code);
+    if (forms.length === 0) continue;
+    var at = content.indexOf(forms[0].needle);
+    var line = at === -1 ? 1 : content.slice(0, at).split("\n").length;
+    if (!UNSCREENED[rel] && !/\bassertSafe\s*\(/.test(code)) {
+      bad.push({
+        file:    rel,
+        line:    line,
+        content: forms[0].why + " but never calls b.guardRegex.assertSafe — screen the operator pattern for ReDoS when it is accepted, or add the file to UNSCREENED with a reason if the pattern is matched only against trusted input",
+      });
+    }
+    if (!STATEFUL_OK[rel] && !/\bassertStateless\s*\(/.test(code)) {
+      bad.push({
+        file:    rel,
+        line:    line,
+        content: forms[0].why + " but never calls b.guardRegex.assertStateless — refuse the g and y flags when the pattern is accepted, or add the file to STATEFUL_OK with a reason if the operator's RegExp object is never the one run",
+      });
+    }
+  }
+  _report("a primitive running an operator-supplied RegExp screens it with b.guardRegex.assertSafe and refuses the g and y flags with b.guardRegex.assertStateless",
     bad);
 }
 
@@ -8073,41 +8213,49 @@ function testQueueRedisGateLuaResultCaptured() {
   _report("queue-redis complete()/fail() must capture + gate the inflight-transition LUA result (COMPLETE_LUA / FAIL_LUA)", bad);
 }
 
-// ---- Pattern: ARC instance (i=) parsing must route through _arcInstanceOf ----
+// ---- Pattern: ARC / DKIM header tags are read by one parser ----
 // The ARC instance tag is parsed in several passes: the indexing pass that
-// drives the AMS/AS crypto checks, the AMS h= retention test, and the finalAr
-// surfacing in arcEvaluate. If any pass uses a looser i= regex than the
-// indexer (allowing "i = 1" with a space, or unbounded digits), an attacker
-// can inject an ARC-Authentication-Results that the strict crypto pass ignores
-// while the loose pass consumes it — forging the upstream auth-results
-// (finalAr) on a chain that still verifies pass, with no signing key. Every
-// instance read must go through the one shared _arcInstanceOf reader; flag any
-// instance-capturing regex (`i\s*=...(\d` or `i=(\d`) elsewhere in mail-auth.
+// drives the AMS/AS crypto checks, the AMS h= retention test, the finalAr
+// surfacing in arcEvaluate, and the signer's prior-chain grouping. If any pass
+// uses a different i= reader than the indexer, an attacker can inject an
+// ARC-Authentication-Results that one pass groups and another ignores, forging
+// the upstream auth-results (finalAr) with no signing key. The same held for
+// the sealer domain: arcEvaluate read `d=` with its own pattern (the first
+// `d=` after a delimiter) while the seal was verified with the parsed d= tag,
+// so a seal signed with attacker.example's key and carrying
+// `d=trusted.example` earlier in the header (a repeated tag, text after the
+// signature in b=, or an unknown tag's value) was reported as trusted.example.
+// Every instance read goes through mail-arc-sign `_arcHeaderInstance`, and
+// every tag is read with mail-dkim `_parseTagList`. The check flags, in the
+// mail modules, an instance-capturing regex (`i\s*=`, `i[ \t]*=`, `i=(\d`)
+// outside `_arcHeaderInstance`, and any regex that reads a tag after a
+// `(?:^|[;,\s])` delimiter class.
 function testArcInstanceParseUsesSharedHelper() {
   var bad = [];
-  var rel = "lib/mail-auth.js";
-  var content;
-  try {
-    content = fs.readFileSync(path.resolve(path.resolve(__dirname, "..", ".."), rel), "utf8");
-  } catch (_e) { _report("ARC i= instance parse routes through _arcInstanceOf", bad); return; }
-  var lines = content.split(/\r?\n/);
-  // Matches an instance-capturing regex literal: `i\s*=` (spaced form) or
-  // `i=(\d` (bare capture). Prose like "i=1" / "(i=)" lacks the digit capture
-  // and the `\s*`, so comments are not flagged.
-  var ARC_I_REGEX = /i\\s\*=|i=\(\\d/;
-  var inHelper = false;
-  for (var li = 0; li < lines.length; li++) {
-    if (/function _arcInstanceOf\b/.test(lines[li])) { inHelper = true; continue; }
-    if (inHelper) { if (/^\}/.test(lines[li])) inHelper = false; continue; }
-    if (ARC_I_REGEX.test(lines[li])) {
-      bad.push({
-        file:    rel,
-        line:    li + 1,
-        content: "an ARC instance (i=) parsing regex outside _arcInstanceOf — route it through _arcInstanceOf so the crypto-indexing pass and the finalAr / AMS passes parse the instance identically (a divergent parser forges finalAr on a passing chain).",
-      });
+  var root = path.resolve(__dirname, "..", "..");
+  var FILES = ["lib/mail-auth.js", "lib/mail-arc-sign.js", "lib/mail-dkim.js"];
+  var ARC_I_REGEX = /i\\s\*=|i\[ \\t\]\*=|i=\(\\d/;
+  var TAG_BY_REGEX = /\(\?:\^\|\[;,?\\s\]\)[a-z]{1,2}=/;
+  FILES.forEach(function (rel) {
+    var content;
+    try { content = fs.readFileSync(path.join(root, rel), "utf8"); }
+    catch (_e) { bad.push({ file: rel, line: 0, content: "file missing" }); return; }
+    var lines = content.split(/\r?\n/);
+    var inHelper = false;
+    for (var li = 0; li < lines.length; li++) {
+      if (/function _arcHeaderInstance\b/.test(lines[li])) { inHelper = true; continue; }
+      if (inHelper) { if (/^\}/.test(lines[li])) inHelper = false; continue; }
+      if (ARC_I_REGEX.test(lines[li])) {
+        bad.push({ file: rel, line: li + 1,
+          content: "an ARC instance (i=) regex outside mail-arc-sign _arcHeaderInstance: route it through _arcHeaderInstance so every pass groups headers by the same instance." });
+      }
+      if (TAG_BY_REGEX.test(lines[li])) {
+        bad.push({ file: rel, line: li + 1,
+          content: "a DKIM/ARC tag read by regex from a header value: read it from mail-dkim _parseTagList, the parser the signature was verified with." });
+      }
     }
-  }
-  _report("ARC i= instance parsing must route through the shared _arcInstanceOf reader (no divergent regex)", bad);
+  });
+  _report("ARC i= and DKIM/ARC tag reads route through _arcHeaderInstance / _parseTagList (no second reader)", bad);
 }
 
 // ---- Pattern: OID4VCI single-use store claims must gate on the delete ----
@@ -14689,6 +14837,15 @@ var KNOWN_ANTIPATTERNS = [
     reason: "The toolkit's encodeName() wraps a string subject/issuer/name as a single commonName attribute VALUE, so a caller passing a preformatted DN string (subject: \"CN=\" + cn, or subject: \"CN=name,OU=CAvN\") produces CN=CN=cn — a double-encoded CN — and, for multi-RDN names, folds the whole comma-joined string into one CN with NO separate OU/O attribute. The mtls default engine issued every CA and leaf that way, so CN->identity mTLS authorization received \"CN=alice\" instead of \"alice\" and policies reading the OU=CAvN generation RDN found none. Pass the bare CN value for single-CN subjects and an array of { attributeName: value } RDN objects for multi-attribute DNs; the issuer is derived from the CA cert, not a string. The bound is a ReDoS backstop far above any real sign-call body. New pki sign call with a DN-prefixed string subject/issuer trips this.",
   },
   {
+    id: "test-path-resolve-relative-to-cwd",
+    primitive: "A test resolves a repository path from __dirname (path.resolve(__dirname, \"..\", \"index.js\")), never from the working directory (path.resolve(\"../blamejs/index.js\")).",
+    scanScope: "test",
+    skipCommentLines: true,
+    regex: /path\.resolve\(\s*["']/,
+    allowlist: [],
+    reason: "test/20-db.js wrote a migration fixture requiring path.resolve(\"../blamejs/index.js\") and test/30-chain.js built a child script the same way. That resolves against the working directory, so it only finds the framework when the checkout is named `blamejs` AND the runner's cwd is the repository root: both held on the host and under the documented bind mount at /blamejs, and neither holds for a copy of the tree at another path. The container framework smoke failed with \"migration '001-seed.js' failed to load: Cannot find module '/blamejs/index.js'\" when the suite ran from /work. A __dirname-anchored resolve holds wherever the tree sits. New path.resolve with a string-literal first argument in a test trips this.",
+  },
+  {
     id: "pki-sign-preformatted-dn-string-test",
     primitive: "@blamejs/pki x509.sign / crl.sign take a STRING subject/issuer/name as the common-name VALUE — pass the bare CN value or structured RDN objects, never subject: \"CN=\" + cn (double-encodes to CN=CN=cn). Test fixtures cargo-cult the wrong shape into shipped callers.",
     scanScope: "test",
@@ -15193,7 +15350,7 @@ var KNOWN_ANTIPATTERNS = [
   },
   {
     id: "control-char-check-hand-rolled",
-    primitive: "b.codepointClass.isForbiddenControlChar(code, { allowLf?, allowCr?, forbidTab? }) / firstControlCharOffset(s, opts) (lib/codepoint-class.js) — the RFC 5322 / header-injection control-byte predicate: DEL (0x7f) and any C0 control (< 0x20); TAB (0x09) permitted as folding whitespace by default and forbidden with `{ forbidTab: true }`; LF/CR refused by default, permitted with allowLf/allowCr. Hand-rolling `c === 0x00 || c === 0x7f || (c < 0x20 && c !== 0x09)` (allow-TAB) OR `c < 0x20 || c === 0x7f` (forbid-TAB) — a per-char loop returning bool / throwing with the char code+offset / counting — re-spells it; call codepointClass.firstControlCharOffset(s[, {forbidTab,allowLf,allowCr}]) (or isForbiddenControlChar(c, …) inside an existing scanner, keeping any interleaved slash / quote / backslash / non-ASCII check beside it) and wrap as bool / throw / strip.",
+    primitive: "b.codepointClass.isForbiddenControlChar(code, { allowLf?, allowCr?, forbidTab?, allowC1? }) / firstControlCharOffset(s, opts) (lib/codepoint-class.js): the RFC 5322 / header-injection control-byte predicate. It refuses DEL (0x7f), any C0 control (< 0x20) and the C1 controls (0x80-0x9f); TAB (0x09) permitted as folding whitespace by default and forbidden with `{ forbidTab: true }`; LF/CR refused by default, permitted with allowLf/allowCr; C1 permitted only with allowC1 for a latin1 byte view or a grammar that allows C1. Hand-rolling `c === 0x00 || c === 0x7f || (c < 0x20 && c !== 0x09)` (allow-TAB) OR `c < 0x20 || c === 0x7f` (forbid-TAB) — a per-char loop returning bool / throwing with the char code+offset / counting — re-spells it; call codepointClass.firstControlCharOffset(s[, {forbidTab,allowLf,allowCr}]) (or isForbiddenControlChar(c, …) inside an existing scanner, keeping any interleaved slash / quote / backslash / non-ASCII check beside it) and wrap as bool / throw / strip.",
     // Anchors on the control-byte tell — `< 0x20` (or `< 32`) within one
     // expression of EITHER the TAB-exemption `!== 0x09` (allow-TAB form) OR a
     // DEL compare `=== 0x7f` / `=== 127` (forbid-TAB form). The tempered
@@ -15205,6 +15362,55 @@ var KNOWN_ANTIPATTERNS = [
     skipCommentLines: true,
     allowlist: ["lib/safe-sieve.js", "lib/parsers/safe-xml.js"],
     reason: "~27 parsers / guards / validators hand-rolled the same control-byte refusal loop in TWO predicate variants. ALLOW-TAB (`c < 0x20 && c !== 0x09` ... / `c === 0 || (c < 32 && c !== 9) || c === 127`, RFC 5322 header / folding contexts): the mail guards (guard-dsn / guard-imap-command / guard-pop3-command / guard-managesieve-command / guard-list-id / guard-list-unsubscribe / guard-mail-compose), the text parsers (safe-ical / safe-mime / safe-vcard / parsers/safe-toml), ai-input, inbox._rejectControlChars, safe-jsonpath. FORBID-TAB (`c < 0x20 || c === 0x7f`, identifier / key / name / single-line-value contexts where TAB is not folding whitespace): auth/step-up._quote, middleware/bearer-auth realm, guard-idempotency-key / guard-mail-move / guard-message-id / guard-mail-sieve / guard-agent-registry / guard-event-bus-topic / guard-tenant-id / guard-saga-config / guard-posture-chain name checks, guard-jwt kid, guard-smtp-command, guard-sql identifier, mail-spam-score reasons, mail.feedbackId, mail-deploy (domain / jmap-url / email), mail-rbl zone (ASCII-only), mail-server-imap mailbox name, request-helpers bearer token, safe-redirect, external-db relation, storage assemblyId, structured-fields.refuseControlBytes. They varied only in the allow-set (TAB via forbidTab; LF/CR via allowLf/allowCr; LF conditionally via caps.allowBareLf), the disposition (bool / throw-with-char-code+offset / return-message / count / strip), and interleaved non-control checks (slash / backslash / quote / non-ASCII cc > 0x7e). Extracted codepointClass.isForbiddenControlChar(code, { forbidTab, allowLf, allowCr }) + firstControlCharOffset(s, opts) (forbidTab byte-equivalent to `code < 0x20 || code === 0x7f`, proven over every codepoint); clean loops route through firstControlCharOffset, interleaved scanners use the predicate inline keeping their extra checks. Allowlist is STRUCTURAL — safe-sieve splits the C0 vs DEL refusal into two DISTINCT error messages (the combined predicate can't reproduce both), and parsers/safe-xml checks a resolved numeric char reference for C0-OR-SURROGATE (0xD800-0xDFFF) with NO DEL — a different predicate/op. A re-introduced hand-rolled `< 0x20 ... !== 0x09` or `< 0x20 ... === 0x7f` control-byte check trips this — use codepointClass.firstControlCharOffset / isForbiddenControlChar.",
+  },
+  {
+    id: "control-char-allow-c1-outside-byte-readers",
+    primitive: "b.codepointClass.isForbiddenControlChar / firstControlCharOffset refuse the C1 controls U+0080-U+009F by default; `{ allowC1: true }` turns that off. Only a reader whose string is a latin1 view of bytes (an HTTP field value, where 0x80-0x9f are UTF-8 continuation bytes / obs-text) or whose grammar allows C1 (TOML 1.0 strings) may pass it. Any other caller reads decoded text, where U+009B is a one-character CSI and U+0085 a line break.",
+    // Anchors on the literal opt `allowC1: true`. The predicate itself reads
+    // `opts.allowC1 === true`, which this does not match, and its @example
+    // sits on a comment line.
+    regex: /\ballowC1\s*:\s*true\b/,
+    skipCommentLines: true,
+    allowlist: ["lib/structured-fields.js", "lib/parsers/safe-toml.js"],
+    reason: "The predicate refused C1 only behind an opt-in flag, so every decoded-text caller that did not pass it (safe-ical, safe-vcard, safe-mime headers, the SMTP / IMAP / POP3 / ManageSieve command guards, guard-dsn, guard-list-id, guard-list-unsubscribe, safe-redirect, mail.feedbackId, mail-spam-score, mail-deploy, bearer-auth realm, extractBearer, external-db relation names, local-http paths) accepted U+009B CSI and U+0085 NEL. The default now refuses C1 and the opt-out is allowC1. structured-fields.refuseControlBytes / containsControlBytes scan HTTP field values, which Node exposes as latin1 strings (obs-text, RFC 9110 5.5), and parsers/safe-toml follows TOML 1.0, which allows C1 in basic strings. A new allowC1 elsewhere trips this: decoded text must keep refusing C1.",
+  },
+  {
+    id: "vary-replaced-by-header-object",
+    primitive: "b.requestHelpers.finalizeHeaders(res, headers) / appendVary(res, token) (lib/request-helpers.js): the header object a writer passes to res.writeHead(status, headers) goes through finalizeHeaders, so a Vary already on the response (Origin from b.middleware.cors, Accept-Encoding from b.middleware.compression) joins the Vary the writer sends and a no-store already on the response survives the Cache-Control the object carries. node:http lets a header object passed to writeHead replace a header set with setHeader, and res.setHeader(\"Vary\", x) replaces it outright.",
+    // Anchors on res.writeHead(<status>, <identifier>) whose header argument is
+    // a variable not wrapped in finalizeHeaders (a literal object without Vary
+    // cannot replace one), with one level of parentheses allowed in the status
+    // expression, and on a direct setHeader("Vary", ...).
+    regex: /\.writeHead\(\s*(?:[^,()]|\([^()]*\))+,\s*(?![A-Za-z_$][\w$]*(?:\(\))?\.finalizeHeaders\()[A-Za-z_$][\w$]*\s*\)|\.setHeader\(\s*["']Vary["']/,
+    skipCommentLines: true,
+    allowlist: ["lib/request-helpers.js"],
+    reason: "b.middleware.sse merged Vary: Accept into the response with appendVary and then passed its configured headers to writeHead, so opts.headers { Vary: \"Origin\" } sent only Origin. The same replacement happened in b.render (every writer, opts.headers), b.middleware.openapiServe / asyncapiServe (their own Vary: Origin), b.middleware.noCache (setHeader Vary Cookie, Authorization), b.middleware.compression (Accept-Encoding appended to the handler's header object only), and the deny, static, tus and error-page writers that pass a header variable. The same objects also carried a Cache-Control that replaced the no-store b.middleware.noCache had set: b.render.json(res, body, { headers: { \"Cache-Control\": \"public, max-age=3600\" } }) sent the public value on an authenticated route. Every writer now passes its final object through finalizeHeaders, which merges Vary and keeps an existing no-store. request-helpers.js is the helpers' home.",
+  },
+  {
+    id: "vary-token-appender-hand-rolled",
+    primitive: "b.requestHelpers.appendVaryValue(existing, value) (lib/request-helpers.js): the one answer to \"add this token to a Vary value\". It reports the merged value, `null` when the token is already carried, and `*` alone whenever either side carries the wildcard, because RFC 9110 section 12.5.5 gives `*` its never-reuse meaning only when it stands alone.",
+    scanScope: "lib",
+    // Anchors on a Vary-named function that builds its own token list: the
+    // temper cannot cross a function-closing brace at column 0, so the
+    // `.join(` it finds is inside that function. A file that routes through
+    // the shared helper carries `appendVaryValue` and is exempt.
+    regex: /function\s+[A-Za-z_$]*[Vv]ary[\w$]*\s*\([^)]*\)\s*\{(?:(?!\n\})[\s\S]){0,800}?\.join\(/,
+    requires: /appendVaryValue/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "b.requestHelpers.appendVary pushed the new token onto the parsed list without looking for the wildcard, so a `Vary: *` an earlier middleware had set became `*, Accept` when b.middleware.sse added Accept and `*, Cookie, Authorization` under b.middleware.noCache; a cache reading that list cannot apply the never-reuse `*` asks for. b.middleware.compression kept its own appender, which collapsed the wildcard only when it was the entire earlier value, so `Cookie, *` grew an `Accept-Encoding`. One question had three answers: mergeVary collapsed the wildcard, appendVary ignored it, compression half-handled it. Both appenders now go through appendVaryValue.",
+  },
+  {
+    id: "record-version-check-hand-rolled",
+    primitive: "b.structuredFields.recordVersionMatches(record, name, value, grammar) (lib/structured-fields.js) answers whether a DNS TXT record opens with the version tag its RFC defines, under that RFC's grammar: SPF `v=spf1` ended by SP or end of record (RFC 7208 4.5), DMARC `v` *WSP `=` *WSP `DMARC1` then *WSP `;` or end (RFC 9989), MTA-STS `v=STSv1` and TLS-RPT `v=TLSRPTv1` followed by *WSP `;` (RFC 8461 3.1, RFC 8460 3). Selecting a record with `indexOf(\"v=...\")`, `startsWith(\"v=...\")` or `/^v=.../` re-spells it and gets the edges wrong: a prefix test accepts `v=spf10` and `v=DMARC10`, an anywhere-test accepts a record that carries the tag later, and a case-folding regex accepts a lowercased token the grammar spells case-sensitively.",
+    // Anchors on a string-search call whose argument opens with `v=` (with or
+    // without space before the `=`) or a regex literal anchored on `^v=` plus
+    // a letter. The letter keeps /^v=(\d+)$/ (the PHC hash-string version
+    // segment in argon2-builtin) out; that is not a DNS record version tag.
+    regex: /\.(?:indexOf|lastIndexOf|startsWith|includes)\(\s*["'`]v\s*=|\/\^v=[A-Za-z]/i,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "SPF, DMARC, MTA-STS, TLS-RPT and the DKIM key-record lookups each selected the record by a hand-written version test: `indexOf(\"v=spf1\") === 0` (accepts v=spf10), `indexOf(\"v=DMARC1\") === 0` (accepts v=DMARC10 and refuses `v = DMARC1` and `V=DMARC1`, so a domain publishing either spelling of p=reject evaluated as `none`, and a stray v=DMARC10 record beside a valid one made the lookup see two records and fail open), `indexOf(\"v=STSv1\") === -1` (accepts the tag anywhere in the record), `/^v=TLSRPTv1\\b/i` (case-folds a case-sensitive token and accepts v=TLSRPTv1.5), and `indexOf(\"v=DKIM1\") === 0 || indexOf(\"p=\") !== -1` in both the DKIM and ARC key lookups (accepts v=DKIM10, a v= tag that is not the first tag, and any other version string when p= is present, where RFC 6376 3.6.1 requires v= to be absent or first and equal to DKIM1). recordVersionMatches carries each RFC's grammar as a frozen options object at the call site. Allowlist is EMPTY; a new hand-written version-tag test trips this.",
   },
   {
     id: "severity-gate-disposition-hand-rolled",
@@ -20722,9 +20928,10 @@ function testValidateOptsAcceptedKeysAreRead() {
    "redisMaxReconnectAttempts"].forEach(function (k) {
     ALLOW["lib/cache.js::opts." + k] = true;
   });
-  // flag-providers: passed-through spec metadata — the whole spec is
-  // stored (flags[key] = opts.flags[key]) and returned via
-  // provider.get()/evaluate(); operator tooling reads the fields.
+  // flag-providers: passed-through spec metadata — _validateFlagSpec
+  // returns a copy of the whole spec with the validated rules, which the
+  // provider stores and returns via provider.get(); operator tooling
+  // reads the fields.
   ["description", "tags", "kind"].forEach(function (k) {
     ALLOW["lib/flag-providers.js::spec." + k] = true;
   });
@@ -24998,7 +25205,8 @@ async function run() {
   testNoApplyDefaultsDroppedOpt();
   testNoUnresolvedMarkers();
   testNoStaleDefers();
-  testNoLiteralNulBytesInSource();
+  testNoRawControlCharactersInSource();
+  testGrowthChecksRunSolo();
   testParserPrimitivesHaveFuzzHarness();
   testExemptingSkipGuardsReadStrippedSource();
   testCommentStripHelper();
@@ -25038,6 +25246,7 @@ async function run() {
   testQuotedIdentifiersMatchTheQueryBuilder();
   testRegexModulesContainNoRegexes();
   testOperatorRegexScreenedForReDoS();
+  testCacheControlDefaultsKeepNoStore();
   testModuleLoadListMatchesNativeModuleNaming();
   testCompetingConsumerClaimUsesSkipLocked();
   testCacheCounterUsesAtomicUpdate();

@@ -13,6 +13,9 @@
  * Or via smoke:   `node test/smoke.js`
  */
 
+var fs      = require("fs");
+var os      = require("os");
+var path    = require("path");
 var helpers = require("../helpers");
 var b       = helpers.b;
 var check   = helpers.check;
@@ -1189,7 +1192,135 @@ async function testGate() {
     none.ok === true && none.action === "serve");
 }
 
+// A RegExp with the g or y flag starts each test() or exec() at the lastIndex
+// the previous call left. Every site that keeps an operator's RegExp and runs
+// it on later calls refuses both flags when it accepts the RegExp, and accepts
+// the same pattern without them.
+async function testOperatorRegexSitesRefuseStatefulFlags() {
+  var staticDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-stateful-regex-"));
+  var logger = { info: function () {}, warn: function () {}, error: function () {}, debug: function () {} };
+  var tracer = b.observability.tracer.create({ service: "test", onEnd: function () {} });
+  var SITES = [
+    { name: "b.middleware.botGuard allowedAgents", code: "bot-guard/stateful-pattern",
+      build: function (re) { b.middleware.botGuard({ allowedAgents: [re] }); } },
+    { name: "b.middleware.botGuard blockedAgents", code: "bot-guard/stateful-pattern",
+      build: function (re) { b.middleware.botGuard({ blockedAgents: [re] }); } },
+    { name: "b.middleware.botGuard skipPaths", code: "regex/stateful-pattern",
+      build: function (re) { b.middleware.botGuard({ skipPaths: [re] }); } },
+    { name: "b.middleware.cors origins", code: "cors/stateful-pattern",
+      build: function (re) { b.middleware.cors({ origins: [re] }); } },
+    { name: "b.middleware.requestLog skipPaths", code: "regex/stateful-pattern",
+      build: function (re) { b.middleware.requestLog({ logger: logger, skipPaths: [re] }); } },
+    { name: "b.middleware.spanHttpServer ignorePaths", code: "span-http/stateful-pattern",
+      build: function (re) { b.middleware.spanHttpServer({ tracer: tracer, ignorePaths: [re] }); } },
+    { name: "b.middleware.csrfProtect skipPaths", code: "regex/stateful-pattern",
+      build: function (re) {
+        b.middleware.csrfProtect({ tokenLookup: function () { return "t"; }, skipPaths: [re] });
+      } },
+    { name: "b.middleware.fetchMetadata skipPaths", code: "regex/stateful-pattern",
+      build: function (re) { b.middleware.fetchMetadata({ skipPaths: [re] }); } },
+    { name: "b.middleware.rateLimit skipPaths", code: "regex/stateful-pattern",
+      build: function (re) { b.middleware.rateLimit({ skipPaths: [re] }); } },
+    { name: "b.middleware.requestId formatRegex", code: "request-id/stateful-pattern",
+      build: function (re) { b.middleware.requestId({ formatRegex: re }); } },
+    { name: "b.staticServe.create hashedPathPattern", code: "static/stateful-pattern",
+      build: function (re) { b.staticServe.create({ root: staticDir, hashedPathPattern: re }); } },
+    { name: "b.safeSql.validateIdentifier pattern", code: "sql/stateful-pattern",
+      build: function (re) { b.safeSql.validateIdentifier("users", { pattern: re }); } },
+    { name: "b.safeSchema.string().regex", code: "safe-schema/stateful-pattern",
+      build: function (re) { b.safeSchema.string().regex(re); } },
+    { name: "b.guardCsv.schema column regex", code: "csv.stateful-pattern",
+      build: function (re) { b.guardCsv.schema({ columns: [{ name: "id", type: "string", regex: re }] }); } },
+    { name: "b.dev.create ignore", code: "dev/stateful-pattern",
+      build: function (re) { b.dev.create({ command: "node", ignore: [re] }); } },
+    { name: "b.parsers.env.parse keyShape", code: "env/stateful-pattern",
+      build: function (re) { b.parsers.env.parse("abc=1", { keyShape: re }); } },
+    { name: "b.mail.helo.evaluate genericRdnsPatterns", code: "mail-helo/stateful-pattern",
+      build: function (re) {
+        return b.mail.helo.evaluate({ ip: "203.0.113.42", claimedName: "mail.example.com" },
+          { genericRdnsPatterns: [re] });
+      } },
+    { name: "b.selfUpdate.poll assetPattern", code: "selfupdate/stateful-asset-pattern", clean: false,
+      build: function (re) {
+        return b.selfUpdate.poll({ releasesUrl: "https://example.invalid/releases",
+          currentVersion: "1.0.0", assetPattern: re });
+      } },
+    { name: "b.selfUpdate.poll signaturePattern", code: "selfupdate/stateful-sig-pattern", clean: false,
+      build: function (re) {
+        return b.selfUpdate.poll({ releasesUrl: "https://example.invalid/releases",
+          currentVersion: "1.0.0", signaturePattern: re });
+      } },
+  ];
+  async function codeOf(site, re) {
+    try { await site.build(re); return null; }
+    catch (e) { return (e && e.code) || ("threw without a code: " + (e && e.message)); }
+  }
+  try {
+    for (var i = 0; i < SITES.length; i += 1) {
+      var site = SITES[i];
+      var withG = await codeOf(site, /^[a-z]+$/g);
+      check(site.name + " refuses a g-flagged RegExp with " + site.code, withG === site.code, withG);
+      var withY = await codeOf(site, /^[a-z]+$/y);
+      check(site.name + " refuses a y-flagged RegExp with " + site.code, withY === site.code, withY);
+      if (site.clean !== false) {
+        var clean = await codeOf(site, /^[a-z]+$/);
+        check(site.name + " accepts the same RegExp without g or y", clean === null, clean);
+      }
+    }
+  } finally {
+    fs.rmSync(staticDir, { recursive: true, force: true });
+  }
+
+  check("b.guardRegex.assertStateless returns a RegExp without g or y",
+        typeof b.guardRegex.assertStateless === "function" &&
+        b.guardRegex.assertStateless(/^a$/i, "x") instanceof RegExp);
+  var direct = null;
+  try { b.guardRegex.assertStateless(/^a$/g, "direct"); } catch (e) { direct = e; }
+  check("b.guardRegex.assertStateless without an error class throws GuardRegexError regex/stateful-pattern",
+        direct instanceof b.guardRegex.GuardRegexError && direct.code === "regex/stateful-pattern",
+        direct && direct.code);
+}
+
+// The sites that ran an operator RegExp without screening it, or that ignored
+// or crashed on a value that is not a RegExp.
+async function testOperatorRegexSitesScreenAndTypeCheck() {
+  async function codeOf(fn) {
+    try { await fn(); return null; }
+    catch (e) { return (e && e.code) || ("threw without a code: " + (e && e.message)); }
+  }
+  var nested = /^(a+)+$/;
+  var got;
+  got = await codeOf(function () { b.middleware.requestId({ formatRegex: nested }); });
+  check("b.middleware.requestId refuses a nested-quantifier formatRegex with request-id/unsafe-pattern",
+        got === "request-id/unsafe-pattern", got);
+  got = await codeOf(function () { b.middleware.requestId({ formatRegex: "^[a-z]+$" }); });
+  check("b.middleware.requestId refuses a formatRegex that is not a RegExp with request-id/bad-format-regex",
+        got === "request-id/bad-format-regex", got);
+  got = await codeOf(function () { b.safeSql.validateIdentifier("users", { pattern: "^[a-z]+$" }); });
+  check("b.safeSql.validateIdentifier refuses a pattern that is not a RegExp with sql/bad-pattern",
+        got === "sql/bad-pattern", got);
+  got = await codeOf(function () { b.parsers.env.parse("abc=1", { keyShape: "^[a-z]+$" }); });
+  check("b.parsers.env.parse refuses a keyShape that is not a RegExp with env/bad-opt", got === "env/bad-opt", got);
+  got = await codeOf(function () { b.parsers.env.parse("abc=1", { keyShape: nested }); });
+  check("b.parsers.env.parse refuses a nested-quantifier keyShape with env/unsafe-pattern",
+        got === "env/unsafe-pattern", got);
+  got = await codeOf(function () {
+    return b.mail.helo.evaluate({ ip: "203.0.113.42", claimedName: "mail.example.com" },
+      { genericRdnsPatterns: ["dynamic"] });
+  });
+  check("b.mail.helo.evaluate refuses a genericRdnsPatterns entry that is not a RegExp with mail-helo/bad-pattern",
+        got === "mail-helo/bad-pattern", got);
+  got = await codeOf(function () { b.structuredFields.parseTagList("a=1;b=2", { sep: /(;+)+/ }); });
+  check("b.structuredFields.parseTagList refuses a nested-quantifier RegExp sep with regex/unsafe-pattern",
+        got === "regex/unsafe-pattern", got);
+  check("b.structuredFields.parseTagList still splits on a screened RegExp sep",
+        JSON.stringify(b.structuredFields.parseTagList("a=1; b=2", { sep: /;\s*/ })) === JSON.stringify([["a", "1"], ["b", "2"]]),
+        JSON.stringify(b.structuredFields.parseTagList("a=1; b=2", { sep: /;\s*/ })));
+}
+
 async function run() {
+  await testOperatorRegexSitesRefuseStatefulFlags();
+  await testOperatorRegexSitesScreenAndTypeCheck();
   testLinearShapesAccepted();
   testProvablyUnambiguousShapesAccepted();
   testAmbiguousShapesStillRefused();

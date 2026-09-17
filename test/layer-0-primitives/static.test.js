@@ -1217,7 +1217,7 @@ async function testForceAttachmentExtFallback() {
   // A .zip served as the generic octet-stream, forced download (final
   // catch-all return true).
   var zip = await _ctx({ contentSafety: null, forceAttachmentForNonText: true },
-                       { "bundle.zip": "PKstuff" });
+                       { "bundle.zip": "PK\u0003\u0004stuff" });
   try {
     var r = await _get(zip.port, "/bundle.zip");
     check("force-attachment: octet-stream .zip forced to download",

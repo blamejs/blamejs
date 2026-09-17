@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) blamejs contributors
 "use strict";
+// SMOKE_RUN_SOLO: growth checks here compare wall-clock time across input sizes, which a CPU shared with the smoke pool distorts.
 /**
  * guard-sql — error / adversarial-branch coverage for
  * b.guardSql (the raw-SQL content-safety primitive).

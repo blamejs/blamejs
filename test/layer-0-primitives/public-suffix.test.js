@@ -503,7 +503,7 @@ async function testDomainDefinitionAgreesAcrossPrimitives() {
     // about agreement, which is what this test is for.)
     "a%b.com", "a^b.com", "a|b.com", "a<b.com", "a>b.com",
     // control bytes and whitespace
-    "a\u0000.com", "a b.com", "a\tb.com", "a\nb.com", "example.com",
+    "a\u0000.com", "a b.com", "a\tb.com", "a\nb.com", "example.com\u007F",
     // over the RFC 1035 name ceiling. A 64-octet LABEL is deliberately absent:
     // canonicalDomain caps the whole name at 253 but says nothing about label
     // length, so it accepts one — the wire encoder is what refuses that, and

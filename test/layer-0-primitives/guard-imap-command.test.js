@@ -102,7 +102,7 @@ function testSmugglingDefense() {
 
   // C0 control refused
   var threw4 = null;
-  try { b.guardImapCommand.validate("A001 LOGIN ab"); } catch (e) { threw4 = e; }
+  try { b.guardImapCommand.validate("A001 LOGIN a\u0008b"); } catch (e) { threw4 = e; }
   check("refuses C0 control (BS)",
     threw4 && threw4.code === "guard-imap-command/bad-byte");
 

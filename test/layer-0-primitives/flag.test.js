@@ -52,6 +52,41 @@ function run() {
   });
   check("memProvider.kind",                      memProvider.kind === "memory");
   check("memProvider.list",                      memProvider.list().length === 3);
+  check("memProvider: a targeting match names the provider in its metadata",
+        memProvider.evaluate("greeting", { role: "admin" }).metadata.provider === "memory");
+  check("memProvider: a default result names the provider in its metadata",
+        memProvider.evaluate("new-checkout", {}).metadata.provider === "memory");
+
+  // A regex condition is compiled when the provider validates the flag spec,
+  // and every evaluation path uses the compiled rules.
+  var regexProvider = b.flag.providers.memory({
+    flags: {
+      beta: {
+        default: "off",
+        variants: { off: false, on: true },
+        rules: [{ variant: "on", conditions: [{ attribute: "email", op: "regex", value: "@example\\.com$" }] }],
+      },
+    },
+  });
+  var regexHit = regexProvider.evaluate("beta", { email: "user@example.com" });
+  check("memProvider: a regex rule matches through the provider",
+        regexHit.variant === "on" && regexHit.reason === "targeting_match", JSON.stringify(regexHit));
+  check("memProvider: a regex rule does not match a different domain",
+        regexProvider.evaluate("beta", { email: "user@example.org" }).variant === "off");
+  var regexEnvProvider = b.flag.providers.environmentVariable({
+    prefix: "BLAMEJS_TEST_FLAG_REGEX_",
+    flags: {
+      beta: {
+        default: "off",
+        variants: { off: false, on: true },
+        rules: [{ variant: "on", conditions: [{ attribute: "email", op: "regex", value: "@example\\.com$" }] }],
+      },
+    },
+  });
+  check("environmentVariable provider: a regex rule matches through the provider",
+        regexEnvProvider.evaluate("beta", { email: "user@example.com" }).variant === "on");
+  check("environmentVariable provider: results name the provider in their metadata",
+        regexEnvProvider.evaluate("beta", {}).metadata.provider === "environment");
 
   // ---- bad spec validation ----
   rejects("provider: bad spec - no variants",

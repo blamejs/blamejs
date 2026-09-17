@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) blamejs contributors
 "use strict";
+// SMOKE_RUN_SOLO: growth checks here compare wall-clock time across input sizes, which a CPU shared with the smoke pool distorts.
 /**
  * Layer 0 — b.jtd (RFC 8927 JSON Type Definition).
  * Oracle: a curated subset of the official jsontypedef/json-typedef-spec
@@ -49,7 +50,32 @@ function testExplicit(){
   check("non-object metadata rejected", code(function(){ b.jtd.validate({type:"string",metadata:1}, "x"); }) === "jtd/bad-schema");
   check("object metadata accepted", b.jtd.isValid({type:"string",metadata:{doc:"x"}}, "y"));
 }
-async function run(){ testSurface(); testValidation(); testInvalidSchemas(); testExplicit(); }
+// A schema built in code can reuse one object at every level. Checking its
+// shape once per path costs 2^depth before a single value is validated.
+function testSharedSchemaObjectsAreCheckedOnce(){
+  function shared(d){ var x = {type:"string"}; for (var i = 0; i < d; i += 1) x = {optionalProperties:{a:x, b:x}}; return x; }
+  var grew = helpers.looksSuperlinear(function(d){ b.jtd.validate(shared(d), {}); }, {small:10, large:20, threshold:8, floorMs:5});
+  check("jtd: a schema reusing one object at every level is checked once per object, not once per path", !grew);
+  if (grew) return;
+  check("jtd: a 60-level shared schema validates a conforming value", b.jtd.isValid(shared(60), {a:{b:{}}}));
+  check("jtd: a 60-level shared schema refuses a non-conforming value", !b.jtd.isValid(shared(60), {a:{b:1}}));
+  var root = {definitions:{x:{type:"string"}}, properties:{}};
+  root.properties.self = root;
+  check("jtd: a schema whose root reappears below the root is refused", code(function(){ b.jtd.validate(root, {}); }) === "jtd/bad-schema");
+  var badShared = {type:"nope"};
+  check("jtd: a malformed subschema reached twice is still refused", code(function(){ b.jtd.validate({properties:{a:badShared, b:badShared}}, {}); }) === "jtd/bad-schema");
+  // A cycle anywhere in the object graph is not a JSON schema. Being on the
+  // path currently being checked is not the same as having been checked.
+  var cycles = [];
+  var s1 = {}; s1.elements = s1; cycles.push(["elements", s1]);
+  var s2 = {}; s2.values = s2; cycles.push(["values", s2]);
+  var s3 = {properties:{}}; s3.properties.next = {elements:s3}; cycles.push(["properties -> elements", s3]);
+  var inner = {optionalProperties:{}}; var s4 = {properties:{child:inner}}; inner.optionalProperties.back = inner; cycles.push(["nested optionalProperties", s4]);
+  var s5 = {discriminator:"k", mapping:{}}; s5.mapping.a = {properties:{x:s5}}; cycles.push(["discriminator mapping", s5]);
+  var accepted = cycles.filter(function(c){ return code(function(){ b.jtd.validate(c[1], []); }) !== "jtd/bad-schema"; }).map(function(c){ return c[0]; });
+  check("jtd: a cyclic schema object graph is refused" + (accepted.length ? " (accepted: " + accepted.join(", ") + ")" : ""), accepted.length === 0);
+}
+async function run(){ testSurface(); testValidation(); testInvalidSchemas(); testExplicit(); testSharedSchemaObjectsAreCheckedOnce(); }
 module.exports={run:run};
 if(require.main===module){ run().then(function(){console.log("[jtd] OK — "+helpers.getChecks()+" checks passed");},function(e){console.error("FAIL:",e&&e.stack||e);process.exit(1);}); }
 
