@@ -2986,6 +2986,82 @@ async function testBackupFlagSurfacing() {
 
 // ---- run ----
 
+// requireAttestation:true refuses a credential that attests no authenticator
+// model (attestationType None or Self). requireAttestationAnchor is scoped to
+// certificate chains (it refuses a chain that anchored at nothing) and by
+// design does not fire on chainless none/self, so a high-assurance RP had no
+// way to say "reject unattested credentials" at the verify chokepoint — it had
+// to post-process attestationType and could forget. WebAuthn L2/L3 §7.1:
+// attestation trust is the RP's policy; this enforces the presence half of it.
+async function testRequireAttestationGatesUnattestedCredentials() {
+  var chNone = b64url(crypto.randomBytes(32));
+  var none = makeRegistration(chNone);
+  var noneRefused = await regOutcome({
+    response: none.response, expectedChallenge: chNone,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID, requireAttestation: true,
+  });
+  check("requireAttestation: a none attestation is refused",
+        noneRefused.threw === true && /attestation-required/.test(noneRefused.code || ""),
+        JSON.stringify(noneRefused));
+
+  // Load-bearing control: the same none registration verifies without the
+  // option, so the refusal is the option's doing, not some other rejection.
+  var noneAllowed = await regOutcome({
+    response: none.response, expectedChallenge: chNone,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("requireAttestation control: none verifies when the option is absent",
+        noneAllowed.ok === true, JSON.stringify(noneAllowed));
+
+  // A valid packed SELF attestation (signs the right bytes, no x5c) verifies as
+  // attestationType Self, and must also be refused under requireAttestation.
+  var chSelf = b64url(crypto.randomBytes(32));
+  var selfKp = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var selfCred = crypto.randomBytes(32);
+  var selfAuth = buildAuthData(RP_ID, FLAG_UP | FLAG_UV | FLAG_AT, 0,
+    buildAttestedCredData(Buffer.alloc(16, 0), selfCred, coseEC2PublicKey(selfKp.publicKey)));
+  var selfClient = Buffer.from(JSON.stringify({
+    type: "webauthn.create", challenge: chSelf, origin: ORIGIN, crossOrigin: false,
+  }), "utf8");
+  var selfAtt = cborMap([
+    [cborText("fmt"),     cborText("packed")],
+    [cborText("attStmt"), cborMap([
+      [cborText("alg"), cborInt(-7)],
+      [cborText("sig"), cborBytes(signDER(selfKp.privateKey,
+        Buffer.concat([selfAuth, sha256(selfClient)])))],
+    ])],
+    [cborText("authData"), cborBytes(selfAuth)],
+  ]);
+  var selfResp = {
+    id: b64url(selfCred), rawId: b64url(selfCred), type: "public-key",
+    response: { clientDataJSON: b64url(selfClient), attestationObject: b64url(selfAtt) },
+    clientExtensionResults: {},
+  };
+  var selfAllowed = await regOutcome({
+    response: selfResp, expectedChallenge: chSelf, expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  });
+  check("requireAttestation control: self-attestation verifies as Self when the option is absent",
+        selfAllowed.ok === true && selfAllowed.rv.registrationInfo.attestationType === "Self",
+        JSON.stringify({ ok: selfAllowed.ok, at: selfAllowed.rv && selfAllowed.rv.registrationInfo && selfAllowed.rv.registrationInfo.attestationType }));
+  var selfRefused = await regOutcome({
+    response: selfResp, expectedChallenge: chSelf, expectedOrigin: ORIGIN, expectedRPID: RP_ID, requireAttestation: true,
+  });
+  check("requireAttestation: a self attestation is refused",
+        selfRefused.threw === true && /attestation-required/.test(selfRefused.code || ""),
+        JSON.stringify(selfRefused));
+
+  // No over-refusal: a real packed (Basic) attestation is permitted.
+  var chPacked = b64url(crypto.randomBytes(32));
+  var packed = await makePackedAttestationUnderOwnCa(chPacked);
+  var packedOk = await regOutcome({
+    response: packed.response, expectedChallenge: chPacked,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID, requireAttestation: true,
+  });
+  check("requireAttestation: a packed (Basic) attestation is permitted",
+        packedOk.ok === true && packedOk.rv.registrationInfo.attestationType === "Basic",
+        JSON.stringify({ ok: packedOk.ok, code: packedOk.code, at: packedOk.rv && packedOk.rv.registrationInfo && packedOk.rv.registrationInfo.attestationType }));
+}
+
 async function run() {
   await testBackupFlagSurfacing();
   await testRegistrationGenuineAndTampered();
@@ -2993,6 +3069,7 @@ async function run() {
   await testCeremonyPolicyRefusals();
   await testRegistrationCredentialIdIsAttested();
   await testAttestationRootsArePinned();
+  await testRequireAttestationGatesUnattestedCredentials();
   await testCredPropsAndPaddedDescriptors();
   await testAuthenticatorExtensionResults();
   await testAssertionFlagsComeFromTheVerifiedBytes();
