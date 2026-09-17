@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) blamejs contributors
 "use strict";
+// SMOKE_RUN_SOLO: growth checks here compare wall-clock time across input sizes, which a CPU shared with the smoke pool distorts.
 /**
  * guard-csv — CSV content-safety primitive (b.guardCsv) + the
  * gate-contract foundation (b.gateContract).

@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.20.30",
-  "createdAt": "2026-09-17T14:06:08.786Z",
+  "createdAt": "2026-09-17T20:15:26.013Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -52405,6 +52405,10 @@
           "arity": 3
         },
         "makeSkipMatcher": {
+          "type": "function",
+          "arity": 2
+        },
+        "mergeVary": {
           "type": "function",
           "arity": 2
         },

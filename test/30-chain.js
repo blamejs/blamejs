@@ -2010,7 +2010,7 @@ async function testRollbackDetection() {
     // same modes; the test passphrase is inherited via env.
     setTestPassphraseEnv();
     var spawnSync = require("child_process").spawnSync;
-    var childScript = "var b = require('" + path.resolve("../blamejs/index.js").replace(/\\/g, "/") + "');\n" +
+    var childScript = "var b = require('" + path.resolve(__dirname, "..", "index.js").replace(/\\/g, "/") + "');\n" +
       "process.env.BLAMEJS_SKIP_NTP_CHECK = '1';\n" +
       "(async function () {\n" +
       "  await b.vault.init({ dataDir: " + JSON.stringify(tmpDir) + " });\n" +

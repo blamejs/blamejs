@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) blamejs contributors
 "use strict";
+// SMOKE_RUN_SOLO: growth checks here compare wall-clock time across input sizes, which a CPU shared with the smoke pool distorts.
 /**
  * b.safeSchema.SafeSchemaError + b.safeSchema.undefined_ — the schema
  * error class and the undefined-only leaf schema.
@@ -288,6 +289,80 @@ function testShapeChecksAgreeWithThePatternsTheyReplaced() {
   testRegexPatternsAreScreened(s);
   testRecursiveLazyFactoryParsesSmallValues();
   testRepeatedValidationOfOneValueCostsItsSize(s);
+  testFreshRecursiveSchemaValidatesLikeAResolvedOne(s);
+  testFrozenSchemasValidate(s);
+}
+
+// Validation reads a schema and never writes to it, so a schema the caller
+// froze or sealed validates the same way as one left open. Nested unions take
+// the probing path, which analyses each option's callbacks.
+// A recursive union whose lazy references have not been resolved yet gives the
+// same result as one an earlier parse resolved. In a fresh schema the lazy
+// getters run during the first descent, so the option that matches at each
+// level on the way back up must not validate the subtree below it again.
+function testFreshRecursiveSchemaValidatesLikeAResolvedOne(s) {
+  function build(optionCount) {
+    var Expr;
+    var options = [];
+    function bin(op) {
+      return s.object({ op: s.literal(op), left: s.lazy(function () { return Expr; }), right: s.lazy(function () { return Expr; }) });
+    }
+    for (var i = 0; i < optionCount; i += 1) options.push(bin("op" + i));
+    Expr = s.union(options.concat([s.number()]));
+    return Expr;
+  }
+  function body(depth, op) {
+    var x = 1;
+    for (var i = 0; i < depth; i += 1) x = { op: op, left: x, right: 1 };
+    return x;
+  }
+  var wrong = [];
+  [[3, 90], [3, 300], [20, 90], [20, 300]].forEach(function (c) {
+    var value = body(c[1], "op" + (c[0] - 1));
+    var fresh = build(c[0]).safeParse(value);
+    var resolved = build(c[0]);
+    resolved.safeParse(body(2, "op0"));
+    var warm = resolved.safeParse(value);
+    var label = c[0] + " options, depth " + c[1];
+    if (fresh.ok !== true) wrong.push(label + " fresh -> " + (fresh.errors && fresh.errors[0] && fresh.errors[0].code));
+    else if (JSON.stringify(fresh.value) !== JSON.stringify(value)) wrong.push(label + " fresh value differs");
+    if (warm.ok !== true) wrong.push(label + " resolved -> " + (warm.errors && warm.errors[0] && warm.errors[0].code));
+  });
+  check("safeSchema: a recursive union validates a deep value the same before and after its lazy references resolve" +
+        (wrong.length ? " (" + wrong.join("; ") + ")" : ""), wrong.length === 0);
+}
+
+function testFrozenSchemasValidate(s) {
+  function freezeDeep(o) {
+    Object.getOwnPropertyNames(o).forEach(function (k) {
+      var v = o[k];
+      if (v && typeof v === "object" && !Object.isFrozen(v)) freezeDeep(v);
+    });
+    return Object.freeze(o);
+  }
+  var CASES = [
+    ["frozen string inside a nested union's array", function () {
+      return s.union([s.union([s.array(Object.freeze(s.string()))])]); }, ["ok"]],
+    ["sealed object option inside a nested union", function () {
+      return s.union([s.union([Object.seal(s.object({ a: s.string() })), s.number()])]); }, { a: "x" }],
+    ["deep-frozen tuple and record options", function () {
+      return s.union([s.union([freezeDeep(s.tuple([s.string(), s.number()])),
+                               freezeDeep(s.record(s.string(), s.number()))])]); }, { k: 1 }],
+    ["frozen lazy option", function () {
+      var node = Object.freeze(s.lazy(function () { return s.object({ v: s.number() }); }));
+      return s.union([s.union([s.object({ child: node }), s.string()])]); }, { child: { v: 1 } }],
+  ];
+  var wrong = [];
+  CASES.forEach(function (c) {
+    try {
+      var r = c[1]().safeParse(c[2]);
+      if (!r || r.ok !== true) wrong.push(c[0] + " -> " + JSON.stringify(r && r.errors).slice(0, 120));
+    } catch (e) {
+      wrong.push(c[0] + " threw " + (e && e.name) + ": " + String(e && e.message).slice(0, 80));
+    }
+  });
+  check("safeSchema validates frozen and sealed schemas inside nested unions" +
+        (wrong.length ? " (" + wrong.join("; ") + ")" : ""), wrong.length === 0);
 }
 
 // A lazy getter may build a fresh schema, holding a fresh lazy, every time it

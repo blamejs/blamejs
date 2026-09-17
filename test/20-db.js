@@ -260,7 +260,7 @@ async function testDbMigrations() {
   // sealed-row path via top-level vault.seal (since the migration runs
   // after vault is initialized).
   fs.writeFileSync(path.join(migDir, "001-seed.js"),
-    "var b = require(" + JSON.stringify(path.resolve("../blamejs/index.js")) + ");\n" +
+    "var b = require(" + JSON.stringify(path.resolve(__dirname, "..", "index.js")) + ");\n" +
     "module.exports = {\n" +
     "  description: 'seed system row',\n" +
     "  up: function (database) {\n" +

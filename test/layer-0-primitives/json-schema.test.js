@@ -8,6 +8,14 @@
  * bundled dialect metaschema or $vocabulary selection — both opt-in). This
  * file embeds a representative slice across the vocabulary plus the surface
  * + reference-resolution + annotation cases that exercise the tricky paths.
+ *
+ * SMOKE_RUN_SOLO, for the validation-cost growth probes. The uniqueItems probe
+ * times 64,000 items against 16,000, and the larger sample holds a Map that
+ * outgrows the young generation and the CPU cache. In node:24-alpine on 32
+ * cores, alongside 64 processes that allocate in a loop, the linear scan read
+ * 13.8, 35.1, 12.2 and 18.8 against a bound of 8 in four of six rounds, and the
+ * container smoke failed on it twice. The same probe read 4.5 to 5.5 with the
+ * container otherwise idle.
  */
 
 var b = require("../../index");
@@ -853,9 +861,11 @@ function testValidationCostFollowsInputSize() {
   function numbers(n) { var a = []; for (var i = 0; i < n; i += 1) a.push(i); return a; }
   function objects(n) { var a = []; for (var i = 0; i < n; i += 1) a.push({ k: i, tag: "t" }); return a; }
   var uniqGrew = [];
-  if (helpers.looksSuperlinear(function (n) { uniq.validate(numbers(n)); },
+  var numberInputs = { 16000: numbers(16000), 64000: numbers(64000) };
+  var objectInputs = { 4000: objects(4000), 16000: objects(16000) };
+  if (helpers.looksSuperlinear(function (n) { uniq.validate(numberInputs[n]); },
       { small: 16000, large: 64000, threshold: 8, floorMs: 5 })) uniqGrew.push("numbers");
-  if (helpers.looksSuperlinear(function (n) { uniq.validate(objects(n)); },
+  if (helpers.looksSuperlinear(function (n) { uniq.validate(objectInputs[n]); },
       { small: 4000, large: 16000, threshold: 8, floorMs: 5 })) uniqGrew.push("objects");
   check("jsonSchema: uniqueItems costs the length of the array, not its square" +
         (uniqGrew.length ? " (grew: " + uniqGrew.join("; ") + ")" : ""), uniqGrew.length === 0);

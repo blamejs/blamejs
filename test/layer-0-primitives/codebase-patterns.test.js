@@ -1464,6 +1464,29 @@ function testNoRawControlCharactersInSource() {
     hits);
 }
 
+// A growth check compares wall-clock time at two input sizes. In the smoke
+// pool the file shares the CPU with 63 other workers, and a larger sample is
+// interrupted more often than a smaller one, so linear work reads as
+// superlinear: in node:24-alpine with 64 busy processes on 32 cores, the
+// json-schema uniqueItems probe read 13.8 to 35.1 against a bound of 8 on a
+// scan that reads 4.5 to 5.5 on an idle box, and failed the container smoke
+// twice. A test file that calls the growth helper declares SMOKE_RUN_SOLO in
+// its head, which makes test/smoke.js run it alone.
+function testGrowthChecksRunSolo() {
+  var soloFile = require("../helpers/solo-file");
+  var repoRoot = path.resolve(__dirname, "..", "..");
+  var hits = [];
+  _testFiles().forEach(function (full) {
+    var rel = path.relative(repoRoot, full).replace(/\\/g, "/");
+    if (/^test\/helpers\//.test(rel)) return;
+    var text = fs.readFileSync(full, "utf8");
+    if (!/\b(?:looksSuperlinear|looksSuperlinearAsync|superlinearRatio)\s*\(/.test(text)) return;
+    if (soloFile.isSoloFile(full)) return;
+    hits.push({ file: rel, line: 1, content: "calls the growth helper without SMOKE_RUN_SOLO in its first " + soloFile.HEAD_BYTES + " bytes" });
+  });
+  _report("test files that measure growth run alone in smoke (SMOKE_RUN_SOLO)", hits);
+}
+
 // release-named-test-file is now an inline KNOWN_ANTIPATTERNS entry
 // with scanScope: "test" + matchOn: "basename".
 
@@ -14814,6 +14837,15 @@ var KNOWN_ANTIPATTERNS = [
     reason: "The toolkit's encodeName() wraps a string subject/issuer/name as a single commonName attribute VALUE, so a caller passing a preformatted DN string (subject: \"CN=\" + cn, or subject: \"CN=name,OU=CAvN\") produces CN=CN=cn — a double-encoded CN — and, for multi-RDN names, folds the whole comma-joined string into one CN with NO separate OU/O attribute. The mtls default engine issued every CA and leaf that way, so CN->identity mTLS authorization received \"CN=alice\" instead of \"alice\" and policies reading the OU=CAvN generation RDN found none. Pass the bare CN value for single-CN subjects and an array of { attributeName: value } RDN objects for multi-attribute DNs; the issuer is derived from the CA cert, not a string. The bound is a ReDoS backstop far above any real sign-call body. New pki sign call with a DN-prefixed string subject/issuer trips this.",
   },
   {
+    id: "test-path-resolve-relative-to-cwd",
+    primitive: "A test resolves a repository path from __dirname (path.resolve(__dirname, \"..\", \"index.js\")), never from the working directory (path.resolve(\"../blamejs/index.js\")).",
+    scanScope: "test",
+    skipCommentLines: true,
+    regex: /path\.resolve\(\s*["']/,
+    allowlist: [],
+    reason: "test/20-db.js wrote a migration fixture requiring path.resolve(\"../blamejs/index.js\") and test/30-chain.js built a child script the same way. That resolves against the working directory, so it only finds the framework when the checkout is named `blamejs` AND the runner's cwd is the repository root: both held on the host and under the documented bind mount at /blamejs, and neither holds for a copy of the tree at another path. The container framework smoke failed with \"migration '001-seed.js' failed to load: Cannot find module '/blamejs/index.js'\" when the suite ran from /work. A __dirname-anchored resolve holds wherever the tree sits. New path.resolve with a string-literal first argument in a test trips this.",
+  },
+  {
     id: "pki-sign-preformatted-dn-string-test",
     primitive: "@blamejs/pki x509.sign / crl.sign take a STRING subject/issuer/name as the common-name VALUE — pass the bare CN value or structured RDN objects, never subject: \"CN=\" + cn (double-encodes to CN=CN=cn). Test fixtures cargo-cult the wrong shape into shipped callers.",
     scanScope: "test",
@@ -15341,6 +15373,18 @@ var KNOWN_ANTIPATTERNS = [
     skipCommentLines: true,
     allowlist: ["lib/structured-fields.js", "lib/parsers/safe-toml.js"],
     reason: "The predicate refused C1 only behind an opt-in flag, so every decoded-text caller that did not pass it (safe-ical, safe-vcard, safe-mime headers, the SMTP / IMAP / POP3 / ManageSieve command guards, guard-dsn, guard-list-id, guard-list-unsubscribe, safe-redirect, mail.feedbackId, mail-spam-score, mail-deploy, bearer-auth realm, extractBearer, external-db relation names, local-http paths) accepted U+009B CSI and U+0085 NEL. The default now refuses C1 and the opt-out is allowC1. structured-fields.refuseControlBytes / containsControlBytes scan HTTP field values, which Node exposes as latin1 strings (obs-text, RFC 9110 5.5), and parsers/safe-toml follows TOML 1.0, which allows C1 in basic strings. A new allowC1 elsewhere trips this: decoded text must keep refusing C1.",
+  },
+  {
+    id: "vary-replaced-by-header-object",
+    primitive: "b.requestHelpers.mergeVary(res, headers) / appendVary(res, token) (lib/request-helpers.js): a Vary already on the response (Origin from b.middleware.cors, Accept-Encoding from b.middleware.compression) joins the Vary a writer sends. node:http lets a header object passed to res.writeHead(status, headers) replace a header set with setHeader, and res.setHeader(\"Vary\", x) replaces it outright, so either drops the earlier tokens and a shared cache keys the response on fewer request headers than it depends on.",
+    // Anchors on res.writeHead(<status>, <identifier>) whose header argument is
+    // a variable not wrapped in mergeVary (a literal object without Vary cannot
+    // replace one), with one level of parentheses allowed in the status
+    // expression, and on a direct setHeader("Vary", ...).
+    regex: /\.writeHead\(\s*(?:[^,()]|\([^()]*\))+,\s*(?![A-Za-z_$][\w$]*(?:\(\))?\.mergeVary\()[A-Za-z_$][\w$]*\s*\)|\.setHeader\(\s*["']Vary["']/,
+    skipCommentLines: true,
+    allowlist: ["lib/request-helpers.js"],
+    reason: "b.middleware.sse merged Vary: Accept into the response with appendVary and then passed its configured headers to writeHead, so opts.headers { Vary: \"Origin\" } sent only Origin. The same replacement happened in b.render (every writer, opts.headers), b.middleware.openapiServe / asyncapiServe (their own Vary: Origin), b.middleware.noCache (setHeader Vary Cookie, Authorization), b.middleware.compression (Accept-Encoding appended to the handler's header object only), and the deny, static, tus and error-page writers that pass a header variable. Every one now goes through mergeVary or appendVary. request-helpers.js is the helpers' home.",
   },
   {
     id: "record-version-check-hand-rolled",
@@ -25148,6 +25192,7 @@ async function run() {
   testNoUnresolvedMarkers();
   testNoStaleDefers();
   testNoRawControlCharactersInSource();
+  testGrowthChecksRunSolo();
   testParserPrimitivesHaveFuzzHarness();
   testExemptingSkipGuardsReadStrippedSource();
   testCommentStripHelper();

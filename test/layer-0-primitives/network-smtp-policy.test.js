@@ -747,6 +747,37 @@ async function testMtaStsFetchMaxAgeAbsentUsesDefault() {
         await _stsCachedAt("noage.example", C.TIME.minutes(61)) === false);
 }
 
+// A cached policy is valid for its own max_age (RFC 8461 §3.3). The one-hour
+// floor on how long the cache keeps an entry does not extend that: a policy
+// published with max_age 60 is not applied two minutes later, whether the
+// TXT record is gone or still names the same id.
+async function testMtaStsShortMaxAgeExpires() {
+  var fetches = 0;
+  var body = _STS_ENFORCE + "max_age: 60\n";
+  async function fetchWithTxt(domain, offsetMs, records) {
+    return _atClockOffset(offsetMs, function () {
+      return withFakeHttpRequest(
+        async function () { fetches += 1; return { statusCode: 200, headers: {}, body: Buffer.from(body, "utf8") }; },
+        function () {
+          return b.network.smtp.mtaSts.fetch(domain, {
+            dnsLookup: async function () { return records.map(function (r) { return [r]; }); },
+          });
+        });
+    });
+  }
+  await fetchWithTxt("short-age.example", 0, ["v=STSv1; id=SHORT01"]);
+  var within = await _stsCachedAt("short-age.example", C.TIME.seconds(30));
+  var after = await _stsCachedAt("short-age.example", C.TIME.minutes(2));
+  check("mtaSts.fetch: a cached policy with max_age 60 is applied within 60 s and not after",
+        within === true && after === false, JSON.stringify({ within: within, after: after }));
+
+  await fetchWithTxt("short-same-id.example", 0, ["v=STSv1; id=SAME01"]);
+  var before = fetches;
+  await fetchWithTxt("short-same-id.example", C.TIME.minutes(2), ["v=STSv1; id=SAME01"]);
+  check("mtaSts.fetch: an expired cached policy is fetched again even when the TXT id is unchanged",
+        fetches - before === 1, "fetches after expiry: " + (fetches - before));
+}
+
 async function testMtaStsFetchTxtRecordShapes() {
   // _fetchStsTxt tolerates a mixed TXT answer: a non-string chunk is
   // skipped, and a plain-string record (not the array-of-chunks shape) is
@@ -1350,6 +1381,7 @@ async function run() {
   await testMtaStsFetchTxtRecordShapes();
   await testMtaStsTxtRecordSelection();
   await testMtaStsAppliesCachedPolicyWithoutLivePolicy();
+  await testMtaStsShortMaxAgeExpires();
   await testTlsRptRecordSelection();
   await testMtaStsFetch404ReturnsNull();
   await testMtaStsFetchNon2xxThrows();

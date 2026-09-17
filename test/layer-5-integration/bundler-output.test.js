@@ -29,7 +29,13 @@ var path    = require("node:path");
 var os      = require("node:os");
 var nodeCrypto = require("node:crypto");
 var childProcess = require("node:child_process");
-var esbuild = require("esbuild");
+// esbuild is a devDependency. A tree without dev dependencies installed (a
+// packed tarball, a copy of the sources into a container) has no esbuild at
+// all, which is the same situation as the mismatched native binary below: the
+// bundle gate cannot run, so it skips with a named row instead of failing at
+// require time.
+var esbuild = null;
+try { esbuild = require("esbuild"); } catch (_e) { esbuild = null; }
 
 var REPO_ROOT = path.resolve(__dirname, "..", "..");
 
@@ -140,6 +146,7 @@ function _esbuildBinaryMatchesPlatform() {
   // never reinstalls deps in the framework container, so the
   // win32-x64 binary stays in place. The bundler test only adds
   // value when esbuild can actually run; mismatched binary = skip.
+  if (esbuild === null) return false;
   var expected = "@esbuild/" + process.platform + "-" + process.arch;
   try { require.resolve(expected); return true; }
   catch (_e) { return false; }
@@ -171,6 +178,10 @@ function _esbuildBinaryMatchesPlatform() {
 var ESBUILD_BINARY_SHA256 = require("../../scripts/esbuild-binary-pin.json").binarySha256;
 
 function testEsbuildBinaryHashPinned() {
+  if (esbuild === null) {
+    check("esbuild binary pin: skipped — esbuild is not installed (no dev dependencies in this tree)", true);
+    return;
+  }
   var ver = require("esbuild/package.json").version;
   var platKey = process.platform + "-" + process.arch;
   var verMap = ESBUILD_BINARY_SHA256[ver];

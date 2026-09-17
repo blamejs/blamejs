@@ -83,6 +83,29 @@ async function testSseOverRealResponse() {
         got.headers.vary === "Cookie, Accept", got.headers.vary);
   check("sse over node:http: both events reach the client",
         /id: 1\nevent: tick\ndata: {"n":1}\n\n/.test(got.body) && /data: plain\n\n/.test(got.body), got.body);
+
+  // A Vary in opts.headers joins the earlier Vary and Accept instead of
+  // replacing them, whatever case the configured header name uses.
+  var configured = [["Vary", "Origin"], ["vary", "Origin, Cookie"]];
+  for (var i = 0; i < configured.length; i += 1) {
+    var extra = {};
+    extra[configured[i][0]] = configured[i][1];
+    var mw2 = b.middleware.sse(async function (channel) { channel.close(); }, { heartbeatMs: false, headers: extra });
+    var server2 = http.createServer(function (req, res) {
+      res.setHeader("Vary", "Cookie");
+      mw2(req, res).catch(function () { if (!res.writableEnded) res.end(); });
+    });
+    var port2 = await helpers.listenOnRandomPort(server2);
+    var vary = await new Promise(function (resolve, reject) {
+      http.get({ host: "127.0.0.1", port: port2, path: "/events" }, function (response) {
+        response.resume();
+        response.on("end", function () { resolve(response.headers.vary); });
+      }).on("error", reject);
+    });
+    await new Promise(function (resolve) { server2.close(resolve); });
+    check("sse over node:http: opts.headers " + configured[i][0] + ": " + configured[i][1] +
+          " merges with the earlier Vary and Accept", vary === "Cookie, Accept, Origin", vary);
+  }
 }
 
 async function run() {
