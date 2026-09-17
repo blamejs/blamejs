@@ -207,21 +207,57 @@ async function testNoStoreSurvivesFrameworkWriters() {
   check("noCache: every framework writer keeps no-store" +
         (failed.length ? " (replaced by: " + failed.join("; ") + ")" : ""), failed.length === 0);
 
-  var explicit = await new Promise(function (resolve) {
-    var s = http.createServer(function (req, res) {
-      noCache(req, res, function () {});
-      b.render.json(res, { ok: true }, { headers: { "Cache-Control": "public, max-age=60" } });
-    });
-    helpers.listenOnRandomPort(s).then(function (p) {
-      http.get({ host: "127.0.0.1", port: p, path: "/" }, function (response) {
-        var value = response.headers["cache-control"];
-        response.resume();
-        s.close(function () { resolve(value); });
-      });
+  // A Cache-Control the caller passes to a writer cannot remove the no-store
+  // the middleware set: the response is still keyed to a signed-in user. A
+  // route that must be cacheable is kept out of the middleware's scope with
+  // its `when` predicate instead.
+  var CALLER_HEADER = { "Cache-Control": "public, max-age=3600" };
+  var CALLER_ROWS = [
+    { name: "b.render.json", run: function (req, res) { b.render.json(res, { ok: true }, { headers: CALLER_HEADER }); } },
+    { name: "b.render.text", run: function (req, res) { b.render.text(res, "ok", { headers: CALLER_HEADER }); } },
+    { name: "b.render.htmlString", run: function (req, res) { b.render.htmlString(res, "<p>x</p>", { headers: CALLER_HEADER }); } },
+    { name: "b.render.redirect", run: function (req, res) { b.render.redirect(res, "/next", { headers: CALLER_HEADER }); } },
+    { name: "b.render.stream", run: function (req, res) { return b.render.stream(res, ["a"], { headers: CALLER_HEADER }); } },
+    { name: "b.render.create().html", run: function (req, res) {
+      b.render.create({ engine: stubEngine }).html(res, "page", {}, { headers: CALLER_HEADER }); } },
+    { name: "b.middleware.sse", noTransform: true, run: function (req, res) {
+      return b.middleware.sse(async function () {}, { heartbeatMs: false, headers: CALLER_HEADER })(req, res); } },
+    { name: "lower-case caller header", run: function (req, res) {
+      b.render.json(res, { ok: true }, { headers: { "cache-control": "public, max-age=3600" } }); } },
+  ];
+  var callerFailed = [];
+  var callerServer = http.createServer(function (req, res) {
+    var row = CALLER_ROWS[Number(req.headers["x-row"])];
+    noCache(req, res, function () {});
+    Promise.resolve().then(function () { return row.run(req, res); }).catch(function (e) {
+      row.threw = e;
+      if (!res.headersSent) res.statusCode = 500;
+      if (!res.writableEnded) res.end();
     });
   });
-  check("noCache: an explicit opts.headers Cache-Control on a render call still wins",
-        explicit === "public, max-age=60", explicit);
+  var callerPort = await helpers.listenOnRandomPort(callerServer);
+  try {
+    for (var ci = 0; ci < CALLER_ROWS.length; ci += 1) {
+      var sent = await new Promise(function (resolve) {
+        var rq = http.get({ host: "127.0.0.1", port: callerPort, path: "/r", headers: { "x-row": String(ci) } },
+          function (response) {
+            resolve({ status: response.statusCode, cacheControl: response.headers["cache-control"] || "" });
+            response.destroy();
+          });
+        rq.setTimeout(5000, function () { rq.destroy(new Error("no response within 5 s")); });
+        rq.on("error", function (e) { resolve({ status: 599, cacheControl: "request failed: " + e.message }); });
+      });
+      var sentParsed = b.cdnCacheControl.parse(sent.cacheControl) || {};
+      if (CALLER_ROWS[ci].threw) sent.status = 598;
+      if (sent.status >= 400 || sentParsed.noStore !== true) {
+        callerFailed.push(CALLER_ROWS[ci].name + " sent " + sent.status + " \"" + sent.cacheControl + "\"");
+      }
+    }
+  } finally {
+    await new Promise(function (resolve) { callerServer.close(resolve); callerServer.closeAllConnections(); });
+  }
+  check("noCache: a Cache-Control the caller passes to a writer does not remove no-store" +
+        (callerFailed.length ? " (removed by: " + callerFailed.join("; ") + ")" : ""), callerFailed.length === 0);
 }
 
 async function run() {

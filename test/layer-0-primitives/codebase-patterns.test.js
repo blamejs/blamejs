@@ -15376,15 +15376,15 @@ var KNOWN_ANTIPATTERNS = [
   },
   {
     id: "vary-replaced-by-header-object",
-    primitive: "b.requestHelpers.mergeVary(res, headers) / appendVary(res, token) (lib/request-helpers.js): a Vary already on the response (Origin from b.middleware.cors, Accept-Encoding from b.middleware.compression) joins the Vary a writer sends. node:http lets a header object passed to res.writeHead(status, headers) replace a header set with setHeader, and res.setHeader(\"Vary\", x) replaces it outright, so either drops the earlier tokens and a shared cache keys the response on fewer request headers than it depends on.",
+    primitive: "b.requestHelpers.finalizeHeaders(res, headers) / appendVary(res, token) (lib/request-helpers.js): the header object a writer passes to res.writeHead(status, headers) goes through finalizeHeaders, so a Vary already on the response (Origin from b.middleware.cors, Accept-Encoding from b.middleware.compression) joins the Vary the writer sends and a no-store already on the response survives the Cache-Control the object carries. node:http lets a header object passed to writeHead replace a header set with setHeader, and res.setHeader(\"Vary\", x) replaces it outright.",
     // Anchors on res.writeHead(<status>, <identifier>) whose header argument is
-    // a variable not wrapped in mergeVary (a literal object without Vary cannot
-    // replace one), with one level of parentheses allowed in the status
+    // a variable not wrapped in finalizeHeaders (a literal object without Vary
+    // cannot replace one), with one level of parentheses allowed in the status
     // expression, and on a direct setHeader("Vary", ...).
-    regex: /\.writeHead\(\s*(?:[^,()]|\([^()]*\))+,\s*(?![A-Za-z_$][\w$]*(?:\(\))?\.mergeVary\()[A-Za-z_$][\w$]*\s*\)|\.setHeader\(\s*["']Vary["']/,
+    regex: /\.writeHead\(\s*(?:[^,()]|\([^()]*\))+,\s*(?![A-Za-z_$][\w$]*(?:\(\))?\.finalizeHeaders\()[A-Za-z_$][\w$]*\s*\)|\.setHeader\(\s*["']Vary["']/,
     skipCommentLines: true,
     allowlist: ["lib/request-helpers.js"],
-    reason: "b.middleware.sse merged Vary: Accept into the response with appendVary and then passed its configured headers to writeHead, so opts.headers { Vary: \"Origin\" } sent only Origin. The same replacement happened in b.render (every writer, opts.headers), b.middleware.openapiServe / asyncapiServe (their own Vary: Origin), b.middleware.noCache (setHeader Vary Cookie, Authorization), b.middleware.compression (Accept-Encoding appended to the handler's header object only), and the deny, static, tus and error-page writers that pass a header variable. Every one now goes through mergeVary or appendVary. request-helpers.js is the helpers' home.",
+    reason: "b.middleware.sse merged Vary: Accept into the response with appendVary and then passed its configured headers to writeHead, so opts.headers { Vary: \"Origin\" } sent only Origin. The same replacement happened in b.render (every writer, opts.headers), b.middleware.openapiServe / asyncapiServe (their own Vary: Origin), b.middleware.noCache (setHeader Vary Cookie, Authorization), b.middleware.compression (Accept-Encoding appended to the handler's header object only), and the deny, static, tus and error-page writers that pass a header variable. The same objects also carried a Cache-Control that replaced the no-store b.middleware.noCache had set: b.render.json(res, body, { headers: { \"Cache-Control\": \"public, max-age=3600\" } }) sent the public value on an authenticated route. Every writer now passes its final object through finalizeHeaders, which merges Vary and keeps an existing no-store. request-helpers.js is the helpers' home.",
   },
   {
     id: "record-version-check-hand-rolled",

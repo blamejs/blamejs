@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.20.30",
-  "createdAt": "2026-09-17T20:15:26.013Z",
+  "createdAt": "2026-09-17T22:07:51.855Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -52391,6 +52391,10 @@
         "failAfterHeaders": {
           "type": "function",
           "arity": 1
+        },
+        "finalizeHeaders": {
+          "type": "function",
+          "arity": 2
         },
         "ipKey": {
           "type": "function",
