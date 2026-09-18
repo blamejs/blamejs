@@ -148,6 +148,14 @@ async function testWorkingDirectories() {
     var freshPartialId = b.atomicFile.pathTimestamp() + "-0badf00d";
     fs.mkdirSync(path.join(storeRoot, ".partial-" + freshPartialId), { recursive: true });
     fs.mkdirSync(staleStaging, { recursive: true });
+    // The sweep removes a leftover only when nothing inside it is recent, so
+    // the abandoned partial and staging directories are aged on disk. The
+    // fresh partial stays recent: a copy in progress has to survive.
+    var abandonedAt = new Date(Date.now() - b.constants.TIME.hours(72));
+    [path.join(storeRoot, ".partial-" + OLD_ID, "files"),
+      path.join(storeRoot, ".partial-" + OLD_ID), staleStaging].forEach(function (p) {
+      fs.utimesSync(p, abandonedAt, abandonedAt);
+    });
     var storage = b.backup.diskStorage({ root: storeRoot });
     var copyTargets = [];
     var originalCopy = b.atomicFile.copyDirRecursive;

@@ -149,6 +149,12 @@ async function testStagingIsBesideDataDirAndStaleWorkIsRemoved() {
     var stale = path.join(live, ".blamejs-restore-staging-2000-01-01T00-00-00-000Z-deadbeef");
     fs.mkdirSync(stale);
     fs.writeFileSync(path.join(stale, "db.enc"), "decrypted leftover");
+    // The sweep removes a leftover only when nothing inside it is recent, so
+    // the fixture has to look abandoned rather than merely old-named.
+    var abandonedAt = new Date(Date.now() - b.constants.TIME.hours(72));
+    [path.join(stale, "db.enc"), stale].forEach(function (p) {
+      fs.utimesSync(p, abandonedAt, abandonedAt);
+    });
     var watched = _watchingStorage(fx.storage);
     var restorer = b.restore.create({ dataDir: dataDir, storage: watched.storage, passphrase: PASSPHRASE });
     var summary = await restorer.run({ bundleId: fx.bundleId });
@@ -208,6 +214,13 @@ function testRemoveStaleDirs() {
       "work-not-a-stamp", "other-2000-01-01T00-00-00-000Z-a", "work-2000-13-01T00-00-00-000Z-a"];
     names.forEach(function (n) { fs.mkdirSync(path.join(root, n)); });
     fs.writeFileSync(path.join(root, "work-2000-01-02T00-00-00-000Z-file"), "a file, not a directory");
+    // The sweep asks for a stale NAME and no recent activity inside, so the
+    // directories that stand for abandoned work are aged, and `fresh` is
+    // left recent to show a current run's directory survives.
+    var abandonedAt = new Date(Date.now() - b.constants.TIME.hours(72));
+    names.filter(function (n) { return n !== fresh; }).forEach(function (n) {
+      fs.utimesSync(path.join(root, n), abandonedAt, abandonedAt);
+    });
     var removed = b.atomicFile.removeStaleDirs(root, {
       prefix: "work-", olderThanMs: b.constants.TIME.hours(24), keep: ["work-2000-01-01T00-00-00-000Z-kept"],
     });
@@ -217,6 +230,51 @@ function testRemoveStaleDirs() {
           left.indexOf("work-2000-01-01T00-00-00-000Z-kept") !== -1 && left.indexOf(fresh) !== -1 &&
           left.indexOf("work-2000-13-01T00-00-00-000Z-a") !== -1 && left.indexOf("work-2000-01-02T00-00-00-000Z-file") !== -1,
           JSON.stringify({ removed: removed, left: left }));
+    // An old NAME is not evidence the work stopped: a copy still running
+    // writes as it goes, so a directory with recent activity inside is left
+    // alone however long ago it started.
+    var active = "work-2000-01-01T00-00-00-000Z-active";
+    fs.mkdirSync(path.join(root, active, "nested"), { recursive: true });
+    fs.writeFileSync(path.join(root, active, "nested", "chunk.part"), "being written");
+    var removedSecond = b.atomicFile.removeStaleDirs(root, {
+      prefix: "work-", olderThanMs: b.constants.TIME.hours(24),
+    });
+    check("a directory with an old name but recent activity inside is kept",
+          removedSecond.indexOf(active) === -1 && fs.existsSync(path.join(root, active, "nested", "chunk.part")),
+          JSON.stringify(removedSecond));
+
+    // With its contents aged past the window it is removed.
+    var longAgo = new Date(Date.now() - b.constants.TIME.hours(72));
+    [path.join(root, active, "nested", "chunk.part"), path.join(root, active, "nested"),
+      path.join(root, active)].forEach(function (p) { fs.utimesSync(p, longAgo, longAgo); });
+    var removedThird = b.atomicFile.removeStaleDirs(root, {
+      prefix: "work-", olderThanMs: b.constants.TIME.hours(24),
+    });
+    check("the same directory is removed once nothing inside it is recent",
+          removedThird.indexOf(active) !== -1 && !fs.existsSync(path.join(root, active)),
+          JSON.stringify(removedThird));
+
+    // A scan the sweep cannot finish is inconclusive, not idle: a directory
+    // with more children than the scan budget is kept even when every
+    // entry it managed to read is old, because the file being written may
+    // be one of the entries it never reached.
+    var crowded = "work-2000-01-01T00-00-00-000Z-crowded";
+    fs.mkdirSync(path.join(root, crowded), { recursive: true });
+    var aged = new Date(Date.now() - b.constants.TIME.hours(72));
+    for (var ci = 0; ci < 4100; ci += 1) {
+      var child = path.join(root, crowded, "c" + ci);
+      fs.writeFileSync(child, "");
+      fs.utimesSync(child, aged, aged);
+    }
+    fs.utimesSync(path.join(root, crowded), aged, aged);
+    var removedCrowded = b.atomicFile.removeStaleDirs(root, {
+      prefix: "work-", olderThanMs: b.constants.TIME.hours(24),
+    });
+    check("a directory the activity scan cannot finish is kept",
+          removedCrowded.indexOf(crowded) === -1 && fs.existsSync(path.join(root, crowded)),
+          JSON.stringify(removedCrowded));
+    fs.rmSync(path.join(root, crowded), { recursive: true, force: true });
+
     var codes = [{}, { prefix: "", olderThanMs: 1 }, { prefix: "w", olderThanMs: 0 }, { prefix: "w", olderThanMs: 1.5 }]
       .map(function (o) { try { b.atomicFile.removeStaleDirs(root, o); return "none"; } catch (e) { return e.code; } });
     check("atomicFile.removeStaleDirs refuses a missing prefix or a non-positive-integer age",
@@ -336,7 +394,60 @@ async function testASymlinkedDataDirIsRefusedBeforePulling() {
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 
+async function testANonDirectoryRoleIsRefusedBeforePulling() {
+  // A file where a directory belongs used to pass the layout checks, which
+  // only asked about devices and mount points: dataDir as a file swapped
+  // "successfully" and left a rollback that rollback() refuses, and a
+  // rollbackRoot as a file was caught by ensureDir after the bundle had
+  // been pulled and decrypted.
+  var ROLES = [
+    { role: "dataDir",      code: "restore/datadir-not-a-directory" },
+    { role: "stagingRoot",  code: "restore/bad-staging-root" },
+    { role: "rollbackRoot", code: "restore/bad-rollback-root" },
+  ];
+  var wrong = [];
+  for (var i = 0; i < ROLES.length; i += 1) {
+    var root = _tmp("rst-notdir-");
+    try {
+      b.auditSign._resetForTest();
+      var fx = await _bundle(root);
+      var live = path.join(root, "live");
+      fs.mkdirSync(live, { recursive: true });
+      var opts = {
+        dataDir:      path.join(live, "data"),
+        stagingRoot:  path.join(live, "staging"),
+        rollbackRoot: path.join(live, "rollbacks"),
+      };
+      fs.mkdirSync(opts.dataDir, { recursive: true });
+      // The role under test is a regular file; the others stay directories.
+      fs.rmSync(opts[ROLES[i].role], { recursive: true, force: true });
+      fs.writeFileSync(opts[ROLES[i].role], "a file where a directory belongs");
+
+      var watcher = _watchingStorage(fx.storage);
+      var refused = null;
+      try {
+        await b.restore.create({
+          dataDir:      opts.dataDir,
+          storage:      watcher.storage,
+          passphrase:   PASSPHRASE,
+          stagingRoot:  opts.stagingRoot,
+          rollbackRoot: opts.rollbackRoot,
+          audit:        false,
+        }).run({ bundleId: fx.bundleId });
+      } catch (e) { refused = e; }
+      if (refused === null || refused.code !== ROLES[i].code) {
+        wrong.push(ROLES[i].role + " -> " + (refused === null ? "no refusal" : refused.code));
+      } else if (watcher.pulls.length !== 0) {
+        wrong.push(ROLES[i].role + " pulled before refusing");
+      }
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  }
+  check("a file where dataDir, stagingRoot or rollbackRoot belongs is refused before pulling" +
+        (wrong.length ? " (" + wrong.join("; ") + ")" : ""), wrong.length === 0);
+}
+
 async function run() {
+  await testANonDirectoryRoleIsRefusedBeforePulling();
   await testASymlinkedDataDirIsRefusedBeforePulling();
   await testASymlinkIntoDataDirIsRefusedBeforePulling();
   await testMountPointAndCrossDeviceAreRefusedBeforePulling();
