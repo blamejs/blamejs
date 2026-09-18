@@ -31,10 +31,16 @@ var THREADS = [
   { id: "t2", emailIds: ["m2"] },
 ];
 
+// Every method here is account-scoped, so each call names the one account
+// the actor holds; RFC 8620 section 1.6.2 makes accountId mandatory.
+var ACCOUNT = "A1";
+
 function _server(seen) {
   return b.mail.server.jmap.create({
     mailStore:   { appendMessage: function () {} },
-    accountsFor: async function () { return { primaryAccounts: {}, accounts: {} }; },
+    accountsFor: async function () {
+      return { primaryAccounts: { mail: ACCOUNT }, accounts: { A1: { name: "one" } } };
+    },
     methods: {
       "Email/get":  async function (actor, args) { seen.push(["Email/get", args]);  return { list: EMAILS }; },
       "Thread/get": async function (actor, args) { seen.push(["Thread/get", args]); return { list: THREADS }; },
@@ -62,8 +68,8 @@ function _errorOf(response) {
 
 async function testStarMapsTheRestOfThePointer() {
   var run = await _dispatch([
-    ["Email/get", { ids: ["m1", "m2"] }, "c0"],
-    ["Thread/get", { "#ids": { resultOf: "c0", name: "Email/get", path: "/list/*/threadId" } }, "c1"],
+    ["Email/get", { accountId: ACCOUNT, ids: ["m1", "m2"] }, "c0"],
+    ["Thread/get", { accountId: ACCOUNT, "#ids": { resultOf: "c0", name: "Email/get", path: "/list/*/threadId" } }, "c1"],
   ]);
   var threadArgs = run.seen.filter(function (c) { return c[0] === "Thread/get"; })[0];
   check("a * path maps the rest of the pointer over the array",
@@ -74,7 +80,7 @@ async function testStarMapsTheRestOfThePointer() {
 
 async function testStarFlattensArrayResults() {
   var run = await _dispatch([
-    ["Thread/get", { ids: ["t1", "t2"] }, "c0"],
+    ["Thread/get", { accountId: ACCOUNT, ids: ["t1", "t2"] }, "c0"],
     ["Core/echo", { "#ids": { resultOf: "c0", name: "Thread/get", path: "/list/*/emailIds" } }, "c1"],
   ]);
   var echo = run.seen.filter(function (c) { return c[0] === "Core/echo"; })[0];
@@ -86,7 +92,7 @@ async function testStarFlattensArrayResults() {
 
 async function testAPathNoItemSatisfiesIsRejected() {
   var run = await _dispatch([
-    ["Email/get", { ids: ["m1", "m2"] }, "c0"],
+    ["Email/get", { accountId: ACCOUNT, ids: ["m1", "m2"] }, "c0"],
     ["Core/echo", { "#ids": { resultOf: "c0", name: "Email/get", path: "/list/*/nosuch" } }, "c1"],
   ]);
   var second = run.responses[1];
@@ -108,7 +114,7 @@ async function testArrayIndexFollowsTheRfc6901Grammar() {
   ];
   for (var i = 0; i < CASES.length; i += 1) {
     var run = await _dispatch([
-      ["Email/get", { ids: ["m1", "m2"] }, "c0"],
+      ["Email/get", { accountId: ACCOUNT, ids: ["m1", "m2"] }, "c0"],
       ["Core/echo", { "#id": { resultOf: "c0", name: "Email/get", path: CASES[i].path } }, "c1"],
     ]);
     var echo = run.seen.filter(function (c) { return c[0] === "Core/echo"; })[0];
@@ -126,7 +132,7 @@ async function testArrayIndexFollowsTheRfc6901Grammar() {
 
 async function testBothFormsOfAnArgumentAreRejected() {
   var run = await _dispatch([
-    ["Email/get", { ids: ["m1", "m2"] }, "c0"],
+    ["Email/get", { accountId: ACCOUNT, ids: ["m1", "m2"] }, "c0"],
     ["Core/echo", {
       ids:   ["literal"],
       "#ids": { resultOf: "c0", name: "Email/get", path: "/list/*/id" },

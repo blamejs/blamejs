@@ -2170,18 +2170,23 @@ async function testDispatchAccountGateEdges() {
     accountsFor: async function () { return { primaryAccounts: {}, accounts: { A1: { name: "x" } } }; },
     methods: { "Mailbox/get": async function (actor, args) { reached.nullId = true; return { got: args.accountId }; } },
   });
-  // accountId:null → the gate skips a null-valued *AccountId key (method runs).
+  // accountId:null → Mailbox/get is account-scoped, so a call that names no
+  // account is invalidArguments (RFC 8620 sections 1.6.2, 3.6.2 and 3.9) and
+  // the handler never runs.
   var rvNullAcc = await jmap.dispatch({ id: "a" }, {
     using: [], methodCalls: [["Mailbox/get", { accountId: null }, "c0"]],
   });
-  check("accountId:null skips gate → method runs",
-    reached.nullId === true && rvNullAcc.methodResponses[0][0] === "Mailbox/get");
-  // non-string accountId (number) → denied with deniedAccountId coerced to null.
+  check("accountId:null → invalidArguments, and the method does not run",
+    reached.nullId === false &&
+    rvNullAcc.methodResponses[0][1].type === "urn:ietf:params:jmap:error:invalidArguments",
+    JSON.stringify(rvNullAcc.methodResponses[0]));
+  // A non-string accountId is the same missing-argument case.
   var rvNum = await jmap.dispatch({ id: "a" }, {
     using: [], methodCalls: [["Mailbox/get", { accountId: 999 }, "c0"]],
   });
-  check("non-string accountId → accountNotFound (denied)",
-    rvNum.methodResponses[0][1].type === "urn:ietf:params:jmap:error:accountNotFound");
+  check("non-string accountId → invalidArguments",
+    rvNum.methodResponses[0][1].type === "urn:ietf:params:jmap:error:invalidArguments",
+    JSON.stringify(rvNum.methodResponses[0]));
 }
 
 async function testDispatchBackRefMissingObjectKey() {
