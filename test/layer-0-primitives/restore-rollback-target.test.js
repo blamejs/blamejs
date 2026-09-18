@@ -145,8 +145,80 @@ async function testRollbackPutsDataDirBackWhenTheSecondRenameFails() {
   } finally { fx.cleanup(); }
 }
 
+async function testAStrayDirectoryDoesNotBlockTheMostRecentRollback() {
+  // list() and rollback() have to agree on what a rollback point is. An
+  // ordinary directory in the rollback root used to be listed, sorted to
+  // the front by its newer mtime, chosen as the default target, and then
+  // refused by rollback() even though a real point sat behind it.
+  var fx = _fixture();
+  try {
+    var stray = path.join(fx.rollbackRoot, "manual-copy");
+    fs.mkdirSync(stray, { recursive: true });
+    fs.writeFileSync(path.join(stray, "note.txt"), "an operator's own copy");
+
+    var listed = b.restoreRollback.list({ rollbackRoot: fx.rollbackRoot });
+    check("the stray directory is not listed as a rollback point",
+          listed.every(function (p) { return path.basename(p.rollbackPath) !== "manual-copy"; }),
+          listed.map(function (p) { return path.basename(p.rollbackPath); }).join(","));
+    check("the real point is still listed",
+          listed.some(function (p) { return p.rollbackPath === fx.point; }),
+          listed.map(function (p) { return path.basename(p.rollbackPath); }).join(","));
+
+    var rolled = await b.restoreRollback.rollback({
+      dataDir: fx.dataDir, rollbackRoot: fx.rollbackRoot, rollbackPath: listed[0].rollbackPath,
+    });
+    check("the most-recent rollback completes with a stray directory present",
+          rolled && rolled.restoredFrom === fx.point,
+          rolled && JSON.stringify(rolled));
+    check("the rolled-back data is the pre-restore content",
+          fs.readFileSync(path.join(fx.dataDir, "db.enc"), "utf8") === "LIVE-DB",
+          fs.readFileSync(path.join(fx.dataDir, "db.enc"), "utf8"));
+    check("the stray directory is left alone", fs.existsSync(path.join(stray, "note.txt")));
+  } finally { fx.cleanup(); }
+}
+
+async function testSwapRefusesASymlinkedDataDir() {
+  // swap() used to move a symlinked dataDir into the rollback root, which
+  // stores the link rather than the data and produces a "rollback point"
+  // that rollback() then refuses, leaving no way back. It is refused before
+  // either rename instead.
+  var root = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-rbt-link-"));
+  try {
+    var real = path.join(root, "real-data");
+    fs.mkdirSync(real, { recursive: true });
+    fs.writeFileSync(path.join(real, "db.enc"), "LIVE-DB");
+    var link = path.join(root, "data-link");
+    try { fs.symlinkSync(real, link, "junction"); }
+    catch (_e) {
+      helpers.unavailable("restoreRollback.swap: symlinked dataDir refusal",
+        "this host does not allow creating a directory symlink");
+      return;
+    }
+    var staging = path.join(root, "staging");
+    fs.mkdirSync(staging);
+    fs.writeFileSync(path.join(staging, "db.enc"), "RESTORED-DB");
+
+    var refused = null;
+    try {
+      b.restoreRollback.swap({
+        stagingDir: staging, dataDir: link, rollbackRoot: path.join(root, "rollbacks"),
+      });
+    } catch (e) { refused = e; }
+    check("swap refuses a symlinked dataDir",
+          refused !== null && refused.code === "restore-rollback/datadir-is-symlink",
+          refused && (refused.code + " " + refused.message.slice(0, 70)));
+    check("the link and its target are untouched",
+          fs.existsSync(link) && fs.readFileSync(path.join(real, "db.enc"), "utf8") === "LIVE-DB");
+    check("no rollback point was created",
+          !fs.existsSync(path.join(root, "rollbacks")) ||
+          fs.readdirSync(path.join(root, "rollbacks")).length === 0);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
 async function run() {
   await testRollbackRefusesATargetThatIsNotARollbackPoint();
+  await testSwapRefusesASymlinkedDataDir();
+  await testAStrayDirectoryDoesNotBlockTheMostRecentRollback();
   await testRollbackPutsDataDirBackWhenTheSecondRenameFails();
 }
 

@@ -190,7 +190,35 @@ function testAnUnrelatedRangeErrorIsNotReportedAsDepth() {
         thrown.ok ? "no throw" : thrown.code + " " + thrown.message.slice(0, 70));
 }
 
+function testTheTextDepthScanAgreesWithTheWalker() {
+  // safeJson.parse reads nesting off the text before parsing, and that
+  // count has to match the walker that runs after it, which counts the root
+  // container at depth zero. Counting the root as one tightened every
+  // caller's maxDepth by a level: `{"x":{}}` was refused at maxDepth 1.
+  var ROWS = [
+    { text: '{"x":1}',          maxDepth: 1, want: "ok" },
+    { text: '{"x":{}}',         maxDepth: 1, want: "ok" },
+    { text: '{"x":[]}',         maxDepth: 1, want: "ok" },
+    { text: '{"x":{"y":1}}',    maxDepth: 1, want: "json/too-deep" },
+    { text: '{"x":{"y":1}}',    maxDepth: 2, want: "ok" },
+    { text: '[[[1]]]',          maxDepth: 2, want: "json/too-deep" },
+    { text: '[[[1]]]',          maxDepth: 3, want: "ok" },
+    { text: '{"s":"{{{{{{{{"}', maxDepth: 1, want: "ok" },
+  ];
+  var wrong = [];
+  ROWS.forEach(function (row) {
+    var got = outcome(function () { return b.safeJson.parse(row.text, { maxDepth: row.maxDepth }); });
+    var answer = got.ok ? "ok" : (got.code || got.name);
+    if (answer !== row.want) {
+      wrong.push(row.text + " at maxDepth " + row.maxDepth + " -> " + answer);
+    }
+  });
+  check("the text depth scan refuses exactly what the walker refuses" +
+        (wrong.length ? " (" + wrong.join("; ") + ")" : ""), wrong.length === 0);
+}
+
 function run() {
+  testTheTextDepthScanAgreesWithTheWalker();
   testAnUnrelatedRangeErrorIsNotReportedAsDepth();
   testDeepValuesAreRefusedByName();
   testALegitimateDeepValueIsNotReportedAsCyclic();
