@@ -70,8 +70,8 @@
           "body": "`b.restoreRollback.swap` moved a symlinked `dataDir` into the rollback root, which stores the link rather than the data and leaves a rollback point `rollback` refuses, so there was no way back. Both the restore preflight and `swap` refuse it now, the preflight before anything is pulled or decrypted: `restore/datadir-is-symlink` and `restore-rollback/datadir-is-symlink`."
         },
         {
-          "title": "A file where a restore directory belongs is refused before pulling",
-          "body": "The restore preflight asked about filesystems and mount points but not about what each path is, so a `dataDir` that was a regular file swapped without complaint and left a rollback `b.restoreRollback.rollback` refuses, and a `stagingRoot` or `rollbackRoot` that was a file failed only after the bundle had been pulled and decrypted. Each of the three roles is now refused before anything is pulled: `restore/datadir-not-a-directory`, `restore/bad-staging-root`, `restore/bad-rollback-root`."
+          "title": "A path that cannot serve as a restore directory is refused before pulling",
+          "body": "The restore preflight asked about filesystems and mount points but not about what each path is, so a `dataDir` that was a regular file swapped without complaint and left a rollback `b.restoreRollback.rollback` refuses, while a `stagingRoot` or `rollbackRoot` that was a file, or a symbolic link resolving to nothing, failed only after the bundle had been pulled and decrypted. Each of the three roles is now checked before anything is pulled: `restore/datadir-not-a-directory`, `restore/bad-staging-root`, `restore/bad-rollback-root`."
         },
         {
           "title": "A working directory is swept only when the work in it has stopped",

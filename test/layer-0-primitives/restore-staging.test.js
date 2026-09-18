@@ -446,8 +446,61 @@ async function testANonDirectoryRoleIsRefusedBeforePulling() {
         (wrong.length ? " (" + wrong.join("; ") + ")" : ""), wrong.length === 0);
 }
 
+async function testADanglingSymlinkRoleIsRefusedBeforePulling() {
+  // A link that resolves to nothing reads as ENOENT through statSync, which
+  // the preflight took for "absent, and I will create it". ensureDir then
+  // failed on the dangling link after the bundle had been decrypted.
+  var ROLES = [
+    { role: "stagingRoot",  code: "restore/bad-staging-root" },
+    { role: "rollbackRoot", code: "restore/bad-rollback-root" },
+  ];
+  var wrong = [];
+  for (var i = 0; i < ROLES.length; i += 1) {
+    var root = _tmp("rst-dangling-");
+    try {
+      b.auditSign._resetForTest();
+      var fx = await _bundle(root);
+      var live = path.join(root, "live");
+      fs.mkdirSync(live, { recursive: true });
+      var opts = {
+        dataDir:      path.join(live, "data"),
+        stagingRoot:  path.join(live, "staging"),
+        rollbackRoot: path.join(live, "rollbacks"),
+      };
+      fs.mkdirSync(opts.dataDir, { recursive: true });
+      try { fs.symlinkSync(path.join(root, "nowhere"), opts[ROLES[i].role], "junction"); }
+      catch (_e) {
+        helpers.unavailable("restore staging: dangling-symlink refusal",
+          "this host does not allow creating a directory symlink");
+        return;
+      }
+
+      var watcher = _watchingStorage(fx.storage);
+      var refused = null;
+      try {
+        await b.restore.create({
+          dataDir:      opts.dataDir,
+          storage:      watcher.storage,
+          passphrase:   PASSPHRASE,
+          stagingRoot:  opts.stagingRoot,
+          rollbackRoot: opts.rollbackRoot,
+          audit:        false,
+        }).run({ bundleId: fx.bundleId });
+      } catch (e) { refused = e; }
+      if (refused === null || refused.code !== ROLES[i].code) {
+        wrong.push(ROLES[i].role + " -> " + (refused === null ? "no refusal" : refused.code));
+      } else if (watcher.pulls.length !== 0) {
+        wrong.push(ROLES[i].role + " pulled before refusing");
+      }
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  }
+  check("a stagingRoot or rollbackRoot that is a dangling symlink is refused before pulling" +
+        (wrong.length ? " (" + wrong.join("; ") + ")" : ""), wrong.length === 0);
+}
+
 async function run() {
   await testANonDirectoryRoleIsRefusedBeforePulling();
+  await testADanglingSymlinkRoleIsRefusedBeforePulling();
   await testASymlinkedDataDirIsRefusedBeforePulling();
   await testASymlinkIntoDataDirIsRefusedBeforePulling();
   await testMountPointAndCrossDeviceAreRefusedBeforePulling();
