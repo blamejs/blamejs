@@ -12,6 +12,13 @@ lib/vendor/** -text binary
 # script fails at line 1.
 *.sh text eol=lf
 
+# Service configs under docker/ are bind-mounted into Linux containers, whose
+# parsers read the CR as part of the value: a Windows checkout's CRLF made
+# clamd refuse `LogTime yes` with "Incorrect argument format" and never open
+# its socket, so the container stayed unhealthy and the live-integration gate
+# could not bring the stack up.
+docker/** text eol=lf
+
 # Test files carry NUL-byte fixtures, and git classifies a file containing a
 # NUL as binary -- which skips line-ending normalization, so a text-mode write
 # on Windows commits CRLF verbatim and re-writes the whole file. Pin them.
