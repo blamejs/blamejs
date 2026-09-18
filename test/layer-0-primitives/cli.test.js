@@ -2124,17 +2124,21 @@ async function sectionRestoreCatches() {
     // empty point in → the OK-rolled-back success arm (exit 0).
     var dd2 = path.join(dir, "dd2");
     fs.mkdirSync(dd2, { recursive: true });
+    // The point carries the name swap() gives it — a timestamp, a direct
+    // child of the rollback root — which is the only form rollback() accepts.
     var rbRoot = path.join(dir, "rbroot");
-    fs.mkdirSync(path.join(rbRoot, "point-0001"), { recursive: true });
-    fs.writeFileSync(path.join(rbRoot, "point-0001.marker.json"),
+    var pointName = "2026-05-24T15-00-00-000Z";
+    fs.mkdirSync(path.join(rbRoot, pointName), { recursive: true });
+    fs.writeFileSync(path.join(rbRoot, pointName + ".marker.json"),
       JSON.stringify({ swappedAt: "2026-05-24T15:00:00.000Z", operator: { bundleId: "bk-1", reason: "unit" } }));
     var crd = _captureCtx();
     var rcrd = await cli.main(
       ["restore", "rollback", "--data-dir", dd2, "--rollback-root", rbRoot], crd);
-    check("restore rollback (default most-recent, point present) → exit 0", rcrd === 0);
+    check("restore rollback (default most-recent, point present) → exit 0", rcrd === 0,
+      crd.err());
     check("restore rollback (default most-recent, point present) → OK line", /OK — rolled back/.test(crd.out()));
     check("restore rollback (default most-recent, point present) → used the point",
-      /point-0001/.test(crd.out()));
+      crd.out().indexOf(pointName) !== -1, crd.out());
   } finally { _rm(dir); }
 }
 

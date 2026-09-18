@@ -86,7 +86,7 @@ function testSymlinkNotFollowed() {
     catch (_e) { symlinkOk = false; }
 
     if (!symlinkOk) {
-      check("writeExclSync: symlink case skipped (platform lacks symlink privilege)", true);
+      helpers.unavailable("writeExclSync: symlink case skipped (platform lacks symlink privilege)");
       return;
     }
 

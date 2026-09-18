@@ -830,7 +830,7 @@ function testOpensslInterop() {
   var path = require("path");
   var dir;
   try { dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-tsa-")); } catch (_e) { dir = null; }
-  if (!dir) { check("openssl interop skipped (no tmpdir)", true); return; }
+  if (!dir) { helpers.unavailable("openssl interop skipped (no tmpdir)"); return; }
   var cnf = path.join(dir, "ossl.cnf");
   fs.writeFileSync(cnf, "[req]\ndistinguished_name=dn\nx509_extensions=v3_tsa\nprompt=no\n[dn]\nCN=Test TSA\n[v3_tsa]\nextendedKeyUsage=critical,timeStamping\nbasicConstraints=CA:false\n");
   var env = Object.assign({}, process.env, { OPENSSL_CONF: cnf });
@@ -838,7 +838,7 @@ function testOpensslInterop() {
   var gen = ossl(["req", "-x509", "-newkey", "rsa:2048", "-keyout", "tsa.key", "-out", "tsa.crt", "-days", "3650", "-nodes", "-config", "ossl.cnf"]);
   if (!gen || gen.status !== 0) {
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* ignore */ }
-    check("openssl interop skipped (openssl(1) unavailable)", true);
+    helpers.unavailable("openssl interop skipped (openssl(1) unavailable)");
     return;
   }
   fs.writeFileSync(path.join(dir, "tsa.cnf"), "[c1]\nserial=./serial\ncrypto_device=builtin\nsigner_cert=./tsa.crt\nsigner_key=./tsa.key\ncerts=./tsa.crt\nsigner_digest=sha512\ndefault_policy=1.2.3.4.1\ndigests=sha256,sha384,sha512\naccuracy=secs:1\n");
@@ -848,7 +848,7 @@ function testOpensslInterop() {
   var reply = ossl(["ts", "-reply", "-queryfile", "q.tsq", "-config", "tsa.cnf", "-section", "c1", "-out", "r.tsr"]);
   if (!reply || reply.status !== 0 || !fs.existsSync(path.join(dir, "r.tsr"))) {
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* ignore */ }
-    check("openssl interop skipped (ts -reply unavailable)", true);
+    helpers.unavailable("openssl interop skipped (ts -reply unavailable)");
     return;
   }
   var tsr = fs.readFileSync(path.join(dir, "r.tsr"));

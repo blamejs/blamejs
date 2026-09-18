@@ -1,0 +1,113 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.20.31",
+  "date": "2026-09-17",
+  "headline": "A signed backup restores only under a known signing key, and backup retention deletes nothing until the new bundle reads back intact",
+  "summary": "`b.restore` and `b.backup.verifyManifestSignature` verified a backup manifest's signature with the public key the manifest itself carries, so a writer of backup storage could edit a signed bundle, re-sign it with a key of its own, including an Ed25519 key, and restore it with `requireSignature: true`. A signature is now trusted only when its key matches `expectedFingerprint` or is the active or a rotated `b.auditSign` key, and its type matches `signature.algorithm`. New bundles derive every file key from one bundle key, so a blob copied in from another bundle no longer decrypts, and a backup of many files runs one Argon2id derivation instead of one per file. `b.restoreRollback.rollback` did not check that its target was a rollback point and could leave the live data directory where `purge` deletes it; it now accepts only a rollback point under the rollback root and undoes a half-finished swap. Backup retention counted a partial or planted directory as the newest bundle and deleted complete bundles before reading the new one back; `diskStorage` now renames a finished copy into place, listings require `manifest.json`, and `run()` compares the stored bundle with what it wrote before deleting anything. `b.restore` staged decrypted files under `os.tmpdir()`, so a restore into a mounted volume failed and left them there; it now stages beside `dataDir` and refuses a layout its rename swap cannot complete before decrypting anything. Manifest readers refused a manifest above 4 MiB that the writer produced; every reader and the writer now apply one 64 MiB limit.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "A backup manifest signature is trusted only under a known key",
+          "body": "`b.backupManifest.verifySignature`, `verifyBytes`, `b.backup.verifyManifestSignature`, the `scheduleTest` drill, `b.restoreBundle.extract` and `b.restore` checked a signature against the `publicKey` in the signature block itself, so any key that produced a valid signature was accepted, and `requireSignature: true` only required a signature to be present. A bundle edited in storage (a blob rolled back to an older copy, a file entry removed) and re-signed with a fresh ML-DSA-65, Ed25519 or Ed448 key restored. The key must now match `expectedFingerprint`, or, without one, be the active or a rotated `b.auditSign` key; a process that has not run `b.auditSign.init()` gets `ok: false` unless it pins a fingerprint. `signature.algorithm` must be one of `b.auditSign.SUPPORTED_SIGNING_ALGS` and must name the type of the key, and `signature.value` must be canonical base64. The `fingerprint` in the result is computed from the key. `requireSignature: true` with `verifySignature: false` now throws `restore/bad-opts` or `restore-bundle/bad-opts`. `blamejs restore apply`, `blamejs backup verify` and `blamejs backup extract` gain `--expected-fingerprint`, `--require-signature` and `--no-verify-signature`; the CLI holds no audit-sign key, so a signed bundle needs the pinned fingerprint or the explicit skip."
+        },
+        {
+          "title": "A blob copied from another backup bundle does not decrypt",
+          "body": "Each file in a bundle was encrypted under a key derived from the passphrase and the file's own salt, with the file's path as associated data, so an older bundle's blob for the same path, copied in with its manifest entry, decrypted in an unsigned bundle. A new bundle records `keyScheme: \"argon2id-hkdf-sha3-512-path-digest\"` and a random `bundleSalt`: one Argon2id derivation produces the bundle key, and each file key and the vault-key wrapping key are derived from it with HKDF-SHA3-512 over the entry's salt and a label carrying a digest of the file's path. A blob from another bundle fails with `restore/decrypt-failed`. One derivation replaces one per file: a backup of 40 small files took 1.8 s and its restore 2.1 s, and both now take about 0.3 s. Bundles without `keyScheme` are still read with one Argon2id key per file."
+        },
+        {
+          "title": "b.restoreRollback.rollback accepts only a rollback point",
+          "body": "`rollback` moved the live `dataDir` aside and renamed whatever `rollbackPath` named into its place without checking that it was a rollback point. When that second rename failed, the live data stayed in a `discarded-*` directory that `purge` deletes. `rollback` now refuses with `restore-rollback/bad-rollback-path` a path that is not a timestamp-named directory directly under the rollback root (after resolving symlinks), or that is, contains or sits inside `dataDir`, and it moves the live data back when the second rename fails."
+        }
+      ]
+    },
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "Backup retention deletes only bundles older than a bundle that reads back intact",
+          "body": "`b.backup.diskStorage` copied a bundle directly to its final directory, and `listBundles` returned every directory with a bundle-id name, so a copy interrupted by a killed run, or an empty directory with a later timestamp, counted as the newest bundle. With `retention: { keep: 1 }`, `run()` could delete the bundle it had just written, and a storage backend that kept part of a new bundle caused complete older bundles to be deleted. `diskStorage` now copies into `.partial-<bundleId>` and renames it into place, removes partial copies and backup staging directories more than 24 hours old, and reports a bundle from `listBundles`, `hasBundle` and `readBundle` only when it holds `manifest.json`. `bundleAdapterStorage` in the `directory` format writes `manifest.json` last and lists only bundles that have it. `run()` reads each new bundle back through `storage.readBundle` and compares it byte for byte with what it wrote; a difference deletes the new bundle, skips retention and rejects with `backup/verify-after-write-failed`. Retention and `purgeOlder` give no keep slot to, and do not delete, a bundle whose id sorts after the current run or the current time."
+        },
+        {
+          "title": "b.restore stages beside dataDir and refuses a layout its swap cannot complete",
+          "body": "`b.restore` pulled and decrypted the bundle under `os.tmpdir()` and then renamed `dataDir` into the rollback root and the staging directory onto `dataDir`. A rename cannot move a mount point or cross filesystems, so a restore into a volume failed with `restore/swap-failed` and left the decrypted files in the temp directory. `run()` now pulls and decrypts under `stagingRoot` (default: the parent directory of the rollback root), refuses before pulling anything a `dataDir` that is a mount point (`restore/datadir-is-mount-point`) and a `stagingRoot` or rollback root on another filesystem (`restore/cross-device`), removes the decrypted staging directory when the swap fails, and removes a rollback root it created that is still empty. `blamejs restore apply` gains `--staging-root`."
+        },
+        {
+          "title": "A backup manifest larger than 4 MiB restores",
+          "body": "The backup writer produced a manifest of any size, while `b.restoreBundle.extract`, `inspect`, `b.backup.verifyManifestSignature` and the `scheduleTest` drill refused one above 4 MiB, so a backup of several thousand files could not be restored. Every reader now uses `b.backupManifest.readFile` with `b.backupManifest.MAX_MANIFEST_BYTES` (64 MiB), and `b.backupManifest.serialize` refuses a larger manifest with `backup-manifest/too-large`, so `run()` rejects before anything reaches storage."
+        },
+        {
+          "title": "b.backupManifest verification returns a verdict when the fingerprint cannot be computed",
+          "body": "A `b.auditSign.fingerprintOf` that throws or is missing now yields `ok: false` with the reason, instead of an exception from `verifySignature` or `verifyBytes`."
+        },
+        {
+          "title": "A value nested deeper than a validator can walk is refused by name",
+          "body": "`b.safeSchema.parse` and `safeParse` threw a raw `RangeError` for a value about 500 levels deep, `b.jtd.validate` did the same past about 3,000 levels because its cap of 10,000 sat above the JavaScript stack, and `b.cbor.encode` did the same past about 6,000. `b.jsonSchema.validate` counted every descent into the value against its `$ref` cap, so a 300-level value under an ordinary recursive schema was reported as `json-schema/ref-loop` (\"cyclic $ref?\") though nothing was cyclic. `b.safeJson.parse` reported a well-formed 2,000-level document as `json/syntax`, because the prototype-stripping reviver it passes to `JSON.parse` is what ran out of stack, and every throw from the parse was reported as a syntax error. Each now refuses by name: `safe-schema/value-too-deep`, `jtd/too-deep`, `cbor/too-deep`, `json-schema/value-too-deep`, and `json/too-deep`, the last decided by counting nesting on the text before the parse runs. `b.jsonSchema` keeps `json-schema/ref-loop` for a schema that resolves 256 `$ref`s on one value without reaching into it, which is what a cycle does."
+        },
+        {
+          "title": "A shared validator builds the caller's error class with the code in .code",
+          "body": "`b.validateOpts.requireNonEmptyString` and the `b.numericBounds` requirement helpers build the error class the caller passes. Sixteen framework error classes take `(message, code)` while the generated ones take `(code, message)`, so a refusal from one of the sixteen arrived with the message in `.code` and the code in `.message`, and an operator matching on `err.code` matched nothing. Every class now carries a factory that both conventions answer."
+        },
+        {
+          "title": "A backup to a recipient this host cannot decrypt still completes",
+          "body": "`b.backup.run()` reads each bundle back from storage before retention runs. A `b.backup.bundleAdapterStorage` configured with `cryptoStrategy: \"recipient\"` and only the recipient's public keys cannot read its own bundles, so that read failed and the bundle it had just stored was deleted. Such a backend now reports `canReadBundle: false` and the run confirms the bundle is stored instead; the result's `verifiedBy` says which check ran, `\"readback\"` or `\"presence\"`."
+        }
+      ]
+    },
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "The disaster-recovery runbook prints calls that exist",
+          "body": "`b.drRunbook.emit` wrote a restore procedure naming `b.backupBundle.verifyManifestSignature`, which the framework does not export, `b.auditChain.verify`, whose name is `verifyChain`, and an `extract` call with `outDir` and `vaultKeyJsonOnly` arguments it does not take. An operator following the generated runbook hit a TypeError at step 2. The runbook now names `b.backup.verifyManifestSignature(bundleDir, { expectedFingerprint })`, `b.restoreBundle.extract({ bundleDir, stagingDir, passphrase, requireSignature, expectedFingerprint })` and `b.auditChain.verifyChain`, and a test resolves every framework call the runbook prints. The same name was corrected in the NIST CP-9 crosswalk, the CIS crosswalk documents and README."
+        },
+        {
+          "title": "b.restore has a reference page",
+          "body": "`b.restore` carried no documentation, so it had no page in the generated reference. `b.restore.create` now documents its options, the four steps of a restore, the layouts it refuses and the codes it reports."
+        },
+        {
+          "title": "Restore reports each extract failure under its own code",
+          "body": "`b.restore.run` reports every `restore-bundle/<name>` failure as `restore/<name>`. `restore/bad-manifest` and `restore/vault-key-recovery-failed` were reported as `restore/extract-failed`."
+        },
+        {
+          "title": "backup.create validates retention",
+          "body": "`b.backup.create` throws `backup/bad-retention` unless `retention` is `{ keep: <positive integer> }`. A `keep` of 0 skipped retention without an error, and a `keep` between 0 and 1 deleted every bundle, including the one `run()` had just written."
+        },
+        {
+          "title": "b.atomicFile.removeStaleDirs",
+          "body": "`b.atomicFile.removeStaleDirs(parentDir, { prefix, olderThanMs, keep })` removes directories named with a prefix and a `pathTimestamp` stamp older than the given age."
+        },
+        {
+          "title": "b.safeJson.parseTyped",
+          "body": "`b.safeJson.parseTyped(input, opts)` parses under the same caps as `parse` and reports a failure as the caller's own error class and code, so a document read at a protocol boundary refuses with the code that boundary documents. The backup manifest reader, the TLS-RPT report reader, the CIBA notification reader and the OAuth response reader use it."
+        },
+        {
+          "title": "Tests report an unavailable host precondition instead of a passing check",
+          "body": "A test that could not reach openssl(1), a resolver, or a platform API recorded a passing check and returned, so the suite counted coverage that never ran. Those rows now print `UNAVAILABLE` and count nothing, and the preconditions a test can create for itself (a TLS context, a temp directory, a local server) are created, so failing to build one fails the test."
+        }
+      ]
+    },
+    {
+      "heading": "Migration",
+      "items": [
+        {
+          "title": "Pin the signing key when restoring a signed bundle",
+          "body": "A process that restores or verifies a signed bundle without the signing key initialized in `b.auditSign` passes `expectedFingerprint` (the value of `b.auditSign.getPublicKeyFingerprint()` in the backing-up process), or `--expected-fingerprint` to `blamejs restore apply`. A bundle signed under a key that `b.auditSign` no longer holds as active or rotated needs the pin as well."
+        },
+        {
+          "title": "Bundles written by this release need this release to restore",
+          "body": "A bundle written by 0.20.31 records `keyScheme`, which earlier releases do not read; they report `restore/decrypt-failed` for it. Upgrade every process that restores before the first backup runs on 0.20.31. A bundle written by an earlier release restores under this one unchanged: its manifest records no `keyScheme` and each file is read with the per-file key that release derived."
+        },
+        {
+          "title": "Custom storage backends report complete bundles only",
+          "body": "A custom backend's `listBundles` and `hasBundle` must not report a bundle until all of its files, `manifest.json` included, are stored, and its `readBundle` must return what `writeBundle` stored: `run()` now reads every new bundle back before retention."
+        },
+        {
+          "title": "Restore error handling",
+          "body": "`restore/swap-failed` no longer carries `stagingDir`, because the staging directory is removed. Code matching `restore/extract-failed` for an invalid manifest or an unrecoverable vault key matches `restore/bad-manifest` and `restore/vault-key-recovery-failed`. A restore whose `dataDir` parent directory is not writable passes `stagingRoot` on the same filesystem as `dataDir`; a `dataDir` that is itself a mount point is replaced by a directory inside the volume."
+        }
+      ]
+    }
+  ]
+}

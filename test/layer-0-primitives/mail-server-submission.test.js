@@ -175,9 +175,7 @@ function testBadBoundsRefused() {
 }
 
 async function _makePermissiveServer() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { return null; }
+  var ctx = await _makeTestTlsContext();
   var handoffs = [];
   var agent = {
     handoff: function (env) {
@@ -195,7 +193,6 @@ async function _makePermissiveServer() {
 
 async function testEhloAdvertisesChunking() {
   var bundle = await _makePermissiveServer();
-  if (!bundle) { check("BDAT CHUNKING advertised (skipped — no TLS ctx)", true); return; }
   var srv = bundle.srv;
   var info = await srv.listen({ port: 0, address: "127.0.0.1" });
   try {
@@ -210,7 +207,6 @@ async function testEhloAdvertisesChunking() {
 
 async function testBdatSingleLastChunk() {
   var bundle = await _makePermissiveServer();
-  if (!bundle) { check("BDAT single LAST chunk (skipped)", true); return; }
   var srv = bundle.srv;
   var info = await srv.listen({ port: 0, address: "127.0.0.1" });
   try {
@@ -243,7 +239,6 @@ async function testBdatSingleLastChunk() {
 // downstream; content does not.
 async function testBdatRefusesSmuggledBody() {
   var bundle = await _makePermissiveServer();
-  if (!bundle) { check("BDAT smuggling screen (skipped)", true); return; }
   var srv = bundle.srv;
   var info = await srv.listen({ port: 0, address: "127.0.0.1" });
   try {
@@ -351,7 +346,6 @@ async function testBdatRefusesSmuggledBody() {
 
 async function testBdatMultipleChunksThenLast() {
   var bundle = await _makePermissiveServer();
-  if (!bundle) { check("BDAT multiple chunks (skipped)", true); return; }
   var srv = bundle.srv;
   var info = await srv.listen({ port: 0, address: "127.0.0.1" });
   try {
@@ -378,7 +372,6 @@ async function testBdatMultipleChunksThenLast() {
 
 async function testBdatZeroByteLast() {
   var bundle = await _makePermissiveServer();
-  if (!bundle) { check("BDAT zero-byte LAST (skipped)", true); return; }
   var srv = bundle.srv;
   var info = await srv.listen({ port: 0, address: "127.0.0.1" });
   try {
@@ -399,7 +392,6 @@ async function testBdatZeroByteLast() {
 
 async function testBdatOutsideTransaction() {
   var bundle = await _makePermissiveServer();
-  if (!bundle) { check("BDAT outside transaction (skipped)", true); return; }
   var srv = bundle.srv;
   var info = await srv.listen({ port: 0, address: "127.0.0.1" });
   try {
@@ -415,7 +407,6 @@ async function testBdatOutsideTransaction() {
 
 async function testBdatBadArgs() {
   var bundle = await _makePermissiveServer();
-  if (!bundle) { check("BDAT bad args (skipped)", true); return; }
   var srv = bundle.srv;
   var info = await srv.listen({ port: 0, address: "127.0.0.1" });
   try {
@@ -446,7 +437,6 @@ async function testBdatBinaryBytesPreserved() {
   // the body corrupts. Send a payload containing every non-CR/LF
   // byte value 0x00..0xFF and assert byte-for-byte equality.
   var bundle = await _makePermissiveServer();
-  if (!bundle) { check("BDAT binary bytes preserved (skipped)", true); return; }
   var srv = bundle.srv;
   var info = await srv.listen({ port: 0, address: "127.0.0.1" });
   try {
@@ -486,9 +476,7 @@ async function testBdatBinaryBytesPreserved() {
 // written in one segment are both dispatched while the session is still
 // unauthenticated.
 async function testPipelinedAuthCannotRaceTheSubmissionGuard() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("submission pipelined AUTH (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var verifies = 0;
   var srv = b.mail.server.submission.create({
     tlsContext: ctx,
@@ -531,9 +519,7 @@ async function testPipelinedAuthCannotRaceTheSubmissionGuard() {
 // and runs it: a transaction pipelined behind an AUTH reaches the agent on a
 // connection the server refused and closed.
 async function testRefusedBacklogDoesNotFinalizeAfterTheVerdict() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("submission refused backlog (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var release   = null;
   var gate      = new Promise(function (r) { release = r; });
   var handoffs  = [];
@@ -599,9 +585,7 @@ async function testRefusedBacklogDoesNotFinalizeAfterTheVerdict() {
 // leaves nothing to mark the session, so the verdict's continuation resumes
 // the drain and the message reaches the agent on a connection that is gone.
 async function testAPeerHangUpStopsTheDrain() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("submission peer hang-up (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var release  = null;
   var gate     = new Promise(function (r) { release = r; });
   var handoffs = [];
@@ -645,9 +629,7 @@ async function testAPeerHangUpStopsTheDrain() {
 // an over-cap remainder in the same segment are therefore checked before the
 // AUTH is taken: the remainder is never measured, and the completion drains it.
 async function testTheBacklogIsBoundedWhenAuthStartsWaiting() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("submission auth backlog (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var release  = null;
   var gate     = new Promise(function (r) { release = r; });
   var handoffs = [];
@@ -700,9 +682,7 @@ async function testTheBacklogIsBoundedWhenAuthStartsWaiting() {
 // session that lost its EHLO. The verdict was right and only the sentence was
 // wrong, which costs debugging time rather than correctness.
 async function testASecondMailNamesTheRightFault() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("second MAIL reply (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var srv = b.mail.server.submission.create({
     tlsContext: ctx,
     profile:    "permissive",
@@ -781,9 +761,7 @@ async function testASecondMailNamesTheRightFault() {
 }
 
 async function testBdatOversizeRefused() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("BDAT oversize (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   // Tight 1 KiB cap so the test runs fast.
   var srv = b.mail.server.submission.create({
     tlsContext:      ctx,
@@ -2335,7 +2313,7 @@ async function run() {
 
   var tls;
   try { tls = await _makeTestTlsContextWithCa(); }
-  catch (_e) { check("mail-server-submission error branches skipped (no TLS ctx)", true); return; }
+  catch (_e) { helpers.unavailable("mail-server-submission error branches skipped (no TLS ctx)"); return; }
 
   testCreateValidation(tls);
   await testCloseBeforeListen(tls);

@@ -139,7 +139,7 @@ function testNoFollowRefusesSymlink() {
       check("excl flags: symlink target (victim) NOT written through",
             fs.readFileSync(victim, "utf8") === "SECRET");
     } else {
-      check("excl flags: symlink case skipped (platform lacks symlink privilege)", true);
+      helpers.unavailable("excl flags: symlink case skipped (platform lacks symlink privilege)");
     }
   } finally {
     dir.cleanup();
@@ -163,7 +163,7 @@ async function testSymlinkAtDestinationReplacedNotFollowed() {
     catch (_e) { symlinkOk = false; }
 
     if (!symlinkOk) {
-      check("dest-symlink case skipped (platform lacks symlink privilege)", true);
+      helpers.unavailable("dest-symlink case skipped (platform lacks symlink privilege)");
       return;
     }
 

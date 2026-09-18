@@ -180,7 +180,40 @@ async function testAssociatedDataBinding() {
     !again.encrypted.equals(sealed.encrypted));
 }
 
+async function testALongRelativePathStillDerivesAKey() {
+  // HKDF takes at most 1024 bytes of context, so a label carrying the path
+  // itself refused a file whose path is longer than that: backing up a
+  // deeply nested tree failed with ERR_OUT_OF_RANGE. The label carries a
+  // digest of the path, and the path itself stays bound as the AAD.
+  var longPath = "nested/".repeat(200) + "file.enc";
+  check("the probe path is longer than the HKDF context limit",
+        Buffer.byteLength(longPath) > 1024, Buffer.byteLength(longPath));
+  check("the derived label stays inside the limit",
+        Buffer.byteLength(b.backupCrypto.fileKeyLabel(longPath)) <= 1024,
+        Buffer.byteLength(b.backupCrypto.fileKeyLabel(longPath)));
+
+  var key = await b.backupCrypto.deriveKey("passphrase-1234567890", "aa".repeat(32));
+  var salt = "bb".repeat(32);
+  var enc = b.backupCrypto.encryptUnderSubkey("payload", key, salt,
+    b.backupCrypto.fileKeyLabel(longPath), longPath);
+  var out = b.backupCrypto.decryptUnderSubkey(enc, key, salt,
+    b.backupCrypto.fileKeyLabel(longPath), longPath);
+  check("a file at a 1.4 KiB path round-trips", out.toString() === "payload", out.toString());
+
+  // Two different long paths still derive different keys, so the digest did
+  // not collapse the domain separation the path provides.
+  var other = "nested/".repeat(200) + "other.enc";
+  var decodedUnderOther = null;
+  try {
+    decodedUnderOther = b.backupCrypto.decryptUnderSubkey(enc, key, salt,
+      b.backupCrypto.fileKeyLabel(other), other).toString();
+  } catch (_e) { decodedUnderOther = null; }
+  check("a blob does not decrypt under another long path's key", decodedUnderOther === null,
+        decodedUnderOther);
+}
+
 async function run() {
+  await testALongRelativePathStillDerivesAKey();
   testChecksumInputGuard();
   await testPassphraseAndSaltGuards();
   await testDerivedKeyLengthIsVerified();

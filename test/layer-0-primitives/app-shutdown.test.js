@@ -300,7 +300,7 @@ async function testAppShutdownWatchdogForcesExitOnHang() {
     // terminates the process), so the graceful signal path the watchdog
     // guards doesn't exist here. This defends a Linux-container SIGTERM
     // deployment; the container smoke leg exercises it for real.
-    check("watchdog test skipped on win32 (no deliverable SIGTERM)", true);
+    helpers.unavailable("watchdog test skipped on win32 (no deliverable SIGTERM)");
     return;
   }
   var cp = require("node:child_process");

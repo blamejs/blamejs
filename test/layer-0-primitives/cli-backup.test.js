@@ -61,6 +61,58 @@ async function _buildFixtureBundle(passphrase) {
   return { dataDir: dataDir, bundleRoot: bundleRoot, bundleDir: path.join(bundleRoot, result.bundleId) };
 }
 
+// blamejs backup verify and extract decrypt a bundle, so both take the
+// signature flags blamejs restore apply takes. The CLI holds no audit-sign
+// key, so a signed bundle needs a pinned fingerprint or an explicit skip.
+async function testBackupSignatureFlags(unsignedBundleDir) {
+  var signerDir = _tmpDir("blamejs-cli-backup-signer");
+  var fingerprint;
+  var fx;
+  b.auditSign._resetForTest();
+  try {
+    await b.auditSign.init({ dataDir: signerDir, mode: "plaintext" });
+    fingerprint = b.auditSign.getPublicKeyFingerprint();
+    fx = await _buildFixtureBundle("signed-fixture-passphrase");
+  } finally {
+    b.auditSign._resetForTest();
+  }
+  var manifest = JSON.parse(fs.readFileSync(path.join(fx.bundleDir, "manifest.json"), "utf8"));
+  var rows = [];
+  async function verify(extra, label) {
+    var ctx = _captureCtx();
+    var code = await cli.main(["backup", "verify", "--bundle", fx.bundleDir,
+      "--passphrase", "signed-fixture-passphrase"].concat(extra), ctx);
+    rows.push(label + "=" + code + (code === 0 ? "" : " " + ctx.err().trim().slice(0, 80)));
+    return code;
+  }
+  var wrong = [];
+  if (!manifest.signature) wrong.push("precondition: the fixture bundle is unsigned");
+  if (await verify([], "no-pin") === 0) wrong.push("verify without a pin accepted a signed bundle");
+  if (await verify(["--expected-fingerprint", fingerprint], "pinned") !== 0) wrong.push("verify with the signing fingerprint failed");
+  if (await verify(["--no-verify-signature"], "skip") !== 0) wrong.push("verify with --no-verify-signature failed");
+  if (await verify(["--no-verify-signature", "--require-signature"], "conflict") !== 2) wrong.push("conflicting flags were not a usage error");
+  if (await verify(["--expected-fingerprint"], "no-value") !== 2) wrong.push("--expected-fingerprint without a value was not a usage error");
+
+  var target = path.join(_tmpDir("blamejs-cli-backup-extract"), "out");
+  var ctxE = _captureCtx();
+  var extractCode = await cli.main(["backup", "extract", "--bundle", fx.bundleDir, "--to", target,
+    "--passphrase", "signed-fixture-passphrase", "--expected-fingerprint", fingerprint], ctxE);
+  if (extractCode !== 0 || !fs.existsSync(path.join(target, "hello.txt"))) {
+    wrong.push("extract with the signing fingerprint -> " + extractCode);
+  }
+  var ctxU = _captureCtx();
+  var unsignedRequired = await cli.main(["backup", "verify", "--bundle", unsignedBundleDir,
+    "--passphrase", "the-fixture-passphrase", "--require-signature"], ctxU);
+  if (unsignedRequired === 0) wrong.push("--require-signature accepted an unsigned bundle");
+
+  check("blamejs backup verify and extract trust a manifest signature only under a pinned key" +
+        (wrong.length ? " (" + wrong.join("; ") + ")" : ""), wrong.length === 0, rows.join(" | "));
+  fs.rmSync(fx.dataDir, { recursive: true, force: true });
+  fs.rmSync(fx.bundleRoot, { recursive: true, force: true });
+  fs.rmSync(signerDir, { recursive: true, force: true });
+  fs.rmSync(path.dirname(target), { recursive: true, force: true });
+}
+
 async function run() {
   var fx = await _buildFixtureBundle("the-fixture-passphrase");
 
@@ -120,6 +172,8 @@ async function run() {
   var c8 = await cli.main(["help", "backup"], ctx8);
   check("help backup: prints BACKUP_USAGE",
         c8 === 0 && /Usage: blamejs backup/.test(ctx8.out()));
+
+  await testBackupSignatureFlags(fx.bundleDir);
 
   // ---- cleanup ----
   fs.rmSync(fx.dataDir,    { recursive: true, force: true });

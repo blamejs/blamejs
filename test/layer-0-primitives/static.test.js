@@ -1465,7 +1465,7 @@ async function testSymlinkEscapeRefused() {
 // Windows, which follows the link), so this only exercises on POSIX.
 async function testSymlinkFinalComponentFailsClosed() {
   if (process.platform === "win32") {
-    check("final-component symlink: skipped on win32 (O_NOFOLLOW is a no-op)", true);
+    helpers.unavailable("final-component symlink: skipped on win32 (O_NOFOLLOW is a no-op)");
     return;
   }
   var ctx = await _server();

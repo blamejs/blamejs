@@ -294,7 +294,7 @@ async function testDownloadTempCreateIsExclusiveNoFollow() {
         check("downloadStream(excl): symlink target (victim) untouched",
               fs.readFileSync(victim, "utf8") === "DO NOT OVERWRITE");
       } else {
-        check("downloadStream(excl): symlink-dest case skipped (no privilege)", true);
+        helpers.unavailable("downloadStream(excl): symlink-dest case skipped (no privilege)");
       }
     } finally {
       dir.cleanup();

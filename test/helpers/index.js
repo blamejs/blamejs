@@ -48,6 +48,8 @@ module.exports = {
 
   // Assertion + counter
   check:              _check.check,
+  unavailable:        _check.unavailable,
+  getUnavailable:     _check.getUnavailable,
   getChecks:          _check.getChecks,
   resetChecksForTest: _check.resetChecksForTest,
   addExternalChecks:  _check.addExternalChecks,

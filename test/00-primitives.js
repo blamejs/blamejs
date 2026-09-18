@@ -6311,9 +6311,18 @@ async function testBackupBundleCreateEndToEnd() {
     check("manifest carries operator metadata",     m.metadata && m.metadata.reason === "test-end-to-end");
     check("manifest marks blobs AEAD path-bound",   m.aadBound === true);
 
-    // Vault key round-trip — decrypt with passphrase + bundled salt
-    var vkBytes = await b.backupCrypto.decryptWithPassphrase(
-      Buffer.from(m.vaultKeyEnc, "base64"), passphrase, m.vaultKeySalt);
+    // Key scheme — one Argon2id derivation per bundle, then an HKDF subkey
+    // for the vault key and for each file, every one labeled and path-bound.
+    check("manifest records the bundle key scheme",
+          m.keyScheme === b.backupManifest.KEY_SCHEME_BUNDLE, String(m.keyScheme));
+    check("manifest carries a bundle salt",
+          typeof m.bundleSalt === "string" && m.bundleSalt.length === 64, String(m.bundleSalt));
+    var bundleKey = await b.backupCrypto.deriveKey(passphrase, m.bundleSalt);
+
+    // Vault key round-trip — unwrap under the bundle key's vault subkey.
+    var vkBytes = b.backupCrypto.decryptUnderSubkey(
+      Buffer.from(m.vaultKeyEnc, "base64"), bundleKey, m.vaultKeySalt,
+      b.backupCrypto.VAULT_KEY_LABEL, b.backupCrypto.VAULT_KEY_LABEL);
     check("vaultKeyEnc decrypts to original JSON",  vkBytes.toString("utf8") === vaultKeyJson);
 
     // Each file's blob exists and decrypts to the original bytes
@@ -6328,7 +6337,8 @@ async function testBackupBundleCreateEndToEnd() {
       // Blobs are sealed with their relativePath as AEAD associated data
       // (manifest.aadBound) — pass it so the manual decrypt matches.
       var blobAad = m.aadBound === true ? entry.relativePath : undefined;
-      var dec = await b.backupCrypto.decryptWithPassphrase(blob, passphrase, entry.salt, blobAad);
+      var dec = b.backupCrypto.decryptUnderSubkey(blob, bundleKey, entry.salt,
+        b.backupCrypto.fileKeyLabel(entry.relativePath), blobAad);
       var origPath = path.join(fx.dataDir, entry.relativePath);
       var orig = fs.readFileSync(origPath);
       check("decrypted blob matches original plaintext for " + entry.relativePath,

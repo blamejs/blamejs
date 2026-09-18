@@ -665,7 +665,7 @@ async function testEncryptedNonTmpfsTmpDirRefusedByDefault() {
   // fail-closed assertion only runs on Linux. A repo-local .test-output
   // path is provably outside /dev/shm /run/shm /run/user /tmp.
   if (process.platform !== "linux") {
-    check("non-tmpfs tmpDir gate is Linux-only (skipped off-Linux)", true);
+    helpers.unavailable("non-tmpfs tmpDir gate is Linux-only (skipped off-Linux)");
     return;
   }
   var scratchBase = path.join(__dirname, "..", ".test-output");

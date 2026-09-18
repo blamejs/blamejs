@@ -271,13 +271,13 @@ function testFingerprintPinning(bytes, block, trustedFp) {
     signedAt:    new Date().toISOString(),
   };
 
-  // Unpinned, the forgery verifies — it is a real signature, just by the
-  // wrong key. This is precisely why the pin exists.
+  // The forgery is a real signature by the wrong key. Unpinned, the key must be
+  // an audit-sign key, and it is not.
   var unpinnedForgery = b.backupManifest.verifyBytes(bytes, forged);
-  check("pinning: an unpinned forged block verifies under its own key (why the pin exists)",
-    unpinnedForgery.ok === true);
+  check("pinning: an unpinned forged block is refused because its key is not an audit-sign key",
+    unpinnedForgery.ok === false && /is not the active or a rotated audit-sign key/.test(unpinnedForgery.reason));
   check("pinning: the unpinned verdict reports the ATTACKER's derived fingerprint, not the claimed one",
-    unpinnedForgery.fingerprint !== trustedFp);
+    typeof unpinnedForgery.fingerprint === "string" && unpinnedForgery.fingerprint !== trustedFp);
 
   var pinnedForgery = b.backupManifest.verifyBytes(bytes, forged, { expectedFingerprint: trustedFp });
   check("pinning: a foreign key claiming the trusted fingerprint is REFUSED",
@@ -298,44 +298,43 @@ function testFingerprintDerivationFailures(bytes, block, trustedFp) {
     check("derivation: a throwing fingerprintOf is reported as a refusal, not raised",
       threw.ok === false && /could not derive fingerprint from publicKey: fingerprint backend down/.test(threw.reason));
 
-    // Absent (not throwing) fingerprintOf: verification still works unpinned,
-    // but a pin cannot be honoured, so it fails closed rather than skipping.
+    // Absent (not throwing) fingerprintOf: trust is decided by the key's
+    // fingerprint, pinned or not, so both forms fail closed.
     b.auditSign.fingerprintOf = undefined;
     var unpinned = b.backupManifest.verifyBytes(bytes, block);
-    check("derivation: without fingerprintOf an UNPINNED verify still succeeds",
-      unpinned.ok === true);
+    check("derivation: without fingerprintOf an UNPINNED verify fails closed",
+      unpinned.ok === false && /requires audit-sign\.fingerprintOf \(unavailable\)/.test(unpinned.reason));
 
     var pinnedNoFp = b.backupManifest.verifyBytes(bytes, block, { expectedFingerprint: trustedFp });
     check("derivation: without fingerprintOf a PINNED verify fails closed",
-      pinnedNoFp.ok === false && /fingerprint pinning requires audit-sign\.fingerprintOf \(unavailable\)/.test(pinnedNoFp.reason));
+      pinnedNoFp.ok === false && /requires audit-sign\.fingerprintOf \(unavailable\)/.test(pinnedNoFp.reason));
   } finally {
     b.auditSign.fingerprintOf = origFp;
   }
 }
 
 // ---------------------------------------------------------------------------
-// Verifier dispatch: audit-sign when present, node:crypto otherwise, and the
-// two failure shapes (verifier threw / signature simply did not verify).
+// Verification: node:crypto checks the signature under the block's key once
+// that key is trusted, whatever b.auditSign.verify does, and a signature that
+// does not cover the bytes is refused.
 // ---------------------------------------------------------------------------
 function testVerifyDispatchAndFailures(bytes, block, trustedFp) {
   var origVerify = b.auditSign.verify;
   try {
-    // A verifier process that never loaded audit-sign's verify still checks
-    // the block through node:crypto with the block's own public key.
     b.auditSign.verify = undefined;
     var viaNode = b.backupManifest.verifyBytes(bytes, block);
     check("dispatch: with no audit-sign verify, node:crypto verifies the block",
       viaNode.ok === true && viaNode.fingerprint === trustedFp);
 
-    var tamperedViaNode = b.backupManifest.verifyBytes(Buffer.from("tampered-payload", "utf8"), block);
-    check("dispatch: the node:crypto fallback still rejects tampered bytes",
-      tamperedViaNode.ok === false);
+    b.auditSign.verify = function () { return true; };
+    var tamperedUnderStub = b.backupManifest.verifyBytes(Buffer.from("tampered-payload", "utf8"), block);
+    check("dispatch: an audit-sign verify that accepts everything does not make tampered bytes verify",
+      tamperedUnderStub.ok === false);
 
-    // A verifier that raises is reported, not propagated.
     b.auditSign.verify = function () { throw new Error("verifier exploded"); };
-    var threw = b.backupManifest.verifyBytes(bytes, block);
-    check("dispatch: a throwing verifier is reported as a refusal",
-      threw.ok === false && /verify threw: verifier exploded/.test(threw.reason));
+    var honestUnderThrower = b.backupManifest.verifyBytes(bytes, block);
+    check("dispatch: a throwing audit-sign verify does not change the verdict",
+      honestUnderThrower.ok === true);
   } finally {
     b.auditSign.verify = origVerify;
   }

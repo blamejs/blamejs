@@ -52,8 +52,79 @@ async function _buildFixtureBundle(passphrase) {
   };
 }
 
+async function _buildSignedFixtureBundle(passphrase) {
+  var signerDir = _tmpDir("blamejs-cli-restore-signer");
+  b.auditSign._resetForTest();
+  try {
+    await b.auditSign.init({ dataDir: signerDir, mode: "plaintext" });
+    var fx = await _buildFixtureBundle(passphrase);
+    var manifest = JSON.parse(fs.readFileSync(path.join(fx.bundleDir, "manifest.json"), "utf8"));
+    fx.signed = !!manifest.signature;
+    fx.fingerprint = b.auditSign.getPublicKeyFingerprint();
+    return fx;
+  } finally {
+    b.auditSign._resetForTest();
+    fs.rmSync(signerDir, { recursive: true, force: true });
+  }
+}
+
+async function _apply(fx, extraArgs) {
+  var liveDataDir = path.join(_tmpDir("blamejs-cli-restore-sig"), "data");
+  fs.mkdirSync(liveDataDir, { recursive: true });
+  var ctx = _captureCtx();
+  var code = await cli.main(
+    ["restore", "apply", "--data-dir", liveDataDir, "--bundle", fx.bundleDir,
+     "--passphrase", "the-fixture-passphrase"].concat(extraArgs), ctx);
+  var restored = fs.existsSync(path.join(liveDataDir, "hello.txt"));
+  fs.rmSync(path.dirname(liveDataDir), { recursive: true, force: true });
+  return { code: code, restored: restored, err: ctx.err() };
+}
+
+async function testApplySignatureFlags(unsignedFx) {
+  var fx = await _buildSignedFixtureBundle("the-fixture-passphrase");
+  try {
+    check("signature flags: the fixture bundle is signed", fx.signed === true);
+
+    var noPin = await _apply(fx, []);
+    check("apply: a signed bundle without --expected-fingerprint in a process without audit-sign is refused",
+          noPin.code !== 0 && noPin.restored === false && /signature/i.test(noPin.err), JSON.stringify(noPin));
+
+    var pinned = await _apply(fx, ["--expected-fingerprint", fx.fingerprint]);
+    check("apply: --expected-fingerprint with the signing key's fingerprint restores",
+          pinned.code === 0 && pinned.restored === true, JSON.stringify(pinned));
+
+    var wrongPin = await _apply(fx, ["--expected-fingerprint", "ab".repeat(64)]);
+    check("apply: --expected-fingerprint with another fingerprint is refused",
+          wrongPin.code !== 0 && wrongPin.restored === false, JSON.stringify(wrongPin));
+
+    var skipped = await _apply(fx, ["--no-verify-signature"]);
+    check("apply: --no-verify-signature restores without checking the signature",
+          skipped.code === 0 && skipped.restored === true, JSON.stringify(skipped));
+
+    var conflict = await _apply(fx, ["--no-verify-signature", "--require-signature"]);
+    check("apply: --no-verify-signature with --require-signature is a usage error",
+          conflict.code === 2 && conflict.restored === false, JSON.stringify(conflict));
+
+    var conflictPin = await _apply(fx, ["--no-verify-signature", "--expected-fingerprint", fx.fingerprint]);
+    check("apply: --no-verify-signature with --expected-fingerprint is a usage error",
+          conflictPin.code === 2 && conflictPin.restored === false, JSON.stringify(conflictPin));
+
+    var emptyPin = await _apply(fx, ["--expected-fingerprint"]);
+    check("apply: --expected-fingerprint without a value is a usage error",
+          emptyPin.code === 2 && emptyPin.restored === false, JSON.stringify(emptyPin));
+
+    var requiredUnsigned = await _apply(unsignedFx, ["--require-signature"]);
+    check("apply: --require-signature refuses an unsigned bundle",
+          requiredUnsigned.code !== 0 && requiredUnsigned.restored === false, JSON.stringify(requiredUnsigned));
+  } finally {
+    fs.rmSync(fx.dataDir,    { recursive: true, force: true });
+    fs.rmSync(fx.bundleRoot, { recursive: true, force: true });
+  }
+}
+
 async function run() {
   var fx = await _buildFixtureBundle("the-fixture-passphrase");
+  await testApplySignatureFlags(fx);
 
   // ---- list ----
   var ctx1 = _captureCtx();

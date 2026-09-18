@@ -318,7 +318,7 @@ async function run() {
     check("azure-blob.presignedUploadPolicy throws PRESIGN_NOT_SUPPORTED",
       _throws(function () { azureBackend.presignedUploadPolicy({ maxBytes: 100 }); }, "objectstore/presign-not-supported"));
   } else {
-    check("azure-blob backend constructible (skipped if not)", true);
+    helpers.unavailable("azure-blob backend constructible (skipped if not)");
   }
 
   // ---- NTS auth: server reply without AUTHENTICATOR_AND_ENC must fail closed ----

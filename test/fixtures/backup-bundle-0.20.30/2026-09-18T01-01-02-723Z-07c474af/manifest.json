@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "framework": "blamejs",
+  "frameworkVersion": "0.20.30",
+  "createdAt": "2026-09-18T01:01:02.858Z",
+  "vaultKeySalt": "c49b76e75e0678a1d6a775e7763bb3dfe1a8a5ec31c5db322baa5e730b8b54be",
+  "vaultKeyEnc": "qCeMQk60/mAYlnU9o38UU8SooVtAOzpvw1gvfXVGv7MoG/+Jl2JNciSX9DebkOiszfpghK4YzrqxWQ==",
+  "files": [
+    {
+      "relativePath": "db.enc",
+      "encryptedPath": "files/db.enc.enc",
+      "size": 17,
+      "encryptedSize": 57,
+      "checksum": "08539de752ccb479238d4b34e52deaa6184af776099fea83879350729deb04cc2eb6645a3a14836b63249158a013d0cdb2553080a1f68e0617912ae9c42266c2",
+      "salt": "60f0fc372fca0ced3ddbfe9013553f05a925b6f994393458be9e3d8549ce6613",
+      "kind": "raw"
+    },
+    {
+      "relativePath": "audit.log",
+      "encryptedPath": "files/audit.log.enc",
+      "size": 14,
+      "encryptedSize": 54,
+      "checksum": "09c47559042341d3bb792f7f78997ec262aab4175fd00e03b2346d6c4f7f9663e0d9266dac005d80bb4baaa943325fdb6eaf6c46fd51390ae9d7ad2b45964c21",
+      "salt": "d7a5b1002609d68b6f5084f157392e9defa26f6a3f0efb9542f4c6bc5f0ee9f7",
+      "kind": "raw"
+    }
+  ],
+  "metadata": {
+    "bundleId": "2026-09-18T01-01-02-723Z-07c474af"
+  },
+  "aadBound": true
+}

@@ -42,6 +42,23 @@ async function run() {
     check("runbook lists Incident Commander", body.indexOf("incidentCommander") !== -1);
     check("runbook lists api-edge service",   body.indexOf("api-edge") !== -1);
     check("runbook references restore steps", body.indexOf("verifyManifestSignature") !== -1);
+
+    // An operator follows the runbook literally, so every framework call it
+    // prints has to exist. ENGINE_METHODS are the documented names of methods
+    // on the object a create() returns, which do not resolve on `b` itself.
+    var ENGINE_METHODS = ["b.backup.scheduleTest", "b.restore.rollback"];
+    var referenced = {};
+    var refPattern = /\bb\.([A-Za-z][A-Za-z0-9]*)\.([A-Za-z][A-Za-z0-9]*)/g;
+    var found;
+    while ((found = refPattern.exec(body)) !== null) referenced[found[0]] = true;
+    var unresolved = Object.keys(referenced).filter(function (ref) {
+      if (ENGINE_METHODS.indexOf(ref) !== -1) return false;
+      return ref.split(".").slice(1).reduce(function (node, key) {
+        return node === undefined || node === null ? undefined : node[key];
+      }, b) === undefined;
+    });
+    check("every framework call the runbook prints resolves (" + Object.keys(referenced).length + " referenced)" +
+          (unresolved.length ? ": " + unresolved.join(", ") : ""), unresolved.length === 0);
   } finally {
     try { fs.rmSync(outDir, { recursive: true, force: true }); }
     catch (_e) { /* best-effort */ }

@@ -78,7 +78,7 @@ async function run() {
       check("requireStepUp: 401 carries Cache-Control: no-store",
             (outSu.res._hdrs["cache-control"] || "").indexOf("no-store") !== -1);
     } else {
-      check("requireStepUp: primitive present (opt-shape skipped)", true);
+      helpers.unavailable("requireStepUp: primitive present (opt-shape skipped)");
     }
   } else {
     check("requireStepUp: primitive present", true);
