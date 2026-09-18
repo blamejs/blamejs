@@ -299,7 +299,45 @@ async function testASymlinkIntoDataDirIsRefusedBeforePulling() {
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 
+async function testASymlinkedDataDirIsRefusedBeforePulling() {
+  // A symlinked dataDir survives the layout checks, which follow the link,
+  // and only restoreRollback.swap() catches it — after the bundle has been
+  // pulled and decrypted. The preflight checks the path as written.
+  var root = _tmp("rst-datadir-link-");
+  try {
+    b.auditSign._resetForTest();
+    var fx = await _bundle(root);
+    var real = path.join(root, "real-data");
+    fs.mkdirSync(real, { recursive: true });
+    var link = path.join(root, "data-link");
+    try { fs.symlinkSync(real, link, "junction"); }
+    catch (_e) {
+      helpers.unavailable("restore staging: symlinked dataDir refusal",
+        "this host does not allow creating a directory symlink");
+      return;
+    }
+
+    var watcher = _watchingStorage(fx.storage);
+    var refused = null;
+    try {
+      await b.restore.create({
+        dataDir:      link,
+        storage:      watcher.storage,
+        passphrase:   PASSPHRASE,
+        rollbackRoot: path.join(root, "rollbacks"),
+        audit:        false,
+      }).run({ bundleId: fx.bundleId });
+    } catch (e) { refused = e; }
+    check("a symlinked dataDir is refused",
+          refused !== null && refused.code === "restore/datadir-is-symlink",
+          refused && (refused.code + " " + refused.message.slice(0, 80)));
+    check("nothing was pulled before that refusal", watcher.pulls.length === 0,
+          watcher.pulls.join(","));
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
 async function run() {
+  await testASymlinkedDataDirIsRefusedBeforePulling();
   await testASymlinkIntoDataDirIsRefusedBeforePulling();
   await testMountPointAndCrossDeviceAreRefusedBeforePulling();
   await testStagingIsBesideDataDirAndStaleWorkIsRemoved();

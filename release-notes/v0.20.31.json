@@ -66,8 +66,8 @@
           "body": "The preflight compared paths lexically, so a `stagingRoot` or `rollbackRoot` symlinked into `dataDir` was accepted and the decrypted staging landed inside the directory the restore renames aside, failing the swap after the bundle had been decrypted. Both spellings are refused now: the path as written, and the path with its symlinks resolved. A bind-mounted `dataDir` that shares its parent's device number is also refused, read from the mount table rather than inferred from device numbers."
         },
         {
-          "title": "restoreRollback.swap refuses a symlinked dataDir",
-          "body": "`swap` moved a symlinked `dataDir` into the rollback root, which stores the link rather than the data and leaves a rollback point that `rollback` refuses, so there was no way back. It is refused before either rename now, with `restore-rollback/datadir-is-symlink`."
+          "title": "A symlinked dataDir is refused before a bundle is decrypted",
+          "body": "`b.restoreRollback.swap` moved a symlinked `dataDir` into the rollback root, which stores the link rather than the data and leaves a rollback point `rollback` refuses, so there was no way back. Both the restore preflight and `swap` refuse it now, the preflight before anything is pulled or decrypted: `restore/datadir-is-symlink` and `restore-rollback/datadir-is-symlink`."
         }
       ]
     },
