@@ -543,11 +543,25 @@ async function testADanglingSymlinkRoleIsRefusedBeforePulling() {
         rollbackRoot: path.join(live, "rollbacks"),
       };
       fs.mkdirSync(opts.dataDir, { recursive: true });
-      try { fs.symlinkSync(path.join(root, "nowhere"), opts[ROLES[i].role], "junction"); }
-      catch (_e) {
-        helpers.unavailable("restore staging: dangling-symlink refusal",
-          "this host does not allow creating a directory symlink");
-        return;
+      // Half the rows point the role AT a dangling link; the other half
+      // reach it THROUGH one, which an endpoint-only check cannot see.
+      var throughAncestor = i % 2 === 1;
+      if (throughAncestor) {
+        var ancestor = path.join(live, "ancestor-link");
+        try { fs.symlinkSync(path.join(root, "nowhere"), ancestor, "junction"); }
+        catch (_e0) {
+          helpers.unavailable("restore staging: dangling-ancestor refusal",
+            "this host does not allow creating a directory symlink");
+          return;
+        }
+        opts[ROLES[i].role] = path.join(ancestor, "child");
+      } else {
+        try { fs.symlinkSync(path.join(root, "nowhere"), opts[ROLES[i].role], "junction"); }
+        catch (_e) {
+          helpers.unavailable("restore staging: dangling-symlink refusal",
+            "this host does not allow creating a directory symlink");
+          return;
+        }
       }
 
       var watcher = _watchingStorage(fx.storage);
