@@ -587,7 +587,43 @@ async function testADanglingSymlinkRoleIsRefusedBeforePulling() {
         (wrong.length ? " (" + wrong.join("; ") + ")" : ""), wrong.length === 0);
 }
 
+async function testTheHeartbeatIsLiveEvenWhenStagingRootIsNew() {
+  // The heartbeat marker is a sibling of the pull directory, so it lives in
+  // stagingRoot. When that directory did not exist yet, the marker could
+  // not be created and the heartbeat silently did nothing, leaving a long
+  // download exposed to another run's stale sweep.
+  var root = _tmp("rst-newroot-");
+  try {
+    b.auditSign._resetForTest();
+    var fx = await _bundle(root);
+    var dataDir = path.join(root, "live", "data");
+    fs.mkdirSync(dataDir, { recursive: true });
+    var stagingRoot = path.join(root, "live", "not-created-yet");
+    check("the staging root does not exist before the restore", !fs.existsSync(stagingRoot));
+
+    var markerSeen = false;
+    var watching = Object.assign({}, fx.storage, {
+      readBundle: async function (bundleId, destDir) {
+        var siblings = fs.readdirSync(stagingRoot);
+        markerSeen = siblings.some(function (n) { return n.indexOf(".active") !== -1; });
+        return fx.storage.readBundle(bundleId, destDir);
+      },
+    });
+
+    await b.restore.create({
+      dataDir:      dataDir,
+      storage:      watching,
+      passphrase:   PASSPHRASE,
+      stagingRoot:  stagingRoot,
+      rollbackRoot: path.join(root, "rollbacks"),
+      audit:        false,
+    }).run({ bundleId: fx.bundleId });
+    check("the pull runs with a live heartbeat beside it", markerSeen);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
 async function run() {
+  await testTheHeartbeatIsLiveEvenWhenStagingRootIsNew();
   await testANonDirectoryRoleIsRefusedBeforePulling();
   await testADanglingSymlinkRoleIsRefusedBeforePulling();
   await testASymlinkedDataDirIsRefusedBeforePulling();
