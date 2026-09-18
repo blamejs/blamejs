@@ -1926,7 +1926,9 @@ function _makeESHandler(overrides) {
   var base = {
     deliver:     fakeDeliver,
     lookupEmail: async function (id) {
-      return id === "missing" ? null : Buffer.from("From: ops@x.com\r\n\r\nbody");
+      // The From header names the identity's own address: a message claiming
+      // another sender is forbiddenFrom (RFC 8621 section 7.5).
+      return id === "missing" ? null : Buffer.from("From: ops@example.com\r\n\r\nbody");
     },
     identities: function () {
       return [{ id: "I1", email: "ops@example.com" }];
