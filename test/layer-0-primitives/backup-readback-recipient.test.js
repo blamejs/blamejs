@@ -22,6 +22,23 @@ var helpers = require("../helpers");
 var b       = helpers.b;
 var check   = helpers.check;
 
+// Truncates the stored payload on disk right after the write, which is the
+// damage a presence check cannot see: the storage key still exists.
+function _corruptingStorage(storage, storeRoot) {
+  var wrapped = Object.create(null);
+  Object.keys(storage).forEach(function (k) { wrapped[k] = storage[k]; });
+  wrapped.canReadBundle = storage.canReadBundle;
+  wrapped.verifyStoredContent = function (bundleId) { return storage.verifyStoredContent(bundleId); };
+  wrapped.writeBundle = async function (bundleId, sourceDir) {
+    var out = await storage.writeBundle(bundleId, sourceDir);
+    var stored = path.join(storeRoot, bundleId, "bundle.tar");
+    var bytes = fs.readFileSync(stored);
+    fs.writeFileSync(stored, bytes.subarray(0, Math.max(0, bytes.length - 64)));
+    return out;
+  };
+  return wrapped;
+}
+
 function _storage(root, recipient) {
   return b.backup.bundleAdapterStorage({
     adapter:        b.backup.bundleAdapterStorage.fsAdapter({ root: root }),
@@ -57,9 +74,26 @@ async function testAPublicKeyOnlyRecipientBackupCompletes() {
     }).run();
 
     check("the backup completes", typeof result.bundleId === "string", String(result.bundleId));
-    check("the result says the bundle was verified by presence",
-          result.verifiedBy === "presence", String(result.verifiedBy));
+    check("the result says the stored bytes were compared with what was written",
+          result.verifiedBy === "stored-content", String(result.verifiedBy));
+    check("retention ran, because the check was content-level",
+          result.retentionSkipped === undefined && Array.isArray(result.retentionPurged),
+          JSON.stringify({ skipped: result.retentionSkipped, purged: result.retentionPurged }));
     check("the bundle is still in storage", (await storage.hasBundle(result.bundleId)) === true);
+
+    // A corrupt stored payload is caught without the private key.
+    var corrupt = await b.backup.create({
+      dataDir:      dataDir,
+      storage:      _corruptingStorage(_storage(path.join(root, "store-bad"), publicOnly),
+                                       path.join(root, "store-bad")),
+      passphrase:   "readback-recipient-passphrase-1",
+      files:        [{ relativePath: "db.enc", kind: "raw", required: true }],
+      vaultKeyJson: '{"vault":"x"}',
+      audit:        false,
+    }).run().then(function () { return null; }, function (e) { return e; });
+    check("a truncated stored payload fails verification",
+          corrupt !== null && corrupt.code === "backup/verify-after-write-failed",
+          corrupt && (corrupt.code + " " + corrupt.message.slice(0, 90)));
 
     // The bundle a host with both keys writes is still read back and compared.
     var bothRoot = path.join(root, "store-both");
@@ -105,8 +139,55 @@ function testTheCapabilityFollowsWhatUnwrapAccepts() {
         (wrong.length ? " (" + wrong.join("; ") + ")" : ""), wrong.length === 0);
 }
 
+async function testPresenceOnlyVerificationDoesNotRunRetention() {
+  // A storage that can neither read its bundles back nor compare the bytes
+  // it stored proves only that a key exists. Deleting an older bundle on
+  // that basis could leave nothing but a corrupt one, so retention is left
+  // undone and the result says why.
+  var root = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-presence-only-"));
+  try {
+    var dataDir = path.join(root, "data");
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.writeFileSync(path.join(dataDir, "db.enc"), "DB-BYTES");
+
+    var disk = b.backup.diskStorage({ root: path.join(root, "store") });
+    var presenceOnly = Object.create(null);
+    Object.keys(disk).forEach(function (k) { presenceOnly[k] = disk[k]; });
+    presenceOnly.canReadBundle = false;                  // and no verifyStoredContent
+
+    var engine = b.backup.create({
+      dataDir:      dataDir,
+      storage:      presenceOnly,
+      passphrase:   "presence-only-passphrase-123456",
+      files:        [{ relativePath: "db.enc", kind: "raw", required: true }],
+      vaultKeyJson: '{"vault":"x"}',
+      audit:        false,
+      retention:    { keep: 1 },
+    });
+    var first = await engine.run();
+    var firstAt = Date.now();
+    await helpers.waitUntil(function () { return Date.now() > firstAt; },
+      { timeoutMs: 1000, label: "presence-only: clock past the first bundle's millisecond" });
+    var second = await engine.run();
+
+    check("verification falls back to presence when nothing better is offered",
+          second.verifiedBy === "presence", String(second.verifiedBy));
+    check("retention did not run", Array.isArray(second.retentionPurged) === false &&
+          typeof second.retentionSkipped === "string", JSON.stringify({
+            purged: second.retentionPurged, skipped: (second.retentionSkipped || "").slice(0, 40),
+          }));
+    var listed = (await presenceOnly.listBundles()).map(function (e) { return e.bundleId; });
+    check("the older bundle is still there under keep: 1",
+          listed.indexOf(first.bundleId) !== -1 && listed.indexOf(second.bundleId) !== -1,
+          listed.join(","));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
 async function run() {
   testTheCapabilityFollowsWhatUnwrapAccepts();
+  await testPresenceOnlyVerificationDoesNotRunRetention();
   await testAPublicKeyOnlyRecipientBackupCompletes();
 }
 

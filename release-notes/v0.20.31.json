@@ -51,7 +51,7 @@
         },
         {
           "title": "A backup to a recipient this host cannot decrypt still completes",
-          "body": "`b.backup.run()` reads each bundle back from storage before retention runs. A `b.backup.bundleAdapterStorage` configured with `cryptoStrategy: \"recipient\"` and only the recipient's public keys cannot read its own bundles, so that read failed and the bundle it had just stored was deleted. Such a backend now reports `canReadBundle: false` and the run confirms the bundle is stored instead; the result's `verifiedBy` says which check ran, `\"readback\"` or `\"presence\"`."
+          "body": "`b.backup.run()` reads each bundle back from storage before retention runs. A `b.backup.bundleAdapterStorage` configured with `cryptoStrategy: \"recipient\"` and only the recipient's public keys cannot read its own bundles, so that read failed and the bundle it had just stored was deleted. Such a backend now reports `canReadBundle: false` and offers `verifyStoredContent(bundleId)`, which compares the stored bytes against what was written without decrypting them, so a truncated or corrupted payload is still caught. The result's `verifiedBy` says which check ran: `\"readback\"`, `\"stored-content\"`, or `\"presence\"`. Retention does not run after a presence-only check, because a stored key says nothing about the bytes under it and deleting an older bundle on that basis could leave only a corrupt one; the result then carries `retentionSkipped`."
         },
         {
           "title": "maxBundleBytes bounds the archive, framing included",
