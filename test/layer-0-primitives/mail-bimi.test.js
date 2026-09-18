@@ -2002,9 +2002,19 @@ function testTinyPsAttrParseDoesNotBacktrack() {
   check("mail.bimi: a hostile-shaped SVG at the Tiny-PS cap parses without " +
         "backtracking (" + hostileMs.toFixed(0) + "ms)",
         hostileMs < ceiling, hostileMs.toFixed(0) + "ms, ceiling " + ceiling.toFixed(1) + "ms");
+  // The claim is that the benign input is not itself slow, so the reference
+  // is a parse measured in this process under the same load rather than a
+  // wall-clock budget: 50ms alone fails on a container running 64 workers,
+  // where this sub-millisecond parse was recorded at 77ms.
+  var smallMs = ms(function () {
+    b.mail.bimi.validateTinyPsSvg('<svg xmlns="http://www.w3.org/2000/svg" ' +
+      'baseProfile="tiny-ps" version="1.2"><title>t</title></svg>');
+  });
+  var benignCeiling = Math.max(50, smallMs * 50);
   check("mail.bimi: a well-formed SVG of the same size is still fast (" +
-        benignMs.toFixed(1) + "ms) — the fix is not a smaller input",
-        benignMs < 50, benignMs.toFixed(1) + "ms");
+        benignMs.toFixed(1) + "ms), so the fix is not a smaller input",
+        benignMs < benignCeiling,
+        benignMs.toFixed(1) + "ms, ceiling " + benignCeiling.toFixed(1) + "ms");
 
   // And the parser still reads attributes: a conformant tiny-ps SVG carries
   // baseProfile="tiny-ps" and version="1.2", and validation turns on reading

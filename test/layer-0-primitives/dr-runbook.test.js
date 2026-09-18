@@ -59,6 +59,28 @@ async function run() {
     });
     check("every framework call the runbook prints resolves (" + Object.keys(referenced).length + " referenced)" +
           (unresolved.length ? ": " + unresolved.join(", ") : ""), unresolved.length === 0);
+
+    // A name that resolves is not yet a call an operator can run: the
+    // runbook printed `b.auditChain.verifyChain({ db: restoredDb })` while
+    // the function takes (queryAllAsync, tableName, opts), so following the
+    // runbook raised an argument error before any row was checked.
+    var FIRST_ARGUMENT_IS_A_FUNCTION = ["b.auditChain.verifyChain"];
+    var wrongShape = [];
+    FIRST_ARGUMENT_IS_A_FUNCTION.forEach(function (ref) {
+      var target = ref.split(".").slice(1).reduce(function (node, key) {
+        return node === undefined || node === null ? undefined : node[key];
+      }, b);
+      if (typeof target !== "function") { wrongShape.push(ref + " does not resolve"); return; }
+      var printed = new RegExp(ref.replace(/\./g, "\\.") + "\\(\\s*([^,)]*)");
+      var call = printed.exec(body);
+      if (call === null) return;
+      if (!/^function\b|^\(|^async\b/.test(call[1].trim())) {
+        wrongShape.push(ref + " is printed with " + JSON.stringify(call[1].trim()) +
+          " as its first argument, but it takes a query callback");
+      }
+    });
+    check("every printed call passes the arguments its function takes" +
+          (wrongShape.length ? ": " + wrongShape.join("; ") : ""), wrongShape.length === 0);
   } finally {
     try { fs.rmSync(outDir, { recursive: true, force: true }); }
     catch (_e) { /* best-effort */ }

@@ -226,7 +226,81 @@ function testRemoveStaleDirs() {
   }
 }
 
+async function testASymlinkIntoDataDirIsRefusedBeforePulling() {
+  // A staging or rollback root that is a SYMLINK into dataDir passes a
+  // lexical containment check: the pull and the decrypted staging land
+  // inside the live directory, and moving dataDir aside takes them with it,
+  // so the second rename fails with the bundle already decrypted. The
+  // preflight canonicalizes both sides before comparing.
+  var root = _tmp("rst-symlink-");
+  try {
+    b.auditSign._resetForTest();
+    var fx = await _bundle(root);
+    var dataDir = path.join(root, "live", "data");
+    fs.mkdirSync(path.join(dataDir, "inner"), { recursive: true });
+
+    var stagingLink = path.join(root, "live", "staging-link");
+    try { fs.symlinkSync(path.join(dataDir, "inner"), stagingLink, "junction"); }
+    catch (_e) {
+      helpers.unavailable("restore staging: symlink refusal",
+        "this host does not allow creating a directory symlink");
+      return;
+    }
+
+    var watcher = _watchingStorage(fx.storage);
+    var refused = null;
+    try {
+      await b.restore.create({
+        dataDir:      dataDir,
+        storage:      watcher.storage,
+        passphrase:   PASSPHRASE,
+        stagingRoot:  stagingLink,
+        rollbackRoot: path.join(root, "rollbacks"),
+        audit:        false,
+      }).run({ bundleId: fx.bundleId });
+    } catch (e) { refused = e; }
+    check("a stagingRoot symlinked into dataDir is refused",
+          refused !== null && refused.code === "restore/bad-staging-root",
+          refused && (refused.code + " " + refused.message.slice(0, 80)));
+    check("nothing was pulled before the refusal", watcher.pulls.length === 0,
+          watcher.pulls.join(","));
+
+    // The other direction: a path lexically INSIDE dataDir whose symlink
+    // target sits elsewhere. The staging bytes land outside, but the
+    // pathname the swap uses is inside dataDir and disappears when dataDir
+    // is renamed aside, so the second rename fails with ENOENT after the
+    // bundle has been decrypted.
+    var outward = path.join(root, "outside-target");
+    fs.mkdirSync(outward, { recursive: true });
+    var inwardName = path.join(dataDir, "stage-link");
+    try { fs.symlinkSync(outward, inwardName, "junction"); }
+    catch (_e) {
+      helpers.unavailable("restore staging: outward symlink refusal",
+        "this host does not allow creating a directory symlink");
+      return;
+    }
+    var watcherTwo = _watchingStorage(fx.storage);
+    var refusedOutward = null;
+    try {
+      await b.restore.create({
+        dataDir:      dataDir,
+        storage:      watcherTwo.storage,
+        passphrase:   PASSPHRASE,
+        stagingRoot:  inwardName,
+        rollbackRoot: path.join(root, "rollbacks"),
+        audit:        false,
+      }).run({ bundleId: fx.bundleId });
+    } catch (e) { refusedOutward = e; }
+    check("a stagingRoot whose PATH is inside dataDir is refused, wherever it points",
+          refusedOutward !== null && refusedOutward.code === "restore/bad-staging-root",
+          refusedOutward && (refusedOutward.code + " " + refusedOutward.message.slice(0, 80)));
+    check("nothing was pulled before that refusal either", watcherTwo.pulls.length === 0,
+          watcherTwo.pulls.join(","));
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
 async function run() {
+  await testASymlinkIntoDataDirIsRefusedBeforePulling();
   await testMountPointAndCrossDeviceAreRefusedBeforePulling();
   await testStagingIsBesideDataDirAndStaleWorkIsRemoved();
   await testSwapFailureRemovesDecryptedStaging();
