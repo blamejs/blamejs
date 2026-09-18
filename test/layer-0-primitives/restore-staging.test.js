@@ -275,6 +275,81 @@ function testRemoveStaleDirs() {
           JSON.stringify(removedCrowded));
     fs.rmSync(path.join(root, crowded), { recursive: true, force: true });
 
+    // A phase that only READS what was staged, an upload, moves no
+    // modification time, so the owner holds a heartbeat and the sweep sees
+    // the directory as active.
+    var uploading = "work-2000-01-01T00-00-00-000Z-uploading";
+    fs.mkdirSync(path.join(root, uploading), { recursive: true });
+    fs.writeFileSync(path.join(root, uploading, "payload.bin"), "staged bytes");
+    var agedForUpload = new Date(Date.now() - b.constants.TIME.hours(72));
+    [path.join(root, uploading, "payload.bin"), path.join(root, uploading)]
+      .forEach(function (p) { fs.utimesSync(p, agedForUpload, agedForUpload); });
+    var removedMidUpload = b.atomicFile.removeStaleDirs(root, {
+      prefix: "work-", olderThanMs: b.constants.TIME.hours(24),
+    });
+    check("without a heartbeat an idle-looking upload directory is swept",
+          removedMidUpload.indexOf(uploading) !== -1, JSON.stringify(removedMidUpload));
+
+    fs.mkdirSync(path.join(root, uploading), { recursive: true });
+    fs.writeFileSync(path.join(root, uploading, "payload.bin"), "staged bytes");
+    [path.join(root, uploading, "payload.bin"), path.join(root, uploading)]
+      .forEach(function (p) { fs.utimesSync(p, agedForUpload, agedForUpload); });
+    var beat = b.atomicFile.heartbeat(path.join(root, uploading));
+    try {
+      var removedWithBeat = b.atomicFile.removeStaleDirs(root, {
+        prefix: "work-", olderThanMs: b.constants.TIME.hours(24),
+      });
+      check("a heartbeat keeps the directory through a read-only phase",
+            removedWithBeat.indexOf(uploading) === -1 &&
+            fs.existsSync(path.join(root, uploading, "payload.bin")),
+            JSON.stringify(removedWithBeat));
+      // The marker sits BESIDE the directory: the staged bytes are copied
+      // and compared, and a file appearing inside them would fail that
+      // comparison on a backup slow enough to beat twice.
+      check("the marker is a sibling, not part of the staged bytes",
+            fs.existsSync(path.join(root, uploading + ".active")) &&
+            fs.readdirSync(path.join(root, uploading)).join(",") === "payload.bin",
+            fs.readdirSync(path.join(root, uploading)).join(","));
+    } finally { beat.stop(); }
+    check("stopping the heartbeat removes its marker",
+          !fs.existsSync(path.join(root, uploading + ".active")));
+
+    // The marker path is predictable and the staging parent is shared, so a
+    // link planted there must not be followed: the heartbeat creates its
+    // marker exclusively and stays silent rather than writing through
+    // someone else's file.
+    var victim = path.join(root, "victim.txt");
+    fs.writeFileSync(victim, "the operator's own bytes");
+    var planted = path.join(root, uploading + ".active");
+    var plantedKind = null;
+    try { fs.linkSync(victim, planted); plantedKind = "hard link"; }
+    catch (_e) {
+      try { fs.symlinkSync(victim, planted); plantedKind = "symbolic link"; }
+      catch (_e2) { plantedKind = null; }
+    }
+    if (plantedKind === null) {
+      helpers.unavailable("heartbeat: planted-link refusal",
+        "this host does not allow creating a hard or symbolic link");
+    } else {
+      fs.mkdirSync(path.join(root, uploading), { recursive: true });
+      var blocked = b.atomicFile.heartbeat(path.join(root, uploading));
+      blocked.stop();
+      check("a " + plantedKind + " at the marker path is not written through",
+            fs.readFileSync(victim, "utf8") === "the operator's own bytes",
+            fs.readFileSync(victim, "utf8").slice(0, 40));
+      fs.rmSync(planted, { force: true });
+      fs.rmSync(path.join(root, uploading), { recursive: true, force: true });
+    }
+
+    // A marker it cannot create at all leaves the heartbeat silent, and
+    // stopping one is safe whether or not it ever wrote anything.
+    var impossible = b.atomicFile.heartbeat(path.join(root, "no-such-parent", "work"));
+    impossible.stop();
+    impossible.stop();
+    check("a heartbeat that cannot create its marker stays silent and stops cleanly",
+          !fs.existsSync(path.join(root, "no-such-parent")));
+    fs.rmSync(path.join(root, uploading), { recursive: true, force: true });
+
     var codes = [{}, { prefix: "", olderThanMs: 1 }, { prefix: "w", olderThanMs: 0 }, { prefix: "w", olderThanMs: 1.5 }]
       .map(function (o) { try { b.atomicFile.removeStaleDirs(root, o); return "none"; } catch (e) { return e.code; } });
     check("atomicFile.removeStaleDirs refuses a missing prefix or a non-positive-integer age",

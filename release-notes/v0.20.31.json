@@ -75,7 +75,11 @@
         },
         {
           "title": "A working directory is swept only when the work in it has stopped",
-          "body": "`b.atomicFile.removeStaleDirs` read the start time out of a directory's name, so a backup or restore running for longer than the window had its staging directory deleted under it by the next run. A directory is removed now only when nothing inside it has been written within the same window, which a run in progress keeps fresh as it copies."
+          "body": "`b.atomicFile.removeStaleDirs` read the start time out of a directory's name, so a backup or restore running for longer than the window had its staging directory deleted under it by the next run. A directory is removed now only when nothing inside it has been written within the same window, and a phase that reads without writing (uploading what was staged, pulling a bundle from storage) holds the new `b.atomicFile.heartbeat(dir)` so the sweep sees it as active. A scan that cannot be finished keeps the directory rather than treating the part it did not read as idle."
+        },
+        {
+          "title": "A bundle missing the blobs its manifest names is not a bundle",
+          "body": "`b.backup.diskStorage` counted any directory holding a `manifest.json` as a bundle, so a copy interrupted after the manifest and before its files was listed, reported by `hasBundle`, and took a retention slot from a bundle that restores. A directory is reported now only when every encrypted file its manifest names is present at the size the manifest records. A manifest this release cannot parse is reported as before, since it says nothing about which files to expect."
         }
       ]
     },

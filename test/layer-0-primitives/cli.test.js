@@ -3101,6 +3101,14 @@ function _writeValidManifest(bundleDir) {
     ],
   };
   fs.writeFileSync(path.join(bundleDir, "manifest.json"), JSON.stringify(manifest));
+  // A bundle is the manifest AND the blobs it names, at the sizes it
+  // records: storage reports a directory missing one of them as no bundle
+  // at all, so a fixture that only wrote the manifest is not one.
+  fs.mkdirSync(path.join(bundleDir, "files"), { recursive: true });
+  manifest.files.forEach(function (entry) {
+    fs.writeFileSync(path.join(bundleDir, entry.encryptedPath),
+      Buffer.alloc(entry.encryptedSize, 0x7a));
+  });
 }
 
 async function sectionBackupInspectSuccess() {

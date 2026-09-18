@@ -86,6 +86,50 @@ async function testPlantedDirectoryTakesNoKeepSlot() {
   }
 }
 
+async function testAHalfCopiedBundleTakesNoKeepSlot() {
+  // A bundle copied in by hand, interrupted after the manifest and before
+  // its blobs, carries a manifest that parses and names files that are not
+  // there. Counting it as a bundle let it take a retention slot from one
+  // that restores.
+  var root = _tmp("bri-halfcopy-");
+  try {
+    b.auditSign._resetForTest();
+    var storeRoot = path.join(root, "store");
+    var storage = b.backup.diskStorage({ root: storeRoot });
+    var engine = _fixture(root, storage, { keep: 2 });
+    var real = await engine.run();
+
+    // Copy the real bundle under a newer id, then remove its blobs.
+    var halfId = b.atomicFile.pathTimestamp() + "-facef00d";
+    b.atomicFile.copyDirRecursive(path.join(storeRoot, real.bundleId), path.join(storeRoot, halfId));
+    var manifest = JSON.parse(
+      fs.readFileSync(path.join(storeRoot, halfId, "manifest.json"), "utf8"));
+    manifest.files.forEach(function (entry) {
+      fs.rmSync(path.join(storeRoot, halfId, entry.encryptedPath), { force: true });
+    });
+    check("the half-copied directory still has a manifest that parses",
+          fs.existsSync(path.join(storeRoot, halfId, "manifest.json")) && manifest.files.length > 0);
+
+    var listed = (await storage.listBundles()).map(function (e) { return e.bundleId; });
+    check("a bundle whose manifest names blobs that are missing is not listed",
+          listed.indexOf(halfId) === -1 && (await storage.hasBundle(halfId)) === false,
+          listed.join(","));
+
+    // With keep: 2 and one real bundle plus the half copy, a second run must
+    // not purge the first: the half copy never counted.
+    var firstAt = Date.now();
+    await helpers.waitUntil(function () { return Date.now() > firstAt; },
+      { timeoutMs: 1000, label: "half-copy: clock past the first bundle's millisecond" });
+    var second = await engine.run();
+    check("the older restorable bundle survives the next run",
+          (await storage.hasBundle(real.bundleId)) === true &&
+          (second.retentionPurged || []).length === 0,
+          JSON.stringify({ purged: second.retentionPurged }));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
 async function testIncompleteWriteRejectsTheRunAndDeletesNothingElse() {
   var root = _tmp("bri-incomplete-");
   try {
@@ -236,6 +280,7 @@ function testRetentionOptionIsValidated() {
 
 async function run() {
   await testPlantedDirectoryTakesNoKeepSlot();
+  await testAHalfCopiedBundleTakesNoKeepSlot();
   await testIncompleteWriteRejectsTheRunAndDeletesNothingElse();
   await testPurgeOlderSkipsIdsAfterNow();
   await testWorkingDirectories();

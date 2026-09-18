@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.20.31",
-  "createdAt": "2026-09-18T08:08:53.731Z",
+  "createdAt": "2026-09-18T09:23:43.993Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -2341,6 +2341,10 @@
         "fsyncDir": {
           "type": "function",
           "arity": 1
+        },
+        "heartbeat": {
+          "type": "function",
+          "arity": 2
         },
         "listDir": {
           "type": "function",

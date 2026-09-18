@@ -185,8 +185,60 @@ async function testPresenceOnlyVerificationDoesNotRunRetention() {
   }
 }
 
+async function testASlowUploadStillVerifies() {
+  // A backup whose upload outlasts the heartbeat interval beats again while
+  // storage is copying. A marker written inside the staged bytes would then
+  // differ from the copy and fail the read-back comparison, deleting an
+  // intact bundle; the marker sits beside the directory instead.
+  var root = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-slow-upload-"));
+  try {
+    var dataDir = path.join(root, "data");
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.writeFileSync(path.join(dataDir, "db.enc"), "DB-BYTES");
+
+    var disk = b.backup.diskStorage({ root: path.join(root, "store") });
+    var slow = Object.create(null);
+    Object.keys(disk).forEach(function (k) { slow[k] = disk[k]; });
+    var stagedDuringUpload = null;
+    slow.writeBundle = async function (bundleId, sourceDir) {
+      // The engine holds its own heartbeat across this call, so what the
+      // staged directory contains here is what storage copies. A marker
+      // written among those bytes would be copied into the bundle and then
+      // removed from staging when the beat stops, which is the difference
+      // the read-back comparison reported.
+      stagedDuringUpload = fs.readdirSync(sourceDir).sort();
+      return disk.writeBundle(bundleId, sourceDir);
+    };
+
+    var result = await b.backup.create({
+      dataDir:      dataDir,
+      storage:      slow,
+      passphrase:   "slow-upload-passphrase-123456",
+      files:        [{ relativePath: "db.enc", kind: "raw", required: true }],
+      vaultKeyJson: '{"vault":"x"}',
+      audit:        false,
+    }).run();
+    check("a backup whose upload holds a heartbeat still verifies",
+          result.verifiedBy === "readback" && (await slow.hasBundle(result.bundleId)) === true,
+          String(result.verifiedBy));
+    check("the heartbeat left no marker among the bytes storage copied",
+          stagedDuringUpload !== null &&
+          stagedDuringUpload.every(function (n) { return n.indexOf(".active") === -1 &&
+            n.indexOf(".blamejs-active") === -1; }),
+          JSON.stringify(stagedDuringUpload));
+    check("and none reached the stored bundle",
+          fs.readdirSync(path.join(root, "store", result.bundleId)).every(function (n) {
+            return n.indexOf("active") === -1;
+          }),
+          fs.readdirSync(path.join(root, "store", result.bundleId)).join(","));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
 async function run() {
   testTheCapabilityFollowsWhatUnwrapAccepts();
+  await testASlowUploadStillVerifies();
   await testPresenceOnlyVerificationDoesNotRunRetention();
   await testAPublicKeyOnlyRecipientBackupCompletes();
 }
