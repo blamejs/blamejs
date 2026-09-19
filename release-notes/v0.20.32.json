@@ -9,6 +9,10 @@
       "heading": "Security",
       "items": [
         {
+          "title": "A message sent with the null reverse path gets no DSN, in either spelling",
+          "body": "The guard that stops a DSN being generated for the null reverse path compared `envelope.from` with `\"\"` exactly. On the wire the null reverse path is written `<>`, and that is the spelling it arrives in, so a caller passing it through got a DSN for a message RFC 5321 §4.5.5 says must not receive one: a DSN's `To:` is the original `from`, so bouncing a bounce addresses it to nobody and, to a less careful peer, to itself. The question is now a predicate that recognizes both spellings, so a second site added later cannot repeat the omission. The MX listener already normalized the wire form, which is why this was latent rather than live."
+        },
+        {
           "title": "A forged Authentication-Results is stripped in every spelling the readers accept",
           "body": "`b.mail.server.mx` removed a peer's forged `Authentication-Results` by matching the field name as a literal line prefix and reading the authserv-id off that same line, while every reader downstream is an RFC 5322 parser. Three spellings the parser accepts as the same header went straight through: folded before the authserv-id (RFC 5322 §2.2.3), a quoted authserv-id (RFC 8601 §2.2), and whitespace before the colon (RFC 5322 §4.5.8 obs-optional). Measured on a real session: a peer failing SPF and DMARC delivered a folded forged header claiming `dmarc=pass`, and the stored message carried two verdicts under the receiving server's own name. The strip now unfolds the header block and reads the field name and authserv-id under the same grammar the parsers use, including a quoted id and leading comments. `b.mail.server.mx.stripForgedAuthResults(message, authservId)` is exported."
         },
