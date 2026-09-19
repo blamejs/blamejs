@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.20.32",
-  "createdAt": "2026-09-19T19:47:41.487Z",
+  "createdAt": "2026-09-19T19:48:40.832Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -54138,6 +54138,10 @@
           "type": "function",
           "arity": 2
         },
+        "filenameFromHeaders": {
+          "type": "function",
+          "arity": 1
+        },
         "findFirst": {
           "type": "function",
           "arity": 2
@@ -55980,6 +55984,10 @@
         "IMMUTABLE_MAX_AGE_SEC": {
           "type": "primitive",
           "valueType": "number"
+        },
+        "attachmentDisposition": {
+          "type": "function",
+          "arity": 1
         },
         "create": {
           "type": "function",
