@@ -225,6 +225,38 @@ async function testTheRootChoiceDoesNotDependOnRowOrder() {
   } finally { _teardown(fx); }
 }
 
+async function testAMoveCannotCarryAThreadIntoAnotherAccount() {
+  // A move kept the message's scope, so a message moved from one account's
+  // folder into another's sat in the second account's mailbox carrying the
+  // first account's thread, and `threadFor` on it listed the first account's
+  // messages. RFC 8621 §5.4 gives `Email/copy` as the cross-account move and
+  // it makes a new Email id, so a cross-owner move here is refused rather
+  // than silently rescoped.
+  var fx = await _store();
+  try {
+    fx.store.createFolder("h.INBOX", { owner: "H" });
+    fx.store.createFolder("h.Archive", { owner: "H" });
+    fx.store.createFolder("i.INBOX", { owner: "I" });
+    var msg = fx.store.appendMessage("h.INBOX", _msg([
+      "From: peer@example.test", "To: h@example.test",
+      "Subject: hi", "Message-Id: <move-1@example.test>",
+    ], "hi"));
+
+    var within = fx.store.moveMessages("h.INBOX", "h.Archive", [msg.objectid]);
+    check("a move inside one account moves the message",
+          within.changed === 1, JSON.stringify(within));
+
+    var threw = null;
+    try { fx.store.moveMessages("h.Archive", "i.INBOX", [msg.objectid]); }
+    catch (e) { threw = e; }
+    check("a move into another account's folder is refused",
+          threw !== null && threw.code === "mail-store/cross-account-move",
+          threw && (threw.code + " " + threw.message));
+    check("the message stays where it was",
+          fx.store.fetchByObjectId("h.Archive", msg.objectid) !== null);
+  } finally { _teardown(fx); }
+}
+
 function testEveryThreadLookupCarriesTheScope() {
   // The leak was a lookup with no scope condition, so the guarantee is about
   // every such lookup rather than the two that were found: a select keyed on
@@ -253,6 +285,7 @@ async function run() {
   await testAStoreWithNoOwnersThreadsAsOneAccount();
   await testAnAppendMayNameItsOwnScope();
   await testTheRootChoiceDoesNotDependOnRowOrder();
+  await testAMoveCannotCarryAThreadIntoAnotherAccount();
 }
 
 module.exports = { run: run };
