@@ -180,7 +180,7 @@ async function run() {
         check("watcher.create: skips symlink events", !sawSymlink);
       } catch (_e) {
         // Some sandboxes refuse symlink even on POSIX; treat as a pass.
-        check("watcher.create: skips symlink events (skipped — symlink unavailable)", true);
+        helpers.unavailable("watcher.create: skips symlink events (skipped — symlink unavailable)");
       }
     }
 
@@ -530,7 +530,7 @@ async function run() {
         check("watcher poll: symlink entry skipped in walk",
           symHits.indexOf("link-out") === -1);
       } else {
-        check("watcher poll: symlink entry skipped (skipped — symlink unavailable)", true);
+        helpers.unavailable("watcher poll: symlink entry skipped (skipped — symlink unavailable)");
       }
       symW.stop();
     } finally {

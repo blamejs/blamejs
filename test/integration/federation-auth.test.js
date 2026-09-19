@@ -853,7 +853,7 @@ async function run() {
   // keypair is generated at runtime so no private key is committed.
   var spEnc = _generateSpEncryptionKeypair();
   if (!spEnc) {
-    check("SAML EncryptedAssertion: skipped — openssl unavailable for runtime SP cert (see file header)", true);
+    helpers.unavailable("SAML EncryptedAssertion: skipped — openssl unavailable for runtime SP cert (see file header)");
   } else {
     await _ensureSamlEncClient(adminTok, spEnc.certDerB64);
     var spEncHandle = b.auth.saml.sp.create({

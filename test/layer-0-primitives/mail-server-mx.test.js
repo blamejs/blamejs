@@ -255,9 +255,7 @@ async function _connectTo(info) {
 // eventual refusal is a transient 451 that arrives only after the peer has
 // transmitted the whole message, so it retries indefinitely.
 async function testEmptyLocalDomainsRefusesEveryRecipient() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("mx empty localDomains (skipped — cert fixture unavailable)", true); return; }
+  var ctx = await _makeTestTlsContext();
 
   // The explicit spelling must construct: a server hosting nothing has to be
   // able to bind and refuse politely, not be unable to start.
@@ -323,9 +321,7 @@ async function testEmptyLocalDomainsRefusesEveryRecipient() {
 // operator mail was still arriving for it. The neighbouring recipientPolicy was
 // already answered per RCPT, so one question had two halves of different age.
 async function testLocalDomainsCanBeAnsweredPerRecipient() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("mx live localDomains (skipped — cert fixture unavailable)", true); return; }
+  var ctx = await _makeTestTlsContext();
 
   // ONE array, mutated in place — the way an operator actually keeps this
   // state. A resolver that cached on the array's identity would normalize this
@@ -424,9 +420,7 @@ async function testLocalDomainsCanBeAnsweredPerRecipient() {
 }
 
 async function testRecipientPolicyRefusesUnknownMailbox() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("mx recipientPolicy (skipped — cert fixture unavailable)", true); return; }
+  var ctx = await _makeTestTlsContext();
 
   var seen = [];
   var srv = b.mail.server.mx.create({
@@ -476,9 +470,7 @@ async function testRecipientPolicyRefusesUnknownMailbox() {
 // A CR or LF in it ends the 550 line early and the remainder is read by the peer
 // as a second, forged server reply.
 async function testRecipientPolicyReasonCannotForgeAReplyLine() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("mx recipientPolicy reason injection (skipped — cert fixture)", true); return; }
+  var ctx = await _makeTestTlsContext();
 
   var srv = b.mail.server.mx.create({
     tlsContext: ctx, profile: "permissive", localDomains: ["example.com"],
@@ -559,9 +551,7 @@ async function testRecipientPolicyReasonCannotForgeAReplyLine() {
 // policy refusal has to charge it too — otherwise adding the hook hands
 // scanners a free enumeration channel the listener previously did not have.
 async function testRecipientPolicyRefusalCostsTheScannerBudget() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("mx recipientPolicy budget (skipped — cert fixture)", true); return; }
+  var ctx = await _makeTestTlsContext();
 
   var noted = 0;
   var real = b.mail.server.rateLimit.create({});
@@ -593,9 +583,7 @@ async function testRecipientPolicyRefusalCostsTheScannerBudget() {
 // verdict about this mailbox. Answering 550 there would permanently reject mail
 // for a legitimate recipient because a lookup failed.
 async function testRecipientPolicyThrowIsTransient() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("mx recipientPolicy throw (skipped — cert fixture)", true); return; }
+  var ctx = await _makeTestTlsContext();
 
   var srv = b.mail.server.mx.create({
     tlsContext: ctx, profile: "permissive", localDomains: ["example.com"],
@@ -619,9 +607,7 @@ async function testRecipientPolicyThrowIsTransient() {
 // the test does not have to spend the ten-second grace window to reach the
 // branch.
 async function testBodyRateFloorIsAskedDuringData() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("mx body-rate floor (skipped — cert fixture)", true); return; }
+  var ctx = await _makeTestTlsContext();
 
   var asked = [];
   var real = b.mail.server.rateLimit.create({});
@@ -678,12 +664,7 @@ async function testEhloFlow() {
   // Boot the server with a permissive profile so plaintext EHLO works
   // (operator-acknowledged downgrade for staging). Skip if the test
   // cert fixture isn't available.
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) {
-    check("EHLO flow (skipped — test cert fixture unavailable)", true);
-    return;
-  }
+  var ctx = await _makeTestTlsContext();
   var srv = b.mail.server.mx.create({
     tlsContext:   ctx,
     profile:      "permissive",
@@ -723,12 +704,7 @@ async function testEhloFlow() {
 }
 
 async function testRelayRefused() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) {
-    check("Relay refusal (skipped)", true);
-    return;
-  }
+  var ctx = await _makeTestTlsContext();
   var srv = b.mail.server.mx.create({
     tlsContext:   ctx,
     profile:      "permissive",
@@ -751,12 +727,7 @@ async function testRelayRefused() {
 }
 
 async function testStrictProfileRequiresStartTls() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) {
-    check("strict-profile STARTTLS gate (skipped)", true);
-    return;
-  }
+  var ctx = await _makeTestTlsContext();
   var srv = b.mail.server.mx.create({
     tlsContext:   ctx,
     profile:      "strict",  // requires STARTTLS before MAIL FROM
@@ -781,12 +752,7 @@ async function testStrictProfileRequiresStartTls() {
 // state machine. Each gate is an operator-supplied object; we drive the
 // real wire protocol with mock gates and assert the SMTP verdict.
 async function testConnectionGates() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) {
-    check("connection gates (skipped — test cert fixture unavailable)", true);
-    return;
-  }
+  var ctx = await _makeTestTlsContext();
 
   async function _connect(srv) {
     var info = await srv.listen({ port: 0, address: "127.0.0.1" });
@@ -910,7 +876,7 @@ async function testGateOverStartTls() {
       usage: "server", sans: ["DNS:localhost", "IP:127.0.0.1"], validityDays: 1,
     });
   } catch (_e) {
-    check("gate over STARTTLS (skipped — cert fixture unavailable)", true);
+    helpers.unavailable("gate over STARTTLS (skipped — cert fixture unavailable)");
     return;
   }
   var ctx = nodeTls.createSecureContext({ key: leaf.key, cert: leaf.cert });
@@ -948,9 +914,7 @@ async function testGateOverStartTls() {
 // delivers annotated, monitor mode never refuses, and DNS temperror
 // defers (451) or accepts per onTemperror.
 async function testGuardEnvelopeGate() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("guardEnvelope gate (skipped — test cert fixture unavailable)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var records = {
     "external.com/TXT":         [["v=spf1 ip4:127.0.0.1 -all"]],
     "_dmarc.external.com/TXT":  [["v=DMARC1; p=reject"]],
@@ -1241,9 +1205,7 @@ function testGuardDomainBootOptions() {
 
 // ---- Command dispatch: NOOP / RSET / VRFY / EXPN / unknown / HELO / EHLO-no-arg
 async function testCommandDispatch() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("command dispatch (skipped — cert fixture unavailable)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var srv = b.mail.server.mx.create({
     tlsContext: ctx, profile: "permissive", localDomains: ["example.com"],
   });
@@ -1267,9 +1229,7 @@ async function testCommandDispatch() {
 
 // ---- Sequence + syntax errors: out-of-order commands and malformed args -
 async function testSequenceAndSyntaxErrors() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("sequence/syntax errors (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var srv = b.mail.server.mx.create({
     tlsContext: ctx, profile: "permissive", localDomains: ["example.com"],
   });
@@ -1304,9 +1264,7 @@ async function testSequenceAndSyntaxErrors() {
 // ---- Domain hardening refuses HELO / MAIL FROM / RCPT TO bad domains ----
 // bare-IPv4-as-domain (CVE-2021-22931 class) + special-use domain (RFC 6761).
 async function testDomainRefusals() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("domain refusals (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var srv = b.mail.server.mx.create({
     tlsContext: ctx, profile: "permissive", localDomains: ["example.com"],
   });
@@ -1332,9 +1290,7 @@ async function testDomainRefusals() {
 
 // ---- Resource caps: SIZE=, per-message size, recipient count, line length
 async function testResourceLimits() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("resource limits (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
 
   // Small per-message cap: declared SIZE= over the cap refused at MAIL
   // FROM (552), and a DATA body over the cap refused mid-stream (552).
@@ -1418,9 +1374,7 @@ async function testResourceLimits() {
 // (the mailbox-enumeration backstop — RFC 5321 §3.5). A low cap makes the
 // backoff deterministic.
 async function testRcptFailureRateLimit() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("RCPT-failure rate limit (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var srv = b.mail.server.mx.create({
     tlsContext: ctx, profile: "permissive", localDomains: ["example.com"],
     rateLimit: { rcptFailuresPerIpPerMinute: 2 },
@@ -1448,9 +1402,7 @@ async function testRcptFailureRateLimit() {
 // _detected audit to prove the NUL-injection path is audited (regression:
 // the code guard emits is `guard-smtp-command/nul`, not `nul-byte`).
 async function testWireSmuggling() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("wire smuggling (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
 
   // strict profile refuses bare LF (permissive tolerates it), so the
   // smuggling-detected audit fires for bare LF / bare CR / NUL here.
@@ -1507,9 +1459,7 @@ async function testWireSmuggling() {
 
 // ---- Operator-explicit relay allowlist admits non-local recipients ------
 async function testRelayAllowed() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("relay allowlist (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var srv = b.mail.server.mx.create({
     tlsContext: ctx, profile: "permissive", localDomains: ["example.com"],
     relayAllowedFor: [{ cidr: "0.0.0.0/0", scope: "all" }],
@@ -1532,9 +1482,7 @@ async function testRelayAllowed() {
 // a non-empty relayAllowedFor admitted every peer regardless of source
 // address (the entry `cidr` was ignored).
 async function testRelayCidrEnforced() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("relay CIDR enforcement (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
 
   // (a) Peer 127.0.0.1 is OUTSIDE 10.0.0.0/8 → relay refused with 550.
   var denySrv = b.mail.server.mx.create({
@@ -1622,9 +1570,7 @@ async function testRelayCidrEnforced() {
 
 // ---- Agent handoff failure surfaces a 451 transient error ---------------
 async function testAgentHandoffFailure() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("agent handoff failure (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var srv = b.mail.server.mx.create({
     tlsContext: ctx, profile: "permissive", localDomains: ["example.com"],
     agent: { handoff: async function () { throw new Error("mail store unavailable"); } },
@@ -1691,9 +1637,7 @@ async function testAgentRefusalChoosesItsReply(ctx) {
 
 // ---- A gate that throws is caught by the pump → 421 + connection close --
 async function testGateThrows() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("gate throws (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var srv = b.mail.server.mx.create({
     tlsContext: ctx, profile: "permissive", localDomains: ["example.com"],
     helo: { evaluate: async function () { throw new Error("gate backend down"); } },
@@ -1710,9 +1654,7 @@ async function testGateThrows() {
 
 // ---- Idle-timeout fires a 421 and closes the plaintext connection -------
 async function testIdleTimeout() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("idle timeout (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var srv = b.mail.server.mx.create({
     tlsContext: ctx, profile: "permissive", localDomains: ["example.com"],
     idleTimeoutMs: 300,                                                                // allow:raw-time-literal — test-only short idle window
@@ -1737,9 +1679,7 @@ async function testIdleTimeout() {
 // event firing there is a turn in which the peer's queued commands still run.
 // The flag has to be set where the teardown is decided.
 async function testAQueuedChunkDoesNotRunAfterTheGateTearsDown() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("mx queued chunk after teardown (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var rejectQuery = null;
   var queries     = 0;
   var srv = b.mail.server.mx.create({
@@ -1777,9 +1717,7 @@ async function testAQueuedChunkDoesNotRunAfterTheGateTearsDown() {
 // already did successfully, so a reader who trusts the reply goes looking for a
 // session that lost its EHLO.
 async function testASecondMailNamesTheRightFault() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("mx second MAIL reply (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var srv = b.mail.server.mx.create({
     tlsContext: ctx, profile: "permissive", localDomains: ["example.com"],
   });
@@ -1831,9 +1769,7 @@ async function testASecondMailNamesTheRightFault() {
 // stops and reports to its sender, and one that receives nothing has no verdict
 // and falls back to its retry schedule for the whole of its queue lifetime.
 async function testAPermanentRefusalSurvivesALargeOvershoot() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("refusal delivery (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var srv = b.mail.server.mx.create({
     tlsContext: ctx, profile: "permissive", localDomains: ["example.com"],
     maxMessageBytes: 65536,                                                            // allow:raw-byte-literal — small ceiling so the overshoot is cheap to send
@@ -1863,9 +1799,7 @@ async function testAPermanentRefusalSurvivesALargeOvershoot() {
 
 // ---- close() drains, then force-destroys a lingering connection ---------
 async function testCloseDestroysLingering() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("close-drain destroy (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var srv = b.mail.server.mx.create({
     tlsContext: ctx, profile: "permissive", localDomains: ["example.com"],
   });
@@ -1893,7 +1827,7 @@ async function testTlsErrorPaths() {
       cn: "localhost", caCertPem: ca.caCertPem, caKeyPem: ca.caKeyPem,
       usage: "server", sans: ["DNS:localhost", "IP:127.0.0.1"], validityDays: 1,
     });
-  } catch (_e) { check("TLS error paths (skipped — cert fixture unavailable)", true); return; }
+  } catch (_e) { helpers.unavailable("TLS error paths (skipped — cert fixture unavailable)"); return; }
   var ctx = nodeTls.createSecureContext({ key: leaf.key, cert: leaf.cert });
 
   // ---- STARTTLS issued a second time over the negotiated TLS → 503 ----
@@ -1963,9 +1897,7 @@ async function testTlsErrorPaths() {
 // reverse path (`<>`) are legitimate non-domain forms; the guardDomain
 // hardening is skipped for them rather than refusing.
 async function testAddressLiteralAndNullSender() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("address-literal / null sender (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var srv = b.mail.server.mx.create({
     tlsContext: ctx, profile: "permissive", localDomains: ["example.com"],
   });
@@ -2004,9 +1936,7 @@ async function testAddressLiteralAndNullSender() {
 
 // ---- Per-IP concurrent-connection cap refuses the excess connection ----
 async function testConnectionRateLimit() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("connection rate limit (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var srv = b.mail.server.mx.create({
     tlsContext: ctx, profile: "permissive", localDomains: ["example.com"],
     rateLimit: { maxConcurrentConnectionsPerIp: 1 },
@@ -2027,9 +1957,7 @@ async function testConnectionRateLimit() {
 
 // ---- close() is idempotent: no-arg close drains, second close is a no-op
 async function testCloseIdempotent() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("close idempotency (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var srv = b.mail.server.mx.create({
     tlsContext: ctx, profile: "permissive", localDomains: ["example.com"],
   });

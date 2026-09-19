@@ -216,9 +216,7 @@ async function _connectAndLogin(srv) {
 // false whichever way it is set: worse than the gap. The hook applies where
 // the list is COMPUTED, so all three stay identical by construction.
 async function testCapabilityHook() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("capability hook (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var seen = [];
   var srv = b.mail.server.imap.create({
     tlsContext: ctx,
@@ -261,9 +259,7 @@ async function testCapabilityHook() {
 // leave the listener claiming a protocol it does not speak, so the refusal
 // stays with the listener rather than being delegated to the consumer.
 async function testCapabilityHookMustKeepImap4rev2() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("capability hook rev2 (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var srv = b.mail.server.imap.create({
     tlsContext: ctx,
     mailStore:  _makeStubMailStore(),
@@ -289,9 +285,7 @@ async function testCapabilityHookMustKeepImap4rev2() {
 // greeting — before a client has sent anything — so a throw there would take
 // out a connection at the point where nothing has gone wrong yet.
 async function testCapabilityHookCannotInjectOrCrash() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("capability hook injection (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
 
   async function _greetingWith(hook) {
     var srv = b.mail.server.imap.create({
@@ -347,9 +341,7 @@ async function testCapabilityHookCannotInjectOrCrash() {
 // A non-callable hook is the operator asking for a list the listener would
 // then never consult.
 async function testCapabilityHookRejectsNonFunction() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("capability hook non-callable (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var threw = null;
   try {
     b.mail.server.imap.create({ tlsContext: ctx, mailStore: _makeStubMailStore(),
@@ -366,9 +358,7 @@ async function testCapabilityHookRejectsNonFunction() {
 // tell is on the wire: a greeting advertising STARTTLS inside an established
 // TLS session.
 async function testImplicitTls() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("imap implicit TLS (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var srv = b.mail.server.imap.create({
     tlsContext:  ctx,
     mailStore:   _makeStubMailStore(),
@@ -433,9 +423,7 @@ async function testImplicitTls() {
 }
 
 async function testCapabilityAdvertisesCondstore() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("CONDSTORE capability (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var stub = _makeStubMailStore();
   var srv = b.mail.server.imap.create({
     tlsContext: ctx,
@@ -457,9 +445,7 @@ async function testCapabilityAdvertisesCondstore() {
 }
 
 async function testEnableCondstore() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("ENABLE CONDSTORE (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var stub = _makeStubMailStore();
   var srv = b.mail.server.imap.create({
     tlsContext: ctx,
@@ -485,9 +471,7 @@ async function testEnableCondstore() {
 }
 
 async function testFetchChangedSinceParses() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("FETCH CHANGEDSINCE (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var stub = _makeStubMailStore();
   var srv = b.mail.server.imap.create({
     tlsContext: ctx,
@@ -522,9 +506,7 @@ async function testFetchChangedSinceParses() {
 // doubled, an escaped `"` kept its backslash). The backend then keys, creates,
 // or ACLs the wrong name.
 async function testSelectUnescapesQuotedMailboxName() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("SELECT unescapes quoted mailbox (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var stub = _makeStubMailStore();
   var srv = b.mail.server.imap.create({
     tlsContext: ctx, mailStore: stub, profile: "permissive",
@@ -561,9 +543,7 @@ async function testSelectUnescapesQuotedMailboxName() {
 // "bad\q") makes it un-unquotable. The command must be rejected, not stored with
 // the invalid date silently dropped to a null internalDate.
 async function testAppendRejectsMalformedQuotedDate() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("APPEND malformed date (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var stub = _makeStubMailStore();
   var appended = false;
   stub.appendMessage = function () { appended = true; return Promise.resolve({ uid: 1, uidValidity: 1 }); };
@@ -605,9 +585,7 @@ async function testAppendRejectsMalformedQuotedDate() {
 // The same message over POP3 in the same tree arrives intact, so the protocol
 // an account holder happens to use decides whether they receive their own mail.
 async function testFetchWritesTheOctetsTheBackendReturned() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("FETCH octets (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
 
   // An ordinary 8-bit message: ISO-8859-1 e-acute, then a lone 0x82. Neither
   // is valid UTF-8, and both are perfectly ordinary mail.
@@ -705,9 +683,7 @@ async function testFetchWritesTheOctetsTheBackendReturned() {
 }
 
 async function testStoreUnchangedSinceConflict() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("STORE UNCHANGEDSINCE (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var stub = _makeStubMailStore();
   var srv = b.mail.server.imap.create({
     tlsContext: ctx,
@@ -744,9 +720,7 @@ async function testFetchChangedSinceImpliesCondstore() {
   // untagged responses even when the client never issued
   // `ENABLE CONDSTORE`. Per RFC 7162 §3.1.2 the modifier engages
   // CONDSTORE implicitly for the session.
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("FETCH CHANGEDSINCE implies CONDSTORE (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var stub = _makeStubMailStore();
   var srv = b.mail.server.imap.create({
     tlsContext: ctx, mailStore: stub, profile: "permissive",
@@ -769,9 +743,7 @@ async function testFetchChangedSinceImpliesCondstore() {
 // ---- v0.11.28 — NOTIFY / METADATA / CATENATE ----
 
 async function testCapabilityAdvertisesNewExtensions() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("CAP advertises NOTIFY/METADATA/CATENATE (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var stub = _makeStubMailStore();
   var srv = b.mail.server.imap.create({ tlsContext: ctx, mailStore: stub });
   var c = await _connectAndLogin(srv);
@@ -788,9 +760,7 @@ async function testCapabilityAdvertisesNewExtensions() {
 }
 
 async function testNotifyNoneAndSet() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("NOTIFY (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var stub = _makeStubMailStore();
   var subscribeCalls = [];
   stub.subscribeNotify = function (actor, spec, emitFn) {
@@ -858,9 +828,7 @@ async function testNotifyNoneAndSet() {
 }
 
 async function testNotifyBackendMissing() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("NOTIFY backend missing (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var stub = _makeStubMailStore();
   // No subscribeNotify hook.
   var srv = b.mail.server.imap.create({
@@ -880,9 +848,7 @@ async function testNotifyBackendMissing() {
 }
 
 async function testGetSetMetadata() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("GETMETADATA / SETMETADATA (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var stub = _makeStubMailStore();
   stub.getMetadata = function (actor, mailbox, names) {
     return Promise.resolve(names.map(function (n) {
@@ -930,9 +896,7 @@ async function testGetSetMetadata() {
 }
 
 async function testMetadataBackendMissing() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("METADATA backend missing (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var stub = _makeStubMailStore();
   // No getMetadata / setMetadata.
   var srv = b.mail.server.imap.create({
@@ -953,9 +917,7 @@ async function testMetadataBackendMissing() {
 }
 
 async function testCatenateBackendMissing() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("CATENATE backend missing (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var stub = _makeStubMailStore();
   // No appendCatenate hook.
   var srv = b.mail.server.imap.create({
@@ -1001,9 +963,7 @@ async function testCatenateBackendMissing() {
 // argument, so the reader waits for that line to end rather than deciding from
 // whichever bytes happened to arrive together.
 async function testLiteralFramingDoesNotDependOnPacketBoundaries() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("literal packet boundaries (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var seenCreds = [];
   var srv = b.mail.server.imap.create({
     tlsContext: ctx, mailStore: _makeStubMailStore(), profile: "permissive",
@@ -1058,9 +1018,7 @@ async function testLiteralFramingDoesNotDependOnPacketBoundaries() {
 // write past the bound, and once the literal is consumed the reader continues
 // through the queue without passing the check again.
 async function testPipelineBoundIsNotBypassedByAPendingLiteral() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("pipeline bound behind literal (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var stub = _makeStubMailStore();
   stub.appendMessage = function () { return Promise.resolve({ uid: 3, uidValidity: 1 }); };
   var srv = b.mail.server.imap.create({
@@ -1101,9 +1059,7 @@ async function testPipelineBoundIsNotBypassedByAPendingLiteral() {
 // for the `+` before sending the CRLF that ends the command — so a reader that
 // waits for that CRLF without sending the `+` waits forever.
 async function testZeroLengthSynchronizingLiteralGetsAContinuation() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("zero literal continuation (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var stub = _makeStubMailStore();
   stub.appendMessage = function () { return Promise.resolve({ uid: 9, uidValidity: 1 }); };
   var srv = b.mail.server.imap.create({
@@ -1141,9 +1097,7 @@ async function testZeroLengthSynchronizingLiteralGetsAContinuation() {
 // therefore refuses a literal that is well inside its own cap, purely because
 // the opener had not been parsed when the bound was applied.
 async function testCoalescedLiteralIsNotCountedAsBacklog() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("coalesced literal (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var appended = [];
   var stub = _makeStubMailStore();
   stub.appendMessage = function (folder, bytes) {
@@ -1194,9 +1148,7 @@ async function testCoalescedLiteralIsNotCountedAsBacklog() {
 // the bytes behind it are charged on the next read, which is what the third
 // assertion holds.
 async function testAnOpenerTheListenerWouldRefuseBuysNoExemption() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("refused opener exemption (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var stub = _makeStubMailStore();
   var srv = b.mail.server.imap.create({
     tlsContext: ctx, mailStore: stub, profile: "permissive",
@@ -1295,9 +1247,7 @@ async function testAnOpenerTheListenerWouldRefuseBuysNoExemption() {
 // its octets is the closing paren rather than a space. `ID ("name" {4}` is the
 // shape, and it is one a client may send before authenticating.
 async function testLiteralInsideAParenthesizedListCompletes() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("literal in list (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var srv = b.mail.server.imap.create({
     tlsContext: ctx, mailStore: _makeStubMailStore(), profile: "permissive",
   });
@@ -1326,9 +1276,7 @@ async function testLiteralInsideAParenthesizedListCompletes() {
 // as much as the ones before it. Counting only the non-final literals let a
 // command carry one more than the limit allows.
 async function testAggregateLiteralCapCountsTheFinalLiteral() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("aggregate literal cap (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var verified = [];
   var srv = b.mail.server.imap.create({
     tlsContext: ctx, mailStore: _makeStubMailStore(), profile: "permissive",
@@ -1370,9 +1318,7 @@ async function testAggregateLiteralCapCountsTheFinalLiteral() {
 // against the line cap refuses a command whose text is short and whose
 // argument is legitimately large.
 async function testLiteralBytesAreNotChargedToTheLineCap() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("literal vs line cap (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var seenCreds = [];
   var srv = b.mail.server.imap.create({
     tlsContext: ctx, mailStore: _makeStubMailStore(), profile: "permissive",
@@ -1425,9 +1371,7 @@ async function testLiteralBytesAreNotChargedToTheLineCap() {
 // Needs THREE literals to show: the last one goes down the completion path,
 // which has no line check, so a two-literal command never reaches the case.
 async function testEarlierLiteralsAreNotChargedToTheLineCap() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("earlier literals vs line cap (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var srv = b.mail.server.imap.create({
     tlsContext: ctx, mailStore: _makeStubMailStore(), profile: "permissive",
     maxLineBytes:    200,                                                                              // allow:raw-byte-literal — small line cap, large literal cap
@@ -1468,9 +1412,7 @@ async function testEarlierLiteralsAreNotChargedToTheLineCap() {
 
 // The terminator arriving in its own segment, well after the octets.
 async function testFinalLiteralCompletesWhenItsTerminatorArrivesLate() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("literal without terminator (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var stub = _makeStubMailStore();
   stub.appendMessage = function () { return Promise.resolve({ uid: 7, uidValidity: 1 }); };
   var srv = b.mail.server.imap.create({
@@ -1512,9 +1454,7 @@ async function testFinalLiteralCompletesWhenItsTerminatorArrivesLate() {
 }
 
 async function testLiteralCommandConsumesItsOwnTerminator() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("APPEND literal terminator (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var stub = _makeStubMailStore();
   stub.appendMessage = function () { return Promise.resolve({ uid: 42, uidValidity: 1 }); };
   var srv = b.mail.server.imap.create({
@@ -1561,9 +1501,7 @@ async function testLiteralCommandConsumesItsOwnTerminator() {
 // ONE command carrying two literals. The reader must assemble it rather than
 // dispatch the bytes after the first literal as a fresh line.
 async function testNonFinalLiteralContinuesTheSameCommand() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("non-final literal (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var srv = b.mail.server.imap.create({
     tlsContext: ctx, mailStore: _makeStubMailStore(), profile: "permissive",
     auth: { mechanisms: ["LOGIN"], verify: function () {
@@ -1616,9 +1554,7 @@ async function testNonFinalLiteralContinuesTheSameCommand() {
 // arriving, not against everything waiting behind it — otherwise a client that
 // merely pipelines is answered "Line too long" and disconnected.
 async function testPipelinedCommandsAreNotRefusedAsOneLongLine() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("imap pipelined line cap (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var release = null;
   var gate = new Promise(function (r) { release = r; });
   var store = _makeStubMailStore();
@@ -1665,9 +1601,7 @@ async function testPipelinedCommandsAreNotRefusedAsOneLongLine() {
 }
 
 async function testFinalLiteralReachesTheHandlerAsItsArgument() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("final literal argument (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var seenCreds = [];
   var srv = b.mail.server.imap.create({
     tlsContext: ctx, mailStore: _makeStubMailStore(), profile: "permissive",
@@ -1702,9 +1636,7 @@ async function testFinalLiteralReachesTheHandlerAsItsArgument() {
 }
 
 async function testNonFinalLiteralRefusesUndecodableBytes() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("non-final literal CHAR8 (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var verified = [];
   var srv = b.mail.server.imap.create({
     tlsContext: ctx, mailStore: _makeStubMailStore(), profile: "permissive",
@@ -1738,9 +1670,7 @@ async function testNonFinalLiteralRefusesUndecodableBytes() {
 }
 
 async function testAppendLiteralGetsARealContinuation() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("APPEND literal continuation (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var stub = _makeStubMailStore();
   var appended = [];
   // appendMessage(folder, bytes, opts) — the shape lib/mail-server-imap.js
@@ -1803,9 +1733,7 @@ async function testCatenatePartOrderingAndValidation() {
   // paren list must refuse BEFORE the backend dispatch; multi-literal
   // TEXT parts are deferred-with-condition for v1 (operators that need
   // TEXT-CATENATE use APPEND with a single literal).
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("CATENATE part-ordering + validation (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var stub = _makeStubMailStore();
   var appendCalls = [];
   stub.appendCatenate = function (mailbox, parts, opts) {
@@ -1857,9 +1785,7 @@ async function testStoreSilentEmitsModseqUnderCondstore() {
   // still emit an untagged FETCH carrying the new MODSEQ for each
   // successfully-updated message. Without it CONDSTORE clients
   // can't refresh their local modseq state after a silent update.
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("SILENT STORE emits MODSEQ under CONDSTORE (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var stub = _makeStubMailStore();
   var srv = b.mail.server.imap.create({
     tlsContext: ctx, mailStore: stub, profile: "permissive",
@@ -1902,9 +1828,7 @@ async function testStoreSilentEmitsModseqUnderCondstore() {
 // ---- v0.11.33 — IMAP QRESYNC (RFC 7162 §3.2) ----
 
 async function testCapabilityAdvertisesQresync() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("CAP advertises QRESYNC (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var stub = _makeStubMailStore();
   var srv = b.mail.server.imap.create({ tlsContext: ctx, mailStore: stub });
   var c = await _connectAndLogin(srv);
@@ -1916,9 +1840,7 @@ async function testCapabilityAdvertisesQresync() {
 }
 
 async function testEnableQresyncImpliesCondstore() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("ENABLE QRESYNC (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var stub = _makeStubMailStore();
   var srv = b.mail.server.imap.create({
     tlsContext: ctx, mailStore: stub, profile: "permissive",
@@ -1937,9 +1859,7 @@ async function testEnableQresyncImpliesCondstore() {
 }
 
 async function testSelectQresyncEmitsVanishedEarlier() {
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("SELECT QRESYNC VANISHED (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var stub = _makeStubMailStore();
   // Override selectFolder to honour the qresync opt + emit a stub
   // vanished-earlier set.
@@ -2005,9 +1925,7 @@ async function testSelectQresyncImplicitlyEngagesCondstore() {
   // RFC 7162 §3.2.4 — SELECT with QRESYNC param without prior ENABLE
   // flips both QRESYNC + CONDSTORE flags. Subsequent FETCH must
   // include MODSEQ.
-  var ctx;
-  try { ctx = await _makeTestTlsContext(); }
-  catch (_e) { check("SELECT QRESYNC implicit ENABLE (skipped)", true); return; }
+  var ctx = await _makeTestTlsContext();
   var stub = _makeStubMailStore();
   stub.selectFolder = function () {
     return Promise.resolve({

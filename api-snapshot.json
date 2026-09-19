@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.20.30",
-  "createdAt": "2026-09-17T22:57:35.090Z",
+  "frameworkVersion": "0.20.31",
+  "createdAt": "2026-09-19T17:33:35.263Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -2008,6 +2008,10 @@
             }
           }
         },
+        "canUnwrapFor": {
+          "type": "function",
+          "arity": 1
+        },
         "gz": {
           "type": "function",
           "arity": 2
@@ -2338,6 +2342,10 @@
           "type": "function",
           "arity": 1
         },
+        "heartbeat": {
+          "type": "function",
+          "arity": 2
+        },
         "listDir": {
           "type": "function",
           "arity": 2
@@ -2367,6 +2375,10 @@
           "arity": 2
         },
         "readSync": {
+          "type": "function",
+          "arity": 2
+        },
+        "removeStaleDirs": {
           "type": "function",
           "arity": 2
         },
@@ -4991,9 +5003,21 @@
           "type": "primitive",
           "valueType": "number"
         },
+        "VAULT_KEY_LABEL": {
+          "type": "primitive",
+          "valueType": "string"
+        },
         "checksum": {
           "type": "function",
           "arity": 1
+        },
+        "decryptUnderSubkey": {
+          "type": "function",
+          "arity": 5
+        },
+        "decryptWithKey": {
+          "type": "function",
+          "arity": 3
         },
         "decryptWithPassphrase": {
           "type": "function",
@@ -5003,13 +5027,33 @@
           "type": "function",
           "arity": 3
         },
+        "deriveSubkey": {
+          "type": "function",
+          "arity": 3
+        },
+        "encryptUnderSubkey": {
+          "type": "function",
+          "arity": 5
+        },
         "encryptWithFreshSalt": {
+          "type": "function",
+          "arity": 3
+        },
+        "encryptWithKey": {
           "type": "function",
           "arity": 3
         },
         "encryptWithPassphrase": {
           "type": "function",
           "arity": 4
+        },
+        "fileKeyLabel": {
+          "type": "function",
+          "arity": 1
+        },
+        "newSalt": {
+          "type": "function",
+          "arity": 0
         }
       }
     },
@@ -5027,6 +5071,14 @@
         "FRAMEWORK_NAME": {
           "type": "primitive",
           "valueType": "string"
+        },
+        "KEY_SCHEME_BUNDLE": {
+          "type": "primitive",
+          "valueType": "string"
+        },
+        "MAX_MANIFEST_BYTES": {
+          "type": "primitive",
+          "valueType": "number"
         },
         "VALID_KINDS": {
           "type": "object",
@@ -5052,6 +5104,14 @@
         "parse": {
           "type": "function",
           "arity": 1
+        },
+        "readBuffer": {
+          "type": "function",
+          "arity": 2
+        },
+        "readFile": {
+          "type": "function",
+          "arity": 2
         },
         "serialize": {
           "type": "function",
@@ -6534,6 +6594,10 @@
         "resolvePassphrase": {
           "type": "function",
           "arity": 3
+        },
+        "resolveSignatureOptions": {
+          "type": "function",
+          "arity": 2
         }
       }
     },
@@ -17749,6 +17813,14 @@
         "defineClass": {
           "type": "function",
           "arity": 2
+        },
+        "defineMessageFirstClass": {
+          "type": "function",
+          "arity": 3
+        },
+        "messageFirstFactory": {
+          "type": "function",
+          "arity": 1
         }
       }
     },
@@ -53916,6 +53988,10 @@
           "arity": 3
         },
         "parseStringOrObject": {
+          "type": "function",
+          "arity": 2
+        },
+        "parseTyped": {
           "type": "function",
           "arity": 2
         },

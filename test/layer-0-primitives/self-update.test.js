@@ -337,7 +337,7 @@ async function testSwapSymlinkedFromRefused() {
   var madeLink = false;
   try { fs.symlinkSync(real, link); madeLink = true; } catch (_e) { /* no symlink privilege */ }
   if (!madeLink) {
-    check("swap: symlinked-from test skipped (no symlink privilege)", true);
+    helpers.unavailable("swap: symlinked-from test skipped (no symlink privilege)");
     try { fs.unlinkSync(real); fs.rmdirSync(dir); } catch (_e) { /* best-effort */ }
     return;
   }
@@ -1347,7 +1347,7 @@ async function testSwapReplacesLockedTargetWin32() {
   // Windows-only: POSIX rename ignores the target file mode, so the replace
   // failure can't be forced there without privileged setup.
   if (process.platform !== "win32") {
-    check("swap: locked-target replace test skipped (non-win32)", true);
+    helpers.unavailable("swap: locked-target replace test skipped (non-win32)");
     return;
   }
   var dir = _tmp("dir-locked");
@@ -1406,7 +1406,7 @@ async function testRollbackReplacesLockedTargetWin32() {
   // sidesteps it. Windows-only: POSIX rename ignores the target mode, so the
   // failure can't be forced there without privileged setup.
   if (process.platform !== "win32") {
-    check("rollback: locked-target restore test skipped (non-win32)", true);
+    helpers.unavailable("rollback: locked-target restore test skipped (non-win32)");
     return;
   }
   var dir = _tmp("dir-rb-locked");
@@ -1510,7 +1510,7 @@ async function testRollbackRefusesSymlinkedQuarantineAlias() {
   fs.writeFileSync(quarantine, Buffer.from("KNOWN-GOOD-BACKUP"));   // good backup at the quarantine path
   try { fs.symlinkSync(quarantine, backupLink); }
   catch (_sym) {
-    check("rollback: symlink-alias test skipped (symlinks unsupported here)", true);
+    helpers.unavailable("rollback: symlink-alias test skipped (symlinks unsupported here)");
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
     return;
   }
@@ -1898,7 +1898,7 @@ async function testEvaluateRestoreWriteFailureWin32() {
   // selfupdate/probation-rollback-failed (target left for the operator). Windows-
   // only: POSIX rename-replace ignores the target's read-only mode.
   if (process.platform !== "win32") {
-    check("evaluateOnBoot: restore-write-failure test skipped (non-win32)", true);
+    helpers.unavailable("evaluateOnBoot: restore-write-failure test skipped (non-win32)");
     return;
   }
   var dir = _tmp("dir-eval-wfail");

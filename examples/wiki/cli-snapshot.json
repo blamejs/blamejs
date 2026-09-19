@@ -114,7 +114,10 @@
       ],
       "flags": [
         "--bundle",
+        "--expected-fingerprint",
+        "--no-verify-signature",
         "--passphrase",
+        "--require-signature",
         "--to"
       ]
     },

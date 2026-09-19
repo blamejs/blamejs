@@ -28,6 +28,7 @@
 var fs   = require("fs");
 var os   = require("os");
 var path = require("path");
+var nodeCrypto = require("node:crypto");
 
 var helpers = require("../helpers");
 var check   = helpers.check;
@@ -77,6 +78,20 @@ function _seedSealedDataDir() {
   return { dataDir: dataDir, dbEnc: dbEnc, keyEnc: keyEnc };
 }
 
+function _drillEngine(seeded, storage, scheduler) {
+  return b.backup.create({
+    dataDir:    seeded.dataDir,
+    storage:    storage,
+    passphrase: Buffer.from("operator-backup-passphrase-256bit-entropy-here"),
+    files: [
+      { relativePath: "db.enc",     kind: "raw", required: true },
+      { relativePath: "db.key.enc", kind: "raw", required: true },
+    ],
+    vaultKeyJson: '{"version":1,"kid":"k1"}',
+    scheduler:    scheduler,
+  });
+}
+
 async function main() {
   var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "drill-fw-"));
   await setupTestDb(tmpDir);
@@ -88,17 +103,7 @@ async function main() {
   var storage = b.backup.diskStorage({ root: storageRoot });
   var capSched = _makeCapturingScheduler();
 
-  var engine = b.backup.create({
-    dataDir:    seeded.dataDir,
-    storage:    storage,
-    passphrase: Buffer.from("operator-backup-passphrase-256bit-entropy-here"),
-    files: [
-      { relativePath: "db.enc",     kind: "raw", required: true },
-      { relativePath: "db.key.enc", kind: "raw", required: true },
-    ],
-    vaultKeyJson: '{"version":1,"kid":"k1"}',
-    scheduler:    capSched,
-  });
+  var engine = _drillEngine(seeded, storage, capSched);
 
   // ---- Produce a real, signed backup bundle --------------------------
   var runSummary = await engine.run({ metadata: { reason: "drill-fixture" } });
@@ -212,17 +217,7 @@ async function main() {
   // the captured closure.
   b.scheduler._resetForTest && b.scheduler._resetForTest();
   var realVerifyHit = false;
-  var realEngine = b.backup.create({
-    dataDir:    seeded.dataDir,
-    storage:    storage,
-    passphrase: Buffer.from("operator-backup-passphrase-256bit-entropy-here"),
-    files: [
-      { relativePath: "db.enc",     kind: "raw", required: true },
-      { relativePath: "db.key.enc", kind: "raw", required: true },
-    ],
-    vaultKeyJson: '{"version":1,"kid":"k1"}',
-    scheduler:    b.scheduler,
-  });
+  var realEngine = _drillEngine(seeded, storage, b.scheduler);
   var realDrill = realEngine.scheduleTest({
     name:      "drill.real.path",
     cron:      "0 4 * * 0",
@@ -261,17 +256,7 @@ async function main() {
   var failVerifyCalled = false;
   var failNotify = [];
   var capSched2 = _makeCapturingScheduler();
-  var failEngine = b.backup.create({
-    dataDir:    seeded.dataDir,
-    storage:    storage,
-    passphrase: Buffer.from("operator-backup-passphrase-256bit-entropy-here"),
-    files: [
-      { relativePath: "db.enc",     kind: "raw", required: true },
-      { relativePath: "db.key.enc", kind: "raw", required: true },
-    ],
-    vaultKeyJson: '{"version":1,"kid":"k1"}',
-    scheduler:    capSched2,
-  });
+  var failEngine = _drillEngine(seeded, storage, capSched2);
   failEngine.scheduleTest({
     cron:      "0 5 * * 0",
     restoreTo: restoreRoot,
@@ -302,6 +287,44 @@ async function main() {
   check("notify hook fired with failure outcome on the tampered drill",
     failNotify.length === 1 && failNotify[0].outcome === "failure" &&
     /signature/i.test(failNotify[0].reason || ""));
+
+  // =====================================================================
+  // PART 4 — FAILING DRILL: the manifest re-signed under a foreign key
+  // =====================================================================
+  // The signature verifies under the key embedded in the block, and the
+  // block's fingerprint field names the audit-sign key. The drill must
+  // refuse it because that key is not the active or a rotated audit-sign key.
+  var alg = b.auditSign.getAlgorithm();
+  var foreign = nodeCrypto.generateKeyPairSync(alg);
+  var resigned = JSON.parse(JSON.stringify(manifestOnDisk));
+  resigned.signature = {
+    algorithm:   alg,
+    publicKey:   foreign.publicKey.export({ type: "spki", format: "pem" }).toString(),
+    fingerprint: signedFingerprint,
+    value:       nodeCrypto.sign(null, Buffer.from(b.backupManifest.signingPayload(resigned), "utf8"),
+                   foreign.privateKey).toString("base64"),
+    signedAt:    new Date().toISOString(),
+  };
+  fs.writeFileSync(manifestPath, b.backupManifest.serialize(resigned));
+
+  var foreignVerifyCalled = false;
+  var capSched3 = _makeCapturingScheduler();
+  _drillEngine(seeded, storage, capSched3).scheduleTest({
+    cron:      "0 6 * * 0",
+    restoreTo: restoreRoot,
+    posture:   "hipaa",
+    verify: async function () { foreignVerifyCalled = true; return true; },
+  });
+  await capSched3.captured.specs[0].run();
+  check("foreign-key drill did NOT call the operator verify hook", foreignVerifyCalled === false);
+  await b.audit.flush();
+  var foreignRows = await b.audit.query({ action: "backup.test.failed" });
+  check("foreign-key drill emitted a backup.test.failed row naming the untrusted key",
+    foreignRows.length === 2 &&
+    foreignRows.some(function (row) { return /not the active or a rotated audit-sign key/.test(_meta(row).reason || ""); }));
+  var passRowsAfterForeign = await b.audit.query({ action: "backup.test.passed" });
+  check("a foreign-key signature did not produce a backup.test.passed row",
+    passRowsAfterForeign.length === 2);
 
   // ---- cleanup -------------------------------------------------------
   await teardownTestDb(tmpDir);

@@ -105,6 +105,40 @@ function run() {
   check("resolvePassphrase: throws when opts.flag missing",
         !!threwOnNoFlag && /opts\.flag is required/.test(threwOnNoFlag.message));
 
+  // ---- resolveSignatureOptions ----
+  var sigCtx = _captureCtx();
+  var sigReport = b.cliHelpers.makeReporter(sigCtx, "blamejs backup");
+  var defaults = b.cliHelpers.resolveSignatureOptions({ flags: {} }, sigReport);
+  check("resolveSignatureOptions: no flags leaves every option unset",
+        defaults.requireSignature === false && defaults.expectedFingerprint === undefined &&
+        defaults.verifySignature === undefined && sigCtx.err() === "", JSON.stringify(defaults));
+
+  var pinned = b.cliHelpers.resolveSignatureOptions(
+    { flags: { "expected-fingerprint": "ab12", "require-signature": true } }, sigReport);
+  check("resolveSignatureOptions: passes the pinned fingerprint and the requirement through",
+        pinned.expectedFingerprint === "ab12" && pinned.requireSignature === true &&
+        pinned.verifySignature === undefined, JSON.stringify(pinned));
+
+  var skipped = b.cliHelpers.resolveSignatureOptions({ flags: { "no-verify-signature": true } }, sigReport);
+  check("resolveSignatureOptions: --no-verify-signature sets verifySignature false",
+        skipped.verifySignature === false && skipped.requireSignature === false, JSON.stringify(skipped));
+
+  var badCtx = _captureCtx();
+  var badReport = b.cliHelpers.makeReporter(badCtx, "blamejs backup");
+  var noValue = b.cliHelpers.resolveSignatureOptions({ flags: { "expected-fingerprint": true } }, badReport);
+  check("resolveSignatureOptions: --expected-fingerprint without a value is a usage error",
+        noValue === null && /--expected-fingerprint requires a fingerprint value/.test(badCtx.err()), badCtx.err());
+
+  var conflictCtx = _captureCtx();
+  var conflictReport = b.cliHelpers.makeReporter(conflictCtx, "blamejs backup");
+  var conflicts = [
+    { "no-verify-signature": true, "require-signature": true },
+    { "no-verify-signature": true, "expected-fingerprint": "ab12" },
+  ].map(function (flags) { return b.cliHelpers.resolveSignatureOptions({ flags: flags }, conflictReport); });
+  check("resolveSignatureOptions: --no-verify-signature with either other flag is a usage error",
+        conflicts[0] === null && conflicts[1] === null &&
+        /cannot be combined/.test(conflictCtx.err()), conflictCtx.err());
+
   // ---- bootApp validation (without actually booting; that's covered by
   //      cli-vault, cli-backup, cli-api-key tests) ----
   var threwBootUnknownKey = null;

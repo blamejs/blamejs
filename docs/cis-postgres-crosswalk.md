@@ -79,7 +79,7 @@ and **citation** (the CIS section number).
 | CIS § | Control | Framework posture | Operator action |
 | ----- | ------- | ----------------- | --------------- |
 | 8.1 | Ensure PostgreSQL subdirectory locations are outside the data cluster | n/a | Operator-managed paths. |
-| 8.2 | Ensure the backup and restore tool, 'pgBackRest', is installed and configured | `b.backup` + `b.restoreBundle` provide framework-level encrypted bundles with ML-DSA-87 signed manifest (`b.backupBundle.verifyManifestSignature`) | Operators with petabyte-scale data combine pgBackRest with framework backup for layer-2 belt-and-suspenders. |
+| 8.2 | Ensure the backup and restore tool, 'pgBackRest', is installed and configured | `b.backup` + `b.restoreBundle` provide framework-level encrypted bundles with an audit-sign signed manifest (`b.backup.verifyManifestSignature`) | Operators with petabyte-scale data combine pgBackRest with framework backup for layer-2 belt-and-suspenders. |
 | 8.3 | Ensure miscellaneous configuration settings are correct | n/a | Operator-managed. |
 
 ## Framework primitives that close the gap
@@ -98,5 +98,5 @@ and **citation** (the CIS section number).
   envelope export for federated SIEM
 - **`b.drRunbook.emit({ posture: "hipaa", ... })`** — disaster-recovery
   runbook generator composing b.budr + b.cluster + b.backup
-- **`b.backupBundle.verifyManifestSignature`** — ML-DSA-87 signature
-  verification on restore
+- **`b.backup.verifyManifestSignature`** — manifest signature verification on
+  restore, under a pinned fingerprint or an active or rotated audit-sign key
