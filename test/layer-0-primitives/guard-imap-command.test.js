@@ -217,6 +217,48 @@ function testProfilePrototypeKeyRefused() {
     threwLit && threwLit.code === "guard-imap-command/bad-profile");
 }
 
+// A listener that REFUSES a line needs the size the line announced, to decide
+// what to do with the octets the client is sending: with `{n+}` (RFC 7888) the
+// payload is already in flight and has to be consumed before the next line is
+// parsed, or it is parsed as commands. `validate` cannot answer that, because
+// on a refusal it throws. The reader reports the size as announced, with no
+// cap applied, so the caller can refuse a size it will not read.
+function testAnnouncedLiteral() {
+  var ROWS = [
+    { line: "a1 APPEND INBOX {24+}", size: 24, nonSync: true },
+    { line: "a1 APPEND INBOX {24}",  size: 24, nonSync: false },
+    { line: "a1 APPEND INBOX {0+}",  size: 0,  nonSync: true },
+    // Announced sizes far above any cap are reported, not clamped or refused.
+    { line: "a1 APPEND INBOX {999999999999+}", size: 999999999999, nonSync: true },
+    { line: "a1 NOOP",                 want: null },
+    { line: "a1 APPEND INBOX {24",     want: null },
+    { line: "a1 APPEND INBOX {}",      want: null },
+    { line: "a1 APPEND INBOX {2x}",    want: null },
+    // An opener that is not at the end of the line is not the command's
+    // literal: RFC 9051 section 2.2.2 puts it last, and the smuggling
+    // detector is what refuses this shape.
+    { line: "a1 APPEND {5+} INBOX",    want: null },
+    { line: "",                        want: null },
+  ];
+  var wrong = [];
+  for (var i = 0; i < ROWS.length; i += 1) {
+    var got = b.guardImapCommand.announcedLiteral(ROWS[i].line);
+    if (ROWS[i].want === null) {
+      if (got !== null) wrong.push(JSON.stringify(ROWS[i].line) + " -> " + JSON.stringify(got));
+      continue;
+    }
+    if (!got || got.size !== ROWS[i].size || got.nonSync !== ROWS[i].nonSync) {
+      wrong.push(JSON.stringify(ROWS[i].line) + " -> " + JSON.stringify(got));
+    }
+  }
+  check("announcedLiteral reads the size and the synchronizing form" +
+    (wrong.length ? " (" + wrong.join("; ") + ")" : ""), wrong.length === 0);
+  check("a non-string line reads as no literal",
+    b.guardImapCommand.announcedLiteral(null) === null &&
+    b.guardImapCommand.announcedLiteral(undefined) === null &&
+    b.guardImapCommand.announcedLiteral(42) === null);
+}
+
 function run() {
   testByteCapMultibyte();
   testSurface();
@@ -224,6 +266,7 @@ function run() {
   testBadInputRefused();
   testSmugglingDefense();
   testLiteralInjection();
+  testAnnouncedLiteral();
   testLiteralCaps();
   testProfilePrototypeKeyRefused();
   testCompliancePosture();

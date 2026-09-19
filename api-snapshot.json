@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.20.32",
-  "createdAt": "2026-09-19T19:47:38.174Z",
+  "createdAt": "2026-09-19T19:47:40.103Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -27793,6 +27793,10 @@
               "valueType": "boolean"
             }
           }
+        },
+        "announcedLiteral": {
+          "type": "function",
+          "arity": 1
         },
         "compliancePosture": {
           "type": "function",
