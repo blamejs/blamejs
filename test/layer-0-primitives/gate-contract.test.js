@@ -2751,6 +2751,7 @@ async function run() {
   testDefineGuardAmplificationCapIsARatio();
   await testResidualBranches();
   testDefineParser();
+  testProfilesAreFrozenThroughAndThrough();
   testAnUnknownPostureIsRefusedByName();
   testMakeIssueReporter();
 }
@@ -2760,6 +2761,70 @@ async function run() {
 // `{ profile: "permissive", posture: "hippa" }` ran permissive while
 // believing a compliance posture applied, and the guard said nothing. Both
 // resolvers are config-time readers, so they refuse the value by name.
+// `Object.freeze` is shallow, so a frozen PROFILES map still held mutable
+// profile objects, and every guard exports that map. A consumer could write
+// `b.guardSql.PROFILES.strict.maxLength = 1e9` and change what the guard
+// enforces for the whole process — the value the guard itself reads at
+// validate time. 62 guard profiles were writable this way.
+function testProfilesAreFrozenThroughAndThrough() {
+  var parser = GC.defineParser({
+    name:       "frozen-probe",
+    entry:      function () { return true; },
+    errorClass: GCE,
+    profiles:   { strict: { cap: 1, nested: { inner: 2 } }, loose: { cap: 9 } },
+  });
+  check("the profile map is frozen", Object.isFrozen(parser.PROFILES));
+  // The same helper a namespace calls when it builds its own exports rather
+  // than going through defineGuard / defineParser.
+  var own = b.gateContract.freezePolicy({ tier: { cap: 3 } });
+  check("freezePolicy freezes what a namespace exports itself",
+        Object.isFrozen(own) && Object.isFrozen(own.tier));
+  check("each profile is frozen", Object.isFrozen(parser.PROFILES.strict) &&
+        Object.isFrozen(parser.PROFILES.loose));
+  check("a nested policy object is frozen too",
+        Object.isFrozen(parser.PROFILES.strict.nested));
+
+  var before = parser.PROFILES.strict.cap;
+  try { parser.PROFILES.strict.cap = 999; } catch (_e) { /* strict mode throws */ }
+  check("a caller cannot raise a cap the guard enforces",
+        parser.PROFILES.strict.cap === before, String(parser.PROFILES.strict.cap));
+
+  // Proven on a shipped guard, not only on the probe above.
+  var shippedBefore = b.guardSql.PROFILES.strict;
+  var firstKey = Object.keys(shippedBefore)[0];
+  var firstValue = shippedBefore[firstKey];
+  try { b.guardSql.PROFILES.strict[firstKey] = "tampered"; } catch (_e) { /* frozen */ }
+  check("a shipped guard's profile cannot be edited from outside it",
+        b.guardSql.PROFILES.strict[firstKey] === firstValue,
+        firstKey + " = " + JSON.stringify(b.guardSql.PROFILES.strict[firstKey]));
+
+  // Every namespace, not the two that were checked by hand: 62 profiles were
+  // writable, across guards that build their exports three different ways.
+  var mutable = [];
+  function _probe(ns, name) {
+    if (!ns || typeof ns !== "object" || !ns.PROFILES ||
+        typeof ns.PROFILES !== "object") return;
+    Object.keys(ns.PROFILES).forEach(function (p) {
+      var profile = ns.PROFILES[p];
+      if (profile && typeof profile === "object" && !Object.isFrozen(profile)) {
+        mutable.push(name + "." + p);
+      }
+    });
+  }
+  Object.keys(b).forEach(function (k) {
+    var ns;
+    try { ns = b[k]; } catch (_e) { return; }
+    _probe(ns, "b." + k);
+    if (!ns || typeof ns !== "object") return;
+    Object.keys(ns).forEach(function (k2) {
+      try { _probe(ns[k2], "b." + k + "." + k2); } catch (_e) { /* skip throwing getter */ }
+    });
+  });
+  check("no namespace exports a writable profile" +
+        (mutable.length ? " (" + mutable.slice(0, 6).join(", ") + ")" : ""),
+        mutable.length === 0);
+}
+
 function testAnUnknownPostureIsRefusedByName() {
   var PROFILES = { strict: { cap: 1 }, permissive: { cap: 9 } };
   var POSTURES = { hipaa: "strict", "pci-dss": "strict" };

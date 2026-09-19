@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.20.32",
-  "createdAt": "2026-09-19T19:47:40.103Z",
+  "createdAt": "2026-09-19T19:47:41.487Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -18594,6 +18594,10 @@
           "type": "function",
           "arity": 1
         },
+        "freezePolicy": {
+          "type": "function",
+          "arity": 1
+        },
         "identifierFixtures": {
           "type": "function",
           "arity": 3
@@ -27803,6 +27807,10 @@
           "arity": 1
         },
         "detectLiteralSmuggling": {
+          "type": "function",
+          "arity": 1
+        },
+        "limitsFor": {
           "type": "function",
           "arity": 1
         },
@@ -45609,6 +45617,10 @@
                 "create": {
                   "type": "function",
                   "arity": 1
+                },
+                "legacyMUtf7Allowed": {
+                  "type": "function",
+                  "arity": 2
                 }
               }
             },
