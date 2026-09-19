@@ -26,6 +26,8 @@ var IDENTITIES = [
   { id: "I2", email: "*@example.com" },
   { id: "I3", email: "ops@bücher.example" },
   { id: "I4" },
+  // RFC 5322 section 3.4.1 quoted local part.
+  { id: "I5", email: "\"ops\"@example.com" },
 ];
 
 function _message(fromHeader) {
@@ -112,6 +114,57 @@ async function testTheIdentityMatchIsNormalizedLikeSmtp() {
         (wrong.length ? " (" + wrong.join("; ") + ")" : ""), wrong.length === 0);
 }
 
+async function testAQuotedDisplayNameDoesNotHijackTheAddress() {
+  // RFC 5322 section 3.4 lets a display name be a quoted-string, and a
+  // quoted-string may hold `<` and `>`. Taking the first angle bracket in the
+  // field reads the display name's text as the address, so an authorized
+  // submission was refused with forbiddenFrom. A comment may carry them too
+  // (section 3.2.2).
+  var ROWS = [
+    { label: "plain address",            from: "ops@example.com" },
+    { label: "display name and angles",  from: "Ops <ops@example.com>" },
+    { label: "quoted display name holding angles",
+      from: '"Sales <US>" <ops@example.com>' },
+    { label: "quoted display name holding an at-sign",
+      from: '"ceo@bank.example" <ops@example.com>' },
+    { label: "comment before the address",
+      from: "(the sales desk) ops@example.com" },
+    { label: "escaped quote inside the display name",
+      from: '"Ops \\" <nobody@evil.example>" <ops@example.com>' },
+  ];
+  var wrong = [];
+  for (var i = 0; i < ROWS.length; i += 1) {
+    var got = await _submit({ identityId: "I1", mailFrom: "ops@example.com",
+                              fromHeader: ROWS[i].from });
+    if (!got.created) wrong.push(ROWS[i].label + " -> " + got.error);
+  }
+  check("the address is read past a quoted display name or comment" +
+        (wrong.length ? " (" + wrong.join("; ") + ")" : ""), wrong.length === 0);
+
+  // The check still bites: a genuinely foreign From is still refused.
+  var foreign = await _submit({ identityId: "I1", mailFrom: "ops@example.com",
+                                fromHeader: '"Ops" <ceo@bank.example>' });
+  check("a From the identity does not cover is still forbiddenFrom",
+        foreign.error === "forbiddenFrom", JSON.stringify(foreign));
+
+  // RFC 5322 section 3.4.1 lets the LOCAL PART be a quoted-string, and a
+  // quoted run followed by `@` is an address rather than a display name.
+  // Skipping it as though it were a name leaves `@example.com`, which covers
+  // no identity, so an authorized submission is refused.
+  var quotedLocal = await _submit({
+    identityId: "I5", mailFrom: '"ops"@example.com',
+    fromHeader: '"ops"@example.com',
+  });
+  check("a bare address whose local part is quoted keeps its local part",
+        quotedLocal.created === true, JSON.stringify(quotedLocal));
+  var quotedLocalInAngles = await _submit({
+    identityId: "I5", mailFrom: '"ops"@example.com',
+    fromHeader: 'Ops Desk <"ops"@example.com>',
+  });
+  check("and the same address inside angle brackets is read the same way",
+        quotedLocalInAngles.created === true, JSON.stringify(quotedLocalInAngles));
+}
+
 async function testTheFromHeaderIsCheckedToo() {
   var authorizedEnvelope = await _submit({
     identityId: "I1", mailFrom: "ops@example.com", fromHeader: "ceo@bank.example",
@@ -131,6 +184,7 @@ async function testTheFromHeaderIsCheckedToo() {
 
 async function run() {
   await testTheIdentityMatchIsNormalizedLikeSmtp();
+  await testAQuotedDisplayNameDoesNotHijackTheAddress();
   await testTheFromHeaderIsCheckedToo();
 }
 

@@ -138,6 +138,57 @@ function testAMessageWithNoFilesSaysSo() {
         String(props.bodyStructure.blobId));
 }
 
+function testEveryGeneratedBlobIdFitsTheDownloadHandlersLimit() {
+  // The prefix is bounded at the JMAP Id length, but a part's path is
+  // appended to it, so a prefix at the limit produced a 257-character id for
+  // the first child: advertised by the builder and refused by the download
+  // handler in the same module.
+  var longPrefix = "p".repeat(255);
+  var threw = null;
+  try { _build(MESSAGE, { blobIdPrefix: longPrefix }); } catch (e) { threw = e; }
+  check("a prefix that cannot carry a part suffix is refused up front",
+        threw !== null, threw && threw.code);
+
+  // At a prefix that does leave room, every generated id still fits.
+  var props = _build(MESSAGE, { blobIdPrefix: "p".repeat(200) });
+  var tooLong = [];
+  (function walk(node) {
+    if (typeof node.blobId === "string" && !JMAP_ID_RE.test(node.blobId)) {
+      tooLong.push(node.blobId.length);
+    }
+    (node.subParts || []).forEach(walk);
+  })(props.bodyStructure);
+  check("every generated blobId satisfies the grammar, suffix included" +
+        (tooLong.length ? " (lengths " + tooLong.join(", ") + ")" : ""),
+        tooLong.length === 0);
+}
+
+function testACopyMethodsOwnAccountArgumentsAreAccepted() {
+  // RFC 8620 section 5.4 gives /copy `fromAccountId` for the source and
+  // `accountId` for the destination, so a conforming copy does name an
+  // accountId and the mandatory-account check does not stand in its way.
+  // Pinned because a reviewer read the destination as `toAccountId`, which
+  // RFC 8620 does not define, and a silent change here would break copies.
+  var seen = [];
+  var jmap = b.mail.server.jmap.create({
+    mailStore:   { appendMessage: function () {} },
+    accountsFor: async function () {
+      return { primaryAccounts: { mail: "A1" }, accounts: { A1: {}, A2: {} } };
+    },
+    methods: {
+      "Email/copy": async function (actor, args) { seen.push(args); return { accountId: args.accountId }; },
+    },
+  });
+  return jmap.dispatch({ id: "actor1" }, {
+    using:       ["urn:ietf:params:jmap:core"],
+    methodCalls: [["Email/copy", { fromAccountId: "A1", accountId: "A2", create: {} }, "c0"]],
+  }).then(function (rv) {
+    check("a conforming Email/copy reaches its handler",
+          rv.methodResponses[0][0] === "Email/copy" && seen.length === 1,
+          JSON.stringify(rv.methodResponses[0]));
+  });
+}
+
 function testTheBuilderRefusesInputItCannotIdentify() {
   var threw = null;
   try { b.mail.server.jmap.emailBodyProperties(b.safeMime.parse(Buffer.from(PLAIN, "utf8")), {}); }
@@ -157,6 +208,8 @@ async function run() {
   testTheShapeIsTheOneTheRfcDefines();
   testEveryPartCanBeFetched();
   testAMessageWithNoFilesSaysSo();
+  testEveryGeneratedBlobIdFitsTheDownloadHandlersLimit();
+  await testACopyMethodsOwnAccountArgumentsAreAccepted();
   testTheBuilderRefusesInputItCannotIdentify();
 }
 

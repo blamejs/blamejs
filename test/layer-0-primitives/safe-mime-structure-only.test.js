@@ -162,10 +162,52 @@ async function testTheStoreRecordsTheShapeAtAppend() {
   }
 }
 
+async function testAnUpgradedStoreDoesNotClaimMessagesHaveNoFiles() {
+  // The columns are added to an existing table, so every message written
+  // before the upgrade has no recorded answer. Defaulting those rows to zero
+  // would report a definitive `hasAttachment: false` for messages that do
+  // carry files, which is worse than saying nothing: a caller cannot tell the
+  // claim from a computed one. Unknown stays unknown until it is computed.
+  var dataDir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), "mailstore-upgrade-"));
+  if (typeof b.vault._resetForTest === "function") b.vault._resetForTest();
+  b.cryptoField.clearForTest();
+  await b.vault.init({ dataDir: dataDir, mode: "plaintext" });
+  var nodeSqlite = require("node:sqlite");
+  var dbPath = nodePath.join(dataDir, "store.db");
+  var db = new nodeSqlite.DatabaseSync(dbPath);
+  try {
+    var store = b.mailStore.create({ backend: db });
+    var appended = store.appendMessage("INBOX", _message(2));
+
+    // Simulate a row written before the columns existed: clear what the
+    // append recorded, which is the state an upgraded store starts in.
+    db.prepare("UPDATE blamejs_mail_messages SET has_attachment = NULL, " +
+               "attachment_count = NULL WHERE objectid = ?").run(appended.objectid);
+
+    var fetched = store.fetchByObjectId("INBOX", appended.objectid);
+    check("an un-computed row reports unknown rather than false",
+          fetched.hasAttachment === null && fetched.attachmentCount === null,
+          JSON.stringify([fetched.hasAttachment, fetched.attachmentCount]));
+
+    var listed = store.queryByModseq("INBOX", { sinceModseq: 0 })
+      .filter(function (r) { return r.objectid === appended.objectid; })[0];
+    check("and the listing says unknown too, rather than a definitive no",
+          listed !== undefined && listed.hasAttachment === null &&
+          listed.attachmentCount === null,
+          JSON.stringify(listed));
+  } finally {
+    try { db.close(); } catch (_e) { /* best-effort */ }
+    if (typeof b.vault._resetForTest === "function") b.vault._resetForTest();
+    b.cryptoField.clearForTest();
+    try { nodeFs.rmSync(dataDir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+  }
+}
+
 async function run() {
   testStructureOnlyWalksWithoutDecoding();
   testStructureOnlyStillRefusesHostileShapes();
   await testTheStoreRecordsTheShapeAtAppend();
+  await testAnUpgradedStoreDoesNotClaimMessagesHaveNoFiles();
 }
 
 module.exports = { run: run };
