@@ -132,7 +132,7 @@ async function testSymlinkAtDestinationReplacedNotFollowed() {
     catch (_e) { symlinkOk = false; }
 
     if (!symlinkOk) {
-      check("writeStream: dest-symlink case skipped (platform lacks symlink privilege)", true);
+      helpers.unavailable("writeStream: dest-symlink case skipped (platform lacks symlink privilege)");
       return;
     }
 

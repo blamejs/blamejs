@@ -134,14 +134,20 @@ function testDepthCap() {
   // application. A recursive schema (items:{$ref:"#"}) against a deeply
   // nested instance — both attacker-controlled when validating a request
   // body — would overflow the V8 stack with an uncaught RangeError before
-  // the depth guard fired (its cap was set above native overflow). The cap
-  // is now well under overflow so the typed json-schema/ref-loop error
-  // surfaces instead of a crash, while legitimate nesting (deep or wide)
-  // still validates.
+  // the depth guard fired (its cap was set above native overflow). Two caps
+  // now answer two questions: the value cap names a value deeper than the
+  // walk can carry, and the $ref cap names a schema that points back at
+  // itself without ever moving into the value. Legitimate nesting (deep or
+  // wide) still validates.
   var recursive = { $schema: b.jsonSchema.DIALECT, type: "array", items: { $ref: "#" } };
   function deepArr(n) { var a = [], c = a; for (var i = 0; i < n; i++) { var n2 = []; c.push(n2); c = n2; } return a; }
-  check("validate: deeply nested instance throws typed ref-loop (not RangeError)",
-    code(function () { b.jsonSchema.validate(recursive, deepArr(1500)); }) === "json-schema/ref-loop");
+  check("validate: deeply nested instance throws typed value-too-deep (not RangeError)",
+    code(function () { b.jsonSchema.validate(recursive, deepArr(1500)); }) === "json-schema/value-too-deep");
+  check("validate: a $ref chain that never reaches the value is still a ref loop",
+    code(function () {
+      b.jsonSchema.validate({ $defs: { a: { $ref: "#/$defs/b" }, b: { $ref: "#/$defs/a" } },
+        $ref: "#/$defs/a" }, { any: "value" });
+    }) === "json-schema/ref-loop");
   // Legit shallow nesting validates clean.
   check("validate: shallow nesting still validates", b.jsonSchema.validate(recursive, deepArr(40)).valid === true);
   // Breadth must not trip the nesting cap (sibling properties do not

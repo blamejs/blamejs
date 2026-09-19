@@ -188,7 +188,7 @@ function testSmimeCheckCertHappyPath() {
   var certPem = _maybeMakeSelfSignedCertViaOpenssl(kp.privateKey, "sha256");
   if (!certPem) {
     // openssl(1) not on PATH — record one check and bail gracefully.
-    check("smime.checkCert positive path skipped (openssl(1) not available)", true);
+    helpers.unavailable("smime.checkCert positive path skipped (openssl(1) not available)");
     return;
   }
   var rv = smime.checkCert({ certPem: certPem });
@@ -209,7 +209,7 @@ function testSmimeCheckCertRefusesSha1() {
   });
   var certPem = _maybeMakeSelfSignedCertViaOpenssl(kp.privateKey, "sha1");
   if (!certPem) {
-    check("smime.checkCert sha1-refusal skipped (openssl(1) not available)", true);
+    helpers.unavailable("smime.checkCert sha1-refusal skipped (openssl(1) not available)");
     return;
   }
   var threw = null;
@@ -230,7 +230,7 @@ function testSmimeCheckCertRefusesSmallRsa() {
   });
   var certPem = _maybeMakeSelfSignedCertViaOpenssl(kp.privateKey, "sha256");
   if (!certPem) {
-    check("smime.checkCert rsa-too-small skipped (openssl(1) not available)", true);
+    helpers.unavailable("smime.checkCert rsa-too-small skipped (openssl(1) not available)");
     return;
   }
   var threw = null;
@@ -954,12 +954,12 @@ function testSmimeTrustChainBadChainCert() {
 
 function testSmimeTrustChainRealCertRefusals() {
   if (!_opensslAvailable()) {
-    check("trust chain real-cert refusals skipped (openssl unavailable)", true);
+    helpers.unavailable("trust chain real-cert refusals skipped (openssl unavailable)");
     return;
   }
   var real = _mintCertMinimal({ alg: "rsa", bits: 2048, hash: "sha256", days: 30, cn: "chain-real.example" });
   if (!real) {
-    check("trust chain real-cert refusals skipped (cert mint failed)", true);
+    helpers.unavailable("trust chain real-cert refusals skipped (cert mint failed)");
     return;
   }
   var kp = pqc.ml_dsa_65.keygen();
@@ -992,7 +992,7 @@ function testSmimeTrustChainRealCertRefusals() {
 
 function testSmimeTrustChainMlDsaWalk() {
   if (!_mlDsaAvailable()) {
-    check("trust chain ML-DSA walk skipped (openssl ML-DSA unavailable)", true);
+    helpers.unavailable("trust chain ML-DSA walk skipped (openssl ML-DSA unavailable)");
     return;
   }
   _withMlDsaCa(function (tk) {
@@ -1000,7 +1000,7 @@ function testSmimeTrustChainMlDsaWalk() {
     var leaf = tk.selfSigned("Leaf Signer");
     var other = tk.selfSigned("Unrelated Root");
     if (!leaf || !other) {
-      check("trust chain ML-DSA walk skipped (cert mint failed)", true);
+      helpers.unavailable("trust chain ML-DSA walk skipped (cert mint failed)");
       return;
     }
     // Self-signed leaf IS the trust anchor → full walk validates.
@@ -1046,15 +1046,15 @@ function testSmimeTrustChainMlDsaWalk() {
 
 function testSmimeTrustChainMlDsaIntermediate() {
   if (!_mlDsaAvailable()) {
-    check("trust chain ML-DSA intermediate skipped (openssl ML-DSA unavailable)", true);
+    helpers.unavailable("trust chain ML-DSA intermediate skipped (openssl ML-DSA unavailable)");
     return;
   }
   _withMlDsaCa(function (tk) {
     var root = tk.selfSigned("Root CA");
-    if (!root) { check("trust chain intermediate skipped (root mint failed)", true); return; }
+    if (!root) { helpers.unavailable("trust chain intermediate skipped (root mint failed)"); return; }
     var inter = tk.caSign("Intermediate CA", root);
     var leaf  = inter && tk.caSign("Leaf Signer", inter);
-    if (!inter || !leaf) { check("trust chain intermediate skipped (CA issuance failed)", true); return; }
+    if (!inter || !leaf) { helpers.unavailable("trust chain intermediate skipped (CA issuance failed)"); return; }
     var msg = Buffer.from("intermediate-walk-body");
     // Chain carries leaf + intermediate; only the root is a trust anchor, so
     // the walk must hop leaf → intermediate → root.
@@ -1067,12 +1067,12 @@ function testSmimeTrustChainMlDsaIntermediate() {
 
 function testVerifyAllTrustChain() {
   if (!_mlDsaAvailable()) {
-    check("verifyAll trust chain skipped (openssl ML-DSA unavailable)", true);
+    helpers.unavailable("verifyAll trust chain skipped (openssl ML-DSA unavailable)");
     return;
   }
   _withMlDsaCa(function (tk) {
     var leaf = tk.selfSigned("VerifyAll Leaf");
-    if (!leaf) { check("verifyAll trust chain skipped (cert mint failed)", true); return; }
+    if (!leaf) { helpers.unavailable("verifyAll trust chain skipped (cert mint failed)"); return; }
     var msg = Buffer.from("verifyall-chain-body");
     var v = smime.verifyAll({ message: msg, signature: _mlDsaEnvelope(tk, leaf.keyPath, msg, [leaf.der]),
       signerPublicKeys: { "01": leaf.rawPub }, trustAnchorCertsPem: [leaf.pem] });
@@ -1085,7 +1085,7 @@ function testVerifyAllTrustChain() {
 
 function testSmimeCheckCertRealCerts() {
   if (!_opensslAvailable()) {
-    check("checkCert real-cert body skipped (openssl unavailable)", true);
+    helpers.unavailable("checkCert real-cert body skipped (openssl unavailable)");
     return;
   }
   var rsa = _mintCertMinimal({ alg: "rsa", bits: 2048, hash: "sha256", days: 30, cn: "rsa.example" });
@@ -1097,7 +1097,7 @@ function testSmimeCheckCertRealCerts() {
     check("checkCert: returns subject + issuer DN strings",
       typeof rv.subject === "string" && typeof rv.issuer === "string");
   } else {
-    check("checkCert RSA happy path skipped (mint failed)", true);
+    helpers.unavailable("checkCert RSA happy path skipped (mint failed)");
   }
 
   // EC cert exercises the non-RSA path — the RSA bit-floor block is skipped.
@@ -1106,7 +1106,7 @@ function testSmimeCheckCertRealCerts() {
     var ev = smime.checkCert({ certPem: ec.pem });
     check("checkCert: EC cert reports ec keyType (RSA floor skipped)", ev.keyType === "ec");
   } else {
-    check("checkCert EC happy path skipped (mint failed)", true);
+    helpers.unavailable("checkCert EC happy path skipped (mint failed)");
   }
 
   // SHA-1-signed cert is refused at the signature-algorithm screen.
@@ -1117,7 +1117,7 @@ function testSmimeCheckCertRealCerts() {
     check("checkCert: SHA-1 cert signature refused (refused-hash)",
       t1 && t1.code === "mail-crypto/smime/refused-hash");
   } else {
-    check("checkCert SHA-1 refusal skipped (mint failed)", true);
+    helpers.unavailable("checkCert SHA-1 refusal skipped (mint failed)");
   }
 
   // Sub-2048-bit RSA is refused at the bit floor.
@@ -1128,13 +1128,13 @@ function testSmimeCheckCertRealCerts() {
     check("checkCert: RSA-1024 cert refused at the bit floor (rsa-too-small)",
       t2 && t2.code === "mail-crypto/smime/rsa-too-small");
   } else {
-    check("checkCert small-RSA refusal skipped (mint failed)", true);
+    helpers.unavailable("checkCert small-RSA refusal skipped (mint failed)");
   }
 }
 
 function testSmimeCheckCertValidityWindow() {
   if (!_opensslAvailable()) {
-    check("checkCert validity window skipped (openssl unavailable)", true);
+    helpers.unavailable("checkCert validity window skipped (openssl unavailable)");
     return;
   }
   var expired = _mintCertMinimal({ alg: "rsa", bits: 2048, hash: "sha256",
@@ -1145,7 +1145,7 @@ function testSmimeCheckCertValidityWindow() {
     check("checkCert: expired cert refused (expired-cert)",
       t1 && t1.code === "mail-crypto/smime/expired-cert" && /expired/.test(t1.message));
   } else {
-    check("checkCert expired-cert skipped (mint failed)", true);
+    helpers.unavailable("checkCert expired-cert skipped (mint failed)");
   }
   var future = _mintCertMinimal({ alg: "rsa", bits: 2048, hash: "sha256",
     notBefore: "20350101000000Z", notAfter: "20360101000000Z", cn: "future.example" });
@@ -1155,7 +1155,7 @@ function testSmimeCheckCertValidityWindow() {
     check("checkCert: not-yet-valid cert refused (expired-cert / not yet valid)",
       t2 && t2.code === "mail-crypto/smime/expired-cert" && /not yet valid/.test(t2.message));
   } else {
-    check("checkCert not-yet-valid skipped (mint failed)", true);
+    helpers.unavailable("checkCert not-yet-valid skipped (mint failed)");
   }
 }
 

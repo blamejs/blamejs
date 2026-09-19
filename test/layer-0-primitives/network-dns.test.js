@@ -871,7 +871,7 @@ async function testLookupNegativeCache() {
     check("lookup: negative cache re-throws the SAME error instance (cache hit)",
       e2 !== null && e2 === e1);
   } else {
-    check("lookup: negative-cache path (host unexpectedly resolved; skipped)", true);
+    helpers.unavailable("lookup: negative-cache path (host unexpectedly resolved; skipped)");
   }
   _reset();
 }
@@ -1113,7 +1113,7 @@ async function testSystemRawQueryV6Bracket() {
     });
   } catch (_e) { port = null; }
   if (port === null) {
-    check("querySvcb(system): [::1]:port bracket parse (skipped — no IPv6 loopback)", true);
+    helpers.unavailable("querySvcb(system): [::1]:port bracket parse (skipped — no IPv6 loopback)");
     _reset();
     return;
   }
@@ -2430,7 +2430,7 @@ async function testCacheExpiryBranches() {
     check("lookup: positive-derived negative TTL caches the failure (same instance)",
       e2 !== null && e2 === e1);
   } else {
-    check("lookup: positive-derived negative TTL (host resolved unexpectedly; skipped)", true);
+    helpers.unavailable("lookup: positive-derived negative TTL (host resolved unexpectedly; skipped)");
   }
 
   // A negative cache entry that OUTLIVES its short explicit negative TTL is
@@ -2448,7 +2448,7 @@ async function testCacheExpiryBranches() {
     check("lookup: expired negative cache entry is dropped then the failure re-runs (new instance)",
       n2 !== null && n2 !== n1);
   } else {
-    check("lookup: negative cache expiry (host resolved unexpectedly; skipped)", true);
+    helpers.unavailable("lookup: negative cache expiry (host resolved unexpectedly; skipped)");
   }
   _reset();
 }

@@ -79,8 +79,42 @@ async function run() {
         rollbackRoot: path.join(fx.root, "rb2"), audit: false,
       }).run({ bundleId: r.bundleId });
     } catch (e) { threw = e; }
-    check("restore: blob-remap attack is REFUSED (AEAD path-binding)",
-          threw && /^restore\/(decrypt-failed|extract-failed)$/.test(threw.code || ""));
+    // Two entries naming one blob is refused when the manifest is read: an
+    // entry's encryptedPath is its own. The AEAD binding below is what
+    // answers a swap the manifest cannot see.
+    check("restore: blob-remap attack is REFUSED (two entries, one blob)",
+          threw && /^restore\/(bad-manifest|decrypt-failed|extract-failed)$/.test(threw.code || ""),
+          threw && (threw.code + " " + threw.message));
+
+    // The same attack with a structurally clean manifest: the two stored
+    // blobs trade places on disk, so each entry still names its own path
+    // and only the relativePath bound into the AEAD tells them apart.
+    var manifest2 = JSON.parse(fs.readFileSync(path.join(bdir, "manifest.json"), "utf8"));
+    var e1 = manifest2.files[0];
+    var e2 = manifest2.files[1];
+    var p1 = path.join(bdir, e1.encryptedPath);
+    var p2 = path.join(bdir, e2.encryptedPath);
+    var b1 = fs.readFileSync(p1);
+    var b2 = fs.readFileSync(p2);
+    fs.writeFileSync(p1, b2);
+    fs.writeFileSync(p2, b1);
+    var swapped = e1.salt; e1.salt = e2.salt; e2.salt = swapped;
+    var swappedSum = e1.checksum; e1.checksum = e2.checksum; e2.checksum = swappedSum;
+    var swappedSize = e1.size; e1.size = e2.size; e2.size = swappedSize;
+    var swappedEnc = e1.encryptedSize; e1.encryptedSize = e2.encryptedSize; e2.encryptedSize = swappedEnc;
+    delete manifest2.signature;
+    fs.writeFileSync(path.join(bdir, "manifest.json"), JSON.stringify(manifest2));
+
+    var threwSwap = null;
+    try {
+      await b.restore.create({
+        dataDir: fx.dataDir, storage: storage(), passphrase: pp,
+        rollbackRoot: path.join(fx.root, "rb3"), audit: false,
+      }).run({ bundleId: r.bundleId });
+    } catch (e) { threwSwap = e; }
+    check("restore: two blobs traded on disk are REFUSED (AEAD path-binding)",
+          threwSwap && /^restore\/(decrypt-failed|extract-failed|bad-manifest)$/.test(threwSwap.code || ""),
+          threwSwap && (threwSwap.code + " " + threwSwap.message));
   } finally {
     fs.rmSync(fx.root, { recursive: true, force: true });
   }

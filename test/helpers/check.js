@@ -35,8 +35,29 @@ function check(label, condition, detail) {
   _checks += 1;
 }
 
+// unavailable — what a test records when the HOST cannot provide a
+// precondition the test has no way to create: openssl(1) is not installed,
+// the platform has no ::1 loopback, the esbuild binary was built for another
+// platform, the API is win32-only. It prints the reason and counts nothing,
+// so the total never credits a row that did not run. A precondition the test
+// CAN create (a temp directory, a fixture key, a local server, a TLS context)
+// is created instead; recording it here hides the same coverage a passing
+// check hid.
+var _unavailable = [];
+
+function unavailable(label, reason) {
+  var text = String(label) + (reason === undefined || reason === null || reason === ""
+    ? "" : ": " + String(reason));
+  var oneLine = text.replace(/[\r\n]+/g, " ").replace(/\t+/g, " ").replace(/ {2,}/g, " ");
+  if (oneLine.length > 1000) oneLine = oneLine.slice(0, 1000) + "...";
+  _unavailable.push(oneLine);
+  console.log("UNAVAILABLE: " + oneLine);
+}
+
+function getUnavailable() { return _unavailable.slice(); }
+
 function getChecks()         { return _checks; }
-function resetChecksForTest() { _checks = 0; }
+function resetChecksForTest() { _checks = 0; _unavailable.length = 0; }
 
 // addExternalChecks — the parallel smoke runner forks per-file
 // children; each child runs its own _checks counter in its process
@@ -66,6 +87,8 @@ function formatErr(e) {
 
 module.exports = {
   check:              check,
+  unavailable:        unavailable,
+  getUnavailable:     getUnavailable,
   getChecks:          getChecks,
   resetChecksForTest: resetChecksForTest,
   addExternalChecks:  addExternalChecks,

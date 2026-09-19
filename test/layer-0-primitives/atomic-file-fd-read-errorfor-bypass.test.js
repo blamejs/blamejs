@@ -102,7 +102,7 @@ function testSymlinkErrorForUndefinedThrowsRealError() {
       check("fdSafeReadSync symlink + undefined errorFor throws a real Error (not undefined)",
             r !== null && r.e instanceof Error);
     } else {
-      check("fdSafeReadSync symlink case skipped (platform lacks symlink privilege)", true);
+      helpers.unavailable("fdSafeReadSync symlink case skipped (platform lacks symlink privilege)");
     }
   } finally { dir.cleanup(); }
 }

@@ -9510,6 +9510,33 @@ async function testNoDuplicateCodeBlocks() {
   // shape.
   var KNOWN_CLUSTERS = [
     {
+      // A refusal built from the caller's own error class, code and prose,
+      // seen across four unrelated domains: archive entry metadata handed to
+      // a guard, an OAuth token exchange, an OID4VCI credential offer, and a
+      // rollback-path check. The shingle is the throw-a-typed-error shape
+      // plus the surrounding option reads, not shared behaviour: each names
+      // a different error class and a different code namespace that callers
+      // catch on, and prose about its own subject. What IS shared already
+      // moved to primitives these bodies call — b.safeJson.parseTyped reads
+      // a document and reports the caller's code, and the archive readers
+      // share their guard-metadata assembly. Collapsing the rest would make
+      // every one of these refuse with the same code.
+      mode:  "family-subset",
+      files: [
+        "lib/archive-read.js:_assertGuardMetadata",
+        "lib/archive-tar-read.js:_assertGuardMetadata",
+        "lib/auth/ciba.js:_verifyIdTokenIfPresent",
+        "lib/auth/oauth.js:exchangeToken",
+        "lib/auth/oauth.js:nativeSsoExchange",
+        "lib/auth/oauth.js:pollDeviceCode",
+        "lib/auth/oid4vci.js:createCredentialOffer",
+        "lib/auth/oid4vci.js:exchangePreAuthorizedCode",
+        "lib/backup/index.js:scheduleTest",
+        "lib/restore-rollback.js:refuse",
+        "lib/restore-rollback.js:rollback",
+      ],
+    },
+    {
       // X.509 chain-walker result mapping — the extraction already happened:
       // all three route chain building through the shared x509Chain.resolveChain
       // primitive and then translate its { ok, invalidCert, reason } result to
@@ -14853,6 +14880,42 @@ var KNOWN_ANTIPATTERNS = [
     regex: /pki\.(?:x509|crl)\.sign\(\s*\{[\s\S]{0,800}?\b(?:subject|issuer|name)\s*:\s*"(?:CN|OU|O|C|L|ST|DC|UID|E)=/,
     allowlist: [],
     reason: "Same @blamejs/pki encodeName contract as pki-sign-preformatted-dn-string-lib, gated on test fixtures so a fixture minting a cert with subject: \"CN=\" + cn (double-encoded CN=CN=cn) can't seed the wrong pattern back into shipped code. Fixtures pass the bare CN value (subject: cn) — a self-signed cert derives its issuer from the subject, and a chain fixture passes the issuer name the same bare way so subject/issuer stay DER-equal. The bound is a ReDoS backstop. New fixture with a DN-prefixed string subject/issuer trips this.",
+  },
+  {
+    id: "backup-manifest-read-outside-readfile",
+    primitive: "b.backupManifest.readFile(manifestPath, { errorFor }) (lib/backup/manifest.js) reads and parses a backup manifest.json under MAX_MANIFEST_BYTES, the limit b.backupManifest.serialize enforces on the writer. A reader that calls fdSafeReadSync on the manifest path or backupManifest.parse on text it read itself picks its own limit.",
+    scanScope: "lib",
+    skipCommentLines: true,
+    regex: /\bbackupManifest\.parse\(|fdSafeReadSync\(\s*manifestPath\b/,
+    allowlist: [
+      "lib/backup/manifest.js",
+      "lib/audit-tools.js",
+      "lib/cli.js",
+      "lib/config-drift.js",
+    ],
+    reason: "The backup writer produced a manifest of any size while b.restoreBundle.extract, inspect, b.backup.verifyManifestSignature and the scheduleTest drill each read manifest.json with maxBytes: C.BYTES.mib(4), and backupManifest.parse applied 16 MiB, so a backup of several thousand files wrote a bundle none of them would read. Every reader now goes through backupManifest.readFile. The allowlisted files other than manifest.js read different manifests: the audit-log archive manifest (audit-tools.js, and cli.js audit verify-chain) and lib/vendor/MANIFEST.json (config-drift.js). New fdSafeReadSync(manifestPath, ...) or backupManifest.parse(...) in lib trips this.",
+  },
+  {
+    id: "restore-swap-work-dir-under-os-tmpdir",
+    primitive: "b.restore run() pulls and decrypts under stagingRoot (default: the parent directory of rollbackRoot), which _requireSwappableLayout checks is on dataDir's filesystem, so restoreRollback.swap's renames stay on one device.",
+    scanScope: "lib",
+    skipCommentLines: true,
+    regex: /os\.tmpdir\(\)\s*,\s*["'][^"']*restore-(?:pull|staging)/,
+    allowlist: [],
+    reason: "b.restore pulled a bundle into os.tmpdir()/blamejs-restore-pull-* and decrypted it into os.tmpdir()/blamejs-restore-staging-*, then renamed the staging directory onto dataDir. When os.tmpdir() and dataDir are on different filesystems (a container whose data lives on a volume) the rename fails with EXDEV, and the decrypted files stayed in the temp directory. New staging or pull directory under os.tmpdir() in a restore path trips this.",
+  },
+  {
+    id: "test-skip-recorded-as-passing-check",
+    primitive: "A test establishes its own preconditions (b.auditSign.init into a temp dir, a fixture key, a local server) instead of recording check(\"... skipped ...\", true) and returning when the precondition is absent.",
+    scanScope: "test",
+    skipCommentLines: true,
+    regex: /\bcheck\(\s*["'][^"'\n]*\bskip(?:ped|ping|s)?\b[^"'\n]*["']\s*,\s*true\s*\)/i,
+    allowlist: [
+      "test/layer-5-integration/bundler-output.test.js",
+      "test/layer-0-primitives/daemon.test.js",
+      "test/layer-0-primitives/network-nts.test.js",
+    ],
+    reason: "backup-manifest-signature.test.js recorded check(\"audit-sign not initialized — skipping sign assertion\", true) and returned when b.backupManifest.sign threw backup-manifest/no-signer. The smoke worker forks a fresh process per file and never initializes audit-sign, so every signing, verification, pinning and forged-fingerprint row after that return had never run, and the file reported green on its parser rows alone. The test now initializes audit-sign in a temp dir. A skip recorded as a passing check makes a precondition the test could create look like coverage. The allowlisted files skip on the host itself: an esbuild binary built for another platform, a win32-only process API, and a host with no ::1 loopback. New check(\"...skip...\", true) in a test trips this.",
   },
   {
     // v0.15.13 — the drop-silent, gated, prefixed audit emitter that every

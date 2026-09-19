@@ -158,7 +158,7 @@ function testRefuseSymlinkAndInodeHappyPath() {
       check("fdSafeReadSync: refuseSymlink refuses a symlink source",
             e !== null && e.kind === "symlink");
     } else {
-      check("fdSafeReadSync: symlink case skipped (platform lacks symlink privilege)", true);
+      helpers.unavailable("fdSafeReadSync: symlink case skipped (platform lacks symlink privilege)");
     }
   } finally { dir.cleanup(); }
 }

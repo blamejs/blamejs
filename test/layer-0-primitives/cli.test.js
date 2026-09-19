@@ -1971,18 +1971,27 @@ async function sectionRestoreMore() {
     var dd = path.join(dir, "dd");
     fs.mkdirSync(dd, { recursive: true });
     var rbRoot = path.join(dir, "rbroot");
-    fs.mkdirSync(path.join(rbRoot, "point-0001"), { recursive: true });
+    // The listing reports what rollback() will accept, so the point carries
+    // the timestamp name swap() gives it. A directory someone else put in
+    // the rollback root is not a point and is not listed.
+    var listedPoint = "2026-05-24T15-00-00-000Z";
+    fs.mkdirSync(path.join(rbRoot, listedPoint), { recursive: true });
+    fs.mkdirSync(path.join(rbRoot, "operator-copy"), { recursive: true });
     // A sibling <point>.marker.json carries the operator metadata the listing
     // annotates each point with (bundleId / reason on marker.operator, swappedAt
     // top-level) -- the row previously read a non-existent recordedAt/bundleId.
-    fs.writeFileSync(path.join(rbRoot, "point-0001.marker.json"),
+    fs.writeFileSync(path.join(rbRoot, listedPoint + ".marker.json"),
       JSON.stringify({ swappedAt: "2026-05-24T15:00:00.000Z", operator: { bundleId: "bk-test-123", reason: "unit-test" } }));
     var clr = _captureCtx();
     var rclr = await cli.main(
       ["restore", "list-rollbacks", "--data-dir", dd, "--rollback-root", rbRoot], clr);
     check("restore list-rollbacks (populated) → exit 0", rclr === 0);
-    check("restore list-rollbacks (populated) → point-count header", /rollback points at .*: 1/.test(clr.out()));
-    check("restore list-rollbacks (populated) → lists the point", /point-0001/.test(clr.out()));
+    check("restore list-rollbacks (populated) → point-count header", /rollback points at .*: 1/.test(clr.out()),
+      clr.out());
+    check("restore list-rollbacks (populated) → lists the point",
+      clr.out().indexOf(listedPoint) !== -1, clr.out());
+    check("restore list-rollbacks (populated) → does not list a directory that is not a point",
+      clr.out().indexOf("operator-copy") === -1, clr.out());
     check("restore list-rollbacks (populated) → renders swappedAt from the marker",
       /swappedAt=2026-05-24T15:00:00\.000Z/.test(clr.out()));
     check("restore list-rollbacks (populated) → renders bundleId from marker.operator",
@@ -2124,17 +2133,21 @@ async function sectionRestoreCatches() {
     // empty point in → the OK-rolled-back success arm (exit 0).
     var dd2 = path.join(dir, "dd2");
     fs.mkdirSync(dd2, { recursive: true });
+    // The point carries the name swap() gives it — a timestamp, a direct
+    // child of the rollback root — which is the only form rollback() accepts.
     var rbRoot = path.join(dir, "rbroot");
-    fs.mkdirSync(path.join(rbRoot, "point-0001"), { recursive: true });
-    fs.writeFileSync(path.join(rbRoot, "point-0001.marker.json"),
+    var pointName = "2026-05-24T15-00-00-000Z";
+    fs.mkdirSync(path.join(rbRoot, pointName), { recursive: true });
+    fs.writeFileSync(path.join(rbRoot, pointName + ".marker.json"),
       JSON.stringify({ swappedAt: "2026-05-24T15:00:00.000Z", operator: { bundleId: "bk-1", reason: "unit" } }));
     var crd = _captureCtx();
     var rcrd = await cli.main(
       ["restore", "rollback", "--data-dir", dd2, "--rollback-root", rbRoot], crd);
-    check("restore rollback (default most-recent, point present) → exit 0", rcrd === 0);
+    check("restore rollback (default most-recent, point present) → exit 0", rcrd === 0,
+      crd.err());
     check("restore rollback (default most-recent, point present) → OK line", /OK — rolled back/.test(crd.out()));
     check("restore rollback (default most-recent, point present) → used the point",
-      /point-0001/.test(crd.out()));
+      crd.out().indexOf(pointName) !== -1, crd.out());
   } finally { _rm(dir); }
 }
 
@@ -2939,12 +2952,16 @@ async function sectionRestoreListRollbacksNoMarker() {
     var dd = path.join(dir, "dd");
     fs.mkdirSync(dd, { recursive: true });
     var rbRoot = path.join(dir, "rbroot");
-    fs.mkdirSync(path.join(rbRoot, "point-bare"), { recursive: true });   // no .marker.json
+    // A point whose marker file is missing: still a point by its name, so
+    // the listing shows it with the directory's mtime instead of a marker.
+    var barePoint = "2026-05-24T16-00-00-000Z";
+    fs.mkdirSync(path.join(rbRoot, barePoint), { recursive: true });   // no .marker.json
     var c = _captureCtx();
     var rc = await cli.main(
       ["restore", "list-rollbacks", "--data-dir", dd, "--rollback-root", rbRoot], c);
     check("restore list-rollbacks (markerless point) → exit 0", rc === 0);
-    check("restore list-rollbacks (markerless point) → lists the point", /point-bare/.test(c.out()));
+    check("restore list-rollbacks (markerless point) → lists the point",
+      c.out().indexOf(barePoint) !== -1, c.out());
     check("restore list-rollbacks (markerless point) → no bundleId annotation",
       !/bundleId=/.test(c.out()));
   } finally { _rm(dir); }
@@ -3084,6 +3101,14 @@ function _writeValidManifest(bundleDir) {
     ],
   };
   fs.writeFileSync(path.join(bundleDir, "manifest.json"), JSON.stringify(manifest));
+  // A bundle is the manifest AND the blobs it names, at the sizes it
+  // records: storage reports a directory missing one of them as no bundle
+  // at all, so a fixture that only wrote the manifest is not one.
+  fs.mkdirSync(path.join(bundleDir, "files"), { recursive: true });
+  manifest.files.forEach(function (entry) {
+    fs.writeFileSync(path.join(bundleDir, entry.encryptedPath),
+      Buffer.alloc(entry.encryptedSize, 0x7a));
+  });
 }
 
 async function sectionBackupInspectSuccess() {

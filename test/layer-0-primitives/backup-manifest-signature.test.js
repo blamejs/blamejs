@@ -10,6 +10,9 @@ var helpers = require("../helpers");
 var nodeCrypto = require("node:crypto");
 var b     = helpers.b;
 var check = helpers.check;
+var fs    = helpers.fs;
+var os    = helpers.os;
+var path  = helpers.path;
 
 async function run() {
   check("backupManifest.sign is fn",            typeof b.backupManifest.sign === "function");
@@ -198,20 +201,24 @@ async function run() {
   check("parse strips __proto__ (no prototype pollution)",
     ({}).polluted === undefined && covPolled.version === 1);
 
-  // Oversized manifest (> the 16 MiB parse cap) is refused, not OOM'd.
-  _covRefuses("parse refuses an oversized manifest (>16 MiB)", function () {
-    b.backupManifest.parse('{"version":1,"blob":"' + "a".repeat(0x1100000) + '"}');
+  // A manifest above MAX_MANIFEST_BYTES is refused before JSON parsing.
+  check("MAX_MANIFEST_BYTES is 64 MiB", b.backupManifest.MAX_MANIFEST_BYTES === b.constants.BYTES.mib(64));
+  _covRefuses("parse refuses a manifest above MAX_MANIFEST_BYTES", function () {
+    b.backupManifest.parse('{"version":1,"blob":"' + "a".repeat(b.backupManifest.MAX_MANIFEST_BYTES) + '"}');
   }, "backup-manifest/bad-json");
 
-  // We need an audit-sign-initialized process to sign. helpers.b
-  // initializes audit-sign during the smoke runner setup; if not
-  // initialized, this test is a smoke-skipped no-op that logs and
-  // returns.
-  if (!b.auditSign || typeof b.auditSign.sign !== "function") {
-    check("audit-sign not wired in this runner — skipping signature test", true);
-    return;
+  var signerDir = fs.mkdtempSync(path.join(os.tmpdir(), "bms-audit-sign-"));
+  b.auditSign._resetForTest();
+  try {
+    await b.auditSign.init({ dataDir: signerDir, mode: "plaintext" });
+    await _signatureRows();
+  } finally {
+    b.auditSign._resetForTest();
+    try { fs.rmSync(signerDir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
   }
+}
 
+async function _signatureRows() {
   // Build a valid manifest fixture (no signature)
   var fixture = b.backupManifest.create({
     vaultKeySalt: "0011aabb",
@@ -231,22 +238,9 @@ async function run() {
   });
   check("create() succeeds without signature", fixture.signature === undefined);
 
-  // Sign — best-effort. When audit-sign is not initialized in this
-  // smoke runner (CLI / standalone test), the manifest signer surfaces
-  // either backup-manifest/no-signer or backup-manifest/sign-failed
-  // depending on how the audit-sign module was loaded. Either path
-  // means the runner doesn't have a live keypair; skip the rest.
-  try { b.backupManifest.sign(fixture); }
-  catch (e) {
-    var skipCodes = ["backup-manifest/no-signer", "backup-manifest/sign-failed"];
-    if (e && skipCodes.indexOf(e.code) !== -1) {
-      check("audit-sign not initialized — skipping sign assertion", true);
-      return;
-    }
-    throw e;
-  }
+  b.backupManifest.sign(fixture);
   check("sign() attaches signature block",     !!fixture.signature);
-  check("signature carries algorithm",         typeof fixture.signature.algorithm === "string");
+  check("signature carries the audit-sign algorithm", fixture.signature.algorithm === b.auditSign.getAlgorithm());
   check("signature carries publicKey PEM",     fixture.signature.publicKey.indexOf("-----BEGIN") === 0);
   check("signature carries fingerprint",       typeof fixture.signature.fingerprint === "string");
   check("signature carries base64 value",      typeof fixture.signature.value === "string" && fixture.signature.value.length > 0);
@@ -334,11 +328,11 @@ async function run() {
   // block passes pinning.
   var trustedFp = b.auditSign.getPublicKeyFingerprint();
   var atkBytes = Buffer.from("attacker-controlled-payload", "utf8");
-  var atk = nodeCrypto.generateKeyPairSync("ed25519");
+  var atk = nodeCrypto.generateKeyPairSync("ml-dsa-65");
   var atkPubPem = atk.publicKey.export({ type: "spki", format: "pem" }).toString();
   var atkSig = nodeCrypto.sign(null, atkBytes, atk.privateKey);
   var forged = {
-    algorithm: "ed25519", publicKey: atkPubPem,
+    algorithm: "ml-dsa-65", publicKey: atkPubPem,
     fingerprint: trustedFp,                     // the lie
     value: atkSig.toString("base64"), signedAt: new Date(0).toISOString(),
   };
@@ -355,27 +349,42 @@ async function run() {
   forgedManifest.signature = forged;
   var forgedMRes = b.backupManifest.verifySignature(forgedManifest, { expectedFingerprint: trustedFp });
   check("verifySignature rejects a forged-fingerprint manifest under pinning", forgedMRes.ok === false);
+  var unpinnedForged = b.backupManifest.verifyBytes(atkBytes, forged);
+  check("verifyBytes rejects a block whose key is not an audit-sign key",
+        unpinnedForged.ok === false && /not the active or a rotated audit-sign key/.test(unpinnedForged.reason || ""));
+
+  // A key type audit-sign does not sign with is refused before any key lookup.
+  var edKey = nodeCrypto.generateKeyPairSync("ed25519");
+  var edBlock = {
+    algorithm: "ed25519", publicKey: edKey.publicKey.export({ type: "spki", format: "pem" }).toString(),
+    fingerprint: trustedFp,
+    value: nodeCrypto.sign(null, atkBytes, edKey.privateKey).toString("base64"), signedAt: new Date(0).toISOString(),
+  };
+  var edRes = b.backupManifest.verifyBytes(atkBytes, edBlock);
+  check("verifyBytes refuses an Ed25519 block by algorithm",
+        edRes.ok === false && /is not an audit-sign algorithm/.test(edRes.reason || ""));
 
   // b.auditSign.fingerprintOf recomputes the fingerprint from a PEM, no init.
   check("auditSign.fingerprintOf is a function", typeof b.auditSign.fingerprintOf === "function");
   check("auditSign.fingerprintOf(active pubkey) == active fingerprint",
         b.auditSign.fingerprintOf(b.auditSign.getPublicKey()) === trustedFp);
 
-  // Verifier-only path: a process that never ran auditSign.init() must still be
-  // able to verify a detached block (it holds only a trusted public key). Reset
-  // LAST so earlier checks keep their initialized signer.
+  // Verifier-only path: a process that never ran auditSign.init() verifies a
+  // detached block under a pinned fingerprint, and refuses one without a pin.
+  // Reset LAST so earlier checks keep their initialized signer.
   var honestBytes = Buffer.from("downstream-verifier-payload", "utf8");
   var honestBlock = b.backupManifest.signBytes(honestBytes);
   b.auditSign._resetForTest();
   var reThrew = null;
   try { b.auditSign.getPublicKey(); } catch (e) { reThrew = e; }
   check("verifier-only precondition: audit-sign is uninitialized", reThrew !== null);
-  check("verifyBytes works in a verifier-only process (no init)",
-        b.backupManifest.verifyBytes(honestBytes, honestBlock).ok === true);
+  var unpinned = b.backupManifest.verifyBytes(honestBytes, honestBlock);
+  check("verifyBytes without a pin is refused in a verifier-only process",
+        unpinned.ok === false && /expectedFingerprint/.test(unpinned.reason || ""));
   check("verifyBytes pinned works in a verifier-only process",
         b.backupManifest.verifyBytes(honestBytes, honestBlock, { expectedFingerprint: trustedFp }).ok === true);
-  check("verifyBytes still rejects tampered bytes in a verifier-only process",
-        b.backupManifest.verifyBytes(Buffer.from("tampered"), honestBlock).ok === false);
+  check("verifyBytes pinned still rejects tampered bytes in a verifier-only process",
+        b.backupManifest.verifyBytes(Buffer.from("tampered"), honestBlock, { expectedFingerprint: trustedFp }).ok === false);
 }
 
 module.exports = { run: run };

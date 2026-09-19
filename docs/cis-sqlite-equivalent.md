@@ -25,7 +25,7 @@ produces.
 | DB file readable only by owning process | AC-3 | `b.db.init({ atRest: "encrypted" })` writes db.enc with mode 0600 (atomicFile.writeSync). Plaintext DB lives in tmpfs (`/dev/shm/blamejs-*` on Linux) — wiped on every clean shutdown via `removePlaintextFiles`. |
 | Encryption-at-rest with PQC primitives | SC-28 | Default mode = `encrypted`. XChaCha20-Poly1305 + Argon2id (RFC 9106). Operator-supplied passphrase via `BLAMEJS_VAULT_PASSPHRASE_*` env. |
 | Backup encryption mandatory under regulated postures | SC-28(1) | `b.compliance.set("hipaa")` / `pci-dss` causes `b.backup.create` to refuse `encrypt: false` (F-BUDR-4). |
-| Backup integrity protection | SC-12 | Manifest is signed with the audit-sign keypair (ML-DSA-87 / SLH-DSA-SHAKE-256f). `b.backupBundle.verifyManifestSignature` rejects tampered bundles. |
+| Backup integrity protection | SC-12 | Manifest is signed with the audit-sign keypair (SLH-DSA-SHAKE-256f by default, ML-DSA-87 and ML-DSA-65 supported). `b.backup.verifyManifestSignature` rejects a tampered bundle, and a signature under any key other than a pinned fingerprint or an active or rotated audit-sign key. |
 | Periodic backup test | CP-9(1) | `b.backup.scheduleTest({ cron, restoreTo, verify, posture })` emits `backup.test.passed` / `.failed` audit rows (HIPAA §164.308(a)(7)(ii)(D)). |
 
 ## Audit & accountability
