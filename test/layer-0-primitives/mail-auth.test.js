@@ -3772,13 +3772,27 @@ function testAuthResultsEmitFormatting() {
   check("authResults.emit: empty results → '; none'",
         E({ authservId: "mx.a", results: [] }) === "Authentication-Results: mx.a; none");
   // ptype.property=value triples for the recognized shorthand keys.
+  // `smtp.mailfrom` is the envelope ADDRESS (RFC 8601 section 2.7.1);
+  // `header.from` is the From DOMAIN (IANA Email Authentication Methods
+  // registry; RFC 7489 section 3.1 aligns on the domain). This row used to
+  // pass an address for both, which is what the emitted header carried until
+  // a consumer's parseDomain refused it and its reports went uncounted.
   var props = E({ authservId: "mx.a", results: [
     { method: "spf",   result: "pass", smtpMailfrom: "u@s.example" },
-    { method: "dmarc", result: "pass", from: "u@s.example" },
+    { method: "dmarc", result: "pass", from: "s.example" },
   ] });
   check("authResults.emit: property keys mapped to RFC 8601 §2.3 ptype.property",
         /spf=pass smtp\.mailfrom=u@s\.example/.test(props) &&
-        /dmarc=pass header\.from=u@s\.example/.test(props));
+        /dmarc=pass header\.from=s\.example/.test(props));
+  var addressUnderDomain = null;
+  try {
+    E({ authservId: "mx.a",
+        results: [{ method: "dmarc", result: "pass", from: "u@s.example" }] });
+  } catch (e) { addressUnderDomain = e; }
+  check("authResults.emit: an address under header.from is refused",
+        addressUnderDomain !== null &&
+        addressUnderDomain.code === "mail-auth/ar-address-in-domain-property",
+        addressUnderDomain && addressUnderDomain.code);
   // A reason string with an embedded DQUOTE is backslash-escaped (§2.2).
   var reason = E({ authservId: "mx.a", results: [{ method: "dkim", result: "fail", reason: 'key "rotated"' }] });
   check("authResults.emit: reason DQUOTE escaped as \\\" (RFC 8601 §2.2)",
