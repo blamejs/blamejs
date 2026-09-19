@@ -93,6 +93,12 @@ async function testTheIdentityMatchIsNormalizedLikeSmtp() {
       identityId: "I4", mailFrom: "ceo@bank.example", want: "forbiddenMailFrom" },
     { label: "a different mailbox at the identity's domain",
       identityId: "I1", mailFrom: "ceo@example.com", want: "forbiddenMailFrom" },
+    // RFC 5321 section 2.4 makes the domain case-insensitive and leaves the
+    // local part to the receiving host, so only the domain is folded. Folding
+    // the local part as well would let `OPS@example.com` pass as the identity
+    // on a host that treats it as a different mailbox.
+    { label: "the identity's local part in another case",
+      identityId: "I1", mailFrom: "OPS@example.com", want: "forbiddenMailFrom" },
   ];
 
   var wrong = [];

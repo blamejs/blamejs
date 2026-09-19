@@ -18,7 +18,7 @@
         },
         {
           "title": "EmailSubmission/set compares the envelope sender with the identity by address",
-          "body": "`envelope.mailFrom` was compared with the identity's address as an exact string, so a sender differing only in case or in an internationalized domain's form was refused, while an identity carrying no address accepted any sender. The comparison now normalizes both sides, reads `*@domain` as RFC 8621 §6 defines it, and refuses an identity with no address. The `From` header is checked against the identity as well, and a message whose `From` it does not cover is `forbiddenFrom`."
+          "body": "`envelope.mailFrom` was compared with the identity's address as an exact string, so a sender whose domain differed only in case, or gave an internationalized domain in its A-label form, was refused, while an identity carrying no address accepted any sender. The comparison now folds the domain's case and its A-label form, per RFC 5321 §2.4, folds a subaddress when a delimiter is configured, reads `*@domain` as RFC 8621 §6 defines it, and refuses an identity with no address. The local part keeps its case, which RFC 5321 §2.4 leaves to the receiving host. The `From` header is checked against the identity as well, and a message whose `From` it does not cover is `forbiddenFrom`."
         }
       ]
     },
@@ -46,6 +46,22 @@
           "body": "`urn:ietf:params:jmap:core` was an empty object, so a client could read none of the limits it has to obey. It now carries `maxSizeUpload`, `maxConcurrentUpload`, `maxSizeRequest`, `maxConcurrentRequests`, `maxCallsInRequest`, `maxObjectsInGet`, `maxObjectsInSet` and `collationAlgorithms`, built from the profile the listener enforces and from `maxBlobBytes`. `create` refuses a `serverCapabilities` core value that differs from what the listener applies."
         },
         {
+          "title": "A compliance posture the guard does not know is refused by name",
+          "body": "`b.gateContract.makeProfileResolver` and `b.gateContract.resolveProfileName` dropped a `posture` value their table did not hold and fell through to `profile` or the default, and the 24 guards built on them inherited that. An operator who wrote `{ profile: \"permissive\", posture: \"hippa\" }`, or `\"HIPAA\"` in the wrong case, ran permissive with no signal that the posture had been ignored. Both resolvers now throw `<guard>/bad-posture` naming the value and the postures the guard accepts. `b.guardJmap`, `b.guardImapCommand`, `b.guardPop3Command` and `b.guardManageSieveCommand` each resolved the profile and posture with their own copy of the same code and kept dropping it; all four now use the shared resolver. A posture that is absent, null or empty is not a value and is not refused."
+        },
+        {
+          "title": "A guard profile cannot be edited from outside the guard",
+          "body": "`b.guardJmap.limitsFor` returned the profile object itself, so `limitsFor({}).maxCallsInRequest = 9999` raised the cap the guard enforces for every listener in the process. The profiles are frozen."
+        },
+        {
+          "title": "The JMAP WebSocket transport applies the request size the session declares",
+          "body": "The WebSocket path carried its own 10 MiB limit in the upgrade cap, the frame-length check and the parse, while the session publishes the profile's `maxSizeRequest`. Under the balanced profile a client was told 50 MiB and refused at 10 MiB. All three read the profile's limit, and `webSocketMaxMessageBytes` overrides it."
+        },
+        {
+          "title": "A mail-store move between accounts is refused",
+          "body": "A move kept the message's thread scope, so a message moved from one account's folder into another's sat in the second account's mailbox carrying the first account's thread, and `threadFor` on it listed the first account's messages. A move between folders with different owners throws `mail-store/cross-account-move`; RFC 8621 §5.4 gives `Email/copy` as the cross-account move, and it makes a new Email id."
+        },
+        {
           "title": "A result reference path applies the whole pointer",
           "body": "`*` returned the array itself and dropped the tokens after it, so the chain RFC 8620 §3.7 uses as its example, `Email/query` to `Email/get` to `Thread/get` to `Email/get` through `/list/*/threadId` and `/list/*/emailIds`, passed the previous method's objects instead of thread ids and message ids. `*` now applies the rest of the pointer to every item and flattens array results into one array. A path no item satisfies fails the call with `invalidResultReference` rather than resolving to the array, an array index follows the RFC 6901 grammar, and an arguments object carrying both `ids` and `#ids` is `invalidArguments`."
         }
@@ -66,6 +82,10 @@
         {
           "title": "A client that matched the old JMAP error strings",
           "body": "A client matching `urn:ietf:params:jmap:error:unknownMethod` and the other method-level URIs should match the bare names instead. A client matching `guard-jmap/bad-json`, `guard-jmap/bad-input` or `urn:ietf:params:jmap:error:requestTooLarge` on a refused request should match `notJSON`, `notRequest` and `limit`. A refused request no longer carries `methodResponses` or `sessionState`."
+        },
+        {
+          "title": "A misspelled compliance posture now throws at config time",
+          "body": "A guard call that passes a `posture` outside its table throws `<guard>/bad-posture` where it used to run the default profile silently. If a deployment has been passing one, the message names the value and the postures that guard accepts: `hipaa`, `pci-dss`, `gdpr`, `soc2`. Passing no posture is unchanged."
         },
         {
           "title": "A mail store that holds more than one account",

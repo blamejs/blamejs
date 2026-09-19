@@ -191,6 +191,42 @@ async function testACoreValueThatDisagreesWithTheListenerIsRefused() {
         threw && threw.message);
 }
 
+function testLimitsForCannotBeTurnedIntoALie() {
+  // `limitsFor` handed back the shared profile object, so a caller could
+  // write `limitsFor({}).maxCallsInRequest = 9999` and raise the cap the
+  // guard enforces for every listener in the process. And an unrecognized
+  // posture was dropped, so `{ profile: "permissive", posture: "hippa" }`
+  // ran permissive while the caller believed a compliance posture applied.
+  var first = b.guardJmap.limitsFor({ profile: "strict" });
+  var before = first.maxCallsInRequest;
+  try { first.maxCallsInRequest = 9999; } catch (_e) { /* frozen */ }
+  check("a caller cannot raise the cap the guard enforces",
+        b.guardJmap.limitsFor({ profile: "strict" }).maxCallsInRequest === before,
+        String(b.guardJmap.limitsFor({ profile: "strict" }).maxCallsInRequest));
+
+  var threwPosture = null;
+  try { b.guardJmap.limitsFor({ profile: "permissive", posture: "hippa" }); }
+  catch (e) { threwPosture = e; }
+  check("an unrecognized posture is refused by name rather than dropped",
+        threwPosture !== null && threwPosture.code === "guard-jmap/bad-posture",
+        threwPosture && (threwPosture.code + " " + threwPosture.message));
+
+  var threwValidate = null;
+  try {
+    b.guardJmap.validate({ using: [], methodCalls: [["x", {}, "c0"]] },
+      { profile: "permissive", posture: "hippa" });
+  } catch (e) { threwValidate = e; }
+  check("validate refuses it on the same footing",
+        threwValidate !== null && threwValidate.code === "guard-jmap/bad-posture",
+        threwValidate && threwValidate.code);
+
+  var threwCreate = null;
+  try { _server([], { posture: "hippa" }); } catch (e) { threwCreate = e; }
+  check("and the listener refuses it at create",
+        threwCreate !== null && /hippa/.test(threwCreate.message || ""),
+        threwCreate && threwCreate.message);
+}
+
 function testTheWebSocketCapIsTheDeclaredOne() {
   // The WebSocket transport carried its own 10 MiB literal in three places
   // while the session published the profile's maxSizeRequest, so under the
@@ -244,6 +280,7 @@ function testEveryProfileKnobIsRead() {
 }
 
 async function run() {
+  testLimitsForCannotBeTurnedIntoALie();
   testTheWebSocketCapIsTheDeclaredOne();
   testEveryProfileKnobIsRead();
   await testGetIsBoundedByMaxObjectsInGet();

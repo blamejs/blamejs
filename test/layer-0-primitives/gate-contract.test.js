@@ -269,8 +269,14 @@ function testMakeProfileResolverAndName() {
   check("makeProfileResolver: posture-first", resolver({ posture: "hipaa" }) === "strict");
   check("makeProfileResolver: explicit profile", resolver({ profile: "balanced" }) === "balanced");
   check("makeProfileResolver: default fallback", resolver({}) === "strict");
-  check("makeProfileResolver: unmapped posture falls to default",
-    resolver({ posture: "nope" }) === "strict");
+  // This row used to assert that an unmapped posture fell through to the
+  // default. Falling through is what makes the option a lie: an operator
+  // who writes `{ profile: "permissive", posture: "hippa" }` gets permissive
+  // and no signal that the posture was ignored.
+  var threwPosture = false;
+  try { resolver({ posture: "nope" }); }
+  catch (e) { threwPosture = e.code === "csv/bad-posture"; }
+  check("makeProfileResolver: unmapped posture throws bad-posture", threwPosture);
   var threw = false;
   try { resolver({ profile: "ghost" }); }
   catch (e) { threw = e.code === "csv/bad-profile"; }
@@ -292,8 +298,14 @@ function testMakeProfileResolverAndName() {
     GC.resolveProfileName({ posture: "hipaa" }, POSTURES, "strict") === "strict");
   check("resolveProfileName: default when neither",
     GC.resolveProfileName({}, POSTURES, "strict") === "strict");
-  check("resolveProfileName: prototype-key posture → default (proto-shadow safe)",
-    GC.resolveProfileName({ posture: "constructor" }, {}, "strict") === "strict");
+  // A prototype key is not a posture the table holds, so it is refused like
+  // any other unknown value rather than reaching Object.prototype.
+  var threwProto = null;
+  try { GC.resolveProfileName({ posture: "constructor" }, {}, "strict"); }
+  catch (e) { threwProto = e; }
+  check("resolveProfileName: prototype-key posture is refused (proto-shadow safe)",
+    threwProto !== null && threwProto.code === "gate-contract/bad-posture",
+    threwProto && threwProto.code);
   check("resolveProfileName: null opts → default",
     GC.resolveProfileName(null, POSTURES, "strict") === "strict");
 }
@@ -2739,7 +2751,59 @@ async function run() {
   testDefineGuardAmplificationCapIsARatio();
   await testResidualBranches();
   testDefineParser();
+  testAnUnknownPostureIsRefusedByName();
   testMakeIssueReporter();
+}
+
+// A posture the table does not hold was dropped, and the resolver fell
+// through to `opts.profile` or the default. An operator who wrote
+// `{ profile: "permissive", posture: "hippa" }` ran permissive while
+// believing a compliance posture applied, and the guard said nothing. Both
+// resolvers are config-time readers, so they refuse the value by name.
+function testAnUnknownPostureIsRefusedByName() {
+  var PROFILES = { strict: { cap: 1 }, permissive: { cap: 9 } };
+  var POSTURES = { hipaa: "strict", "pci-dss": "strict" };
+  var resolve = GC.makeProfileResolver({
+    profiles: PROFILES, postures: POSTURES, defaults: "strict",
+    errorClass: GCE, codePrefix: "gate-contract", byObject: true,
+  });
+
+  check("a known posture still selects its profile",
+        resolve({ posture: "hipaa" }).cap === 1);
+  check("no posture still takes the profile",
+        resolve({ profile: "permissive" }).cap === 9);
+  check("neither takes the default",
+        resolve({}).cap === 1);
+
+  var threw = null;
+  try { resolve({ profile: "permissive", posture: "hippa" }); } catch (e) { threw = e; }
+  check("an unknown posture is refused rather than dropped",
+        threw !== null && /bad-posture/.test((threw && threw.code) || ""),
+        threw && (threw.code + " " + threw.message));
+
+  var threwCase = null;
+  try { resolve({ posture: "HIPAA" }); } catch (e) { threwCase = e; }
+  check("a posture in the wrong case is refused too, not silently dropped",
+        threwCase !== null && /bad-posture/.test((threwCase && threwCase.code) || ""),
+        threwCase && threwCase.code);
+
+  var threwType = null;
+  try { resolve({ posture: 7 }); } catch (e) { threwType = e; }
+  check("a non-string posture is refused", threwType !== null);
+
+  check("an absent posture is not a value, so it is not refused",
+        resolve({ posture: null }).cap === 1 && resolve({ posture: undefined }).cap === 1);
+
+  // resolveProfileName answers the same question for the factories that
+  // check membership themselves, so it refuses on the same footing.
+  check("resolveProfileName maps a known posture",
+        GC.resolveProfileName({ posture: "hipaa" }, POSTURES, "permissive") === "strict");
+  var threwName = null;
+  try { GC.resolveProfileName({ posture: "hippa" }, POSTURES, "permissive"); }
+  catch (e) { threwName = e; }
+  check("resolveProfileName refuses an unknown posture",
+        threwName !== null && /bad-posture/.test((threwName && threwName.code) || ""),
+        threwName && threwName.code);
 }
 
 function testMakeIssueReporter() {

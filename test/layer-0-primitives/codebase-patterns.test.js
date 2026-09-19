@@ -11602,8 +11602,18 @@ async function testNoDuplicateCodeBlocks() {
       // `{ quoteName: true, … }`-shaped policy options object) — same token
       // shape, no shared logic.
       mode:  "family-subset",
+      // `external-db.js:_emitMetric` joins the same fingerprint because the
+      // statement-class keyword map is declared right after it, so the
+      // shingle that spans the map anchors on that function. The three
+      // line-protocol guards' tops also carry the identical
+      // `makeProfileResolver({ profiles, postures, defaults, errorClass,
+      // codePrefix })` construction, which is the composition of the
+      // extracted primitive rather than logic to extract again: wrapping a
+      // single factory call in another factory buys nothing, and the
+      // per-guard arguments are the irreducible part.
       files: [
         "lib/external-db.js:_cteMainKeyword",
+        "lib/external-db.js:_emitMetric",
         "lib/guard-imap-command.js:<top>",
         "lib/guard-managesieve-command.js:<top>",
         "lib/guard-pop3-command.js:<top>",
