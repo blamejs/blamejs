@@ -31,7 +31,7 @@
         },
         {
           "title": "A JMAP method error is the bare name RFC 8620 §3.6.2 defines",
-          "body": "A method error was written as the request-level URI, `urn:ietf:params:jmap:error:unknownMethod`, where §3.6.2 writes `[ \"error\", { \"type\": \"unknownMethod\" }, \"c0\" ]`. A client matching the names the RFC prints, and the names RFC 8621 defines for the Email and Mailbox set errors, matched none of them. Method errors are now bare names, and a handler that returns or throws one has that name sent to the client rather than `serverFail`."
+          "body": "A method error was written as the request-level URI, `urn:ietf:params:jmap:error:unknownMethod`, where §3.6.2 writes `[ \"error\", { \"type\": \"unknownMethod\" }, \"c0\" ]`. A client matching the names the RFC prints, and the names RFC 8621 defines for the Email and Mailbox set errors, matched none of them. Method errors are now bare names, and a handler that returns or throws one has that name sent to the client rather than `serverFail`. A returned result counts as an error only when it carries an error name and nothing besides `description` and `properties`, so a result whose own data happens to include a `type` is still a result."
         },
         {
           "title": "maxObjectsInGet and maxObjectsInSet are applied",

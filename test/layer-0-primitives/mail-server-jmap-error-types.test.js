@@ -133,11 +133,40 @@ async function testMethodErrorsUseTheBareNames() {
         rv.methodResponses[2][0] === "error", JSON.stringify(rv.methodResponses[2]));
 }
 
+async function testOnlyAnErrorShapedResultIsReadAsAnError() {
+  // A handler signals a method error by returning the error object RFC 8620
+  // section 3.6.2 describes: a `type`, and at most the `description` and
+  // `properties` that go with it. Reading any result that merely carries a
+  // `type` as an error turns a success into a failure whenever the value is
+  // caller-influenced: `Core/echo` echoes its arguments, so a client that
+  // sent `{ "type": "notFound" }` got an error response built from its own
+  // request.
+  var jmap = _server();
+  var rv = await jmap.dispatch({ id: "actor1" }, {
+    using:       ["urn:ietf:params:jmap:core"],
+    methodCalls: [["Core/echo", { type: "notFound", hi: 1 }, "c0"]],
+  });
+  var response = rv.methodResponses[0];
+  check("a result that carries other members is a result, not an error",
+        response[0] === "Core/echo" && response[1].hi === 1,
+        JSON.stringify(response));
+
+  var refusal = await jmap.dispatch({ id: "actor1" }, {
+    using:       ["urn:ietf:params:jmap:core"],
+    methodCalls: [["Mailbox/get", { accountId: "A1" }, "c0"]],
+  });
+  check("a result carrying only the error members is still an error",
+        refusal.methodResponses[0][0] === "error" &&
+        refusal.methodResponses[0][1].type === "invalidArguments",
+        JSON.stringify(refusal.methodResponses[0]));
+}
+
 async function run() {
   await testRequestLevelTypesAreTheFourRfcTypes();
   await testTheRefusalIsAProblemDetailsObject();
   await testTheApiHandlerSendsProblemJson();
   await testMethodErrorsUseTheBareNames();
+  await testOnlyAnErrorShapedResultIsReadAsAnError();
 }
 
 module.exports = { run: run };
