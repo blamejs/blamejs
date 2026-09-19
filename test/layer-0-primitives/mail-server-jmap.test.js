@@ -102,7 +102,7 @@ async function testBadBackRefRefused() {
   });
   check("second call surfaces invalidResultReference",
     rv.methodResponses[1][0] === "error" &&
-    rv.methodResponses[1][1].type === "urn:ietf:params:jmap:error:invalidResultReference");
+    rv.methodResponses[1][1].type === "invalidResultReference");
 }
 
 async function testUnknownMethod() {
@@ -117,7 +117,7 @@ async function testUnknownMethod() {
   });
   check("unknownMethod returned for unwired method",
     rv.methodResponses[0][0] === "error" &&
-    rv.methodResponses[0][1].type === "urn:ietf:params:jmap:error:unknownMethod");
+    rv.methodResponses[0][1].type === "unknownMethod");
 }
 
 async function testMethodThrewMaskedAsServerFail() {
@@ -134,7 +134,7 @@ async function testMethodThrewMaskedAsServerFail() {
   });
   check("method throw masked as serverFail",
     rv.methodResponses[0][0] === "error" &&
-    rv.methodResponses[0][1].type === "urn:ietf:params:jmap:error:serverFail");
+    rv.methodResponses[0][1].type === "serverFail");
   check("internal stack trace not leaked in description",
     !/internal stack-trace/.test(rv.methodResponses[0][1].description));
 }
@@ -177,7 +177,7 @@ async function testDispatchForeignAccountRefused() {
   });
   check("foreign accountId → accountNotFound",
     rv.methodResponses[0][0] === "error" &&
-    rv.methodResponses[0][1].type === "urn:ietf:params:jmap:error:accountNotFound");
+    rv.methodResponses[0][1].type === "accountNotFound");
   check("foreign accountId → method handler NOT reached", reached === false);
   check("response echoes clientId on the gate error",
     rv.methodResponses[0][2] === "c0");
@@ -221,7 +221,7 @@ async function testDispatchForeignFromAccountRefused() {
   });
   check("Email/copy foreign fromAccountId → accountNotFound",
     rv.methodResponses[0][0] === "error" &&
-    rv.methodResponses[0][1].type === "urn:ietf:params:jmap:error:accountNotFound");
+    rv.methodResponses[0][1].type === "accountNotFound");
   check("Email/copy foreign fromAccountId → handler NOT reached", reached === false);
 }
 
@@ -1065,13 +1065,13 @@ async function testApiHandler() {
     check("api happy → result echoed", okBody.methodResponses[0][1].hi === 7);
     check("api happy → sessionState", typeof okBody.sessionState === "string");
 
-    // 3c. guard refusal (no `using`) → 400 invalidArguments
+    // 3c. guard refusal (no `using`) → 400 notRequest, as problem details
     var rBad = await _req(s.port, {
       method: "POST", path: "/jmap/api", headers: { "content-type": "application/json" },
       body: JSON.stringify({ methodCalls: [["Core/echo", {}, "c0"]] }),
     });
     check("api guard-refusal → 400", rBad.status === 400);
-    check("api guard-refusal → invalidArguments", /jmap:error:invalidArguments/.test(rBad.body));
+    check("api guard-refusal → notRequest", /jmap:error:notRequest/.test(rBad.body));
 
     // 3d. no actor → forbidden mapped to 401
     var rForbidden = await _req(s.port, {
@@ -1090,7 +1090,7 @@ async function testApiHandler() {
     var opErrBody = JSON.parse(rOpErr.body);
     check("api operator-error-shape preserved",
       opErrBody.methodResponses[0][0] === "error" &&
-      opErrBody.methodResponses[0][1].type === "urn:ietf:params:jmap:error:invalidArguments");
+      opErrBody.methodResponses[0][1].type === "invalidArguments");
   } finally { await _stop(s.server); }
 
   // 3f. accountsFor throws inside dispatch → serverFail refusal (mapped 400)
@@ -1105,7 +1105,10 @@ async function testApiHandler() {
       method: "POST", path: "/jmap/api", headers: { "content-type": "application/json" },
       body: JSON.stringify({ using: [], methodCalls: [["Core/echo", {}, "c0"]] }),
     });
-    check("api accountsFor-throw → 400 (serverFail refusal)", rat.status === 400);
+    // The account backend failing is a server fault, so the problem details
+    // carry the 500 RFC 8620 section 3.6.1 pairs with serverFail, not a 400
+    // that blames the request.
+    check("api accountsFor-throw → 500 (serverFail refusal)", rat.status === 500);
     check("api accountsFor-throw → serverFail", /jmap:error:serverFail/.test(rat.body));
     check("api accountsFor-throw → account authorization unavailable",
       /account authorization unavailable/.test(rat.body));
@@ -1159,7 +1162,7 @@ async function testBackRefsAndPointer() {
       ] }),
     });
     check("backref into non-object → invalidResultReference",
-      JSON.parse(rNon.body).methodResponses[1][1].type === "urn:ietf:params:jmap:error:invalidResultReference");
+      JSON.parse(rNon.body).methodResponses[1][1].type === "invalidResultReference");
 
     // 4c. malformed back-ref value (missing `path`) → invalidResultReference
     var rMissing = await _req(s.port, {
@@ -1170,7 +1173,7 @@ async function testBackRefsAndPointer() {
       ] }),
     });
     check("backref missing path → invalidResultReference",
-      JSON.parse(rMissing.body).methodResponses[1][1].type === "urn:ietf:params:jmap:error:invalidResultReference");
+      JSON.parse(rMissing.body).methodResponses[1][1].type === "invalidResultReference");
 
     // 4d. back-ref value is an ARRAY (not the { resultOf, name, path } object)
     var rArr = await _req(s.port, {
@@ -1181,7 +1184,7 @@ async function testBackRefsAndPointer() {
       ] }),
     });
     check("backref value-is-array → invalidResultReference",
-      JSON.parse(rArr.body).methodResponses[1][1].type === "urn:ietf:params:jmap:error:invalidResultReference");
+      JSON.parse(rArr.body).methodResponses[1][1].type === "invalidResultReference");
 
     // 4e. back-ref name mismatch (prior clientId produced a different method)
     var rName = await _req(s.port, {
@@ -1192,7 +1195,7 @@ async function testBackRefsAndPointer() {
       ] }),
     });
     check("backref name-mismatch → invalidResultReference",
-      JSON.parse(rName.body).methodResponses[1][1].type === "urn:ietf:params:jmap:error:invalidResultReference");
+      JSON.parse(rName.body).methodResponses[1][1].type === "invalidResultReference");
 
     // 4e2. back-ref array index is non-numeric → undefined → invalidResultReference
     var rNaN = await _req(s.port, {
@@ -1203,7 +1206,7 @@ async function testBackRefsAndPointer() {
       ] }),
     });
     check("backref non-numeric array index → invalidResultReference",
-      JSON.parse(rNaN.body).methodResponses[1][1].type === "urn:ietf:params:jmap:error:invalidResultReference");
+      JSON.parse(rNaN.body).methodResponses[1][1].type === "invalidResultReference");
 
     // 4f. unknown method → unknownMethod
     var rUnknown = await _req(s.port, {
@@ -1211,7 +1214,7 @@ async function testBackRefsAndPointer() {
       body: JSON.stringify({ using: [], methodCalls: [["Nope/nope", {}, "c0"]] }),
     });
     check("unknown method → unknownMethod",
-      JSON.parse(rUnknown.body).methodResponses[0][1].type === "urn:ietf:params:jmap:error:unknownMethod");
+      JSON.parse(rUnknown.body).methodResponses[0][1].type === "unknownMethod");
   } finally { await _stop(s.server); }
 }
 
@@ -2147,7 +2150,7 @@ async function testDispatchMethodEntryNonFunctionSkipped() {
     rv.methodResponses[0][0] === "Good/x" && rv.methodResponses[0][1].ok === 1);
   check("non-function method entry unregistered → unknownMethod",
     rv.methodResponses[1][0] === "error" &&
-    rv.methodResponses[1][1].type === "urn:ietf:params:jmap:error:unknownMethod");
+    rv.methodResponses[1][1].type === "unknownMethod");
 }
 
 async function testDispatchAccountGateEdges() {
@@ -2162,7 +2165,7 @@ async function testDispatchAccountGateEdges() {
     using: [], methodCalls: [["Mailbox/get", { accountId: "A1" }, "c0"]],
   });
   check("accountsFor null → accountNotFound (fail-closed)",
-    rvNull.methodResponses[0][1].type === "urn:ietf:params:jmap:error:accountNotFound");
+    rvNull.methodResponses[0][1].type === "accountNotFound");
 
   var reached = { nullId: false };
   var jmap = b.mail.server.jmap.create({
@@ -2178,14 +2181,14 @@ async function testDispatchAccountGateEdges() {
   });
   check("accountId:null → invalidArguments, and the method does not run",
     reached.nullId === false &&
-    rvNullAcc.methodResponses[0][1].type === "urn:ietf:params:jmap:error:invalidArguments",
+    rvNullAcc.methodResponses[0][1].type === "invalidArguments",
     JSON.stringify(rvNullAcc.methodResponses[0]));
   // A non-string accountId is the same missing-argument case.
   var rvNum = await jmap.dispatch({ id: "a" }, {
     using: [], methodCalls: [["Mailbox/get", { accountId: 999 }, "c0"]],
   });
   check("non-string accountId → invalidArguments",
-    rvNum.methodResponses[0][1].type === "urn:ietf:params:jmap:error:invalidArguments",
+    rvNum.methodResponses[0][1].type === "invalidArguments",
     JSON.stringify(rvNum.methodResponses[0]));
 }
 
@@ -2207,7 +2210,7 @@ async function testDispatchBackRefMissingObjectKey() {
     ],
   });
   check("back-ref to missing object key → invalidResultReference",
-    rv.methodResponses[1][1].type === "urn:ietf:params:jmap:error:invalidResultReference");
+    rv.methodResponses[1][1].type === "invalidResultReference");
 }
 
 // ==========================================================================
@@ -2627,7 +2630,7 @@ async function testDispatchMethodThrowsNonError() {
   });
   check("string-throw method → serverFail",
     rv.methodResponses[0][0] === "error" &&
-    rv.methodResponses[0][1].type === "urn:ietf:params:jmap:error:serverFail");
+    rv.methodResponses[0][1].type === "serverFail");
 }
 
 async function testDispatchAccountsForThrowsNonError() {

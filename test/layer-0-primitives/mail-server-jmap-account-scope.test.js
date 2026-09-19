@@ -89,7 +89,7 @@ async function testCoreEchoTakesNoAccount() {
 async function testAHandlersOwnRefusalReachesTheClient() {
   var got = await _call("Mailbox/set", { accountId: "A1" });
   check("a handler's JMAP error type reaches the client rather than serverFail",
-        got.type === "urn:ietf:params:jmap:error:invalidPatch", JSON.stringify(got));
+        got.type === "invalidPatch", JSON.stringify(got));
 }
 
 async function run() {

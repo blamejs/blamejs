@@ -12996,6 +12996,29 @@ function testStateStampScanningDeferred() {
 //      patterns split across lines still match.
 var KNOWN_ANTIPATTERNS = [
   {
+    id: "a-jmap-method-error-type-is-a-bare-name",
+    primitive: "b.mail.server.jmap.create",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // A methodResponses entry whose `type` is written as the request-level
+    // URI. The tempered token stops at the closing bracket of the push, so
+    // the match stays inside one entry.
+    regex: /methodResponses\.push\((?:(?!\]\);)[\s\S]){0,400}type:\s*"urn:ietf:params:jmap:error:/,
+    allowlist: [],
+    fixtures: {
+      fires: [
+        'methodResponses.push(["error", { type: "urn:ietf:params:jmap:error:unknownMethod", description: d }, clientId]);',
+        'methodResponses.push(["error",\n  { type: "urn:ietf:params:jmap:error:serverFail", description: "x" },\n  clientId]);',
+      ],
+      quiet: [
+        'methodResponses.push(["error", { type: "unknownMethod", description: d }, clientId]);',
+        'methodResponses.push(["error", _methodError("serverFail", "Method threw"), clientId]);',
+        'return _refusalResponse("urn:ietf:params:jmap:error:notRequest", msg);',
+      ],
+    },
+    reason: "RFC 8620 draws the two error levels differently. Section 3.6.1 names a refusal of the whole request with a URI, `urn:ietf:params:jmap:error:notRequest` and its three siblings, because that body is problem details for the HTTP response. Section 3.6.2 writes a method error as the bare name in the response tuple: `[ \"error\", { \"type\": \"unknownMethod\" }, \"c0\" ]`. The listener sent the URI in both places, so a client matching the names the RFC prints, and the names RFC 8621 defines for the Email and Mailbox set errors, matched none of them and fell through to its unknown-error branch. Every method error now comes from `_methodError` / `methodErrorName`, which strip the prefix and refuse a name outside the RFC 8620 and RFC 8621 sets. Anchored inside a `methodResponses.push(` because that is the tuple section 3.6.2 governs; `_refusalResponse` and the blob and session HTTP handlers keep the URI form and are not matched. Empty allowlist: no method response carries the URI.",
+  },
+  {
     id: "an-imap-name-split-must-span-a-quoted-string-escape",
     primitive: "b.mail.server.imap.create",
     scanScope: "lib",

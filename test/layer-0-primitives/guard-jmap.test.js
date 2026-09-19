@@ -25,32 +25,36 @@ function testHappyPath() {
 }
 
 function testBadShapeRefused() {
+  // RFC 8620 section 3.6.1 gives the request level four problem types:
+  // a body that will not parse is notJSON, a parsed body that is not a
+  // Request object is notRequest.
   function expectThrow(label, fn, codeMatch) {
     var threw = null;
     try { fn(); } catch (e) { threw = e; }
-    check(label, threw && (threw.code || "").indexOf(codeMatch) !== -1);
+    check(label + " (" + (threw && threw.code) + ")",
+      threw && (threw.code || "").indexOf(codeMatch) !== -1);
   }
   expectThrow("refuses non-object body",
     function () { b.guardJmap.validate("not-json"); },
-    "guard-jmap/bad-json");
+    "urn:ietf:params:jmap:error:notJSON");
   expectThrow("refuses array body",
     function () { b.guardJmap.validate([]); },
-    "urn:ietf:params:jmap:error:invalidArguments");
+    "urn:ietf:params:jmap:error:notRequest");
   expectThrow("refuses missing using",
     function () { b.guardJmap.validate({ methodCalls: [["x", {}, "c"]] }); },
-    "urn:ietf:params:jmap:error:invalidArguments");
+    "urn:ietf:params:jmap:error:notRequest");
   expectThrow("refuses missing methodCalls",
     function () { b.guardJmap.validate({ using: [] }); },
-    "urn:ietf:params:jmap:error:invalidArguments");
+    "urn:ietf:params:jmap:error:notRequest");
   expectThrow("refuses empty methodCalls",
     function () { b.guardJmap.validate({ using: [], methodCalls: [] }); },
-    "urn:ietf:params:jmap:error:invalidArguments");
+    "urn:ietf:params:jmap:error:notRequest");
   expectThrow("refuses non-3-tuple call",
     function () { b.guardJmap.validate({ using: [], methodCalls: [["x", {}]] }); },
-    "urn:ietf:params:jmap:error:invalidArguments");
+    "urn:ietf:params:jmap:error:notRequest");
   expectThrow("refuses non-string clientId",
     function () { b.guardJmap.validate({ using: [], methodCalls: [["x", {}, 5]] }); },
-    "urn:ietf:params:jmap:error:invalidArguments");
+    "urn:ietf:params:jmap:error:notRequest");
 }
 
 function testUnknownCapabilityRefused() {
@@ -79,16 +83,20 @@ function testCapsTripped() {
   for (var i = 0; i < 33; i += 1) { calls.push(["x", {}, "c" + i]); }
   try { b.guardJmap.validate({ using: [], methodCalls: calls }); }
   catch (e) { threw = e; }
+  // A limit refusal is the bare `limit` type plus a `limit` member naming
+  // the cap, which is how RFC 8620 section 3.6.1 writes it.
   check("maxCallsInRequest tripped",
-    threw && threw.code === "urn:ietf:params:jmap:error:limit/maxCallsInRequest");
+    threw && threw.code === "urn:ietf:params:jmap:error:limit" &&
+    threw.limit === "maxCallsInRequest");
 
   // Oversize JSON body
   var big = "{\"using\":[],\"methodCalls\":[[\"x\",{}, \"c0\"]],\"pad\":\"" +
     "x".repeat(11000000) + "\"}";
   var threw2 = null;
   try { b.guardJmap.validate(big); } catch (e) { threw2 = e; }
-  check("requestTooLarge tripped",
-    threw2 && threw2.code === "urn:ietf:params:jmap:error:requestTooLarge");
+  check("maxSizeRequest tripped",
+    threw2 && threw2.code === "urn:ietf:params:jmap:error:limit" &&
+    threw2.limit === "maxSizeRequest");
 }
 
 function testBackRefDepth() {
@@ -106,7 +114,8 @@ function testBackRefDepth() {
     });
   } catch (e) { threw = e; }
   check("maxBackRefDepth tripped",
-    threw && threw.code === "urn:ietf:params:jmap:error:limit/maxBackRefDepth");
+    threw && threw.code === "urn:ietf:params:jmap:error:limit" &&
+    threw.limit === "maxBackRefDepth");
 }
 
 function testServerCapsNotMutated() {
