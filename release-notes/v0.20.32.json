@@ -1,0 +1,77 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.20.32",
+  "date": "2026-09-19",
+  "headline": "JMAP answers with the error types, limits and thread boundaries its RFCs define",
+  "summary": "A JMAP refusal now carries one of the four request-level problem types RFC 8620 §3.6.1 defines, `unknownCapability`, `notJSON`, `notRequest` or `limit` with a member naming the cap, sent as `application/problem+json` with `status` and `detail`; the listener had been sending its own codes, and the HTTP and WebSocket transports answered the same input differently. A method error is the bare name §3.6.2 prints rather than a URI, so a client matching `unknownMethod` or any RFC 8621 set error matches. `maxObjectsInGet` and `maxObjectsInSet` were defined in every profile and read by nothing: an `Email/get` handler received 250,000 ids under a profile whose limit is 500, and a `/get` or `/set` over the cap is now `requestTooLarge` before the handler runs, counted after result references resolve. A request body is parsed with the profile's `maxSizeRequest` rather than a 1 MiB default, so a valid 1.17 MB request is no longer reported as invalid JSON. The session's `urn:ietf:params:jmap:core` capability was an empty object and now carries the eight properties RFC 8620 §2 requires, built from the limits the listener applies. `b.mailStore` threaded messages across every folder in the store, so an account holder who appended a message naming a Message-ID could tell whether any other account on the server held it, and a message delivered to two accounts split the second account's thread; a folder now carries an owner and a thread stays inside it. A result reference path with `*` applies the rest of the pointer to every item and flattens the results, an account-scoped method without an `accountId` is refused before its handler runs, and `EmailSubmission/set` compares the envelope sender against the identity by address rather than by exact string.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "b.mailStore threads inside one account, so a Message-ID in another account is not observable",
+          "body": "`appendMessage` looked each `In-Reply-To` and `References` message id up in `message_id_hash` across the whole messages table, with no folder condition and no ordering, and took the first matching row's thread root; `threadFor` then returned every row with that root, in every folder. One `b.mail.server.jmap` listener takes one store for every account `accountsFor` returns. An account holder who appended a message naming some Message-ID, by IMAP APPEND or by mailing themself, got their own objectid as the thread root only when no message anywhere in the store carried that id, and another account's objectid otherwise, which a JMAP `Email/get` reporting `threadId` shows them: any account holder could test whether another account held any Message-ID they chose. Separately, a message delivered to two accounts put a later reply in the first account's thread and left the second account's own copy in a thread alone. `createFolder(name, { owner })` records the account that holds a folder, `appendMessage(folder, bytes, { threadScope })` names the scope directly, and every message carries the resulting scope. The Message-ID lookup and `threadFor` match only rows in that scope, and the lookup orders by `received_at` then `objectid` so the root does not depend on row order. Folders that declare no owner share the scope `\"\"`, so a single-account store is unchanged."
+        },
+        {
+          "title": "An account-scoped JMAP method is refused when no account is named",
+          "body": "The account check compared every `*accountId` argument against the accounts `accountsFor` returns and skipped an argument that was absent or null, so `Email/get` and every other method RFC 8620 §1.6.2 gives a mandatory `accountId` ran its handler with no account named. Such a call is now `invalidArguments` before the handler runs. `b.mail.serverRegistry.jmapMethodTakesAccount(name)` answers which methods take one; `Core/echo` is the one that does not."
+        },
+        {
+          "title": "EmailSubmission/set compares the envelope sender with the identity by address",
+          "body": "`envelope.mailFrom` was compared with the identity's address as an exact string, so a sender differing only in case or in an internationalized domain's form was refused, while an identity carrying no address accepted any sender. The comparison now normalizes both sides, reads `*@domain` as RFC 8621 §6 defines it, and refuses an identity with no address. The `From` header is checked against the identity as well, and a message whose `From` it does not cover is `forbiddenFrom`."
+        }
+      ]
+    },
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "A refused JMAP request carries an RFC 8620 §3.6.1 problem type",
+          "body": "The listener answered a malformed request with its own codes, `guard-jmap/bad-json`, `guard-jmap/bad-input`, `invalidArguments`, `requestTooLarge` and `limit/<name>`, and put an empty `methodResponses` array and a `sessionState` in the body. A conforming client could not tell a body that would not parse from one that was not a Request, or either from an over-limit request, and the HTTP path sent a different type than the WebSocket path for the same input. A refusal is now `unknownCapability`, `notJSON`, `notRequest`, or `limit` with a `limit` member naming the cap reached (`maxSizeRequest`, `maxCallsInRequest`, `maxUsingCapabilities`, `maxBackRefDepth`), sent as `application/problem+json` with `status` and `detail` and no method-response envelope. Both transports send the same type for the same input. An account backend that fails answers 500 rather than 400."
+        },
+        {
+          "title": "A JMAP method error is the bare name RFC 8620 §3.6.2 defines",
+          "body": "A method error was written as the request-level URI, `urn:ietf:params:jmap:error:unknownMethod`, where §3.6.2 writes `[ \"error\", { \"type\": \"unknownMethod\" }, \"c0\" ]`. A client matching the names the RFC prints, and the names RFC 8621 defines for the Email and Mailbox set errors, matched none of them. Method errors are now bare names, and a handler that returns or throws one has that name sent to the client rather than `serverFail`."
+        },
+        {
+          "title": "maxObjectsInGet and maxObjectsInSet are applied",
+          "body": "Both were defined in every `b.guardJmap` profile and documented as enforced, and no code read either: under the strict profile, whose limit is 500, an `Email/get` handler received 250,000 ids and an `Email/set` handler 250,000 destroy ids in one request. A `/get` call's `ids`, and the combined `create`, `update` and `destroy` of a `/set` or `/copy` call, are now counted after result references resolve, and an over-cap call is `requestTooLarge` before the handler runs, per RFC 8620 §5.1 and §5.3. `b.guardJmap.limitsFor(opts)` resolves the caps a profile and posture select."
+        },
+        {
+          "title": "A request body is parsed against the declared maxSizeRequest",
+          "body": "A string or Buffer body was measured against the profile's `maxSizeRequest`, 10 MiB under the strict profile, and then parsed with the 1 MiB default of `b.safeJson.parse`, so a valid 1.17 MB request came back as \"body is not valid JSON\". The parse now uses the profile's limit, and a body over it is the `limit` problem naming `maxSizeRequest`."
+        },
+        {
+          "title": "The session publishes the core capability RFC 8620 §2 requires",
+          "body": "`urn:ietf:params:jmap:core` was an empty object, so a client could read none of the limits it has to obey. It now carries `maxSizeUpload`, `maxConcurrentUpload`, `maxSizeRequest`, `maxConcurrentRequests`, `maxCallsInRequest`, `maxObjectsInGet`, `maxObjectsInSet` and `collationAlgorithms`, built from the profile the listener enforces and from `maxBlobBytes`. `create` refuses a `serverCapabilities` core value that differs from what the listener applies."
+        },
+        {
+          "title": "A result reference path applies the whole pointer",
+          "body": "`*` returned the array itself and dropped the tokens after it, so the chain RFC 8620 §3.7 uses as its example, `Email/query` to `Email/get` to `Thread/get` to `Email/get` through `/list/*/threadId` and `/list/*/emailIds`, passed the previous method's objects instead of thread ids and message ids. `*` now applies the rest of the pointer to every item and flattens array results into one array. A path no item satisfies fails the call with `invalidResultReference` rather than resolving to the array, an array index follows the RFC 6901 grammar, and an arguments object carrying both `ids` and `#ids` is `invalidArguments`."
+        }
+      ]
+    },
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "New options",
+          "body": "`b.mail.server.jmap.create` takes `maxConcurrentUpload`, `maxConcurrentRequests` and `collationAlgorithms`, all published in the session. `b.mailStore.createFolder` takes `owner`, and `b.mailStore.appendMessage` takes `threadScope`. `b.guardJmap.limitsFor(opts)` is new."
+        }
+      ]
+    },
+    {
+      "heading": "Migration",
+      "items": [
+        {
+          "title": "A client that matched the old JMAP error strings",
+          "body": "A client matching `urn:ietf:params:jmap:error:unknownMethod` and the other method-level URIs should match the bare names instead. A client matching `guard-jmap/bad-json`, `guard-jmap/bad-input` or `urn:ietf:params:jmap:error:requestTooLarge` on a refused request should match `notJSON`, `notRequest` and `limit`. A refused request no longer carries `methodResponses` or `sessionState`."
+        },
+        {
+          "title": "A mail store that holds more than one account",
+          "body": "Give each folder an `owner` at `createFolder`, or pass `appendOpts.threadScope` on append. Messages written before this carry the scope `\"\"` and keep their existing thread roots; RFC 8621 §3 makes `threadId` immutable, so moving them into per-account scopes means reinserting them with new objectids."
+        }
+      ]
+    }
+  ]
+}

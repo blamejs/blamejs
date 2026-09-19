@@ -191,6 +191,30 @@ async function testACoreValueThatDisagreesWithTheListenerIsRefused() {
         threw && threw.message);
 }
 
+function testTheWebSocketCapIsTheDeclaredOne() {
+  // The WebSocket transport carried its own 10 MiB literal in three places
+  // while the session published the profile's maxSizeRequest, so under the
+  // balanced profile a client was told 50 MiB and refused at 10 MiB. The
+  // transport reads the same number, and `webSocketMaxMessageBytes` still
+  // overrides it.
+  var fs   = require("node:fs");
+  var path = require("node:path");
+  var src  = fs.readFileSync(
+    path.join(__dirname, "..", "..", "lib", "mail-server-jmap.js"), "utf8");
+  var literalCaps = src.split("\n").filter(function (line) {
+    return /webSocketMaxMessageBytes/.test(line) && /10 \* 1024 \* 1024/.test(line);
+  });
+  check("the WebSocket cap is not a literal beside the declared limit" +
+        (literalCaps.length ? " (" + literalCaps.length + " sites)" : ""),
+        literalCaps.length === 0);
+
+  var balanced = b.guardJmap.limitsFor({ profile: "balanced" });
+  var strict   = b.guardJmap.limitsFor({ profile: "strict" });
+  check("the two profiles declare different request sizes, so the row means something",
+        balanced.maxSizeRequest !== strict.maxSizeRequest,
+        balanced.maxSizeRequest + " vs " + strict.maxSizeRequest);
+}
+
 function testEveryProfileKnobIsRead() {
   // `maxObjectsInGet` and `maxObjectsInSet` sat in the profiles for eleven
   // releases with no reader, and the documentation said they were enforced.
@@ -220,6 +244,7 @@ function testEveryProfileKnobIsRead() {
 }
 
 async function run() {
+  testTheWebSocketCapIsTheDeclaredOne();
   testEveryProfileKnobIsRead();
   await testGetIsBoundedByMaxObjectsInGet();
   await testSetIsBoundedByTheCombinedTotal();
