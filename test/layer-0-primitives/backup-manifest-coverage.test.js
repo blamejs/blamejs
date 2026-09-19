@@ -406,11 +406,38 @@ function testSignedManifestRoundTrip() {
     }, "backup-manifest/invalid");
 }
 
+// A storage backend whose manifest arrives as bytes rather than a path has
+// to read it under the same limit `serialize` enforces on the writer.
+// `readBuffer` is where that limit lives for those callers, so a backend
+// never measures the bytes itself and picks its own.
+function testReadBufferAppliesTheWritersLimit() {
+  var text = b.backupManifest.serialize(_validManifest());
+  var parsed = b.backupManifest.readBuffer(Buffer.from(text, "utf8"));
+  check("readBuffer parses a manifest held as bytes",
+    parsed && Array.isArray(parsed.files) && parsed.files.length > 0);
+  check("and agrees with reading the same manifest as text",
+    JSON.stringify(parsed) === JSON.stringify(b.backupManifest.parse(text)));
+
+  var threwBig = null;
+  var oversize = Buffer.alloc(b.backupManifest.MAX_MANIFEST_BYTES + 1, 0x20);
+  try { b.backupManifest.readBuffer(oversize); } catch (e) { threwBig = e; }
+  check("a manifest above the writer's limit is refused by size, not parsed",
+    threwBig !== null && threwBig.code === "backup-manifest/too-large",
+    threwBig && threwBig.code);
+
+  var threwType = null;
+  try { b.backupManifest.readBuffer("not a buffer"); } catch (e) { threwType = e; }
+  check("and a non-Buffer is refused by name",
+    threwType !== null && threwType.code === "backup-manifest/bad-input",
+    threwType && threwType.code);
+}
+
 async function run() {
   testValidateResidualGuards();
   testCreateHonoursSuppliedFields();
   testSignInputRefusals();
   testVerifyInputGuards();
+  testReadBufferAppliesTheWritersLimit();
 
   // The signature paths need a live keypair. Reset first so the fixture is
   // this test's own key regardless of what the runner initialized, and reset

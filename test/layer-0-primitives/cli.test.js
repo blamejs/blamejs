@@ -1958,8 +1958,19 @@ async function sectionRestoreMore() {
     // row loop (only reached when listBundles() returns > 0). ---
     var store = path.join(dir, "store");
     var bundleId = "2026-05-24T15-00-00-000Z-aabb1100"; // valid timestamp+suffix
-    fs.mkdirSync(path.join(store, bundleId), { recursive: true });
-    fs.writeFileSync(path.join(store, bundleId, "manifest.json"), "{}");
+    fs.mkdirSync(path.join(store, bundleId, "files"), { recursive: true });
+    fs.writeFileSync(path.join(store, bundleId, "files", "a.enc"), "AAA");
+    fs.writeFileSync(path.join(store, bundleId, "manifest.json"), b.backupManifest.serialize(
+      b.backupManifest.create({
+        bundleId:     bundleId,
+        dataDir:      "/fixture",
+        vaultKeySalt: "aa".repeat(16),
+        vaultKeyEnc:  Buffer.from("fixture").toString("base64"),
+        files:        [{
+          relativePath: "a", encryptedPath: "files/a.enc", size: 3, encryptedSize: 3,
+          checksum: "bb".repeat(64), salt: "cc".repeat(32), kind: "raw",
+        }],
+      })));
     var cl = _captureCtx();
     var rcl = await cli.main(["restore", "list", "--storage-root", store], cl);
     check("restore list (populated) → exit 0", rcl === 0);

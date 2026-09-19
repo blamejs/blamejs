@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.20.31",
-  "createdAt": "2026-09-18T11:02:19.882Z",
+  "createdAt": "2026-09-19T17:33:35.263Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -5104,6 +5104,10 @@
         "parse": {
           "type": "function",
           "arity": 1
+        },
+        "readBuffer": {
+          "type": "function",
+          "arity": 2
         },
         "readFile": {
           "type": "function",

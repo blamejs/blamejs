@@ -190,7 +190,20 @@ async function testBundleInfoDirectoryCreatedAt() {
   var dest = fs.mkdtempSync(path.join(os.tmpdir(), "bidir-dest-"));
   try {
     fs.writeFileSync(path.join(src, "a"), "x", { mode: 0o600 });
-    fs.writeFileSync(path.join(src, "manifest.json"), "{\"version\":1}", { mode: 0o600 });
+    // Listing a directory-format bundle checks that every encrypted file its
+    // manifest declares is present at the declared size, so the fixture
+    // carries a manifest describing the file beside it.
+    fs.writeFileSync(path.join(src, "manifest.json"), b.backupManifest.serialize(
+      b.backupManifest.create({
+        bundleId:     "2026-05-24T00-45-00-000Z-aaaa9999",
+        dataDir:      "/fixture",
+        vaultKeySalt: "aa".repeat(16),
+        vaultKeyEnc:  Buffer.from("fixture").toString("base64"),
+        files:        [{
+          relativePath: "a", encryptedPath: "a", size: 1, encryptedSize: 1,
+          checksum: "bb".repeat(64), salt: "cc".repeat(32), kind: "raw",
+        }],
+      })), { mode: 0o600 });
     var storage = b.backup.bundleAdapterStorage({
       adapter: b.backup.bundleAdapterStorage.fsAdapter({ root: dest }),
       format:  "directory",

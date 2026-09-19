@@ -96,9 +96,23 @@ async function testBackupMigrateDirectoryToTar() {
   var verifyDir = fs.mkdtempSync(path.join(os.tmpdir(), "bjs-bk-verify-"));
   fs.rmSync(verifyDir, { recursive: true });    // backend wants non-existent dest
   try {
-    fs.writeFileSync(path.join(srcDir, "manifest.json"), JSON.stringify({ v: 1 }));
+    // Migration reads the source through listBundles, which lists a
+    // directory-format bundle only when its manifest parses and names files
+    // that are present at the declared size.
     fs.mkdirSync(path.join(srcDir, "files"));
     fs.writeFileSync(path.join(srcDir, "files", "blob.bin"), Buffer.from([1, 2, 3]));
+    fs.writeFileSync(path.join(srcDir, "manifest.json"), b.backupManifest.serialize(
+      b.backupManifest.create({
+        bundleId:     "2026-05-23T15-00-00-000Z-deadbeef",
+        dataDir:      "/fixture",
+        vaultKeySalt: "aa".repeat(16),
+        vaultKeyEnc:  Buffer.from("fixture").toString("base64"),
+        files:        [{
+          relativePath: "blob.bin", encryptedPath: "files/blob.bin",
+          size: 3, encryptedSize: 3,
+          checksum: "bb".repeat(64), salt: "cc".repeat(32), kind: "raw",
+        }],
+      })));
 
     var from = b.backup.bundleAdapterStorage({
       adapter: b.backup.bundleAdapterStorage.fsAdapter({ root: fromRoot }),
@@ -125,7 +139,10 @@ async function testBackupMigrateDirectoryToTar() {
     // Read back from destination, verify file contents.
     await to.readBundle(bundleId, verifyDir);
     var manifest = JSON.parse(fs.readFileSync(path.join(verifyDir, "manifest.json"), "utf8"));
-    check("migrate: manifest round-tripped", manifest.v === 1);
+    check("migrate: manifest round-tripped",
+      Array.isArray(manifest.files) && manifest.files.length === 1 &&
+      manifest.files[0].encryptedPath === "files/blob.bin",
+      JSON.stringify(manifest.files));
     var blob = fs.readFileSync(path.join(verifyDir, "files", "blob.bin"));
     check("migrate: blob round-tripped",
       blob.length === 3 && blob[0] === 1 && blob[2] === 3);

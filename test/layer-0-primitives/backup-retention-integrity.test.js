@@ -112,8 +112,13 @@ async function testAHalfCopiedBundleTakesNoKeepSlot() {
 
     var listed = (await storage.listBundles()).map(function (e) { return e.bundleId; });
     check("a bundle whose manifest names blobs that are missing is not listed",
-          listed.indexOf(halfId) === -1 && (await storage.hasBundle(halfId)) === false,
-          listed.join(","));
+          listed.indexOf(halfId) === -1, listed.join(","));
+    // Listing decides retention keep slots, so that is where restorability is
+    // enforced. hasBundle answers whether the directory is there at all, and
+    // it is: a restore aimed at this id must be able to say what is wrong
+    // with the bundle rather than that no such bundle exists.
+    check("but the half copy is still reported as present on disk",
+          (await storage.hasBundle(halfId)) === true);
 
     // With keep: 2 and one real bundle plus the half copy, a second run must
     // not purge the first: the half copy never counted.

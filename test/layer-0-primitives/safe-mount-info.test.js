@@ -147,6 +147,47 @@ function testReadNonExistentPath() {
   check("read with custom fallback returns it",      withFb === sentinel);
 }
 
+function testReadAnExistingPath() {
+  // Every other read test names a path that does not exist, so each returns
+  // its fallback before the file is ever opened. That left the reading path
+  // uncovered: `read` forwarded its own options straight to `parse`, which
+  // accepts a narrower set, so `read({ path })` threw "unknown option
+  // 'path'" for any file that could actually be read. The documented option
+  // was unusable exactly where it mattered.
+  var nodeFs   = require("fs");
+  var nodeOs   = require("os");
+  var nodePath = require("path");
+  var dir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), "smi-read-"));
+  try {
+    var file = nodePath.join(dir, "mountinfo");
+    nodeFs.writeFileSync(file, FIXTURE_TEXT);
+
+    var entries = b.safeMountInfo.read({ path: file });
+    check("read({path}) parses a file that exists",
+          Array.isArray(entries) && entries.length > 0, JSON.stringify(entries));
+    check("and it agrees with parsing the same text directly",
+          JSON.stringify(entries) === JSON.stringify(b.safeMountInfo.parse(FIXTURE_TEXT)));
+
+    var everyOption = b.safeMountInfo.read({
+      path: file, fallback: null, audit: false, strict: false, maxLines: 1000,
+    });
+    check("and every documented option together is still accepted",
+          Array.isArray(everyOption) && everyOption.length === entries.length,
+          JSON.stringify(everyOption && everyOption.length));
+
+    // maxLines refuses an over-long table rather than truncating it, and the
+    // refusal has to survive the hop from read into parse.
+    var capThrew = null;
+    try { b.safeMountInfo.read({ path: file, maxLines: 1 }); }
+    catch (e) { capThrew = e; }
+    check("maxLines still reaches the parser through read",
+          capThrew !== null && /exceeds maxLines/.test(capThrew.message),
+          capThrew && capThrew.message);
+  } finally {
+    nodeFs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 function testAuditEmittedOnReadFailed() {
   var captured = [];
   var auditFake = { safeEmit: function (e) { captured.push(e); } };
@@ -244,6 +285,7 @@ async function run() {
   testLineCapBoundaryWithTrailingNewline();
   testBadInputRefused();
   testReadNonExistentPath();
+  testReadAnExistingPath();
   testAuditEmittedOnReadFailed();
 }
 

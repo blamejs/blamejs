@@ -79,12 +79,49 @@ function _tmp(tag) {
 function _rm(p) {
   try { fs.rmSync(p, { recursive: true, force: true }); } catch (_e) { /* ignore */ }
 }
+// A storage backend lists a bundle only when its manifest parses and every
+// encrypted file that manifest declares is present at the declared size, so
+// a plumbing fixture needs a real manifest describing the blobs beside it
+// rather than a stub. `_mkSrcDir` substitutes one for any stub manifest the
+// caller passes; a caller testing a deliberately broken manifest writes the
+// bytes for it after the directory is built.
+function _manifestFor(files) {
+  var declared = Object.keys(files)
+    .filter(function (rel) { return rel !== "manifest.json"; })
+    .map(function (rel) {
+      return {
+        relativePath:  path.basename(rel),
+        encryptedPath: rel.split("\\").join("/"),
+        size:          Buffer.byteLength(files[rel]),
+        encryptedSize: Buffer.byteLength(files[rel]),
+        checksum:      "bb".repeat(64),
+        salt:          "cc".repeat(32),
+        kind:          "raw",
+      };
+    });
+  return b.backupManifest.serialize(b.backupManifest.create({
+    bundleId:     VALID_ID,
+    dataDir:      "/fixture",
+    vaultKeySalt: "aa".repeat(16),
+    vaultKeyEnc:  Buffer.from("fixture").toString("base64"),
+    files:        declared,
+  }));
+}
+
 function _mkSrcDir(files) {
   var dir = _tmp("src");
-  Object.keys(files).forEach(function (rel) {
+  var written = {};
+  Object.keys(files).forEach(function (rel) { written[rel] = files[rel]; });
+  var stub = Object.prototype.hasOwnProperty.call(written, "manifest.json") &&
+             written["manifest.json"].length < 32;
+  if (stub) {
+    if (Object.keys(written).length === 1) written["files/placeholder.enc"] = "x";
+    written["manifest.json"] = _manifestFor(written);
+  }
+  Object.keys(written).forEach(function (rel) {
     var full = path.join(dir, rel);
     fs.mkdirSync(path.dirname(full), { recursive: true });
-    fs.writeFileSync(full, files[rel]);
+    fs.writeFileSync(full, written[rel]);
   });
   return dir;
 }
