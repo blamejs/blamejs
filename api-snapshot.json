@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.20.31",
-  "createdAt": "2026-09-19T17:33:35.263Z",
+  "createdAt": "2026-09-19T19:45:37.206Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -27941,6 +27941,10 @@
           "type": "function",
           "arity": 1
         },
+        "limitsFor": {
+          "type": "function",
+          "arity": 1
+        },
         "validate": {
           "type": "function",
           "arity": 2
@@ -46149,6 +46153,10 @@
               "type": "instance",
               "ctorName": "Array"
             },
+            "JMAP_METHODS_WITHOUT_ACCOUNT": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
             "MANAGESIEVE_VERBS": {
               "type": "instance",
               "ctorName": "Array"
@@ -46158,6 +46166,10 @@
               "arity": 4
             },
             "create": {
+              "type": "function",
+              "arity": 1
+            },
+            "jmapMethodTakesAccount": {
               "type": "function",
               "arity": 1
             }

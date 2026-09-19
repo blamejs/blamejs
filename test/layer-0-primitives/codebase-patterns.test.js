@@ -11538,6 +11538,7 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-imap-command.js:validate",
         "lib/guard-jmap.js:<top>",
         "lib/guard-jmap.js:validate",
+        "lib/guard-jmap.js:limitsFor",
         "lib/guard-list-id.js:<top>",
         "lib/guard-mail-compose.js:<top>",
         "lib/guard-mail-compose.js:_checkAddrList",
