@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.20.32",
-  "createdAt": "2026-09-19T19:48:40.832Z",
+  "createdAt": "2026-09-19T19:48:42.017Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -45634,6 +45634,10 @@
                 "create": {
                   "type": "function",
                   "arity": 1
+                },
+                "emailBodyProperties": {
+                  "type": "function",
+                  "arity": 2
                 },
                 "emailSubmissionSetHandler": {
                   "type": "function",
