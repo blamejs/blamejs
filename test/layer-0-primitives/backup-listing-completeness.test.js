@@ -233,6 +233,45 @@ async function testTheAdapterListingChecksTheManifestsDeclaredKeys() {
   }
 }
 
+async function testARestoreAimedAtADamagedBundleSaysWhatIsWrongWithIt() {
+  // This is why the two questions stay apart. restore asks hasBundle to tell
+  // "no such bundle" from "this bundle is broken", and reports the precise
+  // refusal only for the second. A hasBundle that answered restorability
+  // would collapse both into bundle-not-found, which is the less useful
+  // answer and, for a bundle that is sitting right there, the untrue one.
+  var root = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-listing-diag-"));
+  try {
+    var made = await _makeBundle(root);
+    fs.writeFileSync(path.join(made.bundleDir, "manifest.json"), "{ truncated");
+
+    var restore = b.restore.create({
+      dataDir:      path.join(root, "data"),
+      storage:      made.disk,
+      passphrase:   PASSPHRASE,
+      stagingRoot:  path.join(root, "staging"),
+      rollbackRoot: path.join(root, "rollbacks"),
+      audit:        false,
+    });
+    var threw = null;
+    try { await restore.run({ bundleId: made.bundleId }); }
+    catch (e) { threw = e; }
+    check("a restore aimed at the damaged bundle is refused",
+          threw !== null, threw && threw.code);
+    check("and says what is wrong with it rather than that it does not exist",
+          threw !== null && threw.code !== "restore/bundle-not-found",
+          threw && (threw.code + ": " + threw.message));
+
+    var absent = null;
+    try { await restore.run({ bundleId: "2026-01-01T00-00-00-000Z-abcdef12" }); }
+    catch (e) { absent = e; }
+    check("while a bundle that really is absent still reads as not found",
+          absent !== null && absent.code === "restore/bundle-not-found",
+          absent && absent.code);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
 async function run() {
   await testAManifestThatWillNotParseIsNotListed();
   await testASymlinkedBlobIsNotListed();
@@ -240,6 +279,7 @@ async function run() {
   await testADeclaredBlobOfTheWrongSizeIsNotListed();
   await testAMissingBlobIsNotListed();
   await testTheAdapterListingChecksTheManifestsDeclaredKeys();
+  await testARestoreAimedAtADamagedBundleSaysWhatIsWrongWithIt();
 }
 
 module.exports = { run: run };
