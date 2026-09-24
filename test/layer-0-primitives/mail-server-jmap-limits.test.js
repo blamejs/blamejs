@@ -73,6 +73,63 @@ async function testGetIsBoundedByMaxObjectsInGet() {
         JSON.stringify(overCap));
 }
 
+// RFC 8620 section 5.1 makes `ids` nullable: a /get that omits it asks for
+// every record of the type, "if ... the number of records does not exceed the
+// maxObjectsInGet limit", and the server MUST answer requestTooLarge when it
+// does. Counting the arguments cannot see that form, because the request
+// names no ids at all, so the bound has to be read off what came back.
+async function testTheAllRecordsGetFormIsBoundedToo() {
+  function _listOf(n) {
+    var out = [];
+    for (var i = 0; i < n; i += 1) out.push({ id: "id-" + i });
+    return out;
+  }
+  async function _getReturning(count, args) {
+    var seen = [];
+    var server = b.mail.server.jmap.create({
+      mailStore:   { appendMessage: function () {} },
+      accountsFor: async function () {
+        return { primaryAccounts: { mail: ACCOUNT }, accounts: { A1: { name: "one" } } };
+      },
+      methods: {
+        "Email/get": async function (actor, a) {
+          seen.push(a);
+          return { accountId: a.accountId, state: "s", list: _listOf(count), notFound: [] };
+        },
+      },
+    });
+    var rv = await server.dispatch({ id: "actor1" }, {
+      using:       ["urn:ietf:params:jmap:core"],
+      methodCalls: [["Email/get", args, "c0"]],
+    });
+    var response = rv.methodResponses[0];
+    return {
+      ranHandler: seen.length > 0,
+      type:       response[0] === "error" ? (response[1] && response[1].type) : null,
+      listLength: response[0] === "error" ? null : (response[1].list || []).length,
+    };
+  }
+
+  var omitted = await _getReturning(501, { accountId: ACCOUNT });
+  check("a /get naming no ids whose account holds more than the cap is requestTooLarge",
+        omitted.type === "requestTooLarge", JSON.stringify(omitted));
+
+  var explicitNull = await _getReturning(501, { accountId: ACCOUNT, ids: null });
+  check("and the same when ids is written as null",
+        explicitNull.type === "requestTooLarge", JSON.stringify(explicitNull));
+
+  // The border: an account inside the cap answers with its records.
+  var atCap = await _getReturning(500, { accountId: ACCOUNT, ids: null });
+  check("an all-records /get at the cap still answers",
+        atCap.type === null && atCap.listLength === 500, JSON.stringify(atCap));
+
+  // A handler that answers a bounded id list is unaffected by the result
+  // bound, since the argument check already held it to the cap.
+  var byIds = await _getReturning(10, { accountId: ACCOUNT, ids: _ids(10) });
+  check("a /get naming ids inside the cap is untouched",
+        byIds.type === null && byIds.listLength === 10, JSON.stringify(byIds));
+}
+
 async function testAGetNamesItsObjectsUnderWhateverArgumentItDefines() {
   // `maxObjectsInGet` bounds the objects a `/get` names, and `ids` is not the
   // only argument that names them: RFC 8621 section 5.1 gives
@@ -871,6 +928,7 @@ async function run() {
   testTheWebSocketCapIsTheDeclaredOne();
   testEveryProfileKnobIsRead();
   await testGetIsBoundedByMaxObjectsInGet();
+  await testTheAllRecordsGetFormIsBoundedToo();
   await testAGetNamesItsObjectsUnderWhateverArgumentItDefines();
   await testAMutatingMethodCountsItsIdArgumentsToo();
   await testSetIsBoundedByTheCombinedTotal();

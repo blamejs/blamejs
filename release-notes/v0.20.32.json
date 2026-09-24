@@ -179,7 +179,7 @@
         },
         {
           "title": "The session publishes the core capability RFC 8620 §2 requires",
-          "body": "`urn:ietf:params:jmap:core` was an empty object, so a client could read none of the limits it has to obey. It now carries `maxSizeUpload`, `maxConcurrentUpload`, `maxSizeRequest`, `maxConcurrentRequests`, `maxCallsInRequest`, `maxObjectsInGet`, `maxObjectsInSet` and `collationAlgorithms`, built from the profile the listener enforces and from `maxBlobBytes`. `create` refuses a `serverCapabilities` core value that differs from what the listener applies."
+          "body": "`urn:ietf:params:jmap:core` was an empty object, so a client could read none of the limits it has to obey. It now carries `maxSizeUpload`, `maxConcurrentUpload`, `maxSizeRequest`, `maxConcurrentRequests`, `maxCallsInRequest`, `maxObjectsInGet`, `maxObjectsInSet` and `collationAlgorithms`, built from the profile the listener enforces and from `maxBlobBytes`. `create` refuses a `serverCapabilities` core value that differs from what the listener applies. RFC 8620 §5.1 makes a `/get`'s `ids` nullable, and a request that omits it asks for every record of the type, which counting the request's arguments cannot see: `maxObjectsInGet` is now read off what the handler returned as well, so an account holding more records than the cap gets `requestTooLarge` rather than the whole collection."
         },
         {
           "title": "A download's Content-Disposition filename survives the round trip",
