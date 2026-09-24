@@ -203,8 +203,29 @@ async function testAnUpgradedStoreDoesNotClaimMessagesHaveNoFiles() {
   }
 }
 
+function testAskingAShapeForItsTextIsARefusalNotACrash() {
+  // structureOnly keeps the shape and drops the bodies, so extractText has
+  // nothing to decode. It read leaf.body anyway and came back with
+  // "Cannot read properties of null (reading 'toString')" — a bare TypeError
+  // carrying no code, which reads as a programming mistake rather than as
+  // this tree being the wrong one to ask.
+  var shape = b.safeMime.parse(_message(2), { structureOnly: true });
+  var threw = null;
+  try { b.safeMime.extractText(shape, { prefer: "plain" }); } catch (e) { threw = e; }
+  check("extractText on a shape-only tree refuses with its own error",
+        threw !== null && !(threw instanceof TypeError) &&
+          threw.code === "safe-mime/structure-only",
+        threw ? (threw.constructor.name + " code=" + threw.code) : "returned");
+
+  // The same tree still answers the question it was parsed to answer.
+  check("and the shape still reports its attachments",
+        Array.isArray(b.safeMime.extractAttachments(shape)),
+        JSON.stringify(b.safeMime.extractAttachments(shape).length));
+}
+
 async function run() {
   testStructureOnlyWalksWithoutDecoding();
+  testAskingAShapeForItsTextIsARefusalNotACrash();
   testStructureOnlyStillRefusesHostileShapes();
   await testTheStoreRecordsTheShapeAtAppend();
   await testAnUpgradedStoreDoesNotClaimMessagesHaveNoFiles();

@@ -93,6 +93,11 @@ function makeContext(opts) {
     URL: URL, URLSearchParams: URLSearchParams, TextEncoder: TextEncoder, TextDecoder: TextDecoder,
     structuredClone: (typeof structuredClone === "function" ? structuredClone : undefined),
   };
+  // A caller that rewrites the body to record something (the arrow-claim pass
+  // records the value each `// ->` annotates) binds its collector here.
+  if (opts.globals) {
+    Object.keys(opts.globals).forEach(function (k) { sandbox[k] = opts.globals[k]; });
+  }
   if (opts.allowAnyModule) {
     // The child pass runs examples that legitimately reach the platform.
     sandbox.process    = process;

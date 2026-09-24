@@ -9817,6 +9817,25 @@ async function testNoDuplicateCodeBlocks() {
       ],
     },
     {
+      // The lazyRequire module-top header — §9 convention, not extractable.
+      // Each of these opens with the same mandated skeleton: the top-of-file
+      // requires §9 forbids hoisting into a helper, `defineClass` for the
+      // module's own error class, and a `lazyRequire(function () { return
+      // require("./x"); })` binding for a module it cannot require eagerly.
+      // The shared part IS the extracted primitive, lib/lazy-require.js, so
+      // there is nothing further to pull out; what follows the header
+      // diverges completely (a token-bucket table, a middleware composer, a
+      // Sieve grammar). safe-sieve.js joined the fingerprint when it took a
+      // lazyRequire on b.mail.sieve to read the interpreter's implemented
+      // command and test names rather than keeping a second copy of them.
+      mode:  "family-subset",
+      files: [
+        "lib/mail-server-rate-limit.js:<top>",
+        "lib/middleware/compose-pipeline.js:<top>",
+        "lib/safe-sieve.js:<top>",
+      ],
+    },
+    {
       // Guard module-top scaffolding — §9 convention, not extractable.
       // Every b.guard* module opens with the same mandated skeleton:
       //   var { defineClass } = require("./framework-error");
@@ -13006,6 +13025,33 @@ function testStateStampScanningDeferred() {
 //   4. The catalog scans whole-file content (multiline regex) so
 //      patterns split across lines still match.
 var KNOWN_ANTIPATTERNS = [
+  {
+    id: "an-actor-identity-is-not-hand-rolled",
+    primitive: "b.requestHelpers.actorIdentityKey",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // An identity read spelled as its own fallback chain off an actor-named
+    // binding. The tempered token cannot cross the end of the statement, so
+    // a match stays inside one derivation.
+    regex: /\bactor(?:Opts|Ctx)?\.(?:id|userId|username|sub)\s*\|\|\s*(?:(?!;)[\s\S]){0,120}\.(?:id|userId|username|sub|email|principalId)\b/,
+    allowlist: [
+      "lib/request-helpers.js",
+      "lib/break-glass.js",
+    ],
+    fixtures: {
+      fires: [
+        'return (actor && (actor.id || actor.userId)) || "_anonymous";',
+        'var who = actor.username || actor.id || "unknown";',
+        'var k = actorOpts.id || actorOpts.userId;',
+      ],
+      quiet: [
+        'var key = requestHelpers.actorIdentityKey(actor, { actorKey: actorKeyFn });',
+        'if (key === null) throw _err("file-upload/unidentified-actor", msg);',
+        'var scopes = actor.scopes || actor.roles || [];',
+      ],
+    },
+    reason: "Who a principal is was answered separately in each module that needed a per-actor bucket, and the answers disagreed: `actor.id || actor.userId` in b.fileUpload, `actor.id` then `actor.username` in the JMAP slot key, `userId` alone in the audit row. Each chain ended in a shared literal, so every actor the chain could not name landed on one key. A bucket is an ownership record as often as it is a counter, so that merged two authenticated users: measured, one principal read, wrote, finalized and cancelled another's upload, and `list()` dropped its scoping filter entirely. `b.requestHelpers.actorIdentityKey` is the one derivation, it tags each key with the field it came from so `{id:\"x\"}` and `{userId:\"x\"}` stay two principals, and it answers null for an actor it cannot name so the caller refuses instead of folding. Allowlisted, and only these two, because only these two are matched today: request-helpers is the resolver itself, and break-glass (:887, :1344) reads `actor.userId || req.apiKey.id` and then THROWS on a null, so it cannot fold two principals onto one key. Widening break-glass would widen who may open a break-glass grant, which is the wrong direction for exactly the reason this detector exists. `dual-control`, `require-step-up` and `mail-dav` each keep their own narrower list too, and each fails closed the same way, but none of them is written with `||` against an actor-named binding, so the regex does not reach them: listing them would have bought nothing except silence on a future chain, which is how an allowlist stops being a record of decisions.",
+  },
   {
     id: "a-jmap-method-error-type-is-a-bare-name",
     primitive: "b.mail.server.jmap.create",
@@ -17500,6 +17546,28 @@ var KNOWN_ANTIPATTERNS = [
     regex: /!\s*(?:[a-zA-Z_$][\w$]*\.)?[A-Z][A-Z0-9_]{2,}\[\s*[a-z]|[A-Z][A-Z0-9_]{2,}\[[a-z][\w.]*\]\s*===\s*undefined/,
     allowlist: [],
     reason: "Proto-shadow allowlist-bypass class (CWE-1321 prototype pollution / unsafe reflection). A reject-if-absent membership check on an object-literal allowlist — `if (!MAP[key])` or `if (MAP[key] === undefined)` — passes for any Object.prototype member name (constructor / __proto__ / toString / valueOf / hasOwnProperty) when `key` is attacker- or caller-supplied, bypassing the allowlist and (for value-lookup callers) handing a Function downstream. The v0.15.14 sweep converted every such gate across lib/ to the framework's canonical `Object.prototype.hasOwnProperty.call(MAP, key)` membership idiom (already 312 uses). Zero allowlist: a re-introduced `!SCREAMING_MAP[lowercaseKey]` or `SCREAMING_MAP[key] === undefined` membership gate anywhere in lib/ trips this — use hasOwnProperty.call instead. Reject-if-PRESENT gates (`if (DANGEROUS[scheme]) refuse`) are the opposite, fail-safe polarity and are written with the positive `if (MAP[key])` form, which this detector deliberately does not match (adding hasOwnProperty there would weaken them).",
+  },
+  {
+    id: "transaction-commit-outside-the-try-that-guards-it",
+    primitive: "run COMMIT / savepoint RELEASE inside the try whose catch unwinds the transaction",
+    // A statement that ENDS a transaction can FAIL. `COMMIT`, and a savepoint
+    // `RELEASE` that is the outermost one, both attempt the commit, and SQLite
+    // answers SQLITE_BUSY while another connection holds a read transaction in
+    // rollback-journal mode. When that statement sits AFTER the function's
+    // catch block rather than inside the try, nothing unwinds: the call
+    // throws, the transaction stays open, its rows stay pending on the writer
+    // connection, and the next write reports success inside a transaction
+    // nobody will commit.
+    //
+    // The catch body is bounded by the indentation of its own `} catch (...) {`
+    // line, captured and backreferenced. A `\n}` column-0 boundary does NOT
+    // work here: every helper in lib/mail-store.js is nested inside create(),
+    // so column 0 spans the whole file and the match runs from one function
+    // into an unrelated COMMIT in another.
+    scanScope: "lib",
+    regex: /(\r?\n[ \t]{1,12})\}[ \t]*catch[ \t]*\([^)\n]{0,40}\)[ \t]*\{(?:(?!\1\})[\s\S]){0,2000}\1\}\1(?!try\b)[^\r\n]{0,200}?["'](?:COMMIT|RELEASE)\b/,   // allow:regex-no-length-cap — every quantifier bounded; measured 41 ms across lib/
+    allowlist: [],
+    reason: "Failed-commit-leaves-the-transaction-open class. dbSchema.runInTransaction (sync and async), db.transaction, clusterStorage's local transaction and mailStore's FTS reindex all run COMMIT INSIDE the try, so a commit that throws lands in the catch and ROLLBACK runs. mailStore's savepoint helper ran RELEASE after the catch instead: with a second connection holding a read transaction, createFolder threw, db.isTransaction stayed true, the new folder row stayed pending on the writer, and the next createFolder reported success inside the abandoned transaction. Put the commit inside a try whose catch unwinds: roll back to the savepoint, and abort the transaction outright when the helper is the one that opened it. Zero allowlist.",
   },
   {
     id: "inline-optional-non-empty-string-array-validation",

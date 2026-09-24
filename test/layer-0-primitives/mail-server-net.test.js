@@ -447,8 +447,79 @@ function testFoldSubaddress() {
     fold('"alice+one"@example.com') !== fold('"alice+two"@example.com'));
 }
 
+// RFC 5321 4.1.2 allows a local part to be written as a quoted string, and a
+// quoted string whose content is already a dot-atom names the same mailbox as
+// the bare spelling. `identityCovers` compared the two texts, so a submission
+// whose From header wrote `"ops"@example.com` against the identity
+// `ops@example.com` was refused as a forbidden sender.
+function testAQuotedLocalPartNamesTheSameMailboxAsItsBareSpelling() {
+  var covers = mailServerNet.identityCovers;
+  check("a quoted spelling of the identity is covered",
+    covers("ops@example.com", '"ops"@example.com') === true);
+  check("and an identity written quoted covers the bare address",
+    covers('"ops"@example.com', "ops@example.com") === true);
+  check("a quoted pair decodes to the character it escapes",
+    covers('"o\\ps"@example.com', "ops@example.com") === true);
+  check("a different mailbox is still refused",
+    covers("ops@example.com", '"opsx"@example.com') === false);
+  // A quoted local part carries its delimiter as literal mailbox data, so it
+  // is not folded and does not speak for the folded address.
+  check("a quoted local part is not subaddress-folded",
+    covers("ops@example.com", '"ops+one"@example.com', { subaddressDelimiter: "+" }) === false);
+  check("while the bare spelling still folds",
+    covers("ops@example.com", "ops+one@example.com", { subaddressDelimiter: "+" }) === true);
+  check("an unterminated quoted local part names no mailbox",
+    covers("ops@example.com", '"ops@example.com') === false);
+}
+
+function testTheGuardAndTheListenersReadOneAddress() {
+  // b.guardSmtpCommand is the gate the two SMTP listeners run before they act
+  // on a line, and both then read the address out of it. While the guard
+  // ended the reverse-path at the first `>` outside a quoted string and the
+  // listeners cut at the first raw one, the guard shape-checked one mailbox
+  // and the envelope carried a shorter one nothing had checked: for
+  // `MAIL FROM:<"x@evil.example> y"@example.com>` the guard validated the
+  // domain example.com and the envelope sender became `"x@evil.example`.
+  // They read the same bytes now, and this asserts they keep doing so.
+  var LINES = [
+    'MAIL FROM:<alice@example.com>',
+    'MAIL FROM:<alice@example.com> SIZE=100',
+    'MAIL FROM:<>',
+    'MAIL FROM:<"a>b"@example.com>',
+    'MAIL FROM:<"x@evil.example> y"@example.com>',
+    'MAIL FROM:<"a> b"@example.com>',
+    'RCPT TO:<bob@example.net>',
+    'RCPT TO:<"r> x"@example.org>',
+    'RCPT TO:<bob@example.net> ORCPT=rfc822;bob@example.net',
+  ];
+
+  LINES.forEach(function (line) {
+    var guarded = null;
+    try { guarded = b.guardSmtpCommand.validate(line); } catch (_e) { guarded = null; }
+    if (guarded === null) return;   // a line the guard refuses never reaches a listener
+
+    var rest = line.replace(/^(MAIL\s+FROM:|RCPT\s+TO:)/i, "");
+    var sliced = mailServerNet.sliceAnglePath(rest);
+    check("the listener slices the same path the guard validated: " + line,
+          sliced !== null && ("<" + sliced.address + ">") === guarded.args[0],
+          JSON.stringify({ guard: guarded.args[0],
+                           listener: sliced && ("<" + sliced.address + ">") }));
+  });
+
+  // RFC 5321 4.1.1.2 puts a space before any parameter, so text butted
+  // against the closing bracket is malformed rather than a parameter.
+  check("no space before a parameter is not a path",
+        mailServerNet.sliceAnglePath("<a@example.com>extra") === null);
+  check("a path with no closing bracket is not a path",
+        mailServerNet.sliceAnglePath("<a@example.com") === null);
+  check("a quoted bracket does not close the path",
+        mailServerNet.sliceAnglePath('<"a>b"@example.com>').address === '"a>b"@example.com');
+}
+
 async function run() {
   testFoldSubaddress();
+  testTheGuardAndTheListenersReadOneAddress();
+  testAQuotedLocalPartNamesTheSameMailboxAsItsBareSpelling();
   testAnnouncedLiteralBytes();
   testBodyRateWindowGivesNoCreditForAnEarlyBurst();
   await testListenerCeilingRefusesBeyondMaxConnections();

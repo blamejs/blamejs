@@ -1376,15 +1376,21 @@ async function testDownloadHandler() {
     check("download Content-Disposition attachment",
       /attachment; filename="note\.txt"/.test(rOk.headers["content-disposition"] || ""));
 
-    // 6b. A filename that cannot be quoted costs the NAME, not the
-    // disposition. Without one the response renders inline, and blob bytes are
-    // attacker-influenced in the ordinary case — a mail attachment — so an
-    // inline render is script execution in the application's origin against a
-    // session the endpoint has already authenticated.
+    // 6b. A name the old spelling refused to quote now costs neither the
+    // disposition nor the name: the header comes from
+    // b.staticServe.attachmentDisposition, which quotes an ASCII form and
+    // carries the real name in an RFC 8187 ext-value. The disposition is the
+    // part that matters most, because without it the response renders inline,
+    // and blob bytes are attacker-influenced in the ordinary case (a mail
+    // attachment), so an inline render is script execution in the
+    // application's origin against a session the endpoint authenticated.
     var rNoDisp = await _req(s.port, { path: "/jmap/download/A1/blob_1/no,te" });
-    check("download with an unquotable filename is still an attachment",
-      (rNoDisp.headers["content-disposition"] || "") === "attachment",
-      JSON.stringify(rNoDisp.headers["content-disposition"]));
+    var disp = rNoDisp.headers["content-disposition"] || "";
+    check("download with an awkward filename is still an attachment",
+      disp.indexOf("attachment") === 0, JSON.stringify(disp));
+    check("and the name survives rather than being dropped",
+      /filename="no,te"/.test(disp) && /filename\*=UTF-8''no%2Cte/.test(disp),
+      JSON.stringify(disp));
 
     // 6c. RFC 8620 section 6.2 defines the download URL's `{type}` variable as
     // "the type for the server to set in the Content-Type header of the
@@ -1808,8 +1814,32 @@ async function _teardown() {
   _wsClients = []; _wsSockets = []; _httpServers = [];
 }
 
+// `audit` is in this listener's documented options and the wiki page is built
+// from that block, but the listener bound the process-global emitter directly,
+// so an operator wiring a per-tenant or compliance sink got silence. Every
+// sibling listener composes b.auditEmit's dual emitter for exactly this.
+async function testOperatorAuditSinkIsWired() {
+  var seen = [];
+  var srv = b.mail.server.jmap.create({
+    mailStore:   { appendMessage: function () {} },
+    audit:       { safeEmit: function (ev) { seen.push(ev); } },
+    accountsFor: async function () {
+      return { primaryAccounts: { mail: "A1" }, accounts: { A1: { name: "one" } } };
+    },
+    methods: { "Core/echo": async function (_a, args) { return args; } },
+  });
+
+  // A refused request is the cheapest event this listener emits.
+  await srv.dispatch({ id: "actor1" }, { using: ["urn:ietf:params:jmap:core"],
+    methodCalls: [["Nope/method", { accountId: "A1" }, "c0"]] });
+
+  check("the operator's audit sink receives the listener's events",
+        seen.length > 0, JSON.stringify(seen.length));
+}
+
 async function run() {
   testSurface();
+  await testOperatorAuditSinkIsWired();
   testBadOptsRefused();
   await testDispatchHappyPath();
   await testBackRefResolution();

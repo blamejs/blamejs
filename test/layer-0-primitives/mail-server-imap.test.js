@@ -160,6 +160,44 @@ async function _sendCommand(socket, tag, line) {
   });
 }
 
+// A command whose argument arrives as an RFC 9051 literal: the opener is sent
+// alone, the server answers `+`, and only then do the octets go out. Writing
+// the whole thing in one frame would be a different wire shape than the one a
+// client produces, and a different one than the listener's literal reader sees.
+async function _sendWithLiteral(socket, tag, opener, payload) {
+  // The server either invites the octets with `+` or refuses the opener with a
+  // tagged line. Waiting only for `+` turns a refusal into a hang, which says
+  // nothing about which of the two happened.
+  var refusal = await new Promise(function (resolve, reject) {
+    var buf = "";
+    function onData(chunk) {
+      buf += chunk.toString("utf8");
+      if (/^\+/m.test(buf)) { socket.removeListener("data", onData); resolve(null); return; }
+      if (new RegExp("^" + tag + " ", "m").test(buf)) {
+        socket.removeListener("data", onData);
+        resolve(buf);
+      }
+    }
+    socket.on("data", onData);
+    socket.once("error", reject);
+    socket.write(tag + " " + opener + "{" + Buffer.byteLength(payload, "utf8") + "}\r\n");
+  });
+  if (refusal !== null) return refusal;
+  return new Promise(function (resolve, reject) {
+    var buf = "";
+    function onData(chunk) {
+      buf += chunk.toString("utf8");
+      if (new RegExp("^" + tag + " ", "m").test(buf)) {
+        socket.removeListener("data", onData);
+        resolve(buf);
+      }
+    }
+    socket.on("data", onData);
+    socket.once("error", reject);
+    socket.write(payload + "\r\n");
+  });
+}
+
 // Operator-shaped mailStore stub. Records the opts passed to fetchRange
 // / storeFlags so the tests can assert the CONDSTORE protocol pieces
 // landed in the right place.
@@ -168,8 +206,10 @@ function _makeStubMailStore() {
   return {
     calls: calls,
     appendMessage: function () { return Promise.resolve(); },
+    selectShouldThrow: null,
     selectFolder: function (_actor, mailbox) {
       calls.select.push({ mailbox: mailbox });
+      if (this.selectShouldThrow) return Promise.reject(new Error(this.selectShouldThrow));
       return Promise.resolve({ uidvalidity: 1, modseq: 42, exists: 5,                                  // allow:raw-byte-literal — test-only stub modseq
                                recent: 0, unseen: 0, flags: ["\\Seen"] });
     },
@@ -505,6 +545,139 @@ async function testFetchChangedSinceParses() {
 // so a mailbox name carrying `\` or `"` reached the backend corrupted (a `\`
 // doubled, an escaped `"` kept its backslash). The backend then keys, creates,
 // or ACLs the wrong name.
+async function testAFailedSelectLeavesNoMailboxSelected() {
+  // RFC 9051 6.3.2: a SELECT that fails deselects whatever was selected and
+  // returns the session to the authenticated state. The failure path wrote NO
+  // and left state.selectedMailbox alone, so the client's next EXPUNGE, STORE
+  // or FETCH went on acting against the mailbox it believed it had left.
+  var ctx = await _makeTestTlsContext();
+  var stub = _makeStubMailStore();
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: stub, profile: "permissive",
+    auth: {
+      mechanisms: ["PLAIN", "LOGIN"],
+      verify: function () { return Promise.resolve({ ok: true, actor: { id: "u1", mailboxes: ["INBOX"] } }); },
+    },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    await _sendCommand(c.socket, "a0", "LOGIN test test");
+    var ok = await _sendCommand(c.socket, "a1", "SELECT INBOX");
+    check("the first SELECT succeeds", /^a1 OK/m.test(ok), JSON.stringify(ok));
+
+    stub.selectShouldThrow = "no such mailbox";
+    var bad = await _sendCommand(c.socket, "a2", "SELECT Missing");
+    check("a SELECT the store refuses answers NO", /^a2 NO/m.test(bad), JSON.stringify(bad));
+    check("and says the mailbox that was open is closed",
+          /\[CLOSED\]/.test(bad), JSON.stringify(bad));
+
+    // EXPUNGE reads the selection, so it is the command that can tell whether
+    // the session really left the mailbox.
+    stub.selectShouldThrow = null;
+    var after = await _sendCommand(c.socket, "a3", "EXPUNGE");
+    check("EXPUNGE after the failed SELECT is refused, not run on the old mailbox",
+          !/^a3 OK/m.test(after), JSON.stringify(after));
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+async function testAllowLegacyMUtf7GovernsWhatItDeclares() {
+  // create() accepts allowLegacyMUtf7 and the docblock describes setting it,
+  // but the listener derived the answer from the profile table alone and never
+  // read the option, in EITHER direction: an operator turning the legacy
+  // encoding on under strict still had it refused, and one turning it off
+  // under permissive still had it accepted. A knob the API takes by name and
+  // then ignores is worse than one it refuses by name.
+  var ctx = await _makeTestTlsContext();
+  var stub = _makeStubMailStore();
+  var MUTF7 = "Fr&AOk-d";   // "Fréd" in RFC 3501 modified UTF-7.
+
+  // Whether the STORE saw the name is the thing that distinguishes: a refusal
+  // is written as BAD by one path and NO by another, so "the reply was not
+  // BAD" is satisfied by both outcomes.
+  async function selectsMUtf7(opts) {
+    var store = _makeStubMailStore();
+    var srv = b.mail.server.imap.create(Object.assign({
+      tlsContext: ctx, mailStore: store,
+      auth: {
+        mechanisms: ["PLAIN", "LOGIN"],
+        verify: function () { return Promise.resolve({ ok: true, actor: { id: "u1", mailboxes: ["INBOX"] } }); },
+      },
+    }, opts));
+    var c = await _connectAndLogin(srv);
+    try {
+      await _sendCommand(c.socket, "a0", "LOGIN test test");
+      await _sendCommand(c.socket, "a1", "SELECT " + MUTF7);
+      c.socket.destroy();
+      return store.calls.select.some(function (s) { return s.mailbox === MUTF7; });
+    } finally { await srv.close({ timeoutMs: 1000 }); }                                                 // allow:raw-time-literal — test-only short drain
+  }
+
+  // The profile table is the default, and b.mail.server.imap.legacyMUtf7Allowed
+  // is the one place that reads it.
+  check("the table says permissive accepts the legacy encoding",
+        b.mail.server.imap.legacyMUtf7Allowed("permissive") === true);
+  check("and that balanced and strict do not",
+        b.mail.server.imap.legacyMUtf7Allowed("balanced") === false &&
+        b.mail.server.imap.legacyMUtf7Allowed("strict") === false);
+
+  // Driven end to end on the profile whose sessions this harness can
+  // authenticate: the default accepts the name, and the option turns it off.
+  // That is the direction an operator hardens in, and it is the direction the
+  // listener was ignoring.
+  check("the permissive default reaches the store with the legacy name",
+        await selectsMUtf7({ profile: "permissive" }) === true);
+  check("allowLegacyMUtf7 false stops it reaching the store",
+        await selectsMUtf7({ profile: "permissive", allowLegacyMUtf7: false }) === false);
+  void stub;
+}
+
+async function testAMailboxNameSentAsALiteralTakesTheSameCap() {
+  // b.guardImapCommand applies maxMailboxBytes to the LINE, and a literal
+  // arrives after it. CREATE {N} decoded up to maxLiteralBytes (64 MiB under
+  // strict), quoted the result and built it into the argument string, and only
+  // then did operand parsing turn it away — so the name never reached the
+  // store, but the listener did all of that work per command and answered with
+  // a message about operand count rather than about the cap it exceeded.
+  var ctx = await _makeTestTlsContext();
+  var stub = _makeStubMailStore();
+  var created = [];
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: stub, profile: "permissive",
+    mailboxAdmin: { createFolder: function (_a, name) { created.push(name); return Promise.resolve(); } },
+    auth: {
+      mechanisms: ["PLAIN", "LOGIN"],
+      verify: function () { return Promise.resolve({ ok: true, actor: { id: "u1", mailboxes: ["INBOX"] } }); },
+    },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    await _sendCommand(c.socket, "a0", "LOGIN test test");
+    var cap = b.guardImapCommand.limitsFor({ profile: "permissive" }).maxMailboxBytes;
+
+    // A literal inside the cap still creates the mailbox.
+    var okName = "N".repeat(16);
+    var okReply = await _sendWithLiteral(c.socket, "a1", "CREATE ", okName);
+    check("a mailbox name sent as a literal inside the cap is created",
+          /^a1 OK/m.test(okReply) && created.indexOf(okName) !== -1,
+          JSON.stringify({ reply: okReply, created: created.length }));
+
+    // One past it is refused, and nothing reaches the store.
+    var before = created.length;
+    var bigName = "N".repeat(cap + 1);
+    var bigReply = await _sendWithLiteral(c.socket, "a2", "CREATE ", bigName);
+    // Named refusal, not any refusal: an oversized literal reaches several
+    // other bounds on its way, and "something said no" is satisfied by all of
+    // them, so it cannot tell whether THIS cap is the one that applied.
+    check("a literal past maxMailboxBytes is refused by that cap",
+          /^a2 BAD CREATE literal is not a mailbox name within /m.test(bigReply),
+          JSON.stringify(bigReply).slice(0, 160));
+    check("and no oversized name reached the store",
+          created.length === before, JSON.stringify(created.length));
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
 async function testSelectUnescapesQuotedMailboxName() {
   var ctx = await _makeTestTlsContext();
   var stub = _makeStubMailStore();
@@ -3558,6 +3731,9 @@ async function run() {
     await testEnableCondstore();
     await testFetchChangedSinceParses();
     await testSelectUnescapesQuotedMailboxName();
+    await wtt("failed select deselects", testAFailedSelectLeavesNoMailboxSelected);
+    await wtt("literal mailbox name cap", testAMailboxNameSentAsALiteralTakesTheSameCap);
+    await wtt("allowLegacyMUtf7 governs", testAllowLegacyMUtf7GovernsWhatItDeclares);
     await testAppendRejectsMalformedQuotedDate();
     await testFetchWritesTheOctetsTheBackendReturned();
     await testStoreUnchangedSinceConflict();

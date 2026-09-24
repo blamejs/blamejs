@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.20.32",
-  "createdAt": "2026-09-19T19:48:46.115Z",
+  "createdAt": "2026-09-24T00:51:40.477Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -15955,6 +15955,10 @@
         "integrityMonitor": {
           "type": "function",
           "arity": 1
+        },
+        "isTransaction": {
+          "type": "primitive",
+          "valueType": "boolean"
         },
         "prepare": {
           "type": "function",
@@ -46218,6 +46222,10 @@
               "type": "function",
               "arity": 1
             },
+            "implementedNames": {
+              "type": "function",
+              "arity": 0
+            },
             "run": {
               "type": "function",
               "arity": 3
@@ -52387,6 +52395,18 @@
     "requestHelpers": {
       "type": "object",
       "members": {
+        "ACTOR_DISPLAY_FIELDS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "ACTOR_IDENTITY_FIELDS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "ANONYMOUS_ACTOR_KEY": {
+          "type": "primitive",
+          "valueType": "string"
+        },
         "HTTP_STATUS": {
           "type": "object",
           "members": {
@@ -52476,6 +52496,14 @@
             }
           }
         },
+        "actorDisplayName": {
+          "type": "function",
+          "arity": 2
+        },
+        "actorIdentityKey": {
+          "type": "function",
+          "arity": 2
+        },
         "appendVary": {
           "type": "function",
           "arity": 2
@@ -52515,6 +52543,10 @@
         "ipPrefix": {
           "type": "function",
           "arity": 2
+        },
+        "legacyActorKey": {
+          "type": "function",
+          "arity": 1
         },
         "makeResourceAuditEmitter": {
           "type": "function",
@@ -53042,9 +53074,17 @@
           "type": "function",
           "arity": 2
         },
+        "previewText": {
+          "type": "function",
+          "arity": 2
+        },
         "quoteString": {
           "type": "function",
           "arity": 1
+        },
+        "readQuotedString": {
+          "type": "function",
+          "arity": 2
         },
         "secureZero": {
           "type": "function",
@@ -53065,6 +53105,10 @@
         "toBuffer": {
           "type": "function",
           "arity": 2
+        },
+        "unquotedIndexOf": {
+          "type": "function",
+          "arity": 3
         }
       }
     },
@@ -54157,6 +54201,10 @@
         "parse": {
           "type": "function",
           "arity": 2
+        },
+        "selectBodyParts": {
+          "type": "function",
+          "arity": 1
         },
         "walk": {
           "type": "function",
@@ -56111,6 +56159,10 @@
         "containsControlBytes": {
           "type": "function",
           "arity": 2
+        },
+        "endsInsideQuotedString": {
+          "type": "function",
+          "arity": 1
         },
         "forEachKeyValue": {
           "type": "function",

@@ -31,6 +31,12 @@ function _server() {
       "Mailbox/get": async function () {
         return { type: "invalidArguments", description: "ids must be a list" };
       },
+      "Widget/get": async function () {
+        return {
+          type:        "urn:ietf:params:jmap:error:customFailure",
+          description: "refused",
+        };
+      },
     },
   });
 }
@@ -151,6 +157,18 @@ async function testOnlyAnErrorShapedResultIsReadAsAnError() {
         response[0] === "Core/echo" && response[1].hi === 1,
         JSON.stringify(response));
 
+  // And with nothing else alongside it, which is the shape that does match
+  // the error grammar exactly: echo answers with what the client sent, so
+  // those arguments are still data.
+  var bare = await jmap.dispatch({ id: "actor1" }, {
+    using:       ["urn:ietf:params:jmap:core"],
+    methodCalls: [["Core/echo", { type: "notFound" }, "c1"]],
+  });
+  check("an echo of nothing but an error name is still an echo",
+        bare.methodResponses[0][0] === "Core/echo" &&
+        bare.methodResponses[0][1].type === "notFound",
+        JSON.stringify(bare.methodResponses[0]));
+
   var refusal = await jmap.dispatch({ id: "actor1" }, {
     using:       ["urn:ietf:params:jmap:core"],
     methodCalls: [["Mailbox/get", { accountId: "A1" }, "c0"]],
@@ -159,10 +177,79 @@ async function testOnlyAnErrorShapedResultIsReadAsAnError() {
         refusal.methodResponses[0][0] === "error" &&
         refusal.methodResponses[0][1].type === "invalidArguments",
         JSON.stringify(refusal.methodResponses[0]));
+
+  // The member list is what tells an error from a result whose `type` is
+  // caller-influenced, and it is needed only while the type is ambiguous. A
+  // type written with the `urn:ietf:params:jmap:error:` prefix is not:
+  // nothing else says that. RFC 8620 section 3.6.2 gives the standard errors
+  // members of their own (`invalidArguments` carries `arguments`,
+  // `invalidPatch` a `path`), and an extension error carries whatever its
+  // extension defines, so holding every error to three members turned a
+  // handler's refusal into a successful response carrying an error object.
+  var prefixedJmap = b.mail.server.jmap.create({
+    mailStore:   { appendMessage: function () {} },
+    accountsFor: async function () {
+      return { primaryAccounts: { mail: "A1" }, accounts: { A1: {} } };
+    },
+    methods: {
+      "Email/get": async function () {
+        return {
+          type:      "urn:ietf:params:jmap:error:invalidArguments",
+          arguments: ["ids"],
+          detail:    "ids must be an array",
+        };
+      },
+    },
+  });
+  var withMembers = await prefixedJmap.dispatch({ id: "actor1" }, {
+    using:       ["urn:ietf:params:jmap:core"],
+    methodCalls: [["Email/get", { accountId: "A1", ids: [] }, "c0"]],
+  });
+  var errored = withMembers.methodResponses[0];
+  check("an explicitly prefixed error is an error whatever else it carries",
+        errored[0] === "error" && errored[1].type === "invalidArguments",
+        JSON.stringify(errored));
+  check("and the members it carries reach the client",
+        errored[1] && JSON.stringify(errored[1].arguments) === JSON.stringify(["ids"]) &&
+        errored[1].detail === "ids must be an array",
+        JSON.stringify(errored[1]));
+
+  // Core/echo stays the exception, because its result IS the client's own
+  // arguments: a client that sends the prefixed spelling gets it echoed.
+  var echoed = await _server().dispatch({ id: "actor1" }, {
+    using:       ["urn:ietf:params:jmap:core"],
+    methodCalls: [["Core/echo",
+      { type: "urn:ietf:params:jmap:error:notFound", hi: 1 }, "c2"]],
+  });
+  check("an echo of a prefixed error name is still an echo",
+        echoed.methodResponses[0][0] === "Core/echo" &&
+        echoed.methodResponses[0][1].hi === 1,
+        JSON.stringify(echoed.methodResponses[0]));
+}
+
+async function testAnExtensionErrorKeepsTheNameItsHandlerGave() {
+  // RFC 8620 section 3.6.2 names the standard method errors and says an
+  // extension may define its own, written with the `urn:ietf:params:jmap:
+  // error:` prefix. Reading the prefixed name against the standard set alone
+  // turned an extension refusal into a successful method response carrying
+  // the error object as its data. A bare name outside the set is still data,
+  // because a result may legitimately carry a `type` member.
+  var jmap = _server();
+  var rv = await jmap.dispatch({ id: "actor1" }, {
+    using:       ["urn:ietf:params:jmap:core"],
+    methodCalls: [["Widget/get", { accountId: "A1" }, "w0"]],
+  });
+  var response = rv.methodResponses[0];
+  check("an extension error is sent as an error",
+        response[0] === "error", JSON.stringify(response));
+  check("under the name its handler gave",
+        response[1] && response[1].type === "customFailure",
+        JSON.stringify(response));
 }
 
 async function run() {
   await testRequestLevelTypesAreTheFourRfcTypes();
+  await testAnExtensionErrorKeepsTheNameItsHandlerGave();
   await testTheRefusalIsAProblemDetailsObject();
   await testTheApiHandlerSendsProblemJson();
   await testMethodErrorsUseTheBareNames();

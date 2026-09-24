@@ -435,6 +435,83 @@ function testMakePostureAccessor() {
   check("makePostureAccessor: custom fallback", accF("nope") === "none");
 }
 
+function testAPostureOptionTheGuardDoesNotReadIsRefusedByName() {
+  // The framework spells this option two ways. Most guards read
+  // `compliancePosture`, resolved by `resolveProfileAndPosture`; the command
+  // guards read `posture`, resolved by `makeProfileResolver`. Each helper
+  // ignored the other's spelling in silence, so an operator who wrote the
+  // wrong one got no posture and no error: the guard ran at its default while
+  // the call said `hipaa`. Neither name is wrong, so neither is renamed; the
+  // one a guard does not read is refused and names the one it does.
+  var byPosture = [
+    ["guardSmtpCommand", b.guardSmtpCommand],
+  ];
+  var byCompliancePosture = [
+    ["guardCsv", b.guardCsv],
+    ["guardHtml", b.guardHtml],
+    ["guardSql", b.guardSql],
+    ["guardEmail", b.guardEmail],
+  ];
+
+  function refusalFor(g, optName, value) {
+    var o = {};
+    o[optName] = value;
+    try { g.gate(o); return null; }
+    catch (e) { return e; }
+  }
+
+  byCompliancePosture.forEach(function (row) {
+    var known = refusalFor(row[1], "compliancePosture", "hipaa");
+    check(row[0] + " still takes the name it reads", known === null,
+          known ? String(known.code) : "ok");
+    var wrong = refusalFor(row[1], "posture", "hipaa");
+    check(row[0] + " refuses `posture` rather than ignoring it",
+          wrong !== null && /bad-opt|bad-posture/.test(String(wrong.code)),
+          wrong ? String(wrong.code) : "accepted in silence");
+    check(row[0] + "'s refusal names the option it does read",
+          wrong !== null && /compliancePosture/.test(String(wrong.message)),
+          wrong ? String(wrong.message).slice(0, 80) : "no refusal");
+  });
+
+  byPosture.forEach(function (row) {
+    var known = refusalFor(row[1], "posture", "hipaa");
+    check(row[0] + " still takes the name it reads", known === null,
+          known ? String(known.code) : "ok");
+    var wrong = refusalFor(row[1], "compliancePosture", "hipaa");
+    check(row[0] + " refuses `compliancePosture` rather than ignoring it",
+          wrong !== null && /bad-opt|bad-posture/.test(String(wrong.code)),
+          wrong ? String(wrong.code) : "accepted in silence");
+  });
+
+  // b.guardAll validates the shared regime itself rather than through these
+  // resolvers, so it is the one place the rule has to be written twice.
+  var allKnown = refusalFor(b.guardAll, "compliancePosture", "hipaa");
+  check("guardAll still takes compliancePosture", allKnown === null,
+        allKnown ? String(allKnown.code) : "ok");
+  var allWrong = refusalFor(b.guardAll, "posture", "hipaa");
+  check("guardAll refuses `posture` rather than dropping it on the way out",
+        allWrong !== null && String(allWrong.code) === "guard-all/bad-opt",
+        allWrong ? String(allWrong.code) : "accepted in silence");
+
+  // Every guard the aggregator dispatches to, not just the sample above.
+  var ignoring = [];
+  (b.guardAll.allGuards() || []).forEach(function (entry) {
+    var g = entry && entry.NAME ? b[_guardExportName(entry.NAME)] : null;
+    if (!g || typeof g.gate !== "function") return;
+    var byP = refusalFor(g, "posture", "hipaa");
+    var byC = refusalFor(g, "compliancePosture", "hipaa");
+    if (byP === null && byC === null) ignoring.push(entry.NAME);
+  });
+  check("no guard in the family accepts both spellings, which would mean it reads neither",
+        ignoring.length === 0, ignoring.join(", "));
+}
+
+// b.guardCsv is exported as guardCsv for a NAME of "csv".
+function _guardExportName(name) {
+  var camel = String(name).replace(/[-_ ]+(.)/g, function (_m, c) { return c.toUpperCase(); });
+  return "guard" + camel.charAt(0).toUpperCase() + camel.slice(1);
+}
+
 function testCompliancePosturesFactory() {
   var built = GC.compliancePostures({ strict: { s: 1 }, balanced: { z: 2 } }, { base: 64 });
   check("compliancePostures: hipaa is strict tier + budget",
@@ -2715,6 +2792,7 @@ async function run() {
   testUnmappedPostureWarning();
   testLookupCompliancePosture();
   testMakePostureAccessor();
+  testAPostureOptionTheGuardDoesNotReadIsRefusedByName();
   testCompliancePosturesFactory();
   testStrictDefaults();
   testRunIssueValidatorContracts();

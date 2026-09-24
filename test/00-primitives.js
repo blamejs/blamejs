@@ -18961,11 +18961,17 @@ async function testFileUploadList() {
   await u.init({ uploadId: "u-1", actor: { id: "alice" }, metadata: { tag: "1" } });
   await u.init({ uploadId: "u-2", actor: { id: "alice" }, metadata: { tag: "2" } });
   await u.init({ uploadId: "u-3", actor: { id: "bob" },   metadata: { tag: "3" } });
-  // Default scope: actor sees only their own
+  // Default scope: actor sees only their own. An entry reports the owner KEY,
+  // which is opaque and field-tagged so {id:"x"} and {userId:"x"} stay two
+  // principals — so a caller matching on it derives it the same way the
+  // module does rather than comparing against the raw id it passed in.
+  var aliceKey  = b.requestHelpers.actorIdentityKey({ id: "alice" });
   var aliceList = u.list({ actor: { id: "alice" } });
   check("fileUpload.list: default-scoped to actor returns 2 of 3 uploads",
         aliceList.length === 2 &&
-        aliceList.every(function (item) { return item.actorId === "alice"; }));
+        aliceList.every(function (item) { return item.ownerKey === aliceKey; }));
+  check("fileUpload.list: the owner key is not the bare id the caller passed",
+        aliceKey !== "alice" && aliceKey !== b.requestHelpers.actorIdentityKey({ userId: "alice" }));
   // scopeToActor: false → see everything
   var allList = u.list({ actor: { id: "alice" }, scopeToActor: false });
   check("fileUpload.list: scopeToActor:false returns all uploads",

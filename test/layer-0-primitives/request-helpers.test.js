@@ -843,8 +843,156 @@ function testTrustedIdentityHeaders() {
     threw(function () { b.requestHelpers.trustedIdentityHeaders({ headers: HDRS, peerTrust: "nope" }); }) !== null);
 }
 
+function testAQualityListReadsQuotedPairsAndDropsWhatItCannotTerminate() {
+  // RFC 9110 5.6.4 quoted-string carries quoted-pair, so a `\"` inside a
+  // parameter value is part of the value rather than its end. Splitting on
+  // quotes alone read that as the close and the rest of the header as more
+  // entries. The splitter that honours the escape drops a run it cannot
+  // terminate rather than inventing a closing quote, so a malformed tail is
+  // absent instead of admitted as a type nobody offered.
+  var q = b.requestHelpers.parseQualityList;
+  var escaped = q('text/html;note="a\\";q=0.2", text/plain');
+  check("an escaped quote does not end the parameter value",
+        escaped.length === 2 && escaped[0].value === "text/html" &&
+        escaped[1].value === "text/plain",
+        JSON.stringify(escaped));
+  check("and the q it carries is the one outside the quotes",
+        escaped[0].q === 1, JSON.stringify(escaped[0]));
+
+  var unterminated = q('text/html, text/plain"');
+  check("a run that never closes is dropped rather than offered",
+        unterminated.length === 1 && unterminated[0].value === "text/html",
+        JSON.stringify(unterminated));
+
+  var ordinary = q("text/html;q=0.8, application/json;q=0.9");
+  check("an ordinary header still reads in preference order",
+        ordinary[0].value === "application/json" && ordinary[1].value === "text/html",
+        JSON.stringify(ordinary));
+}
+
+function testActorIdentityKeySeparatesPrincipals() {
+  // The one derivation every per-actor bucket reads. Each module used to
+  // answer this itself and the answers disagreed: b.fileUpload read
+  // `actor.id || actor.userId`, the JMAP slot key read id then username, the
+  // audit row read userId alone. Every chain ended in a shared literal, so
+  // each module folded every actor it could not name onto one key, and a
+  // bucket is an ownership record as often as it is a counter.
+  var key = b.requestHelpers.actorIdentityKey;
+  check("a principal named by any of the fields is named",
+        typeof key({ id: "a" }) === "string" &&
+        typeof key({ userId: "a" }) === "string" &&
+        typeof key({ username: "a" }) === "string" &&
+        typeof key({ sub: "a" }) === "string" &&
+        typeof key({ principalId: "a" }) === "string" &&
+        typeof key({ email: "a@b.c" }) === "string");
+  check("the field it came from is part of the key, so two fields are two principals",
+        key({ id: "x" }) !== key({ userId: "x" }),
+        JSON.stringify([key({ id: "x" }), key({ userId: "x" })]));
+  check("a value that concatenates the same way is still a different principal",
+        key({ id: "ab" }) !== key({ id: "a" }) + "b",
+        JSON.stringify([key({ id: "ab" }), key({ id: "a" })]));
+  check("tenantId scopes the key",
+        key({ id: "x", tenantId: "t1" }) !== key({ id: "x", tenantId: "t2" }) &&
+        key({ id: "x", tenantId: "t1" }) !== key({ id: "x" }));
+  check("no principal at all is the anonymous key",
+        key(null) === b.requestHelpers.ANONYMOUS_ACTOR_KEY &&
+        key(undefined) === b.requestHelpers.ANONYMOUS_ACTOR_KEY);
+  // The absent principal is answered before any hook runs. A hook is written
+  // against the shape the deployment's tokens carry, so calling it with no
+  // actor at all hands it undefined and it throws, which turned wiring one
+  // up into a crash on every unauthenticated call.
+  var readsActor = { actorKey: function (a) { return a.p.uuid; } };
+  check("an absent principal never reaches the hook",
+        key(null, readsActor) === b.requestHelpers.ANONYMOUS_ACTOR_KEY &&
+        key(undefined, readsActor) === b.requestHelpers.ANONYMOUS_ACTOR_KEY,
+        String(key(null, readsActor)));
+  check("an actor carrying no name this framework reads is refused, not folded",
+        key({ role: "admin", scopes: ["a"] }) === null,
+        JSON.stringify(key({ role: "admin" })));
+  check("an operator hook names the principal when the shape is theirs",
+        key({ p: { uuid: "u1" } }, { actorKey: function (a) { return a.p.uuid; } }) !==
+        key({ p: { uuid: "u2" } }, { actorKey: function (a) { return a.p.uuid; } }));
+  check("and a hook that answers nothing is refused rather than shared",
+        key({ p: {} }, { actorKey: function () { return null; } }) === null);
+  // A hook names a principal within its deployment's own namespace, which is
+  // per tenant as much as the fields are: two tenants whose directories both
+  // number their users from 1 are not one principal.
+  var byUuid = { actorKey: function (a) { return a.p.uuid; } };
+  check("a hook's key is scoped by tenant like every other",
+        key({ tenantId: "t1", p: { uuid: "u1" } }, byUuid) !==
+        key({ tenantId: "t2", p: { uuid: "u1" } }, byUuid),
+        JSON.stringify([key({ tenantId: "t1", p: { uuid: "u1" } }, byUuid),
+                        key({ tenantId: "t2", p: { uuid: "u1" } }, byUuid)]));
+  check("a hook cannot collide with the anonymous key",
+        key({}, { actorKey: function () { return b.requestHelpers.ANONYMOUS_ACTOR_KEY; } }) !==
+        b.requestHelpers.ANONYMOUS_ACTOR_KEY);
+
+  // A tenantId that is present but is neither a non-empty string nor a
+  // finite number cannot scope anything, and dropping it silently put two
+  // tenants on one key. The actor is the operator's object, so a tenantId
+  // that arrived as an object or a boolean is a deployment whose scoping
+  // this function cannot honour: it says so rather than answering as if
+  // there were no tenant at all.
+  check("an unusable tenantId is refused rather than ignored",
+        key({ id: "x", tenantId: {} }) === null &&
+        key({ id: "x", tenantId: true }) === null,
+        JSON.stringify([key({ id: "x", tenantId: {} }), key({ id: "x", tenantId: true })]));
+  check("while an absent one simply leaves the key unscoped",
+        typeof key({ id: "x" }) === "string" &&
+        key({ id: "x", tenantId: null }) === key({ id: "x" }),
+        JSON.stringify([key({ id: "x" }), key({ id: "x", tenantId: null })]));
+
+  // Identity is what the actor carries, not what its prototype carries: a
+  // name inherited from a shared prototype is the same name for every actor
+  // built from it, which is the merge this function exists to prevent.
+  function Shared() {}
+  Shared.prototype.id = "everyone";
+  var inherited = new Shared();
+  check("an inherited name does not name the principal",
+        key(inherited) === null, JSON.stringify(key(inherited)));
+  var own = new Shared();
+  own.sub = "alice";
+  check("while the actor's own name still does",
+        key(own) !== null && key(own).indexOf("alice") !== -1, JSON.stringify(key(own)));
+
+  // The display answer reads the same list in the same order, so a listener
+  // reporting a username and the bucket separating that user's work cannot
+  // drift apart.
+  var name = b.requestHelpers.actorDisplayName;
+  check("the display name is the value as the actor wrote it",
+        name({ sub: "alice" }) === "alice" && name({ id: "a-1" }) === "a-1");
+  // The two answer different questions, so they read the fields in different
+  // orders: a reader wants the login name, a bucket wants a stable key. What
+  // must not drift is WHICH fields name a principal, so the lists carry the
+  // same members and a field added to one is present in the other.
+  check("the display order prefers the login name over an opaque id",
+        name({ id: "u1", username: "alice" }) === "alice");
+  check("and both orders read exactly the same fields",
+        b.requestHelpers.ACTOR_DISPLAY_FIELDS.slice().sort().join(",") ===
+        b.requestHelpers.ACTOR_IDENTITY_FIELDS.slice().sort().join(","),
+        JSON.stringify([b.requestHelpers.ACTOR_DISPLAY_FIELDS,
+                        b.requestHelpers.ACTOR_IDENTITY_FIELDS]));
+  check("and answers null where the key refuses",
+        name({ role: "admin" }) === null && name(null) === null &&
+        name(null, { actorKey: function (a) { return a.p.uuid; } }) === null);
+
+  // The derivation used before this one, kept so a primitive can recognize a
+  // record its earlier version wrote instead of stranding it. It answers
+  // null for every actor the old rule would have folded onto the shared
+  // literal, so recognizing a legacy record cannot resurrect the collapse.
+  var legacy = b.requestHelpers.legacyActorKey;
+  check("the legacy key is the bare value the old rule wrote",
+        legacy({ id: "ada" }) === "ada" && legacy({ userId: "ada" }) === "ada");
+  check("no actor is the old shared literal",
+        legacy(null) === "_anonymous");
+  check("and an actor the old rule could not name answers null, not the literal",
+        legacy({ sub: "ada" }) === null && legacy({ role: "admin" }) === null);
+}
+
 async function run() {
   testSurface();
+  testActorIdentityKeySeparatesPrincipals();
+  testAQualityListReadsQuotedPairsAndDropsWhatItCannotTerminate();
   testSafeHeadersDistinct();
   testIpPrefixMasking();
   testIpKeyForRateLimit();

@@ -37,6 +37,9 @@ var CREATE_HANDLE_SHORTHAND = Object.freeze({
   "b.backup.scheduleTest":             "b.backup.create().scheduleTest",
   "b.dualControl.consume":             "b.dualControl.create().consume",
   "b.flag.middleware":                 "b.flag.create().middleware",
+  "b.mailStore.appendMessage":         "b.mailStore.create().appendMessage",
+  "b.mailStore.createFolder":          "b.mailStore.create().createFolder",
+  "b.restore.rollback":                "b.restore.create().rollback — the rollback a restore leaves behind",
 });
 
 // Names the prose mentions BECAUSE they are gone. Resolving would mean the
@@ -44,11 +47,35 @@ var CREATE_HANDLE_SHORTHAND = Object.freeze({
 var DELIBERATELY_ABSENT = Object.freeze({
   "b.backup.localStorage": "renamed to b.backup.diskStorage in v0.11.2, alias removed in v0.11.20; " +
                            "the Node 26 localStorage note exists to record that removal",
+  "b.backup.X":            "the same note writes the property-access shape `b.backup.X(...)` to " +
+                           "contrast it with a bare global; the X stands for any member rather " +
+                           "than naming one",
 });
 
 // Member names may hold underscores (ml_kem_1024), so a class that stops at
 // `_` would report a truncated name that resolves nowhere.
-var REFERENCE_RE = /\bb\.([A-Za-z][A-Za-z0-9_]*)((?:\.[A-Za-z][A-Za-z0-9_]*)+)/g;
+// A name written in prose opens a word: it follows the start of the text,
+// whitespace, or a delimiter someone quotes or brackets it with. Matching
+// anywhere read the `b.txt` out of the filename `a;b.txt` in an example and
+// reported it as a namespace that resolves to nothing.
+var OPENS_A_NAME = "(?:^|[\\s`\"'(\\[<>|*,])";
+
+var REFERENCE_RE = new RegExp(
+  OPENS_A_NAME + "b\\.([A-Za-z][A-Za-z0-9_]*)((?:\\.[A-Za-z][A-Za-z0-9_]*)+)", "g");
+
+// Sources under lib/ that name primitives to a reader rather than calling
+// them: a compliance crosswalk answers an auditor "which primitive covers
+// this control", so a name it carries is as operator-facing as one in a
+// document, and nothing else resolves it.
+var CATALOG_SOURCES = ["nist-crosswalk.js", "compliance-ai-act.js"];
+
+// `b.<name>` with no member after it. Written as its own class because the
+// member pattern above needs a dot to match, so a namespace named alone was
+// never resolved against anything.
+// The `*` exclusion keeps the family globs prose writes, `b.guard*` and
+// `b.safe*`, out of it: those name a family rather than a namespace.
+var NAMESPACE_RE = new RegExp(
+  OPENS_A_NAME + "b\\.([A-Za-z][A-Za-z0-9_]*)(?![A-Za-z0-9_.*])", "g");
 
 function _operatorDocs() {
   var files = [];
@@ -62,6 +89,23 @@ function _operatorDocs() {
       if (/\.md$/.test(name)) files.push(nodePath.join(docsDir, name));
     });
   }
+  // The compliance crosswalks name primitives to an auditor the same way a
+  // document does, and they are read by `b.nistCrosswalk` rather than by a
+  // person, so nothing else checks them. A rename applied to one of three
+  // entries left the other two naming a primitive that does not exist.
+  CATALOG_SOURCES.forEach(function (name) {
+    var p = nodePath.join(ROOT, "lib", name);
+    if (nodeFs.existsSync(p)) files.push(p);
+  });
+  // The release notes being written now. They are the CHANGELOG entry and the
+  // GitHub Release body, so a name that resolves to nothing reaches operators
+  // there exactly as it would from the README, and nothing else looked: this
+  // release described a fix as the work of `b.mail.serverNet`, which is an
+  // internal module and no namespace at all. Only the current version's file
+  // is read, because the shipped ones name the surface of their own release.
+  var version = require(nodePath.join(ROOT, "package.json")).version;
+  var notes = nodePath.join(ROOT, "release-notes", "v" + version + ".json");
+  if (nodeFs.existsSync(notes)) files.push(notes);
   return files;
 }
 
@@ -93,6 +137,19 @@ function testEveryDocumentedApiNameResolves() {
       if (Object.prototype.hasOwnProperty.call(CREATE_HANDLE_SHORTHAND, name)) continue;
       if (Object.prototype.hasOwnProperty.call(DELIBERATELY_ABSENT, name)) continue;
       if (dead.indexOf(name + " (" + rel + ")") === -1) dead.push(name + " (" + rel + ")");
+    }
+    // A namespace named on its own resolves or it does not, and the member
+    // class above cannot see one: `b.atoKillSwitch` carries no member to
+    // match, so a namespace that moved under another read as ordinary prose
+    // while naming nothing.
+    NAMESPACE_RE.lastIndex = 0;
+    while ((m = NAMESPACE_RE.exec(text)) !== null) {
+      scanned += 1;
+      var ns = "b." + m[1];
+      if (_resolves([m[1]])) continue;
+      if (Object.prototype.hasOwnProperty.call(CREATE_HANDLE_SHORTHAND, ns)) continue;
+      if (Object.prototype.hasOwnProperty.call(DELIBERATELY_ABSENT, ns)) continue;
+      if (dead.indexOf(ns + " (" + rel + ")") === -1) dead.push(ns + " (" + rel + ")");
     }
   });
 

@@ -37,6 +37,44 @@ function testSplitTopLevelComma() {
         unterminated.length === 1 && unterminated[0] === "a");
 }
 
+function testEndsInsideQuotedString() {
+  var ends = b.structuredFields.endsInsideQuotedString;
+
+  // The piece splitTopLevel drops is the one this reports on, so a caller can
+  // tell an absent parameter from one an open quote swallowed.
+  check("endsInsideQuotedString: a closed quote does not",
+        ends('a="1"; b=2') === false);
+  check("endsInsideQuotedString: an open quote does",
+        ends('a="1; b=2') === true);
+  check("endsInsideQuotedString: no quotes at all",
+        ends("a=1; b=2") === false);
+
+  // An escaped quote inside the run does not close it; an escaped backslash
+  // before the closing quote does. These two shapes decide whether what
+  // follows the run is a parameter or text inside a value.
+  check("endsInsideQuotedString: an escaped quote leaves the run open",
+        ends('note="a\\"; charset=utf-8') === true);
+  check("endsInsideQuotedString: an escaped backslash still closes the run",
+        ends('note="a\\\\"; charset=utf-8') === false);
+
+  // A backslash as the last character has nothing to escape, so the field was
+  // truncated mid-escape and the run is still open.
+  check("endsInsideQuotedString: a trailing backslash inside a run",
+        ends('a="x\\') === true);
+
+  check("endsInsideQuotedString: empty string",     ends("") === false);
+  check("endsInsideQuotedString: a lone quote",     ends('"') === true);
+  check("endsInsideQuotedString: non-string input", ends(null) === false);
+
+  // The two answers agree: when this reports the field closed, the split
+  // keeps every piece the field carried.
+  [['a="1"; b=2', 2], ["a=1; b=2", 2], ['a="x;y"; b=2', 2]].forEach(function (row) {
+    check("endsInsideQuotedString agrees with the split for: " + row[0],
+          ends(row[0]) === false &&
+            b.structuredFields.splitTopLevel(row[0], ";").length === row[1]);
+  });
+}
+
 function testSplitTopLevelSemi() {
   check("splitTopLevel: semicolon list",
     JSON.stringify(b.structuredFields.splitTopLevel("a;b;c", ";")) ===
@@ -260,6 +298,7 @@ function testUnfoldHeaderContinuations() {
 async function run() {
   testSplitTopLevelComma();
   testSplitTopLevelSemi();
+  testEndsInsideQuotedString();
   testParseTagList();
   testForEachKeyValue();
   testRefuseControlBytes();

@@ -73,6 +73,48 @@ async function testGetIsBoundedByMaxObjectsInGet() {
         JSON.stringify(overCap));
 }
 
+async function testAGetNamesItsObjectsUnderWhateverArgumentItDefines() {
+  // `maxObjectsInGet` bounds the objects a `/get` names, and `ids` is not the
+  // only argument that names them: RFC 8621 section 5.1 gives
+  // `SearchSnippet/get` an `emailIds` argument instead. Counting `ids` alone
+  // answered zero for that method, so the cap the session advertises was not
+  // the cap it applied and a request naming any number of emails reached the
+  // handler.
+  var snippetAtCap = await _call("SearchSnippet/get",
+    { accountId: ACCOUNT, emailIds: _ids(500), filter: { text: "x" } },
+    { methods: { "SearchSnippet/get": async function (actor, args) {
+      return { accountId: args.accountId, list: [], notFound: [] };
+    } } });
+  var snippetOverCap = await _call("SearchSnippet/get",
+    { accountId: ACCOUNT, emailIds: _ids(501), filter: { text: "x" } },
+    { methods: { "SearchSnippet/get": async function (actor, args) {
+      return { accountId: args.accountId, list: [], notFound: [] };
+    } } });
+  check("a SearchSnippet/get at the cap runs",
+        snippetAtCap.type === null, JSON.stringify(snippetAtCap));
+  check("and one over it is requestTooLarge before the handler runs",
+        snippetOverCap.type === "requestTooLarge" &&
+        snippetOverCap.ranHandler === false, JSON.stringify(snippetOverCap));
+
+  // The rule is the argument's name, so a future `/get` naming its objects the
+  // same way is bounded without a table of methods to keep in step.
+  var otherIdsArgument = await _call("Email/get",
+    { accountId: ACCOUNT, threadIds: _ids(501) });
+  check("any Ids argument of a /get counts toward the cap",
+        otherIdsArgument.type === "requestTooLarge" &&
+        otherIdsArgument.ranHandler === false, JSON.stringify(otherIdsArgument));
+
+  // An argument that is a list of something other than objects is not a count
+  // of objects: `properties` names fields, and a long one is not over the cap.
+  var manyProperties = [];
+  for (var p = 0; p < 600; p += 1) manyProperties.push("header:x-" + p);
+  var propertiesOnly = await _call("Email/get",
+    { accountId: ACCOUNT, ids: _ids(1), properties: manyProperties });
+  check("a long properties list is not counted as objects",
+        propertiesOnly.type === null && propertiesOnly.ranHandler === true,
+        JSON.stringify(propertiesOnly));
+}
+
 async function testSetIsBoundedByTheCombinedTotal() {
   // RFC 8620 section 5.3 counts create, update and destroy together.
   var create = {}; var update = {};
@@ -279,11 +321,522 @@ function testEveryProfileKnobIsRead() {
         shapeMismatch.length === 0);
 }
 
+function _uploadReqRes(url, bytes) {
+  var listeners = Object.create(null);
+  var headers = {};
+  var chunks = [];
+  var status = 200;
+  var req = {
+    method:  "POST",
+    url:     url,
+    headers: { "content-type": "text/plain" },
+    user:    { id: "actor1" },
+    socket:  { remoteAddress: "127.0.0.1" },
+    on:      function (event, fn) { (listeners[event] = listeners[event] || []).push(fn); return req; },
+    // The refusal paths tear the request down, so a mock without this makes
+    // every one of them throw a TypeError the handler then swallows, and the
+    // teardown the refusal performs is never exercised.
+    destroy: function () { req._destroyed = true; req._fire("close"); },
+    _fire:   function (event, arg) {
+      var fns = listeners[event] || [];
+      for (var i = 0; i < fns.length; i += 1) fns[i](arg);
+    },
+    _send:   function () { req._fire("data", bytes); req._fire("end"); },
+  };
+  var res = {
+    setHeader: function (k, v) { headers[k.toLowerCase()] = String(v); },
+    end:       function (c) { if (c) chunks.push(Buffer.from(c)); },
+    _buf:      function () { return Buffer.concat(chunks).toString("utf8"); },
+    _status:   function () { return status; },
+  };
+  Object.defineProperty(res, "statusCode", {
+    get: function () { return status; },
+    set: function (v) { status = v; },
+  });
+  return { req: req, res: res };
+}
+
+function _apiReqRes(body) {
+  var chunks = [];
+  var headers = {};
+  var status = 200;
+  var req = {
+    method:  "POST",
+    url:     "/jmap/api",
+    headers: { "content-type": "application/json" },
+    user:    { id: "actor1" },
+    socket:  { remoteAddress: "127.0.0.1" },
+    body:    body,
+  };
+  var res = {
+    setHeader: function (k, v) { headers[k.toLowerCase()] = String(v); },
+    end:       function (c) { if (c) chunks.push(Buffer.from(c)); },
+    _buf:      function () { return Buffer.concat(chunks).toString("utf8"); },
+    _status:   function () { return status; },
+  };
+  Object.defineProperty(res, "statusCode", {
+    get: function () { return status; },
+    set: function (v) { status = v; },
+  });
+  return { req: req, res: res };
+}
+
+function _settle() {
+  return new Promise(function (r) { setImmediate(function () { setImmediate(r); }); });
+}
+
+async function testMaxConcurrentRequestsAdmitsOnlyWhatItAdvertises() {
+  // The session advertises how many requests a client may have in flight.
+  // Publishing it without admitting against it left the operator with a knob
+  // that governs nothing: the backend still ran every dispatch at once,
+  // which is the work the knob exists to bound.
+  var release = null;
+  var started = 0;
+  var blocked = new Promise(function (r) { release = r; });
+  var jmap = _server([], {
+    maxConcurrentRequests: 1,
+    methods: {
+      "Core/echo": async function (actor, args) { started += 1; await blocked; return args; },
+    },
+  });
+  var body = {
+    using:       ["urn:ietf:params:jmap:core"],
+    methodCalls: [["Core/echo", { hi: 1 }, "c0"]],
+  };
+  var first = jmap.dispatch({ id: "actor1" }, body);
+  await _settle();
+  var second = await jmap.dispatch({ id: "actor1" }, body);
+  check("the second request in flight is refused",
+        second && second.type === "urn:ietf:params:jmap:error:limit",
+        JSON.stringify(second));
+  check("and the refusal names the limit it reached",
+        second && second.limit === "maxConcurrentRequests", JSON.stringify(second));
+  check("the backend ran the first request only", started === 1, String(started));
+
+  // RFC 8620 section 3.6.1 gives the `limit` problem HTTP 429 when the limit
+  // reached is a concurrency one: a request refused because another is in
+  // flight is not a bad request, and a client that retries on 429 can
+  // recover from it while one told 400 will not.
+  var mr = _apiReqRes(body);
+  jmap.apiHandler(mr.req, mr.res);
+  await helpers.waitUntil(function () { return mr.res._buf().length > 0; },
+    { timeoutMs: 5000, label: "jmap limits: concurrency refusal reached the response" });
+  check("the HTTP transport answers 429 rather than 400",
+        mr.res._status() === 429, String(mr.res._status()));
+  var sent = JSON.parse(mr.res._buf() || "{}");
+  check("and the problem body carries the same status",
+        sent.status === 429, JSON.stringify(sent));
+  check("naming the limit it reached",
+        sent.limit === "maxConcurrentRequests" &&
+        sent.type === "urn:ietf:params:jmap:error:limit", JSON.stringify(sent));
+
+  // Every other limit keeps the status it had.
+  var overCalls = _apiReqRes({
+    using:       ["urn:ietf:params:jmap:core"],
+    methodCalls: [["Core/echo", { hi: 1 }, "c0"]],
+    extra:       true,
+  });
+  overCalls.req.body = "not a request";
+  overCalls.req.user = { id: "actor2" };
+  jmap.apiHandler(overCalls.req, overCalls.res);
+  await helpers.waitUntil(function () { return overCalls.res._buf().length > 0; },
+    { timeoutMs: 5000, label: "jmap limits: malformed-request refusal reached the response" });
+  check("a malformed request is still 400",
+        overCalls.res._status() === 400, String(overCalls.res._status()));
+
+  release();
+  var done = await first;
+  check("the admitted request still answers",
+        done.methodResponses[0][0] === "Core/echo", JSON.stringify(done.methodResponses[0]));
+
+  // The slot is released when the request finishes, or one refusal would
+  // close the account for good.
+  var later = await jmap.dispatch({ id: "actor1" }, body);
+  check("and the slot is free again afterwards",
+        later.methodResponses[0][0] === "Core/echo", JSON.stringify(later.methodResponses[0]));
+}
+
+async function testMaxConcurrentUploadAdmitsOnlyWhatItAdvertises() {
+  var release = null;
+  var blocked = new Promise(function (r) { release = r; });
+  var uploads = 0;
+  var jmap = _server([], {
+    maxConcurrentUpload: 1,
+    mailStore: {
+      appendMessage: function () {},
+      uploadBlob: async function () {
+        uploads += 1;
+        await blocked;
+        return { blobId: "blob_1", type: "text/plain", size: 2 };
+      },
+    },
+  });
+  var first = _uploadReqRes("/jmap/upload/" + ACCOUNT, Buffer.from("hi"));
+  jmap.uploadHandler(first.req, first.res);
+  first.req._send();
+  await _settle();
+
+  var second = _uploadReqRes("/jmap/upload/" + ACCOUNT, Buffer.from("hi"));
+  jmap.uploadHandler(second.req, second.res);
+  second.req._send();
+  await _settle();
+  check("a second upload beyond the advertised concurrency is refused",
+        second.res._status() === 429, String(second.res._status()));
+  check("and it names the limit it reached",
+        second.res._buf().indexOf("maxConcurrentUpload") !== -1, second.res._buf());
+  check("the upload backend ran once", uploads === 1, String(uploads));
+
+  release();
+  await _settle();
+  await _settle();
+  check("the admitted upload still answers", first.res._status() === 201,
+        String(first.res._status()) + " " + first.res._buf());
+
+  var third = _uploadReqRes("/jmap/upload/" + ACCOUNT, Buffer.from("hi"));
+  jmap.uploadHandler(third.req, third.res);
+  third.req._send();
+  await _settle();
+  await _settle();
+  check("and the slot is free again afterwards", third.res._status() === 201,
+        String(third.res._status()) + " " + third.res._buf());
+}
+
+async function testConcurrencyIsCountedPerActor() {
+  // One account's traffic must not spend another's allowance. Reading only a
+  // string `id` put every actor identified by a number, and every actor with
+  // neither field, into one bucket, so one client in flight refused all the
+  // others. Two tenants may also spell an account id the same way.
+  var release = null;
+  var blocked = new Promise(function (r) { release = r; });
+  var jmap = _server([], {
+    maxConcurrentRequests: 1,
+    methods: {
+      // Only the actor whose slot is meant to stay busy waits; a handler
+      // held past its deadline answers serverFail and says nothing about
+      // admission.
+      "Core/echo": async function (actor, args) {
+        if (actor.id === 1 || actor.tenantId === "t1") await blocked;
+        return args;
+      },
+    },
+  });
+  var body = {
+    using:       ["urn:ietf:params:jmap:core"],
+    methodCalls: [["Core/echo", { hi: 1 }, "c0"]],
+  };
+  var held = jmap.dispatch({ id: 1 }, body);
+  await _settle();
+  var other = await jmap.dispatch({ id: 2 }, body);
+  check("a numerically identified actor has its own allowance",
+        other && other.methodResponses !== undefined &&
+        other.methodResponses[0][0] === "Core/echo", JSON.stringify(other));
+
+  var sameNumber = await jmap.dispatch({ id: 1 }, body);
+  check("while the same actor is still held to it",
+        sameNumber && sameNumber.type === "urn:ietf:params:jmap:error:limit",
+        JSON.stringify(sameNumber));
+
+  // A tenant-local id is only unique within its tenant.
+  var tenantHeld = jmap.dispatch({ tenantId: "t1", id: "shared" }, body);
+  await _settle();
+  var otherTenant = await jmap.dispatch({ tenantId: "t2", id: "shared" }, body);
+  check("the same id under another tenant is another actor",
+        otherTenant && otherTenant.methodResponses !== undefined &&
+        otherTenant.methodResponses[0][0] === "Core/echo", JSON.stringify(otherTenant));
+  var sameTenant = await jmap.dispatch({ tenantId: "t1", id: "shared" }, body);
+  check("and the same id under the same tenant is the same actor",
+        sameTenant && sameTenant.type === "urn:ietf:params:jmap:error:limit",
+        JSON.stringify(sameTenant));
+
+  release();
+  await held;
+  await tenantHeld;
+}
+
+async function testAnActorIdentifiedByAnotherFieldIsStillItsOwnPrincipal() {
+  // The listener does not choose what an actor looks like: the operator's
+  // verify() does, and a deployment issuing JWTs hands back `{ sub }` with no
+  // id and no username. Reading only the fields this framework happens to
+  // write put every such user in one bucket, so one client in flight refused
+  // all the others, and the refusal named a limit they had not reached.
+  var release = null;
+  var blocked = new Promise(function (r) { release = r; });
+  var jmap = _server([], {
+    maxConcurrentRequests: 1,
+    methods: {
+      "Core/echo": async function (actor, args) {
+        if (actor.sub === "alice") await blocked;
+        return args;
+      },
+    },
+  });
+  var body = {
+    using:       ["urn:ietf:params:jmap:core"],
+    methodCalls: [["Core/echo", { hi: 1 }, "c0"]],
+  };
+  var held = jmap.dispatch({ sub: "alice" }, body);
+  await _settle();
+  var other = await jmap.dispatch({ sub: "bob" }, body);
+  check("another subject has its own allowance",
+        other && other.methodResponses !== undefined &&
+        other.methodResponses[0][0] === "Core/echo", JSON.stringify(other));
+  var same = await jmap.dispatch({ sub: "alice" }, body);
+  check("while the same subject is still held to it",
+        same && same.type === "urn:ietf:params:jmap:error:limit", JSON.stringify(same));
+  release();
+  await held;
+}
+
+function testAConcurrencyOptionThatBoundsNothingIsRefused() {
+  // Both values are advertised to every client in the session and are now
+  // admission limits, so a zero or a negative refuses every request while
+  // the session goes on promising the number. A value that cannot bound
+  // anything is a configuration error, caught where the operator can see it.
+  var bad = [0, -1, 1.5, "4", null];
+  var accepted = [];
+  bad.forEach(function (value) {
+    ["maxConcurrentRequests", "maxConcurrentUpload"].forEach(function (name) {
+      var made = {
+        mailStore:   { appendMessage: function () {} },
+        accountsFor: async function () { return { accounts: {} }; },
+        methods:     {},
+      };
+      made[name] = value;
+      var threw = null;
+      try { b.mail.server.jmap.create(made); } catch (e) { threw = e; }
+      // null means "not supplied", which keeps the default.
+      var wanted = value === null ? null : "mail-server-jmap/bad-concurrency";
+      var got = threw ? threw.code : null;
+      if (got !== wanted) accepted.push(name + "=" + JSON.stringify(value) + " -> " + got);
+    });
+  });
+  check("a concurrency value that bounds nothing is refused at create" +
+        (accepted.length ? " (" + accepted.join("; ") + ")" : ""), accepted.length === 0);
+}
+
+async function testTheOperatorCanNameTheIdentityFieldItself() {
+  // An actor this framework cannot read at all is the operator's own shape,
+  // so they say how to read it rather than having their users merged.
+  var release = null;
+  var blocked = new Promise(function (r) { release = r; });
+  var jmap = _server([], {
+    maxConcurrentRequests: 1,
+    actorKey: function (actor) { return actor.principal.uuid; },
+    methods: {
+      "Core/echo": async function (actor, args) {
+        if (actor.principal.uuid === "u-1") await blocked;
+        return args;
+      },
+    },
+  });
+  var body = {
+    using:       ["urn:ietf:params:jmap:core"],
+    methodCalls: [["Core/echo", { hi: 1 }, "c0"]],
+  };
+  var held = jmap.dispatch({ principal: { uuid: "u-1" } }, body);
+  await _settle();
+  var other = await jmap.dispatch({ principal: { uuid: "u-2" } }, body);
+  check("the operator's key separates them",
+        other && other.methodResponses !== undefined &&
+        other.methodResponses[0][0] === "Core/echo", JSON.stringify(other));
+  var same = await jmap.dispatch({ principal: { uuid: "u-1" } }, body);
+  check("and still holds one of them to the limit",
+        same && same.type === "urn:ietf:params:jmap:error:limit", JSON.stringify(same));
+  release();
+  await held;
+
+  // A hook that cannot answer is a configuration error, not a silent merge.
+  var threw = null;
+  try {
+    b.mail.server.jmap.create({
+      mailStore:   { appendMessage: function () {} },
+      accountsFor: async function () { return { accounts: {} }; },
+      methods:     {},
+      actorKey:    "not a function",
+    });
+  } catch (e) { threw = e; }
+  check("a non-function actorKey is refused at create",
+        threw !== null && threw.code === "mail-server-jmap/bad-actor-key",
+        threw && (threw.code + ": " + threw.message));
+}
+
+async function testAThrowingActorKeyDoesNotEscapeTheListener() {
+  // The hook is the operator's code and runs against whatever their tokens
+  // carry, so it throws on a shape they did not anticipate. Calling it bare
+  // inside the HTTP request listener let that throw leave the listener,
+  // which ends the process rather than the request.
+  var reachedBackend = false;
+  var jmap = _server([], {
+    actorKey: function (actor) { return actor.principal.uuid; },
+    mailStore: {
+      appendMessage: function () {},
+      // Present, so the handler reaches the identity derivation rather than
+      // answering 503 for a missing backend and never running the hook.
+      uploadBlob: async function () {
+        reachedBackend = true;
+        return { blobId: "b1", type: "text/plain", size: 2 };
+      },
+    },
+    methods: { "Core/echo": async function (actor, args) { return args; } },
+  });
+  var mr = _uploadReqRes("/jmap/upload/" + ACCOUNT, Buffer.from("hi"));
+  mr.req.user = { sub: "alice" };
+  var threw = null;
+  try {
+    jmap.uploadHandler(mr.req, mr.res);
+    mr.req._send();
+  } catch (e) { threw = e; }
+  await _settle();
+  await _settle();
+  check("a hook that throws does not throw out of the upload handler",
+        threw === null, threw && String(threw));
+  check("the request is refused as a server fault, not a missing backend",
+        mr.res._status() === 500 &&
+        mr.res._buf().indexOf("actorKey") !== -1,
+        mr.res._status() + " " + mr.res._buf());
+  check("and the upload never reached the backend",
+        reachedBackend === false, String(reachedBackend));
+
+  var rv = await jmap.dispatch({ sub: "alice" }, {
+    using:       ["urn:ietf:params:jmap:core"],
+    methodCalls: [["Core/echo", { hi: 1 }, "c0"]],
+  });
+  check("and a dispatch is refused rather than crashing",
+        rv && rv.type === "urn:ietf:params:jmap:error:serverFail",
+        JSON.stringify(rv));
+}
+
+async function testTheConcurrencyRefusalCarriesOneStatusOnBothTransports() {
+  // RFC 8620 section 3.6.1 gives the problem a `status` member, and the
+  // WebSocket RequestError frame carries the same one. Deriving it from the
+  // type alone reported 400 there while the HTTP transport answered 429, so
+  // a client with both transports saw one refusal two ways.
+  var release = null;
+  var blocked = new Promise(function (r) { release = r; });
+  var jmap = _server([], {
+    maxConcurrentRequests: 1,
+    methods: {
+      "Core/echo": async function (actor, args) {
+        if (actor.id === "held") await blocked;
+        return args;
+      },
+    },
+  });
+  var body = {
+    using:       ["urn:ietf:params:jmap:core"],
+    methodCalls: [["Core/echo", { hi: 1 }, "c0"]],
+  };
+  var held = jmap.dispatch({ id: "held" }, body);
+  await _settle();
+
+  // Driven through apiHandler rather than dispatch, because the HTTP status
+  // is set there: asserting on the object dispatch returns says nothing
+  // about what either transport puts on the wire.
+  var mr = _apiReqRes(body);
+  mr.req.user = { id: "held" };
+  jmap.apiHandler(mr.req, mr.res);
+  await helpers.waitUntil(function () { return mr.res._buf().length > 0; },
+    { timeoutMs: 5000, label: "jmap limits: HTTP concurrency refusal" });
+  var httpBody = JSON.parse(mr.res._buf());
+  check("the HTTP transport answers 429",
+        mr.res._status() === 429, String(mr.res._status()));
+  check("and its problem body carries the same status",
+        httpBody.status === 429, JSON.stringify(httpBody));
+
+  // The WebSocket RequestError frame is built from this same refusal object
+  // and copies its `status`, so the value the refusal carries is the value
+  // both transports report. Deriving it from the type instead is what made
+  // the two disagree, and 400 is what that derivation produced.
+  var refusal = await jmap.dispatch({ id: "held" }, body);
+  check("the refusal itself carries 429 for both transports to copy",
+        refusal.status === 429 &&
+        refusal.type === "urn:ietf:params:jmap:error:limit",
+        JSON.stringify(refusal));
+
+  release();
+  await held;
+}
+
+async function testAnUploadHoldsItsSlotWhileTheBackendWorks() {
+  // Node fires `close` on an ordinary request once its body has been read,
+  // which is before the backend has finished with the bytes. Releasing there
+  // handed the slot back while the upload was still being processed, so the
+  // limit bounded the reading of request bodies rather than the work.
+  var release = null;
+  var blocked = new Promise(function (r) { release = r; });
+  var uploads = 0;
+  var jmap = _server([], {
+    maxConcurrentUpload: 1,
+    mailStore: {
+      appendMessage: function () {},
+      uploadBlob: async function () {
+        uploads += 1;
+        await blocked;
+        return { blobId: "blob_1", type: "text/plain", size: 2 };
+      },
+    },
+  });
+  var first = _uploadReqRes("/jmap/upload/" + ACCOUNT, Buffer.from("hi"));
+  jmap.uploadHandler(first.req, first.res);
+  first.req._send();
+  first.req._fire("close");
+  await _settle();
+
+  var second = _uploadReqRes("/jmap/upload/" + ACCOUNT, Buffer.from("hi"));
+  jmap.uploadHandler(second.req, second.res);
+  second.req._send();
+  second.req._fire("close");
+  await _settle();
+  check("the slot is still held while the backend works",
+        second.res._status() === 429, String(second.res._status()));
+  check("so the backend ran once", uploads === 1, String(uploads));
+
+  release();
+  await _settle();
+  await _settle();
+  check("the first upload answers", first.res._status() === 201,
+        String(first.res._status()) + " " + first.res._buf());
+
+  var third = _uploadReqRes("/jmap/upload/" + ACCOUNT, Buffer.from("hi"));
+  jmap.uploadHandler(third.req, third.res);
+  third.req._send();
+  third.req._fire("close");
+  await _settle();
+  await _settle();
+  check("and the slot is free once the backend has settled",
+        third.res._status() === 201, String(third.res._status()) + " " + third.res._buf());
+
+  // A connection that drops before the body is complete releases it, or a
+  // client that hangs up mid-upload would hold the slot for good.
+  var aborted = _uploadReqRes("/jmap/upload/" + ACCOUNT, Buffer.from("hi"));
+  jmap.uploadHandler(aborted.req, aborted.res);
+  aborted.req._fire("close");
+  await _settle();
+  var after = _uploadReqRes("/jmap/upload/" + ACCOUNT, Buffer.from("hi"));
+  jmap.uploadHandler(after.req, after.res);
+  after.req._send();
+  after.req._fire("close");
+  await _settle();
+  await _settle();
+  check("an abandoned upload does not keep the slot",
+        after.res._status() === 201, String(after.res._status()) + " " + after.res._buf());
+}
+
 async function run() {
   testLimitsForCannotBeTurnedIntoALie();
+  await testMaxConcurrentRequestsAdmitsOnlyWhatItAdvertises();
+  await testConcurrencyIsCountedPerActor();
+  await testAnActorIdentifiedByAnotherFieldIsStillItsOwnPrincipal();
+  testAConcurrencyOptionThatBoundsNothingIsRefused();
+  await testTheOperatorCanNameTheIdentityFieldItself();
+  await testAThrowingActorKeyDoesNotEscapeTheListener();
+  await testTheConcurrencyRefusalCarriesOneStatusOnBothTransports();
+  await testAnUploadHoldsItsSlotWhileTheBackendWorks();
+  await testMaxConcurrentUploadAdmitsOnlyWhatItAdvertises();
   testTheWebSocketCapIsTheDeclaredOne();
   testEveryProfileKnobIsRead();
   await testGetIsBoundedByMaxObjectsInGet();
+  await testAGetNamesItsObjectsUnderWhateverArgumentItDefines();
   await testSetIsBoundedByTheCombinedTotal();
   await testTheCapCountsWhatAResultReferenceProduces();
   await testTheProfileGovernsTheCap();

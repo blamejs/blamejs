@@ -47,6 +47,7 @@
 var path    = require("path");
 var fs      = require("node:fs");
 var os      = require("node:os");
+var vm      = require("node:vm");
 var cp      = require("node:child_process");
 var helpers = require("../helpers");
 var check   = helpers.check;
@@ -685,6 +686,449 @@ function _collectExamples() {
   return { inProcess: inProcess, stateful: stateful };
 }
 
+// ---------------------------------------------------------------------------
+// The arrow pass: an `// ->` states what the call it annotates answers with,
+// and until this ran, nothing checked it. Executing an example proves the API
+// still exists; it does not prove the documented answer is the one the code
+// gives. Three shipped examples stated an answer the code has never given, one
+// of them on a primitive added in the same release as this pass, where the fix
+// had moved a profile table and left the example describing the old one.
+//
+// Only a claim naming a VALUE is checked. An arrow carrying prose ("integer in
+// [0, 100)"), a digest written with its middle cut out ("1f3a...c08d") or a
+// gloss after the value ("null (non-hex)") describes a shape, and the marker
+// for that lives in the documentation, where a reader sees it too — the same
+// reason `// requires:` is a line in the doc rather than an entry in a list
+// here. A random draw written as a concrete literal is a doc defect: the
+// example claims one answer for something that answers differently each call.
+var ARROW = "// →";
+
+// Nothing is in scope, so an identifier fails to evaluate and the arrow reads
+// as prose rather than as a value this can contradict.
+var NOTHING_IN_SCOPE = vm.createContext(Object.create(null));
+
+// Bracket balance for a piece of CODE, where a quote really does open a
+// string. `opts.prose` is for the text after an arrow, where an apostrophe is
+// an apostrophe: reading `false (it's cloud-metadata)` as an open string made
+// the reader swallow the following code lines into the expected value, so the
+// statements they carried were never emitted and never checked.
+function _bracketsBalanced(s, opts) {
+  var prose = opts && opts.prose === true;
+  var depth = 0, inStr = null;
+  for (var i = 0; i < s.length; i += 1) {
+    var ch = s.charAt(i);
+    if (inStr) {
+      if (ch === "\\") { i += 1; continue; }
+      if (ch === inStr) inStr = null;
+      continue;
+    }
+    if (ch === '"' || (ch === "'" && !prose)) { inStr = ch; continue; }
+    if (ch === "{" || ch === "[" || ch === "(") depth += 1;
+    else if (ch === "}" || ch === "]" || ch === ")") depth -= 1;
+  }
+  return depth <= 0 && inStr === null;
+}
+
+// A statement is complete when its brackets close and it is not left mid
+// string.
+// A line whose brackets balance can still be half a statement: a string
+// concatenation, an assignment whose value is on the next line, a chained call
+// broken after the dot. Emitting those halves separately produced `var x =;`
+// and the example's claims were thrown away with the parse error.
+var _ENDS_MID_STATEMENT =
+  /(?:[=+\-*/%&|^<>!?:,.]|=>|\b(?:typeof|instanceof|new|in|of|return|case|delete|void|await|yield))$/;
+
+function _statementComplete(s) {
+  if (!_bracketsBalanced(s)) return false;
+  var tail = String(s).trim();
+  if (tail === "" || /[;)}\]]$/.test(tail)) return true;
+  return !_ENDS_MID_STATEMENT.test(tail);
+}
+
+// A value written with its middle cut out ("1f3a...c08d") or with a stand-in
+// for a part that varies ("<16hex> <16hex>") states a shape, not a value.
+function _isElided(value) {
+  // A stand-in reads as a name inside angle brackets: `<timestamp>`,
+  // `<sha3-512 hex>`, `<id-hex>`. Markup carries a closing tag, so a value
+  // that really is HTML is still compared.
+  if (typeof value === "string") {
+    if (/\.{3}|…/.test(value)) return true;
+    return /<[^<>]+>/.test(value) && value.indexOf("</") === -1;
+  }
+  if (Array.isArray(value)) return value.some(_isElided);
+  if (value && typeof value === "object") {
+    return Object.keys(value).some(function (k) { return _isElided(value[k]); });
+  }
+  return false;
+}
+
+// What follows the value decides whether it is one answer or one of several. A
+// parenthesised CONDITION ("(NODE_ENV=production)") or an alternative ("or 0
+// (never bumped)") says the answer depends on something the example does not
+// set, so there is no single value to compare against.
+function _isConditional(text) {
+  return /\bor\b|=/.test(text);
+}
+
+// Trim from the right at each gloss opener and take the longest prefix that is
+// a literal, so "null (non-hex)" reads as null and prose reads as nothing.
+function _readLiteral(text) {
+  var candidates = [text];
+  [" //", " (", " —", "   "].forEach(function (opener) {
+    var at = text.lastIndexOf(opener);
+    while (at > 0) { candidates.push(text.slice(0, at)); at = text.lastIndexOf(opener, at - 1); }
+  });
+  candidates.sort(function (x, y) { return y.length - x.length; });
+  for (var i = 0; i < candidates.length; i += 1) {
+    var c = candidates[i].trim().replace(/[,;]$/, "");
+    if (c === "") continue;
+    if (!/^[[{"'0-9-]|^(true|false|null|undefined)\b/.test(c)) continue;
+    var value;
+    try { value = vm.runInContext("(" + c + ")", NOTHING_IN_SCOPE, { timeout: 250 }); }            // allow:raw-time-literal — parsing one literal
+    catch (_e) { continue; }
+    if (_isElided(value)) return { ok: false };
+    if (_isConditional(text.slice(c.length))) return { ok: false };
+    return { ok: true, value: value };
+  }
+  return { ok: false };
+}
+
+function _sortDeep(v) {
+  if (Array.isArray(v)) return v.map(_sortDeep);
+  if (v && typeof v === "object") {
+    var out = {};
+    Object.keys(v).sort().forEach(function (k) { out[k] = _sortDeep(v[k]); });
+    return out;
+  }
+  return v;
+}
+
+function _stable(v) {
+  return JSON.stringify(_sortDeep(v), function (k, x) {
+    return typeof x === "bigint" ? String(x) + "n" : x;
+  });
+}
+
+function _render(v) {
+  if (typeof v === "string") return JSON.stringify(v);
+  if (v === undefined) return "undefined";
+  if (typeof v === "function") return "[function]";
+  if (typeof v === "bigint") return String(v) + "n";
+  if (Buffer.isBuffer(v)) return "Buffer<" + v.toString("hex") + ">";
+  try { return _stable(v); } catch (_e) { return String(v); }
+}
+
+function _claimHolds(actual, expected) {
+  if (actual === expected) return true;
+  if (Buffer.isBuffer(actual) && typeof expected === "string") {
+    return actual.toString("utf8") === expected || actual.toString("hex") === expected;
+  }
+  try { return _stable(actual) === _stable(expected); } catch (_e) { return false; }
+}
+
+// Rewrite the body so each arrow records the value of the statement it
+// annotates. The statements run in their own order, so an example that
+// configures something and then reads it back reads its own configuration.
+// Cut a trailing line comment, reading quotes so the `//` in a URL stays put.
+function _stripTrailingComment(s) {
+  var quote = null;
+  for (var i = 0; i < s.length; i += 1) {
+    var ch = s.charAt(i);
+    if (quote !== null) {
+      if (ch === "\\") { i += 1; continue; }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") { quote = ch; continue; }
+    if (ch === "/" && s.charAt(i + 1) === "/") return s.slice(0, i).trim();
+  }
+  return s;
+}
+
+// Does the next line with code on it continue the statement that just closed?
+// Either it reopens a block that is syntactically finished but not over
+// (`catch`, `finally`, `else`), or it opens with something no statement can
+// begin with, which is how a ternary or a concatenation broken across lines
+// reads: `: ago + " days ago";` under `var label = ago === 0 ? "today"`.
+var _CONTINUATION_KEYWORD = /^(?:catch\b|finally\b|else\b)/;
+// Only the spellings that can begin nothing else. `/` is excluded because a
+// line opening with one is a regex literal far more often than a division
+// carried over, and `+` and `-` because they are unary operators.
+var _CANNOT_BEGIN_A_STATEMENT = /^(?:&&|\|\||\?\?|=>|[?:.,])/;
+
+function _continuesTheBlock(lines, from) {
+  for (var i = from; i < lines.length; i += 1) {
+    var arrowAt = lines[i].indexOf(ARROW);
+    var code = (arrowAt === -1 ? lines[i] : lines[i].slice(0, arrowAt)).trim();
+    if (code === "" || /^\/\//.test(code)) continue;
+    return _CONTINUATION_KEYWORD.test(code) || _CANNOT_BEGIN_A_STATEMENT.test(code);
+  }
+  return false;
+}
+
+function _compileClaims(body) {
+  var lines = body.split("\n");
+  var prog = ["var __last;"];
+  var claims = [];
+  // The statement an arrow-only line annotates is the last one the EXAMPLE
+  // wrote, not the last one emitted: the recorder lines this adds are not
+  // statements the documentation makes a claim about.
+  var lastUserStatement = null;
+  // A statement may span lines — a call whose options object opens on one
+  // line and closes on another is the commonest shape in lib/ — so lines are
+  // gathered until the brackets close before anything is emitted. Terminating
+  // each LINE turned `b.x({` into `b.x({;`, which is a syntax error, and the
+  // whole example then counted as unchecked.
+  var pending = null;
+  // How many statements the EXAMPLE has run. Two arrows with no statement
+  // between them annotate one call; two with a statement between them are a
+  // before and an after.
+  var emitted = 0;
+  // The statement whose arrows turned out to be a list of alternatives, so
+  // every later arrow against it is one too.
+  var voided = null;
+  function emit(statement) { _emit(prog, statement); emitted += 1; }
+  for (var i = 0; i < lines.length; i += 1) {
+    var line = lines[i];
+    var arrowAt = line.indexOf(ARROW);
+    // Per LINE, because a comment ends at its newline. Cutting the assembled
+    // statement instead threw away everything after the first `//` in it,
+    // closing brackets included.
+    var code = _stripTrailingComment(
+      (arrowAt === -1 ? line : line.slice(0, arrowAt))).trim();
+    if (pending !== null) {
+      // Joined on the newline the example wrote. A space instead ran a
+      // trailing `//` comment on one gathered line into the code on the next
+      // and commented it out.
+      pending += "\n" + code;
+      if (!_statementComplete(pending)) continue;
+      code = pending;
+      pending = null;
+    } else if (code !== "" && !/^\/\//.test(code) && !_statementComplete(code)) {
+      pending = code;
+      continue;
+    }
+    // A block can be closed and still be continued: `try { … }` is balanced,
+    // and the `catch` that follows it is not a statement of its own. Emitting
+    // them separately produced a program that did not parse, and every claim
+    // in that example was then thrown away.
+    if (code !== "" && !/^\/\//.test(code) && _continuesTheBlock(lines, i + 1)) {
+      pending = code;
+      continue;
+    }
+    if (arrowAt === -1) {
+      if (code !== "" && !/^\/\//.test(code)) {
+        emit(code);
+        lastUserStatement = code;
+      }
+      continue;
+    }
+    var expected = line.slice(arrowAt + ARROW.length).trim();
+    // Only a comment line continues an expected value; a code line begins the
+    // next statement and must not be eaten by an unbalanced-looking gloss.
+    while (!_bracketsBalanced(expected, { prose: true }) && i + 1 < lines.length &&
+           /^\s*\/\//.test(lines[i + 1])) {
+      i += 1;
+      expected += " " + lines[i].replace(/^\s*\/\/\s?/, "").trim();
+    }
+    var annotatesPrevious = code === "" || /^\/\//.test(code);
+    if (annotatesPrevious && lastUserStatement === null) continue;
+    if (!annotatesPrevious) {
+      emit(code);
+      lastUserStatement = code;
+    }
+    var expr = _describe(annotatesPrevious ? lastUserStatement : code);
+    if (expr === null) continue;
+    var want = _readLiteral(expected);
+    if (!want.ok) continue;
+    // Two arrows against ONE statement state alternatives, the answer under
+    // one mode and under another, so neither is the single value the call
+    // gives and both are dropped. The same call written twice around a
+    // mutation is a before-and-after instead, and both of its answers are
+    // real. What separates them is whether the example ran anything between
+    // the two arrows, not whether the second one sits on its own line: both
+    // shapes put it there, so keying on that discarded live claims, including
+    // the first of a before-and-after, which was never in doubt.
+    if (voided !== null && voided.expr === expr && voided.emitted === emitted) continue;
+    if (annotatesPrevious && claims.length > 0 &&
+        claims[claims.length - 1].expr === expr &&
+        claims[claims.length - 1].emitted === emitted) {
+      claims.pop();
+      prog.pop();
+      // A third alternative would otherwise find the list empty, miss the
+      // comparison and be recorded as the one answer the call gives.
+      voided = { expr: expr, emitted: emitted };
+      continue;
+    }
+    claims.push({ expr: expr, expected: expected, want: want.value, emitted: emitted });
+    prog.push("__claims.push(__last);");
+  }
+  return { source: prog.join("\n"), claims: claims };
+}
+
+// Emit one statement, keeping its value in `__last`. The value has to come
+// from the statement that already ran: re-evaluating the expression to record
+// it ran every call TWICE, so an example whose call has an effect — an
+// enqueue, a counter, a write — reported the answer after two of them and
+// contradicted a correct doc.
+var _STARTS_A_BLOCK =
+  /^(?:async\s+function|function|if|for|while|do|switch|try|return|throw|class)\b|^[}{]/;
+
+function _emit(prog, code) {
+  var stmt = code.replace(/;$/, "");
+  // A declaration is written out as the example wrote it and the binding is
+  // read back afterwards. Re-parenthesising the initialiser instead bound the
+  // name to the last operand of `var lo = 1, hi = 2`, because everything after
+  // the first `=` became one comma expression, and every later declarator
+  // turned into a bare assignment.
+  var decl = stmt.match(/^(?:var|let|const)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=/);
+  if (decl) {
+    prog.push(stmt + ";");
+    prog.push("__last = " + decl[1] + ";");
+    return;
+  }
+  if (_STARTS_A_BLOCK.test(stmt) || /^(?:var|let|const)\s/.test(stmt)) {
+    prog.push(stmt + ";");
+    prog.push("__last = undefined;");
+    return;
+  }
+  var printed = stmt.match(/^console\.(?:log|info)\s*\(([\s\S]+)\)$/);
+  prog.push("__last = (" + (printed ? printed[1].trim() : stmt) + ");");
+}
+
+// What the arrow is a claim about, for the report. A declaration's claim is
+// about the value it bound.
+function _describe(code) {
+  var stmt = String(code).replace(/;$/, "").trim();
+  if (stmt === "") return null;
+  // A block statement runs for its effect and has no value to carry, so an
+  // arrow on one names something inside it that this gate cannot reach. It is
+  // left unsettled rather than compared against the block's own undefined.
+  if (_STARTS_A_BLOCK.test(stmt)) return null;
+  var decl = stmt.match(/^(?:var|let|const)\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=\s*([\s\S]+)$/);
+  if (decl) return decl[1].trim();
+  var printed = stmt.match(/^console\.(?:log|info)\s*\(([\s\S]+)\)$/);
+  return printed ? printed[1].trim() : stmt;
+}
+
+// The examples share one loaded framework, so an example that SETS a
+// process-wide value (a compliance posture, a drift threshold) changes what a
+// later example READS. A claim that fails on the shared instance is therefore
+// re-run against a framework loaded fresh for it alone, and only a claim that
+// fails there too is a claim the documentation gets wrong.
+function _freshFramework() {
+  var libDir = path.join(ROOT, "lib");
+  var entry  = path.join(ROOT, "index.js");
+  Object.keys(require.cache).forEach(function (k) {
+    if (k.indexOf(libDir) === 0 || k === entry) delete require.cache[k];
+  });
+  return require(entry);
+}
+
+async function _runClaims(built, freshB) {
+  var recorded = [];
+  var globals = { __claims: recorded };
+  if (freshB) globals.b = freshB;
+  var res = await runtime.runExampleInContext(built.source, {
+    context:   runtime.makeContext({ globals: globals }),
+    timeoutMs: 1500,                                                                              // allow:raw-byte-literal // allow:raw-time-literal — in-process ceiling
+  });
+  return {
+    ok:      res.outcome === "ran",
+    skipped: res.outcome === "skip",
+    values:  recorded,
+    why:     String(res.outcome) + (res.error ? ": " + String(res.error).slice(0, 120) : ""),
+  };
+}
+
+async function _checkArrowClaims(items) {
+  var checked = 0, held = 0, unchecked = 0;
+  var broken = [];
+  var suspects = [];
+  // An example the rewrite cannot READ is not an example that states no value.
+  // Counting the two together meant a rewrite that mis-split a statement threw
+  // away every claim in that example and the gate still reported none broken,
+  // which is the one failure a gate must not have. A rewrite that does not
+  // parse is this gate's defect and fails it; one that parses and then throws
+  // is the example meeting an environment it needs, and is only reported.
+  var uncompilable = [];
+  var threw = [];
+  for (var i = 0; i < items.length; i += 1) {
+    var item = items[i];
+    if (item.body.indexOf(ARROW) === -1) continue;
+    // The rewrite drops comment-only lines, which would take a `// requires:`
+    // marker with it, so the declaration is read from the ORIGINAL body.
+    if (runtime.declaresPrerequisite(item.body)) { unchecked += 1; continue; }
+    var built = _compileClaims(item.body);
+    if (built.claims.length === 0) { unchecked += 1; continue; }
+    // Compiled the way the runtime compiles it, inside the same async IIFE, so
+    // a top-level await is as legal here as it is there. A rewrite that does
+    // not parse is this gate mis-reading the example.
+    try {
+      new vm.Script("(async function () {\n" + built.source + "\n})();",
+        { filename: "claims.js" });
+    } catch (syntax) {
+      uncompilable.push({ sig: item.sig, why: String(syntax.message).slice(0, 120) });
+      continue;
+    }
+    var run = await _runClaims(built, null);
+    // The runtime declines some examples by design (a declared prerequisite,
+    // a shape it will not run in process). That is not the gate failing to
+    // read one.
+    if (run.skipped) { unchecked += 1; continue; }
+    // The examples share one loaded framework, so a call that throws here may
+    // be answering a posture some earlier example set rather than anything
+    // about this one. It gets the same fresh-framework retry a failing claim
+    // gets before it is called unreadable.
+    if (!run.ok) {
+      run = await _runClaims(built, _freshFramework());
+      if (run.skipped) { unchecked += 1; continue; }
+      if (!run.ok) { threw.push({ sig: item.sig, why: run.why }); continue; }
+    }
+    for (var c = 0; c < built.claims.length && c < run.values.length; c += 1) {
+      checked += 1;
+      if (_claimHolds(run.values[c], built.claims[c].want)) { held += 1; continue; }
+      suspects.push({ item: item, built: built, index: c });
+    }
+  }
+
+  for (var s = 0; s < suspects.length; s += 1) {
+    var sus = suspects[s];
+    var alone = await _runClaims(sus.built, _freshFramework());
+    if (!alone.ok || alone.values.length <= sus.index) { unchecked += 1; continue; }
+    var claim = sus.built.claims[sus.index];
+    if (_claimHolds(alone.values[sus.index], claim.want)) { held += 1; continue; }
+    broken.push({ sig: sus.item.sig, expr: claim.expr,
+                  said: claim.expected, got: _render(alone.values[sus.index]) });
+  }
+  broken.slice(0, 50).forEach(function (f) {                                                      // allow:raw-byte-literal — printed detail cap
+    console.log("  CLAIM " + f.sig + " :: " + f.expr);
+    console.log("         said: " + f.said);
+    console.log("         got:  " + f.got);
+  });
+  uncompilable.slice(0, 50).forEach(function (f) {                                                // allow:raw-byte-literal — printed detail cap
+    console.log("  UNREAD " + f.sig + " :: " + f.why);
+  });
+  threw.slice(0, 50).forEach(function (f) {                                                       // allow:raw-byte-literal — printed detail cap
+    console.log("  THREW  " + f.sig + " :: " + f.why);
+  });
+  var arrowSummary = "arrow claims: " + checked + " checked, " + held + " hold, " +
+                     broken.length + " do not; " + unchecked +
+                     " example(s) state no value this can settle, " +
+                     threw.length + " need an environment this does not have, " +
+                     uncompilable.length + " could not be read";
+  console.log("[jsdoc-example-execution] " + arrowSummary);
+  check("every @example states the answer the code gives", broken.length === 0,
+        broken.length ? broken[0].sig + " :: said " + broken[0].said + ", got " + broken[0].got : "");
+  // A claim this gate silently dropped reads exactly like a claim that held,
+  // so an example it cannot read is a failure of the gate, not a pass.
+  check("every @example carrying a claim can be read by this gate",
+        uncompilable.length === 0,
+        uncompilable.length ? uncompilable.length + " unread, first: " +
+          uncompilable[0].sig + " :: " + uncompilable[0].why : "");
+  return { summary: arrowSummary, broken: broken, unread: uncompilable };
+}
+
 // Run the stateful half: batches of examples, a few children at a time, each
 // reporting to its own results file (stdout carries the framework's own boot
 // logging, which is indistinguishable from a result record).
@@ -842,6 +1286,7 @@ async function run() {
   await setupTestDb(tmp, [{ name: "widget", columns: { id: "TEXT PRIMARY KEY" } }]);
 
   var ran = 0, skipped = 0, childRan = 0, failures = [];
+  var arrows = { summary: "arrow claims: not reached", broken: [] };
   function record(item, res, fromChild) {
     if (res.outcome === "ran") { ran += 1; if (fromChild) childRan += 1; }
     else if (res.outcome === "skip") skipped += 1;
@@ -864,6 +1309,13 @@ async function run() {
     }
     var childResults = await _runStatefulBatches(all.stateful, tmp);
     childResults.forEach(function (r) { record(byId[r.id], r, true); });
+    // Both halves: the split above is about what an example NEEDS to run, and
+    // a pure function can sit in a module whose name matches the stateful
+    // pattern — b.mail.server.imap.legacyMUtf7Allowed is one, and its arrow
+    // was wrong. An example that really does need a listener or a disk fails
+    // to run under this sandbox and is counted unchecked, which is what the
+    // pass already does with anything it cannot settle.
+    arrows = await _checkArrowClaims(all.inProcess.concat(all.stateful));
   }, async function () {
     try { await teardownTestDb(tmp); } catch (_e) { /* best-effort */ }
     process.chdir(origCwd);
@@ -884,8 +1336,17 @@ async function run() {
   console.log(summary);
   // Persist the detail: a failure under a forked smoke worker whose stdout the
   // parent does NOT fold into .test-output/smoke.log would otherwise be lost.
+  // The arrow pass goes in the file too: under a forked smoke worker its
+  // stdout is not folded into smoke.log, so a broken claim would otherwise be
+  // readable only by re-running the gate.
   var report = summary + "\n" +
-    failures.map(function (f) { return "  FAIL " + f.sig + " :: " + f.error; }).join("\n") + "\n";
+    failures.map(function (f) { return "  FAIL " + f.sig + " :: " + f.error; }).join("\n") + "\n" +
+    "[jsdoc-example-execution] " + arrows.summary + "\n" +
+    arrows.broken.map(function (f) {
+      return "  CLAIM " + f.sig + " :: " + f.expr + "\n" +
+             "         said: " + f.said + "\n" +
+             "         got:  " + f.got;
+    }).join("\n") + "\n";
   try { fs.writeFileSync(path.join(ROOT, ".test-output", "jsdoc-example-execution.log"), report); }
   catch (_e3) { /* best-effort */ }
   if (failures.length) failures.slice(0, 50).forEach(function (f) { console.log("  FAIL " + f.sig + " :: " + f.error); });
