@@ -157,6 +157,48 @@ function testRequestSizeCapInBytesNotCodeUnits() {
     threw && /bytes exceeds cap/.test(threw.message));
 }
 
+function testTheCapMeasuresTheBodyTheCallerWillProcess() {
+  // The cap exists to bound the data the handlers walk, and `validate`
+  // returns the object it was given. A `toJSON` hook changes what
+  // JSON.stringify would write and changes nothing about the object, so
+  // measuring the hook's answer let an 11 MiB body through a 10 MiB cap and
+  // handed all 11 MiB to the handler.
+  var pad = "x".repeat(11 * 1024 * 1024);
+  var hidden = { _pad: pad, toJSON: function () { return {}; } };
+  var body = {
+    using:       ["urn:ietf:params:jmap:core"],
+    methodCalls: [["Core/echo", hidden, "c0"]],
+  };
+  var threw = null;
+  try { b.guardJmap.validate(body); } catch (e) { threw = e; }
+  check("a body hidden behind a toJSON hook is still measured",
+        threw && threw.code === "urn:ietf:params:jmap:error:limit",
+        JSON.stringify({ code: threw && threw.code }));
+  check("and the refusal names maxSizeRequest",
+        threw && threw.limit === "maxSizeRequest");
+
+  // An inherited hook is the same hook.
+  function Carrier() { this._pad = pad; }
+  Carrier.prototype.toJSON = function () { return {}; };
+  var inherited = {
+    using:       ["urn:ietf:params:jmap:core"],
+    methodCalls: [["Core/echo", new Carrier(), "c0"]],
+  };
+  var threwInherited = null;
+  try { b.guardJmap.validate(inherited); } catch (e) { threwInherited = e; }
+  check("an inherited toJSON hides nothing either",
+        threwInherited && threwInherited.code === "urn:ietf:params:jmap:error:limit",
+        JSON.stringify({ code: threwInherited && threwInherited.code }));
+
+  // And a body under the cap still validates, hook or no hook.
+  var small = {
+    using:       ["urn:ietf:params:jmap:core"],
+    methodCalls: [["Core/echo", { hi: 1, toJSON: function () { return { hi: 1 }; } }, "c0"]],
+  };
+  check("a small body carrying a hook is not refused",
+        b.guardJmap.validate(small).methodCalls.length === 1);
+}
+
 function testEveryProfileSizeCapIsOneTheParserWillHonor() {
   // `maxSizeRequest` is published to clients in the session's
   // urn:ietf:params:jmap:core capability (RFC 8620 section 2), so it is a
@@ -270,6 +312,7 @@ function run() {
   testServerCapsNotMutated();
   testRequestSizeCapInBytesNotCodeUnits();
   testEveryProfileSizeCapIsOneTheParserWillHonor();
+  testTheCapMeasuresTheBodyTheCallerWillProcess();
   testRequestSizeCapAppliesToAPreParsedBody();
   testCompliancePosture();
 }

@@ -873,6 +873,39 @@ async function testARenameKeepsTheMailboxsUidvalidity() {
   });
 }
 
+async function testNoTwoMailboxesShareAUidvalidity() {
+  // A client keys its cache on the mailbox name together with its
+  // UIDVALIDITY, so two mailboxes holding one number is only safe while both
+  // names exist. Delete one and rename the other onto its name and the client
+  // reconnects to a name it knows, a number it knows, and somebody else's
+  // messages. The six default folders were seeded with a single timestamp,
+  // which made that collision exact, and the seed did not record the
+  // high-water mark either, so the first folder created could be issued the
+  // same number again.
+  await _withStore(async function (store) {
+    var seeded = store.listFolders();
+    var numbers = seeded.map(function (f) { return f.uidvalidity; });
+    check("every seeded mailbox has its own uidvalidity",
+          new Set(numbers).size === numbers.length,
+          JSON.stringify(seeded.map(function (f) { return [f.name, f.uidvalidity]; })));
+
+    var made = store.createFolder("Fresh");
+    check("and a folder created afterwards does not repeat one of them",
+          numbers.indexOf(made.uidvalidity) === -1,
+          JSON.stringify({ made: made.uidvalidity, seeded: numbers }));
+
+    // The sequence the collision is reached by: free a name, then move
+    // another mailbox onto it.
+    var trashBefore = seeded.filter(function (f) { return f.name === "Trash"; })[0];
+    store.deleteFolder("Trash");
+    store.renameFolder("Archive", "Trash");
+    var trashNow = store.listFolders().filter(function (f) { return f.name === "Trash"; })[0];
+    check("a mailbox renamed onto a freed name does not inherit its number",
+          trashNow.uidvalidity !== trashBefore.uidvalidity,
+          JSON.stringify({ before: trashBefore.uidvalidity, now: trashNow.uidvalidity }));
+  });
+}
+
 async function testARenameCarriesTheChildrenItParents() {
   // RFC 9051 section 6.3.6 requires a rename to carry the mailbox's inferior
   // hierarchical names with it. Here a child's name does not embed its
@@ -1492,6 +1525,7 @@ async function run() {
   await testAParentFolderIsNotDeletedOutFromUnderItsChildren();
   await testInboxIsNotRenamed();
   await testARenameKeepsTheMailboxsUidvalidity();
+  await testNoTwoMailboxesShareAUidvalidity();
   await testARenameCarriesTheChildrenItParents();
   await testStoreOperationsComposeInsideACallersTransaction();
   await testAWrapperBackendReportsItsInnerTransaction();

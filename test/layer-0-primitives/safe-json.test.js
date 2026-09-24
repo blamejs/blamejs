@@ -490,6 +490,29 @@ function testMeasureBytes() {
   check("measureBytes counts a function at the top as zero",
         b.safeJson.measureBytes(function () {}).bytes === 0);
 
+  // `followToJson: false` measures the value as it stands. A hook changes
+  // what JSON.stringify writes and changes nothing about the object, so a
+  // caller bounding what it is about to WORK on has to see through it: the
+  // cap on a pre-parsed body is read that way, because the body is handed
+  // on unchanged.
+  var hidden = { pad: "x".repeat(4096), toJSON: function () { return {}; } };
+  check("the default follows toJSON, as JSON.stringify does",
+        b.safeJson.measureBytes(hidden).bytes ===
+        Buffer.byteLength(JSON.stringify(hidden), "utf8"));
+  check("and followToJson:false measures what the object still holds",
+        b.safeJson.measureBytes(hidden, { followToJson: false }).bytes > 4096,
+        String(b.safeJson.measureBytes(hidden, { followToJson: false }).bytes));
+  check("the hook cannot carry a value past a cap read that way",
+        b.safeJson.measureBytes(hidden, { limit: 256, followToJson: false }).exceeded === true);
+  check("while the same value is inside the cap when measured as JSON",
+        b.safeJson.measureBytes(hidden, { limit: 256 }).exceeded === false);
+
+  function Inherited() { this.pad = "x".repeat(4096); }
+  Inherited.prototype.toJSON = function () { return {}; };
+  check("an inherited hook is seen through too",
+        b.safeJson.measureBytes(new Inherited(), { limit: 256, followToJson: false })
+          .exceeded === true);
+
   // A caller's limit is the caller's, not silently lowered to the parse
   // ceiling: b.guardJmap publishes its profile's maxSizeRequest to clients,
   // so a clamp here would refuse a body the published number admits.
