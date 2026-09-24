@@ -177,6 +177,19 @@ function testTheCapMeasuresTheBodyTheCallerWillProcess() {
   check("and the refusal names maxSizeRequest",
         threw && threw.limit === "maxSizeRequest");
 
+  // A boxed primitive holds data JSON.stringify does not write either: it
+  // serializes as its primitive and ignores the properties hung on it, while
+  // `validate` returns the wrapper and the handlers walk those properties.
+  var boxed = {
+    using:       ["urn:ietf:params:jmap:core"],
+    methodCalls: [["Core/echo", Object.assign(new String(""), { _pad: pad }), "c0"]],
+  };
+  var threwBoxed = null;
+  try { b.guardJmap.validate(boxed); } catch (e) { threwBoxed = e; }
+  check("a body hung on a boxed primitive is measured for what it holds",
+        threwBoxed && threwBoxed.code === "urn:ietf:params:jmap:error:limit",
+        JSON.stringify({ code: threwBoxed && threwBoxed.code }));
+
   // An inherited hook is the same hook.
   function Carrier() { this._pad = pad; }
   Carrier.prototype.toJSON = function () { return {}; };

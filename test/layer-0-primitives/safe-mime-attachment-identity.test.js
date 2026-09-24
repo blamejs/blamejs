@@ -1067,6 +1067,86 @@ function testARelatedRootIsTheOneTheSenderDeclared() {
         })));
 }
 
+function testANamedFirstAlternativeBesideARealBodyIsAFileToo() {
+  // The same question asked of a `multipart/alternative`: a named
+  // `text/plain` first, the real body after it as `text/html`. This branch
+  // answered it the other way, exempting the first part from the name test
+  // outright, so the named file was offered as the message text while no list
+  // named it, and the identical shape under `multipart/mixed` was already
+  // read the other way. One question with two answers is the defect; the
+  // exemption is a fallback for a part with no siblings, in both.
+  var alt = b.safeMime.parse(Buffer.from([
+    "From: a@example.com", "Subject: s", "MIME-Version: 1.0",
+    'Content-Type: multipart/alternative; boundary="a"', "",
+    "--a", "Content-Type: text/plain",
+    'Content-Disposition: inline; filename="notes.txt"', "", "attached notes",
+    "--a", "Content-Type: text/html", "", "<p>the real body</p>",
+    "--a--", "",
+  ].join("\r\n"), "utf8"));
+
+  var altSelection = b.safeMime.selectBodyParts(alt);
+  check("the named first alternative is a file",
+        altSelection.files.length === 1 && altSelection.files[0].filename === "notes.txt",
+        JSON.stringify(altSelection.files.map(function (f) { return f.filename; })));
+  check("and it is not offered as the message text",
+        altSelection.text.length === 0, String(altSelection.text.length));
+  check("while the part carrying no name is the body",
+        altSelection.html.length === 1 &&
+        altSelection.html[0].part.leaf.body.toString("utf8").indexOf("the real body") !== -1,
+        JSON.stringify(altSelection.html.map(function (h) {
+          return h.part.leaf.body.toString("utf8");
+        })));
+  check("extractAttachments offers it",
+        b.safeMime.extractAttachments(alt).map(function (f) { return f.filename; })
+          .join(",") === "notes.txt",
+        JSON.stringify(b.safeMime.extractAttachments(alt)
+          .map(function (f) { return f.filename; })));
+
+  // The body a named part is weighed against is not always a sibling LEAF.
+  // A `multipart/mixed` that opens with a named inline note and carries the
+  // real body after it as a `multipart/alternative` has one leaf sibling and
+  // one subtree, and reading only the leaves leaves the note looking like the
+  // only thing on offer, so it went back to being the message text and left
+  // the attachment list.
+  var nested = b.safeMime.parse(Buffer.from([
+    "From: a@example.com", "Subject: s", "MIME-Version: 1.0",
+    'Content-Type: multipart/mixed; boundary="m"', "",
+    "--m", "Content-Type: text/plain",
+    'Content-Disposition: inline; filename="notes.txt"', "", "attached notes",
+    "--m", 'Content-Type: multipart/alternative; boundary="a"', "",
+    "--a", "Content-Type: text/plain", "", "the real body",
+    "--a", "Content-Type: text/html", "", "<p>the real body</p>",
+    "--a--", "",
+    "--m--", "",
+  ].join("\r\n"), "utf8"));
+  var nestedSelection = b.safeMime.selectBodyParts(nested);
+  check("a body inside a sibling multipart still makes the named part a file",
+        nestedSelection.files.length === 1 &&
+        nestedSelection.files[0].filename === "notes.txt",
+        JSON.stringify(nestedSelection.files.map(function (f) { return f.filename; })));
+  check("and the body comes from the alternative",
+        nestedSelection.text.length === 1 &&
+        nestedSelection.text[0].part.leaf.body.toString("utf8")
+          .indexOf("the real body") !== -1,
+        JSON.stringify(nestedSelection.text.map(function (t) {
+          return t.part.leaf.body.toString("utf8");
+        })));
+
+  // The fallback: an alternative holding one named text part has nothing
+  // else to show, so that part is still the body.
+  var only = b.safeMime.parse(Buffer.from([
+    "From: a@example.com", "Subject: s", "MIME-Version: 1.0",
+    'Content-Type: multipart/alternative; boundary="a"', "",
+    "--a", "Content-Type: text/plain",
+    'Content-Disposition: inline; filename="message.txt"', "", "the only thing here",
+    "--a--", "",
+  ].join("\r\n"), "utf8"));
+  var onlySelection = b.safeMime.selectBodyParts(only);
+  check("a lone named alternative is still the body",
+        onlySelection.text.length === 1 && onlySelection.files.length === 0,
+        JSON.stringify([onlySelection.text.length, onlySelection.files.length]));
+}
+
 function testANamedFirstPartBesideARealBodyIsAFile() {
   // RFC 8621 section 4.1.4's algorithm exempts the first part from the name
   // test outright (`i === 0 ||`), and taking that literally makes a named file
@@ -1524,6 +1604,7 @@ async function run() {
   testPreferAnyAsksTheConstructThatKnows();
   testARelatedRootIsTheOneTheSenderDeclared();
   testANamedFirstPartBesideARealBodyIsAFile();
+  testANamedFirstAlternativeBesideARealBodyIsAFileToo();
   testAnAttachedMultipartTakesItsWholeSubtreeWithIt();
   testTheRichestRepresentationIsATextTypeQuestion();
   testInlineInclusionReturnsEveryLeaf();

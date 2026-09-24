@@ -507,6 +507,25 @@ function testMeasureBytes() {
   check("while the same value is inside the cap when measured as JSON",
         b.safeJson.measureBytes(hidden, { limit: 256 }).exceeded === false);
 
+  // A boxed primitive is its primitive to JSON.stringify, which ignores the
+  // properties hung on it, and is an ordinary object to everything else. A
+  // caller bounding what it will work on holds the wrapper and walks those
+  // properties, so measuring it as its primitive reports a few bytes for a
+  // value carrying megabytes.
+  var wrapped = Object.assign(new String(""), { payload: "x".repeat(4096) });
+  check("a wrapper is its primitive when measured as JSON, as JSON.stringify has it",
+        b.safeJson.measureBytes(wrapped).bytes ===
+        Buffer.byteLength(JSON.stringify(wrapped), "utf8"),
+        String(b.safeJson.measureBytes(wrapped).bytes));
+  check("and what it carries is measured when the caller means to work on it",
+        b.safeJson.measureBytes(wrapped, { followToJson: false }).bytes > 4096,
+        String(b.safeJson.measureBytes(wrapped, { followToJson: false }).bytes));
+  check("so a wrapper cannot carry a value past a cap read that way",
+        b.safeJson.measureBytes(wrapped, { limit: 256, followToJson: false })
+          .exceeded === true);
+  check("while the same value is inside that cap measured as JSON",
+        b.safeJson.measureBytes(wrapped, { limit: 256 }).exceeded === false);
+
   function Inherited() { this.pad = "x".repeat(4096); }
   Inherited.prototype.toJSON = function () { return {}; };
   check("an inherited hook is seen through too",
