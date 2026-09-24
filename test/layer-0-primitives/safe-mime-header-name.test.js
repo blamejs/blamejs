@@ -219,8 +219,46 @@ function testTheHeaderLineCapIsMeasuredInBytes() {
         under && (under.code + ": " + under.message));
 }
 
+// The ftext check reads the name a key/value split HANDED it, and that split
+// trims. So `Content-Type : text/html` arrived as `content-type`, which is
+// valid ftext, and the space RFC 5322 section 3.6.8 forbids never reached the
+// check: `field-name = 1*ftext` with `ftext = %d33-57 / %d59-126` admits no
+// space. A receiver that reads the raw name sees a field called
+// `Content-Type ` and no `Content-Type`, so it does not apply the MIME
+// semantics this parser applies, which is the disagreement the check exists to
+// stop. An empty name passed for the same reason: the loop over zero
+// characters finds no offending byte.
+function testTheFieldNameIsCheckedAsTheBytesCarriedIt() {
+  var CASES = [
+    { label: "a space before the colon", line: "Content-Type : text/html" },
+    { label: "a tab before the colon", line: "Content-Type\t: text/html" },
+    { label: "an empty name", line: ": value" },
+    { label: "only whitespace before the colon", line: "  : value" },
+    { label: "a space inside and before", line: "X Probe : value" },
+  ];
+  var accepted = [];
+  for (var i = 0; i < CASES.length; i += 1) {
+    var err = _parseError(_message([CASES[i].line, "Subject: ok"]));
+    if (err === null || err.code !== "safe-mime/bad-header-name") {
+      accepted.push(CASES[i].label + " -> " + (err === null ? "accepted" : err.code));
+    }
+  }
+  check("a field name is held to ftext as the bytes carried it" +
+        (accepted.length ? " (" + accepted.join("; ") + ")" : ""),
+        accepted.length === 0);
+
+  // A conformant header still parses, so the check is the raw name and not a
+  // refusal of ordinary mail.
+  var ok = _parseError(_message([
+    "Subject: hi", "Content-Type: text/plain", "X-Spam_Score: 4.2",
+  ]));
+  check("an ordinary header block still parses", ok === null,
+        ok && (ok.code + ": " + ok.message));
+}
+
 function run() {
   testADigestPartDefaultsToTheEnclosedMessageType();
+  testTheFieldNameIsCheckedAsTheBytesCarriedIt();
   testTheHeaderLineCapIsMeasuredInBytes();
   testAFieldNameOutsideFtextIsRefused();
   testAnOrdinaryNameIsStillAccepted();

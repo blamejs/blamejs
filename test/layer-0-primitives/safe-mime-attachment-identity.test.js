@@ -1015,6 +1015,64 @@ function testARelatedRootIsTheOneTheSenderDeclared() {
         })));
 }
 
+function testANamedFirstPartBesideARealBodyIsAFile() {
+  // RFC 8621 section 4.1.4's algorithm exempts the first part from the name
+  // test outright (`i === 0 ||`), and taking that literally makes a named file
+  // the body whenever the sender puts it first: a `multipart/mixed` opening
+  // with `text/plain; inline; filename="notes.txt"` and carrying the real body
+  // after it offered the file as the message text, left it out of
+  // `attachments`, and stored both facts wrong.
+  //
+  // The exemption is there for the message that has nothing else to show: a
+  // lone `text/plain` a gateway wrote as `inline; filename="message.txt"` is
+  // the body, and calling it a file leaves the message with none. So the
+  // exemption is a FALLBACK for a part with no siblings, not a precedence over
+  // the name.
+  var mixed = b.safeMime.parse(Buffer.from([
+    "From: a@example.com", "Subject: s", "MIME-Version: 1.0",
+    'Content-Type: multipart/mixed; boundary="m"', "",
+    "--m", "Content-Type: text/plain",
+    'Content-Disposition: inline; filename="notes.txt"', "", "attached notes",
+    "--m", "Content-Type: text/plain", "", "the real body",
+    "--m--", "",
+  ].join("\r\n"), "utf8"));
+
+  var selection = b.safeMime.selectBodyParts(mixed);
+  check("the named first part is a file",
+        selection.files.length === 1 &&
+        selection.files[0].filename === "notes.txt",
+        JSON.stringify(selection.files.map(function (f) { return f.filename; })));
+  check("and the body is the part that carries no name",
+        selection.text.length === 1 &&
+        selection.text[0].part.leaf.body.toString("utf8").indexOf("the real body") !== -1,
+        JSON.stringify(selection.text.map(function (t) {
+          return t.part.leaf.body.toString("utf8");
+        })));
+
+  var text = b.safeMime.extractText(mixed, { prefer: "plain" });
+  check("extractText answers with the body, not the named file",
+        text !== null && text.body.toString("utf8").indexOf("the real body") !== -1,
+        JSON.stringify(text && text.body.toString("utf8")));
+
+  var files = b.safeMime.extractAttachments(mixed);
+  check("extractAttachments offers the named file",
+        files.length === 1 && files[0].filename === "notes.txt",
+        JSON.stringify(files.map(function (f) { return f.filename; })));
+
+  // The fallback still holds: a lone named text part is the body, because
+  // there is nothing else the message could show.
+  var lone = b.safeMime.parse(Buffer.from([
+    "From: a@example.com", "Subject: s", "MIME-Version: 1.0",
+    "Content-Type: text/plain",
+    'Content-Disposition: inline; filename="message.txt"', "",
+    "the only thing here", "",
+  ].join("\r\n"), "utf8"));
+  var loneSelection = b.safeMime.selectBodyParts(lone);
+  check("a lone named text part is still the body",
+        loneSelection.text.length === 1 && loneSelection.files.length === 0,
+        JSON.stringify([loneSelection.text.length, loneSelection.files.length]));
+}
+
 function testAnAttachedMultipartTakesItsWholeSubtreeWithIt() {
   // A `Content-Disposition: attachment` on a CONTAINER says the whole thing is
   // attached, and RFC 2183 section 2.2 puts the disposition on the body part
@@ -1412,6 +1470,7 @@ async function run() {
   testPreferOutranksTheOppositeTypeEvenOutsideTheDisplayLists();
   testPreferAnyAsksTheConstructThatKnows();
   testARelatedRootIsTheOneTheSenderDeclared();
+  testANamedFirstPartBesideARealBodyIsAFile();
   testAnAttachedMultipartTakesItsWholeSubtreeWithIt();
   testTheRichestRepresentationIsATextTypeQuestion();
   testInlineInclusionReturnsEveryLeaf();
