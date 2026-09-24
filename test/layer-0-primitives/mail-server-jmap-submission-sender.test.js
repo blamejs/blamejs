@@ -386,6 +386,36 @@ async function testEveryMailboxOfAFromListIsChecked() {
         unterminatedGroup.error === "forbiddenFrom",
         JSON.stringify(unterminatedGroup));
 
+  // RFC 5322 section 2.2 makes a field name one or more ftext, the printable
+  // ASCII except the colon, followed immediately by the colon. `From :` is
+  // not a field name, so a receiving parser reads that line as no field at
+  // all. This parser trimmed the text before the colon and authorized on it,
+  // which approves a message whose From a conformant reader does not see.
+  var spacedName = await _submit({
+    identityId: "I1", mailFrom: "ops@example.com",
+    rawHeaders: "From : ops@example.com\r\n",
+  });
+  check("a From whose field name carries a space is not read as a From",
+        spacedName.created === false && spacedName.error === "forbiddenFrom",
+        JSON.stringify(spacedName));
+  check("nothing was delivered for it", spacedName.deliveredFrom === null);
+
+  // The one beside it: the name written as the grammar requires still reads.
+  var tightName = await _submit({
+    identityId: "I1", mailFrom: "ops@example.com",
+    rawHeaders: "From: ops@example.com\r\n",
+  });
+  check("the same header with no space before the colon is read",
+        tightName.created === true, JSON.stringify(tightName));
+
+  check("b.safeMime.isHeaderFieldName reads the grammar",
+        b.safeMime.isHeaderFieldName("From") === true &&
+        b.safeMime.isHeaderFieldName("From ") === false &&
+        b.safeMime.isHeaderFieldName("Fr:om") === false &&
+        b.safeMime.isHeaderFieldName("") === false &&
+        b.safeMime.isHeaderFieldName("X-Odd!#$%") === true &&
+        b.safeMime.isHeaderFieldName(null) === false);
+
   // A wildcard identity authorizes by domain, and the domain is read by
   // splitting at the last `@`. Nothing checked that what sits in front of it
   // is a local part, so `ceo@bank.example;ops@example.com` presented a local

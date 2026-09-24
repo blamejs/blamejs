@@ -809,12 +809,15 @@ function testAFailedDeletionLeavesTheFolderWhole() {
 }
 
 function testARenameRunsAsOneTransaction() {
-  // The rename read the source row, checked the destination was free,
-  // allocated a UIDVALIDITY and wrote the UPDATE as four separate statements,
-  // with only the allocation transactional. Two connections renaming the same
-  // folder both read the original row, both reported success, and the later
-  // UPDATE wrote its older allocation over the newer one. The whole sequence
-  // has to hold one transaction for the checks to still be true at the write.
+  // The rename read the source row, checked the destination was free and
+  // wrote the UPDATE as separate statements. Two connections renaming the
+  // same folder both read the original row and both reported success. The
+  // whole sequence has to hold one transaction for the checks to still be
+  // true at the write.
+  //
+  // The write is found by its own shape, `SET name`, rather than by a column
+  // it happens to touch: it used to set a fresh uidvalidity, and keying on
+  // that left the hook matching nothing once the rename stopped doing so.
   return _withStore(function (store) {
     store.createFolder("Before");
     var db = store._dbForTest;
@@ -822,7 +825,7 @@ function testARenameRunsAsOneTransaction() {
     var openAtUpdate = null;
     db.prepare = function (text) {
       var stmt = realPrepare(text);
-      if (text.indexOf("UPDATE") !== -1 && text.indexOf("uidvalidity") !== -1) {
+      if (/UPDATE[\s\S]*SET[\s\S]*name/.test(text)) {                                                // allow:regex-no-length-cap — matched against this test's own SQL
         return { run: function () {
           openAtUpdate = db.isTransaction;
           return stmt.run.apply(stmt, arguments);
@@ -835,8 +838,38 @@ function testARenameRunsAsOneTransaction() {
 
     check("the rename is applied", _names(store).indexOf("After") !== -1,
           JSON.stringify(_names(store)));
-    check("and the checks, the allocation and the write ran in one transaction",
+    check("and the checks and the write ran in one transaction",
           openAtUpdate === true, String(openAtUpdate));
+  });
+}
+
+async function testARenameKeepsTheMailboxsUidvalidity() {
+  // UIDVALIDITY identifies the set of UIDs, not the name: RFC 9051 section
+  // 2.3.1.1 lets a client reuse what it has cached for a mailbox only while
+  // that number holds. A rename moves no messages and renumbers nothing, so
+  // changing it tells every client its cache is worthless, makes it download
+  // the mailbox again, and discards the QRESYNC state it would have resumed
+  // from.
+  await _withStore(async function (store) {
+    store.createFolder("Before");
+    var before = store.listFolders().filter(function (f) { return f.name === "Before"; })[0];
+    check("the folder starts with a uidvalidity", typeof before.uidvalidity === "number",
+          JSON.stringify(before));
+
+    store.renameFolder("Before", "After");
+    var after = store.listFolders().filter(function (f) { return f.name === "After"; })[0];
+    check("the rename is applied", after !== undefined, JSON.stringify(_names(store)));
+    check("and the mailbox keeps the uidvalidity its UIDs were issued under",
+          after.uidvalidity === before.uidvalidity,
+          JSON.stringify({ before: before.uidvalidity, after: after.uidvalidity }));
+
+    // A fresh mailbox created at the freed name is a different mailbox and
+    // gets its own number, so the two are not confusable.
+    store.createFolder("Before");
+    var reused = store.listFolders().filter(function (f) { return f.name === "Before"; })[0];
+    check("a new mailbox at the freed name gets its own uidvalidity",
+          reused.uidvalidity !== before.uidvalidity,
+          JSON.stringify({ original: before.uidvalidity, reused: reused.uidvalidity }));
   });
 }
 
@@ -1422,6 +1455,7 @@ async function run() {
   await testDeletingAFolderTakesItsSearchIndexWithIt();
   await testAParentFolderIsNotDeletedOutFromUnderItsChildren();
   await testInboxIsNotRenamed();
+  await testARenameKeepsTheMailboxsUidvalidity();
   await testStoreOperationsComposeInsideACallersTransaction();
   await testAWrapperBackendReportsItsInnerTransaction();
   await testBDbReportsWhetherATransactionIsOpen();
