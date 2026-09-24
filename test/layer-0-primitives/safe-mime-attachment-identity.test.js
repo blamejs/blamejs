@@ -209,6 +209,58 @@ function testAFilenameThatLooksLikeAParameterIsNotReadAsOne() {
         JSON.stringify([awkward, b.safeMime.filenameFromHeaders(headers)]));
 }
 
+function testWhitespaceAroundTheParameterEqualsIsAllowed() {
+  // RFC 2045 section 5.1 writes a parameter as `attribute "=" value`, and the
+  // structured-field grammar it inherits from RFC 822 permits linear
+  // whitespace around the separator. A reader that insists on an immediate
+  // `=` does not find the parameter at all, so a named part reads as body
+  // text and drops out of the attachment list and out of what JMAP reports:
+  // the sender chooses the spacing.
+  function _named(cd) {
+    return { get: function (n) {
+      return String(n).toLowerCase() === "content-disposition" ? cd : null;
+    } };
+  }
+  [["a space before the equals",       "attachment; filename =\"notes.txt\""],
+   ["a space either side",             "attachment; filename = \"notes.txt\""],
+   ["a tab before the equals",         "attachment; filename\t=\"notes.txt\""],
+   ["no space at all",                 "attachment; filename=\"notes.txt\""],
+   ["an unquoted value with spacing",  "attachment; filename = notes.txt"]].forEach(function (row) {
+    check("filename is read with " + row[0],
+          b.safeMime.filenameFromHeaders(_named(row[1])) === "notes.txt",
+          JSON.stringify([row[1], b.safeMime.filenameFromHeaders(_named(row[1]))]));
+  });
+
+  // The extended form carries its `*` inside the attribute, so the whitespace
+  // it admits is the same whitespace, on the other side of the star.
+  check("the RFC 2231 extended form is read with spacing too",
+        b.safeMime.filenameFromHeaders(
+          _named("attachment; filename* = UTF-8''notes.txt")) === "notes.txt",
+        JSON.stringify(b.safeMime.filenameFromHeaders(
+          _named("attachment; filename* = UTF-8''notes.txt"))));
+
+  // And the part it names is a file, not the body: this is the reading that
+  // decides whether the attachment list mentions it at all.
+  var message = Buffer.from(
+    "MIME-Version: 1.0\r\n" +
+    "Content-Type: multipart/mixed; boundary=b1\r\n" +
+    "\r\n" +
+    "--b1\r\n" +
+    "Content-Type: text/plain\r\n" +
+    "\r\n" +
+    "the body\r\n" +
+    "--b1\r\n" +
+    "Content-Type: text/plain\r\n" +
+    "Content-Disposition: attachment; filename = \"notes.txt\"\r\n" +
+    "\r\n" +
+    "attached text\r\n" +
+    "--b1--\r\n", "utf8");
+  var names = b.safeMime.extractAttachments(b.safeMime.parse(message))
+    .map(function (a) { return a.filename; });
+  check("a part named with spacing is offered as an attachment",
+        names.indexOf("notes.txt") !== -1, JSON.stringify(names));
+}
+
 function testASupersededAlternativesFilesAreStillOffered() {
   // The parts of a multipart/alternative are one body written several ways,
   // and only one of them is displayed. Its FILES are a separate question:
@@ -1461,6 +1513,7 @@ async function run() {
   testAPartAnnouncedOnlyByContentTypeIsStillAnAttachment();
   testAnInlineFileIsCountedTheWayTheJmapViewCountsIt();
   testAFilenameThatLooksLikeAParameterIsNotReadAsOne();
+  testWhitespaceAroundTheParameterEqualsIsAllowed();
   testASupersededAlternativesFilesAreStillOffered();
   testThePreferredAlternativeIsTheLastOne();
   testAnAttachedFileSurvivesLosingTheRepresentationContest();

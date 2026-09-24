@@ -1125,7 +1125,8 @@ async function testBackRefsAndPointer() {
     accountsFor: DEFAULT_ACCOUNTS,
     methods: {
       "First/get":  async function () {
-        return { list: [{ id: "x1" }, { id: "x2" }], name: "n", s: "str", "a/b": "slash", "c~d": "tilde" };
+        return { list: [{ id: "x1" }, { id: "x2" }], name: "n", s: "str", "a/b": "slash", "c~d": "tilde",
+                 "": "empty-key" };
       },
       "Second/use": async function (actor, args) { return { received: args }; },
     },
@@ -1143,11 +1144,17 @@ async function testBackRefsAndPointer() {
           "#first": { resultOf: "c0", name: "First/get", path: "/list/0/id" },
           "#sl":    { resultOf: "c0", name: "First/get", path: "/a~1b" },
           "#ti":    { resultOf: "c0", name: "First/get", path: "/c~0d" },
+          // RFC 6901 section 5: "" is the whole document and "/" is the
+          // member whose name is the empty string. Reading both as the root
+          // hands the whole response to an argument that asked for a member.
+          "#emptyKey": { resultOf: "c0", name: "First/get", path: "/" },
         }, "c1"],
       ] }),
     });
     var got = JSON.parse(rv.body).methodResponses[1][1].received;
     check("backref path='' resolves whole result", got.whole && got.whole.name === "n");
+    check("backref path='/' resolves the empty-key member, not the root",
+          got.emptyKey === "empty-key", JSON.stringify(got.emptyKey));
     check("backref path='/list/*' resolves array", Array.isArray(got.arr) && got.arr.length === 2);
     check("backref path='/list/0/id' resolves scalar", got.first === "x1");
     check("backref ~1 escape → '/'", got.sl === "slash");
