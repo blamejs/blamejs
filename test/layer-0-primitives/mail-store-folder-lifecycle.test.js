@@ -873,6 +873,42 @@ async function testARenameKeepsTheMailboxsUidvalidity() {
   });
 }
 
+async function testARenameCarriesTheChildrenItParents() {
+  // RFC 9051 section 6.3.6 requires a rename to carry the mailbox's inferior
+  // hierarchical names with it. Here a child's name does not embed its
+  // parent's: this store's names are flat, a name carrying the hierarchy
+  // delimiter is refused outright, and the relationship is a parent id. So
+  // renaming the parent carries the subtree by construction, and the test
+  // states that rather than leaving it to be inferred.
+  await _withStore(async function (store) {
+    var parent = store.createFolder("Proj");
+    var child = store.createFolder("Y2025", { parentId: parent.id });
+    store.createFolder("Q1", { parentId: child.id });
+
+    var slash = null;
+    try { store.createFolder("Proj/Y2025"); } catch (e) { slash = e.code; }
+    check("a name carrying the hierarchy delimiter is refused",
+          slash === "mail-store/bad-folder-name", String(slash));
+
+    store.renameFolder("Proj", "Zap");
+    var rows = store.listFolders();
+    var renamed = rows.filter(function (f) { return f.name === "Zap"; })[0];
+    var kid = rows.filter(function (f) { return f.name === "Y2025"; })[0];
+    var grandkid = rows.filter(function (f) { return f.name === "Q1"; })[0];
+    check("the mailbox is renamed", renamed !== undefined, JSON.stringify(_names(store)));
+    check("its child is still parented by it", kid.parent_id === renamed.id,
+          JSON.stringify({ child: kid.parent_id, parent: renamed.id }));
+    check("and the grandchild is still parented by the child",
+          grandkid.parent_id === kid.id,
+          JSON.stringify({ grandchild: grandkid.parent_id, child: kid.id }));
+    check("no row is left pointing at a parent that is gone",
+          rows.every(function (f) {
+            return f.parent_id === null ||
+                   rows.some(function (p) { return p.id === f.parent_id; });
+          }), JSON.stringify(rows.map(function (f) { return [f.name, f.parent_id]; })));
+  });
+}
+
 function testASecondDatabaseGetsItsOwnTransaction() {
   // "Am I already inside a transaction" was answered by one module-wide flag,
   // so a store operation running inside another store's transaction skipped
@@ -1456,6 +1492,7 @@ async function run() {
   await testAParentFolderIsNotDeletedOutFromUnderItsChildren();
   await testInboxIsNotRenamed();
   await testARenameKeepsTheMailboxsUidvalidity();
+  await testARenameCarriesTheChildrenItParents();
   await testStoreOperationsComposeInsideACallersTransaction();
   await testAWrapperBackendReportsItsInnerTransaction();
   await testBDbReportsWhetherATransactionIsOpen();

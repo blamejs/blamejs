@@ -600,6 +600,28 @@ async function testCreateDeleteAndRenameReachTheStore() {
   } finally { await c.close(); }
 }
 
+async function testADeleteRefusedForChildrenSaysSo() {
+  // RFC 9051 section 6.3.5 lets a server that will not delete a mailbox
+  // holding inferiors refuse: "then it SHOULD disallow the DELETE command by
+  // returning a tagged NO response. The NO response SHOULD include the
+  // HASCHILDREN response code." b.mailStore takes that option, and the
+  // response code is what tells a client to delete the children first rather
+  // than treat the mailbox as undeletable.
+  var store = _mailStore();
+  store.deleteFolder = function () {
+    var err = new Error("deleteFolder: 'Parent' has child folders; delete them first");
+    err.code = "mail-store/folder-has-children";
+    throw err;
+  };
+  var c = await _open(store);
+  try {
+    var reply = await c.cmd("a1", 'DELETE "Parent"');
+    check("the delete is refused", /^a1 NO/m.test(reply), reply.slice(0, 160));
+    check("and the refusal carries the HASCHILDREN response code",
+          /^a1 NO \[HASCHILDREN\]/m.test(reply), reply.slice(0, 160));
+  } finally { await c.close(); }
+}
+
 async function testAPatternOfManyWildcardsIsRefusedNotWalked() {
   // Backtracking is the product of the wildcard positions, so a pattern
   // built only of them is the cheap way to make the server do the work.
@@ -1447,6 +1469,7 @@ async function run() {
   await testReturnStatusAnswersInTheSameRoundTrip();
   await testSubscribeAndUnsubscribeChangeWhatIsListed();
   await testCreateDeleteAndRenameReachTheStore();
+  await testADeleteRefusedForChildrenSaysSo();
   await testAPatternOfManyWildcardsIsRefusedNotWalked();
   await testASubscriptionOutlivingItsMailboxIsStillListed();
   await testAnAsyncSubscriptionLookupIsWaitedFor();
