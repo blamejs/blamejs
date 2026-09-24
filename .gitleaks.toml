@@ -77,23 +77,6 @@ regexes = [
 ]
 
 [[allowlists]]
-description = "b.apiKey.parseFormat's documented token shape"
-# `parseFormat` takes `<prefix>_<namespace>_<idHex>_<secretHex>` and its
-# @example has to pass a token the parser ACCEPTS: the executable-example
-# gate runs every @example and checks the value it states, and a
-# `<secret-hex>` placeholder parses as nothing. The hex is fabricated for
-# the doc, and `secretHex` names a field the parser SPLITS OUT of a
-# caller's token rather than anything the framework stores.
-#
-# regexTarget = "match" so this is anchored on the surrounding doc field:
-# the default target is the extracted secret, which is the bare hex and
-# would allowlist that hex wherever it appeared.
-regexTarget = "match"
-regexes = [
-  '''secretHex:\s*"[0-9a-fA-F]+"''',
-]
-
-[[allowlists]]
 description = "Camel-case identifier names that trip generic-api-key entropy"
 # Public parameter / property names in the framework's KEM envelope
 # surface (e.g. `x25519PrivateKey`, `mlkemPrivateKey`) score above the

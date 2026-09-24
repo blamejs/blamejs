@@ -372,6 +372,10 @@
       "heading": "Changed",
       "items": [
         {
+          "title": "Vendored bundles refreshed",
+          "body": "`@blamejs/pki` 0.7.45 to 0.8.17 and the public suffix list to its 2026-09-21 revision, both rebundled and re-signed through `scripts/vendor-update.sh` with `lib/vendor/MANIFEST.json` and `NOTICE` updated to match. The framework's runtime dependency set is unchanged: these ship as reviewable source inside the tarball."
+        },
+        {
           "title": "The permissive JMAP profile declares 64 MiB, the largest request it can accept",
           "body": "`b.guardJmap.PROFILES.permissive.maxSizeRequest` was 100 MiB, and `b.mail.server.jmap` publishes it to clients in the session's `urn:ietf:params:jmap:core` capability as the size a request may reach. No branch honored it: a string body goes through `b.safeJson.parse`, which refuses anything over its own 64 MiB ceiling whatever the caller asks. Measured at the declared limit, a 66 MiB request came back as `notJSON`, \"body is not valid JSON\", rather than as a size refusal. The profile now declares 64 MiB, which both branches accept, and a test holds every profile's `maxSizeRequest` at or under that ceiling so a later bump cannot publish a number the parser will not honor. The strict (10 MiB) and balanced (50 MiB) profiles are unchanged. A deployment relying on requests between 64 and 100 MiB was already being refused them."
         },
