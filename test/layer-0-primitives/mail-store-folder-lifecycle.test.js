@@ -1422,6 +1422,47 @@ function testUidvalidityNeverGoesBackwards() {
   });
 }
 
+function _isInbox(name) {
+  return String(name).toUpperCase() === "INBOX";
+}
+
+function testAStoreWrittenBeforeUidvaliditySeparationIsRepairedOnOpen() {
+  // The default folders used to be seeded with one value for all of them,
+  // and a store written that way keeps it: seeding only ever runs on an
+  // empty database. RFC 9051 2.3.1.1 makes what a client caches the pair of
+  // the mailbox NAME and its UIDVALIDITY, so while the values are shared,
+  // deleting Trash and renaming Archive onto the name hands a client back
+  // the pair it already holds with another mailbox's messages behind it.
+  // Opening the store separates them.
+  return _withStore(function (store) {
+    var db = store._dbForTest;
+    var shared = 1700000000;                                                                          // allow:raw-byte-literal — a fixed legacy UIDVALIDITY
+    db.prepare("UPDATE blamejs_mail_folders SET uidvalidity = ?").run(shared);
+    var legacy = store.listFolders();
+    check("the control: every folder shares one value to begin with",
+          legacy.length > 1 && legacy.every(function (f) { return f.uidvalidity === shared; }),
+          JSON.stringify(legacy.map(function (f) { return [f.name, f.uidvalidity]; })));
+
+    var reopened = b.mailStore.create({ backend: db });
+    var folders = reopened.listFolders();
+    var values = folders.map(function (f) { return f.uidvalidity; });
+    check("reopening gives every folder its own UIDVALIDITY",
+          new Set(values).size === values.length,
+          JSON.stringify(folders.map(function (f) { return [f.name, f.uidvalidity]; })));
+    var inbox = folders.filter(function (f) { return _isInbox(f.name); })[0];
+    check("and the first folder keeps the value it had",
+          inbox && inbox.uidvalidity === shared, JSON.stringify(inbox));
+
+    // The scenario that pair protects against, run end to end.
+    var doomed = folders.filter(function (f) { return f.name === "Trash"; })[0];
+    reopened.deleteFolder("Trash");
+    var moved = reopened.renameFolder("Archive", "Trash");
+    check("a mailbox renamed onto a deleted one's name does not answer to its pair",
+          moved.uidvalidity !== doomed.uidvalidity,
+          JSON.stringify([doomed.uidvalidity, moved.uidvalidity]));
+  });
+}
+
 function testAFolderCanBeRenamed() {
   return _withStore(function (store) {
     store.createFolder("Old");
@@ -1545,6 +1586,7 @@ async function run() {
   await testAFailedCommitOnThePrepareOnlyBackendLeavesNothingStranded();
   await testALifecycleChangeSurvivesReopeningTheStore();
   await testUidvalidityNeverGoesBackwards();
+  await testAStoreWrittenBeforeUidvaliditySeparationIsRepairedOnOpen();
   await testAFolderCanBeRenamed();
   await testSubscriptionIsRecordedAndListed();
   await testDeleteAndRenameLeaveSubscriptionsAlone();

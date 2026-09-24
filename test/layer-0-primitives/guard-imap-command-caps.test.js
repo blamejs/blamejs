@@ -115,6 +115,34 @@ function testTheSequenceSetCapIsApplied() {
   check("the profile chooses the cap",
         _refusal(over, { profile: "permissive" }) === null,
         String(_refusal(over, { profile: "permissive" })));
+
+  // UIDs are sparse, so the width of a UID range says nothing about how many
+  // messages carry a UID inside it: a mailbox that has expunged everything
+  // between them answers `UID FETCH 100000:120000` with two. Counting the
+  // width refused a synchronization the client is entitled to make, before
+  // the only party that can count it had seen the command.
+  var wideUid = "A001 UID FETCH " + (strict + 1) + ":" + (strict * 3) + " (FLAGS)";
+  check("a UID range wider than the cap is not refused by the item cap",
+        _refusal(wideUid, { profile: "strict" }) === null,
+        String(_refusal(wideUid, { profile: "strict" })));
+  check("the same width in message numbers is still refused",
+        _refusal("A001 FETCH " + (strict + 1) + ":" + (strict * 3) + " (FLAGS)",
+                 { profile: "strict" }) === "guard-imap-command/sequence-set-too-large");
+  // An enumerated UID set is still counted by its items, each one naming a
+  // message whether or not that message is still there. A list long enough to
+  // reach the item cap is longer than a line is allowed to be, so the line
+  // cap is what answers it, and what bounds the UID sets neither cap can
+  // count is the selected mailbox `b.mail.server.imap` counts them against.
+  var enumerated = [];
+  for (var u = 1; u <= strict + 1; u += 1) enumerated.push(u);
+  var enumeratedLine = "A001 UID STORE " + enumerated.join(",") + " +FLAGS (\\Seen)";
+  check("an enumeration long enough to reach the item cap is answered by the line cap",
+        _refusal(enumeratedLine, { profile: "strict" }) === "guard-imap-command/line-too-long",
+        String(_refusal(enumeratedLine, { profile: "strict" })));
+  check("an enumerated UID set inside both caps is accepted",
+        _refusal("A001 UID STORE 5,7,900000 +FLAGS (\\Seen)", { profile: "strict" }) === null,
+        String(_refusal("A001 UID STORE 5,7,900000 +FLAGS (\\Seen)", { profile: "strict" })));
+
   // `*` is the largest message number, not an unbounded expansion, so a
   // range to it cannot be counted and is not refused on count alone.
   check("a range to * is not refused for its count",
