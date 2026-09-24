@@ -78,6 +78,24 @@ async function testGetIsBoundedByMaxObjectsInGet() {
 // maxObjectsInGet limit", and the server MUST answer requestTooLarge when it
 // does. Counting the arguments cannot see that form, because the request
 // names no ids at all, so the bound has to be read off what came back.
+async function testCoreEchoEchoesWhateverItIsGiven() {
+  // RFC 8620 section 4 makes Core/echo return its arguments unchanged, so a
+  // payload member is data rather than a reference to anything. The account
+  // check scanned every argument whose name ends in accountId, which read an
+  // ordinary echoed string as a target and answered accountNotFound: the one
+  // method the registry already marks as taking no account was the one it
+  // could not round-trip.
+  var payload = { accountId: "arbitrary-data", toAccountId: "also-data", hi: 1 };
+  var rv = await _call("Core/echo", payload);
+  check("Core/echo is not account-checked", rv.type === null, JSON.stringify(rv));
+  check("and its handler runs", rv.ranHandler === true, JSON.stringify(rv));
+
+  // The border it sits next to: an account-scoped method is still checked.
+  var scoped = await _call("Email/get", { accountId: "arbitrary-data", ids: [] });
+  check("an account-scoped method still refuses an account the actor lacks",
+        scoped.type === "accountNotFound", JSON.stringify(scoped));
+}
+
 async function testTheAllRecordsGetFormIsBoundedToo() {
   function _listOf(n) {
     var out = [];
@@ -928,6 +946,7 @@ async function run() {
   testTheWebSocketCapIsTheDeclaredOne();
   testEveryProfileKnobIsRead();
   await testGetIsBoundedByMaxObjectsInGet();
+  await testCoreEchoEchoesWhateverItIsGiven();
   await testTheAllRecordsGetFormIsBoundedToo();
   await testAGetNamesItsObjectsUnderWhateverArgumentItDefines();
   await testAMutatingMethodCountsItsIdArgumentsToo();

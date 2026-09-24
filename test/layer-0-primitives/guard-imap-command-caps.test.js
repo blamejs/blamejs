@@ -87,6 +87,31 @@ function testTheSequenceSetCapIsApplied() {
         String(_refusal(over, { profile: "strict" })));
   check("an enumerated set is counted the same way",
         _refusal("A001 STORE 1,2,3 +FLAGS (\\Seen)", { profile: "strict" }) === null);
+
+  // RFC 9051 section 9 makes `*` the largest number in use, so a range
+  // written against it names a count only the selected mailbox knows. This
+  // guard has no mailbox, so it does not count such a range and does not
+  // refuse it: `FETCH 1:*` is how a client reads a mailbox, and what bounds
+  // it is the mailbox and the listener's per-handler response and
+  // wall-clock budgets. Counting it as a single message, which is what it
+  // did, made the guard refuse `1:20000` while admitting the same set
+  // written `1:*`.
+  ["A001 FETCH 1:* (FLAGS)",
+   "A001 FETCH " + (strict + 1) + ":* (FLAGS)",
+   "A001 STORE 1:* +FLAGS (\\Seen)",
+   "A001 FETCH *:1 (FLAGS)"].forEach(function (line) {
+    check("a range written against * is not refused by the item cap: " + line.slice(10, 30),
+          _refusal(line, { profile: "strict" }) === null,
+          String(_refusal(line, { profile: "strict" })));
+  });
+  // A bare `*` names exactly one message, the last, and is counted as one.
+  check("a bare * is one message",
+        _refusal("A001 FETCH * (FLAGS)", { profile: "strict" }) === null);
+  // The set that mixes them is still not counted, because one part of it
+  // cannot be: the enumerated part alone must not decide the answer.
+  check("a set mixing an enumeration with a wildcard range is not counted",
+        _refusal("A001 FETCH 1:" + (strict + 1) + ",2:* (FLAGS)",
+                 { profile: "strict" }) === null);
   check("the profile chooses the cap",
         _refusal(over, { profile: "permissive" }) === null,
         String(_refusal(over, { profile: "permissive" })));

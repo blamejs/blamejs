@@ -84,6 +84,25 @@ async function testCoreEchoTakesNoAccount() {
         b.mail.serverRegistry.jmapMethodTakesAccount("Email/get") === true &&
         b.mail.serverRegistry.jmapMethodTakesAccount("Core/echo") === false &&
         b.mail.serverRegistry.jmapMethodTakesAccount("Experimental/thing") === false);
+
+  // The two predicates part company on a name the registry does not know.
+  // `jmapMethodTakesAccount` reads false for it because nothing says it takes
+  // one; `jmapMethodIsAccountFree` reads false because nothing says it does
+  // not. Only the second decides whether the account authorization is
+  // skipped, so an operator's own method keeps every check.
+  check("b.mail.serverRegistry.jmapMethodIsAccountFree names only the known account-free methods",
+        b.mail.serverRegistry.jmapMethodIsAccountFree("Core/echo") === true &&
+        b.mail.serverRegistry.jmapMethodIsAccountFree("Email/get") === false &&
+        b.mail.serverRegistry.jmapMethodIsAccountFree("Experimental/thing") === false &&
+        b.mail.serverRegistry.jmapMethodIsAccountFree(null) === false);
+  check("it is not the negation of the other predicate",
+        b.mail.serverRegistry.jmapMethodTakesAccount("Experimental/thing") ===
+        b.mail.serverRegistry.jmapMethodIsAccountFree("Experimental/thing"));
+
+  // An echoed member named like an account is data, not a target.
+  var echoed = await _call("Core/echo", { accountId: "arbitrary-data", hi: 1 });
+  check("Core/echo is not account-checked on its payload",
+        echoed.type === null && echoed.ranHandler === true, JSON.stringify(echoed));
 }
 
 async function testAHandlersOwnRefusalReachesTheClient() {

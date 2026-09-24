@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.20.32",
-  "createdAt": "2026-09-24T10:32:08.633Z",
+  "createdAt": "2026-09-24T11:26:40.770Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -46210,6 +46210,10 @@
               "arity": 4
             },
             "create": {
+              "type": "function",
+              "arity": 1
+            },
+            "jmapMethodIsAccountFree": {
               "type": "function",
               "arity": 1
             },

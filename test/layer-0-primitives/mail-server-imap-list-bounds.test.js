@@ -445,6 +445,44 @@ async function testTheMailboxNameLimitIsTheProfilesOwn() {
   } finally { await c.close(); }
 }
 
+async function testAnEmptyPatternIsStillChargedForTheWorkItDoes() {
+  // The work bound charges the pattern's length against each name, so a
+  // pattern of length zero charged nothing while still running a whole match
+  // per folder: matching allocates arrays the size of the name whatever the
+  // pattern's length. The client chooses how many patterns to send, so a
+  // list of empty ones bought unbounded matching for free.
+  //
+  // Read off the listing rather than off a clock: once the budget is spent
+  // the matcher stops matching, so the `%` paired with the empty patterns
+  // returns nothing, while the same `%` on its own returns the folders.
+  var folders = [];
+  for (var f = 0; f < 1000; f += 1) {
+    folders.push("Folder" + f + "-" + "x".repeat(200));
+  }
+  // A thousand of them: measured on the unbounded tree this served all 1001
+  // folders in 487 ms while charging nothing, and the argument parser
+  // refuses a list much longer, so a larger flood would be refused for a
+  // different reason and prove nothing about the budget.
+  var empties = [];
+  for (var i = 0; i < 1000; i += 1) empties.push('""');
+
+  var c = await _open({ folders: folders });
+  try {
+    var alone = await c.cmd("a1", 'LIST "" "%"');
+    var aloneCount = (alone.match(/^\* LIST /mg) || []).length;
+    check("the pattern on its own lists the folders", aloneCount > 100, String(aloneCount));
+
+    var flooded = await c.cmd("a2", 'LIST "" (' + empties.join(" ") + ' "%")');
+    check("the flood is refused by the work bound rather than served",
+          /^a2 NO LIST pattern and mailbox set need more than/m.test(flooded),
+          flooded.slice(-160));
+    var floodedCount = (flooded.match(/^\* LIST /mg) || []).length;
+    check("and it stops short of the listing it would otherwise have served",
+          floodedCount < aloneCount,
+          JSON.stringify({ alone: aloneCount, flooded: floodedCount }));
+  } finally { await c.close(); }
+}
+
 async function testARefusedCommandIsAnsweredAgainstItsTag() {
   // RFC 9051 section 2.2.1: every client command is followed by a tagged
   // response, which is how a client pairs a reply with what it sent. A
@@ -591,6 +629,7 @@ async function run() {
   await testAnEmptyPatternAnswersTheDelimiterQuery();
   await testRecursivematchIsRefusedRatherThanIgnored();
   await testTheMailboxNameLimitIsTheProfilesOwn();
+  await testAnEmptyPatternIsStillChargedForTheWorkItDoes();
   await testARefusedCommandIsAnsweredAgainstItsTag();
   await testRemoteIsAdditiveNotRestrictive();
   await testAHierarchyLevelWithNoMailboxOfItsOwnIsStillListed();
