@@ -102,7 +102,7 @@ async function testBadBackRefRefused() {
   });
   check("second call surfaces invalidResultReference",
     rv.methodResponses[1][0] === "error" &&
-    rv.methodResponses[1][1].type === "urn:ietf:params:jmap:error:invalidResultReference");
+    rv.methodResponses[1][1].type === "invalidResultReference");
 }
 
 async function testUnknownMethod() {
@@ -117,7 +117,7 @@ async function testUnknownMethod() {
   });
   check("unknownMethod returned for unwired method",
     rv.methodResponses[0][0] === "error" &&
-    rv.methodResponses[0][1].type === "urn:ietf:params:jmap:error:unknownMethod");
+    rv.methodResponses[0][1].type === "unknownMethod");
 }
 
 async function testMethodThrewMaskedAsServerFail() {
@@ -134,7 +134,7 @@ async function testMethodThrewMaskedAsServerFail() {
   });
   check("method throw masked as serverFail",
     rv.methodResponses[0][0] === "error" &&
-    rv.methodResponses[0][1].type === "urn:ietf:params:jmap:error:serverFail");
+    rv.methodResponses[0][1].type === "serverFail");
   check("internal stack trace not leaked in description",
     !/internal stack-trace/.test(rv.methodResponses[0][1].description));
 }
@@ -177,7 +177,7 @@ async function testDispatchForeignAccountRefused() {
   });
   check("foreign accountId → accountNotFound",
     rv.methodResponses[0][0] === "error" &&
-    rv.methodResponses[0][1].type === "urn:ietf:params:jmap:error:accountNotFound");
+    rv.methodResponses[0][1].type === "accountNotFound");
   check("foreign accountId → method handler NOT reached", reached === false);
   check("response echoes clientId on the gate error",
     rv.methodResponses[0][2] === "c0");
@@ -221,7 +221,7 @@ async function testDispatchForeignFromAccountRefused() {
   });
   check("Email/copy foreign fromAccountId → accountNotFound",
     rv.methodResponses[0][0] === "error" &&
-    rv.methodResponses[0][1].type === "urn:ietf:params:jmap:error:accountNotFound");
+    rv.methodResponses[0][1].type === "accountNotFound");
   check("Email/copy foreign fromAccountId → handler NOT reached", reached === false);
 }
 
@@ -1065,13 +1065,13 @@ async function testApiHandler() {
     check("api happy → result echoed", okBody.methodResponses[0][1].hi === 7);
     check("api happy → sessionState", typeof okBody.sessionState === "string");
 
-    // 3c. guard refusal (no `using`) → 400 invalidArguments
+    // 3c. guard refusal (no `using`) → 400 notRequest, as problem details
     var rBad = await _req(s.port, {
       method: "POST", path: "/jmap/api", headers: { "content-type": "application/json" },
       body: JSON.stringify({ methodCalls: [["Core/echo", {}, "c0"]] }),
     });
     check("api guard-refusal → 400", rBad.status === 400);
-    check("api guard-refusal → invalidArguments", /jmap:error:invalidArguments/.test(rBad.body));
+    check("api guard-refusal → notRequest", /jmap:error:notRequest/.test(rBad.body));
 
     // 3d. no actor → forbidden mapped to 401
     var rForbidden = await _req(s.port, {
@@ -1090,7 +1090,7 @@ async function testApiHandler() {
     var opErrBody = JSON.parse(rOpErr.body);
     check("api operator-error-shape preserved",
       opErrBody.methodResponses[0][0] === "error" &&
-      opErrBody.methodResponses[0][1].type === "urn:ietf:params:jmap:error:invalidArguments");
+      opErrBody.methodResponses[0][1].type === "invalidArguments");
   } finally { await _stop(s.server); }
 
   // 3f. accountsFor throws inside dispatch → serverFail refusal (mapped 400)
@@ -1105,7 +1105,10 @@ async function testApiHandler() {
       method: "POST", path: "/jmap/api", headers: { "content-type": "application/json" },
       body: JSON.stringify({ using: [], methodCalls: [["Core/echo", {}, "c0"]] }),
     });
-    check("api accountsFor-throw → 400 (serverFail refusal)", rat.status === 400);
+    // The account backend failing is a server fault, so the problem details
+    // carry the 500 RFC 8620 section 3.6.1 pairs with serverFail, not a 400
+    // that blames the request.
+    check("api accountsFor-throw → 500 (serverFail refusal)", rat.status === 500);
     check("api accountsFor-throw → serverFail", /jmap:error:serverFail/.test(rat.body));
     check("api accountsFor-throw → account authorization unavailable",
       /account authorization unavailable/.test(rat.body));
@@ -1122,7 +1125,8 @@ async function testBackRefsAndPointer() {
     accountsFor: DEFAULT_ACCOUNTS,
     methods: {
       "First/get":  async function () {
-        return { list: [{ id: "x1" }, { id: "x2" }], name: "n", s: "str", "a/b": "slash", "c~d": "tilde" };
+        return { list: [{ id: "x1" }, { id: "x2" }], name: "n", s: "str", "a/b": "slash", "c~d": "tilde",
+                 "": "empty-key" };
       },
       "Second/use": async function (actor, args) { return { received: args }; },
     },
@@ -1140,11 +1144,17 @@ async function testBackRefsAndPointer() {
           "#first": { resultOf: "c0", name: "First/get", path: "/list/0/id" },
           "#sl":    { resultOf: "c0", name: "First/get", path: "/a~1b" },
           "#ti":    { resultOf: "c0", name: "First/get", path: "/c~0d" },
+          // RFC 6901 section 5: "" is the whole document and "/" is the
+          // member whose name is the empty string. Reading both as the root
+          // hands the whole response to an argument that asked for a member.
+          "#emptyKey": { resultOf: "c0", name: "First/get", path: "/" },
         }, "c1"],
       ] }),
     });
     var got = JSON.parse(rv.body).methodResponses[1][1].received;
     check("backref path='' resolves whole result", got.whole && got.whole.name === "n");
+    check("backref path='/' resolves the empty-key member, not the root",
+          got.emptyKey === "empty-key", JSON.stringify(got.emptyKey));
     check("backref path='/list/*' resolves array", Array.isArray(got.arr) && got.arr.length === 2);
     check("backref path='/list/0/id' resolves scalar", got.first === "x1");
     check("backref ~1 escape → '/'", got.sl === "slash");
@@ -1159,7 +1169,7 @@ async function testBackRefsAndPointer() {
       ] }),
     });
     check("backref into non-object → invalidResultReference",
-      JSON.parse(rNon.body).methodResponses[1][1].type === "urn:ietf:params:jmap:error:invalidResultReference");
+      JSON.parse(rNon.body).methodResponses[1][1].type === "invalidResultReference");
 
     // 4c. malformed back-ref value (missing `path`) → invalidResultReference
     var rMissing = await _req(s.port, {
@@ -1170,7 +1180,7 @@ async function testBackRefsAndPointer() {
       ] }),
     });
     check("backref missing path → invalidResultReference",
-      JSON.parse(rMissing.body).methodResponses[1][1].type === "urn:ietf:params:jmap:error:invalidResultReference");
+      JSON.parse(rMissing.body).methodResponses[1][1].type === "invalidResultReference");
 
     // 4d. back-ref value is an ARRAY (not the { resultOf, name, path } object)
     var rArr = await _req(s.port, {
@@ -1181,7 +1191,7 @@ async function testBackRefsAndPointer() {
       ] }),
     });
     check("backref value-is-array → invalidResultReference",
-      JSON.parse(rArr.body).methodResponses[1][1].type === "urn:ietf:params:jmap:error:invalidResultReference");
+      JSON.parse(rArr.body).methodResponses[1][1].type === "invalidResultReference");
 
     // 4e. back-ref name mismatch (prior clientId produced a different method)
     var rName = await _req(s.port, {
@@ -1192,7 +1202,7 @@ async function testBackRefsAndPointer() {
       ] }),
     });
     check("backref name-mismatch → invalidResultReference",
-      JSON.parse(rName.body).methodResponses[1][1].type === "urn:ietf:params:jmap:error:invalidResultReference");
+      JSON.parse(rName.body).methodResponses[1][1].type === "invalidResultReference");
 
     // 4e2. back-ref array index is non-numeric → undefined → invalidResultReference
     var rNaN = await _req(s.port, {
@@ -1203,7 +1213,7 @@ async function testBackRefsAndPointer() {
       ] }),
     });
     check("backref non-numeric array index → invalidResultReference",
-      JSON.parse(rNaN.body).methodResponses[1][1].type === "urn:ietf:params:jmap:error:invalidResultReference");
+      JSON.parse(rNaN.body).methodResponses[1][1].type === "invalidResultReference");
 
     // 4f. unknown method → unknownMethod
     var rUnknown = await _req(s.port, {
@@ -1211,7 +1221,7 @@ async function testBackRefsAndPointer() {
       body: JSON.stringify({ using: [], methodCalls: [["Nope/nope", {}, "c0"]] }),
     });
     check("unknown method → unknownMethod",
-      JSON.parse(rUnknown.body).methodResponses[0][1].type === "urn:ietf:params:jmap:error:unknownMethod");
+      JSON.parse(rUnknown.body).methodResponses[0][1].type === "unknownMethod");
   } finally { await _stop(s.server); }
 }
 
@@ -1373,15 +1383,21 @@ async function testDownloadHandler() {
     check("download Content-Disposition attachment",
       /attachment; filename="note\.txt"/.test(rOk.headers["content-disposition"] || ""));
 
-    // 6b. A filename that cannot be quoted costs the NAME, not the
-    // disposition. Without one the response renders inline, and blob bytes are
-    // attacker-influenced in the ordinary case — a mail attachment — so an
-    // inline render is script execution in the application's origin against a
-    // session the endpoint has already authenticated.
+    // 6b. A name the old spelling refused to quote now costs neither the
+    // disposition nor the name: the header comes from
+    // b.staticServe.attachmentDisposition, which quotes an ASCII form and
+    // carries the real name in an RFC 8187 ext-value. The disposition is the
+    // part that matters most, because without it the response renders inline,
+    // and blob bytes are attacker-influenced in the ordinary case (a mail
+    // attachment), so an inline render is script execution in the
+    // application's origin against a session the endpoint authenticated.
     var rNoDisp = await _req(s.port, { path: "/jmap/download/A1/blob_1/no,te" });
-    check("download with an unquotable filename is still an attachment",
-      (rNoDisp.headers["content-disposition"] || "") === "attachment",
-      JSON.stringify(rNoDisp.headers["content-disposition"]));
+    var disp = rNoDisp.headers["content-disposition"] || "";
+    check("download with an awkward filename is still an attachment",
+      disp.indexOf("attachment") === 0, JSON.stringify(disp));
+    check("and the name survives rather than being dropped",
+      /filename="no,te"/.test(disp) && /filename\*=UTF-8''no%2Cte/.test(disp),
+      JSON.stringify(disp));
 
     // 6c. RFC 8620 section 6.2 defines the download URL's `{type}` variable as
     // "the type for the server to set in the Content-Type header of the
@@ -1805,8 +1821,32 @@ async function _teardown() {
   _wsClients = []; _wsSockets = []; _httpServers = [];
 }
 
+// `audit` is in this listener's documented options and the wiki page is built
+// from that block, but the listener bound the process-global emitter directly,
+// so an operator wiring a per-tenant or compliance sink got silence. Every
+// sibling listener composes b.auditEmit's dual emitter for exactly this.
+async function testOperatorAuditSinkIsWired() {
+  var seen = [];
+  var srv = b.mail.server.jmap.create({
+    mailStore:   { appendMessage: function () {} },
+    audit:       { safeEmit: function (ev) { seen.push(ev); } },
+    accountsFor: async function () {
+      return { primaryAccounts: { mail: "A1" }, accounts: { A1: { name: "one" } } };
+    },
+    methods: { "Core/echo": async function (_a, args) { return args; } },
+  });
+
+  // A refused request is the cheapest event this listener emits.
+  await srv.dispatch({ id: "actor1" }, { using: ["urn:ietf:params:jmap:core"],
+    methodCalls: [["Nope/method", { accountId: "A1" }, "c0"]] });
+
+  check("the operator's audit sink receives the listener's events",
+        seen.length > 0, JSON.stringify(seen.length));
+}
+
 async function run() {
   testSurface();
+  await testOperatorAuditSinkIsWired();
   testBadOptsRefused();
   await testDispatchHappyPath();
   await testBackRefResolution();
@@ -1926,7 +1966,9 @@ function _makeESHandler(overrides) {
   var base = {
     deliver:     fakeDeliver,
     lookupEmail: async function (id) {
-      return id === "missing" ? null : Buffer.from("From: ops@x.com\r\n\r\nbody");
+      // The From header names the identity's own address: a message claiming
+      // another sender is forbiddenFrom (RFC 8621 section 7.5).
+      return id === "missing" ? null : Buffer.from("From: ops@example.com\r\n\r\nbody");
     },
     identities: function () {
       return [{ id: "I1", email: "ops@example.com" }];
@@ -2145,7 +2187,7 @@ async function testDispatchMethodEntryNonFunctionSkipped() {
     rv.methodResponses[0][0] === "Good/x" && rv.methodResponses[0][1].ok === 1);
   check("non-function method entry unregistered → unknownMethod",
     rv.methodResponses[1][0] === "error" &&
-    rv.methodResponses[1][1].type === "urn:ietf:params:jmap:error:unknownMethod");
+    rv.methodResponses[1][1].type === "unknownMethod");
 }
 
 async function testDispatchAccountGateEdges() {
@@ -2160,7 +2202,7 @@ async function testDispatchAccountGateEdges() {
     using: [], methodCalls: [["Mailbox/get", { accountId: "A1" }, "c0"]],
   });
   check("accountsFor null → accountNotFound (fail-closed)",
-    rvNull.methodResponses[0][1].type === "urn:ietf:params:jmap:error:accountNotFound");
+    rvNull.methodResponses[0][1].type === "accountNotFound");
 
   var reached = { nullId: false };
   var jmap = b.mail.server.jmap.create({
@@ -2168,18 +2210,23 @@ async function testDispatchAccountGateEdges() {
     accountsFor: async function () { return { primaryAccounts: {}, accounts: { A1: { name: "x" } } }; },
     methods: { "Mailbox/get": async function (actor, args) { reached.nullId = true; return { got: args.accountId }; } },
   });
-  // accountId:null → the gate skips a null-valued *AccountId key (method runs).
+  // accountId:null → Mailbox/get is account-scoped, so a call that names no
+  // account is invalidArguments (RFC 8620 sections 1.6.2, 3.6.2 and 3.9) and
+  // the handler never runs.
   var rvNullAcc = await jmap.dispatch({ id: "a" }, {
     using: [], methodCalls: [["Mailbox/get", { accountId: null }, "c0"]],
   });
-  check("accountId:null skips gate → method runs",
-    reached.nullId === true && rvNullAcc.methodResponses[0][0] === "Mailbox/get");
-  // non-string accountId (number) → denied with deniedAccountId coerced to null.
+  check("accountId:null → invalidArguments, and the method does not run",
+    reached.nullId === false &&
+    rvNullAcc.methodResponses[0][1].type === "invalidArguments",
+    JSON.stringify(rvNullAcc.methodResponses[0]));
+  // A non-string accountId is the same missing-argument case.
   var rvNum = await jmap.dispatch({ id: "a" }, {
     using: [], methodCalls: [["Mailbox/get", { accountId: 999 }, "c0"]],
   });
-  check("non-string accountId → accountNotFound (denied)",
-    rvNum.methodResponses[0][1].type === "urn:ietf:params:jmap:error:accountNotFound");
+  check("non-string accountId → invalidArguments",
+    rvNum.methodResponses[0][1].type === "invalidArguments",
+    JSON.stringify(rvNum.methodResponses[0]));
 }
 
 async function testDispatchBackRefMissingObjectKey() {
@@ -2200,7 +2247,7 @@ async function testDispatchBackRefMissingObjectKey() {
     ],
   });
   check("back-ref to missing object key → invalidResultReference",
-    rv.methodResponses[1][1].type === "urn:ietf:params:jmap:error:invalidResultReference");
+    rv.methodResponses[1][1].type === "invalidResultReference");
 }
 
 // ==========================================================================
@@ -2620,7 +2667,7 @@ async function testDispatchMethodThrowsNonError() {
   });
   check("string-throw method → serverFail",
     rv.methodResponses[0][0] === "error" &&
-    rv.methodResponses[0][1].type === "urn:ietf:params:jmap:error:serverFail");
+    rv.methodResponses[0][1].type === "serverFail");
 }
 
 async function testDispatchAccountsForThrowsNonError() {

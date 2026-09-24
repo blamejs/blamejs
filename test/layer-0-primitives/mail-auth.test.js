@@ -2843,6 +2843,33 @@ function testDmarcRuaExpansionRatioBounded() {
   check("a stream expanding past the ratio cap is refused as a bomb",
         bombErr && /dmarc-rua-gunzip-bomb/.test(bombErr.code || ""),
         JSON.stringify({ code: bombErr && bombErr.code }));
+
+  // The 8 MiB cap is a statement about the report, not about the encoding it
+  // arrived in: a caller that hands over an already-decoded object reaches the
+  // same shaping code and has to meet the same bound.
+  var oversizeErr = null;
+  try {
+    b.mail.dmarc.parseAggregateReport({
+      feedback: {
+        report_metadata: { org_name: "x".repeat(9 * 1024 * 1024) },
+        policy_published: { domain: "example.com" },
+        record: [],
+      },
+    });
+  } catch (e) { oversizeErr = e; }
+  check("a pre-parsed report over the byte cap is refused",
+        oversizeErr && oversizeErr.code === "mail-auth/dmarc-rua-too-large",
+        JSON.stringify({ code: oversizeErr && oversizeErr.code }));
+
+  var okParsed = b.mail.dmarc.parseAggregateReport({
+    feedback: {
+      report_metadata: { org_name: "acme", report_id: "r1" },
+      policy_published: { domain: "example.com" },
+      record: [],
+    },
+  });
+  check("a pre-parsed report under the byte cap still shapes",
+        okParsed.reportMetadata.orgName === "acme");
 }
 
 // RFC 7489 §7.2.1.1 names ZIP alongside gzip. A ZIP holds entries rather than
@@ -3772,13 +3799,27 @@ function testAuthResultsEmitFormatting() {
   check("authResults.emit: empty results → '; none'",
         E({ authservId: "mx.a", results: [] }) === "Authentication-Results: mx.a; none");
   // ptype.property=value triples for the recognized shorthand keys.
+  // `smtp.mailfrom` is the envelope ADDRESS (RFC 8601 section 2.7.1);
+  // `header.from` is the From DOMAIN (IANA Email Authentication Methods
+  // registry; RFC 7489 section 3.1 aligns on the domain). This row used to
+  // pass an address for both, which is what the emitted header carried until
+  // a consumer's parseDomain refused it and its reports went uncounted.
   var props = E({ authservId: "mx.a", results: [
     { method: "spf",   result: "pass", smtpMailfrom: "u@s.example" },
-    { method: "dmarc", result: "pass", from: "u@s.example" },
+    { method: "dmarc", result: "pass", from: "s.example" },
   ] });
   check("authResults.emit: property keys mapped to RFC 8601 §2.3 ptype.property",
         /spf=pass smtp\.mailfrom=u@s\.example/.test(props) &&
-        /dmarc=pass header\.from=u@s\.example/.test(props));
+        /dmarc=pass header\.from=s\.example/.test(props));
+  var addressUnderDomain = null;
+  try {
+    E({ authservId: "mx.a",
+        results: [{ method: "dmarc", result: "pass", from: "u@s.example" }] });
+  } catch (e) { addressUnderDomain = e; }
+  check("authResults.emit: an address under header.from is refused",
+        addressUnderDomain !== null &&
+        addressUnderDomain.code === "mail-auth/ar-address-in-domain-property",
+        addressUnderDomain && addressUnderDomain.code);
   // A reason string with an embedded DQUOTE is backslash-escaped (§2.2).
   var reason = E({ authservId: "mx.a", results: [{ method: "dkim", result: "fail", reason: 'key "rotated"' }] });
   check("authResults.emit: reason DQUOTE escaped as \\\" (RFC 8601 §2.2)",

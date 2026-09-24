@@ -317,7 +317,11 @@ async function testPlaintextNoAuth() {
     check("STARTTLS unavailable w/o context", /NO "STARTTLS unavailable/.test(await _cmd(sock, "STARTTLS")));
     check("AUTHENTICATE not configured",      /NO "AUTHENTICATE not configured/.test(await _cmd(sock, 'AUTHENTICATE "EXTERNAL"')));
     check("HAVESPACE before auth refused",    /NO "AUTHENTICATE first"/.test(await _cmd(sock, 'HAVESPACE "s" 100')));
-    check("PUTSCRIPT before auth refused",    /NO "AUTHENTICATE first"/.test(await _cmd(sock, 'PUTSCRIPT "s" {5+}')));
+    // A synchronizing literal, because the refusal of a `{N+}` now consumes
+    // the N octets RFC 5804 §4 says are already in flight, and this row sends
+    // none: a client that announces LITERAL+ and then sends its next command
+    // instead is the misbehaving case, not the one under test here.
+    check("PUTSCRIPT before auth refused",    /NO "AUTHENTICATE first"/.test(await _cmd(sock, 'PUTSCRIPT "s" {5}')));
     check("unknown verb refused (guard)",     /NO "[^"]*unknown verb/.test(await _cmd(sock, "FLOOP")));
     check("empty command line refused",       /NO "[^"]*empty command line/.test(await _cmd(sock, "")));
     check("LOGOUT → OK + close",              /OK "Logout completed"/.test(await _cmd(sock, "LOGOUT")));
@@ -860,12 +864,15 @@ async function testAPipelinedLoginCarriesTheLiteralBehindIt() {
           JSON.stringify(reply.slice(0, 160)));
     check("managesieve: and nothing more reached the store",
           put.length === 1, JSON.stringify(put.length));
-    // The exemption was a prediction about a line the reader had not taken.
-    // Once the reader refuses that PUTSCRIPT the octets are ordinary queue, and
-    // the allowance is applied to them rather than waiting for a socket read
-    // that a single coalesced write never produces.
-    check("managesieve: the payload behind a refused opener is charged, not exempt",
-          /Too much pipelined data/.test(reply), JSON.stringify(reply.slice(0, 240)));
+    // The octets behind a refused `{N+}` opener are consumed as the literal
+    // they were announced to be, and discarded. Leaving them in the queue is
+    // what let them be parsed as commands, and the pipeline cap was the only
+    // thing bounding them; the discard is bounded by the profile's literal
+    // cap, the body-rate window and the literal deadline, and anything the
+    // client sends beyond the announced count is charged as ordinary queue.
+    check("managesieve: the payload behind a refused opener is consumed, not parsed",
+          !/PUTSCRIPT completed/.test(reply) && put.length === 1,
+          JSON.stringify(reply.slice(0, 240)));
   } finally { sock.destroy(); if (sock2) sock2.destroy(); await srv.close(); }
 }
 

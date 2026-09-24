@@ -15,6 +15,7 @@
 !.npmrc
 !.clusterfuzzlite/
 !.gitleaks.toml
+!.gitleaks.lib-default.toml
 !.pinact.yaml
 # Vendor-data integrity surface — pubkey ships in tarball so operators
 # verify .data.js signatures against the maintainer's pinned key.
@@ -75,6 +76,11 @@ id_ed25519*
 # The example app's repo-tracked content is its source; data/ is local.
 examples/*/data/
 examples/*/data-e2e/
+# The same state at the repo root, which the test suite writes when it runs
+# from here: `b.fileUpload`'s default staging directory is `data/uploads`, and
+# the release commit stages with `git add -A`, so an unignored one rides into
+# the tarball as test output nobody looked at.
+/data/
 # A BACKSTOP, no longer the answer. The wiki e2e's data dir landed under a
 # literal `C:/` directory inside examples/wiki/ because Git Bash rewrites a
 # POSIX-looking `-e VAR=/tmp/...` into a Windows path before Docker sees it,

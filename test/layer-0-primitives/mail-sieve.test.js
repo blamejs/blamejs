@@ -44,7 +44,10 @@ function testAddressDomain() {
 }
 
 function testEnvelope() {
-  var script = 'if envelope :is "from" "boss@example.com" { fileinto "Boss"; }\r\n';
+  // RFC 5228 section 2.10.5: both `envelope` and `fileinto` are extensions and
+  // a script that uses one declares it.
+  var script = 'require ["envelope", "fileinto"];\r\n' +
+    'if envelope :is "from" "boss@example.com" { fileinto "Boss"; }\r\n';
   var rv = b.mail.sieve.runScript(script, {
     envelope: { from: "boss@example.com", to: "me@example.com" },
     headers:  [],
@@ -133,20 +136,50 @@ function testCreateHandle() {
 // ---- tests / adversarial input ------------------------------------------
 
 function testUnknownTestRefused() {
-  // A test identifier the parser accepts (any id is a test) but the
-  // interpreter never wired — must refuse, not silently pass/fail-open.
+  // A test identifier the grammar accepts but the interpreter never wired —
+  // must refuse, not silently pass/fail-open. The parser resolves the name
+  // against the interpreter's published set, so the refusal now arrives
+  // there, before a script naming it can be stored.
   var threw = null;
   try { b.mail.sieve.runScript('if bogustest "x" { keep; }', {}); }
   catch (e) { threw = e; }
   check("unknown test refused with typed error",
-    threw && threw.code === "mail-sieve/unknown-test");
+    threw && threw.code === "safe-sieve/unimplemented-test", threw && threw.code);
+
+  // The interpreter keeps its own refusal for an AST that did not come from
+  // the parser, which is the only way an unwired name still reaches it.
+  var handBuilt = null;
+  try {
+    b.mail.sieve.run({
+      kind:         "script",
+      requiredCaps: [],
+      commands:     [{
+        kind:     "if",
+        test:     { kind: "test", name: "bogustest", args: { tags: [], positional: [] } },
+        thenBody: [], elif: [], elseBody: [],
+      }],
+    }, {});
+  } catch (e) { handBuilt = e; }
+  check("and a hand-built AST is still refused at run time",
+    handBuilt && handBuilt.code === "mail-sieve/unknown-test", handBuilt && handBuilt.code);
 }
 
 function testUnknownActionRefused() {
   var threw = null;
   try { b.mail.sieve.runScript('frobnicate;', {}); } catch (e) { threw = e; }
   check("unknown action refused with typed error",
-    threw && threw.code === "mail-sieve/unknown-action");
+    threw && threw.code === "safe-sieve/unimplemented-action", threw && threw.code);
+
+  var handBuilt = null;
+  try {
+    b.mail.sieve.run({
+      kind:         "script",
+      requiredCaps: [],
+      commands:     [{ kind: "action", name: "frobnicate", args: { tags: [], positional: [] } }],
+    }, {});
+  } catch (e) { handBuilt = e; }
+  check("and a hand-built AST is still refused at run time",
+    handBuilt && handBuilt.code === "mail-sieve/unknown-action", handBuilt && handBuilt.code);
 }
 
 function testBadCommandKind() {
@@ -245,17 +278,20 @@ function testAddressPartsAndExtraction() {
 
 function testEnvelopeArrayAndBogusField() {
   // Array-valued envelope recipient list — each entry compared.
-  var arr = b.mail.sieve.runScript('if envelope :is "to" "b@x.com" { keep; }',
+  var arr = b.mail.sieve.runScript(
+    'require ["envelope"];\r\nif envelope :is "to" "b@x.com" { keep; }',
     { envelope: { to: ["a@x.com", "b@x.com"] } });
   check("envelope matches any entry of an array value",
     arr.actions[0].kind === "keep" && !arr.actions[0].implicit);
   // Envelope field other than from/to is skipped per RFC 5228 §5.4.
-  var bogus = b.mail.sieve.runScript('if envelope :is "subject" "x" { discard; }',
+  var bogus = b.mail.sieve.runScript(
+    'require ["envelope"];\r\nif envelope :is "subject" "x" { discard; }',
     { envelope: { from: "a@x.com" } });
   check("envelope ignores fields other than from/to",
     bogus.actions[0].implicit === true);
   // No envelope object at all → no match.
-  var none = b.mail.sieve.runScript('if envelope :is "from" "a@x.com" { discard; }', {});
+  var none = b.mail.sieve.runScript(
+    'require ["envelope"];\r\nif envelope :is "from" "a@x.com" { discard; }', {});
   check("envelope with no env.envelope → implicit keep",
     none.actions[0].implicit === true);
 }
@@ -343,7 +379,8 @@ function testExplicitKeepAndStopSkips() {
   check("explicit keep is not marked implicit",
     k.actions.length === 1 && k.actions[0].kind === "keep" && !k.actions[0].implicit);
   // stop halts before a following action ever runs.
-  var s = b.mail.sieve.runScript('stop;\r\nfileinto "X";\r\n', {});
+  var s = b.mail.sieve.runScript(
+    'require ["fileinto"];\r\nstop;\r\nfileinto "X";\r\n', {});
   check("stop skips subsequent commands",
     s.stopped === true &&
     !s.actions.some(function (a) { return a.kind === "fileinto"; }));
@@ -393,6 +430,214 @@ function testParseErrorsPropagate() {
   catch (e) { unimpl = e; }
   check("runScript propagates unimplemented-capability refusal",
     unimpl && unimpl.code === "safe-sieve/unimplemented-capability");
+}
+
+function testAnEmptyNameIsRefusedInBothSpellings() {
+  // `fileinto ["x"]` and `fileinto "x"` name the same folder, and the reader
+  // dropped an empty list entry to null while letting an empty STRING through:
+  // `fileinto ""` filed the message into a folder with no name and cancelled
+  // the implicit keep, while `fileinto [""]` was refused. One value, two
+  // spellings, two answers.
+  [['fileinto ""', "mail-sieve/bad-fileinto"],
+   ['fileinto [""]', "mail-sieve/bad-fileinto"],
+   ['redirect ""', "mail-sieve/bad-redirect"],
+   ['redirect [""]', "mail-sieve/bad-redirect"]].forEach(function (row) {
+    var threw = null;
+    try {
+      b.mail.sieve.runScript('require ["fileinto"];\r\n' + row[0] + ";\r\n", {});
+    } catch (e) { threw = e; }
+    check("an empty name is refused: " + row[0],
+          threw !== null && threw.code === row[1],
+          threw ? String(threw.code) : "accepted");
+  });
+
+  // A named folder still files.
+  var ok = b.mail.sieve.runScript(
+    'require ["fileinto"];\r\nfileinto "Archive";\r\n', {});
+  check("a named folder still files",
+        ok.actions.some(function (a) { return a.kind === "fileinto" && a.folder === "Archive"; }),
+        JSON.stringify(ok.actions));
+}
+
+function testARedirectAddressCannotEndTheSmtpCommandThatCarriesIt() {
+  // A redirect address is written into an SMTP `RCPT TO:` line, so a CR or LF
+  // in it ends that command and the rest is read as another one. The check
+  // belongs here, where every redirect passes whatever spelling produced the
+  // address: screening the encoded-character decoder instead refused
+  // conformant scripts for bytes their literal text was allowed to carry, and
+  // the same address written with a literal CRLF went through untouched.
+  function actionsFor(script) {
+    var ast = b.safeSieve.parse(script, { profile: "permissive" });
+    return b.mail.sieve.run(ast, {});
+  }
+  function refusalFor(script) {
+    try { actionsFor(script); } catch (e) { return e; }
+    return null;
+  }
+
+  var literal = refusalFor(
+    'require ["encoded-character"];\nredirect "a@b.c\r\nRCPT TO:<x@y.z>";');
+  check("a redirect address carrying a literal CRLF is refused",
+        literal !== null && literal.code === "mail-sieve/bad-redirect",
+        literal ? String(literal.code) : "accepted");
+
+  var encoded = refusalFor(
+    'require ["encoded-character"];\nredirect "a@b.c${hex:0d 0a}RCPT TO:<x@y.z>";');
+  check("and so is the same address written as an encoded run",
+        encoded !== null && encoded.code === "mail-sieve/bad-redirect",
+        encoded ? String(encoded.code) : "accepted");
+
+  // The check answers whether the address can break the command, and nothing
+  // else, so addresses an email-deliverability policy would argue about still
+  // redirect.
+  ['a@b.c', "x@localhost", '\\"odd name\\"@example.com'].forEach(function (addr) {
+    var ran = null;
+    try { ran = actionsFor('redirect "' + addr + '";'); } catch (e) { ran = e; }
+    check("an ordinary address still redirects (" + addr + ")",
+          ran !== null && ran.actions &&
+          ran.actions.some(function (a) { return a.kind === "redirect"; }),
+          JSON.stringify(ran && (ran.actions || ran.code)));
+  });
+}
+
+function testAnEncodedRunIsHeldToWhatALiteralMayCarry() {
+  // The encoded-character extension may not smuggle in a character the string
+  // grammar forbids, and the grammar forbids exactly one: NUL. Screening the
+  // decoded text for every control character instead refused scripts RFC 5228
+  // requires an implementation to accept, and blamed a run for a byte the
+  // literal text beside it carried.
+  function parses(script) {
+    try { b.safeSieve.parse(script, { profile: "permissive" }); return null; }
+    catch (e) { return e; }
+  }
+
+  var c1 = parses('require ["encoded-character"];\n' +
+    'if header :contains "X" "N${unicode:85}O" { stop; }');
+  check("a run decoding to U+0085 parses, as RFC 5228 section 2.4.2.4 requires",
+        c1 === null, c1 ? String(c1.code) + " " + String(c1.message).slice(0, 60) : "ok");
+
+  var beside = parses('require ["encoded-character"];\n' +
+    'if header :contains "X" "line1\r\nline2 ${hex:41}" { stop; }');
+  check("a literal CRLF beside a run is not blamed on the run",
+        beside === null, beside ? String(beside.code) : "ok");
+
+  var nulHex = parses('require ["encoded-character"];\n' +
+    'if header :contains "X" "a${hex:00}b" { stop; }');
+  check("a run decoding to NUL is refused",
+        nulHex !== null && nulHex.code === "safe-sieve/bad-encoded-character",
+        nulHex ? String(nulHex.code) : "accepted");
+
+  var nulUni = parses('require ["encoded-character"];\n' +
+    'if header :contains "X" "a${unicode:0}b" { stop; }');
+  check("and so is the same NUL written as a unicode run",
+        nulUni !== null && nulUni.code === "safe-sieve/bad-encoded-character",
+        nulUni ? String(nulUni.code) : "accepted");
+}
+
+function testWhateverTheParserCertifiesTheInterpreterRuns() {
+  // The upload half and the delivery half read the same script, so a script
+  // the parser calls valid has to run. The interpreter's cap and the
+  // permissive profile's are both 128, and the interpreter counted the
+  // top-level command list as a nesting level while the parser does not, so
+  // the deepest script the parser accepted was refused at delivery: the
+  // mailbox owner uploads a script the server certifies and then loses mail
+  // to `mail-sieve/nesting-too-deep`. The cap is probed AT the boundary,
+  // since a test that only tries 8 and 20000 cannot see a one-level gap.
+  function nest(levels) {
+    var open = "";
+    var close = "";
+    for (var i = 0; i < levels; i += 1) { open += "if true { "; close += " }"; }
+    return open + "stop;" + close;
+  }
+
+  var deepest = 0;
+  for (var n = 1; n <= 130; n += 1) {
+    var parsed = null;
+    try { parsed = b.safeSieve.parse(nest(n), { profile: "permissive" }); }
+    catch (_e) { break; }
+    if (parsed === null) break;
+    deepest = n;
+    var ran = true;
+    var code = null;
+    try { b.mail.sieve.run(parsed, {}); }
+    catch (e) { ran = false; code = e.code || e.message; }
+    if (!ran) {
+      check("the interpreter runs every depth the parser certifies (level " + n + ")",
+            false, String(code));
+      return;
+    }
+  }
+  check("the permissive parser's deepest accepted script also runs",
+        deepest === 128, "deepest=" + deepest);
+
+  // And one level past it is refused by the parser, so the cap still bites.
+  var tooDeep = null;
+  try { b.safeSieve.parse(nest(deepest + 1), { profile: "permissive" }); }
+  catch (e) { tooDeep = e; }
+  check("one level deeper is refused at parse",
+        tooDeep !== null, tooDeep ? String(tooDeep.code) : "accepted");
+}
+
+function testRunBoundsTheAstItIsHandedRatherThanTheOneItParsed() {
+  // run() takes an ast and the only shape check is kind === "script", so the
+  // parser's nesting cap is not the interpreter's: the caller chooses the AST.
+  // _evalTest recurses through `not` / `anyof` / `allof` exactly as the parser
+  // does, and a hand-built tree ran until the stack gave out, which reaches
+  // the caller as a bare RangeError carrying no code.
+  function nest(levels) {
+    var t = { kind: "test", name: "true" };
+    for (var i = 0; i < levels; i += 1) t = { kind: "test", name: "not", subs: [t] };
+    return {
+      kind: "script",
+      requiredCaps: [],
+      commands: [{
+        kind: "if", test: t, elif: [], elseBody: null,
+        thenBody: [{ kind: "action", name: "keep", args: { tags: [], positional: [] } }],
+      }],
+    };
+  }
+
+  var threw = null;
+  var out = null;
+  try { out = b.mail.sieve.run(nest(20000), {}); } catch (e) { threw = e; }
+  check("a hand-built AST nested past the cap is refused, not run off the stack",
+        threw !== null && !(threw instanceof RangeError) &&
+          typeof threw.code === "string" && threw.code.indexOf("mail-sieve/") === 0,
+        threw ? (threw.constructor.name + " code=" + threw.code)
+              : "ran: " + JSON.stringify(out && out.actions));
+
+  // The test grammar is one of two ways an AST recurses. Commands nest too,
+  // through thenBody / elif / elseBody, and bounding only the tests left the
+  // other half reaching the caller as the bare RangeError this test's own
+  // reasoning calls out.
+  function nestBlocks(levels) {
+    var inner = { kind: "action", name: "keep", args: { tags: [], positional: [] } };
+    for (var i = 0; i < levels; i += 1) {
+      inner = {
+        kind: "if", test: { kind: "test", name: "true" }, elif: [], elseBody: null,
+        thenBody: [inner],
+      };
+    }
+    return { kind: "script", requiredCaps: [], commands: [inner] };
+  }
+  var blockThrew = null;
+  try { b.mail.sieve.run(nestBlocks(20000), {}); } catch (e) { blockThrew = e; }
+  check("a hand-built AST whose BLOCKS nest past the cap is refused too",
+        blockThrew !== null && !(blockThrew instanceof RangeError) &&
+          typeof blockThrew.code === "string" &&
+          blockThrew.code.indexOf("mail-sieve/") === 0,
+        blockThrew ? (blockThrew.constructor.name + " code=" + blockThrew.code) : "ran");
+
+  var okBlocks = b.mail.sieve.run(nestBlocks(8), {});
+  check("blocks nested inside the cap still evaluate",
+        okBlocks && Array.isArray(okBlocks.actions),
+        JSON.stringify(okBlocks && okBlocks.actions));
+
+  // A tree inside the cap still evaluates, so the refusal is about the depth.
+  var okOut = b.mail.sieve.run(nest(8), {});
+  check("a hand-built AST inside the cap still evaluates",
+        okOut && Array.isArray(okOut.actions),
+        JSON.stringify(okOut && okOut.actions));
 }
 
 function testCreateOptValidation() {
@@ -579,6 +824,11 @@ function run() {
   testGasExhaustionInCommands();
   testMaxGasOptValidation();
   testParseErrorsPropagate();
+  testARedirectAddressCannotEndTheSmtpCommandThatCarriesIt();
+  testAnEncodedRunIsHeldToWhatALiteralMayCarry();
+  testWhateverTheParserCertifiesTheInterpreterRuns();
+  testRunBoundsTheAstItIsHandedRatherThanTheOneItParsed();
+  testAnEmptyNameIsRefusedInBothSpellings();
   testCreateOptValidation();
   testCreateAuditEmissions();
   testCreateAuditThrowDropSilent();

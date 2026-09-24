@@ -5,8 +5,8 @@
 // Please pull this list from, and only from https://publicsuffix.org/list/public_suffix_list.dat,
 // rather than any other VCS sites. Pulling from any other URL is not guaranteed to be supported.
 
-// VERSION: 2026-09-18_18-42-54_UTC
-// COMMIT: ff02362b20e273fbcc66405b9b3c21e5dd3e4367
+// VERSION: 2026-09-21_18-50-07_UTC
+// COMMIT: 728555a30ef4d40e42a82d5678e5fbad2ad17b26
 
 // Instructions on pulling and using this list can be found at https://publicsuffix.org/list/.
 
@@ -12844,6 +12844,13 @@ dyndns.dappnode.io
 builtwithdark.com
 darklang.io
 
+// Databricks, Inc. : https://www.databricks.com/
+// Submitted by Databricks Enterprise Security <entsec@databricks.com>
+aws.databricksapps.com
+*.azure.databricksapps.com
+gcp.databricksapps.com
+aws-gov.databricksapps.us
+
 // DataDetect, LLC. : https://datadetect.com
 // Submitted by Andrew Banchich <abanchich@sceven.com>
 demo.datadetect.com
@@ -15996,6 +16003,10 @@ realtime.supabase.co
 storage.supabase.co
 supabase.in
 supabase.net
+
+// Surge : https://surge.sh
+// Submitted by Brock Whitten <support@surge.sh>
+surge.sh
 
 // Syncloud : https://syncloud.org
 // Submitted by Boris Rybalkin <syncloud@syncloud.it>

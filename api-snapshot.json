@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.20.31",
-  "createdAt": "2026-09-19T17:33:35.263Z",
+  "frameworkVersion": "0.20.32",
+  "createdAt": "2026-09-24T17:53:33.394Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -7285,7 +7285,15 @@
           "type": "function",
           "arity": 1
         },
+        "isAtext": {
+          "type": "function",
+          "arity": 1
+        },
         "isAuditPolicy": {
+          "type": "function",
+          "arity": 1
+        },
+        "isDotAtomText": {
           "type": "function",
           "arity": 1
         },
@@ -7310,6 +7318,10 @@
           "arity": 1
         },
         "isUrlSchemeStrippable": {
+          "type": "function",
+          "arity": 1
+        },
+        "isUtf8DotAtomText": {
           "type": "function",
           "arity": 1
         },
@@ -15956,6 +15968,10 @@
           "type": "function",
           "arity": 1
         },
+        "isTransaction": {
+          "type": "primitive",
+          "valueType": "boolean"
+        },
         "prepare": {
           "type": "function",
           "arity": 1
@@ -18591,6 +18607,10 @@
           "arity": 3
         },
         "extractBytesAsText": {
+          "type": "function",
+          "arity": 1
+        },
+        "freezePolicy": {
           "type": "function",
           "arity": 1
         },
@@ -27794,11 +27814,23 @@
             }
           }
         },
+        "announcedLiteral": {
+          "type": "function",
+          "arity": 1
+        },
         "compliancePosture": {
           "type": "function",
           "arity": 1
         },
         "detectLiteralSmuggling": {
+          "type": "function",
+          "arity": 1
+        },
+        "limitsFor": {
+          "type": "function",
+          "arity": 1
+        },
+        "tagOf": {
           "type": "function",
           "arity": 1
         },
@@ -27938,6 +27970,10 @@
           }
         },
         "compliancePosture": {
+          "type": "function",
+          "arity": 1
+        },
+        "limitsFor": {
           "type": "function",
           "arity": 1
         },
@@ -45601,6 +45637,10 @@
                 "create": {
                   "type": "function",
                   "arity": 1
+                },
+                "legacyMUtf7Allowed": {
+                  "type": "function",
+                  "arity": 2
                 }
               }
             },
@@ -45614,6 +45654,10 @@
                 "create": {
                   "type": "function",
                   "arity": 1
+                },
+                "emailBodyProperties": {
+                  "type": "function",
+                  "arity": 2
                 },
                 "emailSubmissionSetHandler": {
                   "type": "function",
@@ -45644,6 +45688,10 @@
                 "create": {
                   "type": "function",
                   "arity": 1
+                },
+                "stripForgedAuthResults": {
+                  "type": "function",
+                  "arity": 2
                 }
               }
             },
@@ -46149,6 +46197,10 @@
               "type": "instance",
               "ctorName": "Array"
             },
+            "JMAP_METHODS_WITHOUT_ACCOUNT": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
             "MANAGESIEVE_VERBS": {
               "type": "instance",
               "ctorName": "Array"
@@ -46158,6 +46210,14 @@
               "arity": 4
             },
             "create": {
+              "type": "function",
+              "arity": 1
+            },
+            "jmapMethodIsAccountFree": {
+              "type": "function",
+              "arity": 1
+            },
+            "jmapMethodTakesAccount": {
               "type": "function",
               "arity": 1
             }
@@ -46181,6 +46241,10 @@
             "create": {
               "type": "function",
               "arity": 1
+            },
+            "implementedNames": {
+              "type": "function",
+              "arity": 0
             },
             "run": {
               "type": "function",
@@ -52351,6 +52415,18 @@
     "requestHelpers": {
       "type": "object",
       "members": {
+        "ACTOR_DISPLAY_FIELDS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "ACTOR_IDENTITY_FIELDS": {
+          "type": "instance",
+          "ctorName": "Array"
+        },
+        "ANONYMOUS_ACTOR_KEY": {
+          "type": "primitive",
+          "valueType": "string"
+        },
         "HTTP_STATUS": {
           "type": "object",
           "members": {
@@ -52440,6 +52516,14 @@
             }
           }
         },
+        "actorDisplayName": {
+          "type": "function",
+          "arity": 2
+        },
+        "actorIdentityKey": {
+          "type": "function",
+          "arity": 2
+        },
         "appendVary": {
           "type": "function",
           "arity": 2
@@ -52479,6 +52563,10 @@
         "ipPrefix": {
           "type": "function",
           "arity": 2
+        },
+        "legacyActorKey": {
+          "type": "function",
+          "arity": 1
         },
         "makeResourceAuditEmitter": {
           "type": "function",
@@ -53006,9 +53094,17 @@
           "type": "function",
           "arity": 2
         },
+        "previewText": {
+          "type": "function",
+          "arity": 2
+        },
         "quoteString": {
           "type": "function",
           "arity": 1
+        },
+        "readQuotedString": {
+          "type": "function",
+          "arity": 2
         },
         "secureZero": {
           "type": "function",
@@ -53029,6 +53125,10 @@
         "toBuffer": {
           "type": "function",
           "arity": 2
+        },
+        "unquotedIndexOf": {
+          "type": "function",
+          "arity": 3
         }
       }
     },
@@ -53979,6 +54079,10 @@
           "type": "function",
           "arity": 1
         },
+        "measureBytes": {
+          "type": "function",
+          "arity": 2
+        },
         "parse": {
           "type": "function",
           "arity": 2
@@ -54110,13 +54214,25 @@
           "type": "function",
           "arity": 2
         },
+        "filenameFromHeaders": {
+          "type": "function",
+          "arity": 1
+        },
         "findFirst": {
           "type": "function",
           "arity": 2
         },
+        "isHeaderFieldName": {
+          "type": "function",
+          "arity": 1
+        },
         "parse": {
           "type": "function",
           "arity": 2
+        },
+        "selectBodyParts": {
+          "type": "function",
+          "arity": 1
         },
         "walk": {
           "type": "function",
@@ -55953,6 +56069,10 @@
           "type": "primitive",
           "valueType": "number"
         },
+        "attachmentDisposition": {
+          "type": "function",
+          "arity": 1
+        },
         "create": {
           "type": "function",
           "arity": 1
@@ -56067,6 +56187,10 @@
         "containsControlBytes": {
           "type": "function",
           "arity": 2
+        },
+        "endsInsideQuotedString": {
+          "type": "function",
+          "arity": 1
         },
         "forEachKeyValue": {
           "type": "function",

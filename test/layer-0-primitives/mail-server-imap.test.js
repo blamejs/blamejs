@@ -160,6 +160,44 @@ async function _sendCommand(socket, tag, line) {
   });
 }
 
+// A command whose argument arrives as an RFC 9051 literal: the opener is sent
+// alone, the server answers `+`, and only then do the octets go out. Writing
+// the whole thing in one frame would be a different wire shape than the one a
+// client produces, and a different one than the listener's literal reader sees.
+async function _sendWithLiteral(socket, tag, opener, payload) {
+  // The server either invites the octets with `+` or refuses the opener with a
+  // tagged line. Waiting only for `+` turns a refusal into a hang, which says
+  // nothing about which of the two happened.
+  var refusal = await new Promise(function (resolve, reject) {
+    var buf = "";
+    function onData(chunk) {
+      buf += chunk.toString("utf8");
+      if (/^\+/m.test(buf)) { socket.removeListener("data", onData); resolve(null); return; }
+      if (new RegExp("^" + tag + " ", "m").test(buf)) {
+        socket.removeListener("data", onData);
+        resolve(buf);
+      }
+    }
+    socket.on("data", onData);
+    socket.once("error", reject);
+    socket.write(tag + " " + opener + "{" + Buffer.byteLength(payload, "utf8") + "}\r\n");
+  });
+  if (refusal !== null) return refusal;
+  return new Promise(function (resolve, reject) {
+    var buf = "";
+    function onData(chunk) {
+      buf += chunk.toString("utf8");
+      if (new RegExp("^" + tag + " ", "m").test(buf)) {
+        socket.removeListener("data", onData);
+        resolve(buf);
+      }
+    }
+    socket.on("data", onData);
+    socket.once("error", reject);
+    socket.write(payload + "\r\n");
+  });
+}
+
 // Operator-shaped mailStore stub. Records the opts passed to fetchRange
 // / storeFlags so the tests can assert the CONDSTORE protocol pieces
 // landed in the right place.
@@ -168,10 +206,12 @@ function _makeStubMailStore() {
   return {
     calls: calls,
     appendMessage: function () { return Promise.resolve(); },
+    selectShouldThrow: null,
     selectFolder: function (_actor, mailbox) {
       calls.select.push({ mailbox: mailbox });
+      if (this.selectShouldThrow) return Promise.reject(new Error(this.selectShouldThrow));
       return Promise.resolve({ uidvalidity: 1, modseq: 42, exists: 5,                                  // allow:raw-byte-literal — test-only stub modseq
-                               recent: 0, unseen: 0, flags: ["\\Seen"] });
+                               uidnext: 6, recent: 0, unseen: 0, flags: ["\\Seen"] });
     },
     fetchRange: function (_actor, mailbox, seqSet, partsSpec, opts) {
       calls.fetchRange.push({ mailbox: mailbox, seqSet: seqSet, partsSpec: partsSpec, opts: opts });
@@ -215,6 +255,244 @@ async function _connectAndLogin(srv) {
 // registry produces a server whose three answers disagree, so one of them is
 // false whichever way it is set: worse than the gap. The hook applies where
 // the list is COMPUTED, so all three stay identical by construction.
+async function testTheStoreCapTravelsWithTheSetToTheStore() {
+  // `STORE 1:* +FLAGS.SILENT` mutates every message in the mailbox and
+  // answers with almost nothing, so neither the response-byte budget nor the
+  // handler timeout bounds it, and a timeout would not undo what the backend
+  // already wrote. Nothing short of the mailbox can say how many messages it
+  // names, so `maxSequenceSetItems` travels to the store as `maxMessages`
+  // rather than being applied here against a number taken at SELECT that
+  // another connection can make wrong in either direction.
+  var ctx = await _makeTestTlsContext();
+  var store = _makeStubMailStore();
+  store.selectFolder = function (_actor, mailbox) {
+    store.calls.select.push({ mailbox: mailbox });
+    return Promise.resolve({ uidvalidity: 1, modseq: 42, exists: 200000,
+                             uidnext: 200001, recent: 0, unseen: 0, flags: ["\\Seen"] });
+  };
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: store, profile: "permissive",
+    auth: { mechanisms: ["PLAIN"], verify: function () {
+      return Promise.resolve({ ok: true, actor: { id: "u1", mailboxes: ["INBOX"] } });
+    } },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var socket = nodeNet.connect(info.port, "127.0.0.1");
+  await new Promise(function (r) { socket.once("connect", r); });
+  try {
+    await _readGreeting(socket);
+    await _sendCommand(socket, "a1",
+      "AUTHENTICATE PLAIN " + Buffer.from("\0u1\0pw", "utf8").toString("base64"));
+    await _sendCommand(socket, "a2", "SELECT INBOX");
+
+    // Every one of these names more messages than the cap allows, or may do,
+    // and none of them can be counted from the line: the store is the only
+    // party that knows, so each reaches it carrying the cap.
+    var cap = b.guardImapCommand.PROFILES.permissive.maxSequenceSetItems;
+    var uncountable = [
+      ["a3", "STORE 1:* +FLAGS.SILENT (\\Seen)"],
+      ["a5", "STORE *:* +FLAGS (\\Seen)"],
+      ["a6", "STORE 199990:* +FLAGS (\\Seen)"],
+      ["a7", "STORE 1,2,3:5,*:* +FLAGS (\\Seen)"],
+      ["u1", "UID STORE 1:* +FLAGS (\\Seen)"],
+      ["u2", "UID STORE 4000000000:* +FLAGS (\\Seen)"],
+      ["u3", "UID STORE 5,7,9 +FLAGS (\\Seen)"],
+      ["u6", "UID STORE *:* +FLAGS (\\Seen)"],
+    ];
+    for (var q = 0; q < uncountable.length; q += 1) {
+      var answer = await _sendCommand(socket, uncountable[q][0], uncountable[q][1]);
+      var seen = store.calls.storeFlags[store.calls.storeFlags.length - 1];
+      check("the store is asked, and told the cap: " + uncountable[q][1],
+            new RegExp("^" + uncountable[q][0] + " OK", "m").test(answer) &&
+            seen.opts.maxMessages === cap,
+            answer.slice(0, 120) + " :: " + JSON.stringify(seen));
+    }
+
+    // A message-number range IS countable from the line, and the guard
+    // refuses one past the cap before the listener is reached.
+    var seqHuge = await _sendCommand(socket, "u5", "STORE 1:4000000000 +FLAGS (\\Seen)");
+    check("a message-number range spanning more than the cap is refused",
+          /^u5 BAD/m.test(seqHuge), seqHuge.slice(0, 200));
+
+    // The shape that reads worst under a span-based rule: a small mailbox
+    // whose UIDs start high. Counting the span from 50000 would refuse a
+    // command naming ten messages; UIDs are sparse, so it is served.
+    var sparse = _makeStubMailStore();
+    sparse.selectFolder = function (_actor, mailbox) {
+      sparse.calls.select.push({ mailbox: mailbox });
+      return Promise.resolve({ uidvalidity: 1, modseq: 42, exists: 10,
+                               uidnext: 50010, recent: 0, unseen: 0, flags: ["\\Seen"] });
+    };
+    var srv2 = b.mail.server.imap.create({
+      tlsContext: ctx, mailStore: sparse, profile: "strict",
+      auth: { mechanisms: ["PLAIN"], verify: function () {
+        return Promise.resolve({ ok: true, actor: { id: "u1", mailboxes: ["INBOX"] } });
+      } },
+    });
+    var info2 = await srv2.listen({ port: 0, address: "127.0.0.1" });
+    var sock2 = nodeNet.connect(info2.port, "127.0.0.1");
+    await new Promise(function (r) { sock2.once("connect", r); });
+    try {
+      await _readGreeting(sock2);
+      await _sendCommand(sock2, "s1", "STARTTLS");
+      var tlsSock = nodeTls.connect({ socket: sock2, ca: ctx.testCaPem,
+                                      servername: "localhost" });
+      await new Promise(function (r) { tlsSock.once("secureConnect", r); });
+      await _sendCommand(tlsSock, "s2",
+        "AUTHENTICATE PLAIN " + Buffer.from("\0u1\0pw", "utf8").toString("base64"));
+      await _sendCommand(tlsSock, "s3", "SELECT INBOX");
+      var tenMessages = await _sendCommand(tlsSock, "s4", "UID STORE 50000:* +FLAGS (\\Seen)");
+      check("a UID range naming ten messages is served at the strict cap",
+            /^s4 OK/m.test(tenMessages), tenMessages.slice(0, 200));
+      tlsSock.destroy();
+    } finally { await srv2.close({ timeoutMs: 1000 }); }                                                // allow:raw-time-literal — test-only short drain
+
+    // Nothing here is decided from a number the listener remembers, so a
+    // mailbox emptied by another connection changes no answer: the same
+    // command is served before and after, and the store is told the cap both
+    // times.
+    store.expungeFolder = function () {
+      var ex = [];
+      for (var i = 1; i <= 199000; i += 1) ex.push(i);
+      return Promise.resolve({ expunged: ex, modseq: 43 });                                             // allow:raw-byte-literal — test-only stub modseq
+    };
+    var purged = await _sendCommand(socket, "a8", "EXPUNGE");
+    check("the expunge is accepted", /^a8 OK/m.test(purged), purged.slice(-120));
+    var afterPurge = await _sendCommand(socket, "a9", "STORE 1:* +FLAGS (\\Seen)");
+    var afterCall = store.calls.storeFlags[store.calls.storeFlags.length - 1];
+    check("a wildcard STORE is served the same way after the mailbox shrinks",
+          /^a9 OK/m.test(afterPurge) && afterCall.seqSet === "1:*" &&
+          afterCall.opts.maxMessages === cap,
+          afterPurge.slice(0, 120) + " :: " + JSON.stringify(afterCall));
+    socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+async function testASequenceSetReachesTheStoreAsTheClientWroteIt() {
+  // Which messages a set names is the mailbox's answer, and the listener does
+  // not hold the mailbox. It knows what it last told this client, which is
+  // not the same thing: another connection can append without this one being
+  // told, so a number the listener substituted for `*` would address the
+  // backend's numbering by a count taken from its own. Every set is therefore
+  // forwarded byte for byte, and what the listener checks first is a count,
+  // not a rewrite.
+  var ctx = await _makeTestTlsContext();
+  var store = _makeStubMailStore();
+  var reported = { exists: 3, uidnext: 4 };
+  store.selectFolder = function (_actor, mailbox) {
+    store.calls.select.push({ mailbox: mailbox });
+    return Promise.resolve({ uidvalidity: 1, modseq: 42, exists: reported.exists,
+                             uidnext: reported.uidnext, recent: 0, unseen: 0,
+                             flags: ["\\Seen"] });
+  };
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: store, profile: "permissive",
+    auth: { mechanisms: ["PLAIN"], verify: function () {
+      return Promise.resolve({ ok: true, actor: { id: "u1", mailboxes: ["INBOX"] } });
+    } },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var socket = nodeNet.connect(info.port, "127.0.0.1");
+  await new Promise(function (r) { socket.once("connect", r); });
+  try {
+    await _readGreeting(socket);
+    await _sendCommand(socket, "a1",
+      "AUTHENTICATE PLAIN " + Buffer.from("\0u1\0pw", "utf8").toString("base64"));
+    await _sendCommand(socket, "a2", "SELECT INBOX");
+
+    // Everything the mailbox gains from here belongs to other connections.
+    reported.exists = 250000;
+    reported.uidnext = 250001;
+
+    // Every shape a rewrite would have changed: a range against `*`, one
+    // whose ends arrive in the other order, one lying past what this session
+    // was told about, a lone number and a lone `*`, in both spaces. Each
+    // reaches the store exactly as the client sent it.
+    var shapes = [
+      ["a3", "STORE 1:* +FLAGS (\\Seen)",          "1:*"],
+      ["a4", "UID STORE 1:* +FLAGS (\\Seen)",      "1:*"],
+      ["a5", "STORE 200000:* +FLAGS (\\Seen)",     "200000:*"],
+      ["a6", "UID STORE 200000:* +FLAGS (\\Seen)", "200000:*"],
+      ["a7", "STORE 2:3 +FLAGS (\\Seen)",          "2:3"],
+      ["a8", "STORE 4 +FLAGS (\\Seen)",            "4"],
+      ["a9", "STORE 500:600 +FLAGS (\\Seen)",      "500:600"],
+      ["b1", "UID STORE *:* +FLAGS (\\Seen)",      "*:*"],
+    ];
+    for (var s = 0; s < shapes.length; s += 1) {
+      var reply = await _sendCommand(socket, shapes[s][0], shapes[s][1]);
+      var call = store.calls.storeFlags[store.calls.storeFlags.length - 1];
+      check("the store is asked for what the client wrote: " + shapes[s][1],
+            new RegExp("^" + shapes[s][0] + " OK", "m").test(reply) &&
+            call.seqSet === shapes[s][2],
+            reply.slice(0, 120) + " :: " + JSON.stringify(call));
+    }
+    var fetched = await _sendCommand(socket, "b2", "FETCH *:* (FLAGS)");
+    var lastFetch = store.calls.fetchRange[store.calls.fetchRange.length - 1];
+    check("and FETCH is forwarded the same way",
+          /^b2 OK/m.test(fetched) && lastFetch.seqSet === "*:*",
+          fetched.slice(0, 120) + " :: " + JSON.stringify(lastFetch));
+
+    // Because the set is the store's to resolve, the cap travels with it.
+    // `1:*` is whatever the mailbox holds when the store reads it, and a UID
+    // range's width is not a message count, so the only party that can hold
+    // such a set to `maxSequenceSetItems` is the one resolving it.
+    var withCap = store.calls.storeFlags[store.calls.storeFlags.length - 1];
+    check("the profile's cap is carried to the store with the set",
+          withCap.opts.maxMessages ===
+            b.guardImapCommand.PROFILES.permissive.maxSequenceSetItems,
+          JSON.stringify(withCap.opts));
+
+    socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+async function testAUidWildcardIsTheStoresToResolve() {
+  // The shape that rules out ever resolving a UID `*` here. UIDNEXT is a
+  // watermark, not a census: a mailbox holding UIDs 80 and 90 can report
+  // UIDNEXT 101 once the messages above 90 are expunged. `UID FETCH 95:*` has
+  // to answer with UID 90, because a range covers both its ends in either
+  // order, and every number this listener could reach for lies above 90.
+  var ctx = await _makeTestTlsContext();
+  var gapped = _makeStubMailStore();
+  gapped.selectFolder = function (_actor, mailbox) {
+    gapped.calls.select.push({ mailbox: mailbox });
+    return Promise.resolve({ uidvalidity: 1, modseq: 42, exists: 2, uidnext: 101,
+                             recent: 0, unseen: 0, flags: ["\\Seen"] });
+  };
+  var srv4 = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: gapped, profile: "permissive",
+    auth: { mechanisms: ["PLAIN"], verify: function () {
+      return Promise.resolve({ ok: true, actor: { id: "u1", mailboxes: ["INBOX"] } });
+    } },
+  });
+  var info4 = await srv4.listen({ port: 0, address: "127.0.0.1" });
+  var sock4 = nodeNet.connect(info4.port, "127.0.0.1");
+  await new Promise(function (r) { sock4.once("connect", r); });
+  try {
+    await _readGreeting(sock4);
+    await _sendCommand(sock4, "d1",
+      "AUTHENTICATE PLAIN " + Buffer.from("\0u1\0pw", "utf8").toString("base64"));
+    await _sendCommand(sock4, "d2", "SELECT INBOX");
+    await _sendCommand(sock4, "d3", "UID FETCH * (FLAGS)");
+    var loneGap = gapped.calls.fetchRange[gapped.calls.fetchRange.length - 1];
+    check("a lone UID `*` is not turned into the watermark",
+          loneGap.seqSet === "*", JSON.stringify(loneGap));
+    await _sendCommand(sock4, "d4", "UID FETCH *:* (FLAGS)");
+    var lonePair = gapped.calls.fetchRange[gapped.calls.fetchRange.length - 1];
+    check("nor is `*:*`, which names the same one message",
+          lonePair.seqSet === "*:*", JSON.stringify(lonePair));
+    await _sendCommand(sock4, "d5", "UID FETCH 95:* (FLAGS)");
+    var acrossTheGap = gapped.calls.fetchRange[gapped.calls.fetchRange.length - 1];
+    check("a range whose other end is above every surviving UID keeps its `*`",
+          acrossTheGap.seqSet === "95:*", JSON.stringify(acrossTheGap));
+    await _sendCommand(sock4, "d6", "UID FETCH 1:* (FLAGS)");
+    var everything = gapped.calls.fetchRange[gapped.calls.fetchRange.length - 1];
+    check("and so does the range that reads the whole mailbox",
+          everything.seqSet === "1:*", JSON.stringify(everything));
+    sock4.destroy();
+  } finally { await srv4.close({ timeoutMs: 1000 }); }                                                  // allow:raw-time-literal — test-only short drain
+}
+
 async function testCapabilityHook() {
   var ctx = await _makeTestTlsContext();
   var seen = [];
@@ -505,6 +783,139 @@ async function testFetchChangedSinceParses() {
 // so a mailbox name carrying `\` or `"` reached the backend corrupted (a `\`
 // doubled, an escaped `"` kept its backslash). The backend then keys, creates,
 // or ACLs the wrong name.
+async function testAFailedSelectLeavesNoMailboxSelected() {
+  // RFC 9051 6.3.2: a SELECT that fails deselects whatever was selected and
+  // returns the session to the authenticated state. The failure path wrote NO
+  // and left state.selectedMailbox alone, so the client's next EXPUNGE, STORE
+  // or FETCH went on acting against the mailbox it believed it had left.
+  var ctx = await _makeTestTlsContext();
+  var stub = _makeStubMailStore();
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: stub, profile: "permissive",
+    auth: {
+      mechanisms: ["PLAIN", "LOGIN"],
+      verify: function () { return Promise.resolve({ ok: true, actor: { id: "u1", mailboxes: ["INBOX"] } }); },
+    },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    await _sendCommand(c.socket, "a0", "LOGIN test test");
+    var ok = await _sendCommand(c.socket, "a1", "SELECT INBOX");
+    check("the first SELECT succeeds", /^a1 OK/m.test(ok), JSON.stringify(ok));
+
+    stub.selectShouldThrow = "no such mailbox";
+    var bad = await _sendCommand(c.socket, "a2", "SELECT Missing");
+    check("a SELECT the store refuses answers NO", /^a2 NO/m.test(bad), JSON.stringify(bad));
+    check("and says the mailbox that was open is closed",
+          /\[CLOSED\]/.test(bad), JSON.stringify(bad));
+
+    // EXPUNGE reads the selection, so it is the command that can tell whether
+    // the session really left the mailbox.
+    stub.selectShouldThrow = null;
+    var after = await _sendCommand(c.socket, "a3", "EXPUNGE");
+    check("EXPUNGE after the failed SELECT is refused, not run on the old mailbox",
+          !/^a3 OK/m.test(after), JSON.stringify(after));
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+async function testAllowLegacyMUtf7GovernsWhatItDeclares() {
+  // create() accepts allowLegacyMUtf7 and the docblock describes setting it,
+  // but the listener derived the answer from the profile table alone and never
+  // read the option, in EITHER direction: an operator turning the legacy
+  // encoding on under strict still had it refused, and one turning it off
+  // under permissive still had it accepted. A knob the API takes by name and
+  // then ignores is worse than one it refuses by name.
+  var ctx = await _makeTestTlsContext();
+  var stub = _makeStubMailStore();
+  var MUTF7 = "Fr&AOk-d";   // "Fréd" in RFC 3501 modified UTF-7.
+
+  // Whether the STORE saw the name is the thing that distinguishes: a refusal
+  // is written as BAD by one path and NO by another, so "the reply was not
+  // BAD" is satisfied by both outcomes.
+  async function selectsMUtf7(opts) {
+    var store = _makeStubMailStore();
+    var srv = b.mail.server.imap.create(Object.assign({
+      tlsContext: ctx, mailStore: store,
+      auth: {
+        mechanisms: ["PLAIN", "LOGIN"],
+        verify: function () { return Promise.resolve({ ok: true, actor: { id: "u1", mailboxes: ["INBOX"] } }); },
+      },
+    }, opts));
+    var c = await _connectAndLogin(srv);
+    try {
+      await _sendCommand(c.socket, "a0", "LOGIN test test");
+      await _sendCommand(c.socket, "a1", "SELECT " + MUTF7);
+      c.socket.destroy();
+      return store.calls.select.some(function (s) { return s.mailbox === MUTF7; });
+    } finally { await srv.close({ timeoutMs: 1000 }); }                                                 // allow:raw-time-literal — test-only short drain
+  }
+
+  // The profile table is the default, and b.mail.server.imap.legacyMUtf7Allowed
+  // is the one place that reads it.
+  check("the table says permissive accepts the legacy encoding",
+        b.mail.server.imap.legacyMUtf7Allowed("permissive") === true);
+  check("and that balanced and strict do not",
+        b.mail.server.imap.legacyMUtf7Allowed("balanced") === false &&
+        b.mail.server.imap.legacyMUtf7Allowed("strict") === false);
+
+  // Driven end to end on the profile whose sessions this harness can
+  // authenticate: the default accepts the name, and the option turns it off.
+  // That is the direction an operator hardens in, and it is the direction the
+  // listener was ignoring.
+  check("the permissive default reaches the store with the legacy name",
+        await selectsMUtf7({ profile: "permissive" }) === true);
+  check("allowLegacyMUtf7 false stops it reaching the store",
+        await selectsMUtf7({ profile: "permissive", allowLegacyMUtf7: false }) === false);
+  void stub;
+}
+
+async function testAMailboxNameSentAsALiteralTakesTheSameCap() {
+  // b.guardImapCommand applies maxMailboxBytes to the LINE, and a literal
+  // arrives after it. CREATE {N} decoded up to maxLiteralBytes (64 MiB under
+  // strict), quoted the result and built it into the argument string, and only
+  // then did operand parsing turn it away — so the name never reached the
+  // store, but the listener did all of that work per command and answered with
+  // a message about operand count rather than about the cap it exceeded.
+  var ctx = await _makeTestTlsContext();
+  var stub = _makeStubMailStore();
+  var created = [];
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: stub, profile: "permissive",
+    mailboxAdmin: { createFolder: function (_a, name) { created.push(name); return Promise.resolve(); } },
+    auth: {
+      mechanisms: ["PLAIN", "LOGIN"],
+      verify: function () { return Promise.resolve({ ok: true, actor: { id: "u1", mailboxes: ["INBOX"] } }); },
+    },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    await _sendCommand(c.socket, "a0", "LOGIN test test");
+    var cap = b.guardImapCommand.limitsFor({ profile: "permissive" }).maxMailboxBytes;
+
+    // A literal inside the cap still creates the mailbox.
+    var okName = "N".repeat(16);
+    var okReply = await _sendWithLiteral(c.socket, "a1", "CREATE ", okName);
+    check("a mailbox name sent as a literal inside the cap is created",
+          /^a1 OK/m.test(okReply) && created.indexOf(okName) !== -1,
+          JSON.stringify({ reply: okReply, created: created.length }));
+
+    // One past it is refused, and nothing reaches the store.
+    var before = created.length;
+    var bigName = "N".repeat(cap + 1);
+    var bigReply = await _sendWithLiteral(c.socket, "a2", "CREATE ", bigName);
+    // Named refusal, not any refusal: an oversized literal reaches several
+    // other bounds on its way, and "something said no" is satisfied by all of
+    // them, so it cannot tell whether THIS cap is the one that applied.
+    check("a literal past maxMailboxBytes is refused by that cap",
+          /^a2 BAD CREATE literal is not a mailbox name within /m.test(bigReply),
+          JSON.stringify(bigReply).slice(0, 160));
+    check("and no oversized name reached the store",
+          created.length === before, JSON.stringify(created.length));
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
 async function testSelectUnescapesQuotedMailboxName() {
   var ctx = await _makeTestTlsContext();
   var stub = _makeStubMailStore();
@@ -2128,7 +2539,14 @@ async function testUnauthDispatch() {
     var id = await _cmd(sock, "a3", "ID (\"name\" \"x\")");
     check("ID replies untagged ID + OK", /^\* ID \("name" "blamejs"/m.test(id) && /^a3 OK ID completed/m.test(id));
     check("SELECT before auth → NO Login first", /^a4 NO Login first/m.test(await _cmd(sock, "a4", "SELECT INBOX")));
-    check("unknown verb → untagged BAD", /^\* BAD/m.test(await _cmdT(sock, "a5", "ZORP x", /^\* BAD/m)));
+    // RFC 9051 section 7.1.3: "When the server detects a protocol error (such
+    // as the receipt of an invalid command line), it MUST send a tagged BAD
+    // response." An unknown verb arrives under a readable tag, so the refusal
+    // is addressed to it; a client that waits for its tag would otherwise
+    // wait out the whole command.
+    check("unknown verb → BAD against the tag it was sent under",
+      /^a5 BAD/m.test(await _cmdT(sock, "a5", "ZORP x", /^a5 BAD/m)));
+    // A line with no tag to read leaves untagged as the only form available.
     check("empty line → untagged BAD (empty command line)",
       /^\* BAD .*empty command line/m.test(await _raw(sock, /^\* BAD/m, "\r\n")));
     check("GETQUOTA (known verb, no handler) → notFound BAD not implemented",
@@ -2321,11 +2739,19 @@ async function testSelectExamine() {
     check("SELECT quoted mailbox → OK", /^a3 OK/m.test(await _cmd(sock, "a3", "SELECT " + '"' + "INBOX" + '"')));
     check("SELECT empty name → BAD refused", /^a4 BAD Mailbox name refused/m.test(await _cmd(sock, "a4", "SELECT")));
     check("SELECT path-traversal (..) → BAD refused", /^a5 BAD Mailbox name refused/m.test(await _cmd(sock, "a5", "SELECT ../etc")));
-    check("SELECT C1 control (U+009B) in the name → untagged BAD at the command gate",
-      /^\* BAD .*control byte 0x9b/m.test(await _cmdT(sock, "a5c", "SELECT in" + String.fromCharCode(0x9b) + "box", /^\* BAD/m)));
+    check("SELECT C1 control (U+009B) in the name → BAD at the command gate, against its tag",
+      /^a5c BAD .*control byte 0x9b/m.test(
+        await _cmdT(sock, "a5c", "SELECT in" + String.fromCharCode(0x9b) + "box", /^a5c BAD/m)));
     check("SELECT trailing-slash → BAD refused", /^a6 BAD Mailbox name refused/m.test(await _cmd(sock, "a6", "SELECT foo/")));
-    var longName = new Array(1101).join("a");
-    check("SELECT overlong name → BAD refused", /^a7 BAD Mailbox name refused/m.test(await _cmd(sock, "a7", "SELECT " + longName)));
+    // The name cap is the profile's own `maxMailboxBytes`, 4096 under
+    // permissive, rather than a figure the listener keeps to itself. A name
+    // inside it is served; one past it is refused.
+    var insideCap = new Array(1101).join("a");
+    check("SELECT a name inside the profile's cap is not refused for its length",
+          !/^a7 BAD Mailbox name refused/m.test(await _cmd(sock, "a7", "SELECT " + insideCap)));
+    var longName = new Array(4200).join("a");
+    check("SELECT overlong name → BAD refused",
+          /^a7b BAD /m.test(await _cmd(sock, "a7b", "SELECT " + longName)));
     // permissive → modified-UTF7 accepted (skip-branch): passes name validation, reaches backend.
     check("SELECT mUTF7 name accepted under permissive → OK", /^a8 OK/m.test(await _cmd(sock, "a8", "SELECT &AAA-")));
     // QRESYNC valid + VANISHED emission needs a matching-uidvalidity store below.
@@ -2620,8 +3046,12 @@ async function testLiteralSmuggling() {
   var s = await _makeServer({ profile: "permissive" });
   var sock = await _connect(s.port);
   try {
-    check("mid-line literal opener → * BAD (smuggling refused)",
-      /^\* BAD/m.test(await _raw(sock, /^\* BAD/m, "a1 APPEND INBOX {5} EXTRA\r\n")));
+    // The smuggling opener arrives under a readable tag, so RFC 9051 section
+    // 7.1.3's tagged BAD is what the client gets and can pair with it.
+    check("mid-line literal opener → BAD against its tag (smuggling refused)",
+      /^a1 BAD/m.test(await _raw(sock, /^a1 BAD/m, "a1 APPEND INBOX {5} EXTRA\r\n")));
+    // `+bad` is outside the tag grammar, so there is no tag to answer against
+    // and untagged is the only form left.
     check("bad tag → * BAD (non-smuggling guard throw)",
       /^\* BAD/m.test(await _raw(sock, /^\* BAD/m, "+bad NOOP\r\n")));
   } finally { sock.destroy(); await s.srv.close(); }
@@ -3558,6 +3988,9 @@ async function run() {
     await testEnableCondstore();
     await testFetchChangedSinceParses();
     await testSelectUnescapesQuotedMailboxName();
+    await wtt("failed select deselects", testAFailedSelectLeavesNoMailboxSelected);
+    await wtt("literal mailbox name cap", testAMailboxNameSentAsALiteralTakesTheSameCap);
+    await wtt("allowLegacyMUtf7 governs", testAllowLegacyMUtf7GovernsWhatItDeclares);
     await testAppendRejectsMalformedQuotedDate();
     await testFetchWritesTheOctetsTheBackendReturned();
     await testStoreUnchangedSinceConflict();
@@ -3593,6 +4026,9 @@ async function run() {
     await testSelectQresyncEmitsVanishedEarlier();
     await testSelectQresyncImplicitlyEngagesCondstore();
     // RFC 9051 command dispatch + error branches
+    await wtt("store cap travels",      testTheStoreCapTravelsWithTheSetToTheStore);
+    await wtt("set forwarded verbatim", testASequenceSetReachesTheStoreAsTheClientWroteIt);
+    await wtt("uid wildcard is the store's", testAUidWildcardIsTheStoresToResolve);
     await wtt("unauth dispatch",        testUnauthDispatch);
     await wtt("starttls upgrade",       testStartTlsUpgrade);
     await wtt("authenticate",           testAuthenticate);

@@ -1478,6 +1478,63 @@ function testFoldedSearchAndRangeRuns() {
   check("b.codepointClass.isAsciiHexDigit agrees with [0-9A-Fa-f] across ASCII",
         hexDiffs.length === 0, JSON.stringify(hexDiffs.slice(0, 5)));
 
+  // ---- isAtext / isDotAtomText ----
+  // RFC 5322 section 3.2.3 spells atext out, and the dot is not in it: a dot
+  // joins atoms. Read off the grammar's own character list rather than off
+  // the implementation, across the whole of ASCII including the specials.
+  var ATEXT_RE = /[A-Za-z0-9!#$%&'*+\-/=?^_`{|}~]/;
+  var atextDiffs = [];
+  for (var ac = 0; ac < 0x80; ac += 1) {
+    if (CP.isAtext(ac) !== ATEXT_RE.test(String.fromCharCode(ac))) atextDiffs.push(ac);
+  }
+  check("b.codepointClass.isAtext agrees with the RFC 5322 3.2.3 atext list",
+        atextDiffs.length === 0, JSON.stringify(atextDiffs.slice(0, 8)));
+  check("the dot is not atext", CP.isAtext(0x2E) === false);
+
+  [["a single atom", "abc", true],
+   ["atoms joined by dots", "first.last", true],
+   ["every atext punctuation", "!#$%&'*+-/=?^_`{|}~", true],
+   ["one character", "a", true],
+   ["the empty string", "", false],
+   ["a doubled dot", "a..b", false],
+   ["a leading dot", ".ab", false],
+   ["a trailing dot", "ab.", false],
+   ["a lone dot", ".", false],
+   ["an at sign", "a@b", false],
+   ["a semicolon", "a;b", false],
+   ["a space", "a b", false],
+   ["a quote", "a\"b", false],
+   ["a comma", "a,b", false],
+   ["a backslash", "a\\b", false],
+   ["a non-string", null, false]].forEach(function (row) {
+    check("isDotAtomText: " + row[0] + " reads " + row[2],
+          CP.isDotAtomText(row[1]) === row[2], JSON.stringify(row[1]));
+  });
+
+  // RFC 6531 section 3.3 adds UTF8-non-ascii to atext and leaves the dot rule
+  // alone, so the two predicates part company on non-ASCII and nowhere else.
+  check("a non-ASCII local part is not RFC 5322 dot-atom",
+        CP.isDotAtomText("üser") === false);
+  check("and it is RFC 6531 dot-atom",
+        CP.isUtf8DotAtomText("üser") === true);
+  [["an at sign", "üser@evil"],
+   ["a semicolon", "üs;er"],
+   ["a doubled dot", "ü..ser"],
+   ["a leading dot", ".üser"],
+   ["a trailing dot", "üser."],
+   ["a space", "ü ser"],
+   ["the empty string", ""]].forEach(function (row) {
+    check("isUtf8DotAtomText still refuses " + row[0],
+          CP.isUtf8DotAtomText(row[1]) === false, JSON.stringify(row[1]));
+  });
+  var asciiDiffs = [];
+  for (var dc = 0; dc < 0x80; dc += 1) {
+    var one = String.fromCharCode(dc);
+    if (CP.isDotAtomText(one) !== CP.isUtf8DotAtomText(one)) asciiDiffs.push(dc);
+  }
+  check("the two predicates agree on every ASCII character",
+        asciiDiffs.length === 0, JSON.stringify(asciiDiffs.slice(0, 8)));
+
   // ---- isAsciiWhitespace ----
   var ASCII_WS_RE = /[\t\n\f\r ]/;
   var wsDiffs = [];

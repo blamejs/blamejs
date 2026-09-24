@@ -77,6 +77,20 @@ regexes = [
 ]
 
 [[allowlists]]
+description = "One superseded commit whose doc example carried a token-shaped literal"
+# `b.apiKey.parseFormat`'s @example used to pass a fabricated hex secret so
+# that the executable-example gate had a token the parser accepts. The example
+# now uses a zero-entropy placeholder, so no file in the tree carries the
+# shape and the default ruleset reads lib/ clean. This names the one commit
+# on the release branch that still holds the old text; the branch squash-
+# merges, so the commit does not reach main and this entry can go with the
+# next release. A fingerprint pins one commit, file and line rather than
+# allowlisting the shape wherever it appears.
+commits = [
+  "195577208ed76ef348c1a16d7efff488ddfeeb8e",
+]
+
+[[allowlists]]
 description = "Camel-case identifier names that trip generic-api-key entropy"
 # Public parameter / property names in the framework's KEM envelope
 # surface (e.g. `x25519PrivateKey`, `mlkemPrivateKey`) score above the

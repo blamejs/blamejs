@@ -57,6 +57,27 @@ function testParsesMailFrom() {
   // Bounce sender — empty path is valid for MAIL FROM
   var bounce = b.guardSmtpCommand.validate("MAIL FROM:<>");
   check("MAIL empty path (bounce)", bounce.args[0] === "<>");
+
+  // RFC 5321 4.1.2 writes a local part as a Quoted-string when it holds
+  // characters a dot-atom cannot, the closing angle bracket among them.
+  // Ending the path at the first ">" cut the address inside the quotes and
+  // refused a valid sender, and fed the tail back as extension parameters.
+  var quoted = b.guardSmtpCommand.validate('MAIL FROM:<"a>b"@example.com> SIZE=10');
+  check("MAIL path with a quoted local part holding an angle bracket",
+        quoted.args[0] === '<"a>b"@example.com>', JSON.stringify(quoted.args));
+  check("and its extension parameters are still read",
+        quoted.params.SIZE === "10", JSON.stringify(quoted.params));
+
+  var escaped = b.guardSmtpCommand.validate('RCPT TO:<"a\\">b"@example.com>');
+  check("a quoted pair inside the local part does not end the quoted string",
+        escaped.args[0] === '<"a\\">b"@example.com>', JSON.stringify(escaped.args));
+
+  var unterminated = null;
+  try { b.guardSmtpCommand.validate('MAIL FROM:<"a>b@example.com'); }
+  catch (e) { unterminated = e; }
+  check("a path with no closing bracket outside the quotes is refused",
+        unterminated !== null && unterminated.code === "guard-smtp-command/bad-shape",
+        unterminated && unterminated.code);
 }
 
 function testParsesRcptTo() {
