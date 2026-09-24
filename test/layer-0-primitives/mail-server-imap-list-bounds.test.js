@@ -86,13 +86,27 @@ function _mailStore(extraNames) {
                                recent: 0, unseen: 0, flags: [] });
     },
     listFolders: function () { return folders.map(function (f) { return f; }); },
+    // CREATE reaches the store only once the name has been read as a valid
+    // one, so a store that cannot create leaves every length answered the
+    // same way and a length test on it proves nothing.
+    createFolder: function (name) {
+      folders.push({ name: name, attributes: [], subscribed: false });
+      return Promise.resolve();
+    },
   };
 }
 
 async function _open(openOpts) {
+  var store = _mailStore(openOpts && openOpts.folders);
   var srv = b.mail.server.imap.create({
     tlsContext: await _tlsContext(),
-    mailStore:  _mailStore(openOpts && openOpts.folders),
+    mailStore:  store,
+    // The mutating verbs are the operator's to authorize, so without an
+    // administrator they answer NO whatever the name is, and a test about
+    // name length on them measures nothing.
+    mailboxAdmin: {
+      createFolder: function (actor, name) { return store.createFolder(name); },
+    },
     profile:    "permissive",
     auth:       {
       mechanisms: ["PLAIN"],
@@ -413,6 +427,82 @@ async function testRecursivematchIsRefusedRatherThanIgnored() {
   } finally { await c.close(); }
 }
 
+async function testTheMailboxNameLimitIsTheProfilesOwn() {
+  // b.guardImapCommand's profiles declare maxMailboxBytes at 1024, 2048 and
+  // 4096. The listener held every name to a hard kilobyte of its own, so a
+  // 1500-byte name passed the guard under permissive and was then answered
+  // BAD by the handler: the published number and the served one disagreed.
+  var c = await _open();
+  try {
+    var ok = await c.cmd("a1", 'CREATE "' + "L".repeat(1500) + '"');
+    check("a name inside the profile's maxMailboxBytes is served",
+          /^a1 OK/m.test(ok), ok.slice(0, 160));
+
+    // And the profile's own ceiling still refuses: permissive is 4096.
+    var refused = await c.cmd("a2", 'CREATE "' + "L".repeat(5000) + '"');
+    check("a name past the profile's maxMailboxBytes is refused",
+          /^a2 (BAD|NO)/m.test(refused), refused.slice(0, 160));
+  } finally { await c.close(); }
+}
+
+async function testARefusedCommandIsAnsweredAgainstItsTag() {
+  // RFC 9051 section 2.2.1: every client command is followed by a tagged
+  // response, which is how a client pairs a reply with what it sent. A
+  // refusal from the command guard was written untagged, so a client that
+  // sent an over-long mailbox name waited for a completion that never came.
+  // The tag is readable whenever the guard got past its own tag grammar.
+  var c = await _open();
+  try {
+    var refused = await c.cmd("a1", 'CREATE "' + "L".repeat(5000) + '"');
+    check("a guard refusal carries the tag it was sent under",
+          /^a1 BAD/m.test(refused), refused.slice(0, 160));
+
+    // And the session is still usable afterwards.
+    var after = await c.cmd("a2", 'LIST "" "%"');
+    check("the connection still serves the next command",
+          /^a2 OK/m.test(after), after.slice(0, 160));
+  } finally { await c.close(); }
+
+  check("tagOf reads the tag a listener answers against",
+        b.guardImapCommand.tagOf("a1 CREATE \"x\"") === "a1");
+  // The tag is the atom before the first space, so what follows it does not
+  // decide whether one was sent: `bad tag!` opens with the readable tag
+  // `bad`, and only a line with no space, an empty one, one that opens with
+  // the space, or one whose first atom is outside the tag grammar has none.
+  check("tagOf reads the first atom whatever follows it",
+        b.guardImapCommand.tagOf("a b c") === "a" &&
+        b.guardImapCommand.tagOf("bad tag!") === "bad");
+  check("tagOf returns null where no tag can be read",
+        b.guardImapCommand.tagOf("{5}") === null &&
+        b.guardImapCommand.tagOf("") === null &&
+        b.guardImapCommand.tagOf(" LIST") === null &&
+        b.guardImapCommand.tagOf("a!b LIST") === null &&
+        b.guardImapCommand.tagOf(null) === null);
+}
+
+async function testRemoteIsAdditiveNotRestrictive() {
+  // RFC 5258 section 3, which RFC 9051 section 6.3.9 carries forward: "The
+  // REMOTE selection option has no interaction with other options. Its
+  // effect is to tell the server to apply the other options, if any, to
+  // remote mailboxes, in addition to local ones." A store with no remote
+  // mailboxes answers a REMOTE listing with its local ones, the local set
+  // plus an empty remote set. Reading REMOTE as a restriction would answer
+  // nothing, so this pins the direction rather than the acceptance.
+  var c = await _open();
+  try {
+    var withRemote = await c.cmd("a1", 'LIST (REMOTE) "" "*"');
+    check("LIST (REMOTE) is accepted", /^a1 OK/m.test(withRemote), withRemote.slice(0, 160));
+    check("and still answers the local mailboxes",
+          /INBOX/.test(withRemote), withRemote.slice(0, 300));
+
+    var plain = await c.cmd("a2", 'LIST "" "*"');
+    function _countList(text) { return (text.match(/^\* LIST /mg) || []).length; }
+    check("REMOTE adds to the local set rather than replacing it",
+          _countList(withRemote) === _countList(plain) && _countList(plain) > 0,
+          JSON.stringify({ remote: _countList(withRemote), plain: _countList(plain) }));
+  } finally { await c.close(); }
+}
+
 async function testAHierarchyLevelWithNoMailboxOfItsOwnIsStillListed() {
   // A store can hold Deep/Nested without holding Deep. Listing one level at
   // a time is how a client browses, so omitting the level makes everything
@@ -500,6 +590,9 @@ async function run() {
   await testInboxIsMatchedCaseInsensitively();
   await testAnEmptyPatternAnswersTheDelimiterQuery();
   await testRecursivematchIsRefusedRatherThanIgnored();
+  await testTheMailboxNameLimitIsTheProfilesOwn();
+  await testARefusedCommandIsAnsweredAgainstItsTag();
+  await testRemoteIsAdditiveNotRestrictive();
   await testAHierarchyLevelWithNoMailboxOfItsOwnIsStillListed();
   await testAnOperandSentAsALiteralIsStillRead();
   await testALiteralThatIsNotValidUtf8IsRefused();

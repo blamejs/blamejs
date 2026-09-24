@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.20.32",
-  "createdAt": "2026-09-24T09:34:46.841Z",
+  "createdAt": "2026-09-24T10:32:08.633Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -27827,6 +27827,10 @@
           "arity": 1
         },
         "limitsFor": {
+          "type": "function",
+          "arity": 1
+        },
+        "tagOf": {
           "type": "function",
           "arity": 1
         },

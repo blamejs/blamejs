@@ -106,8 +106,13 @@ async function testAGuardRefusalConsumesTheLiteral() {
           transcript.slice(0, 200));
     check("the smuggled command is not executed",
           transcript.indexOf("z9 ") === -1, transcript.slice(0, 400));
+    // One refusal and no more: a second would mean the octets were read as a
+    // command in their own right. Counted however the refusal is addressed,
+    // because a guard refusal whose tag can be read is answered against that
+    // tag per RFC 9051 section 2.2.1 rather than untagged.
     check("the literal's octets do not reach the parser at all",
-          (transcript.match(/\* BAD/g) || []).length === 1, transcript.slice(0, 400));
+          (transcript.match(/^(?:\*|\S+) BAD/mg) || []).length === 1,
+          transcript.slice(0, 400));
     check("the connection resynchronizes, so the next real command answers",
           /^a2 OK/m.test(transcript), transcript.slice(0, 400));
   } finally { await c.close(); }

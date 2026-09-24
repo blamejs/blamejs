@@ -2301,7 +2301,14 @@ async function testUnauthDispatch() {
     var id = await _cmd(sock, "a3", "ID (\"name\" \"x\")");
     check("ID replies untagged ID + OK", /^\* ID \("name" "blamejs"/m.test(id) && /^a3 OK ID completed/m.test(id));
     check("SELECT before auth → NO Login first", /^a4 NO Login first/m.test(await _cmd(sock, "a4", "SELECT INBOX")));
-    check("unknown verb → untagged BAD", /^\* BAD/m.test(await _cmdT(sock, "a5", "ZORP x", /^\* BAD/m)));
+    // RFC 9051 section 7.1.3: "When the server detects a protocol error (such
+    // as the receipt of an invalid command line), it MUST send a tagged BAD
+    // response." An unknown verb arrives under a readable tag, so the refusal
+    // is addressed to it; a client that waits for its tag would otherwise
+    // wait out the whole command.
+    check("unknown verb → BAD against the tag it was sent under",
+      /^a5 BAD/m.test(await _cmdT(sock, "a5", "ZORP x", /^a5 BAD/m)));
+    // A line with no tag to read leaves untagged as the only form available.
     check("empty line → untagged BAD (empty command line)",
       /^\* BAD .*empty command line/m.test(await _raw(sock, /^\* BAD/m, "\r\n")));
     check("GETQUOTA (known verb, no handler) → notFound BAD not implemented",
@@ -2494,11 +2501,19 @@ async function testSelectExamine() {
     check("SELECT quoted mailbox → OK", /^a3 OK/m.test(await _cmd(sock, "a3", "SELECT " + '"' + "INBOX" + '"')));
     check("SELECT empty name → BAD refused", /^a4 BAD Mailbox name refused/m.test(await _cmd(sock, "a4", "SELECT")));
     check("SELECT path-traversal (..) → BAD refused", /^a5 BAD Mailbox name refused/m.test(await _cmd(sock, "a5", "SELECT ../etc")));
-    check("SELECT C1 control (U+009B) in the name → untagged BAD at the command gate",
-      /^\* BAD .*control byte 0x9b/m.test(await _cmdT(sock, "a5c", "SELECT in" + String.fromCharCode(0x9b) + "box", /^\* BAD/m)));
+    check("SELECT C1 control (U+009B) in the name → BAD at the command gate, against its tag",
+      /^a5c BAD .*control byte 0x9b/m.test(
+        await _cmdT(sock, "a5c", "SELECT in" + String.fromCharCode(0x9b) + "box", /^a5c BAD/m)));
     check("SELECT trailing-slash → BAD refused", /^a6 BAD Mailbox name refused/m.test(await _cmd(sock, "a6", "SELECT foo/")));
-    var longName = new Array(1101).join("a");
-    check("SELECT overlong name → BAD refused", /^a7 BAD Mailbox name refused/m.test(await _cmd(sock, "a7", "SELECT " + longName)));
+    // The name cap is the profile's own `maxMailboxBytes`, 4096 under
+    // permissive, rather than a figure the listener keeps to itself. A name
+    // inside it is served; one past it is refused.
+    var insideCap = new Array(1101).join("a");
+    check("SELECT a name inside the profile's cap is not refused for its length",
+          !/^a7 BAD Mailbox name refused/m.test(await _cmd(sock, "a7", "SELECT " + insideCap)));
+    var longName = new Array(4200).join("a");
+    check("SELECT overlong name → BAD refused",
+          /^a7b BAD /m.test(await _cmd(sock, "a7b", "SELECT " + longName)));
     // permissive → modified-UTF7 accepted (skip-branch): passes name validation, reaches backend.
     check("SELECT mUTF7 name accepted under permissive → OK", /^a8 OK/m.test(await _cmd(sock, "a8", "SELECT &AAA-")));
     // QRESYNC valid + VANISHED emission needs a matching-uidvalidity store below.
@@ -2793,8 +2808,12 @@ async function testLiteralSmuggling() {
   var s = await _makeServer({ profile: "permissive" });
   var sock = await _connect(s.port);
   try {
-    check("mid-line literal opener → * BAD (smuggling refused)",
-      /^\* BAD/m.test(await _raw(sock, /^\* BAD/m, "a1 APPEND INBOX {5} EXTRA\r\n")));
+    // The smuggling opener arrives under a readable tag, so RFC 9051 section
+    // 7.1.3's tagged BAD is what the client gets and can pair with it.
+    check("mid-line literal opener → BAD against its tag (smuggling refused)",
+      /^a1 BAD/m.test(await _raw(sock, /^a1 BAD/m, "a1 APPEND INBOX {5} EXTRA\r\n")));
+    // `+bad` is outside the tag grammar, so there is no tag to answer against
+    // and untagged is the only form left.
     check("bad tag → * BAD (non-smuggling guard throw)",
       /^\* BAD/m.test(await _raw(sock, /^\* BAD/m, "+bad NOOP\r\n")));
   } finally { sock.destroy(); await s.srv.close(); }
