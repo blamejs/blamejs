@@ -115,6 +115,41 @@ async function testAGetNamesItsObjectsUnderWhateverArgumentItDefines() {
         JSON.stringify(propertiesOnly));
 }
 
+async function testAMutatingMethodCountsItsIdArgumentsToo() {
+  // `maxObjectsInSet` counts what a `/set` or `/copy` names, and RFC 8620
+  // section 5.3 names those in `create`, `update` and `destroy`. An id array
+  // sent alongside them is still a list of objects the request names, and it
+  // reached the operator's handler at any length: the count is what the cap
+  // is for, not the argument's spelling, and a handler that reads an argument
+  // the count ignores is handed an unbounded array.
+  var withIds = await _call("Email/copy",
+    { accountId: ACCOUNT, fromAccountId: ACCOUNT, ids: _ids(501), create: {} },
+    { methods: { "Email/copy": async function (actor, args) {
+      return { accountId: args.accountId };
+    } } });
+  check("a /copy naming more ids than the cap is refused",
+        withIds.type === "requestTooLarge" && withIds.ranHandler === false,
+        JSON.stringify(withIds));
+
+  var atCap = await _call("Email/copy",
+    { accountId: ACCOUNT, fromAccountId: ACCOUNT, ids: _ids(500), create: {} },
+    { methods: { "Email/copy": async function (actor, args) {
+      return { accountId: args.accountId };
+    } } });
+  check("and one at the cap still runs",
+        atCap.type === null, JSON.stringify(atCap));
+
+  // The documented arguments are still counted, and counted together with an
+  // id array rather than instead of it.
+  var combined = {};
+  for (var i = 0; i < 300; i += 1) combined["c" + i] = { subject: "x" };
+  var both = await _call("Email/set",
+    { accountId: ACCOUNT, create: combined, destroy: _ids(250) });
+  check("a /set counts its id array alongside create and destroy",
+        both.type === "requestTooLarge" && both.ranHandler === false,
+        JSON.stringify(both));
+}
+
 async function testSetIsBoundedByTheCombinedTotal() {
   // RFC 8620 section 5.3 counts create, update and destroy together.
   var create = {}; var update = {};
@@ -837,6 +872,7 @@ async function run() {
   testEveryProfileKnobIsRead();
   await testGetIsBoundedByMaxObjectsInGet();
   await testAGetNamesItsObjectsUnderWhateverArgumentItDefines();
+  await testAMutatingMethodCountsItsIdArgumentsToo();
   await testSetIsBoundedByTheCombinedTotal();
   await testTheCapCountsWhatAResultReferenceProduces();
   await testTheProfileGovernsTheCap();

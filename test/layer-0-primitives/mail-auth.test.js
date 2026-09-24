@@ -2843,6 +2843,33 @@ function testDmarcRuaExpansionRatioBounded() {
   check("a stream expanding past the ratio cap is refused as a bomb",
         bombErr && /dmarc-rua-gunzip-bomb/.test(bombErr.code || ""),
         JSON.stringify({ code: bombErr && bombErr.code }));
+
+  // The 8 MiB cap is a statement about the report, not about the encoding it
+  // arrived in: a caller that hands over an already-decoded object reaches the
+  // same shaping code and has to meet the same bound.
+  var oversizeErr = null;
+  try {
+    b.mail.dmarc.parseAggregateReport({
+      feedback: {
+        report_metadata: { org_name: "x".repeat(9 * 1024 * 1024) },
+        policy_published: { domain: "example.com" },
+        record: [],
+      },
+    });
+  } catch (e) { oversizeErr = e; }
+  check("a pre-parsed report over the byte cap is refused",
+        oversizeErr && oversizeErr.code === "mail-auth/dmarc-rua-too-large",
+        JSON.stringify({ code: oversizeErr && oversizeErr.code }));
+
+  var okParsed = b.mail.dmarc.parseAggregateReport({
+    feedback: {
+      report_metadata: { org_name: "acme", report_id: "r1" },
+      policy_published: { domain: "example.com" },
+      record: [],
+    },
+  });
+  check("a pre-parsed report under the byte cap still shapes",
+        okParsed.reportMetadata.orgName === "acme");
 }
 
 // RFC 7489 §7.2.1.1 names ZIP alongside gzip. A ZIP holds entries rather than

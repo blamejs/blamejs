@@ -74,6 +74,15 @@ async function runErrorBranches() {
         codeOf(function () { b.mcp.parseRequest('{"jsonrpc":"2.0","method":"x","id":1,"params":[1,2]}'); }) === null);
   check("parseRequest: already-parsed object passes through",
         b.mcp.parseRequest({ jsonrpc: "2.0", method: "x", id: 1 }).method === "x");
+  // The 1 MiB cap the doc block advertises has to hold on the parsed form
+  // too — that is the shape b.middleware.bodyParser hands the handler.
+  check("parseRequest: already-parsed object over the 1 MiB cap is refused",
+        codeOf(function () {
+          b.mcp.parseRequest({
+            jsonrpc: "2.0", method: "x", id: 1,
+            params: { pad: "p".repeat(2 * 1024 * 1024) },
+          });
+        }) === "mcp/bad-json");
 
   // ------------------------------------------------------------------
   // refuse — HTTP status mapping + id defaulting

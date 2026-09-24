@@ -350,6 +350,219 @@ function testParseStringOrObject() {
         e6 && e6.code === "json/wrong-input-type");
 }
 
+function testParseStringOrObjectCapsTheObjectBranch() {
+  var CustomErr = _makeCustomErr();
+  var big = { pad: "x".repeat(4096) };
+
+  var e1 = _thrown(function () { b.safeJson.parseStringOrObject(big, { maxBytes: 256 }); });
+  check("parseStringOrObject applies maxBytes to a pre-parsed object",
+        e1 && e1.code === "json/too-large");
+
+  var e2 = _thrown(function () {
+    b.safeJson.parseStringOrObject(big, {
+      maxBytes: 256, errorClass: CustomErr, jsonCode: "x/bad-json", label: "x.parse",
+    });
+  });
+  check("an over-cap object routes through the operator errorClass",
+        e2 && e2.name === "CustomErr" && e2.code === "x/bad-json");
+
+  var under = { pad: "x".repeat(64) };
+  check("an object under the cap is still returned by identity",
+        b.safeJson.parseStringOrObject(under, { maxBytes: 256 }) === under);
+}
+
+function testMeasureBytes() {
+  // The count is a claim about what JSON.stringify writes, so every case is
+  // read off JSON.stringify rather than off a number written here by hand.
+  // A hook that reports one size and a serializer that writes another is how
+  // a byte cap admits a body past it.
+  var cases = [
+    ["a small object",                  { a: 1 }],
+    ["a mixed nesting",                 { a: [1, "two", null, true], b: { c: -1.5 } }],
+    ["a bare string",                   "hello"],
+    ["a multi-byte string",             "é中😀"],
+    ["a lone high surrogate",           "\ud800"],
+    ["every short escape",              "\b\t\n\f\r\"\\"],
+    ["a control character",             "\u0001"],
+    ["DEL, which JSON leaves raw",      "\u007f"],
+    ["a negative exponent",             1e-7],
+    ["a large exponent",                1e21],
+    ["negative zero",                   -0],
+    ["NaN",                             NaN],
+    ["Infinity",                        Infinity],
+    ["an empty array",                  []],
+    ["an empty object",                 {}],
+    ["an array hole",                   [, 1]],                                                      // eslint-disable-line no-sparse-arrays
+    ["an array of dropped values",      [undefined, function () {}, Symbol("s")]],
+    ["an object of dropped values",     { a: undefined, b: function () {}, c: Symbol("s"), d: 1 }],
+    ["a Date, which carries toJSON",    { when: new Date(0) }],
+    ["a boxed Number",                  { a: new Number(123456789) }],
+    ["a boxed String",                  { a: new String("hello") }],
+    ["a boxed Boolean",                 { a: new Boolean(false) }],
+    ["a boxed String in an array",      [new String("hi")]],
+    ["a toJSON reading its key",        { a: { toJSON: function (k) { return k === "a" ? "long value" : "x"; } } }],
+    ["a toJSON returning a toJSON",     { a: { toJSON: function () { return { pad: "x".repeat(100), toJSON: function () { return 0; } }; } } }],
+    ["a toJSON returning undefined",    { a: { toJSON: function () { return undefined; } }, b: 1 }],
+    ["a toJSON inside an array",        [{ toJSON: function (k) { return k; } }, { toJSON: function (k) { return k; } }]],
+    ["a key needing an escape",         { "a\"b\nc": 1 }],
+    ["a multi-byte key",                { "é": 1 }],
+    // Symbol.toStringTag is writable, so a value can name itself "Number"
+    // while holding a kilobyte of string. Reading the tag rather than the
+    // internal slot measured that as the four bytes of NaN.
+    ["an object claiming to be Number", { pad: "x".repeat(1000), [Symbol.toStringTag]: "Number" }],
+    ["an object claiming to be String", { pad: "x".repeat(1000), [Symbol.toStringTag]: "String" }],
+    ["an object claiming to be BigInt", { pad: "x".repeat(16), [Symbol.toStringTag]: "BigInt" }],
+    ["a null-prototype object",         Object.assign(Object.create(null), { a: 1 })],
+    // JSON.stringify unboxes a wrapper with ToString / ToNumber, which run the
+    // overridable coercion. Reading the internal slot instead measured the
+    // original three bytes for a wrapper that serializes a kilobyte.
+    ["a boxed String overriding toString",
+      Object.assign(new String("x"), { toString: function () { return "y".repeat(1000); } })],
+    ["a boxed Number overriding valueOf",
+      Object.assign(new Number(1), { valueOf: function () { return 123456789012; } })],
+    ["a boxed Number coercing to NaN",
+      Object.assign(new Number(1), { valueOf: function () { return NaN; } })],
+    ["a boxed Boolean overriding toString",
+      Object.assign(new Boolean(true), { toString: function () { return "z".repeat(50); } })],
+    ["a boxed Boolean overriding valueOf",
+      Object.assign(new Boolean(false), { valueOf: function () { return true; } })],
+    // A wrapper keeps its internal slot when its prototype is replaced, so a
+    // prototype-shaped shortcut walked these as ordinary objects.
+    ["a re-prototyped boxed Number",    Object.setPrototypeOf(new Number(5), Object.prototype)],
+    ["a re-prototyped boxed String",    Object.setPrototypeOf(new String("abc"), Object.prototype)],
+    ["a null-prototype boxed Boolean",  Object.setPrototypeOf(new Boolean(true), null)],
+    // JSON.rawJSON holds a literal that JSON.stringify writes verbatim.
+    // Walking it as an ordinary object counted its wrapper property instead,
+    // which refused a value that fits.
+    ["a rawJSON literal",               { n: JSON.rawJSON("12345678901234567890") }],
+    ["a bare rawJSON literal",          JSON.rawJSON("12345678901234567890")],
+    ["a rawJSON string literal",        { s: JSON.rawJSON("\"hello\"") }],
+    ["a rawJSON in an array",           [JSON.rawJSON("1"), JSON.rawJSON("2")]],
+  ];
+  cases.forEach(function (row) {
+    var expected = Buffer.byteLength(JSON.stringify(row[1]), "utf8");
+    var actual   = b.safeJson.measureBytes(row[1]).bytes;
+    check("measureBytes matches JSON.stringify for " + row[0],
+          actual === expected, "measured " + actual + ", stringify " + expected);
+  });
+
+  // JSON.stringify reads toJSON once and calls what that read returned. An
+  // accessor handing out a large serializer first and a small one after
+  // reported the small one's size, so each side gets its own instance and
+  // both see the first read.
+  function accessorHook() {
+    var served = 0;
+    return Object.defineProperty({}, "toJSON", {
+      get: function () {
+        served += 1;
+        var length = served === 1 ? 1000 : 1;
+        return function () { return "q".repeat(length); };
+      },
+    });
+  }
+  check("measureBytes reads a toJSON accessor once, as JSON.stringify does",
+        b.safeJson.measureBytes(accessorHook()).bytes ===
+        Buffer.byteLength(JSON.stringify(accessorHook()), "utf8"),
+        String(b.safeJson.measureBytes(accessorHook()).bytes));
+
+  // A value JSON.stringify cannot serialize is one measureBytes cannot size.
+  // A boxed Number whose valueOf hands back a BigInt is the case: reading it
+  // through a conversion that accepts a BigInt reported a size for a value
+  // that has none, and the cap then admitted it.
+  [
+    ["a boxed Number whose valueOf returns a BigInt",
+      Object.assign(new Number(1), { valueOf: function () { return BigInt(1); } })],
+    ["a boxed String whose toString returns a symbol",
+      Object.assign(new String("x"), { toString: function () { return Symbol("q"); } })],
+    ["a toJSON that throws",
+      { a: { toJSON: function () { throw new RangeError("no"); } } }],
+  ].forEach(function (row) {
+    var stringifyThrew = false, measureThrew = false;
+    try { JSON.stringify(row[1]); } catch (_s) { stringifyThrew = true; }
+    try { b.safeJson.measureBytes(row[1]); } catch (_m) { measureThrew = true; }
+    check("measureBytes refuses " + row[0] + " exactly as JSON.stringify does",
+          stringifyThrew === true && measureThrew === true,
+          JSON.stringify({ stringifyThrew: stringifyThrew, measureThrew: measureThrew }));
+  });
+
+  check("measureBytes counts a value JSON drops at the top as zero",
+        b.safeJson.measureBytes(undefined).bytes === 0);
+  check("measureBytes counts a function at the top as zero",
+        b.safeJson.measureBytes(function () {}).bytes === 0);
+
+  // A caller's limit is the caller's, not silently lowered to the parse
+  // ceiling: b.guardJmap publishes its profile's maxSizeRequest to clients,
+  // so a clamp here would refuse a body the published number admits.
+  check("measureBytes honors a limit above the parse ceiling",
+        b.safeJson.measureBytes({ pad: "x".repeat(4096) },
+          { limit: b.safeJson.ABSOLUTE_MAX_BYTES * 2 }).exceeded === false);
+
+  var big = b.safeJson.measureBytes({ pad: "x".repeat(4096) }, { limit: 128 });
+  check("measureBytes stops at the limit", big.exceeded === true);
+  check("measureBytes reports a lower bound once it stops", big.bytes >= 128);
+  check("measureBytes stops inside one long string too",
+        b.safeJson.measureBytes("x".repeat(4096), { limit: 128 }).exceeded === true);
+
+  var cyclic = { name: "root" };
+  cyclic.self = cyclic;
+  check("measureBytes throws json/circular on a cycle",
+        _code(function () { b.safeJson.measureBytes(cyclic); }) === "json/circular");
+
+  check("measureBytes throws json/wrong-input-type on a BigInt",
+        _code(function () { b.safeJson.measureBytes({ a: BigInt(1) }); }) === "json/wrong-input-type");
+  check("measureBytes throws on a boxed BigInt as JSON.stringify does",
+        _code(function () { b.safeJson.measureBytes({ a: Object(BigInt(1)) }); }) === "json/wrong-input-type");
+
+  var deep = {};
+  var cursor = deep;
+  for (var i = 0; i < 40; i += 1) { cursor.next = {}; cursor = cursor.next; }
+  check("measureBytes throws json/too-deep past maxDepth",
+        _code(function () { b.safeJson.measureBytes(deep, { maxDepth: 8 }); }) === "json/too-deep");
+
+  // The string branch of parseStringOrObject enforces depth through
+  // _walkAndCheck, which charges a level for every value including the
+  // primitive at the bottom. A chain ending in an empty object is one level
+  // shallower than the same chain ending in a number, so both terminators are
+  // walked: a check that only nests containers reads the two branches as
+  // agreeing while they part company one level in.
+  function chain(levels, leaf) {
+    var root = {}, tip = root;
+    for (var n = 1; n < levels; n += 1) { tip.next = {}; tip = tip.next; }
+    if (leaf !== undefined) tip.leaf = leaf;
+    return root;
+  }
+  [["an empty object", undefined], ["a number", 1], ["a string", "x"], ["an array", [1]]]
+    .forEach(function (terminator) {
+      var sawAccepted = false, sawRefused = false;
+      [1, 2, 3, 4, 5, 6, 7, 8].forEach(function (levels) {
+        var viaObject = _code(function () {
+          b.safeJson.parseStringOrObject(chain(levels, terminator[1]),
+            { maxDepth: 5, maxBytes: 4096 });
+        });
+        var viaString = _code(function () {
+          b.safeJson.parseStringOrObject(JSON.stringify(chain(levels, terminator[1])),
+            { maxDepth: 5, maxBytes: 4096 });
+        });
+        if (viaObject === "OK") sawAccepted = true;
+        if (viaObject === "json/too-deep") sawRefused = true;
+        check("both parseStringOrObject branches answer the same at " + levels +
+              " levels ending in " + terminator[0],
+              viaObject === viaString,
+              JSON.stringify({ viaObject: viaObject, viaString: viaString }));
+      });
+      check("the depth parity check ending in " + terminator[0] + " crosses its boundary",
+            sawAccepted && sawRefused);
+    });
+
+  check("measureBytes charges a level for a primitive leaf as _walkAndCheck does",
+        _code(function () {
+          b.safeJson.measureBytes({ a: { b: 1 } }, { maxDepth: 1 });
+        }) === "json/too-deep");
+  check("measureBytes counts a function carrying toJSON",
+        b.safeJson.measureBytes({ f: Object.assign(function () {},
+          { toJSON: function () { return "x".repeat(1000); } }) }).bytes === 1008);
+}
+
 // ---- stringify ----
 
 function testStringify() {
@@ -711,6 +924,8 @@ async function run() {
   testParseExpectTypeAndRequiredKeys();
   testParseOrDefault();
   testParseStringOrObject();
+  testParseStringOrObjectCapsTheObjectBranch();
+  testMeasureBytes();
   testStringify();
   testStringifyReplaceCleaning();
   testStringifyForScript();

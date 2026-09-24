@@ -168,6 +168,32 @@ function testGuardEmailSyntaxReject() {
         }));
 }
 
+function testGuardEmailLocalPartIsADotAtom() {
+  // RFC 5322 section 3.2.3 joins atoms with single dots, so a doubled dot or
+  // one at either edge is not a local part. Reading the dot as an ordinary
+  // atext character accepted all three, which put this validator's answer at
+  // odds with what a receiving parser reads out of the same bytes.
+  [["a doubled dot", "a..b@example.com"],
+   ["a leading dot", ".ab@example.com"],
+   ["a trailing dot", "ab.@example.com"],
+   ["a lone dot", ".@example.com"]].forEach(function (row) {
+    var bad = b.guardEmail.validateAddress(row[1], { profile: "strict" });
+    check("local part with " + row[0] + " is refused",
+          bad.ok === false &&
+          bad.issues.some(function (i) { return i.kind === "address-syntax"; }),
+          JSON.stringify({ addr: row[1], ok: bad.ok }));
+  });
+
+  // The border: single dots between atoms, and every punctuation atext admits.
+  [["dotted atoms", "first.last@example.com"],
+   ["every atext punctuation", "a!#$%&'*+-/=?^_`{|}~b@example.com"],
+   ["a single atom", "plain@example.com"]].forEach(function (row) {
+    var good = b.guardEmail.validateAddress(row[1], { profile: "strict" });
+    check("a local part with " + row[0] + " is accepted",
+          good.ok === true, JSON.stringify({ addr: row[1], issues: good.issues }));
+  });
+}
+
 function testGuardEmailBareLfSmuggling() {
   // Bare LF in body — SMTP smuggling vector (CVE-2023-51765 / 51766).
   var msg = "From: a@example.com\r\nTo: b@example.com\r\nSubject: x\r\n\r\nbody\nMAIL FROM: <evil@x>\r\n";
@@ -468,6 +494,7 @@ async function run() {
   testGuardEmailMixedScript();
   testGuardEmailUnicodeLocalPartRejected();
   testGuardEmailSyntaxReject();
+  testGuardEmailLocalPartIsADotAtom();
   testGuardEmailBareLfSmuggling();
   testGuardEmailSmugglingScanUsesConstantSpace();
   testGuardEmailCrlfHeaderInjection();

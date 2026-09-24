@@ -157,6 +157,50 @@ function testRequestSizeCapInBytesNotCodeUnits() {
     threw && /bytes exceeds cap/.test(threw.message));
 }
 
+function testEveryProfileSizeCapIsOneTheParserWillHonor() {
+  // `maxSizeRequest` is published to clients in the session's
+  // urn:ietf:params:jmap:core capability (RFC 8620 section 2), so it is a
+  // promise about what the server accepts. A string body goes through
+  // `safeJson.parse`, which refuses anything over its own 64 MiB ceiling
+  // whatever the caller asks for, so a profile declaring more than that
+  // publishes a number no branch honors. Measured before this bound: a
+  // 66 MiB body under the permissive profile's declared 100 MiB came back
+  // as notJSON, "body is not valid JSON", rather than as a size refusal.
+  var ceiling = b.safeJson.ABSOLUTE_MAX_BYTES;
+  Object.keys(b.guardJmap.PROFILES).forEach(function (name) {
+    var declared = b.guardJmap.PROFILES[name].maxSizeRequest;
+    check("profile '" + name + "' declares a maxSizeRequest the parser honors",
+          declared <= ceiling,
+          JSON.stringify({ declared: declared, ceiling: ceiling }));
+  });
+}
+
+function testRequestSizeCapAppliesToAPreParsedBody() {
+  // `validate` documents a pre-parsed object as an accepted input, and
+  // b.mail.server.jmap's apiHandler reads `req.body`, which is what
+  // b.middleware.bodyParser leaves behind. The size cap has to hold on
+  // that input too: measuring only the string form left the documented
+  // wiring with maxSizeRequest unenforced.
+  var pad  = "x".repeat(11 * 1024 * 1024);                                                             // 11 MiB > strict's 10 MiB cap
+  var body = {
+    using:       ["urn:ietf:params:jmap:core"],
+    methodCalls: [["Core/echo", { _pad: pad }, "c0"]],
+  };
+  var threw = null;
+  try { b.guardJmap.validate(body); } catch (e) { threw = e; }
+  check("pre-parsed body over maxSizeRequest refused",
+    threw && threw.code === "urn:ietf:params:jmap:error:limit");
+  check("pre-parsed size refusal names maxSizeRequest",
+    threw && threw.limit === "maxSizeRequest");
+
+  var small = {
+    using:       ["urn:ietf:params:jmap:core"],
+    methodCalls: [["Core/echo", { hi: 1 }, "c0"]],
+  };
+  check("a pre-parsed body under the cap still validates",
+    b.guardJmap.validate(small).methodCalls.length === 1);
+}
+
 function testCompliancePosture() {
   check("posture: hipaa → strict",   b.guardJmap.compliancePosture("hipaa") === "strict");
   check("posture: pci-dss → strict", b.guardJmap.compliancePosture("pci-dss") === "strict");
@@ -225,6 +269,8 @@ function run() {
   testBackRefDepth();
   testServerCapsNotMutated();
   testRequestSizeCapInBytesNotCodeUnits();
+  testEveryProfileSizeCapIsOneTheParserWillHonor();
+  testRequestSizeCapAppliesToAPreParsedBody();
   testCompliancePosture();
 }
 

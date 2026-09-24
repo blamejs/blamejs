@@ -37,6 +37,9 @@ var IDENTITIES = [
   // literal a legal domain.
   { id: "I8", email: "ops@[192.0.2.1]" },
   { id: "I9", email: "ops@[IPv6:2001:db8::1]" },
+  // RFC 6531 section 3.3 extends atext with UTF8-non-ascii, so an SMTPUTF8
+  // deployment's identity can carry one in the local part.
+  { id: "I10", email: "üser@example.com" },
 ];
 
 // `rawHeaders` writes the header block verbatim, for a row whose point is
@@ -312,6 +315,216 @@ async function testEveryMailboxOfAFromListIsChecked() {
   check("a DQUOTE inside a comment does not hide a later author",
         hiddenByComment.created === false && hiddenByComment.error === "forbiddenFrom",
         JSON.stringify(hiddenByComment));
+
+  // RFC 6854 section 2.1 lets From carry an address-list, and RFC 5322
+  // section 3.4 defines an address as a mailbox OR a group,
+  // `display-name ":" [group-list] ";"`. A group's members are the authors;
+  // reading the whole construct as one address refused a message whose only
+  // author is the identity's own.
+  var groupOfOne = await _submit({
+    identityId: "I1", mailFrom: "ops@example.com",
+    fromHeader: "Authors: ops@example.com;",
+  });
+  check("a group naming only the identity's own address is accepted",
+        groupOfOne.created === true, JSON.stringify(groupOfOne));
+
+  // A group's mailbox-list is comma separated, so its members have to survive
+  // the same split the top level uses, and each is checked in its own right.
+  var groupOfTwoCovered = await _submit({
+    identityId: "I2", mailFrom: "sales@example.com",
+    fromHeader: "Team: sales@example.com, support@example.com;",
+  });
+  check("a group the identity covers entirely is accepted",
+        groupOfTwoCovered.created === true, JSON.stringify(groupOfTwoCovered));
+
+  var groupHidingAnAuthor = await _submit({
+    identityId: "I1", mailFrom: "ops@example.com",
+    fromHeader: "Authors: ops@example.com, ceo@bank.example;",
+  });
+  check("an author inside a group is checked like any other",
+        groupHidingAnAuthor.created === false &&
+        groupHidingAnAuthor.error === "forbiddenFrom",
+        JSON.stringify(groupHidingAnAuthor));
+  check("nothing was delivered for the group hiding an author",
+        groupHidingAnAuthor.deliveredFrom === null);
+
+  var groupBesideAMailbox = await _submit({
+    identityId: "I1", mailFrom: "ops@example.com",
+    fromHeader: "ops@example.com, Authors: ceo@bank.example;",
+  });
+  check("a group following a mailbox does not hide its members",
+        groupBesideAMailbox.created === false &&
+        groupBesideAMailbox.error === "forbiddenFrom",
+        JSON.stringify(groupBesideAMailbox));
+
+  var groupAfterAMailbox = await _submit({
+    identityId: "I1", mailFrom: "ops@example.com",
+    fromHeader: "Authors: ceo@bank.example;, ops@example.com",
+  });
+  check("a mailbox after a closed group does not cover the group's members",
+        groupAfterAMailbox.created === false &&
+        groupAfterAMailbox.error === "forbiddenFrom",
+        JSON.stringify(groupAfterAMailbox));
+
+  // RFC 5322 section 3.4 allows an empty group-list, which names no author at
+  // all. Nothing to authorize is not the same as authorized.
+  var emptyGroup = await _submit({
+    identityId: "I1", mailFrom: "ops@example.com",
+    fromHeader: "Undisclosed recipients:;",
+  });
+  check("a group naming no author is refused",
+        emptyGroup.created === false && emptyGroup.error === "forbiddenFrom",
+        JSON.stringify(emptyGroup));
+
+  // A group a sender never closes is not a group the reader can account for.
+  var unterminatedGroup = await _submit({
+    identityId: "I1", mailFrom: "ops@example.com",
+    fromHeader: "Authors: ops@example.com, ceo@bank.example",
+  });
+  check("an unterminated group is refused",
+        unterminatedGroup.created === false &&
+        unterminatedGroup.error === "forbiddenFrom",
+        JSON.stringify(unterminatedGroup));
+
+  // A wildcard identity authorizes by domain, and the domain is read by
+  // splitting at the last `@`. Nothing checked that what sits in front of it
+  // is a local part, so `ceo@bank.example;ops@example.com` presented a local
+  // part of `ceo@bank.example;ops` at `example.com` and the wildcard covered
+  // the whole string. RFC 5322 section 3.2.3 makes an unquoted local part a
+  // dot-atom, and `@` and `;` are not atext, so a receiving parser reads a
+  // different author out of the same bytes than this check authorized.
+  var spliceInFrom = await _submit({
+    identityId: "I2", mailFrom: "sales@example.com",
+    fromHeader: "ceo@bank.example;ops@example.com",
+  });
+  check("a From local part that is not a dot-atom is not covered by a wildcard",
+        spliceInFrom.created === false && spliceInFrom.error === "forbiddenFrom",
+        JSON.stringify(spliceInFrom));
+  check("nothing was delivered for the spliced From", spliceInFrom.deliveredFrom === null);
+
+  var spliceInEnvelope = await _submit({
+    identityId: "I2", mailFrom: "ceo@bank.example;ops@example.com",
+  });
+  check("an envelope local part that is not a dot-atom is not covered either",
+        spliceInEnvelope.created === false &&
+        spliceInEnvelope.error === "forbiddenMailFrom",
+        JSON.stringify(spliceInEnvelope));
+
+  // The shapes either side of the boundary: a dot-atom with the punctuation
+  // RFC 5322 section 3.2.3 admits still passes, and a doubled or edge dot does
+  // not, because dot-atom joins atoms with single dots.
+  var oddButLegal = await _submit({
+    identityId: "I2", mailFrom: "a!#$%&'*+-/=?^_`{|}~b@example.com",
+  });
+  check("a local part using every atext punctuation is covered",
+        oddButLegal.created === true, JSON.stringify(oddButLegal));
+
+  // The dot-atom rule is RFC 5322's, which is ASCII. RFC 6531 section 3.3
+  // adds UTF8-non-ascii to atext, and an identity whose local part carries
+  // one has to still cover itself: reading the ASCII grammar over every
+  // address refused an exact match.
+  var eaiExact = await _submit({
+    identityId: "I10", mailFrom: "üser@example.com",
+  });
+  check("an internationalized local part covers itself",
+        eaiExact.created === true, JSON.stringify(eaiExact));
+
+  var eaiOther = await _submit({
+    identityId: "I10", mailFrom: "öther@example.com",
+  });
+  check("and a different internationalized local part does not",
+        eaiOther.created === false && eaiOther.error === "forbiddenMailFrom",
+        JSON.stringify(eaiOther));
+
+  var eaiSpliced = await _submit({
+    identityId: "I10", mailFrom: "üser@evil.example;x@example.com",
+  });
+  check("an internationalized local part is still held to the atom shape",
+        eaiSpliced.created === false && eaiSpliced.error === "forbiddenMailFrom",
+        JSON.stringify(eaiSpliced));
+
+  // The subaddress suffix is dropped for the comparison, so it must be
+  // dropped AFTER the address has been read as a mailbox: folding first made
+  // the extra `@` of `ops+foo@evil.example@example.com` disappear before
+  // anything looked at the local part.
+  var splicedSubaddress = await _submit({
+    identityId: "I1", mailFrom: "ops+foo@evil.example@example.com",
+    subaddressDelimiter: "+",
+  });
+  check("a subaddress does not fold away a second at sign",
+        splicedSubaddress.created === false &&
+        splicedSubaddress.error === "forbiddenMailFrom",
+        JSON.stringify(splicedSubaddress));
+  check("nothing was delivered for the spliced subaddress",
+        splicedSubaddress.deliveredFrom === null);
+
+  // The border it sits next to: a subaddress on a well-formed address still
+  // folds to the identity it belongs to.
+  var plainSubaddress = await _submit({
+    identityId: "I1", mailFrom: "ops+news@example.com", subaddressDelimiter: "+",
+  });
+  check("a subaddress on a well-formed address still folds",
+        plainSubaddress.created === true, JSON.stringify(plainSubaddress));
+
+  var badDots = ["a..b@example.com", ".ab@example.com", "ab.@example.com", "a b@example.com"];
+  for (var bd = 0; bd < badDots.length; bd += 1) {
+    var refused = await _submit({ identityId: "I2", mailFrom: badDots[bd] });
+    check("a local part that is not a dot-atom is refused: " + badDots[bd],
+          refused.created === false && refused.error === "forbiddenMailFrom",
+          JSON.stringify(refused));
+  }
+
+  // A group's display-name is a phrase (RFC 5322 section 3.4), so everything
+  // before the colon has to read as one. Discarding it unchecked let a mailbox
+  // ride in front of the colon: the group's own member is the identity's
+  // address, so the element passed, and the message went out naming an author
+  // nobody authorized.
+  var mailboxBeforeTheColon = await _submit({
+    identityId: "I1", mailFrom: "ops@example.com",
+    fromHeader: "<ceo@bank.example> Authors: ops@example.com;",
+  });
+  check("a mailbox in front of a group's colon is not discarded",
+        mailboxBeforeTheColon.created === false &&
+        mailboxBeforeTheColon.error === "forbiddenFrom",
+        JSON.stringify(mailboxBeforeTheColon));
+  check("nothing was delivered for the mailbox in front of the colon",
+        mailboxBeforeTheColon.deliveredFrom === null);
+
+  var addrSpecBeforeTheColon = await _submit({
+    identityId: "I1", mailFrom: "ops@example.com",
+    fromHeader: "ceo@bank.example Authors: ops@example.com;",
+  });
+  check("a bare addr-spec in front of a group's colon is refused",
+        addrSpecBeforeTheColon.created === false &&
+        addrSpecBeforeTheColon.error === "forbiddenFrom",
+        JSON.stringify(addrSpecBeforeTheColon));
+
+  var namelessGroup = await _submit({
+    identityId: "I1", mailFrom: "ops@example.com",
+    fromHeader: ": ops@example.com;",
+  });
+  check("a group with no display-name is refused",
+        namelessGroup.created === false && namelessGroup.error === "forbiddenFrom",
+        JSON.stringify(namelessGroup));
+
+  // A colon is only a group opener where the grammar puts one. RFC 5322
+  // section 3.2.2 ctext and section 3.2.4 qcontent both admit it, and
+  // section 3.4.1 lets a domain be a bracketed literal whose IPv6 form is
+  // written with colons. The domain-literal case is covered by the identity
+  // I9 row above, which expects the message to go out.
+  var colonInComment = await _submit({
+    identityId: "I1", mailFrom: "ops@example.com",
+    fromHeader: "Ops <ops@example.com> (see: elsewhere)",
+  });
+  check("a colon inside a comment does not open a group",
+        colonInComment.created === true, JSON.stringify(colonInComment));
+
+  var colonInDisplayName = await _submit({
+    identityId: "I1", mailFrom: "ops@example.com",
+    fromHeader: '"Ops: the desk" <ops@example.com>',
+  });
+  check("a colon inside a quoted display name does not open a group",
+        colonInDisplayName.created === true, JSON.stringify(colonInDisplayName));
 
   // And the mirror: a comma inside a comment is not a separator either, so a
   // legitimate message is not refused for carrying one.

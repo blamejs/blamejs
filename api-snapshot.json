@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.20.32",
-  "createdAt": "2026-09-24T00:51:40.477Z",
+  "createdAt": "2026-09-24T05:43:49.413Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -7285,7 +7285,15 @@
           "type": "function",
           "arity": 1
         },
+        "isAtext": {
+          "type": "function",
+          "arity": 1
+        },
         "isAuditPolicy": {
+          "type": "function",
+          "arity": 1
+        },
+        "isDotAtomText": {
           "type": "function",
           "arity": 1
         },
@@ -7310,6 +7318,10 @@
           "arity": 1
         },
         "isUrlSchemeStrippable": {
+          "type": "function",
+          "arity": 1
+        },
+        "isUtf8DotAtomText": {
           "type": "function",
           "arity": 1
         },
@@ -54058,6 +54070,10 @@
         "isJsonObject": {
           "type": "function",
           "arity": 1
+        },
+        "measureBytes": {
+          "type": "function",
+          "arity": 2
         },
         "parse": {
           "type": "function",
