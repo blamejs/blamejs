@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.20.32",
-  "createdAt": "2026-09-28T16:05:03.111Z",
+  "createdAt": "2026-09-28T18:20:02.709Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -18664,7 +18664,7 @@
         },
         "resolveProfileName": {
           "type": "function",
-          "arity": 3
+          "arity": 4
         },
         "runGate": {
           "type": "function",

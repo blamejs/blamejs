@@ -353,6 +353,34 @@ function testCommentsAreNotContent() {
   check("an explicit comments:false reads the same way",
         JSON.stringify(sf.splitTopLevel(cookieLine, ";", { comments: false })) ===
         JSON.stringify(sf.splitTopLevel(cookieLine, ";")));
+
+  // The two readers answer ONE question: did the split drop something it
+  // could not terminate. `splitTopLevel` drops a trailing piece that ends
+  // inside a quoted string, a comment or an escape, so the check has to
+  // report all three. Reporting only the quoted string let an unterminated
+  // comment swallow a parameter in silence: `charset=utf-7 (unterminated`
+  // parsed as `us-ascii` with no parameters at all, which is the charset
+  // allowlist skipped rather than applied.
+  var UNTERMINATED = [
+    ['charset=utf-7 (unterminated', "a comment"],
+    ['charset="utf-7', "a quoted string"],
+    ["charset=utf-7 (note\\", "an escape inside a comment"],
+  ];
+  var missed = [];
+  UNTERMINATED.forEach(function (row) {
+    var dropped = sf.splitTopLevel("text/plain; " + row[0], ";", MIME).length < 2;
+    var reported = sf.endsInsideQuotedString("text/plain; " + row[0], MIME);
+    if (dropped !== reported) {
+      missed.push(row[1] + ": dropped=" + dropped + " reported=" + reported);
+    }
+    if (!dropped) missed.push(row[1] + ": the split kept a piece it cannot terminate");
+  });
+  check("every unterminated run is both dropped and reported" +
+        (missed.length ? " (" + missed.join("; ") + ")" : ""), missed.length === 0);
+  // The control: a value that terminates everything it opens is neither.
+  check("and a well-formed value is neither dropped nor reported",
+        sf.splitTopLevel('text/plain; charset="utf-8" (note)', ";", MIME).length === 2 &&
+        sf.endsInsideQuotedString('text/plain; charset="utf-8" (note)', MIME) === false);
 }
 
 async function run() {

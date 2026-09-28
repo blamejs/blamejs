@@ -9536,11 +9536,12 @@ async function testNoDuplicateCodeBlocks() {
         "lib/guard-sql.js:<top>",
         "lib/guard-stream-args.js:<top>",
         "lib/mail-server-imap.js:_clearSelection",
+        "lib/mail-server-imap.js:_openSelection",
         "lib/safe-ical.js:<top>",
         "lib/safe-vcard.js:<top>",
         "lib/sql.js:dropPolicy",
       ],
-      reason: "frozen keyword tables, one vocabulary per specification, sharing only the literal's shape",
+      reason: "frozen keyword tables, one vocabulary per specification, sharing only the literal's shape. The two mail-server-imap entries are the selection's open and clear, which sit beside those tables and share the shingle's shape without sharing a question with them: one stamps the identity a SELECT creates, the other drops it",
     },
     {
       // A refusal built from the caller's own error class, code and prose,

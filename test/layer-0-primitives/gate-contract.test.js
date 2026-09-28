@@ -2829,7 +2829,7 @@ async function run() {
   testDefineGuardAmplificationCapIsARatio();
   await testResidualBranches();
   testDefineParser();
-  testProfilesAreFrozenThroughAndThrough();
+  await testProfilesAreFrozenThroughAndThrough();
   testAnUnknownPostureIsRefusedByName();
   testMakeIssueReporter();
 }
@@ -2844,7 +2844,7 @@ async function run() {
 // `b.guardSql.PROFILES.strict.maxLength = 1e9` and change what the guard
 // enforces for the whole process — the value the guard itself reads at
 // validate time. 62 guard profiles were writable this way.
-function testProfilesAreFrozenThroughAndThrough() {
+async function testProfilesAreFrozenThroughAndThrough() {
   var parser = GC.defineParser({
     name:       "frozen-probe",
     entry:      function () { return true; },
@@ -2883,6 +2883,56 @@ function testProfilesAreFrozenThroughAndThrough() {
         threwDeep !== null && String(threwDeep.code).indexOf("gate-contract/") === 0,
         JSON.stringify({ code: threwDeep && threwDeep.code,
                          leafFrozen: Object.isFrozen(deep.leaf) }));
+
+  // `resolveProfileName` is the posture reader every non-guard consumer uses,
+  // and it built its refusal from `GateContractError` with
+  // `gate-contract/bad-posture` whatever the caller was. An operator who
+  // mistyped a posture on `b.mail.scan.create` got an error from a module they
+  // never called, under a code their own catch does not match, while the
+  // release says the refusal is `<module>/bad-posture`. The caller's class is
+  // what it throws now, and every in-tree consumer is walked here rather than
+  // one being spot-checked.
+  var fakeResolver = { query: function () { return Promise.resolve([]); } };
+  var POSTURE_CONSUMERS = [
+    ["b.guardEnvelope.check",  function () {
+      return b.guardEnvelope.check({ mailFrom: "a@example.com" }, { posture: "hippa" });
+    }, "GuardEnvelopeError", "guard-envelope/bad-posture"],
+    ["b.mail.greylist.create", function () { return b.mail.greylist.create({ posture: "hippa" }); },
+     "MailGreylistError",   "mail-greylist/bad-posture"],
+    ["b.mail.helo.evaluate",   function () {
+      return b.mail.helo.evaluate(
+        { ip: "203.0.113.42", claimedName: "mail.example.com", resolver: fakeResolver },
+        { posture: "hippa" });
+    }, "MailHeloError",      "mail-helo/bad-posture"],
+    ["b.mail.rbl.create",      function () {
+      return b.mail.rbl.create({ posture: "hippa", resolver: fakeResolver });
+    }, "MailRblError",       "mail-rbl/bad-posture"],
+    ["b.mail.scan.create",     function () {
+      return b.mail.scan.create({ posture: "hippa", host: "127.0.0.1", port: 3310 });                 // allow:raw-byte-literal — test-only clamd port
+    }, "MailScanError",      "mail-scan/bad-posture"],
+    ["b.mail.spamScore.create", function () {
+      return b.mail.spamScore.create({ posture: "hippa", scorer: function () { return 0; } });
+    }, "MailSpamScoreError", "mail-spam-score/bad-posture"],
+  ];
+  var wrongClass = [];
+  for (var pc = 0; pc < POSTURE_CONSUMERS.length; pc += 1) {
+    var row = POSTURE_CONSUMERS[pc];
+    var threw = null;
+    try {
+      var rv = row[1]();
+      // An async consumer refuses inside the promise; settle it before judging.
+      if (rv && typeof rv.then === "function") {
+        await rv.then(function () { return null; }, function (e) { threw = e; });
+      }
+    } catch (e) { threw = e; }
+    if (!threw || threw.constructor.name !== row[2] || threw.code !== row[3]) {
+      wrongClass.push(row[0] + " -> " +
+        (threw ? threw.constructor.name + "/" + threw.code : "ACCEPTED"));
+    }
+  }
+  check("an unknown posture is refused by the module the operator called" +
+        (wrongClass.length ? " (" + wrongClass.join("; ") + ")" : ""),
+        wrongClass.length === 0);
 
   // A cycle is the same question: it cannot be frozen through, so it is
   // refused rather than returned part-frozen.

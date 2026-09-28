@@ -3252,6 +3252,68 @@ async function testARemovalThatOutlivesItsSelectionIsStillRecorded() {
   }
 }
 
+async function testACommandInFlightSurvivesAConcurrentRename() {
+  // A rename keeps the selection, so a command that was already talking to
+  // the store when the rename landed is still a command about the mailbox
+  // this session has open. The staleness check compared mailbox NAMES, which
+  // was the same question while a name could not move under a selection and
+  // a different one once it could: the client was answered `NO [CLOSED]` for
+  // a selection the server still holds. What has to survive a rename is the
+  // selection's identity, not its name.
+  var release = null;
+  var fetched = [];
+  var store = _baseStore({
+    listFolders: function () {
+      return Promise.resolve([{ name: "INBOX" }, { name: "Work" }]);
+    },
+    fetchRange: function (_actor, name) {
+      fetched.push(name);
+      return new Promise(function (res) {
+        release = function () { res([{ seq: 1, payload: "FLAGS (\\Seen)" }]); };
+      });
+    },
+  });
+  var s = await _makeServer({
+    profile: "permissive", mailStore: store,
+    mailboxAdmin: { renameFolder: function () { return Promise.resolve(); } },
+  });
+  var sock = await _authConn(s);
+  var admin = await _authConn(s);
+  try {
+    await _cmd(sock, "p1", "SELECT Work");
+    var pending = _cmdT(sock, "p2", "FETCH 1 (FLAGS)", /^p2 /m);
+    await helpers.waitUntil(function () { return release !== null; },
+      { timeoutMs: 5000, label: "imap rename in flight: the store call is in flight" });              // allow:raw-time-literal — test-only wait budget
+    await _cmd(admin, "q1", "RENAME Work Archive");
+    release();
+    var reply = await pending;
+    check("a FETCH crossed by a rename completes rather than being refused",
+          /^p2 OK/m.test(reply) && !/\[CLOSED\]/.test(reply), JSON.stringify(reply));
+    check("and the rows it read are written to the client",
+          /^\* 1 FETCH /m.test(reply), JSON.stringify(reply));
+    // The control: a DELETE across the same window still invalidates it,
+    // because that mailbox is gone rather than renamed.
+    var s2 = await _makeServer({
+      profile: "permissive", mailStore: store,
+      mailboxAdmin: { deleteFolder: function () { return Promise.resolve(); } },
+    });
+    var sock2 = await _authConn(s2);
+    var admin2 = await _authConn(s2);
+    try {
+      release = null;
+      await _cmd(sock2, "r1", "SELECT Work");
+      var pending2 = _cmdT(sock2, "r2", "FETCH 1 (FLAGS)", /^r2 /m);
+      await helpers.waitUntil(function () { return release !== null; },
+        { timeoutMs: 5000, label: "imap delete in flight: the store call is in flight" });            // allow:raw-time-literal — test-only wait budget
+      await _cmd(admin2, "s1", "DELETE Work");
+      release();
+      var reply2 = await pending2;
+      check("a FETCH crossed by a DELETE is still refused",
+            /^r2 NO \[CLOSED\]/m.test(reply2), JSON.stringify(reply2));
+    } finally { sock2.destroy(); admin2.destroy(); await s2.srv.close(); }
+  } finally { sock.destroy(); admin.destroy(); await s.srv.close(); }
+}
+
 async function testCloseRemovesThroughTheStoreSeamOnly() {
   // An EXPUNGE override is written to serve the EXPUNGE command: it holds the
   // connection, writes untagged responses and answers a tag. RFC 9051 §6.4.2
@@ -4902,6 +4964,7 @@ async function run() {
     await wtt("handler past its budget",  testAHandlerPastItsBudgetEndsTheConnection);
     await wtt("close uses the store seam", testCloseRemovesThroughTheStoreSeamOnly);
     await wtt("stale removal is recorded", testARemovalThatOutlivesItsSelectionIsStillRecorded);
+    await wtt("in-flight command survives a rename", testACommandInFlightSurvivesAConcurrentRename);
     await wtt("handler's own answer",     testAnAnswerAnOperatorHandlerWroteItselfCounts);
     await wtt("auth gate covers every verb", testEveryAuthenticatedVerbIsGatedBeforeItsHandler);
     await wtt("answer reaches every form", testParsedAnswerReachesEveryOverrideForm);

@@ -768,13 +768,32 @@ async function testRenamingTheSelectedMailboxClosesIt() {
     await c.cmd("a1", 'SELECT "Archive"');
     var renamed = await c.cmd("a2", 'RENAME "Archive" "Renamed"');
     check("the rename succeeds", /^a2 OK/m.test(renamed), renamed);
-    check("and the session is told its mailbox closed",
-          /^\* OK \[CLOSED\]/m.test(renamed), renamed);
+    // RFC 9051 §3 ends the selected state on CLOSE, UNSELECT, an unsolicited
+    // CLOSED, a failed SELECT or EXAMINE, or LOGOUT, and a rename is none of
+    // them; §7.1 defines CLOSED for a mailbox closed IMPLICITLY by SELECT or
+    // EXAMINE on another mailbox, as a boundary between two selections, so
+    // sending it here reported something that did not happen. `renameFolder`
+    // is one `UPDATE folders SET name` against the same row, so UIDVALIDITY
+    // is unchanged and the messages are the same messages: the selection
+    // follows the name, and §6.3.6's unsolicited LIST with OLDNAME is how the
+    // client is told the name moved.
+    check("the session keeps its selection rather than being told it closed",
+          !/\[CLOSED\]/.test(renamed), renamed);
+    // RFC 9051 §6.3.9.7's own example: `* LIST () "/" "NewMailbox"
+    // ("OLDNAME" ("OldMailbox"))`.
+    check("and the rename is announced with OLDNAME, per RFC 9051 section 6.3.9.7",
+          /^\* LIST \(\) "\/" "Renamed" \("OLDNAME" \("Archive"\)\)/m.test(renamed),
+          renamed.slice(0, 300));
 
     asked.length = 0;
-    await c.cmd("a3", 'SELECT "Renamed"');
-    check("so it selects the mailbox again under its new name, learning the new UIDVALIDITY",
-          asked.indexOf("Renamed") !== -1, JSON.stringify(asked));
+    var fetched = await c.cmd("a3", "FETCH 1 (FLAGS)");
+    // A selected-state command gets past the state gate and reaches the store
+    // seam (this fixture supplies no `fetchRange`, so the refusal names the
+    // backend). Being refused "only valid in Selected state" is what a lost
+    // selection looks like, and no SELECT was needed to get here.
+    check("a selected-state command is still admitted, under the new name",
+          !/only valid in Selected/i.test(fetched) && asked.length === 0,
+          fetched.slice(0, 200) + " :: reselected=" + JSON.stringify(asked));
 
     var status = await c.cmd("a4", 'STATUS "Renamed" (MESSAGES)');
     check("the renamed mailbox answers STATUS", /^a4 OK/m.test(status), status);
