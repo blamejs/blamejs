@@ -936,25 +936,40 @@ function testParsingWalksAgreeWithThePatternsTheyReplaced() {
     // as the tail of another parameter's name, so it is not the reference
     // for whether a parameter IS the filename: a parameter starts at the
     // head of the value or after a semicolon.
-    var m = /(?:^|;)[ \t]*filename\*?=([^;]+)/i.exec(cd);
-    var ref = m ? m[1].trim() : null;
+    var m = /(?:^|;)[ \t]*filename(\*?)=([^;]+)/i.exec(cd);
+    var ref = m ? m[2].trim() : null;
     var got = api.filenameParamValue(cd);
-    if (ref !== got) {
+    if (ref !== (got && got.raw)) {
       cdDiffs.push(JSON.stringify(cd) + " want " + JSON.stringify(ref) +
-                   " got " + JSON.stringify(got));
+                   " got " + JSON.stringify(got && got.raw));
+    }
+    // Which of the two forms matched is part of the answer: the
+    // charset'language' prefix belongs to `filename*=` and a `filename=`
+    // value is literal, so a reader that cannot tell them apart renames a
+    // file whose name opens with two apostrophes.
+    if (ref !== null && (m[1] === "*") !== got.extended) {
+      cdDiffs.push(JSON.stringify(cd) + " form want " + JSON.stringify(m[1] === "*") +
+                   " got " + JSON.stringify(got.extended));
     }
   });
   check("the filename-parameter walk agrees with the pattern it replaced",
         cdDiffs.length === 0, cdDiffs.slice(0, 3).join(" | "));
 
+  // RFC 2231 §4 writes `extended-initial-value := [charset] "'" [language] "'"
+  // extended-other-values`, and BOTH bracketed parts are optional: `''x` is a
+  // prefix carrying neither, and a reader that required a charset left the
+  // two apostrophes in the filename. The reference pattern says the same
+  // thing as the grammar, so the walk is compared against `*` rather than `+`
+  // for the charset. RFC 8187 requires a charset for an HTTP field; this
+  // reader serves MIME parts, where §4 does not.
   var EXT_VALUES = ["UTF-8''a", "UTF-8'en'a", "utf_8''x", "''x", "UTF-8'a",
-                    "UTF-8", "a'b'c", "a b'c'", "-''x", "UTF-8''"];
+                    "UTF-8", "a'b'c", "a b'c'", "-''x", "UTF-8''", "'en'x", "'"];
   var extDiffs = [];
   EXT_VALUES.forEach(function (v) {
-    var ref = /^[A-Za-z0-9_-]+'[A-Za-z0-9_-]*'/.test(v);
+    var ref = /^[A-Za-z0-9_-]*'[A-Za-z0-9_-]*'/.test(v);
     if (ref !== api.hasRfc2231CharsetPrefix(v)) extDiffs.push(JSON.stringify(v));
   });
-  check("the RFC 2231 ext-value prefix walk agrees with the pattern it replaced",
+  check("the RFC 2231 ext-value prefix walk agrees with the grammar's optional parts",
         extDiffs.length === 0, extDiffs.join(" | "));
 }
 

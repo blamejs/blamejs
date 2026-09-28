@@ -1490,6 +1490,192 @@ function testTheSelectionIsReadableOnItsOwn() {
         b.safeMime.selectBodyParts(null).html.length === 0);
 }
 
+function testAFilenameSplitAcrossContinuationsIsReadWhole() {
+  // RFC 2231 §3 lets a sender split a long parameter across numbered
+  // segments, and §4.1 puts the charset'language' prefix on the first one
+  // while flagging each percent-encoded segment with a trailing `*`. The
+  // reader consumed the `*` and then required an `=`, so `filename*0*=` was
+  // no filename at all and neither was `filename*1*=`: the part came back
+  // named `null`. A part whose only mark of being a file is that name is then
+  // classified as displayed text, so it vanishes from `extractAttachments`
+  // and from a JMAP `Email/get`'s attachment list.
+  function _cont(cd) {
+    return { get: function (n) {
+      return String(n).toLowerCase() === "content-disposition" ? cd : null;
+    } };
+  }
+  // RFC 2231 §4.1 writes the two apostrophes of the charset'language' prefix
+  // literally; only the value after them is percent-encoded.
+  var CASES = [
+    ["percent-encoded segments",
+     "attachment; filename*0*=utf-8''long%20; filename*1*=notes.txt",
+     "long notes.txt"],
+    ["a plain first segment and the rest",
+     "attachment; filename*0=\"long \"; filename*1=\"notes.txt\"",
+     "long notes.txt"],
+    ["three segments in order",
+     "attachment; filename*0*=utf-8''a; filename*1*=b; filename*2*=c.txt",
+     "abc.txt"],
+    ["segments written out of order",
+     "attachment; filename*1*=notes.txt; filename*0*=utf-8''long%20",
+     "long notes.txt"],
+    ["a non-ASCII name across segments",
+     "attachment; filename*0*=utf-8''r%C3%A9; filename*1*=el.pdf",
+     "réel.pdf"],
+    // Each segment is decoded by its OWN flag. An unflagged one is literal,
+    // so a percent sign in it is a percent sign: escaping it for a shared
+    // decode pass returned `100%25 done.txt` for a name the sender wrote as
+    // `100% done.txt`, and an unflagged run has no charset prefix to trigger
+    // that pass at all.
+    ["a literal percent in an unflagged run",
+     "attachment; filename*0=\"100%\"; filename*1=\" done.txt\"",
+     "100% done.txt"],
+    ["an unflagged segment beside a flagged one",
+     "attachment; filename*0=\"plain\"; filename*1*=%20name.txt",
+     "plain name.txt"],
+    ["a flagged run with no charset prefix",
+     "attachment; filename*0*=a%20b; filename*1*=.txt",
+     "a b.txt"],
+    // RFC 2231 §3 may split a CHARACTER between segments, so the value is
+    // assembled as bytes and decoded once. Decoding segment by segment left
+    // `r%C3` and `%A9el.pdf` each undecodable and the escapes in the name.
+    ["a multibyte character split across the boundary",
+     "attachment; filename*0*=utf-8''r%C3; filename*1*=%A9el.pdf",
+     "réel.pdf"],
+    ["and one split with the charset named upper-case",
+     "attachment; filename*0*=UTF-8''caf%C3; filename*1*=%A9.txt",
+     "café.txt"],
+    // Only a `*`-flagged segment is percent-encoded bytes. An unflagged one
+    // is text the header already decoded, so pushing it through a byte
+    // encoding loses whatever is not in that encoding: `café` came back with
+    // a replacement character.
+    ["unencoded non-ASCII in an unflagged segment",
+     "attachment; filename*0=\"café\"; filename*1=\".txt\"",
+     "café.txt"],
+    // RFC 2231 §4 makes the charset and the language optional, so `''` is a
+    // prefix with neither. Requiring a charset left the two apostrophes in
+    // the name.
+    ["an omitted charset in a continuation",
+     "attachment; filename*0*=''name; filename*1*=.txt",
+     "name.txt"],
+    // An empty unflagged segment contributes no characters, so it does not
+    // separate the flagged segments on either side of it. Ending the byte run
+    // at one left `r%C3` and `%A9el.pdf` decoded apart again, which is the
+    // failure the byte-run assembly exists to stop.
+    ["an empty unflagged segment inside a split character",
+     "attachment; filename*0*=utf-8''r%C3; filename*1=\"\"; filename*2*=%A9el.pdf",
+     "réel.pdf"],
+    // The charset'language' prefix belongs to the extended form. An unflagged
+    // segment is literal, so a name that opens with two apostrophes keeps
+    // them.
+    ["apostrophes in an unflagged first segment",
+     "attachment; filename*0=\"''report\"; filename*1=\".txt\"",
+     "''report.txt"],
+    // RFC 2231 §3 concatenates the sections into one value and §4 declares one
+    // charset for that value, so an unflagged section contributes octets to
+    // the same run rather than a separately decoded string of its own. A
+    // header carries only ASCII there, and ASCII text is its own octets, so
+    // the two readings differ only where a character is split across the
+    // boundary: `%4E` and `-` are the two halves of one UTF-16BE character.
+    ["a character split between a flagged and an unflagged segment",
+     "attachment; filename*0*=utf-16be''%4E; filename*1=\"-\"",
+     "中"],
+    // The combined example §4.1 writes out, with `filename` for its `title`.
+    ["the combined example RFC 2231 §4.1 writes",
+     "attachment; filename*0*=us-ascii'en'This%20is%20even%20more%20; " +
+     "filename*1*=%2A%2A%2Afun%2A%2A%2A%20; filename*2=\"isn't it!\"",
+     "This is even more ***fun*** isn't it!"],
+  ];
+  var wrong = [];
+  CASES.forEach(function (row) {
+    var got = b.safeMime.filenameFromHeaders(_cont(row[1]));
+    if (got !== row[2]) wrong.push(row[0] + ": " + JSON.stringify(got));
+  });
+  check("a filename split across RFC 2231 continuations reads whole" +
+        (wrong.length ? " (" + wrong.join("; ") + ")" : ""), wrong.length === 0);
+
+  // A run with a gap names nothing whole, so it names nothing: guessing at
+  // the missing piece would hand a caller a filename the sender did not
+  // write.
+  var gapped = "attachment; filename*0*=utf-8''a; filename*2*=c.txt";
+  check("a continuation run missing a segment is not a filename",
+        b.safeMime.filenameFromHeaders(_cont(gapped)) === null,
+        JSON.stringify(b.safeMime.filenameFromHeaders(_cont(gapped))));
+  // The control: the single-parameter forms are unaffected.
+  check("and the plain and extended single forms still read",
+        b.safeMime.filenameFromHeaders(_cont('attachment; filename="notes.txt"')) === "notes.txt" &&
+        b.safeMime.filenameFromHeaders(
+          _cont("attachment; filename*=utf-8''r%C3%A9el.pdf")) === "réel.pdf");
+  // The single extended form takes the same optional charset, and did not:
+  // the two apostrophes stayed in the name there too.
+  check("a single filename* with an omitted charset reads without its prefix",
+        b.safeMime.filenameFromHeaders(_cont("attachment; filename*=''name.txt")) === "name.txt",
+        JSON.stringify(b.safeMime.filenameFromHeaders(
+          _cont("attachment; filename*=''name.txt"))));
+  // That prefix is the extended form's alone. A plain `filename=` carries a
+  // literal string, so reading the same two apostrophes there renamed a file
+  // the sender had named `''report.txt`.
+  var apostrophes = "attachment; filename=\"''report.txt\"";
+  check("a plain filename keeps a leading pair of apostrophes",
+        b.safeMime.filenameFromHeaders(_cont(apostrophes)) === "''report.txt",
+        JSON.stringify(b.safeMime.filenameFromHeaders(_cont(apostrophes))));
+
+  // The guarantee the case table samples: where a sender splits a value is the
+  // sender's choice, so splitting one must not change the name it spells. Every
+  // boundary that does not cut a `%XX` escape is tried, in both the all-flagged
+  // form and the mixed form a plain tail gives, against the single-parameter
+  // spelling of the same name.
+  function _pctUtf8(name) {
+    var buf = Buffer.from(name, "utf8");
+    var out = "";
+    for (var i = 0; i < buf.length; i += 1) {
+      var ch = String.fromCharCode(buf[i]);
+      var unreserved = (ch >= "A" && ch <= "Z") || (ch >= "a" && ch <= "z") ||
+                       (ch >= "0" && ch <= "9") || ch === "." || ch === "_" ||
+                       ch === "~" || ch === "-";
+      out += unreserved ? ch
+                        : "%" + (buf[i] < 16 ? "0" : "") + buf[i].toString(16).toUpperCase();
+    }
+    return out;
+  }
+  var SPLIT_NAMES = [
+    "notes.txt", "long notes.txt", "réel.pdf", "café.txt", "中文.txt",
+    "100% done.txt", "a'b'c.txt", "''weird.txt", "spa ce+plus.tar.gz",
+  ];
+  var splitWrong = [];
+  var splitsTried = 0;
+  SPLIT_NAMES.forEach(function (name) {
+    var enc = _pctUtf8(name);
+    var whole = b.safeMime.filenameFromHeaders(_cont("attachment; filename*=utf-8''" + enc));
+    if (whole !== name) splitWrong.push("single " + JSON.stringify(name));
+    for (var k = 0; k <= enc.length; k += 1) {
+      var head = enc.slice(0, k);
+      var pct = head.lastIndexOf("%");
+      if (pct !== -1 && pct > head.length - 3) continue;
+      var tail = enc.slice(k);
+      splitsTried += 1;
+      var flagged = b.safeMime.filenameFromHeaders(
+        _cont("attachment; filename*0*=utf-8''" + head + "; filename*1*=" + tail));
+      if (flagged !== name) {
+        splitWrong.push(JSON.stringify(name) + " flagged split at " + k + ": " + JSON.stringify(flagged));
+      }
+      // An unflagged section is literal, so it can only carry the part of the
+      // value that has no escapes left in it.
+      if (tail.indexOf("%") !== -1) continue;
+      splitsTried += 1;
+      var mixed = b.safeMime.filenameFromHeaders(
+        _cont("attachment; filename*0*=utf-8''" + head + "; filename*1=\"" + tail + "\""));
+      if (mixed !== name) {
+        splitWrong.push(JSON.stringify(name) + " mixed split at " + k + ": " + JSON.stringify(mixed));
+      }
+    }
+  });
+  check("splitting a filename across segments never changes the name (" +
+        splitsTried + " boundaries)" +
+        (splitWrong.length ? ": " + splitWrong.slice(0, 4).join("; ") : ""),
+        splitWrong.length === 0 && splitsTried > 150);
+}
+
 function testOnlyTheFilenameParameterIsReadAsTheFilename() {
   // The reader searched the header for the text "filename", which is the
   // tail of every parameter ending in those letters. A sender writing
@@ -1610,6 +1796,7 @@ async function run() {
   testInlineInclusionReturnsEveryLeaf();
   testInlineInclusionKeepsDocumentOrder();
   testTheSelectionIsReadableOnItsOwn();
+  testAFilenameSplitAcrossContinuationsIsReadWhole();
   testOnlyTheFilenameParameterIsReadAsTheFilename();
   testOnlyTheNameParameterIsReadAsTheName();
 }

@@ -548,10 +548,14 @@ var BACKEND_LIVE_MAP = [
   },
   {
     backend:  "smtp-mail",
+    // `lib/safe-mime.js` belongs here because `b.mailStore` parses every
+    // APPEND through it and records what it found, so a change to that reader
+    // decides what a live store files as an attachment. Naming only the
+    // listener modules left it reaching a merge on header-string coverage.
     match:    ["lib/mail-send", "lib/mail-require-tls",
                "lib/mail-server", "lib/network-smtp-policy", "lib/mail-dkim",
                "lib/mail-crypto", "lib/mail-deploy", "lib/mail-auth",
-               "lib/mail.js"],
+               "lib/safe-mime", "lib/mail-store", "lib/mail.js"],
     services: ["mailpit"],
     tests:    ["mail-smtp", "mail-dkim", "mail-crypto-smime", "mail-listeners"],
   },
