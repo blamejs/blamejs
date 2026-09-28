@@ -844,18 +844,21 @@ async function testAnotherAccountsSelectionIsLeftAlone() {
     var otherStill = await two.cmd("b2", "NOOP");
     check("the other account's connection is still usable",
           /^b2 OK/m.test(otherStill), otherStill);
-    // NOOP and CLOSE both answer OK whether or not the selection was
-    // released, so neither can tell the two apart. The untagged [CLOSED]
-    // this release emits is the signal, and EXPUNGE is the command that
-    // reads the selection: it answers "NO No mailbox selected" once it has
-    // gone.
+    // NOOP answers OK whether or not the selection was released, so it
+    // cannot tell the two apart. The untagged [CLOSED] this release emits is
+    // the signal, and a selected-state command is what reads the selection:
+    // CHECK answers OK while a mailbox is held and BAD once it has gone, and
+    // unlike EXPUNGE it asks nothing of the store.
     check("the other account was never told its mailbox closed",
           two.text().indexOf("[CLOSED]") === -1,
           JSON.stringify(two.text().slice(-200)));
-    var otherActs = await two.cmd("b3", "EXPUNGE");
+    var otherActs = await two.cmd("b3", "CHECK");
     check("and it can still act on the mailbox it holds",
           /^b3 OK/m.test(otherActs), otherActs);
-    var otherClose = await two.cmd("b4", "CLOSE");
+    // UNSELECT rather than CLOSE, because this store has no expunge backend
+    // and CLOSE promises a removal it could not make. Either verb answers
+    // from the selected state, which is what is being read here.
+    var otherClose = await two.cmd("b4", "UNSELECT");
     check("and closes from the selected state",
           /^b4 OK/m.test(otherClose), otherClose);
   } finally {
@@ -1420,12 +1423,12 @@ async function testRenamingInboxDoesNotMoveTheSelection() {
 
     // STATUS reads its mailbox out of its own arguments and never looks at
     // the session's selection, so it answers OK whether the selection was
-    // released or not: both outcomes mapped into it. EXPUNGE is the command
-    // that reads the selection. This store has no expungeFolder, so a
-    // selected session is answered OK and a released one is answered
-    // "NO No mailbox selected".
+    // released or not: both outcomes mapped into it. A selected-state
+    // command is what reads the selection, and CHECK is the one that asks
+    // nothing of the store: it answers OK while a mailbox is held and BAD
+    // once it has gone.
     selected.length = 0;
-    var acted = await c.cmd("a3", "EXPUNGE");
+    var acted = await c.cmd("a3", "CHECK");
     check("and INBOX is still the mailbox the session can act on",
           /^a3 OK/m.test(acted), acted);
     check("without the session having reselected anything",

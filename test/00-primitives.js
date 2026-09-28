@@ -9761,6 +9761,30 @@ function testPickPoisonedKeyPrimitive() {
                                           pick.isPoisonedKey(null) === false &&
                                           pick.isPoisonedKey(undefined) === false);
 
+  // movesThePrototype answers a narrower question than isPoisonedKey: which
+  // name, assigned to a fresh object, replaces that object's prototype. Only
+  // `__proto__` does; `constructor` and `prototype` become ordinary own
+  // properties, which is why a protocol that admits them by name needs a
+  // predicate that does not fold all three together. It is a fact about the
+  // language, so `registerPoisonedKeys` does not widen it.
+  check("movesThePrototype __proto__",   pick.movesThePrototype("__proto__") === true);
+  check("movesThePrototype constructor", pick.movesThePrototype("constructor") === false);
+  check("movesThePrototype prototype",   pick.movesThePrototype("prototype") === false);
+  check("movesThePrototype other",       pick.movesThePrototype("displayName") === false &&
+                                         pick.movesThePrototype(42) === false &&
+                                         pick.movesThePrototype(null) === false);
+  var probe = {};
+  probe.constructor = "c";
+  probe.prototype = "p";
+  check("and the language agrees: neither name moved the prototype",
+        Object.getPrototypeOf(probe) === Object.prototype &&
+        Object.prototype.hasOwnProperty.call(probe, "constructor") &&
+        Object.prototype.hasOwnProperty.call(probe, "prototype"));
+  pick.registerPoisonedKeys(["movesThePrototypeProbe"]);
+  check("registerPoisonedKeys does not widen movesThePrototype",
+        pick.isPoisonedKey("movesThePrototypeProbe") === true &&
+        pick.movesThePrototype("movesThePrototypeProbe") === false);
+
   // POISONED_KEYS — the frozen core snapshot.
   check("POISONED_KEYS frozen core",    Object.isFrozen(pick.POISONED_KEYS) &&
                                           pick.POISONED_KEYS.join(",") === "__proto__,constructor,prototype");
@@ -14153,9 +14177,12 @@ function testJsonParseStringOrObject() {
   // byte-identical to a raw JSON.parse.
   var fromStr = b.safeJson.parseStringOrObject('{"a":1,"b":[2,3]}');
   check("parseStringOrObject parses a string",            fromStr.a === 1 && fromStr.b[1] === 3);
-  // Object → passed through unchanged (same reference).
+  // Object → its JSON form, read once and handed over, so the caps are a
+  // statement about the value the caller ends up holding.
   var obj = { openapi: "3.0.0" };
-  check("parseStringOrObject passes an object through",   b.safeJson.parseStringOrObject(obj) === obj);
+  var fromObj = b.safeJson.parseStringOrObject(obj);
+  check("parseStringOrObject answers an object with its JSON form",
+        fromObj !== obj && fromObj.openapi === "3.0.0");
   // The proto-pollution defense applies to the STRING path (a raw JSON.parse
   // would keep "__proto__" as an own key); the marker'd hand-rolls bypassed it.
   var stripped = b.safeJson.parseStringOrObject('{"__proto__":{"isAdmin":true},"name":"alice"}');

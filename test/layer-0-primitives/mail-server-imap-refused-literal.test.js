@@ -2,8 +2,9 @@
 // Copyright (c) blamejs contributors
 "use strict";
 /**
- * A refused IMAP command line that opened a literal still consumes the
- * literal's octets, so the payload is never parsed as protocol.
+ * A refused IMAP command line that opened a non-synchronizing literal ends
+ * the connection, so the payload already in flight is never parsed as
+ * protocol.
  *
  * `b.mail.server.imap` read a line, handed it to `b.guardImapCommand`, and on
  * a refusal wrote `BAD` and returned without arming `state.pendingLiteral`.
@@ -17,10 +18,14 @@
  * opener belong to that command, not to the command stream.
  *
  * Three refusal paths returned that way: the guard's own refusal, the
- * oversize-literal refusal and the pre-authentication refusal. The octets are
- * consumed only for `{N+}`, which is the form whose payload is already in
- * flight; for `{N}` the client is waiting for a continuation the refusal never
- * sends, so consuming N octets there would eat the client's next command.
+ * oversize-literal refusal and the pre-authentication refusal. Discarding the
+ * announced octets closes the single-literal case and only that one: RFC 9051
+ * §4.3 ends the line at each opener, so a command carrying two literals puts
+ * the second size on a line the refusal never reached, and discarding the
+ * first leaves the second payload at the head of the stream. The server says
+ * BYE and closes instead. `{N}` is untouched, because there the client waits
+ * for a continuation the refusal never sends, so no payload is in flight and
+ * the connection is still in step.
  */
 
 var helpers = require("../helpers");
@@ -92,15 +97,20 @@ async function _open(createOpts) {
 var SMUGGLED = "z9 NOOP";
 var SMUGGLED_BYTES = SMUGGLED.length;
 
-async function testAGuardRefusalConsumesTheLiteral() {
+async function testAGuardRefusalEndsTheConnection() {
   // `LOGIN {5+}` opens a LITERAL+ the guard refuses (RFC 7888 forbids it
   // pre-authentication), so the five octets that follow are the literal's,
-  // not a command.
+  // not a command. Discarding exactly those octets keeps the connection in
+  // step for this shape and only this shape: the announced size is the FIRST
+  // literal's, a command may announce several, and the refusal happened
+  // because the line was not parsed, so the later sizes are not known. The
+  // server says BYE and closes rather than guessing where the payload ends.
   var c = await _open();
   try {
     c.send("a1 LOGIN {" + SMUGGLED_BYTES + "+}\r\n" + SMUGGLED + "\r\na2 CAPABILITY\r\n");
-    await helpers.waitUntil(function () { return /^a2 /m.test(c.text()); },
-      { timeoutMs: 5000, label: "imap refused-literal: a2 answered" });
+    await helpers.waitUntil(function () { return /BYE/.test(c.text()) || c.socket.destroyed; },
+      { timeoutMs: 5000, label: "imap refused-literal: the connection is ended" });
+    await helpers.passiveObserve(300, "imap refused-literal: nothing further executes");            // allow:raw-time-literal — test-only observation window
     var transcript = c.text();
     check("the opener is refused", /BAD .*LITERAL\+ refused/.test(transcript),
           transcript.slice(0, 200));
@@ -113,8 +123,35 @@ async function testAGuardRefusalConsumesTheLiteral() {
     check("the literal's octets do not reach the parser at all",
           (transcript.match(/^(?:\*|\S+) BAD/mg) || []).length === 1,
           transcript.slice(0, 400));
-    check("the connection resynchronizes, so the next real command answers",
-          /^a2 OK/m.test(transcript), transcript.slice(0, 400));
+    check("the connection is told BYE and ended",
+          /^\* BYE Refused literal cannot be resynchronized/m.test(transcript),
+          transcript.slice(0, 400));
+    check("and the command that followed the payload is never answered",
+          /^a2 /m.test(transcript) === false, transcript.slice(0, 400));
+  } finally { await c.close(); }
+}
+
+async function testACommandAnnouncingTwoLiteralsCannotSmuggleThroughTheSecond() {
+  // The shape that rules out discarding. RFC 9051 §4.3 ends the line at each
+  // literal opener, so a command carrying two of them puts the SECOND size on
+  // a continuation the server never reads: it refused the first line and
+  // stopped parsing there. Discarding the one size it knows leaves the second
+  // payload at the head of the stream, where the line reader takes it for a
+  // command. Measured against the discarding form: `z9 CAPABILITY` was
+  // answered `z9 OK CAPABILITY completed`, before any LOGIN.
+  var SECOND = "z9 CAPABILITY";
+  var c = await _open();
+  try {
+    c.send("d1 LOGIN {" + SMUGGLED_BYTES + "+}\r\n" + SMUGGLED +
+           " {" + SECOND.length + "+}\r\n" + SECOND + "\r\n");
+    await helpers.waitUntil(function () { return /BYE/.test(c.text()) || c.socket.destroyed; },
+      { timeoutMs: 5000, label: "imap refused-literal: two-literal opener ends the connection" });
+    await helpers.passiveObserve(300, "imap refused-literal: the second payload does not execute"); // allow:raw-time-literal — test-only observation window
+    var transcript = c.text();
+    check("neither announced payload is executed as a command",
+          transcript.indexOf("z9 ") === -1, transcript.slice(0, 400));
+    check("the connection is ended rather than resynchronized",
+          /BYE/.test(transcript) || c.socket.destroyed, transcript.slice(0, 400));
   } finally { await c.close(); }
 }
 
@@ -166,7 +203,8 @@ async function testARefusedSynchronizingLiteralDoesNotEatTheNextCommand() {
 }
 
 async function run() {
-  await testAGuardRefusalConsumesTheLiteral();
+  await testAGuardRefusalEndsTheConnection();
+  await testACommandAnnouncingTwoLiteralsCannotSmuggleThroughTheSecond();
   await testAnOversizeLiteralConsumesNothingAndDoesNotExecute();
   await testARefusedSynchronizingLiteralDoesNotEatTheNextCommand();
 }

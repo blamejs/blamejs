@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.20.32",
-  "createdAt": "2026-09-24T17:53:33.394Z",
+  "createdAt": "2026-09-28T06:03:10.822Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -27877,6 +27877,10 @@
           "type": "function",
           "arity": 4
         },
+        "MAX_KEYS_PER_OBJECT": {
+          "type": "primitive",
+          "valueType": "number"
+        },
         "PROFILES": {
           "type": "object",
           "members": {
@@ -54078,6 +54082,10 @@
         "isJsonObject": {
           "type": "function",
           "arity": 1
+        },
+        "jsonCopyUnderCap": {
+          "type": "function",
+          "arity": 2
         },
         "measureBytes": {
           "type": "function",

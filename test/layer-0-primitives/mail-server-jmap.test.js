@@ -1679,7 +1679,9 @@ async function testWebSocket() {
       },
     },
     accountsFor: DEFAULT_ACCOUNTS,
-    methods: { "Core/echo": async function (actor, args) { return { hi: args.hi }; } },
+    methods: {
+      "Core/echo": async function (actor, args) { captured.lastArgs = args; return { hi: args.hi }; },
+    },
   });
   var s = await _startHttp(jmap, {});
   try {
@@ -1698,6 +1700,34 @@ async function testWebSocket() {
     check("ws Request → Response @type", resp["@type"] === "Response");
     check("ws Response echoes requestId", resp.requestId === "r1");
     check("ws Response carries methodResponses", resp.methodResponses[0][1].hi === 9);
+
+    // 8a2. The transport reads the frame under the same policy the request
+    // validator applies, so a client-chosen name is honored or refused the
+    // same way over WebSocket as it is over HTTP. Reading the frame with the
+    // default strip deleted `constructor` and `prototype` before the
+    // validator saw them, and let a `__proto__` through to it.
+    msgs.length = 0;
+    client.send('{"@type":"Request","id":"r2","using":[],"methodCalls":' +
+      '[["Core/echo",{"hi":1,"constructor":"c","prototype":"p"},"c0"]]}');
+    await _wsWait(client, function () { return msgs.length >= 1; }, "ws: reserved names");
+    var named = JSON.parse(msgs[0]);
+    check("ws keeps a name the validator admits",
+      named["@type"] === "Response" && named.methodResponses[0][1].hi === 1,
+      JSON.stringify(named).slice(0, 200));
+    check("and the handler received it as an own property",
+      captured.lastArgs !== undefined &&
+      Object.prototype.hasOwnProperty.call(captured.lastArgs, "constructor") &&
+      Object.prototype.hasOwnProperty.call(captured.lastArgs, "prototype"),
+      JSON.stringify(Object.keys(captured.lastArgs || {})));
+
+    msgs.length = 0;
+    client.send('{"@type":"Request","id":"r3","using":[],"methodCalls":' +
+      '[["Core/echo",{"__proto__":{"polluted":true}},"c0"]]}');
+    await _wsWait(client, function () { return msgs.length >= 1; }, "ws: proto mover refused");
+    check("ws refuses the name that moves a prototype, as the validator does",
+      JSON.parse(msgs[0])["@type"] === "RequestError" && /notRequest/.test(msgs[0]),
+      msgs[0].slice(0, 200));
+    check("and nothing was polluted", ({}).polluted === undefined);
 
     // 8b. binary frame → RequestError notJSON
     msgs.length = 0;
@@ -1825,6 +1855,86 @@ async function _teardown() {
 // from that block, but the listener bound the process-global emitter directly,
 // so an operator wiring a per-tenant or compliance sink got silence. Every
 // sibling listener composes b.auditEmit's dual emitter for exactly this.
+async function testAWideRequestIsAnsweredTheSameOverBothTransports() {
+  // RFC 8620 §5.3 puts no bound on how many creation ids one request carries,
+  // and the session advertises maxSizeRequest as the bound a client works to.
+  // The WebSocket handler reads the frame once itself, to find `@type` and
+  // `id`, and read it under a member cap the request validator does not
+  // apply, so a body inside every advertised limit was served over HTTP and
+  // refused over WebSocket as malformed JSON.
+  var jmap = b.mail.server.jmap.create({
+    mailStore:   { appendMessage: function () {} },
+    accountsFor: DEFAULT_ACCOUNTS,
+    methods:     { "Core/echo": async function (_actor, args) { return { hi: args.hi }; } },
+  });
+  var request = {
+    "@type":     "Request",
+    id:          "wide-1",
+    using:       ["urn:ietf:params:jmap:core"],
+    methodCalls: [["Core/echo", { hi: 7 }, "c0"]],
+    createdIds:  {},
+  };
+  for (var i = 0; i < 20000; i += 1) request.createdIds["k" + i] = "M" + i;                           // allow:raw-byte-literal — test-only member count
+  var text = JSON.stringify(request);
+  var limits = b.guardJmap.limitsFor({});
+  check("[setup] the request is well inside the advertised maxSizeRequest",
+        text.length < limits.maxSizeRequest,
+        JSON.stringify({ bytes: text.length, maxSizeRequest: limits.maxSizeRequest }));
+
+  var s = await _startHttp(jmap, {});
+  var client = null;
+  try {
+    var overHttp = await _req(s.port, {
+      method: "POST", path: "/jmap/api",
+      headers: { "content-type": "application/json" }, body: text,
+    });
+    check("a wide request is served over HTTP",
+          overHttp.status === 200 &&
+          JSON.parse(overHttp.body).methodResponses[0][1].hi === 7,
+          JSON.stringify({ status: overHttp.status, body: overHttp.body.slice(0, 200) }));
+
+    client = _wsConnect(s.port);
+    var msgs = [];
+    client.on("message", function (d) { msgs.push(typeof d === "string" ? d : d.toString("utf8")); });
+    await _wsWait(client, function () { return client.readyState === "open"; }, "ws wide: open");
+    client.send(text);
+    await _wsWait(client, function () { return msgs.length >= 1; }, "ws wide: answered");
+    var overWs = JSON.parse(msgs[0]);
+    check("and the same request is served over WebSocket",
+          overWs["@type"] === "Response" && overWs.methodResponses[0][1].hi === 7,
+          msgs[0].slice(0, 220));
+
+    // Past the bound, both transports have to say the same thing about it.
+    // RFC 8620 §3.6.1 keeps `notJSON` for a body that did not parse, and a
+    // body wider or deeper than the validator reads parsed perfectly, so the
+    // frame reader classifying it itself made one request two different
+    // refusals depending on how it arrived.
+    var tooWide = { "@type": "Request", id: "wide-2",
+                    using: ["urn:ietf:params:jmap:core"],
+                    methodCalls: [["Core/echo", { hi: 7 }, "c0"]], createdIds: {} };
+    for (var w = 0; w <= b.guardJmap.MAX_KEYS_PER_OBJECT; w += 1) tooWide.createdIds["k" + w] = "M";
+    var tooWideText = JSON.stringify(tooWide);
+    var httpRefusal = await _req(s.port, {
+      method: "POST", path: "/jmap/api",
+      headers: { "content-type": "application/json" }, body: tooWideText,
+    });
+    msgs.length = 0;
+    client.send(tooWideText);
+    await _wsWait(client, function () { return msgs.length >= 1; }, "ws wide: over-bound answered");
+    check("a body past the member bound is refused as notRequest on both transports",
+          JSON.parse(httpRefusal.body).type === "urn:ietf:params:jmap:error:notRequest" &&
+          JSON.parse(msgs[0]).type === "urn:ietf:params:jmap:error:notRequest",
+          JSON.stringify({ http: JSON.parse(httpRefusal.body).type,
+                           ws: JSON.parse(msgs[0]).type }));
+  } finally {
+    if (client !== null) {
+      try { client.close(1000, "bye"); } catch (_e) { /* already gone */ }
+      await _wsWait(client, function () { return client.readyState === "closed"; }, "ws wide: closed");
+    }
+    await _stop(s.server);
+  }
+}
+
 async function testOperatorAuditSinkIsWired() {
   var seen = [];
   var srv = b.mail.server.jmap.create({
@@ -1945,6 +2055,7 @@ async function run() {
     await wtt("download handler",  testDownloadHandler);
     await wtt("event source",      testEventSource);
     await wtt("web socket",        testWebSocket);
+    await wtt("wide request, both transports", testAWideRequestIsAnsweredTheSameOverBothTransports);
     await wtt("download router params", testDownloadRouterSuppliedParams);
     await wtt("ws non-jmap subprotocol", testWebSocketNonJmapSubprotocol);
     await wtt("ws push lifecycle edges", testWebSocketPushLifecycleEdges);
@@ -2557,6 +2668,25 @@ async function testEmailSubmissionSetDestroyEdges() {
   var rvT = await esThrow.handler({}, { accountId: "A1", destroy: ["S9"] }, {});
   check("onDestroyed throws → notDestroyed serverFail",
     rvT.notDestroyed && rvT.notDestroyed.S9 && rvT.notDestroyed.S9.type === "serverFail");
+
+  // `destroy` is an array, so its entries are client-supplied VALUES that
+  // become KEYS of the result map. The name that moves a prototype is refused
+  // where it arrives as a key, and this is the way in that is not one: RFC
+  // 8620 §5.3 requires every id to come back in exactly one of `destroyed` or
+  // `notDestroyed`, and assigning it replaced the map's prototype instead.
+  var esProto = _makeESHandler({
+    onDestroyed: async function (id) { if (id === "__proto__") throw new Error("nope"); },
+  });
+  var rvP = await esProto.handler({},
+    { accountId: "A1", destroy: ["__proto__", "constructor", "S1"] }, {});
+  check("a destroy id naming the prototype setter is reported, not assigned through",
+    Object.prototype.hasOwnProperty.call(rvP.notDestroyed, "__proto__") &&
+    rvP.notDestroyed["__proto__"] && rvP.notDestroyed["__proto__"].type === "serverFail",
+    JSON.stringify(Object.keys(rvP.notDestroyed)));
+  check("and the ordinary names alongside it are unaffected",
+    rvP.destroyed.indexOf("constructor") !== -1 && rvP.destroyed.indexOf("S1") !== -1,
+    JSON.stringify(rvP.destroyed));
+  check("and nothing was polluted", ({}).type === undefined);
 }
 
 async function testEmailSubmissionSetDeliveryStatusVariants() {

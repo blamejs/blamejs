@@ -1580,6 +1580,230 @@ async function testHandlerFaults() {
   } finally { sock.destroy(); await srv.close(); }
 }
 
+async function testAHandlerPastItsBudgetEndsTheConnection() {
+  // A handler the dispatcher answered for outrunning maxHandlerMs keeps running
+  // and keeps the socket. RFC 5804 §1.2 gives a response no tag, so a line the
+  // late handler writes is read as the answer to whatever the client sent next,
+  // and the two disagree about every reply from then on. The command has
+  // already failed, so the listener says BYE and closes.
+  var late = { wrote: false };
+  var srv = b.mail.server.managesieve.create({
+    allowPlaintext: true, profile: "permissive", mailStore: _richStore(),
+    overrides: {
+      NOOP: {
+        fn: function (_state, socket) {
+          return new Promise(function (resolve) {
+            setTimeout(function () {
+              socket.write("OK \"NOOP completed\"\r\n");
+              late.wrote = true;
+              resolve();
+            }, 400);                                                                                  // allow:raw-time-literal — test-only handler delay
+          });
+        },
+        maxHandlerBytes: b.constants.BYTES.kib(8),
+        maxHandlerMs:    60,                                                                          // allow:raw-time-literal — test-only handler budget
+      },
+    },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var sock = _connect(info.port);
+  var seen = "";
+  var ended = false;
+  try {
+    await _read(sock);
+    sock.on("data", function (chunk) { seen += chunk.toString("utf8"); });
+    sock.on("close", function () { ended = true; });
+    sock.write("NOOP\r\n");
+    await helpers.waitUntil(function () { return ended; },
+      { timeoutMs: 5000, label: "managesieve budget: the connection is closed" });                    // allow:raw-time-literal — test-only wait budget
+    check("a handler past its budget is refused and the client told BYE",
+          /^NO /m.test(seen) && /^BYE /m.test(seen), JSON.stringify(seen));
+    await helpers.waitUntil(function () { return late.wrote; },
+      { timeoutMs: 5000, label: "managesieve budget: the late handler finishes" });                   // allow:raw-time-literal — test-only wait budget
+    await helpers.passiveObserve(200, "managesieve budget: the late write does not arrive");          // allow:raw-time-literal — test-only observation window
+    check("and nothing it writes afterwards reaches the client",
+          seen.indexOf("NOOP completed") === -1, JSON.stringify(seen));
+  } finally { sock.destroy(); await srv.close(); }
+}
+
+async function testAHandlerThatFailsAfterWritingDoesNotDrawASecondResponse() {
+  // A ManageSieve response carries no tag (RFC 5804 §1.2), so the client reads
+  // responses in the order it sent commands. A handler that answered and then
+  // rejected drew `NO "Internal error"` on top of its own answer, and the
+  // client reads that as the reply to whatever it sent next: every reply from
+  // there on is attributed to the wrong command. The listener cannot say which
+  // of the two is the answer, so where the handler has already put bytes on
+  // the wire it says BYE and closes instead of adding a second response.
+  // A handler can fail either way: by rejecting a promise, or by throwing
+  // where it stands. The registry rethrows a synchronous throw synchronously,
+  // so that is a second path to the same place, and it had no check at all.
+  var shapes = [
+    ["a rejected promise", function (_state, _socket, parsed) {
+      parsed.answer("OK \"NOOP completed\"");
+      return new Promise(function (_resolve, reject) {
+        setTimeout(function () { reject(new Error("index write failed")); }, 120);                    // allow:raw-time-literal — test-only delay
+      });
+    }],
+    ["a synchronous throw", function (_state, _socket, parsed) {
+      parsed.answer("OK \"NOOP completed\"");
+      throw new Error("index write failed");
+    }],
+  ];
+  // Each case runs in its own scope: `var` inside a loop is one binding, so a
+  // listener left on the previous iteration's socket writes the flag the next
+  // iteration reads.
+  async function runShape(label, fn) {
+    var srv = b.mail.server.managesieve.create({
+      allowPlaintext: true, profile: "permissive", mailStore: _richStore(),
+      overrides: {
+        NOOP: {
+          fn: fn,
+          maxHandlerBytes: b.constants.BYTES.kib(8),
+          maxHandlerMs:    b.constants.TIME.seconds(5),
+        },
+      },
+    });
+    var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+    var sock = _connect(info.port);
+    var wire = { seen: "", ended: false };
+    try {
+      await _read(sock);
+      sock.on("data", function (chunk) { wire.seen += chunk.toString("utf8"); });
+      sock.on("close", function () { wire.ended = true; });
+      sock.write("NOOP\r\n");
+      await helpers.waitUntil(function () { return /^OK "NOOP completed"/m.test(wire.seen); },
+        { timeoutMs: 5000, label: "managesieve one response: the handler answers" });                 // allow:raw-time-literal — test-only wait budget
+      await helpers.passiveObserve(400, "managesieve one response: nothing follows it");              // allow:raw-time-literal — test-only observation window
+      check("the handler's own answer is the only response (" + label + ")",
+            (wire.seen.match(/^(OK|NO|BYE) /mg) || []).length === 1 &&
+            /^OK "NOOP completed"/m.test(wire.seen), JSON.stringify(wire.seen));
+      check("and the session survives a per-command failure (" + label + ")",
+            wire.ended === false, JSON.stringify(wire));
+    } finally { sock.destroy(); await srv.close(); }
+  }
+  for (var i = 0; i < shapes.length; i += 1) {
+    await runShape(shapes[i][0], shapes[i][1]);
+  }
+
+  // The other order. The handler fails BEFORE it answers, so the dispatcher
+  // answers for it, and a callback the handler had already scheduled then
+  // writes a second response on top of that one. The dispatcher's own answer
+  // was not recorded anywhere, so `parsed.answer` still saw an unanswered
+  // command and a client that had sent nothing since read the extra line as
+  // the reply to its next command.
+  async function runLateAnswer(label, fn) {
+    var srv = b.mail.server.managesieve.create({
+      allowPlaintext: true, profile: "permissive", mailStore: _richStore(),
+      overrides: {
+        NOOP: {
+          fn: fn,
+          maxHandlerBytes: b.constants.BYTES.kib(8),
+          maxHandlerMs:    b.constants.TIME.seconds(5),
+        },
+      },
+    });
+    var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+    var sock = _connect(info.port);
+    var wire = { seen: "", ended: false };
+    try {
+      await _read(sock);
+      sock.on("data", function (chunk) { wire.seen += chunk.toString("utf8"); });
+      sock.on("close", function () { wire.ended = true; });
+      sock.write("NOOP\r\n");
+      await helpers.waitUntil(function () { return /^NO "Internal error"/m.test(wire.seen); },
+        { timeoutMs: 5000, label: "managesieve late answer: the dispatcher answers" });                // allow:raw-time-literal — test-only wait budget
+      await helpers.passiveObserve(400, "managesieve late answer: the scheduled answer is refused");   // allow:raw-time-literal — test-only observation window
+      check("the dispatcher's answer is the only response (" + label + ")",
+            (wire.seen.match(/^(OK|NO|BYE) /mg) || []).length === 1 &&
+            /^NO "Internal error"/m.test(wire.seen), JSON.stringify(wire.seen));
+      check("and the session survives it (" + label + ")",
+            wire.ended === false, JSON.stringify(wire));
+    } finally { sock.destroy(); await srv.close(); }
+  }
+  var lateShapes = [
+    ["rejects, then answers late", function (_state, _socket, parsed) {
+      setTimeout(function () { parsed.answer("OK \"NOOP completed\""); }, 120);                        // allow:raw-time-literal — test-only delay
+      return Promise.reject(new Error("index write failed"));
+    }],
+    ["throws, then answers late", function (_state, _socket, parsed) {
+      setTimeout(function () { parsed.answer("OK \"NOOP completed\""); }, 120);                        // allow:raw-time-literal — test-only delay
+      throw new Error("index write failed");
+    }],
+  ];
+  for (var j = 0; j < lateShapes.length; j += 1) {
+    await runLateAnswer(lateShapes[j][0], lateShapes[j][1]);
+  }
+
+  // A ManageSieve reply is zero or more DATA lines and then one OK/NO/BYE
+  // (RFC 5804 §2.7 shows it for LISTSCRIPTS, and the shipped handler writes a
+  // line per script before its OK). Counting any byte the handler wrote as
+  // "it answered" therefore misreads a listing that fails part-way, and the
+  // client lost the whole connection where a NO would have kept it in step.
+  var midFail = b.mail.server.managesieve.create({
+    allowPlaintext: true, profile: "permissive", mailStore: _richStore(),
+    overrides: {
+      LISTSCRIPTS: {
+        fn: function (_state, socket) {
+          socket.write("\"s1\" ACTIVE\r\n");
+          return Promise.reject(new Error("store died mid-listing"));
+        },
+        maxHandlerBytes: b.constants.BYTES.kib(8),
+        maxHandlerMs:    b.constants.TIME.seconds(5),
+      },
+    },
+  });
+  var midInfo = await midFail.listen({ port: 0, address: "127.0.0.1" });
+  var midSock = _connect(midInfo.port);
+  var midSeen = "";
+  var midEnded = false;
+  try {
+    await _read(midSock);
+    midSock.on("data", function (chunk) { midSeen += chunk.toString("utf8"); });
+    midSock.on("close", function () { midEnded = true; });
+    midSock.write("LISTSCRIPTS\r\n");
+    await helpers.waitUntil(function () { return /^NO /m.test(midSeen); },
+      { timeoutMs: 5000, label: "managesieve mid-listing failure: the command is refused" });         // allow:raw-time-literal — test-only wait budget
+    check("a listing that fails after its data lines is refused, not disconnected",
+          /^"s1" ACTIVE/m.test(midSeen) && /^NO "Internal error"/m.test(midSeen) &&
+          midEnded === false, JSON.stringify({ ended: midEnded, seen: midSeen }));
+  } finally { midSock.destroy(); await midFail.close(); }
+
+  // A response carries no tag, so the client pairs replies with commands by
+  // order alone: a line written once the command is over becomes the NEXT
+  // command's answer and every reply after it is off by one. The IMAP side
+  // refuses that call; this one has more riding on it, not less.
+  var lateReturn = { value: null };
+  var lateSrv = b.mail.server.managesieve.create({
+    allowPlaintext: true, profile: "permissive", mailStore: _richStore(),
+    overrides: {
+      NOOP: {
+        fn: function (_state, _socket, parsed) {
+          setTimeout(function () {
+            lateReturn.value = parsed.answer("OK \"late NOOP\"");
+          }, 300);                                                                                   // allow:raw-time-literal — test-only delay
+          return Promise.resolve();
+        },
+        maxHandlerBytes: b.constants.BYTES.kib(8),
+        maxHandlerMs:    b.constants.TIME.seconds(5),
+      },
+    },
+  });
+  var lateInfo = await lateSrv.listen({ port: 0, address: "127.0.0.1" });
+  var lateSock = _connect(lateInfo.port);
+  var lateSeen = "";
+  try {
+    await _read(lateSock);
+    lateSock.on("data", function (chunk) { lateSeen += chunk.toString("utf8"); });
+    lateSock.write("NOOP\r\nCAPABILITY\r\n");
+    await helpers.waitUntil(function () { return lateReturn.value !== null; },
+      { timeoutMs: 5000, label: "managesieve late answer: the handler calls back" });                // allow:raw-time-literal — test-only wait budget
+    await helpers.passiveObserve(300, "managesieve late answer: it writes nothing");                 // allow:raw-time-literal — test-only observation window
+    check("an answer written after its command is over is refused",
+          lateReturn.value === false && lateSeen.indexOf("late NOOP") === -1,
+          JSON.stringify({ returned: lateReturn.value, seen: lateSeen }));
+  } finally { lateSock.destroy(); await lateSrv.close(); }
+}
+
 async function run() {
   testSurface();
   testRequiresTlsContext();
@@ -1620,6 +1844,8 @@ async function run() {
   await testPostStartTlsTimeoutStopsTheReader();
   await testAPeerHangUpStopsTheReader();
   await testHandlerFaults();
+  await testAHandlerPastItsBudgetEndsTheConnection();
+  await testAHandlerThatFailsAfterWritingDoesNotDrawASecondResponse();
 }
 
 module.exports = { run: run };

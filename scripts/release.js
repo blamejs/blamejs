@@ -1093,22 +1093,76 @@ function _openPrNumber(branch) {
 // `push` (before the PR opens) and `push-fix` (after committing a fix, so the
 // fix itself is scanned). The win32 bind-mount transform matches Docker
 // Desktop's `//c/...` form -- the colon in `C:` confuses the `-v` splitter.
+function _gitleaksMount() {
+  if (process.platform !== "win32") return ROOT;
+  var posixified = ROOT.replace(/\\/g, "/");
+  return "//" + posixified.charAt(0).toLowerCase() + posixified.slice(2);
+}
+
+// A git worktree carries a `.git` FILE naming a directory outside the mount,
+// so the history scan resolves nothing inside the container and reports
+// "0 commits scanned" alongside "no leaks found". That is a clean verdict over
+// an empty scan, which is the one answer a secret gate must never give. The
+// tree is scanned as files instead, and the findings are narrowed to the paths
+// git tracks: `dir` mode reads what `git ls-files` does not, and the untracked
+// side is test output and generated key material that cannot reach a commit.
+function _gitleaksWorkingTree(mount) {
+  var report = path.join(ROOT, ".test-output", "gitleaks-worktree.json");
+  try { fs.mkdirSync(path.dirname(report), { recursive: true }); } catch (_e) { /* exists */ }
+  try { fs.unlinkSync(report); } catch (_e) { /* absent */ }
+  _capture("docker", [
+    "run", "--rm", "-v", mount + ":/repo", "-w", "//repo",
+    "zricethezav/gitleaks:latest",
+    "dir", "--config=.gitleaks.toml", "--redact", "--exit-code=1",
+    "--report-format=json", "--report-path=//repo/.test-output/gitleaks-worktree.json", ".",
+  ]);
+  if (!fs.existsSync(report)) {
+    throw new Error("release: gitleaks wrote no report for the working tree -- " +
+      "the scan did not run, and an unreadable result is not an empty one.");
+  }
+  var findings = JSON.parse(fs.readFileSync(report, "utf8"));
+  var tracked = Object.create(null);
+  _captureOk("listing tracked files", "git", ["ls-files"], { cwd: ROOT })
+    .stdout.split(/\r?\n/).forEach(function (f) { if (f) tracked[f] = true; });
+  var inCommit = findings.filter(function (f) {
+    return tracked[String(f.File).replace(/\\/g, "/")] === true;
+  });
+  if (inCommit.length > 0) {
+    throw new Error("release: gitleaks found " + inCommit.length +
+      " leak(s) in tracked files:\n" +
+      inCommit.map(function (f) { return "  " + f.File + ":" + f.StartLine + "  " + f.RuleID; })
+        .join("\n"));
+  }
+  _ok("gitleaks clean over " + Object.keys(tracked).length + " tracked files " +
+      "(history scan runs on the PR)");
+}
+
+// gitleaks over the full working tree via the pinned OSS image. Shared by
+// `push` (before the PR opens) and `push-fix` (after committing a fix, so the
+// fix itself is scanned). The win32 bind-mount transform matches Docker
+// Desktop's `//c/...` form -- the colon in `C:` confuses the `-v` splitter.
 function _gitleaks() {
   _section("gitleaks");
-  var mount;
-  if (process.platform === "win32") {
-    var posixified = ROOT.replace(/\\/g, "/");
-    mount = "//" + posixified.charAt(0).toLowerCase() + posixified.slice(2);
-  } else {
-    mount = ROOT;
-  }
-  _run("docker", [
+  var mount = _gitleaksMount();
+  var rv = _capture("docker", [
     "run", "--rm",
     "-v", mount + ":/repo",
     "-w", "//repo",
     "zricethezav/gitleaks:latest",
     "git", "--config=.gitleaks.toml", "--redact", "--exit-code=1",
   ]);
+  // gitleaks colors its log, so the count is written against an escape
+  // sequence: `<esc>[1m0 commits scanned.` A word boundary in front of the
+  // digit never matches, because the `m` of the escape is a word character.
+  var ANSI = new RegExp(String.fromCharCode(27) + "\\[[0-9;]*m", "g");
+  var output = ((rv.stdout || "") + (rv.stderr || "")).replace(ANSI, "");
+  if (/(^|[^0-9])0 commits scanned/.test(output)) {
+    _gitleaksWorkingTree(mount);
+    return;
+  }
+  if (rv.status !== 0) {
+    throw new Error(_describeFailure("gitleaks", "docker", ["run", "gitleaks", "git"], rv));
+  }
   _ok("gitleaks clean");
 }
 

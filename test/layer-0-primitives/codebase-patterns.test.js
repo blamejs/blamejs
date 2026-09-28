@@ -9510,6 +9510,39 @@ async function testNoDuplicateCodeBlocks() {
   // shape.
   var KNOWN_CLUSTERS = [
     {
+      // Frozen lookup tables of bare keyword names, each read to answer a
+      // yes-or-no question about one token: which IMAP commands need a
+      // selected mailbox and which of them write to it, which SMTP, POP3,
+      // ManageSieve and SQL verbs a guard knows, which iCalendar and vCard
+      // properties are defined, which policy names a DROP may carry. The
+      // shingle is the table literal itself, `Object.freeze({ NAME: true,
+      // ... })` repeated, which is what every such table looks like. There
+      // is no behaviour to share: each holds a different vocabulary from a
+      // different specification, and one table across them would answer a
+      // question none of them asks.
+      mode:  "family-subset",
+      files: [
+        "lib/external-db.js:_cteMainKeyword",
+        "lib/guard-imap-command.js:<top>",
+        "lib/guard-list-id.js:<top>",
+        "lib/guard-mail-compose.js:<top>",
+        "lib/guard-mail-query.js:<top>",
+        "lib/guard-mail-reply.js:<top>",
+        "lib/guard-mail-sieve.js:<top>",
+        "lib/guard-managesieve-command.js:<top>",
+        "lib/guard-pop3-command.js:<top>",
+        "lib/guard-posture-chain.js:<top>",
+        "lib/guard-smtp-command.js:<top>",
+        "lib/guard-sql.js:<top>",
+        "lib/guard-stream-args.js:<top>",
+        "lib/mail-server-imap.js:_clearSelection",
+        "lib/safe-ical.js:<top>",
+        "lib/safe-vcard.js:<top>",
+        "lib/sql.js:dropPolicy",
+      ],
+      reason: "frozen keyword tables, one vocabulary per specification, sharing only the literal's shape",
+    },
+    {
       // A refusal built from the caller's own error class, code and prose,
       // seen across four unrelated domains: archive entry metadata handed to
       // a guard, an OAuth token exchange, an OID4VCI credential offer, and a

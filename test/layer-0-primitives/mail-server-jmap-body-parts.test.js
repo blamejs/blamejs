@@ -302,6 +302,15 @@ function testACopyMethodsOwnAccountArgumentsAreAccepted() {
           rv.methodResponses[0][1].type === "invalidArguments",
           JSON.stringify(rv.methodResponses[0]));
     check("and its handler did not run", seen.length === 1, String(seen.length));
+    // The refusal names both arguments and the section that defines them, so a
+    // client written against `toAccountId` reads what to send instead. Two
+    // readers of this code have taken `toAccountId` for the RFC's spelling.
+    check("and the refusal names accountId, fromAccountId and section 5.4",
+          rv.methodResponses[0][1].description.indexOf("accountId") !== -1 &&
+          rv.methodResponses[0][1].description.indexOf("fromAccountId") !== -1 &&
+          rv.methodResponses[0][1].description.indexOf("section 5.4") !== -1 &&
+          rv.methodResponses[0][1].description.indexOf("no toAccountId") !== -1,
+          JSON.stringify(rv.methodResponses[0][1].description));
   });
 }
 

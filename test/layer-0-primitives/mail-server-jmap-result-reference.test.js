@@ -176,17 +176,24 @@ async function testAPoisonedTargetKeyIsNotWrittenThroughThePrototype() {
   // Built through JSON, which is how a request arrives: in an object LITERAL
   // `__proto__:` sets the prototype at construction and is never an own key,
   // so a literal cannot model the shape the wire produces.
+  // The name is refused for the whole request rather than for the one call,
+  // because `b.guardJmap.validate` reads it before any method runs: nothing
+  // downstream is handed an object carrying it, so no merge an operator
+  // writes can move a prototype with it.
   var plainArgs = JSON.parse(
     '{"accountId":"' + ACCOUNT + '","__proto__":{"accountId":"SOMEONE-ELSE"}}');
-  var plain = await _dispatch([["Core/echo", plainArgs, "c0"]]);
-  var plainEchoes = plain.seen.filter(function (c) { return c[0] === "Core/echo"; });
+  var plainSeen = [];
+  var plainRv = await _server(plainSeen).dispatch({ id: "actor1" }, {
+    using:       ["urn:ietf:params:jmap:core"],
+    methodCalls: [["Core/echo", plainArgs, "c0"]],
+  });
   check("a plain argument naming a prototype key is refused",
-        _errorOf(plain.responses[0]) !== null, JSON.stringify(plain.responses[0]));
-  check("and the handler did not run with a foreign prototype",
-        plainEchoes.length === 0 ||
-          Object.getPrototypeOf(plainEchoes[0][1]) === Object.prototype ||
-          Object.getPrototypeOf(plainEchoes[0][1]) === null,
-        plainEchoes.length ? JSON.stringify(Object.getPrototypeOf(plainEchoes[0][1])) : "did not run");
+        plainRv.type === "urn:ietf:params:jmap:error:notRequest" && plainRv.status === 400,
+        JSON.stringify(plainRv));
+  check("and no handler ran at all",
+        plainRv.methodResponses === undefined &&
+        plainSeen.filter(function (c) { return c[0] === "Core/echo"; }).length === 0,
+        JSON.stringify(plainSeen));
 
   // The refusal answers one question, whether the key moves the prototype,
   // and `__proto__` is the only key that does: assigning `constructor` or
