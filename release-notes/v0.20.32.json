@@ -195,7 +195,7 @@
         },
         {
           "title": "A JMAP Email/get can answer the body-part properties RFC 8621 defines",
-          "body": "`b.mail.server.jmap` carried no `bodyStructure`, `attachments` or `hasAttachment` anywhere, so a JMAP client could not see that a message held a file, list its parts, or fetch one. Nothing was refused and nothing was logged: the response was well formed, the client read the properties it knew, and a message with three files looked the same as one with none. `Email/get` is an operator-supplied handler, so the new piece is the builder it composes: `b.mail.server.jmap.emailBodyProperties(tree, { blobIdPrefix })` turns the tree `b.safeMime.parse` returns into `{ bodyStructure, textBody, htmlBody, attachments, hasAttachment }`, with the `partId` and `blobId` RFC 8621 §4.1.4 puts on each `EmailBodyPart`. A `blobId` is the prefix and the part's path, and the prefix must satisfy the RFC 8620 §1.2 Id grammar, because the download handler in the same module refuses anything else."
+          "body": "`b.mail.server.jmap` carried no `bodyStructure`, `attachments` or `hasAttachment` anywhere, so a JMAP client could not see that a message held a file, list its parts, or fetch one. Nothing was refused and nothing was logged: the response was well formed, the client read the properties it knew, and a message with three files looked the same as one with none. `Email/get` is an operator-supplied handler, so the new piece is the builder it composes: `b.mail.server.jmap.emailBodyProperties(tree, { blobIdPrefix })` turns the tree `b.safeMime.parse` returns into `{ bodyStructure, textBody, htmlBody, attachments, hasAttachment }`, with the `partId` and `blobId` RFC 8621 §4.1.4 puts on each `EmailBodyPart`. A `blobId` is the prefix's length, the prefix and the part's path, and the prefix must satisfy the RFC 8620 §1.2 Id grammar, because the download handler in the same module refuses anything else. That grammar admits `-` and `_`, so a separator also occurs inside a prefix and joining the two plainly let two different messages name one blob: a message `m` with a first part and a message `m-0` with none both read `m-0`, and a download handler keyed on `blobId` inside an account could answer one with the other's bytes. The length in front lets a reader take exactly the prefix and leave the path, whatever either contains."
         },
         {
           "title": "An extracted attachment says which part it came from",
@@ -401,7 +401,7 @@
       "items": [
         {
           "title": "Vendored bundles refreshed",
-          "body": "`@blamejs/pki` 0.7.45 to 0.8.17 and the public suffix list to its 2026-09-21 revision, both rebundled and re-signed through `scripts/vendor-update.sh` with `lib/vendor/MANIFEST.json` and `NOTICE` updated to match. The framework's runtime dependency set is unchanged: these ship as reviewable source inside the tarball."
+          "body": "`@blamejs/pki` 0.7.45 to 0.8.26 and the public suffix list to its 2026-09-21 revision, both rebundled and re-signed through `scripts/vendor-update.sh` with `lib/vendor/MANIFEST.json` and `NOTICE` updated to match. The framework's runtime dependency set is unchanged: these ship as reviewable source inside the tarball."
         },
         {
           "title": "The permissive JMAP profile declares 64 MiB, the largest request it can accept",

@@ -219,8 +219,12 @@ function testEveryPartCanBeFetched() {
         ids.length === new Set(ids).size, JSON.stringify(ids));
   check("a multipart carries no blobId of its own, per section 4.1.4",
         props.bodyStructure.blobId === null, JSON.stringify(props.bodyStructure.blobId));
+  // The prefix is written with its own length in front, so a reader takes
+  // exactly that many characters and whatever is left is the part path. Two
+  // messages whose ids differ therefore cannot name one blob, however either
+  // spells a separator the Id grammar admits.
   check("the prefix scopes the blobIds to the message",
-        leaves.every(function (p) { return p.blobId.indexOf("obj_1") === 0; }),
+        leaves.every(function (p) { return p.blobId.indexOf("5-obj_1") === 0; }),
         JSON.stringify(leaves.map(function (p) { return p.blobId; })));
 }
 
@@ -327,6 +331,45 @@ function testTheBuilderRefusesInputItCannotIdentify() {
   } catch (e) { threwId = e; }
   check("a prefix that is not a JMAP Id is refused, rather than emitting an unfetchable blobId",
         threwId !== null, threwId && threwId.code);
+
+  // A blobId is the prefix and the part path joined, and RFC 8620 §1.2 admits
+  // `-` and `_` inside an Id, so a separator taken from that alphabet also
+  // occurs inside the prefix. Joining them plainly made two different messages
+  // name one blob: prefix `m` with part path 0 and prefix `m-0` with no path
+  // both read `m-0`, and a download handler keyed on blobId inside an account
+  // serves one message's bytes for the other's. The prefix's length goes in
+  // front, so a reader takes exactly that many characters and the rest is the
+  // path, whatever either contains.
+  function _allBlobIds(node, out) {
+    out = out || [];
+    if (node.blobId) out.push(node.blobId);
+    (node.subParts || []).forEach(function (s) { _allBlobIds(s, out); });
+    return out;
+  }
+  var MULTI = "Content-Type: multipart/mixed; boundary=bb\r\n\r\n" +
+              "--bb\r\nContent-Type: text/plain\r\n\r\nalpha\r\n--bb--\r\n";
+  var collisions = [];
+  [["m", "m-0"], ["obj", "obj-0"], ["a_b", "a_b-0"], ["x-1", "x-1-0"]].forEach(function (pair) {
+    var fromMulti = _allBlobIds(b.mail.server.jmap.emailBodyProperties(
+      b.safeMime.parse(Buffer.from(MULTI, "utf8")), { blobIdPrefix: pair[0] }).bodyStructure);
+    var fromSingle = _allBlobIds(b.mail.server.jmap.emailBodyProperties(
+      b.safeMime.parse(Buffer.from(PLAIN, "utf8")), { blobIdPrefix: pair[1] }).bodyStructure);
+    fromMulti.forEach(function (id) {
+      if (fromSingle.indexOf(id) !== -1) {
+        collisions.push(pair[0] + " part vs " + pair[1] + " root both read " + id);
+      }
+    });
+  });
+  check("two messages whose ids differ never name the same blob" +
+        (collisions.length ? " (" + collisions.join("; ") + ")" : ""),
+        collisions.length === 0);
+  // The control: a blobId is still a JMAP Id, so the download handler that
+  // refuses anything else can still fetch it.
+  var encoded = _allBlobIds(b.mail.server.jmap.emailBodyProperties(
+    b.safeMime.parse(Buffer.from(MULTI, "utf8")), { blobIdPrefix: "obj_1f3c" }).bodyStructure);
+  check("and every blobId it emits is a JMAP Id",
+        encoded.length > 0 && encoded.every(function (id) { return /^[A-Za-z0-9_-]{1,255}$/.test(id); }),
+        JSON.stringify(encoded));
 }
 
 // Three readers answer one question, "which leaves are files", and an operator

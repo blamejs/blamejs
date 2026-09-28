@@ -1904,24 +1904,29 @@ async function testAWideRequestIsAnsweredTheSameOverBothTransports() {
           overWs["@type"] === "Response" && overWs.methodResponses[0][1].hi === 7,
           msgs[0].slice(0, 220));
 
-    // Past the bound, both transports have to say the same thing about it.
-    // RFC 8620 §3.6.1 keeps `notJSON` for a body that did not parse, and a
-    // body wider or deeper than the validator reads parsed perfectly, so the
-    // frame reader classifying it itself made one request two different
-    // refusals depending on how it arrived.
-    var tooWide = { "@type": "Request", id: "wide-2",
+    // Past a structural bound, both transports have to say the same thing
+    // about it. RFC 8620 §3.6.1 keeps `notJSON` for a body that did not parse,
+    // and a body wider or deeper than the validator reads parsed perfectly, so
+    // the frame reader classifying it itself made one request two different
+    // refusals depending on how it arrived. Driven on the DEPTH bound rather
+    // than the member bound: both reach the same classification, and a body
+    // over the member bound is several megabytes to build and to send twice,
+    // which does not fit this test's budget on a contended runner. The member
+    // bound is covered against both input forms in guard-jmap.test.js.
+    var tooDeep = { "@type": "Request", id: "deep-1",
                     using: ["urn:ietf:params:jmap:core"],
-                    methodCalls: [["Core/echo", { hi: 7 }, "c0"]], createdIds: {} };
-    for (var w = 0; w <= b.guardJmap.MAX_KEYS_PER_OBJECT; w += 1) tooWide.createdIds["k" + w] = "M";
-    var tooWideText = JSON.stringify(tooWide);
+                    methodCalls: [["Core/echo", { hi: 7 }, "c0"]] };
+    var cursor = tooDeep.methodCalls[0][1];
+    for (var d = 0; d < 200; d += 1) { cursor.next = {}; cursor = cursor.next; }                      // allow:raw-byte-literal — test-only nesting depth
+    var tooDeepText = JSON.stringify(tooDeep);
     var httpRefusal = await _req(s.port, {
       method: "POST", path: "/jmap/api",
-      headers: { "content-type": "application/json" }, body: tooWideText,
+      headers: { "content-type": "application/json" }, body: tooDeepText,
     });
     msgs.length = 0;
-    client.send(tooWideText);
+    client.send(tooDeepText);
     await _wsWait(client, function () { return msgs.length >= 1; }, "ws wide: over-bound answered");
-    check("a body past the member bound is refused as notRequest on both transports",
+    check("a body past a structural bound is refused as notRequest on both transports",
           JSON.parse(httpRefusal.body).type === "urn:ietf:params:jmap:error:notRequest" &&
           JSON.parse(msgs[0]).type === "urn:ietf:params:jmap:error:notRequest",
           JSON.stringify({ http: JSON.parse(httpRefusal.body).type,

@@ -1122,8 +1122,13 @@ function _gitleaksWorkingTree(mount) {
   }
   var findings = JSON.parse(fs.readFileSync(report, "utf8"));
   var tracked = Object.create(null);
-  _captureOk("listing tracked files", "git", ["ls-files"], { cwd: ROOT })
-    .stdout.split(/\r?\n/).forEach(function (f) { if (f) tracked[f] = true; });
+  // `-z` and NUL, not newlines: with the default `core.quotePath`, plain
+  // `ls-files` writes a name carrying a non-ASCII or special character as a
+  // quoted C string (`"r\303\251sum\303\251.js"`), which matches no path
+  // gitleaks reports, so a leak in such a file would be filtered out and the
+  // gate would report clean. A NUL-delimited listing is the bytes themselves.
+  _captureOk("listing tracked files", "git", ["ls-files", "-z"], { cwd: ROOT })
+    .stdout.split("\u0000").forEach(function (f) { if (f) tracked[f] = true; });
   var inCommit = findings.filter(function (f) {
     return tracked[String(f.File).replace(/\\/g, "/")] === true;
   });
