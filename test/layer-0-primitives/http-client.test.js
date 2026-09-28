@@ -614,6 +614,26 @@ function testCookieJarParseStore() {
   check("cj.store: secure flag absent by default", all[0].secure === false);
   check("cj.store: session cookie has null expiresAt", all[0].expiresAt === null);
 
+  // RFC 6265 §4.1.1 lets a cookie path hold any CHAR but `;`, so `(` is an
+  // ordinary character here and not the opening of an RFC 5322 comment. A
+  // shared header splitter that read it as one swallowed every attribute
+  // after it: the cookie stored with path `/` and `secure: false`, and was
+  // then sent over plain HTTP. The attributes survive a parenthesis.
+  var parenJar = CJ.create();
+  parenJar.setFromResponse("https://example.com/app/page",
+    "sid=secret; Path=/foo(; Secure; HttpOnly");
+  var parenRows = parenJar.getAll();
+  check("cj.store: a parenthesis in Path does not swallow the attributes after it",
+        parenRows.length === 1 && parenRows[0].path === "/foo(" &&
+        parenRows[0].secure === true && parenRows[0].httpOnly === true,
+        JSON.stringify(parenRows));
+  check("and a Secure cookie stored that way is not offered over http",
+        parenJar.cookieHeaderFor("http://example.com/foo(") === null,
+        JSON.stringify(parenJar.cookieHeaderFor("http://example.com/foo(")));
+  check("while https still gets it, so the path survived as written",
+        parenJar.cookieHeaderFor("https://example.com/foo(") === "sid=secret",
+        JSON.stringify(parenJar.cookieHeaderFor("https://example.com/foo(")));
+
   // setFromResponse guards: falsy header + array-of-lines + malformed lines skipped.
   var jar2 = CJ.create();
   jar2.setFromResponse("http://example.com/", null);

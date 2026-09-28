@@ -415,10 +415,25 @@ function testAnnouncedLiteral() {
   check("and the synchronizing form the same way",
         unreadableSync !== null && unreadableSync.size === null &&
         unreadableSync.nonSync === false, JSON.stringify(unreadableSync));
-  // Past what any client could mean, it is not an announcement at all.
-  check("a digit run past twenty is not an announcement",
-        b.guardManageSieveCommand.announcedLiteral(
-          "PUTSCRIPT \"x\" {" + "9".repeat(21) + "+}") === null);                                     // allow:raw-byte-literal — test-only digit run
+  // A digit run has no length at which it stops being an announcement. A cap
+  // on it was a way back into the smuggle it was added to close: leading
+  // zeroes spell a SMALL size in as many digits as the sender likes, so
+  // `{00000000000000000000022+}` announces 22 octets that a client sends and
+  // a reader that answered "no literal" left to be read as commands.
+  var padded = "0".repeat(19) + "22";
+  var paddedRead = b.guardManageSieveCommand.announcedLiteral("PUTSCRIPT \"x\" {" + padded + "+}");
+  check("a small size written in many digits is still an announcement",
+        paddedRead !== null && paddedRead.nonSync === true,
+        JSON.stringify({ digits: padded.length, read: paddedRead }));
+  var longRun = b.guardManageSieveCommand.announcedLiteral(
+    "PUTSCRIPT \"x\" {" + "9".repeat(40) + "+}");                                                      // allow:raw-byte-literal — test-only digit run
+  check("and a run of any length reports the form, with the size unread",
+        longRun !== null && longRun.nonSync === true && longRun.size === null,
+        JSON.stringify(longRun));
+  // What is not an announcement is a tail that is not digits at all.
+  check("a non-digit body is not an announcement",
+        b.guardManageSieveCommand.announcedLiteral("PUTSCRIPT \"x\" {12a34+}") === null &&
+        b.guardManageSieveCommand.announcedLiteral("PUTSCRIPT \"x\" {+}") === null);
 }
 
 function run() {

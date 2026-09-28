@@ -308,6 +308,27 @@ async function testTheStoreCapTravelsWithTheSetToTheStore() {
             answer.slice(0, 120) + " :: " + JSON.stringify(seen));
     }
 
+    // FETCH reads the same uncountable sets and hands its rows straight into
+    // the response, so it is the same question: `FETCH 1:*` on a mailbox
+    // larger than the cap reached `fetchRange` with no bound at all, and the
+    // listener then awaited and materialized every row the backend returned.
+    // The cap travels with it exactly as it does for STORE.
+    var uncountableFetch = [
+      ["f1", "FETCH 1:* (FLAGS)"],
+      ["f2", "FETCH *:* (FLAGS)"],
+      ["f3", "FETCH 199990:* (FLAGS)"],
+      ["f4", "UID FETCH 1:* (FLAGS)"],
+      ["f5", "UID FETCH 4000000000:* (FLAGS)"],
+    ];
+    for (var ff = 0; ff < uncountableFetch.length; ff += 1) {
+      var fetched = await _sendCommand(socket, uncountableFetch[ff][0], uncountableFetch[ff][1]);
+      var lastFetch = store.calls.fetchRange[store.calls.fetchRange.length - 1];
+      check("the store is asked, and told the cap: " + uncountableFetch[ff][1],
+            new RegExp("^" + uncountableFetch[ff][0] + " OK", "m").test(fetched) &&
+            lastFetch.opts.maxMessages === cap,
+            fetched.slice(0, 120) + " :: " + JSON.stringify(lastFetch));
+    }
+
     // A message-number range IS countable from the line, and the guard
     // refuses one past the cap before the listener is reached.
     var seqHuge = await _sendCommand(socket, "u5", "STORE 1:4000000000 +FLAGS (\\Seen)");

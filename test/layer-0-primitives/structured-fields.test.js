@@ -295,10 +295,71 @@ function testUnfoldHeaderContinuations() {
     b.structuredFields.unfoldHeaderContinuations("a=1; b=2") === "a=1; b=2");
 }
 
+// RFC 5322 §3.2.2 lets a comment appear between the tokens of a structured
+// field, and `ctext` admits a double quote and a semicolon: `(a " comment)` and
+// `(x; y)` are both legal. Two readers here answer "where does a quoted string
+// run" and "where does a parameter end", and neither knew about comments, so a
+// quote inside one opened a quoted string that never closed and a semicolon
+// inside one split a parameter in half. Comments nest, and a backslash inside
+// one escapes the next character.
+function testCommentsAreNotContent() {
+  var sf = b.structuredFields;
+  var MIME = { comments: true };
+  check("a quote inside a comment does not open a quoted string",
+        sf.endsInsideQuotedString('a=b (x " y)', MIME) === false);
+  check("a quote inside a NESTED comment does not either",
+        sf.endsInsideQuotedString('a=b (x (y " z) w)', MIME) === false);
+  check("an escaped close-paren keeps the comment open",
+        sf.endsInsideQuotedString('a=b (x \\) " y)', MIME) === false);
+  // The control: the shape the check exists for is still caught.
+  check("a genuinely unterminated quoted string is still reported",
+        sf.endsInsideQuotedString('a="unterminated', MIME) === true);
+  check("and one left open after a comment closes",
+        sf.endsInsideQuotedString('a=b (note) c="open', MIME) === true);
+  // A comment INSIDE a quoted string is not a comment: RFC 5322 makes those
+  // characters ordinary qtext.
+  check("parentheses inside a quoted string are content, not a comment",
+        sf.endsInsideQuotedString('a="(still open', MIME) === true);
+
+  check("a separator inside a comment does not split the field",
+        JSON.stringify(sf.splitTopLevel("a=b (x; y); c=d", ";", MIME)) ===
+        JSON.stringify(["a=b (x; y)", " c=d"]),
+        JSON.stringify(sf.splitTopLevel("a=b (x; y); c=d", ";", MIME)));
+  check("nor a comma inside one",
+        JSON.stringify(sf.splitTopLevel("a=b (x, y), c=d", ",", MIME)) ===
+        JSON.stringify(["a=b (x, y)", " c=d"]),
+        JSON.stringify(sf.splitTopLevel("a=b (x, y), c=d", ",", MIME)));
+  check("a separator inside a quoted string is still not a split",
+        JSON.stringify(sf.splitTopLevel('a="x; y"; c=d', ";", MIME)) ===
+        JSON.stringify(['a="x; y"', " c=d"]),
+        JSON.stringify(sf.splitTopLevel('a="x; y"; c=d', ";", MIME)));
+  check("and an ordinary separator still splits",
+        JSON.stringify(sf.splitTopLevel("a=b; c=d", ";", MIME)) ===
+        JSON.stringify(["a=b", " c=d"]));
+
+  // Only RFC 5322's grammar has comments. RFC 6265 §4.1.1 makes a cookie
+  // path any CHAR but `;`, so `(` is an ordinary character there, and RFC
+  // 9651 has no comments either. Reading one in an HTTP field swallows every
+  // attribute after it: `Path=/foo(` took `Secure` and `HttpOnly` with it and
+  // the cookie was stored unrestricted. The default is off, and the mail
+  // parsers ask for it.
+  var cookieLine = "sid=secret; Path=/foo(; Secure; HttpOnly";
+  check("a parenthesis in an HTTP field is an ordinary character by default",
+        JSON.stringify(sf.splitTopLevel(cookieLine, ";")) ===
+        JSON.stringify(["sid=secret", " Path=/foo(", " Secure", " HttpOnly"]),
+        JSON.stringify(sf.splitTopLevel(cookieLine, ";")));
+  check("and it does not open a quoted string either",
+        sf.endsInsideQuotedString("a=/foo(; b=1") === false);
+  check("an explicit comments:false reads the same way",
+        JSON.stringify(sf.splitTopLevel(cookieLine, ";", { comments: false })) ===
+        JSON.stringify(sf.splitTopLevel(cookieLine, ";")));
+}
+
 async function run() {
   testSplitTopLevelComma();
   testSplitTopLevelSemi();
   testEndsInsideQuotedString();
+  testCommentsAreNotContent();
   testParseTagList();
   testForEachKeyValue();
   testRefuseControlBytes();
