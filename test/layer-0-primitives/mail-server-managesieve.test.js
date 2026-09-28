@@ -1626,6 +1626,74 @@ async function testAHandlerPastItsBudgetEndsTheConnection() {
   } finally { sock.destroy(); await srv.close(); }
 }
 
+async function testALineTheGuardRefusesDoesNotLetItsLiteralBecomeCommands() {
+  // The same class the IMAP listener closed this release, on its sibling.
+  // RFC 5804 §4 gives ManageSieve the non-synchronizing literal RFC 7888 gives
+  // IMAP: `{N+}` needs no continuation, so the octets are already on the wire
+  // when the line is read. Where `guardManageSieveCommand.validate` THROWS,
+  // the listener answered `NO` and returned with nothing armed to read those
+  // octets, so the script's own bytes were parsed as fresh commands and a
+  // script beginning `DELETESCRIPT "victim"` ran even though the upload was
+  // refused. A refusal means the line did not parse, so its announced size is
+  // a number from an unparsed line: the connection is told BYE and closed
+  // rather than resynchronized on it, which is the IMAP answer too.
+  var deleted = [];
+  var store = _richStore();
+  store.sieveScripts.delete = async function (_actor, name) { deleted.push(name); };
+  var srv = b.mail.server.managesieve.create({
+    // Permissive so PLAIN is accepted over the plaintext port; the script-name
+    // cap this drives is 512 bytes in every profile, so the refusal is the
+    // same one under any of them.
+    allowPlaintext: true, profile: "permissive", mailStore: store,
+    auth: {
+      mechanisms: ["PLAIN"],
+      verify: async function () {
+        return { ok: true, actor: { username: "alice", tenantId: "t1" } };
+      },
+    },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var sock = _connect(info.port);
+  var wire = { seen: "", ended: false };
+  try {
+    await _read(sock);
+    // Authenticated, so nothing but the desync itself stands between the
+    // smuggled line and the store.
+    check("[setup] the connection is authenticated",
+          /OK "Authenticated"/.test(
+            await _cmd(sock, 'AUTHENTICATE "PLAIN" "' + _b64("\0alice\0pw") + '"')));
+    sock.on("data", function (chunk) { wire.seen += chunk.toString("utf8"); });
+    sock.on("close", function () { wire.ended = true; });
+    // The literal's own octets ARE the smuggled command, which is the shape
+    // the finding describes. The opener is refused on its script NAME (over
+    // the 512-byte cap), so `validate` throws with the payload already on the
+    // wire, and the line stays well under the profile's line cap so nothing
+    // else can refuse it first.
+    var smuggled = "DELETESCRIPT \"victim\"\r\n";
+    var longName = "n".repeat(600);                                                                   // allow:raw-byte-literal — test-only name over the 512-byte cap
+    sock.write("PUTSCRIPT \"" + longName + "\" {" + smuggled.length + "+}\r\n" + smuggled);
+    await helpers.waitUntil(function () { return /^(NO|BYE)/m.test(wire.seen) || wire.ended; },
+      { timeoutMs: 5000, label: "managesieve refused literal: the opener is answered" });             // allow:raw-time-literal — test-only wait budget
+    await helpers.passiveObserve(400, "managesieve refused literal: nothing further executes");       // allow:raw-time-literal — test-only observation window
+    check("the oversize PUTSCRIPT is refused",
+          /^NO /m.test(wire.seen) || /^BYE /m.test(wire.seen), JSON.stringify(wire.seen.slice(0, 200)));
+    // The smuggled line names a script the store would be asked to remove,
+    // and that call is the finding: a refusal that leaves the octets to the
+    // line reader is a client deleting a script through a command the server
+    // said no to.
+    check("the script's own bytes never reach the store as a command",
+          deleted.length === 0, JSON.stringify(deleted));
+    // The refusal and the BYE, and nothing else: a third line would be the
+    // reply to a command the payload became.
+    check("nothing is answered beyond the refusal and the BYE",
+          (wire.seen.match(/^(OK|NO|BYE) /mg) || []).join(",") === "NO ,BYE ",
+          JSON.stringify(wire.seen.slice(0, 300)));
+    check("the connection is ended rather than resynchronized on an unparsed size",
+          wire.ended === true || /^BYE /m.test(wire.seen),
+          JSON.stringify({ ended: wire.ended, seen: wire.seen.slice(0, 200) }));
+  } finally { sock.destroy(); await srv.close(); }
+}
+
 async function testAHandlerThatFailsAfterWritingDoesNotDrawASecondResponse() {
   // A ManageSieve response carries no tag (RFC 5804 §1.2), so the client reads
   // responses in the order it sent commands. A handler that answered and then
@@ -1845,6 +1913,7 @@ async function run() {
   await testAPeerHangUpStopsTheReader();
   await testHandlerFaults();
   await testAHandlerPastItsBudgetEndsTheConnection();
+  await testALineTheGuardRefusesDoesNotLetItsLiteralBecomeCommands();
   await testAHandlerThatFailsAfterWritingDoesNotDrawASecondResponse();
 }
 

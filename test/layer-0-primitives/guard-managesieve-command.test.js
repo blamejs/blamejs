@@ -363,7 +363,66 @@ function testParseQuotedString() {
         p('"a' + String.fromCharCode(0) + 'b"') === null);
 }
 
+// A listener that REFUSED a line still has to decide what the client is about
+// to send, and by then nothing parsed the line. RFC 7888's `{n+}` is already
+// on the wire; RFC 5804 §4's `{n}` waits for a continuation the refusal never
+// sends. The sibling reader on `b.guardImapCommand` answers the same question
+// for IMAP, and the two are held to the same shape here.
+function testAnnouncedLiteral() {
+  var b = require("../../");
+  var ROWS = [
+    { line: "PUTSCRIPT \"x\" {24+}",  size: 24,  nonSync: true },
+    { line: "PUTSCRIPT \"x\" {24}",   size: 24,  nonSync: false },
+    { line: "PUTSCRIPT \"x\" {0+}",   size: 0,   nonSync: true },
+    { line: "PUTSCRIPT \"x\" {24+}\r\n", size: 24, nonSync: true },
+    { line: "CAPABILITY",             want: null },
+    { line: "PUTSCRIPT \"x\" {24",    want: null },
+    { line: "PUTSCRIPT \"x\" {}",     want: null },
+    { line: "PUTSCRIPT \"x\" {2x}",   want: null },
+    { line: "",                       want: null },
+  ];
+  var wrong = [];
+  for (var i = 0; i < ROWS.length; i += 1) {
+    var got = b.guardManageSieveCommand.announcedLiteral(ROWS[i].line);
+    if (ROWS[i].want === null) {
+      if (got !== null) wrong.push(JSON.stringify(ROWS[i].line) + " -> " + JSON.stringify(got));
+      continue;
+    }
+    if (!got || got.size !== ROWS[i].size || got.nonSync !== ROWS[i].nonSync) {
+      wrong.push(JSON.stringify(ROWS[i].line) + " -> " + JSON.stringify(got));
+    }
+  }
+  check("announcedLiteral reads the size and the synchronizing form" +
+        (wrong.length ? " (" + wrong.join("; ") + ")" : ""), wrong.length === 0);
+  check("a non-string line reads as no literal",
+        b.guardManageSieveCommand.announcedLiteral(null) === null &&
+        b.guardManageSieveCommand.announcedLiteral(undefined) === null &&
+        b.guardManageSieveCommand.announcedLiteral(42) === null);
+  // The size is reported as announced, with no cap applied, so a caller can
+  // refuse a size it will not read rather than read it to find out.
+  var overCap = b.guardManageSieveCommand.PROFILES.strict.maxScriptBytes + 1;
+  var huge = b.guardManageSieveCommand.announcedLiteral("PUTSCRIPT \"x\" {" + overCap + "+}");
+  check("a size past the profile cap is still reported, not refused here",
+        huge !== null && huge.size === overCap, JSON.stringify(huge));
+  // A digit run longer than `validate` reads is still an announcement: what a
+  // refusing caller asks is whether octets are in flight, and answering "no
+  // literal" there would leave the payload to be read as commands.
+  var unreadable = b.guardManageSieveCommand.announcedLiteral("PUTSCRIPT \"x\" {999999999999+}");
+  check("an unreadable size still reports the non-synchronizing form",
+        unreadable !== null && unreadable.size === null && unreadable.nonSync === true,
+        JSON.stringify(unreadable));
+  var unreadableSync = b.guardManageSieveCommand.announcedLiteral("PUTSCRIPT \"x\" {999999999999}");
+  check("and the synchronizing form the same way",
+        unreadableSync !== null && unreadableSync.size === null &&
+        unreadableSync.nonSync === false, JSON.stringify(unreadableSync));
+  // Past what any client could mean, it is not an announcement at all.
+  check("a digit run past twenty is not an announcement",
+        b.guardManageSieveCommand.announcedLiteral(
+          "PUTSCRIPT \"x\" {" + "9".repeat(21) + "+}") === null);                                     // allow:raw-byte-literal — test-only digit run
+}
+
 function run() {
+  testAnnouncedLiteral();
   testParseQuotedString();
   testByteCapMultibyte();
   testBSurface();

@@ -225,6 +225,66 @@ async function testAMutatingMethodCountsItsIdArgumentsToo() {
         JSON.stringify(both));
 }
 
+async function testTheTwoMethodsThatCarryObjectsUnderAnotherNameAreBoundedToo() {
+  // The cap was chosen by the method-name suffix, so two standard methods
+  // carrying objects under names that end in neither `/get` nor `/set` reached
+  // the handler at any size. RFC 8621 section 4.8 gives `Email/import` an
+  // `emails` map of creation id to EmailImport, which is a request to create
+  // objects and so RFC 8620 section 5.3's `requestTooLarge` ("the total number
+  // of objects to create, update, or destroy"); section 4.9 gives
+  // `Email/parse` a `blobIds` array, which is ids requested and so section
+  // 5.1's ("the number of ids requested by the client").
+  // Driven through a server of this test's own, because `_call`'s
+  // `ranHandler` reports only its built-in handlers and these two are not
+  // among them: asserting on it there would answer "did not run" for a call
+  // that ran.
+  var ran = { import: 0, parse: 0 };
+  var jmap = _server([], {
+    methods: {
+      "Email/import": async function (actor, args) {
+        ran.import += 1;
+        return { accountId: args.accountId, created: {}, notCreated: {} };
+      },
+      "Email/parse": async function (actor, args) {
+        ran.parse += 1;
+        return { accountId: args.accountId, parsed: {}, notParsable: [], notFound: [] };
+      },
+    },
+  });
+  async function _one(name, args) {
+    var rv = await jmap.dispatch({ id: "actor1" }, {
+      using:       ["urn:ietf:params:jmap:core"],
+      methodCalls: [[name, args, "c0"]],
+    });
+    var response = rv.methodResponses[0];
+    return response[0] === "error" ? (response[1] && response[1].type) : null;
+  }
+
+  var manyEmails = {};
+  for (var i = 0; i < 501; i += 1) manyEmails["c" + i] = { blobId: "b" + i, mailboxIds: { m1: true } };
+  var importOver = await _one("Email/import", { accountId: ACCOUNT, emails: manyEmails });
+  check("an Email/import over maxObjectsInSet is requestTooLarge before the handler runs",
+        importOver === "requestTooLarge" && ran.import === 0,
+        JSON.stringify({ type: importOver, ran: ran.import }));
+
+  var atCapEmails = {};
+  for (var j = 0; j < 500; j += 1) atCapEmails["c" + j] = { blobId: "b" + j, mailboxIds: { m1: true } };
+  var importAtCap = await _one("Email/import", { accountId: ACCOUNT, emails: atCapEmails });
+  check("and an Email/import at the cap still runs",
+        importAtCap === null && ran.import === 1,
+        JSON.stringify({ type: importAtCap, ran: ran.import }));
+
+  var parseOver = await _one("Email/parse", { accountId: ACCOUNT, blobIds: _ids(501) });
+  check("an Email/parse over maxObjectsInGet is requestTooLarge before the handler runs",
+        parseOver === "requestTooLarge" && ran.parse === 0,
+        JSON.stringify({ type: parseOver, ran: ran.parse }));
+
+  var parseAtCap = await _one("Email/parse", { accountId: ACCOUNT, blobIds: _ids(500) });
+  check("and an Email/parse at the cap still runs",
+        parseAtCap === null && ran.parse === 1,
+        JSON.stringify({ type: parseAtCap, ran: ran.parse }));
+}
+
 async function testSetIsBoundedByTheCombinedTotal() {
   // RFC 8620 section 5.3 counts create, update and destroy together.
   var create = {}; var update = {};
@@ -1021,6 +1081,7 @@ async function run() {
   await testTheAllRecordsGetFormIsBoundedToo();
   await testAGetNamesItsObjectsUnderWhateverArgumentItDefines();
   await testAMutatingMethodCountsItsIdArgumentsToo();
+  await testTheTwoMethodsThatCarryObjectsUnderAnotherNameAreBoundedToo();
   await testSetIsBoundedByTheCombinedTotal();
   await testTheCapCountsWhatAResultReferenceProduces();
   await testTheProfileGovernsTheCap();
