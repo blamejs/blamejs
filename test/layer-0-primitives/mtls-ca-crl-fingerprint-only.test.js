@@ -68,16 +68,16 @@ async function testEngineDirectCrl() {
   }
 
   // Non-array revocations → treated as empty; still a valid CRL.
-  var emptyCrl = await engine.generateCrl({ caCertPem: ca.caCertPem, caKeyPem: ca.caKeyPem, revocations: "not-an-array" });
+  var emptyCrl = await engine.generateCrl({ caCertPem: ca.caCertPem, caKeyPem: ca.caKeyPem, revocations: "not-an-array", crlNumber: 1 });
   check("a non-array revocations list produces a valid empty CRL",
     typeof emptyCrl === "string" && /-----BEGIN (?:X509 )?CRL-----/.test(emptyCrl));
 
   // A revocation with no revokedAt (default revocation date) + a hex serial.
-  var noDateCrl = await engine.generateCrl({ caCertPem: ca.caCertPem, caKeyPem: ca.caKeyPem, revocations: [{ serialNumber: "ab" }] });
+  var noDateCrl = await engine.generateCrl({ caCertPem: ca.caCertPem, caKeyPem: ca.caKeyPem, revocations: [{ serialNumber: "ab" }], crlNumber: 2 });
   check("a revocation without a revokedAt defaults its revocation date", typeof noDateCrl === "string" && noDateCrl.length > 0);
 
   // A 0x-prefixed serial is passed through unchanged.
-  var prefixedCrl = await engine.generateCrl({ caCertPem: ca.caCertPem, caKeyPem: ca.caKeyPem, revocations: [{ serialNumber: "0x1a2b" }] });
+  var prefixedCrl = await engine.generateCrl({ caCertPem: ca.caCertPem, caKeyPem: ca.caKeyPem, revocations: [{ serialNumber: "0x1a2b" }], crlNumber: 3 });
   check("a 0x-prefixed serial is accepted by the CRL encoder", typeof prefixedCrl === "string" && prefixedCrl.length > 0);
 
   // A null serial normalises to "" and a non-hex serial passes through
@@ -85,12 +85,12 @@ async function testEngineDirectCrl() {
   // is the current (correct) downstream behaviour — the normalisation arms
   // still execute before the encoder throws.
   var threwNull = false;
-  try { await engine.generateCrl({ caCertPem: ca.caCertPem, caKeyPem: ca.caKeyPem, revocations: [{ serialNumber: null }] }); }
+  try { await engine.generateCrl({ caCertPem: ca.caCertPem, caKeyPem: ca.caKeyPem, revocations: [{ serialNumber: null }], crlNumber: 4 }); }
   catch (_e) { threwNull = true; }
   check("a null revocation serial is rejected downstream by the CRL encoder", threwNull);
 
   var threwNonHex = false;
-  try { await engine.generateCrl({ caCertPem: ca.caCertPem, caKeyPem: ca.caKeyPem, revocations: [{ serialNumber: "zz-not-hex" }] }); }
+  try { await engine.generateCrl({ caCertPem: ca.caCertPem, caKeyPem: ca.caKeyPem, revocations: [{ serialNumber: "zz-not-hex" }], crlNumber: 5 }); }
   catch (_e) { threwNonHex = true; }
   check("a non-hex revocation serial is rejected downstream by the CRL encoder", threwNonHex);
 }

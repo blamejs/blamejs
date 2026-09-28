@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.20.32",
-  "createdAt": "2026-09-28T21:28:29.773Z",
+  "createdAt": "2026-09-28T22:38:01.149Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -47650,6 +47650,14 @@
               "valueType": "string"
             },
             "crl": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "crlNumber": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "crlPublished": {
               "type": "primitive",
               "valueType": "string"
             },

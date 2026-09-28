@@ -418,14 +418,23 @@ async function _generateTestChain(opts) {
 
   // The leaf is CA-signed by the root cert (issuer DN copied byte-exact
   // from the root's subject).
+  var leafExtensions = _buildLeafExtensions(opts);
+  // A hand-encoded extension list is the whole list: the toolkit cannot add the
+  // authorityKeyIdentifier it derives for an object-built spec, so its RFC 5280
+  // build gate would refuse a leaf this fixture has to encode itself (the
+  // logotype extension has no object form here). The gate stays on for every
+  // object-built fixture, which is where a real conformance slip would show.
+  var leafSignOpts = Array.isArray(leafExtensions)
+    ? { pem: true, profile: "none" }
+    : { pem: true };
   var leafPem = await pki.x509.sign({
     subject:          sanDomain,
     subjectPublicKey: leafSpki,
     serialNumber:     "0x02",
     notBefore:        leafNotBefore,
     notAfter:         leafNotAfter,
-    extensions:       _buildLeafExtensions(opts),
-  }, { cert: rootPem, key: caKeyPem }, { pem: true });
+    extensions:       leafExtensions,
+  }, { cert: rootPem, key: caKeyPem }, leafSignOpts);
 
   return {
     rootPem: rootPem,
@@ -483,7 +492,7 @@ async function _generateTestChainWithRawLogotype(innerDer) {
     notBefore:        now,
     notAfter:         notAfter,
     extensions:       _buildLeafExtensions({ logotypeExt: _logotypeExtensionRaw(placeholder) }),
-  }, { cert: rootPem, key: caKeyPem });
+  }, { cert: rootPem, key: caKeyPem }, { profile: "none" });
   var parts = pki.asn1.decode(leafDer).children;
   var tbs = Buffer.from(parts[0].bytes);
   var sigAlg = Buffer.from(parts[1].bytes);
