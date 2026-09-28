@@ -2862,6 +2862,46 @@ function testProfilesAreFrozenThroughAndThrough() {
   check("a nested policy object is frozen too",
         Object.isFrozen(parser.PROFILES.strict.nested));
 
+  // The walk carries a depth bound so a cyclic or hostile policy cannot run
+  // it out of stack, and past that bound it used to RETURN the rest of the
+  // subtree untouched. A caller was then handed an "ostensibly frozen" policy
+  // with a writable cap in it, which is the whole defect this freeze exists to
+  // close, moved down a few levels. A policy deeper than the walk reads is
+  // refused instead: profiles and postures are flat config records, and one
+  // that is not is a policy this contract cannot promise anything about.
+  function _nest(levels) {
+    var root = {};
+    var cursor = root;
+    for (var i = 0; i < levels; i += 1) { cursor.next = {}; cursor = cursor.next; }
+    cursor.cap = 100;                                                                                 // allow:raw-byte-literal — test-only cap value
+    return { root: root, leaf: cursor };
+  }
+  var deep = _nest(12);                                                                               // allow:raw-byte-literal — test-only nesting depth
+  var threwDeep = null;
+  try { b.gateContract.freezePolicy({ strict: deep.root }); } catch (e) { threwDeep = e; }
+  check("a policy nested deeper than the freeze walk reads is refused",
+        threwDeep !== null && String(threwDeep.code).indexOf("gate-contract/") === 0,
+        JSON.stringify({ code: threwDeep && threwDeep.code,
+                         leafFrozen: Object.isFrozen(deep.leaf) }));
+
+  // A cycle is the same question: it cannot be frozen through, so it is
+  // refused rather than returned part-frozen.
+  var cyclic = {};
+  cyclic.self = cyclic;
+  var threwCycle = null;
+  try { b.gateContract.freezePolicy({ strict: cyclic }); } catch (e) { threwCycle = e; }
+  check("and a cyclic policy is refused rather than returned part-frozen",
+        threwCycle !== null && String(threwCycle.code).indexOf("gate-contract/") === 0,
+        JSON.stringify({ code: threwCycle && threwCycle.code }));
+
+  // The control: the depth a real policy uses is still accepted and frozen
+  // through. Every shipped guard profile is well inside it.
+  var ordinary = _nest(6);                                                                            // allow:raw-byte-literal — test-only nesting depth
+  var frozenOrdinary = b.gateContract.freezePolicy({ strict: ordinary.root });
+  check("a policy within the bound is frozen through to its deepest value",
+        Object.isFrozen(frozenOrdinary) && Object.isFrozen(ordinary.leaf),
+        JSON.stringify({ leafFrozen: Object.isFrozen(ordinary.leaf) }));
+
   var before = parser.PROFILES.strict.cap;
   try { parser.PROFILES.strict.cap = 999; } catch (_e) { /* strict mode throws */ }
   check("a caller cannot raise a cap the guard enforces",

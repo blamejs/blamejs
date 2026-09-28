@@ -684,7 +684,14 @@ async function testDaemonBootWindowSurvivesShortLauncher() {
   var script =
     "var d=require(" + JSON.stringify(daemonPath) + ");" +
     "d.start({pidFile:" + JSON.stringify(pidFile) + ",command:process.execPath," +
-    "args:['-e','setTimeout(function(){process.exit(1)},300)'],bootDeathWindowMs:4000});";
+    // The window has to outlast the CHILD'S OWN START, not just its ~300ms
+    // life: the clock begins when the launcher calls start(), and under
+    // SMOKE_PARALLEL=64 a cold node can take seconds to reach its first line.
+    // At 4000 the window closed before the child had died on a loaded host,
+    // the launcher exited with nothing to observe, and the pidfile it was
+    // supposed to reap was still there. The launcher exits as soon as it
+    // reaps, so a wide window costs nothing on a run that behaves.
+    "args:['-e','setTimeout(function(){process.exit(1)},300)'],bootDeathWindowMs:30000});";
   await new Promise(function (resolve, reject) {
     var cp = processSpawn.spawn(process.execPath, ["-e", script], { stdio: "ignore" });
     cp.once("exit",  function () { resolve(); });

@@ -223,7 +223,7 @@
         },
         {
           "title": "A guard profile cannot be edited from outside the guard",
-          "body": "`b.guardJmap.limitsFor` returned the profile object itself, so `limitsFor({}).maxCallsInRequest = 9999` raised the cap the guard enforces for every listener in the process. The profiles are frozen."
+          "body": "`b.guardJmap.limitsFor` returned the profile object itself, so `limitsFor({}).maxCallsInRequest = 9999` raised the cap the guard enforces for every listener in the process. The profiles are frozen. The walk that freezes them carries a depth bound so a cyclic policy cannot run it out of stack, and past that bound it returned the rest of the policy untouched, which handed back a writable cap under a policy reported as frozen. A policy nested deeper than eight levels, a cyclic one among them, is refused with `gate-contract/policy-too-deep` instead; the deepest policy any shipped guard carries is three."
         },
         {
           "title": "The JMAP WebSocket transport applies the request size the session declares",
