@@ -431,7 +431,7 @@ function testEveryProfileKnobIsRead() {
         shapeMismatch.length === 0);
 }
 
-function _uploadReqRes(url, bytes) {
+function _uploadReqRes(url, bytes, reqHeaders) {
   var listeners = Object.create(null);
   var headers = {};
   var chunks = [];
@@ -439,7 +439,7 @@ function _uploadReqRes(url, bytes) {
   var req = {
     method:  "POST",
     url:     url,
-    headers: { "content-type": "text/plain" },
+    headers: Object.assign({ "content-type": "text/plain" }, reqHeaders || {}),
     user:    { id: "actor1" },
     socket:  { remoteAddress: "127.0.0.1" },
     on:      function (event, fn) { (listeners[event] = listeners[event] || []).push(fn); return req; },
@@ -609,6 +609,36 @@ async function testMaxConcurrentUploadAdmitsOnlyWhatItAdvertises() {
   await _settle();
   check("and the slot is free again afterwards", third.res._status() === 201,
         String(third.res._status()) + " " + third.res._buf());
+
+  // A slot is taken for the length of one upload and released only from
+  // listeners installed after, so anything that throws in between costs the
+  // account that slot for the life of the process. `maxBlobBytes` is refused
+  // at `create` now, so the chunk collector cannot be the thing that throws,
+  // and it is built before the slot is taken so that nothing is. What is left
+  // in that window is the Content-Type this handler reads on the way in: these
+  // drive it with headers a client can send and assert the slot comes back.
+  // Measured: the shapes below do not currently throw, so this is a guard on
+  // that path rather than a proof of the ordering.
+  var hostileTypes = ["", "!!!", "x".repeat(4096), "text/plain; boundary=\"" + "a".repeat(2048)];   // allow:raw-byte-literal — test-only header lengths
+  for (var h = 0; h < hostileTypes.length; h += 1) {
+    var odd = _uploadReqRes("/jmap/upload/" + ACCOUNT, Buffer.from("hi"),
+      { "content-type": hostileTypes[h] });
+    jmap.uploadHandler(odd.req, odd.res);
+    odd.req._send();
+    await _settle();
+    await _settle();
+    check("an upload whose Content-Type is malformed still answers (" + h + ")",
+          odd.res._status() !== null && odd.res._status() !== 429,
+          String(odd.res._status()));
+  }
+  var afterOdd = _uploadReqRes("/jmap/upload/" + ACCOUNT, Buffer.from("hi"));
+  jmap.uploadHandler(afterOdd.req, afterOdd.res);
+  afterOdd.req._send();
+  await _settle();
+  await _settle();
+  check("and the one upload slot was not consumed by any of them",
+        afterOdd.res._status() === 201,
+        String(afterOdd.res._status()) + " " + afterOdd.res._buf());
 }
 
 async function testConcurrencyIsCountedPerActor() {
@@ -722,6 +752,47 @@ function testAConcurrencyOptionThatBoundsNothingIsRefused() {
   });
   check("a concurrency value that bounds nothing is refused at create" +
         (accepted.length ? " (" + accepted.join("; ") + ")" : ""), accepted.length === 0);
+
+  // `maxBlobBytes` is the third number the session advertises, as
+  // `maxSizeUpload`, and it reached the upload handler unchecked. There the
+  // chunk collector is built AFTER the concurrency slot is taken, so a cap the
+  // collector refuses threw between the two and the slot was never released:
+  // `maxConcurrentUpload` attempts and every later upload for that actor is
+  // answered 429 for the life of the process. Caught where the operator can
+  // see it instead.
+  var badCaps = [];
+  [-1, 0, Infinity, NaN, "50", 1.5].forEach(function (value) {
+    var threw = null;
+    try {
+      b.mail.server.jmap.create({
+        mailStore:    { appendMessage: function () {} },
+        accountsFor:  async function () { return { accounts: {} }; },
+        methods:      {},
+        maxBlobBytes: value,
+      });
+    } catch (e) { threw = e; }
+    if (!threw || threw.code !== "mail-server-jmap/bad-blob-cap") {
+      badCaps.push(JSON.stringify(value) + " -> " + (threw ? threw.code : "ACCEPTED"));
+    }
+  });
+  check("a maxBlobBytes the upload path cannot honor is refused at create" +
+        (badCaps.length ? " (" + badCaps.join("; ") + ")" : ""), badCaps.length === 0);
+  // The control: the values an operator legitimately sets are still accepted,
+  // and omitting it keeps the default.
+  var goodCaps = [];
+  [undefined, null, 1, 1024, b.constants.BYTES.mib(50)].forEach(function (value) {
+    var made = {
+      mailStore:   { appendMessage: function () {} },
+      accountsFor: async function () { return { accounts: {} }; },
+      methods:     {},
+    };
+    if (value !== undefined) made.maxBlobBytes = value;
+    var threw = null;
+    try { b.mail.server.jmap.create(made); } catch (e) { threw = e; }
+    if (threw) goodCaps.push(JSON.stringify(value) + " -> " + threw.code);
+  });
+  check("and a cap the upload path can honor is accepted" +
+        (goodCaps.length ? " (" + goodCaps.join("; ") + ")" : ""), goodCaps.length === 0);
 }
 
 async function testTheOperatorCanNameTheIdentityFieldItself() {
