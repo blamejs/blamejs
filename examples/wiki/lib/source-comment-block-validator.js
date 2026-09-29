@@ -115,6 +115,25 @@ function _reEscape(s) {
 var TEST_REF_ALLOWLIST = {
 };
 
+// OPTS_SUBJECT_ALLOWLIST: primitives whose first parameter is NAMED `opts`
+// and is the caller's own object being inspected, not a configuration bag
+// this primitive reads keys out of. Check 9b fires on any signature
+// containing `opts`, because a config bag whose keys go undocumented renders
+// a page with a missing section. These have no keys of their own to
+// document: the whole point of `b.validateOpts(opts, allowedKeys, primitive)`
+// is that the keys belong to the caller and are named in `allowedKeys`, so a
+// page with no opts section is the right page. Add an entry ONLY for a
+// parameter that is the subject of the check rather than its configuration;
+// a primitive that really does take options documents them.
+var OPTS_SUBJECT_ALLOWLIST = {
+  "b.validateOpts":                  "the opts under test; its keys are the caller's and are named in allowedKeys",
+  "b.validateOpts.check":            "the same function under its own name, so the same parameter",
+  "b.validateOpts.checkOrThrow":     "the opts under test; its keys are the caller's and are named in allowedKeys",
+  "b.validateOpts.shape":            "the opts under test; its keys are the caller's and are named in the schema",
+  "b.validateOpts.requireObject":    "the opts under test; this only asks whether an object is there",
+  "b.validateOpts.applyDefaults":    "the opts being merged over the defaults; its keys are the caller's",
+};
+
 function _walkJsFiles(dir, out) {
   var entries;
   try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
@@ -701,7 +720,9 @@ function validate(config) {
       //     gate runs from a clean checkout without
       //     `examples/wiki && npm install`), the probe-side check
       //     skips. The manual @opts check above still fires.
-      if (tags.signature && /\(\s*[^)]*opts/.test(tags.signature)) {
+      var optsIsTheSubject =
+        Object.prototype.hasOwnProperty.call(OPTS_SUBJECT_ALLOWLIST, primTag);
+      if (tags.signature && /\(\s*[^)]*opts/.test(tags.signature) && !optsIsTheSubject) {
         if (!tags.opts && optsResolver) {
           var probe = optsResolver.resolve(tags.signature);
           if (!probe.ok) {
