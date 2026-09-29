@@ -385,6 +385,47 @@ async function testAWildcardExpansionIsChargedAsItIsBuilt() {
         _errorOf(okRv.methodResponses[1]) === null &&
         okRv.methodResponses[1][1].values.length === 1000,
         JSON.stringify(_errorOf(okRv.methodResponses[1])));
+
+  // Siblings inside ONE call draw on one budget. Each `#` argument used to get
+  // the whole remaining request budget to itself, so the allocation grew with
+  // how many references the call carried while the call was still refused:
+  // measured at 0.77 MiB of wire, twenty references to one 400,000-element
+  // array grew the heap 139 MiB and sixty grew it 318 MiB.
+  // 100 elements of 64 KiB is 6.5 MB, so ONE expansion fits inside the 10 MiB
+  // a request may reach and four together do not. That is the shape the defect
+  // needed: every sibling passing its own check while their sum does not.
+  var sibReads = 0;
+  var sibChunk = "y".repeat(65536);
+  var sibSource = [];
+  for (var s = 0; s < 100; s += 1) {
+    Object.defineProperty(sibSource, s, {
+      enumerable: true, configurable: true,
+      get: function () { sibReads += 1; return sibChunk; },
+    });
+  }
+  sibSource.length = 100;
+
+  var sibSrv = _serverFor("Core/sib", sibSource);
+  var sibArgs = { accountId: ACCOUNT };
+  for (var r = 0; r < 4; r += 1) {
+    sibArgs["#r" + r] = { resultOf: "n0", name: "Core/sib", path: "/values/*" };
+  }
+  var sibRv = await sibSrv.dispatch({ id: "actor1" }, {
+    using:       ["urn:ietf:params:jmap:core"],
+    methodCalls: [
+      ["Core/sib", { accountId: ACCOUNT }, "n0"],
+      ["Core/echo", sibArgs, "n1"],
+    ],
+  });
+  check("a call whose sibling references overrun the budget is refused",
+        _errorOf(sibRv.methodResponses[1]) === "invalidResultReference",
+        JSON.stringify(_errorOf(sibRv.methodResponses[1])));
+  // Sharing one budget, the call stops partway through the second sibling at
+  // roughly 160 reads. Holding one budget each, all four expand in full — 400
+  // reads — and only the check that runs afterwards refuses the call.
+  check("and the four siblings drew on one budget rather than four",
+        sibReads > 0 && sibReads < 300,
+        JSON.stringify({ reads: sibReads, siblings: 4, perSibling: 100 }));
 }
 
 async function run() {
