@@ -485,6 +485,7 @@ var VALID_ALLOW_CLASSES = {
   "root-prefix-family-without-reseal": 1,
   "scoped-context-binding-unused": 1,
   "serializer-realm-bound-instanceof": 1,
+  "lib-realm-bound-byte-instanceof": 1,
   "session-updatedata-merges-one-level-deep": 1,
   "shape-file-inline-opts-validation": 1,
   "smtp-linebuffer-utf8-roundtrip": 1,
@@ -22935,11 +22936,27 @@ var _REALM_BOUND_BUILTINS = "Date|Map|Set|RegExp|WeakMap|WeakSet|Promise|ArrayBu
   "Float32Array|Float64Array|BigInt64Array|BigUint64Array|DataView";
 
 function testSerializersDoNotDispatchOnRealmBoundInstanceof() {
-  // Named one by one: each turns an arbitrary operator value into bytes or a
-  // string, so which branch it takes is the whole answer. A module that only
-  // coerces (`x instanceof Date ? x : new Date(x)`) is not in scope, because
-  // its other branch handles the value correctly.
-  var SERIALIZERS = ["lib/canonical-json.js", "lib/cbor.js", "lib/safe-json.js"];
+  // Named one by one: each decides what an arbitrary operator value IS, and
+  // then stores it, signs it, redacts it, refuses it, or files it under a
+  // timestamp. Which branch it takes is the whole answer, so the realm that
+  // happened to build the value must not choose. Measured on these before the
+  // rule: b.redact emitted a secret's bytes as {"0":115,...} where a local
+  // byte array collapses to [REDACTED], and its classifier returned
+  // verdict:"clean" for a body carrying an SSN, which is the verdict
+  // installOutboundDlp gates egress on; b.worm stored 3 bytes as the 19 bytes
+  // of {"0":1,"1":2,"2":3} in a write-once record and digested that;
+  // b.guardMailQuery accepted a RegExp its own rule refuses; b.time.toParts
+  // refused a Date as "got object"; compliance.aiAct.logging dropped a
+  // record's timestamp to null.
+  var SERIALIZERS = [
+    "lib/canonical-json.js", "lib/cbor.js", "lib/safe-json.js",
+    "lib/redact.js", "lib/worm.js", "lib/audit.js", "lib/audit-tools.js",
+    "lib/crypto-field.js", "lib/framework-schema.js", "lib/guard-mail-query.js",
+    "lib/compliance-ai-act-logging.js", "lib/db-collection.js", "lib/time.js",
+    "lib/i18n.js", "lib/cms-codec.js", "lib/archive.js", "lib/atomic-file.js",
+    "lib/mdoc.js", "lib/vc.js", "lib/safe-buffer.js", "lib/privacy-pass.js",
+    "lib/session-device-binding.js", "lib/mail-bimi.js",
+  ];
   var re = new RegExp("instanceof\\s+(?:" + _REALM_BOUND_BUILTINS + ")\\b");
   var bad = [];
   SERIALIZERS.forEach(function (rel) {
@@ -22960,6 +22977,43 @@ function testSerializersDoNotDispatchOnRealmBoundInstanceof() {
   bad = _filterMarkers(bad, "serializer-realm-bound-instanceof");
   _report("a serializer decides a value's type with node:util types, never `instanceof` against a built-in " +
           "(which answers no for a value from another realm)",
+    bad);
+}
+
+// The rule above names its modules, because `instanceof Date` in front of
+// `: new Date(x)` is a coercion whose other branch is correct, and there are
+// scores of those. Bytes have no such form: every place lib/ asked
+// `x instanceof Uint8Array` it was deciding whether a value IS bytes, and the
+// answer decided whether the bytes got redacted, capped, hex-encoded, wiped,
+// stored or refused. So bytes get the whole tree with no named list and no
+// allowlist, and the file-scoped rule above keeps the wider built-in set for
+// the modules where a wrong branch is a wrong signature.
+var _REALM_BOUND_BYTE_VIEWS = "Uint8Array|Uint16Array|Uint32Array|Int8Array|" +
+  "Int16Array|Int32Array|Float32Array|Float64Array|BigInt64Array|" +
+  "BigUint64Array|ArrayBuffer|DataView";
+
+function testNothingInLibDecidesBytesWithRealmBoundInstanceof() {
+  var re = new RegExp("instanceof\\s+(?:" + _REALM_BOUND_BYTE_VIEWS + ")\\b");
+  var bad = [];
+  _libFiles().forEach(function (full) {
+    var rel = _relPath(full);
+    if (rel.indexOf("lib/vendor/") === 0) return;
+    var src;
+    try { src = fs.readFileSync(full, "utf8"); }
+    catch (_e) { return; }
+    _stripComments(src).split("\n").forEach(function (line, i) {
+      if (!re.test(line)) return;
+      bad.push({ file: rel, line: i + 1,
+        content: "`instanceof` against a typed-array view compares THIS realm's constructor, so a byte " +
+                 "array built anywhere else answers no and takes the branch meant for something that is " +
+                 "not bytes. Use nodeTypes.isUint8Array (node:util's types), which reads the internal " +
+                 "slot and answers for every realm; it also refuses an object that only claims the " +
+                 "prototype, which `instanceof` accepts. Buffer.isBuffer stays where a Buffer and a " +
+                 "plain view are handled differently, but it cannot stand in for this test" });
+    });
+  });
+  bad = _filterMarkers(bad, "lib-realm-bound-byte-instanceof");
+  _report("nothing in lib/ decides whether a value is bytes with `instanceof` against a typed-array view",
     bad);
 }
 
@@ -25902,6 +25956,7 @@ async function run() {
   testRequireMtlsRevocationSourceReturnsBoolean();
   testSessionUpdateDataMergesOneLevelDeep();
   testSerializersDoNotDispatchOnRealmBoundInstanceof();
+  testNothingInLibDecidesBytesWithRealmBoundInstanceof();
   testMtlsCaCommitJournalsPriorKeyBeforeRename();
   testMtlsCaIssuanceLedgerFailsClosedOnCorruptSchema();
   testMtlsCaIssuanceGenerationUndeterminableIsNull();

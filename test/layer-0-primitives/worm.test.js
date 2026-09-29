@@ -114,6 +114,38 @@ function testCallerCannotMutateThroughOutput() {
   check("record still verifies after output mutation",        code(function () { w.get("k"); }) === "NO-THROW");
 }
 
+// put() stores whatever bytes it is handed and digests them, and the record
+// is write-once, so getting the byte test wrong is not recoverable by writing
+// again. _toBytes asked `data instanceof Uint8Array`, which only answers for
+// this realm; a byte array from any other one fell through to the JSON branch
+// and 3 bytes were stored as the 19 bytes of {"0":1,"1":2,"2":3}.
+function testBytesFromAnotherRealmAreStoredAsBytes() {
+  var vm = require("node:vm");
+  var ctx = vm.createContext({});
+  var far = vm.runInContext("new Uint8Array([1, 2, 3])", ctx);
+
+  var w = b.worm.create({ defaultRetentionMs: 1000 });
+  w.put("local", new Uint8Array([1, 2, 3]));
+  w.put("far", far);
+
+  check("worm: a local byte array stores its 3 bytes",
+        w.get("local").data.length === 3, w.get("local").data.length);
+  check("worm: a byte array from another realm stores the same 3 bytes",
+        w.get("far").data.length === 3, w.get("far").data.length);
+  check("worm: and they are the bytes that went in, not a JSON index map",
+        w.get("far").data.equals(Buffer.from([1, 2, 3])),
+        JSON.stringify(w.get("far").data.toString("latin1")));
+  check("worm: both records digest identically, since the bytes are identical",
+        w.get("far").digest === w.get("local").digest,
+        w.get("far").digest + " vs " + w.get("local").digest);
+
+  // A plain object still takes the JSON branch — that is its documented shape.
+  w.put("obj", { a: 1 });
+  check("worm: a plain object is still stored as its JSON",
+        w.get("obj").data.toString("utf8") === '{"a":1}',
+        w.get("obj").data.toString("utf8"));
+}
+
 async function run() {
   testSurface();
   testWriteOnceAndRetain();
@@ -123,6 +155,7 @@ async function run() {
   testTamperEvidence();
   testCallerCannotMutateThroughInput();
   testCallerCannotMutateThroughOutput();
+  testBytesFromAnotherRealmAreStoredAsBytes();
 }
 module.exports = { run: run };
 if (require.main === module) { run().then(function () { console.log("[worm] OK — " + helpers.getChecks() + " checks passed"); }, function (e) { console.error("FAIL:", e && e.stack || e); process.exit(1); }); }
