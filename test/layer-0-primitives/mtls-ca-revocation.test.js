@@ -671,6 +671,35 @@ async function testAnOlderCrlDoesNotOverwriteANewerPublishedOne() {
     : 0;
   check("the number is recorded before the file, so a failed write cannot leave it behind",
         watermarkAfter >= 1, JSON.stringify({ watermark: watermarkAfter }));
+
+  // The counter is read from a file that holds digits, and a restored or
+  // hand-edited one can hold more digits than a JavaScript number carries
+  // exactly. Reading it with parseInt silently rounds, so the CA would go on
+  // as though the number were fine and the refusal would come from the signer,
+  // naming neither the file nor the reason. The counter is refused here, by
+  // name, and so is a value with no room left to add one.
+  var PRECISION_CASES = [
+    ["a counter with more digits than a number carries exactly", "9007199254740993"],
+    ["a counter far beyond the exact range", "123456789012345678901234567890"],
+    ["a counter with no room left to increment", "9007199254740991"],
+  ];
+  var precisionWrong = [];
+  for (var p = 0; p < PRECISION_CASES.length; p += 1) {
+    var pDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-mtls-crlprec-"));
+    var pCa = b.mtlsCa.create({ dataDir: pDir, caKeySealedMode: "disabled", generation: 1 });
+    var pLeaf = await pCa.generateClientCert({ cn: "crl-precision-client" });
+    await pCa.revoke(pLeaf.serialNumber, { reason: "keyCompromise" });
+    fs.writeFileSync(path.join(pDir, "ca.crl-number"), PRECISION_CASES[p][1] + "\n");
+    var pThrew = null;
+    try { await pCa.generateCrl({ persist: false }); } catch (e) { pThrew = e; }
+    var code = pThrew && pThrew.code;
+    if (code !== "mtls-ca/crl-number-unreadable" && code !== "mtls-ca/crl-number-exhausted") {
+      precisionWrong.push(PRECISION_CASES[p][0] + " -> " + (code || "ACCEPTED"));
+    }
+  }
+  check("a CRL counter the reader cannot carry exactly is refused by name" +
+        (precisionWrong.length ? " (" + precisionWrong.join("; ") + ")" : ""),
+        precisionWrong.length === 0);
 }
 
 async function run() {

@@ -516,7 +516,99 @@ function testTheGuardAndTheListenersReadOneAddress() {
         mailServerNet.sliceAnglePath('<"a>b"@example.com>').address === '"a>b"@example.com');
 }
 
+// Every listener reads its boolean options as `opts.X === true`, which turns any
+// other value into `false` without saying so. For a permission flag that fails
+// closed, but `implicitTls` and `requireDkim` are REQUIREMENTS: a config
+// carrying `implicitTls: "true"`, which is what a value read from an environment
+// variable or a config file looks like, left the listener on
+// plaintext-with-STARTTLS while the operator believed TLS started at the SYN. A
+// greeting that is not a string reaches the wire as whatever it is. All four
+// listeners share the shape, so the check walks all four.
+function testEveryListenerRefusesANonBooleanForABooleanOption() {
+  var nodeTls = require("node:tls");
+  var ctx = nodeTls.createSecureContext({});
+  function _auth() {
+    return { mechanisms: ["PLAIN"],
+             verify: async function () { return { ok: true, actor: { id: "u" } }; } };
+  }
+  function _store() {
+    return { appendMessage: function () {}, search: function () { return []; },
+             fetchRange: function () { return []; },
+             openPop3Drop: function () { return { messages: [] }; },
+             commitPop3Drop: function () {}, getMessage: function () { return null; },
+             listMessages: function () { return []; }, markDelete: function () {},
+             sieveScripts: { put: function () {}, list: function () { return []; },
+                             get: function () { return null; }, setActive: function () {},
+                             delete: function () {}, rename: function () {},
+                             haveSpace: function () { return true; } } };
+  }
+  var LISTENERS = [
+    ["imap", function () { return { tlsContext: ctx, mailStore: _store(), auth: _auth() }; },
+     ["implicitTls"]],
+    ["pop3", function () { return { tlsContext: ctx, mailStore: _store(), auth: _auth() }; },
+     ["implicitTls"]],
+    ["managesieve", function () {
+      return { tlsContext: ctx, mailStore: _store(), auth: _auth() };
+    }, ["implicitTls", "allowPlaintext"]],
+    ["submission", function () {
+      return { tlsContext: ctx, auth: _auth(),
+               agent: { send: async function () { return { ok: true }; } } };
+    }, ["implicitTls", "allowSmtpUtf8", "requireDkim"]],
+  ];
+  var NON_BOOLEANS = ["true", "yes", 1, 0, "false"];
+  var accepted = [];
+  var unreachable = [];
+  LISTENERS.forEach(function (row) {
+    var name = row[0], base = row[1], flags = row[2];
+    // If this test cannot build options the listener accepts at all, the walk
+    // below would pass for the wrong reason, so the baseline is asserted first.
+    var baseThrew = null;
+    try { b.mail.server[name].create(base()); } catch (e) { baseThrew = e; }
+    if (baseThrew) { unreachable.push(name + " -> " + baseThrew.code); return; }
+    flags.forEach(function (flag) {
+      NON_BOOLEANS.forEach(function (value) {
+        var made = base();
+        made[flag] = value;
+        var threw = null;
+        try { b.mail.server[name].create(made); } catch (e) { threw = e; }
+        if (threw === null) accepted.push(name + "." + flag + " = " + JSON.stringify(value));
+      });
+    });
+    [42, "", {}].forEach(function (value) {
+      var made = base();
+      made.greeting = value;
+      var threw = null;
+      try { b.mail.server[name].create(made); } catch (e) { threw = e; }
+      if (threw === null) accepted.push(name + ".greeting = " + JSON.stringify(value));
+    });
+  });
+  check("the boolean-option walk reaches every listener" +
+        (unreachable.length ? " (" + unreachable.join("; ") + ")" : ""),
+        unreachable.length === 0);
+  check("every listener refuses a non-boolean for a boolean option and a non-string greeting" +
+        (accepted.length ? " (accepted: " + accepted.join("; ") + ")" : ""),
+        accepted.length === 0);
+
+  // The control: the documented values are still accepted, so the checks refuse
+  // the wrong value rather than the option.
+  var refusedGood = [];
+  LISTENERS.forEach(function (row) {
+    var name = row[0], base = row[1], flags = row[2];
+    flags.concat(["greeting"]).forEach(function (flag) {
+      var made = base();
+      made[flag] = flag === "greeting" ? "blamejs test" : true;
+      var threw = null;
+      try { b.mail.server[name].create(made); } catch (e) { threw = e; }
+      if (threw) refusedGood.push(name + "." + flag + " -> " + threw.code);
+    });
+  });
+  check("and the documented values are still accepted" +
+        (refusedGood.length ? " (" + refusedGood.join("; ") + ")" : ""),
+        refusedGood.length === 0);
+}
+
 async function run() {
+  testEveryListenerRefusesANonBooleanForABooleanOption();
   testFoldSubaddress();
   testTheGuardAndTheListenersReadOneAddress();
   testAQuotedLocalPartNamesTheSameMailboxAsItsBareSpelling();

@@ -855,6 +855,83 @@ function testAConcurrencyOptionThatBoundsNothingIsRefused() {
         (goodCaps.length ? " (" + goodCaps.join("; ") + ")" : ""), goodCaps.length === 0);
 }
 
+// Each option above was checked by a validator written for it alone, so an
+// option added later had none: three of them reached the listener unchecked.
+// This walks EVERY option the create() block documents rather than the ones a
+// review happened to name, so the next option added without a check fails here
+// instead of in a deployment.
+function testEveryDocumentedCreateOptionRefusesAValueItCannotHonor() {
+  function _base() {
+    return {
+      mailStore:   { appendMessage: function () {} },
+      accountsFor: async function () { return { accounts: {} }; },
+      methods:     {},
+    };
+  }
+  // `webSocketMaxMessageBytes` bounds the frame the transport buffers BEFORE
+  // dispatch applies the profile's maxSizeRequest, so an Infinity here is not
+  // a cosmetic error: it removes the only bound an authenticated peer's frame
+  // meets on the way in.
+  var CASES = [
+    ["webSocketMaxMessageBytes", Infinity],
+    ["webSocketMaxMessageBytes", -1],
+    ["webSocketMaxMessageBytes", 0],
+    ["webSocketMaxMessageBytes", 1.5],
+    ["webSocketMaxMessageBytes", "8192"],
+    ["webSocketMaxMessageBytes", NaN],
+    ["webSocketUrl", 42],
+    ["webSocketUrl", ""],
+    ["collationAlgorithms", "i;octet"],
+    ["collationAlgorithms", []],
+    ["collationAlgorithms", [1]],
+    ["collationAlgorithms", [""]],
+    ["collationAlgorithms", ["i;octet not-a-name"]],
+    ["webSocket", "yes"],
+    ["maxBlobBytes", Infinity],
+    ["maxConcurrentUpload", Infinity],
+    ["maxConcurrentRequests", -3],
+    ["actorKey", "not-a-function"],
+  ];
+  var accepted = [];
+  CASES.forEach(function (row) {
+    var made = _base();
+    made[row[0]] = row[1];
+    var threw = null;
+    try { b.mail.server.jmap.create(made); } catch (e) { threw = e; }
+    if (!threw) accepted.push(row[0] + " = " + JSON.stringify(String(row[1])));
+  });
+  check("every documented create option refuses a value it cannot honor" +
+        (accepted.length ? " (accepted: " + accepted.join("; ") + ")" : ""),
+        accepted.length === 0);
+
+  // The control: the documented shapes are still accepted, so the checks
+  // refuse the wrong value rather than the option.
+  var refusedGood = [];
+  [
+    ["webSocketMaxMessageBytes", 65536],
+    ["webSocketUrl", "/jmap/socket"],
+    ["collationAlgorithms", ["i;octet"]],
+    ["collationAlgorithms", ["i;ascii-numeric", "i;ascii-casemap", "i;octet"]],
+    // The handlers registered here do the sorting, not the listener, so an
+    // operator whose backend implements another RFC 4790 collation advertises
+    // it. Refusing anything outside the default three made a working deployment
+    // fail at create.
+    ["collationAlgorithms", ["i;unicode-casemap"]],
+    ["collationAlgorithms", ["i;octet", "x-vendor-collation"]],
+    ["webSocket", false],
+    ["maxBlobBytes", 1024],
+  ].forEach(function (row) {
+    var made = _base();
+    made[row[0]] = row[1];
+    var threw = null;
+    try { b.mail.server.jmap.create(made); } catch (e) { threw = e; }
+    if (threw) refusedGood.push(row[0] + " = " + JSON.stringify(row[1]) + " -> " + threw.code);
+  });
+  check("and the documented shapes are still accepted" +
+        (refusedGood.length ? " (" + refusedGood.join("; ") + ")" : ""),
+        refusedGood.length === 0);
+}
+
 async function testTheOperatorCanNameTheIdentityFieldItself() {
   // An actor this framework cannot read at all is the operator's own shape,
   // so they say how to read it rather than having their users merged.
@@ -1069,6 +1146,7 @@ async function run() {
   await testConcurrencyIsCountedPerActor();
   await testAnActorIdentifiedByAnotherFieldIsStillItsOwnPrincipal();
   testAConcurrencyOptionThatBoundsNothingIsRefused();
+  testEveryDocumentedCreateOptionRefusesAValueItCannotHonor();
   await testTheOperatorCanNameTheIdentityFieldItself();
   await testAThrowingActorKeyDoesNotEscapeTheListener();
   await testTheConcurrencyRefusalCarriesOneStatusOnBothTransports();

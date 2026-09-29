@@ -10857,6 +10857,19 @@ async function testNoDuplicateCodeBlocks() {
       files: ["lib/auth/jar.js:parse", "lib/auth/status-list.js:fromJwt", "lib/eat.js:verify"],
     },
     {
+      // fp:e7c718f88a0d — JAR parse / EAT verify / SCITT verifyStatement. Each
+      // forwards the options its spec names for a verification: algorithms, a key
+      // or resolver, an expected issuer and audience, a clock skew and a now.
+      // The names coincide because the specs chose the same words; the calls do
+      // not, because each hands them to a different verifier with its own
+      // contract (a JWS for JAR, a CWT for EAT, a COSE_Sign1 for SCITT), and the
+      // claim each then checks belongs to its own format. A shared forwarder
+      // would couple three credential formats to one option set and would have
+      // to grow a branch per format on the first divergence.
+      mode: "family-subset",
+      files: ["lib/auth/jar.js:parse", "lib/eat.js:verify", "lib/scitt.js:verifyStatement"],
+    },
+    {
       // fp:9d3b9d7485a8 — HAL link-normalize / Auth-Results emit / template create:
       // unrelated (run = 0).
       mode: "family-subset",
@@ -22394,6 +22407,77 @@ function testKeycloakRealmFitsItsColumns() {
         tooLong.length === 0);
 }
 
+// An option read by an identity comparison turns every OTHER value into the
+// opposite, and says nothing. A configuration carrying the string "true" or
+// "false", which is what an environment variable or a config file hands a
+// program, therefore gets the setting it did not ask for.
+//
+// Only the direction that fails OPEN is flagged, because that is the direction
+// where the deployment ends up less protected than its own configuration says:
+//
+//   `opts.requireX === true`   — a requirement, switched OFF by any non-boolean
+//   `opts.allowX  !== false`   — a permission, left ON by any non-boolean
+//
+// The reverse readings fail closed and cost a feature, not a defence, so they
+// are not worth the churn. The behavioural walk is requirement-flags.test.js;
+// this is the structural half, and it states the guarantee as "the file that
+// reads it also checks it" rather than as a list, so a new primitive is covered
+// the day it is written.
+function testARequirementFlagIsValidatedWhereItIsRead() {
+  var FAIL_OPEN = [
+    // [ name prefixes, how the read is spelled, how it is described ]
+    { names: /^(require|enforce|must|mandat|demand)/, op: "===\\s*true",  as: "=== true" },
+    { names: /^(allow|permit|trust|skip|disable|insecure)/, op: "!==\\s*false", as: "!== false" },
+  ];
+  var bad = [];
+  _libFiles().forEach(function (file) {
+    // Comment-stripped throughout. A doc block that quotes the shape it
+    // documents is not a read of it (`mail-require-tls` refuses a non-boolean and
+    // was flagged by its own comment), and a comment mentioning a validator must
+    // not exempt a file that does not call one.
+    var src = _stripComments(fs.readFileSync(file, "utf8"));
+    var seen = Object.create(null);
+    FAIL_OPEN.forEach(function (kind) {
+    var read = new RegExp("\\b(opts[A-Za-z0-9_]*)\\.([A-Za-z0-9_]+)\\s*" + kind.op, "g");
+    var m;
+    while ((m = read.exec(src)) !== null) {
+      var name = m[2];
+      if (!kind.names.test(name)) continue;
+      if (seen[name]) continue;
+      seen[name] = true;
+      // A validation is either an explicit optionalBoolean on that option or a
+      // declarative schema entry naming it with a boolean rule. Both are real
+      // and both are used in lib/, so neither is privileged here.
+      // Any validator whose name says "boolean", receiving that option: the
+      // shared `validateOpts.optionalBoolean` and a module's own
+      // `_requireBooleanIfPresent` are the same guarantee.
+      var explicit = new RegExp("[A-Za-z_$][A-Za-z0-9_$]*[Bb]oolean[A-Za-z0-9_$]*\\(\\s*opts" +
+                                "[A-Za-z0-9_]*\\." + name + "\\b");
+      var listed   = new RegExp("\\[[^\\]]*[\"']" + name + "[\"'][^\\]]*\\]\\s*\\.forEach");
+      var schema   = new RegExp("\\b" + name + "\\s*:\\s*\\{[^}]*optional-boolean");
+      // A hand-rolled type check is a validation too: a primitive low enough in
+      // the stack not to import the shared validator still has to refuse.
+      var byType   = new RegExp("typeof\\s+opts[A-Za-z0-9_]*\\." + name +
+                                "\\s*!==\\s*[\"']boolean[\"']");
+      // `if (opts.X !== true) { throw ... }` IS the refusal, which is how
+      // `mail-require-tls` states it. The throw is what makes it one: accepting
+      // a bare `!== true` exempted `sql.js`, where that spelling is the
+      // default-deny BRANCH of a feature flag and refuses nothing, and it hid a
+      // genuine fail-open read of the same option two thousand lines away.
+      var byNotTrue = new RegExp("opts[A-Za-z0-9_]*\\." + name +
+                                 "\\s*!==\\s*true\\s*\\)[^;{]{0,40}\\{[^}]{0,300}throw");
+      var validated = explicit.test(src) || listed.test(src) || schema.test(src) ||
+                      byType.test(src) || byNotTrue.test(src);
+      if (validated) continue;
+      bad.push(file.replace(/\\/g, "/") + ": opts." + name +
+               " is read as " + kind.as + " and never checked as a boolean");
+    }
+    });
+  });
+  check("a requirement-shaped option is validated where it is read (" + bad.length + ")" +
+        (bad.length ? ":\n    " + bad.join("\n    ") : ""), bad.length === 0);
+}
+
 function testWikiPortAgreesAcrossArtifacts() {
   var bad = [];
   var dockerfile;
@@ -25576,6 +25660,7 @@ async function run() {
   // WIKI_PORT default must match the release-container.yml smoke
   // step's port mapping + curl host.
   testKeycloakRealmFitsItsColumns();
+  testARequirementFlagIsValidatedWhereItIsRead();
   testWikiPortAgreesAcrossArtifacts();
   testReleasePushPathsRunLiveIntegration();
   testReleaseUnresolvedThreadsFailClosedAtPageCap();
