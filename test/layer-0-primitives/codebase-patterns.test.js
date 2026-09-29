@@ -22897,16 +22897,21 @@ function testSessionUpdateDataMergesOneLevelDeep() {
   var noComments = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
   var bad = [];
   if (!/_isPlainObject\(\s*ev\s*\)\s*&&\s*_isPlainObject\(\s*nv\s*\)[\s\S]{0,80}next\[k\]\s*=\s*Object\.assign\(\s*\{\}\s*,\s*ev\s*,\s*nv\s*\)/.test(noComments) ||
-      !/function\s+_isPlainObject[\s\S]{0,180}getPrototypeOf\([\s\S]{0,60}Object\.prototype/.test(noComments) ||
+      !/function\s+_isPlainObject(?:(?!\n\})[\s\S]){0,400}getPrototypeOf\((?:(?!\n\})[\s\S]){0,200}getPrototypeOf\((?:(?!\n\})[\s\S]){0,60}===\s*null/.test(noComments) ||
       /next\[k\]\s*=\s*data\[k\]/.test(noComments)) {
     bad.push({ file: "lib/session.js", line: 1,
       content: "session.updateData({ merge: true }) must merge an inner PLAIN OBJECT one level deep so the existing inner " +
                "keys survive (its doc promises \"Inner objects merge ONE LEVEL DEEP\") — merge only when BOTH values are " +
                "plain objects (`_isPlainObject(ev) && _isPlainObject(nv)` → `next[k] = Object.assign({}, ev, nv)`), where " +
-               "_isPlainObject is prototype-based (Object.getPrototypeOf === Object.prototype/null) so a Date/Buffer/class " +
-               "instance REPLACES (reaching JSON as its own form) rather than being merged into the retained old object or " +
-               "mangled to byte keys. A bare `next[k] = data[k]` shallow-replaces the whole inner object, silently " +
-               "discarding the operator's existing nested keys (data loss)" });
+               "_isPlainObject reads the PROTOTYPE CHAIN (a prototype that is null, or whose own prototype is null) so a " +
+               "Date/Buffer/class instance REPLACES (reaching JSON as its own form) rather than being merged into the " +
+               "retained old object or mangled to byte keys. Asking whether the prototype IS Object.prototype answers no " +
+               "for an object built in another realm, which has that realm's Object.prototype, so a `node:vm` caller's " +
+               "inner object replaced the whole nested value and dropped the keys already in it; asking whether the " +
+               "prototype's own prototype is null answers the question without naming a realm. A bare " +
+               "`next[k] = data[k]` shallow-replaces the whole inner object, silently discarding the operator's existing " +
+               "nested keys (data loss). The behaviour itself is pinned by " +
+               "test/layer-0-primitives/session-extensions.test.js; this only keeps the shape that produces it" });
   }
   bad = _filterMarkers(bad, "session-updatedata-merges-one-level-deep");
   _report("session.updateData({ merge: true }) merges an inner object one level deep (existing nested keys survive), " +
