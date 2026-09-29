@@ -103,6 +103,38 @@ function run() {
   check("validateContainment accepts nested arrays",
     safeJsonPath.validateContainment(nested) === nested);
 
+  // The walk reached these through `typeof v === "object"` and then read
+  // Object.keys, which is empty for every one of them, so each validated clean
+  // and `b.db` went on to JSON.stringify it to `{}`. A containment predicate
+  // against `{}` is satisfied by every JSON object, so `where` returned every
+  // row instead of the intended ones. b.canonicalJson already refuses a Map as
+  // unserialisable; these two answered the same question about the same value
+  // in opposite ways.
+  [["a Map", new Map([["a", 1]])],
+   ["a Set", new Set([1])],
+   ["a RegExp", /x/],
+   ["a WeakMap", new WeakMap()],
+   ["a Promise", Promise.resolve(1)],
+   ["an ArrayBuffer", new ArrayBuffer(4)],
+   ["a DataView", new DataView(new ArrayBuffer(4))]].forEach(function (row) {
+    _throws("validateContainment refuses " + row[0] + ", which would query as {}",
+      function () { safeJsonPath.validateContainment({ meta: row[1] }); }, /no JSON form|bad-type/);
+  });
+
+  var farMap = require("node:vm").runInContext(
+    "new Map([['a',1]])", require("node:vm").createContext({}));
+  _throws("validateContainment refuses a Map from another realm too",
+    function () { safeJsonPath.validateContainment({ meta: farMap }); }, /no JSON form|bad-type/);
+
+  // A Date has a JSON form, so it stays acceptable; so do the empty containers
+  // an operator legitimately queries with.
+  check("validateContainment still accepts a Date",
+    safeJsonPath.validateContainment({ at: new Date(0) }) !== undefined);
+  check("validateContainment still accepts an empty object",
+    safeJsonPath.validateContainment({}) !== undefined);
+  check("validateContainment still accepts an empty array",
+    safeJsonPath.validateContainment([]) !== undefined);
+
   // Surface assertions on the b.* shape so the coverage gate sees
   // direct b.safeJsonPath.* references.
   check("b.safeJsonPath.validateKey is fn",         typeof b.safeJsonPath.validateKey === "function");

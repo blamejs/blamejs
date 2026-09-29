@@ -396,6 +396,32 @@ async function testOverflowInsertAndDecode() {
     docs.insert({ _id: "d3", email: "cara@x.com", data: { pre: 9 }, extraKey: "v" });
     var d3 = docs.findOne({ _id: "d3" });
     check("existing overflow object merges with folded extras", d3.pre === 9 && d3.extraKey === "v");
+
+    // A value whose data lives in internal slots stringifies to {}, so the
+    // write stored an empty object and the read gave it back empty, with
+    // nothing raised at any point. b.canonicalJson already refuses such a
+    // value; a write path is the place an operator finds out.
+    function refused(doc) {
+      try { docs.insert(doc); return false; }
+      catch (e) { return /has no JSON form|stored empty/.test(e.message); }
+    }
+    check("a Map in a jsonColumn is refused rather than stored as {}",
+          refused({ _id: "m1", email: "m@x.com", roles: new Map([["a", 1]]) }));
+    check("a Set in a jsonColumn is refused",
+          refused({ _id: "m2", email: "m@x.com", roles: new Set([1]) }));
+    check("a Map folded into the overflow column is refused too",
+          refused({ _id: "m3", email: "m@x.com", stashed: new Map([["a", 1]]) }));
+
+    // What must keep working: arrays, plain objects and a Date all have a JSON
+    // form, and a Date's is its ISO string.
+    docs.insert({ _id: "ok1", email: "ok@x.com", roles: ["a"], when: new Date(0), nested: { a: 1 } });
+    var ok1 = docs.findOne({ _id: "ok1" });
+    check("an array jsonColumn still writes and reads back",
+          Array.isArray(ok1.roles) && ok1.roles[0] === "a");
+    check("a Date folded into overflow keeps its ISO string",
+          ok1.when === "1970-01-01T00:00:00.000Z", String(ok1.when));
+    check("a nested plain object folded into overflow round-trips",
+          ok1.nested && ok1.nested.a === 1);
   } finally {
     await teardownTestDb(tmpDir);
   }

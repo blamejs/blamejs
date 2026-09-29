@@ -140,11 +140,65 @@ function testDepthCap() {
     /circular/.test(code(function () { cj.stringify(cyc); })));
 }
 
+// Map, Set and RegExp were refused by name, so the five other built-ins whose
+// data lives in internal slots were not: a WeakMap, a WeakSet, a Promise, an
+// ArrayBuffer and a DataView each have no own enumerable keys, so the walk
+// wrote `{}` and a signature committed to bytes that carry none of the value.
+// Naming three shapes cannot be complete; what the refusal has to ask is
+// whether the value has a JSON form at all. A `new Map()` carrying an own
+// property is the case a key-count test alone would pass, because
+// `JSON.stringify` writes that property and drops every entry.
+function testValuesWithNoJsonFormAreRefusedNotEmptied() {
+  var NO_FORM = [
+    ["WeakMap", new WeakMap()],
+    ["WeakSet", new WeakSet()],
+    ["Promise", Promise.resolve(1)],
+    ["ArrayBuffer", new ArrayBuffer(4)],
+    ["DataView", new DataView(new ArrayBuffer(4))],
+    ["Map", new Map([["a", 1]])],
+    ["Set", new Set([1])],
+    ["RegExp", /x/],
+  ];
+  NO_FORM.forEach(function (row) {
+    var msg = code(function () { cj.stringify({ v: row[1] }); });
+    check("stringify refuses a " + row[0] + " rather than writing {} for it",
+          msg !== "NO-THROW" && /no JSON form|not serialisable/.test(msg), row[0] + ": " + msg);
+  });
+
+  var mapWithProp = new Map([["entry", 1]]);
+  mapWithProp.decoy = 2;
+  check("stringify refuses a Map carrying an own property, which JSON.stringify " +
+        "would write while dropping every entry",
+        /no JSON form|not serialisable/.test(code(function () { cj.stringify({ v: mapWithProp }); })),
+        JSON.stringify(mapWithProp));
+
+  var farNoForm = require("node:vm").runInContext(
+    "new WeakMap()", require("node:vm").createContext({}));
+  check("and one built in another realm is refused the same way",
+        /no JSON form|not serialisable/.test(code(function () { cj.stringify({ v: farNoForm }); })));
+
+  // What must keep working. An empty plain object is a real JSON value, a
+  // null-prototype object is the shape safe parsers hand back, and an operator
+  // class carrying its own fields canonicalizes by those fields.
+  function Holder() { this.a = 1; }
+  check("an empty plain object still canonicalizes", cj.stringify({}) === "{}");
+  check("an empty array still canonicalizes", cj.stringify([]) === "[]");
+  check("a null-prototype object still canonicalizes",
+        cj.stringify(Object.assign(Object.create(null), { a: 1 })) === '{"a":1}');
+  check("a class instance carrying fields canonicalizes by its fields",
+        cj.stringify(new Holder()) === '{"a":1}');
+  check("a Date is still written as its ISO string, not refused",
+        cj.stringify(new Date(Date.UTC(2026, 0, 2))) === '"2026-01-02T00:00:00.000Z"');
+  check("a Buffer is still written as hex, not refused",
+        cj.stringify(Buffer.from([0xAB])) === '"ab"');
+}
+
 async function run() {
   testSurface();
   testJcsConformance();
   testSparseArrays();
   testStrictRefusals();
+  testValuesWithNoJsonFormAreRefusedNotEmptied();
   testCrossRealmValuesCanonicalizeTheSameWay();
   testLenientStringify();
   testDepthCap();
