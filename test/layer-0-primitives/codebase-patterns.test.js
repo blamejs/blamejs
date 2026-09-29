@@ -22424,25 +22424,112 @@ function testKeycloakRealmFitsItsColumns() {
 // reads it also checks it" rather than as a list, so a new primitive is covered
 // the day it is written.
 function testARequirementFlagIsValidatedWhereItIsRead() {
+  // What makes `=== true` a fail-open is not the word `require`: it is that the
+  // option TIGHTENS something. Every verb below was taken from the tree rather
+  // than guessed — a census of every policy-shaped boolean read in lib/ turned
+  // up `rejectUnknown`, `forbidProxy`, `forbidSelfApprove`, `refuseStopSequences`,
+  // `redactBcc` and `seal`, all read `=== true`, none of them matched by the
+  // five verbs this rule started with. `forbidProxy` sits in the same function
+  // as four `require*` options that were fixed while it was not.
+  //
+  // The other direction takes the mirror-image list. A tightening option read
+  // `!== false` stays ON for a value that is not the boolean `false`, which
+  // costs nothing; only an option that GRANTS something fails open read that
+  // way, and the granting verbs came from the same census: `acceptGrant`,
+  // `tolerateMissingPeerCert`, `ignoreSystem`, `replicaFallbackToPrimary`.
+  //
+  // The verb is matched wherever it sits in the name, not only at the front:
+  // `replicaFallbackToPrimary` carries its verb in the middle and
+  // `dpopBoundAccessTokensRequired` at the end, and a rule anchored at the
+  // start reported neither.
+  //
+  // Some verbs only mean what they say at the front, and matching those
+  // anywhere reads a policy into an ordinary word. `only` found nothing real
+  // and matched `readOnly`, `bearerOnly`, `structureOnly`, `verifyOnly` and
+  // `usesProfileOnly`, which name a MODE; `trust` matched `requireTrustedTypes`
+  // and `systemTrust`, which are a requirement and a piece of internal state.
+  // Those two are gone from the anywhere list, and the rest stay prefix-only.
+  function _verb(anywhere, prefixOnly) {
+    return new RegExp("(?:^|[a-z0-9_])(" + anywhere + ")|^(" + prefixOnly + ")", "i");
+  }
   var FAIL_OPEN = [
-    // [ name prefixes, how the read is spelled, how it is described ]
-    { names: /^(require|enforce|must|mandat|demand)/, op: "===\\s*true",  as: "=== true" },
-    { names: /^(allow|permit|trust|skip|disable|insecure)/, op: "!==\\s*false", as: "!== false" },
+    // [ which names, how the read is spelled, how it is described ]
+    { names: _verb("require|enforce|must|mandat|demand|reject|refuse|forbid", "deny|block|strict|seal|redact"),
+      op: "===\\s*true",  as: "=== true" },
+    { names: _verb("allow|permit|accept|tolerate|ignore|bypass|lenient|relax|fallback",
+                   "trust|skip|disable|insecure|loose"),
+      op: "!==\\s*false", as: "!== false" },
   ];
+  // The third spelling, which neither comparison above catches: a permission read
+  // TRUTHILY. `!!x.allowY` turns the string "false" into true, so the off switch
+  // an operator writes in a config file or an environment variable reads as on.
+  // Measured on `safeJson.parse`: `allowProto: "false"` kept `__proto__` as an own
+  // key, exactly as `allowProto: true` does.
+  //
+  // The leading boundary matters. Without it this matches the `Boolean(` inside
+  // `optionalBoolean(opts.allowX)` — a VALIDATION — and every validated option
+  // would report itself as a defect.
+  // The receiver is any identifier, not just one spelled `opts`. Scoping this to
+  // `opts` missed the same defect under `entry`, `spec`, `mwOpts`, `verifyOpts`,
+  // `sel` and `schema` — including a role's `requireMfa` and a route gate's, in a
+  // file whose neighbouring fields all throw.
+  //
+  // A dotted path is a receiver too. `!!opts.tls.allowSelfSigned` reads an
+  // option exactly as `!!opts.allowSelfSigned` does, and a single-identifier
+  // receiver matched `opts` and called the option `tls`, which no name rule
+  // recognizes. lib/ holds no such read today, which is why the narrower
+  // version reported zero and looked finished.
+  var RECEIVER = "[A-Za-z_$][A-Za-z0-9_$]*(?:\\.[A-Za-z_$][A-Za-z0-9_$]*){0,4}";
+  var GRANTS = _verb("allow|permit|accept|tolerate|ignore|bypass|lenient|relax|fallback",
+                     "trust|skip|disable|insecure|loose");
+  FAIL_OPEN.push({
+    names: GRANTS,
+    re:    "(?:^|[^A-Za-z0-9_$.])(?:!!|Boolean\\()(" + RECEIVER + ")\\.([A-Za-z0-9_]+)",
+    as:    "a truthy read",
+  });
+  // A BARE truthy read is the same defect without the `!!`: `if (opts.allowX)`
+  // and `!opts.allowX` both turn the string "false" into a granted permission.
+  // Reported only for an option the file's OWN `@opts` block declares
+  // `boolean`, because the bare shape also matches arrays, constants and
+  // internal results — `opts.allowedHosts`, `safeUrl.ALLOW_HTTP_TLS`,
+  // `verdict.allowed`. With the declaration as the filter, 84 matches became
+  // the 22 that are really options, and the claim is the one worth making: an
+  // option this module declares a boolean is read as one.
+  FAIL_OPEN.push({
+    names:        GRANTS,
+    declaredOnly: true,
+    re:           "(?:if\\s*\\(\\s*!?|\\breturn\\s+!?|\\|\\|\\s*!?|&&\\s*!?|\\?\\s*)(" +
+                  RECEIVER + ")\\.([A-Za-z0-9_]+)\\s*(?:\\)|\\?|&&|\\|\\||;|:)",
+    as:           "a bare truthy read",
+  });
+  FAIL_OPEN.forEach(function (kind) {
+    if (!kind.re) {
+      kind.re = "\\b(" + RECEIVER + ")\\.([A-Za-z0-9_]+)\\s*" + kind.op;
+    }
+  });
   var bad = [];
   _libFiles().forEach(function (file) {
     // Comment-stripped throughout. A doc block that quotes the shape it
     // documents is not a read of it (`mail-require-tls` refuses a non-boolean and
     // was flagged by its own comment), and a comment mentioning a validator must
     // not exempt a file that does not call one.
-    var src = _stripComments(fs.readFileSync(file, "utf8"));
+    var raw = fs.readFileSync(file, "utf8");
+    var src = _stripComments(raw);
+    // `   name:   boolean,` inside a comment block. An exact `boolean` only: a
+    // union such as `boolean | string` is a different question.
+    var declared = Object.create(null);
+    raw.split(/\r?\n/).forEach(function (line) {
+      var d = /^\s*\*?\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*:\s*boolean\s*(?:,|$|\/\/)/.exec(line);
+      if (d) declared[d[1]] = true;
+    });
     var seen = Object.create(null);
     FAIL_OPEN.forEach(function (kind) {
-    var read = new RegExp("\\b(opts[A-Za-z0-9_]*)\\.([A-Za-z0-9_]+)\\s*" + kind.op, "g");
+    var read = new RegExp(kind.re, "g");
     var m;
     while ((m = read.exec(src)) !== null) {
       var name = m[2];
       if (!kind.names.test(name)) continue;
+      if (kind.declaredOnly && !declared[name]) continue;
       if (seen[name]) continue;
       seen[name] = true;
       // A validation is either an explicit optionalBoolean on that option or a
@@ -22451,31 +22538,93 @@ function testARequirementFlagIsValidatedWhereItIsRead() {
       // Any validator whose name says "boolean", receiving that option: the
       // shared `validateOpts.optionalBoolean` and a module's own
       // `_requireBooleanIfPresent` are the same guarantee.
-      var explicit = new RegExp("[A-Za-z_$][A-Za-z0-9_$]*[Bb]oolean[A-Za-z0-9_$]*\\(\\s*opts" +
-                                "[A-Za-z0-9_]*\\." + name + "\\b");
+      var explicit = new RegExp("[A-Za-z_$][A-Za-z0-9_$]*[Bb]oolean[A-Za-z0-9_$]*\\(\\s*" +
+                                RECEIVER + "\\." + name + "\\b");
       var listed   = new RegExp("\\[[^\\]]*[\"']" + name + "[\"'][^\\]]*\\]\\s*\\.forEach");
       var schema   = new RegExp("\\b" + name + "\\s*:\\s*\\{[^}]*optional-boolean");
       // A hand-rolled type check is a validation too: a primitive low enough in
       // the stack not to import the shared validator still has to refuse.
-      var byType   = new RegExp("typeof\\s+opts[A-Za-z0-9_]*\\." + name +
+      var byType   = new RegExp("typeof\\s+" + RECEIVER + "\\." + name +
                                 "\\s*!==\\s*[\"']boolean[\"']");
       // `if (opts.X !== true) { throw ... }` IS the refusal, which is how
       // `mail-require-tls` states it. The throw is what makes it one: accepting
       // a bare `!== true` exempted `sql.js`, where that spelling is the
       // default-deny BRANCH of a feature flag and refuses nothing, and it hid a
       // genuine fail-open read of the same option two thousand lines away.
-      var byNotTrue = new RegExp("opts[A-Za-z0-9_]*\\." + name +
+      var byNotTrue = new RegExp(RECEIVER + "\\." + name +
                                  "\\s*!==\\s*true\\s*\\)[^;{]{0,40}\\{[^}]{0,300}throw");
+      // `x.opt != null && x.opt !== false` is not a boolean read at all: the
+      // option holds an OBJECT and `false` is its disable sentinel, so anything
+      // else falls into the object check and is refused there.
+      // `breakGlass.policy.set`'s `serviceAccountBypass` is that shape, and the
+      // widened verb list reported it until this told the two apart.
+      var sentinel = new RegExp(RECEIVER + "\\." + name + "\\s*!=\\s*null\\s*&&");
+      // A guard does not validate its own options: it hands them to the shared
+      // resolver, which refuses a non-boolean for every key whose DEFAULT is a
+      // boolean. So a file that routes through that resolver and gives the
+      // option a boolean default has stated the same guarantee, one file over.
+      var byGuardDefault = /(?:defineGuard|defineParser|resolveProfileAndPosture|makeProfileResolver)\s*\(/.test(src) &&
+                           new RegExp("\\b" + name + "\\s*:\\s*(?:true|false)\\s*,").test(src);
       var validated = explicit.test(src) || listed.test(src) || schema.test(src) ||
-                      byType.test(src) || byNotTrue.test(src);
+                      byType.test(src) || byNotTrue.test(src) || sentinel.test(src) ||
+                      byGuardDefault;
       if (validated) continue;
-      bad.push(file.replace(/\\/g, "/") + ": opts." + name +
+      bad.push(file.replace(/\\/g, "/") + ": " + m[1] + "." + name +
                " is read as " + kind.as + " and never checked as a boolean");
     }
     });
   });
   check("a requirement-shaped option is validated where it is read (" + bad.length + ")" +
         (bad.length ? ":\n    " + bad.join("\n    ") : ""), bad.length === 0);
+}
+
+// Two constructor conventions live side by side. `defineClass` builds
+// `(code, message)`; a class registered with `messageFirstFactory` or built by
+// `defineMessageFirstClass` takes `(message, code)`. Writing one in the other's
+// order throws an error whose `.code` holds the whole diagnostic and whose
+// `.message` holds the stable code, so a caller matching on the code never
+// matches and a message-only log carries the code and nothing else. Nothing
+// fails: the throw still happens, the shape is just inside out.
+//
+// `lib/parsers/safe-xml.js` shipped that way for both of its option refusals.
+// A code is recognizable on its own: lowercase words either side of one slash,
+// which is why a first argument spelled that way is the signal.
+function testAMessageFirstErrorIsNotBuiltCodeFirst() {
+  var sources = {};
+  var files = _libFiles();
+  files.forEach(function (file) { sources[file] = _stripComments(fs.readFileSync(file, "utf8")); });
+
+  var messageFirst = Object.create(null);
+  files.forEach(function (file) {
+    var src = sources[file];
+    var registered = /(^|[^A-Za-z0-9_$])messageFirstFactory\(\s*([A-Za-z0-9_$]+)\s*\)/g;
+    var defined = /var\s+([A-Za-z0-9_$]+)\s*=\s*[A-Za-z0-9_$.]*defineMessageFirstClass\(/g;
+    var m;
+    while ((m = registered.exec(src)) !== null) {
+      // The definition of the registrar is not a registration of anything.
+      if (/function\s*$/.test(src.slice(Math.max(0, m.index - 12), m.index + m[1].length))) continue;
+      messageFirst[m[2]] = true;
+    }
+    while ((m = defined.exec(src)) !== null) messageFirst[m[1]] = true;
+  });
+
+  var bad = [];
+  files.forEach(function (file) {
+    var src = sources[file];
+    Object.keys(messageFirst).forEach(function (cls) {
+      var built = new RegExp("new\\s+" + cls + "\\(\\s*\"([a-z0-9-]+\\/[a-z0-9-]+)\"", "g");
+      var m;
+      while ((m = built.exec(src)) !== null) {
+        bad.push({ file: file.replace(/\\/g, "/"),
+                   line: src.slice(0, m.index).split("\n").length,
+                   content: "new " + cls + "(\"" + m[1] + "\", ...) passes the code where " + cls +
+                            " takes the message: this class is message-first, so `.code` ends up " +
+                            "holding the diagnostic and `.message` the code" });
+      }
+    });
+  });
+  _report("a message-first error class is constructed message-first (" +
+          Object.keys(messageFirst).length + " such classes)", bad);
 }
 
 function testWikiPortAgreesAcrossArtifacts() {
@@ -25661,6 +25810,7 @@ async function run() {
   // step's port mapping + curl host.
   testKeycloakRealmFitsItsColumns();
   testARequirementFlagIsValidatedWhereItIsRead();
+  testAMessageFirstErrorIsNotBuiltCodeFirst();
   testWikiPortAgreesAcrossArtifacts();
   testReleasePushPathsRunLiveIntegration();
   testReleaseUnresolvedThreadsFailClosedAtPageCap();

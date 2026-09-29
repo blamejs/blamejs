@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.20.32",
-  "createdAt": "2026-09-29T02:30:36.985Z",
+  "createdAt": "2026-09-29T08:29:18.922Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -37040,6 +37040,10 @@
           "type": "object",
           "members": {
             "allowComments": {
+              "type": "primitive",
+              "valueType": "boolean"
+            },
+            "allowLiterals": {
               "type": "primitive",
               "valueType": "boolean"
             },

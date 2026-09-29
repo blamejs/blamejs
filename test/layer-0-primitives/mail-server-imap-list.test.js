@@ -701,6 +701,36 @@ async function testAnAsyncSubscriptionLookupIsWaitedFor() {
   } finally { await c.close(); }
 }
 
+// A backend may hold subscriptions in `listSubscriptions` alone and return
+// ordinary folder rows, which the store interface allows: nothing says a row
+// must carry a `subscribed` boolean. The listener filtered on that boolean
+// first and read the subscription list afterwards, and that later pass skips
+// every name that exists, so it could only ever report subscriptions whose
+// mailbox was gone. `LIST (SUBSCRIBED)` therefore returned nothing at all for
+// such a backend while the client was in fact subscribed.
+async function testSubscriptionsHeldOnlyInTheListAreStillListed() {
+  var store = _mailStore();
+  store.listFolders = function () {
+    return [{ name: "INBOX", attributes: [] },
+            { name: "Archive", attributes: [] },
+            { name: "Spam", attributes: [] }];
+  };
+  store.listSubscriptions = function () { return ["INBOX", "Archive"]; };
+  var c = await _open(store);
+  try {
+    var reply = await c.cmd("a1", 'LIST (SUBSCRIBED) "" "*"');
+    var names = _listed(reply).map(function (e) { return e.name; });
+    check("an existing mailbox subscribed only through listSubscriptions is listed",
+          names.indexOf("Archive") !== -1 && names.indexOf("INBOX") !== -1,
+          JSON.stringify(names));
+    check("and a mailbox that is not subscribed is still left out",
+          names.indexOf("Spam") === -1, JSON.stringify(names));
+    check("the ones that exist are not reported as gone",
+          !/\\NonExistent/.test(reply), reply);
+    check("the command completes OK", /^a1 OK/m.test(reply), reply);
+  } finally { await c.close(); }
+}
+
 async function testTheVerbsWorkAgainstTheShippedStore() {
   // The mock above answers the signature b.mailStore ships, but only the
   // shipped store proves the listener calls it the way it is written: a
@@ -1495,6 +1525,7 @@ async function run() {
   await testAPatternOfManyWildcardsIsRefusedNotWalked();
   await testASubscriptionOutlivingItsMailboxIsStillListed();
   await testAnAsyncSubscriptionLookupIsWaitedFor();
+  await testSubscriptionsHeldOnlyInTheListAreStillListed();
   await testTheVerbsWorkAgainstTheShippedStore();
   await testRenamingTheSelectedMailboxClosesIt();
   await testARecreatedNameDoesNotInheritTheOldSelection();

@@ -126,6 +126,37 @@ function testConstructorAttributeNoFalseDuplicate() {
         threw && threw.code === "xml/forbidden-name");
 }
 
+// `SafeXmlError` is registered message-first, so `new SafeXmlError(code, msg)`
+// puts the whole diagnostic in `.code` and the stable code in `.message`. Every
+// other refusal in this parser is matched on `.code`, and the two option
+// refusals were built the other way round, so a caller matching the code never
+// matched and a message-only log carried "xml/bad-opt" and nothing else.
+//
+// Both spellings of the defect are asserted here rather than one, because the
+// numeric one shipped and the boolean one was written the same way next to it.
+function testAnOptionRefusalCarriesTheCodeAndTheDiagnostic() {
+  function refusalOf(label, opts) {
+    var threw = null;
+    try { xml.parse("<root/>", opts); } catch (e) { threw = e; }
+    check("[setup] " + label + " is refused", threw !== null);
+    return threw || { code: "", message: "" };
+  }
+
+  var numeric = refusalOf("maxDepth: 0", { maxDepth: 0 });
+  check("a numeric option refusal carries the stable code",
+        numeric.code === "xml/bad-opt", JSON.stringify(String(numeric.code).slice(0, 80)));
+  check("and names the option in the message",
+        String(numeric.message).indexOf("maxDepth") !== -1,
+        JSON.stringify(String(numeric.message).slice(0, 80)));
+
+  var boolean = refusalOf("allowDoctype: \"false\"", { allowDoctype: "false" });
+  check("a boolean option refusal carries the stable code",
+        boolean.code === "xml/bad-opt", JSON.stringify(String(boolean.code).slice(0, 80)));
+  check("and names the option in the message",
+        String(boolean.message).indexOf("allowDoctype") !== -1,
+        JSON.stringify(String(boolean.message).slice(0, 80)));
+}
+
 function run() {
   try {
     testParsesAttributedElement();
@@ -137,6 +168,7 @@ function run() {
     testRejectsConstructorElementName();
     testRejectsPrototypeElementName();
     testConstructorAttributeNoFalseDuplicate();
+    testAnOptionRefusalCarriesTheCodeAndTheDiagnostic();
   } catch (e) {
     console.error(e);
     process.exit(1);

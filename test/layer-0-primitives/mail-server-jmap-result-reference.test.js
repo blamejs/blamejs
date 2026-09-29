@@ -316,7 +316,79 @@ async function testChainedResultReferencesCannotOutgrowTheRequestCap() {
         _errorOf(tail) === null, JSON.stringify(tail));
 }
 
+// The budget was measured AFTER `_resolveBackRefs` returned, so a `*` had
+// already built the whole array by the time anything refused it. A 120 KiB
+// request with one 60,000-element array and 31 references to `/values/*` grew
+// the heap by 66 MiB and was answered in full; at 4.5 MiB of wire it reached
+// 444 MiB. The expansion is charged as each element is taken now, so the array
+// is not materialized and then measured.
+async function testAWildcardExpansionIsChargedAsItIsBuilt() {
+  function _serverFor(name, values) {
+    var methods = { "Core/echo": async function (actor, args) { return args; } };
+    methods[name] = async function () { return { values: values }; };
+    return b.mail.server.jmap.create({
+      mailStore:   { appendMessage: function () {} },
+      accountsFor: async function () {
+        return { primaryAccounts: { mail: ACCOUNT }, accounts: { A1: { name: "one" } } };
+      },
+      methods: methods,
+    });
+  }
+
+  function _expand(srv, name, clientId) {
+    return srv.dispatch({ id: "actor1" }, {
+      using:       ["urn:ietf:params:jmap:core"],
+      methodCalls: [
+        [name, { accountId: ACCOUNT }, clientId],
+        ["Core/echo", { accountId: ACCOUNT,
+          "#values": { resultOf: clientId, name: name, path: "/values/*" } }, clientId + "b"],
+      ],
+    });
+  }
+
+  // Counting getters, so this can see how far the expansion got rather than
+  // infer it from the answer. 200 elements of 64 KiB come to 12.8 MB, past the
+  // 10 MiB a request may reach.
+  var reads = 0;
+  var chunk = "x".repeat(65536);
+  var wide = [];
+  for (var i = 0; i < 200; i += 1) {
+    Object.defineProperty(wide, i, {
+      enumerable: true, configurable: true,
+      get: function () { reads += 1; return chunk; },
+    });
+  }
+  wide.length = 200;
+
+  var wideRv = await _expand(_serverFor("Core/wide", wide), "Core/wide", "w0");
+  check("a `*` expansion past the request cap is refused",
+        _errorOf(wideRv.methodResponses[1]) === "invalidResultReference",
+        JSON.stringify(wideRv.methodResponses[1]).slice(0, 200));
+  check("and it stopped while building, rather than reading every element first",
+        reads > 0 && reads < 200, JSON.stringify({ reads: reads, length: 200 }));
+
+  // The budget counts JSON bytes, and an array of bare numbers costs two bytes
+  // each on the wire and far more than that in memory. Charged at their wire
+  // width alone, 700,000 zeros expand inside a 10 MiB budget while allocating
+  // hundreds of megabytes, so each element carries a floor.
+  var zerosRv = await _expand(_serverFor("Core/zeros", new Array(700000).fill(0)),
+                              "Core/zeros", "z0");
+  check("an expansion of many tiny elements is refused on the per-element floor",
+        _errorOf(zerosRv.methodResponses[1]) === "invalidResultReference",
+        JSON.stringify(_errorOf(zerosRv.methodResponses[1])));
+
+  // The control for both: an expansion that fits is answered in full, so the
+  // floor has not simply refused every wildcard.
+  var okRv = await _expand(_serverFor("Core/small", new Array(1000).fill(0)),
+                           "Core/small", "s0");
+  check("an expansion that fits is answered in full",
+        _errorOf(okRv.methodResponses[1]) === null &&
+        okRv.methodResponses[1][1].values.length === 1000,
+        JSON.stringify(_errorOf(okRv.methodResponses[1])));
+}
+
 async function run() {
+  await testAWildcardExpansionIsChargedAsItIsBuilt();
   await testChainedResultReferencesCannotOutgrowTheRequestCap();
   await testStarMapsTheRestOfThePointer();
   await testAPoisonedTargetKeyIsNotWrittenThroughThePrototype();

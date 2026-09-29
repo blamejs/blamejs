@@ -35,6 +35,8 @@ var CREATE_HANDLE_SHORTHAND = Object.freeze({
   "b.auth.oauth.parseCallback":        "b.auth.oauth.create().parseCallback",
   "b.auth.oauth.refreshAccessToken":   "b.auth.oauth.create().refreshAccessToken",
   "b.backup.scheduleTest":             "b.backup.create().scheduleTest",
+  "b.cache.set":                       "b.cache.create().set",
+  "b.cache.update":                    "b.cache.create().update",
   "b.dualControl.consume":             "b.dualControl.create().consume",
   "b.flag.middleware":                 "b.flag.create().middleware",
   "b.mailStore.appendMessage":         "b.mailStore.create().appendMessage",

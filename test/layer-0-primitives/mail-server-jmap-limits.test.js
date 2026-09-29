@@ -787,6 +787,99 @@ async function testAnActorIdentifiedByAnotherFieldIsStillItsOwnPrincipal() {
   await held;
 }
 
+// `maxHandlerMs` rejects the WRAPPER around a handler, not the handler: the
+// underlying promise keeps running, because nothing in the handler contract can
+// cancel an operator's backend call. Releasing the slot when the wrapper rejects
+// therefore let the same authenticated client start another handler immediately,
+// and another after that one timed out, accumulating live backend operations
+// without limit while `maxConcurrentRequests` reported one in flight. The slot is
+// the accounting for real work, so it is held until the real work settles.
+async function testATimedOutHandlerKeepsItsSlotUntilTheWorkSettles() {
+  var release = null;
+  var started = 0;
+  var blocked = new Promise(function (r) { release = r; });
+  var jmap = _server([], {
+    maxConcurrentRequests: 1,
+    // Past its budget and not cancellable: exactly the shape an operator's
+    // database or upstream HTTP call has. The budget rides on `overrides`,
+    // which is where a per-handler `maxHandlerMs` is declared.
+    methods: {
+      "Core/echo": async function (actor, args) { started += 1; await blocked; return args; },
+    },
+    overrides: {
+      "Core/echo": {
+        fn: async function (actor, args) { started += 1; await blocked; return args; },
+        maxHandlerMs:    5,
+        maxHandlerBytes: 1024,
+      },
+    },
+  });
+  var body = {
+    using:       ["urn:ietf:params:jmap:core"],
+    methodCalls: [["Core/echo", { accountId: ACCOUNT, hi: 1 }, "c0"]],
+  };
+
+  var first = await jmap.dispatch({ id: "actor1" }, body);
+  check("the handler past maxHandlerMs is answered as an error",
+        Array.isArray(first.methodResponses) && first.methodResponses[0][0] === "error",
+        JSON.stringify(first.methodResponses && first.methodResponses[0]));
+  check("and its work is still running", started === 1, String(started));
+
+  // The slot must still be taken: the first handler has not finished.
+  var second = await jmap.dispatch({ id: "actor1" }, body);
+  check("a second request while the timed-out work is still running is refused",
+        second && second.type === "urn:ietf:params:jmap:error:limit",
+        JSON.stringify(second && (second.type || second)));
+  check("and the refusal did not start another backend call",
+        started === 1, String(started));
+
+  // Once the work settles the slot comes back, so a timeout does not cost the
+  // account its concurrency permanently.
+  release();
+  await _settle();
+  await _settle();
+  var third = await jmap.dispatch({ id: "actor1" }, body);
+  check("once the outstanding work settles the slot is released",
+        third && Array.isArray(third.methodResponses),
+        JSON.stringify(third && (third.type || "dispatched")));
+
+  // A handler may return a thenable rather than a Promise, which the registry
+  // accepts. Reading `then` a second time to track completion would run the
+  // backend operation again, and a thenable whose `then` returns nothing would
+  // leave no handle at all, which silently restores the released slot. The
+  // registry assimilates the value ONCE and tracks that same promise.
+  var thenCalls = 0;
+  var lazyRelease = null;
+  var lazyBlocked = new Promise(function (r) { lazyRelease = r; });
+  var lazyJmap = _server([], {
+    maxConcurrentRequests: 1,
+    methods: { "Core/echo": async function (actor, args) { return args; } },
+    overrides: {
+      "Core/echo": {
+        fn: function () {
+          return {
+            then: function (onOk, onErr) {
+              thenCalls += 1;
+              lazyBlocked.then(function () { onOk({ done: true }); }, onErr);
+            },
+          };
+        },
+        maxHandlerMs:    5,
+        maxHandlerBytes: 1024,
+      },
+    },
+  });
+  await lazyJmap.dispatch({ id: "actor2" }, body);
+  check("a lazy thenable handler is assimilated once, not re-run to track it",
+        thenCalls === 1, String(thenCalls));
+  var lazySecond = await lazyJmap.dispatch({ id: "actor2" }, body);
+  check("and its slot is still held while that work runs",
+        lazySecond && lazySecond.type === "urn:ietf:params:jmap:error:limit",
+        JSON.stringify(lazySecond && (lazySecond.type || "dispatched")));
+  lazyRelease();
+  await _settle();
+}
+
 function testAConcurrencyOptionThatBoundsNothingIsRefused() {
   // Both values are advertised to every client in the session and are now
   // admission limits, so a zero or a negative refuses every request while
@@ -1145,6 +1238,7 @@ async function run() {
   await testMaxConcurrentRequestsAdmitsOnlyWhatItAdvertises();
   await testConcurrencyIsCountedPerActor();
   await testAnActorIdentifiedByAnotherFieldIsStillItsOwnPrincipal();
+  await testATimedOutHandlerKeepsItsSlotUntilTheWorkSettles();
   testAConcurrencyOptionThatBoundsNothingIsRefused();
   testEveryDocumentedCreateOptionRefusesAValueItCannotHonor();
   await testTheOperatorCanNameTheIdentityFieldItself();
