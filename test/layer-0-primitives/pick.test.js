@@ -93,6 +93,58 @@ function testPrototypeKeysNeverComeThrough() {
         ({}).polluted === undefined);
 }
 
+// An input shape the filter does not recognize used to come back whole, which
+// is the one answer an allow-list must never give. Three shapes reached it.
+function testAnUnrecognizedShapeIsStillFiltered() {
+  var vm = require("node:vm");
+
+  // A vm context has its own Object.prototype, so an object born there is not
+  // `=== Object.prototype` here. Comparing prototypes by identity read it as
+  // "not a plain object" and handed it back unfiltered, __proto__ included.
+  var ctx = vm.createContext({ out: null, hostile: null });
+  vm.runInContext('out = { name: "ada", isAdmin: true };', ctx);
+  var crossRealm = b.pick(ctx.out, ["name"]);
+  check("cross-realm: an unlisted key is dropped",
+        !Object.prototype.hasOwnProperty.call(crossRealm, "isAdmin"));
+  check("cross-realm: the allowed key comes through", crossRealm.name === "ada");
+
+  vm.runInContext('hostile = JSON.parse(\'{"__proto__":{"polluted":true},"name":"ada"}\');', ctx);
+  var crossHostile = b.pick(ctx.hostile, ["name", "__proto__"]);
+  check("cross-realm: __proto__ is dropped",
+        !Object.prototype.hasOwnProperty.call(crossHostile, "__proto__"));
+  check("cross-realm: nothing was written onto Object.prototype",
+        ({}).polluted === undefined);
+
+  // A class instance has a longer prototype chain and was handed back whole.
+  function User(name, isAdmin) { this.name = name; this.isAdmin = isAdmin; }
+  User.prototype.greet = function () { return "hi"; };
+  var instance = b.pick(new User("ada", true), ["name"]);
+  check("class instance: an unlisted key is dropped",
+        !Object.prototype.hasOwnProperty.call(instance, "isAdmin"));
+  check("class instance: the allowed key comes through", instance.name === "ada");
+  check("class instance: the prototype does not come with it",
+        instance.greet === undefined);
+
+  // A body an attacker made an array was handed back whole, so every element
+  // kept every key.
+  var arr = b.pick([{ name: "ada", isAdmin: true }, { name: "bob", isAdmin: true }], ["name"]);
+  check("array: each element is filtered",
+        Array.isArray(arr) && arr.length === 2 &&
+        arr[0].name === "ada" && arr[1].name === "bob" &&
+        !Object.prototype.hasOwnProperty.call(arr[0], "isAdmin") &&
+        !Object.prototype.hasOwnProperty.call(arr[1], "isAdmin"));
+
+  var nestedArr = b.pick({ users: [{ bio: "x", role: "root" }] }, [["users", ["bio"]]]);
+  check("array: elements under a nested allow-list are filtered",
+        nestedArr.users[0].bio === "x" &&
+        !Object.prototype.hasOwnProperty.call(nestedArr.users[0], "role"));
+
+  // A value that is not an object still comes back as it is.
+  check("a string comes back as it is", b.pick("plain", ["a"]) === "plain");
+  check("a number comes back as it is", b.pick(7, ["a"]) === 7);
+  check("null comes back as it is", b.pick(null, ["a"]) === null);
+}
+
 function testKeyPredicates() {
   check("isPoisonedKey: __proto__",     b.pick.isPoisonedKey("__proto__") === true);
   check("isPoisonedKey: constructor",   b.pick.isPoisonedKey("constructor") === true);
@@ -144,6 +196,7 @@ async function run() {
   testSurface();
   testOnlyAllowedKeysSurvive();
   testPrototypeKeysNeverComeThrough();
+  testAnUnrecognizedShapeIsStillFiltered();
   testKeyPredicates();
   testRegisterPoisonedKeys();
 }
