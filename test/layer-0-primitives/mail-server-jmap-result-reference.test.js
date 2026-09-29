@@ -229,7 +229,95 @@ async function testAPoisonedTargetKeyIsNotWrittenThroughThePrototype() {
         JSON.stringify(walked.responses[1]));
 }
 
+// A result reference NAMES a value rather than copying it, so resolving one
+// shares the referenced subtree instead of duplicating it. Two references to the
+// same prior call, repeated down a chain, therefore describe a DAG whose
+// serialized form doubles at every step while the request grows by one short
+// call. Measured before the budget: 16 calls turned a 2 KiB request into a 5.6 MB
+// response, four times larger per call added, and the profile permits 32. None of
+// the per-reference checks can see it: every descriptor is well formed and every
+// depth is under `maxBackRefDepth`. The cost is cumulative, so the budget is too.
+async function testChainedResultReferencesCannotOutgrowTheRequestCap() {
+  function _chain(n) {
+    var calls = [["Core/echo", { accountId: ACCOUNT, seed: "x".repeat(64) }, "c0"]];
+    for (var i = 1; i < n; i += 1) {
+      var prev = "c" + (i - 1);
+      calls.push(["Core/echo", {
+        accountId: ACCOUNT,
+        "#a": { resultOf: prev, name: "Core/echo", path: "" },
+        "#b": { resultOf: prev, name: "Core/echo", path: "" },
+      }, "c" + i]);
+    }
+    return calls;
+  }
+
+  var deep = await _dispatch(_chain(24));
+  // A method-level error carries the bare name RFC 8620 §3.6.2 prints, not the
+  // request-level URI, which is what this release settled.
+  var refused = deep.responses.filter(function (r) {
+    return _errorOf(r) === "invalidResultReference";
+  });
+  check("a chain of doubling result references is refused before it expands",
+        refused.length > 0, JSON.stringify(deep.responses.length));
+
+  // The refusal has to bound the ANSWER, not merely appear in it.
+  var bytes = JSON.stringify(deep.responses).length;
+  check("and the response stays within the request cap it is measured against",
+        bytes <= 10485760, JSON.stringify({ bytes: bytes }));
+
+  // The control: the mechanism still works. A short chain of the same shape
+  // expands to almost nothing and is answered in full.
+  var ok = await _dispatch(_chain(4));
+  var okErrors = ok.responses.filter(function (r) { return _errorOf(r) !== null; });
+  check("a short chain of the same shape is still answered in full",
+        okErrors.length === 0, JSON.stringify(okErrors.slice(0, 2)));
+
+  // A budget is only useful if it measures what it claims to. Three ways the
+  // first version of this one was wrong, each of which makes it either refuse
+  // honest traffic or miss the traffic it exists to refuse.
+
+  // Charging a flat width per primitive refuses a request the size validator
+  // already admitted: 1.2 million zeros serialize to about 2.4 MB.
+  var zeros = new Array(1200000).fill(0);
+  var big = await _dispatch([["Core/echo", { accountId: ACCOUNT, zeros: zeros }, "z0"]]);
+  check("a large reference-free request is measured at its real size, not a flat width",
+        _errorOf(big.responses[0]) === null,
+        JSON.stringify(_errorOf(big.responses[0])));
+
+  // Counting UTF-16 code units misses JSON escaping: a NUL serializes as the
+  // six bytes of \u0000, so a seed of them expanded far past the cap while the
+  // budget believed it was spending one byte each.
+  function _escapedChain(n) {
+    var calls = [["Core/echo",
+      { accountId: ACCOUNT, seed: "\u0000".repeat(64) }, "e0"]];
+    for (var i = 1; i < n; i += 1) {
+      var prev = "e" + (i - 1);
+      calls.push(["Core/echo", {
+        accountId: ACCOUNT,
+        "#a": { resultOf: prev, name: "Core/echo", path: "" },
+        "#b": { resultOf: prev, name: "Core/echo", path: "" },
+      }, "e" + i]);
+    }
+    return calls;
+  }
+  var escaped = await _dispatch(_escapedChain(24));
+  var escapedBytes = JSON.stringify(escaped.responses).length;
+  check("an escaped string is charged what it serializes to, so the cap holds",
+        escapedBytes <= 10485760, JSON.stringify({ bytes: escapedBytes }));
+
+  // Spending the budget before checking it leaves it negative, so the refusal
+  // of one call becomes the refusal of every later one, including calls that
+  // carry no reference at all.
+  var after = await _dispatch(_chain(24).concat([
+    ["Core/echo", { accountId: ACCOUNT, ok: true }, "tail"],
+  ]));
+  var tail = after.responses[after.responses.length - 1];
+  check("a call refused for its size does not spend the budget of the calls after it",
+        _errorOf(tail) === null, JSON.stringify(tail));
+}
+
 async function run() {
+  await testChainedResultReferencesCannotOutgrowTheRequestCap();
   await testStarMapsTheRestOfThePointer();
   await testAPoisonedTargetKeyIsNotWrittenThroughThePrototype();
   await testStarFlattensArrayResults();
