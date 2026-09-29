@@ -559,16 +559,19 @@ jobs:
             echo "::error::Inspect release-notes/v$VERSION.json — the generator likely validated through but every section was empty."
             exit 1
           fi
-          # GitHub rejects a release body over 125,000 characters. renderReleasePage
-          # fits the page within its own budget, so reaching this means the budget
-          # and the API disagree — fail here, where the tag is not yet spent, rather
-          # than at `gh release create`.
-          if [ "$BYTE_COUNT" -gt 125000 ]; then
-            echo "::error::release-page markdown is $BYTE_COUNT bytes; GitHub refuses a release body over 125000."
+          # GitHub rejects a release body over 125,000 CHARACTERS, which is what
+          # its 422 counts and what renderReleasePage budgets against. The page
+          # carries multi-byte characters, so `wc -c` above reports more than the
+          # API counts and cannot answer this question; node reads the same
+          # length the API applies. Reaching this means the budget and the API
+          # disagree, and failing here spends no tag.
+          CHAR_COUNT=$(node -e 'process.stdout.write(String(require("node:fs").readFileSync("release-notes.md","utf8").length))')
+          if [ "$CHAR_COUNT" -gt 125000 ]; then
+            echo "::error::release-page markdown is $CHAR_COUNT characters; GitHub refuses a release body over 125000."
             echo "::error::renderReleasePage in scripts/generate-changelog-entry.js is meant to fit it — check RELEASE_BODY_BUDGET."
             exit 1
           fi
-          echo "[release-notes] generated $BYTE_COUNT bytes of release-page markdown for v$VERSION"
+          echo "[release-notes] generated $CHAR_COUNT characters ($BYTE_COUNT bytes) of release-page markdown for v$VERSION"
           echo "--- release-notes.md (first 20 lines) ---"
           head -20 release-notes.md
           echo "---"

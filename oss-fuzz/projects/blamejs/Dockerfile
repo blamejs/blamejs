@@ -11,7 +11,7 @@
 # never built by OSS-Fuzz's own infra. The actual upstream OSS-Fuzz submission
 # un-pins the FROM in its own PR per OSS-Fuzz convention (that infra tracks the
 # latest base-builder). This is a CI-only fuzzing image, never deployed.
-FROM gcr.io/oss-fuzz-base/base-builder-javascript@sha256:2e218dedc1603f15e34cec784030789e06db1df8eb5356f0a8e27285619ac8c2
+FROM gcr.io/oss-fuzz-base/base-builder-javascript@sha256:ea9b7826563af75b221e374f2cf24da0f655c63e31fdbd4c75d56963f17253f3
 
 # Clone the framework into the build context. OSS-Fuzz builds against
 # main on every run; once the project is accepted, ClusterFuzz tracks
