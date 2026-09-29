@@ -1332,7 +1332,40 @@ async function run() {
   testUnanchoredScanCost();
   testCatastrophicShapesRefused();
   testOtherClasses();
+  testCrossRealmPatternsAreJudgedTheSameWay();
   await testGate();
+}
+
+// A RegExp built in another realm is a RegExp. Both entry points asked
+// `input instanceof RegExp`, which compares against THIS realm's
+// constructor, so one from a `node:vm` context took the other branch:
+// assertSafe analysed the object stringified, delimiters and all, and
+// refused an anchored literal; assertStateless returned early, so a
+// g-flagged pattern — the whole reason that check exists — went through.
+function testCrossRealmPatternsAreJudgedTheSameWay() {
+  var vm = require("node:vm");
+  var ctx = vm.createContext({ plain: null, catastrophic: null, global: null, sticky: null });
+  vm.runInContext('plain = /^alice$/; catastrophic = /^(a+)+$/; global = /^alice$/g; sticky = /^alice$/y;', ctx);
+
+  function safeCode(re) {
+    try { b.guardRegex.assertSafe(re, "x"); return null; } catch (e) { return e.code; }
+  }
+  function statelessCode(re) {
+    try { b.guardRegex.assertStateless(re, "x"); return null; } catch (e) { return e.code; }
+  }
+
+  check("assertSafe accepts a cross-realm anchored literal", safeCode(ctx.plain) === null,
+        String(safeCode(ctx.plain)));
+  check("assertSafe still refuses a cross-realm catastrophic shape",
+        safeCode(ctx.catastrophic) !== null);
+  check("assertStateless refuses a cross-realm g-flagged pattern",
+        statelessCode(ctx.global) === "regex/stateful-pattern", String(statelessCode(ctx.global)));
+  check("assertStateless refuses a cross-realm y-flagged pattern",
+        statelessCode(ctx.sticky) === "regex/stateful-pattern", String(statelessCode(ctx.sticky)));
+  check("assertStateless still passes a cross-realm unflagged pattern",
+        statelessCode(ctx.plain) === null);
+  check("a local pattern is judged the same as before",
+        safeCode(/^alice$/) === null && statelessCode(/^alice$/g) === "regex/stateful-pattern");
 }
 
 if (require.main === module) {
