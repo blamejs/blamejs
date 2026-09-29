@@ -470,7 +470,7 @@
       "items": [
         {
           "title": "Vendored bundles refreshed",
-          "body": "`@blamejs/pki` 0.7.45 to 0.8.28 and the public suffix list to its 2026-09-21 revision, both rebundled and re-signed through `scripts/vendor-update.sh` with `lib/vendor/MANIFEST.json` and `NOTICE` updated to match. The framework's runtime dependency set is unchanged: these ship as reviewable source inside the tarball. 0.8.28 checks a certificate or CRL against the RFC 5280 profile while it is being built and refuses one that violates it, which caught three artifacts the bundled mTLS engine was emitting; those are described under Security and Migration."
+          "body": "`@blamejs/pki` 0.7.45 to 0.8.31 and the public suffix list to its 2026-09-24 revision, both rebundled and re-signed through `scripts/vendor-update.sh` with `lib/vendor/MANIFEST.json` and `NOTICE` updated to match. The framework's runtime dependency set is unchanged: these ship as reviewable source inside the tarball. 0.8.28 checks a certificate or CRL against the RFC 5280 profile while it is being built and refuses one that violates it, which caught three artifacts the bundled mTLS engine was emitting; those are described under Security and Migration."
         },
         {
           "title": "The permissive JMAP profile declares 64 MiB, the largest request it can accept",
