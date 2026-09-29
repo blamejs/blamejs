@@ -130,6 +130,14 @@ var SECTION_ALLOWLIST_ORDER = [
   "Migration",
 ];
 
+// A GitHub release body is capped at 125,000 characters and the API rejects a
+// longer one outright. The v0.20.32 page reached 148,498 characters and the
+// release call failed with HTTP 422 after the tag was already public, so the
+// page is rendered to fit and CHANGELOG.md keeps the entry whole.
+var RELEASE_BODY_LIMIT = 125000;
+var RELEASE_BODY_BUDGET = 118000;
+var CHANGELOG_URL = "https://github.com/blamejs/blamejs/blob/main/CHANGELOG.md";
+
 function _fail(errors) {
   process.stderr.write("[generate-changelog-entry] FAIL:\n");
   for (var i = 0; i < errors.length; i += 1) {
@@ -300,36 +308,104 @@ function renderChangelogLine(notes) {
 // renders as its own scannable card on the release page instead of a
 // single dense paragraph. The workflow's gh-release-create step
 // passes this output via --notes-file.
-function renderReleasePage(notes) {
-  var lines = [];
-  lines.push("**" + notes.headline + ".**");
-  lines.push("");
-  if (notes.summary && notes.summary.length > 0) {
-    lines.push(notes.summary);
-    lines.push("");
+// The release page is rendered from the same notes the workflow will publish,
+// so this fails here rather than at `gh release create`, where the tag is
+// already public and the run cannot be repaired without re-cutting it.
+function _checkReleasePageFits() {
+  var version = _readPackageVersion();
+  var loaded;
+  try { loaded = _loadReleaseNotes(version); }
+  catch (_e) { return; }
+  var page = renderReleasePage(loaded.notes, version);
+  if (page.length > RELEASE_BODY_LIMIT) {
+    _exit("the v" + version + " release page renders " + page.length + " characters and " +
+          "GitHub refuses a release body over " + RELEASE_BODY_LIMIT + "; renderReleasePage " +
+          "is meant to fit it within " + RELEASE_BODY_BUDGET);
   }
+}
+
+function renderReleasePage(notes, version) {
+  var head = [];
+  head.push("**" + notes.headline + ".**");
+  head.push("");
+  if (notes.summary && notes.summary.length > 0) {
+    head.push(notes.summary);
+    head.push("");
+  }
+
+  // Every bullet carries the section it belongs to, so a page that has to be
+  // shortened can drop whole bullets from the end and still open each section
+  // it keeps with its own heading.
+  var bullets = [];
   var orderedSections = _sortSections(notes.sections);
   for (var s = 0; s < orderedSections.length; s += 1) {
     var sec = orderedSections[s];
-    lines.push("## " + sec.heading);
-    lines.push("");
     for (var t = 0; t < sec.items.length; t += 1) {
       var it = sec.items[t];
-      // Each item: bold title, em-dash, body. One bullet per item.
-      lines.push("- **" + it.title + "** — " + it.body);
+      bullets.push({ heading: sec.heading, text: "- **" + it.title + "** — " + it.body });
     }
-    lines.push("");
   }
+
+  var tail = [];
   if (Array.isArray(notes.references) && notes.references.length > 0) {
-    lines.push("## References");
-    lines.push("");
+    tail.push("## References");
+    tail.push("");
     for (var r = 0; r < notes.references.length; r += 1) {
       var ref = notes.references[r];
-      lines.push("- [" + ref.label + "](" + ref.url + ")");
+      tail.push("- [" + ref.label + "](" + ref.url + ")");
     }
+    tail.push("");
+  }
+
+  var whole = _assembleReleasePage(head, bullets, tail, null);
+  if (whole.length <= RELEASE_BODY_BUDGET) return whole;
+
+  // What an operator has to ACT on survives a shortened page. Dropping from the
+  // end would take Migration first, since it sorts last, and that is the
+  // section which says what to do about the release.
+  var dropOrder = ["Fixed", "Added", "Changed", "Detectors", "Removed",
+                   "Deprecated", "Security", "Migration"];
+  var order = bullets.map(function (b, i) { return i; });
+  order.sort(function (a, z) {
+    var ra = dropOrder.indexOf(bullets[a].heading);
+    var rz = dropOrder.indexOf(bullets[z].heading);
+    if (ra !== rz) return (ra === -1 ? 0 : ra) - (rz === -1 ? 0 : rz);
+    return z - a;
+  });
+
+  var dropped = Object.create(null);
+  var note = "_This release carries " + bullets.length + " entries, more than a GitHub " +
+             "release body holds. Some are left out below, the ones describing a change " +
+             "rather than an action to take; [CHANGELOG.md](" + CHANGELOG_URL + ") carries v" +
+             (version || "") + " in full._";
+  var page = whole;
+  for (var d = 0; d < order.length && page.length > RELEASE_BODY_BUDGET; d += 1) {
+    dropped[order[d]] = true;
+    page = _assembleReleasePage(head, bullets.filter(function (_b, i) {
+      return !dropped[i];
+    }), tail, note);
+  }
+  return page;
+}
+
+function _assembleReleasePage(head, bullets, tail, note) {
+  var lines = head.slice();
+  if (note) {
+    lines.push(note);
     lines.push("");
   }
-  return lines.join("\n");
+  var heading = null;
+  for (var i = 0; i < bullets.length; i += 1) {
+    if (bullets[i].heading !== heading) {
+      if (heading !== null) lines.push("");
+      heading = bullets[i].heading;
+      lines.push("## " + heading);
+      lines.push("");
+    }
+    lines.push(bullets[i].text);
+  }
+  if (bullets.length > 0) lines.push("");
+  return lines.concat(tail).join("\n");
 }
 
 function _readPackageVersion() {
@@ -545,6 +621,7 @@ function main() {
       _exit("cannot read CHANGELOG.md: " + (e && e.message || e));
     }
     if (expected.replace(/\r\n/g, "\n") === actual.replace(/\r\n/g, "\n")) {
+      _checkReleasePageFits();
       process.stderr.write("[generate-changelog-entry] OK — CHANGELOG.md matches the rebuild from release-notes/\n");
       return;
     }
@@ -562,7 +639,7 @@ function main() {
   validate(notes, version);
 
   if (releasePageMode) {
-    var releaseMd = renderReleasePage(notes);
+    var releaseMd = renderReleasePage(notes, version);
     process.stdout.write(releaseMd);
     process.stderr.write("[generate-changelog-entry] OK — rendered v" + version +
       " release-page markdown (" + releaseMd.length + " chars)\n");

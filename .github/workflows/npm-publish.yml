@@ -559,6 +559,15 @@ jobs:
             echo "::error::Inspect release-notes/v$VERSION.json — the generator likely validated through but every section was empty."
             exit 1
           fi
+          # GitHub rejects a release body over 125,000 characters. renderReleasePage
+          # fits the page within its own budget, so reaching this means the budget
+          # and the API disagree — fail here, where the tag is not yet spent, rather
+          # than at `gh release create`.
+          if [ "$BYTE_COUNT" -gt 125000 ]; then
+            echo "::error::release-page markdown is $BYTE_COUNT bytes; GitHub refuses a release body over 125000."
+            echo "::error::renderReleasePage in scripts/generate-changelog-entry.js is meant to fit it — check RELEASE_BODY_BUDGET."
+            exit 1
+          fi
           echo "[release-notes] generated $BYTE_COUNT bytes of release-page markdown for v$VERSION"
           echo "--- release-notes.md (first 20 lines) ---"
           head -20 release-notes.md
