@@ -270,6 +270,64 @@ async function testAppShutdownSignalHandlersInstall() {
   o._resetForTest();
 }
 
+// onUncaught is where an operator wires crash reporting, and a rejection can
+// carry any value. The handler asked `reason instanceof Error`, false for an
+// error built in another realm, so the hook received `new Error(String(reason))`
+// instead: the same message, but a stack pointing at app-shutdown rather than at
+// the throw site. Run in a child process because the handler shuts the process
+// down and sets process.exitCode, which would take the runner with it.
+async function testUncaughtHookGetsTheOriginalError() {
+  var cp = require("node:child_process");
+  var nodePath = require("node:path");
+  var repoRoot = nodePath.resolve(__dirname, "..", "..");
+  var script =
+    "var vm = require('node:vm');" +
+    "var appShutdown = require(" +
+      JSON.stringify(nodePath.join(repoRoot, "lib", "app-shutdown.js")) + ");" +
+    "var far = vm.runInContext(\"new Error('from another realm')\", vm.createContext({}));" +
+    "var got = [];" +
+    "appShutdown.create({ phases: [], installSignalHandlers: true," +
+    "  onUncaught: function (err) { got.push(err); } });" +
+    "process.emit('unhandledRejection', far);" +
+    "process.emit('unhandledRejection', 'just a string');" +
+    "process.emit('unhandledRejection', Object.create(Error.prototype));" +
+    "var start = Date.now();" +
+    "(function wait() {" +
+    "  if (got.length >= 3 || Date.now() - start > 4000) {" +
+    "    process.stdout.write(" +
+    "      (got[0] === far ? 'SAME' : 'COPY') + '|' +" +
+    "      (got[0] && got[0].stack === far.stack ? 'STACK-KEPT' : 'STACK-LOST') + '|' +" +
+    "      (got[1] instanceof Error && /just a string/.test(got[1].message) ? 'WRAPPED' : 'RAW') + '|' +" +
+    "      (got[2] && typeof got[2].stack === 'string' && got[2].stack.length > 0" +
+    "        ? 'FORGED-WRAPPED' : 'FORGED-PASSED') + '\\n');" +
+    "    process.exit(0);" +
+    "  } else { setTimeout(wait, 10); }" +
+    "})();";
+
+  var out = "";
+  var done = false;
+  var child = cp.spawn(process.execPath, ["-e", script], { stdio: ["ignore", "pipe", "pipe"] });
+  child.stdout.on("data", function (d) { out += d.toString(); });
+  child.on("exit", function () { done = true; });
+  await helpers.waitUntil(function () { return done; }, {
+    timeoutMs: 20000,
+    label: "app-shutdown: child reporting what onUncaught received",
+  });
+
+  // The child's own boot log shares stdout, so the marker is the last line.
+  var lines = out.trim().split("\n").filter(function (l) { return l.indexOf("|") !== -1; });
+  var marker = lines.length ? lines[lines.length - 1].trim() : "";
+  var parts = marker.split("|");
+  check("onUncaught receives the very error that was rejected, not a copy",
+        parts[0] === "SAME", marker);
+  check("so its stack still points at the throw site",
+        parts[1] === "STACK-KEPT", marker);
+  check("a non-error rejection is still wrapped in a real Error",
+        parts[2] === "WRAPPED", marker);
+  check("an object merely claiming Error.prototype is wrapped, since it has no stack",
+        parts[3] === "FORGED-WRAPPED", marker);
+}
+
 async function testAppShutdownConfigValidation() {
   var threw = null;
   try {
@@ -592,6 +650,7 @@ async function run() {
   await testAppShutdownExitAfterPhasesExits();
   await testAppShutdownPidLock();
   await testPidLockAdoptsSelfPidWithoutUnlink();
+  await testUncaughtHookGetsTheOriginalError();
 }
 
 module.exports = {
