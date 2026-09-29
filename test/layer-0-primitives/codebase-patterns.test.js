@@ -22627,6 +22627,38 @@ function testAMessageFirstErrorIsNotBuiltCodeFirst() {
           Object.keys(messageFirst).length + " such classes)", bad);
 }
 
+// The fuzzing base image is pinned by digest in two Dockerfiles, one for
+// ClusterFuzzLite and one for the OSS-Fuzz project. Dependabot opens its bump
+// against a single directory, so accepting one leaves the other behind and the
+// two builds stop running the same base. Nothing else compares them.
+function testFuzzBaseImageDigestAgreesAcrossDockerfiles() {
+  var paths = [".clusterfuzzlite/Dockerfile", "oss-fuzz/projects/blamejs/Dockerfile"];
+  var pinned = [];
+  for (var i = 0; i < paths.length; i += 1) {
+    var text;
+    try { text = fs.readFileSync(paths[i], "utf8"); }
+    catch (_e) { return; }
+    var m = /base-builder-javascript@sha256:([0-9a-f]{64})/.exec(text);
+    if (!m) {
+      _report("the fuzzing base image is pinned by digest in both Dockerfiles",
+        [{ file: paths[i], line: 1,
+           content: "no `base-builder-javascript@sha256:<digest>` pin found; a floating tag " +
+                    "puts the fuzz build on whatever upstream published last" }]);
+      return;
+    }
+    pinned.push({ path: paths[i], digest: m[1], line: text.slice(0, m.index).split("\n").length });
+  }
+  var bad = [];
+  if (pinned[0].digest !== pinned[1].digest) {
+    bad.push({ file: pinned[1].path, line: pinned[1].line,
+      content: "base-builder-javascript is pinned to " + pinned[1].digest.slice(0, 12) +
+               " here and " + pinned[0].digest.slice(0, 12) + " in " + pinned[0].path +
+               "; both builds must run the same base, and a bump that touches one " +
+               "directory splits them" });
+  }
+  _report("the fuzzing base image digest agrees across both Dockerfiles", bad);
+}
+
 function testWikiPortAgreesAcrossArtifacts() {
   var bad = [];
   var dockerfile;
@@ -25811,6 +25843,7 @@ async function run() {
   testKeycloakRealmFitsItsColumns();
   testARequirementFlagIsValidatedWhereItIsRead();
   testAMessageFirstErrorIsNotBuiltCodeFirst();
+  testFuzzBaseImageDigestAgreesAcrossDockerfiles();
   testWikiPortAgreesAcrossArtifacts();
   testReleasePushPathsRunLiveIntegration();
   testReleaseUnresolvedThreadsFailClosedAtPageCap();
