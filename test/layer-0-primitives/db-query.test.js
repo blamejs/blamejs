@@ -661,6 +661,92 @@ async function testPerRowKeyWrites() {
 }
 
 // ---------------------------------------------------------------------------
+// asActor — the read names the principal the unseal-failure cap counts per.
+// ---------------------------------------------------------------------------
+
+var ACTOR_SCHEMA = [{
+  name: "actor_rows",
+  columns: { _id: "TEXT PRIMARY KEY", secret: "TEXT" },
+  sealedFields: ["secret"],
+}];
+
+async function testAsActorSeparatesTheUnsealFailureCap() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "dbq-actor-"));
+  try {
+    await setupTestDb(tmpDir, ACTOR_SCHEMA);
+    b.cryptoField.clearResidencyForTest();
+
+    check("asActor returns the chain", (function () {
+      var q = b.db.from("actor_rows");
+      return q.asActor({ id: "chain" }) === q;
+    })());
+    check("asActor refuses an omitted actor",
+      /db-query\/bad-actor/.test(_codeOf(function () {
+        b.db.from("actor_rows").asActor(undefined);
+      })));
+    check("asActor refuses a shape that names no principal",
+      /db-query\/bad-actor/.test(_codeOf(function () {
+        b.db.from("actor_rows").asActor({ role: "admin" });
+      })));
+    check("asActor refuses a value that is not an actor",
+      /db-query\/bad-actor/.test(_codeOf(function () {
+        b.db.from("actor_rows").asActor(true);
+      })));
+
+    b.db.from("actor_rows").insertOne({ _id: "good", secret: "readable" });
+    // A forged cell drives unsealRow's failure path on every read of it.
+    b.db.prepare('UPDATE "actor_rows" SET "secret" = ? WHERE "_id" = ?')
+      .run("vault.aad:Zm9yZ2VkLWdhcmJhZ2U=", "forged");
+    b.db.from("actor_rows").insertOne({ _id: "forged", secret: "placeholder" });
+    b.db.prepare('UPDATE "actor_rows" SET "secret" = ? WHERE "_id" = ?')
+      .run("vault.aad:Zm9yZ2VkLWdhcmJhZ2U=", "forged");
+
+    b.cryptoField.clearRateCapForTest();
+    b.cryptoField.configureUnsealRateCap({ threshold: 3, windowMs: 60000, cooldownMs: 300000 });
+
+    var attackerRefused = false;
+    for (var i = 0; i < 6; i += 1) {
+      try { b.db.from("actor_rows").asActor({ id: "attacker" }).where({ _id: "forged" }).first(); }
+      catch (e) {
+        if (e && e.code === "crypto-field/unseal-rate-exceeded") attackerRefused = true;
+      }
+    }
+    check("asActor: the attacker's own reads are refused once the cap trips",
+      attackerRefused === true);
+
+    var victimValue = null, victimRefused = false;
+    try {
+      victimValue = b.db.from("actor_rows").asActor({ id: "victim" })
+        .where({ _id: "good" }).first().secret;
+    } catch (e2) {
+      victimRefused = (e2 && e2.code === "crypto-field/unseal-rate-exceeded");
+    }
+    check("asActor: a second principal still reads the column",
+      victimRefused === false && victimValue === "readable");
+
+    // all() and stream() carry the same actor as first().
+    var allRefused = false;
+    try { b.db.from("actor_rows").asActor({ id: "attacker" }).where({ _id: "good" }).all(); }
+    catch (e3) { allRefused = (e3 && e3.code === "crypto-field/unseal-rate-exceeded"); }
+    check("asActor: all() reads under the named actor's cooldown", allRefused === true);
+
+    var streamErr = null;
+    await new Promise(function (resolve) {
+      var s = b.db.from("actor_rows").asActor({ id: "attacker" }).where({ _id: "good" }).stream();
+      s.on("data", function () {});
+      s.on("error", function (e) { streamErr = e; resolve(); });
+      s.on("end", resolve);
+    });
+    check("asActor: stream() reads under the named actor's cooldown",
+      streamErr !== null && streamErr.code === "crypto-field/unseal-rate-exceeded");
+  } finally {
+    try { b.cryptoField.clearRateCapForTest(); } catch (_e) { /* best-effort teardown */ }
+    try { b.cryptoField.clearResidencyForTest(); } catch (_e) { /* best-effort teardown */ }
+    await teardownTestDb(tmpDir);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Residency write-gate + raw-write residency helpers (dedicated db.init).
 // ---------------------------------------------------------------------------
 
@@ -1005,6 +1091,7 @@ async function run() {
   await testStreamExecution();
   await testWhereGroupOrWhereExecution();
   await testPerRowKeyWrites();
+  await testAsActorSeparatesTheUnsealFailureCap();
   await testResidencyGates();
   await testResidencyWithoutDeploymentRegion();
 }
