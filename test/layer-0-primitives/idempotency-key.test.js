@@ -1092,8 +1092,87 @@ function testReplaySkipsThrowingSetHeader() {
         res2._statusCode() === 200 && res2._getBody() === "hdr-body" && res2._ended() === true);
 }
 
+// The default scope read `actor.userId` and folded everything else onto the
+// literal "anon", so every principal a deployment names some other way shared
+// one idempotency scope. `extractActorContext` fills `userId` from `req.user.id`,
+// `req.user.userId` or `req.apiKey.ownerId` only, so a bearer token carrying
+// `sub` — the ordinary OIDC shape — lands on "anon" for everyone. Measured: two
+// requests differing only in `req.user.sub`, same key, and the second was
+// answered with the first's status, headers and body.
+async function testScopeDoesNotFoldPrincipalsOntoOneLiteral() {
+  function _principalReq(claim, value) {
+    var req = _mockReq("POST", "/pay", "K-shared", Buffer.from("{}"));
+    req.user = {};
+    req.user[claim] = value;
+    return req;
+  }
+  async function _drive(mw, req) {
+    var res = _mockRes();
+    mw(req, res, function () {
+      res.statusCode = 200;
+      res.end(JSON.stringify({ balanceOf: req.user.sub || req.user.username }));
+    });
+    await helpers.waitUntil(function () { return res._ended(); },
+      { timeoutMs: 5000, label: "idempotency scope: response ended for " + JSON.stringify(req.user) });
+    return res;
+  }
+
+  var mw = b.middleware.idempotencyKey({ store: b.middleware.idempotencyKey.memoryStore() });
+  var alice = await _drive(mw, _principalReq("sub", "alice"));
+  var bob   = await _drive(mw, _principalReq("sub", "bob"));
+  check("[setup] the first principal is answered its own body",
+        alice._getBody().indexOf("alice") !== -1, alice._getBody());
+  check("a second principal is not served the first's cached response",
+        bob._getBody().indexOf("alice") === -1,
+        JSON.stringify({ bob: bob._getBody() }));
+
+  // The same for a deployment naming principals by username rather than sub.
+  var mw2 = b.middleware.idempotencyKey({ store: b.middleware.idempotencyKey.memoryStore() });
+  var one = await _drive(mw2, _principalReq("username", "carol"));
+  var two = await _drive(mw2, _principalReq("username", "dave"));
+  check("and the same holds for a principal named by username",
+        two._getBody().indexOf("carol") === -1,
+        JSON.stringify({ second: two._getBody(), first: one._getBody() }));
+
+  // An actor the resolver cannot name is refused rather than shared. The
+  // operator names the field with scopeFn when a route is genuinely anonymous.
+  var mw3 = b.middleware.idempotencyKey({ store: b.middleware.idempotencyKey.memoryStore() });
+  var nameless = _mockReq("POST", "/pay", "K-nameless", Buffer.from("{}"));
+  nameless.user = { nothingWeRead: 1 };
+  var refused = _mockRes();
+  var reached = false;
+  mw3(nameless, refused, function () { reached = true; });
+  await helpers.waitUntil(function () { return reached || refused._ended(); },
+    { timeoutMs: 5000, label: "idempotency scope: unnameable actor answered" });
+  check("an actor carrying no name the resolver reads is refused, not scoped to a literal",
+        reached === false && refused._statusCode() >= 400,
+        JSON.stringify({ reachedHandler: reached, status: refused._statusCode() }));
+}
+
+// `req.body` arriving as a string reached `Buffer.concat` unconverted, because
+// the conversion tests `typeof === "object"`. A text body parser produces
+// exactly that, and the middleware threw out of the request.
+async function testStringBodyIsFingerprintedNotThrown() {
+  var mw = b.middleware.idempotencyKey({ store: b.middleware.idempotencyKey.memoryStore() });
+  var req = _mockReq("POST", "/pay", "K-string", "plain text body");
+  req.user = { id: "alice" };
+  var res = _mockRes();
+  var threw = null;
+  try {
+    mw(req, res, function () { res.statusCode = 200; res.end("ok"); });
+  } catch (e) { threw = e; }
+  if (threw === null) {
+    await helpers.waitUntil(function () { return res._ended(); },
+      { timeoutMs: 5000, label: "idempotency string body: response ended" });
+  }
+  check("a string request body does not throw out of the middleware",
+        threw === null, threw && String(threw.message).slice(0, 120));
+}
+
 async function run() {
   testSurface();
+  await testScopeDoesNotFoldPrincipalsOntoOneLiteral();
+  await testStringBodyIsFingerprintedNotThrown();
   testBadOpts();
   testMemoryStoreBadMaxEntries();
   testCreateBadNumericOpts();
