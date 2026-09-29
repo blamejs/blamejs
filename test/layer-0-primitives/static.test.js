@@ -564,7 +564,7 @@ async function testConditionalEntityTagPrecedence() {
 // (fn) so revoke / stats / invalidateMeta can be driven through the operator
 // surface. close() tears down the server AND the temp dir.
 // ---------------------------------------------------------------------------
-async function _ctx(opts, files) {
+async function _ctx(opts, files, attach) {
   var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-static-cov-"));
   if (files) {
     Object.keys(files).forEach(function (rel) { _writeFile(dir, rel, files[rel]); });
@@ -572,6 +572,7 @@ async function _ctx(opts, files) {
   b.staticServe._resetCacheForTest();
   var fn = b.staticServe.create(Object.assign({ root: dir }, opts || {}));
   var server = http.createServer(function (req, res) {
+    if (typeof attach === "function") attach(req);
     fn(req, res, function () { res.writeHead(404); res.end("nf"); });
   });
   var port = await listenOnRandomPort(server);
@@ -1258,6 +1259,79 @@ async function testBandwidthPerActorCapRejected() {
   }
 }
 
+// The per-actor bandwidth window is per ACTOR. Two authenticated principals
+// arriving from one address hold two windows, and an actor named by a field
+// other than id/userId is a principal rather than a share of the address's
+// window.
+async function testBandwidthWindowIsPerPrincipalNotPerAddress() {
+  var cache = b.cache.create({ namespace: "static-bwp-" + process.pid, backend: "memory" });
+  var who = null;
+  var ctx = await _ctx(
+    { contentSafety: null, cache: cache, maxBytesPerActorPerWindowMs: 15 },
+    { "f.txt": "0123456789" },
+    function (req) { req.user = who; }
+  );
+  try {
+    who = { sub: "alice" };
+    var a1 = await _get(ctx.port, "/f.txt");
+    check("per-principal window: the first read for a principal is served", a1.statusCode === 200);
+    await helpers.waitUntil(async function () {
+      return ((await cache.get("static:bw:actor:u:" +
+        b.requestHelpers.actorIdentityKey({ sub: "alice" }))) || 0) > 0;
+    }, { timeoutMs: 5000, label: "static per-principal quota: alice's window charged after serve" });
+
+    var a2 = await _get(ctx.port, "/f.txt");
+    check("per-principal window: the same principal is capped on the second read",
+      a2.statusCode === 429);
+
+    who = { sub: "mallory" };
+    var m1 = await _get(ctx.port, "/f.txt");
+    check("per-principal window: a second principal on the same address is not capped",
+      m1.statusCode === 200);
+
+    who = { apiKeyless: true };
+    var anon = await _get(ctx.port, "/f.txt");
+    check("per-principal window: an actor object naming no principal falls back to the address",
+      anon.statusCode === 200);
+  } finally {
+    ctx.close();
+    if (typeof cache.close === "function") await cache.close();
+  }
+}
+
+// An API key is a principal of its own: a request bearing one holds a window
+// separate from the address it arrived on, and separate from a user whose id
+// happens to spell the same text as the key's.
+async function testApiKeyHoldsItsOwnWindow() {
+  var cache = b.cache.create({ namespace: "static-bwk-" + process.pid, backend: "memory" });
+  var attach = null;
+  var ctx = await _ctx(
+    { contentSafety: null, cache: cache, maxBytesPerActorPerWindowMs: 15 },
+    { "f.txt": "0123456789" },
+    function (req) { if (attach) attach(req); }
+  );
+  try {
+    attach = function (req) { req.apiKey = { id: "shared-text", scopes: [] }; };
+    var k1 = await _get(ctx.port, "/f.txt");
+    check("api-key window: the first read on a key is served", k1.statusCode === 200);
+    await helpers.waitUntil(async function () {
+      return ((await cache.get("static:bw:actor:k:" +
+        b.requestHelpers.actorIdentityKey({ id: "shared-text" }))) || 0) > 0;
+    }, { timeoutMs: 5000, label: "static per-principal quota: the key's window charged after serve" });
+
+    var k2 = await _get(ctx.port, "/f.txt");
+    check("api-key window: the same key is capped on the second read", k2.statusCode === 429);
+
+    attach = function (req) { req.user = { id: "shared-text" }; };
+    var u1 = await _get(ctx.port, "/f.txt");
+    check("api-key window: a user whose id spells the key's id holds a separate window",
+      u1.statusCode === 200);
+  } finally {
+    ctx.close();
+    if (typeof cache.close === "function") await cache.close();
+  }
+}
+
 // The atomic counter retries the whole read-modify-write when the cache
 // signals UPDATE_CONTENTION (cluster CAS lost the race); a stub cache that
 // throws contention once then delegates proves the retry recovers.
@@ -1489,10 +1563,10 @@ async function testSymlinkFinalComponentFailsClosed() {
   }
 }
 
-// An authenticated principal on the request makes extractActorContext derive
-// userId, so the quota actor key becomes "id:<userId>" instead of "ip:<addr>".
-// Seeding the id-keyed concurrency counter above the cap forces a deterministic
-// 429 — which only fires if the id-form key was used.
+// An authenticated principal on the request keys the quota bucket by the
+// principal instead of by the address. The key is the one the identity
+// resolver derives, so seeding that counter above the cap forces a
+// deterministic 429 — which only fires if the principal-form key was used.
 async function testActorKeyUserIdBranch() {
   var cache = b.cache.create({ namespace: "static-uid-" + process.pid, backend: "memory" });
   var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-static-uid-"));
@@ -1508,9 +1582,9 @@ async function testActorKeyUserIdBranch() {
   });
   var port = await listenOnRandomPort(server);
   try {
-    await cache.set("static:conc:id:user-42", 5);
+    await cache.set("static:conc:u:" + b.requestHelpers.actorIdentityKey({ id: "user-42" }), 5);
     var r = await _get(port, "/f.txt");
-    check("actor-key: authenticated userId keys the quota bucket as id:userId → 429",
+    check("actor-key: an authenticated principal keys the quota bucket by principal → 429",
           r.statusCode === 429);
   } finally {
     server.close();
@@ -2075,6 +2149,8 @@ async function run() {
     await testIndexFileDisabled();
     await testForceAttachmentExtFallback();
     await testBandwidthPerActorCapRejected();
+    await testBandwidthWindowIsPerPrincipalNotPerAddress();
+    await testApiKeyHoldsItsOwnWindow();
     await testCounterRetriesOnContention();
     await testMalformedPercentEncoding();
     await testMountPathExactMatch();

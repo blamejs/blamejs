@@ -646,6 +646,39 @@ function run() {
 
   // ---- cache wrapper ----
   check("b.flag.cache is fn",                    typeof b.flag.cache === "function");
+
+  // The cache key held `targetingKey` and the flag key and dropped every other
+  // attribute the evaluation context carries, which is what a targeting rule
+  // reads. Two contexts sharing a targeting key but differing in the attribute
+  // the rules decide on were one entry, so the second principal was served the
+  // first's decision and the provider was never asked. Measured: a context with
+  // `role: "guest"` received the `true` computed for `role: "admin"`.
+  var roleSeen = [];
+  var roleProvider = {
+    kind: "probe",
+    list: function () { return ["beta"]; },
+    evaluate: function (flagKey, ctx) {
+      var role = ctx && ctx.attributes ? ctx.attributes.role : null;
+      roleSeen.push(role);
+      return { value: role === "admin", reason: "targeting_match" };
+    },
+  };
+  var roleCache = b.flag.cache(roleProvider, { ttlMs: 5000, maxEntries: 50 });
+  var asAdmin = roleCache.evaluate("beta", { targetingKey: "session-7", attributes: { role: "admin" } });
+  var asGuest = roleCache.evaluate("beta", { targetingKey: "session-7", attributes: { role: "guest" } });
+  check("[setup] the admin context is evaluated as admin", asAdmin.value === true);
+  check("cache: a context differing in a targeted attribute is not served the other's decision",
+        asGuest.value === false,
+        JSON.stringify({ guest: asGuest, providerSaw: roleSeen }));
+  check("cache: and the provider is consulted for it",
+        roleSeen.length === 2, JSON.stringify(roleSeen));
+
+  // The same key with the SAME attributes is still a hit, so the cache has not
+  // simply been turned off.
+  var repeatSeen = roleSeen.length;
+  roleCache.evaluate("beta", { targetingKey: "session-7", attributes: { role: "admin" } });
+  check("cache: an identical context still hits the cache",
+        roleSeen.length === repeatSeen, JSON.stringify(roleSeen));
   rejects("cache: bad downstream",
     function () { b.flag.cache({}); }, /must implement/);
   rejects("cache: ttlMs too small",

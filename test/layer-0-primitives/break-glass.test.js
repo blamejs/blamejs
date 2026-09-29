@@ -1270,6 +1270,84 @@ async function testListActiveAllAndRevokeAll() {
   }
 }
 
+// A grant is held by a user or by an API key, and the two are separate
+// holders even when the id text is the same. listActive answers the caller's
+// own grants, so a key whose id spells a user's id must not see, and so must
+// not be able to redeem, that user's grants.
+async function testGrantHolderIsNotSharedBetweenAUserAndAKeyOfTheSameId() {
+  var tmpDir = _tmp();
+  await setupTestDb(tmpDir);
+  try {
+    b.breakGlass.init();
+    await b.breakGlass.policy.set("collide", { columns: ["c"], factors: ["totp"], maxRowsPerGrant: 3 });
+
+    var userReq = _fakeReq({ user: { id: "collide-7" } });
+    var keyReq  = _fakeReq({ user: null, apiKey: { id: "collide-7", scopes: [] } });
+
+    var totp = _validTotp();
+    var userGrant = await b.breakGlass.grant({
+      req: userReq, table: "collide",
+      reason: "compliance review per ticket #7",
+      factor: { type: "totp", code: totp.code, secret: totp.secret },
+    });
+    check("holder split: the user's grant is issued", typeof userGrant.id === "string");
+
+    var seenByUser = await b.breakGlass.listActive({ req: userReq });
+    check("holder split: the user sees its own grant",
+      seenByUser.length === 1 && seenByUser[0].id === userGrant.id);
+
+    var seenByKey = await b.breakGlass.listActive({ req: keyReq });
+    check("holder split: a key whose id spells the user's id sees no grant",
+      seenByKey.length === 0);
+
+    var totp2 = _validTotp();
+    var keyGrant = await b.breakGlass.grant({
+      req: keyReq, table: "collide",
+      reason: "compliance review per ticket #8",
+      factor: { type: "totp", code: totp2.code, secret: totp2.secret },
+    });
+    var seenByKeyNow = await b.breakGlass.listActive({ req: keyReq });
+    check("holder split: the key sees its own grant and only its own",
+      seenByKeyNow.length === 1 && seenByKeyNow[0].id === keyGrant.id);
+    var seenByUserNow = await b.breakGlass.listActive({ req: userReq });
+    check("holder split: the user still sees only its own grant",
+      seenByUserNow.length === 1 && seenByUserNow[0].id === userGrant.id);
+
+    // An incident revoking a bare id reaches the grants held under that id
+    // by either credential.
+    var revoked = await b.breakGlass.revokeAll({ actorId: "collide-7", reason: "ir-collide-test" });
+    check("holder split: a bare actorId revokes both holders' grants",
+      revoked && revoked.revokedCount === 2);
+    check("holder split: nothing is left active for either holder",
+      (await b.breakGlass.listActive({ req: userReq })).length === 0 &&
+      (await b.breakGlass.listActive({ req: keyReq })).length === 0);
+
+    // A prefixed actorId reaches exactly one holder.
+    var totp3 = _validTotp();
+    await b.breakGlass.grant({
+      req: userReq, table: "collide",
+      reason: "compliance review per ticket #9",
+      factor: { type: "totp", code: totp3.code, secret: totp3.secret },
+    });
+    var totp4 = _validTotp();
+    var keyGrant2 = await b.breakGlass.grant({
+      req: keyReq, table: "collide",
+      reason: "compliance review per ticket #10",
+      factor: { type: "totp", code: totp4.code, secret: totp4.secret },
+    });
+    var revokedUserOnly = await b.breakGlass.revokeAll({
+      actorId: "user:collide-7", reason: "ir-collide-test-scoped",
+    });
+    check("holder split: a prefixed actorId revokes that holder alone",
+      revokedUserOnly && revokedUserOnly.revokedCount === 1);
+    var keyStill = await b.breakGlass.listActive({ req: keyReq });
+    check("holder split: the other holder's grant survives a scoped revoke",
+      keyStill.length === 1 && keyStill[0].id === keyGrant2.id);
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
 // ---- Not-initialized guard — every primitive fails closed before init() ----
 
 async function testRequireInitGuards() {
@@ -1933,6 +2011,7 @@ async function run() {
   await testServiceAccountBypassHappyPath();
   await testServiceAccountBypassRefusalPaths();
   await testListActiveAllAndRevokeAll();
+  await testGrantHolderIsNotSharedBetweenAUserAndAKeyOfTheSameId();
   // Uncovered error / adversarial / defensive branch coverage
   await testPolicyValidationAdversarial();
   await testCellAndAdminInputValidation();

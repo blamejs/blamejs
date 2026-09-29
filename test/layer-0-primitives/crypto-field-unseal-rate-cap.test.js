@@ -174,6 +174,76 @@ async function run() {
   b.cryptoField.unsealRow("cf_ratecap", { id: "w1", secret: FORGED }, "slider");
   check("three failures within one window trip the cap", audits.length === 1);
 
+  // ---- one bucket per principal: two authenticated actors given as
+  // objects must not share a counter. Deriving the bucket with String()
+  // spells every object "[object Object]", so an attacker's forged reads
+  // put an unrelated user into cooldown. ----
+  audits.length = 0;
+  nowMs = 7000000;
+  b.cryptoField.configureUnsealRateCap({
+    threshold: 3, windowMs: 60000, cooldownMs: 300000,
+    now: clock,
+    onAudit: function (ev) { audits.push(ev); },
+  });
+  var attacker = { id: "attacker-9", role: "user" };
+  var victim   = { id: "victim-1",   role: "user" };
+  for (var a = 0; a < 5; a++) {
+    try { b.cryptoField.unsealRow("cf_ratecap", { id: "shared", secret: FORGED }, attacker); }
+    catch (_e) { /* the attacker's own cooldown, which is the point */ }
+  }
+  check("the attacker's own bucket trips", audits.length >= 1);
+  var victimRow = b.cryptoField.sealRow("cf_ratecap", { id: "vrow", secret: "victim-plaintext" });
+  var victimDenied = false, victimValue = null;
+  try { victimValue = b.cryptoField.unsealRow("cf_ratecap", victimRow, victim).secret; }
+  catch (e) { victimDenied = (e.code === "crypto-field/unseal-rate-exceeded"); }
+  check("a second principal is not put into cooldown by the first's failures",
+    victimDenied === false && victimValue === "victim-plaintext");
+
+  // Two objects naming the same principal through DIFFERENT fields are two
+  // principals: { id: "x" } is not { userId: "x" }.
+  audits.length = 0;
+  nowMs = 7500000;
+  b.cryptoField.clearRateCapForTest();
+  b.cryptoField.configureUnsealRateCap({
+    threshold: 3, windowMs: 60000, cooldownMs: 300000,
+    now: clock,
+    onAudit: function (ev) { audits.push(ev); },
+  });
+  for (var c = 0; c < 5; c++) {
+    try { b.cryptoField.unsealRow("cf_ratecap", { id: "shared", secret: FORGED }, { id: "same-text" }); }
+    catch (_e) { /* expected once the id bucket trips */ }
+  }
+  var byOtherField = b.cryptoField.sealRow("cf_ratecap", { id: "orow", secret: "other-field-plaintext" });
+  var otherDenied = false, otherValue = null;
+  try { otherValue = b.cryptoField.unsealRow("cf_ratecap", byOtherField, { userId: "same-text" }).secret; }
+  catch (e2) { otherDenied = (e2.code === "crypto-field/unseal-rate-exceeded"); }
+  check("the field an actor is named by separates buckets",
+    otherDenied === false && otherValue === "other-field-plaintext");
+
+  // An actor object naming no principal is still accepted — a framework
+  // caller passes { type: "system" } — and lands in its own bucket rather
+  // than the one an absent actor uses.
+  audits.length = 0;
+  nowMs = 8000000;
+  b.cryptoField.clearRateCapForTest();
+  b.cryptoField.configureUnsealRateCap({
+    threshold: 3, windowMs: 60000, cooldownMs: 300000,
+    now: clock,
+    onAudit: function (ev) { audits.push(ev); },
+  });
+  var systemRow = b.cryptoField.sealRow("cf_ratecap", { id: "srow", secret: "system-plaintext" });
+  check("an actor carrying no name this framework reads still unseals",
+    b.cryptoField.unsealRow("cf_ratecap", systemRow, { type: "system" }).secret === "system-plaintext");
+  for (var u = 0; u < 5; u++) {
+    try { b.cryptoField.unsealRow("cf_ratecap", { id: "shared", secret: FORGED }, { type: "system" }); }
+    catch (_e) { /* expected once the unnameable bucket trips */ }
+  }
+  var anonDenied = false, anonValue = null;
+  try { anonValue = b.cryptoField.unsealRow("cf_ratecap", systemRow).secret; }
+  catch (e3) { anonDenied = (e3.code === "crypto-field/unseal-rate-exceeded"); }
+  check("an unnameable actor's bucket is not the absent-actor bucket",
+    anonDenied === false && anonValue === "system-plaintext");
+
   // ---- disable path: configureUnsealRateCap(null) restores audit-only ----
   b.cryptoField.configureUnsealRateCap(null);
   var afterDisable = false;
