@@ -37,6 +37,44 @@ function testSplitTopLevelComma() {
         unterminated.length === 1 && unterminated[0] === "a");
 }
 
+function testEndsInsideQuotedString() {
+  var ends = b.structuredFields.endsInsideQuotedString;
+
+  // The piece splitTopLevel drops is the one this reports on, so a caller can
+  // tell an absent parameter from one an open quote swallowed.
+  check("endsInsideQuotedString: a closed quote does not",
+        ends('a="1"; b=2') === false);
+  check("endsInsideQuotedString: an open quote does",
+        ends('a="1; b=2') === true);
+  check("endsInsideQuotedString: no quotes at all",
+        ends("a=1; b=2") === false);
+
+  // An escaped quote inside the run does not close it; an escaped backslash
+  // before the closing quote does. These two shapes decide whether what
+  // follows the run is a parameter or text inside a value.
+  check("endsInsideQuotedString: an escaped quote leaves the run open",
+        ends('note="a\\"; charset=utf-8') === true);
+  check("endsInsideQuotedString: an escaped backslash still closes the run",
+        ends('note="a\\\\"; charset=utf-8') === false);
+
+  // A backslash as the last character has nothing to escape, so the field was
+  // truncated mid-escape and the run is still open.
+  check("endsInsideQuotedString: a trailing backslash inside a run",
+        ends('a="x\\') === true);
+
+  check("endsInsideQuotedString: empty string",     ends("") === false);
+  check("endsInsideQuotedString: a lone quote",     ends('"') === true);
+  check("endsInsideQuotedString: non-string input", ends(null) === false);
+
+  // The two answers agree: when this reports the field closed, the split
+  // keeps every piece the field carried.
+  [['a="1"; b=2', 2], ["a=1; b=2", 2], ['a="x;y"; b=2', 2]].forEach(function (row) {
+    check("endsInsideQuotedString agrees with the split for: " + row[0],
+          ends(row[0]) === false &&
+            b.structuredFields.splitTopLevel(row[0], ";").length === row[1]);
+  });
+}
+
 function testSplitTopLevelSemi() {
   check("splitTopLevel: semicolon list",
     JSON.stringify(b.structuredFields.splitTopLevel("a;b;c", ";")) ===
@@ -257,9 +295,99 @@ function testUnfoldHeaderContinuations() {
     b.structuredFields.unfoldHeaderContinuations("a=1; b=2") === "a=1; b=2");
 }
 
+// RFC 5322 §3.2.2 lets a comment appear between the tokens of a structured
+// field, and `ctext` admits a double quote and a semicolon: `(a " comment)` and
+// `(x; y)` are both legal. Two readers here answer "where does a quoted string
+// run" and "where does a parameter end", and neither knew about comments, so a
+// quote inside one opened a quoted string that never closed and a semicolon
+// inside one split a parameter in half. Comments nest, and a backslash inside
+// one escapes the next character.
+function testCommentsAreNotContent() {
+  var sf = b.structuredFields;
+  var MIME = { comments: true };
+  check("a quote inside a comment does not open a quoted string",
+        sf.endsInsideQuotedString('a=b (x " y)', MIME) === false);
+  check("a quote inside a NESTED comment does not either",
+        sf.endsInsideQuotedString('a=b (x (y " z) w)', MIME) === false);
+  check("an escaped close-paren keeps the comment open",
+        sf.endsInsideQuotedString('a=b (x \\) " y)', MIME) === false);
+  // The control: the shape the check exists for is still caught.
+  check("a genuinely unterminated quoted string is still reported",
+        sf.endsInsideQuotedString('a="unterminated', MIME) === true);
+  check("and one left open after a comment closes",
+        sf.endsInsideQuotedString('a=b (note) c="open', MIME) === true);
+  // A comment INSIDE a quoted string is not a comment: RFC 5322 makes those
+  // characters ordinary qtext.
+  check("parentheses inside a quoted string are content, not a comment",
+        sf.endsInsideQuotedString('a="(still open', MIME) === true);
+
+  check("a separator inside a comment does not split the field",
+        JSON.stringify(sf.splitTopLevel("a=b (x; y); c=d", ";", MIME)) ===
+        JSON.stringify(["a=b (x; y)", " c=d"]),
+        JSON.stringify(sf.splitTopLevel("a=b (x; y); c=d", ";", MIME)));
+  check("nor a comma inside one",
+        JSON.stringify(sf.splitTopLevel("a=b (x, y), c=d", ",", MIME)) ===
+        JSON.stringify(["a=b (x, y)", " c=d"]),
+        JSON.stringify(sf.splitTopLevel("a=b (x, y), c=d", ",", MIME)));
+  check("a separator inside a quoted string is still not a split",
+        JSON.stringify(sf.splitTopLevel('a="x; y"; c=d', ";", MIME)) ===
+        JSON.stringify(['a="x; y"', " c=d"]),
+        JSON.stringify(sf.splitTopLevel('a="x; y"; c=d', ";", MIME)));
+  check("and an ordinary separator still splits",
+        JSON.stringify(sf.splitTopLevel("a=b; c=d", ";", MIME)) ===
+        JSON.stringify(["a=b", " c=d"]));
+
+  // Only RFC 5322's grammar has comments. RFC 6265 §4.1.1 makes a cookie
+  // path any CHAR but `;`, so `(` is an ordinary character there, and RFC
+  // 9651 has no comments either. Reading one in an HTTP field swallows every
+  // attribute after it: `Path=/foo(` took `Secure` and `HttpOnly` with it and
+  // the cookie was stored unrestricted. The default is off, and the mail
+  // parsers ask for it.
+  var cookieLine = "sid=secret; Path=/foo(; Secure; HttpOnly";
+  check("a parenthesis in an HTTP field is an ordinary character by default",
+        JSON.stringify(sf.splitTopLevel(cookieLine, ";")) ===
+        JSON.stringify(["sid=secret", " Path=/foo(", " Secure", " HttpOnly"]),
+        JSON.stringify(sf.splitTopLevel(cookieLine, ";")));
+  check("and it does not open a quoted string either",
+        sf.endsInsideQuotedString("a=/foo(; b=1") === false);
+  check("an explicit comments:false reads the same way",
+        JSON.stringify(sf.splitTopLevel(cookieLine, ";", { comments: false })) ===
+        JSON.stringify(sf.splitTopLevel(cookieLine, ";")));
+
+  // The two readers answer ONE question: did the split drop something it
+  // could not terminate. `splitTopLevel` drops a trailing piece that ends
+  // inside a quoted string, a comment or an escape, so the check has to
+  // report all three. Reporting only the quoted string let an unterminated
+  // comment swallow a parameter in silence: `charset=utf-7 (unterminated`
+  // parsed as `us-ascii` with no parameters at all, which is the charset
+  // allowlist skipped rather than applied.
+  var UNTERMINATED = [
+    ['charset=utf-7 (unterminated', "a comment"],
+    ['charset="utf-7', "a quoted string"],
+    ["charset=utf-7 (note\\", "an escape inside a comment"],
+  ];
+  var missed = [];
+  UNTERMINATED.forEach(function (row) {
+    var dropped = sf.splitTopLevel("text/plain; " + row[0], ";", MIME).length < 2;
+    var reported = sf.endsInsideQuotedString("text/plain; " + row[0], MIME);
+    if (dropped !== reported) {
+      missed.push(row[1] + ": dropped=" + dropped + " reported=" + reported);
+    }
+    if (!dropped) missed.push(row[1] + ": the split kept a piece it cannot terminate");
+  });
+  check("every unterminated run is both dropped and reported" +
+        (missed.length ? " (" + missed.join("; ") + ")" : ""), missed.length === 0);
+  // The control: a value that terminates everything it opens is neither.
+  check("and a well-formed value is neither dropped nor reported",
+        sf.splitTopLevel('text/plain; charset="utf-8" (note)', ";", MIME).length === 2 &&
+        sf.endsInsideQuotedString('text/plain; charset="utf-8" (note)', MIME) === false);
+}
+
 async function run() {
   testSplitTopLevelComma();
   testSplitTopLevelSemi();
+  testEndsInsideQuotedString();
+  testCommentsAreNotContent();
   testParseTagList();
   testForEachKeyValue();
   testRefuseControlBytes();

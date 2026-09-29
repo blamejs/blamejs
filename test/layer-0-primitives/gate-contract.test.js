@@ -269,8 +269,14 @@ function testMakeProfileResolverAndName() {
   check("makeProfileResolver: posture-first", resolver({ posture: "hipaa" }) === "strict");
   check("makeProfileResolver: explicit profile", resolver({ profile: "balanced" }) === "balanced");
   check("makeProfileResolver: default fallback", resolver({}) === "strict");
-  check("makeProfileResolver: unmapped posture falls to default",
-    resolver({ posture: "nope" }) === "strict");
+  // This row used to assert that an unmapped posture fell through to the
+  // default. Falling through is what makes the option a lie: an operator
+  // who writes `{ profile: "permissive", posture: "hippa" }` gets permissive
+  // and no signal that the posture was ignored.
+  var threwPosture = false;
+  try { resolver({ posture: "nope" }); }
+  catch (e) { threwPosture = e.code === "csv/bad-posture"; }
+  check("makeProfileResolver: unmapped posture throws bad-posture", threwPosture);
   var threw = false;
   try { resolver({ profile: "ghost" }); }
   catch (e) { threw = e.code === "csv/bad-profile"; }
@@ -292,8 +298,14 @@ function testMakeProfileResolverAndName() {
     GC.resolveProfileName({ posture: "hipaa" }, POSTURES, "strict") === "strict");
   check("resolveProfileName: default when neither",
     GC.resolveProfileName({}, POSTURES, "strict") === "strict");
-  check("resolveProfileName: prototype-key posture → default (proto-shadow safe)",
-    GC.resolveProfileName({ posture: "constructor" }, {}, "strict") === "strict");
+  // A prototype key is not a posture the table holds, so it is refused like
+  // any other unknown value rather than reaching Object.prototype.
+  var threwProto = null;
+  try { GC.resolveProfileName({ posture: "constructor" }, {}, "strict"); }
+  catch (e) { threwProto = e; }
+  check("resolveProfileName: prototype-key posture is refused (proto-shadow safe)",
+    threwProto !== null && threwProto.code === "gate-contract/bad-posture",
+    threwProto && threwProto.code);
   check("resolveProfileName: null opts → default",
     GC.resolveProfileName(null, POSTURES, "strict") === "strict");
 }
@@ -421,6 +433,83 @@ function testMakePostureAccessor() {
     acc("constructor") === null);
   var accF = GC.makePostureAccessor({ hipaa: "strict" }, { fallback: "none" });
   check("makePostureAccessor: custom fallback", accF("nope") === "none");
+}
+
+function testAPostureOptionTheGuardDoesNotReadIsRefusedByName() {
+  // The framework spells this option two ways. Most guards read
+  // `compliancePosture`, resolved by `resolveProfileAndPosture`; the command
+  // guards read `posture`, resolved by `makeProfileResolver`. Each helper
+  // ignored the other's spelling in silence, so an operator who wrote the
+  // wrong one got no posture and no error: the guard ran at its default while
+  // the call said `hipaa`. Neither name is wrong, so neither is renamed; the
+  // one a guard does not read is refused and names the one it does.
+  var byPosture = [
+    ["guardSmtpCommand", b.guardSmtpCommand],
+  ];
+  var byCompliancePosture = [
+    ["guardCsv", b.guardCsv],
+    ["guardHtml", b.guardHtml],
+    ["guardSql", b.guardSql],
+    ["guardEmail", b.guardEmail],
+  ];
+
+  function refusalFor(g, optName, value) {
+    var o = {};
+    o[optName] = value;
+    try { g.gate(o); return null; }
+    catch (e) { return e; }
+  }
+
+  byCompliancePosture.forEach(function (row) {
+    var known = refusalFor(row[1], "compliancePosture", "hipaa");
+    check(row[0] + " still takes the name it reads", known === null,
+          known ? String(known.code) : "ok");
+    var wrong = refusalFor(row[1], "posture", "hipaa");
+    check(row[0] + " refuses `posture` rather than ignoring it",
+          wrong !== null && /bad-opt|bad-posture/.test(String(wrong.code)),
+          wrong ? String(wrong.code) : "accepted in silence");
+    check(row[0] + "'s refusal names the option it does read",
+          wrong !== null && /compliancePosture/.test(String(wrong.message)),
+          wrong ? String(wrong.message).slice(0, 80) : "no refusal");
+  });
+
+  byPosture.forEach(function (row) {
+    var known = refusalFor(row[1], "posture", "hipaa");
+    check(row[0] + " still takes the name it reads", known === null,
+          known ? String(known.code) : "ok");
+    var wrong = refusalFor(row[1], "compliancePosture", "hipaa");
+    check(row[0] + " refuses `compliancePosture` rather than ignoring it",
+          wrong !== null && /bad-opt|bad-posture/.test(String(wrong.code)),
+          wrong ? String(wrong.code) : "accepted in silence");
+  });
+
+  // b.guardAll validates the shared regime itself rather than through these
+  // resolvers, so it is the one place the rule has to be written twice.
+  var allKnown = refusalFor(b.guardAll, "compliancePosture", "hipaa");
+  check("guardAll still takes compliancePosture", allKnown === null,
+        allKnown ? String(allKnown.code) : "ok");
+  var allWrong = refusalFor(b.guardAll, "posture", "hipaa");
+  check("guardAll refuses `posture` rather than dropping it on the way out",
+        allWrong !== null && String(allWrong.code) === "guard-all/bad-opt",
+        allWrong ? String(allWrong.code) : "accepted in silence");
+
+  // Every guard the aggregator dispatches to, not just the sample above.
+  var ignoring = [];
+  (b.guardAll.allGuards() || []).forEach(function (entry) {
+    var g = entry && entry.NAME ? b[_guardExportName(entry.NAME)] : null;
+    if (!g || typeof g.gate !== "function") return;
+    var byP = refusalFor(g, "posture", "hipaa");
+    var byC = refusalFor(g, "compliancePosture", "hipaa");
+    if (byP === null && byC === null) ignoring.push(entry.NAME);
+  });
+  check("no guard in the family accepts both spellings, which would mean it reads neither",
+        ignoring.length === 0, ignoring.join(", "));
+}
+
+// b.guardCsv is exported as guardCsv for a NAME of "csv".
+function _guardExportName(name) {
+  var camel = String(name).replace(/[-_ ]+(.)/g, function (_m, c) { return c.toUpperCase(); });
+  return "guard" + camel.charAt(0).toUpperCase() + camel.slice(1);
 }
 
 function testCompliancePosturesFactory() {
@@ -2703,6 +2792,7 @@ async function run() {
   testUnmappedPostureWarning();
   testLookupCompliancePosture();
   testMakePostureAccessor();
+  testAPostureOptionTheGuardDoesNotReadIsRefusedByName();
   testCompliancePosturesFactory();
   testStrictDefaults();
   testRunIssueValidatorContracts();
@@ -2739,7 +2829,214 @@ async function run() {
   testDefineGuardAmplificationCapIsARatio();
   await testResidualBranches();
   testDefineParser();
+  await testProfilesAreFrozenThroughAndThrough();
+  testAnUnknownPostureIsRefusedByName();
   testMakeIssueReporter();
+}
+
+// A posture the table does not hold was dropped, and the resolver fell
+// through to `opts.profile` or the default. An operator who wrote
+// `{ profile: "permissive", posture: "hippa" }` ran permissive while
+// believing a compliance posture applied, and the guard said nothing. Both
+// resolvers are config-time readers, so they refuse the value by name.
+// `Object.freeze` is shallow, so a frozen PROFILES map still held mutable
+// profile objects, and every guard exports that map. A consumer could write
+// `b.guardSql.PROFILES.strict.maxLength = 1e9` and change what the guard
+// enforces for the whole process — the value the guard itself reads at
+// validate time. 62 guard profiles were writable this way.
+async function testProfilesAreFrozenThroughAndThrough() {
+  var parser = GC.defineParser({
+    name:       "frozen-probe",
+    entry:      function () { return true; },
+    errorClass: GCE,
+    profiles:   { strict: { cap: 1, nested: { inner: 2 } }, loose: { cap: 9 } },
+  });
+  check("the profile map is frozen", Object.isFrozen(parser.PROFILES));
+  // The same helper a namespace calls when it builds its own exports rather
+  // than going through defineGuard / defineParser.
+  var own = b.gateContract.freezePolicy({ tier: { cap: 3 } });
+  check("freezePolicy freezes what a namespace exports itself",
+        Object.isFrozen(own) && Object.isFrozen(own.tier));
+  check("each profile is frozen", Object.isFrozen(parser.PROFILES.strict) &&
+        Object.isFrozen(parser.PROFILES.loose));
+  check("a nested policy object is frozen too",
+        Object.isFrozen(parser.PROFILES.strict.nested));
+
+  // The walk carries a depth bound so a cyclic or hostile policy cannot run
+  // it out of stack, and past that bound it used to RETURN the rest of the
+  // subtree untouched. A caller was then handed an "ostensibly frozen" policy
+  // with a writable cap in it, which is the whole defect this freeze exists to
+  // close, moved down a few levels. A policy deeper than the walk reads is
+  // refused instead: profiles and postures are flat config records, and one
+  // that is not is a policy this contract cannot promise anything about.
+  function _nest(levels) {
+    var root = {};
+    var cursor = root;
+    for (var i = 0; i < levels; i += 1) { cursor.next = {}; cursor = cursor.next; }
+    cursor.cap = 100;                                                                                 // allow:raw-byte-literal — test-only cap value
+    return { root: root, leaf: cursor };
+  }
+  var deep = _nest(12);                                                                               // allow:raw-byte-literal — test-only nesting depth
+  var threwDeep = null;
+  try { b.gateContract.freezePolicy({ strict: deep.root }); } catch (e) { threwDeep = e; }
+  check("a policy nested deeper than the freeze walk reads is refused",
+        threwDeep !== null && String(threwDeep.code).indexOf("gate-contract/") === 0,
+        JSON.stringify({ code: threwDeep && threwDeep.code,
+                         leafFrozen: Object.isFrozen(deep.leaf) }));
+
+  // `resolveProfileName` is the posture reader every non-guard consumer uses,
+  // and it built its refusal from `GateContractError` with
+  // `gate-contract/bad-posture` whatever the caller was. An operator who
+  // mistyped a posture on `b.mail.scan.create` got an error from a module they
+  // never called, under a code their own catch does not match, while the
+  // release says the refusal is `<module>/bad-posture`. The caller's class is
+  // what it throws now, and every in-tree consumer is walked here rather than
+  // one being spot-checked.
+  var fakeResolver = { query: function () { return Promise.resolve([]); } };
+  var POSTURE_CONSUMERS = [
+    ["b.guardEnvelope.check",  function () {
+      return b.guardEnvelope.check({ mailFrom: "a@example.com" }, { posture: "hippa" });
+    }, "GuardEnvelopeError", "guard-envelope/bad-posture"],
+    ["b.mail.greylist.create", function () { return b.mail.greylist.create({ posture: "hippa" }); },
+     "MailGreylistError",   "mail-greylist/bad-posture"],
+    ["b.mail.helo.evaluate",   function () {
+      return b.mail.helo.evaluate(
+        { ip: "203.0.113.42", claimedName: "mail.example.com", resolver: fakeResolver },
+        { posture: "hippa" });
+    }, "MailHeloError",      "mail-helo/bad-posture"],
+    ["b.mail.rbl.create",      function () {
+      return b.mail.rbl.create({ posture: "hippa", resolver: fakeResolver });
+    }, "MailRblError",       "mail-rbl/bad-posture"],
+    ["b.mail.scan.create",     function () {
+      return b.mail.scan.create({ posture: "hippa", host: "127.0.0.1", port: 3310 });                 // allow:raw-byte-literal — test-only clamd port
+    }, "MailScanError",      "mail-scan/bad-posture"],
+    ["b.mail.spamScore.create", function () {
+      return b.mail.spamScore.create({ posture: "hippa", scorer: function () { return 0; } });
+    }, "MailSpamScoreError", "mail-spam-score/bad-posture"],
+  ];
+  var wrongClass = [];
+  for (var pc = 0; pc < POSTURE_CONSUMERS.length; pc += 1) {
+    var row = POSTURE_CONSUMERS[pc];
+    var threw = null;
+    try {
+      var rv = row[1]();
+      // An async consumer refuses inside the promise; settle it before judging.
+      if (rv && typeof rv.then === "function") {
+        await rv.then(function () { return null; }, function (e) { threw = e; });
+      }
+    } catch (e) { threw = e; }
+    if (!threw || threw.constructor.name !== row[2] || threw.code !== row[3]) {
+      wrongClass.push(row[0] + " -> " +
+        (threw ? threw.constructor.name + "/" + threw.code : "ACCEPTED"));
+    }
+  }
+  check("an unknown posture is refused by the module the operator called" +
+        (wrongClass.length ? " (" + wrongClass.join("; ") + ")" : ""),
+        wrongClass.length === 0);
+
+  // A cycle is the same question: it cannot be frozen through, so it is
+  // refused rather than returned part-frozen.
+  var cyclic = {};
+  cyclic.self = cyclic;
+  var threwCycle = null;
+  try { b.gateContract.freezePolicy({ strict: cyclic }); } catch (e) { threwCycle = e; }
+  check("and a cyclic policy is refused rather than returned part-frozen",
+        threwCycle !== null && String(threwCycle.code).indexOf("gate-contract/") === 0,
+        JSON.stringify({ code: threwCycle && threwCycle.code }));
+
+  // The control: the depth a real policy uses is still accepted and frozen
+  // through. Every shipped guard profile is well inside it.
+  var ordinary = _nest(6);                                                                            // allow:raw-byte-literal — test-only nesting depth
+  var frozenOrdinary = b.gateContract.freezePolicy({ strict: ordinary.root });
+  check("a policy within the bound is frozen through to its deepest value",
+        Object.isFrozen(frozenOrdinary) && Object.isFrozen(ordinary.leaf),
+        JSON.stringify({ leafFrozen: Object.isFrozen(ordinary.leaf) }));
+
+  var before = parser.PROFILES.strict.cap;
+  try { parser.PROFILES.strict.cap = 999; } catch (_e) { /* strict mode throws */ }
+  check("a caller cannot raise a cap the guard enforces",
+        parser.PROFILES.strict.cap === before, String(parser.PROFILES.strict.cap));
+
+  // Proven on a shipped guard, not only on the probe above.
+  var shippedBefore = b.guardSql.PROFILES.strict;
+  var firstKey = Object.keys(shippedBefore)[0];
+  var firstValue = shippedBefore[firstKey];
+  try { b.guardSql.PROFILES.strict[firstKey] = "tampered"; } catch (_e) { /* frozen */ }
+  check("a shipped guard's profile cannot be edited from outside it",
+        b.guardSql.PROFILES.strict[firstKey] === firstValue,
+        firstKey + " = " + JSON.stringify(b.guardSql.PROFILES.strict[firstKey]));
+
+  // Every namespace, not the two that were checked by hand: 62 profiles were
+  // writable, across guards that build their exports three different ways.
+  var mutable = [];
+  function _probe(ns, name) {
+    if (!ns || typeof ns !== "object" || !ns.PROFILES ||
+        typeof ns.PROFILES !== "object") return;
+    Object.keys(ns.PROFILES).forEach(function (p) {
+      var profile = ns.PROFILES[p];
+      if (profile && typeof profile === "object" && !Object.isFrozen(profile)) {
+        mutable.push(name + "." + p);
+      }
+    });
+  }
+  Object.keys(b).forEach(function (k) {
+    var ns;
+    try { ns = b[k]; } catch (_e) { return; }
+    _probe(ns, "b." + k);
+    if (!ns || typeof ns !== "object") return;
+    Object.keys(ns).forEach(function (k2) {
+      try { _probe(ns[k2], "b." + k + "." + k2); } catch (_e) { /* skip throwing getter */ }
+    });
+  });
+  check("no namespace exports a writable profile" +
+        (mutable.length ? " (" + mutable.slice(0, 6).join(", ") + ")" : ""),
+        mutable.length === 0);
+}
+
+function testAnUnknownPostureIsRefusedByName() {
+  var PROFILES = { strict: { cap: 1 }, permissive: { cap: 9 } };
+  var POSTURES = { hipaa: "strict", "pci-dss": "strict" };
+  var resolve = GC.makeProfileResolver({
+    profiles: PROFILES, postures: POSTURES, defaults: "strict",
+    errorClass: GCE, codePrefix: "gate-contract", byObject: true,
+  });
+
+  check("a known posture still selects its profile",
+        resolve({ posture: "hipaa" }).cap === 1);
+  check("no posture still takes the profile",
+        resolve({ profile: "permissive" }).cap === 9);
+  check("neither takes the default",
+        resolve({}).cap === 1);
+
+  var threw = null;
+  try { resolve({ profile: "permissive", posture: "hippa" }); } catch (e) { threw = e; }
+  check("an unknown posture is refused rather than dropped",
+        threw !== null && /bad-posture/.test((threw && threw.code) || ""),
+        threw && (threw.code + " " + threw.message));
+
+  var threwCase = null;
+  try { resolve({ posture: "HIPAA" }); } catch (e) { threwCase = e; }
+  check("a posture in the wrong case is refused too, not silently dropped",
+        threwCase !== null && /bad-posture/.test((threwCase && threwCase.code) || ""),
+        threwCase && threwCase.code);
+
+  var threwType = null;
+  try { resolve({ posture: 7 }); } catch (e) { threwType = e; }
+  check("a non-string posture is refused", threwType !== null);
+
+  check("an absent posture is not a value, so it is not refused",
+        resolve({ posture: null }).cap === 1 && resolve({ posture: undefined }).cap === 1);
+
+  // resolveProfileName answers the same question for the factories that
+  // check membership themselves, so it refuses on the same footing.
+  check("resolveProfileName maps a known posture",
+        GC.resolveProfileName({ posture: "hipaa" }, POSTURES, "permissive") === "strict");
+  var threwName = null;
+  try { GC.resolveProfileName({ posture: "hippa" }, POSTURES, "permissive"); }
+  catch (e) { threwName = e; }
+  check("resolveProfileName refuses an unknown posture",
+        threwName !== null && /bad-posture/.test((threwName && threwName.code) || ""),
+        threwName && threwName.code);
 }
 
 function testMakeIssueReporter() {

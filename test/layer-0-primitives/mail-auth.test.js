@@ -2758,6 +2758,114 @@ async function testDmarcAlignmentUsesPsl() {
         rvSpoof.alignment.spf === false && rvSpoof.alignment.dkim === false);
 }
 
+function testADmarcDateRangeIsReadWhateverSpellingItArrivesIn() {
+  // A pre-parsed report is served as its JSON form, so a `Date` an operator
+  // built the report with arrives as an ISO timestamp. Reading that with a
+  // plain integer parse took its leading four digits, and an hour-long
+  // window was recorded as a moment in 1970.
+  function made(begin, end) {
+    return {
+      feedback: {
+        report_metadata: { org_name: "x", report_id: "1",
+                           date_range: { begin: begin, end: end } },
+        policy_published: { domain: "example.com", p: "reject" },
+        record: [{ row: { source_ip: "192.0.2.1", count: 3,
+                          policy_evaluated: { disposition: "none" } },
+                   identifiers: { header_from: "example.com" }, auth_results: {} }],
+      },
+    };
+  }
+  var fromSeconds = b.mail.dmarc.parseAggregateReport(made(1700000000, 1700003600));                 // allow:raw-time-literal — test-only epoch seconds
+  check("epoch seconds are read as they always were",
+        fromSeconds.reportMetadata.dateRange.begin === 1700000000 &&                                 // allow:raw-time-literal — test-only epoch seconds
+        fromSeconds.reportMetadata.dateRange.end === 1700003600,                                     // allow:raw-time-literal — test-only epoch seconds
+        JSON.stringify(fromSeconds.reportMetadata.dateRange));
+  var fromText = b.mail.dmarc.parseAggregateReport(made("1700000000", "1700003600"));
+  check("and so is the numeric string the wire form carries",
+        fromText.reportMetadata.dateRange.begin === 1700000000,                                      // allow:raw-time-literal — test-only epoch seconds
+        JSON.stringify(fromText.reportMetadata.dateRange));
+  var fromDates = b.mail.dmarc.parseAggregateReport(
+    made(new Date(1700000000000), new Date(1700003600000)));                                         // allow:raw-time-literal — test-only epoch milliseconds
+  check("a Date survives the JSON form the report is served as",
+        fromDates.reportMetadata.dateRange.begin === 1700000000 &&                                   // allow:raw-time-literal — test-only epoch seconds
+        fromDates.reportMetadata.dateRange.end === 1700003600,                                       // allow:raw-time-literal — test-only epoch seconds
+        JSON.stringify(fromDates.reportMetadata.dateRange));
+  var fromNonsense = b.mail.dmarc.parseAggregateReport(made("not a time", {}));
+  check("and a value that is no time at all is null, not a fragment of one",
+        fromNonsense.reportMetadata.dateRange.begin === null &&
+        fromNonsense.reportMetadata.dateRange.end === null,
+        JSON.stringify(fromNonsense.reportMetadata.dateRange));
+  // A leading sign is part of the lexical form of an XML integer, so
+  // `+1700000000` names the same second as `1700000000`, and `-100` names a
+  // second before the epoch rather than the year 100 BC.
+  var signed = b.mail.dmarc.parseAggregateReport(made("+1700000000", "-100"));
+  check("a signed epoch is read as the second it names",
+        signed.reportMetadata.dateRange.begin === 1700000000 &&                                      // allow:raw-time-literal — test-only epoch seconds
+        signed.reportMetadata.dateRange.end === -100,                                                // allow:raw-time-literal — test-only epoch seconds
+        JSON.stringify(signed.reportMetadata.dateRange));
+  var signedXml = b.mail.dmarc.parseAggregateReport(
+    "<feedback><report_metadata><org_name>x</org_name><report_id>1</report_id>" +
+    "<date_range><begin>+1700000000</begin><end>+1700003600</end></date_range>" +
+    "</report_metadata><policy_published><domain>example.com</domain><p>reject</p>" +
+    "</policy_published><record><row><source_ip>192.0.2.1</source_ip><count>3</count>" +
+    "<policy_evaluated><disposition>none</disposition></policy_evaluated></row>" +
+    "<identifiers><header_from>example.com</header_from></identifiers>" +
+    "<auth_results></auth_results></record></feedback>");
+  check("and the XML form reads it the same way",
+        signedXml.reportMetadata.dateRange.begin === 1700000000 &&                                   // allow:raw-time-literal — test-only epoch seconds
+        signedXml.reportMetadata.dateRange.end === 1700003600,                                       // allow:raw-time-literal — test-only epoch seconds
+        JSON.stringify(signedXml.reportMetadata.dateRange));
+
+  // A timestamp with no zone is read in the HOST's local time by
+  // ECMAScript, so two collectors in different regions would record
+  // different windows for the same report file. There is no right answer to
+  // pick, so it is not a time this reader claims to know.
+  // ECMAScript defines only the ISO 8601 profile; every other spelling is
+  // implementation-defined and V8 reads it in the host's zone. Looking for a
+  // zone is not enough, because a spelling that joins the date and the time
+  // with anything but `T` carries no zone to find and is still host-local.
+  [
+    "2023-11-14T22:13:20",        // ISO, no zone
+    "2023-11-14 22:13:20",        // space separator
+    "2023/11/14 22:13:20",        // slashes
+    "Nov 14 2023 22:13:20",       // month name
+    "14 November 2023 22:13:20",
+  ].forEach(function (spelling) {
+    var zoneless = b.mail.dmarc.parseAggregateReport(made(spelling, spelling));
+    check("a timestamp the host would read locally is null: " + spelling,
+          zoneless.reportMetadata.dateRange.begin === null &&
+          zoneless.reportMetadata.dateRange.end === null,
+          JSON.stringify(zoneless.reportMetadata.dateRange));
+  });
+  // A date with no time at all is UTC by the same specification, so it is
+  // the one zone-less spelling that reads the same everywhere.
+  var dateOnly = b.mail.dmarc.parseAggregateReport(made("2023-11-14", "2023-11-15"));
+  check("a date-only value is read as UTC, which is what the spec says it is",
+        dateOnly.reportMetadata.dateRange.begin === Date.UTC(2023, 10, 14) / 1000 &&           // allow:raw-time-literal — milliseconds to seconds
+        dateOnly.reportMetadata.dateRange.end === Date.UTC(2023, 10, 15) / 1000,               // allow:raw-time-literal — milliseconds to seconds
+        JSON.stringify(dateOnly.reportMetadata.dateRange));
+  [["Z", "2023-11-14T22:13:20Z"], ["+00:00", "2023-11-14T22:13:20+00:00"],
+   ["-05:00", "2023-11-14T17:13:20-05:00"]].forEach(function (c) {
+    var zoned = b.mail.dmarc.parseAggregateReport(made(c[1], c[1]));
+    check("and one carrying " + c[0] + " is the second it names",
+          zoned.reportMetadata.dateRange.begin === 1700000000,                                       // allow:raw-time-literal — test-only epoch seconds
+          JSON.stringify({ given: c[1], got: zoned.reportMetadata.dateRange.begin }));
+  });
+  // A `Date` an operator built the report with serializes with a Z, which is
+  // the whole reason this reader accepts a timestamp at all.
+  var fromDateAgain = b.mail.dmarc.parseAggregateReport(
+    made(new Date(1700000000000), new Date(1700003600000)));                                         // allow:raw-time-literal — test-only epoch milliseconds
+  check("a Date still round-trips, since its JSON form carries the zone",
+        fromDateAgain.reportMetadata.dateRange.begin === 1700000000,                                 // allow:raw-time-literal — test-only epoch seconds
+        JSON.stringify(fromDateAgain.reportMetadata.dateRange));
+  // A fractional epoch is a second, floored, not a non-digit to give up on.
+  var fractional = b.mail.dmarc.parseAggregateReport(made("1700000000.75", "-100.5"));
+  check("a fractional epoch string is floored toward its second",
+        fractional.reportMetadata.dateRange.begin === 1700000000 &&                                  // allow:raw-time-literal — test-only epoch seconds
+        fractional.reportMetadata.dateRange.end === -100,                                            // allow:raw-time-literal — test-only epoch seconds
+        JSON.stringify(fractional.reportMetadata.dateRange));
+}
+
 function testDmarcRuaGunzipBombDistinguished() {
   // MAIL-39 — bomb error code must be distinct from generic gunzip
   // failure so audit / alert rules can react. Use zlib to craft a
@@ -2843,6 +2951,33 @@ function testDmarcRuaExpansionRatioBounded() {
   check("a stream expanding past the ratio cap is refused as a bomb",
         bombErr && /dmarc-rua-gunzip-bomb/.test(bombErr.code || ""),
         JSON.stringify({ code: bombErr && bombErr.code }));
+
+  // The 8 MiB cap is a statement about the report, not about the encoding it
+  // arrived in: a caller that hands over an already-decoded object reaches the
+  // same shaping code and has to meet the same bound.
+  var oversizeErr = null;
+  try {
+    b.mail.dmarc.parseAggregateReport({
+      feedback: {
+        report_metadata: { org_name: "x".repeat(9 * 1024 * 1024) },
+        policy_published: { domain: "example.com" },
+        record: [],
+      },
+    });
+  } catch (e) { oversizeErr = e; }
+  check("a pre-parsed report over the byte cap is refused",
+        oversizeErr && oversizeErr.code === "mail-auth/dmarc-rua-too-large",
+        JSON.stringify({ code: oversizeErr && oversizeErr.code }));
+
+  var okParsed = b.mail.dmarc.parseAggregateReport({
+    feedback: {
+      report_metadata: { org_name: "acme", report_id: "r1" },
+      policy_published: { domain: "example.com" },
+      record: [],
+    },
+  });
+  check("a pre-parsed report under the byte cap still shapes",
+        okParsed.reportMetadata.orgName === "acme");
 }
 
 // RFC 7489 §7.2.1.1 names ZIP alongside gzip. A ZIP holds entries rather than
@@ -3772,13 +3907,27 @@ function testAuthResultsEmitFormatting() {
   check("authResults.emit: empty results → '; none'",
         E({ authservId: "mx.a", results: [] }) === "Authentication-Results: mx.a; none");
   // ptype.property=value triples for the recognized shorthand keys.
+  // `smtp.mailfrom` is the envelope ADDRESS (RFC 8601 section 2.7.1);
+  // `header.from` is the From DOMAIN (IANA Email Authentication Methods
+  // registry; RFC 7489 section 3.1 aligns on the domain). This row used to
+  // pass an address for both, which is what the emitted header carried until
+  // a consumer's parseDomain refused it and its reports went uncounted.
   var props = E({ authservId: "mx.a", results: [
     { method: "spf",   result: "pass", smtpMailfrom: "u@s.example" },
-    { method: "dmarc", result: "pass", from: "u@s.example" },
+    { method: "dmarc", result: "pass", from: "s.example" },
   ] });
   check("authResults.emit: property keys mapped to RFC 8601 §2.3 ptype.property",
         /spf=pass smtp\.mailfrom=u@s\.example/.test(props) &&
-        /dmarc=pass header\.from=u@s\.example/.test(props));
+        /dmarc=pass header\.from=s\.example/.test(props));
+  var addressUnderDomain = null;
+  try {
+    E({ authservId: "mx.a",
+        results: [{ method: "dmarc", result: "pass", from: "u@s.example" }] });
+  } catch (e) { addressUnderDomain = e; }
+  check("authResults.emit: an address under header.from is refused",
+        addressUnderDomain !== null &&
+        addressUnderDomain.code === "mail-auth/ar-address-in-domain-property",
+        addressUnderDomain && addressUnderDomain.code);
   // A reason string with an embedded DQUOTE is backslash-escaped (§2.2).
   var reason = E({ authservId: "mx.a", results: [{ method: "dkim", result: "fail", reason: 'key "rotated"' }] });
   check("authResults.emit: reason DQUOTE escaped as \\\" (RFC 8601 §2.2)",
@@ -5219,6 +5368,7 @@ async function run() {
   await testDmarcPctSamplingDeterministic();
   await testDmarcAlignmentUsesPsl();
   testDmarcRuaGunzipBombDistinguished();
+  testADmarcDateRangeIsReadWhateverSpellingItArrivesIn();
   testDmarcRuaExpansionRatioBounded();
   testDmarcRuaZipIsNamed();
   testDmarcRuaBuildRoundTrip();

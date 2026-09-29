@@ -1,0 +1,21 @@
+# Default ruleset, minus the vendored bundles.
+#
+# The lib/ scan in ci.yml runs the rules a consumer gets with no
+# configuration, so that the framework's own documentation does not force
+# every such consumer into a blanket allowlist. That question is about text
+# this project writes. `lib/vendor/` holds third-party bundles reproduced
+# byte-for-byte by scripts/vendor-update.sh and hashed in MANIFEST.json, so
+# their contents are not this project's to phrase differently: @blamejs/pki
+# carries a PEM label table whose `"PRIVATE KEY": "pkcs8"` entry the
+# generic-api-key rule reads as a secret named KEY.
+#
+# The path a finding reports is the one the scan prints, `lib/vendor/...`,
+# rather than one relative to the `--source` root.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Vendored third-party bundles, reproduced from upstream"
+paths = [
+  '''(^|/)lib/vendor/''',
+]

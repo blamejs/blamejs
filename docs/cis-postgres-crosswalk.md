@@ -68,7 +68,7 @@ and **citation** (the CIS section number).
 
 | CIS § | Control | Framework posture | Operator action |
 | ----- | ------- | ----------------- | --------------- |
-| 7.1 | Ensure a replication-only user is created | `b.cluster.create({ externalDbBackend })` uses operator-supplied pool — framework doesn't create roles itself | Create `replication_user` role; framework's cluster module reads under that role. |
+| 7.1 | Ensure a replication-only user is created | `b.cluster.init({ externalDbBackend })` uses operator-supplied pool — framework doesn't create roles itself | Create `replication_user` role; framework's cluster module reads under that role. |
 | 7.2 | Ensure logical replication is configured | `b.outbox.create({ envelope: "debezium" })` provides change-event emission compatible with logical-replication consumers | Enable `wal_level = logical`. |
 | 7.3 | Ensure base backups are configured and functional | `b.backup.scheduleTest({ cron, restoreTo, verify, posture })` runs periodic restore-and-verify drills (HIPAA §164.308(a)(7)(ii)(D)) | Wire `pg_basebackup` for the Postgres-layer side. |
 | 7.4 | Ensure WAL archiving is configured and functional | n/a | `archive_mode = on`, `archive_command = '...'`. |

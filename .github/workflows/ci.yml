@@ -310,10 +310,14 @@ jobs:
         # their claims rather than pasting a literal, and write key placeholders
         # without the PEM framing.
         #
-        # Scoped to lib/ because that is what ships. No --config, deliberately:
-        # pointing this at .gitleaks.toml would answer the wrong question.
+        # Scoped to lib/ because that is what ships. The config carries the
+        # default rules and one path exclusion for lib/vendor/, whose bundles
+        # are reproduced byte-for-byte from upstream and so are not this
+        # project's to phrase differently. Pointing this at .gitleaks.toml
+        # instead would answer the wrong question.
         run: |
-          gitleaks detect --source=lib --no-git --redact --verbose --exit-code=1
+          gitleaks detect --source=lib --no-git --config=.gitleaks.lib-default.toml \
+            --redact --verbose --exit-code=1
 
   osv-scan:
     name: OSV-Scanner (vendored-dep known CVEs)

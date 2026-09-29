@@ -43,7 +43,7 @@ produces.
 | Control intent | NIST 800-53 | Framework posture |
 | -------------- | ----------- | ----------------- |
 | Per-tenant data isolation | AC-3 | `b.tenantQuota.create` / `b.tenantQuota.budget` / `b.tenantQuota.instrumentQuery` provide storage caps + query budget + crossover detection. SOC 2 CC6.1 + ISO 27001:2022 A.8.3 (isolation) and A.8.6 (caps). |
-| Role-context for every query | AC-6 | `b.dbRoleContext` binds an actor → audit emission row pair on every query the framework executes. |
+| Role-context for every query | AC-6 | `b.externalDb.runAs` binds an actor → audit emission row pair on every query the framework executes. |
 | WORM (write-once-read-many) for regulatory tables | AU-9 | `b.db.declareWorm({ table })` installs SQLite trigger refusing UPDATE/DELETE; required under postures `sec-17a-4`, `finra-4511`, `fda-21cfr11`. Enforcement is software, inside the database — **not** AU-9(1), which requires hardware-enforced write-once media. Deployments claiming that enhancement pair this with WORM storage underneath. |
 | Dual-control on sensitive operations | AC-3(7) | `b.dualControl.consume` gates `b.db.eraseHard` on declared tables. |
 | Step-up auth on PHI/PCI columns | IA-2(6) | `b.breakGlass` wraps column-policy / row-enforcement step-up auth (PHI / PCI columns require fresh second-factor grant + reason). |
@@ -89,4 +89,4 @@ produces.
 | TLS 1.3 minimum | SC-8 | `tls.DEFAULT_MIN_VERSION = "TLSv1.3"` set at index.js entry; sticky for the entire process. |
 | OCSP stapling | SC-12 | `b.network.tls.ocsp` for outbound; required under HIPAA/PCI-DSS/DORA postures. |
 | Certificate Transparency SCT verification | SC-12 | `b.network.tls.ct` for outbound. |
-| DoH for DNS | SC-20 | `b.network.dns.doh` is the framework default for outbound DNS. |
+| DoH for DNS | SC-20 | `b.network.dns.useDnsOverHttps()` selects the DNS-over-HTTPS resolver the framework uses for outbound DNS by default. |

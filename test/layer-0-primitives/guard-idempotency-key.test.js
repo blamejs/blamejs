@@ -93,13 +93,17 @@ function testProtoKeyProfileRejected() {
     function () { b.guardIdempotencyKey.validate("k", { profile: "__proto__" }); },
     "idempotency-key/bad-profile");
   // A prototype-member name as the posture must not resolve to an inherited
-  // member either. The resolver's own-property guard skips the unknown posture
-  // and falls back to the default profile, validating cleanly — a bare
-  // `postures[name]` read would return a Function and blow up on `.maxBytes`.
+  // member either. A bare `postures[name]` read would return a Function and
+  // blow up on `.maxBytes`. The resolver's own-property guard refuses it by
+  // name, as it now refuses any posture the table does not hold: an unknown
+  // posture used to fall through to the default profile, so an operator who
+  // misspelled one ran a profile they had not asked for, with no signal.
   var postureThrew = null;
   try { b.guardIdempotencyKey.validate("k", { posture: "constructor" }); }
   catch (e) { postureThrew = e; }
-  check("prototype-key posture does not fail-open", postureThrew === null);
+  check("prototype-key posture is refused rather than resolved or dropped",
+    postureThrew !== null && /bad-posture$/.test(postureThrew.code || ""),
+    postureThrew && postureThrew.code);
   // A valid profile still resolves and validates.
   var validThrew = null;
   try { b.guardIdempotencyKey.validate("k", { profile: "strict" }); }

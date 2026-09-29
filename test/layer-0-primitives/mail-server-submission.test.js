@@ -1223,6 +1223,18 @@ async function testSubaddressFoldingWhenConfigured(tls) {
     // set is accepted.
     check("subaddress: a mixed-case subaddress of the same mailbox is accepted",
       /^250 /.test(await _send(sock, "MAIL FROM:<OK+Newsletter@Example.COM>")));
+    check("subaddress: RSET before the quoted check → 250",
+      /^250 /.test(await _send(sock, "RSET")));
+    // RFC 5321 4.1.2 lets a local part be written as a quoted string, and a
+    // quoted string whose content is a dot-atom names the mailbox the bare
+    // spelling names. Comparing the two texts refused an account sending
+    // under its own address because its MUA quoted it.
+    check("a quoted spelling of a mailbox in the set is accepted",
+      /^250 /.test(await _send(sock, 'MAIL FROM:<"ok"@example.com>')));
+    check("subaddress: RSET after the quoted check → 250",
+      /^250 /.test(await _send(sock, "RSET")));
+    check("a quoted spelling of someone else's mailbox is still refused",
+      /^553 /.test(await _send(sock, 'MAIL FROM:<"oktober"@example.com>')));
   } finally { sock.destroy(); await s.srv.close({ timeoutMs: b.constants.TIME.seconds(2) }); }
 }
 

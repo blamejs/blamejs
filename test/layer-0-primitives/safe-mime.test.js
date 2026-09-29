@@ -666,9 +666,11 @@ function testExtractTextExtraBranches() {
   var h = b.safeMime.extractText(mixedHtml, { prefer: "html" });
   check("extractText: non-alt prefer html", h && h.contentType === "text/html");
 
-  // multipart/alternative whose FIRST child is itself a multipart (no
-  // leaf): the reverse last-wins loop visits the non-leaf child and skips
-  // it before matching the text/plain sibling.
+  // An alternative whose LAST child is itself a multipart. RFC 2046 5.1.4
+  // orders alternatives from simplest to richest, so that child is the
+  // preferred representation and the text inside it is the body. The reader
+  // used to skip any non-leaf child, answering with the simpler sibling the
+  // sender meant to supersede.
   var altNested = b.safeMime.parse([
     "Content-Type: multipart/alternative; boundary=A", "",
     "--A", "Content-Type: text/plain", "", "outer",
@@ -677,7 +679,22 @@ function testExtractTextExtraBranches() {
     "--A--",
   ].join("\r\n"));
   var nested = b.safeMime.extractText(altNested, { prefer: "plain" });
-  check("extractText: skips non-leaf alt child", nested && nested.body.trim() === "outer");
+  check("extractText: reads into the preferred alternative",
+        nested && nested.body.trim() === "inner",
+        JSON.stringify(nested && nested.body));
+
+  // And with the multipart first, the plain sibling after it supersedes it.
+  var altNestedFirst = b.safeMime.parse([
+    "Content-Type: multipart/alternative; boundary=A", "",
+    "--A", "Content-Type: multipart/mixed; boundary=N", "",
+    "--N", "Content-Type: text/plain", "", "inner", "--N--",
+    "--A", "Content-Type: text/plain", "", "outer",
+    "--A--",
+  ].join("\r\n"));
+  var nestedFirst = b.safeMime.extractText(altNestedFirst, { prefer: "plain" });
+  check("extractText: a later sibling supersedes an earlier multipart",
+        nestedFirst && nestedFirst.body.trim() === "outer",
+        JSON.stringify(nestedFirst && nestedFirst.body));
 }
 
 function testExtractAttachmentsInline() {
@@ -902,6 +919,10 @@ function testParsingWalksAgreeWithThePatternsTheyReplaced() {
     "attachment", "attachment; filename=a.txt", "attachment; filename=\"a b.txt\"",
     "attachment; FILENAME=a.txt", "attachment; filename*=UTF-8''a%20b.txt",
     "inline; filename=a.txt; size=1", "attachment; xfilename=a.txt",
+    // A parameter whose name merely ends in those letters is not the
+    // filename, and the sender chooses it: reading one as the filename let
+    // them name the file ahead of the real parameter.
+    "attachment; x-filename*=UTF-8''evil.exe; filename=\"real.pdf\"",
     "attachment; filename=", "attachment; filename",
     // A character whose case fold is not length-preserving, before the
     // parameter: an index found in a lower-cased copy names a different
@@ -911,25 +932,44 @@ function testParsingWalksAgreeWithThePatternsTheyReplaced() {
   ];
   var cdDiffs = [];
   DISPOSITIONS.forEach(function (cd) {
-    var m = /filename\*?=([^;]+)/i.exec(cd);
-    var ref = m ? m[1].trim() : null;
+    // The pattern this walk replaced matched `filename` anywhere, including
+    // as the tail of another parameter's name, so it is not the reference
+    // for whether a parameter IS the filename: a parameter starts at the
+    // head of the value or after a semicolon.
+    var m = /(?:^|;)[ \t]*filename(\*?)=([^;]+)/i.exec(cd);
+    var ref = m ? m[2].trim() : null;
     var got = api.filenameParamValue(cd);
-    if (ref !== got) {
+    if (ref !== (got && got.raw)) {
       cdDiffs.push(JSON.stringify(cd) + " want " + JSON.stringify(ref) +
-                   " got " + JSON.stringify(got));
+                   " got " + JSON.stringify(got && got.raw));
+    }
+    // Which of the two forms matched is part of the answer: the
+    // charset'language' prefix belongs to `filename*=` and a `filename=`
+    // value is literal, so a reader that cannot tell them apart renames a
+    // file whose name opens with two apostrophes.
+    if (ref !== null && (m[1] === "*") !== got.extended) {
+      cdDiffs.push(JSON.stringify(cd) + " form want " + JSON.stringify(m[1] === "*") +
+                   " got " + JSON.stringify(got.extended));
     }
   });
   check("the filename-parameter walk agrees with the pattern it replaced",
         cdDiffs.length === 0, cdDiffs.slice(0, 3).join(" | "));
 
+  // RFC 2231 §4 writes `extended-initial-value := [charset] "'" [language] "'"
+  // extended-other-values`, and BOTH bracketed parts are optional: `''x` is a
+  // prefix carrying neither, and a reader that required a charset left the
+  // two apostrophes in the filename. The reference pattern says the same
+  // thing as the grammar, so the walk is compared against `*` rather than `+`
+  // for the charset. RFC 8187 requires a charset for an HTTP field; this
+  // reader serves MIME parts, where §4 does not.
   var EXT_VALUES = ["UTF-8''a", "UTF-8'en'a", "utf_8''x", "''x", "UTF-8'a",
-                    "UTF-8", "a'b'c", "a b'c'", "-''x", "UTF-8''"];
+                    "UTF-8", "a'b'c", "a b'c'", "-''x", "UTF-8''", "'en'x", "'"];
   var extDiffs = [];
   EXT_VALUES.forEach(function (v) {
-    var ref = /^[A-Za-z0-9_-]+'[A-Za-z0-9_-]*'/.test(v);
+    var ref = /^[A-Za-z0-9_-]*'[A-Za-z0-9_-]*'/.test(v);
     if (ref !== api.hasRfc2231CharsetPrefix(v)) extDiffs.push(JSON.stringify(v));
   });
-  check("the RFC 2231 ext-value prefix walk agrees with the pattern it replaced",
+  check("the RFC 2231 ext-value prefix walk agrees with the grammar's optional parts",
         extDiffs.length === 0, extDiffs.join(" | "));
 }
 

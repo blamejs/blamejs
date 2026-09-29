@@ -138,6 +138,441 @@ async function testHappyLifecycle() {
         nodeFs.existsSync(nodePath.join(stagingDir, "u-happy")) === false);
 }
 
+async function testAnActorWithNoKnownIdFieldIsNotEveryOtherActor() {
+  // The owner of an upload is recorded as `actor.id || actor.userId`, falling
+  // back to the literal "_anonymous". This module does not choose what an
+  // actor looks like: a deployment issuing JWTs hands back `{ sub }`, and
+  // every such user collapsed onto that one literal. They then shared the
+  // per-actor upload quota and, worse, passed each other's ownership check,
+  // so one user could read, finalize or cancel another's upload.
+  var u = b.fileUpload.create({
+    stagingDir: _tmpDir("actor-identity"), contentSafety: null, filenameSafety: null,
+    onFinalize: async function () { return { ok: true }; },
+  });
+  await u.init({ uploadId: "u-alice", actor: { sub: "alice" },
+                 metadata: { filename: "a.txt" } });
+
+  // The method is cancelUpload; calling a name the object does not export
+  // throws a TypeError, which would satisfy "it threw" without the gate ever
+  // running, so the assertion is on the code the gate raises.
+  var stole = null;
+  try { await u.cancelUpload("u-alice", { actor: { sub: "mallory" } }); }
+  catch (e) { stole = e; }
+  check("another subject cannot cancel this one's upload",
+        stole !== null && stole.code === "file-upload/ownership-violation",
+        stole && (stole.code + ": " + stole.message));
+
+  var peeked = null;
+  try { peeked = u.status("u-alice", { actor: { sub: "mallory" } }); }
+  catch (e) { peeked = e; }
+  check("nor read its status",
+        peeked instanceof Error && peeked.code === "file-upload/ownership-violation",
+        peeked && (peeked.code + ": " + peeked.message));
+
+  // An actor carrying no name this module reads is refused rather than
+  // folded onto a shared literal that every other such actor also owns.
+  var unnamed = null;
+  try { await u.init({ uploadId: "u-unnamed", actor: { role: "admin" },
+                       metadata: { filename: "a.txt" } }); }
+  catch (e) { unnamed = e; }
+  check("an actor with no readable name is refused by name",
+        unnamed !== null && unnamed.code === "file-upload/unidentified-actor",
+        unnamed && (unnamed.code + ": " + unnamed.message));
+
+  // And a list() call cannot fall out of its own scoping filter: the leak
+  // the sweep measured was a sub-only caller enumerating uploads owned by
+  // principals that do carry an id.
+  await u.init({ uploadId: "u-carol", actor: { id: "carol" },
+                 metadata: { filename: "c.txt" } });
+  var seen = u.list({ actor: { sub: "alice" } });
+  check("a caller lists only its own uploads",
+        seen.length === 1 && seen[0].uploadId === "u-alice",
+        JSON.stringify(seen.map(function (x) { return x.uploadId; })));
+
+  // The same scoping applies with no actor at all, which is a principal in
+  // its own right: the anonymous one. Leaving the filter off for that caller
+  // listed every upload in the staging directory while the ownership check
+  // on the very same caller refused each of them.
+  var asNobody = u.list({});
+  check("an actor-less caller is scoped like any other",
+        asNobody.every(function (x) { return x.uploadId !== "u-alice"; }),
+        JSON.stringify(asNobody.map(function (x) { return x.uploadId; })));
+  check("and operator tooling still opts out explicitly",
+        u.list({ scopeToActor: false }).some(function (x) { return x.uploadId === "u-alice"; }),
+        JSON.stringify(u.list({ scopeToActor: false }).map(function (x) { return x.uploadId; })));
+
+  // Opting out of the scoping means the key is never used, so deriving one
+  // is not a precondition: refusing an actor the module cannot name on a
+  // path that never asks who they are is a refusal for nothing.
+  var adminView = null;
+  try { adminView = u.list({ actor: { role: "admin" }, scopeToActor: false }); }
+  catch (e) { adminView = e; }
+  check("an unnameable actor can still list without scoping",
+        Array.isArray(adminView) && adminView.length > 0,
+        adminView instanceof Error ? adminView.code : JSON.stringify(adminView));
+
+  var mine = u.status("u-alice", { actor: { sub: "alice" } });
+  check("while the owner still reaches their own upload",
+        mine && mine.uploadId === "u-alice", JSON.stringify(mine));
+
+  // A deployment with no authentication has one anonymous principal, which
+  // is coherent, and still works.
+  var anon = b.fileUpload.create({
+    stagingDir: _tmpDir("actor-anon"), contentSafety: null, filenameSafety: null,
+    onFinalize: async function () { return { ok: true }; },
+  });
+  await anon.init({ uploadId: "u-anon", metadata: { filename: "a.txt" } });
+  var anonStatus = anon.status("u-anon");
+  check("an unauthenticated deployment still owns its own uploads",
+        anonStatus && anonStatus.uploadId === "u-anon", JSON.stringify(anonStatus));
+}
+
+async function testAnUploadStagedBeforeTheKeyChangeIsStillItsOwners() {
+  // Ownership keys carry the field they came from now, so a record written
+  // by an earlier version holds the bare value. An upload is resumable
+  // across a restart, so an upgrade must not strand one: its owner would get
+  // ownership-violation from status, chunk, finalize and cancel alike, and
+  // the upload would sit in staging until its TTL.
+  var stagingDir = _tmpDir("legacy-owner");
+  var u = b.fileUpload.create({
+    stagingDir: stagingDir, contentSafety: null, filenameSafety: null,
+    onFinalize: async function () { return { ok: true }; },
+  });
+  await u.init({ uploadId: "u-legacy", actor: { id: "ada" },
+                 metadata: { filename: "a.txt" } });
+
+  // Rewrite the record the way the previous version wrote it.
+  var metaPath = nodePath.join(stagingDir, "u-legacy", "_meta.json");
+  var meta = JSON.parse(nodeFs.readFileSync(metaPath, "utf8"));
+  meta.actorId = "ada";
+  delete meta.ownerKeyVersion;
+  nodeFs.writeFileSync(metaPath, JSON.stringify(meta));
+
+  var status = u.status("u-legacy", { actor: { id: "ada" } });
+  check("the owner still reaches an upload staged by the previous version",
+        status && status.uploadId === "u-legacy", JSON.stringify(status));
+  check("and it is still listed for them",
+        u.list({ actor: { id: "ada" } }).some(function (x) { return x.uploadId === "u-legacy"; }),
+        JSON.stringify(u.list({ actor: { id: "ada" } }).map(function (x) { return x.uploadId; })));
+
+  var other = null;
+  try { other = u.status("u-legacy", { actor: { id: "eve" } }); }
+  catch (e) { other = e; }
+  check("while another principal still does not",
+        other instanceof Error && other.code === "file-upload/ownership-violation",
+        other && (other.code || JSON.stringify(other)));
+
+  // A record written in the new format is never compared against the old
+  // derivation, or an actor whose literal id happens to be another owner's
+  // encoded key would pass the fallback and reach their upload.
+  await u.init({ uploadId: "u-new", actor: { id: "ada" },
+                 metadata: { filename: "n.txt" } });
+  var newKey = JSON.parse(nodeFs.readFileSync(
+    nodePath.join(stagingDir, "u-new", "_meta.json"), "utf8")).actorId;
+  var forged = null;
+  try { forged = u.status("u-new", { actor: { id: newKey } }); }
+  catch (e) { forged = e; }
+  check("an actor whose id spells another owner's key cannot use the legacy path",
+        forged instanceof Error && forged.code === "file-upload/ownership-violation",
+        forged && (forged.code || JSON.stringify(forged)));
+
+  // An owner recorded as a number by the old derivation is still its owner.
+  await u.init({ uploadId: "u-num", actor: { id: 42 }, metadata: { filename: "n.txt" } });
+  var numPath = nodePath.join(stagingDir, "u-num", "_meta.json");
+  var numMeta = JSON.parse(nodeFs.readFileSync(numPath, "utf8"));
+  numMeta.actorId = 42;
+  delete numMeta.ownerKeyVersion;
+  nodeFs.writeFileSync(numPath, JSON.stringify(numMeta));
+  var numStatus = u.status("u-num", { actor: { id: 42 } });
+  check("a numeric owner from the previous version still owns its upload",
+        numStatus && numStatus.uploadId === "u-num", JSON.stringify(numStatus));
+
+  // The per-actor cap has to ask the same ownership question the ownership
+  // check asks. Counting only records in the new format let an actor hold a
+  // second full cap's worth across an upgrade, which is when staging is
+  // already carrying a cap's worth of in-flight work.
+  var cappedStaging = _tmpDir("legacy-quota");
+  var capped = b.fileUpload.create({
+    stagingDir: cappedStaging, contentSafety: null, filenameSafety: null,
+    maxActiveUploadsPerActor: 2,
+    onFinalize: async function () { return { ok: true }; },
+  });
+  var cappedDir = null;
+  for (var q = 0; q < 2; q += 1) {
+    await capped.init({ uploadId: "q" + q, actor: { id: "ada" },
+                        metadata: { filename: "q.txt" } });
+  }
+  // Downgrade both to the shape the previous version wrote.
+  ["q0", "q1"].forEach(function (id) {
+    var p = nodePath.join(cappedStaging, id, "_meta.json");
+    if (!nodeFs.existsSync(p)) return;
+    var m = JSON.parse(nodeFs.readFileSync(p, "utf8"));
+    m.actorId = "ada";
+    delete m.ownerKeyVersion;
+    nodeFs.writeFileSync(p, JSON.stringify(m));
+    cappedDir = p;
+  });
+  var overCap = null;
+  try {
+    await capped.init({ uploadId: "q2", actor: { id: "ada" },
+                        metadata: { filename: "q.txt" } });
+  } catch (e) { overCap = e; }
+  check("uploads staged by the previous version still count against the cap",
+        cappedDir !== null && overCap !== null &&
+        overCap.code === "file-upload/actor-quota-exceeded",
+        overCap ? overCap.code : "accepted a third upload over a cap of two");
+
+  // A legacy record is compared against the old derivation ONLY, and which
+  // comparison applies is decided by the record's own version rather than by
+  // trying both. The two formats share one field, so trying both lets any
+  // owner whose stored literal happens to spell a new key pass for it: an
+  // upload owned by the literal "anonymous" would be handed to an
+  // unauthenticated caller, whose key is also "anonymous".
+  await u.init({ uploadId: "u-named-anon", actor: { id: "x" },
+                 metadata: { filename: "x.txt" } });
+  var anonPath = nodePath.join(stagingDir, "u-named-anon", "_meta.json");
+  var anonMeta = JSON.parse(nodeFs.readFileSync(anonPath, "utf8"));
+  anonMeta.actorId = b.requestHelpers.ANONYMOUS_ACTOR_KEY;
+  delete anonMeta.ownerKeyVersion;
+  nodeFs.writeFileSync(anonPath, JSON.stringify(anonMeta));
+  var asNobody = null;
+  try { asNobody = u.status("u-named-anon"); }
+  catch (e) { asNobody = e; }
+  check("a legacy owner spelling a new key is not matched by that key",
+        asNobody instanceof Error, JSON.stringify(asNobody));
+
+  // The collapse itself is not resurrected: a legacy record owned by the old
+  // shared literal is not handed to an actor that merely cannot be named.
+  await u.init({ uploadId: "u-shared", actor: { id: "bob" },
+                 metadata: { filename: "b.txt" } });
+  var sharedPath = nodePath.join(stagingDir, "u-shared", "_meta.json");
+  var sharedMeta = JSON.parse(nodeFs.readFileSync(sharedPath, "utf8"));
+  sharedMeta.actorId = "_anonymous";
+  delete sharedMeta.ownerKeyVersion;
+  nodeFs.writeFileSync(sharedPath, JSON.stringify(sharedMeta));
+  var claimed = null;
+  try { claimed = u.status("u-shared", { actor: { sub: "mallory" } }); }
+  catch (e) { claimed = e; }
+  check("an unnamed actor cannot claim a record owned by the old shared literal",
+        claimed instanceof Error, JSON.stringify(claimed));
+
+  // The actor-less caller is the other half, and it is the half the shared
+  // literal was written for: a deployment with no authentication wrote every
+  // record under it, so refusing that caller too would strand its own
+  // uploads. A record the old build wrote for an actor it could not name is
+  // indistinguishable from one it wrote for no actor, and this reading keeps
+  // an unauthenticated deployment working while every NAMED principal above
+  // is refused.
+  var anonymous = u.status("u-shared", {});
+  check("the actor-less caller still owns a record under the shared literal",
+        anonymous !== null && anonymous.uploadId === "u-shared",
+        JSON.stringify(anonymous && anonymous.uploadId));
+  check("and list() scoped to no actor returns it",
+        u.list({}).some(function (x) { return x.uploadId === "u-shared"; }),
+        JSON.stringify(u.list({}).map(function (x) { return x.uploadId; })));
+
+  // That match is not a wildcard: the record's original owner is refused it
+  // like every other named principal.
+  var namedAgain = null;
+  try { namedAgain = u.status("u-shared", { actor: { id: "bob" } }); }
+  catch (e) { namedAgain = e; }
+  check("a named actor is still refused the same record",
+        namedAgain instanceof Error, JSON.stringify(namedAgain));
+}
+
+async function testAnOwnerKeyVersionThisBuildDoesNotKnowIsNotDowngraded() {
+  // Which comparison applies is decided by the record's own version, and a
+  // version this build does not recognize is not the absence of one: reading
+  // anything unrecognized as "legacy" means a record written by a LATER
+  // version is matched against the old raw-value rule, which is the weaker
+  // of the two and the one an actor's literal id can spell.
+  var staging = _tmpDir("owner-version");
+  var u = b.fileUpload.create({
+    stagingDir: staging, contentSafety: null, filenameSafety: null,
+    onFinalize: async function () { return { ok: true }; },
+  });
+  await u.init({ uploadId: "v-future", actor: { id: "ada" },
+                 metadata: { filename: "a.txt" } });
+  var p = nodePath.join(staging, "v-future", "_meta.json");
+  var meta = JSON.parse(nodeFs.readFileSync(p, "utf8"));
+  meta.ownerKeyVersion = 99;
+  meta.actorId = "ada";
+  nodeFs.writeFileSync(p, JSON.stringify(meta));
+
+  var claimed = null;
+  try { claimed = u.status("v-future", { actor: { id: "ada" } }); }
+  catch (e) { claimed = e; }
+  check("a record whose version this build does not know is refused",
+        claimed instanceof Error,
+        claimed instanceof Error ? claimed.code : JSON.stringify(claimed));
+}
+
+async function testAThrowingActorKeyDoesNotEscapeTheUploadApi() {
+  // The hook is the operator's code, written against the shape their tokens
+  // carry, so it throws on one it did not anticipate. Calling it bare meant
+  // the throw reached the caller as a raw TypeError instead of a refusal,
+  // and it closed the cross-actor admin hatch, which never needed the key.
+  var u = b.fileUpload.create({
+    stagingDir: _tmpDir("hook-throws"), contentSafety: null, filenameSafety: null,
+    allowCrossActor: true,
+    actorKey:   function (actor) { return actor.principal.uuid; },
+    onFinalize: async function () { return { ok: true }; },
+  });
+  await u.init({ uploadId: "t-owned", actor: { principal: { uuid: "u-1" } },
+                 metadata: { filename: "a.txt" } });
+
+  var threw = null;
+  try { u.status("t-owned", { actor: { sub: "no-principal-field" } }); }
+  catch (e) { threw = e; }
+  check("a hook that throws does not reach the caller as a TypeError",
+        !(threw instanceof TypeError),
+        threw ? threw.constructor.name + ": " + (threw.code || threw.message) : "no error");
+
+  // And the admin hatch, which never consults the key, still opens.
+  var seen = null;
+  try { seen = u.status("t-owned", { actor: { role: "operator-tooling" } }); }
+  catch (e) { seen = e; }
+  check("while admin tooling still reaches the upload",
+        seen && seen.uploadId === "t-owned",
+        seen instanceof Error ? (seen.code || String(seen)) : JSON.stringify(seen));
+}
+
+async function testAdminToolingReachesAnUploadWhateverTheActorLooksLike() {
+  // allowCrossActor plus the fileUpload.admin scope is the escape hatch for
+  // operator tooling, and it exists precisely for callers the ownership rule
+  // would otherwise refuse. Deriving the caller's key before consulting it
+  // refused the actor first, so the hatch could not be reached by the one
+  // shape that needs it.
+  var u = b.fileUpload.create({
+    stagingDir: _tmpDir("admin-hatch"), contentSafety: null, filenameSafety: null,
+    allowCrossActor: true,
+    onFinalize: async function () { return { ok: true }; },
+  });
+  await u.init({ uploadId: "u-owned", actor: { id: "ada" },
+                 metadata: { filename: "a.txt" } });
+  var seen = null;
+  try { seen = u.status("u-owned", { actor: { role: "operator-tooling" } }); }
+  catch (e) { seen = e; }
+  check("admin tooling reaches the upload even unnamed",
+        seen && seen.uploadId === "u-owned",
+        seen instanceof Error ? (seen.code || String(seen)) : JSON.stringify(seen));
+
+  // Every call site the ownership check guards, not just the one: status,
+  // cancelUpload and finalize each go through it.
+  var cancelled = null;
+  try { cancelled = await u.cancelUpload("u-owned", { actor: { role: "operator-tooling" } }); }
+  catch (e) { cancelled = e; }
+  check("and can cancel it",
+        !(cancelled instanceof Error),
+        cancelled instanceof Error ? cancelled.code : JSON.stringify(cancelled));
+
+  // The same with a permissions instance backing the scope check, which is
+  // the other shape of the hatch.
+  var perms = { check: function (actor, scope) {
+    return !!(actor && Array.isArray(actor.scopes) && actor.scopes.indexOf(scope) !== -1);
+  } };
+  var guarded = b.fileUpload.create({
+    stagingDir: _tmpDir("admin-perms"), contentSafety: null, filenameSafety: null,
+    allowCrossActor: true, permissions: perms,
+    onFinalize: async function () { return { ok: true }; },
+  });
+  await guarded.init({ uploadId: "g-owned",
+                       actor: { id: "ada", scopes: ["fileUpload.init"] },
+                       metadata: { filename: "g.txt" } });
+  var scoped = null;
+  try {
+    scoped = guarded.status("g-owned",
+      { actor: { role: "tool", scopes: ["fileUpload.admin", "fileUpload.status"] } });
+  } catch (e) { scoped = e; }
+  check("an unnamed principal holding the admin scope reaches it too",
+        scoped && scoped.uploadId === "g-owned",
+        scoped instanceof Error ? scoped.code : JSON.stringify(scoped));
+
+  var unscoped = null;
+  try {
+    unscoped = guarded.status("g-owned", { actor: { role: "tool", scopes: ["fileUpload.status"] } });
+  } catch (e) { unscoped = e; }
+  check("while one without the scope is refused for lacking it",
+        unscoped instanceof Error && unscoped.code === "file-upload/permission-denied",
+        unscoped instanceof Error ? unscoped.code : JSON.stringify(unscoped));
+
+  // Without the hatch the same caller is still refused.
+  var closed = b.fileUpload.create({
+    stagingDir: _tmpDir("admin-closed"), contentSafety: null, filenameSafety: null,
+    onFinalize: async function () { return { ok: true }; },
+  });
+  await closed.init({ uploadId: "c-owned", actor: { id: "ada" },
+                      metadata: { filename: "a.txt" } });
+  var refused = null;
+  try { closed.status("c-owned", { actor: { role: "operator-tooling" } }); }
+  catch (e) { refused = e; }
+  check("while an ordinary deployment still refuses an actor it cannot name",
+        refused !== null && refused.code === "file-upload/unidentified-actor",
+        refused && refused.code);
+}
+
+async function testTheOperatorCanNameTheUploadActorField() {
+  // When the actor shape is the operator's own, they say how to read it
+  // rather than having their users merged.
+  var u = b.fileUpload.create({
+    stagingDir: _tmpDir("actor-hook"), contentSafety: null, filenameSafety: null,
+    actorKey:   function (actor) { return actor.principal.uuid; },
+    onFinalize: async function () { return { ok: true }; },
+  });
+  await u.init({ uploadId: "u-hook", actor: { principal: { uuid: "u-1" } },
+                 metadata: { filename: "a.txt" } });
+  var mine = u.status("u-hook", { actor: { principal: { uuid: "u-1" } } });
+  check("the operator's key identifies the owner",
+        mine && mine.uploadId === "u-hook", JSON.stringify(mine));
+  var theirs = null;
+  try { theirs = u.status("u-hook", { actor: { principal: { uuid: "u-2" } } }); }
+  catch (e) { theirs = e; }
+  check("and separates another principal", theirs instanceof Error, JSON.stringify(theirs));
+
+  var threw = null;
+  try {
+    b.fileUpload.create({
+      stagingDir: _tmpDir("actor-hook-bad"), contentSafety: null,
+      filenameSafety: null, actorKey: "not a function",
+    });
+  } catch (e) { threw = e; }
+  check("a non-function actorKey is refused at create",
+        threw !== null && threw.code === "file-upload/bad-opt",
+        threw && (threw.code + ": " + threw.message));
+
+  // Adopting the hook is the migration the unidentified-actor refusal tells
+  // an operator to perform, so it cannot be the thing that strands every
+  // upload already in staging. A record written before the upgrade holds the
+  // old untagged key, which the old derivation still reads whether or not a
+  // hook is now wired.
+  var hooked = _tmpDir("actor-hook-legacy");
+  var withHook = b.fileUpload.create({
+    stagingDir: hooked, contentSafety: null, filenameSafety: null,
+    maxActiveUploadsPerActor: 2,
+    actorKey:   function (actor) { return actor.id || actor.nameID; },
+    onFinalize: async function () { return { ok: true }; },
+  });
+  await withHook.init({ uploadId: "h-old", actor: { id: "ada" },
+                        metadata: { filename: "h.txt" } });
+  var hookedPath = nodePath.join(hooked, "h-old", "_meta.json");
+  var hookedMeta = JSON.parse(nodeFs.readFileSync(hookedPath, "utf8"));
+  hookedMeta.actorId = "ada";
+  delete hookedMeta.ownerKeyVersion;
+  nodeFs.writeFileSync(hookedPath, JSON.stringify(hookedMeta));
+
+  var reachable = null;
+  try { reachable = withHook.status("h-old", { actor: { id: "ada" } }); }
+  catch (e) { reachable = e; }
+  check("a pre-upgrade upload is still its owner's once a hook is wired",
+        reachable && reachable.uploadId === "h-old",
+        reachable instanceof Error ? reachable.code : JSON.stringify(reachable));
+  check("and it is still listed for them",
+        withHook.list({ actor: { id: "ada" } })
+          .some(function (x) { return x.uploadId === "h-old"; }),
+        JSON.stringify(withHook.list({ actor: { id: "ada" } })
+          .map(function (x) { return x.uploadId; })));
+}
+
 // Default onFinalize (operator supplies none) returns { ok, sha3, size }.
 async function testDefaultOnFinalize() {
   var u = b.fileUpload.create({
@@ -1131,6 +1566,12 @@ async function testInProgressAndDefaultArms() {
 async function run() {
   try {
     await testHappyLifecycle();
+    await testAnActorWithNoKnownIdFieldIsNotEveryOtherActor();
+    await testAnUploadStagedBeforeTheKeyChangeIsStillItsOwners();
+    await testAnOwnerKeyVersionThisBuildDoesNotKnowIsNotDowngraded();
+    await testAThrowingActorKeyDoesNotEscapeTheUploadApi();
+    await testAdminToolingReachesAnUploadWhateverTheActorLooksLike();
+    await testTheOperatorCanNameTheUploadActorField();
     await testDefaultOnFinalize();
     await testStatusListCancel();
     await testCreateOptValidation();

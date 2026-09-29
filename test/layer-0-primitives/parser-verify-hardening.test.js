@@ -109,6 +109,94 @@ function testJsonPathFilterDepthCap() {
     ((err.code || "").indexOf("json-path/") === 0));
 }
 
+function testEveryRecursiveParserBoundsItsNesting() {
+  // The jsonPath cap above closed one instance. The guarantee is the family: a
+  // parser reached from the public surface with text a sender wrote answers a
+  // deeply-nested input with its own typed refusal. safeSieve declared
+  // maxDepth and checked it in _parseBlock alone, so a script that nested only
+  // its tests validated clean, was stored by ManageSieve PUTSCRIPT, and threw
+  // a bare RangeError at delivery. Each row drives the shipped entry point.
+  var CASES = [
+    { name: "safeJson.parse", prefix: "json/",
+      run: function () { b.safeJson.parse("[".repeat(20000) + "]".repeat(20000)); } },
+    { name: "safeMime.parse", prefix: "safe-mime/",
+      run: function () {
+        var hdr = "";
+        for (var i = 0; i < 400; i += 1) {
+          hdr += 'Content-Type: multipart/mixed; boundary="b' + i + '"\r\n\r\n--b' + i + "\r\n";
+        }
+        b.safeMime.parse(Buffer.from("MIME-Version: 1.0\r\n" + hdr +
+                                     "Content-Type: text/plain\r\n\r\nhi\r\n", "utf8"));
+      } },
+    { name: "safeIcal.parse", prefix: "safe-ical/",
+      run: function () {
+        var s = "BEGIN:VCALENDAR\r\n";
+        for (var i = 0; i < 2000; i += 1) s += "BEGIN:VEVENT\r\n";
+        b.safeIcal.parse(s + "END:VCALENDAR\r\n");
+      } },
+    { name: "safeSieve.parse (blocks)", prefix: "safe-sieve/",
+      run: function () {
+        b.safeSieve.parse("if true {".repeat(200) + "keep;" + "}".repeat(200) + "\r\n");
+      } },
+    { name: "safeSieve.parse (tests)", prefix: "safe-sieve/",
+      run: function () {
+        b.safeSieve.parse("if " + "not ".repeat(3000) + "true { keep; }\r\n");
+      } },
+    { name: "xmlC14n.canonicalize", prefix: "xml-c14n/",
+      run: function () {
+        b.xmlC14n.canonicalize("<a>".repeat(20000) + "</a>".repeat(20000));
+      } },
+  ];
+
+  CASES.forEach(function (c) {
+    var err = null;
+    try { c.run(); } catch (e) { err = e; }
+    check(c.name + " refuses deep nesting with its own error, not a RangeError",
+          err !== null && err.name !== "RangeError" &&
+            String(err.code || "").indexOf(c.prefix) === 0,
+          err ? (err.name + " code=" + err.code) : "parsed without refusing");
+  });
+
+  // Two more carry the bound without an error code of their own; each still
+  // refuses rather than running off the stack.
+  var jsonDeep = {};
+  var cur = jsonDeep;
+  for (var d = 0; d < 20000; d += 1) { cur.a = {}; cur = cur.a; }
+
+  var cjErr = null;
+  try { b.canonicalJson.stringify(jsonDeep); } catch (e) { cjErr = e; }
+  check("canonicalJson.stringify refuses deep nesting, not a RangeError",
+        cjErr !== null && cjErr.name !== "RangeError",
+        cjErr ? (cjErr.name + ": " + String(cjErr.message).slice(0, 60)) : "serialized");
+
+  var node = b.safeSchema.lazy(function () {
+    return b.safeSchema.object({ a: b.safeSchema.optional(node) });
+  });
+  var schemaErr = null;
+  try { node.parse(jsonDeep); } catch (e) { schemaErr = e; }
+  check("safeSchema refuses a value nested deeper than it can walk",
+        schemaErr !== null && schemaErr.name !== "RangeError" &&
+          String(schemaErr.code || "").indexOf("safe-schema/") === 0,
+        schemaErr ? (schemaErr.name + " code=" + schemaErr.code) : "validated");
+
+  // The interpreter is a second reader of the same shape: run() takes an ast,
+  // so the parser's cap is not its cap.
+  function nested(levels) {
+    var t = { kind: "test", name: "true" };
+    for (var i = 0; i < levels; i += 1) t = { kind: "test", name: "not", subs: [t] };
+    return { kind: "script", requiredCaps: [], commands: [{
+      kind: "if", test: t, elif: [], elseBody: null,
+      thenBody: [{ kind: "action", name: "keep", args: { tags: [], positional: [] } }],
+    }] };
+  }
+  var runErr = null;
+  try { b.mail.sieve.run(nested(20000), {}); } catch (e) { runErr = e; }
+  check("mail.sieve.run refuses an over-nested AST it was handed",
+        runErr !== null && runErr.name !== "RangeError" &&
+          String(runErr.code || "").indexOf("mail-sieve/") === 0,
+        runErr ? (runErr.name + " code=" + runErr.code) : "ran");
+}
+
 function testBodyParserRawWildcardMatchesRealType() {
   // bodyParser.raw() defaults contentTypes to ["*/*"]; that wildcard must match
   // a real Content-Type (it never did → 415 on every request).
@@ -187,6 +275,7 @@ async function run() {
   await testMdocRequiresTrustAnchorByDefault();
   await testCoseAlgCurveBinding();
   testJsonPathFilterDepthCap();
+  testEveryRecursiveParserBoundsItsNesting();
   await testBodyParserRawWildcardMatchesRealType();
 }
 

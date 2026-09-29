@@ -74,6 +74,67 @@ async function runErrorBranches() {
         codeOf(function () { b.mcp.parseRequest('{"jsonrpc":"2.0","method":"x","id":1,"params":[1,2]}'); }) === null);
   check("parseRequest: already-parsed object passes through",
         b.mcp.parseRequest({ jsonrpc: "2.0", method: "x", id: 1 }).method === "x");
+  // The 1 MiB cap the doc block advertises has to hold on the parsed form
+  // too — that is the shape b.middleware.bodyParser hands the handler.
+  check("parseRequest: already-parsed object over the 1 MiB cap is refused",
+        codeOf(function () {
+          b.mcp.parseRequest({
+            jsonrpc: "2.0", method: "x", id: 1,
+            params: { pad: "p".repeat(2 * 1024 * 1024) },
+          });
+        }) === "mcp/bad-json");
+  // A pre-parsed body is served as its JSON form, and a form that is not an
+  // object is not an envelope. Handing the text on instead let a value whose
+  // `toJSON` returns a JSON string be parsed a second time and read as the
+  // request, which is the shape the copy exists to stop.
+  check("parseRequest: an already-parsed body whose JSON form is a string is refused",
+        codeOf(function () {
+          b.mcp.parseRequest({
+            toJSON: function () { return '{"jsonrpc":"2.0","method":"x","id":1}'; },
+          });
+        }) === "mcp/bad-json");
+  check("parseRequest: and one whose form is null is refused too",
+        codeOf(function () {
+          b.mcp.parseRequest({ toJSON: function () { return null; } });
+        }) === "mcp/bad-json");
+  // The two forms of one body are the same request: a body-parser hands the
+  // object, a raw transport hands the text. The per-object key cap is a
+  // property of safeJson, and leaving it unnamed on one side took the parse
+  // default of 10,000 there and a million on the other, so an envelope wide
+  // enough to sit between them was served or refused by how it arrived. The
+  // refusal it produced named the JSON as malformed, which it is not.
+  var wide = { jsonrpc: "2.0", method: "tools/call", id: 1, params: { name: "t", arguments: {} } };
+  for (var wk = 0; wk < 20000; wk += 1) wide.params.arguments["k" + wk] = 1;                          // allow:raw-byte-literal — test-only member count
+  var wideText = JSON.stringify(wide);
+  var fromObject = null, fromText = null;
+  try { fromObject = b.mcp.parseRequest(wide); } catch (e) { fromObject = e; }
+  try { fromText = b.mcp.parseRequest(wideText); } catch (e) { fromText = e; }
+  check("parseRequest: a wide envelope reads the same as an object and as text",
+        fromObject !== null && !(fromObject instanceof Error) &&
+        fromText !== null && !(fromText instanceof Error) &&
+        Object.keys(fromObject.params.arguments).length === 20000 &&                                  // allow:raw-byte-literal — test-only member count
+        Object.keys(fromText.params.arguments).length === 20000,                                      // allow:raw-byte-literal — test-only member count
+        JSON.stringify({ objectCode: fromObject && fromObject.code,
+                         textCode: fromText && fromText.code,
+                         bytes: wideText.length }));
+  // The member cap both forms carry sits above what the 1 MiB body cap can
+  // hold, so the byte cap is the only one a client can reach and neither
+  // form can refuse a body the other serves. The smallest a distinct member
+  // can be written is six bytes, `"a":0,`, so the widest object 1 MiB can
+  // carry is well under the number both sides name.
+  var widestUnderTheByteCap = Math.ceil(b.constants.BYTES.mib(1) / 6);
+  check("parseRequest: the member cap sits above what the byte cap can carry",
+        widestUnderTheByteCap < 250000,                                                              // allow:raw-byte-literal — the number both branches name
+        JSON.stringify({ widestUnderTheByteCap: widestUnderTheByteCap }));
+
+  // The control: the cap that DOES bound both forms is the byte cap, and it
+  // has to answer the same way whichever form arrives.
+  var hugeText = JSON.stringify({
+    jsonrpc: "2.0", method: "x", id: 1, params: { pad: "p".repeat(2 * 1024 * 1024) },                 // allow:raw-byte-literal — test-only padding
+  });
+  check("parseRequest: and both forms refuse the same over-cap body",
+        codeOf(function () { b.mcp.parseRequest(hugeText); }) === "mcp/bad-json" &&
+        codeOf(function () { b.mcp.parseRequest(JSON.parse(hugeText)); }) === "mcp/bad-json");
 
   // ------------------------------------------------------------------
   // refuse — HTTP status mapping + id defaulting
@@ -257,6 +318,27 @@ async function runErrorBranches() {
     b.mcp.serverGuard({ requireBearer: false }), guardReq("/", "{ not json"), parseFailRes);
   check("serverGuard: malformed body refused (parse-error)",
         parseFailState.next === false && parseFailRes._captured().body.indexOf("-32700") !== -1);
+
+  // JSON-RPC 2.0 keeps -32700 for a body that did not parse. A body that
+  // parsed and is not an acceptable envelope is -32600, and one whose params
+  // are wrong is -32602; all three had been answered as a parse error, which
+  // tells a client to look at its own encoding for a refusal about content.
+  var badEnvRes = b.testing.mockRes();
+  var badEnvState = await driveGuard(
+    b.mcp.serverGuard({ requireBearer: false }),
+    guardReq("/", '{"jsonrpc":"2.0","method":"","id":1}'), badEnvRes);
+  check("serverGuard: a parsed body with an empty method is an invalid request",
+        badEnvState.next === false &&
+        badEnvRes._captured().body.indexOf("-32600") !== -1,
+        badEnvRes._captured().body);
+  var badParamsRes = b.testing.mockRes();
+  var badParamsState = await driveGuard(
+    b.mcp.serverGuard({ requireBearer: false }),
+    guardReq("/", '{"jsonrpc":"2.0","method":"x","id":1,"params":5}'), badParamsRes);
+  check("serverGuard: a parsed body with non-object params is invalid params",
+        badParamsState.next === false &&
+        badParamsRes._captured().body.indexOf("-32602") !== -1,
+        badParamsRes._captured().body);
 
   var throwRes = b.testing.mockRes();
   var throwState = await driveGuard(

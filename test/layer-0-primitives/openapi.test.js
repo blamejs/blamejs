@@ -966,6 +966,108 @@ function run() {
   var oasParseObj = b.openapi.parse(validOas.toJson());
   check("openapi.parse: object input",           oasParseObj.valid === true);
 
+  // A generated description is wide, and both ways of handing one over have
+  // to admit the same document. The parser's default key cap is sized for a
+  // request body, and a specification with ten thousand schemas in one
+  // object is ordinary, so `parse` names its own: a document that arrives
+  // decoded is read under the same caps as one that arrives as text, and
+  // neither refuses a spec the other accepts.
+  var wideSchemas = {};
+  for (var w = 0; w < 12000; w += 1) wideSchemas["Schema" + w] = { type: "object" };                 // allow:raw-byte-literal — test-only schema count
+  var wideDoc = {
+    openapi: "3.1.0", info: { title: "T", version: "1.0" },
+    components: { schemas: wideSchemas },
+  };
+  check("openapi.parse: a twelve-thousand-schema document is read as an object",
+        b.openapi.parse(wideDoc).valid === true);
+  check("openapi.parse: and the same document as text",
+        b.openapi.parse(JSON.stringify(wideDoc)).valid === true);
+
+  // A schema map is a free-form name map, so `constructor` and `prototype`
+  // are names a generator emits, and a `$ref` elsewhere in the document
+  // points at them. Dropping the member while answering `valid: true` leaves
+  // the reference pointing at nothing and says the document was read whole.
+  var namedDoc = {
+    openapi: "3.1.0", info: { title: "T", version: "1.0" },
+    components: { schemas: {
+      constructor: { type: "object" }, prototype: { type: "string" },
+      Normal: { $ref: "#/components/schemas/constructor" },
+    } },
+  };
+  ["object", "text"].forEach(function (form) {
+    var read = b.openapi.parse(form === "object" ? namedDoc : JSON.stringify(namedDoc));
+    var schemas = read.doc && read.doc.components ? read.doc.components.schemas : {};
+    check("openapi.parse: a schema named constructor or prototype survives (" + form + ")",
+          Object.prototype.hasOwnProperty.call(schemas, "constructor") &&
+          Object.prototype.hasOwnProperty.call(schemas, "prototype") &&
+          Object.prototype.hasOwnProperty.call(schemas, "Normal"),
+          JSON.stringify(Object.keys(schemas)));
+    check("openapi.parse: and the document is still an ordinary object (" + form + ")",
+          Object.getPrototypeOf(read.doc) === Object.prototype &&
+          Object.getPrototypeOf(schemas) === Object.prototype);
+  });
+
+  // A document whose JSON form is not an object is refused by name, whichever
+  // way it arrives. The text form used to hand `null` straight back, and the
+  // first field read off it threw a raw TypeError instead of the parser's own
+  // error, so a truncated or empty generator output crashed the caller.
+  ["null", " null ", "1", "\"a\"", "true"].forEach(function (text) {
+    var threwShape = null;
+    try { b.openapi.parse(text); } catch (e) { threwShape = e; }
+    check("openapi.parse: a non-object document as text is refused: " + text,
+          threwShape !== null && threwShape.code === "openapi/bad-input",
+          JSON.stringify({ code: threwShape && threwShape.code,
+                           name: threwShape && threwShape.name }));
+  });
+  var threwDateDoc = null;
+  try { b.openapi.parse(new Date(0)); } catch (e) { threwDateDoc = e; }
+  check("openapi.parse: and the same document pre-parsed is refused alike",
+        threwDateDoc !== null && threwDateDoc.code === "openapi/bad-input",
+        JSON.stringify({ code: threwDateDoc && threwDateDoc.code }));
+
+  // "Is this scheme defined?" was a bare bracket read, which finds a truthy
+  // function on Object.prototype for `toString`, `valueOf`, `constructor` and
+  // the rest. A document whose endpoint is protected only by a scheme nobody
+  // declared then came back `valid: true` with no errors, and this parser is
+  // the check that would have caught the typo.
+  // Each level is asserted on its OWN document. A document carrying the name
+  // at both levels is satisfied by either error, so it cannot tell the
+  // doc-level lookup from the per-operation one, and the per-operation one is
+  // where an operator's endpoint actually gets its protection.
+  ["toString", "valueOf", "hasOwnProperty", "constructor", "isPrototypeOf"].forEach(function (name) {
+    var atDoc = {
+      openapi: "3.1.0", info: { title: "T", version: "1.0" },
+      components: { securitySchemes: { real: { type: "http", scheme: "basic" } } },
+      security: [JSON.parse('{"' + name + '":[]}')],
+      paths: { "/p": { get: { responses: { 200: { description: "ok" } } } } },
+    };
+    var readDoc = b.openapi.parse(atDoc);
+    check("openapi.parse: doc-level security naming " + name + " is reported",
+          readDoc.valid === false &&
+          readDoc.errors.join(" ").indexOf("doc-level security references undefined scheme") !== -1,
+          JSON.stringify({ valid: readDoc.valid, errors: readDoc.errors.slice(0, 3) }));
+
+    var atOp = {
+      openapi: "3.1.0", info: { title: "T", version: "1.0" },
+      components: { securitySchemes: { real: { type: "http", scheme: "basic" } } },
+      paths: { "/p": { get: { responses: { 200: { description: "ok" } },
+                              security: [JSON.parse('{"' + name + '":[]}')] } } },
+    };
+    var readOp = b.openapi.parse(atOp);
+    check("openapi.parse: operation security naming " + name + " is reported",
+          readOp.valid === false &&
+          /GET \/p: security references undefined scheme/.test(readOp.errors.join(" ")),
+          JSON.stringify({ valid: readOp.valid, errors: readOp.errors.slice(0, 3) }));
+  });
+  var declared = b.openapi.parse({
+    openapi: "3.1.0", info: { title: "T", version: "1.0" },
+    components: { securitySchemes: JSON.parse('{"toString":{"type":"http","scheme":"basic"}}') },
+    security: [JSON.parse('{"toString":[]}')],
+    paths: {},
+  });
+  check("openapi.parse: and a scheme actually declared under that name is accepted",
+        declared.valid === true, JSON.stringify(declared.errors));
+
   var badVer = b.openapi.parse({ openapi: "3.0.0", info: { title: "T", version: "1.0" }, paths: {} });
   check("openapi.parse: wrong version → invalid", badVer.valid === false);
   check("openapi.parse: error mentions 3.1.x",   badVer.errors.join(",").indexOf("3.1") !== -1);

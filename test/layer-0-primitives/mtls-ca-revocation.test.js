@@ -539,6 +539,7 @@ async function testGenerateCrlDropsLegacyRemoveFromCrl() {
         { serialNumber: "0A", reasonCode: 8, revokedAt: Date.now() },   // legacy removeFromCRL
         { serialNumber: "0B", reasonCode: 1, revokedAt: Date.now() },   // valid keyCompromise
       ],
+      crlNumber: 1,
     });
   } catch (e) { threw = e; }
   check("generateCrl signs despite a legacy removeFromCRL (code 8) entry",
@@ -547,6 +548,158 @@ async function testGenerateCrlDropsLegacyRemoveFromCrl() {
   var serials = revoked.map(function (e) { return parseInt(e.serialNumberHex, 16); });
   check("generateCrl keeps the legacy-reason serial revoked (fail-secure)", serials.indexOf(0x0A) >= 0);
   check("generateCrl keeps the valid revocation", serials.indexOf(0x0B) >= 0);
+}
+
+// RFC 5280 §5.2.3 requires the cRLNumber extension on every CRL and requires it
+// to increase for a given issuer, so a relying party can tell which of two CRLs
+// is newer. The number therefore has to outlive the process that signed the
+// last one: a CA reopened on the same data directory must not restart the
+// sequence and hand two different CRLs the same number.
+async function testCrlNumberIncreasesAndSurvivesAReopen() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-mtls-crlnum-"));
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", generation: 1 });
+  var leaf = await ca.generateClientCert({ cn: "crl-number-client" });
+  await ca.revoke(leaf.serialNumber, { reason: "keyCompromise" });
+
+  // The parser reports the extension by its RFC name and hands back a bigint,
+  // since a cRLNumber may be up to 20 octets.
+  function _numberOf(crlPem) {
+    var exts = pki.schema.crl.parse(crlPem).crlExtensions || [];
+    for (var i = 0; i < exts.length; i += 1) {
+      if (exts[i].name === "cRLNumber") return Number(exts[i].value);
+    }
+    return null;
+  }
+
+  var first  = await ca.generateCrl();
+  var second = await ca.generateCrl();
+  var n1 = _numberOf(first.crlPem);
+  var n2 = _numberOf(second.crlPem);
+  check("a published CRL carries a cRLNumber (RFC 5280 §5.2.3)",
+        n1 !== null && isFinite(n1), JSON.stringify(n1));
+  check("the next CRL from the same CA carries a higher number",
+        n2 !== null && n2 > n1, JSON.stringify({ first: n1, second: n2 }));
+
+  // A fresh object on the same directory is the restart: the counter lives in
+  // the CA's own state, not in this process.
+  var reopened = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", generation: 1 });
+  var third = await reopened.generateCrl();
+  var n3 = _numberOf(third.crlPem);
+  check("a CA reopened on the same directory does not reuse a number",
+        n3 !== null && n3 > n2, JSON.stringify({ second: n2, third: n3 }));
+
+  // An unpublished CRL still takes its own number, so no two CRLs this CA signs
+  // can be told apart by content but not by number.
+  var unpersisted = await reopened.generateCrl({ persist: false });
+  check("an unpersisted CRL still takes its own number",
+        _numberOf(unpersisted.crlPem) > n3,
+        JSON.stringify({ third: n3, unpersisted: _numberOf(unpersisted.crlPem) }));
+}
+
+// A number is allocated before signing and the file is written after it, and
+// signing is not instant, so two CRLs generated together can finish in the
+// other order. Publishing the older one last would hand a client a file whose
+// number goes backwards, which is the one thing the number exists to prevent.
+// The engine here signs the FIRST call slowly so the second lands first.
+async function testAnOlderCrlDoesNotOverwriteANewerPublishedOne() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-mtls-crlorder-"));
+  var signCount = 0;
+  var slowEngine = Object.create(engine);
+  slowEngine.generateCrl = function (crlOpts) {
+    var mine = ++signCount;
+    return engine.generateCrl(crlOpts).then(function (pem) {
+      if (mine > 1) return pem;
+      return new Promise(function (resolve) {
+        setTimeout(function () { resolve(pem); }, 250);                        // allow:raw-time-literal — test-only ordering delay
+      });
+    });
+  };
+  var ca = b.mtlsCa.create({ dataDir: dir, caKeySealedMode: "disabled", generation: 1,
+                             engine: slowEngine });
+  var leaf = await ca.generateClientCert({ cn: "crl-order-client" });
+  await ca.revoke(leaf.serialNumber, { reason: "keyCompromise" });
+
+  function _publishedNumber() {
+    var exts = pki.schema.crl.parse(fs.readFileSync(path.join(dir, "ca.crl"), "utf8")).crlExtensions || [];
+    for (var i = 0; i < exts.length; i += 1) {
+      if (exts[i].name === "cRLNumber") return Number(exts[i].value);
+    }
+    return null;
+  }
+
+  var both = await Promise.all([ca.generateCrl(), ca.generateCrl()]);
+  var numbers = both.map(function (r) {
+    var exts = pki.schema.crl.parse(r.crlPem).crlExtensions || [];
+    for (var i = 0; i < exts.length; i += 1) {
+      if (exts[i].name === "cRLNumber") return Number(exts[i].value);
+    }
+    return null;
+  });
+  check("two CRLs generated together take different numbers",
+        numbers[0] !== numbers[1], JSON.stringify(numbers));
+  check("the published CRL is the higher-numbered one",
+        _publishedNumber() === Math.max(numbers[0], numbers[1]),
+        JSON.stringify({ published: _publishedNumber(), signed: numbers }));
+  check("the CRL that lost the race reports that it was not persisted",
+        both[numbers[0] > numbers[1] ? 1 : 0].persisted === false,
+        JSON.stringify(both.map(function (r) { return r.persisted; })));
+
+  // The number and the file are two writes, so one can land without the other.
+  // The number is written FIRST: a failure then leaves the published file older
+  // than the number claims, which costs a client a stale list until the next
+  // CRL. Writing it second would leave the number BEHIND the published file,
+  // and the next CRL signed concurrently at that number would overwrite a newer
+  // one, which is the regression the number exists to prevent. Here the CRL
+  // write is made to fail by holding its path as a directory.
+  var blockedDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-mtls-crlblock-"));
+  var blockedSub = path.join(blockedDir, "pub");
+  var blocked = b.mtlsCa.create({ dataDir: blockedDir, caKeySealedMode: "disabled", generation: 1,
+                                  paths: { crl: path.join(blockedSub, "ca.crl") } });
+  var blockedLeaf = await blocked.generateClientCert({ cn: "crl-blocked-client" });
+  await blocked.revoke(blockedLeaf.serialNumber, { reason: "keyCompromise" });
+  // The directory the CRL is written into becomes a file, so the write fails
+  // where the number has already been recorded.
+  fs.rmSync(blockedSub, { recursive: true, force: true });
+  fs.writeFileSync(blockedSub, "not a directory");
+  var blockedThrew = null;
+  try { await blocked.generateCrl(); } catch (e) { blockedThrew = e; }
+  check("a CRL whose file cannot be written reports the failure", blockedThrew !== null,
+        String(blockedThrew && (blockedThrew.code || blockedThrew.message)).slice(0, 60));
+  var watermarkPath = path.join(blockedDir, "ca.crl-number.published");
+  var watermarkAfter = fs.existsSync(watermarkPath)
+    ? parseInt(fs.readFileSync(watermarkPath, "utf8").trim(), 10)
+    : 0;
+  check("the number is recorded before the file, so a failed write cannot leave it behind",
+        watermarkAfter >= 1, JSON.stringify({ watermark: watermarkAfter }));
+
+  // The counter is read from a file that holds digits, and a restored or
+  // hand-edited one can hold more digits than a JavaScript number carries
+  // exactly. Reading it with parseInt silently rounds, so the CA would go on
+  // as though the number were fine and the refusal would come from the signer,
+  // naming neither the file nor the reason. The counter is refused here, by
+  // name, and so is a value with no room left to add one.
+  var PRECISION_CASES = [
+    ["a counter with more digits than a number carries exactly", "9007199254740993"],
+    ["a counter far beyond the exact range", "123456789012345678901234567890"],
+    ["a counter with no room left to increment", "9007199254740991"],
+  ];
+  var precisionWrong = [];
+  for (var p = 0; p < PRECISION_CASES.length; p += 1) {
+    var pDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-mtls-crlprec-"));
+    var pCa = b.mtlsCa.create({ dataDir: pDir, caKeySealedMode: "disabled", generation: 1 });
+    var pLeaf = await pCa.generateClientCert({ cn: "crl-precision-client" });
+    await pCa.revoke(pLeaf.serialNumber, { reason: "keyCompromise" });
+    fs.writeFileSync(path.join(pDir, "ca.crl-number"), PRECISION_CASES[p][1] + "\n");
+    var pThrew = null;
+    try { await pCa.generateCrl({ persist: false }); } catch (e) { pThrew = e; }
+    var code = pThrew && pThrew.code;
+    if (code !== "mtls-ca/crl-number-unreadable" && code !== "mtls-ca/crl-number-exhausted") {
+      precisionWrong.push(PRECISION_CASES[p][0] + " -> " + (code || "ACCEPTED"));
+    }
+  }
+  check("a CRL counter the reader cannot carry exactly is refused by name" +
+        (precisionWrong.length ? " (" + precisionWrong.join("; ") + ")" : ""),
+        precisionWrong.length === 0);
 }
 
 async function run() {
@@ -650,6 +803,8 @@ async function run() {
   await testIpv6SanEncodesAsIpAddress();
   await testRevokeRejectsRemoveFromCrl();
   await testGenerateCrlDropsLegacyRemoveFromCrl();
+  await testCrlNumberIncreasesAndSurvivesAReopen();
+  await testAnOlderCrlDoesNotOverwriteANewerPublishedOne();
 
   try {
     fs.rmSync(dir, { recursive: true, force: true });

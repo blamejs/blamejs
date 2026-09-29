@@ -160,6 +160,44 @@ async function _sendCommand(socket, tag, line) {
   });
 }
 
+// A command whose argument arrives as an RFC 9051 literal: the opener is sent
+// alone, the server answers `+`, and only then do the octets go out. Writing
+// the whole thing in one frame would be a different wire shape than the one a
+// client produces, and a different one than the listener's literal reader sees.
+async function _sendWithLiteral(socket, tag, opener, payload) {
+  // The server either invites the octets with `+` or refuses the opener with a
+  // tagged line. Waiting only for `+` turns a refusal into a hang, which says
+  // nothing about which of the two happened.
+  var refusal = await new Promise(function (resolve, reject) {
+    var buf = "";
+    function onData(chunk) {
+      buf += chunk.toString("utf8");
+      if (/^\+/m.test(buf)) { socket.removeListener("data", onData); resolve(null); return; }
+      if (new RegExp("^" + tag + " ", "m").test(buf)) {
+        socket.removeListener("data", onData);
+        resolve(buf);
+      }
+    }
+    socket.on("data", onData);
+    socket.once("error", reject);
+    socket.write(tag + " " + opener + "{" + Buffer.byteLength(payload, "utf8") + "}\r\n");
+  });
+  if (refusal !== null) return refusal;
+  return new Promise(function (resolve, reject) {
+    var buf = "";
+    function onData(chunk) {
+      buf += chunk.toString("utf8");
+      if (new RegExp("^" + tag + " ", "m").test(buf)) {
+        socket.removeListener("data", onData);
+        resolve(buf);
+      }
+    }
+    socket.on("data", onData);
+    socket.once("error", reject);
+    socket.write(payload + "\r\n");
+  });
+}
+
 // Operator-shaped mailStore stub. Records the opts passed to fetchRange
 // / storeFlags so the tests can assert the CONDSTORE protocol pieces
 // landed in the right place.
@@ -168,10 +206,12 @@ function _makeStubMailStore() {
   return {
     calls: calls,
     appendMessage: function () { return Promise.resolve(); },
+    selectShouldThrow: null,
     selectFolder: function (_actor, mailbox) {
       calls.select.push({ mailbox: mailbox });
+      if (this.selectShouldThrow) return Promise.reject(new Error(this.selectShouldThrow));
       return Promise.resolve({ uidvalidity: 1, modseq: 42, exists: 5,                                  // allow:raw-byte-literal — test-only stub modseq
-                               recent: 0, unseen: 0, flags: ["\\Seen"] });
+                               uidnext: 6, recent: 0, unseen: 0, flags: ["\\Seen"] });
     },
     fetchRange: function (_actor, mailbox, seqSet, partsSpec, opts) {
       calls.fetchRange.push({ mailbox: mailbox, seqSet: seqSet, partsSpec: partsSpec, opts: opts });
@@ -215,6 +255,265 @@ async function _connectAndLogin(srv) {
 // registry produces a server whose three answers disagree, so one of them is
 // false whichever way it is set: worse than the gap. The hook applies where
 // the list is COMPUTED, so all three stay identical by construction.
+async function testTheStoreCapTravelsWithTheSetToTheStore() {
+  // `STORE 1:* +FLAGS.SILENT` mutates every message in the mailbox and
+  // answers with almost nothing, so neither the response-byte budget nor the
+  // handler timeout bounds it, and a timeout would not undo what the backend
+  // already wrote. Nothing short of the mailbox can say how many messages it
+  // names, so `maxSequenceSetItems` travels to the store as `maxMessages`
+  // rather than being applied here against a number taken at SELECT that
+  // another connection can make wrong in either direction.
+  var ctx = await _makeTestTlsContext();
+  var store = _makeStubMailStore();
+  store.selectFolder = function (_actor, mailbox) {
+    store.calls.select.push({ mailbox: mailbox });
+    return Promise.resolve({ uidvalidity: 1, modseq: 42, exists: 200000,
+                             uidnext: 200001, recent: 0, unseen: 0, flags: ["\\Seen"] });
+  };
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: store, profile: "permissive",
+    auth: { mechanisms: ["PLAIN"], verify: function () {
+      return Promise.resolve({ ok: true, actor: { id: "u1", mailboxes: ["INBOX"] } });
+    } },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var socket = nodeNet.connect(info.port, "127.0.0.1");
+  await new Promise(function (r) { socket.once("connect", r); });
+  try {
+    await _readGreeting(socket);
+    await _sendCommand(socket, "a1",
+      "AUTHENTICATE PLAIN " + Buffer.from("\0u1\0pw", "utf8").toString("base64"));
+    await _sendCommand(socket, "a2", "SELECT INBOX");
+
+    // Every one of these names more messages than the cap allows, or may do,
+    // and none of them can be counted from the line: the store is the only
+    // party that knows, so each reaches it carrying the cap.
+    var cap = b.guardImapCommand.PROFILES.permissive.maxSequenceSetItems;
+    var uncountable = [
+      ["a3", "STORE 1:* +FLAGS.SILENT (\\Seen)"],
+      ["a5", "STORE *:* +FLAGS (\\Seen)"],
+      ["a6", "STORE 199990:* +FLAGS (\\Seen)"],
+      ["a7", "STORE 1,2,3:5,*:* +FLAGS (\\Seen)"],
+      ["u1", "UID STORE 1:* +FLAGS (\\Seen)"],
+      ["u2", "UID STORE 4000000000:* +FLAGS (\\Seen)"],
+      ["u3", "UID STORE 5,7,9 +FLAGS (\\Seen)"],
+      ["u6", "UID STORE *:* +FLAGS (\\Seen)"],
+    ];
+    for (var q = 0; q < uncountable.length; q += 1) {
+      var answer = await _sendCommand(socket, uncountable[q][0], uncountable[q][1]);
+      var seen = store.calls.storeFlags[store.calls.storeFlags.length - 1];
+      check("the store is asked, and told the cap: " + uncountable[q][1],
+            new RegExp("^" + uncountable[q][0] + " OK", "m").test(answer) &&
+            seen.opts.maxMessages === cap,
+            answer.slice(0, 120) + " :: " + JSON.stringify(seen));
+    }
+
+    // FETCH reads the same uncountable sets and hands its rows straight into
+    // the response, so it is the same question: `FETCH 1:*` on a mailbox
+    // larger than the cap reached `fetchRange` with no bound at all, and the
+    // listener then awaited and materialized every row the backend returned.
+    // The cap travels with it exactly as it does for STORE.
+    var uncountableFetch = [
+      ["f1", "FETCH 1:* (FLAGS)"],
+      ["f2", "FETCH *:* (FLAGS)"],
+      ["f3", "FETCH 199990:* (FLAGS)"],
+      ["f4", "UID FETCH 1:* (FLAGS)"],
+      ["f5", "UID FETCH 4000000000:* (FLAGS)"],
+    ];
+    for (var ff = 0; ff < uncountableFetch.length; ff += 1) {
+      var fetched = await _sendCommand(socket, uncountableFetch[ff][0], uncountableFetch[ff][1]);
+      var lastFetch = store.calls.fetchRange[store.calls.fetchRange.length - 1];
+      check("the store is asked, and told the cap: " + uncountableFetch[ff][1],
+            new RegExp("^" + uncountableFetch[ff][0] + " OK", "m").test(fetched) &&
+            lastFetch.opts.maxMessages === cap,
+            fetched.slice(0, 120) + " :: " + JSON.stringify(lastFetch));
+    }
+
+    // A message-number range IS countable from the line, and the guard
+    // refuses one past the cap before the listener is reached.
+    var seqHuge = await _sendCommand(socket, "u5", "STORE 1:4000000000 +FLAGS (\\Seen)");
+    check("a message-number range spanning more than the cap is refused",
+          /^u5 BAD/m.test(seqHuge), seqHuge.slice(0, 200));
+
+    // The shape that reads worst under a span-based rule: a small mailbox
+    // whose UIDs start high. Counting the span from 50000 would refuse a
+    // command naming ten messages; UIDs are sparse, so it is served.
+    var sparse = _makeStubMailStore();
+    sparse.selectFolder = function (_actor, mailbox) {
+      sparse.calls.select.push({ mailbox: mailbox });
+      return Promise.resolve({ uidvalidity: 1, modseq: 42, exists: 10,
+                               uidnext: 50010, recent: 0, unseen: 0, flags: ["\\Seen"] });
+    };
+    var srv2 = b.mail.server.imap.create({
+      tlsContext: ctx, mailStore: sparse, profile: "strict",
+      auth: { mechanisms: ["PLAIN"], verify: function () {
+        return Promise.resolve({ ok: true, actor: { id: "u1", mailboxes: ["INBOX"] } });
+      } },
+    });
+    var info2 = await srv2.listen({ port: 0, address: "127.0.0.1" });
+    var sock2 = nodeNet.connect(info2.port, "127.0.0.1");
+    await new Promise(function (r) { sock2.once("connect", r); });
+    try {
+      await _readGreeting(sock2);
+      await _sendCommand(sock2, "s1", "STARTTLS");
+      var tlsSock = nodeTls.connect({ socket: sock2, ca: ctx.testCaPem,
+                                      servername: "localhost" });
+      await new Promise(function (r) { tlsSock.once("secureConnect", r); });
+      await _sendCommand(tlsSock, "s2",
+        "AUTHENTICATE PLAIN " + Buffer.from("\0u1\0pw", "utf8").toString("base64"));
+      await _sendCommand(tlsSock, "s3", "SELECT INBOX");
+      var tenMessages = await _sendCommand(tlsSock, "s4", "UID STORE 50000:* +FLAGS (\\Seen)");
+      check("a UID range naming ten messages is served at the strict cap",
+            /^s4 OK/m.test(tenMessages), tenMessages.slice(0, 200));
+      tlsSock.destroy();
+    } finally { await srv2.close({ timeoutMs: 1000 }); }                                                // allow:raw-time-literal — test-only short drain
+
+    // Nothing here is decided from a number the listener remembers, so a
+    // mailbox emptied by another connection changes no answer: the same
+    // command is served before and after, and the store is told the cap both
+    // times.
+    store.expungeFolder = function () {
+      var ex = [];
+      for (var i = 1; i <= 199000; i += 1) ex.push(i);
+      return Promise.resolve({ expunged: ex, modseq: 43 });                                             // allow:raw-byte-literal — test-only stub modseq
+    };
+    var purged = await _sendCommand(socket, "a8", "EXPUNGE");
+    check("the expunge is accepted", /^a8 OK/m.test(purged), purged.slice(-120));
+    var afterPurge = await _sendCommand(socket, "a9", "STORE 1:* +FLAGS (\\Seen)");
+    var afterCall = store.calls.storeFlags[store.calls.storeFlags.length - 1];
+    check("a wildcard STORE is served the same way after the mailbox shrinks",
+          /^a9 OK/m.test(afterPurge) && afterCall.seqSet === "1:*" &&
+          afterCall.opts.maxMessages === cap,
+          afterPurge.slice(0, 120) + " :: " + JSON.stringify(afterCall));
+    socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+async function testASequenceSetReachesTheStoreAsTheClientWroteIt() {
+  // Which messages a set names is the mailbox's answer, and the listener does
+  // not hold the mailbox. It knows what it last told this client, which is
+  // not the same thing: another connection can append without this one being
+  // told, so a number the listener substituted for `*` would address the
+  // backend's numbering by a count taken from its own. Every set is therefore
+  // forwarded byte for byte, and what the listener checks first is a count,
+  // not a rewrite.
+  var ctx = await _makeTestTlsContext();
+  var store = _makeStubMailStore();
+  var reported = { exists: 3, uidnext: 4 };
+  store.selectFolder = function (_actor, mailbox) {
+    store.calls.select.push({ mailbox: mailbox });
+    return Promise.resolve({ uidvalidity: 1, modseq: 42, exists: reported.exists,
+                             uidnext: reported.uidnext, recent: 0, unseen: 0,
+                             flags: ["\\Seen"] });
+  };
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: store, profile: "permissive",
+    auth: { mechanisms: ["PLAIN"], verify: function () {
+      return Promise.resolve({ ok: true, actor: { id: "u1", mailboxes: ["INBOX"] } });
+    } },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var socket = nodeNet.connect(info.port, "127.0.0.1");
+  await new Promise(function (r) { socket.once("connect", r); });
+  try {
+    await _readGreeting(socket);
+    await _sendCommand(socket, "a1",
+      "AUTHENTICATE PLAIN " + Buffer.from("\0u1\0pw", "utf8").toString("base64"));
+    await _sendCommand(socket, "a2", "SELECT INBOX");
+
+    // Everything the mailbox gains from here belongs to other connections.
+    reported.exists = 250000;
+    reported.uidnext = 250001;
+
+    // Every shape a rewrite would have changed: a range against `*`, one
+    // whose ends arrive in the other order, one lying past what this session
+    // was told about, a lone number and a lone `*`, in both spaces. Each
+    // reaches the store exactly as the client sent it.
+    var shapes = [
+      ["a3", "STORE 1:* +FLAGS (\\Seen)",          "1:*"],
+      ["a4", "UID STORE 1:* +FLAGS (\\Seen)",      "1:*"],
+      ["a5", "STORE 200000:* +FLAGS (\\Seen)",     "200000:*"],
+      ["a6", "UID STORE 200000:* +FLAGS (\\Seen)", "200000:*"],
+      ["a7", "STORE 2:3 +FLAGS (\\Seen)",          "2:3"],
+      ["a8", "STORE 4 +FLAGS (\\Seen)",            "4"],
+      ["a9", "STORE 500:600 +FLAGS (\\Seen)",      "500:600"],
+      ["b1", "UID STORE *:* +FLAGS (\\Seen)",      "*:*"],
+    ];
+    for (var s = 0; s < shapes.length; s += 1) {
+      var reply = await _sendCommand(socket, shapes[s][0], shapes[s][1]);
+      var call = store.calls.storeFlags[store.calls.storeFlags.length - 1];
+      check("the store is asked for what the client wrote: " + shapes[s][1],
+            new RegExp("^" + shapes[s][0] + " OK", "m").test(reply) &&
+            call.seqSet === shapes[s][2],
+            reply.slice(0, 120) + " :: " + JSON.stringify(call));
+    }
+    var fetched = await _sendCommand(socket, "b2", "FETCH *:* (FLAGS)");
+    var lastFetch = store.calls.fetchRange[store.calls.fetchRange.length - 1];
+    check("and FETCH is forwarded the same way",
+          /^b2 OK/m.test(fetched) && lastFetch.seqSet === "*:*",
+          fetched.slice(0, 120) + " :: " + JSON.stringify(lastFetch));
+
+    // Because the set is the store's to resolve, the cap travels with it.
+    // `1:*` is whatever the mailbox holds when the store reads it, and a UID
+    // range's width is not a message count, so the only party that can hold
+    // such a set to `maxSequenceSetItems` is the one resolving it.
+    var withCap = store.calls.storeFlags[store.calls.storeFlags.length - 1];
+    check("the profile's cap is carried to the store with the set",
+          withCap.opts.maxMessages ===
+            b.guardImapCommand.PROFILES.permissive.maxSequenceSetItems,
+          JSON.stringify(withCap.opts));
+
+    socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+async function testAUidWildcardIsTheStoresToResolve() {
+  // The shape that rules out ever resolving a UID `*` here. UIDNEXT is a
+  // watermark, not a census: a mailbox holding UIDs 80 and 90 can report
+  // UIDNEXT 101 once the messages above 90 are expunged. `UID FETCH 95:*` has
+  // to answer with UID 90, because a range covers both its ends in either
+  // order, and every number this listener could reach for lies above 90.
+  var ctx = await _makeTestTlsContext();
+  var gapped = _makeStubMailStore();
+  gapped.selectFolder = function (_actor, mailbox) {
+    gapped.calls.select.push({ mailbox: mailbox });
+    return Promise.resolve({ uidvalidity: 1, modseq: 42, exists: 2, uidnext: 101,
+                             recent: 0, unseen: 0, flags: ["\\Seen"] });
+  };
+  var srv4 = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: gapped, profile: "permissive",
+    auth: { mechanisms: ["PLAIN"], verify: function () {
+      return Promise.resolve({ ok: true, actor: { id: "u1", mailboxes: ["INBOX"] } });
+    } },
+  });
+  var info4 = await srv4.listen({ port: 0, address: "127.0.0.1" });
+  var sock4 = nodeNet.connect(info4.port, "127.0.0.1");
+  await new Promise(function (r) { sock4.once("connect", r); });
+  try {
+    await _readGreeting(sock4);
+    await _sendCommand(sock4, "d1",
+      "AUTHENTICATE PLAIN " + Buffer.from("\0u1\0pw", "utf8").toString("base64"));
+    await _sendCommand(sock4, "d2", "SELECT INBOX");
+    await _sendCommand(sock4, "d3", "UID FETCH * (FLAGS)");
+    var loneGap = gapped.calls.fetchRange[gapped.calls.fetchRange.length - 1];
+    check("a lone UID `*` is not turned into the watermark",
+          loneGap.seqSet === "*", JSON.stringify(loneGap));
+    await _sendCommand(sock4, "d4", "UID FETCH *:* (FLAGS)");
+    var lonePair = gapped.calls.fetchRange[gapped.calls.fetchRange.length - 1];
+    check("nor is `*:*`, which names the same one message",
+          lonePair.seqSet === "*:*", JSON.stringify(lonePair));
+    await _sendCommand(sock4, "d5", "UID FETCH 95:* (FLAGS)");
+    var acrossTheGap = gapped.calls.fetchRange[gapped.calls.fetchRange.length - 1];
+    check("a range whose other end is above every surviving UID keeps its `*`",
+          acrossTheGap.seqSet === "95:*", JSON.stringify(acrossTheGap));
+    await _sendCommand(sock4, "d6", "UID FETCH 1:* (FLAGS)");
+    var everything = gapped.calls.fetchRange[gapped.calls.fetchRange.length - 1];
+    check("and so does the range that reads the whole mailbox",
+          everything.seqSet === "1:*", JSON.stringify(everything));
+    sock4.destroy();
+  } finally { await srv4.close({ timeoutMs: 1000 }); }                                                  // allow:raw-time-literal — test-only short drain
+}
+
 async function testCapabilityHook() {
   var ctx = await _makeTestTlsContext();
   var seen = [];
@@ -460,6 +759,10 @@ async function testEnableCondstore() {
   });
   var c = await _connectAndLogin(srv);
   try {
+    // ENABLE is an authenticated-state command (RFC 9051 §6.3.1), so the
+    // session authenticates before asking for it.
+    await _sendCommand(c.socket, "a0",
+      "AUTHENTICATE PLAIN " + Buffer.from("\0u1\0pw", "utf8").toString("base64"));
     var reply = await _sendCommand(c.socket, "a1", "ENABLE CONDSTORE");
     check("ENABLE CONDSTORE → ENABLED CONDSTORE", /ENABLED CONDSTORE/.test(reply));
     check("ENABLE CONDSTORE → OK",                /^a1 OK /m.test(reply));
@@ -487,8 +790,9 @@ async function testFetchChangedSinceParses() {
   var c = await _connectAndLogin(srv);
   try {
     await _sendCommand(c.socket, "a0", "LOGIN test test");
-    await _sendCommand(c.socket, "a1", "SELECT INBOX");
+    // RFC 9051 §6.3.1 takes ENABLE before any mailbox is selected.
     await _sendCommand(c.socket, "a2", "ENABLE CONDSTORE");
+    await _sendCommand(c.socket, "a1", "SELECT INBOX");
     var reply = await _sendCommand(c.socket, "a3", "FETCH 1:* (FLAGS) (CHANGEDSINCE 15)");
     var lastCall = stub.calls.fetchRange[stub.calls.fetchRange.length - 1];
     check("backend got changedSince=15",          lastCall.opts.changedSince === 15);
@@ -505,6 +809,139 @@ async function testFetchChangedSinceParses() {
 // so a mailbox name carrying `\` or `"` reached the backend corrupted (a `\`
 // doubled, an escaped `"` kept its backslash). The backend then keys, creates,
 // or ACLs the wrong name.
+async function testAFailedSelectLeavesNoMailboxSelected() {
+  // RFC 9051 6.3.2: a SELECT that fails deselects whatever was selected and
+  // returns the session to the authenticated state. The failure path wrote NO
+  // and left state.selectedMailbox alone, so the client's next EXPUNGE, STORE
+  // or FETCH went on acting against the mailbox it believed it had left.
+  var ctx = await _makeTestTlsContext();
+  var stub = _makeStubMailStore();
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: stub, profile: "permissive",
+    auth: {
+      mechanisms: ["PLAIN", "LOGIN"],
+      verify: function () { return Promise.resolve({ ok: true, actor: { id: "u1", mailboxes: ["INBOX"] } }); },
+    },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    await _sendCommand(c.socket, "a0", "LOGIN test test");
+    var ok = await _sendCommand(c.socket, "a1", "SELECT INBOX");
+    check("the first SELECT succeeds", /^a1 OK/m.test(ok), JSON.stringify(ok));
+
+    stub.selectShouldThrow = "no such mailbox";
+    var bad = await _sendCommand(c.socket, "a2", "SELECT Missing");
+    check("a SELECT the store refuses answers NO", /^a2 NO/m.test(bad), JSON.stringify(bad));
+    check("and says the mailbox that was open is closed",
+          /\[CLOSED\]/.test(bad), JSON.stringify(bad));
+
+    // EXPUNGE reads the selection, so it is the command that can tell whether
+    // the session really left the mailbox.
+    stub.selectShouldThrow = null;
+    var after = await _sendCommand(c.socket, "a3", "EXPUNGE");
+    check("EXPUNGE after the failed SELECT is refused, not run on the old mailbox",
+          !/^a3 OK/m.test(after), JSON.stringify(after));
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
+async function testAllowLegacyMUtf7GovernsWhatItDeclares() {
+  // create() accepts allowLegacyMUtf7 and the docblock describes setting it,
+  // but the listener derived the answer from the profile table alone and never
+  // read the option, in EITHER direction: an operator turning the legacy
+  // encoding on under strict still had it refused, and one turning it off
+  // under permissive still had it accepted. A knob the API takes by name and
+  // then ignores is worse than one it refuses by name.
+  var ctx = await _makeTestTlsContext();
+  var stub = _makeStubMailStore();
+  var MUTF7 = "Fr&AOk-d";   // "Fréd" in RFC 3501 modified UTF-7.
+
+  // Whether the STORE saw the name is the thing that distinguishes: a refusal
+  // is written as BAD by one path and NO by another, so "the reply was not
+  // BAD" is satisfied by both outcomes.
+  async function selectsMUtf7(opts) {
+    var store = _makeStubMailStore();
+    var srv = b.mail.server.imap.create(Object.assign({
+      tlsContext: ctx, mailStore: store,
+      auth: {
+        mechanisms: ["PLAIN", "LOGIN"],
+        verify: function () { return Promise.resolve({ ok: true, actor: { id: "u1", mailboxes: ["INBOX"] } }); },
+      },
+    }, opts));
+    var c = await _connectAndLogin(srv);
+    try {
+      await _sendCommand(c.socket, "a0", "LOGIN test test");
+      await _sendCommand(c.socket, "a1", "SELECT " + MUTF7);
+      c.socket.destroy();
+      return store.calls.select.some(function (s) { return s.mailbox === MUTF7; });
+    } finally { await srv.close({ timeoutMs: 1000 }); }                                                 // allow:raw-time-literal — test-only short drain
+  }
+
+  // The profile table is the default, and b.mail.server.imap.legacyMUtf7Allowed
+  // is the one place that reads it.
+  check("the table says permissive accepts the legacy encoding",
+        b.mail.server.imap.legacyMUtf7Allowed("permissive") === true);
+  check("and that balanced and strict do not",
+        b.mail.server.imap.legacyMUtf7Allowed("balanced") === false &&
+        b.mail.server.imap.legacyMUtf7Allowed("strict") === false);
+
+  // Driven end to end on the profile whose sessions this harness can
+  // authenticate: the default accepts the name, and the option turns it off.
+  // That is the direction an operator hardens in, and it is the direction the
+  // listener was ignoring.
+  check("the permissive default reaches the store with the legacy name",
+        await selectsMUtf7({ profile: "permissive" }) === true);
+  check("allowLegacyMUtf7 false stops it reaching the store",
+        await selectsMUtf7({ profile: "permissive", allowLegacyMUtf7: false }) === false);
+  void stub;
+}
+
+async function testAMailboxNameSentAsALiteralTakesTheSameCap() {
+  // b.guardImapCommand applies maxMailboxBytes to the LINE, and a literal
+  // arrives after it. CREATE {N} decoded up to maxLiteralBytes (64 MiB under
+  // strict), quoted the result and built it into the argument string, and only
+  // then did operand parsing turn it away — so the name never reached the
+  // store, but the listener did all of that work per command and answered with
+  // a message about operand count rather than about the cap it exceeded.
+  var ctx = await _makeTestTlsContext();
+  var stub = _makeStubMailStore();
+  var created = [];
+  var srv = b.mail.server.imap.create({
+    tlsContext: ctx, mailStore: stub, profile: "permissive",
+    mailboxAdmin: { createFolder: function (_a, name) { created.push(name); return Promise.resolve(); } },
+    auth: {
+      mechanisms: ["PLAIN", "LOGIN"],
+      verify: function () { return Promise.resolve({ ok: true, actor: { id: "u1", mailboxes: ["INBOX"] } }); },
+    },
+  });
+  var c = await _connectAndLogin(srv);
+  try {
+    await _sendCommand(c.socket, "a0", "LOGIN test test");
+    var cap = b.guardImapCommand.limitsFor({ profile: "permissive" }).maxMailboxBytes;
+
+    // A literal inside the cap still creates the mailbox.
+    var okName = "N".repeat(16);
+    var okReply = await _sendWithLiteral(c.socket, "a1", "CREATE ", okName);
+    check("a mailbox name sent as a literal inside the cap is created",
+          /^a1 OK/m.test(okReply) && created.indexOf(okName) !== -1,
+          JSON.stringify({ reply: okReply, created: created.length }));
+
+    // One past it is refused, and nothing reaches the store.
+    var before = created.length;
+    var bigName = "N".repeat(cap + 1);
+    var bigReply = await _sendWithLiteral(c.socket, "a2", "CREATE ", bigName);
+    // Named refusal, not any refusal: an oversized literal reaches several
+    // other bounds on its way, and "something said no" is satisfied by all of
+    // them, so it cannot tell whether THIS cap is the one that applied.
+    check("a literal past maxMailboxBytes is refused by that cap",
+          /^a2 BAD CREATE literal is not a mailbox name within /m.test(bigReply),
+          JSON.stringify(bigReply).slice(0, 160));
+    check("and no oversized name reached the store",
+          created.length === before, JSON.stringify(created.length));
+    c.socket.destroy();
+  } finally { await srv.close({ timeoutMs: 1000 }); }                                                   // allow:raw-time-literal — test-only short drain
+}
+
 async function testSelectUnescapesQuotedMailboxName() {
   var ctx = await _makeTestTlsContext();
   var stub = _makeStubMailStore();
@@ -699,8 +1136,9 @@ async function testStoreUnchangedSinceConflict() {
   var c = await _connectAndLogin(srv);
   try {
     await _sendCommand(c.socket, "a0", "LOGIN test test");
-    await _sendCommand(c.socket, "a1", "SELECT INBOX");
+    // RFC 9051 §6.3.1 takes ENABLE before any mailbox is selected.
     await _sendCommand(c.socket, "a2", "ENABLE CONDSTORE");
+    await _sendCommand(c.socket, "a1", "SELECT INBOX");
     var conflict = await _sendCommand(c.socket, "a3",
       "STORE 1:* (UNCHANGEDSINCE 5) +FLAGS (\\Flagged)");
     var lastCall = stub.calls.storeFlags[stub.calls.storeFlags.length - 1];
@@ -1796,8 +2234,9 @@ async function testStoreSilentEmitsModseqUnderCondstore() {
   var c = await _connectAndLogin(srv);
   try {
     await _sendCommand(c.socket, "a0", "LOGIN test test");
-    await _sendCommand(c.socket, "a1", "SELECT INBOX");
+    // RFC 9051 §6.3.1 takes ENABLE before any mailbox is selected.
     await _sendCommand(c.socket, "a2", "ENABLE CONDSTORE");
+    await _sendCommand(c.socket, "a1", "SELECT INBOX");
     // SILENT STORE — would normally suppress untagged FETCH, but
     // under CONDSTORE the MODSEQ update must still come through.
     var reply = await _sendCommand(c.socket, "a3",
@@ -2089,7 +2528,8 @@ async function _makeServer(extra) {
     profile:    extra.profile || "permissive",
     auth:       extra.auth !== undefined ? extra.auth : DEFAULT_AUTH,
   };
-  ["rateLimit", "maxLineBytes", "maxLiteralBytes", "overrides", "greeting"].forEach(function (k) {
+  ["rateLimit", "maxLineBytes", "maxLiteralBytes", "overrides", "greeting",
+   "mailboxAdmin", "audit"].forEach(function (k) {
     if (extra[k] !== undefined) opts[k] = extra[k];
   });
   var srv = b.mail.server.imap.create(opts);
@@ -2127,12 +2567,21 @@ async function testUnauthDispatch() {
     check("NOOP → OK", /^a2 OK NOOP completed/m.test(await _cmd(sock, "a2", "NOOP")));
     var id = await _cmd(sock, "a3", "ID (\"name\" \"x\")");
     check("ID replies untagged ID + OK", /^\* ID \("name" "blamejs"/m.test(id) && /^a3 OK ID completed/m.test(id));
-    check("SELECT before auth → NO Login first", /^a4 NO Login first/m.test(await _cmd(sock, "a4", "SELECT INBOX")));
-    check("unknown verb → untagged BAD", /^\* BAD/m.test(await _cmdT(sock, "a5", "ZORP x", /^\* BAD/m)));
+    check("SELECT before auth → BAD, wrong state",
+          /^a4 BAD SELECT only valid in Authenticated state/m
+            .test(await _cmd(sock, "a4", "SELECT INBOX")));
+    // RFC 9051 section 7.1.3: "When the server detects a protocol error (such
+    // as the receipt of an invalid command line), it MUST send a tagged BAD
+    // response." An unknown verb arrives under a readable tag, so the refusal
+    // is addressed to it; a client that waits for its tag would otherwise
+    // wait out the whole command.
+    check("unknown verb → BAD against the tag it was sent under",
+      /^a5 BAD/m.test(await _cmdT(sock, "a5", "ZORP x", /^a5 BAD/m)));
+    // A line with no tag to read leaves untagged as the only form available.
     check("empty line → untagged BAD (empty command line)",
       /^\* BAD .*empty command line/m.test(await _raw(sock, /^\* BAD/m, "\r\n")));
-    check("GETQUOTA (known verb, no handler) → notFound BAD not implemented",
-      /^a6 BAD Verb 'GETQUOTA' not implemented/m.test(await _cmd(sock, "a6", "GETQUOTA \"\"")));
+    check("GETQUOTA (known verb, no handler) → tagged BAD naming the verb",
+      /^a6 BAD Verb 'GETQUOTA' is not supported/m.test(await _cmd(sock, "a6", "GETQUOTA \"\"")));
     var out = await _cmd(sock, "q1", "LOGOUT");
     check("LOGOUT → untagged BYE + tagged OK", /^\* BYE Logging out/m.test(out) && /^q1 OK LOGOUT completed/m.test(out));
   } finally { sock.destroy(); await s.srv.close(); }
@@ -2321,11 +2770,19 @@ async function testSelectExamine() {
     check("SELECT quoted mailbox → OK", /^a3 OK/m.test(await _cmd(sock, "a3", "SELECT " + '"' + "INBOX" + '"')));
     check("SELECT empty name → BAD refused", /^a4 BAD Mailbox name refused/m.test(await _cmd(sock, "a4", "SELECT")));
     check("SELECT path-traversal (..) → BAD refused", /^a5 BAD Mailbox name refused/m.test(await _cmd(sock, "a5", "SELECT ../etc")));
-    check("SELECT C1 control (U+009B) in the name → untagged BAD at the command gate",
-      /^\* BAD .*control byte 0x9b/m.test(await _cmdT(sock, "a5c", "SELECT in" + String.fromCharCode(0x9b) + "box", /^\* BAD/m)));
+    check("SELECT C1 control (U+009B) in the name → BAD at the command gate, against its tag",
+      /^a5c BAD .*control byte 0x9b/m.test(
+        await _cmdT(sock, "a5c", "SELECT in" + String.fromCharCode(0x9b) + "box", /^a5c BAD/m)));
     check("SELECT trailing-slash → BAD refused", /^a6 BAD Mailbox name refused/m.test(await _cmd(sock, "a6", "SELECT foo/")));
-    var longName = new Array(1101).join("a");
-    check("SELECT overlong name → BAD refused", /^a7 BAD Mailbox name refused/m.test(await _cmd(sock, "a7", "SELECT " + longName)));
+    // The name cap is the profile's own `maxMailboxBytes`, 4096 under
+    // permissive, rather than a figure the listener keeps to itself. A name
+    // inside it is served; one past it is refused.
+    var insideCap = new Array(1101).join("a");
+    check("SELECT a name inside the profile's cap is not refused for its length",
+          !/^a7 BAD Mailbox name refused/m.test(await _cmd(sock, "a7", "SELECT " + insideCap)));
+    var longName = new Array(4200).join("a");
+    check("SELECT overlong name → BAD refused",
+          /^a7b BAD /m.test(await _cmd(sock, "a7b", "SELECT " + longName)));
     // permissive → modified-UTF7 accepted (skip-branch): passes name validation, reaches backend.
     check("SELECT mUTF7 name accepted under permissive → OK", /^a8 OK/m.test(await _cmd(sock, "a8", "SELECT &AAA-")));
     // QRESYNC valid + VANISHED emission needs a matching-uidvalidity store below.
@@ -2523,7 +2980,25 @@ async function testSelectedCommands() {
   try {
     check("FETCH not selected → BAD", /^a1 BAD FETCH only valid in Selected/m.test(await _cmd(c2, "a1", "FETCH 1 (FLAGS)")));
     check("STORE not selected → BAD", /^a2 BAD STORE only valid in Selected/m.test(await _cmd(c2, "a2", "STORE 1 +FLAGS (\\Seen)")));
-    check("EXPUNGE not selected → NO no mailbox", /^a3 NO No mailbox selected/m.test(await _cmd(c2, "a3", "EXPUNGE")));
+    // RFC 9051 §6 rejects a command issued in a state that does not permit it
+    // with BAD, which is what FETCH and STORE above already answer. EXPUNGE,
+    // SEARCH, COPY and MOVE reach their handler through the registry, so the
+    // answer is given once, before dispatch, for all four: an operator
+    // override replaces the handler and cannot be relied on to check.
+    check("EXPUNGE not selected → BAD", /^a3 BAD EXPUNGE only valid in Selected/m.test(await _cmd(c2, "a3", "EXPUNGE")));
+    check("SEARCH not selected → BAD", /^a4 BAD SEARCH only valid in Selected/m.test(await _cmd(c2, "a4", "SEARCH ALL")));
+    check("COPY not selected → BAD", /^a5 BAD COPY only valid in Selected/m.test(await _cmd(c2, "a5", "COPY 1 Archive")));
+    check("MOVE not selected → BAD", /^a6 BAD MOVE only valid in Selected/m.test(await _cmd(c2, "a6", "MOVE 1 Archive")));
+    check("UID COPY not selected → BAD", /^a7 BAD COPY only valid in Selected/m.test(await _cmd(c2, "a7", "UID COPY 1 Archive")));
+    check("UID FETCH not selected → BAD", /^a8 BAD FETCH only valid in Selected/m.test(await _cmd(c2, "a8", "UID FETCH 1 (FLAGS)")));
+    check("UID STORE not selected → BAD", /^a9 BAD STORE only valid in Selected/m.test(await _cmd(c2, "a9", "UID STORE 1 +FLAGS (\\Seen)")));
+    // CLOSE, UNSELECT and CHECK are selected-state commands too, and each is
+    // a registry entry an operator can replace.
+    check("CLOSE not selected → BAD", /^b1 BAD CLOSE only valid in Selected/m.test(await _cmd(c2, "b1", "CLOSE")));
+    check("UNSELECT not selected → BAD", /^b2 BAD UNSELECT only valid in Selected/m.test(await _cmd(c2, "b2", "UNSELECT")));
+    check("CHECK not selected → BAD", /^b3 BAD CHECK only valid in Selected/m.test(await _cmd(c2, "b3", "CHECK")));
+    check("UID MOVE on a read-only selection names the mailbox, not the handler",
+          /^b4 BAD MOVE only valid in Selected/m.test(await _cmd(c2, "b4", "UID MOVE 1 Archive")));
   } finally { c2.destroy(); await s2.srv.close(); }
 
   // 8c. read-only mailbox refuses STORE
@@ -2540,8 +3015,13 @@ async function testSelectedCommands() {
   try {
     check("FETCH with no backend → BAD not configured", /^a1 BAD FETCH backend not configured/m.test(await _cmd(c4, "a1", "FETCH 1 (FLAGS)")));
     check("STORE with no backend → BAD not configured", /^a2 BAD STORE backend not configured/m.test(await _cmd(c4, "a2", "STORE 1 +FLAGS (\\Seen)")));
+    // A server with no expunge backend cannot remove anything, and saying OK
+    // to a client that has flagged mail for deletion tells it the removal
+    // happened. FETCH and STORE already said so; EXPUNGE said OK and
+    // removed nothing.
     ex = await _cmd(c4, "a3", "EXPUNGE");
-    check("EXPUNGE default (no backend) → OK, no untagged", /^a3 OK EXPUNGE completed/m.test(ex) && !/EXPUNGE\r\n/.test(ex.replace(/^a3.*/m, "")));
+    check("EXPUNGE with no backend → NO not configured",
+          /^a3 NO EXPUNGE backend not configured/m.test(ex), ex.slice(0, 120));
   } finally { c4.destroy(); await s4.srv.close(); }
 }
 
@@ -2562,11 +3042,12 @@ async function testIdle() {
     check("DONE outside IDLE → BAD", /^a3 BAD DONE outside IDLE/m.test(await _cmd(sock, "a3", "DONE")));
   } finally { sock.destroy(); await s.srv.close(); }
 
-  // 9b. IDLE before auth → NO Login first
+  // 9b. IDLE before auth → BAD, wrong state
   var s2 = await _makeServer({ profile: "permissive" });
   var c2 = await _connect(s2.port);
   try {
-    check("IDLE before auth → NO Login first", /^a1 NO Login first/m.test(await _cmd(c2, "a1", "IDLE")));
+    check("IDLE before auth → BAD, wrong state",
+          /^a1 BAD IDLE only valid in Authenticated state/m.test(await _cmd(c2, "a1", "IDLE")));
   } finally { c2.destroy(); await s2.srv.close(); }
 }
 
@@ -2578,12 +3059,829 @@ async function testDispatchErrors() {
     NOOP:  { fn: function () { throw new Error("sync boom"); },              maxHandlerBytes: 1024, maxHandlerMs: 1000 },
     CHECK: { fn: function () { return Promise.reject(new Error("async boom")); }, maxHandlerBytes: 1024, maxHandlerMs: 1000 },
   } });
-  var sock = await _connect(s.port);
+  var sock = await _authConn(s);
   try {
     check("override handler sync-throw → NO handler threw",
       /^a1 NO .*handler threw/m.test(await _cmd(sock, "a1", "NOOP")));
+    // CHECK is a selected-state command, so the handler is only reached from
+    // there; the point here is what the dispatcher does with its rejection.
+    await _cmd(sock, "a2", "SELECT INBOX");
     check("override handler promise-reject → NO async boom",
-      /^a2 NO async boom/m.test(await _cmd(sock, "a2", "CHECK")));
+      /^a3 NO async boom/m.test(await _cmd(sock, "a3", "CHECK")));
+  } finally { sock.destroy(); await s.srv.close(); }
+}
+
+async function testATagIsAnsweredOnceAndStartTlsOnlyBeforeLogin() {
+  // A handler that awaits a backend can be answered by the dispatcher first,
+  // when it outruns its budget or its selection goes, and then answer its own
+  // tag afterwards. Two tagged responses to one command put a client's
+  // replies out of step with its requests for the rest of the connection, so
+  // the listener writes at most one answer per command. What that must not
+  // cost is a tag the client legitimately uses again later, which is a new
+  // command and gets its own answer.
+  var s = await _makeServer({ profile: "permissive" });
+  var sock = await _authConn(s);
+  try {
+    check("a tag is answered", /^t1 OK/m.test(await _cmd(sock, "t1", "NOOP")));
+    check("and the same tag on a later command is answered again",
+          /^t1 OK/m.test(await _cmd(sock, "t1", "NOOP")));
+    check("and again after one that fails",
+          /^t1 BAD/m.test(await _cmd(sock, "t1", "FETCH 1 (FLAGS)")) &&
+          /^t1 OK/m.test(await _cmd(sock, "t1", "NOOP")));
+  } finally { sock.destroy(); await s.srv.close(); }
+
+  // RFC 9051 §6.2.1 permits STARTTLS only in the not-authenticated state.
+  // Serving it afterwards renegotiates underneath a session that keeps its
+  // actor and its selected mailbox.
+  // ENABLE and NAMESPACE are authenticated-state commands (RFC 9051 §6.3),
+  // and both are registry entries an operator can replace.
+  var s3 = await _makeServer({ profile: "permissive" });
+  var sock3 = await _connect(s3.port);
+  try {
+    check("ENABLE before login → BAD",
+          /^v1 BAD ENABLE only valid in Authenticated/m
+            .test(await _cmd(sock3, "v1", "ENABLE CONDSTORE")));
+    check("NAMESPACE before login → BAD",
+          /^v2 BAD NAMESPACE only valid in Authenticated/m
+            .test(await _cmd(sock3, "v2", "NAMESPACE")));
+  } finally { sock3.destroy(); await s3.srv.close(); }
+
+  // RFC 9051 §6.3.1 (from RFC 5161 §3.1) puts ENABLE in the authenticated
+  // state BEFORE a mailbox is selected, and requires a tagged BAD once one
+  // is. Refusing it only when there is no actor implements half the rule the
+  // refusal text cites, and the half it skipped let a client turn CONDSTORE on
+  // under a selection it had already established, so FETCH began carrying
+  // MODSEQ for a mailbox opened without it.
+  var sEnable = await _makeServer({ profile: "permissive" });
+  var sockEnable = await _authConn(sEnable);
+  try {
+    check("ENABLE before a mailbox is selected is served",
+          /^g1 OK ENABLE completed/m.test(await _cmd(sockEnable, "g1", "ENABLE CONDSTORE")));
+    await _cmd(sockEnable, "g2", "SELECT INBOX");
+    check("ENABLE once a mailbox is selected → BAD",
+          /^g3 BAD ENABLE only valid in Authenticated/m
+            .test(await _cmd(sockEnable, "g3", "ENABLE QRESYNC")));
+    check("and NAMESPACE, which has no such restriction, is still served there",
+          /^g4 OK NAMESPACE completed/m.test(await _cmd(sockEnable, "g4", "NAMESPACE")));
+  } finally { sockEnable.destroy(); await sEnable.srv.close(); }
+
+  var s2 = await _makeServer({ profile: "permissive" });
+  var sock2 = await _authConn(s2);
+  try {
+    check("NAMESPACE after login is served",
+          /^u0 OK NAMESPACE completed/m.test(await _cmd(sock2, "u0", "NAMESPACE")));
+    check("STARTTLS after login → BAD",
+          /^u1 BAD STARTTLS only valid in Not Authenticated/m
+            .test(await _cmd(sock2, "u1", "STARTTLS")));
+    await _cmd(sock2, "u2", "SELECT INBOX");
+    check("and from the selected state too",
+          /^u3 BAD STARTTLS only valid in Not Authenticated/m
+            .test(await _cmd(sock2, "u3", "STARTTLS")));
+  } finally { sock2.destroy(); await s2.srv.close(); }
+}
+
+async function testCloseRemovesTheDeletedSetAndUnselectDoesNot() {
+  // RFC 9051 §6.4.2: CLOSE removes every message flagged \Deleted from the
+  // selected mailbox and returns to the authenticated state. UNSELECT
+  // (§6.4.2, from RFC 3691) returns to that state and removes nothing,
+  // which is the whole reason it exists. Both were the same function, so a
+  // client that flagged mail and closed the mailbox was told the deletion
+  // had happened and it had not.
+  var expunged = [];
+  var store = _baseStore({
+    expungeFolder: function (_actor, name) {
+      expunged.push(name);
+      return Promise.resolve({ expunged: [1, 2], modseq: 9 });                                       // allow:raw-byte-literal — test-only stub modseq
+    },
+  });
+  var s = await _makeServer({ profile: "permissive", mailStore: store });
+  var sock = await _authConn(s);
+  try {
+    await _cmd(sock, "c1", "SELECT INBOX");
+    check("CLOSE completes", /^c2 OK CLOSE completed/m.test(await _cmd(sock, "c2", "CLOSE")));
+    check("and it removed the \\Deleted set",
+          expunged.length === 1 && expunged[0] === "INBOX", JSON.stringify(expunged));
+    check("and the session is back in the authenticated state",
+          /^c3 BAD FETCH only valid in Selected/m.test(await _cmd(sock, "c3", "FETCH 1 (FLAGS)")));
+
+    await _cmd(sock, "c4", "SELECT INBOX");
+    check("UNSELECT completes", /^c5 OK UNSELECT completed/m.test(await _cmd(sock, "c5", "UNSELECT")));
+    check("and removes nothing", expunged.length === 1, JSON.stringify(expunged));
+
+    // A mailbox opened read-only keeps its messages through CLOSE, which is
+    // what EXAMINE is for.
+    await _cmd(sock, "c6", "EXAMINE INBOX");
+    check("CLOSE on a read-only selection completes",
+          /^c7 OK CLOSE completed/m.test(await _cmd(sock, "c7", "CLOSE")));
+    check("and removes nothing either", expunged.length === 1, JSON.stringify(expunged));
+  } finally { sock.destroy(); await s.srv.close(); }
+
+  // And a server with no expunge backend cannot do what CLOSE promises, so
+  // it says so rather than answering OK with the mail still there. That is
+  // the same answer EXPUNGE gives, and the reason UNSELECT can still serve:
+  // it never promised a removal.
+  var noBackend = _baseStore({});
+  delete noBackend.expungeFolder;
+  var s2 = await _makeServer({ profile: "permissive", mailStore: noBackend });
+  var sock2 = await _authConn(s2);
+  try {
+    await _cmd(sock2, "d1", "SELECT INBOX");
+    // A server with no expunge backend still has to let a client leave the
+    // mailbox, since CLOSE is how most of them do it, so it completes and
+    // says in the same breath that nothing was removed. Refusing outright
+    // broke every client on a deployment whose removal path is an EXPUNGE
+    // override rather than a mailStore method.
+    check("CLOSE with no expunge backend completes, saying nothing was removed",
+          /^d2 OK CLOSE completed \(no mailStore\.expungeFolder/m
+            .test(await _cmd(sock2, "d2", "CLOSE")));
+    await _cmd(sock2, "d2b", "SELECT INBOX");
+    check("UNSELECT is still served there",
+          /^d3 OK UNSELECT completed/m.test(await _cmd(sock2, "d3", "UNSELECT")));
+    await _cmd(sock2, "d4", "EXAMINE INBOX");
+    check("and CLOSE on a read-only selection too, since it removes nothing",
+          /^d5 OK CLOSE completed/m.test(await _cmd(sock2, "d5", "CLOSE")));
+  } finally { sock2.destroy(); await s2.srv.close(); }
+
+}
+
+async function testARemovalThatOutlivesItsSelectionIsStillRecorded() {
+  // Another connection can delete or rename the mailbox while the store call
+  // is in flight. The removal happened, so it is recorded: guarding the audit
+  // event on the selection still being there left a real deletion with no
+  // trail at all, and told the client its command failed. Both CLOSE and
+  // EXPUNGE reach the store the same way, so both are asked.
+  for (var pass = 0; pass < 2; pass += 1) {
+    var verb = pass === 0 ? "CLOSE" : "EXPUNGE";
+    var events = [];
+    var release = null;
+    var removed = [];
+    var store = _baseStore({
+      listFolders: function () {
+        return Promise.resolve([{ name: "INBOX" }, { name: "Work" }]);
+      },
+      expungeFolder: function (_actor, name) {
+        removed.push(name);
+        return new Promise(function (res) {
+          release = function () { res({ expunged: [1, 2], modseq: 9 }); };                            // allow:raw-byte-literal — test-only stub modseq
+        });
+      },
+    });
+    var s = await _makeServer({
+      profile: "permissive", mailStore: store,
+      mailboxAdmin: { deleteFolder: function () { return Promise.resolve(); } },
+      audit: { emit:     function (e) { events.push(e && (e.action || e.event)); },
+               safeEmit: function (e) { events.push(e && (e.action || e.event)); } },
+    });
+    var sock = await _authConn(s);
+    var admin = await _authConn(s);
+    try {
+      await _cmd(sock, "p1", "SELECT Work");
+      var pending = _cmdT(sock, "p2", verb, /^p2 /m);
+      await helpers.waitUntil(function () { return release !== null; },
+        { timeoutMs: 5000, label: "imap stale removal: the store call is in flight" });               // allow:raw-time-literal — test-only wait budget
+      await _cmd(admin, "q1", "DELETE Work");
+      release();
+      var reply = await pending;
+      check(verb + " with its selection gone still records the removal",
+            removed.length === 1 &&
+            events.filter(function (n) { return /expunge/i.test(String(n)); }).length === 1,
+            JSON.stringify({ removed: removed, events: events }));
+      check("and the client is answered rather than left waiting (" + verb + ")",
+            /^p2 (OK|NO) /m.test(reply), JSON.stringify(reply));
+    } finally { sock.destroy(); admin.destroy(); await s.srv.close(); }
+  }
+}
+
+async function testACommandInFlightSurvivesAConcurrentRename() {
+  // A rename keeps the selection, so a command that was already talking to
+  // the store when the rename landed is still a command about the mailbox
+  // this session has open. The staleness check compared mailbox NAMES, which
+  // was the same question while a name could not move under a selection and
+  // a different one once it could: the client was answered `NO [CLOSED]` for
+  // a selection the server still holds. What has to survive a rename is the
+  // selection's identity, not its name.
+  var release = null;
+  var fetched = [];
+  var store = _baseStore({
+    listFolders: function () {
+      return Promise.resolve([{ name: "INBOX" }, { name: "Work" }]);
+    },
+    fetchRange: function (_actor, name) {
+      fetched.push(name);
+      return new Promise(function (res) {
+        release = function () { res([{ seq: 1, payload: "FLAGS (\\Seen)" }]); };
+      });
+    },
+  });
+  var s = await _makeServer({
+    profile: "permissive", mailStore: store,
+    mailboxAdmin: { renameFolder: function () { return Promise.resolve(); } },
+  });
+  var sock = await _authConn(s);
+  var admin = await _authConn(s);
+  try {
+    await _cmd(sock, "p1", "SELECT Work");
+    var pending = _cmdT(sock, "p2", "FETCH 1 (FLAGS)", /^p2 /m);
+    await helpers.waitUntil(function () { return release !== null; },
+      { timeoutMs: 5000, label: "imap rename in flight: the store call is in flight" });              // allow:raw-time-literal — test-only wait budget
+    await _cmd(admin, "q1", "RENAME Work Archive");
+    release();
+    var reply = await pending;
+    check("a FETCH crossed by a rename completes rather than being refused",
+          /^p2 OK/m.test(reply) && !/\[CLOSED\]/.test(reply), JSON.stringify(reply));
+    check("and the rows it read are written to the client",
+          /^\* 1 FETCH /m.test(reply), JSON.stringify(reply));
+    // The control: a DELETE across the same window still invalidates it,
+    // because that mailbox is gone rather than renamed.
+    var s2 = await _makeServer({
+      profile: "permissive", mailStore: store,
+      mailboxAdmin: { deleteFolder: function () { return Promise.resolve(); } },
+    });
+    var sock2 = await _authConn(s2);
+    var admin2 = await _authConn(s2);
+    try {
+      release = null;
+      await _cmd(sock2, "r1", "SELECT Work");
+      var pending2 = _cmdT(sock2, "r2", "FETCH 1 (FLAGS)", /^r2 /m);
+      await helpers.waitUntil(function () { return release !== null; },
+        { timeoutMs: 5000, label: "imap delete in flight: the store call is in flight" });            // allow:raw-time-literal — test-only wait budget
+      await _cmd(admin2, "s1", "DELETE Work");
+      release();
+      var reply2 = await pending2;
+      check("a FETCH crossed by a DELETE is still refused",
+            /^r2 NO \[CLOSED\]/m.test(reply2), JSON.stringify(reply2));
+    } finally { sock2.destroy(); admin2.destroy(); await s2.srv.close(); }
+  } finally { sock.destroy(); admin.destroy(); await s.srv.close(); }
+}
+
+async function testCloseRemovesThroughTheStoreSeamOnly() {
+  // An EXPUNGE override is written to serve the EXPUNGE command: it holds the
+  // connection, writes untagged responses and answers a tag. RFC 9051 §6.4.2
+  // gives CLOSE one tagged answer and no untagged EXPUNGE responses, so
+  // driving that handler from CLOSE means containing what it writes, and it
+  // cannot be contained: it is handed `state`, and `state.socket` is the
+  // client's own socket. CLOSE removes through `mailStore.expungeFolder`, and
+  // says so when there is none, rather than calling a handler whose output it
+  // would have to suppress.
+  var called = [];
+  var noMethod = _baseStore({});
+  delete noMethod.expungeFolder;
+  var a = await _makeServer({
+    profile: "permissive", mailStore: noMethod,
+    overrides: {
+      EXPUNGE: {
+        fn: function (state, socket, parsed) {
+          called.push(state.selectedMailbox);
+          socket.write("* 1 EXPUNGE\r\n");
+          parsed.answer("OK EXPUNGE completed");
+        },
+        maxHandlerBytes: 4096,                                                                        // allow:raw-byte-literal — test-only handler budget
+        maxHandlerMs:    1200,                                                                        // allow:raw-time-literal — test-only handler budget
+      },
+    },
+  });
+  var sockA = await _authConn(a);
+  try {
+    await _cmd(sockA, "q1", "SELECT INBOX");
+    var replyA = await _cmd(sockA, "q2", "CLOSE");
+    check("CLOSE does not call the EXPUNGE command handler",
+          called.length === 0, JSON.stringify(called));
+    check("and it says nothing was removed rather than claiming otherwise",
+          /^q2 OK CLOSE completed \(no mailStore\.expungeFolder/m.test(replyA),
+          JSON.stringify(replyA));
+    check("and no untagged EXPUNGE reached the client",
+          replyA.indexOf("EXPUNGE") === -1, JSON.stringify(replyA));
+
+    await _cmd(sockA, "q3", "SELECT INBOX");
+    check("while the EXPUNGE command itself still reaches that handler",
+          /^q4 OK EXPUNGE completed/m.test(await _cmd(sockA, "q4", "EXPUNGE")) &&
+          called.length === 1 && called[0] === "INBOX", JSON.stringify(called));
+    check("and the connection is still usable",
+          /^q5 OK NOOP completed/m.test(await _cmd(sockA, "q5", "NOOP")));
+  } finally { sockA.destroy(); await a.srv.close(); }
+
+  // With a store method present, CLOSE uses it, whether or not an override is
+  // also registered: one removal path, the one CLOSE can read the result of.
+  var removed = [];
+  var overrideCalls = [];
+  var withBoth = await _makeServer({
+    profile: "permissive",
+    mailStore: _baseStore({
+      expungeFolder: function (_actor, name) {
+        removed.push(name);
+        return Promise.resolve({ expunged: [1], modseq: 3 });                                         // allow:raw-byte-literal — test-only stub modseq
+      },
+    }),
+    overrides: {
+      EXPUNGE: {
+        fn: function (state, _socket, parsed) {
+          overrideCalls.push(state.selectedMailbox);
+          parsed.answer("OK EXPUNGE completed");
+        },
+        maxHandlerBytes: 4096,                                                                        // allow:raw-byte-literal — test-only handler budget
+        maxHandlerMs:    1200,                                                                        // allow:raw-time-literal — test-only handler budget
+      },
+    },
+  });
+  var sockBoth = await _authConn(withBoth);
+  try {
+    await _cmd(sockBoth, "t1", "SELECT INBOX");
+    check("CLOSE removes through the store method",
+          /^t2 OK CLOSE completed$/m.test(await _cmd(sockBoth, "t2", "CLOSE")) &&
+          removed.length === 1 && overrideCalls.length === 0,
+          JSON.stringify({ removed: removed, override: overrideCalls }));
+    await _cmd(sockBoth, "t3", "SELECT INBOX");
+    check("and the EXPUNGE command goes to the override that replaced it",
+          /^t4 OK EXPUNGE completed/m.test(await _cmd(sockBoth, "t4", "EXPUNGE")) &&
+          overrideCalls.length === 1 && removed.length === 1,
+          JSON.stringify({ removed: removed, override: overrideCalls }));
+  } finally { sockBoth.destroy(); await withBoth.srv.close(); }
+
+}
+
+async function testAnAnswerAnOperatorHandlerWroteItselfCounts() {
+  // The listener counts an answer it wrote, and an `opts.overrides` handler
+  // answers by writing to the socket it is handed. `parsed.answer(text)`
+  // writes that answer through the listener, so a handler that answered and
+  // then failed does not also draw the dispatcher's refusal: RFC 9051 §2.2.2
+  // gives a command exactly one tagged response.
+  var s = await _makeServer({
+    profile: "permissive",
+    overrides: {
+      SEARCH: {
+        fn: function (_state, socket, parsed) {
+          socket.write("* SEARCH 1 2\r\n");
+          parsed.answer("OK SEARCH completed");
+          return new Promise(function (_resolve, reject) {
+            setTimeout(function () { reject(new Error("index write failed")); }, 120);                // allow:raw-time-literal — test-only delay
+          });
+        },
+        maxHandlerBytes: 4096,                                                                        // allow:raw-byte-literal — test-only handler budget
+        maxHandlerMs:    5000,                                                                        // allow:raw-time-literal — test-only handler budget
+      },
+    },
+  });
+  var sock = await _authConn(s);
+  var seen = "";
+  try {
+    await _cmd(sock, "w1", "SELECT INBOX");
+    sock.on("data", function (chunk) { seen += chunk.toString("utf8"); });
+    sock.write("w2 SEARCH ALL\r\n");
+    await helpers.waitUntil(function () { return /^w2 OK SEARCH completed/m.test(seen); },
+      { timeoutMs: 5000, label: "imap one answer: the handler answers its own tag" });                // allow:raw-time-literal — test-only wait budget
+    await helpers.passiveObserve(500, "imap one answer: the rejection writes nothing more");          // allow:raw-time-literal — test-only observation window
+    check("a handler that answered and then failed draws one tagged line, not two",
+          (seen.match(/^w2 /mg) || []).length === 1, JSON.stringify(seen));
+    check("and the tag is reusable for a new command",
+          /^w2 OK NOOP completed/m.test(await _cmd(sock, "w2", "NOOP")));
+  } finally { sock.destroy(); await s.srv.close(); }
+}
+
+async function testEveryAuthenticatedVerbIsGatedBeforeItsHandler() {
+  // Every verb that needs an authenticated session is held to one in FRONT of
+  // the registry, not inside a handler an operator replaces. The gate names
+  // the verbs RFC 9051 §6.1 and §6.2 admit before login and refuses the rest,
+  // so a verb added later is refused by omission rather than admitted by it.
+  // Measured before this: thirteen verbs reached their override with
+  // `state.actor === null`, CREATE, DELETE, RENAME and SELECT among them.
+  var reached = [];
+  // Each command is one the syntax guard accepts, so what refuses it is the
+  // state gate rather than the grammar.
+  var GATED = [
+    ["ENABLE", "ENABLE CONDSTORE"], ["SELECT", "SELECT INBOX"],
+    ["EXAMINE", "EXAMINE INBOX"], ["LIST", "LIST \"\" \"*\""],
+    ["STATUS", "STATUS INBOX (MESSAGES)"], ["NAMESPACE", "NAMESPACE"],
+    ["APPEND", "APPEND INBOX {3}"], ["CHECK", "CHECK"], ["CLOSE", "CLOSE"],
+    ["UNSELECT", "UNSELECT"], ["EXPUNGE", "EXPUNGE"],
+    ["FETCH", "FETCH 1 (FLAGS)"], ["STORE", "STORE 1 +FLAGS (\\Seen)"],
+    ["IDLE", "IDLE"], ["NOTIFY", "NOTIFY NONE"],
+    ["GETMETADATA", "GETMETADATA INBOX (/x)"],
+    ["SETMETADATA", "SETMETADATA INBOX (/x \"v\")"],
+    ["SEARCH", "SEARCH ALL"], ["CREATE", "CREATE Box"], ["DELETE", "DELETE Box"],
+    ["RENAME", "RENAME Box Box2"], ["SUBSCRIBE", "SUBSCRIBE Box"],
+    ["UNSUBSCRIBE", "UNSUBSCRIBE Box"], ["COPY", "COPY 1 Box"], ["MOVE", "MOVE 1 Box"],
+    // UID re-enters the registry by its own path, which is where a field or a
+    // gate added to one path goes missing from the other.
+    ["UID", "UID FETCH 1 (FLAGS)"],
+  ];
+  var overrides = {};
+  GATED.forEach(function (pair) {
+    overrides[pair[0]] = {
+      fn: function (state, _socket, parsed) {
+        reached.push({ verb: pair[0], actor: state.actor });
+        parsed.answer("OK " + pair[0] + " completed");
+      },
+      maxHandlerBytes: 4096,                                                                          // allow:raw-byte-literal — test-only handler budget
+      maxHandlerMs:    5000,                                                                          // allow:raw-time-literal — test-only handler budget
+    };
+  });
+  var s = await _makeServer({ profile: "permissive", overrides: overrides });
+  var sock = await _connect(s.port);
+  var refusedAll = true;
+  var firstBad = null;
+  try {
+    for (var i = 0; i < GATED.length; i += 1) {
+      var tag = "k" + i;
+      var reply = await _cmd(sock, tag, GATED[i][1]);
+      // APPEND announces a literal, and an unauthenticated literal is refused
+      // before the reader is armed, which is a stricter refusal reached
+      // sooner. Either answer keeps the handler out of reach.
+      var ok = new RegExp("^" + tag + " BAD " + GATED[i][0] +
+                          " only valid in Authenticated state", "m").test(reply) ||
+               (GATED[i][0] === "APPEND" &&
+                /requires authentication; no literal accepted before LOGIN/.test(reply));
+      if (!ok && firstBad === null) firstBad = GATED[i][1] + " -> " + JSON.stringify(reply);
+      refusedAll = refusedAll && ok;
+    }
+    check("every authenticated-state verb is refused before login", refusedAll,
+          firstBad || "");
+    check("and no override ran with a null actor", reached.length === 0,
+          JSON.stringify(reached));
+  } finally { sock.destroy(); await s.srv.close(); }
+}
+
+async function testParsedAnswerReachesEveryOverrideForm() {
+  // `parsed.answer` is the route by which an operator handler's reply is one
+  // the listener knows about, so it has to be there for every verb an operator
+  // can replace, carrying that command's own tag, in the plain form and the
+  // UID form alike. The UID form builds its own parsed object and re-enters
+  // the registry by a second path, which is where a field added to one path
+  // goes missing from the other.
+  var reached = [];
+  function answering(verb) {
+    return {
+      fn: function (_state, _socket, parsed) {
+        reached.push({ verb: verb, tag: parsed.tag, useUid: parsed.useUid === true,
+                       hasAnswer: typeof parsed.answer === "function" });
+        parsed.answer("OK " + verb + " completed");
+      },
+      maxHandlerBytes: 4096,                                                                          // allow:raw-byte-literal — test-only handler budget
+      maxHandlerMs:    5000,                                                                          // allow:raw-time-literal — test-only handler budget
+    };
+  }
+  var s = await _makeServer({
+    profile: "permissive",
+    overrides: {
+      SEARCH: answering("SEARCH"), COPY: answering("COPY"), MOVE: answering("MOVE"),
+      EXPUNGE: answering("EXPUNGE"), FETCH: answering("FETCH"), STORE: answering("STORE"),
+      NAMESPACE: answering("NAMESPACE"),
+    },
+  });
+  var sock = await _authConn(s);
+  try {
+    await _cmd(sock, "z0", "SELECT INBOX");
+    var forms = [
+      ["z1", "NAMESPACE", "NAMESPACE", false],
+      ["z2", "SEARCH ALL", "SEARCH", false],
+      ["z3", "COPY 1:2 Archive", "COPY", false],
+      ["z4", "MOVE 1:2 Archive", "MOVE", false],
+      ["z5", "FETCH 1 (FLAGS)", "FETCH", false],
+      ["z6", "STORE 1 +FLAGS (\\Seen)", "STORE", false],
+      ["z7", "EXPUNGE", "EXPUNGE", false],
+      ["y1", "UID SEARCH ALL", "SEARCH", true],
+      ["y2", "UID COPY 1:2 Archive", "COPY", true],
+      ["y3", "UID MOVE 1:2 Archive", "MOVE", true],
+      ["y4", "UID FETCH 1 (FLAGS)", "FETCH", true],
+      ["y5", "UID STORE 1 +FLAGS (\\Seen)", "STORE", true],
+      ["y6", "UID EXPUNGE 1:2", "EXPUNGE", true],
+    ];
+    for (var i = 0; i < forms.length; i += 1) {
+      var tag = forms[i][0];
+      var reply = await _cmd(sock, tag, forms[i][1]);
+      var saw = reached[reached.length - 1];
+      check("parsed.answer answers " + forms[i][1],
+            new RegExp("^" + tag + " OK " + forms[i][2] + " completed", "m").test(reply),
+            JSON.stringify(reply));
+      check("and the handler held the command's own tag and UID marker (" + forms[i][1] + ")",
+            saw && saw.hasAnswer === true && saw.tag === tag &&
+            saw.verb === forms[i][2] && saw.useUid === forms[i][3],
+            JSON.stringify(saw));
+    }
+  } finally { sock.destroy(); await s.srv.close(); }
+}
+
+async function testParsedAnswerRefusesWhatIsNotAnAnswer() {
+  // `parsed.answer` writes a tagged response, so what it is given has to be
+  // one. A non-string put `z1 undefined` on the wire, which is not a tagged
+  // response at all, and an empty string wrote a bare tag. And the tag alone
+  // does not identify the command: a handler that keeps its `parsed` and
+  // answers after its own command is over matches whatever command holds that
+  // tag now, writing the old text and suppressing the new command's reply.
+  // It reports a refusal by returning false rather than by throwing, because
+  // a handler may call it from a timer or another detached callback, where a
+  // throw is caught by nothing and ends the process.
+  var held = null;
+  var thrown = [];
+  var s = await _makeServer({
+    profile: "permissive",
+    overrides: {
+      SEARCH: {
+        fn: function (_state, _socket, parsed) {
+          if (held === null) {
+            held = parsed;
+            parsed.answer("OK first SEARCH");
+            // Report late, from a stack nothing wraps, which is where a throw
+            // would reach the process instead of the dispatcher.
+            setTimeout(function () {
+              thrown.push("late:" + held.answer("NO stale answer from the previous command"));
+            }, 150);                                                                                  // allow:raw-time-literal — test-only delay
+            return undefined;
+          }
+          parsed.answer("OK second SEARCH");
+          return undefined;
+        },
+        maxHandlerBytes: 4096,                                                                        // allow:raw-byte-literal — test-only handler budget
+        maxHandlerMs:    5000,                                                                        // allow:raw-time-literal — test-only handler budget
+      },
+      NAMESPACE: {
+        fn: function (_state, _socket, parsed) {
+          thrown.push(parsed.answer(undefined));
+          thrown.push(parsed.answer(""));
+          thrown.push(parsed.answer({ not: "a string" }));
+          // A tagged response is one line. Text carrying CRLF wrote a second
+          // response for a tag the client never issued, while the listener
+          // recorded one answer, so the accounting the record exists for was
+          // bypassed by the route the module documents as the safe one.
+          thrown.push(parsed.answer("OK NAMESPACE completed\r\nzz9 OK forged"));
+          thrown.push(parsed.answer("OK NAMESPACE completed"));
+          // A second answer inside the same command writes nothing, because
+          // the command is already answered. Reporting true for it tells a
+          // handler that branches on the result the opposite of what happened.
+          thrown.push(parsed.answer("OK NAMESPACE completed again"));
+          return undefined;
+        },
+        maxHandlerBytes: 4096,                                                                        // allow:raw-byte-literal — test-only handler budget
+        maxHandlerMs:    5000,                                                                        // allow:raw-time-literal — test-only handler budget
+      },
+    },
+  });
+  var sock = await _authConn(s);
+  try {
+    var ns = await _cmd(sock, "n1", "NAMESPACE");
+    check("answer reports what it wrote, for each argument and for a repeat",
+          JSON.stringify(thrown) === "[false,false,false,false,true,false]",
+          JSON.stringify(thrown));
+    check("and the real answer is the only line written for that tag",
+          /^n1 OK NAMESPACE completed$/m.test(ns) && (ns.match(/^n1 /mg) || []).length === 1,
+          JSON.stringify(ns));
+    check("and no line was forged for a tag the client never issued",
+          ns.indexOf("zz9") === -1, JSON.stringify(ns));
+
+    await _cmd(sock, "s0", "SELECT INBOX");
+    check("the first command is answered", /^x1 OK first SEARCH/m.test(
+      await _cmd(sock, "x1", "SEARCH ALL")));
+    var second = await _cmd(sock, "x1", "SEARCH ALL");
+    await helpers.waitUntil(function () {
+      return thrown.indexOf("late:false") !== -1 || thrown.indexOf("late:true") !== -1;
+    }, { timeoutMs: 5000, label: "imap answer: the late call is made" });                             // allow:raw-time-literal — test-only wait budget
+    check("a retained answer from a finished command is refused, not written",
+          thrown.indexOf("late:false") !== -1, JSON.stringify(thrown));
+    check("and refusing it did not end the process, so the connection serves on",
+          /^x9 OK NOOP completed/m.test(await _cmd(sock, "x9", "NOOP")));
+    check("and the command that owns the tag now gets its own reply",
+          /^x1 OK second SEARCH$/m.test(second) && second.indexOf("stale answer") === -1,
+          JSON.stringify(second));
+  } finally { sock.destroy(); await s.srv.close(); }
+}
+
+async function testMessageContentIsNotReadAsTheCommandsAnswer() {
+  // What a handler writes for a FETCH is message content, and a literal's
+  // content is not protocol: it carries whatever the sender put in it,
+  // including a line that begins with the tag this client happens to be
+  // using. Deciding from those bytes whether the command had been answered
+  // let the sender of a message suppress the answer to a command that reads
+  // it, and the client then waits for a reply that is never written.
+  var s = await _makeServer({
+    profile: "permissive",
+    overrides: {
+      FETCH: {
+        fn: function (_state, socket, parsed) {
+          socket.write("* 1 FETCH (BODY[] {22}\r\nhello world\r\n" +
+                       parsed.tag + " apple\r\n)\r\n");
+          return new Promise(function (_resolve, reject) {
+            setTimeout(function () { reject(new Error("backend read failed")); }, 80);                // allow:raw-time-literal — test-only delay
+          });
+        },
+        maxHandlerBytes: 4096,                                                                        // allow:raw-byte-literal — test-only handler budget
+        maxHandlerMs:    5000,                                                                        // allow:raw-time-literal — test-only handler budget
+      },
+    },
+  });
+  var sock = await _authConn(s);
+  try {
+    await _cmd(sock, "1", "SELECT INBOX");
+    // The reply is read on a terminator that a body line cannot forge, since
+    // the bare tag is exactly what the message content carries here.
+    var answered = await _cmdT(sock, "1", "FETCH 1 (BODY[])", /^1 (OK|NO|BAD) /m);
+    check("a body line that looks like the tag does not swallow the answer",
+          /^1 NO backend read failed/m.test(answered), JSON.stringify(answered));
+    check("and the connection still serves the next command",
+          /^1 OK NOOP completed/m.test(
+            await _cmdT(sock, "1", "NOOP", /^1 (OK|NO|BAD) /m)));
+  } finally { sock.destroy(); await s.srv.close(); }
+}
+
+async function testAHandlerPastItsBudgetEndsTheConnection() {
+  // A handler that outruns maxHandlerMs is answered by the dispatcher, and
+  // then keeps running and keeps the socket. What it writes afterwards
+  // arrives with no command in flight: untagged data the client attributes to
+  // whatever it sends next, a second answer to a tag it has already retired,
+  // and in the case of SELECT a server that believes a mailbox is open after
+  // telling the client the SELECT failed (RFC 9051 §6.3.2 leaves the client in
+  // the authenticated state). Suppressing only the second tagged answer makes
+  // the divergence silent instead of removing it. The session can no longer be
+  // described to the client, so the listener says BYE and closes.
+  var late = { wrote: false };
+  var s = await _makeServer({
+    profile: "permissive",
+    overrides: {
+      NAMESPACE: {
+        fn: function (_state, socket, parsed) {
+          return new Promise(function (resolve) {
+            setTimeout(function () {
+              socket.write("* NAMESPACE ((\"\" \".\")) NIL NIL\r\n");
+              socket.write(parsed.tag + " OK NAMESPACE completed\r\n");
+              late.wrote = true;
+              resolve();
+            }, 400);                                                                                  // allow:raw-time-literal — test-only handler delay
+          });
+        },
+        maxHandlerBytes: 4096,                                                                        // allow:raw-byte-literal — test-only handler budget
+        maxHandlerMs:    60,                                                                          // allow:raw-time-literal — test-only handler budget
+      },
+    },
+  });
+  var sock = await _authConn(s);
+  var seen = "";
+  var ended = false;
+  sock.on("data", function (chunk) { seen += chunk.toString("utf8"); });
+  sock.on("close", function () { ended = true; });
+  try {
+    sock.write("h1 NAMESPACE\r\n");
+    await helpers.waitUntil(function () { return /^h1 NO /m.test(seen); },
+      { timeoutMs: 5000, label: "imap budget: the dispatcher answers the tag" });                     // allow:raw-time-literal — test-only wait budget
+    await helpers.waitUntil(function () { return ended; },
+      { timeoutMs: 5000, label: "imap budget: the connection is closed" });                           // allow:raw-time-literal — test-only wait budget
+    check("a handler past its budget is answered once and the client told BYE",
+          /^h1 NO dispatch: 'NAMESPACE' exceeded maxHandlerMs=60/m.test(seen) &&
+          /^\* BYE /m.test(seen), JSON.stringify(seen));
+    await helpers.waitUntil(function () { return late.wrote; },
+      { timeoutMs: 5000, label: "imap budget: the late handler finishes" });                          // allow:raw-time-literal — test-only wait budget
+    await helpers.passiveObserve(200, "imap budget: the late handler's writes do not arrive");        // allow:raw-time-literal — test-only observation window
+    check("and nothing it writes afterwards reaches the client",
+          seen.indexOf("NAMESPACE completed") === -1 && seen.indexOf("* NAMESPACE") === -1,
+          JSON.stringify(seen));
+  } finally { sock.destroy(); await s.srv.close(); }
+}
+
+async function testIdleDoesNotOutliveTheConnection() {
+  // RFC 9051 §6.3.1: IDLE runs until the client sends DONE, and the listener
+  // arms a timer so a connection that idles past the bandwidth window is ended
+  // rather than held forever. DONE was the only thing that disarmed it. A
+  // client that goes away while idling never sends DONE, so the timer stayed
+  // armed for the rest of its 29 minutes, holding the connection state and the
+  // socket, and then wrote BYE to a connection that had been gone that whole
+  // time. One per idling client that drops, which is how a client that
+  // reconnects on a loop accumulates them.
+  function _armed() {
+    return process.getActiveResourcesInfo().filter(function (r) { return r === "Timeout"; }).length;
+  }
+  var seen = { state: null };
+  var s = await _makeServer({ profile: "permissive", overrides: {
+    NAMESPACE: {
+      fn: function (state, socket, parsed) {
+        seen.state = state;
+        socket.write(parsed.tag + " OK NAMESPACE completed\r\n");
+      },
+      maxHandlerBytes: 1024,                                                                          // allow:raw-byte-literal — test-only handler budget
+      maxHandlerMs:    1000,                                                                          // allow:raw-time-literal — test-only handler budget
+    },
+  } });
+  var sock = await _authConn(s);
+  try {
+    var namespaced = await _cmd(sock, "n1", "NAMESPACE");
+    check("[setup] the override reaches the connection state",
+          /^n1 OK/m.test(namespaced) && seen.state !== null, JSON.stringify(namespaced));
+    var before = _armed();
+    var idling = await _cmdT(sock, "i1", "IDLE", /^\+ /m);
+    check("IDLE is accepted with a continuation", /^\+ idling/m.test(idling), JSON.stringify(idling));
+    // The control: without it, a test that only reads the count after the
+    // disconnect passes on a tree where IDLE never armed anything at all.
+    check("[control] the armed timer is visible in the count",
+          seen.state.idle !== null && _armed() > before,
+          "idleArmed=" + (seen.state.idle !== null) + " before=" + before + " during=" + _armed());
+    sock.destroy();
+    await helpers.waitUntil(function () { return seen.state.closed === true; },
+      { timeoutMs: 5000, label: "imap idle: the listener sees the connection close" });               // allow:raw-time-literal — test-only wait budget
+    check("a client that disconnects while idling leaves no timer armed",
+          seen.state.idle === null && _armed() <= before,
+          "idleCleared=" + (seen.state.idle === null) + " before=" + before + " after=" + _armed());
+  } finally { sock.destroy(); await s.srv.close(); }
+}
+
+async function testAReadOnlySelectionRefusesTheCommandsThatWrite() {
+  // RFC 9051 §6.3.2: EXAMINE opens a mailbox read-only. STORE already
+  // refused there from inside its own handler, but EXPUNGE and MOVE did not,
+  // and an operator override replaces the handler that would have checked,
+  // so the answer is given in front of the registry for all three.
+  var s = await _makeServer({ profile: "permissive", overrides: {
+    MOVE: { fn: function (_st, so, p) { so.write(p.tag + " OK MOVE completed\r\n"); },
+            maxHandlerBytes: 1024, maxHandlerMs: 1000 },                                              // allow:raw-byte-literal — test-only handler budget
+    EXPUNGE: { fn: function (_st, so, p) { so.write(p.tag + " OK EXPUNGE completed\r\n"); },
+               maxHandlerBytes: 1024, maxHandlerMs: 1000 },                                           // allow:raw-byte-literal — test-only handler budget
+    COPY: { fn: function (_st, so, p) { so.write(p.tag + " OK COPY completed\r\n"); },
+            maxHandlerBytes: 1024, maxHandlerMs: 1000 },                                              // allow:raw-byte-literal — test-only handler budget
+  } });
+  var sock = await _authConn(s);
+  try {
+    await _cmd(sock, "e1", "EXAMINE INBOX");
+    check("EXPUNGE on a read-only selection → NO",
+          /^e2 NO Mailbox is read-only/m.test(await _cmd(sock, "e2", "EXPUNGE")));
+    check("MOVE on a read-only selection → NO",
+          /^e3 NO Mailbox is read-only/m.test(await _cmd(sock, "e3", "MOVE 1 Archive")));
+    check("UID MOVE on a read-only selection → NO",
+          /^e4 NO Mailbox is read-only/m.test(await _cmd(sock, "e4", "UID MOVE 1 Archive")));
+    // The read-only answer comes before anything about which handlers are
+    // configured, so a client is told what is wrong with its command rather
+    // than what the server has been given.
+    check("UID EXPUNGE on a read-only selection names the mailbox",
+          /^e4b NO Mailbox is read-only/m.test(await _cmd(sock, "e4b", "UID EXPUNGE 1:3")));
+    check("STORE on a read-only selection → NO",
+          /^e5 NO Mailbox is read-only/m.test(await _cmd(sock, "e5", "STORE 1 +FLAGS (\\Seen)")));
+    // COPY reads the selected mailbox and writes another, so it is allowed.
+    check("COPY on a read-only selection is served",
+          /^e6 OK COPY completed/m.test(await _cmd(sock, "e6", "COPY 1 Archive")));
+    // And a writable selection still writes.
+    await _cmd(sock, "e7", "SELECT INBOX");
+    check("the same MOVE is served once the mailbox is selected writable",
+          /^e8 OK MOVE completed/m.test(await _cmd(sock, "e8", "MOVE 1 Archive")));
+  } finally { sock.destroy(); await s.srv.close(); }
+}
+
+async function testAnOverrideIsHandedTheCapsItsCommandIsSubjectTo() {
+  // COPY and MOVE are the operator's to implement, and they mutate. The
+  // listener cannot resolve `MOVE 1:* Archive` for them, so what it can do
+  // is hand over the numbers the profile selected, the same way `storeFlags`
+  // is called with `maxMessages`: without that the handler has no way to
+  // learn the cap its own command is subject to, and a client that has
+  // selected a mailbox moves one of any size.
+  //
+  // The UID form matters more than the plain one here, because the command
+  // guard counts a UID range as a single element and leaves the cap to the
+  // handler, and because the UID form re-enters the registry by its own
+  // path: a handler reached that way was handed nothing at all.
+  var seen = [];
+  var s = await _makeServer({ profile: "permissive", overrides: {
+    MOVE: { fn: function (_st, so, p) {
+      seen.push({ verb: "MOVE", args: p.args, limits: p.limits, useUid: p.useUid === true });
+      so.write(p.tag + " OK MOVE completed\r\n");
+    }, maxHandlerBytes: 1024, maxHandlerMs: 1000 },                                                   // allow:raw-byte-literal — test-only handler budget
+    COPY: { fn: function (_st, so, p) {
+      seen.push({ verb: "COPY", args: p.args, limits: p.limits, useUid: p.useUid === true });
+      so.write(p.tag + " OK COPY completed\r\n");
+    }, maxHandlerBytes: 1024, maxHandlerMs: 1000 },                                                   // allow:raw-byte-literal — test-only handler budget
+    FETCH: { fn: function (_st, so, p) {
+      seen.push({ verb: "FETCH", args: p.args, limits: p.limits, useUid: p.useUid === true });
+      so.write(p.tag + " OK FETCH completed\r\n");
+    }, maxHandlerBytes: 1024, maxHandlerMs: 1000 },                                                   // allow:raw-byte-literal — test-only handler budget
+  } });
+  var sock = await _authConn(s);
+  try {
+    var beforeSelect = await _cmd(sock, "a0", "MOVE 1:* Archive");
+    check("an override is not reached before a mailbox is selected",
+          /^a0 BAD MOVE only valid in Selected/m.test(beforeSelect) && seen.length === 0,
+          beforeSelect.slice(0, 120) + " :: " + seen.length);
+
+    await _cmd(sock, "a1", "SELECT INBOX");
+    await _cmd(sock, "a2", "MOVE 1:* Archive");
+    await _cmd(sock, "a3", "COPY 1:* Archive");
+    await _cmd(sock, "a4", "UID MOVE 1:* Archive");
+    await _cmd(sock, "a5", "UID COPY 1:* Archive");
+    // FETCH and STORE reach the registry the same way, so a handler supplied
+    // for one serves its UID form too. They used to be answered inside the
+    // listener before the registry was consulted, so an override for them was
+    // never called with a UID set at all.
+    await _cmd(sock, "a6", "FETCH 1 (FLAGS)");
+    await _cmd(sock, "a7", "UID FETCH 1 (FLAGS)");
+    var fetches = seen.filter(function (one) { return one.verb === "FETCH"; });
+    check("a FETCH override serves both forms",
+          fetches.length === 2 && fetches[0].useUid === false && fetches[1].useUid === true,
+          JSON.stringify(fetches.map(function (one) { return one.useUid; })));
+    seen = seen.filter(function (one) { return one.verb !== "FETCH"; });
+
+    var profileCap = b.guardImapCommand.PROFILES.permissive.maxSequenceSetItems;
+    check("every form reached its override", seen.length === 4, JSON.stringify(seen.length));
+    check("and each was handed the profile's sequence-set cap",
+          seen.every(function (one) {
+            return one.limits && one.limits.maxSequenceSetItems === profileCap;
+          }), JSON.stringify(seen.map(function (one) {
+            return [one.verb, one.useUid, one.limits && one.limits.maxSequenceSetItems];
+          })));
+    check("including the UID forms, which the guard does not count",
+          seen.filter(function (one) { return one.useUid === true; }).length === 2,
+          JSON.stringify(seen.map(function (one) { return one.useUid; })));
+    check("and the set it has to resolve",
+          seen[0].args.indexOf("1:*") === 0, JSON.stringify(seen[0].args));
   } finally { sock.destroy(); await s.srv.close(); }
 }
 
@@ -2620,11 +3918,40 @@ async function testLiteralSmuggling() {
   var s = await _makeServer({ profile: "permissive" });
   var sock = await _connect(s.port);
   try {
-    check("mid-line literal opener → * BAD (smuggling refused)",
-      /^\* BAD/m.test(await _raw(sock, /^\* BAD/m, "a1 APPEND INBOX {5} EXTRA\r\n")));
+    // The smuggling opener arrives under a readable tag, so RFC 9051 section
+    // 7.1.3's tagged BAD is what the client gets and can pair with it.
+    check("mid-line literal opener → BAD against its tag (smuggling refused)",
+      /^a1 BAD/m.test(await _raw(sock, /^a1 BAD/m, "a1 APPEND INBOX {5} EXTRA\r\n")));
+    // `+bad` is outside the tag grammar, so there is no tag to answer against
+    // and untagged is the only form left.
     check("bad tag → * BAD (non-smuggling guard throw)",
       /^\* BAD/m.test(await _raw(sock, /^\* BAD/m, "+bad NOOP\r\n")));
   } finally { sock.destroy(); await s.srv.close(); }
+
+  // A refused command can have announced MORE than one non-synchronizing
+  // literal: RFC 9051 §4.3 puts one at the end of a line, and a command
+  // continues across lines, so `LOGIN {5+}` is followed by a line that both
+  // carries the first literal's bytes and opens the next. Consuming only the
+  // literal named on the refused line leaves that remainder to be read as a
+  // command line, which is the smuggling the refusal exists to stop. A
+  // non-synchronizing literal cannot be resynchronized without parsing the
+  // command that was just refused, so the connection ends instead.
+  var s2 = await _makeServer({ profile: "permissive" });
+  var sock2 = await _connect(s2.port);
+  var seen2 = "";
+  var ended2 = false;
+  try {
+    sock2.on("data", function (chunk) { seen2 += chunk.toString("utf8"); });
+    sock2.on("close", function () { ended2 = true; });
+    sock2.write("a1 LOGIN {5+}\r\nalice {13+}\r\nz9 CAPABILITY\r\n");
+    await helpers.waitUntil(function () { return ended2; },
+      { timeoutMs: 5000, label: "imap multi-literal refusal: the connection ends" });                 // allow:raw-time-literal — test-only wait budget
+    check("a refused non-synchronizing literal does not leave a smuggled command",
+          seen2.indexOf("z9 OK CAPABILITY") === -1 && !/^\* CAPABILITY/m.test(seen2),
+          JSON.stringify(seen2));
+    check("and the client is told why before the connection closes",
+          /^a1 (BAD|NO) /m.test(seen2) && /^\* BYE /m.test(seen2), JSON.stringify(seen2));
+  } finally { sock2.destroy(); await s2.srv.close(); }
 }
 
 // =====================================================================
@@ -2713,7 +4040,7 @@ async function testMetadataNotifyBranches() {
     check("NOTIFY SET bad syntax → BAD", /^a3 BAD NOTIFY syntax/m.test(await _cmd(cn, "a3", "NOTIFY SET")));
   } finally { cn.destroy(); await sN.srv.close(); }
 
-  // NOTIFY NONE without hook → OK ; NOTIFY unauth → NO Login first ; NOTIFY reject → NO
+  // NOTIFY NONE without hook → OK ; NOTIFY unauth → BAD wrong state ; NOTIFY reject → NO
   var sN2 = await _makeServer({ profile: "permissive" });   // base store has no subscribeNotify
   var cn2 = await _authConn(sN2);
   try {
@@ -2724,7 +4051,9 @@ async function testMetadataNotifyBranches() {
   var sN3 = await _makeServer({ profile: "permissive" });
   var cn3 = await _connect(sN3.port);
   try {
-    check("NOTIFY before auth → NO Login first", /^a1 NO Login first/m.test(await _cmd(cn3, "a1", "NOTIFY NONE")));
+    check("NOTIFY before auth → BAD, wrong state",
+          /^a1 BAD NOTIFY only valid in Authenticated state/m
+            .test(await _cmd(cn3, "a1", "NOTIFY NONE")));
   } finally { cn3.destroy(); await sN3.srv.close(); }
 
   var sN4 = await _makeServer({ profile: "permissive", mailStore: _baseStore({ subscribeNotify: function () { return Promise.reject(new Error("notify refused")); } }) });
@@ -2991,10 +4320,11 @@ async function testDispatchMessagelessErrors() {
   var s = await _makeServer({ profile: "permissive", overrides: {
     CHECK: { fn: function () { return Promise.reject(new Error("")); }, maxHandlerBytes: 1024, maxHandlerMs: 1000 },
   } });
-  var sock = await _connect(s.port);
+  var sock = await _authConn(s);
   try {
+    await _cmd(sock, "a1", "SELECT INBOX");
     check("override promise-reject messageless → NO handler rejected",
-      /^a1 NO handler rejected/m.test(await _cmd(sock, "a1", "CHECK")));
+      /^a2 NO handler rejected/m.test(await _cmd(sock, "a2", "CHECK")));
   } finally { sock.destroy(); await s.srv.close(); }
 }
 
@@ -3125,11 +4455,21 @@ async function testMiscBranchGaps() {
   var s2 = await _makeServer({ profile: "permissive" });
   var cu = await _connect(s2.port);
   try {
-    check("GETMETADATA before auth → NO Login first", /^a1 NO Login first/m.test(await _cmd(cu, "a1", "GETMETADATA INBOX (/x)")));
-    check("SETMETADATA before auth → NO Login first", /^a2 NO Login first/m.test(await _cmd(cu, "a2", "SETMETADATA INBOX (/x " + '"' + "v" + '"' + ")")));
-    check("LIST before auth → NO Login first", /^a3 NO Login first/m.test(await _cmd(cu, "a3", "LIST \"\" \"*\"")));
-    check("STATUS before auth → NO Login first", /^a4 NO Login first/m.test(await _cmd(cu, "a4", "STATUS INBOX (MESSAGES)")));
-    check("APPEND before auth → NO Login first", /^a5 NO Login first/m.test(await _cmd(cu, "a5", "APPEND INBOX")));
+    check("GETMETADATA before auth → BAD, wrong state",
+          /^a1 BAD GETMETADATA only valid in Authenticated state/m
+            .test(await _cmd(cu, "a1", "GETMETADATA INBOX (/x)")));
+    check("SETMETADATA before auth → BAD, wrong state",
+          /^a2 BAD SETMETADATA only valid in Authenticated state/m
+            .test(await _cmd(cu, "a2", "SETMETADATA INBOX (/x " + '"' + "v" + '"' + ")")));
+    check("LIST before auth → BAD, wrong state",
+          /^a3 BAD LIST only valid in Authenticated state/m
+            .test(await _cmd(cu, "a3", "LIST \"\" \"*\"")));
+    check("STATUS before auth → BAD, wrong state",
+          /^a4 BAD STATUS only valid in Authenticated state/m
+            .test(await _cmd(cu, "a4", "STATUS INBOX (MESSAGES)")));
+    check("APPEND before auth → BAD, wrong state",
+          /^a5 BAD APPEND only valid in Authenticated state/m
+            .test(await _cmd(cu, "a5", "APPEND INBOX")));
   } finally { cu.destroy(); await s2.srv.close(); }
 
   // LOGIN with a valid user atom + unterminated quoted password: the
@@ -3383,6 +4723,9 @@ async function testUidRoutesThroughTheRegistrySeam() {
   });
   var sock = await _authConn(s);
   try {
+    // SEARCH is a selected-state command (RFC 9051 §6.4.4), and the listener
+    // holds every registry-dispatched one to that before an override sees it.
+    await _cmd(sock, "S0", "SELECT INBOX");
     var plain = await _cmd(sock, "S1", "SEARCH UNSEEN");
     check("imap: a supplied SEARCH answers the sequence form",
       /^S1 OK/m.test(plain), JSON.stringify(plain));
@@ -3485,6 +4828,10 @@ async function testUidExpungeReachesAConsumerSuppliedHandler() {
   });
   var sock = await _authConn(s);
   try {
+    // RFC 4315 §2.1's UID EXPUNGE is a selected-state command like the
+    // EXPUNGE it qualifies, and the gate in front of the registry holds it
+    // there before an operator handler that deletes is reached.
+    await _cmd(sock, "E0", "SELECT INBOX");
     var reply = await _cmd(sock, "E1", "UID EXPUNGE 1:3");
     check("imap: a supplied EXPUNGE serves the UID form",
       /^E1 OK/m.test(reply), JSON.stringify(reply));
@@ -3558,6 +4905,9 @@ async function run() {
     await testEnableCondstore();
     await testFetchChangedSinceParses();
     await testSelectUnescapesQuotedMailboxName();
+    await wtt("failed select deselects", testAFailedSelectLeavesNoMailboxSelected);
+    await wtt("literal mailbox name cap", testAMailboxNameSentAsALiteralTakesTheSameCap);
+    await wtt("allowLegacyMUtf7 governs", testAllowLegacyMUtf7GovernsWhatItDeclares);
     await testAppendRejectsMalformedQuotedDate();
     await testFetchWritesTheOctetsTheBackendReturned();
     await testStoreUnchangedSinceConflict();
@@ -3593,6 +4943,9 @@ async function run() {
     await testSelectQresyncEmitsVanishedEarlier();
     await testSelectQresyncImplicitlyEngagesCondstore();
     // RFC 9051 command dispatch + error branches
+    await wtt("store cap travels",      testTheStoreCapTravelsWithTheSetToTheStore);
+    await wtt("set forwarded verbatim", testASequenceSetReachesTheStoreAsTheClientWroteIt);
+    await wtt("uid wildcard is the store's", testAUidWildcardIsTheStoresToResolve);
     await wtt("unauth dispatch",        testUnauthDispatch);
     await wtt("starttls upgrade",       testStartTlsUpgrade);
     await wtt("authenticate",           testAuthenticate);
@@ -3603,7 +4956,21 @@ async function run() {
     await wtt("append",                 testAppend);
     await wtt("selected commands",      testSelectedCommands);
     await wtt("idle",                   testIdle);
+    await wtt("idle does not outlive the connection", testIdleDoesNotOutliveTheConnection);
     await wtt("dispatch errors",        testDispatchErrors);
+    await wtt("override sees its caps", testAnOverrideIsHandedTheCapsItsCommandIsSubjectTo);
+    await wtt("read-only refuses writes", testAReadOnlySelectionRefusesTheCommandsThatWrite);
+    await wtt("close expunges, unselect does not", testCloseRemovesTheDeletedSetAndUnselectDoesNot);
+    await wtt("handler past its budget",  testAHandlerPastItsBudgetEndsTheConnection);
+    await wtt("close uses the store seam", testCloseRemovesThroughTheStoreSeamOnly);
+    await wtt("stale removal is recorded", testARemovalThatOutlivesItsSelectionIsStillRecorded);
+    await wtt("in-flight command survives a rename", testACommandInFlightSurvivesAConcurrentRename);
+    await wtt("handler's own answer",     testAnAnswerAnOperatorHandlerWroteItselfCounts);
+    await wtt("auth gate covers every verb", testEveryAuthenticatedVerbIsGatedBeforeItsHandler);
+    await wtt("answer reaches every form", testParsedAnswerReachesEveryOverrideForm);
+    await wtt("answer refuses non-answers", testParsedAnswerRefusesWhatIsNotAnAnswer);
+    await wtt("body text is not protocol", testMessageContentIsNotReadAsTheCommandsAnswer);
+    await wtt("one answer per tag",     testATagIsAnsweredOnceAndStartTlsOnlyBeforeLogin);
     await wtt("connection rate-limit",  testConnectionRateLimit);
     await wtt("client disconnect frees", testClientDisconnectReleasesTheConnectionSlot);
     await wtt("uid routes via registry",  testUidRoutesThroughTheRegistrySeam);

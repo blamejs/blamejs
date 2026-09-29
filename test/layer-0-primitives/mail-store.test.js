@@ -146,9 +146,11 @@ async function testBothTransactionConventionsAreHonoured() {
 }
 
 // A backend whose `transaction` does neither — it takes the callback, does not
-// run it, and hands back something uncallable — cannot make the write atomic.
-// Doing the work anyway would be the worse answer: a partial write is exactly
-// what the transaction is there to prevent, so it is refused and named.
+// run it, and hands back something uncallable — cannot make the write atomic
+// through that member. A savepoint makes it atomic without that member, so a
+// backend that accepts one is served rather than refused: refusing a write the
+// store can perform atomically buys no safety. The refusal is for the backend
+// that offers neither route.
 async function testUnusableTransactionIsRefusedNotIgnored() {
   var fx = await _setupStore("txnbad");
   try {
@@ -159,7 +161,37 @@ async function testUnusableTransactionIsRefusedNotIgnored() {
       store.appendMessage("INBOX",
         _msg(["From: a@x", "To: b@x", "Subject: B", "Message-Id: <b@x>"], "body"));
     } catch (e) { threw = e; }
-    check("a backend whose transaction neither runs nor returns a runner is refused",
+    check("a broken transaction member does not stop a backend that takes a savepoint",
+          threw === null, String(threw && (threw.code || threw.message)));
+    var rows = store.queryByModseq("INBOX", { sinceModseq: 0 });
+    check("and the write went in exactly once",
+          rows.length === 1, "rows=" + rows.length);
+  } finally { _teardown(fx); }
+}
+
+// The same broken `transaction` on a backend that refuses a savepoint too. Now
+// neither route makes the write atomic, so it is refused and named rather than
+// half-written.
+async function testABackendWithNoAtomicRouteAtAllIsRefused() {
+  var fx = await _setupStore("txnnone");
+  try {
+    var inner = fx.db;
+    var noSavepoint = {
+      transaction: function () { return 42; },
+      prepare: function (text) {
+        if (/^\s*SAVEPOINT\b/i.test(String(text))) {
+          throw new Error("this backend does not implement SAVEPOINT");
+        }
+        return inner.prepare(text);
+      },
+    };
+    var store = b.mailStore.create({ backend: noSavepoint });
+    var threw = null;
+    try {
+      store.appendMessage("INBOX",
+        _msg(["From: a@x", "To: b@x", "Subject: B", "Message-Id: <b@x>"], "body"));
+    } catch (e) { threw = e; }
+    check("a backend offering neither a savepoint nor a usable transaction is refused",
           threw && threw.code === "mail-store/unusable-transaction",
           String(threw && (threw.code || threw.message)));
     var rows = store.queryByModseq("INBOX", { sinceModseq: 0 });
@@ -823,6 +855,7 @@ async function testSearchFtsUnavailableFallback() {
 async function run() {
   await testBothTransactionConventionsAreHonoured();
   await testUnusableTransactionIsRefusedNotIgnored();
+  await testABackendWithNoAtomicRouteAtAllIsRefused();
   await testBadTablePrefix();
   await testBadHeaderIds();
   await testOversizeMessageDirect();

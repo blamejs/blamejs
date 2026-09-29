@@ -46,6 +46,9 @@ function _fakeSocket(scriptedResponse) {
 // clamd closes as soon as a stream passes StreamMaxLength, while the transport
 // is still writing chunks, so the reply can be followed by ECONNRESET with no
 // "end" event at all.
+// A socket always emits `close` after `error`, so the fakes do too: a reader
+// that waits for the close to see whether a reply is still coming hangs to its
+// timeout against a fake that stops at the error.
 function _fakeResetAfterReplySocket(scriptedResponse, errCode) {
   var sock = new EventEmitter();
   sock.write = function () { return true; };
@@ -55,9 +58,72 @@ function _fakeResetAfterReplySocket(scriptedResponse, errCode) {
       var err = new Error("read ECONNRESET");
       err.code = errCode || "ECONNRESET";
       sock.emit("error", err);
+      sock.emit("close");
     });
   };
   sock.destroy = function () { sock.emit("close"); };
+  return sock;
+}
+
+// The same close, with the write error arriving BEFORE the reply clamd had
+// already sent. Node surfaces an EPIPE from the write side and the pending
+// read on separate turns, so under load the error can be delivered first
+// while the reply is still queued behind it. Settling on the error discards
+// a verdict the daemon did send, and a message over the cap then reaches the
+// caller as a scanner outage, which is retriable, rather than as a refusal,
+// which is not.
+function _fakeErrorBeforeReplySocket(scriptedResponse, errCode) {
+  var sock = new EventEmitter();
+  sock.write = function () { return true; };
+  sock.end = function () {
+    setImmediate(function () {
+      var err = new Error("write EPIPE");
+      err.code = errCode || "EPIPE";
+      sock.emit("error", err);
+      setImmediate(function () {
+        if (scriptedResponse) sock.emit("data", scriptedResponse);
+        sock.emit("close");
+      });
+    });
+  };
+  sock.destroy = function () { /* the peer already closed; the reply is still coming */ };
+  return sock;
+}
+
+// A socket that stops reading partway, the way clamd does once a stream
+// passes StreamMaxLength: `write` reports the buffer is full and no `drain`
+// ever follows, because the peer is not going to read again.
+function _fakeStopsReadingSocket(afterBytes, scriptedResponse) {
+  var sock = new EventEmitter();
+  var written = 0;
+  var replied = false;
+  sock.write = function (chunk) {
+    written += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(chunk, "ascii");
+    if (written <= afterBytes) return true;
+    if (!replied) {
+      replied = true;
+      setImmediate(function () {
+        if (scriptedResponse) sock.emit("data", scriptedResponse);
+        sock.emit("end");
+      });
+    }
+    return false;
+  };
+  sock.end = function () { /* the writer is not expected to reach this */ };
+  sock.destroy = function () { sock.emit("close"); };
+  sock._written = function () { return written; };
+  return sock;
+}
+
+// A write target that reports backpressure but offers no way to learn when it
+// clears. Parking on a `drain` that cannot be subscribed to is a wait with no
+// end, so the scan would sit out its whole timeout saying nothing.
+function _fakeNoDrainSocket() {
+  var sock = new EventEmitter();
+  sock.write = function () { return false; };
+  sock.end = function () { /* never reached: the writer parks before the terminator */ };
+  sock.destroy = function () { sock.emit("close"); };
+  sock.once = undefined;
   return sock;
 }
 
@@ -76,7 +142,10 @@ function _fakeErrorSocket(errMsg) {
   var sock = new EventEmitter();
   sock.write = function () { return true; };
   sock.end = function () {
-    setImmediate(function () { sock.emit("error", new Error(errMsg || "ECONNRESET")); });
+    setImmediate(function () {
+      sock.emit("error", new Error(errMsg || "ECONNRESET"));
+      sock.emit("close");
+    });
   };
   sock.destroy = function () { sock.emit("close"); };
   return sock;
@@ -190,6 +259,18 @@ async function testScanIcapCleanVerdictViaInjectedSocket() {
   check("ICAP 204 → clean verdict",   rv.verdict === "clean");
   check("ICAP returns icapResponse",  rv.icapResponse && rv.icapResponse.statusCode === 204);
   check("ICAP threats array empty",   Array.isArray(rv.threats) && rv.threats.length === 0);
+
+  // An ICAP server may answer 204 before it has read the body, and the same
+  // write discipline applies: stop feeding a peer that stopped reading rather
+  // than queueing the rest of the message behind it.
+  var icapStopper = _fakeStopsReadingSocket(64 * 1024, icapClean);
+  var hStop = mailScan.create({ host: "av.example.test", port: 1344, audit: _fakeAudit() });
+  var icapStopped = await hStop.scan(Buffer.alloc(4 * 1024 * 1024, 0x41),
+    { _socket: icapStopper }).catch(function (e) { return { errorCode: e.code }; });
+  check("ICAP: a server that stops reading still gets its reply read",
+        icapStopped.verdict === "clean", JSON.stringify(icapStopped));
+  check("ICAP: and the writer stops instead of queueing the whole message",
+        icapStopper._written() < 4 * 1024 * 1024, String(icapStopper._written()));
 
   var seen = audit.emitted.map(function (e) { return e.action; });
   check("audit emitted mail.scan.request",
@@ -513,6 +594,58 @@ async function testClamavErrorVerdictsCarryTheirReason() {
   }).catch(function (e) { return { _threw: e.code }; });
   check("clamav reset: a reset with no reply is still a transport failure",
         emptyReset.errorCode === "mail-scan/transport", JSON.stringify(emptyReset));
+
+  // The same complete reply, delivered after the write error rather than
+  // before it. Measured live against the docker clamd fixture, sending 4 MiB
+  // against a 1 MiB StreamMaxLength: 48 concurrent scans produced 47 size
+  // refusals and one transport failure, so the ordering is the load's to
+  // choose and the verdict must not depend on it.
+  var hLate = _clamHandle(audit);
+  var lateReply = await hLate.scan(Buffer.from("body"), {
+    _socket: _fakeErrorBeforeReplySocket(
+      Buffer.from("INSTREAM size limit exceeded. ERROR\n", "ascii")),
+  }).catch(function (e) { return { errorCode: e.code }; });
+  check("clamav: a reply that lands after the write error is still the verdict",
+        lateReply.errorCode === "mail-scan/clamav-size-limit", JSON.stringify(lateReply));
+
+  // With nothing to read after the error, the transport failure stands.
+  var hLateEmpty = _clamHandle(audit);
+  var lateEmpty = await hLateEmpty.scan(Buffer.from("body"), {
+    _socket: _fakeErrorBeforeReplySocket(null),
+  }).catch(function (e) { return { errorCode: e.code }; });
+  check("clamav: an error with no reply behind it is still a transport failure",
+        lateEmpty.errorCode === "mail-scan/transport", JSON.stringify(lateEmpty));
+
+  // The daemon stops reading at its cap while the writer still holds most of
+  // the message. Queueing the rest regardless is what makes the reply race a
+  // write error at all, and it holds the whole message in the socket's buffer
+  // on top of the copy the caller passed.
+  var stopper = _fakeStopsReadingSocket(
+    64 * 1024, Buffer.from("INSTREAM size limit exceeded. ERROR\n", "ascii"));
+  var hStop = _clamHandle(audit);
+  var stopped = await hStop.scan(Buffer.alloc(4 * 1024 * 1024, 0x41), { _socket: stopper })
+    .catch(function (e) { return { errorCode: e.code }; });
+  check("clamav: a daemon that stops reading gets its verdict read",
+        stopped.errorCode === "mail-scan/clamav-size-limit", JSON.stringify(stopped));
+  check("clamav: and the writer stops instead of queueing the whole message",
+        stopper._written() < 4 * 1024 * 1024, String(stopper._written()));
+
+  // Backpressure is only useful if the writer can learn when it clears. A
+  // target that reports a full buffer and carries no way to subscribe to
+  // `drain` is a fault to report, not a wait to sit out: guarding the
+  // subscription and returning left the scan parked for its whole timeout,
+  // which reads to a caller as a scanner outage rather than a broken target.
+  var hNoDrain = mailScan.create({
+    protocol: "clamav-instream", host: "av.example.test", port: 3310,
+    timeoutMs: 400, audit: _fakeAudit(),
+  });
+  var noDrainStart = Date.now();
+  var noDrain = await hNoDrain.scan(Buffer.alloc(256 * 1024, 0x41),
+    { _socket: _fakeNoDrainSocket() }).catch(function (e) { return { errorCode: e.code }; });
+  check("clamav: a write target with no drain signal is a transport failure",
+        noDrain.errorCode === "mail-scan/transport", JSON.stringify(noDrain));
+  check("and it is reported without waiting out the timeout",
+        Date.now() - noDrainStart < 400, String(Date.now() - noDrainStart));
 
   // The reply is the daemon's text, so it is bounded before an operator logs it.
   var hBig = _clamHandle(audit);

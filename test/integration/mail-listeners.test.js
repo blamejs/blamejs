@@ -197,6 +197,87 @@ async function _imapLiteralRoundTrip(tls, store) {
   } finally { await srv.close({ timeoutMs: 2000 }); }                                                  // allow:raw-time-literal — test-only short drain
 }
 
+// ---- IMAP: the filename decides what the store files ---------------------
+
+// `b.mailStore` fills `has_attachment` and `attachment_count` at append time
+// from `b.safeMime.extractAttachments`, so a filename the reader cannot
+// assemble is a part the store files as displayed text. The layer-0 suites
+// assert that reader against a header string; this asserts what a real APPEND
+// through the listener left in a real database.
+async function _imapContinuationFilenameAttachment(tls, store) {
+  var srv = b.mail.server.imap.create({
+    tlsContext: tls.ctx,
+    profile:    "permissive",
+    mailStore:  store,
+    auth: { mechanisms: ["LOGIN"], verify: function () {
+      return Promise.resolve({ ok: true, actor: { id: "u1", username: "alice", tenantId: "t1" } });
+    } },
+  });
+  var info = await srv.listen({ port: 0, address: "127.0.0.1" });
+  var sock = _connect(info.port);
+  try {
+    await _readUntil(sock, function (s) { return /^\* OK/m.test(s); });
+    var seen = "";
+    sock.on("data", function (c) { seen += c.toString("utf8"); });
+
+    sock.write("c1 LOGIN alice pw\r\n");
+    await helpers.waitUntil(function () { return /^c1 OK/m.test(seen); },
+      { timeoutMs: 8000, label: "imap live: login before the continuation append" });
+
+    // The attached part is text/plain and marked inline, so its FILENAME is the
+    // only thing separating it from the body beside it. RFC 2231 §3 splits that
+    // filename across two segments and §4.1 flags each as encoded, with the
+    // multibyte character cut at the boundary.
+    var marker = "continuation-attachment-body-marker";
+    var body = Buffer.from(
+      "From: alice@example.com\r\n" +
+      "To: bob@example.com\r\n" +
+      "Subject: continuation filename append\r\n" +
+      "MIME-Version: 1.0\r\n" +
+      "Content-Type: multipart/mixed; boundary=\"bnd\"\r\n" +
+      "\r\n" +
+      "--bnd\r\n" +
+      "Content-Type: text/plain; charset=utf-8\r\n" +
+      "\r\n" +
+      marker + "\r\n" +
+      "--bnd\r\n" +
+      "Content-Type: text/plain; charset=utf-8\r\n" +
+      "Content-Disposition: inline; filename*0*=utf-8''r%C3; filename*1*=%A9el.csv\r\n" +
+      "\r\n" +
+      "id,amount\r\n1,2\r\n" +
+      "--bnd--\r\n", "utf8");
+
+    sock.write("c2 APPEND INBOX {" + body.length + "+}\r\n");
+    sock.write(body);
+    sock.write("\r\n");
+    await helpers.waitUntil(function () { return /^c2 /m.test(seen); },
+      { timeoutMs: 8000, label: "imap live: continuation append answered" });
+    check("imap live: an APPEND naming its part across RFC 2231 segments is accepted",
+          /^c2 OK/m.test(seen), JSON.stringify(seen.slice(-200)));
+
+    // `search` matches body text, and this marker is in this message alone, so
+    // the row read here is this APPEND's rather than the one the literal
+    // round-trip left in the same folder.
+    var found = store.search("INBOX", { text: marker });
+    var rows = (found && found.rows) || found || [];
+    var mine = null;
+    for (var i = 0; i < rows.length; i += 1) {
+      var row = store.fetchByObjectId("INBOX", rows[i].objectid);
+      if (row && row.subject === "continuation filename append") mine = row;
+    }
+    check("imap live: the continuation-named message is in the store", mine !== null,
+          JSON.stringify({ rows: rows.length }));
+    if (mine !== null) {
+      // Before the segments were assembled the part had no filename, so the
+      // append recorded no attachment and the CSV read as a second body.
+      check("imap live: a filename split across RFC 2231 segments is filed as an attachment",
+            mine.hasAttachment === true && mine.attachmentCount === 1,
+            JSON.stringify({ has: mine.hasAttachment, count: mine.attachmentCount }));
+    }
+    sock.destroy();
+  } finally { await srv.close({ timeoutMs: 2000 }); }                                                  // allow:raw-time-literal — test-only short drain
+}
+
 // ---- Submission: a refusal after STARTTLS reaches the client -------------
 
 // The listener requires the upgrade before it accepts an envelope, so by the
@@ -556,6 +637,7 @@ async function run() {
   var live = await _liveStore();
   try {
     await _imapLiteralRoundTrip(tls, live.store);
+    await _imapContinuationFilenameAttachment(tls, live.store);
     await _managesieveScriptFidelity(tls, live.store);
     await _pop3PipelinedCredentials(tls, live.store);
     await _submissionDeliversToMailpit(tls);

@@ -82,11 +82,16 @@ async function _mintChain(opts) {
   // signed with the root's raw key (issuer name + SPKI, not issuer cert) so a
   // deliberately cA:FALSE intermediate can still be minted — pki.x509.sign
   // refuses to sign under an issuer *certificate* that is not itself a CA.
+  // `profile: "none"` turns off the RFC 5280 build gate for this mint alone:
+  // a cA:TRUE certificate without keyCertSign is precisely the certificate
+  // this test needs, and the gate would otherwise refuse to produce the input
+  // whose rejection is being asserted.
   var interPem = await pki.x509.sign({
     subject: "Test Intermediate", subjectPublicKey: interSpki,
     serialNumber: "02", notBefore: now, notAfter: notAfter,
     extensions: { basicConstraints: { cA: interCa, critical: true } },
-  }, { name: "Test Root CA", publicKey: rootSpki, key: rootKeys.privateKey }, { pem: true });
+  }, { name: "Test Root CA", publicKey: rootSpki, key: rootKeys.privateKey },
+     { pem: true, profile: "none" });
 
   // The leaf is signed with the intermediate's raw key so a cA:FALSE
   // intermediate genuinely issues + signs it (the forged chain under test).
