@@ -1859,6 +1859,54 @@ function testGuardCsvSerializeRedact() {
         outObj.indexOf("[REDACTED]") !== -1 && outObj.indexOf("SECRET") === -1);
 }
 
+// The HIPAA, PCI-DSS and GDPR postures set `piiPolicy: "redact"`. An operator
+// who takes the posture and writes no redactor of their own was getting the
+// rows back unredacted, because the policy only took effect when `opts.redact`
+// was also supplied.
+function testRedactPolicyRedactsWithoutAnOperatorRedactor() {
+  var SSN = "123-45-6789";
+  var PAN = "4111 1111 1111 1111";
+
+  var posture = b.guardCsv.compliancePosture("hipaa");
+  check("posture: hipaa asks for redaction", posture.piiPolicy === "redact");
+
+  var out = b.guardCsv.serialize([{ name: "alice", ssn: SSN, card: PAN }], posture);
+  check("policy: the ssn does not reach the output", out.indexOf(SSN) === -1);
+  check("policy: the card number does not reach the output", out.indexOf(PAN) === -1);
+  check("policy: the rest of the row survives", out.indexOf("alice") !== -1);
+
+  // Array rows take the same path as object rows.
+  var outArr = b.guardCsv.serialize([[SSN, "ok"]],
+    Object.assign({}, posture, { headers: false }));
+  check("policy: an array-row cell is redacted too",
+        outArr.indexOf(SSN) === -1 && outArr.indexOf("ok") !== -1);
+
+  // `preserve` still preserves, so the policy is what decides and not the
+  // presence of a redactor.
+  var kept = b.guardCsv.serialize([[SSN]], { piiPolicy: "preserve", headers: false });
+  check("policy: preserve leaves the cell alone", kept.indexOf(SSN) !== -1);
+
+  // An operator's own redactor still wins over the framework's.
+  var mine = { string: function (v) { return v === SSN ? "MINE" : v; } };
+  var outMine = b.guardCsv.serialize([[SSN]],
+    { piiPolicy: "redact", redact: mine, headers: false });
+  check("policy: an operator redactor takes precedence",
+        outMine.indexOf("MINE") !== -1 && outMine.indexOf(SSN) === -1);
+
+  // A redact opt that cannot redact is a typo, not a redactor.
+  function threw(fn) {
+    try { fn(); return null; } catch (e) { return (e && e.code) || "throw"; }
+  }
+  check("policy: a redact opt with no string() is refused",
+        threw(function () {
+          b.guardCsv.serialize([[SSN]], { piiPolicy: "redact", redact: {}, headers: false });
+        }) === "csv/bad-opt");
+  check("policy: a non-object redact opt is refused",
+        threw(function () {
+          b.guardCsv.serialize([[SSN]], { piiPolicy: "redact", redact: "yes", headers: false });
+        }) === "csv/bad-opt");
+}
+
 function testGuardCsvSerializeCellTooLargeAfterEscape() {
   // Raw "=1234" is 5 bytes (== cap, passes escapeCell's own check); the
   // strict prefix-tab mitigation makes it 6 bytes, tripping the post-escape
@@ -2098,6 +2146,7 @@ async function run() {
   testGuardCsvSchemaBoundValidate();
   testGuardCsvSerializeRowsNotArray();
   testGuardCsvSerializeRedact();
+  testRedactPolicyRedactsWithoutAnOperatorRedactor();
   testGuardCsvSerializeCellTooLargeAfterEscape();
   testGuardCsvSerializeTooManyColumns();
   testGuardCsvSerializeRowNotArrayOrObject();

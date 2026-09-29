@@ -362,6 +362,57 @@ async function run() {
     success.req.apiKey && success.req.apiKey.boundFields.tenantId === "acme");
 
   // ---------------------------------------------------------------
+  // The audit trail names whoever the key acts for.
+  //
+  // b.requestHelpers.extractActorContext reads req.apiKey.ownerId, and
+  // forty-one audit emissions across lib/ take their actor straight from it.
+  // The middleware dropped the field, so every one of those rows recorded a
+  // null principal for a request that was authenticated.
+  // ---------------------------------------------------------------
+  var ownedMw = b.middleware.requireBoundKey({
+    resolver: _resolverFor({
+      id: "k-owned", ownerId: "user-42",
+      scopes: ["webhook.ingest"], boundFields: {},
+    }),
+    requiredScopes: ["webhook.ingest"],
+    audit: false,
+  });
+  var owned = await _drive(ownedMw, _bearerReq("valid-key"));
+  check("owner: the key's owner rides on req.apiKey",
+    owned.nextCalled === true && owned.req.apiKey.ownerId === "user-42");
+  check("owner: an audit row for the request names the owner",
+    b.requestHelpers.extractActorContext(owned.req).userId === "user-42");
+  check("owner: the identity resolver names the key's owner",
+    b.requestHelpers.actorIdentityKey(owned.req.apiKey) !== null);
+
+  // A record with no owner carries none, rather than borrowing the key id:
+  // a key id is not a user id, and folding one onto the other is how two
+  // principals come to share a name.
+  var ownerlessMw = b.middleware.requireBoundKey({
+    resolver: _resolverFor({ id: "k-ownerless", scopes: ["webhook.ingest"], boundFields: {} }),
+    requiredScopes: ["webhook.ingest"],
+    audit: false,
+  });
+  var ownerless = await _drive(ownerlessMw, _bearerReq("valid-key"));
+  check("owner: a key with no owner carries no ownerId",
+    ownerless.nextCalled === true && ownerless.req.apiKey.ownerId === null);
+  check("owner: a key with no owner does not borrow its id as a user id",
+    b.requestHelpers.extractActorContext(ownerless.req).userId === null);
+
+  // A non-string owner on the record is not an owner.
+  var badOwnerMw = b.middleware.requireBoundKey({
+    resolver: _resolverFor({
+      id: "k-bad", ownerId: { nested: "no" },
+      scopes: ["webhook.ingest"], boundFields: {},
+    }),
+    requiredScopes: ["webhook.ingest"],
+    audit: false,
+  });
+  var badOwner = await _drive(badOwnerMw, _bearerReq("valid-key"));
+  check("owner: a non-string ownerId is not carried",
+    badOwner.nextCalled === true && badOwner.req.apiKey.ownerId === null);
+
+  // ---------------------------------------------------------------
   // Refusal customization — onDeny hook + problemDetails mode.
   // ---------------------------------------------------------------
   var onDenyCalls = [];

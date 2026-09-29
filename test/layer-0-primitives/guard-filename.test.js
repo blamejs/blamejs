@@ -401,6 +401,22 @@ function testGdprPostureMatchesBalancedTier() {
         b.guardFilename.COMPLIANCE_POSTURES.gdpr.bidiPolicy === "strip");
   check("gdpr posture overlay keeps controlPolicy=strip",
         b.guardFilename.COMPLIANCE_POSTURES.gdpr.controlPolicy === "strip");
+
+  // Reading the overlay object back says what it declares, not what it does.
+  // A posture that names a policy and changes no outcome is what
+  // b.guardCsv's redact posture was, so compare the overlay against the
+  // default instead of against itself.
+  function sanitized(name, opts) {
+    try { return { value: b.guardFilename.sanitize(name, opts) }; }
+    catch (e) { return { code: (e && e.code) || "throw" }; }
+  }
+  var BIDI = "in‮voice.pdf";
+  var byDefault = sanitized(BIDI, {});
+  var underGdpr = sanitized(BIDI, b.guardFilename.compliancePosture("gdpr"));
+  check("gdpr overlay changes what a bidi name does: default refuses",
+        byDefault.code === "filename.bidi");
+  check("gdpr overlay changes what a bidi name does: gdpr strips it",
+        underGdpr.value === "invoice.pdf");
 }
 
 function testGuardFilenameCompliancePosture() {
