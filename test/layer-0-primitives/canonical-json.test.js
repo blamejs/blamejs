@@ -60,6 +60,53 @@ function testStrictRefusals() {
   check("JCS: circular reference refused", /circular/.test(code(function () { var o = {}; o.self = o; cj.stringifyJcs(o); })));
 }
 
+// The canonical bytes are what a signature commits to, so the same value has
+// to canonicalize the same way whichever realm built it. Type dispatch by
+// `instanceof` compares against this realm's constructors, so a value from a
+// `node:vm` context missed every branch and fell through to the plain-object
+// walk, which has no own enumerable keys to write: a Date became `{}` in the
+// signed bytes, and a Map, Set or RegExp became `{}` where the same value
+// built here is refused outright.
+function testCrossRealmValuesCanonicalizeTheSameWay() {
+  var vm = require("node:vm");
+  var ctx = vm.createContext({ out: {} });
+  vm.runInContext(
+    "out.date = new Date(Date.UTC(2026, 0, 2));" +
+    "out.map  = new Map([[1, 2]]);" +
+    "out.set  = new Set([1]);" +
+    "out.re   = /x/;" +
+    "out.bytes = new Uint8Array([1, 2]);" +
+    "out.plain = { b: 1, a: 2 };",
+    ctx);
+
+  check("cross-realm Date canonicalizes to its ISO string, as a local one does",
+        cj.stringify({ v: ctx.out.date }) === cj.stringify({ v: new Date(Date.UTC(2026, 0, 2)) }));
+  check("cross-realm Date is not written as an empty object",
+        cj.stringify({ v: ctx.out.date }).indexOf("{}") === -1);
+
+  check("cross-realm Map is refused, as a local one is",
+        /Map/.test(code(function () { cj.stringify({ v: ctx.out.map }); })));
+  check("cross-realm Set is refused, as a local one is",
+        /Set/.test(code(function () { cj.stringify({ v: ctx.out.set }); })));
+  check("cross-realm RegExp is refused, as a local one is",
+        /RegExp/.test(code(function () { cj.stringify({ v: ctx.out.re }); })));
+
+  check("cross-realm Uint8Array canonicalizes to hex, as a local one does",
+        cj.stringify({ v: ctx.out.bytes }) === cj.stringify({ v: new Uint8Array([1, 2]) }));
+  check("cross-realm Uint8Array is refused under bufferAs reject, as a local one is",
+        /reject/.test(code(function () {
+          cj.stringify({ v: ctx.out.bytes }, { bufferAs: "reject" });
+        })));
+
+  check("cross-realm plain object still sorts its keys",
+        cj.stringify(ctx.out.plain) === '{"a":2,"b":1}');
+
+  check("JCS refuses a cross-realm Date, as it refuses a local one",
+        /Date/.test(code(function () { cj.stringifyJcs({ v: ctx.out.date }); })));
+  check("JCS refuses a cross-realm Map, as it refuses a local one",
+        /Map/.test(code(function () { cj.stringifyJcs({ v: ctx.out.map }); })));
+}
+
 function testLenientStringify() {
   // The lenient framework variant serializes Buffers (hex), Dates (ISO),
   // and BigInts (decimal) while still sorting keys.
@@ -98,6 +145,7 @@ async function run() {
   testJcsConformance();
   testSparseArrays();
   testStrictRefusals();
+  testCrossRealmValuesCanonicalizeTheSameWay();
   testLenientStringify();
   testDepthCap();
 }

@@ -170,6 +170,36 @@ function testRequireDeterministic() {
   check("decode: non-canonical accepted without requireDeterministic", cbor.decode(Buffer.from([0x18, 0x01])) === 1);
 }
 
+// CBOR is a wire format, so a value has to encode to the same bytes whichever
+// realm built it. Dispatching on `instanceof` compares against this realm's
+// constructors, so a Map from a `node:vm` context fell through to the
+// plain-object branch, where Object.keys sees nothing and the map encodes
+// empty, and a Uint8Array from one would encode as a map of index keys rather
+// than as a byte string.
+function testCrossRealmValuesEncodeTheSameWay() {
+  var vm = require("node:vm");
+  var ctx = vm.createContext({ out: {} });
+  vm.runInContext(
+    'out.map = new Map([[1, 2]]);' +
+    'out.bytes = new Uint8Array([1, 2, 3]);' +
+    'out.nested = new Map([["a", new Map([["b", 1]])]]);',
+    ctx);
+
+  check("cross-realm Map encodes as a local Map does",
+        _hex(cbor.encode(ctx.out.map)) === _hex(cbor.encode(new Map([[1, 2]]))));
+  check("cross-realm Map does not encode empty",
+        _hex(cbor.encode(ctx.out.map)) !== "a0");
+  check("cross-realm nested Map encodes as a local one does",
+        _hex(cbor.encode(ctx.out.nested)) ===
+        _hex(cbor.encode(new Map([["a", new Map([["b", 1]])]]))));
+  check("cross-realm Uint8Array encodes as a byte string, as a local one does",
+        _hex(cbor.encode(ctx.out.bytes)) === _hex(cbor.encode(new Uint8Array([1, 2, 3]))));
+  check("cross-realm Uint8Array round-trips through decode",
+        _hex(cbor.decode(cbor.encode(ctx.out.bytes))) === "010203");
+  check("decode accepts a cross-realm Uint8Array as input",
+        cbor.decode(new Uint8Array(cbor.encode(new Map([[1, 2]])))) instanceof Map);
+}
+
 function testInputValidation() {
   var e1 = null;
   try { cbor.decode("not a buffer"); } catch (e) { e1 = e; }
@@ -193,6 +223,7 @@ function run() {
   testTags();
   testBoundedRefusals();
   testRequireDeterministic();
+  testCrossRealmValuesEncodeTheSameWay();
   testInputValidation();
 }
 

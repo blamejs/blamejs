@@ -484,6 +484,7 @@ var VALID_ALLOW_CLASSES = {
   "resolver-querymx-shape-assumed": 1,
   "root-prefix-family-without-reseal": 1,
   "scoped-context-binding-unused": 1,
+  "serializer-realm-bound-instanceof": 1,
   "session-updatedata-merges-one-level-deep": 1,
   "shape-file-inline-opts-validation": 1,
   "smtp-linebuffer-utf8-roundtrip": 1,
@@ -22919,6 +22920,49 @@ function testSessionUpdateDataMergesOneLevelDeep() {
     bad);
 }
 
+// A serializer decides what bytes a value becomes, and a signature is taken
+// over those bytes. `x instanceof Date` asks whether x was built from THIS
+// realm's Date, so a value from a `node:vm` context answers no to every branch
+// and falls through to whatever the last one is. Measured before this fired:
+// a cross-realm Date canonicalized to `{}` instead of its ISO string, a
+// cross-realm Map and Set canonicalized to `{}` where a local one is REFUSED
+// as unserialisable, and a cross-realm Map encoded to CBOR as an empty map.
+// Each is a value silently dropped out of bytes something then signs.
+// node:util's types read the internal slot instead, so they answer for any
+// realm and cannot be spoofed by a Symbol.toStringTag.
+var _REALM_BOUND_BUILTINS = "Date|Map|Set|RegExp|WeakMap|WeakSet|Promise|ArrayBuffer|" +
+  "Uint8Array|Uint16Array|Uint32Array|Int8Array|Int16Array|Int32Array|" +
+  "Float32Array|Float64Array|BigInt64Array|BigUint64Array|DataView";
+
+function testSerializersDoNotDispatchOnRealmBoundInstanceof() {
+  // Named one by one: each turns an arbitrary operator value into bytes or a
+  // string, so which branch it takes is the whole answer. A module that only
+  // coerces (`x instanceof Date ? x : new Date(x)`) is not in scope, because
+  // its other branch handles the value correctly.
+  var SERIALIZERS = ["lib/canonical-json.js", "lib/cbor.js", "lib/safe-json.js"];
+  var re = new RegExp("instanceof\\s+(?:" + _REALM_BOUND_BUILTINS + ")\\b");
+  var bad = [];
+  SERIALIZERS.forEach(function (rel) {
+    var src;
+    try { src = fs.readFileSync(rel, "utf8"); }
+    catch (_e) { return; }
+    src.split("\n").forEach(function (line, i) {
+      var code = line.replace(/\/\/[^\n]*/g, "");
+      if (!re.test(code)) return;
+      bad.push({ file: rel, line: i + 1,
+        content: "a serializer dispatches on `instanceof` against a built-in, which compares this realm's " +
+                 "constructor: a value from a node:vm context answers no and takes a branch meant for " +
+                 "something else, so it serializes to different bytes or slips past a refusal. Use " +
+                 "node:util's types (nodeTypes.isDate / isMap / isSet / isRegExp / isUint8Array), which read " +
+                 "the internal slot. `Buffer.isBuffer` is already realm-independent and stays" });
+    });
+  });
+  bad = _filterMarkers(bad, "serializer-realm-bound-instanceof");
+  _report("a serializer decides a value's type with node:util types, never `instanceof` against a built-in " +
+          "(which answers no for a value from another realm)",
+    bad);
+}
+
 // b.mtlsCa publishes the CA key and cert as two separate file renames, so they
 // cannot be a single atomic swap: a crash after the key rename but before the
 // cert rename leaves a new-key/old-cert pair the in-memory catch rollback (a
@@ -25857,6 +25901,7 @@ async function run() {
   testMtlsCaFingerprintMatchesGate();
   testRequireMtlsRevocationSourceReturnsBoolean();
   testSessionUpdateDataMergesOneLevelDeep();
+  testSerializersDoNotDispatchOnRealmBoundInstanceof();
   testMtlsCaCommitJournalsPriorKeyBeforeRename();
   testMtlsCaIssuanceLedgerFailsClosedOnCorruptSchema();
   testMtlsCaIssuanceGenerationUndeterminableIsNull();

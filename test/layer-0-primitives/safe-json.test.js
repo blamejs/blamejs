@@ -1673,6 +1673,7 @@ async function run() {
   testFormats();
   testRegisterFormatAndIsJsonObject();
   testFormatsAgreeWithThePatternsTheyReplaced();
+  testCrossRealmPatternsAndBytesAreReadAsThemselves();
   testSchemaPatternRunsInLinearTime();
 }
 
@@ -1752,6 +1753,48 @@ function testFormatsAgreeWithThePatternsTheyReplaced() {
 
 // A schema's `pattern` is operator-written and runs against a value that
 // arrived over the wire — the arrangement catastrophic backtracking needs.
+// `pattern instanceof RegExp` asks whether the pattern came from THIS realm's
+// RegExp, so one built in a `node:vm` context answered no and was read through
+// String(), which yields "/^[a-z]+$/" with the delimiters in it and drops the
+// flags. The schema then compiled a different expression: measured, a value
+// the identical local pattern accepts was refused. The same comparison against
+// Uint8Array decided whether bytes were treated as bytes or walked as an
+// object.
+function testCrossRealmPatternsAndBytesAreReadAsThemselves() {
+  var vm = require("node:vm");
+  var ctx = vm.createContext({ o: {} });
+  vm.runInContext('o.re = /^[a-z]+$/; o.reI = /^ab$/i; o.u8 = new Uint8Array([1, 2, 3]);', ctx);
+
+  function valid(schema, value) {
+    try { b.safeJson.validate(value, schema); return true; }
+    catch (_e) { return false; }
+  }
+
+  check("cross-realm pattern accepts what the same local pattern accepts",
+        valid({ type: "string", pattern: ctx.o.re }, "abc") === true);
+  check("cross-realm pattern refuses what the same local pattern refuses",
+        valid({ type: "string", pattern: ctx.o.re }, "AB1") === false);
+  check("local pattern is unchanged",
+        valid({ type: "string", pattern: /^[a-z]+$/ }, "abc") === true &&
+        valid({ type: "string", pattern: /^[a-z]+$/ }, "AB1") === false);
+  check("cross-realm pattern keeps its flags",
+        valid({ type: "string", pattern: ctx.o.reI }, "AB") === true);
+
+  // A cross-realm Uint8Array is bytes, not an object with index keys.
+  var fromLocal = b.safeJson.parse(Buffer.from('{"a":1}'));
+  var crossBytes = new Uint8Array(Buffer.from('{"a":1}'));
+  var ctx2 = vm.createContext({ bytes: null });
+  ctx2.bytes = crossBytes;
+  check("a local byte input parses", fromLocal && fromLocal.a === 1);
+  check("a cross-realm byte input parses the same way",
+        (function () {
+          try {
+            var got = b.safeJson.parse(ctx.o.u8 && crossBytes);
+            return got && got.a === 1;
+          } catch (_e) { return false; }
+        })());
+}
+
 function testSchemaPatternRunsInLinearTime() {
   function verdict(value, pattern) {
     try { b.safeJson.validate(value, { type: "string", pattern: pattern }); return "ok"; }
