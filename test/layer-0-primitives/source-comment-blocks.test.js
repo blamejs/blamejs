@@ -75,7 +75,141 @@ function _buildLocalOptsResolver() {
 
 var optsResolver = _buildLocalOptsResolver();
 
+// ---------------------------------------------------------------------------
+// @related fixtures.
+//
+// Running the engine over lib/ and asserting "clean" says the tree is clean;
+// it does not say the check can fail. The @related resolution accepted a
+// wholly invented namespace for as long as nobody checked, because a
+// reference it could not resolve fell through to a branch that allowed it.
+// Each fixture below is a one-file tree the engine is run against, so every
+// branch has a case that proves it fires and a case that proves it stays
+// quiet.
+// ---------------------------------------------------------------------------
+
+var fs = require("node:fs");
+var os = require("node:os");
+
+var FIXTURE_SNAPSHOT = {
+  version: 1,
+  exports: {
+    realNs:  { type: "object", members: { realFn: { type: "function", arity: 1 } } },
+    undocNs: { type: "object", members: { someFn: { type: "function", arity: 1 } } },
+    nested:  { type: "object", members: { ns: { type: "object", members: {} } } },
+  },
+};
+
+function _fixtureModule(ns, title) {
+  return [
+    "/**",
+    " * @module b." + ns,
+    " * @nav    Fixtures",
+    " * @title  " + title,
+    " *",
+    " * @intro",
+    " *   A fixture namespace used to drive the @related resolution branches.",
+    " *",
+    " * @card",
+    " *   A fixture namespace used to drive the @related resolution branches.",
+    " */",
+    "",
+  ].join("\n");
+}
+
+function _fixturePrimitive(sig, related) {
+  return [
+    "/**",
+    " * @primitive b." + sig,
+    " * @signature b." + sig + "(value)",
+    " * @since     0.1.0",
+    " * @status    stable",
+    " * @related   " + related,
+    " *",
+    " * A fixture primitive that exists only to carry a @related reference.",
+    " *",
+    " * @example",
+    " *   var out = b." + sig + "(1);",
+    " */",
+    "",
+  ].join("\n");
+}
+
+// Build a temp tree: <root>/api-snapshot.json + <root>/lib/<files>, run the
+// engine over <root>/lib, and answer the cross-ref findings alone.
+function _crossRefFindings(files, opts) {
+  var root = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-scb-fx-"));
+  try {
+    if (!(opts && opts.omitSnapshot)) {
+      fs.writeFileSync(path.join(root, "api-snapshot.json"),
+        JSON.stringify(opts && opts.snapshot ? opts.snapshot : FIXTURE_SNAPSHOT));
+    }
+    var libDir = path.join(root, "lib");
+    fs.mkdirSync(libDir);
+    Object.keys(files).forEach(function (name) {
+      fs.writeFileSync(path.join(libDir, name), files[name]);
+    });
+    var found = validator.validate({ libDir: libDir, parser: parser, curationPages: [] });
+    return found.filter(function (f) { return f.kind === "cross-ref"; });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function _oneFile(related, extra) {
+  var src = _fixtureModule("realNs", "Real") +
+            _fixturePrimitive("realNs.realFn", related) +
+            "function realFn(value) { return value; }\n" +
+            "module.exports = { realFn: realFn };\n";
+  return Object.assign({ "real-ns.js": src }, extra || {});
+}
+
+function testRelatedResolutionBranches() {
+  var cases = [
+    { label: "a reference to a namespace the framework does not export is refused",
+      related: "b.totallyBogus.nope", fires: /exports nothing by that name/ },
+    { label: "a reference that does not start with b. is refused",
+      related: "Money.prototype.toString", fires: /does not start with/ },
+    { label: "a reference into a documented namespace that has no such member is refused",
+      related: "b.realNs.missingFn", fires: /is documented but this primitive isn't there/ },
+    { label: "a reference into an exported but undocumented namespace is allowed",
+      related: "b.undocNs.someFn", fires: null },
+    { label: "a reference to a documented primitive is allowed",
+      related: "b.realNs.realFn", fires: null },
+    { label: "a bare reference to a documented namespace is allowed",
+      related: "b.realNs", fires: null },
+  ];
+  cases.forEach(function (c) {
+    var found = _crossRefFindings(_oneFile(c.related));
+    if (c.fires) {
+      check("@related: " + c.label,
+        found.length === 1 && c.fires.test(found[0].msg));
+    } else {
+      check("@related: " + c.label, found.length === 0);
+    }
+  });
+
+  // A nested @module namespace resolves as a bare reference the same way a
+  // single-segment one does.
+  var nestedFiles = _oneFile("b.nested.ns", {
+    "nested-ns.js": _fixtureModule("nested.ns", "Nested") +
+      _fixturePrimitive("nested.ns.someFn", "b.realNs.realFn") +
+      "function someFn(value) { return value; }\n" +
+      "module.exports = { someFn: someFn };\n",
+  });
+  check("@related: a bare reference to a nested @module namespace is allowed",
+    _crossRefFindings(nestedFiles).length === 0);
+
+  // Without the export list the engine cannot answer the question, so it
+  // refuses to run rather than passing everything.
+  var threw = null;
+  try { _crossRefFindings(_oneFile("b.realNs.realFn"), { omitSnapshot: true }); }
+  catch (e) { threw = e; }
+  check("@related: the gate refuses to run without the export list",
+    threw !== null && /api-snapshot\.json/.test(threw.message));
+}
+
 async function run() {
+  testRelatedResolutionBranches();
   var libDir = path.join(__dirname, "..", "..", "lib");
   var findings = validator.validate({
     libDir:       libDir,

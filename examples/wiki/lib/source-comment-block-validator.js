@@ -180,6 +180,47 @@ function _testReferenced(corpus, primBare, moduleRel) {
   return false;
 }
 
+// The names the framework actually exports, read from api-snapshot.json
+// beside lib/. A @related reference is a link, so it has to name something
+// that exists; without this the reference is checked only against what is
+// DOCUMENTED, and a typo whose namespace nobody has documented resolves by
+// default. Throws when the snapshot is unreadable rather than skipping the
+// check, so a gate that cannot answer the question fails instead of passing.
+function _exportedNameTree(libDir) {
+  var snapshotPath = path.join(path.dirname(libDir), "api-snapshot.json");
+  var raw;
+  try { raw = fs.readFileSync(snapshotPath, "utf8"); }
+  catch (e) {
+    throw new Error("validate(): cannot read " + snapshotPath + " — @related " +
+      "references are resolved against it, so the gate cannot run without it " +
+      "(regenerate with scripts/refresh-api-snapshot.js): " + ((e && e.message) || String(e)));
+  }
+  var parsed = JSON.parse(raw);
+  if (!parsed || !parsed.exports || typeof parsed.exports !== "object") {
+    throw new Error("validate(): " + snapshotPath + " carries no exports map");
+  }
+  return parsed.exports;
+}
+
+// Does a bare dotted path (the @related reference with its leading `b.`
+// removed) name something in the export tree? Each step reads the node's
+// own key or its `members` map, so `crypto.httpSig` resolves through the
+// namespace object the snapshot records.
+function _exportTreeHas(exported, bare) {
+  var parts = bare.split(".");
+  var node = exported;
+  for (var i = 0; i < parts.length; i += 1) {
+    if (!node || typeof node !== "object") return false;
+    var members = node.members && typeof node.members === "object" ? node.members : null;
+    var next;
+    if (Object.prototype.hasOwnProperty.call(node, parts[i])) next = node[parts[i]];
+    else if (members && Object.prototype.hasOwnProperty.call(members, parts[i])) next = members[parts[i]];
+    else return false;
+    node = next;
+  }
+  return true;
+}
+
 // Probe the universe of primitive signatures available for @related
 // cross-reference. Sources: every @primitive block under lib/, plus
 // every primitive heading in seeded page bodies (which includes
@@ -435,6 +476,16 @@ function validate(config) {
   var findings = [];
   var docs = parser.parseTree(libDir);
   var known = _knownPrimitiveSet(docs, seederIndex, parser);
+  var exported = _exportedNameTree(libDir);
+  // The namespaces an @module block declares, so a bare-namespace @related
+  // resolves for a nested one (`b.crypto.httpSig`) the way it does for a
+  // single-segment one.
+  var documentedNs = {};
+  Object.keys(docs).forEach(function (file) {
+    var rec = docs[file];
+    var ns = rec.module && rec.module.tags ? _moduleNs(rec.module.tags.module) : null;
+    if (ns) documentedNs[ns] = true;
+  });
 
   // Optional test-corpus for the primitive-without-test check. When
   // config.testDirs is absent the check silently skips (mirrors
@@ -560,17 +611,37 @@ function validate(config) {
             // Bare-namespace ref + namespace IS documented → resolved.
             return;
           }
-          // Soft-fail: cross-refs to namespaces with ZERO documented
-          // primitives are forward references during the per-namespace
-          // migration. The reference is recorded but doesn't fail the
-          // gate — it'll resolve naturally once the target namespace
-          // gets annotated. Hard-fail only when the target's namespace
-          // IS documented but the specific function doesn't exist
-          // (real drift).
+          // The same, for a namespace an @module block nests
+          // (`b.crypto.httpSig`, `b.middleware.clearSiteData`).
+          if (documentedNs[bare]) return;
+          // Hard-fail when the target's namespace IS documented but the
+          // specific function doesn't exist (real drift).
           if (nsHasAnyDocs) {
             findings.push({
               kind: "cross-ref", file: rel, primitive: primTag,
               msg: "@related `" + refSig + "` — namespace `b." + refNs + "` is documented but this primitive isn't there (drift?)",
+            });
+            return;
+          }
+          // A namespace with no documented primitives is a forward
+          // reference only when the framework exports it; the docs catch
+          // up later and the reference resolves then. When nothing by
+          // that name is exported the reference is a typo, and a typo
+          // that resolves by default is one the wiki renders as a dead
+          // link.
+          if (refSig.indexOf("b.") !== 0) {
+            findings.push({
+              kind: "cross-ref", file: rel, primitive: primTag,
+              msg: "@related `" + refSig + "` — a related reference names a primitive as " +
+                   "`b.<namespace>.<member>`; this one does not start with `b.`",
+            });
+            return;
+          }
+          if (!_exportTreeHas(exported, bare)) {
+            findings.push({
+              kind: "cross-ref", file: rel, primitive: primTag,
+              msg: "@related `" + refSig + "` — the framework exports nothing by that name " +
+                   "(check api-snapshot.json for the spelling)",
             });
           }
           // else: forward reference — silently allowed during migration.
