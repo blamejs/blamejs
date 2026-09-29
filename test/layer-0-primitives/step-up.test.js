@@ -362,6 +362,67 @@ async function run() {
   check("middleware: cross-claims.sub grant does NOT elevate → 401",
         nextJX === 0 && resJX._sent.status === 401);
 
+  // ---- grant bound to an actor, not to the text of one field ----
+  // The principal resolver reads id, then userId, then claims.sub, then sub,
+  // and a grant minted for a bare subject matches whichever of those spells
+  // the same text. Two principals named by different fields therefore share
+  // one grant. Minting from the actor binds the grant to the field as well as
+  // the value, so the second principal is refused.
+  var actorGrant = b.auth.stepUp.grant.create({
+    actor: { id: "shared-name" }, scope: "billing:write", acr: "loa3",
+  });
+  var nextA = 0;
+  var reqA = _mockReq({ "x-step-up-grant": actorGrant.token },
+                      { id: "shared-name", claims: { acr: "loa1" } });
+  var resA = _mockRes();
+  grantMw(reqA, resA, function () { nextA += 1; });
+  check("actor-bound grant: elevates the principal it was minted for",
+        nextA === 1 && reqA.user.stepUp && reqA.user.stepUp.byGrant === true);
+
+  var nextB = 0;
+  var reqB = _mockReq({ "x-step-up-grant": actorGrant.token },
+                      { claims: { sub: "shared-name", acr: "loa1" } });
+  var resB = _mockRes();
+  grantMw(reqB, resB, function () { nextB += 1; });
+  check("actor-bound grant: a principal named by a different field is refused",
+        nextB === 0 && resB._sent.status === 401);
+
+  var nextAu = 0;
+  var reqAu = _mockReq({ "x-step-up-grant": actorGrant.token },
+                       { userId: "shared-name", claims: { acr: "loa1" } });
+  var resAu = _mockRes();
+  grantMw(reqAu, resAu, function () { nextAu += 1; });
+  check("actor-bound grant: userId spelling the same text is refused",
+        nextAu === 0 && resAu._sent.status === 401);
+
+  // A bare-subject grant keeps matching the resolver's chain, so an operator
+  // minting one is unaffected.
+  var bareGrant = b.auth.stepUp.grant.create({
+    subject: "bare-name", scope: "billing:write", acr: "loa3",
+  });
+  var nextD = 0;
+  var reqD = _mockReq({ "x-step-up-grant": bareGrant.token },
+                      { id: "bare-name", claims: { acr: "loa1" } });
+  var resD = _mockRes();
+  grantMw(reqD, resD, function () { nextD += 1; });
+  check("bare-subject grant: still elevates through the resolver chain", nextD === 1);
+
+  // An actor-bound grant checked without an actor is refused rather than
+  // falling back to the text.
+  var vNoActor = b.auth.stepUp.grant.verify(actorGrant.token, { subject: "shared-name" });
+  check("actor-bound grant: verify without an actor refuses",
+        vNoActor.ok === false && vNoActor.error === "subject_mismatch");
+  var vWithActor = b.auth.stepUp.grant.verify(actorGrant.token, { actor: { id: "shared-name" } });
+  check("actor-bound grant: verify with the actor succeeds", vWithActor.ok === true);
+
+  rejects("grant.create: actor and subject together",
+    function () {
+      b.auth.stepUp.grant.create({ actor: { id: "a" }, subject: "a", scope: "s" });
+    }, /actor or subject/);
+  rejects("grant.create: an actor naming no principal",
+    function () { b.auth.stepUp.grant.create({ actor: { role: "admin" }, scope: "s" }); },
+    /name a principal/);
+
   // ---- middleware: grant scope mismatch falls through to claims ----
   var nextS = 0;
   var grantTokenWrong = b.auth.stepUp.grant.create({
