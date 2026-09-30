@@ -131,6 +131,18 @@
       "heading": "Added",
       "items": [
         {
+          "title": "An API key sharing a user's id is a separate idempotency scope",
+          "body": "`b.middleware.idempotencyKey` scopes a cached response to the principal that made the request. Keying it through the identity resolver named the credential's `id` without naming which credential it was, so a user and an unrelated API key that happen to share an `id` produced the same scope: a request carrying `apiKey = { id: \"alice\", ownerId: \"someone-else\" }` was served user `alice`'s cached private response and its own handler never ran. The scope now carries the credential it came from, `u:` for a user and `k:` for an API key, which is what `b.staticServe` already did. Each still replays its own slot, so idempotency is unchanged for either caller."
+        },
+        {
+          "title": "A step-up grant carrying a bare subject refuses an actor check it cannot answer",
+          "body": "`b.auth.stepUp.grant.verify` compares `opts.actor` against a grant minted with `opts.actor`, and `opts.subject` against one minted with `opts.subject`. A caller who passed only `opts.actor` against a bare-subject grant matched neither branch, so nothing was checked and a grant issued for `alice` verified under `{ actor: { id: \"bob\" } }`. Such a grant has no actor binding to answer that question with: its subject is an operator-chosen string, not a tagged identity key. It is refused now with `subject_mismatch`, naming both ways forward, mint the grant with `opts.actor` or name the principal with `opts.subject` as well. Passing both, which is what `b.middleware.requireStepUp` does, is unchanged."
+        },
+        {
+          "title": "A break-glass grant issued before this release can still be listed and revoked",
+          "body": "Break-glass grant owners are recorded as `user:<id>` or `apikey:<id>` so the two credentials cannot be confused. A grant persisted before those prefixes existed has an owner hash derived from the bare id, and both lookups searched the prefixed forms only: `revokeAll({ actorId })` reported nothing to revoke and the owner's own `listActive` did not show it, while its handle kept working until expiry — a grant you could neither see nor revoke. Both lookups include the pre-prefix form now. New grants are still written prefixed, so a user and an API key remain separate."
+        },
+        {
           "title": "A DKIM body-length opt-out takes a boolean, not anything truthy",
           "body": "`b.mail.dkim.verify`'s `acceptBodyLengthLimit` accepts a signature whose `l=` tag covers less than the canonical body, which is the RFC 6376 §8.2 hole where anyone can append to the bytes past that length after the fact. It was read as a bare truthy value, so `acceptBodyLengthLimit: \"false\"` or `\"0\"` turned the protection off while reading as though it kept it on. A value that is not a boolean is refused at the call now, with `dkim/bad-accept-body-length-limit`, and the check reads an explicit `true` rather than anything truthy. Passing `true` or `false` is unchanged. The option is one of six on that verifier that had no documentation at all; the block now records each, including that `minRsaBits` defaults to 2048 above the 1024 RFC 8301 §3.2 permits, that `maxSignatures` defaults to 8 with a ceiling of 16, and that the call resolves an array with one entry per signature."
         },

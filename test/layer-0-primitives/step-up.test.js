@@ -232,6 +232,33 @@ async function run() {
   // Scope mismatch
   var vScopeBad = b.auth.stepUp.grant.verify(g.token, { scope: "admin:write" });
   check("grant verify: scope mismatch",           vScopeBad.ok === false);
+
+  // A caller passing opts.actor is asking "is this grant for this principal".
+  // A grant minted with a bare `subject` carries no actor binding to answer
+  // that with: its `sub` is an operator-chosen string, not a tagged identity
+  // key. The actor branch ran only for an identity-bound grant and the subject
+  // branch only when opts.subject was given, so supplying opts.actor alone
+  // checked NOTHING — a grant for "alice" verified under { id: "bob" }.
+  var gBare = b.auth.stepUp.grant.create({ subject: "alice", scope: "wire.transfer" });
+  var vWrongActor = b.auth.stepUp.grant.verify(gBare.token,
+    { scope: "wire.transfer", actor: { id: "bob" } });
+  check("grant verify: a bare-subject grant refuses an actor check it cannot answer",
+    vWrongActor.ok === false && vWrongActor.error === "subject_mismatch",
+    JSON.stringify(vWrongActor));
+  // Same refusal for the principal the subject names, because the grant still
+  // cannot prove the binding; an actor-bound grant is what answers that.
+  var vRightActor = b.auth.stepUp.grant.verify(gBare.token,
+    { scope: "wire.transfer", actor: { id: "alice" } });
+  check("grant verify: and refuses it even for the named subject",
+    vRightActor.ok === false && vRightActor.error === "subject_mismatch",
+    JSON.stringify(vRightActor));
+  // The bare-subject grant still verifies the way it always did.
+  check("grant verify: a bare-subject grant still verifies by subject",
+    b.auth.stepUp.grant.verify(gBare.token,
+      { scope: "wire.transfer", subject: "alice" }).ok === true);
+  check("grant verify: and still refuses a different subject",
+    b.auth.stepUp.grant.verify(gBare.token,
+      { scope: "wire.transfer", subject: "bob" }).ok === false);
   // Expiry
   rejects("grant: ttlSec too small",
     function () { b.auth.stepUp.grant.create({ subject: "u", scope: "s", ttlSec: 1 }); }, /ttlSec/);

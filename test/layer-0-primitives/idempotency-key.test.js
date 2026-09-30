@@ -151,6 +151,34 @@ function testCrossActorIsolation() {
   mw(reqA2, resA2, function () { handlerRanForA2 = true; resA2.end("ALICE-SECOND"); });
   check("idempotency: same principal + key still replays (no over-isolation)",
     resA2._getBody() === "ALICE-PRIVATE" && handlerRanForA2 === false);
+
+  // A user and an API key are separate credentials, so an `id` they happen to
+  // share is not one principal. Keying both through the identity resolver
+  // without naming which credential it came from collapsed them: a request
+  // carrying `apiKey = { id: "alice", ownerId: "someone-else" }` was served
+  // user alice's cached private response, and its own handler never ran.
+  var reqKey = _mockReq("POST", "/account/export", "shared", { op: "export" });
+  reqKey.apiKey = { id: "alice", ownerId: "someone-else" };
+  var resKey = _mockRes();
+  var handlerRanForKey = false;
+  mw(reqKey, resKey, function () {
+    handlerRanForKey = true; resKey.statusCode = 200; resKey.end("KEY-OWN");
+  });
+  check("idempotency: an API key sharing a user's id is not that user",
+    resKey._getBody() !== "ALICE-PRIVATE", resKey._getBody());
+  check("idempotency: and the API key's own handler runs",
+    handlerRanForKey === true);
+
+  // Its own slot still replays, so namespacing has not turned idempotency off
+  // for API-key callers.
+  var reqKey2 = _mockReq("POST", "/account/export", "shared", { op: "export" });
+  reqKey2.apiKey = { id: "alice", ownerId: "someone-else" };
+  var resKey2 = _mockRes();
+  var handlerRanForKey2 = false;
+  mw(reqKey2, resKey2, function () { handlerRanForKey2 = true; resKey2.end("KEY-SECOND"); });
+  check("idempotency: an API key replays its own slot",
+    resKey2._getBody() === "KEY-OWN" && handlerRanForKey2 === false,
+    resKey2._getBody());
 }
 
 function testMethodSkipsGet() {

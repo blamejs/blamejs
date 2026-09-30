@@ -1933,6 +1933,50 @@ async function testPasskeyFullFieldFactorPath() {
 
 // ---- listActive / listActiveAll / revokeAll edge branches ----
 
+// A grant persisted before the owner id carried a `user:` / `apikey:` prefix
+// has an issuedToActorHash derived from the bare id. The lookups searched only
+// the prefixed forms, so `revokeAll({ actorId })` reported nothing to revoke and
+// the owner's own `listActive` did not show it, while its handle kept working
+// until expiry: a grant you cannot see and cannot revoke.
+async function testLegacyUnprefixedGrantIsRevocable() {
+  var tmpDir = _tmp();
+  await setupTestDb(tmpDir);
+  try {
+    b.breakGlass.init();
+    await b.breakGlass.policy.set("t_legacy", { columns: ["c"], factors: ["totp"] });
+    var totp = _validTotp();
+    var grant = await b.breakGlass.grant({
+      req:    _fakeReq(),
+      table:  "t_legacy",
+      reason: "investigating ticket #99001 for compliance review",
+      factor: { type: "totp", code: totp.code, secret: totp.secret },
+    });
+
+    // Rewrite the row's owner hash to the pre-prefix derivation, which is what
+    // an upgraded deployment's existing rows carry.
+    var legacy = b.cryptoField.computeDerived(
+      "_blamejs_break_glass_grants", "issuedToActorId", "user-test-1");
+    check("[setup] the legacy owner hash derives",
+      legacy && typeof legacy.value === "string" && legacy.value.length > 0);
+    await b.clusterStorage.execute(
+      "UPDATE _blamejs_break_glass_grants SET issuedToActorHash = ? WHERE _id = ?",
+      [legacy.value, grant.id]);
+
+    var seen = await b.breakGlass.listActive({ req: _fakeReq() });
+    check("break-glass: the owner sees a grant persisted before the prefixes",
+      seen.length === 1, JSON.stringify(seen.map(function (s) { return s.id; })));
+
+    var revoked = await b.breakGlass.revokeAll(
+      { actorId: "user-test-1" }, { reason: "ir-legacy-scope" });
+    check("break-glass: revokeAll reaches a grant persisted before the prefixes",
+      revoked && revoked.revokedCount === 1, JSON.stringify(revoked));
+    var after = await b.breakGlass.listActiveAll();
+    check("break-glass: and it is gone afterwards", after.length === 0);
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
 async function testListAndRevokeEdgeBranches() {
   var tmpDir = _tmp();
   await setupTestDb(tmpDir);
@@ -2027,6 +2071,7 @@ async function run() {
   await testGrantAuditReasonHmac();
   await testUnsealRowAsServiceGuardsAndModelB();
   await testPasskeyFullFieldFactorPath();
+  await testLegacyUnprefixedGrantIsRevocable();
   await testListAndRevokeEdgeBranches();
 }
 
