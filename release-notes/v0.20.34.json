@@ -178,6 +178,10 @@
       "heading": "Migration",
       "items": [
         {
+          "title": "Pass req.botChallengeKey to recordFailure, and re-point anything grouping CADF initiators",
+          "body": "`b.authBotChallenge`'s middleware keys its ladder by the authenticated principal on a route that carries no credential in the body, where it previously used the client address. A post-verify path that derived the key itself, `recordFailure(clientIp)` on a token-refresh route, now advances a different ladder from the one the middleware reads, and the two never meet. `middleware()` writes the key it used to `req.botChallengeKey`; pass that. A route whose body carries `email` or `username` is unchanged, so the documented `recordFailure(\"user@example.com\")` still pairs.\n\n`b.auditTools.exportCadf` emits `blamejs:unattributed` and `blamejs:unidentified` where it emitted `\"unknown\"` and `\"n/a\"`. A dashboard or SIEM rule grouping initiators by those literals needs the new values. Rows that name an actor or a resource are unchanged."
+        },
+        {
           "title": "Authenticated callers land in new flag rollout buckets once",
           "body": "`b.flag.context.fromRequest` derives `targetingKey` from `b.requestHelpers.actorIdentityKey` rather than from the raw `user.id`, so the key that places an authenticated caller in a percentage rollout changes value. Each caller keeps a stable key from then on, but a partial rollout re-draws its membership at upgrade: a caller inside a 10 percent rollout may fall outside it, and one outside may fall in. Pin the assignment across the upgrade by passing `userKey`, which is still used exactly as given. Nothing changes for an unauthenticated caller, or where the context is built by hand and carries its own `targetingKey`. A caller whose actor the framework could not name moves the other way, out of the shared anonymous bucket and onto its own key, which is the point of the change."
         },
