@@ -1338,6 +1338,53 @@ function testStringify() {
         _code(function () { b.safeJson.stringify({ n: BigInt(10) }); }) === "json/stringify");
 }
 
+// The data in each of these lives in an internal slot rather than in own
+// enumerable properties, so JSON.stringify writes `{}` and the value is gone.
+// This is the primitive a caller reaches for INSTEAD of JSON.stringify, and it
+// returned the same empty object without saying anything, which is how a Map
+// reached storage as `{}`. The replacer sees each value after toJSON has run,
+// so a Date arrives as its ISO string and is unaffected.
+function testStringifyRefusesValuesWithNoJsonForm() {
+  var NO_FORM = [
+    ["Map", new Map([["a", 1]])],
+    ["Set", new Set([1])],
+    ["WeakMap", new WeakMap()],
+    ["WeakSet", new WeakSet()],
+    ["Promise", Promise.resolve(1)],
+    ["RegExp", /x/],
+    ["ArrayBuffer", new ArrayBuffer(4)],
+    ["DataView", new DataView(new ArrayBuffer(4))],
+  ];
+  NO_FORM.forEach(function (row) {
+    check("stringify refuses a " + row[0] + " at the root rather than returning {}",
+          _code(function () { b.safeJson.stringify(row[1]); }) === "json/no-form",
+          row[0] + " -> " + _code(function () { b.safeJson.stringify(row[1]); }));
+    check("stringify refuses a " + row[0] + " nested in an object",
+          _code(function () { b.safeJson.stringify({ outer: { inner: row[1] } }); }) === "json/no-form");
+  });
+  check("stringify refuses one inside an array",
+        _code(function () { b.safeJson.stringify([1, new Map()]); }) === "json/no-form");
+  check("stringify refuses a Map carrying an own property, which would be " +
+        "written as that property with every entry dropped",
+        _code(function () {
+          var m = new Map([["entry", 1]]); m.decoy = 2;
+          b.safeJson.stringify(m);
+        }) === "json/no-form");
+  var far = require("node:vm").runInContext("new Map([['a',1]])", require("node:vm").createContext({}));
+  check("stringify refuses one built in another realm",
+        _code(function () { b.safeJson.stringify({ m: far }); }) === "json/no-form");
+
+  // What must keep working.
+  check("a Date still serializes as its ISO string, since toJSON runs first",
+        b.safeJson.stringify({ d: new Date(0) }) === '{"d":"1970-01-01T00:00:00.000Z"}');
+  check("a value with its own toJSON still serializes by it",
+        b.safeJson.stringify({ v: { toJSON: function () { return { ok: 1 }; } } }) === '{"v":{"ok":1}}');
+  check("an empty plain object still serializes", b.safeJson.stringify({}) === "{}");
+  check("an empty array still serializes", b.safeJson.stringify([]) === "[]");
+  check("a class instance carrying fields still serializes by its fields",
+        b.safeJson.stringify(Object.assign(Object.create({ }), { a: 1 })) === '{"a":1}');
+}
+
 // ---- stringify replace-mode cycle cleaning ----
 
 function testStringifyReplaceCleaning() {
@@ -1660,6 +1707,7 @@ async function run() {
   testMeasureBytes();
   testJsonCopyUnderCap();
   testStringify();
+  testStringifyRefusesValuesWithNoJsonForm();
   testStringifyReplaceCleaning();
   testStringifyForScript();
   testCanonical();

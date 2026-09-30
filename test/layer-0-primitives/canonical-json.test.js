@@ -191,6 +191,17 @@ function testValuesWithNoJsonFormAreRefusedNotEmptied() {
         cj.stringify(new Date(Date.UTC(2026, 0, 2))) === '"2026-01-02T00:00:00.000Z"');
   check("a Buffer is still written as hex, not refused",
         cj.stringify(Buffer.from([0xAB])) === '"ab"');
+
+  // A boxed primitive has a JSON form: JSON.stringify unwraps it. canonical-json
+  // walked it instead, so `new Number(1)` had no own keys and canonicalized to
+  // {}, and `new String("x")` had index keys and canonicalized to {"0":"x"}.
+  check("a boxed Number canonicalizes as the number", cj.stringify(new Number(1)) === "1");
+  check("a boxed String canonicalizes as the string, not as an index map",
+        cj.stringify(new String("x")) === '"x"', cj.stringify(new String("x")));
+  check("a boxed Boolean canonicalizes as the boolean",
+        cj.stringify(new Boolean(true)) === "true");
+  check("and a plain number is untouched by the refusal", cj.stringify(1) === "1");
+  check("and a plain string is untouched by the refusal", cj.stringify("x") === '"x"');
 }
 
 async function run() {
