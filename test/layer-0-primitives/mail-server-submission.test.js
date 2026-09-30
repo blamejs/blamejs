@@ -2385,6 +2385,65 @@ async function testDkimSelfNeedsADomainTheClientDidNotWrite(tls) {
       /^550 /.test(await _txn(sMbx.port, "alice@corp.example",
         "DKIM-Signature: v=1; d=attacker.example; b=z\r\nFrom: alice@corp.example\r\n\r\nx", true)));
   } finally { await sMbx.srv.close({ timeoutMs: b.constants.TIME.seconds(2) }); }
+
+  // An alias the operator approves through senderPolicy is a sender this
+  // connection may use, so a signature from its domain is "self" too. Under
+  // strict binding that alias is NOT in the actor's mailbox set, so resolving
+  // the expected domain from the actor alone refuses a signature the operator
+  // authorized. The envelope still does not name a domain on its own: the
+  // second transaction below reuses the same listener with an alias the policy
+  // rejects, and it is refused.
+  var sAlias = await _mk(tls, {
+    profile:         "permissive",
+    identityBinding: "strict",
+    requireDkim:     true,
+    dkimRequireMode: "self",
+    auth:            _authReturning({ id: "u-1042", mailboxes: ["alice@corp.example"] }),
+    senderPolicy:    function (ctx) {
+      return { ok: ctx.mailFrom === "alice@partner.example" };
+    },
+  });
+  try {
+    check("dkim self: d= matching a senderPolicy-approved alias → 250",
+      /^250 /.test(await _txn(sAlias.port, "alice@partner.example",
+        "DKIM-Signature: v=1; d=partner.example; b=z\r\nFrom: alice@partner.example\r\n\r\nx", true)));
+    check("dkim self: a senderPolicy-approved alias does not admit a third domain",
+      /^550 /.test(await _txn(sAlias.port, "alice@partner.example",
+        "DKIM-Signature: v=1; d=attacker.example; b=z\r\nFrom: alice@partner.example\r\n\r\nx", true)));
+    // Asserted on the MAIL FROM reply, not the DATA reply: a refused sender
+    // leaves the body lines to be read as commands, so the DATA reply reports
+    // the desynchronized read rather than the refusal.
+    var refusedSock = await _connect(sAlias.port);
+    try {
+      await _readReply(refusedSock);
+      await _send(refusedSock, "EHLO client.example.com");
+      await _send(refusedSock, "AUTH PLAIN " + _saslPlain("u", "x"));
+      check("dkim self: an alias the policy refuses never reaches the DKIM check",
+        /^553 /.test(await _send(refusedSock, "MAIL FROM:<alice@attacker.example>")));
+    } finally { refusedSock.destroy(); }
+
+    // The approval belongs to the transaction that earned it. On ONE
+    // connection, send as the approved alias and then as the actor's own
+    // mailbox: the second message must not still be able to sign as the
+    // alias's domain, or a single approved transaction would authorize that
+    // domain for the rest of the session.
+    var reuseSock = await _connect(sAlias.port);
+    try {
+      await _readReply(reuseSock);
+      await _send(reuseSock, "EHLO client.example.com");
+      await _send(reuseSock, "AUTH PLAIN " + _saslPlain("u", "x"));
+      await _send(reuseSock, "MAIL FROM:<alice@partner.example>");
+      await _send(reuseSock, "RCPT TO:<b@example.com>");
+      check("dkim self: the approved alias signs its own transaction",
+        /^250 /.test(await _dataDot(reuseSock,
+          "DKIM-Signature: v=1; d=partner.example; b=z\r\nFrom: alice@partner.example\r\n\r\nx")));
+      await _send(reuseSock, "MAIL FROM:<alice@corp.example>");
+      await _send(reuseSock, "RCPT TO:<b@example.com>");
+      check("dkim self: the approval does not carry into the next transaction",
+        /^550 /.test(await _dataDot(reuseSock,
+          "DKIM-Signature: v=1; d=partner.example; b=z\r\nFrom: alice@corp.example\r\n\r\nx")));
+    } finally { reuseSock.destroy(); }
+  } finally { await sAlias.srv.close({ timeoutMs: b.constants.TIME.seconds(2) }); }
 }
 
 async function run() {
