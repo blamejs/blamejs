@@ -124,6 +124,46 @@ async function testNeedsRehash() {
   // Unparseable argon2id body → vendor throws → forced rehash.
   check("needsRehash: unparseable argon2id PHC → true",
         b.auth.password.needsRehash("$argon2id$broken") === true);
+
+  // The answer is three comparisons against the wanted cost, and a comparison
+  // with a non-number is false, so a wanted cost that is not a number would
+  // report every stored hash as current and stop the rehash-on-login upgrade.
+  // Costs raised from an environment variable arrive as strings, so an operator
+  // could believe a fleet had been re-hashed while every legacy hash stayed
+  // weak. `_resolveParams` refuses the bad cost before the comparison and that
+  // is what keeps it from happening; lib/argon2-builtin.js underneath reads
+  // these with `opts.x || DEFAULT` and validates nothing, so this guarantee
+  // rests entirely on this layer and nothing else asserted it.
+  //
+  // Either answer is safe: refusing, or reporting that a rehash is needed. What
+  // must never happen is `false` for a hash that is below the target. The stored
+  // hash here is weak ONLY on timeCost, at the default memory and parallelism,
+  // so neither of the other two comparisons can answer for it.
+  var weakOnPassesOnly = await b.auth.password.hash("pw", {
+    memoryCost: b.constants.BYTES.kib(64), timeCost: 1, parallelism: 1,
+  });
+  function verdict(params) {
+    try { return b.auth.password.needsRehash(weakOnPassesOnly, params); }
+    catch (e) { return "refused:" + e.code; }
+  }
+  check("needsRehash: a t=1 hash is flagged against a numeric target of 3",
+        verdict({ memoryCost: b.constants.BYTES.kib(64), timeCost: 3, parallelism: 1 }) === true);
+  [["timeCost", { memoryCost: b.constants.BYTES.kib(64), timeCost: "abc", parallelism: 1 }],
+   ["memoryCost", { memoryCost: "lots", timeCost: 3, parallelism: 1 }],
+   ["parallelism", { memoryCost: b.constants.BYTES.kib(64), timeCost: 3, parallelism: "many" }],
+  ].forEach(function (row) {
+    var got = verdict(row[1]);
+    check("needsRehash: a non-numeric " + row[0] + " never reports a below-target " +
+          "hash as current",
+          got !== false, String(got));
+  });
+  // A hash already at the target is still reported current, so the checks above
+  // cannot be satisfied by answering true for everything.
+  var atDefaults = await b.auth.password.hash("pw", {
+    memoryCost: b.constants.BYTES.kib(64), timeCost: 3, parallelism: 4,
+  });
+  check("needsRehash: a hash at the target is still reported current",
+        b.auth.password.needsRehash(atDefaults) === false);
 }
 
 async function testGate() {

@@ -253,6 +253,16 @@ function testDbscMaxAgeMustBeANumber() {
   // minutes, so the strictest bound could not be asked for.
   check("maxAgeSec 0 refuses an assertion that is not from this instant",
         verify(0) === "dbsc/stale", String(verify(0)));
+
+  // The refusal reported the bound the caller passed rather than the one it
+  // applied, so whenever the default was used the operator read "iat is more
+  // than undefineds old".
+  var staleMessage = null;
+  try {
+    b.dbsc.verifyBindingAssertion(jwt, { secretKey: secret, expectedAud: "https://rp.example" });
+  } catch (e) { staleMessage = e.message; }
+  check("the stale refusal names the bound it applied, not undefined",
+        /more than 300s old/.test(String(staleMessage)), String(staleMessage));
   var fresh = _signEs256Assertion(kp, {
     aud: "https://rp.example", iat: Math.floor(Date.now() / 1000),
   });
