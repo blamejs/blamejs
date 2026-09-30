@@ -131,6 +131,10 @@
       "heading": "Added",
       "items": [
         {
+          "title": "A DKIM body-length opt-out takes a boolean, not anything truthy",
+          "body": "`b.mail.dkim.verify`'s `acceptBodyLengthLimit` accepts a signature whose `l=` tag covers less than the canonical body, which is the RFC 6376 §8.2 hole where anyone can append to the bytes past that length after the fact. It was read as a bare truthy value, so `acceptBodyLengthLimit: \"false\"` or `\"0\"` turned the protection off while reading as though it kept it on. A value that is not a boolean is refused at the call now, with `dkim/bad-accept-body-length-limit`, and the check reads an explicit `true` rather than anything truthy. Passing `true` or `false` is unchanged. The option is one of six on that verifier that had no documentation at all; the block now records each, including that `minRsaBits` defaults to 2048 above the 1024 RFC 8301 §3.2 permits, that `maxSignatures` defaults to 8 with a ceiling of 16, and that the call resolves an array with one entry per signature."
+        },
+        {
           "title": "b.auth.jwt.verifyExternal documents the policy it verifies against",
           "body": "The verifier for another party's JWT accepted eleven options and documented none of them, so the whole verification policy was undiscoverable: `algorithms`, which is required and has no default because the accepted set is the security of a verifier; `jwks` / `jwksUri` / `jwksCacheMs` / `keyResolver` for key sourcing; `allowKidlessJwks`, which accepts a single-key set for a token carrying no `kid`; `audience`, `issuer` and `subject`, each checked only when given, so a verifier naming none of them takes any issuer's token for any audience; and `clockSkewMs`, 30 seconds by default. The block records each one, what it defaults to, and that `none` and the symmetric `HS*` family are refused outright so an issuer cannot downgrade a token to a key the verifier already holds."
         },
