@@ -2,7 +2,7 @@
   "$schema": "./release-note.schema.json",
   "version": "0.20.34",
   "date": "2026-09-30",
-  "headline": "One resolver names the principal an action belongs to, type checks no longer depend on which realm made a value, and a limit is checked as a number before it is enforced",
+  "headline": "One resolver names the principal, a type check does not read which realm made a value, and a limit must be a number",
   "summary": "Four kinds of check were reading something other than what they were written to read. `instanceof` compares against one realm's constructor, so bytes, patterns and dates built in a worker, a `vm` context or another copy of the framework read as the wrong type. A walker classified values by type name and missed `Map`, `Set`, `Promise`, `ArrayBuffer` and `DataView`, each of which a `JSON.stringify` reads as an empty object. A limit taken from options was compared without being checked as a number, and every comparison with a non-number is false, so such a limit allowed everything. Identity was resolved per module by reading whichever field a caller happened to use, so principals that `b.requestHelpers.actorIdentityKey` separates were folded into one key. The entries under Security are the ones where the wrong reading skipped a check instead of refusing the input.",
   "sections": [
     {
