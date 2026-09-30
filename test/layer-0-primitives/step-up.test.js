@@ -517,11 +517,21 @@ async function run() {
 
   // The resolver both sides share, asserted directly so a future edit that
   // narrows one caller's chain shows up here rather than in a quiet audit row.
-  check("stepUp._resolvePrincipal reads the four fields in the documented order",
+  // It answers whatever b.requestHelpers.actorIdentityFields says names the
+  // actor, so the order lives in one place. That order reads a top-level `sub`
+  // ahead of a nested `claims.sub`, where this resolver used to prefer the
+  // nested one: the shared list appends `claims.sub` last so adding it could
+  // not re-key an actor an ownership record already names.
+  check("stepUp._resolvePrincipal reads the fields in the shared order",
         b.auth.stepUp._resolvePrincipal({ user: { id: "a", userId: "b", sub: "c" } }) === "a" &&
         b.auth.stepUp._resolvePrincipal({ user: { userId: "b", sub: "c" } }) === "b" &&
-        b.auth.stepUp._resolvePrincipal({ user: { claims: { sub: "c" }, sub: "d" } }) === "c" &&
+        b.auth.stepUp._resolvePrincipal({ user: { claims: { sub: "c" }, sub: "d" } }) === "d" &&
+        b.auth.stepUp._resolvePrincipal({ user: { claims: { sub: "c" } } }) === "c" &&
         b.auth.stepUp._resolvePrincipal({ user: { sub: "d" } }) === "d");
+  check("and it names an actor carrying only a username or a principalId, " +
+        "which its own chain never read",
+        b.auth.stepUp._resolvePrincipal({ user: { username: "alice" } }) === "alice" &&
+        b.auth.stepUp._resolvePrincipal({ user: { principalId: "p-1" } }) === "p-1");
   check("stepUp._resolvePrincipal answers undefined for a request naming nobody",
         b.auth.stepUp._resolvePrincipal({ user: { role: "x" } }) === undefined &&
         b.auth.stepUp._resolvePrincipal({}) === undefined &&

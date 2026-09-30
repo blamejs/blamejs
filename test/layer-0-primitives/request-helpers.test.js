@@ -1001,6 +1001,60 @@ function testActorIdentityKeySeparatesPrincipals() {
         name({ role: "admin" }) === null && name(null) === null &&
         name(null, { actorKey: function (a) { return a.p.uuid; } }) === null);
 
+  // b.auth.jwt / jar / oauth / oid4vp / openidFederation all answer with the
+  // payload under `claims`, so an operator whose bearerAuth verify returns one
+  // of those results has `req.user = { claims: { sub } }`. Only the top-level
+  // fields were read, so that actor was unnameable here and refused by every
+  // caller, while b.auth.stepUp named it through `claims.sub` — one principal
+  // with two answers, which is what having a single resolver is for.
+  var nested = { claims: { sub: "alice", iss: "https://as.example" } };
+  check("an actor named only by claims.sub is named, not refused",
+        b.requestHelpers.actorIdentityKey(nested) !== null,
+        JSON.stringify(b.requestHelpers.actorIdentityKey(nested)));
+  check("and it is a different principal from a top-level sub of the same text",
+        b.requestHelpers.actorIdentityKey(nested) !==
+        b.requestHelpers.actorIdentityKey({ sub: "alice" }));
+  check("the display name reads it too, so the two lists stay in step",
+        name(nested) === "alice", JSON.stringify(name(nested)));
+  // Agreement, not a value: whichever field this resolver says names an actor
+  // is the field b.auth.stepUp must name it by, or a grant binds to one
+  // principal while an ownership record is keyed to another. Asserted across
+  // shapes that mix the fields, because a single shape cannot catch an ordering
+  // difference.
+  var stepUp = require("../../lib/auth/step-up.js");
+  var disagreed = [];
+  [nested,
+   { id: "u-1" },
+   { userId: "u-2" },
+   { username: "alice", claims: { sub: "bob" } },
+   { sub: "s-1", email: "e@x.test" },
+   { principalId: "p-1", username: "alice" },
+   { email: "e@x.test", claims: { sub: "bob" } },
+   { id: 42, username: "alice" },
+   { role: "admin" },
+  ].forEach(function (actor) {
+    var present = b.requestHelpers.actorIdentityFields(actor);
+    var expected = present.length === 0 ? undefined : present[0].value;
+    var got = stepUp._resolvePrincipal({ user: actor });
+    if (got !== expected) {
+      disagreed.push(JSON.stringify({ actor: actor, shared: expected, stepUp: got }));
+    }
+  });
+  check("b.auth.stepUp names a principal by the same field this resolver does",
+        disagreed.length === 0, disagreed.join("; "));
+
+  // Controls. Adding a field must not re-key an actor that was already named,
+  // because these keys are ownership records, and it must not be reachable
+  // through a prototype.
+  check("an already-named actor keeps its exact key",
+        b.requestHelpers.actorIdentityKey({ id: "x" }) === "0:|id:s:1:x" &&
+        b.requestHelpers.actorIdentityKey({ sub: "alice" }) === "0:|sub:s:5:alice",
+        JSON.stringify([b.requestHelpers.actorIdentityKey({ id: "x" }),
+                        b.requestHelpers.actorIdentityKey({ sub: "alice" })]));
+  check("a claims object reached only through a prototype names nobody",
+        b.requestHelpers.actorIdentityKey({ claims: Object.create({ sub: "evil" }) }) === null &&
+        b.requestHelpers.actorIdentityKey(Object.create({ claims: { sub: "evil" } })) === null);
+
   // The derivation used before this one, kept so a primitive can recognize a
   // record its earlier version wrote instead of stranding it. It answers
   // null for every actor the old rule would have folded onto the shared
