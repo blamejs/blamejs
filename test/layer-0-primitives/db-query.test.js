@@ -692,6 +692,36 @@ async function testAsActorSeparatesTheUnsealFailureCap() {
       /db-query\/bad-actor/.test(_codeOf(function () {
         b.db.from("actor_rows").asActor(true);
       })));
+    check("asActor refuses an empty string",
+      /db-query\/bad-actor/.test(_codeOf(function () {
+        b.db.from("actor_rows").asActor("");
+      })));
+    check("asActor refuses NaN",
+      /db-query\/bad-actor/.test(_codeOf(function () {
+        b.db.from("actor_rows").asActor(NaN);
+      })));
+    check("asActor refuses a non-finite number",
+      /db-query\/bad-actor/.test(_codeOf(function () {
+        b.db.from("actor_rows").asActor(Infinity);
+      })));
+    check("asActor refuses negative infinity",
+      /db-query\/bad-actor/.test(_codeOf(function () {
+        b.db.from("actor_rows").asActor(-Infinity);
+      })));
+    // Control: the primitives that DO name a principal stay accepted, zero
+    // among them — it is falsy and a valid id.
+    check("asActor accepts a non-empty string", (function () {
+      var q = b.db.from("actor_rows");
+      return q.asActor("alice") === q;
+    })());
+    check("asActor accepts a finite number", (function () {
+      var q = b.db.from("actor_rows");
+      return q.asActor(42) === q;
+    })());
+    check("asActor accepts zero", (function () {
+      var q = b.db.from("actor_rows");
+      return q.asActor(0) === q;
+    })());
 
     b.db.from("actor_rows").insertOne({ _id: "good", secret: "readable" });
     // A forged cell drives unsealRow's failure path on every read of it.
