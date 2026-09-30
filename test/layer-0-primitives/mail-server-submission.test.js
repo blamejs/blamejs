@@ -1687,11 +1687,16 @@ async function testDkimModes(tls) {
       /^250 /.test(await _dkimTxn(sAny.port, "DKIM-Signature: v=1;\r\n d=example.com;\r\n b=zzz\r\nFrom: a@example.com\r\n\r\nbody")));
   } finally { await sAny.srv.close({ timeoutMs: b.constants.TIME.seconds(2) }); }
 
-  // self: d= must match envelope-sender domain (no auth → falls back to MAIL FROM domain).
+  // self: d= must name a domain the authenticated identity carries. These
+  // connections are unauthenticated, so there is no such domain and both are
+  // refused. The first of these two checks read "matching d= → 250" and passed,
+  // against a d= tag compared with the client's own MAIL FROM: the assertion
+  // held because the connection agreed with itself. testDkimSelfActor and
+  // testDkimSelfNeedsADomainTheClientDidNotWrite cover what does satisfy it.
   var sSelf = await _mk(tls, { profile: "permissive", requireDkim: true, dkimRequireMode: "self" });
   try {
-    check("dkim self: matching d= → 250",
-      /^250 /.test(await _dkimTxn(sSelf.port, "DKIM-Signature: v=1; d=example.com; b=zzz\r\nFrom: a@example.com\r\n\r\nbody")));
+    check("dkim self: unauthenticated, d= agreeing with the envelope → 550",
+      /^550 /.test(await _dkimTxn(sSelf.port, "DKIM-Signature: v=1; d=example.com; b=zzz\r\nFrom: a@example.com\r\n\r\nbody")));
     check("dkim self: mismatched d= → 550",
       /^550 /.test(await _dkimTxn(sSelf.port, "DKIM-Signature: v=1; d=other.org; b=zzz\r\nFrom: a@example.com\r\n\r\nbody")));
   } finally { await sSelf.srv.close({ timeoutMs: b.constants.TIME.seconds(2) }); }
@@ -2278,7 +2283,7 @@ async function testDkimSelfActor(tls) {
       verify: function (mech, creds) {
         var parts = Buffer.from(creds.clientResponse || "", "base64").toString("utf8").split(NUL);
         // actor with an id carrying the domain but NO explicit .domain field
-        // → _actorDomain falls back to the id's @-domain.
+        // → the actor's domain comes from the id's @-domain.
         return Promise.resolve({ ok: true, actor: { id: parts[1] + "@example.com" } });
       },
     },
@@ -2299,6 +2304,87 @@ async function testDkimSelfActor(tls) {
     check("dkim self signature without d= → 550",
       /^550 /.test(await _dataDot(sock, "DKIM-Signature: v=1; b=z\r\nFrom: u@example.com\r\n\r\nx")));
   } finally { sock.destroy(); await s.srv.close({ timeoutMs: b.constants.TIME.seconds(2) }); }
+}
+
+// ---- dkimRequireMode "self" resolves the expected domain from the actor,
+//      never from the envelope the client wrote ----
+//
+// "self" requires the signature to come from the authenticated identity's own
+// domain, which is what separates it from "any". The expected domain was
+// resolved with a last fallback to the envelope sender, so a connection whose
+// actor carried no domain had its d= tag compared against its own MAIL FROM:
+// both sides written by the same client in the same session, and the mode
+// accepted whatever domain that client named.
+//
+// The mailbox set the authenticator assigned carries the domain for the shape
+// the envelope fallback was there to serve, an opaque actor id with a mailbox
+// list, so that configuration is asserted below as the control.
+async function testDkimSelfNeedsADomainTheClientDidNotWrite(tls) {
+  async function _txn(port, mailFrom, body, withAuth) {
+    var sock = await _connect(port);
+    try {
+      await _readReply(sock);
+      await _send(sock, "EHLO client.example.com");
+      if (withAuth) { await _send(sock, "AUTH PLAIN " + _saslPlain("u", "x")); }
+      await _send(sock, "MAIL FROM:<" + mailFrom + ">");
+      await _send(sock, "RCPT TO:<b@example.com>");
+      return await _dataDot(sock, body);
+    } finally { sock.destroy(); }
+  }
+  function _authReturning(actor) {
+    return {
+      mechanisms: ["PLAIN"],
+      verify:     function () { return Promise.resolve({ ok: true, actor: actor }); },
+    };
+  }
+  // attacker.example, not attacker.test: the domain guard refuses a special-use
+  // suffix at MAIL FROM (RFC 6761), so a .test fixture never reaches the DKIM
+  // check and a test built on one is red for the wrong reason.
+  var forged = "DKIM-Signature: v=1; d=attacker.example; b=z\r\n" +
+               "From: x@attacker.example\r\n\r\nx";
+
+  // No authentication at all, so there is no identity for "self" to name.
+  var sNone = await _mk(tls, {
+    profile: "permissive", requireDkim: true, dkimRequireMode: "self",
+  });
+  try {
+    check("dkim self: unauthenticated, d= agreeing with the client's own MAIL FROM → 550",
+      /^550 /.test(await _txn(sNone.port, "x@attacker.example", forged, false)));
+  } finally { await sNone.srv.close({ timeoutMs: b.constants.TIME.seconds(2) }); }
+
+  // Authenticated, but the actor carries no domain, no @ in its id and no
+  // mailbox set, so the envelope is the only thing naming a domain.
+  var sOpaque = await _mk(tls, {
+    profile:         "permissive",
+    identityBinding: "permissive",
+    requireDkim:     true,
+    dkimRequireMode: "self",
+    auth:            _authReturning({ id: "u-1042" }),
+  });
+  try {
+    check("dkim self: actor with an opaque id and no mailboxes, client-chosen d= → 550",
+      /^550 /.test(await _txn(sOpaque.port, "x@attacker.example", forged, true)));
+  } finally { await sOpaque.srv.close({ timeoutMs: b.constants.TIME.seconds(2) }); }
+
+  // Control, green before and after: an opaque id WITH an assigned mailbox set
+  // still passes, because the domain comes from the mailbox the authenticator
+  // handed over. It goes red if the expected domain is resolved from .domain
+  // and .id alone, which is the other way to close the hole above.
+  var sMbx = await _mk(tls, {
+    profile:         "permissive",
+    identityBinding: "strict",
+    requireDkim:     true,
+    dkimRequireMode: "self",
+    auth:            _authReturning({ id: "u-1042", mailboxes: ["alice@corp.example"] }),
+  });
+  try {
+    check("dkim self: d= matching the actor's assigned mailbox domain → 250",
+      /^250 /.test(await _txn(sMbx.port, "alice@corp.example",
+        "DKIM-Signature: v=1; d=corp.example; b=z\r\nFrom: alice@corp.example\r\n\r\nx", true)));
+    check("dkim self: d= foreign to the actor's assigned mailbox domain → 550",
+      /^550 /.test(await _txn(sMbx.port, "alice@corp.example",
+        "DKIM-Signature: v=1; d=attacker.example; b=z\r\nFrom: alice@corp.example\r\n\r\nx", true)));
+  } finally { await sMbx.srv.close({ timeoutMs: b.constants.TIME.seconds(2) }); }
 }
 
 async function run() {
@@ -2337,6 +2423,7 @@ async function run() {
   await testBdatMore(tls);
   await testPipeliningRace(tls);
   await testDkimSelfActor(tls);
+  await testDkimSelfNeedsADomainTheClientDidNotWrite(tls);
   await testFoldedDkimTagDoesNotBacktrack(tls);
   await testCleartextAuthAndIdentity(tls);
   await testSenderPolicy(tls);
