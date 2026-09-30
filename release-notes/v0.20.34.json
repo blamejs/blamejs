@@ -93,6 +93,10 @@
           "body": "`b.auditTools.exportCadf` set the CADF `initiator.id` to `\"unknown\"` for a row carrying no actor, and `target.id` to `\"n/a\"` for one carrying no resource. Both are values real data can hold, so a row whose `actorUserId` is literally `unknown` exported the same initiator as every unattributed row, and an auditor grouping by that id read one principal as having performed all of them. The placeholders are `blamejs:unattributed` and `blamejs:unidentified` now, which an actor id cannot be, and an unattributed initiator is no longer typed `service/security/account/user`, since there is no user account to describe. A row that does name an actor or a resource exports exactly what it did before."
         },
         {
+          "title": "A break-glass grant from an earlier release is not claimed by a current lookup",
+          "body": "Grant owners are recorded as `user:<id>` or `apikey:<id>`, and releases through 0.20.33 recorded them bare. The two spellings meet where a bare id spells a prefixed one: a grant belonging to the user whose literal id is `user:alice` carries the owner hash an ordinary user `alice` now derives, so `listActive` returned that other principal's grant id and `revokeAll({ actorId })` revoked it. A grant id is redeemable, so the exposure is the grant itself and not only its listing. The grants table gains an `ownerKeyVersion` column, added in place on an existing install, and both owner-scoped queries require the current format, so a grant written under either format is reachable only by the lookup that wrote it. `revokeAll({ table })` does not read the owner hash and still reaches any grant, and every grant expires within the policy's `grantTtl`."
+        },
+        {
           "title": "A sealed-column read under an unnameable actor is refused instead of pooled",
           "body": "`b.db.from(table).asActor(actor)` accepts an object, a string or a number, and refuses a value that names no principal so that `b.cryptoField.configureUnsealRateCap` counts unseal failures per principal. That refusal ran only for objects, so `asActor(\"\")`, `asActor(NaN)` and `asActor(Infinity)` were accepted although the resolver returns no key for any of them, and `b.cryptoField.unsealRow` counted their failures in the shared bucket it uses for reads that name nobody. Those reads spent one rate-cap budget and entered one cooldown together with every other unnamed reader, which is what naming an actor is supposed to prevent. An empty string and a non-finite number now raise `db-query/bad-actor`; `\"alice\"`, `42` and `0` are accepted as before."
         }
@@ -144,7 +148,7 @@
         },
         {
           "title": "A break-glass grant belongs to the credential that took it out",
-          "body": "Break-glass grant owners are recorded as `user:<id>` or `apikey:<id>` so a user and an API key cannot be confused. The owner id was read from the audit context, which resolves an API key to its `ownerId`, so a grant taken out with a key was filed under `user:<ownerId>`: it appeared in that owner's own user-session `listActive`, and `revokeAll({ actorId: \"apikey:<id>\" })` did not reach it. The credential is now resolved from the request, so a key's grant is listed and revoked as the key's.\n\nA grant persisted before those prefixes existed keys on the bare id and is not reachable by `actorId` at all. Matching the bare form against every record is not a fix: for a user whose literal id is `user:alice`, the bare remainder of `user:user:alice` is the different user `alice`'s owner id, which would expose and revoke that user's grants. Revoke such grants by `table`, which does not read the owner hash, or let them expire within the policy's `grantTtl`."
+          "body": "Break-glass grant owners are recorded as `user:<id>` or `apikey:<id>` so a user and an API key cannot be confused. The owner id was read from the audit context, which resolves an API key to its `ownerId`, so a grant taken out with a key was filed under `user:<ownerId>`: it appeared in that owner's own user-session `listActive`, and `revokeAll({ actorId: \"apikey:<id>\" })` did not reach it. The credential is now resolved from the request, so a key's grant is listed and revoked as the key's.\n\nA grant persisted before those prefixes existed records the earlier ownership format and is not reachable by `actorId`. Revoke such grants by `table`, which does not read the owner hash, or let them expire within the policy's `grantTtl`."
         },
         {
           "title": "A DKIM body-length opt-out takes a boolean, not anything truthy",
@@ -176,6 +180,10 @@
     {
       "heading": "Detectors",
       "items": [
+        {
+          "title": "A grant-owner query pins the ownership format it reads",
+          "body": "The break-glass grants table is matched on a hash of the owner id, and that id's format changed, so a query pinning the hash alone can match a row written under the other format. A check requires every query on `issuedToActorHash` to pin `ownerKeyVersion` too."
+        },
         {
           "title": "An identity check is not narrowed to objects",
           "body": "`b.requestHelpers.actorIdentityKey` answers the same question for a string or a number as for an object, so a gate that consults it under a `typeof x === \"object\"` test admits every primitive the resolver rejects. A check covers `lib/` for that shape."
@@ -215,7 +223,7 @@
       "items": [
         {
           "title": "Revoke outstanding break-glass grants by table when upgrading",
-          "body": "A break-glass grant issued before this release records its owner as a bare id, where a new one records `user:<id>` or `apikey:<id>`. `revokeAll({ actorId })` and `listActive` read the new form, so they do not reach an older grant. `revokeAll({ table })` does not read the owner at all and reaches any of them; otherwise they expire within the policy's `grantTtl`, 15 minutes by default. A grant taken out with an API key is now owned by `apikey:<id>` rather than by its owner's user id, so revoke it as the key."
+          "body": "A break-glass grant issued before this release records its owner as a bare id, where a new one records `user:<id>` or `apikey:<id>`. The grants table gains an `ownerKeyVersion` column recording which of the two a row holds; the column is added to an existing table on the first connection after the upgrade, and rows already present take the earlier format. `revokeAll({ actorId })` and `listActive` require the current format, so they do not reach an older grant, including one whose bare id spells a prefixed one. `revokeAll({ table })` does not read the owner at all and reaches any of them; otherwise they expire within the policy's `grantTtl`, 15 minutes by default. A grant taken out with an API key is now owned by `apikey:<id>` rather than by its owner's user id, so revoke it as the key."
         },
         {
           "title": "Pass req.botChallengeKey to recordFailure, and re-point anything grouping CADF initiators",

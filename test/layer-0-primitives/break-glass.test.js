@@ -2021,6 +2021,69 @@ async function testAPrefixShapedUserIdDoesNotReachAnotherUser() {
   }
 }
 
+// A grant written before the credential prefixes stores its owner id bare, so a
+// bare id that spells a prefixed one carries the hash a prefixed lookup derives.
+async function testAPrePrefixOwnerCannotBeClaimedByAPrefixedLookup() {
+  var tmpDir = _tmp();
+  await setupTestDb(tmpDir);
+  try {
+    b.breakGlass.init();
+    await b.breakGlass.policy.set("t_reverse", { columns: ["c"], factors: ["totp"] });
+    var totp = _validTotp();
+
+    // The grant belongs to the user whose literal id is "user:alice".
+    var ownerReq = _fakeReq({ user: { id: "user:alice" } });
+    var ownerGrant = await b.breakGlass.grant({
+      req:    ownerReq,
+      table:  "t_reverse",
+      reason: "investigating ticket #99004 for compliance review",
+      factor: { type: "totp", code: totp.code, secret: totp.secret },
+    });
+    check("[setup] the grant is issued", typeof ownerGrant.id === "string");
+
+    // Rewrite it into the shape a pre-prefix release stored: the owner id
+    // hashed bare, and no ownership-format marker.
+    var bare = b.cryptoField.computeDerived(
+      "_blamejs_break_glass_grants", "issuedToActorId", "user:alice");
+    check("[setup] the bare owner hash derives",
+      bare && typeof bare.value === "string" && bare.value.length > 0);
+    await b.clusterStorage.execute(
+      "UPDATE _blamejs_break_glass_grants SET issuedToActorHash = ?, " +
+      "ownerKeyVersion = " + String(b.breakGlass.OWNER_KEY_VERSION_BARE) + " WHERE _id = ?",
+      [bare.value, ownerGrant.id]);
+
+    // A DIFFERENT user, id "alice", derives that same hash from the prefix.
+    var aliceReq = _fakeReq({ user: { id: "alice" } });
+    var aliceSees = await b.breakGlass.listActive({ req: aliceReq });
+    check("break-glass: a prefixed lookup does not reach a pre-prefix grant of another principal",
+      aliceSees.length === 0, JSON.stringify(aliceSees.map(function (s) { return s.id; })));
+
+    var aliceRevoke = await b.breakGlass.revokeAll(
+      { actorId: "user:alice" }, { reason: "ir-reverse-collision-probe" });
+    check("break-glass: and cannot revoke it either",
+      aliceRevoke && aliceRevoke.revokedCount === 0, JSON.stringify(aliceRevoke));
+
+    // Control: an owner still reaches a grant written in the current format,
+    // so the version filter is not refusing everything.
+    var carolTotp = _validTotp();
+    var carolReq = _fakeReq({ user: { id: "carol" } });
+    await b.breakGlass.grant({
+      req:    carolReq,
+      table:  "t_reverse",
+      reason: "investigating ticket #99005 for compliance review",
+      factor: { type: "totp", code: carolTotp.code, secret: carolTotp.secret },
+    });
+    check("break-glass: the owner of a current-format grant still sees it",
+      (await b.breakGlass.listActive({ req: carolReq })).length === 1);
+    var carolRevoke = await b.breakGlass.revokeAll(
+      { actorId: "carol" }, { reason: "ir-current-format-control" });
+    check("break-glass: and can revoke it",
+      carolRevoke && carolRevoke.revokedCount === 1, JSON.stringify(carolRevoke));
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
 // Revoking by table does not read the owner hash, so it reaches a grant whose
 // owner id predates the credential prefixes.
 async function testRevokeByTableReachesAnyOwnerFormat() {
@@ -2151,6 +2214,7 @@ async function run() {
   await testPasskeyFullFieldFactorPath();
   await testGrantOwnerIsTheCredentialThatTookItOut();
   await testAPrefixShapedUserIdDoesNotReachAnotherUser();
+  await testAPrePrefixOwnerCannotBeClaimedByAPrefixedLookup();
   await testRevokeByTableReachesAnyOwnerFormat();
   await testListAndRevokeEdgeBranches();
 }

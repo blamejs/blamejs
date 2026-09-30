@@ -38,6 +38,27 @@ var PRE_0_18_58_ANCHOR =
   '  "purgedAt" INTEGER NOT NULL' +
   ')';
 
+// The break-glass grants table as a deployment that ran before 0.20.34 has it:
+// the owner id is recorded bare, and nothing records which format that is.
+var PRE_0_20_34_GRANTS =
+  'CREATE TABLE "_blamejs_break_glass_grants" (' +
+  '  "_id" TEXT PRIMARY KEY,' +
+  '  "issuedToActorId" TEXT NOT NULL,' +
+  '  "issuedToActorHash" TEXT NOT NULL,' +
+  '  "factorType" TEXT NOT NULL,' +
+  '  "reasonSealed" TEXT,' +
+  '  "scopeTable" TEXT NOT NULL,' +
+  '  "scopeColumnsJson" TEXT NOT NULL,' +
+  '  "issuedAt" INTEGER NOT NULL,' +
+  '  "expiresAt" INTEGER NOT NULL,' +
+  '  "maxRowsPerGrant" INTEGER NOT NULL,' +
+  '  "rowsConsumed" INTEGER NOT NULL DEFAULT 0,' +
+  '  "revokedAt" INTEGER,' +
+  '  "sessionId" TEXT,' +
+  '  "ip" TEXT,' +
+  '  "kwGrantHalf" TEXT' +
+  ')';
+
 // Read through `pragma_table_info` as a SELECT rather than a bare PRAGMA: the
 // driver returns rows only for statements it recognizes as reads, and a bare
 // PRAGMA comes back with none. That produced an empty column list, which made
@@ -191,6 +212,18 @@ async function run() {
 
     // A volume that predates the columns.
     await driverObj.query(client, PRE_0_18_58_ANCHOR, []);
+    await driverObj.query(client, PRE_0_20_34_GRANTS, []);
+    var grantsBefore = await _columnsOf(driverObj, client, "_blamejs_break_glass_grants");
+    check("the pre-upgrade grants table records no ownership format",
+      grantsBefore.length > 0 && grantsBefore.indexOf("ownerKeyVersion") === -1,
+      grantsBefore.join(","));
+    // A grant already outstanding when the upgrade lands.
+    await driverObj.query(client,
+      'INSERT INTO "_blamejs_break_glass_grants" ' +
+      '("_id", "issuedToActorId", "issuedToActorHash", "factorType", "scopeTable", ' +
+      '"scopeColumnsJson", "issuedAt", "expiresAt", "maxRowsPerGrant") ' +
+      "VALUES ('bg-legacy', 'user:alice', '" + "b".repeat(64) + "', 'totp', 'patients', " +
+      "'[\"ssn\"]', 1750000000000, 1750000900000, 1)", []);
     var before = await _columnsOf(driverObj, client, "_blamejs_audit_purge_anchor");
     check("the pre-upgrade anchor has none of the new columns",
       before.indexOf("signature") === -1 &&
@@ -253,6 +286,23 @@ async function run() {
       JSON.stringify(row));
     check("with the fencing token defaulted, so the fence has something to compare",
       Number(row.fencingToken) === 0, String(row.fencingToken));
+
+    // The grants table gains the ownership format, and the grant that was
+    // already outstanding reads as the earlier one. A row defaulted to the
+    // current format instead would be claimable by a lookup for whichever
+    // principal its bare owner id happens to spell.
+    var grantsAfter = await _columnsOf(driverObj, client, "_blamejs_break_glass_grants");
+    check("ensureSchema adds the ownership-format column to the existing grants table",
+      grantsAfter.indexOf("ownerKeyVersion") !== -1, grantsAfter.join(","));
+    var grantRead = await driverObj.query(client,
+      'SELECT * FROM "_blamejs_break_glass_grants" WHERE "_id" = \'bg-legacy\'', []);
+    var grantRow = ((grantRead && grantRead.rows) ? grantRead.rows : grantRead)[0];
+    check("and an outstanding grant reads as the earlier ownership format",
+      Number(grantRow.ownerKeyVersion) === b.breakGlass.OWNER_KEY_VERSION_BARE,
+      JSON.stringify(grantRow.ownerKeyVersion));
+    check("with its owner id intact, so revoking by table still reaches it",
+      grantRow.issuedToActorId === "user:alice" && grantRow.scopeTable === "patients",
+      JSON.stringify(grantRow));
 
     // Only a column that is ALREADY THERE is swallowed. This loop is the last
     // thing standing between a declared column and a table that silently never
