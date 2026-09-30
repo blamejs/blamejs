@@ -2,8 +2,8 @@
   "$schema": "./release-note.schema.json",
   "version": "0.20.34",
   "date": "2026-09-30",
-  "headline": "A value is judged by what it is, an actor by which field named it, and a limit only binds when it is a number",
-  "summary": "Three questions were being answered by the wrong test. Whether a value is bytes was answered by `instanceof`, which compares against one realm's constructor. Whether a value can be serialized was answered by a list of type names, which missed five types that serialize to an empty object. Whether a limit is exceeded was answered against a value nothing had checked was a number, and every comparison with a non-number is false. A fourth ran alongside them: which principal an action belongs to was answered by reading whichever identity field a caller happened to use, so principals that the framework's own resolver separates were folded together. Each had a case where the wrong answer was to skip work rather than refuse it, and those are the entries under Security.",
+  "headline": "One resolver names the principal an action belongs to, type checks no longer depend on which realm made a value, and a limit is checked as a number before it is enforced",
+  "summary": "Four kinds of check were reading something other than what they were written to read. `instanceof` compares against one realm's constructor, so bytes, patterns and dates built in a worker, a `vm` context or another copy of the framework read as the wrong type. A walker classified values by type name and missed `Map`, `Set`, `Promise`, `ArrayBuffer` and `DataView`, each of which a `JSON.stringify` reads as an empty object. A limit taken from options was compared without being checked as a number, and every comparison with a non-number is false, so such a limit allowed everything. Identity was resolved per module by reading whichever field a caller happened to use, so principals that `b.requestHelpers.actorIdentityKey` separates were folded into one key. The entries under Security are the ones where the wrong reading skipped a check instead of refusing the input.",
   "sections": [
     {
       "heading": "Security",
@@ -91,6 +91,10 @@
         {
           "title": "An audit export does not name an unattributed row after a principal",
           "body": "`b.auditTools.exportCadf` set the CADF `initiator.id` to `\"unknown\"` for a row carrying no actor, and `target.id` to `\"n/a\"` for one carrying no resource. Both are values real data can hold, so a row whose `actorUserId` is literally `unknown` exported the same initiator as every unattributed row, and an auditor grouping by that id read one principal as having performed all of them. The placeholders are `blamejs:unattributed` and `blamejs:unidentified` now, which an actor id cannot be, and an unattributed initiator is no longer typed `service/security/account/user`, since there is no user account to describe. A row that does name an actor or a resource exports exactly what it did before."
+        },
+        {
+          "title": "A sealed-column read under an unnameable actor is refused instead of pooled",
+          "body": "`b.db.from(table).asActor(actor)` accepts an object, a string or a number, and refuses a value that names no principal so that `b.cryptoField.configureUnsealRateCap` counts unseal failures per principal. That refusal ran only for objects, so `asActor(\"\")`, `asActor(NaN)` and `asActor(Infinity)` were accepted although the resolver returns no key for any of them, and `b.cryptoField.unsealRow` counted their failures in the shared bucket it uses for reads that name nobody. Those reads spent one rate-cap budget and entered one cooldown together with every other unnamed reader, which is what naming an actor is supposed to prevent. An empty string and a non-finite number now raise `db-query/bad-actor`; `\"alice\"`, `42` and `0` are accepted as before."
         }
       ]
     },
@@ -172,6 +176,10 @@
     {
       "heading": "Detectors",
       "items": [
+        {
+          "title": "An identity check is not narrowed to objects",
+          "body": "`b.requestHelpers.actorIdentityKey` answers the same question for a string or a number as for an object, so a gate that consults it under a `typeof x === \"object\"` test admits every primitive the resolver rejects. A check covers `lib/` for that shape."
+        },
         {
           "title": "Nothing in lib decides whether a value is bytes by which realm built it",
           "body": "Deciding that a value is bytes has no correct form that tests the realm, so a check covers the whole of `lib/` for `instanceof` against a typed-array view, with no allowlist. Asking the same question about a date or a map does have a correct form, since `x instanceof Date ? x : new Date(x)` handles the other branch, so the existing per-module check keeps the wider set of built-ins and now names every module that decides a type and then stores, signs, redacts, refuses or timestamps the value. Run against the tree before this release, the two report 64 and 42 sites."
