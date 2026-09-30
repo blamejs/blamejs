@@ -475,12 +475,57 @@ async function run() {
   })());
 
   // ---- audit emissions reach the bus ----
-  // Use audit drain helper if available; else just confirm safeEmit doesn't throw.
-  try {
-    b.audit.subscribeNamespace("auth", function (_event) { /* drop-silent */ });
-  } catch (_e) { /* not all backends support subscribeNamespace; non-fatal */ }
   b.auth.stepUp.evaluate({ claims: { acr: "loa3" }, requirement: { acr: "loa2" } });
   check("evaluate is side-effect-free",            true);
+
+  // The middleware decides which principal a step-up applies to by reading
+  // req.user.id, then userId, then claims.sub, then sub, so it serves all four.
+  // The two audit emitters read req.user.id alone, so a decision about a
+  // principal named by any of the other three was recorded with no actor: the
+  // row said a step-up was required or satisfied and named nobody it was about.
+  // One resolver now answers for both, so what the audit names is what the
+  // middleware matched.
+  var SHAPES = [
+    ["id",         { id: "p-id" },                   "p-id"],
+    ["userId",     { userId: "p-userid" },           "p-userid"],
+    ["claims.sub", { claims: { sub: "p-claimsub" } }, "p-claimsub"],
+    ["sub",        { sub: "p-sub" },                 "p-sub"],
+  ];
+  SHAPES.forEach(function (shape) {
+    var rows = [];
+    var sink = { safeEmit: function (ev) { rows.push(ev); } };
+    var req = { url: "/admin", user: shape[1] };
+    b.auth.stepUp.emitAuditRequired("lbl", { acr: "loa2" }, {}, req, sink);
+    b.auth.stepUp.emitAuditSatisfied("lbl", { acr: "loa2" }, {}, req, sink);
+    check("step-up audit: a principal named by " + shape[0] + " reaches both rows",
+          rows.length === 2 &&
+          rows[0].actor && rows[0].actor.userId === shape[2] &&
+          rows[1].actor && rows[1].actor.userId === shape[2],
+          JSON.stringify(rows.map(function (r) { return r.actor && r.actor.userId; })));
+    check("step-up audit: the route rides with the named actor for " + shape[0],
+          rows.length === 2 && rows[0].actor.route === "/admin");
+  });
+
+  // A request naming no principal records no actor id rather than inventing one.
+  var anonRows = [];
+  b.auth.stepUp.emitAuditRequired("lbl", { acr: "loa2" }, {},
+    { url: "/admin", user: { role: "admin" } },
+    { safeEmit: function (ev) { anonRows.push(ev); } });
+  check("step-up audit: an actor naming no principal records a null userId",
+        anonRows.length === 1 && anonRows[0].actor.userId === null,
+        JSON.stringify(anonRows[0] && anonRows[0].actor));
+
+  // The resolver both sides share, asserted directly so a future edit that
+  // narrows one caller's chain shows up here rather than in a quiet audit row.
+  check("stepUp._resolvePrincipal reads the four fields in the documented order",
+        b.auth.stepUp._resolvePrincipal({ user: { id: "a", userId: "b", sub: "c" } }) === "a" &&
+        b.auth.stepUp._resolvePrincipal({ user: { userId: "b", sub: "c" } }) === "b" &&
+        b.auth.stepUp._resolvePrincipal({ user: { claims: { sub: "c" }, sub: "d" } }) === "c" &&
+        b.auth.stepUp._resolvePrincipal({ user: { sub: "d" } }) === "d");
+  check("stepUp._resolvePrincipal answers undefined for a request naming nobody",
+        b.auth.stepUp._resolvePrincipal({ user: { role: "x" } }) === undefined &&
+        b.auth.stepUp._resolvePrincipal({}) === undefined &&
+        b.auth.stepUp._resolvePrincipal(null) === undefined);
 
   // ---- policy DSL ----
   var p = b.auth.stepUp.policy;
