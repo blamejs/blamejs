@@ -48,6 +48,16 @@ var fs   = require("node:fs");
 var path = require("node:path");
 var vm   = require("node:vm");
 
+// By path into the framework's own lib rather than through the package name:
+// scripts/validate-source-comment-blocks.js loads this engine as a cheap static
+// gate, and resolving "@blamejs/core" would make that gate need the wiki's
+// node_modules installed.
+var C          = require("../../../lib/constants");
+var safeJson   = require("../../../lib/safe-json");
+var frameworkError = require("../../../lib/framework-error");
+
+var CommentBlockValidatorError = frameworkError.defineClass("CommentBlockValidatorError");
+
 var KNOWN_STATUSES = { stable: 1, experimental: 1, deprecated: 1 };
 var KNOWN_POSTURES = {
   hipaa: 1, "pci-dss": 1, gdpr: 1, soc2: 1, dora: 1, nis2: 1, cra: 1,
@@ -210,13 +220,16 @@ function _exportedNameTree(libDir) {
   var raw;
   try { raw = fs.readFileSync(snapshotPath, "utf8"); }
   catch (e) {
-    throw new Error("validate(): cannot read " + snapshotPath + " — @related " +
+    throw new CommentBlockValidatorError("wiki/comment-block-snapshot-unreadable",
+      "validate(): cannot read " + snapshotPath + " — @related " +
       "references are resolved against it, so the gate cannot run without it " +
       "(regenerate with scripts/refresh-api-snapshot.js): " + ((e && e.message) || String(e)));
   }
-  var parsed = JSON.parse(raw);
+  // The snapshot is the whole export surface, past the 1 MiB default.
+  var parsed = safeJson.parse(raw, { maxBytes: C.BYTES.mib(32) });
   if (!parsed || !parsed.exports || typeof parsed.exports !== "object") {
-    throw new Error("validate(): " + snapshotPath + " carries no exports map");
+    throw new CommentBlockValidatorError("wiki/comment-block-snapshot-shape",
+      "validate(): " + snapshotPath + " carries no exports map");
   }
   return parsed.exports;
 }
