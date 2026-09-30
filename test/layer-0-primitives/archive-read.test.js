@@ -889,6 +889,8 @@ async function testBombPolicyEdges() {
         "a 2-entry archive was read under maxEntries \"abc\"");
   check("archive-read: a non-numeric maxEntryDecompressedBytes is refused",
         (await policyRefused({ maxEntryDecompressedBytes: "lots" })) !== null);
+  check("archive-read: a non-numeric maxTotalDecompressedBytes is refused",
+        (await policyRefused({ maxTotalDecompressedBytes: "plenty" })) !== null);
   check("archive-read: a non-numeric maxExpansionRatio is refused",
         (await policyRefused({ maxExpansionRatio: "high" })) !== null);
   check("archive-read: a negative maxEntries is refused",
