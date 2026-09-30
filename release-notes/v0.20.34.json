@@ -139,8 +139,8 @@
           "body": "`b.auth.stepUp.grant.verify` compares `opts.actor` against a grant minted with `opts.actor`, and `opts.subject` against one minted with `opts.subject`. A caller who passed only `opts.actor` against a bare-subject grant matched neither branch, so nothing was checked and a grant issued for `alice` verified under `{ actor: { id: \"bob\" } }`. Such a grant has no actor binding to answer that question with: its subject is an operator-chosen string, not a tagged identity key. It is refused now with `subject_mismatch`, naming both ways forward, mint the grant with `opts.actor` or name the principal with `opts.subject` as well. Passing both, which is what `b.middleware.requireStepUp` does, is unchanged."
         },
         {
-          "title": "A break-glass grant issued before this release can still be listed and revoked",
-          "body": "Break-glass grant owners are recorded as `user:<id>` or `apikey:<id>` so the two credentials cannot be confused. A grant persisted before those prefixes existed has an owner hash derived from the bare id, and both lookups searched the prefixed forms only: `revokeAll({ actorId })` reported nothing to revoke and the owner's own `listActive` did not show it, while its handle kept working until expiry — a grant you could neither see nor revoke. Both lookups include the pre-prefix form now. New grants are still written prefixed, so a user and an API key remain separate."
+          "title": "A break-glass grant belongs to the credential that took it out",
+          "body": "Break-glass grant owners are recorded as `user:<id>` or `apikey:<id>` so a user and an API key cannot be confused. The owner id was read from the audit context, which resolves an API key to its `ownerId`, so a grant taken out with a key was filed under `user:<ownerId>`: it appeared in that owner's own user-session `listActive`, and `revokeAll({ actorId: \"apikey:<id>\" })` did not reach it. The credential is now resolved from the request, so a key's grant is listed and revoked as the key's.\n\nA grant persisted before those prefixes existed keys on the bare id and is not reachable by `actorId` at all. Matching the bare form against every record is not a fix: for a user whose literal id is `user:alice`, the bare remainder of `user:user:alice` is the different user `alice`'s owner id, which would expose and revoke that user's grants. Revoke such grants by `table`, which does not read the owner hash, or let them expire within the policy's `grantTtl`."
         },
         {
           "title": "A DKIM body-length opt-out takes a boolean, not anything truthy",
@@ -205,6 +205,10 @@
     {
       "heading": "Migration",
       "items": [
+        {
+          "title": "Revoke outstanding break-glass grants by table when upgrading",
+          "body": "A break-glass grant issued before this release records its owner as a bare id, where a new one records `user:<id>` or `apikey:<id>`. `revokeAll({ actorId })` and `listActive` read the new form, so they do not reach an older grant. `revokeAll({ table })` does not read the owner at all and reaches any of them; otherwise they expire within the policy's `grantTtl`, 15 minutes by default. A grant taken out with an API key is now owned by `apikey:<id>` rather than by its owner's user id, so revoke it as the key."
+        },
         {
           "title": "Pass req.botChallengeKey to recordFailure, and re-point anything grouping CADF initiators",
           "body": "`b.authBotChallenge`'s middleware keys its ladder by the authenticated principal on a route that carries no credential in the body, where it previously used the client address. A post-verify path that derived the key itself, `recordFailure(clientIp)` on a token-refresh route, now advances a different ladder from the one the middleware reads, and the two never meet. `middleware()` writes the key it used to `req.botChallengeKey`; pass that. A route whose body carries `email` or `username` is unchanged, so the documented `recordFailure(\"user@example.com\")` still pairs.\n\n`b.auditTools.exportCadf` emits `blamejs:unattributed` and `blamejs:unidentified` where it emitted `\"unknown\"` and `\"n/a\"`. A dashboard or SIEM rule grouping initiators by those literals needs the new values. Rows that name an actor or a resource are unchanged."
