@@ -346,9 +346,99 @@ async function testConcurrentFailuresDoNotLoseIncrements() {
     lockout.calls.fail === 4);
 }
 
+// ---- the ladder is per principal, not per address ----
+//
+// The default key came from `body.email`, then `body.username`, then the client
+// address. Every auth route that does not carry a credential in the body -- a
+// token refresh, a step-up, an OTP confirmation -- therefore fell to the
+// address, so every caller behind one NAT or one reverse proxy advanced a
+// single ladder: one of them reaches the escalation threshold and the rest are
+// locked out with it. An authenticated request names a principal, and that is
+// what the ladder should count.
+//
+// The address also came from `clientIp` with no options, which reads the socket
+// and ignores forwarded headers. That is right against a forged header and
+// wrong behind a real proxy, where every request carries the proxy's address:
+// one ladder for the whole internet. Declaring the proxy resolves the client.
+async function testLadderIsPerPrincipalNotPerAddress() {
+  function _gate(extra) {
+    var opts = {
+      botGuard:            _fakeBotGuard("pass"),
+      lockout:             _fakeLockout(),
+      sessionStore:        _memoryStore(),
+      threshold:           3,
+      escalationThreshold: 6,
+    };
+    if (extra) { Object.keys(extra).forEach(function (k) { opts[k] = extra[k]; }); }
+    return b.authBotChallenge.create(opts);
+  }
+
+  // Two authenticated principals from one address, neither naming itself in the
+  // body, which is what a refresh or step-up POST looks like.
+  var gate = _gate();
+  var alice = _mockReq({ url: "/token/refresh", body: {},
+                         user: { sub: "alice" }, socket: { remoteAddress: "198.51.100.7" } });
+  var bob   = _mockReq({ url: "/token/refresh", body: {},
+                         user: { sub: "bob" },   socket: { remoteAddress: "198.51.100.7" } });
+  var resA = _mockRes(), resB = _mockRes();
+  await gate.middleware()(alice, resA, function () {});
+  await gate.middleware()(bob,   resB, function () {});
+  check("bot-challenge: the middleware reports the key it counted on",
+    typeof alice.botChallengeKey === "string" && alice.botChallengeKey.length > 0,
+    String(alice.botChallengeKey));
+  check("bot-challenge: two principals from one address are two ladders",
+    alice.botChallengeKey !== bob.botChallengeKey,
+    JSON.stringify({ alice: alice.botChallengeKey, bob: bob.botChallengeKey }));
+
+  // Advancing one principal to the escalation threshold must not lock the other.
+  var i;
+  for (i = 0; i < 6; i += 1) { await gate.recordFailure(alice.botChallengeKey); }
+  var aliceState = await gate.check(alice.botChallengeKey);
+  var bobState   = await gate.check(bob.botChallengeKey);
+  check("bot-challenge: the advanced principal is locked",
+    aliceState.stage === "locked", JSON.stringify(aliceState));
+  check("bot-challenge: the other principal behind that address is not",
+    bobState.stage !== "locked", JSON.stringify(bobState));
+
+  // A body credential still names the ladder, so the documented
+  // recordFailure("user@example.com") pairing is unchanged.
+  var byEmail = _gate();
+  var withEmail = _mockReq({ body: { email: "User@Example.com" } });
+  await byEmail.middleware()(withEmail, _mockRes(), function () {});
+  check("bot-challenge: a body credential still keys the ladder, lowercased",
+    withEmail.botChallengeKey === "user@example.com", withEmail.botChallengeKey);
+
+  // Behind a declared proxy the address is the client's, not the proxy's, so
+  // two clients arriving through one proxy are two ladders.
+  var proxied = _gate({ trustedProxies: ["10.0.0.0/8"] });
+  var c1 = _mockReq({ body: {}, socket: { remoteAddress: "10.0.0.9" },
+                      headers: { "x-forwarded-for": "203.0.113.5" } });
+  var c2 = _mockReq({ body: {}, socket: { remoteAddress: "10.0.0.9" },
+                      headers: { "x-forwarded-for": "203.0.113.6" } });
+  await proxied.middleware()(c1, _mockRes(), function () {});
+  await proxied.middleware()(c2, _mockRes(), function () {});
+  check("bot-challenge: a declared proxy keys by the client, not the proxy",
+    c1.botChallengeKey !== c2.botChallengeKey,
+    JSON.stringify({ c1: c1.botChallengeKey, c2: c2.botChallengeKey }));
+
+  // Control: without a declared proxy a forged header cannot split the ladder,
+  // which is the property the socket-only read was protecting.
+  var unproxied = _gate();
+  var f1 = _mockReq({ body: {}, socket: { remoteAddress: "10.0.0.9" },
+                      headers: { "x-forwarded-for": "203.0.113.5" } });
+  var f2 = _mockReq({ body: {}, socket: { remoteAddress: "10.0.0.9" },
+                      headers: { "x-forwarded-for": "203.0.113.6" } });
+  await unproxied.middleware()(f1, _mockRes(), function () {});
+  await unproxied.middleware()(f2, _mockRes(), function () {});
+  check("bot-challenge: an undeclared forwarded header cannot split the ladder",
+    f1.botChallengeKey === f2.botChallengeKey,
+    JSON.stringify({ f1: f1.botChallengeKey, f2: f2.botChallengeKey }));
+}
+
 async function run() {
   testSurface();
   testCreateRejectsBadOpts();
+  await testLadderIsPerPrincipalNotPerAddress();
   await testStaircaseAdvances();
   await testConcurrentFailuresDoNotLoseIncrements();
   await testMiddlewareChallengeFn();
