@@ -292,6 +292,44 @@ function testClassifyScansAByteBodyFromAnotherRealm() {
         JSON.stringify(farVerdict.redactedBody).slice(0, 80));
 }
 
+// The recursion cap is enforced as `depth > maxDepth`, and `0 > "abc"` is false
+// at every depth, so a maxDepth that is not a number stopped capping and the
+// walk ran to the end of whatever it was handed. redact runs on log payloads,
+// which is where a hostile nesting depth arrives, and it must not throw out of
+// that path, so a value it cannot use falls back to the documented default
+// rather than raising.
+function testRedactDepthCapSurvivesABadMaxDepth() {
+  b.redact._resetForTest();
+  function nest(n) {
+    var root = {}, cur = root;
+    for (var i = 0; i < n; i++) { cur.next = {}; cur = cur.next; }
+    cur.leaf = "bottom";
+    return root;
+  }
+  function depthReached(out) {
+    var hops = 0, cur = out;
+    while (cur && typeof cur === "object" && cur.next !== undefined) { cur = cur.next; hops += 1; }
+    return hops;
+  }
+
+  check("redact: the default cap stops the walk short of 200 levels",
+        depthReached(b.redact.redact(nest(200))) <= 51,
+        String(depthReached(b.redact.redact(nest(200)))));
+  check("redact: a non-numeric maxDepth falls back to the default rather than " +
+        "walking uncapped",
+        depthReached(b.redact.redact(nest(200), { maxDepth: "abc" })) <= 51,
+        String(depthReached(b.redact.redact(nest(200), { maxDepth: "abc" }))));
+  check("redact: a negative maxDepth falls back to the default",
+        depthReached(b.redact.redact(nest(200), { maxDepth: -1 })) <= 51,
+        String(depthReached(b.redact.redact(nest(200), { maxDepth: -1 }))));
+  check("redact: a numeric maxDepth is still honored",
+        depthReached(b.redact.redact(nest(200), { maxDepth: 3 })) <= 4,
+        String(depthReached(b.redact.redact(nest(200), { maxDepth: 3 }))));
+  check("redact: maxDepth 0 replaces a nested value at the top",
+        b.redact.redact({ a: { b: 1 } }, { maxDepth: 0 }).a === "[REDACTED]",
+        JSON.stringify(b.redact.redact({ a: { b: 1 } }, { maxDepth: 0 })));
+}
+
 function testRedactArrayWalk() {
   b.redact._resetForTest();
   var out = b.redact.redact(["4111111111111111", "plain", { password: "p" }]);
@@ -1322,6 +1360,7 @@ async function run() {
   testRedactPrimitivePassthroughs();
   testRedactBinaryValuesAlwaysMarker();
   testRedactRecognizesBytesFromAnotherRealm();
+  testRedactDepthCapSurvivesABadMaxDepth();
   testRedactArrayWalk();
   testRedactSensitiveParentCollapsesComposite();
   testRedactMaxDepthCap();

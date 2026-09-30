@@ -868,6 +868,62 @@ async function testBombPolicyEdges() {
   catch (err) { e1 = err; }
   check("archive-read: maxEntries cap trips", _hasCode(e1, "archive-read/too-many-entries"));
 
+  // A cap that is not a number imposes nothing, because `entries.length > "abc"`
+  // is false for every length. A cap read from an environment variable or a JSON
+  // config arrives as a string, so this is a configuration typo away rather
+  // than a contrived input.
+  var z2 = b.archive.zip();
+  z2.addFile("a.txt", "hello");
+  z2.addFile("b.txt", "world");
+  var two = z2.toBuffer();
+
+  async function policyRefused(policy) {
+    try {
+      await b.archive.read.zip(b.archive.adapters.buffer(two), { bombPolicy: policy }).inspect();
+      return null;
+    } catch (err) { return err; }
+  }
+
+  check("archive-read: a non-numeric maxEntries is refused rather than ignored",
+        (await policyRefused({ maxEntries: "abc" })) !== null,
+        "a 2-entry archive was read under maxEntries \"abc\"");
+  check("archive-read: a non-numeric maxEntryDecompressedBytes is refused",
+        (await policyRefused({ maxEntryDecompressedBytes: "lots" })) !== null);
+  check("archive-read: a non-numeric maxExpansionRatio is refused",
+        (await policyRefused({ maxExpansionRatio: "high" })) !== null);
+  check("archive-read: a negative maxEntries is refused",
+        (await policyRefused({ maxEntries: -1 })) !== null);
+
+  // A numeric cap still enforces, 0 still means refuse anything non-empty, and
+  // a generous cap still reads the archive.
+  check("archive-read: a numeric cap still trips",
+        _hasCode(await policyRefused({ maxEntries: 1 }), "archive-read/too-many-entries"));
+  check("archive-read: a zero cap still trips",
+        _hasCode(await policyRefused({ maxEntries: 0 }), "archive-read/too-many-entries"));
+  var generous = await policyRefused({ maxEntries: 10 });
+  check("archive-read: a generous cap still reads the archive", generous === null,
+        generous ? String(generous.code) : "");
+
+  // The documented builder must be able to express the cap the reader honors.
+  // `|| 65535` replaced an explicit 0 with the permissive default, so a policy
+  // built this way could not say "refuse anything non-empty" at all.
+  check("zipBombPolicy keeps an explicit maxEntries of 0",
+        b.guardArchive.zipBombPolicy({ maxEntries: 0 }).maxEntries === 0,
+        String(b.guardArchive.zipBombPolicy({ maxEntries: 0 }).maxEntries));
+  check("zipBombPolicy still applies its default when the cap is absent",
+        b.guardArchive.zipBombPolicy({}).maxEntries === 65535);
+  var builderThrew = null;
+  try { b.guardArchive.zipBombPolicy({ maxEntries: "abc" }); }
+  catch (err) { builderThrew = err; }
+  check("zipBombPolicy refuses a non-numeric cap at the call",
+        builderThrew !== null, "accepted maxEntries \"abc\"");
+  var ratioThrew = null;
+  try { b.guardArchive.zipBombPolicy({ maxExpansionRatio: "high" }); }
+  catch (err) { ratioThrew = err; }
+  check("zipBombPolicy refuses a non-numeric expansion ratio", ratioThrew !== null);
+  check("zipBombPolicy accepts a fractional expansion ratio",
+        b.guardArchive.zipBombPolicy({ maxExpansionRatio: 1.5 }).maxExpansionRatio === 1.5);
+
   // Highly compressible payload → expansion ratio well above the default 100.
   var raw = Buffer.alloc(10000);
   var deflated = zlib.deflateRawSync(raw);
