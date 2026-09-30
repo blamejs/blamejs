@@ -183,7 +183,25 @@ function run() {
     user: { id: "u-123", role: "admin", email: "a@b.c" },
     headers: { "accept-language": "en-US,en;q=0.9", "user-agent": "test-agent" },
   });
-  check("fromRequest: targetingKey from user.id", ctxFromReq.targetingKey === "u-123");
+  // The targeting key is the tagged identity key, not the raw id it used to be:
+  // untagged, `{ id: "x" }` and `{ sub: "x" }` were one key, so they shared a
+  // rollout bucket and matched one rule written against the key. Tagging
+  // re-buckets authenticated callers once on upgrade. The raw id still reaches
+  // the context as `userId`, which is what a targeting rule reads.
+  check("fromRequest: targetingKey is derived from the actor, not the address",
+        ctxFromReq.targetingKey.indexOf("anon:") !== 0, ctxFromReq.targetingKey);
+  check("fromRequest: targetingKey carries the id",
+        ctxFromReq.targetingKey.indexOf("u-123") !== -1, ctxFromReq.targetingKey);
+  check("fromRequest: targetingKey is stable for the same actor",
+        ctxFromReq.targetingKey === b.flag.context.fromRequest({
+          user: { id: "u-123", role: "admin", email: "a@b.c" },
+          headers: { "accept-language": "en-US,en;q=0.9", "user-agent": "test-agent" },
+        }).targetingKey);
+  check("fromRequest: an id and a sub spelling the same text are two keys",
+        ctxFromReq.targetingKey !== b.flag.context.fromRequest({
+          user: { sub: "u-123" }, headers: { "user-agent": "test-agent" },
+        }).targetingKey);
+  check("fromRequest: userId",                   ctxFromReq.userId === "u-123");
   check("fromRequest: role",                     ctxFromReq.role === "admin");
   check("fromRequest: locale",                   ctxFromReq.locale === "en-US");
 
@@ -230,6 +248,46 @@ function run() {
   check("fromRequest: the anon key is still derived (not a constant)",
         spoofA.targetingKey !== b.flag.context.fromRequest({
           socket: { remoteAddress: "203.0.113.1" }, headers: { "user-agent": "ua" } }).targetingKey);
+
+  // An AUTHENTICATED caller the resolver could not name fell into that same
+  // anonymous bucket. Only a string `user.id` was read, so a JWT-shaped actor
+  // carrying `sub` — which b.middleware.bearerAuth assigns verbatim from its
+  // verify — and an actor whose id is a number both landed on the hash of their
+  // address, shared with every other such caller behind it. A rollout bucket is
+  // the mild reading; a rule matching on the targeting key is the other one.
+  var atSameAddr = function (user, ctxOpts) {
+    return b.flag.context.fromRequest({
+      user:    user,
+      socket:  { remoteAddress: "198.51.100.7" },
+      headers: { "user-agent": "ua" },
+    }, ctxOpts);
+  };
+  var subA = atSameAddr({ sub: "alice" });
+  var subB = atSameAddr({ sub: "bob" });
+  check("fromRequest: two actors named by sub get distinct targeting keys",
+        subA.targetingKey !== subB.targetingKey,
+        JSON.stringify({ a: subA.targetingKey, b: subB.targetingKey }));
+  check("fromRequest: an actor named by sub is not in the anonymous bucket",
+        subA.targetingKey.indexOf("anon:") !== 0, subA.targetingKey);
+  var numId = atSameAddr({ id: 4102 });
+  check("fromRequest: an actor whose id is a number is not in the anonymous bucket",
+        numId.targetingKey.indexOf("anon:") !== 0, numId.targetingKey);
+  check("fromRequest: a numeric id and a string sub of the same text do not collide",
+        numId.targetingKey !== atSameAddr({ sub: "4102" }).targetingKey);
+  check("fromRequest: sub also reaches the context as userId for a rule to target",
+        subA.userId === "alice", JSON.stringify(subA));
+
+  // An actor carrying no name this framework reads has no identity to bucket
+  // on, so it stays in the anonymous bucket, and opts.actorKey is how a
+  // deployment supplies one.
+  var unnameable = atSameAddr({ employeeNumber: 7 });
+  check("fromRequest: an actor with no name the framework reads stays anonymous",
+        unnameable.targetingKey.indexOf("anon:") === 0, unnameable.targetingKey);
+  var hooked = atSameAddr({ employeeNumber: 7 },
+    { actorKey: function (a) { return "emp-" + a.employeeNumber; } });
+  check("fromRequest: opts.actorKey names an actor the framework cannot",
+        hooked.targetingKey.indexOf("anon:") !== 0 &&
+        hooked.targetingKey !== unnameable.targetingKey, hooked.targetingKey);
 
   // An operator genuinely behind a proxy declares it, and the forwarded address
   // is honoured through the same peer gate every other helper uses.
@@ -483,7 +541,8 @@ function run() {
   check("middleware: req.flag attached",         typeof req.flag === "object");
   check("middleware: req.flag.getBoolean",       typeof req.flag.getBoolean === "function");
   check("middleware: req.flag.getString admin",  req.flag.getString("greeting") === "Welcome admin");
-  check("middleware: req.flag.ctx",              req.flag.ctx.targetingKey === "u-mw");
+  check("middleware: req.flag.ctx",              req.flag.ctx.userId === "u-mw" &&
+                                                 req.flag.ctx.targetingKey.indexOf("u-mw") !== -1);
 
   // ---- multi-provider fallback ----
   var primary = b.flag.providers.memory({
@@ -679,6 +738,36 @@ function run() {
   roleCache.evaluate("beta", { targetingKey: "session-7", attributes: { role: "admin" } });
   check("cache: an identical context still hits the cache",
         roleSeen.length === repeatSeen, JSON.stringify(roleSeen));
+
+  // That covers a context whose fields sit under `attributes`, and
+  // b.flag.context.fromRequest does not build one: it carries userId, role,
+  // email, tenantId, locale and userAgent at the TOP LEVEL, and a targeting
+  // rule reads any path through the context, so `attribute: "role"` resolves
+  // `ctx.role`. A context from the framework's own builder therefore had every
+  // decision input outside the cache key.
+  var topSeen = [];
+  var topProvider = {
+    kind: "probe-top",
+    list: function () { return ["beta"]; },
+    evaluate: function (flagKey, ctx) {
+      var role = ctx ? ctx.role : null;
+      topSeen.push(role);
+      return { value: role === "admin", reason: "targeting_match" };
+    },
+  };
+  var topCache = b.flag.cache(topProvider, { ttlMs: 5000, maxEntries: 50 });
+  var topAdmin = topCache.evaluate("beta", { targetingKey: "session-8", role: "admin" });
+  var topGuest = topCache.evaluate("beta", { targetingKey: "session-8", role: "guest" });
+  check("[setup] the top-level admin context is evaluated as admin", topAdmin.value === true);
+  check("cache: a targeted field at the top level of the context is part of the key",
+        topGuest.value === false,
+        JSON.stringify({ guest: topGuest, providerSaw: topSeen }));
+  check("cache: and the provider is consulted for the second context",
+        topSeen.length === 2, JSON.stringify(topSeen));
+  var topRepeat = topSeen.length;
+  topCache.evaluate("beta", { targetingKey: "session-8", role: "admin" });
+  check("cache: an identical top-level context still hits the cache",
+        topSeen.length === topRepeat, JSON.stringify(topSeen));
   rejects("cache: bad downstream",
     function () { b.flag.cache({}); }, /must implement/);
   rejects("cache: ttlMs too small",
