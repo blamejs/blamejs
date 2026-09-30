@@ -131,6 +131,10 @@
       "heading": "Added",
       "items": [
         {
+          "title": "b.auth.jwt.verifyExternal documents the policy it verifies against",
+          "body": "The verifier for another party's JWT accepted eleven options and documented none of them, so the whole verification policy was undiscoverable: `algorithms`, which is required and has no default because the accepted set is the security of a verifier; `jwks` / `jwksUri` / `jwksCacheMs` / `keyResolver` for key sourcing; `allowKidlessJwks`, which accepts a single-key set for a token carrying no `kid`; `audience`, `issuer` and `subject`, each checked only when given, so a verifier naming none of them takes any issuer's token for any audience; and `clockSkewMs`, 30 seconds by default. The block records each one, what it defaults to, and that `none` and the symmetric `HS*` family are refused outright so an issuer cannot downgrade a token to a key the verifier already holds."
+        },
+        {
           "title": "Thirty namespaces that shipped without a documentation page now have one",
           "body": "The documentation site generates a page per namespace from the comment block above it, and thirty namespaces had no block, so they had no page: `b.cli`, `b.seeders`, `b.wsClient`, `b.parsers` and its two body readers, `b.secCyber`, `b.sessionDeviceBinding`, `b.otelExport`, `b.websocketChannels`, `b.pick`, `b.lazyRequire`, `b.validateOpts`, `b.frameworkError`, `b.flag.context`, `b.flag.cache` and the rest. Seventy primitives within them gained a signature, an options contract and a runnable example at the same time."
         }
