@@ -32,6 +32,7 @@ var ROOT = nodePath.join(__dirname, "..", "..");
 // `@related` tag, so this is the house convention and not drift.
 var CREATE_HANDLE_SHORTHAND = Object.freeze({
   "b.acme.renewIfDue":                 "b.acme.create().renewIfDue — RFC 9773 ARI renewal check",
+  "b.acme.revokeCert":                 "b.acme.create().revokeCert — the comment block above it spells it b.acme.create.revokeCert",
   "b.agent.orchestrator.hydrate":      "b.agent.orchestrator.create().hydrate — the facade member, on a namespace that also holds sub-namespaces",
   "b.agent.orchestrator.register":     "b.agent.orchestrator.create().register — the facade member, on a namespace that also holds sub-namespaces",
   "b.auth.oauth.parseCallback":        "b.auth.oauth.create().parseCallback",
@@ -44,6 +45,7 @@ var CREATE_HANDLE_SHORTHAND = Object.freeze({
   "b.mailStore.appendMessage":         "b.mailStore.create().appendMessage",
   "b.mailStore.createFolder":          "b.mailStore.create().createFolder",
   "b.restore.rollback":                "b.restore.create().rollback — the rollback a restore leaves behind",
+  "b.worm.put":                        "b.worm.create().put — the write half of a write-once store",
 });
 
 // Names the prose mentions BECAUSE they are gone. Resolving would mean the
