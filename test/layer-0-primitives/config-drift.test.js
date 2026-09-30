@@ -106,6 +106,78 @@ async function _testVerifyVendorIntegrity() {
     process.chdir(origCwd);
     try { fs.rmSync(elsewhere, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
   }
+
+  // SECURITY.md tells an operator to run this at boot and stop the boot on a
+  // bad verdict, so what the call does on a mismatch is the contract that
+  // instruction rests on: it REPORTS and returns, and the operator exits. The
+  // threat model and the checklist both used to say a mismatch "aborts start",
+  // which it never did, so an operator following them literally would have kept
+  // booting on a swapped bundle with only an audit row to show it. Pin the
+  // reporting contract here so the prose cannot drift away from it again.
+  var tampered = fs.mkdtempSync(path.join(os.tmpdir(), "config-drift-tamper-"));
+  try {
+    var pkgDir = path.join(tampered, "fake-pkg");
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(path.join(pkgDir, "bundle.cjs"), "module.exports = 1;\n", "utf8");
+    fs.writeFileSync(path.join(tampered, "MANIFEST.json"), JSON.stringify({
+      packages: {
+        "fake-pkg": {
+          files:  { server: "lib/vendor/fake-pkg/bundle.cjs" },
+          hashes: { server: "sha256:" + "0".repeat(64) },
+        },
+      },
+    }), "utf8");
+
+    var verdict = null, threw = null;
+    try { verdict = b.configDrift.verifyVendorIntegrity({ libVendorDir: tampered }); }
+    catch (e) { threw = e; }
+    check("verifyVendorIntegrity reports a mismatch rather than throwing",
+      threw === null, threw ? String(threw.code || threw.message) : "");
+    check("and the verdict says not ok, which is what the operator must act on",
+      verdict !== null && verdict.ok === false, JSON.stringify(verdict));
+    check("and it names the file that failed",
+      verdict !== null && verdict.mismatches.length === 1 &&
+      /bundle\.cjs$/.test(verdict.mismatches[0].path),
+      JSON.stringify(verdict && verdict.mismatches));
+
+    // A files entry carrying no hash is listed for verification and cannot be
+    // verified, so it is reported rather than skipped: skipping it silently is
+    // the zero-files-checked pass the throws below exist to prevent, one entry
+    // at a time.
+    fs.writeFileSync(path.join(tampered, "MANIFEST.json"), JSON.stringify({
+      packages: { "fake-pkg": { files: { server: "lib/vendor/fake-pkg/bundle.cjs" }, hashes: {} } },
+    }), "utf8");
+    var unhashed = b.configDrift.verifyVendorIntegrity({ libVendorDir: tampered });
+    check("a files entry with no hash is reported, not silently skipped",
+      unhashed.ok === false && unhashed.mismatches.length === 1 &&
+      unhashed.mismatches[0].actual === "<unverifiable-manifest-entry>",
+      JSON.stringify(unhashed));
+
+    // An absent manifest, and a manifest with no packages map, are the two cases
+    // that DO throw. These are the codes an operator matches on, so they are
+    // asserted rather than described.
+    var missing = fs.mkdtempSync(path.join(os.tmpdir(), "config-drift-nomanifest-"));
+    try {
+      var missingErr = null;
+      try { b.configDrift.verifyVendorIntegrity({ libVendorDir: missing }); }
+      catch (e) { missingErr = e; }
+      check("an absent MANIFEST.json throws rather than passing with zero files checked",
+        missingErr !== null && missingErr.code === "config-drift/vendor-manifest-missing",
+        missingErr ? String(missingErr.code) : "no throw");
+
+      fs.writeFileSync(path.join(missing, "MANIFEST.json"), "{}", "utf8");
+      var shapeErr = null;
+      try { b.configDrift.verifyVendorIntegrity({ libVendorDir: missing }); }
+      catch (e) { shapeErr = e; }
+      check("a manifest with no packages map throws its own code",
+        shapeErr !== null && shapeErr.code === "config-drift/vendor-manifest-shape",
+        shapeErr ? String(shapeErr.code) : "no throw");
+    } finally {
+      try { fs.rmSync(missing, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+    }
+  } finally {
+    try { fs.rmSync(tampered, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+  }
 }
 
 module.exports = { run: async function () { await run(); await _testVerifyVendorIntegrity(); } };
