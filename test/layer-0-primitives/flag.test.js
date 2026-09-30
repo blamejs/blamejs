@@ -768,6 +768,20 @@ function run() {
   topCache.evaluate("beta", { targetingKey: "session-8", role: "admin" });
   check("cache: an identical top-level context still hits the cache",
         topSeen.length === topRepeat, JSON.stringify(topSeen));
+
+  // A value with no JSON form cannot be part of a key, and the documented
+  // answer is to ask the provider rather than to cache under a key that leaves
+  // it out -- which is what sharing an entry between two different Sets would
+  // be. Asserted because the module states it.
+  var uncacheable = b.flag.cache(topProvider, { ttlMs: 5000 });
+  var beforeSet = topSeen.length;
+  uncacheable.evaluate("beta", { targetingKey: "session-9", role: "admin", tags: new Set(["a"]) });
+  uncacheable.evaluate("beta", { targetingKey: "session-9", role: "admin", tags: new Set(["b"]) });
+  check("cache: a context carrying a value with no JSON form is not cached",
+        uncacheable.stats().size === 0 && uncacheable.stats().hits === 0,
+        JSON.stringify(uncacheable.stats()));
+  check("cache: and the provider answers each of those asks",
+        topSeen.length === beforeSet + 2, JSON.stringify(topSeen.length));
   rejects("cache: bad downstream",
     function () { b.flag.cache({}); }, /must implement/);
   rejects("cache: ttlMs too small",

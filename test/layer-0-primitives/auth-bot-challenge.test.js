@@ -163,6 +163,30 @@ function testCreateRejectsBadOpts() {
     });
   } catch (_e) { threw = true; }
   check("create() rejects bad sessionStore shape", threw);
+
+  // The address options are handed to b.requestHelpers.trustedClientIp, which
+  // raises a bare TypeError. create() documents its refusals as
+  // auth-bot-challenge/bad-opt, so an operator matching on `code` would have
+  // caught nothing for these three.
+  // A single CIDR string is a valid trustedProxies, so the invalid value here
+  // is a malformed one; forwardedHeaders takes an array and refuses a string.
+  [["clientIpResolver", "not-a-fn"],
+   ["trustedProxies", "not-a-cidr"],
+   ["forwardedHeaders", "x-forwarded-for"]].forEach(function (pair) {
+    var caught = null;
+    try {
+      var opts = {
+        botGuard: _fakeBotGuard("pass"),
+        lockout:  _fakeLockout(),
+        sessionStore: _memoryStore(),
+      };
+      opts[pair[0]] = pair[1];
+      b.authBotChallenge.create(opts);
+    } catch (e) { caught = e; }
+    check("create() refuses a bad " + pair[0] + " with its own error code",
+      caught !== null && caught.code === "auth-bot-challenge/bad-opt",
+      caught === null ? "did not throw" : (caught.code || caught.name) + ": " + caught.message);
+  });
 }
 
 async function testStaircaseAdvances() {

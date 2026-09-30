@@ -480,6 +480,31 @@ function testTrustedClientIpPeerGatedFlag() {
     b.requestHelpers.trustedClientIp({ clientIpResolver: function () { return "1.2.3.4"; } }).peerGated === true);
 }
 
+// A trustedProxies that is neither an array nor a string normalized to the
+// empty list, so the call answered "no proxies declared" and quietly stopped
+// honoring the forwarded header while the configuration said a proxy was
+// trusted. Its sibling `forwardedHeaders` refuses the same value, so one
+// function answered the same question two ways.
+function testTrustedClientIpRefusesAnUnreadableProxyList() {
+  [42, true, {}, function () {}].forEach(function (value) {
+    var caught = null;
+    try { b.requestHelpers.trustedClientIp({ trustedProxies: value }); }
+    catch (e) { caught = e; }
+    check("trustedClientIp refuses a trustedProxies of " + typeof value +
+          " rather than reading it as no proxies",
+      caught !== null, caught === null ? "accepted" : caught.message);
+  });
+  // The shapes that do carry a proxy list are unchanged.
+  check("trustedClientIp still takes one CIDR as a string",
+    b.requestHelpers.trustedClientIp({ trustedProxies: "10.0.0.0/8" }).peerGated === true);
+  check("trustedClientIp still takes an array of CIDRs",
+    b.requestHelpers.trustedClientIp({ trustedProxies: ["10.0.0.0/8", "192.168.0.0/16"] }).peerGated === true);
+  check("trustedClientIp still takes no proxies at all",
+    b.requestHelpers.trustedClientIp({}).peerGated === false);
+  check("trustedClientIp reads an empty array as no proxies",
+    b.requestHelpers.trustedClientIp({ trustedProxies: [] }).peerGated === false);
+}
+
 function testTrustedClientIpResolves() {
   var pg = b.requestHelpers.trustedClientIp({ trustedProxies: ["10.0.0.0/8"] });
   var forged = { socket: { remoteAddress: "198.51.100.66" },
@@ -1005,6 +1030,7 @@ async function run() {
   testRequestProtocolReadsTheHttp2Scheme();
   testClientIpLegacyFormsStillWork();
   testTrustedClientIpPeerGatedFlag();
+  testTrustedClientIpRefusesAnUnreadableProxyList();
   testTrustedClientIpResolves();
   testTrustedClientIpForwardedHeaderFamily();
   testTrustedClientIpForwardedHeadersValidated();

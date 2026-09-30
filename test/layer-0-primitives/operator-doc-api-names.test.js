@@ -32,6 +32,8 @@ var ROOT = nodePath.join(__dirname, "..", "..");
 // `@related` tag, so this is the house convention and not drift.
 var CREATE_HANDLE_SHORTHAND = Object.freeze({
   "b.acme.renewIfDue":                 "b.acme.create().renewIfDue — RFC 9773 ARI renewal check",
+  "b.agent.orchestrator.hydrate":      "b.agent.orchestrator.create().hydrate — the facade member, on a namespace that also holds sub-namespaces",
+  "b.agent.orchestrator.register":     "b.agent.orchestrator.create().register — the facade member, on a namespace that also holds sub-namespaces",
   "b.auth.oauth.parseCallback":        "b.auth.oauth.create().parseCallback",
   "b.auth.oauth.refreshAccessToken":   "b.auth.oauth.create().refreshAccessToken",
   "b.backup.scheduleTest":             "b.backup.create().scheduleTest",
@@ -195,7 +197,29 @@ function _isHandleMember(parts) {
   if (node === null || node === undefined) return false;
   if (typeof node === "function") return true;
   if (typeof node !== "object") return false;
-  return typeof node.create === "function";
+  if (typeof node.create !== "function") return false;
+  // A factory that also HOLDS namespaces gets no wildcard. `b.mail` has a
+  // create() and thirty-odd sub-namespaces, so "one segment left over under a
+  // factory" accepted `b.mail.<anything>`: three dead names sat in shipped
+  // prose while this gate reported clean — `b.mail.bounce` for `b.mailBounce`,
+  // `b.mail.dnsbl` for `b.mail.rbl`, `b.mail.submission` for
+  // `b.mail.server.submission`. Under a container the shorthand has to be
+  // declared in CREATE_HANDLE_SHORTHAND by name, which is how the operator-doc
+  // side of this same gate has always spelled it.
+  return !_holdsANamespace(node);
+}
+
+// A member that is itself a namespace: an object carrying at least one
+// function. A plain data bag does not count, so `DEFAULTS` and `STATES` leave
+// the sixty-one leaf factories their shorthand.
+function _holdsANamespace(node) {
+  return Object.keys(node).some(function (key) {
+    var member = node[key];
+    if (!member || typeof member !== "object" || Array.isArray(member)) return false;
+    return Object.keys(member).some(function (inner) {
+      return typeof member[inner] === "function";
+    });
+  });
 }
 
 // Names in lib/ prose that resolve nowhere and are still right.
@@ -268,6 +292,10 @@ function testEveryApiNameInLibProseResolves() {
         var name  = "b." + parts.join(".");
         if (_resolves(parts)) continue;
         if (_isHandleMember(parts)) continue;
+        // The house shorthand is declared once. Both halves of this gate read
+        // the same map, so a name the operator docs are allowed to write is a
+        // name lib/ prose may write, and neither half grows its own copy.
+        if (Object.prototype.hasOwnProperty.call(CREATE_HANDLE_SHORTHAND, name)) continue;
         if (Object.prototype.hasOwnProperty.call(LIB_PROSE_ALLOWED, name)) continue;
         if (Object.prototype.hasOwnProperty.call(DELIBERATELY_ABSENT, name)) continue;
         var at = name + " (" + rel + ":" + row[0] + ")";
