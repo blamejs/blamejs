@@ -1509,7 +1509,6 @@ function testParserPrimitivesHaveFuzzHarness() {
   // (lib/parsers/safe-toml.js, lib/auth/...) are covered.
   var FUZZ_NOT_REQUIRED = {
     "lib/safe-async.js":     "runtime-control wrapper (not input-parsing)",
-    "lib/safe-buffer.js":    "byte-level helper consumed only by other primitives, no operator-facing parse path",
     "lib/safe-object.js":    "own-property get/set over an in-memory JS object; no bytes/string parser, no adversarial-input parse path",
     "lib/safe-redirect.js":  "post-validation redirect builder; the validation lives in safe-url which is fuzzed",
     "lib/safe-schema.js":    "schema-builder fluent API; takes operator-authored schema, not adversarial input",
@@ -1520,12 +1519,10 @@ function testParserPrimitivesHaveFuzzHarness() {
     "lib/guard-domain.js":   "single-value validator; covered by safe-url IDN-homograph fuzzing surface",
     "lib/guard-filename.js": "single-string validator; deterministic codepoint scan, no adversarial-bytes parser",
     "lib/guard-graphql.js":  "operator-supplied variables-shape validator; no raw-bytes parser",
-    "lib/guard-image.js":    "operator-feeds-metadata pattern; magic-byte detection covered by safe-buffer",
     "lib/guard-jwt.js":      "JWT parse path covered upstream by b.auth.jwt + safe-json fuzz",
     "lib/guard-jsonpath.js": "JSONPath validator covered by safe-jsonpath fuzz",
     "lib/guard-mime.js":     "single-string validator over a finite vocabulary; no adversarial-bytes parser",
     "lib/guard-oauth.js":    "operator-supplied params validator; flow-shape rather than bytes-parser",
-    "lib/guard-pdf.js":      "operator-feeds-metadata pattern; magic-byte detection covered by safe-buffer",
     "lib/guard-regex.js":    "regex-source linter; deterministic AST walk, no parser surface",
     "lib/guard-shell.js":    "argv-shape validator over operator-supplied tokens; not a bytes-parser",
     "lib/guard-template.js": "template-source linter (operator-authored); not adversarial-input surface",
@@ -1546,11 +1543,14 @@ function testParserPrimitivesHaveFuzzHarness() {
   // filename. asn1-der parses DER from peer TLS certificates, S/MIME, BIMI VMCs,
   // CMS, ACME and TSA responses; cms-codec (b.cms) parses CMS on top of it;
   // link-header (b.linkHeader.parse) parses an untrusted HTTP Link response
-  // header (RFC 8288) a server / SSRF-reachable origin controls.
+  // header (RFC 8288) a server / SSRF-reachable origin controls; file-type
+  // (b.fileType.detect / assertOneOf) walks a signature table over the leading
+  // bytes of an upload body, a mail attachment or a decoded MIME part.
   var FUZZ_REQUIRED_EXTRA = [
     "lib/asn1-der.js",
     "lib/cms-codec.js",
     "lib/link-header.js",
+    "lib/file-type.js",
   ];
   var fs   = require("node:fs");
   var path = require("node:path");

@@ -67,10 +67,12 @@ jobs:
           - guard-trace-context
           - guard-snapshot-envelope
           # Untrusted-byte parsers not named safe-*/guard-* (asn1-der feeds every
-          # certificate path: peer TLS, S/MIME, BIMI, CMS, ACME, TSA).
+          # certificate path: peer TLS, S/MIME, BIMI, CMS, ACME, TSA; file-type
+          # reads the leading bytes of an upload body or a mail attachment).
           - asn1-der
           - cms-codec
           - link-header
+          - file-type
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
