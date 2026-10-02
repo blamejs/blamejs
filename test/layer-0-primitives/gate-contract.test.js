@@ -200,6 +200,35 @@ function testBuildProfileRefusesAMistypedBooleanOverride() {
     build({ brandNewFlag: "whatever" }).brandNewFlag === "whatever");
 }
 
+// Every guard documents `profile` as one of its profile NAMES. An object was
+// accepted and then half-read: the overlay is only built for a string, so the
+// object's keys never reached the resolved options and never met the boolean
+// validation, yet the value still took effect downstream. A flag that cannot be
+// validated on the way in must not arrive that way at all.
+function testResolveProfileRefusesANonStringProfile() {
+  var cfg = {
+    profiles: { strict: { mode: "reject" } },
+    defaults: { mode: "reject", allowThing: false },
+    errorClass: GCE,
+    errCodePrefix: "gc",
+  };
+  function resolve(profile) {
+    return GC.resolveProfileAndPosture({ profile: profile }, cfg);
+  }
+  check("resolveProfileAndPosture: a named profile still resolves",
+    resolve("strict").mode === "reject");
+
+  [{ allowThing: "false" }, [], 7, true].forEach(function (bad) {
+    var threw = null;
+    try { resolve(bad); } catch (e) { threw = e; }
+    check("resolveProfileAndPosture: a " + (Array.isArray(bad) ? "array" : typeof bad) +
+          " profile is refused (" + JSON.stringify(bad) + ")",
+      threw !== null && threw instanceof GCE, String(threw && threw.code));
+  });
+  check("resolveProfileAndPosture: omitting profile still resolves the defaults",
+    GC.resolveProfileAndPosture({}, cfg).allowThing === false);
+}
+
 function testBuildProfileComposition() {
   // requireObject + resolveProfile-required error branches.
   var threw = false;
@@ -2825,6 +2854,7 @@ async function run() {
   testSeverityAndPolicyDispositions();
   testBuildProfileComposition();
   testBuildProfileRefusesAMistypedBooleanOverride();
+  testResolveProfileRefusesANonStringProfile();
   testMakeProfileBuilder();
   testMakeProfileResolverAndName();
   testResolveProfileAndPosture();
