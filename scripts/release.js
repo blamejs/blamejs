@@ -905,11 +905,16 @@ function cmdPrepare(opts) {
   _run("npx", ["--yes", "eslint@latest", "--max-warnings", "0", "."]);
   _run("node", ["test/layer-0-primitives/codebase-patterns.test.js"]);
   _run("node", ["scripts/validate-source-comment-blocks.js"]);
+  // The release notes are hand-written in the step before this one and are the
+  // newest operator-facing prose in the tree, so the API names in them get
+  // checked here rather than only inside smoke.
+  _run("node", ["test/layer-0-primitives/operator-doc-api-names.test.js"]);
   // The case-fold table is derived from the running Node's own case mappings,
   // so a Node upgrade can move it under us. Regenerating here would hide that;
   // failing says which release changed the answer.
   _run("node", ["scripts/gen-case-fold-classes.js", "--check"]);
-  _ok("eslint + codebase-patterns + source-comment-blocks + case-fold table clean");
+  _ok("eslint + codebase-patterns + source-comment-blocks + operator-doc API names + " +
+      "case-fold table clean");
 
   _section("supply-chain currency");
   // A stale SHA-pinned GitHub Action or vendored bundle becomes a

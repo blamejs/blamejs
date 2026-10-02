@@ -763,10 +763,16 @@ async function testActorResolution() {
   try {
     check("user.principalId string → OPTIONS 200",
       (await _req(s.port, { method: "OPTIONS", path: "/caldav/alice/", headers: { "x-test-actor": "up:alice" } })).status === 200);
-    check("user.id fallback → OPTIONS 200",
-      (await _req(s.port, { method: "OPTIONS", path: "/caldav/alice/", headers: { "x-test-actor": "ui:alice" } })).status === 200);
-    check("user.username fallback → OPTIONS 200",
-      (await _req(s.port, { method: "OPTIONS", path: "/caldav/alice/", headers: { "x-test-actor": "un:alice" } })).status === 200);
+    // These two read 200 while `id` and `username` were also accepted for the
+    // principal segment. A principal ID addresses a URL, so accepting three
+    // fields for it made `{ id: "alice" }` and `{ username: "alice" }` the same
+    // principal as `{ principalId: "alice" }`, each of them able to read that
+    // principal's calendars. The deployment names the field through
+    // opts.actorPrincipalId; see testDavPrincipalComesFromOneDeclaredField.
+    check("user.id alone → OPTIONS 401",
+      (await _req(s.port, { method: "OPTIONS", path: "/caldav/alice/", headers: { "x-test-actor": "ui:alice" } })).status === 401);
+    check("user.username alone → OPTIONS 401",
+      (await _req(s.port, { method: "OPTIONS", path: "/caldav/alice/", headers: { "x-test-actor": "un:alice" } })).status === 401);
     check("req.actor.principalId fallback → OPTIONS 200",
       (await _req(s.port, { method: "OPTIONS", path: "/caldav/alice/", headers: { "x-test-actor": "ap:alice" } })).status === 200);
     check("actor object with no usable field → 401",
@@ -1571,6 +1577,65 @@ async function testBranchExtras() {
     rDisc.statusCode === 301 && rDisc.headers["location"] === "/caldav/");
 }
 
+// ---- the principal that authorizes a DAV URL comes from one declared field ----
+//
+// The handler compares the URL's first path segment against the principal it
+// resolves from the request, and the module says the storage backend never sees
+// a principal ID it did not authorize. The resolver read `principalId`, then
+// `id`, then `username`, all into that one URL namespace, so two actors each
+// unambiguous on its own became one principal: a caller whose `username` is
+// "alice" addressed the calendars of the principal whose `principalId` is
+// "alice", and storage answered with the event body. Neither request is
+// detectably wrong on its own, so which field names the principal has to be
+// settled per deployment rather than guessed per request.
+async function testDavPrincipalComesFromOneDeclaredField() {
+  async function _get(dav, actor, url) {
+    var res = _makeRes();
+    var req = _makeReq("GET", url);
+    req.user = actor;
+    dav.caldavHandler(req, res);
+    await helpers.waitUntil(function () { return res.ended; },
+      { timeoutMs: C.TIME.seconds(5), label: "mail-dav: caldavHandler answered" });
+    return res;
+  }
+
+  var storage = _makeStorage();
+  await storage.calendar.putComponent("alice", "cal1", "ev1", Buffer.from(_ical()), null);
+  var dav = mailDav.create({ storage: storage });
+
+  var legit = await _get(dav, { principalId: "alice" }, "/alice/cal1/ev1");
+  check("dav: the principal named by principalId reads its own calendar",
+    legit.statusCode === 200, "status " + legit.statusCode);
+
+  var viaUsername = await _get(dav, { username: "alice" }, "/alice/cal1/ev1");
+  check("dav: a caller whose username equals another principal's id is refused",
+    viaUsername.statusCode === 401, "status " + viaUsername.statusCode);
+
+  var viaId = await _get(dav, { id: "alice" }, "/alice/cal1/ev1");
+  check("dav: a caller whose id equals another principal's id is refused",
+    viaId.statusCode === 401, "status " + viaId.statusCode);
+
+  // Control, green before and after: an actor carrying no name the resolver
+  // reads was already refused rather than folded onto a shared value.
+  var unnameable = await _get(dav, { role: "admin" }, "/alice/cal1/ev1");
+  check("dav: an actor carrying no principal is refused",
+    unnameable.statusCode === 401, "status " + unnameable.statusCode);
+
+  // The hook names the field and is the only thing consulted, so it has to
+  // authorize a value the default resolution would never produce.
+  var hooked = mailDav.create({
+    storage:          storage,
+    actorPrincipalId: function (actor) { return "t1-" + actor.username; },
+  });
+  await storage.calendar.putComponent("t1-alice", "cal1", "ev1", Buffer.from(_ical()), null);
+  var viaHook = await _get(hooked, { username: "alice" }, "/t1-alice/cal1/ev1");
+  check("dav: actorPrincipalId names the principal the URL must match",
+    viaHook.statusCode === 200, "status " + viaHook.statusCode);
+  var hookNotFolded = await _get(hooked, { username: "alice" }, "/alice/cal1/ev1");
+  check("dav: with the hook set, the default fields do not also authorize",
+    hookNotFolded.statusCode === 403, "status " + hookNotFolded.statusCode);
+}
+
 async function run() {
   testSurface();
   testRefusesNoStorage();
@@ -1598,6 +1663,7 @@ async function run() {
   testDiscoveryHandler();
   await testHttpHandlerInvokesDispatch();
   await testBranchExtras();
+  await testDavPrincipalComesFromOneDeclaredField();
 
   var wtt = helpers.withTestTimeout;
   await helpers.withDrain("mail-dav", async function () {

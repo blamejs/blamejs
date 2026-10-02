@@ -342,6 +342,72 @@ async function testUpdateDataReplaceAndMerge() {
   }
 }
 
+// updateData({ merge: true }) documents "Inner objects merge ONE LEVEL DEEP;
+// arrays REPLACE". Only a codebase-patterns detector asserted that, and a
+// detector reads the shape of the code rather than what it does. These drive
+// the behaviour, including the shapes that must NOT merge: Object.assign over
+// a Buffer produces byte-index keys, and over a Date produces nothing at all,
+// so either one merged would destroy the value the caller wrote.
+async function testUpdateDataMergeDepthAndValueShapes() {
+  var vm = require("node:vm");
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ses-merge-shapes-"));
+  try {
+    await setupTestDb(tmpDir);
+
+    // An inner plain object merges one level deep: the keys already inside it
+    // survive alongside the ones written.
+    var s1 = await b.session.create({
+      userId: "u-depth", data: { prefs: { theme: "light", lang: "en" } },
+    });
+    await b.session.updateData(s1.token, { prefs: { theme: "dark" } }, { merge: true });
+    var d1 = (await b.session.verify(s1.token)).data;
+    check("merge depth: the written inner key lands",      d1.prefs.theme === "dark");
+    check("merge depth: the existing inner key survives",  d1.prefs.lang === "en");
+
+    // The same, when the inner object was built in another realm. Deciding
+    // plainness by comparing against this realm's Object.prototype read it as
+    // not-plain and replaced the whole inner object, dropping `lang`.
+    var s2 = await b.session.create({
+      userId: "u-realm", data: { prefs: { theme: "light", lang: "en" } },
+    });
+    var ctx = vm.createContext({ made: null });
+    vm.runInContext('made = { theme: "dark" };', ctx);
+    await b.session.updateData(s2.token, { prefs: ctx.made }, { merge: true });
+    var d2 = (await b.session.verify(s2.token)).data;
+    check("merge depth: a cross-realm inner object lands its key",
+          d2.prefs.theme === "dark");
+    check("merge depth: a cross-realm inner object still merges one level deep",
+          d2.prefs.lang === "en");
+
+    // An array replaces rather than merging, as documented.
+    var s3 = await b.session.create({ userId: "u-arr", data: { roles: ["a", "b"] } });
+    await b.session.updateData(s3.token, { roles: ["c"] }, { merge: true });
+    var d3 = (await b.session.verify(s3.token)).data;
+    check("merge shapes: an array replaces",
+          Array.isArray(d3.roles) && d3.roles.length === 1 && d3.roles[0] === "c");
+
+    // A Date replaces. Merging one would run Object.assign over a value with
+    // no own enumerable keys, so the old object would be kept and the Date
+    // lost entirely.
+    var s4 = await b.session.create({ userId: "u-date", data: { at: { old: 1 } } });
+    var when = new Date(Date.UTC(2026, 0, 2, 3, 4, 5));
+    await b.session.updateData(s4.token, { at: when }, { merge: true });
+    var d4 = (await b.session.verify(s4.token)).data;
+    check("merge shapes: a Date replaces rather than vanishing",
+          d4.at === when.toISOString() &&
+          !(d4.at && typeof d4.at === "object" && d4.at.old === 1));
+
+    // A Buffer replaces. Merging one would spread it into byte-index keys.
+    var s5 = await b.session.create({ userId: "u-buf", data: { blob: { old: 1 } } });
+    await b.session.updateData(s5.token, { blob: Buffer.from([7, 8]) }, { merge: true });
+    var d5 = (await b.session.verify(s5.token)).data;
+    check("merge shapes: a Buffer does not merge into byte-index keys",
+          !(d5.blob && typeof d5.blob === "object" && d5.blob["0"] === 7 && d5.blob.old === 1));
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
 async function testUpdateDataPreservesFingerprint() {
   var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ses-update-fp-"));
   try {
@@ -751,6 +817,7 @@ async function run() {
   await testDestroyAllForUserPluggableNoDb();
   await testPluggableStoreValidation();
   await testUpdateDataReplaceAndMerge();
+  await testUpdateDataMergeDepthAndValueShapes();
   await testUpdateDataPreservesFingerprint();
   await testRotateRekeysFingerprint();
 }

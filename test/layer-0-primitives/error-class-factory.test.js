@@ -115,8 +115,53 @@ function testTheBaseFactoryTakesCodeFirst() {
         built.message === "probe message", built.code + " / " + built.message);
 }
 
+// defineMessageFirstClass is the generator for the second convention, and it
+// had no test of its own. What matters is the pair of orders it produces: the
+// constructor reads (message, code) and the factory reads (code, message), so
+// code raising a class it was handed must go through the factory. Getting that
+// backwards is what put the message in .code across seventeen classes.
+function testDefineMessageFirstClassKeepsBothOrdersStraight() {
+  var Made = frameworkError.defineMessageFirstClass("ProbeMessageFirstError", "probe/default");
+
+  check("defineMessageFirstClass: the class is named what it was asked for",
+        Made.name === "ProbeMessageFirstError", Made.name);
+  check("defineMessageFirstClass: instances extend FrameworkError",
+        new Made("m") instanceof frameworkError.FrameworkError);
+  check("defineMessageFirstClass: the per-class flag is set",
+        new Made("m").isProbeMessageFirstError === true);
+
+  var ctor = new Made("that did not parse");
+  check("the constructor reads its first argument as the message",
+        ctor.message === "that did not parse", ctor.message);
+  check("the code falls back to the default when none is given",
+        ctor.code === "probe/default", ctor.code);
+  check("an explicit code is kept",
+        new Made("m", "probe/explicit").code === "probe/explicit");
+
+  var viaFactory = Made.factory("probe/explicit", "that did not parse");
+  check("the factory reads code FIRST, the other way round from the constructor",
+        viaFactory.code === "probe/explicit" && viaFactory.message === "that did not parse",
+        viaFactory.code + " / " + viaFactory.message);
+
+  // The mistake the factory exists to prevent, shown rather than described:
+  // calling the constructor with the factory's argument order swaps them, and
+  // nothing complains, because both are strings.
+  var swapped = new Made("probe/explicit", "that did not parse");
+  check("calling the constructor code-first silently swaps the two",
+        swapped.code === "that did not parse" && swapped.message === "probe/explicit",
+        swapped.code + " / " + swapped.message);
+
+  var Permanent = frameworkError.defineMessageFirstClass(
+    "ProbePermanentMessageFirstError", "probe/default", { permanent: true });
+  check("opts.permanent marks every instance permanent",
+        new Permanent("m").permanent === true);
+  check("without it, permanent is not set",
+        new Made("m").permanent === undefined, String(new Made("m").permanent));
+}
+
 function run() {
   testTheBaseFactoryTakesCodeFirst();
+  testDefineMessageFirstClassKeepsBothOrdersStraight();
   testEveryErrorClassBuiltByAValidatorCarriesItsCode();
 }
 

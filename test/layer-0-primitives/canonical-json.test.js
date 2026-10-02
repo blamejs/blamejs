@@ -60,6 +60,53 @@ function testStrictRefusals() {
   check("JCS: circular reference refused", /circular/.test(code(function () { var o = {}; o.self = o; cj.stringifyJcs(o); })));
 }
 
+// The canonical bytes are what a signature commits to, so the same value has
+// to canonicalize the same way whichever realm built it. Type dispatch by
+// `instanceof` compares against this realm's constructors, so a value from a
+// `node:vm` context missed every branch and fell through to the plain-object
+// walk, which has no own enumerable keys to write: a Date became `{}` in the
+// signed bytes, and a Map, Set or RegExp became `{}` where the same value
+// built here is refused outright.
+function testCrossRealmValuesCanonicalizeTheSameWay() {
+  var vm = require("node:vm");
+  var ctx = vm.createContext({ out: {} });
+  vm.runInContext(
+    "out.date = new Date(Date.UTC(2026, 0, 2));" +
+    "out.map  = new Map([[1, 2]]);" +
+    "out.set  = new Set([1]);" +
+    "out.re   = /x/;" +
+    "out.bytes = new Uint8Array([1, 2]);" +
+    "out.plain = { b: 1, a: 2 };",
+    ctx);
+
+  check("cross-realm Date canonicalizes to its ISO string, as a local one does",
+        cj.stringify({ v: ctx.out.date }) === cj.stringify({ v: new Date(Date.UTC(2026, 0, 2)) }));
+  check("cross-realm Date is not written as an empty object",
+        cj.stringify({ v: ctx.out.date }).indexOf("{}") === -1);
+
+  check("cross-realm Map is refused, as a local one is",
+        /Map/.test(code(function () { cj.stringify({ v: ctx.out.map }); })));
+  check("cross-realm Set is refused, as a local one is",
+        /Set/.test(code(function () { cj.stringify({ v: ctx.out.set }); })));
+  check("cross-realm RegExp is refused, as a local one is",
+        /RegExp/.test(code(function () { cj.stringify({ v: ctx.out.re }); })));
+
+  check("cross-realm Uint8Array canonicalizes to hex, as a local one does",
+        cj.stringify({ v: ctx.out.bytes }) === cj.stringify({ v: new Uint8Array([1, 2]) }));
+  check("cross-realm Uint8Array is refused under bufferAs reject, as a local one is",
+        /reject/.test(code(function () {
+          cj.stringify({ v: ctx.out.bytes }, { bufferAs: "reject" });
+        })));
+
+  check("cross-realm plain object still sorts its keys",
+        cj.stringify(ctx.out.plain) === '{"a":2,"b":1}');
+
+  check("JCS refuses a cross-realm Date, as it refuses a local one",
+        /Date/.test(code(function () { cj.stringifyJcs({ v: ctx.out.date }); })));
+  check("JCS refuses a cross-realm Map, as it refuses a local one",
+        /Map/.test(code(function () { cj.stringifyJcs({ v: ctx.out.map }); })));
+}
+
 function testLenientStringify() {
   // The lenient framework variant serializes Buffers (hex), Dates (ISO),
   // and BigInts (decimal) while still sorting keys.
@@ -93,11 +140,77 @@ function testDepthCap() {
     /circular/.test(code(function () { cj.stringify(cyc); })));
 }
 
+// Map, Set and RegExp were refused by name, so the five other built-ins whose
+// data lives in internal slots were not: a WeakMap, a WeakSet, a Promise, an
+// ArrayBuffer and a DataView each have no own enumerable keys, so the walk
+// wrote `{}` and a signature committed to bytes that carry none of the value.
+// Naming three shapes cannot be complete; what the refusal has to ask is
+// whether the value has a JSON form at all. A `new Map()` carrying an own
+// property is the case a key-count test alone would pass, because
+// `JSON.stringify` writes that property and drops every entry.
+function testValuesWithNoJsonFormAreRefusedNotEmptied() {
+  var NO_FORM = [
+    ["WeakMap", new WeakMap()],
+    ["WeakSet", new WeakSet()],
+    ["Promise", Promise.resolve(1)],
+    ["ArrayBuffer", new ArrayBuffer(4)],
+    ["DataView", new DataView(new ArrayBuffer(4))],
+    ["Map", new Map([["a", 1]])],
+    ["Set", new Set([1])],
+    ["RegExp", /x/],
+  ];
+  NO_FORM.forEach(function (row) {
+    var msg = code(function () { cj.stringify({ v: row[1] }); });
+    check("stringify refuses a " + row[0] + " rather than writing {} for it",
+          msg !== "NO-THROW" && /no JSON form|not serialisable/.test(msg), row[0] + ": " + msg);
+  });
+
+  var mapWithProp = new Map([["entry", 1]]);
+  mapWithProp.decoy = 2;
+  check("stringify refuses a Map carrying an own property, which JSON.stringify " +
+        "would write while dropping every entry",
+        /no JSON form|not serialisable/.test(code(function () { cj.stringify({ v: mapWithProp }); })),
+        JSON.stringify(mapWithProp));
+
+  var farNoForm = require("node:vm").runInContext(
+    "new WeakMap()", require("node:vm").createContext({}));
+  check("and one built in another realm is refused the same way",
+        /no JSON form|not serialisable/.test(code(function () { cj.stringify({ v: farNoForm }); })));
+
+  // What must keep working. An empty plain object is a real JSON value, a
+  // null-prototype object is the shape safe parsers hand back, and an operator
+  // class carrying its own fields canonicalizes by those fields.
+  function Holder() { this.a = 1; }
+  check("an empty plain object still canonicalizes", cj.stringify({}) === "{}");
+  check("an empty array still canonicalizes", cj.stringify([]) === "[]");
+  check("a null-prototype object still canonicalizes",
+        cj.stringify(Object.assign(Object.create(null), { a: 1 })) === '{"a":1}');
+  check("a class instance carrying fields canonicalizes by its fields",
+        cj.stringify(new Holder()) === '{"a":1}');
+  check("a Date is still written as its ISO string, not refused",
+        cj.stringify(new Date(Date.UTC(2026, 0, 2))) === '"2026-01-02T00:00:00.000Z"');
+  check("a Buffer is still written as hex, not refused",
+        cj.stringify(Buffer.from([0xAB])) === '"ab"');
+
+  // A boxed primitive has a JSON form: JSON.stringify unwraps it. canonical-json
+  // walked it instead, so `new Number(1)` had no own keys and canonicalized to
+  // {}, and `new String("x")` had index keys and canonicalized to {"0":"x"}.
+  check("a boxed Number canonicalizes as the number", cj.stringify(new Number(1)) === "1");
+  check("a boxed String canonicalizes as the string, not as an index map",
+        cj.stringify(new String("x")) === '"x"', cj.stringify(new String("x")));
+  check("a boxed Boolean canonicalizes as the boolean",
+        cj.stringify(new Boolean(true)) === "true");
+  check("and a plain number is untouched by the refusal", cj.stringify(1) === "1");
+  check("and a plain string is untouched by the refusal", cj.stringify("x") === '"x"');
+}
+
 async function run() {
   testSurface();
   testJcsConformance();
   testSparseArrays();
   testStrictRefusals();
+  testValuesWithNoJsonFormAreRefusedNotEmptied();
+  testCrossRealmValuesCanonicalizeTheSameWay();
   testLenientStringify();
   testDepthCap();
 }

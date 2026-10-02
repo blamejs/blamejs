@@ -233,6 +233,103 @@ function testRedactBinaryValuesAlwaysMarker() {
   check("redact: Uint8Array value collapses to marker", outU8.blob === "[REDACTED]");
 }
 
+// The check above passed while the redactor recognized bytes with
+// `value instanceof Uint8Array`, because it only ever handed it a byte array
+// from this realm. A byte array built anywhere else answers no, falls past the
+// marker to the plain-object walk, and every byte is emitted as an index map:
+// {"0":115,"1":101,...} in place of [REDACTED]. Operator code that evaluates
+// anything in a `node:vm` context produces such a value; the framework's own
+// worker boundary does not, because structured clone rebuilds a typed array
+// using the receiving realm's constructor.
+function testRedactRecognizesBytesFromAnotherRealm() {
+  b.redact._resetForTest();
+  var vm = require("node:vm");
+  var ctx = vm.createContext({});
+  var far = vm.runInContext("new Uint8Array([115, 101, 99, 114, 101, 116])", ctx);
+
+  var out = b.redact.redact({ blob: far });
+  check("redact: a byte array from another realm collapses to the marker too",
+        out.blob === "[REDACTED]", JSON.stringify(out.blob).slice(0, 80));
+  check("redact: and none of its bytes reach the output",
+        JSON.stringify(out).indexOf("115") === -1, JSON.stringify(out).slice(0, 90));
+
+  // An object that only claims the prototype is not a typed array: reading
+  // .length or calling .fill on it is what breaks. It must not be treated as
+  // bytes, and must not throw out of the redactor either.
+  var forged = Object.create(Uint8Array.prototype);
+  forged.password = "hunter2";
+  var forgedOut = null, threw = null;
+  try { forgedOut = b.redact.redact({ blob: forged }); } catch (e) { threw = e; }
+  check("redact: an object merely claiming Uint8Array.prototype does not throw",
+        threw === null, threw ? String(threw.message).slice(0, 70) : "");
+  check("redact: and its sensitive field is still redacted",
+        forgedOut !== null &&
+        (forgedOut.blob === "[REDACTED]" || forgedOut.blob.password === "[REDACTED]"),
+        JSON.stringify(forgedOut).slice(0, 90));
+}
+
+// A classifier reads a byte body by decoding it and scanning the text for
+// secrets. The same realm-bound test decided whether the body WAS bytes, so a
+// body from another realm skipped the scan and was walked as an object
+// instead — the classifier saw an index map and found no secret in it.
+function testClassifyScansAByteBodyFromAnotherRealm() {
+  var classify = b.redact.classifyDefaults({ patterns: ["ssn"] });
+  var vm = require("node:vm");
+  var ctx = vm.createContext({ bytes: null });
+  vm.runInContext("bytes = new Uint8Array([" +
+    Array.prototype.join.call(Buffer.from("ssn 123-45-6789", "utf8"), ",") + "]);", ctx);
+
+  var localVerdict = classify({ body: Buffer.from("ssn 123-45-6789", "utf8") });
+  check("classify: a local byte body is found to carry a secret",
+        localVerdict.verdict === "redact", localVerdict.verdict);
+
+  var farVerdict = classify({ body: ctx.bytes });
+  check("classify: a byte body from another realm reaches the same verdict",
+        farVerdict.verdict === "redact", farVerdict.verdict);
+  check("classify: and its redacted body is bytes, not an index map",
+        Buffer.isBuffer(farVerdict.redactedBody) &&
+        farVerdict.redactedBody.toString("utf8") === "ssn [REDACTED]",
+        JSON.stringify(farVerdict.redactedBody).slice(0, 80));
+}
+
+// The recursion cap is enforced as `depth > maxDepth`, and `0 > "abc"` is false
+// at every depth, so a maxDepth that is not a number stopped capping and the
+// walk ran to the end of whatever it was handed. redact runs on log payloads,
+// which is where a hostile nesting depth arrives, and it must not throw out of
+// that path, so a value it cannot use falls back to the documented default
+// rather than raising.
+function testRedactDepthCapSurvivesABadMaxDepth() {
+  b.redact._resetForTest();
+  function nest(n) {
+    var root = {}, cur = root;
+    for (var i = 0; i < n; i++) { cur.next = {}; cur = cur.next; }
+    cur.leaf = "bottom";
+    return root;
+  }
+  function depthReached(out) {
+    var hops = 0, cur = out;
+    while (cur && typeof cur === "object" && cur.next !== undefined) { cur = cur.next; hops += 1; }
+    return hops;
+  }
+
+  check("redact: the default cap stops the walk short of 200 levels",
+        depthReached(b.redact.redact(nest(200))) <= 51,
+        String(depthReached(b.redact.redact(nest(200)))));
+  check("redact: a non-numeric maxDepth falls back to the default rather than " +
+        "walking uncapped",
+        depthReached(b.redact.redact(nest(200), { maxDepth: "abc" })) <= 51,
+        String(depthReached(b.redact.redact(nest(200), { maxDepth: "abc" }))));
+  check("redact: a negative maxDepth falls back to the default",
+        depthReached(b.redact.redact(nest(200), { maxDepth: -1 })) <= 51,
+        String(depthReached(b.redact.redact(nest(200), { maxDepth: -1 }))));
+  check("redact: a numeric maxDepth is still honored",
+        depthReached(b.redact.redact(nest(200), { maxDepth: 3 })) <= 4,
+        String(depthReached(b.redact.redact(nest(200), { maxDepth: 3 }))));
+  check("redact: maxDepth 0 replaces a nested value at the top",
+        b.redact.redact({ a: { b: 1 } }, { maxDepth: 0 }).a === "[REDACTED]",
+        JSON.stringify(b.redact.redact({ a: { b: 1 } }, { maxDepth: 0 })));
+}
+
 function testRedactArrayWalk() {
   b.redact._resetForTest();
   var out = b.redact.redact(["4111111111111111", "plain", { password: "p" }]);
@@ -1262,6 +1359,8 @@ async function run() {
   // redact walk
   testRedactPrimitivePassthroughs();
   testRedactBinaryValuesAlwaysMarker();
+  testRedactRecognizesBytesFromAnotherRealm();
+  testRedactDepthCapSurvivesABadMaxDepth();
   testRedactArrayWalk();
   testRedactSensitiveParentCollapsesComposite();
   testRedactMaxDepthCap();
@@ -1287,6 +1386,7 @@ async function run() {
   testClassifyDefaultsExtraPattern();
   testClassifyObjectBodyRefuseRedactClean();
   testClassifyStringBufferAndScalarBodies();
+  testClassifyScansAByteBodyFromAnotherRealm();
   testClassifyWalksNestedArraysAndBinaryFields();
   testClassifyHeadersScanned();
   testClassifyWalkSkipsInheritedAndUnknownTypes();

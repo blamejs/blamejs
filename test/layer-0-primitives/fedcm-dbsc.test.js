@@ -219,6 +219,63 @@ function testDbscBindingAssertionFutureIat() {
   check("far-future iat binding-assertion refused", threw === "dbsc/iat-future");
 }
 
+// The same replay bound, defeated from the other end. maxAgeSec was read as
+// `(opts.maxAgeSec || 300) * 1000` and never type-checked, so a value that is
+// not a number multiplied out to NaN, and `Date.now() - iat * 1000 > NaN` is
+// false for every age: the stale check stopped firing and the assertion
+// replayed indefinitely. A bound read from an environment variable or a JSON
+// config arrives as a string, so a configuration typo was enough.
+function testDbscMaxAgeMustBeANumber() {
+  var secret = _newSecret();
+  var kp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var old = Math.floor(Date.now() / 1000) - 86400;   // a day old, far past any sane bound
+  var jwt = _signEs256Assertion(kp, { aud: "https://rp.example", iat: old });
+
+  function verify(maxAgeSec) {
+    try {
+      b.dbsc.verifyBindingAssertion(jwt, {
+        secretKey: secret, expectedAud: "https://rp.example", maxAgeSec: maxAgeSec,
+      });
+      return null;
+    } catch (e) { return e.code; }
+  }
+
+  check("a day-old assertion is refused under the default bound",
+        verify(undefined) === "dbsc/stale", String(verify(undefined)));
+  check("a non-numeric maxAgeSec is refused rather than disabling the age check",
+        verify("300") === "dbsc/bad-max-age", String(verify("300")));
+  check("a NaN-producing maxAgeSec is refused",
+        verify("abc") === "dbsc/bad-max-age", String(verify("abc")));
+  check("a negative maxAgeSec is refused", verify(-1) === "dbsc/bad-max-age");
+  check("a numeric bound still refuses a day-old assertion",
+        verify(300) === "dbsc/stale", String(verify(300)));
+  // An explicit 0 means nothing is fresh, and `|| 300` turned it into five
+  // minutes, so the strictest bound could not be asked for.
+  check("maxAgeSec 0 refuses an assertion that is not from this instant",
+        verify(0) === "dbsc/stale", String(verify(0)));
+
+  // The refusal reported the bound the caller passed rather than the one it
+  // applied, so whenever the default was used the operator read "iat is more
+  // than undefineds old".
+  var staleMessage = null;
+  try {
+    b.dbsc.verifyBindingAssertion(jwt, { secretKey: secret, expectedAud: "https://rp.example" });
+  } catch (e) { staleMessage = e.message; }
+  check("the stale refusal names the bound it applied, not undefined",
+        /more than 300s old/.test(String(staleMessage)), String(staleMessage));
+  var fresh = _signEs256Assertion(kp, {
+    aud: "https://rp.example", iat: Math.floor(Date.now() / 1000),
+  });
+  var freshOk = null;
+  try {
+    b.dbsc.verifyBindingAssertion(fresh, {
+      secretKey: secret, expectedAud: "https://rp.example", maxAgeSec: 300,
+    });
+  } catch (e) { freshOk = e.code; }
+  check("a fresh assertion still verifies under a numeric bound",
+        freshOk === null, String(freshOk));
+}
+
 function run() {
   testFedcmWellKnown();
   testFedcmConfig();
@@ -235,6 +292,7 @@ function run() {
   testDbscBindingAssertionMissingJwk();
   testDbscBindingAssertionRoundtrip();
   testDbscBindingAssertionFutureIat();
+  testDbscMaxAgeMustBeANumber();
 }
 
 if (require.main === module) {

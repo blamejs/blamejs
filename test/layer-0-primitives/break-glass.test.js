@@ -1270,6 +1270,84 @@ async function testListActiveAllAndRevokeAll() {
   }
 }
 
+// A grant is held by a user or by an API key, and the two are separate
+// holders even when the id text is the same. listActive answers the caller's
+// own grants, so a key whose id spells a user's id must not see, and so must
+// not be able to redeem, that user's grants.
+async function testGrantHolderIsNotSharedBetweenAUserAndAKeyOfTheSameId() {
+  var tmpDir = _tmp();
+  await setupTestDb(tmpDir);
+  try {
+    b.breakGlass.init();
+    await b.breakGlass.policy.set("collide", { columns: ["c"], factors: ["totp"], maxRowsPerGrant: 3 });
+
+    var userReq = _fakeReq({ user: { id: "collide-7" } });
+    var keyReq  = _fakeReq({ user: null, apiKey: { id: "collide-7", scopes: [] } });
+
+    var totp = _validTotp();
+    var userGrant = await b.breakGlass.grant({
+      req: userReq, table: "collide",
+      reason: "compliance review per ticket #7",
+      factor: { type: "totp", code: totp.code, secret: totp.secret },
+    });
+    check("holder split: the user's grant is issued", typeof userGrant.id === "string");
+
+    var seenByUser = await b.breakGlass.listActive({ req: userReq });
+    check("holder split: the user sees its own grant",
+      seenByUser.length === 1 && seenByUser[0].id === userGrant.id);
+
+    var seenByKey = await b.breakGlass.listActive({ req: keyReq });
+    check("holder split: a key whose id spells the user's id sees no grant",
+      seenByKey.length === 0);
+
+    var totp2 = _validTotp();
+    var keyGrant = await b.breakGlass.grant({
+      req: keyReq, table: "collide",
+      reason: "compliance review per ticket #8",
+      factor: { type: "totp", code: totp2.code, secret: totp2.secret },
+    });
+    var seenByKeyNow = await b.breakGlass.listActive({ req: keyReq });
+    check("holder split: the key sees its own grant and only its own",
+      seenByKeyNow.length === 1 && seenByKeyNow[0].id === keyGrant.id);
+    var seenByUserNow = await b.breakGlass.listActive({ req: userReq });
+    check("holder split: the user still sees only its own grant",
+      seenByUserNow.length === 1 && seenByUserNow[0].id === userGrant.id);
+
+    // An incident revoking a bare id reaches the grants held under that id
+    // by either credential.
+    var revoked = await b.breakGlass.revokeAll({ actorId: "collide-7", reason: "ir-collide-test" });
+    check("holder split: a bare actorId revokes both holders' grants",
+      revoked && revoked.revokedCount === 2);
+    check("holder split: nothing is left active for either holder",
+      (await b.breakGlass.listActive({ req: userReq })).length === 0 &&
+      (await b.breakGlass.listActive({ req: keyReq })).length === 0);
+
+    // A prefixed actorId reaches exactly one holder.
+    var totp3 = _validTotp();
+    await b.breakGlass.grant({
+      req: userReq, table: "collide",
+      reason: "compliance review per ticket #9",
+      factor: { type: "totp", code: totp3.code, secret: totp3.secret },
+    });
+    var totp4 = _validTotp();
+    var keyGrant2 = await b.breakGlass.grant({
+      req: keyReq, table: "collide",
+      reason: "compliance review per ticket #10",
+      factor: { type: "totp", code: totp4.code, secret: totp4.secret },
+    });
+    var revokedUserOnly = await b.breakGlass.revokeAll({
+      actorId: "user:collide-7", reason: "ir-collide-test-scoped",
+    });
+    check("holder split: a prefixed actorId revokes that holder alone",
+      revokedUserOnly && revokedUserOnly.revokedCount === 1);
+    var keyStill = await b.breakGlass.listActive({ req: keyReq });
+    check("holder split: the other holder's grant survives a scoped revoke",
+      keyStill.length === 1 && keyStill[0].id === keyGrant2.id);
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
 // ---- Not-initialized guard — every primitive fails closed before init() ----
 
 async function testRequireInitGuards() {
@@ -1855,6 +1933,191 @@ async function testPasskeyFullFieldFactorPath() {
 
 // ---- listActive / listActiveAll / revokeAll edge branches ----
 
+// A grant taken out with an API key belongs to that key, not to the key's
+// owner. The owner id was read from the audit context, which resolves an API
+// key to its `ownerId`, so such a grant was filed under `user:<ownerId>`: it
+// appeared in the owner's own user-session listing, and
+// `revokeAll({ actorId: "apikey:<id>" })` did not reach it.
+//
+// A grant persisted before the prefixes existed keys on the bare id and is not
+// reachable by actor at all. Matching the bare form against every record is not
+// the answer — for a user whose literal id is "user:alice" the bare form of
+// "user:user:alice" is another user's prefixed id. Revoking by TABLE does not
+// touch the owner hash, so that is the path for those grants, and they expire
+// within the policy's grantTtl regardless.
+async function testGrantOwnerIsTheCredentialThatTookItOut() {
+  var tmpDir = _tmp();
+  await setupTestDb(tmpDir);
+  try {
+    b.breakGlass.init();
+    await b.breakGlass.policy.set("t_cred", { columns: ["c"], factors: ["totp"] });
+    var totp = _validTotp();
+    var keyReq = _fakeReq({ user: null, apiKey: { id: "key1", ownerId: "user-test-1" } });
+    var grant = await b.breakGlass.grant({
+      req:    keyReq,
+      table:  "t_cred",
+      reason: "investigating ticket #99001 for compliance review",
+      factor: { type: "totp", code: totp.code, secret: totp.secret },
+    });
+    check("[setup] the API key took out a grant", typeof grant.id === "string");
+
+    // The owner's user session is a different principal and must not see it.
+    var ownerSees = await b.breakGlass.listActive({ req: _fakeReq() });
+    check("break-glass: an API key's grant is not in its owner's user listing",
+      ownerSees.length === 0, JSON.stringify(ownerSees.map(function (s) { return s.id; })));
+    // The key sees its own.
+    var keySees = await b.breakGlass.listActive({ req: keyReq });
+    check("break-glass: the API key sees its own grant",
+      keySees.length === 1, JSON.stringify(keySees.map(function (s) { return s.id; })));
+
+    // And it is revocable by the credential that took it out.
+    var byKey = await b.breakGlass.revokeAll(
+      { actorId: "apikey:key1" }, { reason: "ir-key-scope" });
+    check("break-glass: revokeAll by the API key reaches its grant",
+      byKey && byKey.revokedCount === 1, JSON.stringify(byKey));
+    check("break-glass: and it is gone afterwards",
+      (await b.breakGlass.listActiveAll()).length === 0);
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
+// A user whose literal id is "user:alice" must not reach the grants of the
+// different user "alice". An earlier attempt at supporting pre-prefix owner
+// hashes matched the bare remainder of every prefixed id, which made exactly
+// that collision: the bare form of "user:user:alice" is another user's
+// prefixed owner id.
+async function testAPrefixShapedUserIdDoesNotReachAnotherUser() {
+  var tmpDir = _tmp();
+  await setupTestDb(tmpDir);
+  try {
+    b.breakGlass.init();
+    await b.breakGlass.policy.set("t_collide", { columns: ["c"], factors: ["totp"] });
+    var totp = _validTotp();
+    // "alice" takes out a grant.
+    var aliceReq = _fakeReq({ user: { id: "alice" } });
+    var aliceGrant = await b.breakGlass.grant({
+      req:    aliceReq,
+      table:  "t_collide",
+      reason: "investigating ticket #99003 for compliance review",
+      factor: { type: "totp", code: totp.code, secret: totp.secret },
+    });
+    check("[setup] alice holds a grant", typeof aliceGrant.id === "string");
+
+    // A different user whose literal id spells a prefixed owner id.
+    var spoofReq = _fakeReq({ user: { id: "user:alice" } });
+    var spoofSees = await b.breakGlass.listActive({ req: spoofReq });
+    check("break-glass: a user id spelling a prefixed owner sees no other user's grant",
+      spoofSees.length === 0, JSON.stringify(spoofSees.map(function (s) { return s.id; })));
+
+    var spoofRevoke = await b.breakGlass.revokeAll(
+      { actorId: "user:user:alice" }, { reason: "ir-collision-probe" });
+    check("break-glass: and cannot revoke it either",
+      spoofRevoke && spoofRevoke.revokedCount === 0, JSON.stringify(spoofRevoke));
+    check("break-glass: alice's grant is still active",
+      (await b.breakGlass.listActive({ req: aliceReq })).length === 1);
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
+// A grant written before the credential prefixes stores its owner id bare, so a
+// bare id that spells a prefixed one carries the hash a prefixed lookup derives.
+async function testAPrePrefixOwnerCannotBeClaimedByAPrefixedLookup() {
+  var tmpDir = _tmp();
+  await setupTestDb(tmpDir);
+  try {
+    b.breakGlass.init();
+    await b.breakGlass.policy.set("t_reverse", { columns: ["c"], factors: ["totp"] });
+    var totp = _validTotp();
+
+    // The grant belongs to the user whose literal id is "user:alice".
+    var ownerReq = _fakeReq({ user: { id: "user:alice" } });
+    var ownerGrant = await b.breakGlass.grant({
+      req:    ownerReq,
+      table:  "t_reverse",
+      reason: "investigating ticket #99004 for compliance review",
+      factor: { type: "totp", code: totp.code, secret: totp.secret },
+    });
+    check("[setup] the grant is issued", typeof ownerGrant.id === "string");
+
+    // Rewrite it into the shape a pre-prefix release stored: the owner id
+    // hashed bare, and no ownership-format marker.
+    var bare = b.cryptoField.computeDerived(
+      "_blamejs_break_glass_grants", "issuedToActorId", "user:alice");
+    check("[setup] the bare owner hash derives",
+      bare && typeof bare.value === "string" && bare.value.length > 0);
+    await b.clusterStorage.execute(
+      "UPDATE _blamejs_break_glass_grants SET issuedToActorHash = ?, " +
+      "ownerKeyVersion = " + String(b.breakGlass.OWNER_KEY_VERSION_BARE) + " WHERE _id = ?",
+      [bare.value, ownerGrant.id]);
+
+    // A DIFFERENT user, id "alice", derives that same hash from the prefix.
+    var aliceReq = _fakeReq({ user: { id: "alice" } });
+    var aliceSees = await b.breakGlass.listActive({ req: aliceReq });
+    check("break-glass: a prefixed lookup does not reach a pre-prefix grant of another principal",
+      aliceSees.length === 0, JSON.stringify(aliceSees.map(function (s) { return s.id; })));
+
+    var aliceRevoke = await b.breakGlass.revokeAll(
+      { actorId: "user:alice" }, { reason: "ir-reverse-collision-probe" });
+    check("break-glass: and cannot revoke it either",
+      aliceRevoke && aliceRevoke.revokedCount === 0, JSON.stringify(aliceRevoke));
+
+    // Control: an owner still reaches a grant written in the current format,
+    // so the version filter is not refusing everything.
+    var carolTotp = _validTotp();
+    var carolReq = _fakeReq({ user: { id: "carol" } });
+    await b.breakGlass.grant({
+      req:    carolReq,
+      table:  "t_reverse",
+      reason: "investigating ticket #99005 for compliance review",
+      factor: { type: "totp", code: carolTotp.code, secret: carolTotp.secret },
+    });
+    check("break-glass: the owner of a current-format grant still sees it",
+      (await b.breakGlass.listActive({ req: carolReq })).length === 1);
+    var carolRevoke = await b.breakGlass.revokeAll(
+      { actorId: "carol" }, { reason: "ir-current-format-control" });
+    check("break-glass: and can revoke it",
+      carolRevoke && carolRevoke.revokedCount === 1, JSON.stringify(carolRevoke));
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
+// Revoking by table does not read the owner hash, so it reaches a grant whose
+// owner id predates the credential prefixes.
+async function testRevokeByTableReachesAnyOwnerFormat() {
+  var tmpDir = _tmp();
+  await setupTestDb(tmpDir);
+  try {
+    b.breakGlass.init();
+    await b.breakGlass.policy.set("t_legacy", { columns: ["c"], factors: ["totp"] });
+    var totp = _validTotp();
+    var grant = await b.breakGlass.grant({
+      req:    _fakeReq(),
+      table:  "t_legacy",
+      reason: "investigating ticket #99002 for compliance review",
+      factor: { type: "totp", code: totp.code, secret: totp.secret },
+    });
+    var legacy = b.cryptoField.computeDerived(
+      "_blamejs_break_glass_grants", "issuedToActorId", "user-test-1");
+    check("[setup] the pre-prefix owner hash derives",
+      legacy && typeof legacy.value === "string" && legacy.value.length > 0);
+    await b.clusterStorage.execute(
+      "UPDATE _blamejs_break_glass_grants SET issuedToActorHash = ? WHERE _id = ?",
+      [legacy.value, grant.id]);
+
+    var byTable = await b.breakGlass.revokeAll(
+      { table: "t_legacy" }, { reason: "ir-table-scope" });
+    check("break-glass: revokeAll by table reaches a pre-prefix grant",
+      byTable && byTable.revokedCount === 1, JSON.stringify(byTable));
+    check("break-glass: and it is gone afterwards",
+      (await b.breakGlass.listActiveAll()).length === 0);
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
 async function testListAndRevokeEdgeBranches() {
   var tmpDir = _tmp();
   await setupTestDb(tmpDir);
@@ -1933,6 +2196,7 @@ async function run() {
   await testServiceAccountBypassHappyPath();
   await testServiceAccountBypassRefusalPaths();
   await testListActiveAllAndRevokeAll();
+  await testGrantHolderIsNotSharedBetweenAUserAndAKeyOfTheSameId();
   // Uncovered error / adversarial / defensive branch coverage
   await testPolicyValidationAdversarial();
   await testCellAndAdminInputValidation();
@@ -1948,6 +2212,10 @@ async function run() {
   await testGrantAuditReasonHmac();
   await testUnsealRowAsServiceGuardsAndModelB();
   await testPasskeyFullFieldFactorPath();
+  await testGrantOwnerIsTheCredentialThatTookItOut();
+  await testAPrefixShapedUserIdDoesNotReachAnotherUser();
+  await testAPrePrefixOwnerCannotBeClaimedByAPrefixedLookup();
+  await testRevokeByTableReachesAnyOwnerFormat();
   await testListAndRevokeEdgeBranches();
 }
 

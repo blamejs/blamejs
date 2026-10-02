@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.20.33",
-  "createdAt": "2026-09-29T12:41:50.326Z",
+  "frameworkVersion": "0.20.34",
+  "createdAt": "2026-09-30T12:46:28.496Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -4651,11 +4651,11 @@
             },
             "emitAuditRequired": {
               "type": "function",
-              "arity": 4
+              "arity": 5
             },
             "emitAuditSatisfied": {
               "type": "function",
-              "arity": 4
+              "arity": 5
             },
             "evaluate": {
               "type": "function",
@@ -6024,6 +6024,14 @@
         "BreakGlassError": {
           "type": "function",
           "arity": 4
+        },
+        "OWNER_KEY_VERSION_BARE": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "OWNER_KEY_VERSION_PREFIXED": {
+          "type": "primitive",
+          "valueType": "number"
         },
         "decryptCell": {
           "type": "function",
@@ -18131,6 +18139,10 @@
               "valueType": "string"
             },
             "ownerIdHash": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "ownerKeyVersion": {
               "type": "primitive",
               "valueType": "string"
             },
@@ -52539,6 +52551,10 @@
         "actorDisplayName": {
           "type": "function",
           "arity": 2
+        },
+        "actorIdentityFields": {
+          "type": "function",
+          "arity": 1
         },
         "actorIdentityKey": {
           "type": "function",

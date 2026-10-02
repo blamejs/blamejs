@@ -202,6 +202,129 @@ function testShapePredicatesAgreeWithThePatternsTheyReplaced() {
 
   testRemovedPatternExportsSignpostTheirReplacement();
   testConsolidatedCallersKeptTheirAcceptanceSets();
+  testCrossRealmBytesAreBytes();
+}
+
+// Every function here that accepts bytes asked `x instanceof Uint8Array`,
+// which compares against THIS realm's Uint8Array, so a byte array built in a
+// `node:vm` context answered no to all six. Two of the six answer by skipping
+// work rather than by refusing: byteLengthOfIfMeasurable returns null, which
+// its callers read as "no cap to apply here", and secureZero returns without
+// wiping, leaving the secret in memory with nothing in the return value to
+// say so. `require("node:util").types.isUint8Array` reads the internal slot,
+// so it answers for any realm and cannot be spoofed by a `Symbol.toStringTag`.
+function testCrossRealmBytesAreBytes() {
+  var vm = require("node:vm");
+  var ctx = vm.createContext({ u8: null, u16: null, big: null, secret: null });
+  vm.runInContext('u8 = new Uint8Array([1, 2, 3]); u16 = new Uint16Array([1, 2]);' +
+                  'big = new Uint8Array(1024); secret = new Uint8Array([7, 7, 7]);', ctx);
+
+  var local = b.safeBuffer.toBuffer(new Uint8Array([1, 2, 3]), { typeCode: "t/bad" });
+  check("a local Uint8Array coerces to a Buffer", Buffer.isBuffer(local) && local.length === 3);
+
+  var fromVm = null, refused = null;
+  try { fromVm = b.safeBuffer.toBuffer(ctx.u8, { typeCode: "t/bad" }); }
+  catch (e) { refused = e; }
+  check("a cross-realm Uint8Array coerces too, as a local one does",
+        refused === null && Buffer.isBuffer(fromVm) && fromVm.length === 3,
+        refused ? String(refused.message).slice(0, 60) : "");
+  check("and carries the same bytes",
+        fromVm !== null && fromVm.equals(Buffer.from([1, 2, 3])));
+
+  // makeByteCoercer is the shape most callers use, so it has to agree.
+  var coerce = b.safeBuffer.makeByteCoercer({
+    errorClass: b.frameworkError.AuthError, typeCode: "t/bad", allowString: false,
+  });
+  var viaCoercer = null, coercerRefused = null;
+  try { viaCoercer = coerce(ctx.u8, "the bytes"); }
+  catch (e) { coercerRefused = e; }
+  check("makeByteCoercer accepts a cross-realm Uint8Array",
+        coercerRefused === null && Buffer.isBuffer(viaCoercer) && viaCoercer.length === 3,
+        coercerRefused ? String(coercerRefused.message).slice(0, 60) : "");
+
+  // normalizeText reads the bytes as UTF-8.
+  var farText = null, textRefused = null;
+  try { farText = b.safeBuffer.normalizeText(vm.runInContext('new Uint8Array([97, 98])', ctx), {}); }
+  catch (e) { textRefused = e; }
+  check("normalizeText decodes a cross-realm Uint8Array",
+        textRefused === null && farText === "ab",
+        textRefused ? String(textRefused.message).slice(0, 60) : JSON.stringify(farText));
+
+  // byteLengthOf throws on what it cannot measure, so cross-realm bytes were
+  // an over-refusal out of a measurement helper.
+  var farLen = null, lenRefused = null;
+  try { farLen = b.safeBuffer.byteLengthOf(ctx.u8); } catch (e) { lenRefused = e; }
+  check("byteLengthOf measures a cross-realm Uint8Array",
+        lenRefused === null && farLen === 3,
+        lenRefused ? String(lenRefused.message).slice(0, 60) : String(farLen));
+
+  // The fail-open half. byteLengthOfIfMeasurable answering null is how a
+  // caller decides there is no size to cap, so 1024 hostile bytes read as
+  // uncapped. It must still answer null for what is genuinely unmeasurable.
+  check("byteLengthOfIfMeasurable measures 1024 cross-realm bytes as 1024, " +
+        "not as unmeasurable",
+        b.safeBuffer.byteLengthOfIfMeasurable(ctx.big) === 1024,
+        String(b.safeBuffer.byteLengthOfIfMeasurable(ctx.big)));
+  check("a plain Array is still unmeasurable",
+        b.safeBuffer.byteLengthOfIfMeasurable([1, 2, 3]) === null);
+  check("an array-like claiming a huge length is still unmeasurable",
+        b.safeBuffer.byteLengthOfIfMeasurable({ length: 1e9 }) === null);
+  check("a cross-realm Uint16Array is not byte-wise, and is still unmeasurable",
+        b.safeBuffer.byteLengthOfIfMeasurable(ctx.u16) === null,
+        String(b.safeBuffer.byteLengthOfIfMeasurable(ctx.u16)));
+  // The other direction. `instanceof` accepts an object that only claims the
+  // prototype, so this used to reach `.length` on something that has none and
+  // hand back undefined out of a function documented to answer a number or
+  // null. Reading the internal slot answers no, and null is what a caller
+  // capping an untrusted bag is written to handle.
+  check("an object that only claims Uint8Array.prototype is unmeasurable, " +
+        "and the answer is null rather than undefined",
+        b.safeBuffer.byteLengthOfIfMeasurable(Object.create(Uint8Array.prototype)) === null,
+        String(b.safeBuffer.byteLengthOfIfMeasurable(Object.create(Uint8Array.prototype))));
+  check("and byteLengthOf refuses it rather than throwing on a missing length",
+        (function () {
+          try { b.safeBuffer.byteLengthOf(Object.create(Uint8Array.prototype)); return false; }
+          catch (e) { return e instanceof TypeError; }
+        })());
+
+  // boundedChunkCollector is the push side of collectStream.
+  var collector = b.safeBuffer.boundedChunkCollector({ maxBytes: 99 });
+  var pushRefused = null;
+  try { collector.push(ctx.u8); } catch (e) { pushRefused = e; }
+  check("boundedChunkCollector accepts a cross-realm Uint8Array chunk",
+        pushRefused === null && collector.bytesCollected() === 3,
+        pushRefused ? String(pushRefused.message).slice(0, 60) : "");
+  check("and the collected result carries those bytes",
+        pushRefused === null && collector.result().equals(Buffer.from([1, 2, 3])));
+
+  // The other fail-open. Nothing in the return value distinguishes "wiped"
+  // from "declined to wipe", so this is the only place it can be caught.
+  b.safeBuffer.secureZero(ctx.secret);
+  check("secureZero wipes a cross-realm Uint8Array rather than silently " +
+        "leaving the secret in memory",
+        Array.prototype.every.call(ctx.secret, function (byte) { return byte === 0; }),
+        JSON.stringify(Array.prototype.slice.call(ctx.secret)));
+  var localSecret = new Uint8Array([7, 7, 7]);
+  b.safeBuffer.secureZero(localSecret);
+  check("and a local one, as before",
+        Array.prototype.every.call(localSecret, function (byte) { return byte === 0; }));
+  var notBytes = { fill: function () { throw new Error("should not be called"); } };
+  var zeroThrew = null;
+  try { b.safeBuffer.secureZero(notBytes); } catch (e) { zeroThrew = e; }
+  check("secureZero still ignores a non-byte value carrying a fill method",
+        zeroThrew === null, zeroThrew ? String(zeroThrew.message) : "");
+
+  // What must still be refused stays refused.
+  function refuses(value) {
+    try { b.safeBuffer.toBuffer(value, { typeCode: "t/bad", allowString: false }); return false; }
+    catch (_e) { return true; }
+  }
+  check("a number is still refused", refuses(42));
+  check("a plain object is still refused", refuses({}));
+  check("null is still refused", refuses(null));
+  check("a string is still refused when allowString is false", refuses("abc"));
+  check("a cross-realm Uint16Array is not byte-wise, and is still refused",
+        refuses(ctx.u16));
 }
 
 // Where ONE shared primitive replaced SEVERAL callers' patterns, each of those

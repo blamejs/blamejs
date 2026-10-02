@@ -164,6 +164,67 @@ async function testCompensationFailureAudit() {
     threw.message.indexOf("compensation") >= 0);
 }
 
+// The audit row records who ran the saga. An actor names itself by any of the
+// fields the identity resolver reads, so a row must carry the name whichever
+// field the operator wrote it in; an audit row with no actor is refused
+// outright under b.audit.bindActor.
+async function testAuditCarriesTheActorWhicheverFieldNamesIt() {
+  var SHAPES = [
+    { label: "id",          actor: { id: "agent-1" },          expect: "agent-1" },
+    { label: "userId",      actor: { userId: "agent-2" },      expect: "agent-2" },
+    { label: "username",    actor: { username: "agent-3" },    expect: "agent-3" },
+    { label: "sub",         actor: { sub: "agent-4" },         expect: "agent-4" },
+    { label: "principalId", actor: { principalId: "agent-5" }, expect: "agent-5" },
+    { label: "email",       actor: { email: "a@b.test" },      expect: "a@b.test" },
+  ];
+  for (var i = 0; i < SHAPES.length; i += 1) {
+    var rows = [];
+    var sink = { safeEmit: function (ev) { rows.push(ev); } };
+    var saga = b.agent.saga.create({
+      name:  "test.actor." + SHAPES[i].label,
+      audit: sink,
+      steps: [{ name: "only", run: async function (_ctx, s) { s.done = true; } }],
+    });
+    await saga.run({}, {}, { actor: SHAPES[i].actor });
+    var named = rows.filter(function (ev) {
+      return ev.actor && ev.actor.userId !== null && ev.actor.userId !== undefined;
+    });
+    check("saga audit: an actor named by " + SHAPES[i].label + " reaches the row",
+      rows.length > 0 && named.length === rows.length &&
+      named[0].actor.userId === SHAPES[i].expect &&
+      named[0].actor.id === SHAPES[i].expect);
+  }
+
+  // An actor object carrying none of those fields names no principal, so the
+  // row says so rather than reporting an undefined one.
+  var anonRows = [];
+  var anonSaga = b.agent.saga.create({
+    name:  "test.actor.unnamed",
+    audit: { safeEmit: function (ev) { anonRows.push(ev); } },
+    steps: [{ name: "only", run: async function (_ctx, s) { s.done = true; } }],
+  });
+  await anonSaga.run({}, {}, { actor: { role: "admin" } });
+  check("saga audit: an actor naming no principal is recorded as the system actor",
+    anonRows.length > 0 && anonRows[0].actor.userId === null &&
+    anonRows[0].actor.id === "<system>");
+
+  // A request-shaped actor keeps the fields the row carries alongside the name.
+  var carriedRows = [];
+  var carriedSaga = b.agent.saga.create({
+    name:  "test.actor.carried",
+    audit: { safeEmit: function (ev) { carriedRows.push(ev); } },
+    steps: [{ name: "only", run: async function (_ctx, s) { s.done = true; } }],
+  });
+  await carriedSaga.run({}, {}, {
+    actor: { userId: "agent-6", ip: "203.0.113.7", sessionId: "sess-9", roles: ["ops"] },
+  });
+  check("saga audit: the carried request fields ride with the named actor",
+    carriedRows.length > 0 && carriedRows[0].actor.userId === "agent-6" &&
+    carriedRows[0].actor.ip === "203.0.113.7" &&
+    carriedRows[0].actor.sessionId === "sess-9" &&
+    carriedRows[0].actor.roles.length === 1);
+}
+
 async function testRefusesBadConfig() {
   var threw = null;
   try { b.agent.saga.create({ name: "x", steps: [] }); } catch (e) { threw = e; }
@@ -274,6 +335,7 @@ async function run() {
   await testResumeCompensatesPreCrashSteps();
   await testResumeRefusesTerminalSaga();
   await testRefusesBadConfig();
+  await testAuditCarriesTheActorWhicheverFieldNamesIt();
 }
 
 async function testResumeCompensatesPreCrashSteps() {

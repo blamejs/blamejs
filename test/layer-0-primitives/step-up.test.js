@@ -232,6 +232,33 @@ async function run() {
   // Scope mismatch
   var vScopeBad = b.auth.stepUp.grant.verify(g.token, { scope: "admin:write" });
   check("grant verify: scope mismatch",           vScopeBad.ok === false);
+
+  // A caller passing opts.actor is asking "is this grant for this principal".
+  // A grant minted with a bare `subject` carries no actor binding to answer
+  // that with: its `sub` is an operator-chosen string, not a tagged identity
+  // key. The actor branch ran only for an identity-bound grant and the subject
+  // branch only when opts.subject was given, so supplying opts.actor alone
+  // checked NOTHING — a grant for "alice" verified under { id: "bob" }.
+  var gBare = b.auth.stepUp.grant.create({ subject: "alice", scope: "wire.transfer" });
+  var vWrongActor = b.auth.stepUp.grant.verify(gBare.token,
+    { scope: "wire.transfer", actor: { id: "bob" } });
+  check("grant verify: a bare-subject grant refuses an actor check it cannot answer",
+    vWrongActor.ok === false && vWrongActor.error === "subject_mismatch",
+    JSON.stringify(vWrongActor));
+  // Same refusal for the principal the subject names, because the grant still
+  // cannot prove the binding; an actor-bound grant is what answers that.
+  var vRightActor = b.auth.stepUp.grant.verify(gBare.token,
+    { scope: "wire.transfer", actor: { id: "alice" } });
+  check("grant verify: and refuses it even for the named subject",
+    vRightActor.ok === false && vRightActor.error === "subject_mismatch",
+    JSON.stringify(vRightActor));
+  // The bare-subject grant still verifies the way it always did.
+  check("grant verify: a bare-subject grant still verifies by subject",
+    b.auth.stepUp.grant.verify(gBare.token,
+      { scope: "wire.transfer", subject: "alice" }).ok === true);
+  check("grant verify: and still refuses a different subject",
+    b.auth.stepUp.grant.verify(gBare.token,
+      { scope: "wire.transfer", subject: "bob" }).ok === false);
   // Expiry
   rejects("grant: ttlSec too small",
     function () { b.auth.stepUp.grant.create({ subject: "u", scope: "s", ttlSec: 1 }); }, /ttlSec/);
@@ -362,6 +389,67 @@ async function run() {
   check("middleware: cross-claims.sub grant does NOT elevate → 401",
         nextJX === 0 && resJX._sent.status === 401);
 
+  // ---- grant bound to an actor, not to the text of one field ----
+  // The principal resolver reads id, then userId, then claims.sub, then sub,
+  // and a grant minted for a bare subject matches whichever of those spells
+  // the same text. Two principals named by different fields therefore share
+  // one grant. Minting from the actor binds the grant to the field as well as
+  // the value, so the second principal is refused.
+  var actorGrant = b.auth.stepUp.grant.create({
+    actor: { id: "shared-name" }, scope: "billing:write", acr: "loa3",
+  });
+  var nextA = 0;
+  var reqA = _mockReq({ "x-step-up-grant": actorGrant.token },
+                      { id: "shared-name", claims: { acr: "loa1" } });
+  var resA = _mockRes();
+  grantMw(reqA, resA, function () { nextA += 1; });
+  check("actor-bound grant: elevates the principal it was minted for",
+        nextA === 1 && reqA.user.stepUp && reqA.user.stepUp.byGrant === true);
+
+  var nextB = 0;
+  var reqB = _mockReq({ "x-step-up-grant": actorGrant.token },
+                      { claims: { sub: "shared-name", acr: "loa1" } });
+  var resB = _mockRes();
+  grantMw(reqB, resB, function () { nextB += 1; });
+  check("actor-bound grant: a principal named by a different field is refused",
+        nextB === 0 && resB._sent.status === 401);
+
+  var nextAu = 0;
+  var reqAu = _mockReq({ "x-step-up-grant": actorGrant.token },
+                       { userId: "shared-name", claims: { acr: "loa1" } });
+  var resAu = _mockRes();
+  grantMw(reqAu, resAu, function () { nextAu += 1; });
+  check("actor-bound grant: userId spelling the same text is refused",
+        nextAu === 0 && resAu._sent.status === 401);
+
+  // A bare-subject grant keeps matching the resolver's chain, so an operator
+  // minting one is unaffected.
+  var bareGrant = b.auth.stepUp.grant.create({
+    subject: "bare-name", scope: "billing:write", acr: "loa3",
+  });
+  var nextD = 0;
+  var reqD = _mockReq({ "x-step-up-grant": bareGrant.token },
+                      { id: "bare-name", claims: { acr: "loa1" } });
+  var resD = _mockRes();
+  grantMw(reqD, resD, function () { nextD += 1; });
+  check("bare-subject grant: still elevates through the resolver chain", nextD === 1);
+
+  // An actor-bound grant checked without an actor is refused rather than
+  // falling back to the text.
+  var vNoActor = b.auth.stepUp.grant.verify(actorGrant.token, { subject: "shared-name" });
+  check("actor-bound grant: verify without an actor refuses",
+        vNoActor.ok === false && vNoActor.error === "subject_mismatch");
+  var vWithActor = b.auth.stepUp.grant.verify(actorGrant.token, { actor: { id: "shared-name" } });
+  check("actor-bound grant: verify with the actor succeeds", vWithActor.ok === true);
+
+  rejects("grant.create: actor and subject together",
+    function () {
+      b.auth.stepUp.grant.create({ actor: { id: "a" }, subject: "a", scope: "s" });
+    }, /actor or subject/);
+  rejects("grant.create: an actor naming no principal",
+    function () { b.auth.stepUp.grant.create({ actor: { role: "admin" }, scope: "s" }); },
+    /name a principal/);
+
   // ---- middleware: grant scope mismatch falls through to claims ----
   var nextS = 0;
   var grantTokenWrong = b.auth.stepUp.grant.create({
@@ -414,12 +502,67 @@ async function run() {
   })());
 
   // ---- audit emissions reach the bus ----
-  // Use audit drain helper if available; else just confirm safeEmit doesn't throw.
-  try {
-    b.audit.subscribeNamespace("auth", function (_event) { /* drop-silent */ });
-  } catch (_e) { /* not all backends support subscribeNamespace; non-fatal */ }
   b.auth.stepUp.evaluate({ claims: { acr: "loa3" }, requirement: { acr: "loa2" } });
   check("evaluate is side-effect-free",            true);
+
+  // The middleware decides which principal a step-up applies to by reading
+  // req.user.id, then userId, then claims.sub, then sub, so it serves all four.
+  // The two audit emitters read req.user.id alone, so a decision about a
+  // principal named by any of the other three was recorded with no actor: the
+  // row said a step-up was required or satisfied and named nobody it was about.
+  // One resolver now answers for both, so what the audit names is what the
+  // middleware matched.
+  var SHAPES = [
+    ["id",         { id: "p-id" },                   "p-id"],
+    ["userId",     { userId: "p-userid" },           "p-userid"],
+    ["claims.sub", { claims: { sub: "p-claimsub" } }, "p-claimsub"],
+    ["sub",        { sub: "p-sub" },                 "p-sub"],
+  ];
+  SHAPES.forEach(function (shape) {
+    var rows = [];
+    var sink = { safeEmit: function (ev) { rows.push(ev); } };
+    var req = { url: "/admin", user: shape[1] };
+    b.auth.stepUp.emitAuditRequired("lbl", { acr: "loa2" }, {}, req, sink);
+    b.auth.stepUp.emitAuditSatisfied("lbl", { acr: "loa2" }, {}, req, sink);
+    check("step-up audit: a principal named by " + shape[0] + " reaches both rows",
+          rows.length === 2 &&
+          rows[0].actor && rows[0].actor.userId === shape[2] &&
+          rows[1].actor && rows[1].actor.userId === shape[2],
+          JSON.stringify(rows.map(function (r) { return r.actor && r.actor.userId; })));
+    check("step-up audit: the route rides with the named actor for " + shape[0],
+          rows.length === 2 && rows[0].actor.route === "/admin");
+  });
+
+  // A request naming no principal records no actor id rather than inventing one.
+  var anonRows = [];
+  b.auth.stepUp.emitAuditRequired("lbl", { acr: "loa2" }, {},
+    { url: "/admin", user: { role: "admin" } },
+    { safeEmit: function (ev) { anonRows.push(ev); } });
+  check("step-up audit: an actor naming no principal records a null userId",
+        anonRows.length === 1 && anonRows[0].actor.userId === null,
+        JSON.stringify(anonRows[0] && anonRows[0].actor));
+
+  // The resolver both sides share, asserted directly so a future edit that
+  // narrows one caller's chain shows up here rather than in a quiet audit row.
+  // It answers whatever b.requestHelpers.actorIdentityFields says names the
+  // actor, so the order lives in one place. That order reads a top-level `sub`
+  // ahead of a nested `claims.sub`, where this resolver used to prefer the
+  // nested one: the shared list appends `claims.sub` last so adding it could
+  // not re-key an actor an ownership record already names.
+  check("stepUp._resolvePrincipal reads the fields in the shared order",
+        b.auth.stepUp._resolvePrincipal({ user: { id: "a", userId: "b", sub: "c" } }) === "a" &&
+        b.auth.stepUp._resolvePrincipal({ user: { userId: "b", sub: "c" } }) === "b" &&
+        b.auth.stepUp._resolvePrincipal({ user: { claims: { sub: "c" }, sub: "d" } }) === "d" &&
+        b.auth.stepUp._resolvePrincipal({ user: { claims: { sub: "c" } } }) === "c" &&
+        b.auth.stepUp._resolvePrincipal({ user: { sub: "d" } }) === "d");
+  check("and it names an actor carrying only a username or a principalId, " +
+        "which its own chain never read",
+        b.auth.stepUp._resolvePrincipal({ user: { username: "alice" } }) === "alice" &&
+        b.auth.stepUp._resolvePrincipal({ user: { principalId: "p-1" } }) === "p-1");
+  check("stepUp._resolvePrincipal answers undefined for a request naming nobody",
+        b.auth.stepUp._resolvePrincipal({ user: { role: "x" } }) === undefined &&
+        b.auth.stepUp._resolvePrincipal({}) === undefined &&
+        b.auth.stepUp._resolvePrincipal(null) === undefined);
 
   // ---- policy DSL ----
   var p = b.auth.stepUp.policy;

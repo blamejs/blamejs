@@ -47,6 +47,27 @@ function testRefuses() {
   expectRefused("refuses regex value",
     function () { b.guardMailQuery.validate({ subject: /x/ }); },
     "mail-query/regex-not-allowed");
+  // The refusal above was written with `node instanceof RegExp`, which asks
+  // whether THIS realm built the pattern. A pattern from anywhere else
+  // answered no, walked past the refusal, reached Object.keys — which is empty
+  // for a RegExp — and validated clean. A guard that one value shape can walk
+  // around is not a guard, so the realm has to stop deciding the answer.
+  expectRefused("refuses a regex value built in another realm",
+    function () {
+      var vm = require("node:vm");
+      b.guardMailQuery.validate({
+        subject: vm.runInContext("/x/", vm.createContext({})),
+      });
+    },
+    "mail-query/regex-not-allowed");
+  expectRefused("refuses an invalid Date built in another realm",
+    function () {
+      var vm = require("node:vm");
+      b.guardMailQuery.validate({
+        subject: vm.runInContext("new Date(NaN)", vm.createContext({})),
+      });
+    },
+    "mail-query/bad-date");
   expectRefused("refuses cycle",
     function () {
       var a = {};

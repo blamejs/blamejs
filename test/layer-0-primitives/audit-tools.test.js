@@ -258,8 +258,32 @@ async function runCadfMapping() {
   check("cadf: denied → failure outcome", batch.events[2].outcome === "failure");
   check("cadf: unparseable metadata falls back to raw",
     batch.events[2].attachments && /not json/.test(batch.events[2].attachments[0].content));
-  check("cadf: unknown initiator id when no actor fields", batch.events[2].initiator.id === "unknown");
-  check("cadf: n/a target when no resource fields", batch.events[2].target.id === "n/a");
+  // The placeholder for a row that names no actor has to be a value no actor
+  // can hold. It was the bare string "unknown", so a row whose actorUserId is
+  // literally "unknown" exported the same initiator id as every unattributed
+  // row, and an auditor grouping by that id reads one principal as having
+  // performed all of them. Same for the target's "n/a" against a resourceId
+  // spelled that way.
+  check("cadf: an unattributed initiator is namespaced",
+    batch.events[2].initiator.id === "blamejs:unattributed", batch.events[2].initiator.id);
+  check("cadf: and is not typed as a user account",
+    batch.events[2].initiator.typeURI.indexOf("account/user") === -1,
+    batch.events[2].initiator.typeURI);
+  check("cadf: an unnamed target is namespaced",
+    batch.events[2].target.id === "blamejs:unidentified", batch.events[2].target.id);
+  var collide = await b.auditTools.exportAudit({ readRows: async function () {
+    return [{ _id: "c1", monotonicCounter: 1, recordedAt: base, action: "a.b",
+              outcome: "success", actorUserId: "unknown", resourceId: "n/a",
+              prevHash: "00", rowHash: "11" }];
+  } });
+  check("cadf: an actor literally named unknown is not the unattributed initiator",
+    collide.events[0].initiator.id === "unknown" &&
+    collide.events[0].initiator.id !== batch.events[2].initiator.id,
+    collide.events[0].initiator.id);
+  check("cadf: a resource literally named n/a is not the unidentified target",
+    collide.events[0].target.id === "n/a" &&
+    collide.events[0].target.id !== batch.events[2].target.id,
+    collide.events[0].target.id);
   check("cadf: warning → unknown outcome", batch.events[3].outcome === "unknown");
   check("cadf: null metadata → no attachments", batch.events[3].attachments === undefined);
   check("cadf: unrecognized outcome passes through", batch.events[4].outcome === "quantum");

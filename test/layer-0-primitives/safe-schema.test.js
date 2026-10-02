@@ -413,6 +413,23 @@ function testRegexPatternsAreScreened(s) {
   var answers = [1, 2, 3, 4].map(function () { return alice.safeParse("alice").ok; });
   check("safeSchema: a .regex() schema gives the same answer on every parse",
         answers.join(",") === "true,true,true,true", answers.join(","));
+
+  // A RegExp built in another realm is a RegExp. Asking `instanceof RegExp`
+  // compares against THIS realm's constructor, so a pattern from a `node:vm`
+  // context was refused as "not a RegExp" — and the screening below it, which
+  // is the reason the check exists, never got to run on it either.
+  var vm = require("node:vm");
+  var ctx = vm.createContext({ ok: null, unsafe: null, sticky: null });
+  vm.runInContext('ok = /^alice$/; unsafe = /^(a+)+$/; sticky = /^alice$/g;', ctx);
+  check("safeSchema: .regex() accepts a cross-realm pattern",
+        regexCode(ctx.ok) === null, String(regexCode(ctx.ok)));
+  check("safeSchema: a cross-realm pattern matches the same values",
+        s.string().regex(ctx.ok).safeParse("alice").ok === true &&
+        s.string().regex(ctx.ok).safeParse("bob").ok === false);
+  check("safeSchema: a cross-realm nested-quantifier pattern is still screened",
+        regexCode(ctx.unsafe) === "safe-schema/unsafe-pattern", String(regexCode(ctx.unsafe)));
+  check("safeSchema: a cross-realm g-flagged pattern is still refused",
+        regexCode(ctx.sticky) === "safe-schema/stateful-pattern", String(regexCode(ctx.sticky)));
 }
 
 // A union's options, and every reference a lazy schema resolves, can reach the

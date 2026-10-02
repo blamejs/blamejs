@@ -484,6 +484,8 @@ var VALID_ALLOW_CLASSES = {
   "resolver-querymx-shape-assumed": 1,
   "root-prefix-family-without-reseal": 1,
   "scoped-context-binding-unused": 1,
+  "serializer-realm-bound-instanceof": 1,
+  "lib-realm-bound-byte-instanceof": 1,
   "session-updatedata-merges-one-level-deep": 1,
   "shape-file-inline-opts-validation": 1,
   "smtp-linebuffer-utf8-roundtrip": 1,
@@ -1507,7 +1509,6 @@ function testParserPrimitivesHaveFuzzHarness() {
   // (lib/parsers/safe-toml.js, lib/auth/...) are covered.
   var FUZZ_NOT_REQUIRED = {
     "lib/safe-async.js":     "runtime-control wrapper (not input-parsing)",
-    "lib/safe-buffer.js":    "byte-level helper consumed only by other primitives, no operator-facing parse path",
     "lib/safe-object.js":    "own-property get/set over an in-memory JS object; no bytes/string parser, no adversarial-input parse path",
     "lib/safe-redirect.js":  "post-validation redirect builder; the validation lives in safe-url which is fuzzed",
     "lib/safe-schema.js":    "schema-builder fluent API; takes operator-authored schema, not adversarial input",
@@ -1518,12 +1519,10 @@ function testParserPrimitivesHaveFuzzHarness() {
     "lib/guard-domain.js":   "single-value validator; covered by safe-url IDN-homograph fuzzing surface",
     "lib/guard-filename.js": "single-string validator; deterministic codepoint scan, no adversarial-bytes parser",
     "lib/guard-graphql.js":  "operator-supplied variables-shape validator; no raw-bytes parser",
-    "lib/guard-image.js":    "operator-feeds-metadata pattern; magic-byte detection covered by safe-buffer",
     "lib/guard-jwt.js":      "JWT parse path covered upstream by b.auth.jwt + safe-json fuzz",
     "lib/guard-jsonpath.js": "JSONPath validator covered by safe-jsonpath fuzz",
     "lib/guard-mime.js":     "single-string validator over a finite vocabulary; no adversarial-bytes parser",
     "lib/guard-oauth.js":    "operator-supplied params validator; flow-shape rather than bytes-parser",
-    "lib/guard-pdf.js":      "operator-feeds-metadata pattern; magic-byte detection covered by safe-buffer",
     "lib/guard-regex.js":    "regex-source linter; deterministic AST walk, no parser surface",
     "lib/guard-shell.js":    "argv-shape validator over operator-supplied tokens; not a bytes-parser",
     "lib/guard-template.js": "template-source linter (operator-authored); not adversarial-input surface",
@@ -1544,11 +1543,14 @@ function testParserPrimitivesHaveFuzzHarness() {
   // filename. asn1-der parses DER from peer TLS certificates, S/MIME, BIMI VMCs,
   // CMS, ACME and TSA responses; cms-codec (b.cms) parses CMS on top of it;
   // link-header (b.linkHeader.parse) parses an untrusted HTTP Link response
-  // header (RFC 8288) a server / SSRF-reachable origin controls.
+  // header (RFC 8288) a server / SSRF-reachable origin controls; file-type
+  // (b.fileType.detect / assertOneOf) walks a signature table over the leading
+  // bytes of an upload body, a mail attachment or a decoded MIME part.
   var FUZZ_REQUIRED_EXTRA = [
     "lib/asn1-der.js",
     "lib/cms-codec.js",
     "lib/link-header.js",
+    "lib/file-type.js",
   ];
   var fs   = require("node:fs");
   var path = require("node:path");
@@ -13083,11 +13085,11 @@ var KNOWN_ANTIPATTERNS = [
     regex: /\bactor(?:Opts|Ctx)?\.(?:id|userId|username|sub)\s*\|\|\s*(?:(?!;)[\s\S]){0,120}\.(?:id|userId|username|sub|email|principalId)\b/,
     allowlist: [
       "lib/request-helpers.js",
-      "lib/break-glass.js",
     ],
     fixtures: {
       fires: [
         'return (actor && (actor.id || actor.userId)) || "_anonymous";',
+        'var actorId = actor.userId || (opts.req && opts.req.apiKey && opts.req.apiKey.id) || null;',
         'var who = actor.username || actor.id || "unknown";',
         'var k = actorOpts.id || actorOpts.userId;',
       ],
@@ -13097,7 +13099,7 @@ var KNOWN_ANTIPATTERNS = [
         'var scopes = actor.scopes || actor.roles || [];',
       ],
     },
-    reason: "Who a principal is was answered separately in each module that needed a per-actor bucket, and the answers disagreed: `actor.id || actor.userId` in b.fileUpload, `actor.id` then `actor.username` in the JMAP slot key, `userId` alone in the audit row. Each chain ended in a shared literal, so every actor the chain could not name landed on one key. A bucket is an ownership record as often as it is a counter, so that merged two authenticated users: measured, one principal read, wrote, finalized and cancelled another's upload, and `list()` dropped its scoping filter entirely. `b.requestHelpers.actorIdentityKey` is the one derivation, it tags each key with the field it came from so `{id:\"x\"}` and `{userId:\"x\"}` stay two principals, and it answers null for an actor it cannot name so the caller refuses instead of folding. Allowlisted, and only these two, because only these two are matched today: request-helpers is the resolver itself, and break-glass (:887, :1344) reads `actor.userId || req.apiKey.id` and then THROWS on a null, so it cannot fold two principals onto one key. Widening break-glass would widen who may open a break-glass grant, which is the wrong direction for exactly the reason this detector exists. `dual-control`, `require-step-up` and `mail-dav` each keep their own narrower list too, and each fails closed the same way, but none of them is written with `||` against an actor-named binding, so the regex does not reach them: listing them would have bought nothing except silence on a future chain, which is how an allowlist stops being a record of decisions.",
+    reason: "Who a principal is was answered separately in each module that needed a per-actor bucket, and the answers disagreed: `actor.id || actor.userId` in b.fileUpload, `actor.id` then `actor.username` in the JMAP slot key, `userId` alone in the audit row. Each chain ended in a shared literal, so every actor the chain could not name landed on one key. A bucket is an ownership record as often as it is a counter, so that merged two authenticated users: measured, one principal read, wrote, finalized and cancelled another's upload, and `list()` dropped its scoping filter entirely. `b.requestHelpers.actorIdentityKey` is the one derivation, it tags each key with the field it came from so `{id:\"x\"}` and `{userId:\"x\"}` stay two principals, and it answers null for an actor it cannot name so the caller refuses instead of folding. Allowlisted, and only this one: request-helpers is the resolver itself. break-glass (:887, :1344) was allowlisted on the argument that it reads `actor.userId || req.apiKey.id` and then THROWS on a null, so it cannot fold two principals onto one key. That argument covered the null, not the text: a user whose userId spells an API key's id produced the same `actorId`, and `actorId` is the break-glass grant's owner, the factor-lockout key and the TOTP replay-step key. Measured on the tree before the fix, `listActive` handed a key holder a user's live grant ids, and `unsealRow` takes a grant handle without re-checking who holds it, so those ids redeem. It now records a holder as `user:<userId>` or `apikey:<keyId>`, which keeps the same two sources in the same order and the same refusal when neither names the caller, and cannot spell one holder two ways. `revokeAll` takes either prefix to target one holder and a bare id to reach both, and refuses when the grants table has no derived owner hash instead of dropping the actor criterion and revoking by table alone. `dual-control`, `require-step-up` and `mail-dav` each keep their own narrower list too, and each fails closed the same way, but none of them is written with `||` against an actor-named binding, so the regex does not reach them: listing them would have bought nothing except silence on a future chain, which is how an allowlist stops being a record of decisions.",
   },
   {
     id: "a-jmap-method-error-type-is-a-bare-name",
@@ -16526,6 +16528,14 @@ var KNOWN_ANTIPATTERNS = [
   { id: "line-listener-auth-step-must-be-returned", primitive: "a mail listener's SASL / authentication step is asynchronous and moves the session's stage, so a call to `_runAuthStep` / `_completeAuthenticate` / `_enterTransaction` / `runSaslStep` made as a BARE STATEMENT hands the reader nothing to wait for and the next command is read against a session that has not finished authenticating — return the call", scanScope: "lib", skipCommentLines: true, regex: /^[ \t]+(?:[A-Za-z_$][\w$.]*\.)?(?:_runAuthStep|_completeAuthenticate|_enterTransaction|runSaslStep)\s*\(/m, allowlist: ["lib/mail-server-submission.js"], reason: "v0.18.61, the same P1 class as line-listener-handler-must-return-its-async-work and found on the round AFTER it, which is why it gets its own matcher. Returning the promise chains was not enough: the authentication helpers were called as bare statements, so the value never reached the pump even where the handler returned what it had. Five sites survived the first sweep — imap `_handleAuthenticate` calling `_runAuthStep`, managesieve `_completeAuthenticate` (both the resume and the fresh-exchange arms), its `_runAuthStep` not returning `runSaslStep`, and its `_continueSaslExchange`. The consequence is worse than a plain ordering bug: with a command already buffered the reader treats it as the NEXT SASL response, so a valid authentication is abandoned by a client that merely pipelined. Allowlist names mail-server-submission.js alone, and for a reason rather than to pass: its reader is not promise-based — it holds the client's pipelined remainder on `state.commandPending` and resumes the drain when the handler answers — so a bare call there is correct PROVIDED the flag is held. Writing this detector is what found that its AUTH path did NOT hold it, unlike the sender-policy hook beside it, so two pipelined credential exchanges were verified concurrently on an unauthenticated session; `_runAuthStep` now sets the flag before its first yield and clears it on every arm. That is covered by a behavioural test rather than by this entry. For the other three listeners the allowlist is empty: these four helpers exist to change authentication state, and a caller with nothing to wait for is the bug. Proven by reverting `return mailServerNet.runSaslStep(` in mail-server-managesieve.js and watching it fire there.", },
 
   { id: "pem-body-wrap-must-not-emit-a-trailing-newline", primitive: "wrapping a base64 body into PEM lines must join the groups (`b64.match(/.{1,64}/g).join(\"\\n\")`) rather than append a newline to each of them — `replace(/(.{64})/g, \"$1\\n\")` also appends one after the LAST group when the body's length divides evenly by the width, and the caller then adds its own before the END line, so the body carries a blank line and the PEM does not parse", scanScope: "lib", regex: /\.replace\(\s*\/\(\.\{\d+\}\)\/g\s*,\s*["'`]\$1\\n["'`]\s*\)(?!\s*\.replace\(\s*\/\\n\$\/)/, allowlist: [], reason: "0.19.3 — b.auth.saml.verifyResponse rebuilt the holder-of-key KeyInfo certificate this way. The IdP's XML carries the certificate as base64 with whatever whitespace its writer used, so the reader strips the whitespace and re-wraps at 64 columns before handing node a PEM; when the body's length was a multiple of 64 the wrap left a blank line and createPublicKey refused it, so verifyResponse answered auth-saml/hok-bad-cert on a well-formed assertion. The length depends only on the certificate, so this is not an occasional failure: an IdP whose certificate lands on a multiple of 64 fails EVERY holder-of-key login, and one in sixteen certificates does. Measured directly: of 400 certificates built across a sweep of subject lengths, the 27 whose base64 length was a multiple of 64 were exactly the 27 that would not parse, and none of them failed under the joining form. Every other PEM builder in lib/ already joins — acme.js's CSR, fido-mds3.js's JWS chain, and the DKIM and mail-auth key readers — so the shape was the single outlier rather than a convention. The lookahead spares a wrapper that strips the trailing newline afterwards, which is how test/layer-0-primitives/privacy-pass.test.js spells it. The width is read as digits rather than fixed at 64 because the defect is in appending a separator per group, not in the column count. Behavioural coverage is testHolderOfKeyCertBodyMultipleOf64 in auth-saml.test.js, which mints a certificate whose body length is a multiple of 64 and requires the confirmation to succeed." },
+
+  { id: "actor-identity-fields-are-read-through-the-shared-reader", primitive: "a lib/ file that holds `b.requestHelpers.ACTOR_IDENTITY_FIELDS` reads an actor's identity through `b.requestHelpers.actorIdentityFields(actor)`, not by indexing the actor with a list entry. An entry may name a NESTED field, `claims.sub`, and `actor[\"claims.sub\"]` is not it — so a consumer that indexes directly silently cannot see that principal at all. Naming the list in a message is fine and is why `.join(` also satisfies this", scanScope: "lib", skipCommentLines: true, regex: /ACTOR_IDENTITY_FIELDS/, requires: /actorIdentityFields\s*\(|ACTOR_IDENTITY_FIELDS\s*\.join\s*\(/, allowlist: [], reason: "0.20.34 — `b.auth.jwt.verify` and its siblings in jar, oauth, oid4vp and openidFederation all answer with the token payload under `claims`, so an operator whose `bearerAuth` verify returns one of those results has `req.user = { claims: { sub } }`. `actorIdentityKey` read only top-level fields and answered `null` for that actor, which its own contract defines as refuse-the-operation, so file-upload ownership, crypto-field, db-query and idempotency scoping refused while flags, static and the bot-challenge ladder folded it onto the anonymous bucket. `b.auth.stepUp` meanwhile named it through its own `claims.sub` rung: one principal with two answers, which is the drift a single resolver exists to prevent. Measured before the fix: `actorIdentityKey({ claims: { sub: \"alice\" } })` was null while `stepUp._resolvePrincipal` answered \"alice\", and the drift ran the other way too — an actor carrying only `username` or `principalId` was named by the shared resolver and undefined to step-up, so requireStepUp refused an actor the rest of the framework names. `claims.sub` is appended LAST to both field lists so adding it could not re-key an actor an ownership record already names, `_ownField` walks a dotted entry by own properties at every step so a prototype cannot supply an identity, and agent-audit, mail-server-imap's same-account rule, flag-evaluation-context and step-up all read the shared reader now. Empty allowlist: the two files that only name the list in an error message satisfy the `.join(` branch, and request-helpers.js satisfies it by defining the reader. Behavioural cover is in request-helpers.test.js, which asserts step-up and this resolver name a principal by the same field across nine mixed shapes rather than re-pinning an order in a second place." },
+
+  { id: "principal-resolver-must-not-take-peer-input", primitive: "a resolver named for a principal — `_actorDomain`, `_principalX`, `_ownerX`, `_tenantX`, `_subjectX`, `_grantX`, `_accountX` — answers what the AUTHENTICATED identity carries, so it must not accept a peer-supplied parameter (`mailFrom`, `rcptTo`, `origin`, `serverName`, a `declared*` / `presented*` / `claimed*` / `advertised*` / `reported*` value, `envelope`, `referer`). A resolver that can read the peer's own value will fall back to it when the identity carries nothing, and the caller then compares that answer against another field of the same peer input — so the check passes on whatever the peer chose, and reports a pass rather than refusing", scanScope: "lib", skipCommentLines: true, regex: /function\s+_?(?:actor|principal|owner|tenant|subject|grant|account)[A-Za-z0-9_$]*\s*\([^)]*\b(?:mailFrom|rcptTo|origin|serverName|declared[A-Za-z]*|presented[A-Za-z]*|claimed[A-Za-z]*|advertised[A-Za-z]*|reported[A-Za-z]*|envelope|referer|hostHeader|fromHeader)\b/, allowlist: [], reason: "0.20.34 — lib/mail-server-submission.js's `_actorDomain(actor, mailFrom)` resolved the domain that dkimRequireMode \"self\" compares the message's d= tag against. Its first two rungs read the actor (its `.domain`, then the domain of an `.id` spelled as an address) and its last read the envelope sender, so a connection whose actor carried neither had its d= tag compared against its own MAIL FROM. Both sides are written by the same client in the same session, and nothing in that path verifies the signature cryptographically — only the tag is read — so \"self\" accepted a forged `DKIM-Signature: v=1; d=<anything>` whose domain agreed with the MAIL FROM beside it. Measured on the unfixed tree over a real listener: an unauthenticated connection and an authenticated one holding `{ id: \"u-1042\" }` both got `250 2.6.0 Message queued` for `d=attacker.example` with `MAIL FROM:<x@attacker.example>`, under `requireDkim: true, dkimRequireMode: \"self\"`. The existing suite asserted that pass as correct (\"dkim self: matching d= → 250\") because the connection agreed with itself. Reachable under `identityBinding: \"permissive\"`, and under a permissive profile where MAIL FROM needs no AUTH at all so there is no actor; under strict binding MAIL FROM is confined to the actor's mailbox set, which is why the fix resolves the domain from that set instead of the envelope and the strict path is unchanged. The function now takes the actor alone and returns every domain it carries, so the envelope is not reachable from it. Empty allowlist: a principal resolver has no business reading what the peer sent. The detector keys on the SIGNATURE, so it does not catch a resolver handed an opaque `state` that it dereferences inside; the behavioural cover for that is testDkimSelfNeedsADomainTheClientDidNotWrite in mail-server-submission.test.js, which drives the listener and pins the refusal." },
+
+  { id: "a-grant-owner-lookup-must-filter-the-ownership-format", primitive: "the break-glass grants table is queried by a hash of the owner id, and the owner id format changed, so every query that matches on `issuedToActorHash` must also pin `ownerKeyVersion` — a row written under the earlier format carries the hash a current lookup derives for a DIFFERENT principal", scanScope: "lib", skipCommentLines: true, regex: /whereIn\("issuedToActorHash",[^)]*\)(?:(?!\n\})(?!ownerKeyVersion)[\s\S]){0,4000}\n\}/, allowlist: [], reason: "0.20.34 — owner ids are stored as `user:<id>` / `apikey:<id>`, and releases through 0.20.33 stored them bare. The two spellings collide exactly where a bare id spells a prefixed one: for a legacy grant belonging to the user whose literal id is `user:alice`, the stored hash is the one an ordinary user `alice` now derives, so `listActive` returned that other principal's grant id and `revokeAll({ actorId })` revoked it. Reproduced on the unfixed tree: alice's listing returned `bg-75161a27f27c54bb27636f0ed371a467`, and with only the revoke-side filter removed the revoke reported `revokedCount: 1`. The grants table gains `ownerKeyVersion` (1 = bare, 2 = prefixed) through the additive-column path both schema declarations support, so existing rows default to 1 and can never match a version-2 lookup; `revokeAll({ table })` still reaches them because it does not read the owner hash, and they expire within the policy's `grantTtl`. The `{0,4000}` bound is a ReDoS backstop far above either function body, not the precision mechanism: the match is bounded by a tempered token that cannot cross the function-closing brace at column 0. Empty allowlist: there are two such queries, `listActive` and `revokeAll`, and both must pin the version. This is why the sibling format on this branch is safe by construction — `actorIdentityKey` is length-tagged, so the idempotency scope's colliding legacy id would have to spell `u:0:|id:s:5:alice` verbatim, where break-glass's plain concatenation only needed the everyday `user:alice`." },
+
+  { id: "an-identity-check-must-not-be-narrowed-to-objects", primitive: "`actorIdentityKey` answers the same question for a string or a number as for an object, and returns null for an empty string and for a non-finite number, so a gate that consults it under a `typeof x === \"object\"` guard admits every primitive the resolver rejects — write the check on the resolver's answer alone and vary only the message", scanScope: "lib", skipCommentLines: true, regex: /typeof\s+[A-Za-z_$][\w$]*\s*===\s*"object"\s*&&[^\n]*actorIdentityKey\s*\(/, allowlist: [], reason: "0.20.34 — lib/db-query.js's `asActor` accepted an object, a string or a number, then ran the names-a-principal check as `typeof actor === \"object\" && actorIdentityKey(actor) === null`. Measured on the unfixed tree: `actorIdentityKey` returns null for \"\", NaN, Infinity and -Infinity, and a key for \"alice\", 42 and 0 — so the guard let all four invalid primitives through, while the error `asActor` promises is a configuration error. crypto-field's `_actorBucket` maps a null key to the shared UNNAMEABLE_ACTOR_BUCKET, so those callers pooled their unseal-failure counts and cooldowns with every other unnamed reader: one caller passing NaN spends another's budget, and the rate cap meant to isolate a principal stops isolating. The fix drops the type guard and keeps two messages, because \"carries none of the fields that name a principal\" is false of a string. Empty allowlist: the two other callers that consult the resolver as a gate, elevation-grant's create and verify, already test `=== null` with no type guard, which is the correct shape. The behavioural cover is the empty-string / NaN / Infinity / -Infinity refusals in testAsActorSeparatesTheUnsealFailureCap, each paired with a control that \"alice\", 42 and 0 are still accepted, zero especially, since it is falsy and a valid id." },
 
   { id: "pem-body-wrap-must-not-emit-a-trailing-newline-in-tests", primitive: "a test that builds a PEM from base64 has the same obligation as lib/: join the wrapped groups rather than append a newline to each, or the fixture is unparseable whenever its length divides evenly by the width", scanScope: "test", regex: /\.replace\(\s*\/\(\.\{\d+\}\)\/g\s*,\s*["'`]\$1\\n["'`]\s*\)(?!\s*\.replace\(\s*\/\\n\$\/)/, allowlist: [], reason: "0.19.3 — the same shape as the lib-side rule of this name, and it was in five fixture builders: test/helpers/tls.js, which several suites use to stand up a real TLS server, plus the certificate builders in http-client, network-tls, security-assert and mtls-ca-migration. There it reads as a flake rather than a failure, because the DER ECDSA signature length varies run to run, so a suite fails on roughly one process in sixteen with a certificate the previous run accepted. test/helpers/tls.js caches its pair for the process, so when it lands on the bad length every consumer of it fails at once and the run looks like a TLS regression. Kept as its own entry because the catalog selects one file set per rule.", },
 
@@ -22897,20 +22907,121 @@ function testSessionUpdateDataMergesOneLevelDeep() {
   var noComments = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
   var bad = [];
   if (!/_isPlainObject\(\s*ev\s*\)\s*&&\s*_isPlainObject\(\s*nv\s*\)[\s\S]{0,80}next\[k\]\s*=\s*Object\.assign\(\s*\{\}\s*,\s*ev\s*,\s*nv\s*\)/.test(noComments) ||
-      !/function\s+_isPlainObject[\s\S]{0,180}getPrototypeOf\([\s\S]{0,60}Object\.prototype/.test(noComments) ||
+      !/function\s+_isPlainObject(?:(?!\n\})[\s\S]){0,400}getPrototypeOf\((?:(?!\n\})[\s\S]){0,200}getPrototypeOf\((?:(?!\n\})[\s\S]){0,60}===\s*null/.test(noComments) ||
       /next\[k\]\s*=\s*data\[k\]/.test(noComments)) {
     bad.push({ file: "lib/session.js", line: 1,
       content: "session.updateData({ merge: true }) must merge an inner PLAIN OBJECT one level deep so the existing inner " +
                "keys survive (its doc promises \"Inner objects merge ONE LEVEL DEEP\") — merge only when BOTH values are " +
                "plain objects (`_isPlainObject(ev) && _isPlainObject(nv)` → `next[k] = Object.assign({}, ev, nv)`), where " +
-               "_isPlainObject is prototype-based (Object.getPrototypeOf === Object.prototype/null) so a Date/Buffer/class " +
-               "instance REPLACES (reaching JSON as its own form) rather than being merged into the retained old object or " +
-               "mangled to byte keys. A bare `next[k] = data[k]` shallow-replaces the whole inner object, silently " +
-               "discarding the operator's existing nested keys (data loss)" });
+               "_isPlainObject reads the PROTOTYPE CHAIN (a prototype that is null, or whose own prototype is null) so a " +
+               "Date/Buffer/class instance REPLACES (reaching JSON as its own form) rather than being merged into the " +
+               "retained old object or mangled to byte keys. Asking whether the prototype IS Object.prototype answers no " +
+               "for an object built in another realm, which has that realm's Object.prototype, so a `node:vm` caller's " +
+               "inner object replaced the whole nested value and dropped the keys already in it; asking whether the " +
+               "prototype's own prototype is null answers the question without naming a realm. A bare " +
+               "`next[k] = data[k]` shallow-replaces the whole inner object, silently discarding the operator's existing " +
+               "nested keys (data loss). The behaviour itself is pinned by " +
+               "test/layer-0-primitives/session-extensions.test.js; this only keeps the shape that produces it" });
   }
   bad = _filterMarkers(bad, "session-updatedata-merges-one-level-deep");
   _report("session.updateData({ merge: true }) merges an inner object one level deep (existing nested keys survive), " +
           "never a shallow next[k] = data[k] that discards them",
+    bad);
+}
+
+// A serializer decides what bytes a value becomes, and a signature is taken
+// over those bytes. `x instanceof Date` asks whether x was built from THIS
+// realm's Date, so a value from a `node:vm` context answers no to every branch
+// and falls through to whatever the last one is. Measured before this fired:
+// a cross-realm Date canonicalized to `{}` instead of its ISO string, a
+// cross-realm Map and Set canonicalized to `{}` where a local one is REFUSED
+// as unserialisable, and a cross-realm Map encoded to CBOR as an empty map.
+// Each is a value silently dropped out of bytes something then signs.
+// node:util's types read the internal slot instead, so they answer for any
+// realm and cannot be spoofed by a Symbol.toStringTag.
+var _REALM_BOUND_BUILTINS = "Date|Map|Set|RegExp|WeakMap|WeakSet|Promise|ArrayBuffer|" +
+  "Uint8Array|Uint16Array|Uint32Array|Int8Array|Int16Array|Int32Array|" +
+  "Float32Array|Float64Array|BigInt64Array|BigUint64Array|DataView";
+
+function testSerializersDoNotDispatchOnRealmBoundInstanceof() {
+  // Named one by one: each decides what an arbitrary operator value IS, and
+  // then stores it, signs it, redacts it, refuses it, or files it under a
+  // timestamp. Which branch it takes is the whole answer, so the realm that
+  // happened to build the value must not choose. Measured on these before the
+  // rule: b.redact emitted a secret's bytes as {"0":115,...} where a local
+  // byte array collapses to [REDACTED], and its classifier returned
+  // verdict:"clean" for a body carrying an SSN, which is the verdict
+  // installOutboundDlp gates egress on; b.worm stored 3 bytes as the 19 bytes
+  // of {"0":1,"1":2,"2":3} in a write-once record and digested that;
+  // b.guardMailQuery accepted a RegExp its own rule refuses; b.time.toParts
+  // refused a Date as "got object"; compliance.aiAct.logging dropped a
+  // record's timestamp to null.
+  var SERIALIZERS = [
+    "lib/canonical-json.js", "lib/cbor.js", "lib/safe-json.js",
+    "lib/redact.js", "lib/worm.js", "lib/audit.js", "lib/audit-tools.js",
+    "lib/crypto-field.js", "lib/framework-schema.js", "lib/guard-mail-query.js",
+    "lib/compliance-ai-act-logging.js", "lib/db-collection.js", "lib/time.js",
+    "lib/i18n.js", "lib/cms-codec.js", "lib/archive.js", "lib/atomic-file.js",
+    "lib/mdoc.js", "lib/vc.js", "lib/safe-buffer.js", "lib/privacy-pass.js",
+    "lib/session-device-binding.js", "lib/mail-bimi.js",
+  ];
+  var re = new RegExp("instanceof\\s+(?:" + _REALM_BOUND_BUILTINS + ")\\b");
+  var bad = [];
+  SERIALIZERS.forEach(function (rel) {
+    var src;
+    try { src = fs.readFileSync(rel, "utf8"); }
+    catch (_e) { return; }
+    src.split("\n").forEach(function (line, i) {
+      var code = line.replace(/\/\/[^\n]*/g, "");
+      if (!re.test(code)) return;
+      bad.push({ file: rel, line: i + 1,
+        content: "a serializer dispatches on `instanceof` against a built-in, which compares this realm's " +
+                 "constructor: a value from a node:vm context answers no and takes a branch meant for " +
+                 "something else, so it serializes to different bytes or slips past a refusal. Use " +
+                 "node:util's types (nodeTypes.isDate / isMap / isSet / isRegExp / isUint8Array), which read " +
+                 "the internal slot. `Buffer.isBuffer` is already realm-independent and stays" });
+    });
+  });
+  bad = _filterMarkers(bad, "serializer-realm-bound-instanceof");
+  _report("a serializer decides a value's type with node:util types, never `instanceof` against a built-in " +
+          "(which answers no for a value from another realm)",
+    bad);
+}
+
+// The rule above names its modules, because `instanceof Date` in front of
+// `: new Date(x)` is a coercion whose other branch is correct, and there are
+// scores of those. Bytes have no such form: every place lib/ asked
+// `x instanceof Uint8Array` it was deciding whether a value IS bytes, and the
+// answer decided whether the bytes got redacted, capped, hex-encoded, wiped,
+// stored or refused. So bytes get the whole tree with no named list and no
+// allowlist, and the file-scoped rule above keeps the wider built-in set for
+// the modules where a wrong branch is a wrong signature.
+var _REALM_BOUND_BYTE_VIEWS = "Uint8Array|Uint16Array|Uint32Array|Int8Array|" +
+  "Int16Array|Int32Array|Float32Array|Float64Array|BigInt64Array|" +
+  "BigUint64Array|ArrayBuffer|DataView";
+
+function testNothingInLibDecidesBytesWithRealmBoundInstanceof() {
+  var re = new RegExp("instanceof\\s+(?:" + _REALM_BOUND_BYTE_VIEWS + ")\\b");
+  var bad = [];
+  _libFiles().forEach(function (full) {
+    var rel = _relPath(full);
+    if (rel.indexOf("lib/vendor/") === 0) return;
+    var src;
+    try { src = fs.readFileSync(full, "utf8"); }
+    catch (_e) { return; }
+    _stripComments(src).split("\n").forEach(function (line, i) {
+      if (!re.test(line)) return;
+      bad.push({ file: rel, line: i + 1,
+        content: "`instanceof` against a typed-array view compares THIS realm's constructor, so a byte " +
+                 "array built anywhere else answers no and takes the branch meant for something that is " +
+                 "not bytes. Use nodeTypes.isUint8Array (node:util's types), which reads the internal " +
+                 "slot and answers for every realm; it also refuses an object that only claims the " +
+                 "prototype, which `instanceof` accepts. Buffer.isBuffer stays where a Buffer and a " +
+                 "plain view are handled differently, but it cannot stand in for this test" });
+    });
+  });
+  bad = _filterMarkers(bad, "lib-realm-bound-byte-instanceof");
+  _report("nothing in lib/ decides whether a value is bytes with `instanceof` against a typed-array view",
     bad);
 }
 
@@ -25852,6 +25963,8 @@ async function run() {
   testMtlsCaFingerprintMatchesGate();
   testRequireMtlsRevocationSourceReturnsBoolean();
   testSessionUpdateDataMergesOneLevelDeep();
+  testSerializersDoNotDispatchOnRealmBoundInstanceof();
+  testNothingInLibDecidesBytesWithRealmBoundInstanceof();
   testMtlsCaCommitJournalsPriorKeyBeforeRename();
   testMtlsCaIssuanceLedgerFailsClosedOnCorruptSchema();
   testMtlsCaIssuanceGenerationUndeterminableIsNull();

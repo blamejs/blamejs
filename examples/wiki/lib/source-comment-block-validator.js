@@ -48,6 +48,16 @@ var fs   = require("node:fs");
 var path = require("node:path");
 var vm   = require("node:vm");
 
+// By path into the framework's own lib rather than through the package name:
+// scripts/validate-source-comment-blocks.js loads this engine as a cheap static
+// gate, and resolving "@blamejs/core" would make that gate need the wiki's
+// node_modules installed.
+var C          = require("../../../lib/constants");
+var safeJson   = require("../../../lib/safe-json");
+var frameworkError = require("../../../lib/framework-error");
+
+var CommentBlockValidatorError = frameworkError.defineClass("CommentBlockValidatorError");
+
 var KNOWN_STATUSES = { stable: 1, experimental: 1, deprecated: 1 };
 var KNOWN_POSTURES = {
   hipaa: 1, "pci-dss": 1, gdpr: 1, soc2: 1, dora: 1, nis2: 1, cra: 1,
@@ -115,6 +125,25 @@ function _reEscape(s) {
 var TEST_REF_ALLOWLIST = {
 };
 
+// OPTS_SUBJECT_ALLOWLIST: primitives whose first parameter is NAMED `opts`
+// and is the caller's own object being inspected, not a configuration bag
+// this primitive reads keys out of. Check 9b fires on any signature
+// containing `opts`, because a config bag whose keys go undocumented renders
+// a page with a missing section. These have no keys of their own to
+// document: the whole point of `b.validateOpts(opts, allowedKeys, primitive)`
+// is that the keys belong to the caller and are named in `allowedKeys`, so a
+// page with no opts section is the right page. Add an entry ONLY for a
+// parameter that is the subject of the check rather than its configuration;
+// a primitive that really does take options documents them.
+var OPTS_SUBJECT_ALLOWLIST = {
+  "b.validateOpts":                  "the opts under test; its keys are the caller's and are named in allowedKeys",
+  "b.validateOpts.check":            "the same function under its own name, so the same parameter",
+  "b.validateOpts.checkOrThrow":     "the opts under test; its keys are the caller's and are named in allowedKeys",
+  "b.validateOpts.shape":            "the opts under test; its keys are the caller's and are named in the schema",
+  "b.validateOpts.requireObject":    "the opts under test; this only asks whether an object is there",
+  "b.validateOpts.applyDefaults":    "the opts being merged over the defaults; its keys are the caller's",
+};
+
 function _walkJsFiles(dir, out) {
   var entries;
   try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
@@ -178,6 +207,50 @@ function _testReferenced(corpus, primBare, moduleRel) {
     if ((nsRef.test(files[i]) || modRef.test(files[i])) && methodRef.test(files[i])) return true;
   }
   return false;
+}
+
+// The names the framework actually exports, read from api-snapshot.json
+// beside lib/. A @related reference is a link, so it has to name something
+// that exists; without this the reference is checked only against what is
+// DOCUMENTED, and a typo whose namespace nobody has documented resolves by
+// default. Throws when the snapshot is unreadable rather than skipping the
+// check, so a gate that cannot answer the question fails instead of passing.
+function _exportedNameTree(libDir) {
+  var snapshotPath = path.join(path.dirname(libDir), "api-snapshot.json");
+  var raw;
+  try { raw = fs.readFileSync(snapshotPath, "utf8"); }
+  catch (e) {
+    throw new CommentBlockValidatorError("wiki/comment-block-snapshot-unreadable",
+      "validate(): cannot read " + snapshotPath + " — @related " +
+      "references are resolved against it, so the gate cannot run without it " +
+      "(regenerate with scripts/refresh-api-snapshot.js): " + ((e && e.message) || String(e)));
+  }
+  // The snapshot is the whole export surface, past the 1 MiB default.
+  var parsed = safeJson.parse(raw, { maxBytes: C.BYTES.mib(32) });
+  if (!parsed || !parsed.exports || typeof parsed.exports !== "object") {
+    throw new CommentBlockValidatorError("wiki/comment-block-snapshot-shape",
+      "validate(): " + snapshotPath + " carries no exports map");
+  }
+  return parsed.exports;
+}
+
+// Does a bare dotted path (the @related reference with its leading `b.`
+// removed) name something in the export tree? Each step reads the node's
+// own key or its `members` map, so `crypto.httpSig` resolves through the
+// namespace object the snapshot records.
+function _exportTreeHas(exported, bare) {
+  var parts = bare.split(".");
+  var node = exported;
+  for (var i = 0; i < parts.length; i += 1) {
+    if (!node || typeof node !== "object") return false;
+    var members = node.members && typeof node.members === "object" ? node.members : null;
+    var next;
+    if (Object.prototype.hasOwnProperty.call(node, parts[i])) next = node[parts[i]];
+    else if (members && Object.prototype.hasOwnProperty.call(members, parts[i])) next = members[parts[i]];
+    else return false;
+    node = next;
+  }
+  return true;
 }
 
 // Probe the universe of primitive signatures available for @related
@@ -435,6 +508,16 @@ function validate(config) {
   var findings = [];
   var docs = parser.parseTree(libDir);
   var known = _knownPrimitiveSet(docs, seederIndex, parser);
+  var exported = _exportedNameTree(libDir);
+  // The namespaces an @module block declares, so a bare-namespace @related
+  // resolves for a nested one (`b.crypto.httpSig`) the way it does for a
+  // single-segment one.
+  var documentedNs = {};
+  Object.keys(docs).forEach(function (file) {
+    var rec = docs[file];
+    var ns = rec.module && rec.module.tags ? _moduleNs(rec.module.tags.module) : null;
+    if (ns) documentedNs[ns] = true;
+  });
 
   // Optional test-corpus for the primitive-without-test check. When
   // config.testDirs is absent the check silently skips (mirrors
@@ -560,17 +643,37 @@ function validate(config) {
             // Bare-namespace ref + namespace IS documented → resolved.
             return;
           }
-          // Soft-fail: cross-refs to namespaces with ZERO documented
-          // primitives are forward references during the per-namespace
-          // migration. The reference is recorded but doesn't fail the
-          // gate — it'll resolve naturally once the target namespace
-          // gets annotated. Hard-fail only when the target's namespace
-          // IS documented but the specific function doesn't exist
-          // (real drift).
+          // The same, for a namespace an @module block nests
+          // (`b.crypto.httpSig`, `b.middleware.clearSiteData`).
+          if (documentedNs[bare]) return;
+          // Hard-fail when the target's namespace IS documented but the
+          // specific function doesn't exist (real drift).
           if (nsHasAnyDocs) {
             findings.push({
               kind: "cross-ref", file: rel, primitive: primTag,
               msg: "@related `" + refSig + "` — namespace `b." + refNs + "` is documented but this primitive isn't there (drift?)",
+            });
+            return;
+          }
+          // A namespace with no documented primitives is a forward
+          // reference only when the framework exports it; the docs catch
+          // up later and the reference resolves then. When nothing by
+          // that name is exported the reference is a typo, and a typo
+          // that resolves by default is one the wiki renders as a dead
+          // link.
+          if (refSig.indexOf("b.") !== 0) {
+            findings.push({
+              kind: "cross-ref", file: rel, primitive: primTag,
+              msg: "@related `" + refSig + "` — a related reference names a primitive as " +
+                   "`b.<namespace>.<member>`; this one does not start with `b.`",
+            });
+            return;
+          }
+          if (!_exportTreeHas(exported, bare)) {
+            findings.push({
+              kind: "cross-ref", file: rel, primitive: primTag,
+              msg: "@related `" + refSig + "` — the framework exports nothing by that name " +
+                   "(check api-snapshot.json for the spelling)",
             });
           }
           // else: forward reference — silently allowed during migration.
@@ -630,7 +733,9 @@ function validate(config) {
       //     gate runs from a clean checkout without
       //     `examples/wiki && npm install`), the probe-side check
       //     skips. The manual @opts check above still fires.
-      if (tags.signature && /\(\s*[^)]*opts/.test(tags.signature)) {
+      var optsIsTheSubject =
+        Object.prototype.hasOwnProperty.call(OPTS_SUBJECT_ALLOWLIST, primTag);
+      if (tags.signature && /\(\s*[^)]*opts/.test(tags.signature) && !optsIsTheSubject) {
         if (!tags.opts && optsResolver) {
           var probe = optsResolver.resolve(tags.signature);
           if (!probe.ok) {

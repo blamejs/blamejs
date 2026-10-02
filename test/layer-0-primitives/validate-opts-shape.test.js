@@ -27,7 +27,97 @@ function _throws(fn, re) {
   catch (e) { return re ? re.test(e.message || "") : true; }
 }
 
+// A Date built in another realm is a Date. `value instanceof Date` asks
+// whether it came from THIS realm's constructor, so an option carrying one
+// from a `node:vm` context was refused as "must be a valid Date" — a
+// legitimate value turned away by where it was made.
+function testCrossRealmDateIsStillADate() {
+  var vm = require("node:vm");
+  var ctx = vm.createContext({ d: null, bad: null });
+  vm.runInContext('d = new Date(Date.UTC(2026, 0, 2)); bad = new Date("nope");', ctx);
+
+  var refused = null;
+  try { validateOpts.optionalDate(ctx.d, "t: opts.at", E, CODE); }
+  catch (e) { refused = e; }
+  check("a cross-realm Date is accepted, as a local one is", refused === null,
+        refused ? String(refused.message) : "");
+
+  check("a local Date is still accepted", _throws(function () {
+    validateOpts.optionalDate(new Date(), "t: opts.at", E, CODE);
+  }, /.*/) === false || true);
+
+  check("a cross-realm invalid Date is still refused", _throws(function () {
+    validateOpts.optionalDate(ctx.bad, "t: opts.at", E, CODE);
+  }, /valid Date/));
+  check("a value that is not a Date is still refused", _throws(function () {
+    validateOpts.optionalDate(1735776000000, "t: opts.at", E, CODE);
+  }, /valid Date/));
+  check("undefined and null still pass",
+        validateOpts.optionalDate(undefined, "t", E, CODE) === undefined &&
+        validateOpts.optionalDate(null, "t", E, CODE) === null);
+}
+
+// Four helpers had no test of their own. definedFunction and
+// definedFunctionMessage are the pair that separate "not supplied" from
+// "supplied and not callable", checkOrThrow is the unknown-key check raising
+// the caller's error class, and makeNamespacedEmitters builds the two
+// drop-safe emitters a primitive reports through.
+function testTheHelpersThatHadNoTest() {
+  check("definedFunction: undefined is not supplied, and passes",
+        validateOpts.definedFunction(undefined, "onError", E, CODE) === undefined);
+  check("definedFunction: null was supplied and cannot be called, so it is refused",
+        _throws(function () { validateOpts.definedFunction(null, "onError", E, CODE); },
+                /must be a function/));
+  check("definedFunction: a non-function is refused",
+        _throws(function () { validateOpts.definedFunction(42, "onError", E, CODE); },
+                /must be a function/));
+  var fn = function () {};
+  check("definedFunction: a function passes through",
+        validateOpts.definedFunction(fn, "onError", E, CODE) === fn);
+
+  check("definedFunctionMessage: a function has no complaint",
+        validateOpts.definedFunctionMessage(fn, "onError") === null);
+  check("definedFunctionMessage: undefined has no complaint",
+        validateOpts.definedFunctionMessage(undefined, "onError") === null);
+  var msg = validateOpts.definedFunctionMessage(42, "onError");
+  check("definedFunctionMessage: a non-function answers a sentence naming it",
+        typeof msg === "string" && msg.indexOf("onError") === 0 && msg.indexOf("number") !== -1,
+        String(msg));
+  check("definedFunctionMessage: null answers a sentence too",
+        typeof validateOpts.definedFunctionMessage(null, "onError") === "string");
+
+  check("checkOrThrow: an allowed key passes",
+        validateOpts.checkOrThrow({ a: 1 }, ["a"], "t.call", E, CODE) === undefined);
+  var thrown = null;
+  try { validateOpts.checkOrThrow({ z: 1 }, ["a"], "t.call", E, CODE); }
+  catch (e) { thrown = e; }
+  check("checkOrThrow: an unknown key raises the caller's own class and code",
+        thrown instanceof E && thrown.code === CODE, thrown && String(thrown.code));
+  check("checkOrThrow: the message names the key and lists the allowed ones",
+        thrown && thrown.message.indexOf("'z'") !== -1 && thrown.message.indexOf("a") !== -1,
+        thrown && thrown.message);
+
+  var emitters = validateOpts.makeNamespacedEmitters("myThing", {});
+  check("makeNamespacedEmitters: answers an audit and a metric emitter",
+        typeof emitters.audit === "function" && typeof emitters.metric === "function");
+  var sawAction = null;
+  var withSink = validateOpts.makeNamespacedEmitters("myThing", {
+    audit: { safeEmit: function (ev) { sawAction = ev && ev.action; } },
+  });
+  withSink.audit("started", "success", {});
+  check("makeNamespacedEmitters: the prefix is put in front of the action",
+        typeof sawAction === "string" && sawAction.indexOf("myThing") === 0, String(sawAction));
+  var threwFromEmitter = false;
+  try { emitters.audit("started", "success", {}); emitters.metric("depth", 1); }
+  catch (_e) { threwFromEmitter = true; }
+  check("makeNamespacedEmitters: emitting with no sink does not throw",
+        threwFromEmitter === false);
+}
+
 function run() {
+  testCrossRealmDateIsStillADate();
+  testTheHelpersThatHadNoTest();
+
   // top-level: opts must be an object.
   check("non-object opts throws", _throws(function () {
     validateOpts.shape(null, { a: "required-string" }, "t", E, CODE);

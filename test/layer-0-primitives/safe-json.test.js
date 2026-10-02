@@ -1338,6 +1338,53 @@ function testStringify() {
         _code(function () { b.safeJson.stringify({ n: BigInt(10) }); }) === "json/stringify");
 }
 
+// The data in each of these lives in an internal slot rather than in own
+// enumerable properties, so JSON.stringify writes `{}` and the value is gone.
+// This is the primitive a caller reaches for INSTEAD of JSON.stringify, and it
+// returned the same empty object without saying anything, which is how a Map
+// reached storage as `{}`. The replacer sees each value after toJSON has run,
+// so a Date arrives as its ISO string and is unaffected.
+function testStringifyRefusesValuesWithNoJsonForm() {
+  var NO_FORM = [
+    ["Map", new Map([["a", 1]])],
+    ["Set", new Set([1])],
+    ["WeakMap", new WeakMap()],
+    ["WeakSet", new WeakSet()],
+    ["Promise", Promise.resolve(1)],
+    ["RegExp", /x/],
+    ["ArrayBuffer", new ArrayBuffer(4)],
+    ["DataView", new DataView(new ArrayBuffer(4))],
+  ];
+  NO_FORM.forEach(function (row) {
+    check("stringify refuses a " + row[0] + " at the root rather than returning {}",
+          _code(function () { b.safeJson.stringify(row[1]); }) === "json/no-form",
+          row[0] + " -> " + _code(function () { b.safeJson.stringify(row[1]); }));
+    check("stringify refuses a " + row[0] + " nested in an object",
+          _code(function () { b.safeJson.stringify({ outer: { inner: row[1] } }); }) === "json/no-form");
+  });
+  check("stringify refuses one inside an array",
+        _code(function () { b.safeJson.stringify([1, new Map()]); }) === "json/no-form");
+  check("stringify refuses a Map carrying an own property, which would be " +
+        "written as that property with every entry dropped",
+        _code(function () {
+          var m = new Map([["entry", 1]]); m.decoy = 2;
+          b.safeJson.stringify(m);
+        }) === "json/no-form");
+  var far = require("node:vm").runInContext("new Map([['a',1]])", require("node:vm").createContext({}));
+  check("stringify refuses one built in another realm",
+        _code(function () { b.safeJson.stringify({ m: far }); }) === "json/no-form");
+
+  // What must keep working.
+  check("a Date still serializes as its ISO string, since toJSON runs first",
+        b.safeJson.stringify({ d: new Date(0) }) === '{"d":"1970-01-01T00:00:00.000Z"}');
+  check("a value with its own toJSON still serializes by it",
+        b.safeJson.stringify({ v: { toJSON: function () { return { ok: 1 }; } } }) === '{"v":{"ok":1}}');
+  check("an empty plain object still serializes", b.safeJson.stringify({}) === "{}");
+  check("an empty array still serializes", b.safeJson.stringify([]) === "[]");
+  check("a class instance carrying fields still serializes by its fields",
+        b.safeJson.stringify(Object.assign(Object.create({ }), { a: 1 })) === '{"a":1}');
+}
+
 // ---- stringify replace-mode cycle cleaning ----
 
 function testStringifyReplaceCleaning() {
@@ -1660,6 +1707,7 @@ async function run() {
   testMeasureBytes();
   testJsonCopyUnderCap();
   testStringify();
+  testStringifyRefusesValuesWithNoJsonForm();
   testStringifyReplaceCleaning();
   testStringifyForScript();
   testCanonical();
@@ -1673,6 +1721,7 @@ async function run() {
   testFormats();
   testRegisterFormatAndIsJsonObject();
   testFormatsAgreeWithThePatternsTheyReplaced();
+  testCrossRealmPatternsAndBytesAreReadAsThemselves();
   testSchemaPatternRunsInLinearTime();
 }
 
@@ -1752,6 +1801,48 @@ function testFormatsAgreeWithThePatternsTheyReplaced() {
 
 // A schema's `pattern` is operator-written and runs against a value that
 // arrived over the wire — the arrangement catastrophic backtracking needs.
+// `pattern instanceof RegExp` asks whether the pattern came from THIS realm's
+// RegExp, so one built in a `node:vm` context answered no and was read through
+// String(), which yields "/^[a-z]+$/" with the delimiters in it and drops the
+// flags. The schema then compiled a different expression: measured, a value
+// the identical local pattern accepts was refused. The same comparison against
+// Uint8Array decided whether bytes were treated as bytes or walked as an
+// object.
+function testCrossRealmPatternsAndBytesAreReadAsThemselves() {
+  var vm = require("node:vm");
+  var ctx = vm.createContext({ o: {} });
+  vm.runInContext('o.re = /^[a-z]+$/; o.reI = /^ab$/i; o.u8 = new Uint8Array([1, 2, 3]);', ctx);
+
+  function valid(schema, value) {
+    try { b.safeJson.validate(value, schema); return true; }
+    catch (_e) { return false; }
+  }
+
+  check("cross-realm pattern accepts what the same local pattern accepts",
+        valid({ type: "string", pattern: ctx.o.re }, "abc") === true);
+  check("cross-realm pattern refuses what the same local pattern refuses",
+        valid({ type: "string", pattern: ctx.o.re }, "AB1") === false);
+  check("local pattern is unchanged",
+        valid({ type: "string", pattern: /^[a-z]+$/ }, "abc") === true &&
+        valid({ type: "string", pattern: /^[a-z]+$/ }, "AB1") === false);
+  check("cross-realm pattern keeps its flags",
+        valid({ type: "string", pattern: ctx.o.reI }, "AB") === true);
+
+  // A cross-realm Uint8Array is bytes, not an object with index keys.
+  var fromLocal = b.safeJson.parse(Buffer.from('{"a":1}'));
+  var crossBytes = new Uint8Array(Buffer.from('{"a":1}'));
+  var ctx2 = vm.createContext({ bytes: null });
+  ctx2.bytes = crossBytes;
+  check("a local byte input parses", fromLocal && fromLocal.a === 1);
+  check("a cross-realm byte input parses the same way",
+        (function () {
+          try {
+            var got = b.safeJson.parse(ctx.o.u8 && crossBytes);
+            return got && got.a === 1;
+          } catch (_e) { return false; }
+        })());
+}
+
 function testSchemaPatternRunsInLinearTime() {
   function verdict(value, pattern) {
     try { b.safeJson.validate(value, { type: "string", pattern: pattern }); return "ok"; }

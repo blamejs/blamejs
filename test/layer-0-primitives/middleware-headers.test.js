@@ -85,6 +85,42 @@ function testHeaderCountCapRefused() {
     res.statusCode === 400 && nextCalled === false);
 }
 
+// A cap is enforced with `>`, and `5 > "abc"` is false for every count, so a
+// cap that is not a number capped nothing and the middleware admitted any
+// number of headers. A limit read from an environment variable or a JSON config
+// arrives as a string, so this needs a configuration typo, not an attacker. The
+// file already validates `trustProxy` for the same reason, because reading its
+// truthiness let the string "false" keep trusting forwarding headers.
+function testNonNumericCapsAreRefusedAtConfigTime() {
+  function built(opts) {
+    try { b.middleware.headers(opts); return null; }
+    catch (e) { return e; }
+  }
+  check("headers: a non-numeric maxHeaderCount is refused when the middleware is built",
+        built({ maxHeaderCount: "abc" }) !== null,
+        "accepted maxHeaderCount \"abc\"");
+  check("headers: a non-numeric maxValueBytes is refused",
+        built({ maxValueBytes: "lots" }) !== null);
+  check("headers: a negative maxHeaderCount is refused",
+        built({ maxHeaderCount: -1 }) !== null);
+  check("headers: a fractional maxHeaderCount is refused",
+        built({ maxHeaderCount: 2.5 }) !== null);
+  check("headers: a valid cap is still accepted",
+        built({ maxHeaderCount: 3, maxValueBytes: 16 }) === null);
+
+  // An explicit 0 means refuse anything non-empty, and `|| 100` replaced it
+  // with the permissive default, so the strictest setting could not be asked
+  // for at all.
+  var strict = b.middleware.headers({ mode: "enforce", maxHeaderCount: 0 });
+  var req = _req({ host: "x" });
+  var res = _res();
+  var nextCalled = false;
+  strict(req, res, function () { nextCalled = true; });
+  check("headers: maxHeaderCount 0 refuses a request carrying a header",
+        res.statusCode === 400 && nextCalled === false,
+        "status " + res.statusCode + ", next called " + nextCalled);
+}
+
 function testValueByteCapRefused() {
   var mw = b.middleware.headers({ mode: "enforce", maxValueBytes: 16 });
   var req = _req({ host: "x", "x-big": "A".repeat(64) });
@@ -147,6 +183,7 @@ function run() {
   testMultiValueSmugglingRefused();
   testHeaderCountCapRefused();
   testValueByteCapRefused();
+  testNonNumericCapsAreRefusedAtConfigTime();
   testInvalidHeaderNameShapeRefused();
   testDeprecatedTrustHeaderWarnsButPasses();
   testTrustProxySuppressesWarning();

@@ -815,6 +815,34 @@ async function testDkimVerifyClockSkewBounded() {
   catch (e) { threwBeyondCeil = e; }
   check("MAIL-7: clockSkewMs > 24h ceiling refused",
         threwBeyondCeil && /bad-clock-skew/.test(threwBeyondCeil.code || ""));
+
+  // acceptBodyLengthLimit LOOSENS: it accepts a signature whose l= tag leaves
+  // body content unsigned, which is the RFC 6376 §8.2 append-after-signature
+  // hole. Read as a bare truthy value, any non-empty string turned the
+  // protection off — including one meaning the opposite. A loosening option is
+  // read strictly, and a value that is not a boolean is refused at the call
+  // rather than interpreted.
+  var loosenerRejects = ["yes", "false", "0", 1, {}];
+  var accepted = [];
+  for (var li = 0; li < loosenerRejects.length; li += 1) {
+    var threwLoose = null;
+    try {
+      await b.mail.dkim.verify(signed,
+        { dnsLookup: dnsLookup, acceptBodyLengthLimit: loosenerRejects[li] });
+    } catch (e) { threwLoose = e; }
+    if (!threwLoose || !/bad-accept-body-length-limit/.test(threwLoose.code || "")) {
+      accepted.push(JSON.stringify(loosenerRejects[li]));
+    }
+  }
+  check("MAIL-7: a non-boolean acceptBodyLengthLimit is refused, not read as true",
+        accepted.length === 0, "accepted: " + accepted.join(", "));
+  // The two booleans are still taken, so the opt-out remains available.
+  var boolOk = true;
+  try {
+    await b.mail.dkim.verify(signed, { dnsLookup: dnsLookup, acceptBodyLengthLimit: true });
+    await b.mail.dkim.verify(signed, { dnsLookup: dnsLookup, acceptBodyLengthLimit: false });
+  } catch (_e) { boolOk = false; }
+  check("MAIL-7: an explicit boolean acceptBodyLengthLimit is accepted", boolOk);
 }
 
 async function testDkimVerifyIDomainSubdomainOfD() {

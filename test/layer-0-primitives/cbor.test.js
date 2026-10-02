@@ -170,6 +170,36 @@ function testRequireDeterministic() {
   check("decode: non-canonical accepted without requireDeterministic", cbor.decode(Buffer.from([0x18, 0x01])) === 1);
 }
 
+// CBOR is a wire format, so a value has to encode to the same bytes whichever
+// realm built it. Dispatching on `instanceof` compares against this realm's
+// constructors, so a Map from a `node:vm` context fell through to the
+// plain-object branch, where Object.keys sees nothing and the map encodes
+// empty, and a Uint8Array from one would encode as a map of index keys rather
+// than as a byte string.
+function testCrossRealmValuesEncodeTheSameWay() {
+  var vm = require("node:vm");
+  var ctx = vm.createContext({ out: {} });
+  vm.runInContext(
+    'out.map = new Map([[1, 2]]);' +
+    'out.bytes = new Uint8Array([1, 2, 3]);' +
+    'out.nested = new Map([["a", new Map([["b", 1]])]]);',
+    ctx);
+
+  check("cross-realm Map encodes as a local Map does",
+        _hex(cbor.encode(ctx.out.map)) === _hex(cbor.encode(new Map([[1, 2]]))));
+  check("cross-realm Map does not encode empty",
+        _hex(cbor.encode(ctx.out.map)) !== "a0");
+  check("cross-realm nested Map encodes as a local one does",
+        _hex(cbor.encode(ctx.out.nested)) ===
+        _hex(cbor.encode(new Map([["a", new Map([["b", 1]])]]))));
+  check("cross-realm Uint8Array encodes as a byte string, as a local one does",
+        _hex(cbor.encode(ctx.out.bytes)) === _hex(cbor.encode(new Uint8Array([1, 2, 3]))));
+  check("cross-realm Uint8Array round-trips through decode",
+        _hex(cbor.decode(cbor.encode(ctx.out.bytes))) === "010203");
+  check("decode accepts a cross-realm Uint8Array as input",
+        cbor.decode(new Uint8Array(cbor.encode(new Map([[1, 2]])))) instanceof Map);
+}
+
 function testInputValidation() {
   var e1 = null;
   try { cbor.decode("not a buffer"); } catch (e) { e1 = e; }
@@ -183,6 +213,61 @@ function testInputValidation() {
   check("encode: NaN emitted under allowNonFinite", Buffer.isBuffer(cbor.encode(NaN, { allowNonFinite: true })));
 }
 
+// The object branch was `isMap(value) || typeof value === "object"`, and the
+// second half caught everything the first did not. _encodeMap then read
+// Object.keys, which is empty for a value whose data lives in an internal slot,
+// so each of these encoded to `a0` — one byte, an empty CBOR map — and callers
+// sign that. A Date is the one that matters most: b.cose, b.cwt, b.mdoc and
+// b.scitt all sign cbor output, and RFC 8949 spells a date as a tag, which this
+// module already supports through b.cbor.Tag.
+function testValuesWithNoCborFormAreRefused() {
+  var NO_FORM = [
+    ["a Set", new Set([1])],
+    ["a WeakMap", new WeakMap()],
+    ["a WeakSet", new WeakSet()],
+    ["a Promise", Promise.resolve(1)],
+    ["a RegExp", /x/],
+    ["an ArrayBuffer", new ArrayBuffer(4)],
+    ["a DataView", new DataView(new ArrayBuffer(4))],
+    ["a Date", new Date(0)],
+  ];
+  NO_FORM.forEach(function (row) {
+    var err = null;
+    try { cbor.encode(row[1]); } catch (e) { err = e; }
+    check("encode refuses " + row[0] + " rather than writing an empty map",
+          err !== null && err.code === "cbor/unencodable",
+          row[0] + " -> " + (err ? err.code : _hex(cbor.encode(row[1]))));
+    var nested = null;
+    try { cbor.encode({ v: row[1] }); } catch (e) { nested = e; }
+    check("encode refuses " + row[0] + " nested in a map",
+          nested !== null && nested.code === "cbor/unencodable");
+  });
+
+  var farSet = require("node:vm").runInContext(
+    "new Set([1])", require("node:vm").createContext({}));
+  var farErr = null;
+  try { cbor.encode(farSet); } catch (e) { farErr = e; }
+  check("encode refuses one built in another realm",
+        farErr !== null && farErr.code === "cbor/unencodable");
+
+  // The documented way to encode a date is the tag this module already has, so
+  // the refusal has somewhere to send the operator.
+  check("a date encodes when written as the tag RFC 8949 defines for it",
+        _hex(cbor.encode(new b.cbor.Tag(1, 0))) === "c100",
+        _hex(cbor.encode(new b.cbor.Tag(1, 0))));
+
+  // What must keep working.
+  check("a Map still encodes as a map", _hex(cbor.encode(new Map([["a", 1]]))) === "a1616101");
+  check("a plain object still encodes as a map", _hex(cbor.encode({ a: 1 })) === "a1616101");
+  check("an empty plain object still encodes as an empty map", _hex(cbor.encode({})) === "a0");
+  check("an array still encodes as an array", _hex(cbor.encode([1])) === "8101");
+  check("a Buffer still encodes as a byte string", _hex(cbor.encode(Buffer.from([1]))) === "4101");
+  check("a boxed Number encodes as the number it wraps",
+        _hex(cbor.encode(new Number(1))) === "01", _hex(cbor.encode(new Number(1))));
+  check("a boxed String encodes as the string it wraps, not as an index map",
+        _hex(cbor.encode(new String("a"))) === "6161", _hex(cbor.encode(new String("a"))));
+}
+
 function run() {
   testSurface();
   testAppendixAVectors();
@@ -193,6 +278,8 @@ function run() {
   testTags();
   testBoundedRefusals();
   testRequireDeterministic();
+  testCrossRealmValuesEncodeTheSameWay();
+  testValuesWithNoCborFormAreRefused();
   testInputValidation();
 }
 
