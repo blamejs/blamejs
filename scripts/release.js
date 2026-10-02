@@ -1239,8 +1239,19 @@ function _codexReviewedHead(prNum) {
   var comments = _ghJson(cv, "PR #" + prNum + " comment list");
   return (comments || []).some(function (c) {
     return c && c.author && _isCodexLogin(c.author.login) &&
-           typeof c.body === "string" && _citesHead(c.body, head);
+           typeof c.body === "string" && _citesHead(c.body, head) &&
+           !_summaryReportsARunningReview(c.body);
   });
+}
+
+// The review-summary comment is a STATUS TRACKER, posted when a review STARTS
+// and edited in place as it progresses, and its table cites the head sha from
+// the first revision. Citing the head is therefore not evidence that a review
+// finished: on PR #806 the wait accepted a summary whose status column read
+// "Running", merged, and the review was still going. A summary that reports a
+// running review does not count, so the wait keeps polling until that clears.
+function _summaryReportsARunningReview(body) {
+  return /codex-pull-request-review-summary/.test(body) && /\bRunning\b/.test(body);
 }
 
 // Codex cites the git-ABBREVIATED head sha (7 chars by default) in its summary

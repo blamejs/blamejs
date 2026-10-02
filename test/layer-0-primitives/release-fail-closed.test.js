@@ -431,6 +431,65 @@ function testCodexCleanReviewCitesAbbreviatedSha() {
   });
 }
 
+// Codex posts the review-summary comment the MOMENT a review starts, and that
+// comment's table cites the abbreviated head sha while the status column still
+// reads "Running". Counting it means the wait returns immediately and the merge
+// fires while the review is in flight, which is the one thing the wait exists to
+// stop. Measured on PR #806: the gate reported "Codex has reviewed the current
+// PR head", squash-merged, and the review was still running afterwards.
+function testARunningCodexReviewDoesNotCountAsReviewed() {
+  var HEAD = "7d795e02a52f374a5fd639299262b04157c12cc5";
+  var ABBREV = HEAD.slice(0, 7);
+  var RUNNING_SUMMARY =
+    "<!-- codex-pull-request-review-summary -->\n\n## Codex Review Summary\n\n" +
+    "| Review | Status | Commit | Review trigger |\n| --- | --- | --- | --- |\n" +
+    "| 📝 **Code Review** | 🔄 **Running** since " +
+    "<relative-time datetime=\"2026-10-02T05:07:54Z\">2026-10-02T05:07:54Z</relative-time> | `" +
+    ABBREV + "` | Manual request |\n";
+
+  function respondWith(body) {
+    return function (cmd, args) {
+      if (args.indexOf("headRefOid") !== -1) return _okResult(HEAD);
+      if (args.indexOf("graphql") !== -1) return _okResult("[]");          // no formal review node
+      if (args.indexOf("comments") !== -1) {
+        return _okResult(JSON.stringify([{
+          author: { login: "chatgpt-codex-connector" }, body: body,
+        }]));
+      }
+      return _failResult("unexpected call");
+    };
+  }
+
+  withQuietConsole(function () {
+    withCapture(respondWith(RUNNING_SUMMARY), function () {
+      check("a summary comment reporting a RUNNING review does not count as reviewed",
+        release._codexReviewedHead("806") === false);
+    });
+  });
+
+  // Control: the same comment once the review has finished DOES count, so the
+  // guard narrows the running state rather than refusing the summary outright.
+  var FINISHED_SUMMARY = RUNNING_SUMMARY
+    .replace("🔄 **Running** since " +
+             "<relative-time datetime=\"2026-10-02T05:07:54Z\">2026-10-02T05:07:54Z</relative-time>",
+             "✅ **Completed**");
+  withQuietConsole(function () {
+    withCapture(respondWith(FINISHED_SUMMARY), function () {
+      check("and the same summary counts once it no longer reports a running review",
+        release._codexReviewedHead("806") === true);
+    });
+  });
+
+  // A findings comment is not a summary at all, and must still count: it is
+  // posted only after the review ran.
+  withQuietConsole(function () {
+    withCapture(respondWith("Reviewed commit `" + ABBREV + "`\n\n- [P2] something"), function () {
+      check("a findings comment citing the head counts as reviewed",
+        release._codexReviewedHead("806") === true);
+    });
+  });
+}
+
 // ---- the Codex wait absorbs a blip but never calls it "not reviewed" -----
 
 // Run `body` with the poll cadence collapsed so the branching is testable
@@ -688,6 +747,7 @@ function run() {
   testSmokeAbortsBeforeTouchingWikiData();
   testCodexHeadLookupFailsClosed();
   testCodexCleanReviewCitesAbbreviatedSha();
+  testARunningCodexReviewDoesNotCountAsReviewed();
   testCodexWaitAbsorbsATransientBlip();
   testCodexWaitAbortsOnAStableFailure();
   testCodexWaitTimeoutSaysUnknownNotNo();
