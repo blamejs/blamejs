@@ -369,6 +369,137 @@ async function run() {
       bothAnchored.valid === true && bothAnchored.chainVerified === true &&
       bothAnchored.signers.length === 2);
 
+    // ---- Two SignerInfos naming DIFFERENT certificates that carry the SAME
+    //      public key. Selecting the chain leaf by key bytes alone matches the
+    //      first such certificate for both signers, so the trusted chain
+    //      validates twice and the second certificate is never walked. The
+    //      twin is issued by a CA that is not an anchor, so the envelope has
+    //      to refuse.
+    var twinCaKp = pq.ml_dsa_65.keygen();
+    var twinCaDer = _buildMlDsaCert({
+      subjectCn:       "smime-pqc-twin-ca.blamejs-test.example",
+      subjectPubKey:   twinCaKp.publicKey,
+      issuerCn:        "smime-pqc-twin-ca.blamejs-test.example",
+      issuerSecretKey: twinCaKp.secretKey,
+      serial:          1,
+      notBefore:       notBefore,
+      notAfter:        notAfter,
+      isCa:            true,
+    });
+    var twinLeafDer = _buildMlDsaCert({
+      subjectCn:       "smime-signer-twin.blamejs-test.example",
+      subjectPubKey:   signerKp.publicKey,            // SAME key as pqcLeafCertDer
+      issuerCn:        "smime-pqc-twin-ca.blamejs-test.example",
+      issuerSecretKey: twinCaKp.secretKey,            // issued by a CA that is NOT an anchor
+      serial:          17,                            // sid serial-hex "11"
+      notBefore:       notBefore,
+      notAfter:        notAfter,
+    });
+    var twinSigned = b.cms.encodeSignedData({
+      encapContent: Buffer.from(message, "utf8"),
+      digestAlg:    "sha3-512",
+      certificates: [pqcLeafCertDer, twinLeafDer],
+      signers: [
+        { certificate: pqcLeafCertDer, secretKey: signerKp.secretKey, sigAlg: "ML-DSA-65" },
+        { certificate: twinLeafDer,    secretKey: signerKp.secretKey, sigAlg: "ML-DSA-65" },
+      ],
+    });
+    threw = null;
+    var twinOut = null;
+    try {
+      twinOut = b.mail.crypto.smime.verifyAll({
+        message:             Buffer.from(message, "utf8"),
+        signature:           twinSigned,
+        signerPublicKeys:    { "02": signerKp.publicKey, "11": signerKp.publicKey },
+        trustAnchorCertsPem: [caCertPem],
+      });
+    } catch (eT) { threw = eT.code; }
+    check("smime.verifyAll: a same-key certificate from an unanchored CA is not waved through",
+      threw === "mail-crypto/smime/untrusted-chain",
+      threw ? String(threw) : "accepted with chainVerified=" + (twinOut && twinOut.chainVerified));
+
+    // Control: anchoring the twin's CA too makes the same envelope validate, so
+    // the refusal above is the unanchored issuer and not the shared key.
+    var twinAnchored = null;
+    try {
+      twinAnchored = b.mail.crypto.smime.verifyAll({
+        message:             Buffer.from(message, "utf8"),
+        signature:           twinSigned,
+        signerPublicKeys:    { "02": signerKp.publicKey, "11": signerKp.publicKey },
+        trustAnchorCertsPem: [caCertPem, _derToPem(twinCaDer)],
+      });
+    } catch (eT2) { twinAnchored = eT2; }
+    check("smime.verifyAll: both issuers anchored validates the same-key envelope",
+      twinAnchored && twinAnchored.valid === true && twinAnchored.chainVerified === true,
+      twinAnchored && twinAnchored.code ? String(twinAnchored.code) : "ok");
+
+    // ---- The sid names a certificate the bundle does not carry, while two
+    //      bundled certificates carry the signer's key. Both issuers are
+    //      anchored, so walking every candidate would report success; which
+    //      certificate the signer meant is unknown, and guessing is what let
+    //      the twin through, so the envelope is refused instead.
+    var strayDer = _buildMlDsaCert({
+      subjectCn:       "smime-signer-stray.blamejs-test.example",
+      subjectPubKey:   signerKp.publicKey,
+      issuerCn:        "smime-pqc-ca.blamejs-test.example",
+      issuerSecretKey: caKp.secretKey,
+      serial:          42,                             // sid serial-hex "2a", absent from the bundle
+      notBefore:       notBefore,
+      notAfter:        notAfter,
+    });
+    var ambiguous = b.cms.encodeSignedData({
+      encapContent: Buffer.from(message, "utf8"),
+      digestAlg:    "sha3-512",
+      certificates: [pqcLeafCertDer, twinLeafDer],     // neither has serial 42
+      signers: [{ certificate: strayDer, secretKey: signerKp.secretKey, sigAlg: "ML-DSA-65" }],
+    });
+    threw = null;
+    var ambOut = null;
+    try {
+      ambOut = b.mail.crypto.smime.verify({
+        message:             Buffer.from(message, "utf8"),
+        signature:           ambiguous,
+        signerPublicKey:     signerKp.publicKey,
+        trustAnchorCertsPem: [caCertPem, _derToPem(twinCaDer)],
+      });
+    } catch (eA) { threw = eA.code; }
+    check("smime.verify: refuses when the sid names no bundled certificate and several carry the key",
+      threw === "mail-crypto/smime/ambiguous-signer-cert",
+      threw ? String(threw) : "accepted with chainVerified=" + (ambOut && ambOut.chainVerified));
+
+    // ---- A serial is unique only within an issuer (RFC 5280 section 4.1.2.2),
+    //      so a bundle may legitimately hold two certificates with the same key
+    //      AND the same serial under different issuers. The sid names one of
+    //      them by issuer and serial together, so naming the anchored one has
+    //      to be accepted: matching on the serial alone would refuse it.
+    var sameSerialTwinDer = _buildMlDsaCert({
+      subjectCn:       "smime-signer-same-serial.blamejs-test.example",
+      subjectPubKey:   signerKp.publicKey,            // same key as pqcLeafCertDer
+      issuerCn:        "smime-pqc-twin-ca.blamejs-test.example",
+      issuerSecretKey: twinCaKp.secretKey,            // different issuer, NOT an anchor
+      serial:          2,                             // SAME serial as pqcLeafCertDer
+      notBefore:       notBefore,
+      notAfter:        notAfter,
+    });
+    var sameSerialSigned = b.cms.encodeSignedData({
+      encapContent: Buffer.from(message, "utf8"),
+      digestAlg:    "sha3-512",
+      certificates: [pqcLeafCertDer, sameSerialTwinDer],
+      signers: [{ certificate: pqcLeafCertDer, secretKey: signerKp.secretKey, sigAlg: "ML-DSA-65" }],
+    });
+    var sameSerialOut = null;
+    try {
+      sameSerialOut = b.mail.crypto.smime.verify({
+        message:             Buffer.from(message, "utf8"),
+        signature:           sameSerialSigned,
+        signerPublicKey:     signerKp.publicKey,
+        trustAnchorCertsPem: [caCertPem],             // only the sid's own issuer
+      });
+    } catch (eS) { sameSerialOut = eS; }
+    check("smime.verify: a same-serial certificate under another issuer does not refuse the envelope the sid names",
+      sameSerialOut && sameSerialOut.valid === true && sameSerialOut.chainVerified === true,
+      sameSerialOut && sameSerialOut.code ? String(sameSerialOut.code) : "ok");
+
     // ---- X.509 sanity — confirm node:crypto can parse the leaf and
     //      verify its issuer matches the CA subject.
     var leafX509 = new nodeCrypto.X509Certificate(leaf.cert);
