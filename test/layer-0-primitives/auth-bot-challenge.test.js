@@ -424,6 +424,36 @@ async function testLadderIsPerPrincipalNotPerAddress() {
   check("bot-challenge: the other principal behind that address is not",
     bobState.stage !== "locked", JSON.stringify(bobState));
 
+  // `b.middleware.requireBoundKey` stores the verified principal on
+  // `req.apiKey`, not `req.user`, so a bodyless API-key route named no
+  // principal and fell to the address: two keys behind one NAT shared a ladder.
+  var keyed = _gate();
+  var k1 = _mockReq({ url: "/token/refresh", body: {},
+                      apiKey: { id: "key-1" }, socket: { remoteAddress: "198.51.100.9" } });
+  var k2 = _mockReq({ url: "/token/refresh", body: {},
+                      apiKey: { id: "key-2" }, socket: { remoteAddress: "198.51.100.9" } });
+  await keyed.middleware()(k1, _mockRes(), function () {});
+  await keyed.middleware()(k2, _mockRes(), function () {});
+  check("bot-challenge: two API keys from one address are two ladders",
+    k1.botChallengeKey !== k2.botChallengeKey,
+    JSON.stringify({ k1: k1.botChallengeKey, k2: k2.botChallengeKey }));
+  check("bot-challenge: an API key's ladder is not keyed on the address",
+    String(k1.botChallengeKey).indexOf("198.51.100.9") === -1,
+    String(k1.botChallengeKey));
+
+  // A user and an API key carrying the same id are two principals, which is the
+  // distinction `b.staticServe` and the idempotency scope carry as `u:` / `k:`.
+  var mixed = _gate();
+  var asUser = _mockReq({ body: {}, user:   { id: "same" },
+                          socket: { remoteAddress: "198.51.100.11" } });
+  var asKey  = _mockReq({ body: {}, apiKey: { id: "same" },
+                          socket: { remoteAddress: "198.51.100.11" } });
+  await mixed.middleware()(asUser, _mockRes(), function () {});
+  await mixed.middleware()(asKey,  _mockRes(), function () {});
+  check("bot-challenge: a user and an API key sharing an id are two ladders",
+    asUser.botChallengeKey !== asKey.botChallengeKey,
+    JSON.stringify({ user: asUser.botChallengeKey, key: asKey.botChallengeKey }));
+
   // A body credential still names the ladder, so the documented
   // recordFailure("user@example.com") pairing is unchanged.
   var byEmail = _gate();
