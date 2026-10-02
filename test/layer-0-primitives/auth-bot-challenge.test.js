@@ -233,14 +233,18 @@ async function testMiddlewareChallengeFn() {
     },
     audit:        auditMock,
   });
-  var key = "user@example.com";
+  var email = "user@example.com";
+  // The body rung namespaces what it reads AND which field read it, so the
+  // ladder the middleware looks up is "body:email:<email>". Seeding anything
+  // else tests nothing.
+  var key = "body:email:" + email;
   // Force the state into challenged.
   await gate.recordFailure(key);
 
   var mw = gate.middleware();
   var nextCalled = 0;
   // Bad captcha → middleware should not call next; it writes 401.
-  var req = _mockReq({ body: { email: key, captchaToken: "wrong" } });
+  var req = _mockReq({ body: { email: email, captchaToken: "wrong" } });
   var res = _mockRes();
   await mw(req, res, function () { nextCalled += 1; });
   check("middleware did not call next on bad captcha", nextCalled === 0);
@@ -248,7 +252,7 @@ async function testMiddlewareChallengeFn() {
   check("challengeFn invoked", challengeCalls === 1);
 
   // Good captcha → next called, state transitions to passed.
-  var req2 = _mockReq({ body: { email: key, captchaToken: "good" } });
+  var req2 = _mockReq({ body: { email: email, captchaToken: "good" } });
   var res2 = _mockRes();
   await mw(req2, res2, function () { nextCalled += 1; });
   check("middleware calls next on good captcha", nextCalled === 1);
@@ -267,12 +271,13 @@ async function testMiddlewareLockedReturns423() {
     escalationThreshold: 2,
     audit:        auditMock,
   });
-  var key = "u@x";
+  var email = "u@x";
+  var key = "body:email:" + email;   // the ladder the body rung will look up
   await gate.recordFailure(key);
   await gate.recordFailure(key);  // → locked
 
   var mw = gate.middleware();
-  var req = _mockReq({ body: { email: key } });
+  var req = _mockReq({ body: { email: email } });
   var res = _mockRes();
   var nextCalled = 0;
   await mw(req, res, function () { nextCalled += 1; });
@@ -424,13 +429,198 @@ async function testLadderIsPerPrincipalNotPerAddress() {
   check("bot-challenge: the other principal behind that address is not",
     bobState.stage !== "locked", JSON.stringify(bobState));
 
-  // A body credential still names the ladder, so the documented
-  // recordFailure("user@example.com") pairing is unchanged.
+  // A raw key string is what `req.apiKey = req.headers["x-api-key"]` holds, and
+  // the resolver folds a primitive verbatim, so resolving one would write the
+  // secret into the ladder key, the lockout key, the session store and every
+  // audit row. Only an object carrier names a principal, which is the guard the
+  // idempotency scope already applies.
+  var secretGate = _gate();
+  var SECRET = "sk_live_51H8ZqR2eZvKYlo2C";
+  var rawKeyReq = _mockReq({ url: "/token/refresh", body: {}, apiKey: SECRET,
+                             socket: { remoteAddress: "198.51.100.21" } });
+  await secretGate.middleware()(rawKeyReq, _mockRes(), function () {});
+  check("bot-challenge: a raw key string never reaches the ladder key",
+    String(rawKeyReq.botChallengeKey).indexOf(SECRET) === -1,
+    String(rawKeyReq.botChallengeKey));
+  check("bot-challenge: and such a request falls back to the address",
+    rawKeyReq.botChallengeKey === "addr:198.51.100.21", String(rawKeyReq.botChallengeKey));
+
+  // requireBoundKey sets { id: record.id || null, ownerId, ... } and nothing
+  // requires record.id, so an id-less record named nobody and fell to the
+  // address — the bug this rung exists to close. ownerId is the principal the
+  // key acts for.
+  var ownerGate = _gate();
+  var o1 = _mockReq({ url: "/token/refresh", body: {},
+                      apiKey: { id: null, ownerId: "acct-1", scopes: ["read"] },
+                      socket: { remoteAddress: "198.51.100.22" } });
+  var o2 = _mockReq({ url: "/token/refresh", body: {},
+                      apiKey: { id: null, ownerId: "acct-2", scopes: ["read"] },
+                      socket: { remoteAddress: "198.51.100.22" } });
+  await ownerGate.middleware()(o1, _mockRes(), function () {});
+  await ownerGate.middleware()(o2, _mockRes(), function () {});
+  check("bot-challenge: an id-less key record is named by its ownerId",
+    o1.botChallengeKey !== "198.51.100.22" && o2.botChallengeKey !== "198.51.100.22",
+    JSON.stringify({ o1: o1.botChallengeKey, o2: o2.botChallengeKey }));
+  check("bot-challenge: and two such records from one address are two ladders",
+    o1.botChallengeKey !== o2.botChallengeKey,
+    JSON.stringify({ o1: o1.botChallengeKey, o2: o2.botChallengeKey }));
+
+  // The body rung reads two fields, so the field has to be part of the key: a
+  // username that reads like someone's email address is not that person.
+  var fieldGate = _gate();
+  var asEmail = _mockReq({ url: "/login", body: { email: "alice@example.com" },
+                           socket: { remoteAddress: "198.51.100.41" } });
+  var asUsername = _mockReq({ url: "/login", body: { username: "alice@example.com" },
+                              socket: { remoteAddress: "198.51.100.42" } });
+  await fieldGate.middleware()(asEmail, _mockRes(), function () {});
+  await fieldGate.middleware()(asUsername, _mockRes(), function () {});
+  check("bot-challenge: a username equal to an email is a different ladder",
+    asEmail.botChallengeKey !== asUsername.botChallengeKey,
+    JSON.stringify({ email: asEmail.botChallengeKey, username: asUsername.botChallengeKey }));
+
+  // The address is the fourth rung and needs a namespace like the other three,
+  // or a caller who can influence the resolved address spells a named
+  // principal's ladder. clientIp returns the last forwarded hop that fails the
+  // trusted-proxy test, so a request from inside the trusted range chooses it.
+  var spoofGate = _gate({ trustedProxies: ["10.0.0.0/8"] });
+  var target = _mockReq({ url: "/token/refresh", body: {}, apiKey: { id: "key-1" },
+                          socket: { remoteAddress: "10.0.0.9" } });
+  await spoofGate.middleware()(target, _mockRes(), function () {});
+  var spoofer = _mockReq({ url: "/token/refresh", body: {},
+                           socket: { remoteAddress: "10.0.0.9" },
+                           headers: { "x-forwarded-for": target.botChallengeKey + ", 10.0.0.77" } });
+  await spoofGate.middleware()(spoofer, _mockRes(), function () {});
+  check("bot-challenge: a forwarded address cannot spell a credential ladder",
+    spoofer.botChallengeKey !== target.botChallengeKey,
+    JSON.stringify({ target: target.botChallengeKey, spoofer: spoofer.botChallengeKey }));
+
+  // The object rule belongs to the credential carrier, whose primitive form is
+  // the secret. req.user is not a credential, and a number cannot be a secret,
+  // so refusing those loses a principal the resolver names.
+  var primGate = _gate();
+  var strUser = _mockReq({ url: "/token/refresh", body: {}, user: "alice",
+                           socket: { remoteAddress: "198.51.100.31" } });
+  var numUser = _mockReq({ url: "/token/refresh", body: {}, user: 42,
+                           socket: { remoteAddress: "198.51.100.31" } });
+  await primGate.middleware()(strUser, _mockRes(), function () {});
+  await primGate.middleware()(numUser, _mockRes(), function () {});
+  check("bot-challenge: a string req.user still names its principal",
+    String(strUser.botChallengeKey).indexOf("alice") !== -1,
+    String(strUser.botChallengeKey));
+  check("bot-challenge: and a numeric req.user is a different ladder again",
+    strUser.botChallengeKey !== numUser.botChallengeKey &&
+    String(numUser.botChallengeKey).indexOf("198.51.100.31") === -1,
+    JSON.stringify({ str: strUser.botChallengeKey, num: numUser.botChallengeKey }));
+
+  // A framework that hangs the principal off the request prototype, which is
+  // what Express does with app.request, still names it.
+  var protoGate = _gate();
+  var inherited = _mockReq({ url: "/token/refresh", body: {},
+                             socket: { remoteAddress: "198.51.100.32" } });
+  var viaProto = Object.create(inherited);
+  viaProto.user = undefined;
+  delete viaProto.user;
+  Object.setPrototypeOf(viaProto, Object.assign(Object.create(
+    Object.getPrototypeOf(inherited)), inherited, { user: { id: "proto-alice" } }));
+  await protoGate.middleware()(viaProto, _mockRes(), function () {});
+  check("bot-challenge: a prototype-supplied principal is still named",
+    String(viaProto.botChallengeKey).indexOf("proto-alice") !== -1,
+    String(viaProto.botChallengeKey));
+
+  // Naming a record by its ownerId must not erase which field named it, or a
+  // key whose id IS another key's owner id shares that owner's ladder.
+  var sameText = _gate();
+  var byId = _mockReq({ url: "/token/refresh", body: {}, apiKey: { id: "acct-1" },
+                        socket: { remoteAddress: "198.51.100.25" } });
+  var byOwner = _mockReq({ url: "/token/refresh", body: {},
+                           apiKey: { id: null, ownerId: "acct-1" },
+                           socket: { remoteAddress: "198.51.100.25" } });
+  await sameText.middleware()(byId, _mockRes(), function () {});
+  await sameText.middleware()(byOwner, _mockRes(), function () {});
+  check("bot-challenge: an id and an ownerId of the same text are two ladders",
+    byId.botChallengeKey !== byOwner.botChallengeKey,
+    JSON.stringify({ byId: byId.botChallengeKey, byOwner: byOwner.botChallengeKey }));
+
+  // And the tenant binding the resolver applies has to survive the fallback.
+  var tenanted = _gate();
+  var t1 = _mockReq({ url: "/token/refresh", body: {},
+                      apiKey: { id: null, ownerId: "owner", tenantId: "t1" },
+                      socket: { remoteAddress: "198.51.100.26" } });
+  var t2 = _mockReq({ url: "/token/refresh", body: {},
+                      apiKey: { id: null, ownerId: "owner", tenantId: "t2" },
+                      socket: { remoteAddress: "198.51.100.26" } });
+  await tenanted.middleware()(t1, _mockRes(), function () {});
+  await tenanted.middleware()(t2, _mockRes(), function () {});
+  check("bot-challenge: one owner in two tenants is two ladders",
+    t1.botChallengeKey !== t2.botChallengeKey,
+    JSON.stringify({ t1: t1.botChallengeKey, t2: t2.botChallengeKey }));
+
+  // A body credential is lowercased and returned raw, so without a namespace of
+  // its own it reproduces a prefixed rung's key exactly and an unauthenticated
+  // caller can drive another principal's ladder to the escalation threshold.
+  var forgeGate = _gate();
+  var victim = _mockReq({ url: "/token/refresh", body: {}, apiKey: { id: "key-1" },
+                          socket: { remoteAddress: "198.51.100.23" } });
+  await forgeGate.middleware()(victim, _mockRes(), function () {});
+  var forger = _mockReq({ url: "/login", body: { email: victim.botChallengeKey },
+                          socket: { remoteAddress: "192.0.2.77" } });
+  await forgeGate.middleware()(forger, _mockRes(), function () {});
+  check("bot-challenge: a body credential cannot forge a credential rung's ladder",
+    forger.botChallengeKey !== victim.botChallengeKey,
+    JSON.stringify({ victim: victim.botChallengeKey, forger: forger.botChallengeKey }));
+
+  // req.apiKey must only be read when it is needed, and inside the guard that
+  // already protects the resolver: a lazily-resolving accessor that throws used
+  // to collapse a request whose req.user names the principal onto one shared key.
+  var lazyGate = _gate();
+  var lazyReq = _mockReq({ url: "/token/refresh", body: {}, user: { sub: "alice" },
+                           socket: { remoteAddress: "198.51.100.24" } });
+  Object.defineProperty(lazyReq, "apiKey", {
+    enumerable: true, configurable: true,
+    get: function () { throw new Error("key record unavailable"); },
+  });
+  await lazyGate.middleware()(lazyReq, _mockRes(), function () {});
+  check("bot-challenge: a throwing apiKey accessor does not lose the named user",
+    String(lazyReq.botChallengeKey).indexOf("alice") !== -1,
+    String(lazyReq.botChallengeKey));
+
+  // `b.middleware.requireBoundKey` stores the verified principal on
+  // `req.apiKey`, not `req.user`, so a bodyless API-key route named no
+  // principal and fell to the address: two keys behind one NAT shared a ladder.
+  var keyed = _gate();
+  var k1 = _mockReq({ url: "/token/refresh", body: {},
+                      apiKey: { id: "key-1" }, socket: { remoteAddress: "198.51.100.9" } });
+  var k2 = _mockReq({ url: "/token/refresh", body: {},
+                      apiKey: { id: "key-2" }, socket: { remoteAddress: "198.51.100.9" } });
+  await keyed.middleware()(k1, _mockRes(), function () {});
+  await keyed.middleware()(k2, _mockRes(), function () {});
+  check("bot-challenge: two API keys from one address are two ladders",
+    k1.botChallengeKey !== k2.botChallengeKey,
+    JSON.stringify({ k1: k1.botChallengeKey, k2: k2.botChallengeKey }));
+  check("bot-challenge: an API key's ladder is not keyed on the address",
+    String(k1.botChallengeKey).indexOf("198.51.100.9") === -1,
+    String(k1.botChallengeKey));
+
+  // A user and an API key carrying the same id are two principals, which is the
+  // distinction `b.staticServe` and the idempotency scope carry as `u:` / `k:`.
+  var mixed = _gate();
+  var asUser = _mockReq({ body: {}, user:   { id: "same" },
+                          socket: { remoteAddress: "198.51.100.11" } });
+  var asKey  = _mockReq({ body: {}, apiKey: { id: "same" },
+                          socket: { remoteAddress: "198.51.100.11" } });
+  await mixed.middleware()(asUser, _mockRes(), function () {});
+  await mixed.middleware()(asKey,  _mockRes(), function () {});
+  check("bot-challenge: a user and an API key sharing an id are two ladders",
+    asUser.botChallengeKey !== asKey.botChallengeKey,
+    JSON.stringify({ user: asUser.botChallengeKey, key: asKey.botChallengeKey }));
+
+  // A body credential still names the ladder, lowercased, under a namespace of
+  // its own so it cannot spell a credential rung's key.
   var byEmail = _gate();
   var withEmail = _mockReq({ body: { email: "User@Example.com" } });
   await byEmail.middleware()(withEmail, _mockRes(), function () {});
-  check("bot-challenge: a body credential still keys the ladder, lowercased",
-    withEmail.botChallengeKey === "user@example.com", withEmail.botChallengeKey);
+  check("bot-challenge: a body credential keys the ladder, lowercased and namespaced",
+    withEmail.botChallengeKey === "body:email:user@example.com", withEmail.botChallengeKey);
 
   // Behind a declared proxy the address is the client's, not the proxy's, so
   // two clients arriving through one proxy are two ladders.

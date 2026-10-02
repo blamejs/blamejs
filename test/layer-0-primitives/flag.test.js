@@ -289,6 +289,19 @@ function run() {
         hooked.targetingKey.indexOf("anon:") !== 0 &&
         hooked.targetingKey !== unnameable.targetingKey, hooked.targetingKey);
 
+  // An actorKey that is not a function is ignored by the resolver, so the actor
+  // it was supplied to name falls to the address-derived anonymous key and every
+  // caller behind one proxy shares a rollout. Refused at the call instead.
+  rejects("a non-function actorKey",
+    function () { atSameAddr({ employeeNumber: 7 }, { actorKey: "emp-number" }); },
+    /actorKey must be a function/);
+  rejects("an object actorKey",
+    function () { atSameAddr({ employeeNumber: 7 }, { actorKey: {} }); },
+    /actorKey must be a function/);
+  // Control: omitting it entirely stays valid, since the option is optional.
+  check("fromRequest: omitting actorKey is still accepted",
+    atSameAddr({ employeeNumber: 7 }, {}).targetingKey.indexOf("anon:") === 0);
+
   // An operator genuinely behind a proxy declares it, and the forwarded address
   // is honoured through the same peer gate every other helper uses.
   var behindProxy = { socket: { remoteAddress: "10.0.0.9" },

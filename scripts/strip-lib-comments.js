@@ -34,7 +34,19 @@ var HEADER_RE = /SPDX-License-Identifier|Copyright \(c\)/;
 // primitive's page IS its block, so a tagged block is content, not narrative.
 // Anchored at line start so an email address or an `@` inside prose does not
 // count.
-var JSDOC_TAG_RE = /^[ \t]*\*?[ \t]*@[a-zA-Z]/m;
+//
+// The tag has to be one something READS. Accepting any at-sign word made the
+// rule an escape hatch from the gate it belongs to: `/** @note <narrative> */`
+// was kept, so a block could carry anything by inventing a tag for it. Every
+// tag below appears in lib/ today; adding one here is a deliberate act.
+var JSDOC_TAGS = [
+  "module", "primitive", "signature", "since", "status", "related", "opts",
+  "example", "exampleFile", "intro", "card", "section", "nav", "title",
+  "order", "slug", "featured", "compliance", "method", "abiTemplate",
+  "concept", "param", "returns", "path", "generated", "deprecated",
+];
+var JSDOC_TAG_RE = new RegExp(
+  "^[ \\t]*\\*?[ \\t]*@(?:" + JSDOC_TAGS.join("|") + ")\\b", "m");
 
 // Suppression markers the gates and tooling read. The rule is the PREFIX:
 // there are 33 allow classes and a list would go stale on the next one.

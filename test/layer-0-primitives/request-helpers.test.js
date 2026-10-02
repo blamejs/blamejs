@@ -1068,8 +1068,69 @@ function testActorIdentityKeySeparatesPrincipals() {
         legacy({ sub: "ada" }) === null && legacy({ role: "admin" }) === null);
 }
 
+// An operator-supplied actorKey hook is called, not awaited. An async hook that
+// throws therefore returns a rejected promise that nothing handles, and Node's
+// default --unhandled-rejections=throw ends the process on it. Measured on
+// 0.20.35's tree: actorIdentityKey returned null AND raised unhandledRejection
+// "hook blew up", so a flag evaluation on one request killed the listener.
+async function testAnAsyncActorKeyHookOrphansNoRejection() {
+  var rh = b.requestHelpers;
+  var seen = [];
+  function onRejection(e) { seen.push((e && e.message) || String(e)); }
+  process.on("unhandledRejection", onRejection);
+  try {
+    var hook = { actorKey: async function () { throw new Error("hook blew up"); } };
+    var keyed    = rh.actorIdentityKey({ sub: "alice" }, hook);
+    var named    = rh.actorDisplayName({ sub: "alice" }, hook);
+    // The rejection, if orphaned, surfaces on a later turn of the loop, so this
+    // watches for the ABSENCE of one over a window.
+    await helpers.passiveObserve(200, "actorKey hook: no unhandled rejection");
+    check("an async actorKey hook leaves no unhandled rejection behind",
+      seen.length === 0, JSON.stringify(seen));
+    check("and the hook names nobody, so the caller treats the actor as unnameable",
+      keyed === null, JSON.stringify(keyed));
+    check("actorDisplayName answers the same way rather than returning a promise",
+      named === null || typeof named === "string", JSON.stringify(named));
+
+    // A hook that resolves is still not a name: the resolver is synchronous.
+    var resolving = { actorKey: async function () { return "emp-7"; } };
+    var r = rh.actorIdentityKey({ sub: "alice" }, resolving);
+    await helpers.passiveObserve(100, "resolving actorKey hook: no unhandled rejection");
+    check("a resolving async hook names nobody and leaves no rejection",
+      r === null && seen.length === 0, JSON.stringify({ r: r, seen: seen }));
+
+    // Control: a synchronous hook keeps working, and a synchronous throw still
+    // reaches the caller, which is the behavior callers already handle.
+    check("a synchronous actorKey hook still names the actor",
+      rh.actorIdentityKey({ sub: "alice" },
+        { actorKey: function (a) { return "emp-" + a.sub; } }) !== null);
+    var threw = false;
+    try {
+      rh.actorIdentityKey({ sub: "alice" },
+        { actorKey: function () { throw new Error("sync boom"); } });
+    } catch (_e) { threw = true; }
+    check("and a synchronous throw still propagates to the caller", threw === true);
+
+    // The hook is a method on the options object, so `this` is that object. A
+    // hook that reads its own configuration through `this` has to keep working.
+    var withThis = {
+      field: "sub",
+      actorKey: function (a) { return a[this.field]; },
+    };
+    check("a hook reading its configuration through `this` still names the actor",
+      rh.actorIdentityKey({ sub: "alice" }, withThis) !== null,
+      JSON.stringify(rh.actorIdentityKey({ sub: "alice" }, withThis)));
+    check("and actorDisplayName gives it the same receiver",
+      typeof rh.actorDisplayName({ sub: "alice" }, withThis) === "string",
+      JSON.stringify(rh.actorDisplayName({ sub: "alice" }, withThis)));
+  } finally {
+    process.removeListener("unhandledRejection", onRejection);
+  }
+}
+
 async function run() {
   testSurface();
+  await testAnAsyncActorKeyHookOrphansNoRejection();
   testActorIdentityKeySeparatesPrincipals();
   testAQualityListReadsQuotedPairsAndDropsWhatItCannotTerminate();
   testSafeHeadersDistinct();

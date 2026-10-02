@@ -208,8 +208,44 @@ function testRelatedResolutionBranches() {
     threw !== null && /api-snapshot\.json/.test(threw.message));
 }
 
+// The rule that keeps a tagged block is what stops the comment stripper from
+// deleting a primitive's documentation. It asked only whether SOME line starts
+// with an at-sign word, never which word, so any invented tag preserved
+// arbitrary narrative in lib/ — an escape hatch from the gate that exists to
+// keep that narrative out.
+function testOnlyARecognizedTagKeepsABlock() {
+  var stripper = require(path.join(__dirname, "..", "..", "scripts",
+                                   "strip-lib-comments.js"));
+  function kept(text) {
+    return stripper.isKept(text, text, { start: 0, end: text.length }, [], 0);
+  }
+
+  var NARRATIVE = " * This was added after the second drift audit; it is kept here\n" +
+                  " * so the next reader knows how we got to this shape.\n";
+
+  check("a block carrying a recognized wiki tag is kept",
+    kept("/**\n * @primitive b.thing.do\n" + NARRATIVE + " */") === "jsdoc-tagged");
+  check("an invented tag does NOT keep a block of narrative",
+    kept("/**\n * @note\n" + NARRATIVE + " */") !== "jsdoc-tagged");
+  check("nor does a single-letter tag",
+    kept("/**\n * @x\n" + NARRATIVE + " */") !== "jsdoc-tagged");
+  check("and the same narrative with no tag is still not kept",
+    kept("/**\n" + NARRATIVE + " */") !== "jsdoc-tagged");
+
+  // Every tag the tree actually uses has to stay recognized, or the stripper
+  // would start proposing the deletion of real documentation.
+  ["module", "primitive", "signature", "since", "status", "related", "opts",
+   "example", "exampleFile", "intro", "card", "section", "nav", "title",
+   "order", "slug", "featured", "compliance", "method", "abiTemplate",
+   "concept", "param", "returns", "path", "generated"].forEach(function (tag) {
+    check("@" + tag + " keeps its block",
+      kept("/**\n * @" + tag + " x\n" + NARRATIVE + " */") === "jsdoc-tagged");
+  });
+}
+
 async function run() {
   testRelatedResolutionBranches();
+  testOnlyARecognizedTagKeepsABlock();
   var libDir = path.join(__dirname, "..", "..", "lib");
   var findings = validator.validate({
     libDir:       libDir,

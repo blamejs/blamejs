@@ -431,6 +431,224 @@ function testCodexCleanReviewCitesAbbreviatedSha() {
   });
 }
 
+// Codex posts the review-summary comment the MOMENT a review starts, and that
+// comment's table cites the abbreviated head sha while the status column still
+// reads "Running". Counting it means the wait returns immediately and the merge
+// fires while the review is in flight, which is the one thing the wait exists to
+// stop. Measured on PR #806: the gate reported "Codex has reviewed the current
+// PR head", squash-merged, and the review was still running afterwards.
+function testARunningCodexReviewDoesNotCountAsReviewed() {
+  var HEAD = "7d795e02a52f374a5fd639299262b04157c12cc5";
+  var ABBREV = HEAD.slice(0, 7);
+  function respondWith(body) {
+    return function (cmd, args) {
+      if (args.indexOf("headRefOid") !== -1) return _okResult(HEAD);
+      if (args.indexOf("graphql") !== -1) return _okResult("[]");          // no formal review node
+      if (args.indexOf("comments") !== -1) {
+        return _okResult(JSON.stringify([{
+          author: { login: "chatgpt-codex-connector" }, body: body,
+        }]));
+      }
+      return _failResult("unexpected call");
+    };
+  }
+
+  // The real comment carries this trailer, and its prose contains the word
+  // "running". A guard that scans the whole body reads the vendor's own help
+  // text as a review state.
+  var ABOUT_BLOCK =
+    "\n\n<details> <summary>About Codex in GitHub</summary>\n<br/>\n\n" +
+    "Reviews are triggered when you\n- Open a pull request for review\n" +
+    "Codex reacts with eyes while any review is running, comments if it has " +
+    "suggestions, and reacts with thumbs up once all reviews finish with no " +
+    "findings.\n\n</details>\n";
+
+  function summary(rows) {
+    return "<!-- codex-pull-request-review-summary -->\n\n## Codex Review Summary\n\n" +
+      "This comment shows the latest Codex review activity on this pull request.\n\n" +
+      "| Review | Status | Commit | Review trigger |\n| --- | --- | --- | --- |\n" +
+      rows.join("\n") + "\n" + ABOUT_BLOCK;
+  }
+  var RUNNING_ROW   = "| Code Review | 🔄 **Running** since <relative-time " +
+                      "datetime=\"2026-10-02T05:07:54Z\">x</relative-time> | `" +
+                      ABBREV + "` | Manual request |";
+  var COMPLETED_ROW = "| Code Review | ✅ **Completed** <relative-time " +
+                      "datetime=\"2026-10-02T05:14:50Z\">x</relative-time> | `" +
+                      ABBREV + "` | Manual request |";
+  var FAILED_ROW    = "| Code Review | ⚠️ **Failed** | `" + ABBREV + "` | Manual request |";
+  var SEC_RUNNING   = "| Security Review | 🔄 **Running** since <relative-time " +
+                      "datetime=\"2026-10-02T05:14:50Z\">x</relative-time> | `" +
+                      ABBREV + "` | Manual request |";
+
+  function reviewed(body) {
+    var out = null;
+    withQuietConsole(function () {
+      withCapture(respondWith(body), function () { out = release._codexReviewedHead("806"); });
+    });
+    return out;
+  }
+
+  check("a summary whose row for this head is RUNNING does not count as reviewed",
+    reviewed(summary([RUNNING_ROW])) === false);
+  check("and the About block's own prose does not decide the state",
+    reviewed(summary([COMPLETED_ROW])) === true);
+
+  // A FAILED review produced no findings and never will, so the gate must not
+  // report that the head was reviewed and wave the merge through.
+  check("a summary reporting a FAILED review does not count as reviewed",
+    reviewed(summary([FAILED_ROW])) === false);
+
+  // A security review posts findings too, so while one is running this head is
+  // not fully reviewed and the wait is right to keep polling. What must never
+  // block is static prose: the About block above says "while any review is
+  // running" on every comment the reviewer ever posts, and reading the whole
+  // body for that word is what would hang a release until the wait times out.
+  check("a running security review still holds the merge",
+    reviewed(summary([COMPLETED_ROW, SEC_RUNNING])) === false);
+  check("but a finished code review and a finished security review count",
+    reviewed(summary([COMPLETED_ROW,
+      SEC_RUNNING.replace("🔄 **Running** since <relative-time " +
+        "datetime=\"2026-10-02T05:14:50Z\">x</relative-time>", "✅ **Completed**")])) === true);
+
+  // The marker is vendor-internal HTML the project does not control, so the
+  // verdict must not depend on it.
+  check("a running summary still does not count once its marker is renamed",
+    reviewed(summary([RUNNING_ROW]).replace(
+      "codex-pull-request-review-summary", "codex-review-summary-v2")) === false);
+
+  // A findings comment is not a summary and must still count: it exists only
+  // because a review ran.
+  check("a findings comment citing the head counts as reviewed",
+    reviewed("Reviewed commit `" + ABBREV + "`\n\n- [P2] something") === true);
+
+  // But a bot notice citing the head is not a review.
+  check("a notice that a review is already running does not count",
+    reviewed("A review is already running for `" + ABBREV + "`.") === false);
+  check("a queued notice does not count either",
+    reviewed("Review queued for `" + ABBREV + "`.") === false);
+
+  // Every body below is one an adversarial pass used to make the previous
+  // version of this gate answer wrongly. The left column is what the gate must
+  // say; "reviewed" is the only answer that lets a merge proceed.
+  function state(body) {
+    var out = null;
+    withQuietConsole(function () {
+      withCapture(respondWith(body), function () {
+        out = release._codexReviewStateForHead("806");
+      });
+    });
+    return out;
+  }
+  var row = function (name, status, commit) {
+    return "| " + name + " | " + status + " | `" + commit + "` | Manual request |";
+  };
+  [
+    // A verdict of failure, however it is spelled, is terminal and not a review.
+    ["absent",   "a prose failure notice",      "Review of `" + ABBREV + "` failed. Please try again."],
+    ["absent",   "a prose cancellation",        "Review of `" + ABBREV + "` was cancelled."],
+    ["absent",   "a prose skip",                "Skipped `" + ABBREV + "`: no reviewable changes."],
+    ["failed",   "a failed row",                summary([row("Code Review", "⚠️ **Failed**", ABBREV)])],
+    // Order must not decide it: failed beside completed is terminal either way.
+    ["failed",   "failed after completed",
+      summary([row("Code Review", "✅ **Completed**", ABBREV),
+               row("Security Review", "⚠️ **Failed**", ABBREV)])],
+    ["failed",   "failed before completed",
+      summary([row("Security Review", "⚠️ **Failed**", ABBREV),
+               row("Code Review", "✅ **Completed**", ABBREV)])],
+    // An unrecognized status is not a completion, and the About text must not
+    // decide it either way.
+    ["running",  "a pending status",            summary([row("Code Review", "⏳ **Pending**", ABBREV)])],
+    ["running",  "an unknown status",           summary([row("Code Review", "❓ **Unknown**", ABBREV)])],
+    ["running",  "an empty status cell",        summary([row("Code Review", "", ABBREV)])],
+    ["running",  "a pending status with the help text reworded",
+      summary([row("Code Review", "⏳ **Pending**", ABBREV)])
+        .replace("while any review is running", "while a review runs")],
+    // Markup inside the status cell is markup, not a state.
+    ["reviewed", "a completed row whose cell carries a queued timestamp",
+      summary([row("Code Review",
+        "✅ **Completed** <relative-time title=\"queued 05:07:54\" datetime=\"x\">x</relative-time>",
+        ABBREV)])],
+    ["running",  "a cell that says completed and re-running",
+      summary([row("Code Review", "✅ **Completed**, re-running security", ABBREV)])],
+    // The row must be identified by its COMMIT cell, not by the line mentioning
+    // the sha somewhere.
+    ["absent",   "another commit's row linking this head",
+      summary(["| Code Review | ✅ **Completed** | `aaaaaaa` | " +
+               "[Comment](https://example.invalid/pull/806#commit-" + ABBREV + ") |"])],
+    // A prose completion that is not the reviewer's own verdict form is a notice.
+    ["absent",   "a gerund completion notice",
+      "Codex finished reviewing `" + ABBREV + "` with no findings."],
+    ["reviewed", "the reviewer's own verdict form",
+      "Reviewed commit `" + ABBREV + "`: no findings."],
+    // The quota notice is terminal and names itself.
+    ["unavailable", "a usage-limit notice",
+      "You have reached your Codex usage limits for code reviews. Add credits for `" +
+      ABBREV + "`."],
+  ].forEach(function (c) {
+    check("review state: " + c[1] + " reads as " + c[0],
+      state(c[2]) === c[0], JSON.stringify(state(c[2])));
+  });
+
+  // A quota notice is about one earlier attempt and carries no commit, so
+  // evidence about THIS head has to outrank it. Otherwise restoring credits and
+  // re-requesting can never satisfy the gate: the old notice refuses forever.
+  function statesOf(bodies) {
+    var out = null;
+    withQuietConsole(function () {
+      withCapture(function (cmd, args) {
+        if (args.indexOf("headRefOid") !== -1) return _okResult(HEAD);
+        if (args.indexOf("graphql") !== -1) return _okResult("[]");
+        if (args.indexOf("comments") !== -1) {
+          return _okResult(JSON.stringify(bodies.map(function (b) {
+            return { author: { login: "chatgpt-codex-connector" }, body: b };
+          })));
+        }
+        return _failResult("unexpected call");
+      }, function () { out = release._codexReviewStateForHead("806"); });
+    });
+    return out;
+  }
+  var QUOTA = "You have reached your Codex usage limits for code reviews.";
+  check("a completed review of this head supersedes an earlier quota notice",
+    statesOf([QUOTA, summary([COMPLETED_ROW])]) === "reviewed",
+    JSON.stringify(statesOf([QUOTA, summary([COMPLETED_ROW])])));
+  check("and the order the comments arrive in does not change that",
+    statesOf([summary([COMPLETED_ROW]), QUOTA]) === "reviewed");
+  check("a running review of this head also outranks the notice, so the wait holds",
+    statesOf([QUOTA, summary([RUNNING_ROW])]) === "running");
+  check("the notice still stands alone when nothing reviewed this head",
+    statesOf([QUOTA]) === "unavailable");
+
+  // An unrecognized status read alone means "not finished", so it has to mean
+  // the same beside a completed row. Otherwise a review whose state the gate
+  // cannot read is waved through as long as one sibling finished.
+  check("an unknown row beside a completed one still holds the merge",
+    state(summary([COMPLETED_ROW, row("Security Review", "❓ **Unknown**", ABBREV)])) ===
+      "running",
+    JSON.stringify(state(summary([COMPLETED_ROW,
+      row("Security Review", "❓ **Unknown**", ABBREV)]))));
+  check("and an empty status beside a completed one does too",
+    state(summary([COMPLETED_ROW, row("Security Review", "", ABBREV)])) === "running");
+
+  // The quota notice is one specific sentence. A finding that happens to discuss
+  // a usage limit is review CONTENT, and reading it as an account outage aborts
+  // the wait on a review that did run.
+  check("a finding that mentions a usage limit is not a quota notice",
+    state("Reviewed commit `" + ABBREV + "`\n\n- [P2] The cap is not enforced: " +
+          "a caller can exceed its usage limit because the counter resets.") === "reviewed",
+    JSON.stringify(state("Reviewed commit `" + ABBREV + "`\n\n- [P2] usage limit")));
+  check("and advice to add credits inside a finding is not one either",
+    state("Reviewed commit `" + ABBREV + "`\n\n- [P3] Document that operators " +
+          "add credits before the quota resets.") === "reviewed");
+  check("the vendor's own notice is still recognized",
+    state("You have reached your Codex usage limits for code reviews. " +
+          "To continue using code reviews, add credits to your account.") === "unavailable");
+  [].forEach(function (c) {
+    check("review state: " + c[1] + " reads as " + c[0],
+      state(c[2]) === c[0], JSON.stringify(state(c[2])));
+  });
+}
+
 // ---- the Codex wait absorbs a blip but never calls it "not reviewed" -----
 
 // Run `body` with the poll cadence collapsed so the branching is testable
@@ -688,6 +906,7 @@ function run() {
   testSmokeAbortsBeforeTouchingWikiData();
   testCodexHeadLookupFailsClosed();
   testCodexCleanReviewCitesAbbreviatedSha();
+  testARunningCodexReviewDoesNotCountAsReviewed();
   testCodexWaitAbsorbsATransientBlip();
   testCodexWaitAbortsOnAStableFailure();
   testCodexWaitTimeoutSaysUnknownNotNo();
