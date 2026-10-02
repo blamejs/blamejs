@@ -161,6 +161,74 @@ var PROFILES = {
 };
 function resolveProfile(name) { return PROFILES[name] || null; }
 
+// A profile declares each flag's type by the value it gives it, and the guards
+// read a loosening flag truthily, which is correct for a boolean. An override
+// merged in without a type check turns `"false"` into a truthy value, so a
+// mistyped override silently disables the protection under a strict profile and
+// reads as though it is on. The profile is the declaration, so the merge can
+// judge the override against it.
+function testBuildProfileRefusesAMistypedBooleanOverride() {
+  var TYPED = {
+    strict: { allowImageData: false, allowComments: false, mode: "reject",
+              tags: ["p"], maxBytes: 1024 },
+  };
+  function resolve(name) { return TYPED[name] || null; }
+  function build(overrides) {
+    return GC.buildProfile({ baseProfile: "strict", resolveProfile: resolve,
+                             overrides: overrides });
+  }
+
+  ["false", "0", "no", "off", {}, [], 1].forEach(function (bad) {
+    var threw = null;
+    try { build({ allowImageData: bad }); } catch (e) { threw = e; }
+    check("buildProfile: a " + (typeof bad) + " override of a boolean flag is refused" +
+          " (" + JSON.stringify(bad) + ")",
+      threw !== null && threw instanceof GCE, String(threw && threw.code));
+  });
+
+  // Controls: a real boolean either way still overrides, and a flag the profile
+  // does not declare as a boolean is not judged by this rule.
+  check("buildProfile: true still loosens the flag",
+    build({ allowImageData: true }).allowImageData === true);
+  check("buildProfile: false still tightens it",
+    build({ allowComments: false }).allowComments === false);
+  check("buildProfile: a string flag still takes a string",
+    build({ mode: "sanitize" }).mode === "sanitize");
+  check("buildProfile: a numeric flag still takes a number",
+    build({ maxBytes: 64 }).maxBytes === 64);
+  check("buildProfile: a key the profile never declared is still accepted",
+    build({ brandNewFlag: "whatever" }).brandNewFlag === "whatever");
+}
+
+// Every guard documents `profile` as one of its profile NAMES. An object was
+// accepted and then half-read: the overlay is only built for a string, so the
+// object's keys never reached the resolved options and never met the boolean
+// validation, yet the value still took effect downstream. A flag that cannot be
+// validated on the way in must not arrive that way at all.
+function testResolveProfileRefusesANonStringProfile() {
+  var cfg = {
+    profiles: { strict: { mode: "reject" } },
+    defaults: { mode: "reject", allowThing: false },
+    errorClass: GCE,
+    errCodePrefix: "gc",
+  };
+  function resolve(profile) {
+    return GC.resolveProfileAndPosture({ profile: profile }, cfg);
+  }
+  check("resolveProfileAndPosture: a named profile still resolves",
+    resolve("strict").mode === "reject");
+
+  [{ allowThing: "false" }, [], 7, true].forEach(function (bad) {
+    var threw = null;
+    try { resolve(bad); } catch (e) { threw = e; }
+    check("resolveProfileAndPosture: a " + (Array.isArray(bad) ? "array" : typeof bad) +
+          " profile is refused (" + JSON.stringify(bad) + ")",
+      threw !== null && threw instanceof GCE, String(threw && threw.code));
+  });
+  check("resolveProfileAndPosture: omitting profile still resolves the defaults",
+    GC.resolveProfileAndPosture({}, cfg).allowThing === false);
+}
+
 function testBuildProfileComposition() {
   // requireObject + resolveProfile-required error branches.
   var threw = false;
@@ -2785,6 +2853,8 @@ async function run() {
   testSummarizeIssues();
   testSeverityAndPolicyDispositions();
   testBuildProfileComposition();
+  testBuildProfileRefusesAMistypedBooleanOverride();
+  testResolveProfileRefusesANonStringProfile();
   testMakeProfileBuilder();
   testMakeProfileResolverAndName();
   testResolveProfileAndPosture();

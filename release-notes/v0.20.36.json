@@ -1,0 +1,39 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.20.36",
+  "date": "2026-10-02",
+  "headline": "A flag that loosens a check is refused unless it is a boolean, on every path that sets it",
+  "summary": "A guard reads a loosening flag truthily, which is correct for a boolean, so a value of the wrong type reads as ON while the operator wrote the word false. Calling a guard with the flag directly already refused that, because the shared option resolver validates every flag its profile declares as a boolean. Two other ways in did not: `buildProfile` merged an override without consulting that declaration, and a `profile` supplied as an object was accepted and then half-read, its keys never reaching the resolver that would have checked them. Both are refused now, and two primitives that own their own options, `b.network.dns.dnssec.verifyDenial` and `b.cbor.encode`, validate the loosening flag they each read.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "A profile override that loosens a guard must be a boolean",
+          "body": "`buildProfile({ baseProfile: \"strict\", overrides: { ... } })` merged an override into the resolved profile without checking its type, and the guards read a loosening flag truthily because the profiles declare it as a boolean. So `allowImageData: \"false\"` under the strict profile turned `data:` URI acceptance ON while reading as though it were off, and the same held for `allowComments`, `allowAnimation` and `allowExternalRefs`. Calling the guard with the flag directly was never affected: `b.gateContract.resolveProfileAndPosture` validates every flag the declared defaults give a boolean value, so `b.guardSql.validate(sql, { allowLiterals: \"false\" })` already raised `sql/bad-opt`. The profile is the declaration, so the merge judges an override against it and raises `gate-contract/bad-override`, naming the key and the type it received. A real boolean still overrides either way, and a key the profile does not declare as a boolean is not judged by this rule."
+        },
+        {
+          "title": "A guard profile is named, so an object is refused rather than half-read",
+          "body": "Every guard documents `profile` as one of its own profile names. An object was accepted and then read in part: the overlay the resolver builds is only populated for a string, so an object's keys never reached the resolved options and never met the validation applied there, yet the values still took effect further down. A profile built with `allowLiterals: \"false\"` and passed as `b.guardSql.validate(sql, { profile: built })` was accepted, and the embedded string literal that profile exists to refuse went through. A non-string `profile` now raises `<guard>/bad-profile` and says where a deliberate delta belongs, which is `overrides` on `buildProfile`. Passing a profile name is unchanged."
+        },
+        {
+          "title": "An Opt-Out NSEC3 denial is accepted only on a real boolean",
+          "body": "`b.network.dns.dnssec.verifyDenial`'s `allowOptOut` accepts an Opt-Out NSEC3 proof, which shows only that no SIGNED record exists rather than that the name does not exist, so it widens what counts as a valid denial. The call validated its option names but not their types, and the flag was read truthily, so `allowOptOut: \"false\"` accepted an Opt-Out proof the operator had written `false` to refuse. Measured against a real Opt-Out NSEC3 chain. A non-boolean now raises `dnssec/bad-opt`; omitting the option still refuses such a proof, and `true` still accepts it."
+        },
+        {
+          "title": "NaN and Infinity reach CBOR bytes only on a real boolean",
+          "body": "`b.cbor.encode`'s `allowNonFinite` permits NaN and Infinity into the encoding, and those bytes are what `b.cms`, `b.mdoc`, `b.eat` and content credentials sign. The option was read truthily and never type-checked, in a file that already validated `requireDeterministic` beside it, which tightens rather than loosens and is harmless when mistyped. A non-boolean now raises `cbor/bad-input`; omitting it still refuses a non-finite number with `cbor/non-finite`."
+        }
+      ]
+    },
+    {
+      "heading": "Migration",
+      "items": [
+        {
+          "title": "A mistyped guard flag or a profile object now raises instead of being ignored",
+          "body": "Three calls that used to be accepted now refuse. A `buildProfile` override of a flag the profile declares as a boolean must be a boolean, so `overrides: { allowImageData: \"false\" }` raises `gate-contract/bad-override` where it used to loosen the guard. A `profile` passed as an object raises `<guard>/bad-profile`; pass the profile name, and express a delta through `overrides`. And `b.network.dns.dnssec.verifyDenial`'s `allowOptOut` and `b.cbor.encode`'s `allowNonFinite` raise on a non-boolean. In each case the previous behavior was to read the value as true, so a deployment that hits one of these errors was running with the protection off."
+        }
+      ]
+    }
+  ]
+}

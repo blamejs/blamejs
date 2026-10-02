@@ -86,6 +86,19 @@ function testRoundTrip() {
   // (the preferred-serialization fix — float64 emission would falsely
   // reject it).
   check("requireDeterministic: float16-canonical input accepted", cbor.decode(cbor.encode(1.5), { requireDeterministic: true }) === 1.5);
+
+  // allowNonFinite LOOSENS what encode will emit, and these bytes get signed, so
+  // it has to be read strictly. The file validates requireDeterministic, which
+  // TIGHTENS and is harmless when mistyped, and left the loosening one unchecked.
+  function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e.code; } }
+  ["false", "0", "no", 1, {}].forEach(function (bad) {
+    check("allowNonFinite " + JSON.stringify(bad) + " is refused, not read as true",
+      code(function () { cbor.encode(NaN, { allowNonFinite: bad }); }) === "cbor/bad-input");
+  });
+  check("allowNonFinite omitted still refuses NaN",
+    code(function () { cbor.encode(NaN); }) === "cbor/non-finite");
+  check("allowNonFinite true still emits a non-finite value",
+    Buffer.isBuffer(cbor.encode(NaN, { allowNonFinite: true })));
 }
 
 function testIntegerBoundary() {
