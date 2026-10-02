@@ -1276,6 +1276,11 @@ function _codexReviewedHead(prNum) {
 // with markup stripped, and only the words the vendor renders as a state. The
 // default is "no evidence", never "reviewed" -- a gate that guesses at an
 // uncontrolled format has to guess toward refusing.
+// The vendor's own sentence, not the words in it. A finding may legitimately
+// discuss a usage limit or advise adding credits, and reading review CONTENT as
+// an account outage aborts the wait on a review that did run.
+var _QUOTA_NOTICE = /you have reached your [^.\n]{0,60}usage limits? for code reviews/i;
+
 var _REVIEW_WORDS = {
   running:   /\b(?:running|queued|in[ -]progress|pending|started|waiting)\b/i,
   failed:    /\b(?:failed|errored|cancell?ed|skipped|timed[ -]out|error)\b/i,
@@ -1310,10 +1315,11 @@ function _stateOfRow(cells) {
 // "running" (findings may still arrive), "failed" / "unavailable" (terminal,
 // and no review of this head will arrive at all), or "reviewed".
 function _commentReviewState(body, head) {
-  if (/usage limit|add credits/i.test(body)) return "unavailable";
+  if (_QUOTA_NOTICE.test(body)) return "unavailable";
   var lines = String(body).split("\n");
   var rowState = null;
   var sawRowForHead = false;
+  var sawUnreadableRow = false;
   for (var i = 0; i < lines.length; i += 1) {
     if (lines[i].indexOf("|") !== 0) continue;
     var cells = lines[i].split("|");
@@ -1325,9 +1331,13 @@ function _commentReviewState(body, head) {
     sawRowForHead = true;
     var seen = _stateOfRow(cells);
     if (seen === "running") return "running";
+    // A state this gate cannot read is not a finished review, and it means that
+    // beside a completed sibling exactly as it does alone.
+    if (seen === null) { sawUnreadableRow = true; continue; }
     if (seen === "failed") rowState = "failed";
     else if (seen === "reviewed" && rowState === null) rowState = "reviewed";
   }
+  if (sawUnreadableRow) return "running";
   if (sawRowForHead) return rowState === null ? "running" : rowState;
   // Not a status table. The one prose form that is evidence a review ran is the
   // reviewer's own "Reviewed commit <sha>" verdict; anything else citing the

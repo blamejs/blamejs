@@ -618,6 +618,31 @@ function testARunningCodexReviewDoesNotCountAsReviewed() {
     statesOf([QUOTA, summary([RUNNING_ROW])]) === "running");
   check("the notice still stands alone when nothing reviewed this head",
     statesOf([QUOTA]) === "unavailable");
+
+  // An unrecognized status read alone means "not finished", so it has to mean
+  // the same beside a completed row. Otherwise a review whose state the gate
+  // cannot read is waved through as long as one sibling finished.
+  check("an unknown row beside a completed one still holds the merge",
+    state(summary([COMPLETED_ROW, row("Security Review", "❓ **Unknown**", ABBREV)])) ===
+      "running",
+    JSON.stringify(state(summary([COMPLETED_ROW,
+      row("Security Review", "❓ **Unknown**", ABBREV)]))));
+  check("and an empty status beside a completed one does too",
+    state(summary([COMPLETED_ROW, row("Security Review", "", ABBREV)])) === "running");
+
+  // The quota notice is one specific sentence. A finding that happens to discuss
+  // a usage limit is review CONTENT, and reading it as an account outage aborts
+  // the wait on a review that did run.
+  check("a finding that mentions a usage limit is not a quota notice",
+    state("Reviewed commit `" + ABBREV + "`\n\n- [P2] The cap is not enforced: " +
+          "a caller can exceed its usage limit because the counter resets.") === "reviewed",
+    JSON.stringify(state("Reviewed commit `" + ABBREV + "`\n\n- [P2] usage limit")));
+  check("and advice to add credits inside a finding is not one either",
+    state("Reviewed commit `" + ABBREV + "`\n\n- [P3] Document that operators " +
+          "add credits before the quota resets.") === "reviewed");
+  check("the vendor's own notice is still recognized",
+    state("You have reached your Codex usage limits for code reviews. " +
+          "To continue using code reviews, add credits to your account.") === "unavailable");
   [].forEach(function (c) {
     check("review state: " + c[1] + " reads as " + c[0],
       state(c[2]) === c[0], JSON.stringify(state(c[2])));
