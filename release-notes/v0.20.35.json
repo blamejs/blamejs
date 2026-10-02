@@ -1,0 +1,31 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.20.35",
+  "date": "2026-10-02",
+  "headline": "A bot-challenge ladder counts an API key as a caller, and an actorKey hook must be a function",
+  "summary": "Two per-caller mechanisms failed to name a caller the framework can name. The adaptive bot-challenge ladder read `req.user` and `req.actor` but not `req.apiKey`, where `b.middleware.requireBoundKey` stores the principal it verified, so a route authenticated by key alone and carrying no body credential counted every key behind one address on a single ladder. And `b.flag.context.fromRequest` forwarded its new `actorKey` hook without checking it is a function, which the resolver ignores rather than refuses, so a mistyped hook left the actor it was meant to name on the address-derived anonymous targeting key.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "A bot-challenge ladder counts an API key as a caller, not its address",
+          "body": "`b.authBotChallenge`'s default key names the caller from the body credential, then the authenticated principal, then the client address. It read `req.user` and `req.actor` only, and `b.middleware.requireBoundKey` stores the principal it verified on `req.apiKey`, so a route authenticated by key alone that carries no credential in its body named no principal and fell to the address. Every key behind one NAT or one reverse proxy then advanced a single ladder: one key reaching the escalation threshold challenged or locked out the rest, and one key's failures were spent on the others' budget. Measured before the fix: two distinct keys from one address both keyed on `198.51.100.9`. `req.apiKey` resolves through `b.requestHelpers.actorIdentityKey` now, under its own prefix, so a user and an API key carrying the same id remain two callers. A deployment whose routes carry a body credential, or whose callers are named on `req.user`, keys exactly as before."
+        },
+        {
+          "title": "An actorKey hook that is not a function is refused instead of ignored",
+          "body": "`b.requestHelpers.actorIdentityKey` reads an `actorKey` hook only when it is a function and otherwise falls back to the identity fields it knows. `b.flag.context.fromRequest` forwarded the option without checking its type, so a hook supplied as a string or an object was dropped silently: an actor carrying only the custom field it was meant to name became unnameable, and the call returned the address-derived `anon:<ip-hash>` targeting key. Behind a shared proxy that merges unrelated callers into one percentage rollout and one cached flag decision. The option now raises `flag/bad-context` at the call, naming the type it received. Passing a function, or omitting the option, is unchanged."
+        }
+      ]
+    },
+    {
+      "heading": "Detectors",
+      "items": [
+        {
+          "title": "A forwarded actorKey hook is validated as a function",
+          "body": "A module that forwards an operator-supplied `actorKey` into `b.requestHelpers.actorIdentityKey` has to refuse a non-function at the call, because the resolver's fallback is an identity the operator did not ask for rather than an error they can see. A check covers `lib/` for the forward and is satisfied by the validation beside it."
+        }
+      ]
+    }
+  ]
+}
