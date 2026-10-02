@@ -234,9 +234,10 @@ async function testMiddlewareChallengeFn() {
     audit:        auditMock,
   });
   var email = "user@example.com";
-  // The body rung namespaces what it reads, so the ladder the middleware will
-  // look up is "body:<email>". Seeding anything else tests nothing.
-  var key = "body:" + email;
+  // The body rung namespaces what it reads AND which field read it, so the
+  // ladder the middleware looks up is "body:email:<email>". Seeding anything
+  // else tests nothing.
+  var key = "body:email:" + email;
   // Force the state into challenged.
   await gate.recordFailure(key);
 
@@ -271,7 +272,7 @@ async function testMiddlewareLockedReturns423() {
     audit:        auditMock,
   });
   var email = "u@x";
-  var key = "body:" + email;      // the ladder the body rung will look up
+  var key = "body:email:" + email;   // the ladder the body rung will look up
   await gate.recordFailure(key);
   await gate.recordFailure(key);  // → locked
 
@@ -464,6 +465,19 @@ async function testLadderIsPerPrincipalNotPerAddress() {
     o1.botChallengeKey !== o2.botChallengeKey,
     JSON.stringify({ o1: o1.botChallengeKey, o2: o2.botChallengeKey }));
 
+  // The body rung reads two fields, so the field has to be part of the key: a
+  // username that reads like someone's email address is not that person.
+  var fieldGate = _gate();
+  var asEmail = _mockReq({ url: "/login", body: { email: "alice@example.com" },
+                           socket: { remoteAddress: "198.51.100.41" } });
+  var asUsername = _mockReq({ url: "/login", body: { username: "alice@example.com" },
+                              socket: { remoteAddress: "198.51.100.42" } });
+  await fieldGate.middleware()(asEmail, _mockRes(), function () {});
+  await fieldGate.middleware()(asUsername, _mockRes(), function () {});
+  check("bot-challenge: a username equal to an email is a different ladder",
+    asEmail.botChallengeKey !== asUsername.botChallengeKey,
+    JSON.stringify({ email: asEmail.botChallengeKey, username: asUsername.botChallengeKey }));
+
   // The address is the fourth rung and needs a namespace like the other three,
   // or a caller who can influence the resolved address spells a named
   // principal's ladder. clientIp returns the last forwarded hop that fails the
@@ -606,7 +620,7 @@ async function testLadderIsPerPrincipalNotPerAddress() {
   var withEmail = _mockReq({ body: { email: "User@Example.com" } });
   await byEmail.middleware()(withEmail, _mockRes(), function () {});
   check("bot-challenge: a body credential keys the ladder, lowercased and namespaced",
-    withEmail.botChallengeKey === "body:user@example.com", withEmail.botChallengeKey);
+    withEmail.botChallengeKey === "body:email:user@example.com", withEmail.botChallengeKey);
 
   // Behind a declared proxy the address is the client's, not the proxy's, so
   // two clients arriving through one proxy are two ladders.
