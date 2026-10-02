@@ -588,6 +588,40 @@ function testARunningCodexReviewDoesNotCountAsReviewed() {
     check("review state: " + c[1] + " reads as " + c[0],
       state(c[2]) === c[0], JSON.stringify(state(c[2])));
   });
+
+  // A quota notice is about one earlier attempt and carries no commit, so
+  // evidence about THIS head has to outrank it. Otherwise restoring credits and
+  // re-requesting can never satisfy the gate: the old notice refuses forever.
+  function statesOf(bodies) {
+    var out = null;
+    withQuietConsole(function () {
+      withCapture(function (cmd, args) {
+        if (args.indexOf("headRefOid") !== -1) return _okResult(HEAD);
+        if (args.indexOf("graphql") !== -1) return _okResult("[]");
+        if (args.indexOf("comments") !== -1) {
+          return _okResult(JSON.stringify(bodies.map(function (b) {
+            return { author: { login: "chatgpt-codex-connector" }, body: b };
+          })));
+        }
+        return _failResult("unexpected call");
+      }, function () { out = release._codexReviewStateForHead("806"); });
+    });
+    return out;
+  }
+  var QUOTA = "You have reached your Codex usage limits for code reviews.";
+  check("a completed review of this head supersedes an earlier quota notice",
+    statesOf([QUOTA, summary([COMPLETED_ROW])]) === "reviewed",
+    JSON.stringify(statesOf([QUOTA, summary([COMPLETED_ROW])])));
+  check("and the order the comments arrive in does not change that",
+    statesOf([summary([COMPLETED_ROW]), QUOTA]) === "reviewed");
+  check("a running review of this head also outranks the notice, so the wait holds",
+    statesOf([QUOTA, summary([RUNNING_ROW])]) === "running");
+  check("the notice still stands alone when nothing reviewed this head",
+    statesOf([QUOTA]) === "unavailable");
+  [].forEach(function (c) {
+    check("review state: " + c[1] + " reads as " + c[0],
+      state(c[2]) === c[0], JSON.stringify(state(c[2])));
+  });
 }
 
 // ---- the Codex wait absorbs a blip but never calls it "not reviewed" -----

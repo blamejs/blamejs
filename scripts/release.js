@@ -1237,20 +1237,22 @@ function _codexReviewStateForHead(prNum) {
   var cv = _captureQuery("PR #" + prNum + " comment list", "gh",
                          ["pr", "view", prNum, "--json", "comments", "--jq", ".comments"]);
   var comments = _ghJson(cv, "PR #" + prNum + " comment list");
-  var state = "absent";
+  var seen = Object.create(null);
   (comments || []).forEach(function (c) {
     if (!c || !c.author || !_isCodexLogin(c.author.login) || typeof c.body !== "string") return;
-    var seen = _commentReviewState(c.body, head);
-    if (seen === null) return;
-    // A running review outranks everything: findings may still arrive. Then a
-    // terminal non-review state, which the operator has to see rather than wait
-    // out. "reviewed" is the weakest claim and only stands unopposed.
-    if (seen === "running") { state = "running"; return; }
-    if (state === "running") return;
-    if (seen === "unavailable" || seen === "failed") { state = seen; return; }
-    if (state === "absent") state = seen;
+    var s = _commentReviewState(c.body, head);
+    if (s !== null) seen[s] = true;
   });
-  return state;
+  // Precedence, strongest claim about THIS head first. A running review wins,
+  // because findings may still arrive. A completed one beats both terminal
+  // states, because a usage notice is about one earlier attempt and names no
+  // commit: without this, restoring credits and re-requesting could never
+  // satisfy the gate, since the old notice would refuse every later head.
+  if (seen.running) return "running";
+  if (seen.reviewed) return "reviewed";
+  if (seen.failed) return "failed";
+  if (seen.unavailable) return "unavailable";
+  return "absent";
 }
 
 // True only for the one state that means "findings, if any, now exist".
