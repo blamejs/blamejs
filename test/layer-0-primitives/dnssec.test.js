@@ -220,6 +220,23 @@ function testNsec3OptOut() {
   check("verifyDenial: Opt-Out NXDOMAIN refused by default", code(function () { b.network.dns.dnssec.verifyDenial({ qname: "x.test", proof: "nxdomain", zone: "test", nsec3: recs }); }) === "dnssec/denial-opt-out");
   var out = b.network.dns.dnssec.verifyDenial({ qname: "x.test", proof: "nxdomain", zone: "test", nsec3: recs, allowOptOut: true });
   check("verifyDenial: Opt-Out NXDOMAIN accepted with allowOptOut", out.ok && out.optOut === true);
+
+  // allowOptOut LOOSENS which proof is accepted, so it has to be read strictly.
+  // The key-set validation above it does not check types and the read is truthy,
+  // so every non-empty string would accept an Opt-Out proof the operator wrote
+  // "false" to refuse.
+  ["false", "0", "no", "off", 1, {}].forEach(function (bad) {
+    check("verifyDenial: allowOptOut " + JSON.stringify(bad) + " is refused, not read as true",
+      code(function () {
+        b.network.dns.dnssec.verifyDenial({ qname: "x.test", proof: "nxdomain",
+          zone: "test", nsec3: recs, allowOptOut: bad });
+      }) === "dnssec/bad-opt");
+  });
+  check("verifyDenial: omitting allowOptOut still refuses the Opt-Out proof",
+    code(function () {
+      b.network.dns.dnssec.verifyDenial({ qname: "x.test", proof: "nxdomain",
+        zone: "test", nsec3: recs });
+    }) === "dnssec/denial-opt-out");
 }
 
 function testWildcardMatchRejected() {
