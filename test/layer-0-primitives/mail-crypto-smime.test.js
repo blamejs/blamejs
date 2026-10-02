@@ -499,6 +499,20 @@ function _issuerSerialSid(serialByte) {
 }
 function _sha3_512(bytes) { return nodeCrypto.createHash("sha3-512").update(bytes).digest(); }
 
+// A conforming producer sets a SignerInfo's sid to its own certificate's issuer
+// and serial. These derive both from the certificate so an envelope built here
+// names the certificate it embeds.
+function _sidFromCert(certDer) {
+  var f = asn1.readCertificateTbsFields(certDer);
+  return asn1.writeSequence([
+    asn1.writeNode(0x30, Buffer.from(f.issuer.value)),
+    asn1.writeNode(0x02, Buffer.from(f.serialNumber.value)),
+  ]);
+}
+function _serialHexOfCert(certDer) {
+  return Buffer.from(asn1.readCertificateTbsFields(certDer).serialNumber.value).toString("hex");
+}
+
 // Build a ContentInfo → SignedData DER with a single controllable SignerInfo.
 // opts: { digestOid, sigOid, eContentType, sid, signedAttrsImplicit (or null
 // to omit), signature, certsDer, signerInfos (raw SET member list — overrides
@@ -659,7 +673,7 @@ function _mlDsaEnvelope(tk, signerKeyPath, msg, certsDer) {
   ]);
   var sig = tk.rawSign(signerKeyPath, sa.set);
   var si = asn1.writeSequence([
-    asn1.writeInteger(Buffer.from([1])), _issuerSerialSid(0x01), _algId(OID.sha3_512),
+    asn1.writeInteger(Buffer.from([1])), _sidFromCert(certsDer[0]), _algId(OID.sha3_512),
     sa.implicit, _algId(OID.mldsa65), asn1.writeOctetString(sig),
   ]);
   return _craftSignedData({ signerInfos: [si], certsDer: certsDer });
@@ -917,6 +931,49 @@ function testVerifyAllSkiSidFallback() {
     threw && /deadbeef/.test(String(threw.message || "")));
 }
 
+// A subject-key-identifier sid names no issuer and serial, so the certificate it
+// points at cannot be bound to a bundle entry. Chain validation refuses rather
+// than walking whichever certificate happens to carry the verifying key.
+function testSmimeTrustChainUnbindableSid() {
+  if (!_mlDsaAvailable()) {
+    helpers.unavailable("trust chain SKI-sid refusal skipped (openssl ML-DSA unavailable)");
+    return;
+  }
+  _withMlDsaCa(function (tk) {
+    var leaf = tk.selfSigned("Unbindable Sid Leaf");
+    if (!leaf) { helpers.unavailable("trust chain SKI-sid refusal skipped (cert mint failed)"); return; }
+    var msg = Buffer.from("ski-sid-chain-body");
+    var sa = _signedAttrs([
+      _attr(OID_CT_ATTR, asn1.writeOid(OID.data)),
+      _attr(OID_MD_ATTR, asn1.writeOctetString(_sha3_512(msg))),
+    ]);
+    var si = asn1.writeSequence([
+      asn1.writeInteger(Buffer.from([1])),
+      asn1.writeContextImplicit(0, Buffer.from([0xde, 0xad, 0xbe, 0xef])),   // [0] SKI, not issuer+serial
+      _algId(OID.sha3_512), sa.implicit, _algId(OID.mldsa65),
+      asn1.writeOctetString(tk.rawSign(leaf.keyPath, sa.set)),
+    ]);
+    var env = _craftSignedData({ signerInfos: [si], certsDer: [leaf.der] });
+    var threw = null;
+    try {
+      smime.verify({ message: msg, signature: env, signerPublicKey: leaf.rawPub,
+        trustAnchorCertsPem: [leaf.pem] });
+    } catch (e) { threw = e; }
+    check("trust chain: a subject-key-identifier sid is refused for chain validation",
+      threw && threw.code === "mail-crypto/smime/unbindable-sid",
+      threw ? String(threw.code) : "accepted");
+
+    // Without trust anchors the same envelope still verifies, so the refusal is
+    // scoped to chain validation rather than to the sid form itself.
+    var ok = null;
+    try {
+      ok = smime.verify({ message: msg, signature: env, signerPublicKey: leaf.rawPub });
+    } catch (e2) { ok = e2; }
+    check("trust chain: the same SKI-sid envelope verifies without trust anchors",
+      ok && ok.valid === true, ok && ok.code ? String(ok.code) : "ok");
+  });
+}
+
 // ---- Trust-chain refusals reachable without ML-DSA certs ----
 
 function testSmimeTrustChainNoCerts() {
@@ -1073,9 +1130,9 @@ function _mlDsaMultiSignerEnvelope(tk, msg, signers) {
     _attr(OID_CT_ATTR, asn1.writeOid(OID.data)),
     _attr(OID_MD_ATTR, asn1.writeOctetString(_sha3_512(msg))),
   ]);
-  var sis = signers.map(function (s, i) {
+  var sis = signers.map(function (s) {
     return asn1.writeSequence([
-      asn1.writeInteger(Buffer.from([1])), _issuerSerialSid(i + 1), _algId(OID.sha3_512),
+      asn1.writeInteger(Buffer.from([1])), _sidFromCert(s.der), _algId(OID.sha3_512),
       sa.implicit, _algId(OID.mldsa65), asn1.writeOctetString(tk.rawSign(s.keyPath, sa.set)),
     ]);
   });
@@ -1103,12 +1160,15 @@ function testVerifyAllTrustChainCoversEverySigner() {
     }
     var msg = Buffer.from("verifyall-every-signer-chain");
     var env = _mlDsaMultiSignerEnvelope(tk, msg, [anchored, rogue]);
+    var multiKeys = {};
+    multiKeys[_serialHexOfCert(anchored.der)] = anchored.rawPub;
+    multiKeys[_serialHexOfCert(rogue.der)]    = rogue.rawPub;
     var threw = null;
     var v = null;
     try {
       v = smime.verifyAll({
         message: msg, signature: env,
-        signerPublicKeys:    { "01": anchored.rawPub, "02": rogue.rawPub },
+        signerPublicKeys:    multiKeys,
         trustAnchorCertsPem: [anchored.pem],
       });
     } catch (e) { threw = e; }
@@ -1122,7 +1182,7 @@ function testVerifyAllTrustChainCoversEverySigner() {
     try {
       bothAnchored = smime.verifyAll({
         message: msg, signature: env,
-        signerPublicKeys:    { "01": anchored.rawPub, "02": rogue.rawPub },
+        signerPublicKeys:    multiKeys,
         trustAnchorCertsPem: [anchored.pem, rogue.pem],
       });
     } catch (e2) { bothAnchored = e2; }
@@ -1141,8 +1201,10 @@ function testVerifyAllTrustChain() {
     var leaf = tk.selfSigned("VerifyAll Leaf");
     if (!leaf) { helpers.unavailable("verifyAll trust chain skipped (cert mint failed)"); return; }
     var msg = Buffer.from("verifyall-chain-body");
+    var leafKeys = {};
+    leafKeys[_serialHexOfCert(leaf.der)] = leaf.rawPub;
     var v = smime.verifyAll({ message: msg, signature: _mlDsaEnvelope(tk, leaf.keyPath, msg, [leaf.der]),
-      signerPublicKeys: { "01": leaf.rawPub }, trustAnchorCertsPem: [leaf.pem] });
+      signerPublicKeys: leafKeys, trustAnchorCertsPem: [leaf.pem] });
     check("verifyAll: trust-anchor chain validates through the bundle",
       v.valid === true && v.chainVerified === true);
   });
@@ -1259,6 +1321,7 @@ function run() {
   testSmimeCertKeyMatchesLongerSigner();
   testVerifyAllNoSigners();
   testVerifyAllSkiSidFallback();
+  testSmimeTrustChainUnbindableSid();
   testSmimeTrustChainNoCerts();
   testSmimeTrustChainBadChainCert();
   testSmimeTrustChainRealCertRefusals();

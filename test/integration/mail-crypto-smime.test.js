@@ -464,8 +464,43 @@ async function run() {
       });
     } catch (eA) { threw = eA.code; }
     check("smime.verify: refuses when the sid names no bundled certificate and several carry the key",
-      threw === "mail-crypto/smime/ambiguous-signer-cert",
+      threw === "mail-crypto/smime/signer-cert-not-named",
       threw ? String(threw) : "accepted with chainVerified=" + (ambOut && ambOut.chainVerified));
+
+    // ---- The sid names an embedded certificate that carries a DIFFERENT key,
+    //      while one other embedded certificate carries the key that verified
+    //      the signature and chains to the anchor. Validating that other
+    //      certificate would report a chain for an identity the SignerInfo
+    //      never claimed, so the envelope is refused.
+    var otherKeyCertDer = _buildMlDsaCert({
+      subjectCn:       "smime-signer-other-key.blamejs-test.example",
+      subjectPubKey:   secondKp.publicKey,             // NOT the signing key
+      issuerCn:        "smime-pqc-twin-ca.blamejs-test.example",
+      issuerSecretKey: twinCaKp.secretKey,             // issuer is not an anchor
+      serial:          5,
+      notBefore:       notBefore,
+      notAfter:        notAfter,
+    });
+    var misnamedSigned = b.cms.encodeSignedData({
+      encapContent: Buffer.from(message, "utf8"),
+      digestAlg:    "sha3-512",
+      certificates: [pqcLeafCertDer, otherKeyCertDer],
+      // sid comes from otherKeyCertDer; the signature is made with signerKp.
+      signers: [{ certificate: otherKeyCertDer, secretKey: signerKp.secretKey, sigAlg: "ML-DSA-65" }],
+    });
+    threw = null;
+    var misOut = null;
+    try {
+      misOut = b.mail.crypto.smime.verify({
+        message:             Buffer.from(message, "utf8"),
+        signature:           misnamedSigned,
+        signerPublicKey:     signerKp.publicKey,
+        trustAnchorCertsPem: [caCertPem],
+      });
+    } catch (eN) { threw = eN.code; }
+    check("smime.verify: refuses when the sid names a certificate that does not carry the verifying key",
+      threw === "mail-crypto/smime/signer-cert-not-named",
+      threw ? String(threw) : "accepted with chainVerified=" + (misOut && misOut.chainVerified));
 
     // ---- A serial is unique only within an issuer (RFC 5280 section 4.1.2.2),
     //      so a bundle may legitimately hold two certificates with the same key
