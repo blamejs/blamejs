@@ -526,6 +526,68 @@ function testARunningCodexReviewDoesNotCountAsReviewed() {
     reviewed("A review is already running for `" + ABBREV + "`.") === false);
   check("a queued notice does not count either",
     reviewed("Review queued for `" + ABBREV + "`.") === false);
+
+  // Every body below is one an adversarial pass used to make the previous
+  // version of this gate answer wrongly. The left column is what the gate must
+  // say; "reviewed" is the only answer that lets a merge proceed.
+  function state(body) {
+    var out = null;
+    withQuietConsole(function () {
+      withCapture(respondWith(body), function () {
+        out = release._codexReviewStateForHead("806");
+      });
+    });
+    return out;
+  }
+  var row = function (name, status, commit) {
+    return "| " + name + " | " + status + " | `" + commit + "` | Manual request |";
+  };
+  [
+    // A verdict of failure, however it is spelled, is terminal and not a review.
+    ["absent",   "a prose failure notice",      "Review of `" + ABBREV + "` failed. Please try again."],
+    ["absent",   "a prose cancellation",        "Review of `" + ABBREV + "` was cancelled."],
+    ["absent",   "a prose skip",                "Skipped `" + ABBREV + "`: no reviewable changes."],
+    ["failed",   "a failed row",                summary([row("Code Review", "⚠️ **Failed**", ABBREV)])],
+    // Order must not decide it: failed beside completed is terminal either way.
+    ["failed",   "failed after completed",
+      summary([row("Code Review", "✅ **Completed**", ABBREV),
+               row("Security Review", "⚠️ **Failed**", ABBREV)])],
+    ["failed",   "failed before completed",
+      summary([row("Security Review", "⚠️ **Failed**", ABBREV),
+               row("Code Review", "✅ **Completed**", ABBREV)])],
+    // An unrecognized status is not a completion, and the About text must not
+    // decide it either way.
+    ["running",  "a pending status",            summary([row("Code Review", "⏳ **Pending**", ABBREV)])],
+    ["running",  "an unknown status",           summary([row("Code Review", "❓ **Unknown**", ABBREV)])],
+    ["running",  "an empty status cell",        summary([row("Code Review", "", ABBREV)])],
+    ["running",  "a pending status with the help text reworded",
+      summary([row("Code Review", "⏳ **Pending**", ABBREV)])
+        .replace("while any review is running", "while a review runs")],
+    // Markup inside the status cell is markup, not a state.
+    ["reviewed", "a completed row whose cell carries a queued timestamp",
+      summary([row("Code Review",
+        "✅ **Completed** <relative-time title=\"queued 05:07:54\" datetime=\"x\">x</relative-time>",
+        ABBREV)])],
+    ["running",  "a cell that says completed and re-running",
+      summary([row("Code Review", "✅ **Completed**, re-running security", ABBREV)])],
+    // The row must be identified by its COMMIT cell, not by the line mentioning
+    // the sha somewhere.
+    ["absent",   "another commit's row linking this head",
+      summary(["| Code Review | ✅ **Completed** | `aaaaaaa` | " +
+               "[Comment](https://example.invalid/pull/806#commit-" + ABBREV + ") |"])],
+    // A prose completion that is not the reviewer's own verdict form is a notice.
+    ["absent",   "a gerund completion notice",
+      "Codex finished reviewing `" + ABBREV + "` with no findings."],
+    ["reviewed", "the reviewer's own verdict form",
+      "Reviewed commit `" + ABBREV + "`: no findings."],
+    // The quota notice is terminal and names itself.
+    ["unavailable", "a usage-limit notice",
+      "You have reached your Codex usage limits for code reviews. Add credits for `" +
+      ABBREV + "`."],
+  ].forEach(function (c) {
+    check("review state: " + c[1] + " reads as " + c[0],
+      state(c[2]) === c[0], JSON.stringify(state(c[2])));
+  });
 }
 
 // ---- the Codex wait absorbs a blip but never calls it "not reviewed" -----

@@ -1218,7 +1218,7 @@ function _isCodexLogin(login) {
 // especially costly in this function: the caller polls it for ten minutes, so
 // a gh outage spent the whole budget and then reported the timeout as Codex
 // being slow — the one explanation that is definitely wrong.
-function _codexReviewedHead(prNum) {
+function _codexReviewStateForHead(prNum) {
   var head = _captureQuery("PR #" + prNum + " head sha", "gh",
                            ["pr", "view", prNum, "--json", "headRefOid",
                             "--jq", ".headRefOid"]).stdout.trim();
@@ -1233,14 +1233,29 @@ function _codexReviewedHead(prNum) {
   var nodes = _ghJson(rv, "PR #" + prNum + " review list");
   if ((nodes || []).some(function (r) {
     return r && r.author && _isCodexLogin(r.author.login) && r.commit && r.commit.oid === head;
-  })) return true;
+  })) return "reviewed";
   var cv = _captureQuery("PR #" + prNum + " comment list", "gh",
                          ["pr", "view", prNum, "--json", "comments", "--jq", ".comments"]);
   var comments = _ghJson(cv, "PR #" + prNum + " comment list");
-  return (comments || []).some(function (c) {
-    return c && c.author && _isCodexLogin(c.author.login) &&
-           typeof c.body === "string" && _commentEvidencesAReview(c.body, head);
+  var state = "absent";
+  (comments || []).forEach(function (c) {
+    if (!c || !c.author || !_isCodexLogin(c.author.login) || typeof c.body !== "string") return;
+    var seen = _commentReviewState(c.body, head);
+    if (seen === null) return;
+    // A running review outranks everything: findings may still arrive. Then a
+    // terminal non-review state, which the operator has to see rather than wait
+    // out. "reviewed" is the weakest claim and only stands unopposed.
+    if (seen === "running") { state = "running"; return; }
+    if (state === "running") return;
+    if (seen === "unavailable" || seen === "failed") { state = seen; return; }
+    if (state === "absent") state = seen;
   });
+  return state;
+}
+
+// True only for the one state that means "findings, if any, now exist".
+function _codexReviewedHead(prNum) {
+  return _codexReviewStateForHead(prNum) === "reviewed";
 }
 
 // The review-summary comment is a STATUS TRACKER, posted when a review STARTS
@@ -1249,58 +1264,75 @@ function _codexReviewedHead(prNum) {
 // finished: on PR #806 the wait accepted such a summary, merged, and the review
 // finished afterwards with two findings.
 //
-// Reading the whole body for the word "Running" is not the answer either. It
-// makes a FAILED review count as reviewed, it makes the vendor's own "while any
-// review is running" help text decide the verdict, and a finished code review
-// beside a still-running SECURITY review would block the merge until the wait
-// times out. So find the table row that cites THIS head and read its state.
-var _REVIEW_STATE = [
-  { state: "running",   re: /\bRunning\b|\bQueued\b|\bIn progress\b/i },
-  { state: "failed",    re: /\bFailed\b|\bErrored\b|\bCancelled\b|\bCanceled\b/i },
-  { state: "completed", re: /\bCompleted\b|\bFinished\b|\bDone\b|\bNo findings\b/i },
-];
+// Reading the whole body for a word is not the answer either. The body carries
+// the vendor's own help text ("while any review is running"), so prose decided
+// the verdict; a FAILED review read as reviewed; and the status cell holds
+// markup the project does not control, so an attribute could pin a finished
+// review to "running" for the whole wait.
+//
+// What this reads, and nothing else: the row whose COMMIT CELL is this head,
+// with markup stripped, and only the words the vendor renders as a state. The
+// default is "no evidence", never "reviewed" -- a gate that guesses at an
+// uncontrolled format has to guess toward refusing.
+var _REVIEW_WORDS = {
+  running:   /\b(?:running|queued|in[ -]progress|pending|started|waiting)\b/i,
+  failed:    /\b(?:failed|errored|cancell?ed|skipped|timed[ -]out|error)\b/i,
+  completed: /\b(?:completed|finished|done|no findings)\b/i,
+};
 
-function _summaryRowStateForHead(body, head) {
+// A cell is markup, not prose: drop tags and their attributes before reading it.
+function _cellText(cell) {
+  return String(cell).replace(/<[^>]*>/g, " ").replace(/`/g, "")
+    .replace(/\s+/g, " ").trim();
+}
+
+function _cellIsHead(cell, head) {
+  var t = _cellText(cell);
+  return /^[0-9a-f]{7,40}$/.test(t) && head.indexOf(t) === 0;
+}
+
+function _stateOfRow(cells) {
+  for (var i = 0; i < cells.length; i += 1) {
+    var text = _cellText(cells[i]);
+    if (!text) continue;
+    // Running is checked first and wins its own cell: a "Completed, re-running"
+    // cell is not a finished review.
+    if (_REVIEW_WORDS.running.test(text))   return "running";
+    if (_REVIEW_WORDS.failed.test(text))    return "failed";
+    if (_REVIEW_WORDS.completed.test(text)) return "reviewed";
+  }
+  return null;
+}
+
+// null when the comment says nothing about this head. Otherwise one of
+// "running" (findings may still arrive), "failed" / "unavailable" (terminal,
+// and no review of this head will arrive at all), or "reviewed".
+function _commentReviewState(body, head) {
+  if (/usage limit|add credits/i.test(body)) return "unavailable";
   var lines = String(body).split("\n");
-  var worst = null;
+  var rowState = null;
+  var sawRowForHead = false;
   for (var i = 0; i < lines.length; i += 1) {
-    var line = lines[i];
-    if (line.indexOf("|") !== 0 || !_citesHead(line, head)) continue;
-    var cells = line.split("|");
-    var status = cells.length > 2 ? cells[2] : "";
-    for (var s = 0; s < _REVIEW_STATE.length; s += 1) {
-      if (!_REVIEW_STATE[s].re.test(status)) continue;
-      // A row still running means this head's review is not finished, whatever
-      // another row says; otherwise a terminal row is evidence it ran.
-      if (_REVIEW_STATE[s].state === "running") return "running";
-      if (worst === null) worst = _REVIEW_STATE[s].state;
-      break;
+    if (lines[i].indexOf("|") !== 0) continue;
+    var cells = lines[i].split("|");
+    var namesHead = false;
+    for (var c = 0; c < cells.length && !namesHead; c += 1) {
+      if (_cellIsHead(cells[c], head)) namesHead = true;
     }
+    if (!namesHead) continue;
+    sawRowForHead = true;
+    var seen = _stateOfRow(cells);
+    if (seen === "running") return "running";
+    if (seen === "failed") rowState = "failed";
+    else if (seen === "reviewed" && rowState === null) rowState = "reviewed";
   }
-  return worst;
-}
-
-function _commentEvidencesAReview(body, head) {
-  if (!_citesHead(body, head)) return false;
-  var rowState = _summaryRowStateForHead(body, head);
-  if (rowState === "completed") return true;
-  if (rowState === "running" || rowState === "failed") return false;
-  // Not a status table: a findings comment exists only because a review ran, but
-  // a notice that one is pending is not a review of anything.
-  return !/\b(?:already running|is running|queued|will review|reviewing)\b/i.test(body) &&
-         !/usage limit|add credits/i.test(body);
-}
-
-// Codex cites the git-ABBREVIATED head sha (7 chars by default) in its summary
-// comment, not the full 40. A cited hex token counts only when it is a prefix
-// of THIS head, so an unrelated sha in the body cannot pass the gate.
-function _citesHead(body, head) {
-  var re = /[0-9a-f]{7,40}/g;
-  var m;
-  while ((m = re.exec(body)) !== null) {
-    if (head.indexOf(m[0]) === 0) return true;
-  }
-  return false;
+  if (sawRowForHead) return rowState === null ? "running" : rowState;
+  // Not a status table. The one prose form that is evidence a review ran is the
+  // reviewer's own "Reviewed commit <sha>" verdict; anything else citing the
+  // head is a notice, and a notice is not a review.
+  var m = /\breviewed\s+commit\s+`?([0-9a-f]{7,40})`?/i.exec(body);
+  if (m && head.indexOf(m[1]) === 0) return "reviewed";
+  return null;
 }
 
 // Block until Codex has reviewed the current head (fail-closed on timeout).
@@ -1337,7 +1369,7 @@ function _waitForCodexReview(prNum) {
   while (Date.now() - startedAt <= budgetMs) {
     var reviewed = false;
     try {
-      reviewed = _codexReviewedHead(prNum);
+      reviewed = _codexReviewStateForHead(prNum);
       lastLookupFailure = null;
     } catch (e) {
       if (!e || !e.lookupFailed || !e.transient) throw e;
@@ -1345,9 +1377,21 @@ function _waitForCodexReview(prNum) {
       console.log("  review lookup failed transiently; re-asking on the next tick -- " +
                   _firstLine(e.message));
     }
-    if (reviewed) {
+    if (reviewed === "reviewed") {
       _ok("Codex has reviewed the current PR head -- thread gate now sees its findings");
       return;
+    }
+    // Terminal, and not a review: no amount of waiting produces one. Stop here
+    // and say which, rather than spending the budget and then reporting the
+    // reviewer as merely slow.
+    if (reviewed === "failed" || reviewed === "unavailable") {
+      throw new Error("release: Codex will not review PR #" + prNum + " head -- it reported " +
+        (reviewed === "failed"
+          ? "a FAILED review of this commit."
+          : "that the account's code-review usage limit is reached.") +
+        "\nWaiting cannot change that. Re-request with `gh pr comment " + prNum +
+        " --body \"@codex review\"` once it can run, or set RELEASE_SKIP_CODEX_WAIT=1 " +
+        "for this confirmed outage and review the branch locally instead.");
     }
     // Sleep only what is left. A full step here would carry the wait PAST the
     // budget it advertises -- a lookup that returns a moment before the
@@ -1859,6 +1903,7 @@ module.exports = {
   _openPrNumber:            _openPrNumber,
   _unresolvedThreads:       _unresolvedThreads,
   _codexReviewedHead:       _codexReviewedHead,
+  _codexReviewStateForHead: _codexReviewStateForHead,
   _waitForCodexReview:      _waitForCodexReview,
   _mergeBaseRef:            _mergeBaseRef,
   _wikiTouched:             _wikiTouched,

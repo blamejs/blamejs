@@ -442,7 +442,7 @@ async function testLadderIsPerPrincipalNotPerAddress() {
     String(rawKeyReq.botChallengeKey).indexOf(SECRET) === -1,
     String(rawKeyReq.botChallengeKey));
   check("bot-challenge: and such a request falls back to the address",
-    rawKeyReq.botChallengeKey === "198.51.100.21", String(rawKeyReq.botChallengeKey));
+    rawKeyReq.botChallengeKey === "addr:198.51.100.21", String(rawKeyReq.botChallengeKey));
 
   // requireBoundKey sets { id: record.id || null, ownerId, ... } and nothing
   // requires record.id, so an id-less record named nobody and fell to the
@@ -463,6 +463,55 @@ async function testLadderIsPerPrincipalNotPerAddress() {
   check("bot-challenge: and two such records from one address are two ladders",
     o1.botChallengeKey !== o2.botChallengeKey,
     JSON.stringify({ o1: o1.botChallengeKey, o2: o2.botChallengeKey }));
+
+  // The address is the fourth rung and needs a namespace like the other three,
+  // or a caller who can influence the resolved address spells a named
+  // principal's ladder. clientIp returns the last forwarded hop that fails the
+  // trusted-proxy test, so a request from inside the trusted range chooses it.
+  var spoofGate = _gate({ trustedProxies: ["10.0.0.0/8"] });
+  var target = _mockReq({ url: "/token/refresh", body: {}, apiKey: { id: "key-1" },
+                          socket: { remoteAddress: "10.0.0.9" } });
+  await spoofGate.middleware()(target, _mockRes(), function () {});
+  var spoofer = _mockReq({ url: "/token/refresh", body: {},
+                           socket: { remoteAddress: "10.0.0.9" },
+                           headers: { "x-forwarded-for": target.botChallengeKey + ", 10.0.0.77" } });
+  await spoofGate.middleware()(spoofer, _mockRes(), function () {});
+  check("bot-challenge: a forwarded address cannot spell a credential ladder",
+    spoofer.botChallengeKey !== target.botChallengeKey,
+    JSON.stringify({ target: target.botChallengeKey, spoofer: spoofer.botChallengeKey }));
+
+  // The object rule belongs to the credential carrier, whose primitive form is
+  // the secret. req.user is not a credential, and a number cannot be a secret,
+  // so refusing those loses a principal the resolver names.
+  var primGate = _gate();
+  var strUser = _mockReq({ url: "/token/refresh", body: {}, user: "alice",
+                           socket: { remoteAddress: "198.51.100.31" } });
+  var numUser = _mockReq({ url: "/token/refresh", body: {}, user: 42,
+                           socket: { remoteAddress: "198.51.100.31" } });
+  await primGate.middleware()(strUser, _mockRes(), function () {});
+  await primGate.middleware()(numUser, _mockRes(), function () {});
+  check("bot-challenge: a string req.user still names its principal",
+    String(strUser.botChallengeKey).indexOf("alice") !== -1,
+    String(strUser.botChallengeKey));
+  check("bot-challenge: and a numeric req.user is a different ladder again",
+    strUser.botChallengeKey !== numUser.botChallengeKey &&
+    String(numUser.botChallengeKey).indexOf("198.51.100.31") === -1,
+    JSON.stringify({ str: strUser.botChallengeKey, num: numUser.botChallengeKey }));
+
+  // A framework that hangs the principal off the request prototype, which is
+  // what Express does with app.request, still names it.
+  var protoGate = _gate();
+  var inherited = _mockReq({ url: "/token/refresh", body: {},
+                             socket: { remoteAddress: "198.51.100.32" } });
+  var viaProto = Object.create(inherited);
+  viaProto.user = undefined;
+  delete viaProto.user;
+  Object.setPrototypeOf(viaProto, Object.assign(Object.create(
+    Object.getPrototypeOf(inherited)), inherited, { user: { id: "proto-alice" } }));
+  await protoGate.middleware()(viaProto, _mockRes(), function () {});
+  check("bot-challenge: a prototype-supplied principal is still named",
+    String(viaProto.botChallengeKey).indexOf("proto-alice") !== -1,
+    String(viaProto.botChallengeKey));
 
   // Naming a record by its ownerId must not erase which field named it, or a
   // key whose id IS another key's owner id shares that owner's ladder.
