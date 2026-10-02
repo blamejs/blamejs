@@ -1065,6 +1065,73 @@ function testSmimeTrustChainMlDsaIntermediate() {
   });
 }
 
+// Detached ML-DSA CMS SignedData carrying one SignerInfo per entry in
+// `signers`, sids 0x01 upward, every signer's cert embedded in
+// SignedData.certificates.
+function _mlDsaMultiSignerEnvelope(tk, msg, signers) {
+  var sa = _signedAttrs([
+    _attr(OID_CT_ATTR, asn1.writeOid(OID.data)),
+    _attr(OID_MD_ATTR, asn1.writeOctetString(_sha3_512(msg))),
+  ]);
+  var sis = signers.map(function (s, i) {
+    return asn1.writeSequence([
+      asn1.writeInteger(Buffer.from([1])), _issuerSerialSid(i + 1), _algId(OID.sha3_512),
+      sa.implicit, _algId(OID.mldsa65), asn1.writeOctetString(tk.rawSign(s.keyPath, sa.set)),
+    ]);
+  });
+  return _craftSignedData({
+    signerInfos: sis,
+    certsDer:    signers.map(function (s) { return s.der; }),
+  });
+}
+
+// The chain half of the per-signer binding that testVerifyAllPerSignerKeyBinding
+// asks about signatures. Two signers, one anchor: the first signer's cert is the
+// anchor, the second's chains to nothing supplied. `valid` and `chainVerified`
+// describe every signer, so one unanchored signer has to refuse the envelope.
+function testVerifyAllTrustChainCoversEverySigner() {
+  if (!_mlDsaAvailable()) {
+    helpers.unavailable("verifyAll per-signer chain skipped (openssl ML-DSA unavailable)");
+    return;
+  }
+  _withMlDsaCa(function (tk) {
+    var anchored = tk.selfSigned("VerifyAll Anchored Signer");
+    var rogue    = tk.selfSigned("VerifyAll Rogue Signer");
+    if (!anchored || !rogue) {
+      helpers.unavailable("verifyAll per-signer chain skipped (cert mint failed)");
+      return;
+    }
+    var msg = Buffer.from("verifyall-every-signer-chain");
+    var env = _mlDsaMultiSignerEnvelope(tk, msg, [anchored, rogue]);
+    var threw = null;
+    var v = null;
+    try {
+      v = smime.verifyAll({
+        message: msg, signature: env,
+        signerPublicKeys:    { "01": anchored.rawPub, "02": rogue.rawPub },
+        trustAnchorCertsPem: [anchored.pem],
+      });
+    } catch (e) { threw = e; }
+    check("verifyAll: a signer whose cert chains to no supplied anchor is refused",
+      threw !== null && /^mail-crypto\/smime\//.test(String(threw.code || "")),
+      threw ? String(threw.code) : "accepted with chainVerified=" + (v && v.chainVerified));
+
+    // The anchored signer alone still validates, so the refusal above is the
+    // unanchored cert and not the multi-signer shape.
+    var bothAnchored = null;
+    try {
+      bothAnchored = smime.verifyAll({
+        message: msg, signature: env,
+        signerPublicKeys:    { "01": anchored.rawPub, "02": rogue.rawPub },
+        trustAnchorCertsPem: [anchored.pem, rogue.pem],
+      });
+    } catch (e2) { bothAnchored = e2; }
+    check("verifyAll: both signers anchored validates the envelope",
+      bothAnchored && bothAnchored.valid === true && bothAnchored.chainVerified === true,
+      bothAnchored && bothAnchored.code ? String(bothAnchored.code) : "ok");
+  });
+}
+
 function testVerifyAllTrustChain() {
   if (!_mlDsaAvailable()) {
     helpers.unavailable("verifyAll trust chain skipped (openssl ML-DSA unavailable)");
@@ -1198,6 +1265,7 @@ function run() {
   testSmimeTrustChainMlDsaWalk();
   testSmimeTrustChainMlDsaIntermediate();
   testVerifyAllTrustChain();
+  testVerifyAllTrustChainCoversEverySigner();
   testSmimeCheckCertRealCerts();
   testSmimeCheckCertValidityWindow();
 }

@@ -306,6 +306,69 @@ async function run() {
     check("smime.verify: refuses chain leaf bound to a different key",
       threw === "mail-crypto/smime/signer-not-in-chain");
 
+    // ---- verifyAll: the chain is validated for EVERY signer, not just
+    //      the first. Two signers, each with its own ML-DSA-65 key and its
+    //      own leaf, the leaves issued by two independent CAs. Supplying
+    //      only the first CA as a trust anchor has to refuse the envelope:
+    //      `valid` and `chainVerified` describe the whole envelope, so a
+    //      signer whose certificate reaches no supplied anchor cannot be
+    //      left unexamined.
+    var secondKp   = pq.ml_dsa_65.keygen();
+    var secondCaKp = pq.ml_dsa_65.keygen();
+    var secondCaDer = _buildMlDsaCert({
+      subjectCn:       "smime-pqc-ca-two.blamejs-test.example",
+      subjectPubKey:   secondCaKp.publicKey,
+      issuerCn:        "smime-pqc-ca-two.blamejs-test.example",
+      issuerSecretKey: secondCaKp.secretKey,                             // self-signed
+      serial:          1,
+      notBefore:       notBefore,
+      notAfter:        notAfter,
+      isCa:            true,
+    });
+    var secondLeafDer = _buildMlDsaCert({
+      subjectCn:       "smime-signer-two.blamejs-test.example",
+      subjectPubKey:   secondKp.publicKey,
+      issuerCn:        "smime-pqc-ca-two.blamejs-test.example",
+      issuerSecretKey: secondCaKp.secretKey,
+      serial:          9,                                                // sid serial-hex "09"
+      notBefore:       notBefore,
+      notAfter:        notAfter,
+    });
+    var multiSigned = b.cms.encodeSignedData({
+      encapContent: Buffer.from(message, "utf8"),
+      digestAlg:    "sha3-512",
+      certificates: [pqcLeafCertDer, secondLeafDer],
+      signers: [
+        { certificate: pqcLeafCertDer, secretKey: signerKp.secretKey, sigAlg: "ML-DSA-65" },
+        { certificate: secondLeafDer,  secretKey: secondKp.secretKey, sigAlg: "ML-DSA-65" },
+      ],
+    });
+    var keysBySerial = { "02": signerKp.publicKey, "09": secondKp.publicKey };
+
+    threw = null;
+    try {
+      b.mail.crypto.smime.verifyAll({
+        message:             Buffer.from(message, "utf8"),
+        signature:           multiSigned,
+        signerPublicKeys:    keysBySerial,
+        trustAnchorCertsPem: [caCertPem],                                // first CA only
+      });
+    } catch (eM) { threw = eM.code; }
+    check("smime.verifyAll: refuses a signer whose chain reaches no supplied anchor",
+      threw === "mail-crypto/smime/untrusted-chain", String(threw));
+
+    // Control: the same envelope with BOTH CAs as anchors validates, so the
+    // refusal above is the missing anchor rather than the two-signer shape.
+    var bothAnchored = b.mail.crypto.smime.verifyAll({
+      message:             Buffer.from(message, "utf8"),
+      signature:           multiSigned,
+      signerPublicKeys:    keysBySerial,
+      trustAnchorCertsPem: [caCertPem, _derToPem(secondCaDer)],
+    });
+    check("smime.verifyAll: every signer anchored validates the envelope",
+      bothAnchored.valid === true && bothAnchored.chainVerified === true &&
+      bothAnchored.signers.length === 2);
+
     // ---- X.509 sanity — confirm node:crypto can parse the leaf and
     //      verify its issuer matches the CA subject.
     var leafX509 = new nodeCrypto.X509Certificate(leaf.cert);

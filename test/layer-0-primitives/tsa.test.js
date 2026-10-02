@@ -229,7 +229,10 @@ function _makeToken(opts) {
   if (!opts.detached) encapChildren.push(asn1.writeContextExplicit(0, asn1.writeOctetString(tstInfo)));
   var encap = asn1.writeSequence(encapChildren);
 
-  var signerInfosSet = opts.emptySignerInfos ? asn1.writeSet([]) : asn1.writeSet([signerInfo]);
+  var signerInfosSet;
+  if (opts.emptySignerInfos)         signerInfosSet = asn1.writeSet([]);
+  else if (opts.twoSignerInfos)      signerInfosSet = asn1.writeSet([signerInfo, signerInfo]);
+  else                               signerInfosSet = asn1.writeSet([signerInfo]);
   var sdChildren = [
     asn1.writeInteger(Buffer.from([3])),                                  // version
     asn1.writeSet([_algId(digestOid, true)]),
@@ -435,6 +438,14 @@ function testVerifyStructuralRefusals() {
   var e5 = null;
   try { b.tsa.verifyToken(_validTokenFor(data, { omitSignedAttrs: true }).token, { allowUntrustedIssuer: true, data: data, hashAlg: "SHA-512" }); } catch (e) { e5 = e; }
   check("SignerInfo with no signed attributes refused", e5 && e5.code === "tsa/no-signed-attrs");
+
+  // RFC 3161 section 2.4.2: a time-stamp token carries the TSA's signature and
+  // no other. Verifying the first SignerInfo and returning a verdict about the
+  // token would accept one carrying a second signature nothing looked at.
+  var e6 = null;
+  try { b.tsa.verifyToken(_validTokenFor(data, { twoSignerInfos: true }).token, { allowUntrustedIssuer: true, data: data, hashAlg: "SHA-512" }); } catch (e) { e6 = e; }
+  check("token carrying a second SignerInfo refused",
+    e6 && e6.code === "tsa/multiple-signers", e6 ? String(e6.code) : "accepted");
 }
 
 // Attribute + signature-algorithm refusals inside the CMS signature check,

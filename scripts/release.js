@@ -909,12 +909,13 @@ function cmdPrepare(opts) {
   // newest operator-facing prose in the tree, so the API names in them get
   // checked here rather than only inside smoke.
   _run("node", ["test/layer-0-primitives/operator-doc-api-names.test.js"]);
+  _run("node", ["test/layer-0-primitives/operator-doc-error-codes.test.js"]);
   // The case-fold table is derived from the running Node's own case mappings,
   // so a Node upgrade can move it under us. Regenerating here would hide that;
   // failing says which release changed the answer.
   _run("node", ["scripts/gen-case-fold-classes.js", "--check"]);
   _ok("eslint + codebase-patterns + source-comment-blocks + operator-doc API names + " +
-      "case-fold table clean");
+      "operator-doc error codes + case-fold table clean");
 
   _section("supply-chain currency");
   // A stale SHA-pinned GitHub Action or vendored bundle becomes a
