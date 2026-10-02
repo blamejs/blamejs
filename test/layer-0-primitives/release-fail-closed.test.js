@@ -440,13 +440,6 @@ function testCodexCleanReviewCitesAbbreviatedSha() {
 function testARunningCodexReviewDoesNotCountAsReviewed() {
   var HEAD = "7d795e02a52f374a5fd639299262b04157c12cc5";
   var ABBREV = HEAD.slice(0, 7);
-  var RUNNING_SUMMARY =
-    "<!-- codex-pull-request-review-summary -->\n\n## Codex Review Summary\n\n" +
-    "| Review | Status | Commit | Review trigger |\n| --- | --- | --- | --- |\n" +
-    "| 📝 **Code Review** | 🔄 **Running** since " +
-    "<relative-time datetime=\"2026-10-02T05:07:54Z\">2026-10-02T05:07:54Z</relative-time> | `" +
-    ABBREV + "` | Manual request |\n";
-
   function respondWith(body) {
     return function (cmd, args) {
       if (args.indexOf("headRefOid") !== -1) return _okResult(HEAD);
@@ -460,34 +453,79 @@ function testARunningCodexReviewDoesNotCountAsReviewed() {
     };
   }
 
-  withQuietConsole(function () {
-    withCapture(respondWith(RUNNING_SUMMARY), function () {
-      check("a summary comment reporting a RUNNING review does not count as reviewed",
-        release._codexReviewedHead("806") === false);
-    });
-  });
+  // The real comment carries this trailer, and its prose contains the word
+  // "running". A guard that scans the whole body reads the vendor's own help
+  // text as a review state.
+  var ABOUT_BLOCK =
+    "\n\n<details> <summary>About Codex in GitHub</summary>\n<br/>\n\n" +
+    "Reviews are triggered when you\n- Open a pull request for review\n" +
+    "Codex reacts with eyes while any review is running, comments if it has " +
+    "suggestions, and reacts with thumbs up once all reviews finish with no " +
+    "findings.\n\n</details>\n";
 
-  // Control: the same comment once the review has finished DOES count, so the
-  // guard narrows the running state rather than refusing the summary outright.
-  var FINISHED_SUMMARY = RUNNING_SUMMARY
-    .replace("🔄 **Running** since " +
-             "<relative-time datetime=\"2026-10-02T05:07:54Z\">2026-10-02T05:07:54Z</relative-time>",
-             "✅ **Completed**");
-  withQuietConsole(function () {
-    withCapture(respondWith(FINISHED_SUMMARY), function () {
-      check("and the same summary counts once it no longer reports a running review",
-        release._codexReviewedHead("806") === true);
-    });
-  });
+  function summary(rows) {
+    return "<!-- codex-pull-request-review-summary -->\n\n## Codex Review Summary\n\n" +
+      "This comment shows the latest Codex review activity on this pull request.\n\n" +
+      "| Review | Status | Commit | Review trigger |\n| --- | --- | --- | --- |\n" +
+      rows.join("\n") + "\n" + ABOUT_BLOCK;
+  }
+  var RUNNING_ROW   = "| Code Review | 🔄 **Running** since <relative-time " +
+                      "datetime=\"2026-10-02T05:07:54Z\">x</relative-time> | `" +
+                      ABBREV + "` | Manual request |";
+  var COMPLETED_ROW = "| Code Review | ✅ **Completed** <relative-time " +
+                      "datetime=\"2026-10-02T05:14:50Z\">x</relative-time> | `" +
+                      ABBREV + "` | Manual request |";
+  var FAILED_ROW    = "| Code Review | ⚠️ **Failed** | `" + ABBREV + "` | Manual request |";
+  var SEC_RUNNING   = "| Security Review | 🔄 **Running** since <relative-time " +
+                      "datetime=\"2026-10-02T05:14:50Z\">x</relative-time> | `" +
+                      ABBREV + "` | Manual request |";
 
-  // A findings comment is not a summary at all, and must still count: it is
-  // posted only after the review ran.
-  withQuietConsole(function () {
-    withCapture(respondWith("Reviewed commit `" + ABBREV + "`\n\n- [P2] something"), function () {
-      check("a findings comment citing the head counts as reviewed",
-        release._codexReviewedHead("806") === true);
+  function reviewed(body) {
+    var out = null;
+    withQuietConsole(function () {
+      withCapture(respondWith(body), function () { out = release._codexReviewedHead("806"); });
     });
-  });
+    return out;
+  }
+
+  check("a summary whose row for this head is RUNNING does not count as reviewed",
+    reviewed(summary([RUNNING_ROW])) === false);
+  check("and the About block's own prose does not decide the state",
+    reviewed(summary([COMPLETED_ROW])) === true);
+
+  // A FAILED review produced no findings and never will, so the gate must not
+  // report that the head was reviewed and wave the merge through.
+  check("a summary reporting a FAILED review does not count as reviewed",
+    reviewed(summary([FAILED_ROW])) === false);
+
+  // A security review posts findings too, so while one is running this head is
+  // not fully reviewed and the wait is right to keep polling. What must never
+  // block is static prose: the About block above says "while any review is
+  // running" on every comment the reviewer ever posts, and reading the whole
+  // body for that word is what would hang a release until the wait times out.
+  check("a running security review still holds the merge",
+    reviewed(summary([COMPLETED_ROW, SEC_RUNNING])) === false);
+  check("but a finished code review and a finished security review count",
+    reviewed(summary([COMPLETED_ROW,
+      SEC_RUNNING.replace("🔄 **Running** since <relative-time " +
+        "datetime=\"2026-10-02T05:14:50Z\">x</relative-time>", "✅ **Completed**")])) === true);
+
+  // The marker is vendor-internal HTML the project does not control, so the
+  // verdict must not depend on it.
+  check("a running summary still does not count once its marker is renamed",
+    reviewed(summary([RUNNING_ROW]).replace(
+      "codex-pull-request-review-summary", "codex-review-summary-v2")) === false);
+
+  // A findings comment is not a summary and must still count: it exists only
+  // because a review ran.
+  check("a findings comment citing the head counts as reviewed",
+    reviewed("Reviewed commit `" + ABBREV + "`\n\n- [P2] something") === true);
+
+  // But a bot notice citing the head is not a review.
+  check("a notice that a review is already running does not count",
+    reviewed("A review is already running for `" + ABBREV + "`.") === false);
+  check("a queued notice does not count either",
+    reviewed("Review queued for `" + ABBREV + "`.") === false);
 }
 
 // ---- the Codex wait absorbs a blip but never calls it "not reviewed" -----

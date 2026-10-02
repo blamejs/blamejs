@@ -1239,19 +1239,56 @@ function _codexReviewedHead(prNum) {
   var comments = _ghJson(cv, "PR #" + prNum + " comment list");
   return (comments || []).some(function (c) {
     return c && c.author && _isCodexLogin(c.author.login) &&
-           typeof c.body === "string" && _citesHead(c.body, head) &&
-           !_summaryReportsARunningReview(c.body);
+           typeof c.body === "string" && _commentEvidencesAReview(c.body, head);
   });
 }
 
 // The review-summary comment is a STATUS TRACKER, posted when a review STARTS
 // and edited in place as it progresses, and its table cites the head sha from
 // the first revision. Citing the head is therefore not evidence that a review
-// finished: on PR #806 the wait accepted a summary whose status column read
-// "Running", merged, and the review was still going. A summary that reports a
-// running review does not count, so the wait keeps polling until that clears.
-function _summaryReportsARunningReview(body) {
-  return /codex-pull-request-review-summary/.test(body) && /\bRunning\b/.test(body);
+// finished: on PR #806 the wait accepted such a summary, merged, and the review
+// finished afterwards with two findings.
+//
+// Reading the whole body for the word "Running" is not the answer either. It
+// makes a FAILED review count as reviewed, it makes the vendor's own "while any
+// review is running" help text decide the verdict, and a finished code review
+// beside a still-running SECURITY review would block the merge until the wait
+// times out. So find the table row that cites THIS head and read its state.
+var _REVIEW_STATE = [
+  { state: "running",   re: /\bRunning\b|\bQueued\b|\bIn progress\b/i },
+  { state: "failed",    re: /\bFailed\b|\bErrored\b|\bCancelled\b|\bCanceled\b/i },
+  { state: "completed", re: /\bCompleted\b|\bFinished\b|\bDone\b|\bNo findings\b/i },
+];
+
+function _summaryRowStateForHead(body, head) {
+  var lines = String(body).split("\n");
+  var worst = null;
+  for (var i = 0; i < lines.length; i += 1) {
+    var line = lines[i];
+    if (line.indexOf("|") !== 0 || !_citesHead(line, head)) continue;
+    var cells = line.split("|");
+    var status = cells.length > 2 ? cells[2] : "";
+    for (var s = 0; s < _REVIEW_STATE.length; s += 1) {
+      if (!_REVIEW_STATE[s].re.test(status)) continue;
+      // A row still running means this head's review is not finished, whatever
+      // another row says; otherwise a terminal row is evidence it ran.
+      if (_REVIEW_STATE[s].state === "running") return "running";
+      if (worst === null) worst = _REVIEW_STATE[s].state;
+      break;
+    }
+  }
+  return worst;
+}
+
+function _commentEvidencesAReview(body, head) {
+  if (!_citesHead(body, head)) return false;
+  var rowState = _summaryRowStateForHead(body, head);
+  if (rowState === "completed") return true;
+  if (rowState === "running" || rowState === "failed") return false;
+  // Not a status table: a findings comment exists only because a review ran, but
+  // a notice that one is pending is not a review of anything.
+  return !/\b(?:already running|is running|queued|will review|reviewing)\b/i.test(body) &&
+         !/usage limit|add credits/i.test(body);
 }
 
 // Codex cites the git-ABBREVIATED head sha (7 chars by default) in its summary

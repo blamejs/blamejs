@@ -233,14 +233,17 @@ async function testMiddlewareChallengeFn() {
     },
     audit:        auditMock,
   });
-  var key = "user@example.com";
+  var email = "user@example.com";
+  // The body rung namespaces what it reads, so the ladder the middleware will
+  // look up is "body:<email>". Seeding anything else tests nothing.
+  var key = "body:" + email;
   // Force the state into challenged.
   await gate.recordFailure(key);
 
   var mw = gate.middleware();
   var nextCalled = 0;
   // Bad captcha → middleware should not call next; it writes 401.
-  var req = _mockReq({ body: { email: key, captchaToken: "wrong" } });
+  var req = _mockReq({ body: { email: email, captchaToken: "wrong" } });
   var res = _mockRes();
   await mw(req, res, function () { nextCalled += 1; });
   check("middleware did not call next on bad captcha", nextCalled === 0);
@@ -248,7 +251,7 @@ async function testMiddlewareChallengeFn() {
   check("challengeFn invoked", challengeCalls === 1);
 
   // Good captcha → next called, state transitions to passed.
-  var req2 = _mockReq({ body: { email: key, captchaToken: "good" } });
+  var req2 = _mockReq({ body: { email: email, captchaToken: "good" } });
   var res2 = _mockRes();
   await mw(req2, res2, function () { nextCalled += 1; });
   check("middleware calls next on good captcha", nextCalled === 1);
@@ -267,12 +270,13 @@ async function testMiddlewareLockedReturns423() {
     escalationThreshold: 2,
     audit:        auditMock,
   });
-  var key = "u@x";
+  var email = "u@x";
+  var key = "body:" + email;      // the ladder the body rung will look up
   await gate.recordFailure(key);
   await gate.recordFailure(key);  // → locked
 
   var mw = gate.middleware();
-  var req = _mockReq({ body: { email: key } });
+  var req = _mockReq({ body: { email: email } });
   var res = _mockRes();
   var nextCalled = 0;
   await mw(req, res, function () { nextCalled += 1; });
@@ -424,6 +428,71 @@ async function testLadderIsPerPrincipalNotPerAddress() {
   check("bot-challenge: the other principal behind that address is not",
     bobState.stage !== "locked", JSON.stringify(bobState));
 
+  // A raw key string is what `req.apiKey = req.headers["x-api-key"]` holds, and
+  // the resolver folds a primitive verbatim, so resolving one would write the
+  // secret into the ladder key, the lockout key, the session store and every
+  // audit row. Only an object carrier names a principal, which is the guard the
+  // idempotency scope already applies.
+  var secretGate = _gate();
+  var SECRET = "sk_live_51H8ZqR2eZvKYlo2C";
+  var rawKeyReq = _mockReq({ url: "/token/refresh", body: {}, apiKey: SECRET,
+                             socket: { remoteAddress: "198.51.100.21" } });
+  await secretGate.middleware()(rawKeyReq, _mockRes(), function () {});
+  check("bot-challenge: a raw key string never reaches the ladder key",
+    String(rawKeyReq.botChallengeKey).indexOf(SECRET) === -1,
+    String(rawKeyReq.botChallengeKey));
+  check("bot-challenge: and such a request falls back to the address",
+    rawKeyReq.botChallengeKey === "198.51.100.21", String(rawKeyReq.botChallengeKey));
+
+  // requireBoundKey sets { id: record.id || null, ownerId, ... } and nothing
+  // requires record.id, so an id-less record named nobody and fell to the
+  // address — the bug this rung exists to close. ownerId is the principal the
+  // key acts for.
+  var ownerGate = _gate();
+  var o1 = _mockReq({ url: "/token/refresh", body: {},
+                      apiKey: { id: null, ownerId: "acct-1", scopes: ["read"] },
+                      socket: { remoteAddress: "198.51.100.22" } });
+  var o2 = _mockReq({ url: "/token/refresh", body: {},
+                      apiKey: { id: null, ownerId: "acct-2", scopes: ["read"] },
+                      socket: { remoteAddress: "198.51.100.22" } });
+  await ownerGate.middleware()(o1, _mockRes(), function () {});
+  await ownerGate.middleware()(o2, _mockRes(), function () {});
+  check("bot-challenge: an id-less key record is named by its ownerId",
+    o1.botChallengeKey !== "198.51.100.22" && o2.botChallengeKey !== "198.51.100.22",
+    JSON.stringify({ o1: o1.botChallengeKey, o2: o2.botChallengeKey }));
+  check("bot-challenge: and two such records from one address are two ladders",
+    o1.botChallengeKey !== o2.botChallengeKey,
+    JSON.stringify({ o1: o1.botChallengeKey, o2: o2.botChallengeKey }));
+
+  // A body credential is lowercased and returned raw, so without a namespace of
+  // its own it reproduces a prefixed rung's key exactly and an unauthenticated
+  // caller can drive another principal's ladder to the escalation threshold.
+  var forgeGate = _gate();
+  var victim = _mockReq({ url: "/token/refresh", body: {}, apiKey: { id: "key-1" },
+                          socket: { remoteAddress: "198.51.100.23" } });
+  await forgeGate.middleware()(victim, _mockRes(), function () {});
+  var forger = _mockReq({ url: "/login", body: { email: victim.botChallengeKey },
+                          socket: { remoteAddress: "192.0.2.77" } });
+  await forgeGate.middleware()(forger, _mockRes(), function () {});
+  check("bot-challenge: a body credential cannot forge a credential rung's ladder",
+    forger.botChallengeKey !== victim.botChallengeKey,
+    JSON.stringify({ victim: victim.botChallengeKey, forger: forger.botChallengeKey }));
+
+  // req.apiKey must only be read when it is needed, and inside the guard that
+  // already protects the resolver: a lazily-resolving accessor that throws used
+  // to collapse a request whose req.user names the principal onto one shared key.
+  var lazyGate = _gate();
+  var lazyReq = _mockReq({ url: "/token/refresh", body: {}, user: { sub: "alice" },
+                           socket: { remoteAddress: "198.51.100.24" } });
+  Object.defineProperty(lazyReq, "apiKey", {
+    enumerable: true, configurable: true,
+    get: function () { throw new Error("key record unavailable"); },
+  });
+  await lazyGate.middleware()(lazyReq, _mockRes(), function () {});
+  check("bot-challenge: a throwing apiKey accessor does not lose the named user",
+    String(lazyReq.botChallengeKey).indexOf("alice") !== -1,
+    String(lazyReq.botChallengeKey));
+
   // `b.middleware.requireBoundKey` stores the verified principal on
   // `req.apiKey`, not `req.user`, so a bodyless API-key route named no
   // principal and fell to the address: two keys behind one NAT shared a ladder.
@@ -454,13 +523,13 @@ async function testLadderIsPerPrincipalNotPerAddress() {
     asUser.botChallengeKey !== asKey.botChallengeKey,
     JSON.stringify({ user: asUser.botChallengeKey, key: asKey.botChallengeKey }));
 
-  // A body credential still names the ladder, so the documented
-  // recordFailure("user@example.com") pairing is unchanged.
+  // A body credential still names the ladder, lowercased, under a namespace of
+  // its own so it cannot spell a credential rung's key.
   var byEmail = _gate();
   var withEmail = _mockReq({ body: { email: "User@Example.com" } });
   await byEmail.middleware()(withEmail, _mockRes(), function () {});
-  check("bot-challenge: a body credential still keys the ladder, lowercased",
-    withEmail.botChallengeKey === "user@example.com", withEmail.botChallengeKey);
+  check("bot-challenge: a body credential keys the ladder, lowercased and namespaced",
+    withEmail.botChallengeKey === "body:user@example.com", withEmail.botChallengeKey);
 
   // Behind a declared proxy the address is the client's, not the proxy's, so
   // two clients arriving through one proxy are two ladders.
