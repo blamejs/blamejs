@@ -464,6 +464,34 @@ async function testLadderIsPerPrincipalNotPerAddress() {
     o1.botChallengeKey !== o2.botChallengeKey,
     JSON.stringify({ o1: o1.botChallengeKey, o2: o2.botChallengeKey }));
 
+  // Naming a record by its ownerId must not erase which field named it, or a
+  // key whose id IS another key's owner id shares that owner's ladder.
+  var sameText = _gate();
+  var byId = _mockReq({ url: "/token/refresh", body: {}, apiKey: { id: "acct-1" },
+                        socket: { remoteAddress: "198.51.100.25" } });
+  var byOwner = _mockReq({ url: "/token/refresh", body: {},
+                           apiKey: { id: null, ownerId: "acct-1" },
+                           socket: { remoteAddress: "198.51.100.25" } });
+  await sameText.middleware()(byId, _mockRes(), function () {});
+  await sameText.middleware()(byOwner, _mockRes(), function () {});
+  check("bot-challenge: an id and an ownerId of the same text are two ladders",
+    byId.botChallengeKey !== byOwner.botChallengeKey,
+    JSON.stringify({ byId: byId.botChallengeKey, byOwner: byOwner.botChallengeKey }));
+
+  // And the tenant binding the resolver applies has to survive the fallback.
+  var tenanted = _gate();
+  var t1 = _mockReq({ url: "/token/refresh", body: {},
+                      apiKey: { id: null, ownerId: "owner", tenantId: "t1" },
+                      socket: { remoteAddress: "198.51.100.26" } });
+  var t2 = _mockReq({ url: "/token/refresh", body: {},
+                      apiKey: { id: null, ownerId: "owner", tenantId: "t2" },
+                      socket: { remoteAddress: "198.51.100.26" } });
+  await tenanted.middleware()(t1, _mockRes(), function () {});
+  await tenanted.middleware()(t2, _mockRes(), function () {});
+  check("bot-challenge: one owner in two tenants is two ladders",
+    t1.botChallengeKey !== t2.botChallengeKey,
+    JSON.stringify({ t1: t1.botChallengeKey, t2: t2.botChallengeKey }));
+
   // A body credential is lowercased and returned raw, so without a namespace of
   // its own it reproduces a prefixed rung's key exactly and an unauthenticated
   // caller can drive another principal's ladder to the escalation threshold.
