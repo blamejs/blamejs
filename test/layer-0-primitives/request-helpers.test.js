@@ -1110,6 +1110,19 @@ async function testAnAsyncActorKeyHookOrphansNoRejection() {
         { actorKey: function () { throw new Error("sync boom"); } });
     } catch (_e) { threw = true; }
     check("and a synchronous throw still propagates to the caller", threw === true);
+
+    // The hook is a method on the options object, so `this` is that object. A
+    // hook that reads its own configuration through `this` has to keep working.
+    var withThis = {
+      field: "sub",
+      actorKey: function (a) { return a[this.field]; },
+    };
+    check("a hook reading its configuration through `this` still names the actor",
+      rh.actorIdentityKey({ sub: "alice" }, withThis) !== null,
+      JSON.stringify(rh.actorIdentityKey({ sub: "alice" }, withThis)));
+    check("and actorDisplayName gives it the same receiver",
+      typeof rh.actorDisplayName({ sub: "alice" }, withThis) === "string",
+      JSON.stringify(rh.actorDisplayName({ sub: "alice" }, withThis)));
   } finally {
     process.removeListener("unhandledRejection", onRejection);
   }
