@@ -152,24 +152,46 @@ async function run() {
     x509Chain.canonicalNameKey(iotaSub) === x509Chain.canonicalNameKey(iotaCap),
     x509Chain.canonicalNameKey(iotaSub) + " vs " + x509Chain.canonicalNameKey(iotaCap));
 
-  // Some characters carry no case mapping until compatibility normalization
-  // turns them into a letter: the mathematical bold capital A is uncased until
-  // NFKC makes it an ASCII A, and the Greek upsilon hook symbol until NFKC makes
-  // it an upsilon. Normalizing once after the fold leaves those unfolded, and
-  // normalizing once before it leaves a case-mapped decomposition unrecomposed,
-  // so neither single order settles both. The preparation runs to a fixed point
-  // instead, which is why both of these agree with their plain spelling.
-  var mathBold = _name([[OID_CN, asn1.writeUtf8String("\u{1d400} CA")]]);
-  var asciiA   = _name([[OID_CN, asn1.writeUtf8String("A CA")]]);
-  check("a letter only NFKC reveals is still folded",
-    x509Chain.canonicalNameKey(mathBold) === x509Chain.canonicalNameKey(asciiA),
-    x509Chain.canonicalNameKey(mathBold) + " vs " + x509Chain.canonicalNameKey(asciiA));
+  // Normalization is to form C, not form KC, and the difference is the whole
+  // safety of the comparison. Compatibility normalization maps one character onto
+  // a DIFFERENT one, so under form KC 24,356 pairs of unrelated code points took
+  // the same key: every superscript, subscript, circled, fullwidth and
+  // mathematical variant collapsed onto its ASCII base. U+1D2C is category Lm, so
+  // no category test excludes it, and NFKC maps it to `A`. Canonical
+  // normalization only composes and reorders, so it never maps a character onto
+  // another one, and these must stay distinct.
+  [["ᴬ", "modifier letter capital A, which NFKC maps to A"],
+   ["\u{1d400}", "mathematical bold capital A"],
+   ["Ａ", "fullwidth capital A"],
+   ["①", "circled digit one"]].forEach(function (pair) {
+    var variant = _name([[OID_CN, asn1.writeUtf8String("A" + pair[0] + "B CA")]]);
+    var plain   = _name([[OID_CN, asn1.writeUtf8String("A" + pair[0].normalize("NFKC") + "B CA")]]);
+    check("a compatibility variant does NOT take the key of what NFKC maps it to (" +
+          pair[1] + ")",
+      x509Chain.canonicalNameKey(variant) !== x509Chain.canonicalNameKey(plain),
+      String(x509Chain.canonicalNameKey(variant)));
+  });
 
-  var upsilonHook = _name([[OID_CN, asn1.writeUtf8String("ϒ CA")]]);
-  var upsilon     = _name([[OID_CN, asn1.writeUtf8String("υ CA")]]);
-  check("the upsilon hook symbol folds onto the letter NFKC maps it to",
-    x509Chain.canonicalNameKey(upsilonHook) === x509Chain.canonicalNameKey(upsilon),
-    x509Chain.canonicalNameKey(upsilonHook) + " vs " + x509Chain.canonicalNameKey(upsilon));
+  // The legacy string types carry a restricted repertoire, and decoding bytes
+  // outside it as Latin-1 fed preparation characters that were never in the
+  // input: a PrintableString holding the bytes 41 00 42 decoded to A, NUL, B, and
+  // the NUL was then deleted, so it took the key of the valid PrintableString
+  // `AB`. A value outside its type's repertoire now keys by its BYTES, which can
+  // only equal an identical byte sequence.
+  var validAb = _name([[OID_CN, asn1.writePrintableString("AB")]]);
+  [[Buffer.from([0x41, 0x00, 0x42]), "a NUL byte"],
+   [Buffer.from([0x41, 0xad, 0x42]), "a byte that would decode to SOFT HYPHEN"],
+   [Buffer.from([0x41, 0x2a, 0x42]), "an asterisk, outside the PrintableString set"]
+  ].forEach(function (pair) {
+    var tlv = Buffer.concat([Buffer.from([0x13, pair[0].length]), pair[0]]);
+    var raw = _name([[OID_CN, tlv]]);
+    var key = x509Chain.canonicalNameKey(raw);
+    check("a PrintableString holding " + pair[1] +
+          " does not take the key of the valid string",
+      key !== x509Chain.canonicalNameKey(validAb), String(key));
+    check("and it keys by its bytes rather than as text (" + pair[1] + ")",
+      key !== null && key.indexOf("b:") !== -1, String(key));
+  });
 
   // And the key is a fixed point: feeding the prepared text back in changes
   // nothing. A preparation that still moved would mean two callers comparing at
