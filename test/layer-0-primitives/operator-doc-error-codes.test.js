@@ -38,8 +38,13 @@ var nodePath = require("node:path");
 var ROOT = nodePath.join(__dirname, "..", "..");
 var LIB  = nodePath.join(ROOT, "lib");
 
-// An error code: two or more slash-separated lowercase segments.
-var CODE_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?:\/[a-z0-9]+(?:-[a-z0-9]+)*){1,3}$/;
+// An error code: two or more slash-separated segments, each starting lowercase.
+// A hyphenated part may carry uppercase after its first character, because a code
+// that names an option names it as the option is spelled:
+// `mail-deploy/bad-displayName`, `deliver/bad-timeout-mxLookupMs`,
+// `vex/missing-documentId`. Reading lowercase only made those invisible, so a
+// block omitting one of them passed.
+var CODE_RE = /^[a-z][a-z0-9]*(?:-[A-Za-z0-9]+)*(?:\/[a-z0-9]+(?:-[A-Za-z0-9]+)*){1,3}$/;
 
 // Two readings, each used for the property it has.
 //
@@ -64,7 +69,7 @@ var NEW_ERROR_RE = /new\s+[A-Za-z_$][A-Za-z0-9_$]*Error\(\s*(?:"([^"\n]+)"|'([^'
 var CLASS_THEN_CODE_RE = /[A-Za-z_$][A-Za-z0-9_$]*Error\s*,\s*(?:"([^"\n]+)"|'([^'\n]+)')/g;
 var FACTORY_CALL_RE = /\.factory\(\s*(?:"([^"\n]+)"|'([^'\n]+)')/g;
 var ANY_OWN_NAMESPACE_LITERAL =
-  /(?:"|')([a-z0-9][a-z0-9-]*(?:\/[a-z0-9-]+){1,3})(?:"|')/g;
+  /(?:"|')([a-z0-9][A-Za-z0-9-]*(?:\/[A-Za-z0-9-]+){1,3})(?:"|')/g;
 
 // A literal on the far side of an equality test, or behind `case`, is a code
 // being RECOGNIZED rather than built. `b.network.dns.discoverEncrypted` reads
@@ -84,7 +89,7 @@ var BUILDER_ALIAS_RE = new RegExp(
   "(?:var|let|const)\\s+([A-Za-z_$][A-Za-z0-9_$]*)\\s*=\\s*" +
   "[A-Za-z_$][A-Za-z0-9_$.]*\\.([A-Za-z_$][A-Za-z0-9_$]*)\\(" +
   "((?:(?!\\}\\s*\\))[\\s\\S])*)", "g");
-var CODE_PREFIX_RE = /code[Pp]refix\s*:\s*"([a-z][a-z0-9-]*(?:\/[a-z0-9-]+)*)"/;
+var CODE_PREFIX_RE = /code[Pp]refix\s*:\s*"([a-z][A-Za-z0-9-]*(?:\/[A-Za-z0-9-]+)*)"/;
 
 // A builder reaches suffixes its own body never spells: `makeProfileResolver`
 // raises "/bad-posture" through `_postureProfileOrThrow`. Reading one body alone
@@ -105,7 +110,7 @@ function builderSuffixes(gateContractSrc) {
   names.forEach(function (name) {
     var sufs = {};
     var sm;
-    var sufRe = /(?:"|')(\/[a-z][a-z0-9-]*)(?:"|')/g;
+    var sufRe = /(?:"|')(\/[a-z][A-Za-z0-9-]*)(?:"|')/g;
     while ((sm = sufRe.exec(bodies[name])) !== null) sufs[sm[1]] = true;
     own[name] = sufs;
     calls[name] = names.filter(function (other) {
@@ -203,6 +208,220 @@ function namespacesFromThrows(text, out) {
   }
 }
 
+// The codes a body THROWS, which is the set that reaches its caller. Reading
+// every code-shaped literal in the body instead demands codes the function never
+// raises: `lib/worker-pool.js` builds `workerpool/post-failed`,
+// `workerpool/task-failed` and `workerpool/timeout` and hands each to
+// `_finishTask`, which rejects a TASK's promise rather than the `create()` call,
+// so `b.workerPool.create` was asked to document eight codes its caller cannot
+// see. Same span rule as the vocabulary scan above: a statement ends at the first
+// `;` outside parentheses.
+// Spans of `throw ...;` and `reject(...)`, where a statement ends at the first
+// `;` outside parentheses.
+function raisingSpans(text) {
+  var spans = [];
+  var re = /\b(?:throw|reject)\b/g;
+  var m;
+  while ((m = re.exec(text)) !== null) {
+    var depth = 0;
+    var end = m.index;
+    for (; end < text.length; end += 1) {
+      var c = text[end];
+      if (c === "(") depth += 1;
+      else if (c === ")") { depth -= 1; if (depth < 0) break; }
+      else if (c === ";" && depth === 0) break;
+    }
+    spans.push([m.index, end]);
+  }
+  return spans;
+}
+
+// Spans of an error-CONSTRUCTION expression: `new <X>Error( … )` and
+// `<something>.factory( … )`, to the matching close paren, with what the
+// expression's value is done with. An error built, assigned, decorated and thrown
+// a few lines later is raised just as directly as one thrown in place:
+// `unwrapWithPassphrase` in `lib/archive-wrap.js` builds
+// `archive-wrap/decrypt-failed`, attaches metadata to it and throws the variable.
+// One RETURNED is raised too, since a function whose value is an error exists for
+// a caller to throw it. Only one passed straight to another call, and never named,
+// has its fate decided elsewhere.
+function constructionSpans(text) {
+  var spans = [];
+  var re = /new\s+[A-Za-z_$][\w$]*Error\s*\(|\.factory\s*\(/g;
+  var m;
+  while ((m = re.exec(text)) !== null) {
+    var depth = 0;
+    var i = m.index + m[0].length - 1;
+    for (; i < text.length; i += 1) {
+      if (text[i] === "(") depth += 1;
+      else if (text[i] === ")") { depth -= 1; if (depth === 0) { i += 1; break; } }
+    }
+    var head = text.slice(Math.max(0, m.index - 160), m.index);
+    var assigned = /(?:(?:var|let|const)\s+)?([A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?$/.exec(head);
+    spans.push({
+      start:      m.index,
+      end:        i,
+      assignedTo: assigned ? assigned[1] : null,
+      returned:   /\breturn\s*(?:await\s+)?$/.test(head),
+    });
+  }
+  return spans;
+}
+
+// Does the body raise the value held by this name?
+function raisesName(text, name) {
+  var safe = name.replace(/\$/g, "\\$");
+  return new RegExp("\\bthrow\\s+" + safe + "\\b").test(text) ||
+         new RegExp("\\breject\\s*\\(\\s*" + safe + "\\b").test(text);
+}
+
+// The construction holding `at`, or null.
+function constructionAt(spans, at) {
+  for (var i = 0; i < spans.length; i += 1) {
+    if (at >= spans[i].start && at < spans[i].end) return spans[i];
+  }
+  return null;
+}
+
+function inAnySpan(spans, at) {
+  for (var i = 0; i < spans.length; i += 1) {
+    if (at >= spans[i][0] && at < spans[i][1]) return true;
+  }
+  return false;
+}
+
+// The codes a body RAISES into its caller.
+//
+// Two readings were each wrong in one direction. Taking every code-shaped
+// literal in the body demanded codes the caller cannot see: `lib/worker-pool.js`
+// builds `workerpool/post-failed`, `workerpool/task-failed` and
+// `workerpool/timeout` and hands each to `_finishTask`, which rejects a TASK's
+// promise, so `b.workerPool.create` was asked for eight codes. Taking only codes
+// inside a `throw` or `reject` then lost the ones a throwing validator raises,
+// since `validateOpts.checkOrThrow(opts, keys, name, ErrorClass, "ns/code")` and
+// `validateOpts.requireNonEmptyString(x, label, ErrorClass, "ns/code")` carry the
+// code as an argument and name no `throw` at the call site.
+//
+// What separates them is the error CONSTRUCTION. A code inside `new <X>Error(…)`
+// or `<x>.factory(…)` that no `throw` or `reject` encloses is an error whose fate
+// the body decides, and handing it to a callback is not raising it.
+//
+// Outside a construction, a code-shaped literal is an argument, and being an
+// argument is not enough either: `lib/worker-pool.js` writes its codes a second
+// time as the `reason` of an audit event, which REPORTS the code rather than
+// raising it. Two shapes raise. The call carries an error class beside the code,
+// which is how every shared validator takes one
+// (`validateOpts.checkOrThrow(opts, keys, name, MailDeployError, "ns/code")`, and
+// the `{ errorClass, code }` object form). Or the callee is a local helper that
+// throws, which is how a module routes every refusal through one place:
+// `lib/regex-linear.js` has `_fail(message, code)` whose body throws, so
+// `_fail("…", "regex/unsupported-group")` raises that code from the caller.
+var RAISING_CLASS_RE = /[A-Za-z_$][\w$]*Error\b|errorClass|ErrorClass/;
+
+// The innermost call whose argument list contains `at`.
+function enclosingCall(text, at) {
+  var depth = 0;
+  var i = at;
+  for (; i >= 0; i -= 1) {
+    var c = text[i];
+    if (c === ")") depth += 1;
+    else if (c === "(") { if (depth === 0) break; depth -= 1; }
+  }
+  if (i < 0) return null;
+  var open = i;
+  var head = text.slice(Math.max(0, open - 160), open);
+  var nameMatch = /([A-Za-z_$][\w$]*)\s*$/.exec(head);
+  var d = 0;
+  var j = open;
+  for (; j < text.length; j += 1) {
+    if (text[j] === "(") d += 1;
+    else if (text[j] === ")") { d -= 1; if (d === 0) { j += 1; break; } }
+  }
+  return {
+    callee: nameMatch ? nameMatch[1] : null,
+    args:   text.slice(open, j),
+  };
+}
+
+// A local helper RAISES what it is handed when its body throws. One that only
+// rejects does not raise into this caller: it settles a promise it holds, which is
+// how `_finishTask` in `lib/worker-pool.js` delivers a failure to the task that
+// asked for it rather than to whoever called `create`.
+function raisingHelperNames(helpers) {
+  var out = {};
+  Object.keys(helpers || {}).forEach(function (name) {
+    if (/\bthrow\b/.test(helpers[name])) out[name] = true;
+  });
+  return out;
+}
+
+// The helpers declared INSIDE this primitive, by name. A factory's own
+// `_finishTask` is nested, so classifying only the module's top-level functions
+// cannot tell whether handing it an error raises that error here.
+function nestedHelperBodies(body) {
+  var masked = maskLiteralsAndComments(body);
+  var declEnd = masked.search(/\{/);
+  if (declEnd === -1) return {};
+  var nested = nestedDeclarations(masked, declEnd + 1);
+  if (nested === null) return {};
+  var out = {};
+  nested.forEach(function (n) {
+    if (n.name && n.end > n.brace) out[n.name] = body.slice(n.brace, n.end);
+  });
+  return out;
+}
+
+// Local helpers that take an error and do NOT throw it, which is the only case
+// where handing a construction to a call keeps it away from this caller.
+function deferringHelperNames(helpers) {
+  var out = {};
+  Object.keys(helpers || {}).forEach(function (name) {
+    if (!/\bthrow\b/.test(helpers[name])) out[name] = true;
+  });
+  return out;
+}
+
+function codesRaisedIn(text, ownNamespaces, raisingHelpers, deferring) {
+  var raising = raisingSpans(text);
+  var constructions = constructionSpans(text);
+  var out = {};
+  ANY_OWN_NAMESPACE_LITERAL.lastIndex = 0;
+  var m;
+  while ((m = ANY_OWN_NAMESPACE_LITERAL.exec(text)) !== null) {
+    if (!CODE_RE.test(m[1])) continue;
+    if (!ownNamespaces[m[1].split("/")[0]]) continue;
+    if (COMPARED_NOT_BUILT.test(text.slice(0, m.index))) continue;
+    if (inAnySpan(raising, m.index)) { out[m[1]] = true; continue; }
+    var built = constructionAt(constructions, m.index);
+    if (built) {
+      if (built.returned ||
+          (built.assignedTo && raisesName(text, built.assignedTo))) {
+        out[m[1]] = true;
+        continue;
+      }
+      // Handed to another call. That reaches this caller unless the callee is a
+      // local helper that demonstrably does not throw. `report(new
+      // SafeJsonError("json/validation", …))` in `lib/safe-json.js` goes to a
+      // callback the caller supplies and throws at once, so it does reach them;
+      // `_finishTask(slot, true, new WorkerPoolError(…))` goes to a helper that
+      // rejects a task's promise, so it does not.
+      // From the construction's START, so the call found is the one the
+      // construction is an argument to rather than the construction itself.
+      var holder = enclosingCall(text, built.start);
+      if (holder && holder.callee && deferring && deferring[holder.callee]) continue;
+      out[m[1]] = true;
+      continue;
+    }
+    var call = enclosingCall(text, m.index);
+    if (!call) continue;
+    if (RAISING_CLASS_RE.test(call.args)) { out[m[1]] = true; continue; }
+    if (call.callee && raisingHelpers && raisingHelpers[call.callee]) {
+      out[m[1]] = true;
+    }
+  }
+  return out;
+}
+
 // The codes a body RECOGNIZES rather than builds, which is the set `codesIn`
 // skips. A primitive that reads one of these in a catch is handling it.
 function comparedCodesIn(text, ownNamespaces) {
@@ -235,7 +454,7 @@ function namespacesIn(text) {
 }
 
 var BACKTICK_RE = /`([^`\n]{1,160})`/g;
-var CODE_IN_TEXT_RE = /([a-z0-9][a-z0-9-]*(?:\/[a-z0-9-]+){1,3})/g;
+var CODE_IN_TEXT_RE = /([a-z0-9][A-Za-z0-9-]*(?:\/[A-Za-z0-9-]+){1,3})/g;
 var BLOCK_RE    = /\/\*\*[\s\S]*?\*\//g;
 
 function walk(dir, out) {
@@ -444,34 +663,119 @@ function isSynchronousCallback(masked, at) {
   return SYNCHRONOUS_CALLBACK_METHODS.test(masked.slice(0, i + 1));
 }
 
-function nestedFunctionSpans(body) {
-  var masked = maskLiteralsAndComments(body);
-  var declEnd = masked.search(/\{/);
-  if (declEnd === -1) return null;
-  var spans = [];
+// Which nested bodies RUN while the primitive runs.
+//
+// "Called somewhere in the body" is the wrong question, and asking it credited a
+// factory with the codes of the handle it returns: `lib/restore.js` declares
+// `inspect`, which throws `restore/bundle-not-found`, and `run` calls it, but both
+// are methods on the returned object, so neither runs during `create`. The
+// question is reachability from the statements that actually execute.
+//
+// So: take the body with every nested body removed, which is what runs. A nested
+// function named there runs too, and so does one named inside a body already
+// kept, transitively. Everything else runs later, if ever.
+//
+// `b.mail.deploy.autoConfigXml` reaches `_server` this way, which is how its
+// `mail-deploy/bad-port` becomes part of its contract, while `b.restore.create`
+// reaches none of its handle's methods.
+function reachableNestedBodies(masked, nested) {
+  // Blank the declaration HEADER as well as the body. Leaving the header behind
+  // made `function inspect(bundleId)` read as a call to `inspect`, so every
+  // nested declaration looked reachable and the factory was credited with its
+  // handle's codes again.
+  var immediate = masked.split("");
+  nested.forEach(function (n) {
+    for (var i = n.headStart; i < n.end && i < immediate.length; i += 1) {
+      if (immediate[i] !== "\n") immediate[i] = " ";
+    }
+  });
+  var byName = {};
+  nested.forEach(function (n) { if (n.name) byName[n.name] = n; });
+
+  function callsIn(text) {
+    var out = [];
+    Object.keys(byName).forEach(function (name) {
+      var re = new RegExp("(?:^|[^.\\w$])" + name.replace(/\$/g, "\\$") + "\\s*\\(");
+      if (re.test(text)) out.push(name);
+    });
+    return out;
+  }
+
+  var keep = {};
+  var frontier = callsIn(immediate.join(""));
+  while (frontier.length) {
+    var next = [];
+    frontier.forEach(function (name) {
+      if (keep[name] || !byName[name]) return;
+      keep[name] = true;
+      var n = byName[name];
+      callsIn(masked.slice(n.brace, n.end)).forEach(function (c) {
+        if (!keep[c]) next.push(c);
+      });
+    });
+    frontier = next;
+  }
+  return keep;
+}
+
+// Every outermost nested function body, with the name it is declared under.
+function nestedDeclarations(masked, from) {
+  var out = [];
   var depth = 0;
-  var spanStart = -1;
-  var spanDepth = -1;
-  for (var i = declEnd + 1; i < masked.length; i += 1) {
+  var start = -1;
+  for (var i = from; i < masked.length; i += 1) {
     var c = masked[i];
     if (c === "{") {
       depth += 1;
-      if (spanStart === -1 && opensFunctionBody(masked, i) &&
-          !isSynchronousCallback(masked, i)) {
-        spanStart = i;
-        spanDepth = depth;
+      if (start === -1 && opensFunctionBody(masked, i)) {
+        start = i;
+        var decl = nameOfBodyAt(masked, i);
+        out.push({
+          brace: i, end: -1, depth: depth,
+          name: decl.name, headStart: decl.headStart,
+        });
       }
     } else if (c === "}") {
-      if (spanStart !== -1 && depth === spanDepth) {
-        spans.push([spanStart, i + 1]);
-        spanStart = -1;
-        spanDepth = -1;
+      if (start !== -1 && out.length && out[out.length - 1].end === -1 &&
+          depth === out[out.length - 1].depth) {
+        out[out.length - 1].end = i + 1;
+        start = -1;
       }
       depth -= 1;
       if (depth < 0) return null;
     }
   }
-  if (depth !== 0 || spanStart !== -1) return null;
+  if (depth !== 0 || start !== -1) return null;
+  return out;
+}
+
+// The name a nested body is declared under, for `function name(...) {`,
+// `var name = function (...) {`, `var name = (...) => {` and the shorthand
+// method form. An anonymous callback has none.
+function nameOfBodyAt(masked, braceIndex) {
+  var from = Math.max(0, braceIndex - 220);
+  var head = masked.slice(from, braceIndex);
+  var m = /(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*$/.exec(head);
+  if (m) return { name: m[1], headStart: from + m.index };
+  m = /(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:function\b[^(]*\([^)]*\)|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)\s*$/.exec(head);
+  if (m) return { name: m[1], headStart: from + m.index };
+  return { name: null, headStart: braceIndex };
+}
+
+function nestedFunctionSpans(body) {
+  var masked = maskLiteralsAndComments(body);
+  var declEnd = masked.search(/\{/);
+  if (declEnd === -1) return null;
+  var nested = nestedDeclarations(masked, declEnd + 1);
+  if (nested === null) return null;
+  if (nested.some(function (n) { return n.end === -1; })) return null;
+  var keep = reachableNestedBodies(masked, nested);
+  var spans = [];
+  nested.forEach(function (n) {
+    if (n.name && keep[n.name]) return;
+    if (isSynchronousCallback(masked, n.brace)) return;
+    spans.push([n.brace, n.end]);
+  });
   return spans;
 }
 
@@ -634,11 +938,14 @@ function collect() {
       // The codes of every body this one reaches, not only its own. A helper the
       // primitive calls synchronously raises into the caller, so its codes are
       // part of the primitive's contract.
-      var thrown = codesIn(own, OWN_NAMESPACES[rel]);
+      var allHelpers = Object.assign({}, LOCAL_HELPERS[rel], nestedHelperBodies(body));
+      var raisers = raisingHelperNames(allHelpers);
+      var deferrers = deferringHelperNames(allHelpers);
+      var thrown = codesRaisedIn(own, OWN_NAMESPACES[rel], raisers, deferrers);
       var reached = bodiesReachedFrom(own, LOCAL_HELPERS[rel]);
       reached.forEach(function (b, idx) {
         if (idx > 0) {
-          Object.keys(codesIn(b, OWN_NAMESPACES[rel])).forEach(function (c) {
+          Object.keys(codesRaisedIn(b, OWN_NAMESPACES[rel], raisers, deferrers)).forEach(function (c) {
             if (!handled[c]) thrown[c] = true;
           });
         }
@@ -875,6 +1182,76 @@ function testTheGateCanFail() {
   check("the comparison reports every undocumented code, whatever shape built it",
         missing.length === expected.length - 1 &&
         missing.indexOf("fixture/documented") === -1, missing.join(","));
+
+  // A code names an option as the option is spelled, so the grammar has to admit
+  // the option's own case. Reading lowercase only made `mail-deploy/bad-displayName`
+  // invisible, and the block that omitted it passed.
+  check("a code that names an option keeps the option's spelling",
+        CODE_RE.test("mail-deploy/bad-displayName") &&
+        CODE_RE.test("deliver/bad-timeout-mxLookupMs") &&
+        CODE_RE.test("vex/missing-documentId") &&
+        !CODE_RE.test("Content-Type"));
+
+  // Which nested bodies count. A helper the body CALLS runs during the call, so
+  // its throws are the caller's contract; one reached only from a method on the
+  // returned object runs later, if ever. Stripping every nested body hid the
+  // first, and keeping every body that is called anywhere credited a factory with
+  // the second.
+  var nestedFixture = [
+    "function factory(opts) {",
+    "  function _now(v) {",
+    "    if (!v) throw new FixtureError(\"fixture/from-helper\", \"no v\");",
+    "    return v;",
+    "  }",
+    "  function _later(v) {",
+    "    if (!v) throw new FixtureError(\"fixture/from-handle\", \"no v\");",
+    "  }",
+    "  var ready = _now(opts.v);",
+    "  return { use: function (x) { _later(x); return ready; } };",
+  ].join("\n");   // no closing brace: bodyAfter cuts the body at the first `\n}`
+  var nestedSpans = nestedFunctionSpans(nestedFixture);
+  var nestedCodes = nestedSpans === null ? ["<unreadable>"] :
+    Object.keys(codesRaisedIn(withoutSpans(nestedFixture, nestedSpans), own)).sort();
+  check("a nested helper the body calls is part of the contract, and one reached " +
+        "only from a returned method is not",
+        nestedCodes.join(",") === "fixture/from-helper", nestedCodes.join(","));
+
+  // Which argument positions RAISE a code, since being an argument is not enough.
+  // A validator carrying an error class raises it, and so does a local helper
+  // whose body throws. An audit event's `reason` reports a code, and an error
+  // handed to a callback is raised by whatever that callback rejects, not here.
+  var raiseFixture = [
+    "function only(x) {",
+    "  validateOpts.checkOrThrow(x, [\"a\"], \"only\", FixtureError, \"fixture/via-validator\");",
+    "  _fail(\"nope\", \"fixture/via-throwing-helper\");",
+    "  _emitAudit(\"only.failed\", \"failure\", { reason: \"fixture/reported-only\" });",
+    "  _finishTask(slot, true, new FixtureError(\"fixture/handed-off\", \"later\"));",
+    "  report(new FixtureError(\"fixture/via-callback\", \"thrown by the caller's hook\"));",
+    "  var e = new FixtureError(\"fixture/assigned-then-thrown\", \"decorated\");",
+    "  e.meta = { at: x };",
+    "  if (x.bad) throw e;",
+    "  if (x.wrapped) return new FixtureError(\"fixture/returned\", \"for a caller\");",
+    "  if (!x) throw new FixtureError(\"fixture/thrown\", \"empty\");",
+  ].join("\n");
+  var raiseHelpers = {
+    _fail:       "function _fail(m, c) { throw new FixtureError(c, m); }",
+    _emitAudit:  "function _emitAudit(a, o, meta) { audit.safeEmit({ action: a }); }",
+    // Takes an error and settles a promise it holds, so it raises into whoever
+    // holds that promise rather than into this caller.
+    _finishTask: "function _finishTask(slot, failed, err) { slot.reject(err); }",
+  };
+  var raised = Object.keys(codesRaisedIn(raiseFixture, own,
+    raisingHelperNames(raiseHelpers), deferringHelperNames(raiseHelpers))).sort();
+  check("a code raises from a throw, from an error assigned and thrown later, from " +
+        "one returned for a caller to throw, from a validator carrying an error " +
+        "class, from a local helper that throws, and from an error handed to a " +
+        "callback the scan cannot classify, while an audit reason and an error " +
+        "handed to a local helper that only settles a promise do not",
+        raised.join(",") ===
+          ["fixture/assigned-then-thrown", "fixture/returned", "fixture/thrown",
+           "fixture/via-callback", "fixture/via-throwing-helper",
+           "fixture/via-validator"].join(","),
+        raised.join(","));
   // A literal outside the file's own namespaces is another module's code, named
   // for reference rather than thrown here, so it must not be demanded.
   var foreign = Object.keys(codesIn("throw other.factory(\"other/elsewhere\");", own));

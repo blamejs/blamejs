@@ -237,6 +237,44 @@ function testAutoConfigJmap() {
     "mail-deploy/bad-jmap-url");
 }
 
+// The block promised that an opts carrying a key the primitive does not accept
+// refuses with mail-deploy/bad-opts, and only requireObject ran, so a typo was
+// accepted and silently ignored: an operator who misspells `displayName` gets a
+// configuration document without their brand label and nothing saying why.
+function testAutoConfigUnknownKeyRefused() {
+  _expectCode("autoconfig refuses an opts key it does not accept",
+    function () {
+      b.mail.deploy.autoConfigXml({
+        domain: "example.com",
+        imap:   { host: "imap.example.com", port: 993 },
+        typo:   true,
+      });
+    },
+    "mail-deploy/bad-opts");
+  _expectCode("autoconfig refuses a misspelled documented key",
+    function () {
+      b.mail.deploy.autoConfigXml({
+        domain:      "example.com",
+        displayname: "Example Mail",
+        imap:        { host: "imap.example.com", port: 993 },
+      });
+    },
+    "mail-deploy/bad-opts");
+  // Every documented key together still succeeds, so the allowlist is not
+  // narrower than the contract it enforces.
+  var xml = b.mail.deploy.autoConfigXml({
+    domain:      "example.com",
+    displayName: "Example Mail",
+    imap:        { host: "imap.example.com", port: 993, socketType: "SSL" },
+    pop3:        { host: "pop.example.com", port: 995, socketType: "SSL" },
+    smtp:        { host: "smtp.example.com", port: 587, socketType: "STARTTLS" },
+    jmap:        { url: "https://jmap.example.com/.well-known/jmap" },
+  });
+  check("autoconfig accepts every documented key together",
+    xml.indexOf("Example Mail") !== -1 &&
+    xml.indexOf("<incomingServer type=\"jmap\">") !== -1);
+}
+
 function testAutoConfigBadInput() {
   _expectPrefix("refuses no incoming server",
     function () { b.mail.deploy.autoConfigXml({ domain: "x.com" }); }, "mail-deploy/");
@@ -710,6 +748,7 @@ async function run() {
   testAutoConfigEscape();
   testAutoConfigProtocolTypeAttr();
   testAutoConfigJmap();
+  testAutoConfigUnknownKeyRefused();
   testAutoConfigBadInput();
   testAutoConfigMoreBranches();
   testAutoDiscoverHappy();
