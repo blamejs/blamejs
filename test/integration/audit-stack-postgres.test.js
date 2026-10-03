@@ -357,11 +357,19 @@ async function run() {
             "SELECT count(*) AS n FROM information_schema.tables " +
             "WHERE table_name = '_blamejs_break_glass_grants';").trim()));
 
+    // Every out-of-band readback here goes through execFileSync("docker", …),
+    // which blocks the event loop, so the lease heartbeat cannot fire while one is
+    // in flight. At the default 30s lease the blocking windows add up past the TTL
+    // under a full integration run and the node loses leadership mid-test, after
+    // which every append correctly refuses with cluster/not-leader. The lease is
+    // sized for a harness that blocks rather than for production.
     await b.cluster.init({
       nodeId:            "audit-stack-node",
       role:              "leader",
       externalDbBackend: "ops",
       dialect:           "postgres",
+      leaseTtl:          b.constants.TIME.minutes(10),
+      heartbeatInterval: b.constants.TIME.minutes(1),
     });
     check("cluster.init acquired leadership on real Postgres (gates every chain append)",
           b.cluster.isLeader() === true);

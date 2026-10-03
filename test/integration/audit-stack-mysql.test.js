@@ -317,11 +317,19 @@ async function run() {
       _countMysql("information_schema.tables",
         "table_schema = '" + DB_NAME + "' AND table_name = '_blamejs_break_glass_grants'") === 1);
 
+    // Every readback in this file goes through execFileSync("docker", …), which
+    // blocks the event loop, so the lease heartbeat cannot fire while one is in
+    // flight. At the default 30s lease the blocking windows add up past the TTL
+    // under a full integration run and the node loses leadership mid-test, after
+    // which every append correctly refuses with cluster/not-leader. The lease is
+    // sized for a harness that blocks rather than for production.
     await b.cluster.init({
       nodeId:            "audit-stack-my",
       role:              "leader",
       externalDbBackend: "ops",
       dialect:           "mysql",
+      leaseTtl:          b.constants.TIME.minutes(10),
+      heartbeatInterval: b.constants.TIME.minutes(1),
     });
     check("cluster.init acquired leadership on real MySQL (gates every chain append)",
       b.cluster.isLeader() === true);

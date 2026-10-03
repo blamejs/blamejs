@@ -400,6 +400,39 @@ function testVerifyAllPerSignerKeyBinding() {
     threw && threw.code === "mail-crypto/smime/signature-mismatch");
 }
 
+// verify() wraps its CMS parse and refuses with parse-failed. verifyAll parsed
+// outside any catch, so a malformed envelope escaped as the cms-layer code and a
+// caller written against the documented code missed it. Both entry points answer
+// a structure they cannot read the same way.
+function testVerifyAllMalformedEnvelope() {
+  var msg = Buffer.from("malformed-envelope-case");
+  var notCms = Buffer.from([0x30, 0x03, 0x02, 0x01, 0x07]);   // DER, but not SignedData
+  var threw = null;
+  try {
+    b.mail.crypto.smime.verifyAll({
+      message: msg, signature: notCms, signerPublicKeys: { "01": Buffer.alloc(32) },
+    });
+  } catch (e) { threw = e; }
+  check("verifyAll: a CMS structure it cannot read refuses with parse-failed",
+    threw && threw.code === "mail-crypto/smime/parse-failed",
+    "code=" + (threw && threw.code));
+  check("verifyAll: parse-failed names the primitive that refused",
+    threw && /verifyAll/.test(threw.message || ""),
+    "message=" + (threw && threw.message));
+
+  // The same bytes through verify() give the same code, which is the promise the
+  // shared documentation makes for both.
+  var threwVerify = null;
+  try {
+    b.mail.crypto.smime.verify({
+      message: msg, signature: notCms, signerPublicKey: Buffer.alloc(32),
+    });
+  } catch (e) { threwVerify = e; }
+  check("verify: the same malformed envelope refuses with the same code",
+    threwVerify && threwVerify.code === "mail-crypto/smime/parse-failed",
+    "code=" + (threwVerify && threwVerify.code));
+}
+
 function testVerifyAllMissingKey() {
   var msg = Buffer.from("missing-key-case");
   var env = _twoSignerEnvelope(msg);
@@ -1420,6 +1453,7 @@ function run() {
   testVerifyAllMultiSigner();
   testVerifyAllPerSignerKeyBinding();
   testVerifyAllMissingKey();
+  testVerifyAllMalformedEnvelope();
   testVerifyAllTamperRefused();
   testVerifyAllSingleSigner();
   testVerifyAllInputValidation();
