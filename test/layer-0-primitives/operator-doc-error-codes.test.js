@@ -16,11 +16,18 @@
  * scope: it documents nothing to be partial about.
  *
  * Scope boundary, stated rather than allowlisted: the block must sit above a
- * function that opens no further function. A code constructed inside a nested
+ * function declaration, and the bodies of any functions nested inside it are
+ * removed before the codes are read. A code constructed inside a nested
  * function is thrown when THAT function runs — from a returned handle, a
  * listener, a worker callback — so attributing it to the primitive the block
- * describes would be wrong. `testTheScopeBoundaryIsNotSwallowingTheWork`
- * reports how many blocks the boundary holds back.
+ * describes would be wrong, while the throws the outer function makes itself
+ * are exactly what the block is supposed to list.
+ * `testTheScopeBoundaryIsNotSwallowingTheWork` reports how many blocks had a
+ * nested body removed and how many the brace scan could not read at all.
+ *
+ * The full list of omissions is written to
+ * `.test-output/operator-doc-error-codes.log`, because the failure names more
+ * blocks than fit in one assertion message.
  */
 
 var helpers  = require("../helpers");
@@ -57,6 +64,13 @@ var NEW_ERROR_RE = /new\s+[A-Za-z_$][A-Za-z0-9_$]*Error\(\s*(?:"([^"\n]+)"|'([^'
 var CLASS_THEN_CODE_RE = /[A-Za-z_$][A-Za-z0-9_$]*Error\s*,\s*(?:"([^"\n]+)"|'([^'\n]+)')/g;
 var ANY_OWN_NAMESPACE_LITERAL =
   /(?:"|')([a-z0-9][a-z0-9-]*(?:\/[a-z0-9-]+){1,3})(?:"|')/g;
+
+// A literal on the far side of an equality test, or behind `case`, is a code
+// being RECOGNIZED rather than built. `b.network.dns.discoverEncrypted` reads
+// `e.code === "dns/no-result"` to translate that failure into
+// `dns/ddr-not-discovered`, so demanding it in the block would put a throw in
+// the documentation that the primitive specifically does not make.
+var COMPARED_NOT_BUILT = /(?:===|!==|==|!=|\bcase)\s*$/;
 
 // A code can also be composed in a SHARED builder from the prefix a module hands
 // it: `var _resolveProfile = gateContract.makeProfileResolver({ codePrefix:
@@ -135,7 +149,9 @@ function codesIn(text, ownNamespaces) {
   var m;
   ANY_OWN_NAMESPACE_LITERAL.lastIndex = 0;
   while ((m = ANY_OWN_NAMESPACE_LITERAL.exec(text)) !== null) {
-    if (CODE_RE.test(m[1]) && ownNamespaces[m[1].split("/")[0]]) out[m[1]] = true;
+    if (!CODE_RE.test(m[1]) || !ownNamespaces[m[1].split("/")[0]]) continue;
+    if (COMPARED_NOT_BUILT.test(text.slice(0, m.index))) continue;
+    out[m[1]] = true;
   }
   return out;
 }
@@ -209,6 +225,140 @@ function pastDeclaration(body) {
   return at === -1 ? body : body.slice(at);
 }
 
+// The contents of every string and every comment become filler, so a brace
+// written inside one cannot move the depth counter. Length and newlines are
+// preserved, so an offset into the masked text addresses the same character of
+// the original.
+function maskLiteralsAndComments(text) {
+  var out = text.split("");
+  var i = 0;
+  while (i < out.length) {
+    var ch = out[i];
+    if (ch === "/" && out[i + 1] === "/") {
+      var a = i;
+      while (a < out.length && out[a] !== "\n") { out[a] = " "; a += 1; }
+      i = a;
+      continue;
+    }
+    if (ch === "/" && out[i + 1] === "*") {
+      var b = i + 2;
+      while (b < out.length && !(out[b] === "*" && out[b + 1] === "/")) b += 1;
+      var stop = Math.min(b + 2, out.length);
+      for (var k = i; k < stop; k += 1) { if (out[k] !== "\n") out[k] = " "; }
+      i = stop;
+      continue;
+    }
+    if (ch !== '"' && ch !== "'" && ch !== "`") { i += 1; continue; }
+    var quote = ch;
+    var j = i + 1;
+    while (j < out.length) {
+      if (out[j] === "\\") { j += 2; continue; }
+      if (out[j] === quote) break;
+      if (quote !== "`" && out[j] === "\n") break;
+      if (out[j] !== "\n") out[j] = "x";
+      j += 1;
+    }
+    i = j + 1;
+  }
+  return out.join("");
+}
+
+// The keywords whose parenthesized head is followed by a BLOCK rather than a
+// function body.
+var CONTROL_HEAD = { "if": 1, "for": 1, "while": 1, "switch": 1, "catch": 1, "with": 1 };
+
+function skipBackWhitespace(text, at) {
+  var i = at;
+  while (i >= 0 && /\s/.test(text[i])) i -= 1;
+  return i;
+}
+
+// Does the brace at `at` open a function body?
+//
+// `function` is only one of three spellings. A shorthand object or class method
+// (`async verifyBundle(id, opts) {`) and an arrow (`=> {`) open one too, and
+// reading only the keyword attributed every method of a returned handle to the
+// factory that built it: `b.backup.bundleAdapterStorage` drew 26 codes that way,
+// among them two that are reported in a result's `errors` array and never
+// thrown at all.
+//
+// So this asks the other question: does the brace open a BLOCK? That
+// set is closed and short, and anything outside it is treated as a function
+// body, which costs coverage when it is wrong instead of demanding a code the
+// primitive does not throw.
+function opensFunctionBody(masked, at) {
+  var i = skipBackWhitespace(masked, at - 1);
+  if (i < 0) return false;
+  if (masked[i] === ">" && masked[i - 1] === "=") return true;      // => {
+  if (masked[i] !== ")") {
+    // `else {`, `try {`, `do {`, `finally {`, a bare block, or an object
+    // literal after `=`, `(`, `,`, `:` or `return`. None is a function body.
+    return false;
+  }
+  var depth = 0;
+  while (i >= 0) {
+    if (masked[i] === ")") depth += 1;
+    else if (masked[i] === "(") {
+      depth -= 1;
+      if (depth === 0) break;
+    }
+    i -= 1;
+  }
+  if (i < 0) return true;                                           // unreadable head
+  var j = skipBackWhitespace(masked, i - 1);
+  var end = j;
+  while (j >= 0 && /[A-Za-z0-9_$]/.test(masked[j])) j -= 1;
+  if (j === end) return true;                                       // `)(` and the like
+  var word = masked.slice(j + 1, end + 1);
+  return !CONTROL_HEAD[word];
+}
+
+// Spans covering each nested function body, or null when the brace scan does
+// not come back balanced. Scanning starts past the declaration's own opening
+// brace: `bodyAfter` includes that brace and stops before the matching close,
+// so counting it would leave every body one deep. A body the scan cannot read
+// is reported as unreadable rather than read wrongly, which falls back to
+// holding the whole block back instead of answering over a skewed count.
+function nestedFunctionSpans(body) {
+  var masked = maskLiteralsAndComments(body);
+  var declEnd = masked.search(/\{/);
+  if (declEnd === -1) return null;
+  var spans = [];
+  var depth = 0;
+  var spanStart = -1;
+  var spanDepth = -1;
+  for (var i = declEnd + 1; i < masked.length; i += 1) {
+    var c = masked[i];
+    if (c === "{") {
+      depth += 1;
+      if (spanStart === -1 && opensFunctionBody(masked, i)) {
+        spanStart = i;
+        spanDepth = depth;
+      }
+    } else if (c === "}") {
+      if (spanStart !== -1 && depth === spanDepth) {
+        spans.push([spanStart, i + 1]);
+        spanStart = -1;
+        spanDepth = -1;
+      }
+      depth -= 1;
+      if (depth < 0) return null;
+    }
+  }
+  if (depth !== 0 || spanStart !== -1) return null;
+  return spans;
+}
+
+function withoutSpans(body, spans) {
+  var out = body.split("");
+  spans.forEach(function (s) {
+    for (var i = s[0]; i < s[1] && i < out.length; i += 1) {
+      if (out[i] !== "\n") out[i] = " ";
+    }
+  });
+  return out.join("");
+}
+
 var FILES = walk(LIB, []);
 
 // ---- The vocabulary: namespaces the tree really builds errors in. ----
@@ -237,6 +387,7 @@ FILES.forEach(function (full) {
 function collect() {
   var inScope = [];
   var heldBack = [];
+  var narrowed = 0;
   var notAFunction = 0;
   FILES.forEach(function (full) {
     var rel = nodePath.relative(ROOT, full).replace(/\\/g, "/");
@@ -268,13 +419,22 @@ function collect() {
         prim:       prim,
         documented: Object.keys(documented).sort(),
       };
-      if (/\bfunction\b/.test(pastDeclaration(body))) {
-        heldBack.push(entry);
-        continue;
+      // A code built inside a callback belongs to that callback, not to the
+      // primitive the block describes, so only the nested BODIES are removed.
+      // Holding the whole primitive back instead would discard the throws the
+      // outer function makes itself, which is most of what there is to check:
+      // `b.deprecate.warn` throws `deprecate/used-in-error-mode` from its own
+      // body and merely passes a callback to a map.
+      var spans = nestedFunctionSpans(body);
+      if (spans === null) { heldBack.push(entry); continue; }
+      var own = body;
+      if (spans.length) {
+        own = withoutSpans(body, spans);
+        narrowed += 1;
       }
-      var thrown = codesIn(body, OWN_NAMESPACES[rel]);
+      var thrown = codesIn(own, OWN_NAMESPACES[rel]);
       Object.keys(COMPOSED_BY_ALIAS[rel]).forEach(function (alias) {
-        if (!new RegExp("\\b" + alias + "\\s*\\(").test(body)) return;
+        if (!new RegExp("\\b" + alias + "\\s*\\(").test(own)) return;
         COMPOSED_BY_ALIAS[rel][alias].forEach(function (c) { thrown[c] = true; });
       });
       entry.missing = Object.keys(thrown)
@@ -284,10 +444,31 @@ function collect() {
       inScope.push(entry);
     }
   });
-  return { inScope: inScope, heldBack: heldBack, notAFunction: notAFunction };
+  return {
+    inScope:      inScope,
+    heldBack:     heldBack,
+    narrowed:     narrowed,
+    notAFunction: notAFunction,
+  };
 }
 
 var WALK = collect();
+
+// The assertion message can only carry a few of the blocks. The whole list goes
+// to a file so a run that fails over thirty blocks is readable without re-running
+// the gate, per the same discipline the other gates follow.
+function writeReport(lines) {
+  var dir = nodePath.join(ROOT, ".test-output");
+  var body = lines.length === 0
+    ? "no block omits a code its function throws\n"
+    : lines.join("\n") + "\n\n" + lines.length + " blocks, " +
+      lines.reduce(function (n, l) { return n + l.split(" omits ")[1].split(" ").length; }, 0) +
+      " codes\n";
+  try {
+    nodeFs.mkdirSync(dir, { recursive: true });
+    nodeFs.writeFileSync(nodePath.join(dir, "operator-doc-error-codes.log"), body);
+  } catch (_e) { /* a report that cannot be written must not fail the gate */ }
+}
 
 function testTheWalkReadTheTree() {
   var documenting = WALK.inScope.length + WALK.heldBack.length;
@@ -303,6 +484,7 @@ function testEveryDocumentedCodeListIsComplete() {
   var lines = partial.map(function (e) {
     return e.file + ":" + e.line + " " + e.prim + " omits " + e.missing.join(" ");
   });
+  writeReport(lines);
   check("every block that names an error code names all the codes its function throws" +
         (lines.length ? " (" + lines.slice(0, 8).join("; ") +
           (lines.length > 8 ? "; +" + (lines.length - 8) + " more" : "") + ")" : ""),
@@ -327,15 +509,63 @@ function testBuilderSuffixesFollowDelegation() {
 }
 
 function testTheScopeBoundaryIsNotSwallowingTheWork() {
-  // The boundary exists because a nested function's codes are not this
-  // primitive's to throw. It is reported rather than silent: a boundary that
-  // grew to hold back most of the tree would be a gate that checks nothing.
+  // A nested function's codes are not the described primitive's to throw, so
+  // those bodies come out of scope. Only the bodies: a block is held back whole
+  // only when the brace scan cannot read it, and that case is reported rather
+  // than silent, because a boundary that grew to hold back most of the tree
+  // would be a gate that checks nothing.
   var held = WALK.heldBack.length;
   var total = WALK.inScope.length + held + WALK.notAFunction;
-  check("the gate reads the majority of the blocks that document codes",
-        WALK.inScope.length > held,
-        WALK.inScope.length + " read, " + held + " held back by the nested-function boundary, " +
+  check("the gate reads all but a handful of the blocks that document codes",
+        WALK.inScope.length > held * 20,
+        WALK.inScope.length + " read (" + WALK.narrowed +
+        " with nested bodies removed), " + held + " held back whole as unreadable, " +
         WALK.notAFunction + " over something that is not a function declaration, of " + total);
+  // Narrowing, not holding back, is what keeps those blocks readable. Stated
+  // as a comparison against the blocks it rescued rather than as a count,
+  // because a count is a number about today's tree and goes stale silently.
+  check("a block with a nested body is narrowed rather than held back",
+        WALK.narrowed > held,
+        WALK.narrowed + " narrowed against " + held + " held back");
+}
+
+function testNestedBodiesComeOutButTheOuterFunctionStays() {
+  // The control for the span scan. The outer function throws one code and the
+  // callback it passes throws another; the first must survive the narrowing and
+  // the second must not. A scan that stripped the whole body, or none of it,
+  // fails one of these two.
+  var body = [
+    "function outer(x) {",
+    "  if (!x) throw new FixtureError(\"fixture/outer-throw\", \"empty\");",
+    "  return x.map(function (item) {",
+    "    if (!item) throw new FixtureError(\"fixture/inner-throw\", \"empty item\");",
+    "    return item;",
+    "  });",
+  ].join("\n");
+  var spans = nestedFunctionSpans(body);
+  check("the brace scan reads the body", spans !== null && spans.length === 1,
+        spans === null ? "null" : spans.length + " spans");
+  var own = withoutSpans(body, spans || []);
+  var codes = Object.keys(codesIn(own, { fixture: true })).sort();
+  check("the outer function's own code survives the narrowing",
+        codes.indexOf("fixture/outer-throw") !== -1, codes.join(","));
+  check("the callback's code does not",
+        codes.indexOf("fixture/inner-throw") === -1, codes.join(","));
+
+  // A brace inside a string or a comment must not move the counter, and an
+  // unbalanced body must come back null rather than a confident wrong span.
+  var tricky = [
+    "function outer(x) {",
+    "  var open = \"{\";",
+    "  // a comment with a } in it",
+    "  return x.map(function (i) { return i + \"}\"; });",
+  ].join("\n");
+  var trickySpans = nestedFunctionSpans(tricky);
+  check("a brace inside a string or a comment does not skew the scan",
+        trickySpans !== null && trickySpans.length === 1,
+        trickySpans === null ? "null" : trickySpans.length + " spans");
+  check("an unreadable body comes back null, so the block is held back whole",
+        nestedFunctionSpans("function outer() {\n  foo(function () {\n") === null);
 }
 
 function testTheGateCanFail() {
@@ -403,6 +633,7 @@ async function run() {
   testEveryDocumentedCodeListIsComplete();
   testBuilderSuffixesFollowDelegation();
   testTheScopeBoundaryIsNotSwallowingTheWork();
+  testNestedBodiesComeOutButTheOuterFunctionStays();
   testTheGateCanFail();
 }
 

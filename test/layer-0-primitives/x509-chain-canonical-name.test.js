@@ -58,6 +58,164 @@ async function run() {
   check("leading and trailing spaces are ignored",
     x509Chain.canonicalNameKey(padded) === x509Chain.canonicalNameKey(utf8));
 
+  // RFC 4518 section 2.2 maps tab, the line and page separators, NEL and every
+  // space-separator character to U+0020 before insignificant spaces collapse, so
+  // a name written with any of them is the same name. Leaving them unmapped
+  // refuses an otherwise valid SignerInfo whose issuer uses one.
+  ["\t", "\n", "\u000b", "\f", "\r", "\u0085", " ", " ", " ",
+   " ", " ", "　"].forEach(function (ws) {
+    var withWs = _name([[OID_CN, asn1.writeUtf8String("Example" + ws + "CA")]]);
+    check("U+" + ws.codePointAt(0).toString(16).padStart(4, "0") +
+          " is mapped to a space before comparison",
+      x509Chain.canonicalNameKey(withWs) === x509Chain.canonicalNameKey(utf8));
+  });
+
+  // RFC 4518 section 2.2 also maps a set of characters to NOTHING: the soft
+  // hyphen, the combining grapheme joiner, the variation selectors, the zero
+  // width space, the object replacement character, and every remaining control
+  // and format code point. A name carrying one of them is the same name, and
+  // leaving them in refuses a valid SignerInfo whose issuer spells it that way.
+  ["­", "​", "͏", "᠋", "︀", "️", "￼",
+   "‍", "\u0001"].forEach(function (nil) {
+    var withNil = _name([[OID_CN, asn1.writeUtf8String("Exam" + nil + "ple CA")]]);
+    check("U+" + nil.codePointAt(0).toString(16).padStart(4, "0") +
+          " is removed before comparison",
+      x509Chain.canonicalNameKey(withNil) === x509Chain.canonicalNameKey(utf8),
+      String(x509Chain.canonicalNameKey(withNil)));
+  });
+
+  // Case-insensitive matching is RFC 4518 case FOLDING, which is not simple
+  // lowercasing: the sharp s folds to two letters, so a CN written one way and
+  // its all-caps spelling are one name. Lowercasing alone leaves them different
+  // and refuses the envelope.
+  var sharp = _name([[OID_CN, asn1.writeUtf8String("Straße CA")]]);
+  var caps  = _name([[OID_CN, asn1.writeUtf8String("STRASSE CA")]]);
+  check("the sharp s folds to ss, so the all-caps spelling is the same name",
+    x509Chain.canonicalNameKey(sharp) === x509Chain.canonicalNameKey(caps),
+    x509Chain.canonicalNameKey(sharp) + " vs " + x509Chain.canonicalNameKey(caps));
+  var capSharp = _name([[OID_CN, asn1.writeUtf8String("ẞTRASSE CA")]]);
+  var sharpLow = _name([[OID_CN, asn1.writeUtf8String("ßtrasse CA")]]);
+  check("the capital sharp s folds the same way its lowercase form does",
+    x509Chain.canonicalNameKey(capSharp) === x509Chain.canonicalNameKey(sharpLow),
+    x509Chain.canonicalNameKey(capSharp) + " vs " + x509Chain.canonicalNameKey(sharpLow));
+
+  // Final sigma and medial sigma fold together; lowercasing keeps them apart.
+  var finalSigma = _name([[OID_CN, asn1.writeUtf8String("ςigma CA")]]);
+  var capSigma   = _name([[OID_CN, asn1.writeUtf8String("ΣIGMA CA")]]);
+  check("final sigma folds onto the medial form",
+    x509Chain.canonicalNameKey(finalSigma) === x509Chain.canonicalNameKey(capSigma),
+    x509Chain.canonicalNameKey(finalSigma) + " vs " + x509Chain.canonicalNameKey(capSigma));
+
+  // Case mapping can hand back a DECOMPOSED sequence, so the normalization has
+  // to follow the fold rather than precede it. Normalizing first leaves the
+  // precomposed j-with-caron and the j plus combining caron different.
+  var precomposed = _name([[OID_CN, asn1.writeUtf8String("ǰ CA")]]);
+  var decomposed  = _name([[OID_CN, asn1.writeUtf8String("J̌ CA")]]);
+  check("a precomposed letter and its decomposed spelling are one name",
+    x509Chain.canonicalNameKey(precomposed) === x509Chain.canonicalNameKey(decomposed),
+    x509Chain.canonicalNameKey(precomposed) + " vs " + x509Chain.canonicalNameKey(decomposed));
+
+  // The Greek iota-subscript forms expand under folding, and the expansion is
+  // what the all-caps spelling lowercases to.
+  // U+1F88 already carries the subscript, so the all-caps spelling of U+1F80 is
+  // U+1F08 followed by a separate capital iota.
+  var iotaSub = _name([[OID_CN, asn1.writeUtf8String("ᾀ CA")]]);
+  var iotaCap = _name([[OID_CN, asn1.writeUtf8String("ἈΙ CA")]]);
+  check("an iota-subscript form folds onto its expanded spelling",
+    x509Chain.canonicalNameKey(iotaSub) === x509Chain.canonicalNameKey(iotaCap),
+    x509Chain.canonicalNameKey(iotaSub) + " vs " + x509Chain.canonicalNameKey(iotaCap));
+
+  // Some characters carry no case mapping until compatibility normalization
+  // turns them into a letter: the mathematical bold capital A is uncased until
+  // NFKC makes it an ASCII A, and the Greek upsilon hook symbol until NFKC makes
+  // it an upsilon. Normalizing once after the fold leaves those unfolded, and
+  // normalizing once before it leaves a case-mapped decomposition unrecomposed,
+  // so neither single order settles both. The preparation runs to a fixed point
+  // instead, which is why both of these agree with their plain spelling.
+  var mathBold = _name([[OID_CN, asn1.writeUtf8String("\u{1d400} CA")]]);
+  var asciiA   = _name([[OID_CN, asn1.writeUtf8String("A CA")]]);
+  check("a letter only NFKC reveals is still folded",
+    x509Chain.canonicalNameKey(mathBold) === x509Chain.canonicalNameKey(asciiA),
+    x509Chain.canonicalNameKey(mathBold) + " vs " + x509Chain.canonicalNameKey(asciiA));
+
+  var upsilonHook = _name([[OID_CN, asn1.writeUtf8String("ϒ CA")]]);
+  var upsilon     = _name([[OID_CN, asn1.writeUtf8String("υ CA")]]);
+  check("the upsilon hook symbol folds onto the letter NFKC maps it to",
+    x509Chain.canonicalNameKey(upsilonHook) === x509Chain.canonicalNameKey(upsilon),
+    x509Chain.canonicalNameKey(upsilonHook) + " vs " + x509Chain.canonicalNameKey(upsilon));
+
+  // And the key is a fixed point: feeding the prepared text back in changes
+  // nothing. A preparation that still moved would mean two callers comparing at
+  // different depths could disagree about one name.
+  var settled = _name([[OID_CN, asn1.writeUtf8String("strasse ca")]]);
+  check("an already-prepared value keys to itself",
+    x509Chain.canonicalNameKey(settled) === x509Chain.canonicalNameKey(sharp),
+    x509Chain.canonicalNameKey(settled) + " vs " + x509Chain.canonicalNameKey(sharp));
+
+  // Normalization runs BEFORE each fold, not only after it. U+0345 folds into a
+  // base letter, so folding an unordered mark run first moves the accent onto a
+  // different letter and no later pass can put it back. Checked as a class: every
+  // ordering of a mark run that NFC reads as one string must key alike, over mark
+  // sets that include the one which folds.
+  // The combining grapheme joiner is itself removed, and removing it can leave a
+  // mark run that still needs ordering, so the mapping and the normalization have
+  // to settle TOGETHER before the fold runs. Every placement of the joiner inside
+  // a mark run is covered, not just the one a review happened to name.
+  var MARKS = ["ͅ", "́", "̈", "̌"];
+  var CGJ = "͏";
+  var compared = 0;
+  var disagreed = [];
+  function _keyOf(text) {
+    return x509Chain.canonicalNameKey(
+      _name([[OID_CN, asn1.writeUtf8String(text + " CA")]]));
+  }
+  ["α", "a", "η"].forEach(function (base) {
+    MARKS.forEach(function (m1) {
+      MARKS.forEach(function (m2) {
+        if (m1 === m2) return;
+        [m1 + m2, m2 + m1].forEach(function (run) {
+          var variants = [run];
+          for (var at = 0; at <= run.length; at += 1) {
+            variants.push(run.slice(0, at) + CGJ + run.slice(at));
+          }
+          var reference = base + m1 + m2;
+          variants.forEach(function (v) {
+            // Compare only the variants that really are the same name once the
+            // joiner is gone and the marks are ordered.
+            if ((base + v).split(CGJ).join("").normalize("NFC") !==
+                reference.normalize("NFC")) return;
+            compared += 1;
+            if (_keyOf(base + v) !== _keyOf(reference)) {
+              disagreed.push(JSON.stringify(base + v) + " vs " + JSON.stringify(reference));
+            }
+          });
+        });
+      });
+    });
+  });
+  check("the mark fixtures produced equivalent variants to compare", compared >= 20,
+    compared + " variants");
+  check("every equivalent mark ordering and joiner placement keys alike",
+    disagreed.length === 0, disagreed.slice(0, 4).join("; "));
+
+  // The control: the fold must not reach FURTHER than the default rules. The
+  // dotless i folds to an ASCII i only under the Turkic rules, which RFC 4518
+  // does not use, so these two are different names and a key that merged them
+  // would let one issuer be read as another.
+  var dotless = _name([[OID_CN, asn1.writeUtf8String("ıstanbul CA")]]);
+  var dotted  = _name([[OID_CN, asn1.writeUtf8String("Istanbul CA")]]);
+  check("the dotless i is NOT folded onto an ASCII i",
+    x509Chain.canonicalNameKey(dotless) !== x509Chain.canonicalNameKey(dotted),
+    x509Chain.canonicalNameKey(dotless) + " vs " + x509Chain.canonicalNameKey(dotted));
+
+  var mixedRun = _name([[OID_CN, asn1.writeUtf8String("Example \t 　 CA")]]);
+  check("a run of mixed separators collapses to one space",
+    x509Chain.canonicalNameKey(mixedRun) === x509Chain.canonicalNameKey(utf8));
+
+  var wsPadded = _name([[OID_CN, asn1.writeUtf8String("\tExample CA\r\n")]]);
+  check("leading and trailing separators are ignored too",
+    x509Chain.canonicalNameKey(wsPadded) === x509Chain.canonicalNameKey(utf8));
+
   // A different name must not collide, or the key would make the comparison
   // useless in the direction that matters.
   var other = _name([[OID_CN, asn1.writeUtf8String("Example CA 2")]]);
