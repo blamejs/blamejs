@@ -203,6 +203,19 @@ function namespacesFromThrows(text, out) {
   }
 }
 
+// The codes a body RECOGNIZES rather than builds, which is the set `codesIn`
+// skips. A primitive that reads one of these in a catch is handling it.
+function comparedCodesIn(text, ownNamespaces) {
+  var out = {};
+  var m;
+  ANY_OWN_NAMESPACE_LITERAL.lastIndex = 0;
+  while ((m = ANY_OWN_NAMESPACE_LITERAL.exec(text)) !== null) {
+    if (!CODE_RE.test(m[1]) || !ownNamespaces[m[1].split("/")[0]]) continue;
+    if (COMPARED_NOT_BUILT.test(text.slice(0, m.index))) out[m[1]] = true;
+  }
+  return out;
+}
+
 // The namespace vocabulary. Construction sites anchored on the error class give
 // the precise core; the throw rule above makes it complete.
 function namespacesIn(text) {
@@ -222,6 +235,7 @@ function namespacesIn(text) {
 }
 
 var BACKTICK_RE = /`([^`\n]{1,160})`/g;
+var CODE_IN_TEXT_RE = /([a-z0-9][a-z0-9-]*(?:\/[a-z0-9-]+){1,3})/g;
 var BLOCK_RE    = /\/\*\*[\s\S]*?\*\//g;
 
 function walk(dir, out) {
@@ -259,11 +273,28 @@ function lineOf(src, index) { return src.slice(0, index).split("\n").length; }
 // block over `var SafeSqlError = frameworkError.defineMessageFirstClass(...)`
 // describes an error CLASS, and reading on to the next `\n}` would collect the
 // codes of whatever function follows it.
-var OPENS_A_FUNCTION = /^\s*(?:async\s+)?function\s+[A-Za-z_$]/;
+var OPENS_A_FUNCTION = /^\s*(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)/;
 
-function bodyAfter(code, blockEnd) {
+// A block is not always adjacent to the function it describes: a module-local
+// helper can sit between them, and reading the first function after the block
+// then attributes that helper's codes to the wrong primitive. The block for
+// `b.mail.server.jmap.emailBodyProperties` is followed by
+// `_refusePositiveIntegerOpt`, whose `mail-server-jmap/bad-concurrency` belongs
+// to `jmap.create`. So the function NAMED by the block is preferred, and the
+// adjacent one is used only when the file declares no function of that name,
+// which is the ordinary case for a primitive exported under another name.
+var relocatedBodies = 0;
+
+function bodyAfter(code, blockEnd, prim) {
   var after = code.slice(blockEnd);
-  if (!OPENS_A_FUNCTION.test(after)) return null;
+  var adjacent = after.match(OPENS_A_FUNCTION);
+  if (!adjacent) return null;
+  var segment = String(prim || "").split(".").pop();
+  if (segment && adjacent[1] !== segment) {
+    var named = after.search(
+      new RegExp("^(?:async\\s+)?function\\s+" + segment + "\\s*\\(", "m"));
+    if (named !== -1) { after = after.slice(named); relocatedBodies += 1; }
+  }
   var end = after.search(/\n\}/);
   return end === -1 ? after : after.slice(0, end);
 }
@@ -369,6 +400,50 @@ function opensFunctionBody(masked, at) {
 // so counting it would leave every body one deep. A body the scan cannot read
 // is reported as unreadable rather than read wrongly, which falls back to
 // holding the whole block back instead of answering over a skewed count.
+// A callback handed to one of these runs DURING the call, so a throw inside it
+// reaches the primitive's caller and the body must stay in scope. That is the
+// opposite of a returned handle or a registered listener, whose throws happen
+// later and belong to whoever runs them: `_verifyTrustChain` raises
+// `mail-crypto/smime/bad-chain-cert` and `mail-crypto/smime/bad-trust-anchor`
+// inside `Array.map` callbacks, and stripping those hid both from
+// `b.mail.crypto.smime.verifyAll`.
+var SYNCHRONOUS_CALLBACK_METHODS = new RegExp(
+  "\\.(?:map|forEach|filter|reduce|reduceRight|some|every|find|findIndex" +
+  "|findLast|findLastIndex|flatMap|sort|replace|replaceAll)\\s*\\(" +
+  "(?:[^()]*,\\s*)?$");
+
+// Is the function body opening at `at` the body of a callback passed straight to
+// one of those methods? Walks back over the parameter list and the `function`
+// keyword or arrow to reach the start of the function expression, then asks what
+// call it sits in.
+function isSynchronousCallback(masked, at) {
+  var i = skipBackWhitespace(masked, at - 1);
+  if (i < 0) return false;
+  if (masked[i] === ">" && masked[i - 1] === "=") {
+    i = skipBackWhitespace(masked, i - 2);
+  } else if (masked[i] === ")") {
+    var depth = 0;
+    while (i >= 0) {
+      if (masked[i] === ")") depth += 1;
+      else if (masked[i] === "(") { depth -= 1; if (depth === 0) break; }
+      i -= 1;
+    }
+    if (i < 0) return false;
+    i = skipBackWhitespace(masked, i - 1);
+    var end = i;
+    while (i >= 0 && /[A-Za-z0-9_$]/.test(masked[i])) i -= 1;
+    if (i !== end && masked.slice(i + 1, end + 1) !== "function") {
+      // A shorthand method or a named reference, not an inline callback.
+      return false;
+    }
+    if (i !== end) i = skipBackWhitespace(masked, i);
+  } else {
+    return false;
+  }
+  if (i < 0) return false;
+  return SYNCHRONOUS_CALLBACK_METHODS.test(masked.slice(0, i + 1));
+}
+
 function nestedFunctionSpans(body) {
   var masked = maskLiteralsAndComments(body);
   var declEnd = masked.search(/\{/);
@@ -381,7 +456,8 @@ function nestedFunctionSpans(body) {
     var c = masked[i];
     if (c === "{") {
       depth += 1;
-      if (spanStart === -1 && opensFunctionBody(masked, i)) {
+      if (spanStart === -1 && opensFunctionBody(masked, i) &&
+          !isSynchronousCallback(masked, i)) {
         spanStart = i;
         spanDepth = depth;
       }
@@ -411,10 +487,65 @@ function withoutSpans(body, spans) {
 
 var FILES = walk(LIB, []);
 
+// Every top-level function the module declares, keyed by name, each already
+// narrowed to its own code. A primitive that calls one of these synchronously
+// raises whatever it raises, so those codes belong to the primitive's contract:
+// `b.archive.unwrap` reaches `_tenantKey`, which throws
+// `archive-wrap/no-tenant-id`, and reading one lexical body never saw it.
+//
+// A body the brace scan cannot read is counted rather than skipped silently, so
+// the coverage this cannot follow stays visible.
+var unreadableHelpers = 0;
+
+function localHelpers(code) {
+  var out = {};
+  var re = /^(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/gm;
+  var m;
+  while ((m = re.exec(code)) !== null) {
+    var rest = code.slice(m.index);
+    var end = rest.search(/\n\}/);
+    var body = end === -1 ? rest : rest.slice(0, end);
+    var spans = nestedFunctionSpans(body);
+    if (spans === null) { unreadableHelpers += 1; continue; }
+    out[m[1]] = spans.length ? withoutSpans(body, spans) : body;
+  }
+  return out;
+}
+
+// Call detection reads a body whose strings and comments are MASKED. Without
+// that, `_requireInit`'s message "db.init() must be awaited" matches `init(` and
+// drags the whole init function in, which demanded `db/bad-at-rest` of
+// `b.db.stream` — a code that primitive does not throw.
+function bodiesReachedFrom(startBody, helpers) {
+  var names = Object.keys(helpers);
+  var seen = {};
+  var reached = [startBody];
+  var frontier = [startBody];
+  while (frontier.length) {
+    var next = [];
+    frontier.forEach(function (body) {
+      var callable = maskLiteralsAndComments(body);
+      names.forEach(function (nm) {
+        if (seen[nm]) return;
+        // A MEMBER call is somebody else's function. `\b` is satisfied between
+        // the dot and the name, so a bare word boundary let `JSON.parse(` match a
+        // local helper called `parse` and drag its codes in.
+        if (!new RegExp("(?<![.\\w$])" + nm + "\\s*\\(").test(callable)) return;
+        seen[nm] = true;
+        reached.push(helpers[nm]);
+        next.push(helpers[nm]);
+      });
+    });
+    frontier = next;
+  }
+  return reached;
+}
+
 // ---- The vocabulary: namespaces the tree really builds errors in. ----
 var NAMESPACES = {};
 var STRIPPED = {};
 var OWN_NAMESPACES = {};
+var LOCAL_HELPERS = {};
 var COMPOSED_BY_ALIAS = {};
 var BUILDER_SUFFIXES = builderSuffixes(
   stripBlocks(nodeFs.readFileSync(nodePath.join(LIB, "gate-contract.js"), "utf8")));
@@ -423,6 +554,7 @@ FILES.forEach(function (full) {
   var code = stripBlocks(nodeFs.readFileSync(full, "utf8"));
   STRIPPED[rel] = code;
   OWN_NAMESPACES[rel] = namespacesIn(code);
+  LOCAL_HELPERS[rel] = localHelpers(code);
   COMPOSED_BY_ALIAS[rel] = composedByAliasIn(code, BUILDER_SUFFIXES);
   Object.keys(OWN_NAMESPACES[rel]).forEach(function (ns) { NAMESPACES[ns] = true; });
   Object.keys(COMPOSED_BY_ALIAS[rel]).forEach(function (alias) {
@@ -449,19 +581,27 @@ function collect() {
       var blk = m[0];
       if (blk.indexOf("@primitive") === -1) continue;
 
+      // A code counts as documented wherever it is written inside a backticked
+      // span, not only when the whole span is the bare code. `b.vault` writes
+      // `VaultError("vault/not-initialized")`, which names the code an operator
+      // would grep for; reading only whole spans called that undocumented.
       var documented = {};
       var bm;
       BACKTICK_RE.lastIndex = 0;
       while ((bm = BACKTICK_RE.exec(blk)) !== null) {
         var inner = bm[1];
-        if (!CODE_RE.test(inner)) continue;
-        if (!NAMESPACES[inner.split("/")[0]]) continue;
-        documented[inner] = true;
+        var cm;
+        CODE_IN_TEXT_RE.lastIndex = 0;
+        while ((cm = CODE_IN_TEXT_RE.exec(inner)) !== null) {
+          if (!CODE_RE.test(cm[1])) continue;
+          if (!NAMESPACES[cm[1].split("/")[0]]) continue;
+          documented[cm[1]] = true;
+        }
       }
       if (Object.keys(documented).length === 0) continue;
 
       var prim = (blk.match(/@primitive\s+(\S+)/) || [])[1] || "(unnamed)";
-      var body = bodyAfter(code, m.index + blk.length);
+      var body = bodyAfter(code, m.index + blk.length, prim);
       if (body === null) { notAFunction += 1; continue; }
       var entry = {
         file:       rel,
@@ -482,10 +622,32 @@ function collect() {
         own = withoutSpans(body, spans);
         narrowed += 1;
       }
+      // A code the primitive's own body COMPARES against is one it handles, so a
+      // helper raising it does not raise it into the caller:
+      // `b.network.dns.discoverEncrypted` catches `dns/no-result` from the SVCB
+      // query and throws `dns/ddr-not-discovered` instead, and demanding the
+      // caught code would put a failure in the documentation that an operator can
+      // never receive. Only PROPAGATION is suppressed, not construction: a
+      // primitive that compares a code and also builds it still documents it.
+      var handled = comparedCodesIn(own, OWN_NAMESPACES[rel]);
+
+      // The codes of every body this one reaches, not only its own. A helper the
+      // primitive calls synchronously raises into the caller, so its codes are
+      // part of the primitive's contract.
       var thrown = codesIn(own, OWN_NAMESPACES[rel]);
-      Object.keys(COMPOSED_BY_ALIAS[rel]).forEach(function (alias) {
-        if (!new RegExp("\\b" + alias + "\\s*\\(").test(own)) return;
-        COMPOSED_BY_ALIAS[rel][alias].forEach(function (c) { thrown[c] = true; });
+      var reached = bodiesReachedFrom(own, LOCAL_HELPERS[rel]);
+      reached.forEach(function (b, idx) {
+        if (idx > 0) {
+          Object.keys(codesIn(b, OWN_NAMESPACES[rel])).forEach(function (c) {
+            if (!handled[c]) thrown[c] = true;
+          });
+        }
+        Object.keys(COMPOSED_BY_ALIAS[rel]).forEach(function (alias) {
+          if (!new RegExp("\\b" + alias + "\\s*\\(").test(b)) return;
+          COMPOSED_BY_ALIAS[rel][alias].forEach(function (c) {
+            if (idx === 0 || !handled[c]) thrown[c] = true;
+          });
+        });
       });
       entry.missing = Object.keys(thrown)
         .filter(isWholeCode)
@@ -541,6 +703,24 @@ function testTheWalkReadTheTree() {
         "running over an empty set",
         withVocabulary * 2 > FILES.length,
         withVocabulary + " of " + FILES.length + " files build errors in a named namespace");
+
+  // A helper whose body the brace scan cannot read is not followed, so its codes
+  // are not demanded of the primitives that call it. That is the conservative
+  // direction, and it is reported rather than silent: a change that made most
+  // helpers unreadable would quietly shrink what this gate checks.
+  var helperCount = Object.keys(LOCAL_HELPERS).reduce(function (n, rel) {
+    return n + Object.keys(LOCAL_HELPERS[rel]).length;
+  }, 0);
+  check("the helper call graph is readable, so codes raised through one are followed",
+        helperCount > unreadableHelpers * 4,
+        helperCount + " helpers followed, " + unreadableHelpers + " unreadable");
+
+  // Blocks whose function is not the one immediately below them, reported so the
+  // relocation stays visible: before it, a module-local helper sitting between a
+  // block and its function had its codes read as that primitive's.
+  check("a block separated from its function by a helper is still matched to it",
+        relocatedBodies > 0,
+        relocatedBodies + " blocks read a function further down the file");
 }
 
 function testEveryDocumentedCodeListIsComplete() {
@@ -594,27 +774,37 @@ function testTheScopeBoundaryIsNotSwallowingTheWork() {
 }
 
 function testNestedBodiesComeOutButTheOuterFunctionStays() {
-  // The control for the span scan. The outer function throws one code and the
-  // callback it passes throws another; the first must survive the narrowing and
-  // the second must not. A scan that stripped the whole body, or none of it,
-  // fails one of these two.
+  // The control for the span scan, pinning both directions. The outer function's
+  // own throw must survive the narrowing. A function it RETURNS runs later, when
+  // the caller invokes the handle, so that body comes out. A callback handed to
+  // `Array.map` runs DURING the call, so its throw reaches the same caller and
+  // that body stays. A scan that stripped everything, or nothing, fails one of
+  // these.
   var body = [
     "function outer(x) {",
     "  if (!x) throw new FixtureError(\"fixture/outer-throw\", \"empty\");",
-    "  return x.map(function (item) {",
-    "    if (!item) throw new FixtureError(\"fixture/inner-throw\", \"empty item\");",
+    "  x.map(function (item) {",
+    "    if (!item) throw new FixtureError(\"fixture/sync-callback\", \"empty item\");",
     "    return item;",
     "  });",
+    "  return function handle(y) {",
+    "    if (!y) throw new FixtureError(\"fixture/deferred\", \"later\");",
+    "    return y;",
+    "  };",
   ].join("\n");
   var spans = nestedFunctionSpans(body);
-  check("the brace scan reads the body", spans !== null && spans.length === 1,
+  check("the brace scan reads the body and strips only the deferred function",
+        spans !== null && spans.length === 1,
         spans === null ? "null" : spans.length + " spans");
   var own = withoutSpans(body, spans || []);
   var codes = Object.keys(codesIn(own, { fixture: true })).sort();
   check("the outer function's own code survives the narrowing",
         codes.indexOf("fixture/outer-throw") !== -1, codes.join(","));
-  check("the callback's code does not",
-        codes.indexOf("fixture/inner-throw") === -1, codes.join(","));
+  check("a synchronous callback's code survives too, because it raises into the " +
+        "same caller",
+        codes.indexOf("fixture/sync-callback") !== -1, codes.join(","));
+  check("the returned handle's code does not, because it runs later",
+        codes.indexOf("fixture/deferred") === -1, codes.join(","));
 
   // A brace inside a string or a comment must not move the counter, and an
   // unbalanced body must come back null rather than a confident wrong span.
@@ -622,7 +812,7 @@ function testNestedBodiesComeOutButTheOuterFunctionStays() {
     "function outer(x) {",
     "  var open = \"{\";",
     "  // a comment with a } in it",
-    "  return x.map(function (i) { return i + \"}\"; });",
+    "  return function (i) { return i + \"}\"; };",
   ].join("\n");
   var trickySpans = nestedFunctionSpans(tricky);
   check("a brace inside a string or a comment does not skew the scan",
