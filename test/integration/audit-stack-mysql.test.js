@@ -100,6 +100,30 @@ function _scalar(sql) {
   return parsed.rows[0][k];
 }
 
+// The audit chain is not this test's private table. The framework emits its own
+// events through the batching audit handler, and one buffered while the stack
+// boots lands whenever that handler next flushes, which is somewhere inside the
+// phases below. So the row counts and counters here are read from the live chain
+// at the instant they are asserted.
+function _auditRows() {
+  return _countMysql("`_blamejs_audit_log`", null);
+}
+function _auditMax() {
+  return Number(_scalar(
+    "SELECT COALESCE(MAX(`monotonicCounter`), 0) AS n FROM `_blamejs_audit_log`"));
+}
+// counter -> action for every row above a baseline, so an assertion can name the
+// row it expected and a failure can name the rows that are actually there.
+function _auditRowsAbove(counter) {
+  var parsed = _parseBatch(_mysqlRoot(
+    "SELECT `monotonicCounter`, `action` FROM `_blamejs_audit_log` " +
+    "WHERE `monotonicCounter` > " + Number(counter) +
+    " ORDER BY `monotonicCounter` ASC", DB_NAME));
+  var map = {};
+  parsed.rows.forEach(function (r) { map[Number(r.monotonicCounter)] = r.action; });
+  return map;
+}
+
 // ---- docker-exec mysql driver (faithful to a text-protocol driver) ----
 // SQL is piped over STDIN, NOT passed as an `-e` argument: a sealed cell can
 // push a single INSERT past the OS command-line length limit (ENAMETOOLONG),
@@ -293,11 +317,19 @@ async function run() {
       _countMysql("information_schema.tables",
         "table_schema = '" + DB_NAME + "' AND table_name = '_blamejs_break_glass_grants'") === 1);
 
+    // Every readback in this file goes through execFileSync("docker", …), which
+    // blocks the event loop, so the lease heartbeat cannot fire while one is in
+    // flight. At the default 30s lease the blocking windows add up past the TTL
+    // under a full integration run and the node loses leadership mid-test, after
+    // which every append correctly refuses with cluster/not-leader. The lease is
+    // sized for a harness that blocks rather than for production.
     await b.cluster.init({
       nodeId:            "audit-stack-my",
       role:              "leader",
       externalDbBackend: "ops",
       dialect:           "mysql",
+      leaseTtl:          b.constants.TIME.minutes(10),
+      heartbeatInterval: b.constants.TIME.minutes(1),
     });
     check("cluster.init acquired leadership on real MySQL (gates every chain append)",
       b.cluster.isLeader() === true);
@@ -305,8 +337,8 @@ async function run() {
       b.clusterStorage.dialect() === "mysql" &&
       b.clusterStorage.tableName("audit_log") === "_blamejs_audit_log");
 
-    await _testAuditRecordAndChain();
-    await _testCheckpointAndFence();
+    var chainTip = await _testAuditRecordAndChain();
+    await _testCheckpointAndFence(chainTip);
     await _testCoercionFidelity();
     await _testAuditToolsBundle(tmpDir);
     await _testBreakGlass();
@@ -338,27 +370,52 @@ async function _testAuditRecordAndChain() {
       metadata: { region: "eu" } },
     { action: "system.shutdown", outcome: "success" },
   ];
+  // This test does not own the chain: booting the stack audits the external-DB
+  // queries that create the schema and take leadership, so the chain already
+  // holds rows. Draining first fixes a baseline the appends are then gapless
+  // from, and the rows they report writing are checked against the table by
+  // action.
+  await b.audit.flush();
+  var base = _auditRows();
   var appended = [];
   for (var i = 0; i < events.length; i++) appended.push(await b.audit.record(events[i]));
-  check("audit.record returned a monotonic counter per row (1..4) on MySQL",
-    appended[0].monotonicCounter === 1 && appended[3].monotonicCounter === 4);
-  check("audit.record landed 4 rows in _blamejs_audit_log on real MySQL",
-    _countMysql("`_blamejs_audit_log`", null) === 4);
+  var counters = appended.map(function (a) { return a && a.monotonicCounter; });
+  var gapless = counters.every(function (c, idx) {
+    if (typeof c !== "number") return false;
+    return idx === 0 ? c === base + 1 : c === counters[idx - 1] + 1;
+  });
+  var placed = _auditRowsAbove(base);
+  check("audit.record returned a gapless monotonic counter per row on MySQL, " +
+    "continuing from what the chain already held",
+    gapless, "counters=" + JSON.stringify(counters) + " base=" + base +
+    " rowsAboveBase=" + JSON.stringify(placed));
+  check("every row audit.record reported is in _blamejs_audit_log under its own " +
+    "action on real MySQL",
+    counters.every(function (c, idx) { return placed[c] === events[idx].action; }),
+    "counters=" + JSON.stringify(counters) + " rowsAboveBase=" + JSON.stringify(placed));
 
   var v = await b.audit.verify({});
   check("audit.verify walks the live MySQL chain and returns ok:true", v.ok === true);
-  check("audit.verify counted every stored row (rowsVerified === 4)",
-    v.ok === true && v.rowsVerified === 4);
+  check("audit.verify counted every stored row",
+    v.ok === true && v.rowsVerified >= base + 4,
+    "rowsVerified=" + v.rowsVerified + " base=" + base);
   if (!v.ok) check("AUDIT-VERIFY DETAIL (mysql): '" + v.reason + "' at row " + v.breakAt, false);
 
-  // Counter primer: a fresh in-process chain-writer must read MAX from MySQL
-  // and continue at 5, not restart at 1.
+  // Counter primer: a fresh in-process chain-writer must read MAX from MySQL and
+  // continue from it, not restart at 1. The reset also shut the batching handler
+  // down, so no framework row can land between the MAX read and the append.
   b.audit._resetForTest();
+  var maxBefore = _auditMax();
   var more = await b.audit.record({ action: "system.boot", outcome: "success" });
-  check("counter primer read MAX(monotonicCounter) from live MySQL (continued at 5)",
-    more.monotonicCounter === 5);
-  check("5 audit rows present after primer-continued append on MySQL",
-    _countMysql("`_blamejs_audit_log`", null) === 5);
+  check("counter primer read MAX(monotonicCounter) from live MySQL (continued " +
+    "from the live MAX, did not restart at 1)",
+    more.monotonicCounter === maxBefore + 1 && maxBefore >= base + 4,
+    "monotonicCounter=" + more.monotonicCounter + " maxBefore=" + maxBefore +
+    " base=" + base);
+  check("the primer-continued append is in the table on MySQL",
+    _auditRows() >= maxBefore + 1,
+    "rowsNow=" + _auditRows() + " maxBefore=" + maxBefore);
+  return more.monotonicCounter;
 }
 
 // ====================================================================
@@ -367,17 +424,23 @@ async function _testAuditRecordAndChain() {
 //    fold; FENCED_OUT detection reads the stored token back (no RETURNING on
 //    MySQL). A strictly-lower incoming token must be FENCED_OUT.
 // ====================================================================
-async function _testCheckpointAndFence() {
+async function _testCheckpointAndFence(chainTip) {
+  var tipNow = _auditMax();
   var ck = await b.audit.checkpoint({});
-  check("audit.checkpoint anchored the live MySQL chain tip (counter 5)",
-    ck && ck.atMonotonicCounter === 5);
+  check("audit.checkpoint anchored the live MySQL chain tip",
+    ck && ck.atMonotonicCounter === tipNow && tipNow >= chainTip,
+    "atMonotonicCounter=" + (ck && ck.atMonotonicCounter) +
+    " liveMax=" + tipNow + " chainTip=" + chainTip);
   check("checkpoint row landed in _blamejs_audit_checkpoints on MySQL",
     _countMysql("`_blamejs_audit_checkpoints`", null) === 1);
 
   check("_upsertAuditTip wrote the single audit-tip row on MySQL",
     _countMysql("`_blamejs_audit_tip`", "`scope` = 'audit'") === 1);
-  check("audit-tip atMonotonicCounter matches the chain tip (5) on MySQL",
-    Number(_scalar("SELECT `atMonotonicCounter` FROM `_blamejs_audit_tip` WHERE `scope` = 'audit'")) === 5);
+  check("audit-tip atMonotonicCounter matches the chain tip on MySQL",
+    Number(_scalar("SELECT `atMonotonicCounter` FROM `_blamejs_audit_tip` WHERE `scope` = 'audit'")) ===
+      ck.atMonotonicCounter,
+    "tip=" + _scalar("SELECT `atMonotonicCounter` FROM `_blamejs_audit_tip` WHERE `scope` = 'audit'") +
+    " checkpoint=" + ck.atMonotonicCounter);
 
   var vc = await b.audit.verifyCheckpoints();
   check("audit.verifyCheckpoints returns ok:true against the live MySQL checkpoint",

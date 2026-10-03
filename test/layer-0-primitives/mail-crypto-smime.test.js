@@ -400,6 +400,39 @@ function testVerifyAllPerSignerKeyBinding() {
     threw && threw.code === "mail-crypto/smime/signature-mismatch");
 }
 
+// verify() wraps its CMS parse and refuses with parse-failed. verifyAll parsed
+// outside any catch, so a malformed envelope escaped as the cms-layer code and a
+// caller written against the documented code missed it. Both entry points answer
+// a structure they cannot read the same way.
+function testVerifyAllMalformedEnvelope() {
+  var msg = Buffer.from("malformed-envelope-case");
+  var notCms = Buffer.from([0x30, 0x03, 0x02, 0x01, 0x07]);   // DER, but not SignedData
+  var threw = null;
+  try {
+    b.mail.crypto.smime.verifyAll({
+      message: msg, signature: notCms, signerPublicKeys: { "01": Buffer.alloc(32) },
+    });
+  } catch (e) { threw = e; }
+  check("verifyAll: a CMS structure it cannot read refuses with parse-failed",
+    threw && threw.code === "mail-crypto/smime/parse-failed",
+    "code=" + (threw && threw.code));
+  check("verifyAll: parse-failed names the primitive that refused",
+    threw && /verifyAll/.test(threw.message || ""),
+    "message=" + (threw && threw.message));
+
+  // The same bytes through verify() give the same code, which is the promise the
+  // shared documentation makes for both.
+  var threwVerify = null;
+  try {
+    b.mail.crypto.smime.verify({
+      message: msg, signature: notCms, signerPublicKey: Buffer.alloc(32),
+    });
+  } catch (e) { threwVerify = e; }
+  check("verify: the same malformed envelope refuses with the same code",
+    threwVerify && threwVerify.code === "mail-crypto/smime/parse-failed",
+    "code=" + (threwVerify && threwVerify.code));
+}
+
 function testVerifyAllMissingKey() {
   var msg = Buffer.from("missing-key-case");
   var env = _twoSignerEnvelope(msg);
@@ -498,6 +531,20 @@ function _issuerSerialSid(serialByte) {
   ]);
 }
 function _sha3_512(bytes) { return nodeCrypto.createHash("sha3-512").update(bytes).digest(); }
+
+// A conforming producer sets a SignerInfo's sid to its own certificate's issuer
+// and serial. These derive both from the certificate so an envelope built here
+// names the certificate it embeds.
+function _sidFromCert(certDer) {
+  var f = asn1.readCertificateTbsFields(certDer);
+  return asn1.writeSequence([
+    asn1.writeNode(0x30, Buffer.from(f.issuer.value)),
+    asn1.writeNode(0x02, Buffer.from(f.serialNumber.value)),
+  ]);
+}
+function _serialHexOfCert(certDer) {
+  return Buffer.from(asn1.readCertificateTbsFields(certDer).serialNumber.value).toString("hex");
+}
 
 // Build a ContentInfo → SignedData DER with a single controllable SignerInfo.
 // opts: { digestOid, sigOid, eContentType, sid, signedAttrsImplicit (or null
@@ -659,7 +706,7 @@ function _mlDsaEnvelope(tk, signerKeyPath, msg, certsDer) {
   ]);
   var sig = tk.rawSign(signerKeyPath, sa.set);
   var si = asn1.writeSequence([
-    asn1.writeInteger(Buffer.from([1])), _issuerSerialSid(0x01), _algId(OID.sha3_512),
+    asn1.writeInteger(Buffer.from([1])), _sidFromCert(certsDer[0]), _algId(OID.sha3_512),
     sa.implicit, _algId(OID.mldsa65), asn1.writeOctetString(sig),
   ]);
   return _craftSignedData({ signerInfos: [si], certsDer: certsDer });
@@ -917,6 +964,163 @@ function testVerifyAllSkiSidFallback() {
     threw && /deadbeef/.test(String(threw.message || "")));
 }
 
+// Two encodings of one distinguished name are the same name: RFC 5280 section
+// 7.1 compares PrintableString and UTF8String attributes after normalization,
+// not as raw DER. A sid that spells its issuer in the other string type still
+// names the certificate it names.
+function testSmimeTrustChainDnEncodingEquivalence() {
+  if (!_mlDsaAvailable()) {
+    helpers.unavailable("trust chain DN-encoding equivalence skipped (openssl ML-DSA unavailable)");
+    return;
+  }
+  _withMlDsaCa(function (tk) {
+    var cn = "Dn Equivalence Leaf";
+    var leaf = tk.selfSigned(cn);
+    if (!leaf) {
+      helpers.unavailable("trust chain DN-encoding equivalence skipped (cert mint failed)");
+      return;
+    }
+    var fields = asn1.readCertificateTbsFields(leaf.der);
+    // Whichever string type the minted certificate used, spell the sid's issuer
+    // with the other one, so the bytes differ while the name does not.
+    var atvValue = asn1.readSequence(
+      asn1.readSequence(asn1.readSequence(fields.issuer.value)[0].value)[0].value)[1];
+    var reEncoded = atvValue.tag === 0x0c
+      ? asn1.writePrintableString(cn)      // cert used UTF8String
+      : asn1.writeUtf8String(cn);          // cert used PrintableString
+    var otherEncodingSid = asn1.writeSequence([
+      asn1.writeSequence([asn1.writeSet([
+        asn1.writeSequence([asn1.writeOid("2.5.4.3"), reEncoded]),
+      ])]),
+      asn1.writeNode(0x02, Buffer.from(fields.serialNumber.value)),
+    ]);
+    check("DN equivalence: the fixture's sid bytes really differ from the cert's",
+      !Buffer.from(otherEncodingSid).equals(Buffer.from(_sidFromCert(leaf.der))));
+
+    var msg = Buffer.from("dn-encoding-equivalence-body");
+    var sa = _signedAttrs([
+      _attr(OID_CT_ATTR, asn1.writeOid(OID.data)),
+      _attr(OID_MD_ATTR, asn1.writeOctetString(_sha3_512(msg))),
+    ]);
+    var si = asn1.writeSequence([
+      asn1.writeInteger(Buffer.from([1])), otherEncodingSid, _algId(OID.sha3_512),
+      sa.implicit, _algId(OID.mldsa65), asn1.writeOctetString(tk.rawSign(leaf.keyPath, sa.set)),
+    ]);
+    var env = _craftSignedData({ signerInfos: [si], certsDer: [leaf.der] });
+    var out = null;
+    try {
+      out = smime.verify({ message: msg, signature: env, signerPublicKey: leaf.rawPub,
+        trustAnchorCertsPem: [leaf.pem] });
+    } catch (e) { out = e; }
+    check("DN equivalence: a sid spelling its issuer in the other string type still names the cert",
+      out && out.valid === true && out.chainVerified === true,
+      out && out.code ? String(out.code) : "ok");
+  });
+}
+
+// An IssuerAndSerialNumber is a SEQUENCE of exactly a Name and an INTEGER. A
+// node that merely carries tag number 16, or one holding extra children between
+// the two that are read, is not that structure and names no certificate, so it
+// cannot be used to bind one.
+function testSmimeTrustChainMalformedSid() {
+  if (!_mlDsaAvailable()) {
+    helpers.unavailable("trust chain malformed-sid refusal skipped (openssl ML-DSA unavailable)");
+    return;
+  }
+  _withMlDsaCa(function (tk) {
+    var leaf = tk.selfSigned("Malformed Sid Leaf");
+    if (!leaf) {
+      helpers.unavailable("trust chain malformed-sid refusal skipped (cert mint failed)");
+      return;
+    }
+    var fields = asn1.readCertificateTbsFields(leaf.der);
+    var issuerDer = asn1.writeNode(0x30, Buffer.from(fields.issuer.value));
+    var serialDer = asn1.writeNode(0x02, Buffer.from(fields.serialNumber.value));
+    var msg = Buffer.from("malformed-sid-body");
+
+    function verifyWithSid(sid) {
+      var sa = _signedAttrs([
+        _attr(OID_CT_ATTR, asn1.writeOid(OID.data)),
+        _attr(OID_MD_ATTR, asn1.writeOctetString(_sha3_512(msg))),
+      ]);
+      var si = asn1.writeSequence([
+        asn1.writeInteger(Buffer.from([1])), sid, _algId(OID.sha3_512),
+        sa.implicit, _algId(OID.mldsa65), asn1.writeOctetString(tk.rawSign(leaf.keyPath, sa.set)),
+      ]);
+      var env = _craftSignedData({ signerInfos: [si], certsDer: [leaf.der] });
+      try {
+        return smime.verify({ message: msg, signature: env, signerPublicKey: leaf.rawPub,
+          trustAnchorCertsPem: [leaf.pem] });
+      } catch (e) { return e; }
+    }
+
+    // Control: the well-formed sid built from the same parts does validate, so a
+    // refusal below is the malformation and not the hand-built envelope.
+    var wellFormed = verifyWithSid(asn1.writeSequence([issuerDer, serialDer]));
+    check("malformed sid: the well-formed control validates",
+      wellFormed && wellFormed.valid === true && wellFormed.chainVerified === true,
+      wellFormed && wellFormed.code ? String(wellFormed.code) : "ok");
+
+    var extraChild = verifyWithSid(asn1.writeSequence([
+      issuerDer, asn1.writeNode(0x05, Buffer.alloc(0)), serialDer,   // NULL wedged between
+    ]));
+    check("malformed sid: a third child between the name and the serial is refused",
+      extraChild && extraChild.code === "mail-crypto/smime/unbindable-sid",
+      extraChild && extraChild.code ? String(extraChild.code)
+        : "accepted with chainVerified=" + (extraChild && extraChild.chainVerified));
+
+    var contextTagged = verifyWithSid(
+      asn1.writeNode(0xb0, Buffer.concat([issuerDer, serialDer])));   // context-specific, tag 16
+    check("malformed sid: a context-specific node carrying tag 16 is refused",
+      contextTagged && contextTagged.code === "mail-crypto/smime/unbindable-sid",
+      contextTagged && contextTagged.code ? String(contextTagged.code)
+        : "accepted with chainVerified=" + (contextTagged && contextTagged.chainVerified));
+  });
+}
+
+// A subject-key-identifier sid names no issuer and serial, so the certificate it
+// points at cannot be bound to a bundle entry. Chain validation refuses rather
+// than walking whichever certificate happens to carry the verifying key.
+function testSmimeTrustChainUnbindableSid() {
+  if (!_mlDsaAvailable()) {
+    helpers.unavailable("trust chain SKI-sid refusal skipped (openssl ML-DSA unavailable)");
+    return;
+  }
+  _withMlDsaCa(function (tk) {
+    var leaf = tk.selfSigned("Unbindable Sid Leaf");
+    if (!leaf) { helpers.unavailable("trust chain SKI-sid refusal skipped (cert mint failed)"); return; }
+    var msg = Buffer.from("ski-sid-chain-body");
+    var sa = _signedAttrs([
+      _attr(OID_CT_ATTR, asn1.writeOid(OID.data)),
+      _attr(OID_MD_ATTR, asn1.writeOctetString(_sha3_512(msg))),
+    ]);
+    var si = asn1.writeSequence([
+      asn1.writeInteger(Buffer.from([1])),
+      asn1.writeContextImplicit(0, Buffer.from([0xde, 0xad, 0xbe, 0xef])),   // [0] SKI, not issuer+serial
+      _algId(OID.sha3_512), sa.implicit, _algId(OID.mldsa65),
+      asn1.writeOctetString(tk.rawSign(leaf.keyPath, sa.set)),
+    ]);
+    var env = _craftSignedData({ signerInfos: [si], certsDer: [leaf.der] });
+    var threw = null;
+    try {
+      smime.verify({ message: msg, signature: env, signerPublicKey: leaf.rawPub,
+        trustAnchorCertsPem: [leaf.pem] });
+    } catch (e) { threw = e; }
+    check("trust chain: a subject-key-identifier sid is refused for chain validation",
+      threw && threw.code === "mail-crypto/smime/unbindable-sid",
+      threw ? String(threw.code) : "accepted");
+
+    // Without trust anchors the same envelope still verifies, so the refusal is
+    // scoped to chain validation rather than to the sid form itself.
+    var ok = null;
+    try {
+      ok = smime.verify({ message: msg, signature: env, signerPublicKey: leaf.rawPub });
+    } catch (e2) { ok = e2; }
+    check("trust chain: the same SKI-sid envelope verifies without trust anchors",
+      ok && ok.valid === true, ok && ok.code ? String(ok.code) : "ok");
+  });
+}
+
 // ---- Trust-chain refusals reachable without ML-DSA certs ----
 
 function testSmimeTrustChainNoCerts() {
@@ -1065,6 +1269,76 @@ function testSmimeTrustChainMlDsaIntermediate() {
   });
 }
 
+// Detached ML-DSA CMS SignedData carrying one SignerInfo per entry in
+// `signers`, sids 0x01 upward, every signer's cert embedded in
+// SignedData.certificates.
+function _mlDsaMultiSignerEnvelope(tk, msg, signers) {
+  var sa = _signedAttrs([
+    _attr(OID_CT_ATTR, asn1.writeOid(OID.data)),
+    _attr(OID_MD_ATTR, asn1.writeOctetString(_sha3_512(msg))),
+  ]);
+  var sis = signers.map(function (s) {
+    return asn1.writeSequence([
+      asn1.writeInteger(Buffer.from([1])), _sidFromCert(s.der), _algId(OID.sha3_512),
+      sa.implicit, _algId(OID.mldsa65), asn1.writeOctetString(tk.rawSign(s.keyPath, sa.set)),
+    ]);
+  });
+  return _craftSignedData({
+    signerInfos: sis,
+    certsDer:    signers.map(function (s) { return s.der; }),
+  });
+}
+
+// The chain half of the per-signer binding that testVerifyAllPerSignerKeyBinding
+// asks about signatures. Two signers, one anchor: the first signer's cert is the
+// anchor, the second's chains to nothing supplied. `valid` and `chainVerified`
+// describe every signer, so one unanchored signer has to refuse the envelope.
+function testVerifyAllTrustChainCoversEverySigner() {
+  if (!_mlDsaAvailable()) {
+    helpers.unavailable("verifyAll per-signer chain skipped (openssl ML-DSA unavailable)");
+    return;
+  }
+  _withMlDsaCa(function (tk) {
+    var anchored = tk.selfSigned("VerifyAll Anchored Signer");
+    var rogue    = tk.selfSigned("VerifyAll Rogue Signer");
+    if (!anchored || !rogue) {
+      helpers.unavailable("verifyAll per-signer chain skipped (cert mint failed)");
+      return;
+    }
+    var msg = Buffer.from("verifyall-every-signer-chain");
+    var env = _mlDsaMultiSignerEnvelope(tk, msg, [anchored, rogue]);
+    var multiKeys = {};
+    multiKeys[_serialHexOfCert(anchored.der)] = anchored.rawPub;
+    multiKeys[_serialHexOfCert(rogue.der)]    = rogue.rawPub;
+    var threw = null;
+    var v = null;
+    try {
+      v = smime.verifyAll({
+        message: msg, signature: env,
+        signerPublicKeys:    multiKeys,
+        trustAnchorCertsPem: [anchored.pem],
+      });
+    } catch (e) { threw = e; }
+    check("verifyAll: a signer whose cert chains to no supplied anchor is refused",
+      threw !== null && /^mail-crypto\/smime\//.test(String(threw.code || "")),
+      threw ? String(threw.code) : "accepted with chainVerified=" + (v && v.chainVerified));
+
+    // The anchored signer alone still validates, so the refusal above is the
+    // unanchored cert and not the multi-signer shape.
+    var bothAnchored = null;
+    try {
+      bothAnchored = smime.verifyAll({
+        message: msg, signature: env,
+        signerPublicKeys:    multiKeys,
+        trustAnchorCertsPem: [anchored.pem, rogue.pem],
+      });
+    } catch (e2) { bothAnchored = e2; }
+    check("verifyAll: both signers anchored validates the envelope",
+      bothAnchored && bothAnchored.valid === true && bothAnchored.chainVerified === true,
+      bothAnchored && bothAnchored.code ? String(bothAnchored.code) : "ok");
+  });
+}
+
 function testVerifyAllTrustChain() {
   if (!_mlDsaAvailable()) {
     helpers.unavailable("verifyAll trust chain skipped (openssl ML-DSA unavailable)");
@@ -1074,8 +1348,10 @@ function testVerifyAllTrustChain() {
     var leaf = tk.selfSigned("VerifyAll Leaf");
     if (!leaf) { helpers.unavailable("verifyAll trust chain skipped (cert mint failed)"); return; }
     var msg = Buffer.from("verifyall-chain-body");
+    var leafKeys = {};
+    leafKeys[_serialHexOfCert(leaf.der)] = leaf.rawPub;
     var v = smime.verifyAll({ message: msg, signature: _mlDsaEnvelope(tk, leaf.keyPath, msg, [leaf.der]),
-      signerPublicKeys: { "01": leaf.rawPub }, trustAnchorCertsPem: [leaf.pem] });
+      signerPublicKeys: leafKeys, trustAnchorCertsPem: [leaf.pem] });
     check("verifyAll: trust-anchor chain validates through the bundle",
       v.valid === true && v.chainVerified === true);
   });
@@ -1177,6 +1453,7 @@ function run() {
   testVerifyAllMultiSigner();
   testVerifyAllPerSignerKeyBinding();
   testVerifyAllMissingKey();
+  testVerifyAllMalformedEnvelope();
   testVerifyAllTamperRefused();
   testVerifyAllSingleSigner();
   testVerifyAllInputValidation();
@@ -1192,12 +1469,16 @@ function run() {
   testSmimeCertKeyMatchesLongerSigner();
   testVerifyAllNoSigners();
   testVerifyAllSkiSidFallback();
+  testSmimeTrustChainUnbindableSid();
+  testSmimeTrustChainDnEncodingEquivalence();
+  testSmimeTrustChainMalformedSid();
   testSmimeTrustChainNoCerts();
   testSmimeTrustChainBadChainCert();
   testSmimeTrustChainRealCertRefusals();
   testSmimeTrustChainMlDsaWalk();
   testSmimeTrustChainMlDsaIntermediate();
   testVerifyAllTrustChain();
+  testVerifyAllTrustChainCoversEverySigner();
   testSmimeCheckCertRealCerts();
   testSmimeCheckCertValidityWindow();
 }
