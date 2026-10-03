@@ -1049,10 +1049,15 @@ async function _testCancelPendingReconnect() {
   c.on("reconnecting", function () { reconnecting += 1; });
   await helpers.waitUntil(function () { return reconnecting >= 1; },
     { timeoutMs: 5000, label: "ws-client: first reconnect scheduled" });
-  check("cancelReconnect: a reconnect was scheduled", reconnecting === 1);
-  c.cancelReconnect();                   // clears the pending timer
-  await _sleep(150);
-  check("cancelReconnect: no further reconnect after cancel", reconnecting === 1);
+  // The backoff uses full jitter, so attempt 1's delay is uniform over
+  // [0, baseMs) and a second attempt can land before this line runs. Assert what
+  // the wait guarantees, then pin the count at the cancel so the real claim,
+  // that no FURTHER reconnect follows, stays exact.
+  check("cancelReconnect: a reconnect was scheduled", reconnecting >= 1);
+  c.cancelReconnect();                   // clears the pending timer and closes
+  var atCancel = reconnecting;
+  await helpers.passiveObserve(150, "ws-client: no reconnect after cancelReconnect");
+  check("cancelReconnect: no further reconnect after cancel", reconnecting === atCancel);
 }
 
 // Option-default arms: a reconnect object omitting maxAttempts/baseMs/maxMs

@@ -41,6 +41,17 @@ var CODE_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?:\/[a-z0-9]+(?:-[a-z0-9]+)*){1,3}
 var NEW_ERROR_RE = /new\s+[A-Za-z_$][A-Za-z0-9_$]*Error\(\s*(?:"([^"\n]+)"|'([^'\n]+)')/g;
 var CLASS_THEN_CODE_RE = /[A-Za-z_$][A-Za-z0-9_$]*Error\s*,\s*(?:"([^"\n]+)"|'([^'\n]+)')/g;
 
+// A third shape: a shared helper takes the class and the code as an options
+// object, as `safeJson.parseTyped(body, { errorClass: AuthError, code: "..." })`
+// does. `code:` alone appears 232 times in lib/ for response codes, catalog
+// entries and problem-details types, so the match is anchored on `errorClass:`
+// in the same object and tempered against its closing brace rather than bounded
+// by a character count.
+var OPTS_CODE_RE =
+  /errorClass\s*:\s*[A-Za-z_$][A-Za-z0-9_$.]*\s*,(?:(?!\})[\s\S])*?code\s*:\s*(?:"([^"\n]+)"|'([^'\n]+)')/g;
+var OPTS_CODE_FIRST_RE =
+  /code\s*:\s*(?:"([^"\n]+)"|'([^'\n]+)')(?:(?!\})[\s\S])*?errorClass\s*:/g;
+
 var BACKTICK_RE = /`([^`\n]{1,160})`/g;
 var BLOCK_RE    = /\/\*\*[\s\S]*?\*\//g;
 
@@ -76,6 +87,14 @@ function codesIn(text) {
     var c = m[1] !== undefined ? m[1] : m[2];
     if (c.indexOf("/") !== -1) out[c] = true;
   }
+  [OPTS_CODE_RE, OPTS_CODE_FIRST_RE].forEach(function (re) {
+    re.lastIndex = 0;
+    var om;
+    while ((om = re.exec(text)) !== null) {
+      var oc = om[1] !== undefined ? om[1] : om[2];
+      if (oc && oc.indexOf("/") !== -1) out[oc] = true;
+    }
+  });
   return out;
 }
 
@@ -217,7 +236,13 @@ function testTheGateCanFail() {
     "function only(x) {",
     "  if (!x) throw new FixtureError(\"fixture/documented\", \"empty\");",
     "  if (x < 0) throw new FixtureError(\"fixture/undocumented\", \"negative\");",
-    "  return x;",
+    "  validateOpts.requireNonEmptyString(x.name, \"name\", FixtureError, \"fixture/via-class-arg\");",
+    "  return safeJson.parseTyped(x.body, {",
+    "    maxBytes:   16,",
+    "    errorClass: FixtureError,",
+    "    code:       \"fixture/via-opts-object\",",
+    "    label:      \"only: body is not JSON\",",
+    "  });",
     "}",
     "",
   ].join("\n");
@@ -225,14 +250,16 @@ function testTheGateCanFail() {
   var blockEnd = fixture.indexOf("*/") + 2;
   var body = bodyAfter(stripped, blockEnd);
   var thrown = Object.keys(codesIn(body)).sort();
-  check("the extractor reads both codes out of a fixture body",
-        thrown.join(",") === "fixture/documented,fixture/undocumented", thrown.join(","));
+  check("the extractor reads every construction shape out of a fixture body",
+        thrown.join(",") === "fixture/documented,fixture/undocumented," +
+        "fixture/via-class-arg,fixture/via-opts-object", thrown.join(","));
   check("the fixture body is in scope — it opens no nested function",
         !/\bfunction\b/.test(pastDeclaration(body)));
   var documented = { "fixture/documented": true };
   var missing = thrown.filter(function (c) { return !documented[c]; });
-  check("the comparison reports the undocumented code",
-        missing.length === 1 && missing[0] === "fixture/undocumented", missing.join(","));
+  check("the comparison reports every undocumented code, whatever shape built it",
+        missing.join(",") === "fixture/undocumented,fixture/via-class-arg," +
+        "fixture/via-opts-object", missing.join(","));
 }
 
 async function run() {
