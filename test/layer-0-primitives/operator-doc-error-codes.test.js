@@ -62,6 +62,7 @@ var CODE_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?:\/[a-z0-9]+(?:-[a-z0-9]+)*){1,3}
 // defeated by a shape nobody has thought of yet.
 var NEW_ERROR_RE = /new\s+[A-Za-z_$][A-Za-z0-9_$]*Error\(\s*(?:"([^"\n]+)"|'([^'\n]+)')/g;
 var CLASS_THEN_CODE_RE = /[A-Za-z_$][A-Za-z0-9_$]*Error\s*,\s*(?:"([^"\n]+)"|'([^'\n]+)')/g;
+var FACTORY_CALL_RE = /\.factory\(\s*(?:"([^"\n]+)"|'([^'\n]+)')/g;
 var ANY_OWN_NAMESPACE_LITERAL =
   /(?:"|')([a-z0-9][a-z0-9-]*(?:\/[a-z0-9-]+){1,3})(?:"|')/g;
 
@@ -156,18 +157,67 @@ function codesIn(text, ownNamespaces) {
   return out;
 }
 
-// The namespace vocabulary, built from construction sites only, where precision
-// is what matters.
+// The nine IANA top-level media types. A media type is written exactly like a
+// code, so without this the vocabulary would adopt `application` or `text` from
+// a throw that reports an unsupported type, and then demand every
+// `application/...` literal in a documented body.
+var MEDIA_TOP_LEVEL = {
+  application: 1, audio: 1, example: 1, font: 1, image: 1,
+  message: 1, model: 1, multipart: 1, text: 1, video: 1,
+};
+
+// A code-shaped literal inside a `throw` or a `reject(...)`, whatever built it.
+//
+// This is the rule that makes the vocabulary complete, and it replaces three
+// rounds of guessing at call shapes. Anchoring on an error CLASS beside the
+// literal is precise but blind by construction: `lib/guard-markdown.js` builds
+// every error through `var _err = GuardMarkdownError.factory`, `lib/a2a.js`
+// through `errorClass.factory(...)` on a parameter, and `lib/sql.js` passes the
+// code as a trailing argument. Each is a different shape and none carries the
+// class beside the literal, so all three modules had an EMPTY vocabulary, which
+// filtered out every code and left their documented blocks silently unchecked.
+//
+// Every error code reaches an operator by being thrown, so that is the construct
+// to read. A statement ends at the first `;` outside parentheses, which a throw
+// expression does not contain.
+function namespacesFromThrows(text, out) {
+  var re = /\b(?:throw|reject)\b/g;
+  var m;
+  while ((m = re.exec(text)) !== null) {
+    var depth = 0;
+    var end = m.index;
+    for (; end < text.length; end += 1) {
+      var c = text[end];
+      if (c === "(") depth += 1;
+      else if (c === ")") { depth -= 1; if (depth < 0) break; }
+      else if (c === ";" && depth === 0) break;
+    }
+    var span = text.slice(m.index, end);
+    ANY_OWN_NAMESPACE_LITERAL.lastIndex = 0;
+    var lm;
+    while ((lm = ANY_OWN_NAMESPACE_LITERAL.exec(span)) !== null) {
+      if (!CODE_RE.test(lm[1])) continue;
+      var ns = lm[1].split("/")[0];
+      if (!MEDIA_TOP_LEVEL[ns]) out[ns] = true;
+    }
+  }
+}
+
+// The namespace vocabulary. Construction sites anchored on the error class give
+// the precise core; the throw rule above makes it complete.
 function namespacesIn(text) {
   var out = {};
-  [NEW_ERROR_RE, CLASS_THEN_CODE_RE].forEach(function (re) {
+  [NEW_ERROR_RE, CLASS_THEN_CODE_RE, FACTORY_CALL_RE].forEach(function (re) {
     re.lastIndex = 0;
     var m;
     while ((m = re.exec(text)) !== null) {
       var lit = m[1] !== undefined ? m[1] : m[2];
-      if (lit && CODE_RE.test(lit)) out[lit.split("/")[0]] = true;
+      if (!lit || !CODE_RE.test(lit)) continue;
+      var ns = lit.split("/")[0];
+      if (!MEDIA_TOP_LEVEL[ns]) out[ns] = true;
     }
   });
+  namespacesFromThrows(text, out);
   return out;
 }
 
@@ -477,6 +527,20 @@ function testTheWalkReadTheTree() {
         FILES.length + " files, " + Object.keys(NAMESPACES).length + " namespaces");
   check("the walk found blocks that document error codes",
         documenting >= 100, documenting + " blocks name at least one code");
+
+  // The premise, measured rather than assumed. A file whose vocabulary comes
+  // back EMPTY has every code-shaped literal filtered out, so the comparison
+  // runs over nothing and the gate reports clean for it. That is how three
+  // modules building errors through a factory went unchecked while this gate
+  // claimed their lists were complete. A regression in the vocabulary would
+  // collapse this count and has to fail here, not pass quietly.
+  var withVocabulary = Object.keys(OWN_NAMESPACES).filter(function (rel) {
+    return Object.keys(OWN_NAMESPACES[rel]).length > 0;
+  }).length;
+  check("most of lib/ contributes an error vocabulary, so the comparison is not " +
+        "running over an empty set",
+        withVocabulary * 2 > FILES.length,
+        withVocabulary + " of " + FILES.length + " files build errors in a named namespace");
 }
 
 function testEveryDocumentedCodeListIsComplete() {

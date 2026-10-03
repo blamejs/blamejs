@@ -84,6 +84,33 @@ async function run() {
       String(x509Chain.canonicalNameKey(withNil)));
   });
 
+  // The set of removed characters is a FIXED table, not a category test against
+  // whatever Unicode version the runtime ships. A deletion is the one mapping that
+  // can make two DIFFERENT names equal, so a character the RFC never listed must
+  // not be deleted just because a later Unicode assigned it a format category.
+  // RFC 4518 section 2.4 prohibits the code points unassigned in Unicode 3.2, and
+  // refusing is the only safe answer: deleting collapses two names, and no
+  // conformant peer sends one.
+  [["؜", "ARABIC LETTER MARK, Cf since Unicode 6.3"],
+   ["⁥", "unassigned"],
+   ["​؜", "a deleted character beside a prohibited one"],
+   ["󰀀", "a private-use code point"]].forEach(function (pair) {
+    var bad = _name([[OID_CN, asn1.writeUtf8String("A" + pair[0] + "B")]]);
+    var key = x509Chain.canonicalNameKey(bad);
+    check("a prohibited code point refuses the name rather than keying it (" +
+          pair[1] + ")", key === null, String(key));
+  });
+
+  // The failure that motivates it, stated as the comparison it would have broken.
+  var plainAb = _name([[OID_CN, asn1.writeUtf8String("AB")]]);
+  var withAlm = _name([[OID_CN, asn1.writeUtf8String("A؜B")]]);
+  check("so an issuer carrying one does NOT take the key of the name without it",
+    x509Chain.canonicalNameKey(withAlm) !== x509Chain.canonicalNameKey(plainAb),
+    String(x509Chain.canonicalNameKey(withAlm)) + " vs " +
+    String(x509Chain.canonicalNameKey(plainAb)));
+  check("and the name without it still keys",
+    x509Chain.canonicalNameKey(plainAb) !== null);
+
   // Case-insensitive matching is RFC 4518 case FOLDING, which is not simple
   // lowercasing: the sharp s folds to two letters, so a CN written one way and
   // its all-caps spelling are one name. Lowercasing alone leaves them different
