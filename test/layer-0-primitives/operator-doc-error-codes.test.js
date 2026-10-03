@@ -58,6 +58,77 @@ var CLASS_THEN_CODE_RE = /[A-Za-z_$][A-Za-z0-9_$]*Error\s*,\s*(?:"([^"\n]+)"|'([
 var ANY_OWN_NAMESPACE_LITERAL =
   /(?:"|')([a-z0-9][a-z0-9-]*(?:\/[a-z0-9-]+){1,3})(?:"|')/g;
 
+// A code can also be composed in a SHARED builder from the prefix a module hands
+// it: `var _resolveProfile = gateContract.makeProfileResolver({ codePrefix:
+// "safe-icap" })` makes `safe-icap/bad-profile` reachable from a body that calls
+// `_resolveProfile`, with the literal living in gate-contract.js. Those codes are
+// invisible to any reading of the body alone, so the builder's suffixes are read
+// out of gate-contract.js once and attributed to a body only when it calls that
+// module's own alias for the builder.
+var BUILDER_ALIAS_RE = new RegExp(
+  "(?:var|let|const)\\s+([A-Za-z_$][A-Za-z0-9_$]*)\\s*=\\s*" +
+  "[A-Za-z_$][A-Za-z0-9_$.]*\\.([A-Za-z_$][A-Za-z0-9_$]*)\\(" +
+  "((?:(?!\\}\\s*\\))[\\s\\S])*)", "g");
+var CODE_PREFIX_RE = /code[Pp]refix\s*:\s*"([a-z][a-z0-9-]*(?:\/[a-z0-9-]+)*)"/;
+
+// A builder reaches suffixes its own body never spells: `makeProfileResolver`
+// raises "/bad-posture" through `_postureProfileOrThrow`. Reading one body alone
+// under-reports, so each body's suffixes are unioned with those of the sibling
+// functions it calls, followed to a fixed point and guarded against cycles.
+function builderSuffixes(gateContractSrc) {
+  var bodies = {};
+  var fnRe = /^function ([A-Za-z_$][A-Za-z0-9_$]*)\(/gm;
+  var m;
+  while ((m = fnRe.exec(gateContractSrc)) !== null) {
+    var rest = gateContractSrc.slice(m.index);
+    var end = rest.search(/\n\}/);
+    bodies[m[1]] = end === -1 ? rest : rest.slice(0, end);
+  }
+  var names = Object.keys(bodies);
+  var own = {};
+  var calls = {};
+  names.forEach(function (name) {
+    var sufs = {};
+    var sm;
+    var sufRe = /(?:"|')(\/[a-z][a-z0-9-]*)(?:"|')/g;
+    while ((sm = sufRe.exec(bodies[name])) !== null) sufs[sm[1]] = true;
+    own[name] = sufs;
+    calls[name] = names.filter(function (other) {
+      return other !== name && new RegExp("\\b" + other + "\\s*\\(").test(bodies[name]);
+    });
+  });
+  function reach(name, seen) {
+    if (seen[name]) return {};
+    seen[name] = true;
+    var acc = Object.assign({}, own[name]);
+    calls[name].forEach(function (callee) {
+      Object.assign(acc, reach(callee, seen));
+    });
+    return acc;
+  }
+  var out = {};
+  names.forEach(function (name) {
+    var all = Object.keys(reach(name, {}));
+    if (all.length) out[name] = all.sort();
+  });
+  return out;
+}
+
+// alias name -> the codes a body calling it can raise.
+function composedByAliasIn(text, suffixesByBuilder) {
+  var out = {};
+  var m;
+  BUILDER_ALIAS_RE.lastIndex = 0;
+  while ((m = BUILDER_ALIAS_RE.exec(text)) !== null) {
+    var sufs = suffixesByBuilder[m[2]];
+    if (!sufs) continue;
+    var pm = CODE_PREFIX_RE.exec(m[3]);
+    if (!pm) continue;
+    out[m[1]] = sufs.map(function (s) { return pm[1] + s; });
+  }
+  return out;
+}
+
 // Every code-shaped literal in a namespace this file builds errors in.
 function codesIn(text, ownNamespaces) {
   var out = {};
@@ -144,12 +215,22 @@ var FILES = walk(LIB, []);
 var NAMESPACES = {};
 var STRIPPED = {};
 var OWN_NAMESPACES = {};
+var COMPOSED_BY_ALIAS = {};
+var BUILDER_SUFFIXES = builderSuffixes(
+  stripBlocks(nodeFs.readFileSync(nodePath.join(LIB, "gate-contract.js"), "utf8")));
 FILES.forEach(function (full) {
   var rel = nodePath.relative(ROOT, full).replace(/\\/g, "/");
   var code = stripBlocks(nodeFs.readFileSync(full, "utf8"));
   STRIPPED[rel] = code;
   OWN_NAMESPACES[rel] = namespacesIn(code);
+  COMPOSED_BY_ALIAS[rel] = composedByAliasIn(code, BUILDER_SUFFIXES);
   Object.keys(OWN_NAMESPACES[rel]).forEach(function (ns) { NAMESPACES[ns] = true; });
+  Object.keys(COMPOSED_BY_ALIAS[rel]).forEach(function (alias) {
+    COMPOSED_BY_ALIAS[rel][alias].forEach(function (c) {
+      NAMESPACES[c.split("/")[0]] = true;
+      OWN_NAMESPACES[rel][c.split("/")[0]] = true;
+    });
+  });
 });
 
 // ---- Walk every @primitive block. ----
@@ -191,7 +272,12 @@ function collect() {
         heldBack.push(entry);
         continue;
       }
-      entry.missing = Object.keys(codesIn(body, OWN_NAMESPACES[rel]))
+      var thrown = codesIn(body, OWN_NAMESPACES[rel]);
+      Object.keys(COMPOSED_BY_ALIAS[rel]).forEach(function (alias) {
+        if (!new RegExp("\\b" + alias + "\\s*\\(").test(body)) return;
+        COMPOSED_BY_ALIAS[rel][alias].forEach(function (c) { thrown[c] = true; });
+      });
+      entry.missing = Object.keys(thrown)
         .filter(isWholeCode)
         .filter(function (c) { return !documented[c]; })
         .sort();
@@ -221,6 +307,23 @@ function testEveryDocumentedCodeListIsComplete() {
         (lines.length ? " (" + lines.slice(0, 8).join("; ") +
           (lines.length > 8 ? "; +" + (lines.length - 8) + " more" : "") + ")" : ""),
         lines.length === 0);
+}
+
+function testBuilderSuffixesFollowDelegation() {
+  // `makeProfileResolver` raises "/bad-posture" through a sibling it calls, so
+  // its own body never spells that suffix. Reading one body alone passed three
+  // primitives whose posture refusal was undocumented, which is what this
+  // control is here to prevent recurring.
+  var gc = stripBlocks(nodeFs.readFileSync(nodePath.join(LIB, "gate-contract.js"), "utf8"));
+  var at = gc.search(/^function makeProfileResolver\(/m);
+  var rest = at === -1 ? "" : gc.slice(at);
+  var endAt = rest.search(/\n\}/);
+  var ownBody = endAt === -1 ? rest : rest.slice(0, endAt);
+  check("the delegating builder's own body does not spell the delegated suffix",
+        at !== -1 && ownBody.indexOf("/bad-posture") === -1);
+  var resolved = BUILDER_SUFFIXES.makeProfileResolver || [];
+  check("yet the resolved suffixes include it, so delegation is followed",
+        resolved.indexOf("/bad-posture") !== -1, resolved.join(" "));
 }
 
 function testTheScopeBoundaryIsNotSwallowingTheWork() {
@@ -298,6 +401,7 @@ function testTheGateCanFail() {
 async function run() {
   testTheWalkReadTheTree();
   testEveryDocumentedCodeListIsComplete();
+  testBuilderSuffixesFollowDelegation();
   testTheScopeBoundaryIsNotSwallowingTheWork();
   testTheGateCanFail();
 }

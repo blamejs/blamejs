@@ -23,6 +23,15 @@
       ]
     },
     {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "b.x509Chain.canonicalNameKey compares two distinguished names as names",
+          "body": "`b.x509Chain.canonicalNameKey(nameNode)` returns one comparable string for an X.501 `Name`, the shape a certificate's issuer and subject fields carry, normalized per RFC 5280 section 7.1. Two encodings of one name, in `PrintableString` or `UTF8String`, in either case, or with repeated inner spaces, give the same key, and attribute order inside a single relative distinguished name does not change it. An empty `RDNSequence` keys like any other name, since RFC 5280 section 4.1.2.6 permits an empty subject when the identity is in `subjectAltName`. A structure that only resembles a name returns `null`: every node is checked for its tag, its class and whether it is constructed, so a relative distinguished name written as a `SEQUENCE`, one holding no attribute, an attribute that is not exactly a primitive object identifier and one value, or a value whose tag number matches a string type under another class refuses rather than keying, each of which would otherwise key the same as the well-formed encoding. A value that does not read as text keys by its bytes together with its full tag identity. Two `null`s are not a match, so check for `null` before comparing. The S/MIME chain check uses it to decide which certificate a SignerInfo names."
+        }
+      ]
+    },
+    {
       "heading": "Changed",
       "items": [
         {

@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.20.37",
-  "createdAt": "2026-10-03T02:05:52.750Z",
+  "createdAt": "2026-10-03T02:53:04.957Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -57716,6 +57716,10 @@
     "x509Chain": {
       "type": "object",
       "members": {
+        "canonicalNameKey": {
+          "type": "function",
+          "arity": 1
+        },
         "isCaCert": {
           "type": "function",
           "arity": 1

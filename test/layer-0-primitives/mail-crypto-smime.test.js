@@ -931,6 +931,60 @@ function testVerifyAllSkiSidFallback() {
     threw && /deadbeef/.test(String(threw.message || "")));
 }
 
+// Two encodings of one distinguished name are the same name: RFC 5280 section
+// 7.1 compares PrintableString and UTF8String attributes after normalization,
+// not as raw DER. A sid that spells its issuer in the other string type still
+// names the certificate it names.
+function testSmimeTrustChainDnEncodingEquivalence() {
+  if (!_mlDsaAvailable()) {
+    helpers.unavailable("trust chain DN-encoding equivalence skipped (openssl ML-DSA unavailable)");
+    return;
+  }
+  _withMlDsaCa(function (tk) {
+    var cn = "Dn Equivalence Leaf";
+    var leaf = tk.selfSigned(cn);
+    if (!leaf) {
+      helpers.unavailable("trust chain DN-encoding equivalence skipped (cert mint failed)");
+      return;
+    }
+    var fields = asn1.readCertificateTbsFields(leaf.der);
+    // Whichever string type the minted certificate used, spell the sid's issuer
+    // with the other one, so the bytes differ while the name does not.
+    var atvValue = asn1.readSequence(
+      asn1.readSequence(asn1.readSequence(fields.issuer.value)[0].value)[0].value)[1];
+    var reEncoded = atvValue.tag === 0x0c
+      ? asn1.writePrintableString(cn)      // cert used UTF8String
+      : asn1.writeUtf8String(cn);          // cert used PrintableString
+    var otherEncodingSid = asn1.writeSequence([
+      asn1.writeSequence([asn1.writeSet([
+        asn1.writeSequence([asn1.writeOid("2.5.4.3"), reEncoded]),
+      ])]),
+      asn1.writeNode(0x02, Buffer.from(fields.serialNumber.value)),
+    ]);
+    check("DN equivalence: the fixture's sid bytes really differ from the cert's",
+      !Buffer.from(otherEncodingSid).equals(Buffer.from(_sidFromCert(leaf.der))));
+
+    var msg = Buffer.from("dn-encoding-equivalence-body");
+    var sa = _signedAttrs([
+      _attr(OID_CT_ATTR, asn1.writeOid(OID.data)),
+      _attr(OID_MD_ATTR, asn1.writeOctetString(_sha3_512(msg))),
+    ]);
+    var si = asn1.writeSequence([
+      asn1.writeInteger(Buffer.from([1])), otherEncodingSid, _algId(OID.sha3_512),
+      sa.implicit, _algId(OID.mldsa65), asn1.writeOctetString(tk.rawSign(leaf.keyPath, sa.set)),
+    ]);
+    var env = _craftSignedData({ signerInfos: [si], certsDer: [leaf.der] });
+    var out = null;
+    try {
+      out = smime.verify({ message: msg, signature: env, signerPublicKey: leaf.rawPub,
+        trustAnchorCertsPem: [leaf.pem] });
+    } catch (e) { out = e; }
+    check("DN equivalence: a sid spelling its issuer in the other string type still names the cert",
+      out && out.valid === true && out.chainVerified === true,
+      out && out.code ? String(out.code) : "ok");
+  });
+}
+
 // A subject-key-identifier sid names no issuer and serial, so the certificate it
 // points at cannot be bound to a bundle entry. Chain validation refuses rather
 // than walking whichever certificate happens to carry the verifying key.
@@ -1322,6 +1376,7 @@ function run() {
   testVerifyAllNoSigners();
   testVerifyAllSkiSidFallback();
   testSmimeTrustChainUnbindableSid();
+  testSmimeTrustChainDnEncodingEquivalence();
   testSmimeTrustChainNoCerts();
   testSmimeTrustChainBadChainCert();
   testSmimeTrustChainRealCertRefusals();
