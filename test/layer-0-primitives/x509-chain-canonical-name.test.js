@@ -475,6 +475,30 @@ async function run() {
       }
     }
   });
+  // A name the preparation refuses still has to equal ITSELF. Treating a refused
+  // name as unequal to every name, including a byte-identical one, refused
+  // conforming input: a SignerInfo whose sid issuer field is copied verbatim from
+  // its certificate stopped binding, so a valid envelope raised
+  // mail-crypto/smime/signer-cert-not-named, and a self-issued rollover whose
+  // subject bytes equal its issuer bytes stopped counting as self-issued, so
+  // pathLenSatisfied rejected a chain RFC 5280 6.1.4(l) exempts. Byte equality is
+  // the strictest comparison there is and cannot merge two different names, so it
+  // is what answers when canonicalization will not.
+  var gaiji = String.fromCodePoint(0xf8ff);
+  var refusedA = _name([[OID_CN, asn1.writeUtf8String("Acme " + gaiji + " Root CA")]]);
+  var refusedCopy = _name([[OID_CN, asn1.writeUtf8String("Acme " + gaiji + " Root CA")]]);
+  var refusedB = _name([[OID_CN, asn1.writeUtf8String("Other " + gaiji + " Root CA")]]);
+  check("a name the preparation refuses has no key",
+        x509Chain.canonicalNameKey(refusedA) === null);
+  check("two byte-identical names match even when neither can be canonicalized",
+        x509Chain.sameName(refusedA, refusedCopy) === true);
+  check("two DIFFERENT uncanonicalizable names still do not match",
+        x509Chain.sameName(refusedA, refusedB) === false);
+  check("an uncanonicalizable name does not match a readable one",
+        x509Chain.sameName(refusedA, utf8) === false);
+  check("two readable spellings of one name still match through sameName",
+        x509Chain.sameName(utf8, prnt) === true);
+
   check("the scan compared enough code points to be meaningful",
         shared.length > 1000, shared.length + " keys are shared by more than one code point");
   check("every code point sharing a key with another is its CASE variant, so no two " +

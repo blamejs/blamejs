@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.20.37",
-  "createdAt": "2026-10-03T17:17:39.143Z",
+  "createdAt": "2026-10-03T20:01:22.840Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -57739,6 +57739,10 @@
         "resolveChain": {
           "type": "function",
           "arity": 4
+        },
+        "sameName": {
+          "type": "function",
+          "arity": 2
         }
       }
     },

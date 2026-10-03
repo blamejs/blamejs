@@ -251,6 +251,20 @@ function testAutoConfigUnknownKeyRefused() {
       });
     },
     "mail-deploy/bad-opts");
+  // `requireObject(opts || {})` accepted undefined and then read `.domain` off it,
+  // so the no-argument call raised a bare TypeError instead of the typed refusal
+  // the block promises. Every primitive in this file masked opts the same way.
+  _expectCode("autoconfig refuses a missing opts with the typed code",
+    function () { b.mail.deploy.autoConfigXml(); }, "mail-deploy/bad-opts");
+  _expectCode("autoconfig refuses a null opts with the typed code",
+    function () { b.mail.deploy.autoConfigXml(null); }, "mail-deploy/bad-opts");
+  _expectCode("autoDiscoverXml refuses a missing opts with the typed code",
+    function () { b.mail.deploy.autoDiscoverXml(); }, "mail-deploy/bad-opts");
+  _expectCode("mtaStsPublish refuses a missing opts with the typed code",
+    function () { b.mail.deploy.mtaStsPublish(); }, "mail-deploy/bad-opts");
+  _expectCode("danePublish refuses a missing opts with the typed code",
+    function () { b.mail.deploy.danePublish(); }, "mail-deploy/bad-opts");
+
   _expectCode("autoconfig refuses a misspelled documented key",
     function () {
       b.mail.deploy.autoConfigXml({

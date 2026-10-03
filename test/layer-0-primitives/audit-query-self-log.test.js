@@ -241,6 +241,27 @@ async function testSuppressionIsScopedToItsOwnCallTree() {
         outsideSaw === false, "outsideSaw=" + outsideSaw);
   check("the mark is gone once that work finishes",
         ctx.isAuditChainWrite() === false);
+
+  // A resource built inside the scope must not inherit it, because it outlives the
+  // call that opened it. A pooled connection opened while the chain was being
+  // written carried the suppression for its whole life, so every keepalive its
+  // operator hook emitted afterwards was dropped: in a one-second idle window that
+  // connection logged nothing while its siblings logged nine events each.
+  var tickFlags = [];
+  var timer = null;
+  await ctx.runAsAuditChainWrite(async function () {
+    await ctx.outsideAuditChainWrite(async function () {
+      await null;
+      timer = setInterval(function () { tickFlags.push(ctx.isAuditChainWrite()); }, 5);
+    });
+    check("work run outside the scope does not see it", ctx.isAuditChainWrite() === true);
+  });
+  await helpers.waitUntil(function () { return tickFlags.length >= 3; },
+    { timeoutMs: 2000, label: "scope capture: timer ticks" });
+  clearInterval(timer);
+  check("a timer registered outside the scope never inherits it, however long it runs",
+        tickFlags.length >= 3 && tickFlags.every(function (f) { return f === false; }),
+        JSON.stringify(tickFlags.slice(0, 6)));
 }
 
 async function run() {

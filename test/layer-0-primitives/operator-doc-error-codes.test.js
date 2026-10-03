@@ -162,7 +162,7 @@ function codesIn(text, ownNamespaces) {
   return out;
 }
 
-// The nine IANA top-level media types. A media type is written exactly like a
+// The ten IANA top-level media types. A media type is written exactly like a
 // code, so without this the vocabulary would adopt `application` or `text` from
 // a throw that reports an unsupported type, and then demand every
 // `application/...` literal in a documented body.
@@ -626,10 +626,22 @@ function opensFunctionBody(masked, at) {
 // `mail-crypto/smime/bad-chain-cert` and `mail-crypto/smime/bad-trust-anchor`
 // inside `Array.map` callbacks, and stripping those hid both from
 // `b.mail.crypto.smime.verifyAll`.
+// Which call a callback was handed to decides whether its throws reach THIS
+// caller. Listing the synchronous ones was the wrong way round: the list has to
+// grow for every API anyone uses, and four separate holes were found in it, one
+// per review round. `new Promise`'s executor runs during the call, a `.then` or
+// `.catch` callback rejects the promise the caller awaits, and a comparator or a
+// replacer handed to any other function runs before that function returns.
+//
+// The constructs that genuinely defer are few and they do not grow: a listener
+// registration, a timer, and a microtask. So those are named, and everything
+// else is treated as running into this caller.
+var DEFERRING_CALL = new RegExp(
+  "(?:\\.(?:on|once|addListener|prependListener|addEventListener|subscribe)" +
+  "|\\bset(?:Timeout|Interval|Immediate)|\\bqueueMicrotask|\\bprocess\\.nextTick)" +
+  "\\s*\\((?:[^()]*,\\s*)?$");
 var SYNCHRONOUS_CALLBACK_METHODS = new RegExp(
-  "\\.(?:map|forEach|filter|reduce|reduceRight|some|every|find|findIndex" +
-  "|findLast|findLastIndex|flatMap|sort|replace|replaceAll)\\s*\\(" +
-  "(?:[^()]*,\\s*)?$");
+  "(?:new\\s+Promise|[A-Za-z_$][\\w$]*)\\s*\\((?:[^()]*,\\s*)?$");
 
 // Is the function body opening at `at` the body of a callback passed straight to
 // one of those methods? Walks back over the parameter list and the `function`
@@ -660,7 +672,9 @@ function isSynchronousCallback(masked, at) {
     return false;
   }
   if (i < 0) return false;
-  return SYNCHRONOUS_CALLBACK_METHODS.test(masked.slice(0, i + 1));
+  var before = masked.slice(0, i + 1);
+  if (DEFERRING_CALL.test(before)) return false;
+  return SYNCHRONOUS_CALLBACK_METHODS.test(before);
 }
 
 // Which nested bodies RUN while the primitive runs.
@@ -691,6 +705,14 @@ function reachableNestedBodies(masked, nested) {
   });
   var byName = {};
   nested.forEach(function (n) { if (n.name) byName[n.name] = n; });
+
+  // A helper bound to a second name is still that helper, so calling it through
+  // the alias reaches its body. `var write = _writeRow;` then `write(row)`.
+  var aliasRe = /(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*[;,\n]/g;
+  var am;
+  while ((am = aliasRe.exec(masked)) !== null) {
+    if (byName[am[2]] && !byName[am[1]]) byName[am[1]] = byName[am[2]];
+  }
 
   function callsIn(text) {
     var out = [];
@@ -758,6 +780,13 @@ function nameOfBodyAt(masked, braceIndex) {
   var m = /(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*$/.exec(head);
   if (m) return { name: m[1], headStart: from + m.index };
   m = /(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:function\b[^(]*\([^)]*\)|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)\s*$/.exec(head);
+  if (m) return { name: m[1], headStart: from + m.index };
+  // A helper hung on an object, either as a property of a literal or assigned
+  // onto one. Reading only `function name` and `var name =` missed both, so a
+  // helper the body calls through its object was stripped with the deferred ones.
+  m = /(?:^|[,{;]\s*)([A-Za-z_$][\w$]*)\s*:\s*(?:async\s+)?(?:function\b[^(]*\([^)]*\)|\([^)]*\)\s*=>)\s*$/.exec(head);
+  if (m) return { name: m[1], headStart: from + m.index };
+  m = /\.([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:function\b[^(]*\([^)]*\)|\([^)]*\)\s*=>)\s*$/.exec(head);
   if (m) return { name: m[1], headStart: from + m.index };
   return { name: null, headStart: braceIndex };
 }
