@@ -34,23 +34,55 @@ var LIB  = nodePath.join(ROOT, "lib");
 // An error code: two or more slash-separated lowercase segments.
 var CODE_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?:\/[a-z0-9]+(?:-[a-z0-9]+)*){1,3}$/;
 
-// A code reaches an error one of two ways: as the first argument of a
-// `new <X>Error(`, or as the argument a shared validator takes right after the
-// error CLASS it is to build. Keying the second on the class is what keeps
-// `setHeader("Content-Type", "application/json")` out of the vocabulary.
+// Two readings, each used for the property it has.
+//
+// ENUMERATING the call shapes that build a code is PRECISE, which is what
+// deciding the error-namespace vocabulary needs: `new <X>Error("ns/kind"`, and
+// the argument a shared validator takes right after the error CLASS it builds.
+// Keying on the class is what keeps `setHeader("Content-Type",
+// "application/json")` out of the vocabulary.
+//
+// It is not COMPLETE, and nothing keeps it complete. A code also reaches an
+// error through an options object (`{ errorClass, code }`, and the same object
+// with `ErrorClass`, `typeCode` or `sizeCode` instead), through the class's own
+// `.factory` or a one-name alias of it, through a local `_makeError(cls, code,
+// msg)` helper, and as the SECOND argument of a message-first class. Each of
+// those was found one at a time, by a reviewer, after the gate had reported
+// clean. So per-body extraction does not enumerate shapes at all: a code is any
+// code-shaped literal in a namespace THAT FILE builds errors in, however it
+// travels. Measured against the shape list over 70 in-scope blocks, the two
+// agree on every undocumented code, so this costs no precision and cannot be
+// defeated by a shape nobody has thought of yet.
 var NEW_ERROR_RE = /new\s+[A-Za-z_$][A-Za-z0-9_$]*Error\(\s*(?:"([^"\n]+)"|'([^'\n]+)')/g;
 var CLASS_THEN_CODE_RE = /[A-Za-z_$][A-Za-z0-9_$]*Error\s*,\s*(?:"([^"\n]+)"|'([^'\n]+)')/g;
+var ANY_OWN_NAMESPACE_LITERAL =
+  /(?:"|')([a-z0-9][a-z0-9-]*(?:\/[a-z0-9-]+){1,3})(?:"|')/g;
 
-// A third shape: a shared helper takes the class and the code as an options
-// object, as `safeJson.parseTyped(body, { errorClass: AuthError, code: "..." })`
-// does. `code:` alone appears 232 times in lib/ for response codes, catalog
-// entries and problem-details types, so the match is anchored on `errorClass:`
-// in the same object and tempered against its closing brace rather than bounded
-// by a character count.
-var OPTS_CODE_RE =
-  /errorClass\s*:\s*[A-Za-z_$][A-Za-z0-9_$.]*\s*,(?:(?!\})[\s\S])*?code\s*:\s*(?:"([^"\n]+)"|'([^'\n]+)')/g;
-var OPTS_CODE_FIRST_RE =
-  /code\s*:\s*(?:"([^"\n]+)"|'([^'\n]+)')(?:(?!\})[\s\S])*?errorClass\s*:/g;
+// Every code-shaped literal in a namespace this file builds errors in.
+function codesIn(text, ownNamespaces) {
+  var out = {};
+  var m;
+  ANY_OWN_NAMESPACE_LITERAL.lastIndex = 0;
+  while ((m = ANY_OWN_NAMESPACE_LITERAL.exec(text)) !== null) {
+    if (CODE_RE.test(m[1]) && ownNamespaces[m[1].split("/")[0]]) out[m[1]] = true;
+  }
+  return out;
+}
+
+// The namespace vocabulary, built from construction sites only, where precision
+// is what matters.
+function namespacesIn(text) {
+  var out = {};
+  [NEW_ERROR_RE, CLASS_THEN_CODE_RE].forEach(function (re) {
+    re.lastIndex = 0;
+    var m;
+    while ((m = re.exec(text)) !== null) {
+      var lit = m[1] !== undefined ? m[1] : m[2];
+      if (lit && CODE_RE.test(lit)) out[lit.split("/")[0]] = true;
+    }
+  });
+  return out;
+}
 
 var BACKTICK_RE = /`([^`\n]{1,160})`/g;
 var BLOCK_RE    = /\/\*\*[\s\S]*?\*\//g;
@@ -72,30 +104,6 @@ function walk(dir, out) {
 // prose never counts as constructed and every line number stays put.
 function stripBlocks(src) {
   return src.replace(BLOCK_RE, function (m) { return m.replace(/[^\n]/g, " "); });
-}
-
-function codesIn(text) {
-  var out = {};
-  var m;
-  NEW_ERROR_RE.lastIndex = 0;
-  while ((m = NEW_ERROR_RE.exec(text)) !== null) {
-    var a = m[1] !== undefined ? m[1] : m[2];
-    if (a.indexOf("/") !== -1) out[a] = true;
-  }
-  CLASS_THEN_CODE_RE.lastIndex = 0;
-  while ((m = CLASS_THEN_CODE_RE.exec(text)) !== null) {
-    var c = m[1] !== undefined ? m[1] : m[2];
-    if (c.indexOf("/") !== -1) out[c] = true;
-  }
-  [OPTS_CODE_RE, OPTS_CODE_FIRST_RE].forEach(function (re) {
-    re.lastIndex = 0;
-    var om;
-    while ((om = re.exec(text)) !== null) {
-      var oc = om[1] !== undefined ? om[1] : om[2];
-      if (oc && oc.indexOf("/") !== -1) out[oc] = true;
-    }
-  });
-  return out;
 }
 
 // A trailing slash means the literal is a PREFIX a builder completes, not a
@@ -135,11 +143,13 @@ var FILES = walk(LIB, []);
 // ---- The vocabulary: namespaces the tree really builds errors in. ----
 var NAMESPACES = {};
 var STRIPPED = {};
+var OWN_NAMESPACES = {};
 FILES.forEach(function (full) {
   var rel = nodePath.relative(ROOT, full).replace(/\\/g, "/");
   var code = stripBlocks(nodeFs.readFileSync(full, "utf8"));
   STRIPPED[rel] = code;
-  Object.keys(codesIn(code)).forEach(function (c) { NAMESPACES[c.split("/")[0]] = true; });
+  OWN_NAMESPACES[rel] = namespacesIn(code);
+  Object.keys(OWN_NAMESPACES[rel]).forEach(function (ns) { NAMESPACES[ns] = true; });
 });
 
 // ---- Walk every @primitive block. ----
@@ -181,7 +191,7 @@ function collect() {
         heldBack.push(entry);
         continue;
       }
-      entry.missing = Object.keys(codesIn(body))
+      entry.missing = Object.keys(codesIn(body, OWN_NAMESPACES[rel]))
         .filter(isWholeCode)
         .filter(function (c) { return !documented[c]; })
         .sort();
@@ -229,6 +239,7 @@ function testTheGateCanFail() {
   // A control, because every other assertion here is expected to pass: run the
   // same extractors over a fixture whose block omits a code its body throws.
   var fixture = [
+    "var _fixtureErr = FixtureError.factory;",
     "/**",
     " * @primitive  b.fixture.only",
     " * Throws `fixture/documented` when the input is empty.",
@@ -237,9 +248,18 @@ function testTheGateCanFail() {
     "  if (!x) throw new FixtureError(\"fixture/documented\", \"empty\");",
     "  if (x < 0) throw new FixtureError(\"fixture/undocumented\", \"negative\");",
     "  validateOpts.requireNonEmptyString(x.name, \"name\", FixtureError, \"fixture/via-class-arg\");",
+    "  if (x.big) throw FixtureError.factory(\"fixture/via-factory\", \"too big\");",
+    "  if (x.odd) throw _fixtureErr(\"fixture/via-factory-alias\", \"odd\");",
+    "  if (x.late) throw new FixtureError(\"late: not ready\", \"fixture/via-message-first\");",
+    "  _makeError(errClass, \"fixture/via-local-helper\", \"helper\");",
+    "  structuredFields.refuseControlBytes(x.hdr, {",
+    "    ErrorClass: FixtureError,",
+    "    code:       \"fixture/via-capital-opts\",",
+    "  });",
     "  return safeJson.parseTyped(x.body, {",
     "    maxBytes:   16,",
     "    errorClass: FixtureError,",
+    "    sizeCode:   \"fixture/via-size-code\",",
     "    code:       \"fixture/via-opts-object\",",
     "    label:      \"only: body is not JSON\",",
     "  });",
@@ -249,17 +269,30 @@ function testTheGateCanFail() {
   var stripped = stripBlocks(fixture);
   var blockEnd = fixture.indexOf("*/") + 2;
   var body = bodyAfter(stripped, blockEnd);
-  var thrown = Object.keys(codesIn(body)).sort();
-  check("the extractor reads every construction shape out of a fixture body",
-        thrown.join(",") === "fixture/documented,fixture/undocumented," +
-        "fixture/via-class-arg,fixture/via-opts-object", thrown.join(","));
+  var own = { fixture: true };
+  var thrown = Object.keys(codesIn(body, own)).sort();
+  // Eight shapes, including the four a reviewer found one at a time. The point
+  // is that none of them is named here: the rule reads a code-shaped literal in
+  // the file's own namespace, so a ninth shape needs no change.
+  var expected = ["fixture/documented", "fixture/undocumented",
+    "fixture/via-capital-opts", "fixture/via-class-arg", "fixture/via-factory",
+    "fixture/via-factory-alias", "fixture/via-local-helper",
+    "fixture/via-message-first", "fixture/via-opts-object",
+    "fixture/via-size-code"];
+  check("the extractor reads a code out of every construction shape",
+        thrown.join(",") === expected.join(","), thrown.join(","));
   check("the fixture body is in scope — it opens no nested function",
         !/\bfunction\b/.test(pastDeclaration(body)));
   var documented = { "fixture/documented": true };
   var missing = thrown.filter(function (c) { return !documented[c]; });
   check("the comparison reports every undocumented code, whatever shape built it",
-        missing.join(",") === "fixture/undocumented,fixture/via-class-arg," +
-        "fixture/via-opts-object", missing.join(","));
+        missing.length === expected.length - 1 &&
+        missing.indexOf("fixture/documented") === -1, missing.join(","));
+  // A literal outside the file's own namespaces is another module's code, named
+  // for reference rather than thrown here, so it must not be demanded.
+  var foreign = Object.keys(codesIn("throw other.factory(\"other/elsewhere\");", own));
+  check("a code in another module's namespace is not counted as thrown here",
+        foreign.length === 0, foreign.join(","));
 }
 
 async function run() {
