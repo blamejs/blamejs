@@ -403,7 +403,7 @@ async function run() {
   //
   // The narrowing is deliberate and is a documented deviation from RFC 5280 §7.1,
   // which reaches RFC 4518 and form KC. Compatibility normalization maps one
-  // character onto a DIFFERENT one, which gave 24,356 pairs of unrelated code
+  // character onto a DIFFERENT one, which gave 24,355 pairs of unrelated code
   // points the same key, so "A<U+1D2C>B" took the key of "AAB". That was harmless
   // while this comparison only skipped a path-length decrement, and stopped being
   // harmless once b.mail.crypto.smime used the same key to decide WHICH

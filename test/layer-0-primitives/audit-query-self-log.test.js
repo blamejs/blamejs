@@ -15,6 +15,11 @@
  * once (no double/recursive log), and a query targeting `audit.read`
  * itself does not auto-log.
  *
+ * The write path has the same shape. In cluster mode the chain write goes
+ * through b.externalDb, which audits every query it runs, so appending a
+ * row emits an event that appends a row. The last test here pins one
+ * record to one row, and a chain that is not recorded to not growing.
+ *
  * Run standalone: `node test/layer-0-primitives/audit-query-self-log.test.js`
  * Or via smoke:   `node test/smoke.js`
  */
@@ -109,10 +114,141 @@ async function testAuditReadQueryDoesNotSelfLog() {
   }
 }
 
+// ---- The WRITE path does not audit itself either ----
+
+// Count out-of-band, through the driver rather than through clusterStorage, so
+// the measurement does not issue the very kind of query under test.
+async function _chainRows(driver) {
+  var client = await driver.connect();
+  var r = await driver.query(client, "SELECT count(*) AS n FROM _blamejs_audit_log", []);
+  await driver.close(client);
+  return Number(r.rows[0].n);
+}
+
+async function _chainMax(driver) {
+  var client = await driver.connect();
+  var r = await driver.query(client,
+    "SELECT COALESCE(MAX(monotonicCounter), 0) AS m FROM _blamejs_audit_log", []);
+  await driver.close(client);
+  return Number(r.rows[0].m);
+}
+
+async function testChainWriteDoesNotAuditItself() {
+  var tmpDir = _tmp();
+  b.cluster._resetForTest();
+  await setupTestDb(tmpDir);
+  var driver = helpers._makeSqliteDriver(path.join(tmpDir, "ops.db"));
+  try {
+    b.externalDb.init({
+      backends: {
+        ops: {
+          connect: driver.connect, query: driver.query, close: driver.close,
+          dialect: "sqlite",
+        },
+      },
+    });
+    await b.frameworkSchema.ensureSchema({
+      externalDbBackend: "ops", dialect: "sqlite",
+    });
+    await b.cluster.init({
+      nodeId:            "audit-selflog-node",
+      role:              "leader",
+      externalDbBackend: "ops",
+      dialect:           "sqlite",
+    });
+
+    // Settle what booting buffered, so the measurement starts from a quiet chain.
+    await b.audit.flush();
+    var before = await _chainRows(driver);
+
+    await b.audit.record({ action: "consent.granted", outcome: "success" });
+    await b.audit.flush();
+    var afterOne = await _chainRows(driver);
+    check("recording one event in cluster mode appends exactly one chain row",
+          afterOne === before + 1,
+          "before=" + before + " after=" + afterOne);
+
+    // Nothing records now. A chain whose own writes are audited keeps writing,
+    // because each append emits an event that becomes the next append.
+    await helpers.passiveObserve(800,
+      "audit chain: no row appears while nothing records");
+    await b.audit.flush();
+    var afterQuiet = await _chainRows(driver);
+    check("the chain does not grow while nothing records to it",
+          afterQuiet === afterOne,
+          "afterOne=" + afterOne + " afterQuiet=" + afterQuiet);
+
+    // A checkpoint anchors a counter. Rows appended by the checkpoint's own
+    // queries would land past it, leaving the anchor stale as it was written.
+    var maxBeforeCk = await _chainMax(driver);
+    var ck = await b.audit.checkpoint({});
+    await b.audit.flush();
+    var maxAfterCk = await _chainMax(driver);
+    check("a checkpoint appends no row past the counter it anchors",
+          ck && ck.atMonotonicCounter === maxBeforeCk && maxAfterCk === maxBeforeCk,
+          "anchored=" + (ck && ck.atMonotonicCounter) +
+          " maxBefore=" + maxBeforeCk + " maxAfter=" + maxAfterCk);
+
+    // Verifying the chain walks it, so a row written per internal query would
+    // grow what is being verified while the walk is running.
+    var v = await b.audit.verify({});
+    await b.audit.flush();
+    var maxAfterVerify = await _chainMax(driver);
+    check("verifying the chain appends no row to it",
+          v.ok === true && maxAfterVerify === maxAfterCk,
+          "ok=" + v.ok + " rowsVerified=" + v.rowsVerified +
+          " maxBefore=" + maxAfterCk + " maxAfter=" + maxAfterVerify);
+  } finally {
+    try { await b.cluster.shutdown(); } catch (_e) {}
+    try { await b.externalDb.shutdown(); } catch (_e) {}
+    b.cluster._resetForTest();
+    driver._close();
+    await teardownTestDb(tmpDir);
+  }
+}
+
+// ---- The write-path suppression is scoped, not a module-global flag ----
+
+// Deterministic by microtask ordering. The outside function runs its synchronous
+// part and suspends at `await null`, queueing its continuation first; the scope
+// then opens and its own function suspends, queueing second; the queue drains, so
+// the outside continuation resumes WHILE the scope is open. A module-global
+// boolean is set for that whole window and the outside work would read it as set,
+// which is the under-logging described at the top of this file, reached on the
+// write path instead of the read path. An AsyncLocalStorage scope is invisible
+// there.
+async function testSuppressionIsScopedToItsOwnCallTree() {
+  var ctx = require("../../lib/db-role-context");
+  var insideSaw = null;
+  var outsideSaw = null;
+
+  var outside = (async function () {
+    await null;
+    outsideSaw = ctx.isAuditChainWrite();
+  })();
+
+  var guarded = ctx.runAsAuditChainWrite(async function () {
+    await null;
+    insideSaw = ctx.isAuditChainWrite();
+  });
+
+  await Promise.all([outside, guarded]);
+
+  check("audit's own storage work is marked inside its own call tree",
+        insideSaw === true, "insideSaw=" + insideSaw);
+  check("and is invisible to work running outside it, so an emission from a " +
+        "request running at the same time is not dropped",
+        outsideSaw === false, "outsideSaw=" + outsideSaw);
+  check("the mark is gone once that work finishes",
+        ctx.isAuditChainWrite() === false);
+}
+
 async function run() {
   await testConcurrentReadsBothLog();
   await testSingleReadLogsExactlyOnce();
   await testAuditReadQueryDoesNotSelfLog();
+  await testChainWriteDoesNotAuditItself();
+  await testSuppressionIsScopedToItsOwnCallTree();
 }
 
 module.exports = { run: run };

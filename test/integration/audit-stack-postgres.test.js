@@ -73,6 +73,43 @@ function _psql(sql) {
   return out;
 }
 
+// The audit chain is not this test's private table. The framework emits its own
+// events through the batching audit handler, and one buffered while the stack
+// boots lands whenever that handler next flushes, which is somewhere inside the
+// phases below. So every row count and counter here is read from the live chain
+// at the instant it is asserted, and the assertions state the arithmetic the
+// primitive guarantees rather than the counters a sole writer would have seen.
+function _psqlNumber(sql) {
+  var out = _psql(sql);
+  var lines = out.split("\n").map(function (l) { return l.trim(); })
+                 .filter(function (l) { return l.length > 0; });
+  var n = Number(lines[lines.length - 1]);
+  if (!isFinite(n)) {
+    throw new Error("expected one number from [" + sql + "], got:\n" + out);
+  }
+  return n;
+}
+function _auditRows() {
+  return _psqlNumber("SELECT count(*) AS n FROM _blamejs_audit_log;");
+}
+function _auditMax() {
+  return _psqlNumber(
+    'SELECT COALESCE(MAX("monotonicCounter"), 0) AS n FROM _blamejs_audit_log;');
+}
+// counter -> action for every row above a baseline, so an assertion can name the
+// row it expected and a failure can name the rows that are actually there.
+function _auditRowsAbove(counter) {
+  var out = _psql('SELECT "monotonicCounter", "action" FROM _blamejs_audit_log ' +
+    'WHERE "monotonicCounter" > ' + Number(counter) +
+    ' ORDER BY "monotonicCounter" ASC;');
+  var map = {};
+  out.split("\n").forEach(function (line) {
+    var parts = line.trim().split("\t");
+    if (parts.length === 2 && parts[0] !== "") map[Number(parts[0])] = parts[1];
+  });
+  return map;
+}
+
 // ---- persistent-session docker-exec psql driver (faithful to node-postgres) ----
 var _seq = 0;
 function _makeDockerPgDriver() {
@@ -339,15 +376,15 @@ async function run() {
       return r.rows;
     }
 
-    await _testAuditRecordAndChain(liveQueryAll);
-    await _testCheckpointAndFence(liveQueryAll);
+    var chainTip = await _testAuditRecordAndChain(liveQueryAll);
+    var anchoredCounter = await _testCheckpointAndFence(liveQueryAll, chainTip);
     // The instant the checkpoint anchored the chain. `archive` requires a
     // signed checkpoint covering the LAST row of the slice it bundles, so the
     // slice has to end where that checkpoint does -- see the boundary's use
     // below.
     var anchoredAt = Date.now();
     await _testCoercionFidelity(liveQueryAll);
-    await _testAuditToolsBundleAndPurge(tmpDir, anchoredAt);
+    await _testAuditToolsBundleAndPurge(tmpDir, anchoredAt, anchoredCounter);
     await _testBreakGlass();
     await _testBreakGlassConcurrentDoubleClaim(driver);
     await _testCryptoFieldKRowRoundTrip(liveQueryAll);
@@ -381,48 +418,68 @@ async function _testAuditRecordAndChain(liveQueryAll) {
       metadata: { region: "eu" } },
     { action: "system.shutdown",    outcome: "success" },
   ];
-  // The table was dropped and recreated at the top of run(), so the first row
-  // must be counter 1. Anything else means rows survived the drop or something
-  // wrote ahead of us, and the counters themselves say which — so report them,
-  // and the surviving row count, rather than failing on a bare boolean. This
-  // check went red once in a full 50-file run and passed on every targeted
-  // re-run, which is exactly the case a value-free assertion cannot explain.
+  // This test does not own the chain. Booting the stack audits the external-DB
+  // queries that create the schema and take leadership, so the chain already
+  // holds rows, and those are buffered until the batching handler flushes.
+  // Draining first fixes a baseline the appends are then gapless from, and the
+  // rows they report writing are checked against the table by action. Naming the
+  // literal counters 1 to 4 instead went red twice in a full 50-file run and
+  // passed every targeted re-run, because a row that arrives between two
+  // assertions moves every number after it.
+  await b.audit.flush();
+  var base = _auditRows();
   var appended = [];
   for (var i = 0; i < events.length; i++) {
     appended.push(await b.audit.record(events[i]));
   }
   var counters = appended.map(function (a) { return a && a.monotonicCounter; });
-  var strictlyRising = counters.every(function (c, idx) {
-    return idx === 0 || (typeof c === "number" && c === counters[idx - 1] + 1);
+  var gapless = counters.every(function (c, idx) {
+    if (typeof c !== "number") return false;
+    return idx === 0 ? c === base + 1 : c === counters[idx - 1] + 1;
   });
-  check("audit.record returned a monotonic counter per row (1..4)",
-        counters[0] === 1 && counters[3] === 4 && strictlyRising,
-        "counters=" + JSON.stringify(counters) +
-        " rowsNow=" + _psql("SELECT count(*) AS n FROM _blamejs_audit_log;").trim() +
-        " (a first counter above 1 means the pre-test DROP did not take effect)");
+  var placed = _auditRowsAbove(base);
+  check("audit.record returned a gapless monotonic counter per row, continuing " +
+        "from what the chain already held",
+        gapless, "counters=" + JSON.stringify(counters) + " base=" + base +
+        " rowsAboveBase=" + JSON.stringify(placed));
 
-  var count = _psql("SELECT count(*) AS n FROM _blamejs_audit_log;");
-  check("audit.record landed 4 rows in _blamejs_audit_log on real Postgres",
-        /\b4\b/.test(count.trim()));
+  var eachPlaced = counters.every(function (c, idx) {
+    return placed[c] === events[idx].action;
+  });
+  check("every row audit.record reported is in _blamejs_audit_log under its own " +
+        "action on real Postgres",
+        eachPlaced, "counters=" + JSON.stringify(counters) +
+        " rowsAboveBase=" + JSON.stringify(placed));
 
   // The reader b.audit.verify uses, against the live table.
   var v = await b.audit.verify({});
   check("audit.verify walks the live Postgres chain and returns ok:true " +
         "(a valid chain on the operator's external DB must verify)", v.ok === true);
-  check("audit.verify counted every stored row (rowsVerified === 4)",
-        v.ok === true && v.rowsVerified === 4);
+  check("audit.verify counted every stored row",
+        v.ok === true && v.rowsVerified >= base + 4,
+        "rowsVerified=" + v.rowsVerified + " base=" + base);
   if (!v.ok) {
     check("AUDIT-VERIFY DETAIL: verify reports '" + v.reason + "' at row " +
           v.breakAt + " on an untampered live chain", false);
   }
 
-  // The second row's prevHash must equal the first row's rowHash — chain
-  // linkage actually persisted, not a per-row island.
+  // Every row's prevHash must equal the previous row's rowHash: chain linkage
+  // actually persisted, not a per-row island. Walking every adjacent pair rather
+  // than the first two also covers whatever row the framework added.
   var linked = await liveQueryAll(
     'SELECT "monotonicCounter", "prevHash", "rowHash" FROM _blamejs_audit_log ' +
     'ORDER BY "monotonicCounter" ASC', []);
-  check("chain links across rows on Postgres (row2.prevHash === row1.rowHash)",
-        linked.length === 4 && linked[1].prevHash === linked[0].rowHash);
+  var brokenAt = null;
+  for (var li = 1; li < linked.length; li++) {
+    if (linked[li].prevHash !== linked[li - 1].rowHash) {
+      brokenAt = linked[li].monotonicCounter;
+      break;
+    }
+  }
+  check("chain links across every adjacent row on Postgres " +
+        "(row[n].prevHash === row[n-1].rowHash)",
+        linked.length >= base + 4 && brokenAt === null,
+        "rows=" + linked.length + " base=" + base + " brokenAt=" + brokenAt);
 
   // Counter primer correctness: a brand-new chain-writer (fresh in-process
   // state via record after flush) must read MAX(monotonicCounter) from the
@@ -430,16 +487,21 @@ async function _testAuditRecordAndChain(liveQueryAll) {
   // chain-writer in-process counter and append once more.
   b.audit._resetForTest();
   // _resetForTest tore down cluster wiring's audit ties but cluster mode
-  // and externalDb remain; the counter primer re-reads MAX from Postgres.
+  // and externalDb remain; the counter primer re-reads MAX from Postgres. It
+  // also shut the batching handler down, so no framework row can land between
+  // the MAX read below and the append that follows it.
+  var maxBefore = _auditMax();
   var more = await b.audit.record({ action: "system.boot", outcome: "success" });
   check("counter primer read MAX(monotonicCounter) from live Postgres on a " +
-        "fresh chain-writer (continued at 5, did not restart at 1)",
-        more.monotonicCounter === 5,
+        "fresh chain-writer (continued from the live MAX, did not restart at 1)",
+        more.monotonicCounter === maxBefore + 1 && maxBefore >= base + 4,
         "monotonicCounter=" + JSON.stringify(more.monotonicCounter) +
-        " rows_in_pg=" + _psql("SELECT count(*) AS n FROM _blamejs_audit_log;").trim());
-  var count2 = _psql("SELECT count(*) AS n FROM _blamejs_audit_log;");
-  check("5 audit rows now present after primer-continued append",
-        /\b5\b/.test(count2.trim()));
+        " maxBefore=" + maxBefore + " base=" + base +
+        " rows_in_pg=" + _auditRows());
+  check("the primer-continued append is in the table",
+        _auditRows() >= maxBefore + 1,
+        "rowsNow=" + _auditRows() + " maxBefore=" + maxBefore);
+  return more.monotonicCounter;
 }
 
 // ====================================================================
@@ -448,9 +510,15 @@ async function _testAuditRecordAndChain(liveQueryAll) {
 //    (storedToken <= EXCLUDED.token) is the canonical fencing-token guard;
 //    a strictly-lower incoming token must be FENCED_OUT.
 // ====================================================================
-async function _testCheckpointAndFence(liveQueryAll) {
+async function _testCheckpointAndFence(liveQueryAll, chainTip) {
+  // The chain tip is whatever the live MAX is when the checkpoint runs, which is
+  // at least the counter the previous phase appended.
+  var tipNow = _auditMax();
   var ck = await b.audit.checkpoint({});
-  check("audit.checkpoint anchored the live chain tip", ck && ck.atMonotonicCounter === 5);
+  check("audit.checkpoint anchored the live chain tip",
+        ck && ck.atMonotonicCounter === tipNow && tipNow >= chainTip,
+        "atMonotonicCounter=" + (ck && ck.atMonotonicCounter) +
+        " liveMax=" + tipNow + " chainTip=" + chainTip);
 
   var ckCount = _psql("SELECT count(*) AS n FROM _blamejs_audit_checkpoints;");
   check("checkpoint row landed in _blamejs_audit_checkpoints on Postgres",
@@ -462,7 +530,8 @@ async function _testCheckpointAndFence(liveQueryAll) {
   check("_upsertAuditTip wrote the single audit-tip row on Postgres",
         tip.length === 1 && tip[0].scope === "audit");
   check("audit-tip atMonotonicCounter coerced BIGINT→number and matches the chain tip",
-        Number(tip[0].atMonotonicCounter) === 5);
+        Number(tip[0].atMonotonicCounter) === ck.atMonotonicCounter,
+        "tip=" + tip[0].atMonotonicCounter + " checkpoint=" + ck.atMonotonicCounter);
 
   // verifyCheckpoints walks the live checkpoints + confirms the anchored
   // row still has its rowHash (ML-DSA signature verify + row match).
@@ -482,7 +551,7 @@ async function _testCheckpointAndFence(liveQueryAll) {
   // Higher token accepted: storedToken <= EXCLUDED.token.
   var higher = _psql(
     'INSERT INTO _blamejs_audit_tip ("scope","atMonotonicCounter","rowHash","signedAt","fencingToken") ' +
-    "VALUES ('audit', 5, 'h', 's', " + (curTok + 10) + ") " +
+    "VALUES ('audit', " + ck.atMonotonicCounter + ", 'h', 's', " + (curTok + 10) + ") " +
     'ON CONFLICT ("scope") DO UPDATE SET "fencingToken" = EXCLUDED."fencingToken" ' +
     'WHERE _blamejs_audit_tip."fencingToken" <= EXCLUDED."fencingToken" ' +
     'RETURNING "fencingToken";');
@@ -491,7 +560,7 @@ async function _testCheckpointAndFence(liveQueryAll) {
   // Lower token rejected: WHERE storedToken(curTok+10) <= EXCLUDED(curTok+1) is false.
   var lower = _psql(
     'INSERT INTO _blamejs_audit_tip ("scope","atMonotonicCounter","rowHash","signedAt","fencingToken") ' +
-    "VALUES ('audit', 5, 'h2', 's2', " + (curTok + 1) + ") " +
+    "VALUES ('audit', " + ck.atMonotonicCounter + ", 'h2', 's2', " + (curTok + 1) + ") " +
     'ON CONFLICT ("scope") DO UPDATE SET "fencingToken" = EXCLUDED."fencingToken" ' +
     'WHERE _blamejs_audit_tip."fencingToken" <= EXCLUDED."fencingToken" ' +
     'RETURNING "fencingToken";');
@@ -502,6 +571,7 @@ async function _testCheckpointAndFence(liveQueryAll) {
   var stillHigh = _psql('SELECT "fencingToken" FROM _blamejs_audit_tip WHERE scope=\'audit\';');
   check("stored fencingToken stayed at the higher value (lower token did not overwrite)",
         new RegExp("\\b" + (curTok + 10) + "\\b").test(stillHigh.trim()));
+  return ck.atMonotonicCounter;
 }
 
 // ====================================================================
@@ -540,7 +610,7 @@ async function _testCoercionFidelity() {
 //    archive (needs a covering checkpoint) → verifyBundle, then the purge
 //    monotonic gate + the live anchor UPSERT through clusterStorage.
 // ====================================================================
-async function _testAuditToolsBundleAndPurge(tmpDir, anchoredAt) {
+async function _testAuditToolsBundleAndPurge(tmpDir, anchoredAt, anchoredCounter) {
   var pass = Buffer.from("audit-bundle-passphrase-not-secret-1234567890", "utf8");
 
   // exportSlice reads rows from the live Postgres audit_log (default
@@ -548,26 +618,30 @@ async function _testAuditToolsBundleAndPurge(tmpDir, anchoredAt) {
   // bundle to disk. audit-tools refuses an existing out dir — pass a fresh
   // (non-existent) path under tmpDir.
   var exDir = path.join(tmpDir, "export-bundle");
+  // exportSlice is unbounded, so it covers the chain as it stands here.
+  var rowsBeforeExport = _auditRows();
   var ex = await b.auditTools.exportSlice({ out: exDir, passphrase: pass });
   check("audit-tools.exportSlice read the live Postgres chain + wrote a bundle " +
-        "(rowCount === 5)", ex.rowCount === 5);
+        "covering every row", ex.rowCount === rowsBeforeExport,
+        "rowCount=" + ex.rowCount + " rowsInChain=" + rowsBeforeExport);
 
   var exVerify = await b.auditTools.verifyBundle({ in: exDir, passphrase: pass });
   check("audit-tools.verifyBundle round-trips the exported live-Postgres slice " +
         "(ok:true, walks the prevHash→rowHash chain)",
-        exVerify.ok === true && exVerify.rowsVerified === 5);
+        exVerify.ok === true && exVerify.rowsVerified === ex.rowCount,
+        "rowsVerified=" + exVerify.rowsVerified + " exported=" + ex.rowCount);
   if (!exVerify.ok) {
     check("EXPORT-VERIFY DETAIL: '" + exVerify.reason + "'", false);
   }
 
   // `archive` requires a signed checkpoint covering the LAST row of the slice
-  // it bundles, and the checkpoint this run has anchors counter 5. So the
-  // slice ends where that checkpoint does: `before` is the instant the
-  // checkpoint was taken, not "now plus an hour".
+  // it bundles, and the checkpoint this run took anchors the tip the chain had
+  // reached then. So the slice ends where that checkpoint does: `before` is the
+  // instant the checkpoint was taken, not "now plus an hour".
   //
   // A `before` of now+1h bundles every row the chain has reached by the time
   // this phase runs, and the phases between the checkpoint and here emit rows
-  // of their own -- so the tip moves past counter 5 and the anchor no longer
+  // of their own -- so the tip moves past the anchor and the anchor no longer
   // covers it. That failed as "no signed checkpoint covers counter=15" in a
   // full run and passed standalone, and it moved to counter=16 the moment this
   // release added an audit emission anywhere upstream: a boundary defined by
@@ -585,7 +659,9 @@ async function _testAuditToolsBundleAndPurge(tmpDir, anchoredAt) {
     passphrase: pass,
   });
   check("audit-tools.archive bundled every live-Postgres row under a covering " +
-        "checkpoint (rowCount === 5)", ar.rowCount === 5);
+        "checkpoint (the slice ends at the anchored counter)",
+        ar.rowCount === anchoredCounter,
+        "rowCount=" + ar.rowCount + " anchoredCounter=" + anchoredCounter);
 
   var arVerify = await b.auditTools.verifyBundle({ in: arDir, passphrase: pass });
   check("audit-tools.verifyBundle confirms the archive chain + checkpoint signature " +
@@ -615,8 +691,11 @@ async function _testAuditToolsBundleAndPurge(tmpDir, anchoredAt) {
   });
   check("audit-tools.purge verified the archive + passed the monotonic gate " +
         "(firstCounter===1 from origin) and reported rowsDeleted",
-        purgeRes.purged === true && purgeRes.rowsDeleted === 5 &&
-        applied && Number(applied.lastPurgedCounter) === 5);
+        purgeRes.purged === true && purgeRes.rowsDeleted === ar.rowCount &&
+        applied && Number(applied.lastPurgedCounter) === anchoredCounter,
+        "rowsDeleted=" + purgeRes.rowsDeleted + " bundled=" + ar.rowCount +
+        " lastPurgedCounter=" + (applied && applied.lastPurgedCounter) +
+        " anchoredCounter=" + anchoredCounter);
 
   // Now prove the live anchor UPSERT (the only piece of purge's default
   // apply that targets the external DB via clusterStorage) actually runs on

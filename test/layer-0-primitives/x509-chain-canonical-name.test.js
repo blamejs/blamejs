@@ -154,7 +154,7 @@ async function run() {
 
   // Normalization is to form C, not form KC, and the difference is the whole
   // safety of the comparison. Compatibility normalization maps one character onto
-  // a DIFFERENT one, so under form KC 24,356 pairs of unrelated code points took
+  // a DIFFERENT one, so under form KC 24,355 pairs of unrelated code points took
   // the same key: every superscript, subscript, circled, fullwidth and
   // mathematical variant collapsed onto its ASCII base. U+1D2C is category Lm, so
   // no category test excludes it, and NFKC maps it to `A`. Canonical
@@ -409,6 +409,77 @@ async function run() {
   check("two unreadable nodes both key to null, so equality alone would mislead",
     x509Chain.canonicalNameKey(notAName) === x509Chain.canonicalNameKey(alsoNot) &&
     x509Chain.canonicalNameKey(alsoNot) === null);
+
+  // The completeness proof for the whole comparison, over every code point rather
+  // than the cases anyone thought of. Two DIFFERENT names must not take one key.
+  // Two case variants taking one key is not that: the attribute is
+  // caseIgnoreMatch, so unifying them is the specified behaviour, and a Georgian
+  // Mtavruli capital folding onto its Mkhedruli letter is the same event as `A`
+  // folding onto `a`.
+  //
+  // So: group every code point by its key and require each group to be a single
+  // Unicode case class. Run against a build that normalizes to form KC instead of
+  // form C, the same scan reports 24,355 pairs that share a key without being case
+  // variants, because a compatibility variant is NOT a case variant of what it maps
+  // to. It is the assertion that would catch that reintroduction, or any other rule
+  // that merged two letters.
+  function caseClass(ch) {
+    var seen = {};
+    var frontier = [ch];
+    while (frontier.length) {
+      var next = [];
+      frontier.forEach(function (c) {
+        [c.toLowerCase(), c.toUpperCase(), c.toUpperCase().toLowerCase(),
+         c.normalize("NFD").toLowerCase()].forEach(function (v) {
+          if (!seen[v]) { seen[v] = true; next.push(v); }
+        });
+      });
+      frontier = next;
+    }
+    return seen;
+  }
+  function caseRelated(a, b) {
+    var ca = caseClass(a);
+    return Object.keys(caseClass(b)).some(function (v) { return ca[v]; });
+  }
+
+  var byKey = {};
+  var scanned = 0;
+  var keyed = 0;
+  var emptyKey = x509Chain.canonicalNameKey(_name([[OID_CN, asn1.writeUtf8String(" ")]]));
+  for (var cp = 0x21; cp <= 0x2ffff; cp += 1) {
+    if (cp >= 0xd800 && cp <= 0xdfff) continue;
+    scanned += 1;
+    var ch = String.fromCodePoint(cp);
+    var k = x509Chain.canonicalNameKey(_name([[OID_CN, asn1.writeUtf8String(ch)]]));
+    if (k === null || k === emptyKey) continue;
+    keyed += 1;
+    if (!byKey[k]) byKey[k] = [];
+    byKey[k].push(ch);
+  }
+  // The premise: a prohibition that grew to refuse most of Unicode would make the
+  // assertion below vacuous, so the share that actually reaches a key is checked.
+  check("most of the scanned code points reach a key, so the comparison below is " +
+        "not running over a handful",
+        keyed * 2 > scanned, keyed + " of " + scanned + " code points keyed");
+  var shared = Object.keys(byKey).filter(function (k) { return byKey[k].length > 1; });
+  var notCase = [];
+  shared.forEach(function (k) {
+    var g = byKey[k];
+    for (var i = 0; i < g.length; i += 1) {
+      for (var j = i + 1; j < g.length; j += 1) {
+        if (!caseRelated(g[i], g[j])) {
+          notCase.push("U+" + g[i].codePointAt(0).toString(16).toUpperCase() +
+            " vs U+" + g[j].codePointAt(0).toString(16).toUpperCase());
+        }
+      }
+    }
+  });
+  check("the scan compared enough code points to be meaningful",
+        shared.length > 1000, shared.length + " keys are shared by more than one code point");
+  check("every code point sharing a key with another is its CASE variant, so no two " +
+        "different letters take one key",
+        notCase.length === 0, notCase.slice(0, 6).join("; "));
 
   console.log("OK — x509 canonical name key (" + helpers.getChecks() + " checks)");
 }
