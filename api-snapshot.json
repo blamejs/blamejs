@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.20.36",
-  "createdAt": "2026-10-02T18:18:35.326Z",
+  "frameworkVersion": "0.20.37",
+  "createdAt": "2026-10-04T09:43:25.972Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -2470,6 +2470,10 @@
         "namespaced": {
           "type": "function",
           "arity": 2
+        },
+        "outsideSelfEmitSuppression": {
+          "type": "function",
+          "arity": 1
         },
         "query": {
           "type": "function",
@@ -57716,6 +57720,10 @@
     "x509Chain": {
       "type": "object",
       "members": {
+        "canonicalNameKey": {
+          "type": "function",
+          "arity": 1
+        },
         "isCaCert": {
           "type": "function",
           "arity": 1
@@ -57735,6 +57743,10 @@
         "resolveChain": {
           "type": "function",
           "arity": 4
+        },
+        "sameName": {
+          "type": "function",
+          "arity": 2
         }
       }
     },

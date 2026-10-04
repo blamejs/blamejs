@@ -397,9 +397,25 @@ async function run() {
   check("TeletexString names é and è are distinct: the intermediate consumes path length (rejected)",
         x509Chain.pathLenSatisfied(t61Chain) === false);
 
-  // A self-issued rollover whose names are Unicode-compatibility-equivalent
-  // (RFC 5280 §7.1 applies NFKC): a full-width "ＣＡ" and "CA" are the same name,
-  // so the rollover must NOT consume path length. RED without NFKC normalization.
+  // A self-issued rollover whose names are COMPATIBILITY-equivalent: a full-width
+  // "ＣＡ" against "CA". These were one name while the comparison normalized to
+  // form KC, and they are two names now that it normalizes to form C.
+  //
+  // The narrowing is deliberate and is a documented deviation from RFC 5280 §7.1,
+  // which reaches RFC 4518 and form KC. Compatibility normalization maps one
+  // character onto a DIFFERENT one, which gave 24,355 pairs of unrelated code
+  // points the same key, so "A<U+1D2C>B" took the key of "AAB". That was harmless
+  // while this comparison only skipped a path-length decrement, and stopped being
+  // harmless once b.mail.crypto.smime used the same key to decide WHICH
+  // certificate a SignerInfo names, where a crafted issuer could bind a signature
+  // to a certificate it had not named. One comparison serves both, so it is the
+  // strict one, and the cost is that a rollover re-encoding its own name into a
+  // compatibility variant now consumes path length. The RFC bounds the same hazard
+  // by prohibiting every code point unassigned in Unicode 3.2, which needs that
+  // repertoire to implement.
+  //
+  // Case, encoding-type and whitespace equivalence are unaffected, which the
+  // checks after this one hold.
   var uk = await pki.webcrypto.subtle.generateKey(alg, true, ["sign", "verify"]);
   var ukSpki = await _spki(uk.publicKey);
   var uRootPem = await pki.x509.sign({
@@ -422,8 +438,8 @@ async function run() {
   var uChain = [uLeafPem, uInterPem, uRootPem].map(function (p) {
     return new nodeCrypto.X509Certificate(p);
   });
-  check("Unicode-compatibility-equivalent (NFKC) self-issued rollover does not consume path length",
-        x509Chain.pathLenSatisfied(uChain) === true);
+  check("a compatibility-variant rollover is two names, so it consumes path length",
+        x509Chain.pathLenSatisfied(uChain) === false);
 
   // A self-issued rollover whose names differ only in case: "CN=CA" issued
   // "CN=ca" under the same key. RFC 5280 §7.1 caseIgnoreMatch makes these the

@@ -13102,6 +13102,87 @@ var KNOWN_ANTIPATTERNS = [
     reason: "Who a principal is was answered separately in each module that needed a per-actor bucket, and the answers disagreed: `actor.id || actor.userId` in b.fileUpload, `actor.id` then `actor.username` in the JMAP slot key, `userId` alone in the audit row. Each chain ended in a shared literal, so every actor the chain could not name landed on one key. A bucket is an ownership record as often as it is a counter, so that merged two authenticated users: measured, one principal read, wrote, finalized and cancelled another's upload, and `list()` dropped its scoping filter entirely. `b.requestHelpers.actorIdentityKey` is the one derivation, it tags each key with the field it came from so `{id:\"x\"}` and `{userId:\"x\"}` stay two principals, and it answers null for an actor it cannot name so the caller refuses instead of folding. Allowlisted, and only this one: request-helpers is the resolver itself. break-glass (:887, :1344) was allowlisted on the argument that it reads `actor.userId || req.apiKey.id` and then THROWS on a null, so it cannot fold two principals onto one key. That argument covered the null, not the text: a user whose userId spells an API key's id produced the same `actorId`, and `actorId` is the break-glass grant's owner, the factor-lockout key and the TOTP replay-step key. Measured on the tree before the fix, `listActive` handed a key holder a user's live grant ids, and `unsealRow` takes a grant handle without re-checking who holds it, so those ids redeem. It now records a holder as `user:<userId>` or `apikey:<keyId>`, which keeps the same two sources in the same order and the same refusal when neither names the caller, and cannot spell one holder two ways. `revokeAll` takes either prefix to target one holder and a bare id to reach both, and refuses when the grants table has no derived owner hash instead of dropping the actor criterion and revoking by table alone. `dual-control`, `require-step-up` and `mail-dav` each keep their own narrower list too, and each fails closed the same way, but none of them is written with `||` against an actor-named binding, so the regex does not reach them: listing them would have bought nothing except silence on a future chain, which is how an allowlist stops being a record of decisions.",
   },
   {
+    id: "audit-self-suppression-wraps-a-storage-call-only",
+    primitive: "b.audit.record",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // A suppression scope whose body reaches its own closing `})` without a
+    // storage call in it. The tempered token cannot cross that boundary, so a
+    // match stays inside one wrapper.
+    regex: /runAsAuditChainWrite\(function \(\) \{(?:(?!clusterStorage\.|_chainWriter\.append|_externalStore\.record|db\(\)\.purgeAuditChain|\}\))[\s\S]){0,400}\}\)/,
+    allowlist: [],
+    fixtures: {
+      fires: [
+        "return dbRoleContext.runAsAuditChainWrite(function () {\n    return _queryInner(criteria);\n  })",
+        "return dbRoleContext.runAsAuditChainWrite(function () {\n    return _verifyInner(opts);\n  })",
+        "await dbRoleContext.runAsAuditChainWrite(function () {\n    return unsealRows(rows);\n  })",
+      ],
+      quiet: [
+        "return dbRoleContext.runAsAuditChainWrite(function () {\n    return clusterStorage.executeAll(built.sql, built.params);\n  })",
+        "var appended = await dbRoleContext.runAsAuditChainWrite(function () {\n        return _chainWriter.append(logical);\n      })",
+        "return dbRoleContext.runAsAuditChainWrite(function () {\n    return safeAsync.withTimeout(\n      clusterStorage.execute(built.sql, built.params),\n      MS, { name: \"x\" });\n  })",
+        "del = await dbRoleContext.runAsAuditChainWrite(function () {\n      return db().purgeAuditChain({ lastPurgedCounter: deleteThrough });\n    })",
+      ],
+    },
+    reason: "The scope that stops the audit chain recording its own writes suppresses EVERY audit emission made inside it, so it has to cover audit's own storage I/O and nothing else. Wrapping whole operations instead swallowed security events that have nothing to do with the chain: `b.audit.query` ends by calling `cryptoField.unsealRow` on the rows it returns, so a row whose sealed cell would not open recorded no `system.crypto.unseal_failed`, and the `denied`-outcome `system.crypto.unseal_rate_exceeded` fired twice inside one query and landed zero rows where the same denial outside landed three. A read that cannot unseal what it returns is exactly what an auditor is looking for, and the suppression hid it. Measured on this branch, before the narrowing. The wrappers now sit on the `clusterStorage` call and on `_chainWriter.append`, which are the calls that raise the `system.externaldb.query` events the cascade fed on; everything else an operation does, including unsealing, signing and the external-store mirror, runs outside and keeps its own audit.",
+  },
+  {
+    id: "an-audit-table-write-runs-outside-the-self-emit-suppression",
+    primitive: "b.audit.record",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // The mirror of the detector above: that one catches a suppression scope
+    // with no storage call in it, this one catches a storage call with no
+    // scope. Anchored on `await` plus the call, because every wrapped site
+    // reads `return <call>` inside the callback and every unwrapped one awaits
+    // the call directly.
+    regex: /\bawait\s+db\(\)\.purgeAuditChain\s*\(|_blamejs_audit(?:(?!\n\})[\s\S]){0,400}?\bawait\s+clusterStorage\.(?:execute|executeOne|executeAll|fencedUpsert|transaction)\s*\(/,
+    allowlist: [],
+    fixtures: {
+      fires: [
+        "var built = sql.select(\"_blamejs_audit_log\", o).toSql();\n  var row = await clusterStorage.executeOne(built.sql, built.params);",
+        "del = await db().purgeAuditChain({ lastPurgedCounter: deleteThrough });",
+        "table: \"_blamejs_audit_purge_anchor\",\n  var fence = await clusterStorage.fencedUpsert({ keyColumns: [\"scope\"] });",
+      ],
+      quiet: [
+        "var built = sql.select(\"_blamejs_audit_log\", o).toSql();\n  var row = await dbRoleContext.runAsAuditChainWrite(function () {\n    return clusterStorage.executeOne(built.sql, built.params);\n  });",
+        "del = await dbRoleContext.runAsAuditChainWrite(function () {\n      return db().purgeAuditChain({ lastPurgedCounter: deleteThrough });\n    });",
+        "var built = sql.select(\"_blamejs_sessions\", o).toSql();\n  var row = await clusterStorage.executeOne(built.sql, built.params);",
+      ],
+    },
+    reason: "Audit's own reads and writes of its own tables have to run inside `dbRoleContext.runAsAuditChainWrite`, because `b.externalDb` audits every query it issues: an unwrapped one queues a `system.externaldb.query` event that becomes the next chain row, which is the cascade this release exists to stop (one `b.audit.record` call produced 164 rows, and an idle chain grew from 80 rows to 5,105 across four seconds). The omission is easy to make one call at a time and was found twice on this branch: first the operation-level wraps in `lib/audit.js`, then `_writePurgeAnchor`'s `clusterStorage.fencedUpsert` and `_defaultApplyPurge`'s `db().purgeAuditChain` in `lib/audit-tools.js`, where the purge-anchor READ was wrapped and its two WRITES were not, so every purge still fed the chain. All 19 such calls across the two files are wrapped now; this detector is what keeps the twentieth from arriving bare. Matching on `await <call>(` rather than on the call alone is what distinguishes the two shapes: a wrapped site returns the call from inside the callback and never awaits it directly.",
+  },
+  {
+    id: "a-framework-errors-code-is-reassigned-after-it-is-built",
+    primitive: "b.frameworkError.defineClass",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // Anchored on the DECLARATION so the binding can be carried into the
+    // assignment by backreference: the question is whether this error's own
+    // code is overwritten, not whether some `.code` is assigned nearby. The
+    // tempered token cannot cross a function-closing brace at column 0, and
+    // the {0,400} is the ReDoS backstop rather than the precision mechanism.
+    regex: /(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:new\s+[A-Za-z_$][\w$]*Error\s*\(|_err\s*\(|[A-Za-z_$][\w$]*\.factory\s*\()(?:(?!\n\})[\s\S]){0,400}?\b\1\.code\s*=/,
+    allowlist: [],
+    fixtures: {
+      fires: [
+        "var e = new AtomicFileError(\"file not found: \" + filepath, \"atomic-file/not-found\");\n        e.code = \"ENOENT\";\n        return e;",
+        "var te = _err(\"notify/timeout\", \"notify.send: transport timed out\");\n          te.code = \"ETIMEDOUT\";\n          throw te;",
+        "const w = SomeError.factory(\"ns/first\", \"msg\");\n  w.code = \"ns/second\";",
+      ],
+      quiet: [
+        // A plain Error built to look like a Node error. Nothing is discarded,
+        // because a plain Error carries no framework code to begin with.
+        "var aerr = new Error(\"no AAAA records for \" + qname);\n      aerr.code = \"ENODATA\";\n      throw aerr;",
+        // The errno IS the code, constructed once.
+        "var e = new AtomicFileError(\"file not found: \" + filepath, \"ENOENT\");\n        return e;",
+        // Another object's code, not the error's.
+        "var e = new AtomicFileError(\"bad\", \"ns/bad\");\n  result.code = \"ns/other\";\n  throw e;",
+      ],
+    },
+    reason: "A framework error's `code` is its contract, and assigning over it after construction leaves the first code reachable by nobody while every block that names it promises a failure the caller can never receive. `lib/atomic-file.js` built `atomic-file/not-found` and immediately overwrote it with `ENOENT`, so `b.atomicFile.read`, `readSync` and `readJson` all delivered `ENOENT` while one block promised the framework code, one block promised `ENOENT`, and the two never agreed; `lib/notify.js` discarded `notify/timeout` the same way. The error-code gate reads constructions, so a discarded code is worse than invisible: it gets demanded in documentation and then cannot arrive. Both sites construct the code they deliver now. An errno-shaped code is fine when it is the code built (`lib/http-client.js` and `lib/log-stream-otlp-grpc.js` both raise `ETIMEDOUT` that way); so is setting `.code` on a plain `new Error` to give a caller a Node-shaped failure, which is what `lib/mail-auth.js`, `lib/network-dns-resolver.js` and `lib/ws-client.js` do for callers that read dns and lookup errors. The binding is carried by backreference so only the error's own code counts.",
+  },
+  {
     id: "a-jmap-method-error-type-is-a-bare-name",
     primitive: "b.mail.server.jmap.create",
     scanScope: "lib",

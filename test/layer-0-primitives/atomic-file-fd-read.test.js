@@ -29,6 +29,42 @@ function _throws(fn) {
   try { fn(); return null; } catch (e) { return e; }
 }
 
+// `allowShortRead` suppresses the short-read refusal, so it loosens a check and
+// has to be read strictly. `read` and `readSync` built the descriptor-read
+// options without forwarding it, so the option was accepted and then dropped:
+// `true` still threw, and a non-boolean reached nothing that could refuse it.
+async function testReadForwardsAllowShortRead() {
+  var dir = _dir();
+  try {
+    var p = path.join(dir.path, "forwarded.bin");
+    fs.writeFileSync(p, Buffer.from("hello"), { mode: 0o600 });
+
+    var syncBad = _throws(function () {
+      return b.atomicFile.readSync(p, { allowShortRead: "nope" });
+    });
+    check("readSync: a non-boolean allowShortRead is refused",
+      syncBad !== null && syncBad.code === "atomic-file/bad-opt",
+      "code=" + (syncBad && syncBad.code));
+
+    var asyncBad = null;
+    try { await b.atomicFile.read(p, { allowShortRead: "nope" }); }
+    catch (e) { asyncBad = e; }
+    check("read: a non-boolean allowShortRead is refused",
+      asyncBad !== null && asyncBad.code === "atomic-file/bad-opt",
+      "code=" + (asyncBad && asyncBad.code));
+
+    // The control: a real boolean is still accepted on both, and omitting the
+    // option is unchanged, so the assertions above read the type rather than a
+    // call that refuses the option outright.
+    check("readSync: allowShortRead true is accepted",
+      String(b.atomicFile.readSync(p, { allowShortRead: true, encoding: "utf8" })) === "hello");
+    check("read: allowShortRead false is accepted",
+      String(await b.atomicFile.read(p, { allowShortRead: false, encoding: "utf8" })) === "hello");
+    check("read: omitting it reads the file as before",
+      String(await b.atomicFile.read(p, { encoding: "utf8" })) === "hello");
+  } finally { dir.cleanup(); }
+}
+
 function testReadsBufferAndString() {
   var dir = _dir();
   try {
@@ -171,6 +207,7 @@ async function run() {
   testEnoent();
   testErrorForCustomError();
   testRefuseSymlinkAndInodeHappyPath();
+  await testReadForwardsAllowShortRead();
 }
 
 module.exports = { run: run };
