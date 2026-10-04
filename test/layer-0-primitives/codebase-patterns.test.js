@@ -13109,7 +13109,7 @@ var KNOWN_ANTIPATTERNS = [
     // A suppression scope whose body reaches its own closing `})` without a
     // storage call in it. The tempered token cannot cross that boundary, so a
     // match stays inside one wrapper.
-    regex: /runAsAuditChainWrite\(function \(\) \{(?:(?!clusterStorage\.|_chainWriter\.append|_externalStore\.record|\}\))[\s\S]){0,400}\}\)/,
+    regex: /runAsAuditChainWrite\(function \(\) \{(?:(?!clusterStorage\.|_chainWriter\.append|_externalStore\.record|db\(\)\.purgeAuditChain|\}\))[\s\S]){0,400}\}\)/,
     allowlist: [],
     fixtures: {
       fires: [
@@ -13121,9 +13121,36 @@ var KNOWN_ANTIPATTERNS = [
         "return dbRoleContext.runAsAuditChainWrite(function () {\n    return clusterStorage.executeAll(built.sql, built.params);\n  })",
         "var appended = await dbRoleContext.runAsAuditChainWrite(function () {\n        return _chainWriter.append(logical);\n      })",
         "return dbRoleContext.runAsAuditChainWrite(function () {\n    return safeAsync.withTimeout(\n      clusterStorage.execute(built.sql, built.params),\n      MS, { name: \"x\" });\n  })",
+        "del = await dbRoleContext.runAsAuditChainWrite(function () {\n      return db().purgeAuditChain({ lastPurgedCounter: deleteThrough });\n    })",
       ],
     },
     reason: "The scope that stops the audit chain recording its own writes suppresses EVERY audit emission made inside it, so it has to cover audit's own storage I/O and nothing else. Wrapping whole operations instead swallowed security events that have nothing to do with the chain: `b.audit.query` ends by calling `cryptoField.unsealRow` on the rows it returns, so a row whose sealed cell would not open recorded no `system.crypto.unseal_failed`, and the `denied`-outcome `system.crypto.unseal_rate_exceeded` fired twice inside one query and landed zero rows where the same denial outside landed three. A read that cannot unseal what it returns is exactly what an auditor is looking for, and the suppression hid it. Measured on this branch, before the narrowing. The wrappers now sit on the `clusterStorage` call and on `_chainWriter.append`, which are the calls that raise the `system.externaldb.query` events the cascade fed on; everything else an operation does, including unsealing, signing and the external-store mirror, runs outside and keeps its own audit.",
+  },
+  {
+    id: "an-audit-table-write-runs-outside-the-self-emit-suppression",
+    primitive: "b.audit.record",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // The mirror of the detector above: that one catches a suppression scope
+    // with no storage call in it, this one catches a storage call with no
+    // scope. Anchored on `await` plus the call, because every wrapped site
+    // reads `return <call>` inside the callback and every unwrapped one awaits
+    // the call directly.
+    regex: /\bawait\s+db\(\)\.purgeAuditChain\s*\(|_blamejs_audit(?:(?!\n\})[\s\S]){0,400}?\bawait\s+clusterStorage\.(?:execute|executeOne|executeAll|fencedUpsert|transaction)\s*\(/,
+    allowlist: [],
+    fixtures: {
+      fires: [
+        "var built = sql.select(\"_blamejs_audit_log\", o).toSql();\n  var row = await clusterStorage.executeOne(built.sql, built.params);",
+        "del = await db().purgeAuditChain({ lastPurgedCounter: deleteThrough });",
+        "table: \"_blamejs_audit_purge_anchor\",\n  var fence = await clusterStorage.fencedUpsert({ keyColumns: [\"scope\"] });",
+      ],
+      quiet: [
+        "var built = sql.select(\"_blamejs_audit_log\", o).toSql();\n  var row = await dbRoleContext.runAsAuditChainWrite(function () {\n    return clusterStorage.executeOne(built.sql, built.params);\n  });",
+        "del = await dbRoleContext.runAsAuditChainWrite(function () {\n      return db().purgeAuditChain({ lastPurgedCounter: deleteThrough });\n    });",
+        "var built = sql.select(\"_blamejs_sessions\", o).toSql();\n  var row = await clusterStorage.executeOne(built.sql, built.params);",
+      ],
+    },
+    reason: "Audit's own reads and writes of its own tables have to run inside `dbRoleContext.runAsAuditChainWrite`, because `b.externalDb` audits every query it issues: an unwrapped one queues a `system.externaldb.query` event that becomes the next chain row, which is the cascade this release exists to stop (one `b.audit.record` call produced 164 rows, and an idle chain grew from 80 rows to 5,105 across four seconds). The omission is easy to make one call at a time and was found twice on this branch: first the operation-level wraps in `lib/audit.js`, then `_writePurgeAnchor`'s `clusterStorage.fencedUpsert` and `_defaultApplyPurge`'s `db().purgeAuditChain` in `lib/audit-tools.js`, where the purge-anchor READ was wrapped and its two WRITES were not, so every purge still fed the chain. All 19 such calls across the two files are wrapped now; this detector is what keeps the twentieth from arriving bare. Matching on `await <call>(` rather than on the call alone is what distinguishes the two shapes: a wrapped site returns the call from inside the callback and never awaits it directly.",
   },
   {
     id: "a-jmap-method-error-type-is-a-bare-name",
