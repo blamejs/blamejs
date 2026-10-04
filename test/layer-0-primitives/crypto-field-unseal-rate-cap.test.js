@@ -251,6 +251,24 @@ async function run() {
   catch (_e) { afterDisable = true; }
   check("configureUnsealRateCap(null) turns the cap back off (no throw)", afterDisable === false);
 
+  // ---- an absent argument is a mistake, not the opt-out ----
+  // `undefined` shared the disable branch with `null`, so a call written
+  // against a config value that turned out to be absent silently turned a
+  // configured cap off.
+  b.cryptoField.configureUnsealRateCap({ threshold: 2, windowMs: 60000 });
+  var omitted = null;
+  try { b.cryptoField.configureUnsealRateCap(); }
+  catch (e) { omitted = e; }
+  check("configureUnsealRateCap() with no argument is refused",
+    omitted !== null && omitted.code === "crypto-field/bad-rate-cap-opt",
+    "code=" + (omitted && omitted.code));
+  var stillCapped = false;
+  for (var ri = 0; ri < 6; ri += 1) {
+    try { b.cryptoField.unsealRow("cf_ratecap", { id: "w2", secret: FORGED }, "omitter"); }
+    catch (e2) { if (e2 && e2.code === "crypto-field/unseal-rate-exceeded") stillCapped = true; }
+  }
+  check("and the cap it would have disabled is still in force", stillCapped);
+
   b.cryptoField.clearRateCapForTest();
   console.log("OK — crypto-field unseal-rate-cap tests");
 }

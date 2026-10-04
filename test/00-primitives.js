@@ -10744,6 +10744,27 @@ async function testVaultPassphraseOpsRotateRejectsBadOldPassphrase() {
           threw && threw.code === "vault-passphrase/passphrase-rejected");
     check("rotate: sealed file unchanged after rejection",
           fs.existsSync(path.join(fx.dir, "vault.key.sealed")));
+
+    // A rotation that stages the new sealed bytes and then refuses has to take
+    // the staged file with it: preflightRotatable refuses while a .tmp exists
+    // and tells the operator to remove it by hand, so a refusal that leaves one
+    // behind cannot be retried. Rotating to the same passphrase reaches that
+    // refusal through the check that the old passphrase has stopped working.
+    var noop = null;
+    try {
+      await b.vaultPassphraseOps.rotate({
+        dataDir: fx.dir,
+        oldPassphrase: Buffer.from("right", "utf8"),
+        newPassphrase: Buffer.from("right", "utf8"),
+      });
+    } catch (e) { noop = e; }
+    check("rotate to the same passphrase refuses as a no-op",
+          noop && noop.code === "vault-passphrase/rotate-noop",
+          "code=" + (noop && noop.code));
+    check("rotate: no staged .tmp survives that refusal",
+          !fs.existsSync(path.join(fx.dir, "vault.key.sealed.tmp")));
+    check("rotate: a further attempt is not blocked by a stale staged file",
+          b.vaultPassphraseOps.preflightRotatable({ dataDir: fx.dir }).ok === true);
   } finally { fx.cleanup(); }
 }
 

@@ -218,6 +218,49 @@ async function run() {
   await testObservabilityEmission();
   await testRejectsBadOpts();
   await testVerifyRejectsShortPayload();
+  await testGateRefusalIsNotAMismatch();
+}
+
+// Every Argon2id derivation in the process waits on one gate, so `verify` can
+// now fail because the gate is full rather than because the secret is wrong.
+// A catch-all read that as "does not match", so under load a correct API key
+// authenticated as invalid and the audit trail recorded `bad-secret` against
+// the caller. `hash` in the same module never had the catch and propagated
+// correctly, which is the asymmetry this pins shut.
+async function testGateRefusalIsNotAMismatch() {
+  var P = b.auth.password;
+  var envelope = await b.credentialHash.hash("the-secret", { algo: "argon2id" });
+  check("the secret verifies with the gate open",
+    (await b.credentialHash.verify("the-secret", envelope)) === true);
+
+  P.gate(1, { maxQueued: 0 });
+  var holder = P.hash("occupant", {
+    memoryCost: b.constants.BYTES.kib(16), timeCost: 2, parallelism: 1,
+  });
+  var refused = null;
+  try { await b.credentialHash.verify("the-secret", envelope); }
+  catch (e) { refused = e; }
+  check("credentialHash.verify raises the gate's refusal rather than answering false",
+    refused !== null && refused.code === "argon2/busy",
+    "code=" + (refused && refused.code) + " was=" + JSON.stringify(refused === null));
+
+  var hashRefused = null;
+  try {
+    await b.credentialHash.hash("another", { algo: "argon2id" });
+  } catch (e) { hashRefused = e; }
+  check("and hash in the same module raises it too, as it already did",
+    hashRefused !== null && hashRefused.code === "argon2/busy",
+    "code=" + (hashRefused && hashRefused.code));
+  await holder;
+
+  // The control: with the gate open again the same secret answers true, and a
+  // wrong one answers false, so the assertions above read the gate rather than
+  // a broken envelope.
+  P.gate(8, { maxQueued: Infinity, waitTimeoutMs: 0 });
+  check("the same envelope verifies once the gate is open",
+    (await b.credentialHash.verify("the-secret", envelope)) === true);
+  check("and a wrong secret still answers false, not a raise",
+    (await b.credentialHash.verify("not-the-secret", envelope)) === false);
 }
 
 // v0.6.64 — verify() now enforces the same 16-byte minimum payload that

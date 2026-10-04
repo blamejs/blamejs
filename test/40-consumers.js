@@ -118,6 +118,36 @@ async function testSession() {
     await helpers.passiveObserve(100, "session: 50ms TTL lapses before purgeExpired");
     var purged = await b.session.purgeExpired();
     check("purgeExpired returns count",             purged >= 1);
+    var batched = await b.session.purgeExpired({ batchSize: 2 });
+    check("purgeExpired takes a batchSize",         batched >= 0);
+    var badBatch = null;
+    try { await b.session.purgeExpired({ batchSize: 0 }); } catch (e) { badBatch = e; }
+    check("purgeExpired refuses a non-positive batchSize",
+      badBatch !== null && badBatch.code === "session/bad-batch-size",
+      "code=" + (badBatch && badBatch.code));
+
+    // purgeStale removes what verify would REFUSE, which purgeExpired does not:
+    // verify refuses a session idle past the limit or older than the absolute
+    // limit, and deleted such a row only when that session's own token came back,
+    // so a client that never returns left its row in the store for good.
+    var idle = await b.session.create({ userId: "u-5", ttlMs: b.constants.TIME.hours(1) });
+    void idle;
+    var countBefore = await b.session.count();
+    // The idle sweep compares `lastActivity < now - idleTimeoutMs`, so the row
+    // has to be older than the window before the sweep can match it.
+    await helpers.passiveObserve(20,
+      "session: the new row ages past a 1ms idle window");
+    var staleDropped = await b.session.purgeStale({ idleTimeoutMs: 1, absoluteTimeoutMs: 0 });
+    check("purgeStale removes a session idle past the limit", staleDropped >= 1,
+      "dropped=" + staleDropped);
+    var countAfter = await b.session.count();
+    check("and the store is smaller for it", countAfter < countBefore,
+      "before=" + countBefore + " after=" + countAfter);
+    var badTimeout = null;
+    try { await b.session.purgeStale({ idleTimeoutMs: -5 }); } catch (e) { badTimeout = e; }
+    check("purgeStale refuses a negative idleTimeoutMs",
+      badTimeout !== null && badTimeout.code === "session/bad-timeout",
+      "code=" + (badTimeout && badTimeout.code));
 
     // Invalid input — session.create rejects synchronously before
     // returning a Promise, so the throw is observable via try/catch

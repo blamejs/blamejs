@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.20.37",
-  "createdAt": "2026-10-04T09:43:25.972Z",
+  "frameworkVersion": "0.20.38",
+  "createdAt": "2026-10-04T12:07:18.890Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -4048,9 +4048,13 @@
                 }
               }
             },
-            "gate": {
+            "costCeiling": {
               "type": "function",
               "arity": 1
+            },
+            "gate": {
+              "type": "function",
+              "arity": 2
             },
             "hash": {
               "type": "function",
@@ -4067,6 +4071,10 @@
             "policy": {
               "type": "function",
               "arity": 1
+            },
+            "stats": {
+              "type": "function",
+              "arity": 0
             },
             "verify": {
               "type": "function",
@@ -17443,6 +17451,10 @@
           "arity": 4
         },
         "ArgParserError": {
+          "type": "function",
+          "arity": 4
+        },
+        "Argon2Error": {
           "type": "function",
           "arity": 4
         },
@@ -55701,7 +55713,11 @@
         },
         "purgeExpired": {
           "type": "function",
-          "arity": 0
+          "arity": 1
+        },
+        "purgeStale": {
+          "type": "function",
+          "arity": 1
         },
         "rotate": {
           "type": "function",

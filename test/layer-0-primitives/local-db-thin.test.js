@@ -161,6 +161,82 @@ async function run() {
     } catch (e) { threw = e; }
     check("localDb.thin: bad pragma name rejected",
       threw && threw.code === "localdb-thin/bad-pragma-name");
+
+    // ---- caller pragmas are applied where they can still take effect ----
+    // `auto_vacuum` only takes on a database that has no tables yet, and
+    // `journal_mode=WAL` writes the header, so applying the caller's pragmas
+    // after WAL left `PRAGMA auto_vacuum` at 0: a session store could not
+    // reclaim pages with `incremental_vacuum` and needed a full VACUUM.
+    // Measured on node:sqlite: WAL then auto_vacuum reads 0, the other order 2.
+    var av = b.localDb.thin({
+      file:      path.join(tmpDir, "av.db"),
+      schemaSql: "CREATE TABLE x(id INTEGER);",
+      pragmas:   { auto_vacuum: "INCREMENTAL" },
+      audit:     false,
+    });
+    var avMode = av.query("PRAGMA auto_vacuum")[0];
+    check("localDb.thin: a caller's auto_vacuum takes effect",
+      avMode && Number(avMode.auto_vacuum) === 2,
+      "auto_vacuum=" + JSON.stringify(avMode));
+    var jm = av.query("PRAGMA journal_mode")[0];
+    check("localDb.thin: journal_mode is still WAL alongside it",
+      jm && String(jm.journal_mode).toLowerCase() === "wal",
+      "journal_mode=" + JSON.stringify(jm));
+    av.close();
+
+    // The fixed set is not the caller's to lower, and a value it would overwrite
+    // is refused rather than accepted and discarded. Applying the caller first
+    // and the fixed set after would have left this one silently dropped.
+    ["journal_mode", "foreign_keys", "secure_delete", "trusted_schema",
+     "cell_size_check"].forEach(function (name) {
+      var opts = {
+        file:      path.join(tmpDir, "floor-" + name + ".db"),
+        schemaSql: "CREATE TABLE x(id INTEGER);",
+        pragmas:   {},
+        audit:     false,
+      };
+      opts.pragmas[name] = "OFF";
+      var refused = null;
+      try { b.localDb.thin(opts); } catch (e) { refused = e; }
+      check("localDb.thin: " + name + " is refused rather than silently dropped",
+        refused !== null && refused.code === "localdb-thin/pragma-not-overridable",
+        "code=" + (refused && refused.code));
+    });
+
+    // Tuning knobs are the caller's. These are applied as defaults only when
+    // the caller says nothing, so an operator who raised busy_timeout for a
+    // contended store, or chose synchronous=FULL for durability, keeps both.
+    var tuned = b.localDb.thin({
+      file:      path.join(tmpDir, "tuned.db"),
+      schemaSql: "CREATE TABLE x(id INTEGER);",
+      pragmas:   { busy_timeout: 30000, synchronous: "FULL" },
+      audit:     false,
+    });
+    var bt = tuned.query("PRAGMA busy_timeout")[0];
+    var sy = tuned.query("PRAGMA synchronous")[0];
+    check("localDb.thin: a caller's busy_timeout survives",
+      bt && Number(bt.timeout) === 30000, "busy_timeout=" + JSON.stringify(bt));
+    check("localDb.thin: a caller's synchronous survives",
+      sy && Number(sy.synchronous) === 2, "synchronous=" + JSON.stringify(sy));
+    var tunedJm = tuned.query("PRAGMA journal_mode")[0];
+    check("localDb.thin: and the fixed set still holds alongside them",
+      tunedJm && String(tunedJm.journal_mode).toLowerCase() === "wal",
+      "journal_mode=" + JSON.stringify(tunedJm));
+    tuned.close();
+
+    // The control: with no pragmas the framework's own defaults apply.
+    var plain = b.localDb.thin({
+      file:      path.join(tmpDir, "plain.db"),
+      schemaSql: "CREATE TABLE x(id INTEGER);",
+      audit:     false,
+    });
+    var plainBt = plain.query("PRAGMA busy_timeout")[0];
+    var plainSy = plain.query("PRAGMA synchronous")[0];
+    check("localDb.thin: the defaults apply when the caller sets nothing",
+      plainBt && Number(plainBt.timeout) === 5000 &&
+      plainSy && Number(plainSy.synchronous) === 1,
+      "busy_timeout=" + JSON.stringify(plainBt) + " synchronous=" + JSON.stringify(plainSy));
+    plain.close();
   } finally {
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_e) {}
   }
