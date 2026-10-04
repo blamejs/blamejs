@@ -864,15 +864,51 @@ function testOpensslInterop() {
   }
   var tsr = fs.readFileSync(path.join(dir, "r.tsr"));
   var anchor = fs.readFileSync(path.join(dir, "tsa.crt"), "utf8");
-  try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* ignore */ }
 
   var resp = b.tsa.parseResponse(tsr);
-  // Name what openssl actually returned. `ts -reply` exits 0 for a REJECTION
-  // as well as a grant, so a bare boolean here says only "not granted" and
-  // leaves nothing to work from — this failed once under SMOKE_PARALLEL=64 and
-  // passed in isolation, with no way to tell whether our parser was wrong or
-  // openssl had declined to issue.
-  check("openssl interop: response granted (status " + resp.status +
+  // `ts -reply` exits 0 for a REJECTION as well as a grant, so the status has
+  // to be read rather than the exit code, and the failInfo has to be named or
+  // there is nothing to work from. What the name cannot settle is WHOSE fault
+  // the rejection is: openssl answers `badDataFormat` with "Bad request format
+  // or system error", which covers a request it could not read AND a failure of
+  // its own, such as the serial file under load. Reading our request back with
+  // `ts -query -text` does not settle it either: that shows the request decodes,
+  // not that it is valid for issuance, so a wrong version or digest length would
+  // print fine and still be refused. The control is a request openssl built
+  // itself. Twice now this has failed under SMOKE_PARALLEL=64 on a CI runner and
+  // passed 6 times in isolation and 16 times concurrently against openssl 3.5.9,
+  // which is the shape of a TSA that could not issue rather than of a malformed
+  // request.
+  if (resp.granted !== true) {
+    // The control is a request openssl built itself, put through the same TSA
+    // config. If that one is granted, this TSA can issue and ours is the
+    // request at fault, so the check below has to fail. If openssl rejects its
+    // own request too, the setup could not issue at all and there is nothing
+    // here about our encoding. Reading the control's status with openssl rather
+    // than with our parser keeps our own code out of the control.
+    fs.writeFileSync(path.join(dir, "data.txt"), "hello world");
+    var ctlQ = ossl(["ts", "-query", "-data", "data.txt", "-sha512", "-out", "ctl.tsq"]);
+    var ctlR = ossl(["ts", "-reply", "-queryfile", "ctl.tsq", "-config", "tsa.cnf",
+      "-section", "c1", "-out", "ctl.tsr"]);
+    var ctlStatus = (ctlQ && ctlQ.status === 0 && ctlR && ctlR.status === 0)
+      ? cp.spawnSync("openssl", ["ts", "-reply", "-in", "ctl.tsr", "-text"],
+          { cwd: dir, env: env, encoding: "utf8" })
+      : null;
+    var ctlGranted = !!(ctlStatus && ctlStatus.status === 0 &&
+      /granted/i.test(String(ctlStatus.stdout || "")));
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* ignore */ }
+    if (!ctlGranted) {
+      helpers.unavailable("openssl interop skipped (this TSA could not issue for " +
+        "openssl's own request either: ours came back status " + resp.status +
+        (resp.failInfo ? ", failInfo " + JSON.stringify(resp.failInfo) : "") +
+        (resp.statusString ? ", " + JSON.stringify(resp.statusString) : "") + ")");
+      return;
+    }
+  } else {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* ignore */ }
+  }
+  check("openssl interop: response granted, or our request was unreadable (status " +
+        resp.status +
         (resp.failInfo ? ", failInfo " + JSON.stringify(resp.failInfo) : "") +
         (resp.statusString ? ", " + JSON.stringify(resp.statusString) : "") + ")",
         resp.granted === true && resp.status === 0);
