@@ -243,6 +243,30 @@ async function testPluggableStore() {
     var n = await b.session.count();
     check("pluggable store: count reads from thin DB",   n === 1);
 
+    // Both purges read and delete through the documented store contract, which
+    // is `execute` + `executeOne`. Reaching for anything else threw
+    // TypeError: store.executeAll is not a function on every store-backed
+    // deployment, this first-party adapter included.
+    var expired = await b.session.purgeExpired({ batchSize: 2 });
+    check("pluggable store: purgeExpired runs on execute/executeOne alone",
+      expired === 0, "removed=" + expired);
+    check("pluggable store: and leaves a live session in place",
+      (await b.session.count()) === 1);
+
+    await helpers.passiveObserve(20,
+      "session purge: age the row past a 1ms idle window");
+    var stale = await b.session.purgeStale({
+      idleTimeoutMs: 1, absoluteTimeoutMs: 0, batchSize: 2,
+    });
+    check("pluggable store: purgeStale removes a session past its idle limit",
+      stale === 1, "removed=" + stale);
+    check("pluggable store: and the row is gone",
+      (await b.session.count()) === 0);
+
+    var again = await b.session.create({ userId: "u-1", data: { team: "a" } });
+    check("pluggable store: a session created after the purge still verifies",
+      !!(await b.session.verify(again.token)));
+
     var revoked = await b.session.destroyAllForUser("u-1");
     check("pluggable store: destroyAllForUser drops 1",  revoked === 1);
 
@@ -252,6 +276,415 @@ async function testPluggableStore() {
     check("pluggable store: useStore(null) reverts",     true);
   } finally {
     b.session.useStore(null);
+    await teardownTestDb(tmpDir);
+  }
+}
+
+// A purge selects the keys it will remove and then deletes them. A session
+// refreshed in between no longer matches the condition that picked it, and the
+// delete used to match on the key alone, so the sweep revoked an active
+// session. The store wrapper below performs that refresh at exactly that point.
+async function testPurgeDoesNotRevokeARefreshedSession() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ses-purge-race-"));
+  var store = null;
+  try {
+    await setupTestDb(tmpDir);
+    store = b.session.stores.localDbThin({ file: path.join(tmpDir, "race.db") });
+    var refreshedOnce = false;
+    var deletes = [];
+    b.session.useStore({
+      execute: async function (text, params) {
+        if (/^\s*delete/i.test(text)) deletes.push(text);
+        var res = await store.execute(text, params);
+        if (!refreshedOnce && /select/i.test(text) && text.indexOf("lastActivity") !== -1) {
+          refreshedOnce = true;
+          await store.execute(
+            "UPDATE _blamejs_sessions SET lastActivity = ?", [Date.now() + 60000]);
+        }
+        return res;
+      },
+      executeOne: function (text, params) { return store.executeOne(text, params); },
+    });
+
+    var s = await b.session.create({ userId: "u-race" });
+    check("purge race: the session starts out verifiable",
+      !!(await b.session.verify(s.token)));
+
+    await helpers.passiveObserve(20,
+      "session purge race: age the row past a 1ms idle window");
+    var removed = await b.session.purgeStale({
+      idleTimeoutMs: 1, absoluteTimeoutMs: 0, batchSize: 10,
+    });
+    check("purge race: the refresh happened at the select", refreshedOnce);
+    check("purge race: the refreshed session is not deleted",
+      removed === 0, "removed=" + removed);
+    check("purge race: and its row is still there", (await b.session.count()) === 1);
+    check("purge race: and it still verifies",
+      !!(await b.session.verify(s.token)));
+    check("purge race: the idle sweep's DELETE carries the idle condition",
+      deletes.some(function (t) { return t.indexOf("lastActivity") !== -1; }),
+      deletes.join(" ~~ "));
+  } finally {
+    b.session.useStore(null);
+    try { if (store && store.close) store.close(); } catch (_e) { /* best-effort */ }
+    await teardownTestDb(tmpDir);
+  }
+}
+
+// Batching bounds what one statement WRITES; it has to bound what each pass
+// READS too. Each pass re-runs the select, so ordering by the primary key made
+// every pass walk the whole table to find the matching rows: on the first-party
+// SQLite store the plan was `SCAN sessions USING INDEX sqlite_autoindex_sessions_1`
+// rather than a range over the expiry index, and a 200,000-row table with 10%
+// expired took 1,574ms to sweep in batches of 500 against 44ms ordered by
+// `expiresAt`. Ordering by the column the sweep filters on is what makes the
+// read work proportional to the rows being removed, so each sweep asserts it.
+async function testEachSweepOrdersByTheColumnItFilters() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ses-purge-order-"));
+  var store = null;
+  try {
+    await setupTestDb(tmpDir);
+    store = b.session.stores.localDbThin({ file: path.join(tmpDir, "order.db") });
+    var selects = [];
+    b.session.useStore({
+      execute: function (text, params) {
+        if (/^\s*select/i.test(text)) selects.push(text);
+        return store.execute(text, params);
+      },
+      executeOne: function (text, params) { return store.executeOne(text, params); },
+    });
+
+    await b.session.create({ userId: "u-order" });
+
+    selects.length = 0;
+    await b.session.purgeExpired({ batchSize: 5 });
+    check("the expiry sweep orders by expiresAt, which the table indexes",
+      selects.some(function (t) { return /order\s+by[^)]*expiresAt/i.test(t); }),
+      selects.join(" ~~ "));
+    check("and no sweep orders by the primary key, which ignores that index",
+      !selects.some(function (t) { return /order\s+by[^)]*sidHash/i.test(t); }),
+      selects.join(" ~~ "));
+
+    selects.length = 0;
+    await b.session.purgeStale({ idleTimeoutMs: 1, absoluteTimeoutMs: 0, batchSize: 5 });
+    check("the idle sweep orders by lastActivity",
+      selects.some(function (t) { return /order\s+by[^)]*lastActivity/i.test(t); }),
+      selects.join(" ~~ "));
+
+    var idleSelect = selects.filter(function (t) {
+      return /order\s+by[^)]*lastActivity/i.test(t);
+    })[0];
+
+    selects.length = 0;
+    await b.session.purgeStale({ idleTimeoutMs: 0, absoluteTimeoutMs: 1, batchSize: 5 });
+    check("the absolute sweep orders by createdAt",
+      selects.some(function (t) { return /order\s+by[^)]*createdAt/i.test(t); }),
+      selects.join(" ~~ "));
+    var absSelect = selects.filter(function (t) {
+      return /order\s+by[^)]*createdAt/i.test(t);
+    })[0];
+
+    // Ordering is only half of it: the column has to be indexed, or every batch
+    // scans what is left of the table and sorts it. Measured on 200,000 rows
+    // with 10% idle, in batches of 500, the sweep is 245ms unindexed against
+    // 81ms indexed, and the plan moves from a table scan to an index range.
+    check("the sweeps have a column to search, not just one to sort by",
+      !!idleSelect && !!absSelect, "idle=" + !!idleSelect + " abs=" + !!absSelect);
+    var idxRows = await store.execute(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = ?",
+      [b.frameworkSchema.tableName("_blamejs_sessions")]);
+    var idxNames = ((idxRows && idxRows.rows) || []).map(function (r) { return r.name; }).join(",");
+    check("the session table indexes lastActivity, which the idle sweep reads",
+      /lastActivity/i.test(idxNames), idxNames);
+    check("and createdAt, which the absolute sweep reads",
+      /createdAt/i.test(idxNames), idxNames);
+
+    // The sessions table is declared in more than one place: the default
+    // single-node schema in b.db, and the dedicated store's own DDL. Indexes
+    // added to one and not the other leave the default deployment scanning,
+    // which is how the first attempt at this missed it, so the two are
+    // compared against each other rather than each against a list.
+    var declared = (b.db.FRAMEWORK_SCHEMA.filter(function (t) {
+      return t.name === "_blamejs_sessions";
+    })[0] || {}).indexes || [];
+    check("the default local schema declares the sweep columns as well",
+      declared.indexOf("lastActivity") !== -1 && declared.indexOf("createdAt") !== -1,
+      declared.join(","));
+    var liveCols = idxNames.split(",")
+      .filter(function (n) { return /_idx$/.test(n); })
+      .map(function (n) { return n.replace(/^.*_blamejs_sessions_/, "").replace(/_idx$/, ""); })
+      .sort().join(",");
+    check("and the two declarations of that table index the same columns",
+      liveCols === declared.slice().sort().join(","),
+      "store=" + liveCols + " default=" + declared.slice().sort().join(","));
+  } finally {
+    b.session.useStore(null);
+    try { if (store && store.close) store.close(); } catch (_e) { /* best-effort */ }
+    await teardownTestDb(tmpDir);
+  }
+}
+
+// A batched sweep has to clear the table, not stop at a batch count and report
+// success over what it left behind. With a cap of 10000 passes, a batchSize of
+// 1 left every row past the 10000th in place and returned as though it had
+// finished.
+async function testPurgeClearsTheTableAcrossPassesOrSaysItCannot() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ses-purge-batches-"));
+  var store = null;
+  try {
+    await setupTestDb(tmpDir);
+    store = b.session.stores.localDbThin({ file: path.join(tmpDir, "batches.db") });
+    // Wrapped from the start: `useStore` closes the store it replaces, so
+    // installing the real one first and the wrapper second leaves the wrapper
+    // delegating to a closed handle.
+    var swallowDeletes = false;
+    b.session.useStore({
+      execute: async function (text, params) {
+        if (swallowDeletes && /^\s*delete/i.test(text)) return { rows: [], rowCount: 0 };
+        return await store.execute(text, params);
+      },
+      executeOne: function (text, params) { return store.executeOne(text, params); },
+    });
+
+    for (var i = 0; i < 5; i += 1) await b.session.create({ userId: "u-batch-" + i });
+    check("batched purge: five sessions are stored", (await b.session.count()) === 5);
+
+    await helpers.passiveObserve(20,
+      "session purge: age the rows past a 1ms idle window");
+    var removed = await b.session.purgeStale({
+      idleTimeoutMs: 1, absoluteTimeoutMs: 0, batchSize: 1,
+    });
+    check("batched purge: one row per pass still clears every row",
+      removed === 5, "removed=" + removed);
+    check("batched purge: the table is empty", (await b.session.count()) === 0);
+
+    // A sweep that cannot delete what it keeps matching says so rather than
+    // returning a count that looks like a completed sweep.
+    await b.session.create({ userId: "u-stall" });
+    swallowDeletes = true;
+    await helpers.passiveObserve(20,
+      "session purge: age the stalled row past a 1ms idle window");
+    var stalled = null;
+    try {
+      await b.session.purgeStale({ idleTimeoutMs: 1, absoluteTimeoutMs: 0, batchSize: 1 });
+    } catch (e) { stalled = e; }
+    check("batched purge: a sweep that deletes nothing it matches raises",
+      stalled !== null && stalled.code === "session/purge-stalled",
+      "code=" + (stalled && stalled.code));
+
+    // The same, with a batch larger than the matching set. A batch shorter than
+    // `batchSize` used to end the sweep before a second pass could see that the
+    // delete had removed nothing, so one undeletable row returned 0 as success.
+    var stalledShort = null;
+    try {
+      await b.session.purgeStale({ idleTimeoutMs: 1, absoluteTimeoutMs: 0, batchSize: 500 });
+    } catch (e) { stalledShort = e; }
+    check("batched purge: a short batch that deletes nothing also raises",
+      stalledShort !== null && stalledShort.code === "session/purge-stalled",
+      "code=" + (stalledShort && stalledShort.code));
+    check("batched purge: and the stalled sweep names what it did remove",
+      stalledShort !== null && /0 row\(s\) were removed/.test(stalledShort.message || ""),
+      stalledShort && stalledShort.message);
+
+    swallowDeletes = false;
+    var finished = await b.session.purgeStale({
+      idleTimeoutMs: 1, absoluteTimeoutMs: 0, batchSize: 500,
+    });
+    check("batched purge: once the delete works the sweep finishes",
+      finished === 1 && (await b.session.count()) === 0, "removed=" + finished);
+  } finally {
+    b.session.useStore(null);
+    try { if (store && store.close) store.close(); } catch (_e) { /* best-effort */ }
+    await teardownTestDb(tmpDir);
+  }
+}
+
+// The stall guard compared this pass's keys to the last pass's POSITIONALLY,
+// and the SELECT carried no ORDER BY, so a store free to return the same
+// matching set in a different order reset the guard on every pass. The sweep
+// then ran to its pass cap: measured at 1,000,001 passes and 6.2 seconds with
+// the event loop never yielding once. Three things have to hold: the order is
+// fixed, the guard reads the key SET, and the loop gives the event loop a turn.
+async function testPurgeStallGuardSurvivesRowOrderAndYields() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ses-purge-order-"));
+  var store = null;
+  try {
+    await setupTestDb(tmpDir);
+    store = b.session.stores.localDbThin({ file: path.join(tmpDir, "order.db") });
+    var rotate = false;
+    var selects = 0;
+    var sawOrderBy = false;
+    b.session.useStore({
+      execute: async function (text, params) {
+        if (/^\s*delete/i.test(text)) return { rows: [], rowCount: 0 };
+        var res = await store.execute(text, params);
+        if (/select/i.test(text) && text.indexOf("sidHash") !== -1) {
+          selects += 1;
+          if (/order\s+by/i.test(text)) sawOrderBy = true;
+          rotate = !rotate;
+          if (rotate && res && res.rows) {
+            return { rows: res.rows.slice().reverse(), rowCount: res.rowCount };
+          }
+        }
+        return res;
+      },
+      executeOne: function (text, params) { return store.executeOne(text, params); },
+    });
+
+    await b.session.create({ userId: "u-order-1" });
+    await b.session.create({ userId: "u-order-2" });
+    await b.session.create({ userId: "u-order-3" });
+
+    var ticks = 0;
+    var ticker = setInterval(function () { ticks += 1; }, 10);
+    await helpers.passiveObserve(20, "session purge: age the rows past a 1ms idle window");
+    var started = Date.now();
+    var stalled = null;
+    try {
+      await b.session.purgeStale({ idleTimeoutMs: 1, absoluteTimeoutMs: 0, batchSize: 2 });
+    } catch (e) { stalled = e; }
+    var elapsedMs = Date.now() - started;
+    clearInterval(ticker);
+
+    check("a sweep whose rows come back in a rotating order still reports the stall",
+      stalled !== null && stalled.code === "session/purge-stalled",
+      "code=" + (stalled && stalled.code));
+    check("and reaches that conclusion in a handful of passes, not a million",
+      selects <= 12, "selects=" + selects + " elapsedMs=" + elapsedMs);
+    check("the select fixes the row order itself", sawOrderBy);
+    check("and the sweep leaves the event loop turns to take",
+      ticks >= 1, "ticks=" + ticks + " elapsedMs=" + elapsedMs);
+  } finally {
+    b.session.useStore(null);
+    try { if (store && store.close) store.close(); } catch (_e) { /* best-effort */ }
+    await teardownTestDb(tmpDir);
+  }
+}
+
+// A store that simply omits rowCount on a DELETE is terse, not broken. Counting
+// every such pass as a full batch both invented a total and removed the only
+// signal that could stop the loop, so the sweep ran to the pass cap and then
+// reported millions of rows removed from a table it had not touched.
+async function testPurgeDoesNotInventARemovalCount() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ses-purge-count-"));
+  var store = null;
+  try {
+    await setupTestDb(tmpDir);
+    store = b.session.stores.localDbThin({ file: path.join(tmpDir, "count.db") });
+    var deletes = 0;
+    b.session.useStore({
+      execute: async function (text, params) {
+        if (/^\s*delete/i.test(text)) { deletes += 1; return { rows: [] }; }
+        return await store.execute(text, params);
+      },
+      executeOne: function (text, params) { return store.executeOne(text, params); },
+    });
+
+    await b.session.create({ userId: "u-count-1" });
+    await b.session.create({ userId: "u-count-2" });
+    await helpers.passiveObserve(20, "session purge: age the rows past a 1ms idle window");
+
+    var stalled = null;
+    try {
+      await b.session.purgeStale({ idleTimeoutMs: 1, absoluteTimeoutMs: 0, batchSize: 500 });
+    } catch (e) { stalled = e; }
+    check("a store that omits rowCount and deletes nothing still reports the stall",
+      stalled !== null && stalled.code === "session/purge-stalled",
+      "code=" + (stalled && stalled.code));
+    check("in a couple of passes rather than the pass cap",
+      deletes <= 4, "deletes=" + deletes);
+    check("and the message does not claim rows it never removed",
+      stalled !== null && /\b0 row\(s\) were removed/.test(stalled.message || ""),
+      stalled && stalled.message);
+  } finally {
+    b.session.useStore(null);
+    try { if (store && store.close) store.close(); } catch (_e) { /* best-effort */ }
+    await teardownTestDb(tmpDir);
+  }
+}
+
+// The other half of that store: one that omits rowCount and DOES delete. An
+// unknown count is not a zero, and treating it as one made every pass look like
+// no progress, so the consecutive-idle guard stopped the sweep partway and left
+// rows behind. The repeated-key check is what covers a stall here, since a pass
+// that deleted nothing matches the same keys again.
+async function testPurgeFinishesWhenAStoreOmitsRowCountButDeletes() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ses-purge-silent-"));
+  var store = null;
+  try {
+    await setupTestDb(tmpDir);
+    store = b.session.stores.localDbThin({ file: path.join(tmpDir, "silent.db") });
+    b.session.useStore({
+      execute: async function (text, params) {
+        var res = await store.execute(text, params);
+        // Terse but correct: the delete happened, the count is not reported.
+        if (/^\s*delete/i.test(text)) return { rows: [] };
+        return res;
+      },
+      executeOne: function (text, params) { return store.executeOne(text, params); },
+    });
+
+    for (var i = 0; i < 20; i += 1) {
+      await b.session.create({ userId: "u-silent-" + i });
+    }
+    check("twenty sessions exist before the sweep", (await b.session.count()) === 20);
+    await helpers.passiveObserve(20, "session purge: age the rows past a 1ms idle window");
+
+    var failed = null;
+    var removed = 0;
+    try {
+      removed = await b.session.purgeStale({
+        idleTimeoutMs: 1, absoluteTimeoutMs: 0, batchSize: 1,
+      });
+    } catch (e) { failed = e; }
+    check("a sweep in batches of 1 clears the table rather than stalling partway",
+      failed === null, failed && failed.code + ": " + failed.message);
+    check("and every row is gone", (await b.session.count()) === 0);
+    check("while the total stays at what the deletes reported, which is nothing",
+      removed === 0, "removed=" + removed);
+  } finally {
+    b.session.useStore(null);
+    try { if (store && store.close) store.close(); } catch (_e) { /* best-effort */ }
+    await teardownTestDb(tmpDir);
+  }
+}
+
+// batchSize binds one parameter per picked key plus the narrowing cutoff, and
+// node:sqlite refuses more than 32766 bound parameters. The option was bounded
+// below and not above, so an operator raising it to cut round trips got the
+// driver's own untyped error and a table that had not been touched.
+async function testPurgeBatchSizeHasADocumentedCeiling() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ses-purge-batchmax-"));
+  var store = null;
+  try {
+    await setupTestDb(tmpDir);
+    store = b.session.stores.localDbThin({ file: path.join(tmpDir, "batchmax.db") });
+    b.session.useStore(store);
+    await b.session.create({ userId: "u-batchmax" });
+
+    var tooBig = null;
+    try { await b.session.purgeExpired({ batchSize: 40000 }); }
+    catch (e) { tooBig = e; }
+    check("a batchSize past the ceiling is refused with the session's own code",
+      tooBig !== null && tooBig.code === "session/bad-batch-size",
+      "code=" + (tooBig && tooBig.code));
+    check("and the refusal names the ceiling",
+      tooBig !== null && /10000/.test(tooBig.message || ""), tooBig && tooBig.message);
+
+    var staleTooBig = null;
+    try { await b.session.purgeStale({ batchSize: 40000 }); }
+    catch (e) { staleTooBig = e; }
+    check("purgeStale refuses it the same way",
+      staleTooBig !== null && staleTooBig.code === "session/bad-batch-size",
+      "code=" + (staleTooBig && staleTooBig.code));
+
+    // The control: the ceiling itself is accepted and sweeps normally.
+    var atCeiling = await b.session.purgeExpired({ batchSize: 10000 });
+    check("the ceiling value itself is accepted", typeof atCeiling === "number",
+      "removed=" + atCeiling);
+  } finally {
+    b.session.useStore(null);
+    try { if (store && store.close) store.close(); } catch (_e) { /* best-effort */ }
     await teardownTestDb(tmpDir);
   }
 }
@@ -814,6 +1247,13 @@ async function run() {
   await testClientIpPrefixV4MappedV6();
   await testFingerprintPeerGatedClientIp();
   await testPluggableStore();
+  await testPurgeDoesNotRevokeARefreshedSession();
+  await testEachSweepOrdersByTheColumnItFilters();
+  await testPurgeClearsTheTableAcrossPassesOrSaysItCannot();
+  await testPurgeStallGuardSurvivesRowOrderAndYields();
+  await testPurgeDoesNotInventARemovalCount();
+  await testPurgeFinishesWhenAStoreOmitsRowCountButDeletes();
+  await testPurgeBatchSizeHasADocumentedCeiling();
   await testDestroyAllForUserPluggableNoDb();
   await testPluggableStoreValidation();
   await testUpdateDataReplaceAndMerge();

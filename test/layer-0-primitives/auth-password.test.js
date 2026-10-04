@@ -83,6 +83,417 @@ async function testHashRejectsBadParams() {
         threwPar && threwPar.code === "auth-password/bad-params");
 }
 
+// verify() ran Argon2id with whatever `m`, `t` and `p` the STORED string named,
+// and the PHC decode accepted any finite integer for each, so a stored
+// `$argon2id$v=19$m=4194304,t=1,p=1$...` asked for 4 GiB on a login attempt and a
+// large `t` ran for as long as it said. Stored hashes usually come from this
+// module's own hash(), but some arrive from configuration, an import or a
+// restored backup. The cost is bounded before Argon2id is entered now, and
+// because verify() must never throw on a bad stored value, an over-ceiling hash
+// answers false instead of raising.
+// The gate counted only hash() and verify(), and nothing reported or bounded it.
+// Three defects in one mechanism: `_release` handed its slot to the next waiter
+// whenever one was queued and only decremented when the list was empty, so a
+// lowered gate(n) took effect only after the queue drained; the waiter list had
+// no bound and no timeout; and no function reported how many were running or
+// waiting. Argon2id also ran ungated in backup/crypto, vault/wrap and the
+// password policy's reuse check, so a consumer lowering the gate to bound memory
+// still got those on top.
+async function testGateBoundsEveryArgon2Run() {
+  // memoryCost is counted in KiB, so BYTES.kib(1) is one MiB of working set.
+  var cheap = { memoryCost: b.constants.BYTES.kib(1), timeCost: 1, parallelism: 1 };
+  var holds = { memoryCost: b.constants.BYTES.kib(16), timeCost: 2, parallelism: 1 };
+  var before = b.auth.password.stats();
+  check("stats reports the gate's shape",
+    before && typeof before.running === "number" && typeof before.waiting === "number" &&
+    typeof before.limit === "number", JSON.stringify(before));
+
+  // A lowered limit applies to the slots, not only to an empty queue.
+  b.auth.password.gate(1, { maxQueued: 1, waitTimeoutMs: 0 });
+  var a = b.auth.password.hash("pw-123456", cheap);
+  var queued = b.auth.password.hash("pw-123456", cheap);
+  var mid = b.auth.password.stats();
+  check("one run holds the only slot and the next waits",
+    mid.running === 1 && mid.waiting === 1, JSON.stringify(mid));
+
+  var threw = null;
+  try { await b.auth.password.hash("pw-123456", cheap); }
+  catch (e) { threw = e; }
+  check("a run past maxQueued refuses rather than queueing without bound",
+    threw !== null && threw.code === "argon2/busy", "code=" + (threw && threw.code));
+  await Promise.all([a, queued]);
+
+  // A waiter that cannot get a slot in time gives up instead of waiting forever.
+  b.auth.password.gate(1, { maxQueued: 8, waitTimeoutMs: 1 });
+  var hold = b.auth.password.hash("pw-123456", holds);
+  var timedOut = null;
+  try { await b.auth.password.hash("pw-123456", cheap); }
+  catch (e) { timedOut = e; }
+  check("a waiter past waitTimeoutMs rejects with a typed code",
+    timedOut !== null && timedOut.code === "argon2/queue-timeout",
+    "code=" + (timedOut && timedOut.code));
+  await hold;
+
+  // The other three Argon2id callers go through the same gate now.
+  b.auth.password.gate(1, { maxQueued: 0, waitTimeoutMs: 0 });
+  var slow = b.auth.password.hash("pw-123456", holds);
+  var vaultRefused = null;
+  try {
+    await require("../../lib/vault/wrap").deriveWrappingKey(
+      "passphrase-123456", Buffer.alloc(16, 7), { memoryCost: 1024, timeCost: 1, parallelism: 1 });
+  } catch (e) { vaultRefused = e; }
+  check("a vault key derivation is counted against the same gate",
+    vaultRefused !== null && vaultRefused.code === "argon2/busy",
+    "code=" + (vaultRefused && vaultRefused.code));
+  await slow;
+
+  // verify and the policy's reuse check wait on the same gate, and its refusals
+  // have to reach the caller. argon2.verify answered false for them, so a
+  // correct password read as wrong under load, and the reuse check reported no
+  // reuse, which approves a password the policy exists to refuse.
+  var storedCheap = await b.auth.password.hash("pw-123456", cheap);
+  var pol = b.auth.password.policy({ historyMinDistance: 1, useBundledCommon: false });
+
+  var holdForVerify = b.auth.password.hash("pw-123456", holds);
+  var verifyRefused = null;
+  try { await b.auth.password.verify(storedCheap, "pw-123456"); }
+  catch (e) { verifyRefused = e; }
+  check("verify surfaces the gate's refusal rather than answering false",
+    verifyRefused !== null && verifyRefused.code === "argon2/busy",
+    "code=" + (verifyRefused && verifyRefused.code));
+  await holdForVerify;
+
+  var holdForReuse = b.auth.password.hash("pw-123456", holds);
+  var reuseRefused = null;
+  try { await pol.reuseProhibited("pw-123456", [storedCheap]); }
+  catch (e) { reuseRefused = e; }
+  check("the reuse check surfaces the gate's refusal rather than reporting no reuse",
+    reuseRefused !== null && reuseRefused.code === "argon2/busy",
+    "code=" + (reuseRefused && reuseRefused.code));
+  await holdForReuse;
+
+  // A consumer that wraps the derivation in a catch-all is where the refusal
+  // stops being recognizable. b.archive.unwrapWithPassphrase reported a valid
+  // archive as archive-wrap/decrypt-failed, which is permanent, so a caller
+  // reading it goes looking for a wrong passphrase instead of retrying.
+  b.auth.password.gate(8, { maxQueued: Infinity, waitTimeoutMs: 0 });
+  var sealedArchive = await b.archive.wrapWithPassphrase(
+    Buffer.from("archive-bytes"), { passphrase: "operator-supplied-long-passphrase" });
+
+  b.auth.password.gate(1, { maxQueued: 0, waitTimeoutMs: 0 });
+  var holdForArchive = b.auth.password.hash("pw-123456", holds);
+  var archiveRefused = null;
+  try {
+    await b.archive.unwrapWithPassphrase(sealedArchive,
+      { passphrase: "operator-supplied-long-passphrase" });
+  } catch (e) { archiveRefused = e; }
+  check("a passphrase-sealed archive surfaces the gate's refusal rather than " +
+        "reporting the archive as undecryptable",
+    archiveRefused !== null && archiveRefused.code === "argon2/busy",
+    "code=" + (archiveRefused && archiveRefused.code));
+  check("and that refusal is retryable, which a translated one is not",
+    archiveRefused !== null && b.retry.isRetryable(archiveRefused) === true,
+    "permanent=" + (archiveRefused && archiveRefused.permanent));
+  await holdForArchive;
+
+  // A refusal is only retryable if nothing irreversible happened first.
+  // b.backup.bundle.create created outDir and its files/ subdirectory before
+  // deriving, so a refusal left both behind and the retry it invites failed
+  // permanently with backup-bundle/outdir-exists.
+  var nodeFs = require("node:fs");
+  var nodeOs = require("node:os");
+  var nodePath = require("node:path");
+  var bundleRoot = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), "pw-gate-bundle-"));
+  var bundleOut = nodePath.join(bundleRoot, "out");
+  var holdForBundle = b.auth.password.hash("pw-123456", holds);
+  var bundleRefused = null;
+  try {
+    await b.backupBundle.create({
+      dataDir: bundleRoot,
+      outDir: bundleOut,
+      passphrase: "operator-supplied-long-passphrase",
+      vaultKeyJson: "{\"kem\":\"ml-kem-1024\"}",
+      files: [{ relativePath: "vault.key", absolutePath: nodePath.join(bundleRoot, "vault.key") }],
+    });
+  } catch (e) { bundleRefused = e; }
+  check("a bundle create surfaces the gate's refusal",
+    bundleRefused !== null && bundleRefused.code === "argon2/busy",
+    "code=" + (bundleRefused && bundleRefused.code));
+  check("and leaves no output directory behind, so the retry it invites can run",
+    !nodeFs.existsSync(bundleOut), bundleOut);
+  await holdForBundle;
+  try { nodeFs.rmSync(bundleRoot, { recursive: true, force: true }); }
+  catch (_e) { /* best-effort */ }
+
+  // A refusal must not skip a secure-zero either. vaultWrap.wrap copies a
+  // string plaintext into a buffer it owns, which is how the vault key and the
+  // audit-signing private key reach it, and the cleanup used to begin after the
+  // derivation: a refusal left that copy to the garbage collector. The zeroing
+  // is observed by recording the calls, since the buffer is internal to wrap.
+  var safeBufferModule = require("../../lib/safe-buffer");
+  var realSecureZero = safeBufferModule.secureZero;
+  var zeroedLengths = [];
+  safeBufferModule.secureZero = function (buf) {
+    if (buf && typeof buf.length === "number") zeroedLengths.push(buf.length);
+    return realSecureZero.apply(this, arguments);
+  };
+  var wrapRefused = null;
+  var secretPlaintext = "{\"privateKey\":\"a-generated-signing-key\"}";
+  var holdForWrap = b.auth.password.hash("pw-123456", holds);
+  try {
+    await require("../../lib/vault/wrap").wrap(secretPlaintext, "passphrase-123456");
+  } catch (e) { wrapRefused = e; }
+  finally { safeBufferModule.secureZero = realSecureZero; }
+  check("a wrap refused by the gate surfaces the refusal",
+    wrapRefused !== null && wrapRefused.code === "argon2/busy",
+    "code=" + (wrapRefused && wrapRefused.code));
+  check("and still zeroes the plaintext copy it owns",
+    zeroedLengths.indexOf(Buffer.byteLength(secretPlaintext, "utf8")) !== -1,
+    "zeroed=" + zeroedLengths.join(","));
+  await holdForWrap;
+
+  // The control: with the gate open all of them answer normally, so the
+  // assertions above read the gate rather than a broken hash, policy or archive.
+  b.auth.password.gate(8, { maxQueued: Infinity, waitTimeoutMs: 0 });
+  check("verify answers true once the gate is open",
+    (await b.auth.password.verify(storedCheap, "pw-123456")) === true);
+  check("the reuse check reports the reuse once the gate is open",
+    (await pol.reuseProhibited("pw-123456", [storedCheap])) === true);
+  check("the archive opens once the gate is open",
+    (await b.archive.unwrapWithPassphrase(sealedArchive,
+      { passphrase: "operator-supplied-long-passphrase" })).toString("utf8") ===
+      "archive-bytes");
+
+  // A rejected reconfiguration must change nothing. The limits were assigned as
+  // each one validated, so a call carrying one bad option raised and left the
+  // earlier ones applied: a caller catching the error ran on with a higher
+  // concurrency and an unbounded queue it had not asked for.
+  b.auth.password.gate(2, { maxQueued: 4, waitTimeoutMs: 100 });
+  var beforeBad = b.auth.password.stats();
+  var badGate = null;
+  try { b.auth.password.gate(8, { maxQueued: Infinity, waitTimeoutMs: -1 }); }
+  catch (e) { badGate = e; }
+  check("a gate call with a bad waitTimeoutMs is refused",
+    badGate !== null && badGate.code === "argon2/bad-gate",
+    "code=" + (badGate && badGate.code));
+  var afterBad = b.auth.password.stats();
+  check("and it leaves every limit as it was",
+    afterBad.limit === beforeBad.limit &&
+    afterBad.maxQueued === beforeBad.maxQueued &&
+    afterBad.waitTimeoutMs === beforeBad.waitTimeoutMs,
+    JSON.stringify(beforeBad) + " → " + JSON.stringify(afterBad));
+
+  var badMax = null;
+  try { b.auth.password.gate(16, { maxQueued: -3 }); }
+  catch (e) { badMax = e; }
+  check("a gate call with a bad maxQueued is refused",
+    badMax !== null && badMax.code === "argon2/bad-gate",
+    "code=" + (badMax && badMax.code));
+  check("and that one leaves the limit alone too",
+    b.auth.password.stats().limit === beforeBad.limit,
+    JSON.stringify(b.auth.password.stats()));
+
+  // The control: a call with every option valid still applies all of them.
+  var applied = b.auth.password.gate(3, { maxQueued: 9, waitTimeoutMs: 50 });
+  check("a valid reconfiguration applies in full",
+    applied.limit === 3 && applied.maxQueued === 9 && applied.waitTimeoutMs === 50,
+    JSON.stringify(applied));
+
+  b.auth.password.gate(8, { maxQueued: Infinity, waitTimeoutMs: 0 });
+  var restored = b.auth.password.stats();
+  check("the gate restores to its default shape",
+    restored.limit === 8 && restored.waiting === 0, JSON.stringify(restored));
+}
+
+async function testVerifyBoundsTheStoredCost() {
+  // Reading the ceiling must not change it. `undefined` shared the reset
+  // branch with `null`, so a read after a deliberate lowering silently put the
+  // default back and widened what verify would spend.
+  var defaults = b.auth.password.costCeiling();
+  check("costCeiling() reports the default before anything sets it",
+    defaults.timeCost === 24 && defaults.parallelism === 16,
+    JSON.stringify(defaults));
+  var lowered = b.auth.password.costCeiling({ timeCost: 12 });
+  check("costCeiling sets what it is given", lowered.timeCost === 12);
+  check("costCeiling() reads the ceiling in force",
+    b.auth.password.costCeiling().timeCost === 12,
+    JSON.stringify(b.auth.password.costCeiling()));
+  check("and reading it twice still reports it",
+    b.auth.password.costCeiling().timeCost === 12);
+  check("costCeiling(null) restores the default",
+    b.auth.password.costCeiling(null).timeCost === 24);
+
+  // A ceiling under what `hash` writes by default would leave the module
+  // refusing every credential it produces, so it is refused rather than set.
+  // The same call used to succeed and leave `hash` raising on its own defaults.
+  [["memoryCost", 1024], ["timeCost", 2], ["parallelism", 1]].forEach(function (row) {
+    var opts = {};
+    opts[row[0]] = row[1];
+    var refused = null;
+    try { b.auth.password.costCeiling(opts); } catch (e) { refused = e; }
+    check("costCeiling refuses a " + row[0] + " below the hash default",
+      refused !== null && refused.code === "auth-password/bad-ceiling",
+      "code=" + (refused && refused.code));
+  });
+  check("and the ceiling is unchanged by a refused call",
+    b.auth.password.costCeiling().timeCost === 24,
+    JSON.stringify(b.auth.password.costCeiling()));
+
+  // Typed, so a caller can branch on it. These used to arrive as a bare Error
+  // naming `argon2.costCeiling`, a module the caller never invoked.
+  [{ memory: 1 }, [], [{ memoryCost: 1024 }], { memoryCost: 2.5 },
+   { memoryCost: "600000" }].forEach(function (bad, i) {
+    var refused = null;
+    try { b.auth.password.costCeiling(bad); } catch (e) { refused = e; }
+    check("costCeiling refuses a malformed ceiling [" + i + "] with its own code",
+      refused !== null && refused.code === "auth-password/bad-ceiling",
+      "code=" + (refused && refused.code));
+  });
+
+  // A history entry hashed above the ceiling cannot be verified without
+  // spending the work the ceiling exists to refuse, and `verify` answers
+  // `false` for it. On a login that is a failed sign-in. In the reuse check,
+  // `false` reads as "not one of the old passwords", so the exact historical
+  // password was approved for reuse: a fail-open in the control that exists to
+  // refuse it. The check must not answer at all.
+  b.auth.password.costCeiling({ parallelism: 24 });
+  var raisedHash = await b.auth.password.hash("pw-history-123456",
+    { memoryCost: b.constants.BYTES.kib(1), timeCost: 2, parallelism: 17 });
+  b.auth.password.costCeiling(null);
+  check("a hash made above the restored ceiling is over it",
+    require("../../lib/argon2-builtin").exceedsCostCeiling(raisedHash) === true);
+  check("and verify answers false for it rather than spending the work",
+    (await b.auth.password.verify(raisedHash, "pw-history-123456")) === false);
+  var overCeiling = null;
+  var reusePolicy = b.auth.password.policy({
+    historyMinDistance: 1, useBundledCommon: false,
+  });
+  try { await reusePolicy.reuseProhibited("pw-history-123456", [raisedHash]); }
+  catch (e) { overCeiling = e; }
+  check("the reuse check refuses to answer rather than approving the old password",
+    overCeiling !== null && overCeiling.code === "auth-password/history-over-ceiling",
+    "code=" + (overCeiling && overCeiling.code) +
+    " returned=" + JSON.stringify(overCeiling === null));
+
+  // A whole number is what Argon2 takes, and the lower bounds alone let a
+  // fractional value through to node's own RangeError on the request path.
+  var fractional = null;
+  try { await b.auth.password.hash("pw-123456", { timeCost: 3.5 }); }
+  catch (e) { fractional = e; }
+  check("hash refuses a fractional timeCost as its own bad-params",
+    fractional !== null && fractional.code === "auth-password/bad-params",
+    "code=" + (fractional && fractional.code));
+  var fractionalRehash = null;
+  try { b.auth.password.needsRehash("$argon2id$v=19$m=65536,t=3,p=4$eHg$eXk", { parallelism: 4.5 }); }
+  catch (e) { fractionalRehash = e; }
+  check("and needsRehash does too",
+    fractionalRehash !== null && fractionalRehash.code === "auth-password/bad-params",
+    "code=" + (fractionalRehash && fractionalRehash.code));
+
+  // A typo'd gate option is this primitive's refusal, not a bare Error from a
+  // module the caller never named. The second argument used to be ignored.
+  var badGateOpt = null;
+  try { b.auth.password.gate(4, { maxQueuedTasks: 64 }); }
+  catch (e) { badGateOpt = e; }
+  check("gate refuses an unknown option with auth-password/bad-gate",
+    badGateOpt !== null && badGateOpt.code === "auth-password/bad-gate",
+    "code=" + (badGateOpt && badGateOpt.code));
+  var badGateShape = null;
+  try { b.auth.password.gate(4, 64); }
+  catch (e) { badGateShape = e; }
+  check("and a non-object opts the same way",
+    badGateShape !== null && badGateShape.code === "auth-password/bad-gate",
+    "code=" + (badGateShape && badGateShape.code));
+  b.auth.password.gate(8, { maxQueued: Infinity, waitTimeoutMs: 0 });
+
+  // The tag length is the fourth cost input a stored row decides, so an absurd
+  // one reads as a row this cannot decode rather than being asked of Argon2.
+  var hugeTag = "$argon2id$v=19$m=65536,t=3,p=4$" +
+    Buffer.from("0123456789abcdef").toString("base64url") + "$" +
+    Buffer.alloc(4096, 7).toString("base64url");
+  check("a stored row carrying an absurd tag length answers false",
+    (await b.auth.password.verify(hugeTag, "pw-123456")) === false);
+  check("and needsRehash reports it for re-derivation",
+    b.auth.password.needsRehash(hugeTag) === true);
+
+  var huge = "$argon2id$v=19$m=4194304,t=1,p=1$" +
+    Buffer.from("0123456789abcdef").toString("base64url") + "$" +
+    Buffer.from("0123456789abcdef0123456789abcdef").toString("base64url");
+  var started = Date.now();
+  var ok = await b.auth.password.verify(huge, "pw-123456");
+  var elapsedMs = Date.now() - started;
+  check("verify: a stored cost over the ceiling answers false", ok === false);
+  check("verify: and does so without running Argon2id at that cost",
+    elapsedMs < 1000, "elapsedMs=" + elapsedMs);
+  check("needsRehash flags the same hash so an operator can re-derive it",
+    b.auth.password.needsRehash(huge) === true);
+
+  // `huge` is also cheaper in passes than the default, so it would be flagged
+  // either way. This one is over the ceiling and at the defaults everywhere
+  // else, so only the ceiling can flag it. Without that check, verify refuses
+  // the row forever and needsRehash calls it current, which leaves no path to
+  // replacing it.
+  var overCeilingOnly = "$argon2id$v=19$m=4194304,t=3,p=4$" +
+    Buffer.from("0123456789abcdef").toString("base64url") + "$" +
+    Buffer.from("0123456789abcdef0123456789abcdef").toString("base64url");
+  check("needsRehash: a hash over the ceiling and current in every other " +
+    "parameter is still flagged",
+    b.auth.password.needsRehash(overCeilingOnly) === true);
+  check("verify: and that hash answers false",
+    (await b.auth.password.verify(overCeilingOnly, "pw-123456")) === false);
+
+  // The control: the same parameters with the memory brought back under the
+  // ceiling are reported current, so the assertion above reads the ceiling
+  // rather than one of the three below-target comparisons.
+  var atCeiling = "$argon2id$v=19$m=524288,t=3,p=4$" +
+    Buffer.from("0123456789abcdef").toString("base64url") + "$" +
+    Buffer.from("0123456789abcdef0123456789abcdef").toString("base64url");
+  check("needsRehash: the same hash at the ceiling is reported current",
+    b.auth.password.needsRehash(atCeiling) === false);
+
+  // A non-positive cost is not a cost. These decoded before and reached
+  // nodeCrypto.argon2 with m=-1 / t=0 / p=0.
+  check("verify: negative memoryCost answers false",
+    (await b.auth.password.verify("$argon2id$v=19$m=-1,t=1,p=1$eHg$eXk", "pw-123456")) === false);
+  check("verify: zero timeCost answers false",
+    (await b.auth.password.verify("$argon2id$v=19$m=1024,t=0,p=1$eHg$eXk", "pw-123456")) === false);
+  check("verify: zero parallelism answers false",
+    (await b.auth.password.verify("$argon2id$v=19$m=1024,t=1,p=0$eHg$eXk", "pw-123456")) === false);
+
+  // Writing a PHC string over the ceiling would store a credential this same
+  // process refuses to verify, so hash refuses the parameters instead.
+  var hashRefused = null;
+  try {
+    await b.auth.password.hash("pw-123456",
+      { memoryCost: b.constants.BYTES.kib(1024), timeCost: 3, parallelism: 4 });
+  } catch (e) { hashRefused = e; }
+  check("hash: parameters over the ceiling are refused",
+    hashRefused !== null && hashRefused.code === "argon2/cost-over-ceiling",
+    "code=" + (hashRefused && hashRefused.code));
+
+  // A raw derivation is a KDF, not a stored credential: nothing later reads a
+  // cost out of it, so the ceiling does not apply.
+  var rawArgon2 = require("../../lib/argon2-builtin");
+  var rawOverCeiling = await rawArgon2.hash("pw-123456", {
+    memoryCost: 1024, timeCost: 25, parallelism: 1, raw: true,
+  });
+  check("hash: a raw derivation over the ceiling still runs",
+    Buffer.isBuffer(rawOverCeiling) && rawOverCeiling.length === 32,
+    "len=" + (rawOverCeiling && rawOverCeiling.length));
+
+  // A legitimately expensive deployment can raise the ceiling.
+  var raised = b.auth.password.costCeiling({ memoryCost: b.constants.BYTES.mib(8) });
+  check("costCeiling reports what it set",
+    raised && raised.memoryCost === b.constants.BYTES.mib(8));
+  // Over the default ceiling of 512 MiB, under the 8 GiB one just set, so a
+  // pass here reads the raise rather than the default.
+  var within = await b.auth.password.hash("pw-123456",
+    { memoryCost: b.constants.BYTES.kib(600), timeCost: 1, parallelism: 1 });
+  check("a hash inside the raised ceiling still verifies",
+    (await b.auth.password.verify(within, "pw-123456")) === true);
+  b.auth.password.costCeiling(null);
+}
+
 async function testVerifyDefensiveReturnsFalse() {
   // verify() never throws on garbage — login flows treat false as
   // "credentials didn't match" and shouldn't wrap each call in try/catch.
@@ -512,6 +923,8 @@ async function run() {
   await testHashRejectsBadPlain();
   await testHashRejectsBadParams();
   await testVerifyDefensiveReturnsFalse();
+  await testVerifyBoundsTheStoredCost();
+  await testGateBoundsEveryArgon2Run();
   await testNeedsRehash();
   await testGate();
   await testConcurrencySemaphoreQueue();

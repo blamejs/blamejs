@@ -159,10 +159,89 @@ function testDefineMessageFirstClassKeepsBothOrdersStraight() {
         new Made("m").permanent === undefined, String(new Made("m").permanent));
 }
 
+// `transientCodes` names the codes of a class that a retry can clear. Four
+// classes each wrote the same `!hasOwnProperty(TABLE, code)` classifier, and a
+// class whose failures are a mix of capacity and configuration got
+// `alwaysPermanent`, which tells a retry layer and a circuit breaker to ignore
+// an overload they exist to handle.
+function testTransientCodesClassifiesByCode() {
+  var Made = frameworkError.defineClass("ProbeTransientError", {
+    transientCodes: ["probe/busy", "probe/timeout"],
+  });
+  check("a listed code is transient", new Made("probe/busy", "m").permanent === false);
+  check("a second listed code is transient",
+        new Made("probe/timeout", "m").permanent === false);
+  check("an unlisted code is permanent",
+        new Made("probe/bad-input", "m").permanent === true);
+  check("a code matching an Object.prototype member is not treated as listed",
+        new Made("constructor", "m").permanent === true &&
+        new Made("toString", "m").permanent === true);
+  check("the third argument is still the status code",
+        new Made("probe/busy", "m", 503).statusCode === 503);
+
+  var refused = [];
+  [{ transientCodes: [] },
+   { transientCodes: "probe/busy" },
+   { transientCodes: ["probe/busy", ""] },
+   { transientCodes: ["probe/busy", 7] },
+   { transientCodes: ["probe/busy"], permanentClassifier: function () { return true; } },
+   { transientCodes: ["probe/busy"], alwaysPermanent: true },
+   { transientCodes: ["probe/busy"], withCause: true },
+   { transientCodes: ["probe/busy"], withStatusCode: true },
+  ].forEach(function (opts, i) {
+    var threw = null;
+    try { frameworkError.defineClass("ProbeTransientRefused" + i, opts); }
+    catch (e) { threw = e; }
+    refused.push(threw !== null);
+  });
+  check("every malformed or combined transientCodes is refused at the mint",
+        refused.every(Boolean), JSON.stringify(refused));
+
+  // The classes that moved onto it classify the same way they did before.
+  var DnsError        = require("../../lib/network-dns").DnsError;
+  var NetworkTlsError = require("../../lib/network-tls").NetworkTlsError;
+  var LocalHttpError  = require("../../lib/local-http").LocalHttpError;
+  var Argon2Error     = frameworkError.Argon2Error;
+  check("DnsError keeps its transient set",
+        new DnsError("dns/lookup-timeout", "m").permanent === false &&
+        new DnsError("dns/ddr-not-discovered", "m").permanent === false &&
+        new DnsError("dns/bad-name", "m").permanent === true);
+  check("NetworkTlsError keeps its transient set",
+        new NetworkTlsError("tls/ech-timeout", "m").permanent === false &&
+        new NetworkTlsError("tls/ech-dns-unavailable", "m").permanent === false &&
+        new NetworkTlsError("tls/bad-opt", "m").permanent === true);
+  check("LocalHttpError keeps its transient set",
+        new LocalHttpError("local-http/timeout", "m").permanent === false &&
+        new LocalHttpError("local-http/response-error", "m").permanent === false &&
+        new LocalHttpError("local-http/bad-url", "m").permanent === true);
+  // A class that NAMES its transient codes has said a retry can clear them, so
+  // `b.retry.isRetryable` has to agree. Reading `permanent === false` instead
+  // would catch every error from a call site that passed no third argument.
+  var retry = require("../../lib/retry");
+  check("a listed code says so on the instance and is retryable",
+        new Made("probe/busy", "m").transient === true &&
+        retry.isRetryable(new Made("probe/busy", "m")) === true);
+  check("an unlisted code does not, and is not",
+        new Made("probe/bad-input", "m").transient === undefined &&
+        retry.isRetryable(new Made("probe/bad-input", "m")) === false);
+  var Plain = frameworkError.defineClass("ProbePlainError");
+  check("a class that names none is unaffected by the flag",
+        new Plain("probe/x", "m", false).transient === undefined &&
+        retry.isRetryable(new Plain("probe/x", "m", false)) === false,
+        "permanent=" + new Plain("probe/x", "m", false).permanent);
+
+  check("Argon2Error separates a full gate from a bad configuration",
+        new Argon2Error("argon2/busy", "m").permanent === false &&
+        new Argon2Error("argon2/queue-timeout", "m").permanent === false &&
+        new Argon2Error("argon2/bad-gate", "m").permanent === true &&
+        new Argon2Error("argon2/cost-over-ceiling", "m").permanent === true);
+}
+
 function run() {
   testTheBaseFactoryTakesCodeFirst();
   testDefineMessageFirstClassKeepsBothOrdersStraight();
   testEveryErrorClassBuiltByAValidatorCarriesItsCode();
+  testTransientCodesClassifiesByCode();
 }
 
 module.exports = { run: run };

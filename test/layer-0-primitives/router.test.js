@@ -490,6 +490,147 @@ function _get(port, path, headers, method) {
   });
 }
 
+// A route that throws a typed 4xx refusal used to write an error-level line
+// with five stack frames, so a burst of failed sign-ins wrote one per request.
+async function testRouteErrorLogLevel() {
+  var r = b.router.create();
+  r.get("/unauthenticated", function () {
+    var e = new Error("no session cookie");
+    e.statusCode = 401;
+    e.code = "app/unauthenticated";
+    throw e;
+  });
+  r.get("/unprocessable", function () {
+    var e = new Error("body failed validation");
+    e.status = 422;
+    throw e;
+  });
+  r.get("/upstream", function () {
+    var e = new Error("payment gateway timed out");
+    e.statusCode = 502;
+    throw e;
+  });
+  r.get("/untyped", function () { throw new Error("cannot read property of undefined"); });
+  r.onError(function (err, req, res) { res.writeHead(500); res.end("handled"); });
+
+  var server = r.listen(0);
+  await _listening(server);
+  var port = server.address().port;
+
+  var stderrLines = [];
+  var stdoutLines = [];
+  var realError = console.error;
+  var realLog = console.log;
+  var realLevel = process.env.BLAMEJS_BOOT_LOG_LEVEL;
+  process.env.BLAMEJS_BOOT_LOG_LEVEL = "debug";
+  console.error = function (m) { stderrLines.push(String(m)); };
+  console.log = function (m) { stdoutLines.push(String(m)); };
+  try {
+    await _get(port, "/unauthenticated");
+    await _get(port, "/unprocessable");
+    await _get(port, "/upstream");
+    await _get(port, "/untyped");
+  } finally {
+    console.error = realError;
+    console.log = realLog;
+    if (realLevel === undefined) delete process.env.BLAMEJS_BOOT_LOG_LEVEL;
+    else process.env.BLAMEJS_BOOT_LOG_LEVEL = realLevel;
+    await _close(server);
+  }
+
+  var errored = stderrLines.filter(function (l) { return l.indexOf("route error:") !== -1; });
+  var refused = stdoutLines.filter(function (l) { return l.indexOf("route refused:") !== -1; });
+
+  check("a 4xx refusal writes no error-level line",
+    errored.filter(function (l) {
+      return l.indexOf("/unauthenticated") !== -1 || l.indexOf("/unprocessable") !== -1;
+    }).length === 0, errored.join(" ~~ "));
+  check("a 4xx refusal is still recorded, at debug level",
+    refused.filter(function (l) { return l.indexOf("/unauthenticated") !== -1; }).length === 1 &&
+    refused.filter(function (l) { return l.indexOf("/unprocessable") !== -1; }).length === 1,
+    refused.join(" ~~ "));
+  check("the refusal line carries the error code the handler set",
+    refused.some(function (l) { return l.indexOf("app/unauthenticated") !== -1; }),
+    refused.join(" ~~ "));
+  check("the refusal line carries no stack frames",
+    refused.every(function (l) { return l.indexOf(" | ") === -1; }),
+    refused.join(" ~~ "));
+
+  // The control: a 5xx and an error carrying no status at all still reach
+  // error level with their frames, so the assertions above read the status
+  // rather than a logger that stopped writing.
+  check("a 5xx still writes an error-level line",
+    errored.filter(function (l) { return l.indexOf("/upstream") !== -1; }).length === 1,
+    errored.join(" ~~ "));
+  check("an error carrying no status still writes an error-level line",
+    errored.filter(function (l) { return l.indexOf("/untyped") !== -1; }).length === 1,
+    errored.join(" ~~ "));
+  check("the error-level line still carries stack frames",
+    errored.every(function (l) { return l.indexOf(" | ") !== -1; }),
+    errored.join(" ~~ "));
+}
+
+// The route-error logger runs first in the unguarded catch, ahead of the error
+// handler and the last-resort 500. Reading the status and the code widened what
+// it touches on a thrown value from {message, stack} to five properties, so a
+// value whose accessor throws, or whose code will not coerce, threw out of the
+// logger: the handler never ran, the response was never ended, and the request
+// hung for the life of the process while the original error surfaced as an
+// unhandled rejection. Logging is a drop-silent concern; it cannot cost a reply.
+async function testRouteErrorLoggingCannotCostTheResponse() {
+  var r = b.router.create();
+  r.get("/status-getter-throws", function () {
+    var e = new Error("upstream refused");
+    Object.defineProperty(e, "statusCode", {
+      get: function () { throw new Error("not computed yet"); },
+    });
+    throw e;
+  });
+  r.get("/code-will-not-coerce", function () {
+    var e = new Error("validation refused");
+    e.statusCode = 422;
+    e.code = Symbol("not-a-string");
+    throw e;
+  });
+  r.get("/message-getter-throws", function () {
+    var e = new Error("x");
+    Object.defineProperty(e, "message", {
+      get: function () { throw new Error("message is hostile too"); },
+    });
+    throw e;
+  });
+  r.onError(function (err, req, res) { res.writeHead(500); res.end("handled"); });
+
+  var unhandled = [];
+  function onUnhandled(e) { unhandled.push(e); }
+  process.on("unhandledRejection", onUnhandled);
+
+  var server = r.listen(0);
+  await _listening(server);
+  var port = server.address().port;
+  try {
+    var a = await _get(port, "/status-getter-throws");
+    check("a thrown value whose statusCode accessor throws still gets a reply",
+      a.status === 500 && a.body === "handled", "status=" + a.status);
+
+    var c = await _get(port, "/code-will-not-coerce");
+    check("and one whose code will not coerce to a string does too",
+      c.status === 500 && c.body === "handled", "status=" + c.status);
+
+    var m = await _get(port, "/message-getter-throws");
+    check("and one whose message accessor throws does too",
+      m.status === 500 && m.body === "handled", "status=" + m.status);
+
+    await helpers.passiveObserve(60, "router: no unhandled rejection from the logger");
+    check("none of them leaves an unhandled rejection behind",
+      unhandled.length === 0,
+      unhandled.map(function (e) { return String(e && e.message); }).join(" ~~ "));
+  } finally {
+    process.removeListener("unhandledRejection", onUnhandled);
+    await _close(server);
+  }
+}
+
 async function testListenResponseHelpers() {
   var r = b.router.create({ allowedRedirectOrigins: ["https://idp.example.com"] });
   r.get("/json",    function (req, res) { res.json({ hello: "world" }); });
@@ -1302,6 +1443,8 @@ async function run() {
   await testTlsSniCallbackThrows();
   await testWsListenH1Upgrade();
   await testRedirectAndErrorBranches();
+  await testRouteErrorLogLevel();
+  await testRouteErrorLoggingCannotCostTheResponse();
 }
 
 module.exports = { run: run };

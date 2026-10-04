@@ -13153,6 +13153,48 @@ var KNOWN_ANTIPATTERNS = [
     reason: "Audit's own reads and writes of its own tables have to run inside `dbRoleContext.runAsAuditChainWrite`, because `b.externalDb` audits every query it issues: an unwrapped one queues a `system.externaldb.query` event that becomes the next chain row, which is the cascade this release exists to stop (one `b.audit.record` call produced 164 rows, and an idle chain grew from 80 rows to 5,105 across four seconds). The omission is easy to make one call at a time and was found twice on this branch: first the operation-level wraps in `lib/audit.js`, then `_writePurgeAnchor`'s `clusterStorage.fencedUpsert` and `_defaultApplyPurge`'s `db().purgeAuditChain` in `lib/audit-tools.js`, where the purge-anchor READ was wrapped and its two WRITES were not, so every purge still fed the chain. All 19 such calls across the two files are wrapped now; this detector is what keeps the twentieth from arriving bare. Matching on `await <call>(` rather than on the call alone is what distinguishes the two shapes: a wrapped site returns the call from inside the callback and never awaits it directly.",
   },
   {
+    id: "a-catch-around-a-gated-argon2-call-swallows-the-capacity-refusal",
+    primitive: "b.auth.password.gate",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // Anchored on the call that can raise the refusal and the catch that
+    // directly follows its try, so a catch further down the same function is
+    // out of scope. The tempered token stops at `isGateRefusal`, which is how
+    // a handled site reads, and at a function-closing brace at column 0.
+    regex: /(?:(?:vaultWrap|argon2(?:Builtin)?)(?:\(\))?\.(?:wrap|unwrap|hash|verify|deriveWrappingKey)|(?:backupCrypto|bCrypto)(?:\(\))?\.(?:deriveKey|encryptWithPassphrase|decryptWithPassphrase|encryptWithFreshSalt))\s*\((?:(?!\n\})[\s\S]){0,240}?\)\s*;?\s*\}?\s*catch\s*\(\s*(?!_)[A-Za-z$][\w$]*\s*\)\s*\{(?:(?!isGateRefusal)(?!vault-wrap\/passphrase-rejected)(?!backup-crypto\/decrypt-failed)(?!\n\})[\s\S]){0,240}?\bthrow\s+(?:new\s+[A-Za-z_$][\w$]*Error|_err\s*\()/,
+    allowlist: [],
+    fixtures: {
+      fires: [
+        "    plaintext = await vaultWrap.unwrap(sealed, pwBuf);\n  } catch (e) {\n    throw new KeychainError(\"keychain/file-unseal-failed\",\n      \"rejected\");",
+        "    try { plaintextBuf = await vaultWrap.unwrap(sealedBytes, passphrase); }\n    catch (e) {\n      throw _err(\"audit-sign/passphrase-rejected\", \"rejected\");",
+        // The derivation is reached through backup/crypto's passphrase surface
+        // too, which the first version of this pattern did not name: it listed
+        // the calls it had seen rather than every export that derives.
+        "      vkBuf = await backupCrypto.decryptWithPassphrase(vaultKeyEnc, passphrase, salt);\n  } catch (e) {\n    throw new RestoreBundleError(\"restore-bundle/vault-key-recovery-failed\",\n      \"could not recover\");",
+      ],
+      quiet: [
+        "    plaintext = await vaultWrap.unwrap(sealed, pwBuf);\n  } catch (e) {\n    if (argon2.isGateRefusal(e)) throw e;\n    throw new KeychainError(\"keychain/file-unseal-failed\",\n      \"rejected\");",
+        "    try { plaintextBuf = await vaultWrap.unwrap(sealedBytes, passphrase); }\n    catch (e) {\n      if (argon2.isGateRefusal(e)) throw e;\n      throw _err(\"audit-sign/passphrase-rejected\", \"rejected\");",
+        // Translating one named code and re-raising everything else already
+        // lets the refusal through, which is how the per-blob decrypt reads.
+        "          plaintext = await backupCrypto.decryptWithPassphrase(blob, passphrase, entry.salt);\n      } catch (e) {\n        if (e && e.code === \"backup-crypto/decrypt-failed\") {\n          throw new RestoreBundleError(\"restore-bundle/decrypt-failed\", \"rejected\");\n        }\n        throw e;\n      }",
+        // A capacity refusal cannot arise from a symmetric open, so a catch
+        // around one translates freely.
+        "    plaintext = bCrypto().decryptPacked(packedBody, oldKey, aad);\n  } catch (e) {\n    throw new ArchiveWrapError(\"archive-wrap/decrypt-failed\", \"did not open\");",
+        // Returning false rather than translating keeps the refusal's own
+        // classification, so there is nothing to mislabel.
+        "  try { return await argon2.verify(stored, plaintext); }\n  catch (e) {\n    return false;\n  }",
+        // Requiring the one failure the check is looking for is stronger than
+        // letting the refusal through, since it propagates every other error too.
+        // Written with the cleanup catch the real site carries, because an
+        // ignored-binding catch between the call and the translating one is what
+        // the first version of this pattern matched by mistake.
+        "  try {\n    await vaultWrap.unwrap(verifyBytes, opts.oldPassphrase);\n    try { nodeFs.unlinkSync(p.sealedTmp); } catch (_e) { /* cleanup */ }\n    throw new VaultPassphraseError(\"vault-passphrase/rotate-noop\",\n      \"old passphrase still unwraps\");\n  } catch (e) {\n    if (e && e.code === \"vault-passphrase/rotate-noop\") throw e;\n    if (!e || e.code !== \"vault-wrap/passphrase-rejected\") {\n      try { nodeFs.unlinkSync(p.sealedTmp); } catch (_e) { /* cleanup */ }\n      throw e;\n    }\n  }",
+      ],
+    },
+    reason: "`b.auth.password.gate` bounds how many Argon2id derivations run at once, and it refuses with `argon2/busy` or `argon2/queue-timeout` when saturated. Those refusals are transient: `b.retry.isRetryable` returns true for them, because waiting is the right answer. Moving the gate into the one derivation entry point made every caller able to receive them, and a caller's catch-all then reported temporary saturation as something permanent: `b.archive.unwrapWithPassphrase` answered `archive-wrap/decrypt-failed` for a valid archive, `b.keychain` answered \"file passphrase rejected or file corrupted\" for an intact file, and `b.auditSign` and the vault passphrase operations said the passphrase was rejected. An operator reading that goes looking for a corrupted file or a wrong passphrase instead of retrying. Every such catch consults `argon2.isGateRefusal` first, which is one predicate rather than a code list each site repeats: two sites in `lib/auth/password.js` had spelled the two codes inline, and a third refusal code would have left them silently swallowing it. A catch around a symmetric open cannot see a capacity refusal and is out of scope, and so is one that returns a value rather than translating.",
+  },
+  {
     id: "a-framework-errors-code-is-reassigned-after-it-is-built",
     primitive: "b.frameworkError.defineClass",
     scanScope: "lib",
