@@ -207,6 +207,106 @@ async function testChainWriteDoesNotAuditItself() {
   }
 }
 
+// A redirect store is operator code, and the suppression scope wraps the call to
+// it. A store that lazily arms a keepalive, a listener or a retry timer on its
+// first write captured that scope, so every audit event it emitted afterwards was
+// dropped for the life of the process, with no error and no row.
+async function testARedirectStoreKeepaliveStillAudits() {
+  var tmpDir = _tmp();
+  b.cluster._resetForTest();
+  await setupTestDb(tmpDir);
+  var armed = null;
+  try {
+    var recorded = [];
+    var resolveFired = null;
+    var fired = new Promise(function (resolve) { resolveFired = resolve; });
+    b.audit.useStore({
+      replaceChain: true,
+      record: function (row) {
+        recorded.push(row.action);
+        if (armed === null) {
+          armed = setTimeout(function () {
+            b.audit.safeEmit({ action: "consent.revoked", outcome: "success" });
+            resolveFired();
+          }, 10);
+        }
+        return Promise.resolve();
+      },
+    });
+
+    await b.audit.record({ action: "consent.granted", outcome: "success" });
+    await b.audit.flush();
+    check("the redirect store received the event that armed its keepalive",
+          recorded.indexOf("consent.granted") !== -1, JSON.stringify(recorded));
+
+    await fired;
+    await b.audit.flush();
+    // `record` runs inside the suppression, because a store that persists
+    // through b.externalDb would otherwise feed itself: each write emits
+    // system.externaldb.query, which is handed back to the store, which writes
+    // again. So a timer the store arms in there inherits the suppression, and
+    // its events are dropped. That is the trap, and the next block is the way
+    // out of it.
+    check("a timer armed inside record inherits the suppression",
+          recorded.indexOf("consent.revoked") === -1, JSON.stringify(recorded));
+  } finally {
+    if (armed !== null) clearTimeout(armed);
+    b.audit.useStore(null);
+    b.cluster._resetForTest();
+    await teardownTestDb(tmpDir);
+  }
+}
+
+// The way out: arm the long-lived resource through
+// b.audit.outsideSelfEmitSuppression, so what it emits later is recorded while
+// the store's own persistence stays suppressed.
+async function testAStoreCanArmAKeepaliveThatStillAudits() {
+  var tmpDir = _tmp();
+  b.cluster._resetForTest();
+  await setupTestDb(tmpDir);
+  var armed = null;
+  try {
+    var recorded = [];
+    var resolveFired = null;
+    var fired = new Promise(function (resolve) { resolveFired = resolve; });
+    b.audit.useStore({
+      replaceChain: true,
+      record: function (row) {
+        recorded.push(row.action);
+        if (armed === null) {
+          armed = b.audit.outsideSelfEmitSuppression(function () {
+            return setTimeout(function () {
+              b.audit.safeEmit({ action: "consent.revoked", outcome: "success" });
+              resolveFired();
+            }, 10);
+          });
+        }
+        return Promise.resolve();
+      },
+    });
+
+    await b.audit.record({ action: "consent.granted", outcome: "success" });
+    await b.audit.flush();
+    await fired;
+    await b.audit.flush();
+    check("a keepalive armed through the escape hatch still audits",
+          recorded.indexOf("consent.revoked") !== -1, JSON.stringify(recorded));
+
+    var refused = null;
+    try { b.audit.outsideSelfEmitSuppression("not-a-function"); }
+    catch (e) { refused = e; }
+    check("and the hatch refuses anything that is not a function, naming itself",
+          refused !== null && refused instanceof TypeError &&
+          /b\.audit\.outsideSelfEmitSuppression/.test(refused.message),
+          refused && refused.message);
+  } finally {
+    if (armed !== null) clearTimeout(armed);
+    b.audit.useStore(null);
+    b.cluster._resetForTest();
+    await teardownTestDb(tmpDir);
+  }
+}
+
 // ---- The write-path suppression is scoped, not a module-global flag ----
 
 // Deterministic by microtask ordering. The outside function runs its synchronous
@@ -262,6 +362,54 @@ async function testSuppressionIsScopedToItsOwnCallTree() {
   check("a timer registered outside the scope never inherits it, however long it runs",
         tickFlags.length >= 3 && tickFlags.every(function (f) { return f === false; }),
         JSON.stringify(tickFlags.slice(0, 6)));
+
+  // The scope deliberately OUTLIVES the call tree it opens, and the
+  // `testClusterAuditFlushNoRecursionHang` regression in test/30-chain.js is
+  // why: the chain write's own `externalDb.query` emits back into the handler
+  // buffer, so if those emissions stop being suppressed the drain loop refills
+  // as fast as it empties and `audit.flush()` spins. Ending the scope when the
+  // call settles reproduces that hang deterministically.
+  //
+  // So a resource built inside the scope DOES inherit it, and that is why
+  // anything FOREIGN the scope invokes is called through
+  // `outsideAuditChainWrite`: `Pool.connect`, and the operator's own
+  // `record` on an external store. Those two are the places a long-lived
+  // resource gets built, and the wrapper is what keeps the inheritance from
+  // reaching them.
+  var inheritedFlags = [];
+  var inheritedTimer = null;
+  await ctx.runAsAuditChainWrite(async function () {
+    await null;
+    inheritedTimer = setInterval(function () {
+      inheritedFlags.push(ctx.isAuditChainWrite());
+    }, 5);
+  });
+  await helpers.waitUntil(function () { return inheritedFlags.length >= 3; },
+    { timeoutMs: 2000, label: "scope capture: unwrapped timer ticks" });
+  clearInterval(inheritedTimer);
+  check("a resource built inside the scope inherits it, which the framework's " +
+        "own storage work depends on",
+        inheritedFlags.length >= 3 && inheritedFlags.every(function (f) { return f === true; }),
+        JSON.stringify(inheritedFlags.slice(0, 6)));
+
+  // And the wrapper is what a foreign callable gets, so what IT builds is
+  // outside the scope for the rest of its life.
+  var foreignFlags = [];
+  var foreignTimer = null;
+  await ctx.runAsAuditChainWrite(async function () {
+    await ctx.outsideAuditChainWrite(async function () {
+      await null;
+      foreignTimer = setInterval(function () {
+        foreignFlags.push(ctx.isAuditChainWrite());
+      }, 5);
+    });
+  });
+  await helpers.waitUntil(function () { return foreignFlags.length >= 3; },
+    { timeoutMs: 2000, label: "scope capture: foreign-callable timer ticks" });
+  clearInterval(foreignTimer);
+  check("a resource a foreign callable builds does not, however long it runs",
+        foreignFlags.length >= 3 && foreignFlags.every(function (f) { return f === false; }),
+        JSON.stringify(foreignFlags.slice(0, 6)));
 }
 
 async function run() {
@@ -269,6 +417,8 @@ async function run() {
   await testSingleReadLogsExactlyOnce();
   await testAuditReadQueryDoesNotSelfLog();
   await testChainWriteDoesNotAuditItself();
+  await testARedirectStoreKeepaliveStillAudits();
+  await testAStoreCanArmAKeepaliveThatStillAudits();
   await testSuppressionIsScopedToItsOwnCallTree();
 }
 

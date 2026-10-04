@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.20.37",
-  "createdAt": "2026-10-04T01:46:51.479Z",
+  "createdAt": "2026-10-04T04:47:30.132Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -2470,6 +2470,10 @@
         "namespaced": {
           "type": "function",
           "arity": 2
+        },
+        "outsideSelfEmitSuppression": {
+          "type": "function",
+          "arity": 1
         },
         "query": {
           "type": "function",
