@@ -350,6 +350,31 @@ async function testVerifyBoundsTheStoredCost() {
       "code=" + (refused && refused.code));
   });
 
+  // A history entry hashed above the ceiling cannot be verified without
+  // spending the work the ceiling exists to refuse, and `verify` answers
+  // `false` for it. On a login that is a failed sign-in. In the reuse check,
+  // `false` reads as "not one of the old passwords", so the exact historical
+  // password was approved for reuse: a fail-open in the control that exists to
+  // refuse it. The check must not answer at all.
+  b.auth.password.costCeiling({ parallelism: 24 });
+  var raisedHash = await b.auth.password.hash("pw-history-123456",
+    { memoryCost: b.constants.BYTES.kib(1), timeCost: 2, parallelism: 17 });
+  b.auth.password.costCeiling(null);
+  check("a hash made above the restored ceiling is over it",
+    require("../../lib/argon2-builtin").exceedsCostCeiling(raisedHash) === true);
+  check("and verify answers false for it rather than spending the work",
+    (await b.auth.password.verify(raisedHash, "pw-history-123456")) === false);
+  var overCeiling = null;
+  var reusePolicy = b.auth.password.policy({
+    historyMinDistance: 1, useBundledCommon: false,
+  });
+  try { await reusePolicy.reuseProhibited("pw-history-123456", [raisedHash]); }
+  catch (e) { overCeiling = e; }
+  check("the reuse check refuses to answer rather than approving the old password",
+    overCeiling !== null && overCeiling.code === "auth-password/history-over-ceiling",
+    "code=" + (overCeiling && overCeiling.code) +
+    " returned=" + JSON.stringify(overCeiling === null));
+
   // A whole number is what Argon2 takes, and the lower bounds alone let a
   // fractional value through to node's own RangeError on the request path.
   var fractional = null;
