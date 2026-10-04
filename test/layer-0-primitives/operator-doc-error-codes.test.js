@@ -72,8 +72,14 @@ var CODE_RE = /^[a-z][a-z0-9]*(?:-[A-Za-z0-9]+)*(?:\/[a-z0-9]+(?:[-_][A-Za-z0-9]
 var NEW_ERROR_RE = /new\s+[A-Za-z_$][A-Za-z0-9_$]*Error\(\s*(?:"([^"\n]+)"|'([^'\n]+)')/g;
 var CLASS_THEN_CODE_RE = /[A-Za-z_$][A-Za-z0-9_$]*Error\s*,\s*(?:"([^"\n]+)"|'([^'\n]+)')/g;
 var FACTORY_CALL_RE = /\.factory\(\s*(?:"([^"\n]+)"|'([^'\n]+)')/g;
+// The underscore is here for the same reason as in CODE_RE and
+// CODE_IN_TEXT_RE: three patterns answer "what does a code look like", and one
+// that stops at the underscore makes the six `auth-ciba` wire-name codes
+// invisible to whichever stage reads through it. Here that stage is the
+// compared-code reader, so `err.code === "auth-ciba/expired_token"` did not
+// register as the body recognising that code at all.
 var ANY_OWN_NAMESPACE_LITERAL =
-  /(?:"|')([a-z0-9][A-Za-z0-9-]*(?:\/[A-Za-z0-9-]+){1,3})(?:"|')/g;
+  /(?:"|')([a-z0-9][A-Za-z0-9-]*(?:\/[A-Za-z0-9_-]+){1,3})(?:"|')/g;
 
 // A literal on the far side of an equality test, or behind `case`, is a code
 // being RECOGNIZED rather than built. `b.network.dns.discoverEncrypted` reads
@@ -430,13 +436,135 @@ function codesRaisedIn(text, ownNamespaces, raisingHelpers, deferring) {
 // skips. A primitive that reads one of these in a catch is handling it.
 function comparedCodesIn(text, ownNamespaces) {
   var out = {};
+  var masked = maskLiteralsAndComments(text);
+  var catches = _catchRanges(masked);
   var m;
   ANY_OWN_NAMESPACE_LITERAL.lastIndex = 0;
   while ((m = ANY_OWN_NAMESPACE_LITERAL.exec(text)) !== null) {
     if (!CODE_RE.test(m[1]) || !ownNamespaces[m[1].split("/")[0]]) continue;
-    if (COMPARED_NOT_BUILT.test(text.slice(0, m.index))) out[m[1]] = true;
+    if (!COMPARED_NOT_BUILT.test(text.slice(0, m.index))) continue;
+    // Comparing a code is only HANDLING it if the catch consumes it. A catch
+    // that reads the code, tidies up and then re-raises the error it caught
+    // leaves the caller receiving that code, so it stays part of the contract:
+    // `b.auth.ciba.client.pollToken` compares `auth-ciba/expired_token`,
+    // `access_denied`, `invalid_grant` and `transaction_failed` only to drop
+    // its interval state, then runs `throw err`, and the blanket rule removed
+    // all four from what the block had to name.
+    if (_rethrowsAt(masked, catches, m.index)) continue;
+    out[m[1]] = true;
   }
   return out;
+}
+
+// The codes a body compares inside a catch that then re-raises what it caught.
+// Those reach the caller THROUGH this primitive even though nothing here builds
+// them — they are raised by whatever this body called, recognised here, and
+// passed on — so they belong in the contract rather than merely being left out
+// of the handled set.
+function rethrownComparedCodesIn(text, ownNamespaces) {
+  var out = {};
+  var masked = maskLiteralsAndComments(text);
+  var catches = _catchRanges(masked);
+  var m;
+  ANY_OWN_NAMESPACE_LITERAL.lastIndex = 0;
+  while ((m = ANY_OWN_NAMESPACE_LITERAL.exec(text)) !== null) {
+    if (!CODE_RE.test(m[1]) || !ownNamespaces[m[1].split("/")[0]]) continue;
+    if (!COMPARED_NOT_BUILT.test(text.slice(0, m.index))) continue;
+    if (_rethrowsAt(masked, catches, m.index)) out[m[1]] = true;
+  }
+  return out;
+}
+
+// Every `catch (binding) { ... }` in the text, as { start, end, binding } over
+// the brace-matched body, so a position can be asked which catch encloses it.
+function _catchRanges(masked) {
+  var ranges = [];
+  var re = /catch\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\{/g;
+  var m;
+  while ((m = re.exec(masked)) !== null) {
+    var open = m.index + m[0].length - 1;
+    var body = bracedBodyAt(masked, open);
+    if (body === null) continue;
+    ranges.push({ start: open, end: open + 1 + body.length, binding: m[1] });
+  }
+  return ranges;
+}
+
+// Does the code compared at `at` reach the caller? `throw` of the binding
+// itself is what leaves it reaching them; a throw of something else has
+// translated it, and a catch that throws nothing has consumed it.
+//
+// The question is per-BRANCH, not per-catch. One catch routinely answers it
+// both ways: `lib/backup/index.js` returns on `objectstore/not-found` and
+// re-raises everything else, and reading the whole catch demanded a code its
+// caller can never receive. Eleven catches in lib/ are that shape, against the
+// four `auth-ciba` codes that fall through to the catch's own `throw err`.
+function _rethrowsAt(masked, catches, at) {
+  var innermost = null;
+  for (var i = 0; i < catches.length; i += 1) {
+    var c = catches[i];
+    if (at < c.start || at > c.end) continue;
+    if (innermost === null || c.start > innermost.start) innermost = c;
+  }
+  if (innermost === null) return false;
+  var rethrow = new RegExp("\\bthrow\\s+" + innermost.binding + "\\s*;");
+  if (!rethrow.test(masked.slice(innermost.start, innermost.end))) return false;
+  var branch = _branchConsequentAt(masked, at);
+  // A shape the branch scan cannot read keeps the catch-level answer, which
+  // demands the code. An over-demand is a visible failure an author can judge;
+  // dropping the code is the silent gap this rule exists to close.
+  if (branch === null) return true;
+  if (rethrow.test(branch)) return true;
+  if (/\breturn\b/.test(branch)) return false;
+  if (/\bthrow\b/.test(branch)) return false;
+  return true;
+}
+
+// The text that runs when the comparison at `at` is true: the consequent of the
+// nearest enclosing `if`, whose condition holds the compared literal. Returns
+// null when `at` is not in an `if` condition at all, which is a shape this scan
+// does not read.
+function _branchConsequentAt(masked, at) {
+  var i = at;
+  while (i >= 0) {
+    var open = _unmatchedParenBefore(masked, i);
+    if (open === null) return null;
+    if (/\bif\s*$/.test(masked.slice(Math.max(0, open - 40), open))) {
+      return _consequentAfterCondition(masked, open);
+    }
+    i = open - 1;
+  }
+  return null;
+}
+
+// The nearest `(` to the left of `at` that `at` sits inside. A brace first means
+// the statement opened without one, so `at` is not in a condition: scanning on
+// would reach the `(` of the enclosing `catch` or `function` and read its body
+// as a branch.
+function _unmatchedParenBefore(masked, at) {
+  var depth = 0;
+  for (var i = at; i >= 0; i -= 1) {
+    var c = masked[i];
+    if (c === ")") depth += 1;
+    else if (c === "(") { if (depth === 0) return i; depth -= 1; }
+    else if (c === "{" || c === "}" || c === ";") return null;
+  }
+  return null;
+}
+
+// The statement after the condition that opens at `open`: a braced block, or a
+// single statement up to its semicolon.
+function _consequentAfterCondition(masked, open) {
+  var depth = 0;
+  var i = open;
+  for (; i < masked.length; i += 1) {
+    if (masked[i] === "(") depth += 1;
+    else if (masked[i] === ")") { depth -= 1; if (depth === 0) { i += 1; break; } }
+  }
+  while (i < masked.length && /\s/.test(masked[i])) i += 1;
+  if (masked[i] === "{") return bracedBodyAt(masked, i);
+  var end = masked.indexOf(";", i);
+  return end === -1 ? null : masked.slice(i, end + 1);
 }
 
 // The namespace vocabulary. Construction sites anchored on the error class give
@@ -1153,6 +1281,11 @@ function collect() {
           });
         });
       });
+      // A code this body recognised in a catch and then re-raised reaches the
+      // caller through it, so it is demanded even though nothing here builds it.
+      Object.keys(rethrownComparedCodesIn(own, OWN_NAMESPACES[rel]))
+        .forEach(function (c) { thrown[c] = true; });
+
       entry.missing = Object.keys(thrown)
         .filter(isWholeCode)
         .filter(function (c) { return !documented[c]; })
@@ -1540,6 +1673,51 @@ function testTheGateCanFail() {
   var foreign = Object.keys(codesIn("throw other.factory(\"other/elsewhere\");", own));
   check("a code in another module's namespace is not counted as thrown here",
         foreign.length === 0, foreign.join(","));
+
+  // What a catch does with a code it compares, in the four shapes one catch
+  // mixes. Returning consumes the code and the caller never sees it; throwing
+  // another error translates it; `throw err` on the branch, and a branch that
+  // falls through to the catch's own `throw err`, both leave the caller holding
+  // it. All four read as handled before, which is how `pollToken` stopped
+  // having to name `auth-ciba/expired_token` and its three siblings. The
+  // underscore matters as much as the branch: the literal pattern stopped a
+  // code's suffix at `[A-Za-z0-9-]`, so the six `auth-ciba` codes carrying the
+  // RFC's own wire names never matched it in the first place.
+  var catchFixture = [
+    "async function poll(id) {",
+    "  try { return await _post(id); }",
+    "  catch (err) {",
+    "    if (err.code === \"fixture/not_found\") return null;",
+    "    if (err.code === \"fixture/unusable\") throw new FixtureError(\"fixture/translated\", \"x\");",
+    "    if (err.code === \"fixture/denied\") { _state.delete(id); throw err; }",
+    "    if (err && (err.code === \"fixture/pending\" || err.code === \"fixture/slow_down\")) {",
+    "      _state.delete(id);",
+    "    }",
+    "    throw err;",
+    "  }",
+    "}",
+  ].join("\n");
+  var consumed = Object.keys(comparedCodesIn(catchFixture, own)).sort();
+  var passedOn = Object.keys(rethrownComparedCodesIn(catchFixture, own)).sort();
+  check("a code the catch returns on, and one it translates, are handled",
+        consumed.join(",") === "fixture/not_found,fixture/unusable", consumed.join(","));
+  check("while one re-raised on its own branch, and one falling through to the " +
+        "catch's throw, stay part of the contract",
+        passedOn.join(",") === "fixture/denied,fixture/pending,fixture/slow_down",
+        passedOn.join(","));
+  ANY_OWN_NAMESPACE_LITERAL.lastIndex = 0;
+  var inCode = ANY_OWN_NAMESPACE_LITERAL.exec("(err.code === \"auth-ciba/expired_token\")");
+  ANY_OWN_NAMESPACE_LITERAL.lastIndex = 0;
+  CODE_IN_TEXT_RE.lastIndex = 0;
+  var inProse = CODE_IN_TEXT_RE.exec("raises auth-ciba/expired_token when it ends");
+  CODE_IN_TEXT_RE.lastIndex = 0;
+  check("a code carrying the wire name's underscore is read by all three " +
+        "patterns that describe a code",
+        CODE_RE.test("auth-ciba/expired_token") &&
+        inCode !== null && inCode[1] === "auth-ciba/expired_token" &&
+        inProse !== null && inProse[1] === "auth-ciba/expired_token",
+        (inCode === null ? "no literal match" : inCode[1]) + " / " +
+        (inProse === null ? "no prose match" : inProse[1]));
 }
 
 async function run() {
