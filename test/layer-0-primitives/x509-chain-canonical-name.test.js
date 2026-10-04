@@ -172,6 +172,24 @@ async function run() {
       String(x509Chain.canonicalNameKey(variant)));
   });
 
+  // The cost of that choice, pinned so it stays a decision. RFC 4518 asks for
+  // form KC, under which both spellings of one name unify, so a peer that
+  // writes the issuer one way in a SignerInfo and the other way in the
+  // certificate is refused here rather than matched. Form KC would unify them
+  // by mapping one character onto another, and bounding that to the characters
+  // the RFC allows needs the Unicode 3.2 repertoire; refusing is the answer
+  // that cannot accept a name the peer did not write.
+  var fullwidth = _name([[OID_CN, asn1.writeUtf8String("ＡCME CA")]]);
+  var ascii     = _name([[OID_CN, asn1.writeUtf8String("ACME CA")]]);
+  check("a fullwidth spelling and its ASCII spelling are two names here",
+    x509Chain.canonicalNameKey(fullwidth) !== x509Chain.canonicalNameKey(ascii),
+    String(x509Chain.canonicalNameKey(fullwidth)) + " vs " +
+    String(x509Chain.canonicalNameKey(ascii)));
+  check("and sameName agrees, so a mixed-spelling issuer is refused not matched",
+    x509Chain.sameName(fullwidth, ascii) === false);
+  check("while one spelling still matches itself",
+    x509Chain.sameName(fullwidth, _name([[OID_CN, asn1.writeUtf8String("ＡCME CA")]])) === true);
+
   // The legacy string types carry a restricted repertoire, and decoding bytes
   // outside it as Latin-1 fed preparation characters that were never in the
   // input: a PrintableString holding the bytes 41 00 42 decoded to A, NUL, B, and

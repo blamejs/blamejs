@@ -647,7 +647,7 @@ var SYNCHRONOUS_CALLBACK_METHODS = new RegExp(
 // one of those methods? Walks back over the parameter list and the `function`
 // keyword or arrow to reach the start of the function expression, then asks what
 // call it sits in.
-function isSynchronousCallback(masked, at) {
+function isSynchronousCallback(masked, at, fileMasked) {
   var i = skipBackWhitespace(masked, at - 1);
   if (i < 0) return false;
   if (masked[i] === ">" && masked[i - 1] === "=") {
@@ -672,9 +672,103 @@ function isSynchronousCallback(masked, at) {
     return false;
   }
   if (i < 0) return false;
-  var before = masked.slice(0, i + 1);
+  // A callback does not have to be a bare argument. `_readSyncCore` hands
+  // `fdSafeReadSync` an options object carrying `errorFor`, which that helper
+  // calls while it runs, so its `atomic-file/short-read` reaches the caller of
+  // `b.atomicFile.read`. Reading only a bare argument stripped that body and
+  // let the block omit the code while this gate still reported clean. So when
+  // the function is a property VALUE, step out of the object literal and ask
+  // the same question of the call the object itself was handed to.
+  var stepped = stepOutOfPropertyPosition(masked, i);
+  if (stepped.at < 0) return false;
+  var before = masked.slice(0, stepped.at + 1);
   if (DEFERRING_CALL.test(before)) return false;
-  return SYNCHRONOUS_CALLBACK_METHODS.test(before);
+  if (!SYNCHRONOUS_CALLBACK_METHODS.test(before)) return false;
+  // A bare argument runs during the call. A property VALUE only runs if the
+  // callee calls it, and a callee in this codebase that takes an object of
+  // functions is as often a builder storing them on the handle it returns:
+  // `_baseSchema({ run: ... })` keeps `run` for `parse` to call later, while
+  // `fdSafeReadSync(path, { errorFor: ... })` calls `errorFor` while it reads.
+  // So the question is asked of the callee's own body, and a callee this file
+  // does not declare is read as calling it, which is the fail-closed answer.
+  if (stepped.key !== null &&
+      !calleeInvokesKey(fileMasked || masked, before, stepped.key)) return false;
+  return true;
+}
+
+var PROPERTY_KEY_BEFORE = /(?:([A-Za-z_$][\w$]*)|"([^"]*)"|'([^']*)')\s*:\s*$/;
+
+// At `i` sits the last character before a function expression. If that is a
+// property key, walk out to the character before the object literal's `{`, so
+// the caller's call test reads the call the object was passed to. Answers the
+// outermost key it stepped past, or null when the function was not in property
+// position; `at` is -1 when the object literal is not closed in this text.
+function stepOutOfPropertyPosition(masked, i) {
+  var key = null;
+  var guard = 0;
+  for (;;) {
+    var m = PROPERTY_KEY_BEFORE.exec(masked.slice(0, i + 1));
+    if (!m || guard >= 8) break;
+    guard += 1;
+    key = m[1] !== undefined ? m[1] : (m[2] !== undefined ? m[2] : m[3]);
+    var depth = 0;
+    var j = i;
+    while (j >= 0) {
+      if (masked[j] === "}") depth += 1;
+      else if (masked[j] === "{") { if (depth === 0) break; depth -= 1; }
+      j -= 1;
+    }
+    if (j < 0) return { at: -1, key: key };
+    i = skipBackWhitespace(masked, j - 1);
+  }
+  return { at: i, key: key };
+}
+
+// `before` ends at the `(` of the call the object literal was handed to, with
+// any earlier arguments still in it. Read the callee's name and which parameter
+// receives the object.
+var CALLEE_AND_ARGS = /([A-Za-z_$][\w$]*)\s*\(([^()]*)$/;
+
+// Does the function named in `before` call `key` on the object it was passed?
+// Reads the callee's declaration in this same file: the parameter the object
+// arrives on, then that parameter's `.key(`, an alias of it that is called, or
+// a bare `key(` from a destructured parameter. A callee this file does not
+// declare answers true.
+function calleeInvokesKey(masked, before, key) {
+  var call = CALLEE_AND_ARGS.exec(before);
+  if (!call) return true;
+  var argIndex = call[2].split(",").length - 1;
+  var decl = new RegExp("\\bfunction\\s+" + escapeRegExp(call[1]) +
+    "\\s*\\(([^)]*)\\)\\s*\\{");
+  var found = decl.exec(masked);
+  if (!found) return true;
+  var body = bracedBodyAt(masked, found.index + found[0].length - 1);
+  if (body === null) return true;
+  var params = found[1].split(",").map(function (p) { return p.trim(); });
+  var param = params[argIndex] || "";
+  var k = escapeRegExp(key);
+  if (new RegExp("\\b" + k + "\\s*\\(").test(body)) return true;
+  if (!/^[A-Za-z_$][\w$]*$/.test(param)) return true;
+  var p = escapeRegExp(param);
+  if (new RegExp("\\b" + p + "\\s*(?:\\.\\s*" + k + "|\\[\\s*[\"']" + k + "[\"']\\s*\\])\\s*\\(")
+      .test(body)) return true;
+  var alias = new RegExp("(?:var|let|const)\\s+([A-Za-z_$][\\w$]*)\\s*=[^;]*\\b" + p +
+    "\\s*(?:\\.\\s*" + k + "|\\[\\s*[\"']" + k + "[\"']\\s*\\])").exec(body);
+  if (alias && new RegExp("\\b" + escapeRegExp(alias[1]) + "\\s*\\(").test(body)) return true;
+  return false;
+}
+
+function escapeRegExp(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+
+// The text between the brace at `open` and its match, or null when unbalanced.
+// Not `bodyAfter`, which takes a block end and finds the function below it.
+function bracedBodyAt(masked, open) {
+  var depth = 0;
+  for (var i = open; i < masked.length; i += 1) {
+    if (masked[i] === "{") depth += 1;
+    else if (masked[i] === "}") { depth -= 1; if (depth === 0) return masked.slice(open + 1, i); }
+  }
+  return null;
 }
 
 // Which nested bodies RUN while the primitive runs.
@@ -791,8 +885,14 @@ function nameOfBodyAt(masked, braceIndex) {
   return { name: null, headStart: braceIndex };
 }
 
-function nestedFunctionSpans(body) {
+// `fileSource` is the whole file this body came from, which is where a callee
+// taking an object of functions is declared. Without it a property-position
+// callback is read as running during the call, which is the fail-closed answer
+// the fixtures below expect.
+function nestedFunctionSpans(body, fileSource) {
   var masked = maskLiteralsAndComments(body);
+  var fileMasked = fileSource === undefined
+    ? masked : maskLiteralsAndComments(fileSource);
   var declEnd = masked.search(/\{/);
   if (declEnd === -1) return null;
   var nested = nestedDeclarations(masked, declEnd + 1);
@@ -802,7 +902,7 @@ function nestedFunctionSpans(body) {
   var spans = [];
   nested.forEach(function (n) {
     if (n.name && keep[n.name]) return;
-    if (isSynchronousCallback(masked, n.brace)) return;
+    if (isSynchronousCallback(masked, n.brace, fileMasked)) return;
     spans.push([n.brace, n.end]);
   });
   return spans;
@@ -838,7 +938,7 @@ function localHelpers(code) {
     var rest = code.slice(m.index);
     var end = rest.search(/\n\}/);
     var body = end === -1 ? rest : rest.slice(0, end);
-    var spans = nestedFunctionSpans(body);
+    var spans = nestedFunctionSpans(body, code);
     if (spans === null) { unreadableHelpers += 1; continue; }
     out[m[1]] = spans.length ? withoutSpans(body, spans) : body;
   }
@@ -948,7 +1048,7 @@ function collect() {
       // outer function makes itself, which is most of what there is to check:
       // `b.deprecate.warn` throws `deprecate/used-in-error-mode` from its own
       // body and merely passes a callback to a map.
-      var spans = nestedFunctionSpans(body);
+      var spans = nestedFunctionSpans(body, src);
       if (spans === null) { heldBack.push(entry); continue; }
       var own = body;
       if (spans.length) {
@@ -1156,6 +1256,52 @@ function testNestedBodiesComeOutButTheOuterFunctionStays() {
         trickySpans === null ? "null" : trickySpans.length + " spans");
   check("an unreadable body comes back null, so the block is held back whole",
         nestedFunctionSpans("function outer() {\n  foo(function () {\n") === null);
+
+  // A callback in property position runs during the call only if the callee
+  // calls it. `_readSyncCore` hands `fdSafeReadSync` an `errorFor` that it
+  // calls while reading, so its codes are the caller's; `_tupleWithRest` hands
+  // `_baseSchema` a `run` it keeps for the handle, so its codes are not.
+  var callsIt = [
+    "function reader(path, opts) {",
+    "  var errorFor = opts.errorFor || null;",
+    "  if (errorFor) throw errorFor(\"enoent\", {});",
+    "  return null;",
+    "}",
+    "function outer(p) {",
+    "  return reader(p, {",
+    "    errorFor: function (kind) {",
+    "      return new FixtureError(\"fixture/in-called-option\", kind);",
+    "    },",
+    "  });",
+  ].join("\n");
+  var callsSpans = nestedFunctionSpans(callsIt.slice(callsIt.indexOf("function outer")), callsIt);
+  check("a property callback the callee calls is kept in scope",
+        callsSpans !== null && callsSpans.length === 0,
+        callsSpans === null ? "null" : callsSpans.length + " spans");
+
+  var storesIt = [
+    "function build(spec) {",
+    "  return { _run: spec.run, kind: spec.kind };",
+    "}",
+    "function outer(items) {",
+    "  return build({",
+    "    kind: \"tuple\",",
+    "    run: function (value) {",
+    "      return new FixtureError(\"fixture/in-stored-option\", value);",
+    "    },",
+    "  });",
+  ].join("\n");
+  var storesSpans = nestedFunctionSpans(storesIt.slice(storesIt.indexOf("function outer")), storesIt);
+  check("a property callback the callee only stores is stripped",
+        storesSpans !== null && storesSpans.length === 1,
+        storesSpans === null ? "null" : storesSpans.length + " spans");
+
+  // Without the file, the callee cannot be read, and the fail-closed answer is
+  // that it runs: a gate that guessed "stored" here would drop real codes.
+  var blindSpans = nestedFunctionSpans(storesIt.slice(storesIt.indexOf("function outer")));
+  check("with no file to read the callee in, a property callback is kept",
+        blindSpans !== null && blindSpans.length === 0,
+        blindSpans === null ? "null" : blindSpans.length + " spans");
 }
 
 function testTheGateCanFail() {
