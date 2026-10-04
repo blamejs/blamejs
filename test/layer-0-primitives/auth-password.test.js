@@ -225,6 +225,33 @@ async function testGateBoundsEveryArgon2Run() {
   try { nodeFs.rmSync(bundleRoot, { recursive: true, force: true }); }
   catch (_e) { /* best-effort */ }
 
+  // A refusal must not skip a secure-zero either. vaultWrap.wrap copies a
+  // string plaintext into a buffer it owns, which is how the vault key and the
+  // audit-signing private key reach it, and the cleanup used to begin after the
+  // derivation: a refusal left that copy to the garbage collector. The zeroing
+  // is observed by recording the calls, since the buffer is internal to wrap.
+  var safeBufferModule = require("../../lib/safe-buffer");
+  var realSecureZero = safeBufferModule.secureZero;
+  var zeroedLengths = [];
+  safeBufferModule.secureZero = function (buf) {
+    if (buf && typeof buf.length === "number") zeroedLengths.push(buf.length);
+    return realSecureZero.apply(this, arguments);
+  };
+  var wrapRefused = null;
+  var secretPlaintext = "{\"privateKey\":\"a-generated-signing-key\"}";
+  var holdForWrap = b.auth.password.hash("pw-123456", holds);
+  try {
+    await require("../../lib/vault/wrap").wrap(secretPlaintext, "passphrase-123456");
+  } catch (e) { wrapRefused = e; }
+  finally { safeBufferModule.secureZero = realSecureZero; }
+  check("a wrap refused by the gate surfaces the refusal",
+    wrapRefused !== null && wrapRefused.code === "argon2/busy",
+    "code=" + (wrapRefused && wrapRefused.code));
+  check("and still zeroes the plaintext copy it owns",
+    zeroedLengths.indexOf(Buffer.byteLength(secretPlaintext, "utf8")) !== -1,
+    "zeroed=" + zeroedLengths.join(","));
+  await holdForWrap;
+
   // The control: with the gate open all of them answer normally, so the
   // assertions above read the gate rather than a broken hash, policy or archive.
   b.auth.password.gate(8, { maxQueued: Infinity, waitTimeoutMs: 0 });
