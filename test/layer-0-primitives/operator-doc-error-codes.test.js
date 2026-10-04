@@ -44,7 +44,11 @@ var LIB  = nodePath.join(ROOT, "lib");
 // `mail-deploy/bad-displayName`, `deliver/bad-timeout-mxLookupMs`,
 // `vex/missing-documentId`. Reading lowercase only made those invisible, so a
 // block omitting one of them passed.
-var CODE_RE = /^[a-z][a-z0-9]*(?:-[A-Za-z0-9]+)*(?:\/[a-z0-9]+(?:-[A-Za-z0-9]+)*){1,3}$/;
+// Kept in step with CODE_IN_TEXT_RE below: both answer "what does a code look
+// like", so a shape one accepts and the other rejects is a code the gate finds
+// and then silently discards. The underscore is here for the six `auth-ciba`
+// codes that re-raise the CIBA and OAuth wire names.
+var CODE_RE = /^[a-z][a-z0-9]*(?:-[A-Za-z0-9]+)*(?:\/[a-z0-9]+(?:[-_][A-Za-z0-9]+)*){1,3}$/;
 
 // Two readings, each used for the property it has.
 //
@@ -453,8 +457,34 @@ function namespacesIn(text) {
   return out;
 }
 
-var BACKTICK_RE = /`([^`\n]{1,160})`/g;
-var CODE_IN_TEXT_RE = /([a-z0-9][A-Za-z0-9-]*(?:\/[A-Za-z0-9-]+){1,3})/g;
+// A block names a code in whatever span its author reached for. Reading only
+// backticks meant a block that wrote "auth-ciba/slow_down" in double quotes
+// extracted no codes at all, and a block that names none is SKIPPED, so the
+// gate reported clean over a block it had never judged —
+// `b.auth.ciba.client.pollToken` named two of its codes that way and omitted
+// `auth-ciba/no-auth-req-id`. Double and single quotes count the same as a
+// backtick here; a quoted span is how the surrounding prose writes a code.
+var QUOTED_SPAN_RE = /`([^`\n]{1,160})`|"([^"\n]{1,160})"|'([^'\n]{1,160})'/g;
+
+// The block's prose: everything before its first multi-line tag. The comment
+// convention puts single-line tags first, then prose, then `@opts` / `@example`
+// and the rest last, so cutting at the first of those leaves the part where the
+// block is describing the primitive rather than illustrating it.
+var FIRST_MULTILINE_TAG_RE = /@(?:opts|example|exampleFile|intro|card|section)\b/;
+
+function _proseOf(blk) {
+  var at = blk.search(FIRST_MULTILINE_TAG_RE);
+  return at === -1 ? blk : blk.slice(0, at);
+}
+// The suffix allows an underscore because six codes carry one: `auth-ciba`
+// re-raises the CIBA and OAuth wire names, `authorization_pending`,
+// `slow_down`, `access_denied`, `expired_token`, `invalid_grant` and
+// `transaction_failed`, which are the RFC's own spellings and not ours to
+// change. Without it the match stopped at the underscore, so
+// `auth-ciba/authorization_pending` read as `auth-ciba/authorization`, matched
+// no real code, and was dropped — the gate could not see those six anywhere,
+// in a backtick or in prose.
+var CODE_IN_TEXT_RE = /([a-z0-9][A-Za-z0-9-]*(?:\/[A-Za-z0-9_-]+){1,3})/g;
 var BLOCK_RE    = /\/\*\*[\s\S]*?\*\//g;
 
 function walk(dir, out) {
@@ -507,15 +537,40 @@ var relocatedBodies = 0;
 function bodyAfter(code, blockEnd, prim) {
   var after = code.slice(blockEnd);
   var adjacent = after.match(OPENS_A_FUNCTION);
-  if (!adjacent) return null;
   var segment = String(prim || "").split(".").pop();
-  if (segment && adjacent[1] !== segment) {
-    var named = after.search(
-      new RegExp("^(?:async\\s+)?function\\s+" + segment + "\\s*\\(", "m"));
-    if (named !== -1) { after = after.slice(named); relocatedBodies += 1; }
+  // A block on a factory method is not adjacent to its function at all: in
+  // `lib/auth/ciba.js` the `pollToken` block is followed by two unrelated
+  // declarations and the method itself is `  async function pollToken(`, sixty
+  // lines down and indented. The old lookup gave up as soon as the ADJACENT
+  // match failed, and its named fallback anchored at column 0, so seven blocks
+  // that name a code were never compared against anything and the gate
+  // reported clean over them.
+  if (!adjacent || (segment && adjacent[1] !== segment)) {
+    var relocated = segment ? _namedFunctionBody(after, segment) : null;
+    if (relocated !== null) { relocatedBodies += 1; return relocated; }
+    if (!adjacent) return null;
   }
   var end = after.search(/\n\}/);
   return end === -1 ? after : after.slice(0, end);
+}
+
+// The body of `function <name>(` wherever it sits and at whatever indentation,
+// delimited by matching its own braces rather than by the next closing brace at
+// column 0 — an indented declaration's brace is indented too, and stopping at
+// the first one would have truncated the body at its first `if`.
+function _namedFunctionBody(after, segment) {
+  var at = after.search(
+    new RegExp("^[ \\t]*(?:async\\s+)?function\\s+" + segment + "\\s*\\(", "m"));
+  if (at === -1) return null;
+  var masked = maskLiteralsAndComments(after);
+  var open = masked.indexOf("{", at);
+  if (open === -1) return null;
+  var body = bracedBodyAt(masked, open);
+  if (body === null) return null;
+  // From the declaration, not from inside the brace: every consumer downstream
+  // expects the text it is handed to still contain the opening `{` of the
+  // function it describes, and `nestedFunctionSpans` returns null without one.
+  return after.slice(at, open + 1 + body.length);
 }
 
 // Everything past the line that opens the function. The declaration itself is
@@ -1020,9 +1075,22 @@ function collect() {
       // would grep for; reading only whole spans called that undocumented.
       var documented = {};
       var bm;
-      BACKTICK_RE.lastIndex = 0;
-      while ((bm = BACKTICK_RE.exec(blk)) !== null) {
-        var inner = bm[1];
+      // Backticks are read across the whole block: a backtick is this
+      // codebase's way of naming an identifier wherever it appears. A QUOTE is
+      // ordinary punctuation, and `@opts` and `@example` are full of quoted
+      // profile names, sample inputs and illustrated outputs, so a quoted code
+      // counts only where the block is making a prose claim. Reading quotes
+      // everywhere turned one `// → "message-id/unbracketed"` in an example
+      // into a claim that the block enumerates all nine of that guard's codes.
+      var quotable = _proseOf(blk);
+      QUOTED_SPAN_RE.lastIndex = 0;
+      while ((bm = QUOTED_SPAN_RE.exec(blk)) !== null) {
+        var inner = bm[1] !== undefined ? bm[1] : null;
+        if (inner === null) {
+          var quoted = bm[2] !== undefined ? bm[2] : bm[3];
+          if (quotable.indexOf(quoted) === -1) continue;
+          inner = quoted;
+        }
         var cm;
         CODE_IN_TEXT_RE.lastIndex = 0;
         while ((cm = CODE_IN_TEXT_RE.exec(inner)) !== null) {
@@ -1157,6 +1225,46 @@ function testTheWalkReadTheTree() {
   check("a block separated from its function by a helper is still matched to it",
         relocatedBodies > 0,
         relocatedBodies + " blocks read a function further down the file");
+
+  // A block on a factory method is the harder shape: nothing resembling a
+  // function follows it, and the method is indented. Giving up when the
+  // ADJACENT match failed left seven such blocks compared against nothing,
+  // `b.auth.ciba.client.pollToken` among them, so the gate reported clean over
+  // a block that named two of its codes and omitted a third.
+  var factoryFixture = [
+    "/**",
+    " * @primitive b.fixture.client.pollThing",
+    " * Throws `fixture/documented` when the ticket is empty.",
+    " */",
+    "  var _unrelated = new Map();",
+    "",
+    "  function _alsoUnrelated(x) { return x; }",
+    "",
+    "  async function pollThing(popts) {",
+    "    if (!popts.ticket) {",
+    "      throw new FixtureError(\"fixture/documented\", \"ticket required\");",
+    "    }",
+    "    if (popts.late) {",
+    "      throw new FixtureError(\"fixture/undocumented\", \"too late\");",
+    "    }",
+    "    return null;",
+    "  }",
+    "",
+    "  return { pollThing: pollThing };",
+  ].join("\n");
+  var blockEnd = factoryFixture.indexOf("*/") + 2;
+  var factoryBody = bodyAfter(factoryFixture, blockEnd, "b.fixture.client.pollThing");
+  check("a block on a factory method finds its indented function further down",
+        factoryBody !== null && factoryBody.indexOf("fixture/documented") !== -1,
+        factoryBody === null ? "null" : JSON.stringify(factoryBody.slice(0, 60)));
+  check("and the body stops at that function rather than running to the factory's end",
+        factoryBody !== null && factoryBody.indexOf("return { pollThing") === -1 &&
+        factoryBody.indexOf("_alsoUnrelated") === -1,
+        factoryBody === null ? "null" : JSON.stringify(factoryBody.slice(-60)));
+  var factoryCodes = Object.keys(codesIn(factoryBody || "", { fixture: true })).sort();
+  check("so both of its codes are read, not just the first",
+        factoryCodes.join(",") === "fixture/documented,fixture/undocumented",
+        factoryCodes.join(","));
 }
 
 function testEveryDocumentedCodeListIsComplete() {
