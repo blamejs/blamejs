@@ -562,6 +562,52 @@ async function testPurgeDoesNotInventARemovalCount() {
   }
 }
 
+// The other half of that store: one that omits rowCount and DOES delete. An
+// unknown count is not a zero, and treating it as one made every pass look like
+// no progress, so the consecutive-idle guard stopped the sweep partway and left
+// rows behind. The repeated-key check is what covers a stall here, since a pass
+// that deleted nothing matches the same keys again.
+async function testPurgeFinishesWhenAStoreOmitsRowCountButDeletes() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ses-purge-silent-"));
+  var store = null;
+  try {
+    await setupTestDb(tmpDir);
+    store = b.session.stores.localDbThin({ file: path.join(tmpDir, "silent.db") });
+    b.session.useStore({
+      execute: async function (text, params) {
+        var res = await store.execute(text, params);
+        // Terse but correct: the delete happened, the count is not reported.
+        if (/^\s*delete/i.test(text)) return { rows: [] };
+        return res;
+      },
+      executeOne: function (text, params) { return store.executeOne(text, params); },
+    });
+
+    for (var i = 0; i < 20; i += 1) {
+      await b.session.create({ userId: "u-silent-" + i });
+    }
+    check("twenty sessions exist before the sweep", (await b.session.count()) === 20);
+    await helpers.passiveObserve(20, "session purge: age the rows past a 1ms idle window");
+
+    var failed = null;
+    var removed = 0;
+    try {
+      removed = await b.session.purgeStale({
+        idleTimeoutMs: 1, absoluteTimeoutMs: 0, batchSize: 1,
+      });
+    } catch (e) { failed = e; }
+    check("a sweep in batches of 1 clears the table rather than stalling partway",
+      failed === null, failed && failed.code + ": " + failed.message);
+    check("and every row is gone", (await b.session.count()) === 0);
+    check("while the total stays at what the deletes reported, which is nothing",
+      removed === 0, "removed=" + removed);
+  } finally {
+    b.session.useStore(null);
+    try { if (store && store.close) store.close(); } catch (_e) { /* best-effort */ }
+    await teardownTestDb(tmpDir);
+  }
+}
+
 // batchSize binds one parameter per picked key plus the narrowing cutoff, and
 // node:sqlite refuses more than 32766 bound parameters. The option was bounded
 // below and not above, so an operator raising it to cut round trips got the
@@ -1165,6 +1211,7 @@ async function run() {
   await testPurgeClearsTheTableAcrossPassesOrSaysItCannot();
   await testPurgeStallGuardSurvivesRowOrderAndYields();
   await testPurgeDoesNotInventARemovalCount();
+  await testPurgeFinishesWhenAStoreOmitsRowCountButDeletes();
   await testPurgeBatchSizeHasADocumentedCeiling();
   await testDestroyAllForUserPluggableNoDb();
   await testPluggableStoreValidation();

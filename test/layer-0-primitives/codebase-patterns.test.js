@@ -13161,16 +13161,23 @@ var KNOWN_ANTIPATTERNS = [
     // directly follows its try, so a catch further down the same function is
     // out of scope. The tempered token stops at `isGateRefusal`, which is how
     // a handled site reads, and at a function-closing brace at column 0.
-    regex: /(?:vaultWrap|argon2(?:Builtin)?(?:\(\))?)\.(?:wrap|unwrap|hash|verify)\s*\((?:(?!\n\})[\s\S]){0,240}?\)\s*;?\s*\}?\s*catch\s*\(\s*(?!_)[A-Za-z$][\w$]*\s*\)\s*\{(?:(?!isGateRefusal)(?!vault-wrap\/passphrase-rejected)(?!\n\})[\s\S]){0,240}?\bthrow\s+(?:new\s+[A-Za-z_$][\w$]*Error|_err\s*\()/,
+    regex: /(?:(?:vaultWrap|argon2(?:Builtin)?)(?:\(\))?\.(?:wrap|unwrap|hash|verify|deriveWrappingKey)|(?:backupCrypto|bCrypto)(?:\(\))?\.(?:deriveKey|encryptWithPassphrase|decryptWithPassphrase|encryptWithFreshSalt))\s*\((?:(?!\n\})[\s\S]){0,240}?\)\s*;?\s*\}?\s*catch\s*\(\s*(?!_)[A-Za-z$][\w$]*\s*\)\s*\{(?:(?!isGateRefusal)(?!vault-wrap\/passphrase-rejected)(?!backup-crypto\/decrypt-failed)(?!\n\})[\s\S]){0,240}?\bthrow\s+(?:new\s+[A-Za-z_$][\w$]*Error|_err\s*\()/,
     allowlist: [],
     fixtures: {
       fires: [
         "    plaintext = await vaultWrap.unwrap(sealed, pwBuf);\n  } catch (e) {\n    throw new KeychainError(\"keychain/file-unseal-failed\",\n      \"rejected\");",
         "    try { plaintextBuf = await vaultWrap.unwrap(sealedBytes, passphrase); }\n    catch (e) {\n      throw _err(\"audit-sign/passphrase-rejected\", \"rejected\");",
+        // The derivation is reached through backup/crypto's passphrase surface
+        // too, which the first version of this pattern did not name: it listed
+        // the calls it had seen rather than every export that derives.
+        "      vkBuf = await backupCrypto.decryptWithPassphrase(vaultKeyEnc, passphrase, salt);\n  } catch (e) {\n    throw new RestoreBundleError(\"restore-bundle/vault-key-recovery-failed\",\n      \"could not recover\");",
       ],
       quiet: [
         "    plaintext = await vaultWrap.unwrap(sealed, pwBuf);\n  } catch (e) {\n    if (argon2.isGateRefusal(e)) throw e;\n    throw new KeychainError(\"keychain/file-unseal-failed\",\n      \"rejected\");",
         "    try { plaintextBuf = await vaultWrap.unwrap(sealedBytes, passphrase); }\n    catch (e) {\n      if (argon2.isGateRefusal(e)) throw e;\n      throw _err(\"audit-sign/passphrase-rejected\", \"rejected\");",
+        // Translating one named code and re-raising everything else already
+        // lets the refusal through, which is how the per-blob decrypt reads.
+        "          plaintext = await backupCrypto.decryptWithPassphrase(blob, passphrase, entry.salt);\n      } catch (e) {\n        if (e && e.code === \"backup-crypto/decrypt-failed\") {\n          throw new RestoreBundleError(\"restore-bundle/decrypt-failed\", \"rejected\");\n        }\n        throw e;\n      }",
         // A capacity refusal cannot arise from a symmetric open, so a catch
         // around one translates freely.
         "    plaintext = bCrypto().decryptPacked(packedBody, oldKey, aad);\n  } catch (e) {\n    throw new ArchiveWrapError(\"archive-wrap/decrypt-failed\", \"did not open\");",

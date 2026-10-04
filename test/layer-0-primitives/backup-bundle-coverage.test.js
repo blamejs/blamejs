@@ -161,6 +161,44 @@ async function testMissingFileHandling() {
     "backup-bundle/empty");
 }
 
+// The outDir refusal has to hold against a concurrent create, not only against
+// a directory that was already there when the call started. The existence check
+// runs before the key derivation awaits, so two calls naming the same outDir
+// both passed it, and both then wrote their files and manifest into the same
+// directory: the second silently replaced the first operator's backup. The
+// directory is claimed with a single non-recursive mkdir after derivation, so
+// one call creates it and the other is refused.
+async function testConcurrentCreatesCannotShareAnOutDir() {
+  var shared = nodePath.join(nodeOs.tmpdir(), "bbc-race-" + process.pid + "-" + Date.now());
+  _tmpDirs.push(shared);
+  var results = await Promise.allSettled([
+    b.backupBundle.create(_baseOpts({ outDir: shared })),
+    b.backupBundle.create(_baseOpts({ outDir: shared })),
+  ]);
+  var ok = results.filter(function (r) { return r.status === "fulfilled"; });
+  var refused = results.filter(function (r) { return r.status === "rejected"; });
+  check("create: exactly one of two concurrent creates claims the outDir",
+    ok.length === 1 && refused.length === 1,
+    "fulfilled=" + ok.length + " rejected=" + refused.length);
+  check("create: the loser is refused as an existing outDir rather than overwriting",
+    refused.length === 1 && refused[0].reason &&
+    refused[0].reason.code === "backup-bundle/outdir-exists",
+    refused.length ? "code=" + (refused[0].reason && refused[0].reason.code) : "none rejected");
+  check("create: the winner's manifest is the one on disk",
+    ok.length === 1 && nodeFs.existsSync(ok[0].value.manifestPath));
+
+  // Claiming the directory must not relax what ensureDir asked for. A bare
+  // mkdir takes 0777 against the umask, which on a default 0022 leaves the
+  // bundle directory listable by every other user on the host.
+  if (process.platform === "win32") {
+    helpers.unavailable("bundle outDir mode: POSIX permission bits are not meaningful on Windows");
+  } else {
+    check("create: the claimed outDir keeps owner-only permissions",
+      (nodeFs.statSync(shared).mode & 0o777) === 0o700,
+      "mode=" + (nodeFs.statSync(shared).mode & 0o777).toString(8));
+  }
+}
+
 async function testProgressCallbackIsIsolated() {
   // Operator code inside the bundler must not be able to abort a backup.
   var calls = 0;
@@ -261,6 +299,7 @@ async function run() {
     await testRequiredOptionGuards();
     await testIncludeEntryGuards();
     await testMissingFileHandling();
+    await testConcurrentCreatesCannotShareAnOutDir();
     await testProgressCallbackIsIsolated();
     await testSigningPosture();
     await testBundleShape();

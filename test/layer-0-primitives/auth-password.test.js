@@ -196,6 +196,35 @@ async function testGateBoundsEveryArgon2Run() {
     "permanent=" + (archiveRefused && archiveRefused.permanent));
   await holdForArchive;
 
+  // A refusal is only retryable if nothing irreversible happened first.
+  // b.backup.bundle.create created outDir and its files/ subdirectory before
+  // deriving, so a refusal left both behind and the retry it invites failed
+  // permanently with backup-bundle/outdir-exists.
+  var nodeFs = require("node:fs");
+  var nodeOs = require("node:os");
+  var nodePath = require("node:path");
+  var bundleRoot = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), "pw-gate-bundle-"));
+  var bundleOut = nodePath.join(bundleRoot, "out");
+  var holdForBundle = b.auth.password.hash("pw-123456", holds);
+  var bundleRefused = null;
+  try {
+    await b.backupBundle.create({
+      dataDir: bundleRoot,
+      outDir: bundleOut,
+      passphrase: "operator-supplied-long-passphrase",
+      vaultKeyJson: "{\"kem\":\"ml-kem-1024\"}",
+      files: [{ relativePath: "vault.key", absolutePath: nodePath.join(bundleRoot, "vault.key") }],
+    });
+  } catch (e) { bundleRefused = e; }
+  check("a bundle create surfaces the gate's refusal",
+    bundleRefused !== null && bundleRefused.code === "argon2/busy",
+    "code=" + (bundleRefused && bundleRefused.code));
+  check("and leaves no output directory behind, so the retry it invites can run",
+    !nodeFs.existsSync(bundleOut), bundleOut);
+  await holdForBundle;
+  try { nodeFs.rmSync(bundleRoot, { recursive: true, force: true }); }
+  catch (_e) { /* best-effort */ }
+
   // The control: with the gate open all of them answer normally, so the
   // assertions above read the gate rather than a broken hash, policy or archive.
   b.auth.password.gate(8, { maxQueued: Infinity, waitTimeoutMs: 0 });
