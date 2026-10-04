@@ -13153,6 +13153,36 @@ var KNOWN_ANTIPATTERNS = [
     reason: "Audit's own reads and writes of its own tables have to run inside `dbRoleContext.runAsAuditChainWrite`, because `b.externalDb` audits every query it issues: an unwrapped one queues a `system.externaldb.query` event that becomes the next chain row, which is the cascade this release exists to stop (one `b.audit.record` call produced 164 rows, and an idle chain grew from 80 rows to 5,105 across four seconds). The omission is easy to make one call at a time and was found twice on this branch: first the operation-level wraps in `lib/audit.js`, then `_writePurgeAnchor`'s `clusterStorage.fencedUpsert` and `_defaultApplyPurge`'s `db().purgeAuditChain` in `lib/audit-tools.js`, where the purge-anchor READ was wrapped and its two WRITES were not, so every purge still fed the chain. All 19 such calls across the two files are wrapped now; this detector is what keeps the twentieth from arriving bare. Matching on `await <call>(` rather than on the call alone is what distinguishes the two shapes: a wrapped site returns the call from inside the callback and never awaits it directly.",
   },
   {
+    id: "a-framework-errors-code-is-reassigned-after-it-is-built",
+    primitive: "b.frameworkError.defineClass",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // Anchored on the DECLARATION so the binding can be carried into the
+    // assignment by backreference: the question is whether this error's own
+    // code is overwritten, not whether some `.code` is assigned nearby. The
+    // tempered token cannot cross a function-closing brace at column 0, and
+    // the {0,400} is the ReDoS backstop rather than the precision mechanism.
+    regex: /(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:new\s+[A-Za-z_$][\w$]*Error\s*\(|_err\s*\(|[A-Za-z_$][\w$]*\.factory\s*\()(?:(?!\n\})[\s\S]){0,400}?\b\1\.code\s*=/,
+    allowlist: [],
+    fixtures: {
+      fires: [
+        "var e = new AtomicFileError(\"file not found: \" + filepath, \"atomic-file/not-found\");\n        e.code = \"ENOENT\";\n        return e;",
+        "var te = _err(\"notify/timeout\", \"notify.send: transport timed out\");\n          te.code = \"ETIMEDOUT\";\n          throw te;",
+        "const w = SomeError.factory(\"ns/first\", \"msg\");\n  w.code = \"ns/second\";",
+      ],
+      quiet: [
+        // A plain Error built to look like a Node error. Nothing is discarded,
+        // because a plain Error carries no framework code to begin with.
+        "var aerr = new Error(\"no AAAA records for \" + qname);\n      aerr.code = \"ENODATA\";\n      throw aerr;",
+        // The errno IS the code, constructed once.
+        "var e = new AtomicFileError(\"file not found: \" + filepath, \"ENOENT\");\n        return e;",
+        // Another object's code, not the error's.
+        "var e = new AtomicFileError(\"bad\", \"ns/bad\");\n  result.code = \"ns/other\";\n  throw e;",
+      ],
+    },
+    reason: "A framework error's `code` is its contract, and assigning over it after construction leaves the first code reachable by nobody while every block that names it promises a failure the caller can never receive. `lib/atomic-file.js` built `atomic-file/not-found` and immediately overwrote it with `ENOENT`, so `b.atomicFile.read`, `readSync` and `readJson` all delivered `ENOENT` while one block promised the framework code, one block promised `ENOENT`, and the two never agreed; `lib/notify.js` discarded `notify/timeout` the same way. The error-code gate reads constructions, so a discarded code is worse than invisible: it gets demanded in documentation and then cannot arrive. Both sites construct the code they deliver now. An errno-shaped code is fine when it is the code built (`lib/http-client.js` and `lib/log-stream-otlp-grpc.js` both raise `ETIMEDOUT` that way); so is setting `.code` on a plain `new Error` to give a caller a Node-shaped failure, which is what `lib/mail-auth.js`, `lib/network-dns-resolver.js` and `lib/ws-client.js` do for callers that read dns and lookup errors. The binding is carried by backreference so only the error's own code counts.",
+  },
+  {
     id: "a-jmap-method-error-type-is-a-bare-name",
     primitive: "b.mail.server.jmap.create",
     scanScope: "lib",
