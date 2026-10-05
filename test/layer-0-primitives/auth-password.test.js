@@ -1212,6 +1212,45 @@ async function testTheSharedGateAccountsPermitsToTheGateThatGrantedThem() {
       b.auth.password.stats().limit === before.limit,
       JSON.stringify(b.auth.password.stats()));
 
+    // The shared permit count is a 32-bit signed integer, so a limit above
+    // that range stores truncated: the count goes negative, every hash is
+    // refused as busy with nothing running, and a zero-timeout wait returns
+    // synchronously so the retry recurses. A limit the counter cannot hold is
+    // a configuration error, not a gate.
+    // The public layer already refuses an `n` outside the integer range, so
+    // the bound is asserted on the module that owns the counter: a limit it
+    // cannot store is a configuration error there too, whoever calls it.
+    var argon2 = require("../../lib/argon2-builtin");
+    var TOO_BIG = 2147483648;
+    var publicRefused = null;
+    try { b.auth.password.gate(TOO_BIG, { shared: true }); }
+    catch (e) { publicRefused = e; }
+    check("the public gate refuses a limit outside the integer range",
+      publicRefused !== null && /bad-gate/.test(publicRefused.code || ""),
+      "code=" + (publicRefused && publicRefused.code));
+
+    var tooBig = null;
+    try { argon2.gate(TOO_BIG, { shared: true }); } catch (e) { tooBig = e; }
+    check("and the shared counter refuses a limit it cannot hold",
+      tooBig !== null && tooBig.code === "argon2/bad-gate",
+      "code=" + (tooBig && tooBig.code) + " stats=" + JSON.stringify(argon2.stats()));
+
+    // The same limit inherited from this thread's own gate rather than passed.
+    argon2.gate(TOO_BIG, { shared: false });
+    var inherited = null;
+    try { argon2.gate(null, { shared: true }); } catch (e) { inherited = e; }
+    check("  including one inherited from the thread's own limit",
+      inherited !== null && inherited.code === "argon2/bad-gate",
+      "code=" + (inherited && inherited.code) + " stats=" + JSON.stringify(argon2.stats()));
+
+    // The control: the largest limit the counter does hold is accepted, so the
+    // refusal reads the range rather than refusing anything large.
+    argon2.gate(8, { shared: false });
+    var atMax = argon2.gate(2147483647, { shared: true });
+    check("  while the largest representable limit is accepted",
+      atMax.shared === true && atMax.available === 2147483647,
+      JSON.stringify(atMax));
+
     // A derivation releases to the pool that granted it, so switching pools
     // underneath a running derivation cannot strand a permit in the old one.
     b.auth.password.gate(1, { shared: true });
