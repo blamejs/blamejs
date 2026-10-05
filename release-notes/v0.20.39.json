@@ -75,6 +75,15 @@
           "body": "`test/layer-0-primitives/jsdoc-example-execution.test.js` runs every `@example` and treats a framework typed error as illustrative, on the grounds that the API resolved and threw its own refusal, which is what a precondition or input demo is written to show. That exemption also covered an example that is simply wrong: both `b.db.declareView` and `b.db.declareRowPolicy` raised `unknown opt` on the option names their own blocks documented, and the gate passed over both.\n\nAn unknown-option refusal is now a failure rather than a skip. It is the one refusal a documented example has no reason to demonstrate, since the example documents that very API, and it says the call shape in the documentation does not exist. Both spellings in the tree are covered: `unknown option 'x'. Allowed keys:` from the shared validator, and `unknown opt 'x'. Allowed:` from a hand-rolled key loop. Run against the two broken blocks it reported exactly those two failures out of the examples that execute and nothing else, and with both corrected the count of executing examples rises by two, to 1,149, with none failing. An example that demonstrates such a refusal deliberately catches it, so it never reaches the classifier."
         }
       ]
+    },
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "The vendored @blamejs/pki bundle moves to 0.8.48, which hardens three verification verdicts",
+          "body": "`lib/vendor/blamejs-pki.cjs` carried 0.8.31. 0.8.48 fixes verification verdicts that were assembled through `Promise.all` read from the global binding at the call rather than from an operation captured at load. A replacement whose `all` resolves an array without awaiting the component verifications therefore handed its own values back as the verdict: `pki.crmf.verifyPop` reported an unverified proof of possession as `verified: true`, and the composite-signature arm reported a signature whose ML-DSA and traditional halves were never checked as verified, reachable through `pki.cms.verify` and `pki.path.validate` wherever a composite algorithm is in use. `pki.webauthn.verify` returned its refusals as rejected promises and folded its attestation trust-path checks over a seed built the same way. In this framework that surface is `b.mtlsCa` and the WebAuthn attestation and assertion verification behind `b.auth.passkey`.\n\nRefreshed through `scripts/vendor-update.sh`, which is the only bundler for `lib/vendor/`. The count of `Promise.all` references in the bundle falls from nine to one, and the process, network, dynamic-evaluation and filesystem-write surface is unchanged: `child_process` 1, `spawn`/`exec` 1, `net`/`tls`/`http` requires 7, URL literals 5, `process.env` 2, and no `eval`, `new Function`, `fetch` or write call in either version. `dependencies` stays empty, as the framework ships no npm runtime dependencies."
+        }
+      ]
     }
   ]
 }
