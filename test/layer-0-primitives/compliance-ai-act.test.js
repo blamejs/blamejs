@@ -7,6 +7,8 @@
 
 var b = require("../..");
 var check = require("../helpers/check").check;
+var nodeCp = require("node:child_process");
+var nodePath = require("node:path");
 
 function rejects(label, fn, pattern) {
   var threw = false; var msg = "";
@@ -890,6 +892,23 @@ function run() {
   check("declareAdherence: a forwarded generatedAt reaches the form",
     typeof copForwardEnv.adherence.generatedAt === "string" &&
     copForwardEnv.adherence.generatedAt.length > 0);
+
+  // What the signer forwards must not depend on the poisoned-key registry.
+  // b.pick.registerPoisonedKeys is public and only grows, so an application
+  // that registers a name the adherence form reads made declareAdherence sign
+  // a document with that field emptied: already-validated operator data
+  // dropped between the validation and the signature. Runs as its own process
+  // because nothing can unregister the name afterwards.
+  var poisonOut = nodeCp.execFileSync(
+    process.execPath,
+    [nodePath.join(__dirname, "_compliance-ai-act-poisoned-key-child.js"),
+     nodePath.resolve(__dirname, "..", "..")],
+    { encoding: "utf8", timeout: 120000 }
+  );
+  var poisoned = JSON.parse(poisonOut);
+  check("declareAdherence: a poisoned key name does not empty a validated option" +
+        " (got " + JSON.stringify(poisoned) + ")",
+    poisoned.error === null && !!poisoned.provider && poisoned.provider.name === "Acme");
 
   // ---- full-dotted-path drive: FRIA (Art. 27), GPAI training-data
   // summary (Art. 53(1)(d)), COP adherence form + signed-declaration
