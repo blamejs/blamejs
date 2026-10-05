@@ -232,14 +232,37 @@ function _candidates(masked, from, name) {
   return out;
 }
 
+// The names an `@opts` section documents AT ITS TOP LEVEL. A section documents
+// sub-objects inline, so taking every `name:` in it let a nested field satisfy
+// a top-level accepted key: `b.mail.server.submission.create` accepts and reads
+// a top-level `rateLimit`, and the only documented one was `auth`'s nested
+// field, so the gate called it documented and the operator was told about a
+// different option.
+//
+// Depth is read from the indentation after the leading `*`, and the top level is
+// the SHALLOWEST depth at which a name appears rather than a fixed column. That
+// is what handles the brace-wrapped form several blocks use, where a bare `{`
+// sits shallower than every field but is not a name.
 function _documentedNames(blk, optsAt) {
   var text = blk.slice(optsAt);
   var stopAt = text.search(/@(?:example|exampleFile|section|intro|card)\b/);
   if (stopAt !== -1) text = text.slice(0, stopAt);
-  var names = {};
-  (text.match(/[A-Za-z_$][\w$]*\??\s*:/g) || []).forEach(function (t) {
-    names[t.replace(/\??\s*:$/, "")] = true;
+  var found = [];
+  text.split("\n").forEach(function (rawLine) {
+    // The tree is CRLF, and `split("\n")` leaves the `\r`. An end-anchored
+    // pattern then matches nothing at all, because `\r` is a line terminator
+    // that `.` will not cross and `$` will not step over.
+    var line = rawLine.replace(/\r$/, "");
+    var body = /^\s*\*?( *)(.*)$/.exec(line);
+    if (!body) return;
+    var m = /^([A-Za-z_$][\w$]*)\??\s*:/.exec(body[2]);
+    if (!m) return;
+    found.push({ indent: body[1].length, name: m[1] });
   });
+  var names = Object.create(null);
+  if (found.length === 0) return names;
+  var top = found.reduce(function (n, f) { return Math.min(n, f.indent); }, Infinity);
+  found.forEach(function (f) { if (f.indent === top) names[f.name] = true; });
   return names;
 }
 
@@ -584,6 +607,36 @@ function testTheInstrumentReadsAFactoryNestedPrimitive() {
   var of = _analyze(opaqueFixture, "fixture.js");
   check("an unreadable allowlist is reported, not skipped",
     of.unresolved.length === 1, JSON.stringify(of.unresolved));
+
+  // A NESTED field must not satisfy a top-level accepted key. `@opts` documents
+  // sub-objects inline, so `auth: { rateLimit: ... }` made the top-level
+  // `rateLimit` that `b.mail.server.submission.create` accepts and reads look
+  // documented while the operator was told about a different option entirely.
+  // Only the shallowest name depth in the section counts, which also handles
+  // the brace-wrapped form some blocks use, where the wrapper `{` is shallower
+  // than every field but is not a name.
+  var nestedFixture = [
+    "/**",
+    " * @primitive b.fixture.nestedOpts",
+    " * @signature b.fixture.nestedOpts(opts)",
+    " *",
+    " * A primitive documenting a sub-object field that shares a top-level name.",
+    " *",
+    " * @opts",
+    " *   auth: {",
+    " *     shadowed: object,   // a nested field, not the top-level option",
+    " *   },",
+    " */",
+    "function nestedOpts(opts) {",
+    "  validateOpts(opts, [\"auth\", \"shadowed\"], \"fixture.nestedOpts\");",
+    "  return opts.shadowed;",
+    "}",
+  ].join("\n");
+  var nf2 = _analyze(nestedFixture, "fixture.js");
+  check("a nested @opts field does not satisfy a top-level accepted option",
+    nf2.rows.length === 1 && nf2.rows[0].missing.join(",") === "shadowed",
+    "measurable=" + nf2.measurable + " missing=" +
+      (nf2.rows.length ? nf2.rows[0].missing.join(",") : "(no row)"));
 
   // The call forms. Reading only `validateOpts(` left 58 of the 413 allowlist
   // sites in lib/ invisible, and the gate reported clean over them: the mail
