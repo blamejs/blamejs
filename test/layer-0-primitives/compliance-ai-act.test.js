@@ -7,6 +7,8 @@
 
 var b = require("../..");
 var check = require("../helpers/check").check;
+var nodeCp = require("node:child_process");
+var nodePath = require("node:path");
 
 function rejects(label, fn, pattern) {
   var threw = false; var msg = "";
@@ -834,6 +836,79 @@ function run() {
         commitments: _copCommitments(["Art. 53(1)(a)"]),
       });
     }, /copVersion/);
+
+  // The two primitives shared ONE allowlist, so each accepted the other's
+  // options and did nothing with them. adherenceForm builds the UNSIGNED
+  // document: a signing key handed to it was validated, carried past every
+  // check, and never used, which is the state b.validateOpts exists to
+  // refuse. `modalities` belonged to neither — it is an option of the sibling
+  // trainingDataSummary primitive.
+  rejects("adherenceForm: a signing key it never reads is refused",
+    function () {
+      gpaiCop.adherenceForm({
+        modelId: "m", modelVersion: "1",
+        commitments: _copCommitments(["Art. 53(1)(a)"]),
+        privateKeyPem: copPair.privateKey,
+      });
+    }, /unknown option/);
+  rejects("adherenceForm: serialNumber, which only the signer reads, is refused",
+    function () {
+      gpaiCop.adherenceForm({
+        modelId: "m", modelVersion: "1",
+        commitments: _copCommitments(["Art. 53(1)(a)"]),
+        serialNumber: "urn:uuid:00000000-0000-4000-8000-000000000000",
+      });
+    }, /unknown option/);
+  rejects("declareAdherence: modalities, which neither primitive reads, is refused",
+    function () {
+      gpaiCop.declareAdherence({
+        modelId: "m", modelVersion: "1", privateKeyPem: copPair.privateKey,
+        commitments: _copCommitments(["Art. 53(1)(a)", "Art. 53(1)(b)",
+                                      "Art. 53(1)(c)", "Art. 53(1)(d)"]),
+        modalities: ["text"],
+      });
+    }, /unknown option/);
+
+  // The control for the narrowing. declareAdherence forwards its opts to
+  // adherenceForm, so narrowing the form's allowlist without narrowing what
+  // the signer forwards makes the signer refuse its own callee's options. This
+  // passes before the change and must still pass after it; it is the assertion
+  // that fails if the forwarding is left alone.
+  var copForwardEnv = gpaiCop.declareAdherence({
+    modelId: "acme-llm-7b", modelVersion: "1.0",
+    provider: { name: "Acme" },
+    copVersion: "2025-07",
+    generatedAt: new Date(Date.now() - 1000).toISOString(),
+    validityMs: 90 * 24 * 60 * 60 * 1000,
+    serialNumber: "urn:uuid:11111111-1111-4111-8111-111111111111",
+    commitments: _copCommitments(["Art. 53(1)(a)", "Art. 53(1)(b)",
+                                  "Art. 53(1)(c)", "Art. 53(1)(d)"]),
+    privateKeyPem: copPair.privateKey,
+  });
+  check("declareAdherence: still forwards every form option it accepts",
+    typeof copForwardEnv.signature === "string" &&
+    copForwardEnv.adherence.copVersion === "2025-07" &&
+    copForwardEnv.adherence.modelId === "acme-llm-7b");
+  check("declareAdherence: a forwarded generatedAt reaches the form",
+    typeof copForwardEnv.adherence.generatedAt === "string" &&
+    copForwardEnv.adherence.generatedAt.length > 0);
+
+  // What the signer forwards must not depend on the poisoned-key registry.
+  // b.pick.registerPoisonedKeys is public and only grows, so an application
+  // that registers a name the adherence form reads made declareAdherence sign
+  // a document with that field emptied: already-validated operator data
+  // dropped between the validation and the signature. Runs as its own process
+  // because nothing can unregister the name afterwards.
+  var poisonOut = nodeCp.execFileSync(
+    process.execPath,
+    [nodePath.join(__dirname, "_compliance-ai-act-poisoned-key-child.js"),
+     nodePath.resolve(__dirname, "..", "..", "lib")],
+    { encoding: "utf8", timeout: 120000 }
+  );
+  var poisoned = JSON.parse(poisonOut);
+  check("declareAdherence: a poisoned key name does not empty a validated option" +
+        " (got " + JSON.stringify(poisoned) + ")",
+    poisoned.error === null && !!poisoned.provider && poisoned.provider.name === "Acme");
 
   // ---- full-dotted-path drive: FRIA (Art. 27), GPAI training-data
   // summary (Art. 53(1)(d)), COP adherence form + signed-declaration
