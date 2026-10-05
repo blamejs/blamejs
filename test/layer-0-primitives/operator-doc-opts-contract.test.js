@@ -174,6 +174,7 @@ function collect() {
   var measurable = 0;
   var notMeasurable = 0;
   var withOpts = 0;
+  var unresolved = [];
 
   _libFiles(LIB, []).forEach(function (file) {
     var src = nodeFs.readFileSync(file, "utf8");
@@ -183,8 +184,48 @@ function collect() {
     measurable += r.measurable;
     notMeasurable += r.notMeasurable;
     withOpts += r.withOpts;
+    unresolved = unresolved.concat(r.unresolved);
   });
-  return { rows: rows, measurable: measurable, notMeasurable: notMeasurable, withOpts: withOpts };
+  return { rows: rows, measurable: measurable, notMeasurable: notMeasurable,
+           withOpts: withOpts, unresolved: unresolved };
+}
+
+// The keys one function's own `validateOpts` calls accept. Two spellings reach
+// the same validator, and reading only the first was a blind spot of the same
+// kind as skipping a block with no `@opts` section: an allowlist the pattern
+// could not see left the block counted as unmeasurable, which reads as a clean
+// verdict rather than as a gap. `b.compliance.aiAct.gpai.adherenceForm`
+// validates against DECLARE_ALLOWED_KEYS and went unmeasured while accepting
+// `modalities`, `privateKeyPem`, `serialNumber` and `audit` undocumented.
+//
+// An identifier whose array literal is not in the file is pushed to
+// `unresolved` instead of being passed over, so it fails the run by name.
+function _acceptedNames(src, ownSrc, optsParam, rel, prim, unresolved) {
+  var accepted = Object.create(null);
+  function take(list) {
+    (list.match(/"([^"]+)"|'([^']+)'/g) || []).forEach(function (q) {
+      accepted[q.slice(1, -1)] = true;
+    });
+  }
+  // The \b keeps a local helper out. Seven modules declare their own
+  // `_validateOpts`, and `deprecate.js` calls it as `_validateOpts(opts, fnName)`
+  // where the second argument is a label, not an allowlist. Without the
+  // boundary that reads as the shared validator handed an unresolvable array,
+  // which would fail the run over a shape that is not an allowlist at all.
+  var inline = new RegExp("\\bvalidateOpts\\s*\\(\\s*" + optsParam + "\\s*,\\s*\\[([^\\]]*)\\]", "g");
+  var m;
+  while ((m = inline.exec(ownSrc)) !== null) take(m[1]);
+
+  var named = new RegExp("\\bvalidateOpts\\s*\\(\\s*" + optsParam +
+    "\\s*,\\s*([A-Za-z_$][\\w$]*)\\s*[,)]", "g");
+  var n;
+  while ((n = named.exec(ownSrc)) !== null) {
+    var decl = new RegExp("(?:var|let|const)\\s+" + n[1] +
+      "\\s*=\\s*(?:Object\\.freeze\\s*\\()?\\[([^\\]]*)\\]").exec(src);
+    if (!decl) { unresolved.push(rel + "  " + prim + "  -> " + n[1]); continue; }
+    take(decl[1]);
+  }
+  return accepted;
 }
 
 // One file's worth of the comparison, taking source rather than a path so a
@@ -196,6 +237,7 @@ function _analyze(src, rel) {
   var measurable = 0;
   var notMeasurable = 0;
   var withOpts = 0;
+  var unresolved = [];
   var masked = _mask(src);
   (function () {
     var m;
@@ -224,14 +266,7 @@ function _analyze(src, rel) {
         var optsParam = params.length ? params[params.length - 1].replace(/\s*=.*$/, "") : null;
         if (!optsParam || !/^[A-Za-z_$][\w$]*$/.test(optsParam)) return;
         var ownSrc = _withoutSpans(src, body, _nestedSpans(masked, body));
-        var vre = new RegExp("validateOpts\\s*\\(\\s*" + optsParam + "\\s*,\\s*\\[([^\\]]*)\\]", "g");
-        var accepted = {};
-        var vm;
-        while ((vm = vre.exec(ownSrc)) !== null) {
-          (vm[1].match(/"([^"]+)"|'([^']+)'/g) || []).forEach(function (q) {
-            accepted[q.slice(1, -1)] = true;
-          });
-        }
+        var accepted = _acceptedNames(src, ownSrc, optsParam, rel, prim, unresolved);
         if (Object.keys(accepted).length === 0) return;
         picked = { accepted: accepted };
       });
@@ -254,7 +289,8 @@ function _analyze(src, rel) {
       });
     }
   }());
-  return { rows: rows, measurable: measurable, notMeasurable: notMeasurable, withOpts: withOpts };
+  return { rows: rows, measurable: measurable, notMeasurable: notMeasurable,
+           withOpts: withOpts, unresolved: unresolved };
 }
 
 var WALK = collect();
@@ -271,6 +307,14 @@ function testTheComparisonHasSomethingToCompare() {
   check("and the comparison ran against those blocks",
     WALK.rows.length === WALK.measurable,
     "rows=" + WALK.rows.length + " measurable=" + WALK.measurable);
+  // An allowlist the gate cannot read is the one case where "unmeasurable" is a
+  // defect rather than a fact about the primitive: the keys exist, so the
+  // comparison is possible and something about the instrument is in the way.
+  // Passing over it is how a named allowlist stayed invisible while the
+  // aggregate threshold above reported a healthy count.
+  check("every allowlist a primitive hands to validateOpts could be read" +
+        (WALK.unresolved.length ? " (" + WALK.unresolved.join("; ") + ")" : ""),
+    WALK.unresolved.length === 0);
 }
 
 function testEveryAcceptedOptionIsDocumented() {
@@ -360,6 +404,42 @@ function testTheInstrumentReadsAFactoryNestedPrimitive() {
   check("and every option it accepts is reported as undocumented",
     fx.rows.length === 1 && fx.rows[0].missing.join(",") === "alpha,beta",
     fx.rows.length ? fx.rows[0].missing.join(",") : "no row");
+
+  // The same blind spot one level along: an allowlist handed over by NAME. The
+  // inline-array pattern found no keys, so the block was counted unmeasurable
+  // and its undocumented options were never compared. A fixture pins it for the
+  // same reason as the one above.
+  var namedFixture = [
+    "var FIXTURE_ALLOWED = [\"gamma\", \"delta\"];",
+    "/**",
+    " * @primitive b.fixture.namedAllowlist",
+    " * @signature b.fixture.namedAllowlist(opts)",
+    " *",
+    " * A primitive whose allowlist is a module-level array.",
+    " *",
+    " * @opts",
+    " *   gamma: string,   // documented",
+    " */",
+    "function namedAllowlist(opts) {",
+    "  validateOpts(opts, FIXTURE_ALLOWED, \"fixture.namedAllowlist\");",
+    "  return opts.gamma;",
+    "}",
+  ].join("\n");
+  var nf = _analyze(namedFixture, "fixture.js");
+  check("an allowlist passed by name is resolved, not counted unmeasurable",
+    nf.measurable === 1, "measurable=" + nf.measurable + " notMeasurable=" + nf.notMeasurable);
+  check("and its undocumented option is reported",
+    nf.rows.length === 1 && nf.rows[0].missing.join(",") === "delta",
+    nf.rows.length ? nf.rows[0].missing.join(",") : "no row");
+
+  // And a named allowlist the gate CANNOT read must fail by name rather than
+  // pass as one more unmeasurable block, which is what made the first two
+  // blind spots survive: the aggregate threshold stayed green over them.
+  var opaqueFixture = namedFixture.replace("var FIXTURE_ALLOWED = [\"gamma\", \"delta\"];",
+    "var FIXTURE_ALLOWED = require(\"./elsewhere\").KEYS;");
+  var of = _analyze(opaqueFixture, "fixture.js");
+  check("an unreadable allowlist is reported, not skipped",
+    of.unresolved.length === 1, JSON.stringify(of.unresolved));
 
   // The three that drove the finding, so dropping their entries fails here too.
   [["b.fedcm.config", "disconnect_endpoint"],

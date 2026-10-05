@@ -188,6 +188,18 @@ function classify(e, opts) {
   if (name === "ReferenceError") return { outcome: "skip", reason: "external identifier" };
   if (e && e.code === "EXAMPLE_EXTERNAL_MODULE") return { outcome: "skip", reason: "external module" };
   if (e && /^test timed out:|Script execution timed out/.test(String(e.message || ""))) return { outcome: "skip", reason: "timeout" };
+  // An option the primitive does not accept is the documented call shape being
+  // wrong, which is this gate's own target, so it is read before the framework
+  // -error skip below rather than inside it. An example demonstrating a
+  // precondition or a type refusal has a reason to throw; one naming a key the
+  // API rejects as unknown does not, since the example documents that very API.
+  // Both spellings in the tree are covered: `unknown option 'x'. Allowed keys:`
+  // from the shared validator, and `unknown opt 'x'. Allowed:` from a
+  // hand-rolled key loop.
+  if (e && e.isFrameworkError && /\bunknown opt(?:ion)?\s+'[^']*'/i.test(String(e.message || ""))) {
+    return { outcome: "fail",
+             error: "example passes an option the primitive does not accept: " + (e.message || String(e)) };
+  }
   // A framework typed error means the API RESOLVED + ran + threw its own error
   // (a precondition / needs-init / input-validation demo) — the API exists, so
   // it is NOT the renamed/removed-API drift this gate targets. (Regressions where
