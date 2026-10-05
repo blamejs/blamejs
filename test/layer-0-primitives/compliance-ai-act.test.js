@@ -902,7 +902,7 @@ function run() {
   var poisonOut = nodeCp.execFileSync(
     process.execPath,
     [nodePath.join(__dirname, "_compliance-ai-act-poisoned-key-child.js"),
-     nodePath.resolve(__dirname, "..", "..")],
+     nodePath.resolve(__dirname, "..", "..", "lib")],
     { encoding: "utf8", timeout: 120000 }
   );
   var poisoned = JSON.parse(poisonOut);
