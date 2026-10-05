@@ -52,6 +52,10 @@
         {
           "title": "A signing refusal is not recorded in the audit trail, and the option says so",
           "body": "`b.mail.crypto.pgp.sign`'s `audit` entry said a refusal is recorded either way. It is not: the primitive's only emit is its `mail.crypto.pgp.sign` success event, and every refusal above it throws first, so a failed sign reaches the caller and not the audit trail. The entry now says that. `b.mail.crypto.pgp.verify` is the one that does emit on failure, as `mail.crypto.pgp.verify_fail`, and its entry already named that event."
+        },
+        {
+          "title": "bundleAdapterStorage described a default fs adapter that does not exist",
+          "body": "`b.backup.bundleAdapterStorage` documented its adapter contract as \"an `fs` implementation is the default + ships in `lib/backup/_adapter-fs.js`\". Neither half held: `adapter` is required and building the backend without one raises `backup/bad-adapter`, and no such file is in the package. An operator following that sentence would omit `adapter` and meet the refusal, then look for a file that is not there.\n\nThe block now names what does ship. Two adapter factories exist, `b.backup.bundleAdapterStorage.fsAdapter({ root })` for a local filesystem and `.objectStoreAdapter(client)` for an object store, so the five-method contract below them is what an operator implements only for a store neither covers; and `b.backup.diskStorage` is the separate filesystem-backed backend that takes no adapter at all. A sweep of every repo path named in a `lib/` comment block found this the only one missing from the tree, out of fifteen."
         }
       ]
     },
