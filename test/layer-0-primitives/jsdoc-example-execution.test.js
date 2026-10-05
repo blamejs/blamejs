@@ -449,6 +449,50 @@ function _checkApplyAsyncFailures() {
   apply(two, [{ id: "x", error: "first" }, { id: "x", error: "second" }]);
   check("the first late failure for a row wins", two[0].error === "first");
 
+  // An unknown option is the one framework refusal a documented example has no
+  // reason to demonstrate, so classify calls it a failure rather than a
+  // precondition demo. The spellings in the tree quote the key differently, and
+  // `validateOpts.shape` writes DOUBLE quotes because it formats the name with
+  // JSON.stringify: a single-quote-only pattern read every shape-validated
+  // primitive's broken example as illustrative. Both refusals come from the
+  // validator rather than from a written string, so a change in its wording
+  // surfaces here instead of silently un-matching.
+  var vo = require(path.join(ROOT, "lib", "validate-opts"));
+  var ProbeOptsError = require(path.join(ROOT, "lib", "framework-error"))
+    .defineClass("ProbeOptsError", {});
+  function _refusalOf(fn) {
+    try { fn(); } catch (e) { return e; }
+    return null;
+  }
+  var keyRefusal = _refusalOf(function () {
+    vo.checkOrThrow({ nope: 1 }, ["yes"], "probe", ProbeOptsError, "probe/bad-opts");
+  });
+  var shapeRefusal = _refusalOf(function () {
+    vo.shape({ nope: 1 },
+      { yes: { rule: "optional-string", code: "probe/bad-opts", label: "probe: yes" } },
+      "probe", ProbeOptsError, "probe/bad-opts");
+  });
+  check("the validator produced both unknown-option quotings",
+    !!keyRefusal && !!shapeRefusal &&
+    /'/.test(keyRefusal.message) && /"/.test(shapeRefusal.message),
+    "key=" + ((keyRefusal && keyRefusal.message) || "").slice(0, 44) +
+    " | shape=" + ((shapeRefusal && shapeRefusal.message) || "").slice(0, 44));
+  check("a single-quoted unknown-option refusal is a failure, not a skip",
+    !!keyRefusal && runtime.classify(keyRefusal).outcome === "fail",
+    JSON.stringify(keyRefusal && runtime.classify(keyRefusal)));
+  check("a double-quoted unknown-option refusal is a failure too",
+    !!shapeRefusal && runtime.classify(shapeRefusal).outcome === "fail",
+    JSON.stringify(shapeRefusal && runtime.classify(shapeRefusal)));
+
+  // The control. An ordinary framework refusal must stay illustrative, or the
+  // narrowing would turn every precondition demo into a failure.
+  var preconditionRefusal = _refusalOf(function () {
+    vo.requireNonEmptyString(undefined, "probe: name", ProbeOptsError, "probe/missing");
+  });
+  check("an ordinary framework refusal is still a skip",
+    !!preconditionRefusal && runtime.classify(preconditionRefusal).outcome === "skip",
+    JSON.stringify(preconditionRefusal && runtime.classify(preconditionRefusal)));
+
   // The resume path writes rows for the examples it finished and hands the
   // rest to a new process, so a straggler can name an id no row carries.
   var absent = [{ id: "x", outcome: "ran" }];

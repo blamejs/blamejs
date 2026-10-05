@@ -193,10 +193,14 @@ function classify(e, opts) {
   // -error skip below rather than inside it. An example demonstrating a
   // precondition or a type refusal has a reason to throw; one naming a key the
   // API rejects as unknown does not, since the example documents that very API.
-  // Both spellings in the tree are covered: `unknown option 'x'. Allowed keys:`
-  // from the shared validator, and `unknown opt 'x'. Allowed:` from a
-  // hand-rolled key loop.
-  if (e && e.isFrameworkError && /\bunknown opt(?:ion)?\s+'[^']*'/i.test(String(e.message || ""))) {
+  // Every spelling in the tree is covered, and the quoting differs between
+  // them: `unknown option 'x'. Allowed keys:` from the shared key check,
+  // `unknown opt 'x'. Allowed:` from a hand-rolled key loop, and
+  // `unknown opt "x" (not in the validated shape...)` from
+  // `validateOpts.shape`, which formats the key with JSON.stringify and so
+  // writes double quotes.
+  if (e && e.isFrameworkError &&
+      /\bunknown opt(?:ion)?\s+(?:'[^']*'|"[^"]*")/i.test(String(e.message || ""))) {
     return { outcome: "fail",
              error: "example passes an option the primitive does not accept: " + (e.message || String(e)) };
   }

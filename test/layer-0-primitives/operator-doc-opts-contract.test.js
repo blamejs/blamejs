@@ -104,15 +104,97 @@ function _mask(text) {
   return out.join("");
 }
 
-function _bracedFrom(masked, at) {
-  var open = masked.indexOf("{", at);
-  if (open === -1) return null;
+function _spanFrom(masked, at, open, close) {
+  var start = masked.indexOf(open, at);
+  if (start === -1) return null;
   var depth = 0;
-  for (var i = open; i < masked.length; i += 1) {
-    if (masked[i] === "{") depth += 1;
-    else if (masked[i] === "}") { depth -= 1; if (depth === 0) return { start: open, end: i }; }
+  for (var i = start; i < masked.length; i += 1) {
+    if (masked[i] === open) depth += 1;
+    else if (masked[i] === close) { depth -= 1; if (depth === 0) return { start: start, end: i }; }
   }
   return null;
+}
+
+function _bracedFrom(masked, at) { return _spanFrom(masked, at, "{", "}"); }
+
+// Every spelling of the shared validator that declares a key allowlist, and
+// where the keys sit. Reading only the first two left 58 of the 413 call sites
+// in lib/ invisible, so the gate reported clean over them: `checkOrThrow` is
+// the same key check raising the caller's error class, and `shape` refuses a
+// key outside its schema, which makes the schema's own field names its
+// allowlist. `applyDefaults` is deliberately absent: it drops an unknown key
+// instead of refusing it, so it declares defaults rather than a contract.
+var ALLOWLIST_CALLS = [
+  { call: "validateOpts",                arg: "array"  },
+  { call: "validateOpts\\.check",        arg: "array"  },
+  { call: "validateOpts\\.checkOrThrow", arg: "array"  },
+  { call: "validateOpts\\.shape",        arg: "object" },
+];
+
+// The top-level argument spans of the call whose `(` is at openParen, so an
+// argument can be read by POSITION. `validateOpts.shape` takes its extra
+// accepted keys as `allow` on a SIXTH argument, and reading only the schema
+// left those keys invisible: `b.ntpCheck.bootCheck` forwards three through
+// `BOOT_CHECK_FORWARDED` and `b.static.create` two inline.
+function _argSpans(masked, openParen) {
+  var out = [];
+  var depth = 0;
+  var start = openParen + 1;
+  for (var i = openParen; i < masked.length; i += 1) {
+    var c = masked[i];
+    if (c === "(" || c === "[" || c === "{") { depth += 1; continue; }
+    if (c === ")" || c === "]" || c === "}") {
+      depth -= 1;
+      if (depth === 0) { out.push({ start: start, end: i - 1 }); return out; }
+      continue;
+    }
+    if (c === "," && depth === 1) { out.push({ start: start, end: i - 1 }); start = i + 1; }
+  }
+  return out;
+}
+
+function _trimmed(masked, span) {
+  var s = span.start;
+  var e = span.end;
+  while (s <= e && /\s/.test(masked[s])) s += 1;
+  while (e >= s && /\s/.test(masked[e])) e -= 1;
+  return e < s ? null : { start: s, end: e };
+}
+
+// A schema object's own field names: an identifier or quoted name followed by
+// `:` at depth 1 whose preceding non-space character is `{` or `,`. That last
+// condition is what keeps the colon of a ternary inside a value from reading as
+// a field name.
+function _schemaFields(masked, src, span) {
+  var names = Object.create(null);
+  var depth = 0;
+  for (var i = span.start; i <= span.end; i += 1) {
+    var c = masked[i];
+    if (c === "{" || c === "[" || c === "(") { depth += 1; continue; }
+    if (c === "}" || c === "]" || c === ")") { depth -= 1; continue; }
+    if (c !== ":" || depth !== 1) continue;
+    var j = i - 1;
+    while (j > span.start && /\s/.test(masked[j])) j -= 1;
+    var end = j + 1;
+    var name;
+    if (masked[j] === '"' || masked[j] === "'") {
+      var q = masked[j];
+      var k = j - 1;
+      while (k > span.start && masked[k] !== q) k -= 1;
+      name = src.slice(k + 1, j);
+      // BEFORE the opening quote, so the delimiter check below reads the `{` or
+      // `,` that precedes the field rather than the quote itself.
+      j = k - 1;
+    } else {
+      while (j >= span.start && /[A-Za-z0-9_$]/.test(masked[j])) j -= 1;
+      name = src.slice(j + 1, end);
+    }
+    var before = j;
+    while (before > span.start && /\s/.test(masked[before])) before -= 1;
+    if (masked[before] !== "{" && masked[before] !== ",") continue;
+    if (/^[A-Za-z_$][\w$]*$/.test(name)) names[name] = true;
+  }
+  return names;
 }
 
 // The functions declared INSIDE this body. A factory's primitives are not the
@@ -130,14 +212,6 @@ function _nestedSpans(masked, body) {
     re.lastIndex = bd.end;
   }
   return spans;
-}
-
-function _withoutSpans(text, body, spans) {
-  var parts = [];
-  var at = body.start;
-  spans.forEach(function (s) { parts.push(text.slice(at, s.start)); at = s.end + 1; });
-  parts.push(text.slice(at, body.end));
-  return parts.join(" ");
 }
 
 function _candidates(masked, from, name) {
@@ -200,31 +274,101 @@ function collect() {
 //
 // An identifier whose array literal is not in the file is pushed to
 // `unresolved` instead of being passed over, so it fails the run by name.
-function _acceptedNames(src, ownSrc, optsParam, rel, prim, unresolved) {
+// Scans the masked source by position rather than a body string, because the
+// `shape` schemas carry function values and the nested-function stripping that
+// keeps a factory's primitives out would cut them in half.
+//
+// The \b on each call form keeps a local helper out. Seven modules declare
+// their own `_validateOpts`, and `deprecate.js` calls it as
+// `_validateOpts(opts, fnName)` where the second argument is a label, not an
+// allowlist. Without the boundary that reads as the shared validator handed an
+// unresolvable array, which would fail the run over a shape that is not an
+// allowlist at all.
+function _acceptedNames(src, masked, body, spans, optsParam, rel, prim, unresolved) {
   var accepted = Object.create(null);
+  function inNested(idx) {
+    for (var i = 0; i < spans.length; i += 1) {
+      if (idx > spans[i].start && idx < spans[i].end) return true;
+    }
+    return false;
+  }
   function take(list) {
     (list.match(/"([^"]+)"|'([^']+)'/g) || []).forEach(function (q) {
       accepted[q.slice(1, -1)] = true;
     });
   }
-  // The \b keeps a local helper out. Seven modules declare their own
-  // `_validateOpts`, and `deprecate.js` calls it as `_validateOpts(opts, fnName)`
-  // where the second argument is a label, not an allowlist. Without the
-  // boundary that reads as the shared validator handed an unresolvable array,
-  // which would fail the run over a shape that is not an allowlist at all.
-  var inline = new RegExp("\\bvalidateOpts\\s*\\(\\s*" + optsParam + "\\s*,\\s*\\[([^\\]]*)\\]", "g");
-  var m;
-  while ((m = inline.exec(ownSrc)) !== null) take(m[1]);
-
-  var named = new RegExp("\\bvalidateOpts\\s*\\(\\s*" + optsParam +
-    "\\s*,\\s*([A-Za-z_$][\\w$]*)\\s*[,)]", "g");
-  var n;
-  while ((n = named.exec(ownSrc)) !== null) {
-    var decl = new RegExp("(?:var|let|const)\\s+" + n[1] +
-      "\\s*=\\s*(?:Object\\.freeze\\s*\\()?\\[([^\\]]*)\\]").exec(src);
-    if (!decl) { unresolved.push(rel + "  " + prim + "  -> " + n[1]); continue; }
-    take(decl[1]);
+  function takeFields(span) {
+    Object.keys(_schemaFields(masked, src, span)).forEach(function (k) { accepted[k] = true; });
   }
+  // An array of key names, written inline or bound to a module-level name. The
+  // span may be a whole argument or the tail after an `allow:`, so both the
+  // array and the identifier are delimited here rather than assumed to end
+  // where the span does.
+  function takeKeyList(span, where) {
+    var t = _trimmed(masked, span);
+    if (!t) return;
+    if (masked[t.start] === "[") {
+      var arr = _spanFrom(masked, t.start, "[", "]");
+      if (!arr || arr.end > t.end) return;
+      take(src.slice(arr.start, arr.end + 1));
+      return;
+    }
+    var lead = /^[A-Za-z_$][\w$]*/.exec(src.slice(t.start, t.end + 1));
+    if (!lead) return;
+    var name = lead[0];
+    var d = new RegExp("(?:var|let|const)\\s+" + name +
+      "\\s*=\\s*(?:Object\\.freeze\\s*\\()?\\[([^\\]]*)\\]").exec(src);
+    if (!d) { unresolved.push(rel + "  " + prim + "  -> " + where + " " + name); return; }
+    take(d[1]);
+  }
+  // An object, written inline or bound to a module-level name; `read` decides
+  // what is taken from its span.
+  function withObject(span, where, read) {
+    var t = _trimmed(masked, span);
+    if (!t) return;
+    if (masked[t.start] === "{") { read(t); return; }
+    var name = src.slice(t.start, t.end + 1);
+    if (!/^[A-Za-z_$][\w$]*$/.test(name)) return;
+    var od = new RegExp("(?:var|let|const)\\s+" + name +
+      "\\s*=\\s*(?:Object\\.freeze\\s*\\()?\\{").exec(src);
+    var osp = od ? _bracedFrom(masked, od.index) : null;
+    if (!osp) { unresolved.push(rel + "  " + prim + "  -> " + where + " " + name); return; }
+    read(osp);
+  }
+  // The `allow` array on a shape call's options argument: extra keys the shape
+  // accepts without declaring a rule for them.
+  function takeAllowList(span) {
+    withObject(span, "shape options", function (osp) {
+      var depth = 0;
+      for (var i = osp.start; i <= osp.end; i += 1) {
+        var c = masked[i];
+        if (c === "{" || c === "[" || c === "(") { depth += 1; continue; }
+        if (c === "}" || c === "]" || c === ")") { depth -= 1; continue; }
+        if (depth !== 1) continue;
+        if (masked.slice(i, i + 5) !== "allow") continue;
+        var j = i + 5;
+        while (j <= osp.end && /\s/.test(masked[j])) j += 1;
+        if (masked[j] !== ":") continue;
+        takeKeyList({ start: j + 1, end: osp.end - 1 }, "shape allow");
+        return;
+      }
+    });
+  }
+  ALLOWLIST_CALLS.forEach(function (form) {
+    var re = new RegExp("\\b" + form.call + "\\s*\\(\\s*" + optsParam + "\\s*,", "g");
+    re.lastIndex = body.start;
+    var m;
+    while ((m = re.exec(masked)) !== null && m.index < body.end) {
+      if (inNested(m.index)) continue;
+      var openParen = masked.indexOf("(", m.index);
+      if (openParen === -1) continue;
+      var args = _argSpans(masked, openParen);
+      if (args.length < 2) continue;
+      if (form.arg === "array") { takeKeyList(args[1], "allowlist"); continue; }
+      withObject(args[1], "shape schema", function (sp) { takeFields(sp); });
+      if (args.length >= 6) takeAllowList(args[5]);
+    }
+  });
   return accepted;
 }
 
@@ -265,8 +409,8 @@ function _analyze(src, rel) {
         var params = cand.params.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
         var optsParam = params.length ? params[params.length - 1].replace(/\s*=.*$/, "") : null;
         if (!optsParam || !/^[A-Za-z_$][\w$]*$/.test(optsParam)) return;
-        var ownSrc = _withoutSpans(src, body, _nestedSpans(masked, body));
-        var accepted = _acceptedNames(src, ownSrc, optsParam, rel, prim, unresolved);
+        var spans = _nestedSpans(masked, body);
+        var accepted = _acceptedNames(src, masked, body, spans, optsParam, rel, prim, unresolved);
         if (Object.keys(accepted).length === 0) return;
         picked = { accepted: accepted };
       });
@@ -440,6 +584,48 @@ function testTheInstrumentReadsAFactoryNestedPrimitive() {
   var of = _analyze(opaqueFixture, "fixture.js");
   check("an unreadable allowlist is reported, not skipped",
     of.unresolved.length === 1, JSON.stringify(of.unresolved));
+
+  // The call forms. Reading only `validateOpts(` left 58 of the 413 allowlist
+  // sites in lib/ invisible, and the gate reported clean over them: the mail
+  // listeners validate with `checkOrThrow` and several primitives declare their
+  // contract as a `shape` schema, whose field names are the allowlist because a
+  // key outside the schema is refused. One fixture per form, so dropping a form
+  // from ALLOWLIST_CALLS fails here rather than going quiet.
+  [
+    { form: "checkOrThrow", body: "validateOpts.checkOrThrow(opts, [\"one\", \"two\"], \"f\", E, \"f/bad\");" },
+    { form: "check",        body: "validateOpts.check(opts, [\"one\", \"two\"], \"f\");" },
+    { form: "shape",        body: "validateOpts.shape(opts, { one: { rule: \"optional-string\" }, " +
+                                  "two: function (v) { return v; } }, \"f\", E, \"f/bad\");" },
+    // A QUOTED schema key. The cursor has to land before the opening quote or
+    // the field-delimiter check rejects every quoted field, which read as a
+    // schema that declares nothing and let the option through.
+    { form: "shapeQuoted",  body: "validateOpts.shape(opts, { one: \"optional-string\", " +
+                                  "\"two\": \"optional-string\" }, \"f\", E, \"f/bad\");" },
+    // The extra keys a shape accepts through its sixth argument's `allow`
+    // array, inline and by name.
+    { form: "shapeAllow",   body: "validateOpts.shape(opts, { one: \"optional-string\" }, " +
+                                  "\"f\", E, \"f/bad\", { allow: [\"two\"] });" },
+  ].forEach(function (c) {
+    var fx2 = _analyze([
+      "/**",
+      " * @primitive b.fixture." + c.form,
+      " * @signature b.fixture." + c.form + "(opts)",
+      " *",
+      " * A primitive validating through " + c.form + ".",
+      " *",
+      " * @opts",
+      " *   one: string,   // documented",
+      " */",
+      "function " + c.form + "(opts) {",
+      "  " + c.body,
+      "  return opts.one;",
+      "}",
+    ].join("\n"), "fixture.js");
+    check("the " + c.form + " call form is read, and its undocumented option reported",
+      fx2.measurable === 1 && fx2.rows.length === 1 && fx2.rows[0].missing.join(",") === "two",
+      "measurable=" + fx2.measurable + " missing=" +
+        (fx2.rows.length ? fx2.rows[0].missing.join(",") : "(no row)"));
+  });
 
   // The three that drove the finding, so dropping their entries fails here too.
   [["b.fedcm.config", "disconnect_endpoint"],
