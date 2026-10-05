@@ -177,18 +177,42 @@ function collect() {
 
   _libFiles(LIB, []).forEach(function (file) {
     var src = nodeFs.readFileSync(file, "utf8");
-    var masked = _mask(src);
     var rel = nodePath.relative(ROOT, file).replace(/\\/g, "/");
+    var r = _analyze(src, rel);
+    rows = rows.concat(r.rows);
+    measurable += r.measurable;
+    notMeasurable += r.notMeasurable;
+    withOpts += r.withOpts;
+  });
+  return { rows: rows, measurable: measurable, notMeasurable: notMeasurable, withOpts: withOpts };
+}
+
+// One file's worth of the comparison, taking source rather than a path so a
+// fixture can drive it. The no-@opts case cannot be pinned against the tree,
+// because once those blocks are documented they all carry a section again, and
+// a reintroduced skip would go unnoticed.
+function _analyze(src, rel) {
+  var rows = [];
+  var measurable = 0;
+  var notMeasurable = 0;
+  var withOpts = 0;
+  var masked = _mask(src);
+  (function () {
     var m;
     BLOCK_RE.lastIndex = 0;
     while ((m = BLOCK_RE.exec(src)) !== null) {
       var blk = m[0];
       if (blk.indexOf("@primitive") === -1) continue;
+      // A block with NO @opts section is measured rather than skipped. Skipping
+      // it was a blind spot over exactly the most complete form of this
+      // omission: `b.fedcm.config` accepted six options and documented none,
+      // and `b.mail.crypto.pgp.sign` and `.verify` accepted nine between them,
+      // all while the gate passed because neither block had a section to
+      // compare against.
       var optsAt = blk.search(/@opts\b/);
-      if (optsAt === -1) continue;
-      withOpts += 1;
+      if (optsAt !== -1) withOpts += 1;
       var prim = (blk.match(/@primitive\s+(\S+)/) || [])[1] || "";
-      var documented = _documentedNames(blk, optsAt);
+      var documented = optsAt === -1 ? Object.create(null) : _documentedNames(blk, optsAt);
       var segment = prim.split(".").pop();
 
       var picked = null;
@@ -229,7 +253,7 @@ function collect() {
         missing: missing,
       });
     }
-  });
+  }());
   return { rows: rows, measurable: measurable, notMeasurable: notMeasurable, withOpts: withOpts };
 }
 
@@ -311,6 +335,42 @@ function testTheInstrumentReadsAFactoryNestedPrimitive() {
   check("a primitive implemented by a differently-named function is measured",
     cors.length === 1 && !!cors[0].accepted.allowPrivateNetwork,
     cors.length ? JSON.stringify(Object.keys(cors[0].accepted).slice(0, 4)) : "not found");
+
+  // The blind spot that let a block documenting NOTHING pass: a block with no
+  // @opts section had nothing to compare against, so three primitives accepted
+  // fifteen options between them and the gate stayed silent. It takes a fixture
+  // to pin, not the tree: once those blocks are documented they carry a section
+  // again, and a reintroduced `if (optsAt === -1) continue` passes every
+  // assertion made against real files.
+  var noOptsFixture = [
+    "/**",
+    " * @primitive b.fixture.noOptsBlock",
+    " * @signature b.fixture.noOptsBlock(opts)",
+    " *",
+    " * A primitive that accepts options and documents none of them.",
+    " */",
+    "function noOptsBlock(opts) {",
+    "  validateOpts(opts, [\"alpha\", \"beta\"], \"fixture.noOptsBlock\");",
+    "  return opts.alpha;",
+    "}",
+  ].join("\n");
+  var fx = _analyze(noOptsFixture, "fixture.js");
+  check("a block with no @opts section is measured, not skipped",
+    fx.measurable === 1, "measurable=" + fx.measurable + " notMeasurable=" + fx.notMeasurable);
+  check("and every option it accepts is reported as undocumented",
+    fx.rows.length === 1 && fx.rows[0].missing.join(",") === "alpha,beta",
+    fx.rows.length ? fx.rows[0].missing.join(",") : "no row");
+
+  // The three that drove the finding, so dropping their entries fails here too.
+  [["b.fedcm.config", "disconnect_endpoint"],
+   ["b.mail.crypto.pgp.sign", "passphrase"],
+   ["b.mail.crypto.pgp.verify", "armored"]].forEach(function (pair) {
+    var row = WALK.rows.filter(function (r) { return r.prim === pair[0]; })[0];
+    check(pair[0] + " is measured and documents " + pair[1],
+      !!row && !!row.accepted[pair[1]] && !!row.documented[pair[1]],
+      row ? "accepted=" + !!row.accepted[pair[1]] + " documented=" + !!row.documented[pair[1]]
+          : "block not measured at all");
+  });
 }
 
 async function run() {
