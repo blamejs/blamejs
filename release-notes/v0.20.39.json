@@ -1,0 +1,39 @@
+{
+  "$schema": "./release-note.schema.json",
+  "version": "0.20.39",
+  "date": "2026-10-04",
+  "headline": "Twenty-four options a primitive accepts but documented nowhere are written down, and a gate holds the two lists equal",
+  "summary": "An option an operator cannot find is one they can neither use nor audit, and every primitive stated its option set twice: the list it accepts, which is the array its `validateOpts` call carries, and the list it documents, which is its `@opts` block. Nothing compared them. Twenty-four options were accepted, validated with a throw, and discoverable nowhere, including three proxy-trust flags that are refused rather than honored, the `skip` and `skipPaths` exemptions on two middlewares, `allowPrivateNetwork` on `b.middleware.cors`, `allowUntrustedIssuer` on `b.mdoc.verifyIssuerSigned`, and the whole option list of the `buildLogoutRequestPost` method on the handle `b.auth.saml.sp.create` returns, which pointed at a sibling rather than naming its own. Each is now written out with the default read from the code, and `test/layer-0-primitives/operator-doc-opts-contract.test.js` compares the two lists on every release so the next one cannot drift apart. No behavior changed.",
+  "sections": [
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "Three proxy-trust flags say that they are refused rather than honored",
+          "body": "`trustProxy` on `b.breakGlass.init` and `b.middleware.networkAllowlist`, and `trustForwardedHeaders` on `b.middleware.dpop`, are each accepted only to be refused: passing one raises `breakglass/bad-opt`, `network-allowlist/bad-opt` or `auth-dpop/bad-opt` unless `trustedProxies` or a resolver already peer-gates the decision, and it never contributes to that decision either way. An operator migrating an Express-style configuration meets that refusal with no entry in the documentation explaining it. All three now carry one, in the wording `b.middleware.cors` already used for the same flag: legacy, refused unless paired with `trustedProxies` or a resolver, and spoofable on its own."
+        },
+        {
+          "title": "The skip exemptions on csrfProtect and fetchMetadata are documented, including what a throwing predicate does",
+          "body": "Both middlewares accept `skipPaths`, an array of string prefixes or RegExps the check is skipped for, and `skip`, a predicate consulted after it. Neither appeared in either block. A string entry matches on a segment boundary, so `\"/api\"` matches `/api` and `/api/x` but not `/apixyz`, and a RegExp entry is asserted ReDoS-safe and stateless when the middleware is built rather than when a request arrives. `skip` skips only on an exact `true`, and a predicate that throws is read as do-not-skip, so a broken exemption can only leave the guard on.\n\nThe part worth reading twice is how much an exemption waives. Both options skip the middleware ENTIRELY, so on `b.middleware.csrfProtect` an exempt path loses `checkOrigin` and `requireJsonContentType` along with the token check, and on `b.middleware.fetchMetadata` it loses `deniedDest` and the `Sec-Fetch-Storage-Access` refusal along with the site check. The adjacent `skipStateless` is the one that waives less: it keeps `checkOrigin`. Exempting a tokenless endpoint with `skipPaths` and assuming origin checking survives is the mistake the two entries are written to prevent."
+        },
+        {
+          "title": "Options documented on nine more primitives",
+          "body": "`allowPrivateNetwork` on `b.middleware.cors` (default false; left off, a Private Network Access preflight is refused with reason `private-network-not-permitted`). `allowUntrustedIssuer` on `b.mdoc.verifyIssuerSigned` (default false; with it unset, omitting `trustAnchorsPem` raises `mdoc/trust-anchors-required`, because the x5chain signer certificate is attacker-controlled). `guardDomain` and `profile` on `b.mail.create` (the address-domain screen is on by default at the `strict` profile, and a refusal raises `mail/recipient-domain-refused`). `trustedProxies`, `forwardedHeaders` and `clientIpResolver` on `b.middleware.flagContext`, which decide what the anonymous targeting key is derived from. `mountInfoPath` on `b.restore.create`, which the cross-device and mount-point checks read instead of the platform's own table. `now` on `b.auth.jar.parse`, which forwards to `b.auth.jwt.verifyExternal` and is documented there already. And `idpSloUrl` on both SAML logout builders."
+        },
+        {
+          "title": "buildLogoutRequestPost names its own options instead of pointing at its sibling",
+          "body": "On the handle `b.auth.saml.sp.create` returns, `buildLogoutRequestPost` accepts the same seven options as `buildLogoutRequest`, and its `@opts` section said \"nameId, nameIdFormat, sessionIndex, relayState — same as buildLogoutRequest\" with the signing pair described in a second line. A run of names in prose is not something an operator can search for, and a reference to a sibling is not a contract. All seven are written out, with the same meanings the sibling gives them and the fallback order for `idpSloUrl`: the call's own value, then `sp.create`'s `idpSloUrl`, then its `idpSsoUrl`, and `auth-saml/no-idp-slo` when none is set."
+        }
+      ]
+    },
+    {
+      "heading": "Detectors",
+      "items": [
+        {
+          "title": "Every option a primitive accepts is one its block documents",
+          "body": "`test/layer-0-primitives/operator-doc-opts-contract.test.js` reads each `@primitive` block's `@opts` section and compares it against the allowlist in that block's own function, and runs in release.js's static-gate block beside the API-name and error-code gates. An injection point for tests is exempt, since publishing one would make it operator surface: the underscore prefix carries itself, and the two seams that do not wear one, `transportFactory` on the mail deliverer and `clock` on the rate limiter, are listed by name with what they inject. Those exemptions are checked for honesty in both directions, so one that stops being accepted, or that becomes documented, fails rather than sitting in the list.\n\nWhat the gate had to get right is which function a block describes, because both obvious rules are wrong in one direction. A body that ends at the first closing brace in column zero ends at the enclosing `create()` factory rather than at the primitive, which credits a block with every later allowlist in that factory: measured that way, `b.auth.oauth.parseCallback` appeared to accept eight options while calling no `validateOpts` at all. Requiring the function to carry the primitive's own name misses `b.middleware.cors`, which is implemented by `function create(opts)`, and preferring that name finds a different function of that name in the same file. The gate tries the adjacent declaration and the named one, keeps whichever validates its own options parameter, and delimits it by matching its own braces. It also asserts that a useful share of blocks remain measurable, so a regression that empties the comparison fails here rather than reporting a clean verdict over nothing."
+        }
+      ]
+    }
+  ]
+}
