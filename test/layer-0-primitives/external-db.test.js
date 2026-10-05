@@ -497,6 +497,84 @@ function testConfigurePool() {
   b.externalDb._resetForTest();
 }
 
+// A connect that rejects frees the slot it had taken, and that is one more way
+// a slot becomes free: the release and the discard both re-offer the pool to the
+// queue, and this path did not. So a resize that admitted one caller whose
+// connection then failed transiently left the rest queued against free slots
+// until some unrelated client happened to come back.
+async function testAFailedConnectStillRelievesTheQueue() {
+  b.externalDb._resetForTest();
+  var held = [];
+  var connects = 0;
+  var failFrom = Infinity;
+  var driver = {
+    connect: async function () {
+      connects += 1;
+      if (connects >= failFrom) {
+        var e = new Error("connect refused");
+        e.code = "ECONNREFUSED";
+        throw e;
+      }
+      return { id: "c" + connects };
+    },
+    query: function (_client, sql) {
+      if (/^SELECT\s+hold\b/i.test(sql)) {
+        return new Promise(function (resolve) {
+          held.push(function () { resolve({ rows: [], rowCount: 0 }); });
+        });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    },
+    close: async function () { /* no-op */ },
+  };
+  b.externalDb.init({
+    backends: {
+      main: {
+        connect: driver.connect, query: driver.query, close: driver.close,
+        pool: { min: 1, max: 1, idleTimeoutMs: b.constants.TIME.minutes(1) },
+      },
+    },
+  });
+  try {
+    var holding = b.externalDb.query("SELECT hold", []);
+    await helpers.waitUntil(function () {
+      return b.externalDb.listBackends()[0].pool.active >= 1;
+    }, { timeoutMs: 5000, label: "failed connect: the only connection is busy" });
+
+    var settled = 0;
+    var queued = [];
+    for (var i = 0; i < 3; i += 1) {
+      queued.push(b.externalDb.query("SELECT 1", [])
+        .then(function () { settled += 1; }, function () { settled += 1; }));
+    }
+    await helpers.waitUntil(function () {
+      return b.externalDb.listBackends()[0].pool.waiters >= 3;
+    }, { timeoutMs: 5000, label: "failed connect: three callers queued" });
+
+    // The next connection attempt fails, so the first caller the resize admits
+    // is refused and gives its slot straight back. The resize opens exactly ONE
+    // slot: raising max far enough to admit every queued caller in a single
+    // pass hides this, because then the loop never has to be re-entered.
+    failFrom = connects + 1;
+    b.externalDb.configurePool("main", { max: 2 });
+
+    var drained = false;
+    await Promise.race([
+      Promise.all(queued).then(function () { drained = true; }),
+      helpers.passiveObserve(6000, "failed connect: the queue drains anyway"),
+    ]);
+    check("a resize whose first connect fails still relieves the rest of the queue",
+      drained === true && settled === 3,
+      "settled=" + settled + " pool=" + JSON.stringify(b.externalDb.listBackends()[0].pool));
+  } finally {
+    failFrom = Infinity;
+    held.forEach(function (release) { release(); });
+    try { await holding; } catch (_e) { /* the hold may be refused */ }
+    try { await b.externalDb.shutdown(); } catch (_e) { /* best effort */ }
+    b.externalDb._resetForTest();
+  }
+}
+
 // Raising max is how an operator relieves a pool that callers are queued on,
 // and the queue was only ever served when a connection came back: the slack the
 // resize created reached nobody until one of the in-flight queries finished,
@@ -1291,6 +1369,7 @@ async function run() {
   await testShutdown();
   testConfigurePool();
   await testConfigurePoolAdmitsCallersAlreadyQueued();
+  await testAFailedConnectStillRelievesTheQueue();
   await testConnectAs();
   await testRunAs();
   await testAssertRoleHardening();

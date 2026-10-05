@@ -507,6 +507,51 @@ async function testAPartFailureWhileTheSourceIsQuietStillFailsAndAborts() {
   }
 }
 
+// Interrupting the read means destroying the source, and a bare `destroy()`
+// relies on the stream emitting something the reader is waiting for. A Readable
+// built with `emitClose: false` emits neither `error` nor `close` when it is
+// destroyed without a reason, so the `for await` stayed pending, the put never
+// settled and the upload was never aborted. Destroying it WITH the failure is
+// what reaches the reader, and that reason is one this code already holds.
+async function testAPartFailureSettlesAQuietSourceThatSuppressesClose() {
+  var PART = 5 * 1024 * 1024;
+  var fake = _fakeS3({ failPartNumber: 1 });
+  var port = await listenOnRandomPort(fake.server);
+  try {
+    var pushed = 0;
+    var source = new Readable({
+      emitClose: false,
+      read: function () {
+        var self = this;
+        if (pushed >= 2) return;   // quiet from here, as in the test above
+        pushed += 1;
+        setTimeout(function () { self.push(Buffer.alloc(PART, pushed)); }, 5);
+      },
+    });
+    var store = sigv4.create(_baseConfig(port, {
+      multipartThresholdBytes: 1,
+      partSizeBytes:           PART,
+      partConcurrency:         2,
+    }));
+    var settled = null;
+    await Promise.race([
+      store.put("quiet-no-close.bin", source).then(
+        function () { settled = "resolved"; },
+        function (e) { settled = e; }),
+      helpers.passiveObserve(8000,
+        "sigv4: a part failed while an emitClose:false source was quiet"),
+    ]);
+    check("a part failure settles the put when the source suppresses close",
+      settled !== null, "still pending after 8s");
+    check("  as a rejection", settled !== "resolved" && settled !== null,
+      String(settled));
+    check("  and the upload is aborted", fake.aborts.length === 1,
+      "aborts=" + fake.aborts.length);
+  } finally {
+    await new Promise(function (r) { fake.server.close(function () { r(); }); });
+  }
+}
+
 // The source is read only after initiation succeeds, so an initiation that
 // fails used to leave the descriptor open: the stream was never read and never
 // closed. Repeated failures then exhaust descriptors.
@@ -1047,6 +1092,7 @@ async function run() {
     await testAFailingSourceStreamAbortsTheUpload();
     await testASourceThatFailsBeforeInitiateDoesNotCrashTheProcess();
     await testAPartFailureWhileTheSourceIsQuietStillFailsAndAborts();
+    await testAPartFailureSettlesAQuietSourceThatSuppressesClose();
     await testAFailedInitiationClosesTheSource();
     await testMultipartPartWithoutEtagFailsAndAborts();
     await testAbortFailureDoesNotMaskPrimaryError();
