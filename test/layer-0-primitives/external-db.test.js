@@ -1176,6 +1176,51 @@ async function testMoreConfigAndPaths() {
 
 // ---- runner ----------------------------------------------------------------
 
+// ---- a refused init drains the pools it already built ---------------------
+
+// init builds one pool per backend, and each pool arms a reaper interval in
+// its constructor. A later backend's config can be refused, and because
+// `initialized` is still false at that point, shutdown() returned at its own
+// guard: every pool built before the refusal kept its reaper armed with
+// nothing left holding the pool. The refusal and the teardown are
+// assertable; the reaper itself is not, so that part is recorded as
+// unmeasured rather than asserted.
+async function testARefusedInitDrainsThePoolsItBuilt() {
+  b.externalDb._resetForTest();
+
+  var threw = null;
+  try {
+    b.externalDb.init({
+      backends: {
+        built:  okBackend(),
+        broken: { query: async function () { return { rows: [], rowCount: 0 }; } },
+      },
+    });
+  } catch (e) { threw = e; }
+  check("init refuses a backend with no connect() after building an earlier pool",
+    threw && threw.code === "external-db/invalid-config",
+    "code=" + (threw && threw.code));
+
+  // The operator's teardown call, on a module that never finished init.
+  var shutdownThrew = null;
+  try { await b.externalDb.shutdown(); } catch (e) { shutdownThrew = e; }
+  check("  and shutdown() after the refusal completes",
+    shutdownThrew === null, "threw=" + (shutdownThrew && shutdownThrew.message));
+
+  helpers.unavailable("externalDb pool-reaper release after a refused init is not " +
+    "observable: the orphaned pool is unreachable and its reaper is an unref'd " +
+    "interval, which neither getActiveResourcesInfo() nor the libuv report " +
+    "distinguishes (Node coalesces JS timers onto one handle)");
+
+  // The module must still take a fresh config.
+  b.externalDb.init({ backends: { fresh: okBackend() } });
+  var names = b.externalDb.listBackends().map(function (x) { return x.name; });
+  check("  and a later init takes a fresh config",
+    names.length === 1 && names[0] === "fresh", "names=" + names.join(","));
+  await b.externalDb.shutdown();
+  b.externalDb._resetForTest();
+}
+
 async function run() {
   await testNotInitialized();
   testInitValidation();
@@ -1196,6 +1241,7 @@ async function run() {
   await testResidencyGate();
   await testReplicas();
   await testPoolInternals();
+  await testARefusedInitDrainsThePoolsItBuilt();
   await testPoolMinFloor();
   await testMoreConfigAndPaths();
 

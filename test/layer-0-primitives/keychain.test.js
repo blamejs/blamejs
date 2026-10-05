@@ -253,8 +253,10 @@ async function runFileBackendEdgeCases() {
 
   // ---- Corrupted / non-wrap file surfaces a typed error, not a crash -----
   // Write bytes that are not a vault.wrap payload, then attempt a read.
-  // vaultWrap.unwrap rejects the magic byte; keychain maps that to
-  // file-unseal-failed rather than propagating a raw crash.
+  // vaultWrap.unwrap rejects the magic byte, which is a fact about the FILE.
+  // This asserted `file-unseal-failed` until 0.21.0, the same code a wrong
+  // passphrase produces, so the message said "passphrase rejected or file
+  // corrupted" and the operator could not tell which to go and fix.
   var ffCorrupt = _tmpFileNamed("corrupt.enc");
   await b.atomicFile.write(ffCorrupt, Buffer.from("this is not a sealed keychain file"), {
     fileMode: 0o600,
@@ -266,8 +268,9 @@ async function runFileBackendEdgeCases() {
       fallbackFile: ffCorrupt, passphrase: pass,
     });
   } catch (e) { threw = e; }
-  check("keychain.retrieve: corrupted file throws file-unseal-failed",
-    threw && threw.code === "keychain/file-unseal-failed");
+  check("keychain.retrieve: an unreadable file is reported as the file",
+    threw && threw.code === "keychain/file-unreadable",
+    "code=" + (threw && threw.code));
 
   // ---- Round-trip fidelity for metacharacter / Unicode passwords ---------
   // The file payload is canonical JSON; a password carrying quotes,

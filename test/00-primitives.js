@@ -10697,6 +10697,49 @@ async function testVaultPassphraseOpsWrongPassphraseRejected() {
   } finally { fx.cleanup(); }
 }
 
+// A sealed file this cannot PARSE is a different fact from a passphrase it
+// rejects, and the remedies differ: restore the file, versus try another
+// passphrase. Both catches translated every non-gate error from
+// `vaultWrap.unwrap` into `passphrase-rejected`, so an operator whose sealed
+// file was truncated or written by a newer build went looking for a wrong
+// passphrase. The passphrase supplied here is the RIGHT one in every case.
+async function testVaultPassphraseOpsUnreadableSealedFileIsNotAPassphraseError() {
+  var corruptions = [
+    ["a file that is not a wrapped vault", function (bytes) {
+      var c = Buffer.from(bytes); c[0] = 0x00; return c;
+    }],
+    ["a sealed file claiming a newer format", function (bytes) {
+      var c = Buffer.from(bytes); c[1] = 0x7f; return c;
+    }],
+    ["a truncated sealed file", function (bytes) { return bytes.slice(0, 10); }],
+  ];
+  for (var i = 0; i < corruptions.length; i += 1) {
+    var fx = _passphraseOpsFixture();
+    try {
+      fx.writePlaintext("data");
+      var pass = Buffer.from("right", "utf8");
+      await b.vaultPassphraseOps.seal({ dataDir: fx.dir, passphrase: pass });
+
+      var sealedPath = path.join(fx.dir, "vault.key.sealed");
+      fs.writeFileSync(sealedPath, corruptions[i][1](fs.readFileSync(sealedPath)));
+
+      var threw = null;
+      try { await b.vaultPassphraseOps.unseal({ dataDir: fx.dir, passphrase: pass }); }
+      catch (e) { threw = e; }
+      check("unseal refuses " + corruptions[i][0], threw !== null, "no throw");
+      check("  and does not call it a rejected passphrase",
+            threw && threw.code !== "vault-passphrase/passphrase-rejected",
+            "code=" + (threw && threw.code));
+      check("  and names the file as the problem",
+            threw && threw.code === "vault-passphrase/sealed-file-unreadable",
+            "code=" + (threw && threw.code));
+      check("  and leaves vault.key.sealed in place", fs.existsSync(sealedPath));
+      check("  and leaks no plaintext",
+            !fs.existsSync(path.join(fx.dir, "vault.key")));
+    } finally { fx.cleanup(); }
+  }
+}
+
 async function testVaultPassphraseOpsRotate() {
   var fx = _passphraseOpsFixture();
   try {
@@ -13117,9 +13160,9 @@ function testErrorsPageLogsViaInjectedLogger() {
   var res500 = _makeFakeRes();
   handler(new Error("kaboom"), req, res500);
   check("500 logged at error level",               captured.length === 1 && captured[0].level === "error");
-  check("500 log fields include status + url",
+  check("500 log fields include status + route",
         captured[0].fields.status === 500 &&
-        captured[0].fields.url === "/x" &&
+        captured[0].fields.route === "/x" &&
         typeof captured[0].fields.stack === "string");
 
   captured.length = 0;
@@ -13333,7 +13376,8 @@ async function testErrorsPageAuditRedactsSecretsInStackAndReason() {
           meta.stack.indexOf("[REDACTED-CONN-STRING]") !== -1);
     // Non-secret triage fields survive redaction.
     check("audit-redact: non-secret metadata preserved",
-          !!meta && meta.status === 500 && meta.method === "POST" && meta.url === "/api/widget");
+          !!meta && meta.status === 500 && meta.method === "POST" &&
+          meta.route === "/api/widget");
   } finally {
     await teardownTestDb(tmpDir);
   }
@@ -19561,6 +19605,7 @@ async function run() {
   await testVaultPassphraseOpsSealUnsealRoundTrip();
   await testVaultPassphraseOpsKeepPlaintext();
   await testVaultPassphraseOpsWrongPassphraseRejected();
+  await testVaultPassphraseOpsUnreadableSealedFileIsNotAPassphraseError();
   await testVaultPassphraseOpsRotate();
   await testVaultPassphraseOpsRotateRejectsBadOldPassphrase();
   testVaultPassphraseOpsArgValidation();
@@ -20299,6 +20344,8 @@ module.exports = {
   testVaultPassphraseOpsSealUnsealRoundTrip: testVaultPassphraseOpsSealUnsealRoundTrip,
   testVaultPassphraseOpsKeepPlaintext:       testVaultPassphraseOpsKeepPlaintext,
   testVaultPassphraseOpsWrongPassphraseRejected: testVaultPassphraseOpsWrongPassphraseRejected,
+  testVaultPassphraseOpsUnreadableSealedFileIsNotAPassphraseError:
+    testVaultPassphraseOpsUnreadableSealedFileIsNotAPassphraseError,
   testVaultPassphraseOpsRotate:              testVaultPassphraseOpsRotate,
   testVaultPassphraseOpsRotateRejectsBadOldPassphrase: testVaultPassphraseOpsRotateRejectsBadOldPassphrase,
   testVaultPassphraseOpsArgValidation:       testVaultPassphraseOpsArgValidation,

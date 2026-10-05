@@ -490,6 +490,111 @@ function _get(port, path, headers, method) {
   });
 }
 
+// Three things decided from the wrong inputs, in one function. The level came
+// from the status being 5xx-or-absent rather than from whether the refusal was
+// deliberate, so a framework capacity refusal was logged as an error with a
+// stack that says nothing. The target came from req.url, so a credential
+// sitting in a path segment or a query string was written to the log. And the
+// router.use() catch logged a line of its own and then rethrew, so one
+// middleware failure produced two lines.
+async function testRouteErrorLoggingLevelTargetAndDuplication() {
+  var FE = b.frameworkError;
+  var SECRET = "SECRETRESETTOKEN0123456789";
+
+  var r = b.router.create();
+  r.get("/capacity", function () {
+    throw new FE.Argon2Error("argon2/busy", "derivation gate is full");
+  });
+  r.get("/store-down", function () {
+    throw new FE.SessionError("session/store-unreachable", "the session store did not answer");
+  });
+  r.get("/reset/:token", function () { throw new Error("reset handler blew up"); });
+  r.onError(function (err, req, res) { res.writeHead(500); res.end("handled"); });
+
+  var mwRouter = b.router.create();
+  mwRouter.use(function authGuard() { throw new Error("guard blew up"); });
+  mwRouter.get("/guarded", function (req, res) { res.end("never"); });
+  mwRouter.onError(function (err, req, res) { res.writeHead(500); res.end("handled"); });
+
+  var out = [];
+  var errLines = [];
+  var realLog = console.log;
+  var realError = console.error;
+  var realLevel = process.env.BLAMEJS_BOOT_LOG_LEVEL;
+  var server = r.listen(0);
+  var mwServer = mwRouter.listen(0);
+  await _listening(server);
+  await _listening(mwServer);
+  var port = server.address().port;
+  var mwPort = mwServer.address().port;
+
+  process.env.BLAMEJS_BOOT_LOG_LEVEL = "debug";
+  console.log = function (m) { out.push(String(m)); };
+  console.error = function (m) { errLines.push(String(m)); };
+  try {
+    await _get(port, "/capacity");
+    await _get(port, "/store-down");
+    await _get(port, "/reset/" + SECRET + "?next=/account");
+    await _get(mwPort, "/guarded");
+  } finally {
+    console.log = realLog;
+    console.error = realError;
+    if (realLevel === undefined) delete process.env.BLAMEJS_BOOT_LOG_LEVEL;
+    else process.env.BLAMEJS_BOOT_LOG_LEVEL = realLevel;
+    await _close(server);
+    await _close(mwServer);
+  }
+
+  function _lines(hay, needle) {
+    return hay.filter(function (l) { return l.indexOf(needle) !== -1; });
+  }
+  var all = out.concat(errLines);
+
+  // #825 — the level follows whether the refusal was deliberate. The needle is
+  // each error's message: only the 4xx line carried err.code before the fix,
+  // so matching on the code would pass vacuously for the others.
+  var CAPACITY = "derivation gate is full";
+  var STORE_DOWN = "the session store did not answer";
+  check("a transient framework refusal writes no error-level line",
+    _lines(errLines, CAPACITY).length === 0, errLines.join(" ~~ "));
+  check("a transient framework refusal is still recorded, below warn",
+    _lines(out, CAPACITY).length === 1, out.join(" ~~ "));
+  check("a non-transient framework error is recorded at warn, not error",
+    _lines(errLines, STORE_DOWN).length === 1 &&
+    errLines.filter(function (l) {
+      return l.indexOf(STORE_DOWN) !== -1 && l.indexOf("\"level\":\"error\"") !== -1;
+    }).length === 0,
+    errLines.join(" ~~ "));
+  check("neither framework line carries stack frames",
+    _lines(all, CAPACITY).concat(_lines(all, STORE_DOWN))
+      .every(function (l) { return l.indexOf(" | ") === -1; }),
+    all.join(" ~~ "));
+  check("and each framework line carries the code the operator greps for",
+    _lines(all, CAPACITY).some(function (l) { return l.indexOf("argon2/busy") !== -1; }) &&
+    _lines(all, STORE_DOWN).some(function (l) {
+      return l.indexOf("session/store-unreachable") !== -1;
+    }),
+    all.join(" ~~ "));
+
+  // #824 — the logged target is the route, never the raw URL.
+  check("no logged line carries the credential from the URL path",
+    all.every(function (l) { return l.indexOf(SECRET) === -1; }),
+    all.filter(function (l) { return l.indexOf(SECRET) !== -1; }).join(" ~~ "));
+  check("the line names the route pattern instead",
+    _lines(all, "/reset/:token").length >= 1, all.join(" ~~ "));
+  check("and no logged line carries the query string",
+    all.every(function (l) { return l.indexOf("next=/account") === -1; }),
+    all.join(" ~~ "));
+
+  // #823 — one middleware failure, one line, and it names the middleware.
+  var guardLines = _lines(all, "guard blew up");
+  check("a middleware failure writes exactly one line",
+    guardLines.length === 1, guardLines.join(" ~~ "));
+  check("and that line names the middleware that failed",
+    guardLines.length === 1 && guardLines[0].indexOf("authGuard") !== -1,
+    guardLines.join(" ~~ "));
+}
+
 // A route that throws a typed 4xx refusal used to write an error-level line
 // with five stack frames, so a burst of failed sign-ins wrote one per request.
 async function testRouteErrorLogLevel() {
@@ -1444,6 +1549,7 @@ async function run() {
   await testWsListenH1Upgrade();
   await testRedirectAndErrorBranches();
   await testRouteErrorLogLevel();
+  await testRouteErrorLoggingLevelTargetAndDuplication();
   await testRouteErrorLoggingCannotCostTheResponse();
 }
 

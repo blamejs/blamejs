@@ -64,6 +64,10 @@ function _fakeS3(behavior) {
       requests.push(rec);
 
       var parsed = new URL("http://x" + req.url);
+      // A hook for a test that has to observe the ORDER of the sub-API calls
+      // against something outside the server, such as how much of a source
+      // stream has been consumed by the time the upload is initiated.
+      if (typeof behavior.onRequest === "function") behavior.onRequest(rec, parsed);
       var hasUploadsParam = parsed.searchParams.has("uploads");
       var uploadId = parsed.searchParams.get("uploadId");
       var partNumber = parsed.searchParams.get("partNumber");
@@ -300,6 +304,243 @@ async function testMultipartFromReadableStream() {
     check("stream-multipart: 3 parts received",       fake.partsReceived[parts[0]].length === 3);
   } finally {
     await new Promise(function (r) { fake.server.close(function () { r(); }); });
+  }
+}
+
+// ---- A streamed put does not hold the whole stream ----
+
+// Every part was read out of the source and held in an array before the upload
+// was even initiated, so a streamed put cost the same peak memory as handing
+// the whole object over as a Buffer — the reason to stream it in the first
+// place. The two observable consequences: the source was drained before the
+// first request went out, and the number of parts resident at once was the
+// part count rather than the configured concurrency.
+async function testAStreamedPutUploadsWhileItReads() {
+  var PART = 5 * 1024 * 1024;
+
+  // Residency is asserted as GROWTH across two object sizes rather than as an
+  // absolute count. The absolute peak includes the source's own read-ahead
+  // buffer, which the uploader does not control and which moved between the
+  // host and a loaded container, while the property that matters is that the
+  // peak does not scale with the object: the old code held one part per part.
+  async function _measure(totalParts) {
+    var pulled = 0;
+    var completed = 0;
+    var peak = 0;
+    var pulledAtInitiate = null;
+
+    var fake = _fakeS3({
+      onRequest: function (rec, parsed) {
+        if (rec.method === "POST" && parsed.searchParams.has("uploads")) {
+          pulledAtInitiate = pulled;
+        }
+        if (rec.method === "PUT" && parsed.searchParams.get("partNumber")) {
+          completed += 1;
+        }
+      },
+    });
+    var port = await listenOnRandomPort(fake.server);
+    try {
+      var pushed = 0;
+      var source = new Readable({
+        read: function () {
+          if (pushed >= totalParts) { this.push(null); return; }
+          pushed += 1;
+          pulled += 1;
+          var resident = pulled - completed;
+          if (resident > peak) peak = resident;
+          this.push(Buffer.alloc(PART, pushed));
+        },
+      });
+
+      var store = sigv4.create(_baseConfig(port, {
+        multipartThresholdBytes: 1,
+        partSizeBytes:           PART,
+        partConcurrency:         1,
+      }));
+      var res = await store.put("streamed-" + totalParts + ".bin", source);
+      return { res: res, pulled: pulled, completed: completed, peak: peak,
+               pulledAtInitiate: pulledAtInitiate, totalParts: totalParts };
+    } finally {
+      await new Promise(function (r) { fake.server.close(function () { r(); }); });
+    }
+  }
+
+  var small = await _measure(4);
+  var large = await _measure(8);
+
+  [small, large].forEach(function (m) {
+    check("a streamed put of " + m.totalParts + " parts completes",
+      !!m.res && m.res.multipart === true, JSON.stringify(m.res));
+    check("  and every part reached the server",
+      m.pulled === m.totalParts && m.completed === m.totalParts,
+      "pulled=" + m.pulled + " completed=" + m.completed);
+    check("  with the full byte count reported",
+      m.res.size === PART * m.totalParts, "size=" + m.res.size);
+    check("  initiated before the source was drained",
+      m.pulledAtInitiate !== null && m.pulledAtInitiate < m.totalParts,
+      "parts read by the time of InitiateMultipartUpload=" + m.pulledAtInitiate);
+  });
+
+  check("peak residency does not grow with the object",
+    large.peak <= small.peak + 1,
+    "4 parts peaked at " + small.peak + ", 8 parts peaked at " + large.peak);
+  check("  and stays far below the part count",
+    large.peak < large.totalParts,
+    "peak=" + large.peak + " of " + large.totalParts + " parts");
+}
+
+// A source that fails partway leaves an initiated upload behind unless every
+// exit aborts it. Reading the stream before initiating meant this path could
+// not arise; reading it after means it can.
+async function testAFailingSourceStreamAbortsTheUpload() {
+  var PART = 5 * 1024 * 1024;
+  var fake = _fakeS3({});
+  var port = await listenOnRandomPort(fake.server);
+  try {
+    var pushedParts = 0;
+    var source = new Readable({
+      read: function () {
+        if (pushedParts >= 2) {
+          this.destroy(new Error("source went away"));
+          return;
+        }
+        pushedParts += 1;
+        this.push(Buffer.alloc(PART, pushedParts));
+      },
+    });
+    var store = sigv4.create(_baseConfig(port, {
+      multipartThresholdBytes: 1,
+      partSizeBytes:           PART,
+      partConcurrency:         1,
+    }));
+    var threw = null;
+    try { await store.put("half.bin", source); } catch (e) { threw = e; }
+    check("a source stream that fails partway fails the put",
+      threw !== null, "resolved instead");
+    check("  and the initiated upload is aborted rather than left behind",
+      fake.aborts.length === 1, "aborts=" + fake.aborts.length);
+  } finally {
+    await new Promise(function (r) { fake.server.close(function () { r(); }); });
+  }
+}
+
+// The source is only read after the upload is initiated, so between the call
+// and that first response nothing was listening to it. A stream that fails in
+// that window — an unreadable file is the ordinary case — emitted `error` with
+// no handler attached, which takes the process down however carefully the
+// caller wrapped `put()`.
+async function testASourceThatFailsBeforeInitiateDoesNotCrashTheProcess() {
+  var nodeFs = require("node:fs");
+  var nodeOs = require("node:os");
+  var nodePath = require("node:path");
+
+  var fake = _fakeS3({});
+  var port = await listenOnRandomPort(fake.server);
+  var uncaught = [];
+  function onUncaught(e) { uncaught.push(e); }
+  process.on("uncaughtException", onUncaught);
+  try {
+    var missing = nodePath.join(
+      nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), "sigv4-missing-")),
+      "not-there.bin");
+    var store = sigv4.create(_baseConfig(port, {
+      multipartThresholdBytes: 1,
+      partSizeBytes:           5 * 1024 * 1024,
+      partConcurrency:         1,
+    }));
+    var threw = null;
+    try { await store.put("gone.bin", nodeFs.createReadStream(missing)); }
+    catch (e) { threw = e; }
+    check("a source that cannot be opened fails the put",
+      threw !== null, "resolved instead");
+    check("  through the rejection rather than an uncaught exception",
+      uncaught.length === 0, uncaught.map(String).join(" ~~ "));
+  } finally {
+    process.removeListener("uncaughtException", onUncaught);
+    await new Promise(function (r) { fake.server.close(function () { r(); }); });
+  }
+}
+
+// With more than one part in flight, a part can fail while the reader is
+// parked on the source's next chunk. A flag the loop reads after that chunk
+// arrives is never looked at if the source has gone quiet, so the put hung and
+// the upload was never aborted.
+async function testAPartFailureWhileTheSourceIsQuietStillFailsAndAborts() {
+  var PART = 5 * 1024 * 1024;
+  var fake = _fakeS3({ failPartNumber: 1 });
+  var port = await listenOnRandomPort(fake.server);
+  try {
+    var pushed = 0;
+    var source = new Readable({
+      read: function () {
+        var self = this;
+        if (pushed >= 2) {
+          // Quiet from here: a source that has more to send but is waiting on
+          // something slow. Nothing else will wake the read loop.
+          return;
+        }
+        pushed += 1;
+        setTimeout(function () { self.push(Buffer.alloc(PART, pushed)); }, 5);
+      },
+    });
+    var store = sigv4.create(_baseConfig(port, {
+      multipartThresholdBytes: 1,
+      partSizeBytes:           PART,
+      partConcurrency:         2,
+    }));
+    var settled = null;
+    await Promise.race([
+      store.put("quiet.bin", source).then(
+        function () { settled = "resolved"; },
+        function (e) { settled = e; }),
+      helpers.passiveObserve(8000, "sigv4: a part failed while the source was quiet"),
+    ]);
+    check("a part failure settles the put even with the source quiet",
+      settled !== null, "still pending after 8s");
+    check("  as a rejection", settled !== "resolved" && settled !== null,
+      String(settled));
+    check("  and the upload is aborted", fake.aborts.length === 1,
+      "aborts=" + fake.aborts.length);
+  } finally {
+    await new Promise(function (r) { fake.server.close(function () { r(); }); });
+  }
+}
+
+// The source is read only after initiation succeeds, so an initiation that
+// fails used to leave the descriptor open: the stream was never read and never
+// closed. Repeated failures then exhaust descriptors.
+async function testAFailedInitiationClosesTheSource() {
+  var nodeFs = require("node:fs");
+  var nodeOs = require("node:os");
+  var nodePath = require("node:path");
+
+  var fake = _fakeS3({ initiateOmitsUploadId: true });
+  var port = await listenOnRandomPort(fake.server);
+  var dir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), "sigv4-fd-"));
+  var file = nodePath.join(dir, "payload.bin");
+  nodeFs.writeFileSync(file, Buffer.alloc(1024, 7));
+  try {
+    var store = sigv4.create(_baseConfig(port, {
+      multipartThresholdBytes: 1,
+      partSizeBytes:           5 * 1024 * 1024,
+      partConcurrency:         1,
+    }));
+    var source = nodeFs.createReadStream(file);
+    var threw = null;
+    try { await store.put("nope.bin", source); } catch (e) { threw = e; }
+    check("an initiation without an UploadId fails the put",
+      threw !== null && /multipart-init-failed/.test(threw.code || ""),
+      "code=" + (threw && threw.code));
+    await helpers.waitUntil(function () { return source.destroyed === true; }, {
+      timeoutMs: 5000,
+      label: "sigv4: source closed after a failed initiation",
+    });
+    check("  and the source it never read is closed rather than left open",
+      source.destroyed === true, "destroyed=" + source.destroyed);
+  } finally {
+    await new Promise(function (r) { fake.server.close(function () { r(); }); });
+    try { nodeFs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* cleanup */ }
   }
 }
 
@@ -802,6 +1043,11 @@ async function run() {
     await testMultipartStreamStringChunksStraddlingPartBoundary();
     await testMultipartEmptyBufferAndEmptyStream();
     await testMultipartInitiateWithoutUploadIdFails();
+    await testAStreamedPutUploadsWhileItReads();
+    await testAFailingSourceStreamAbortsTheUpload();
+    await testASourceThatFailsBeforeInitiateDoesNotCrashTheProcess();
+    await testAPartFailureWhileTheSourceIsQuietStillFailsAndAborts();
+    await testAFailedInitiationClosesTheSource();
     await testMultipartPartWithoutEtagFailsAndAborts();
     await testAbortFailureDoesNotMaskPrimaryError();
     await testCompleteBareErrorBodyStillFails();

@@ -554,7 +554,7 @@ var VALID_ALLOW_CLASSES = {
   "silent-catch-stream-teardown": 1,
   "slsa-framework-action-not-sha-pinned": 1,
   "timer-no-unref-unrefed-below": 1,
-  "timer-no-unref-process-pinning": 1,
+  "timer-no-unref-process-pinning": 2,
   "wildcard-suffix-match-without-single-label-check": 1,
 };
 
@@ -13159,9 +13159,16 @@ var KNOWN_ANTIPATTERNS = [
     skipCommentLines: true,
     // Anchored on the call that can raise the refusal and the catch that
     // directly follows its try, so a catch further down the same function is
-    // out of scope. The tempered token stops at `isGateRefusal`, which is how
+    // out of scope. The tempered token stops at either predicate, which is how
     // a handled site reads, and at a function-closing brace at column 0.
-    regex: /(?:(?:vaultWrap|argon2(?:Builtin)?)(?:\(\))?\.(?:wrap|unwrap|hash|verify|deriveWrappingKey)|(?:backupCrypto|bCrypto)(?:\(\))?\.(?:deriveKey|encryptWithPassphrase|decryptWithPassphrase|encryptWithFreshSalt))\s*\((?:(?!\n\})[\s\S]){0,240}?\)\s*;?\s*\}?\s*catch\s*\(\s*(?!_)[A-Za-z$][\w$]*\s*\)\s*\{(?:(?!isGateRefusal)(?!vault-wrap\/passphrase-rejected)(?!backup-crypto\/decrypt-failed)(?!\n\})[\s\S]){0,240}?\bthrow\s+(?:new\s+[A-Za-z_$][\w$]*Error|_err\s*\()/,
+    //
+    // `isArgon2Error` counts as well as `isGateRefusal` because it is the WIDER
+    // question and subsumes it: a wrong passphrase surfaces as an AEAD failure,
+    // never as an Argon2 error, so a site that rethrows every Argon2 error has
+    // handled the capacity refusal and the permanent ones with it. Consulting
+    // only the narrow predicate let `argon2/cost-over-ceiling` reach a
+    // catch-all that reported it as a rejected passphrase.
+    regex: /(?:(?:vaultWrap|argon2(?:Builtin)?)(?:\(\))?\.(?:wrap|unwrap|hash|verify|deriveWrappingKey)|(?:backupCrypto|bCrypto)(?:\(\))?\.(?:deriveKey|encryptWithPassphrase|decryptWithPassphrase|encryptWithFreshSalt))\s*\((?:(?!\n\})[\s\S]){0,240}?\)\s*;?\s*\}?\s*catch\s*\(\s*(?!_)[A-Za-z$][\w$]*\s*\)\s*\{(?:(?!isGateRefusal)(?!isArgon2Error)(?!vault-wrap\/passphrase-rejected)(?!backup-crypto\/decrypt-failed)(?!\n\})[\s\S]){0,240}?\bthrow\s+(?:new\s+[A-Za-z_$][\w$]*Error|_err\s*\()/,
     allowlist: [],
     fixtures: {
       fires: [
@@ -13251,6 +13258,36 @@ var KNOWN_ANTIPATTERNS = [
       ],
     },
     reason: "`b.pick` refuses a prototype-moving key and consults `b.pick.registerPoisonedKeys`, a public registry that only ever grows and that an application sets for its own object layer. That makes it the right filter for untrusted input and the wrong one for forwarding a primitive's own options, whose keys are a fixed literal that has already passed `b.validateOpts`. `b.compliance.aiAct.gpai.declareAdherence` forwarded its options to `adherenceForm` through it, so an application that registered any name the form reads changed what got signed: registering `provider` made a declaration carrying `{ name: \"Acme\" }` sign `{ name: null, address: null, contact: null }`, dropping operator data between the validation that accepted it and the signature that attested to it, and registering `modelId` made a valid declaration fail. The forwarding question does not depend on that policy, so it copies the fixed key list directly. Filtering an operator-supplied body or a parsed document through `b.pick` is the intended use and is out of scope, as are the `assertSafeKey` and `isPoisonedKey` helpers.",
+  },
+  {
+    id: "a-logged-or-audited-record-field-is-built-from-the-raw-request-url",
+    primitive: "b.requestHelpers.resolveRoute",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // A record field named for the request target and assigned from req.url.
+    // `_canonicalRequestTarget(req.url)` and `new URL(req.url, ...)` both lack
+    // the `field:` anchor, so only a field that carries the raw URL matches.
+    regex: /\b(?:url|originalUrl|requestUrl|fullUrl)\s*:\s*(?:req(?:uest)?\s*&&\s*)?req(?:uest)?\s*\.\s*(?:url|originalUrl)\b/,
+    allowlist: [],
+    fixtures: {
+      fires: [
+        "        metadata: { reason: \"posture-refuse\", method: req.method, url: req.url },",
+        "      url:       req && req.url,",
+        "  var fields = { originalUrl: request.originalUrl, status: 500 };",
+      ],
+      quiet: [
+        // The route-resolving helper, which is the fix.
+        "      route:     requestHelpers.resolveRoute(req),",
+        "        metadata: { method: req.method, route: requestHelpers.resolveRoute(req) },",
+        // Reading the URL to route, hash or parse it is not recording it.
+        "    hash.update(_canonicalRequestTarget(req.url) + \"\\n\");",
+        "    var parsed = new URL(req.url, \"https://\" + host);",
+        "    req.pathname = req.url.split(\"?\")[0];",
+        // A field carrying a URL that is not the request's own target.
+        "      url: cfg.webhookUrl,",
+      ],
+    },
+    reason: "A request target reaches a log line or an audit record as a field, and `req.url` carries whatever the client sent: a reset or invite capability sitting in a path segment, and every query parameter. `b.requestHelpers.resolveRoute` answers the same question without the secret, preferring `req.routePattern` (`/reset/:token`) and falling back to the query-stripped path, so it is the only form a record field should use. Eight sites recorded the raw URL: `lib/router.js` built its `route refused:` and `route error:` lines from it, its middleware catch logged it directly, and its three TLS 0-RTT audit records carried it, while `lib/error-page.js` put it in both the log fields and the audit metadata on every error render. The audit path is the one that cannot be undone, because the chain is signed and append-only, so a capability written there stays written. Reading `req.url` to route, hash or parse a request is not recording it and does not match; neither does a field carrying a URL the operator configured.",
   },
   {
     id: "a-jmap-method-error-type-is-a-bare-name",

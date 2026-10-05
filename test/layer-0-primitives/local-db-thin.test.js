@@ -162,6 +162,60 @@ async function run() {
     check("localDb.thin: bad pragma name rejected",
       threw && threw.code === "localdb-thin/bad-pragma-name");
 
+    // ---- a refused open closes the handle it opened ----
+    // `_attemptOpen` closed the database only on the integrity_check branch, so
+    // a throw from `_runPragmas` or from `schemaSql` left it open with no handle
+    // for the caller to close. On Windows that locks the file. The two legs need
+    // different assertions: /proc/self/fd exists only on Linux, and rename
+    // succeeds there even with the handle open, so neither signal alone covers
+    // both platforms.
+    function _fdsOn(file) {
+      if (process.platform === "win32") return null;
+      var n = 0;
+      try {
+        fs.readdirSync("/proc/self/fd").forEach(function (entry) {
+          var target;
+          try { target = fs.readlinkSync(path.join("/proc/self/fd", entry)); }
+          catch (_e) { return; }
+          if (target === file) n += 1;
+        });
+      } catch (_e) { return null; }
+      return n;
+    }
+    [
+      { label: "a refused pragma",
+        opts: { pragmas: { journal_mode: "WAL", "not-a-real-pragma": 1 },
+                schemaSql: "CREATE TABLE x(id INTEGER);" },
+        code: "localdb-thin/pragma-not-overridable" },
+      { label: "schema SQL that does not parse",
+        opts: { schemaSql: "CREATE TABLE ((((" },
+        code: null },
+    ].forEach(function (c, ci) {
+      var leakDir = fs.mkdtempSync(path.join(os.tmpdir(), "thin-leak-"));
+      var leakFile = path.join(leakDir, "t" + ci + ".db");
+      var baseline = _fdsOn(leakFile);
+      var leakThrew = null;
+      try {
+        b.localDb.thin(Object.assign({ file: leakFile, audit: false }, c.opts));
+      } catch (e) { leakThrew = e; }
+      check("localDb.thin refuses " + c.label, leakThrew !== null);
+      if (c.code) {
+        check("  with " + c.code, leakThrew && leakThrew.code === c.code,
+          "code=" + (leakThrew && leakThrew.code));
+      }
+      if (baseline !== null) {
+        check("  and leaves no open descriptor on the file",
+          _fdsOn(leakFile) === baseline,
+          "baseline=" + baseline + " after=" + _fdsOn(leakFile));
+      }
+      // Removable only when nothing holds the file, so on Windows this is the
+      // same assertion by another route.
+      var removed = true;
+      try { fs.rmSync(leakDir, { recursive: true, force: true }); }
+      catch (_e) { removed = false; }
+      check("  and its directory can be removed", removed);
+    });
+
     // ---- caller pragmas are applied where they can still take effect ----
     // `auto_vacuum` only takes on a database that has no tables yet, and
     // `journal_mode=WAL` writes the header, so applying the caller's pragmas

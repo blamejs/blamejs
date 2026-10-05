@@ -506,6 +506,60 @@ async function testRotateWrappedKeyWriteNoDb() {
   }
 }
 
+// rotate refuses a stagingDir that already exists, and in wrapped mode it
+// derived the new wrapping key only after the staging directory was created
+// and filled. A full derivation gate refuses with argon2/busy, which is
+// transient, so the refusal invited a retry that then met its own leftover
+// staging directory and refused with vault-rotate/staging-exists. Nothing in
+// the derivation needs the staging directory, so a refused rotation must
+// leave none.
+async function testARefusedWrappedRotateLeavesNoStagingDir() {
+  var P = b.auth.password;
+  var dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "vr-gate-"));
+  var staging = path.join(os.tmpdir(), "vr-gate-stg-" + process.pid + "-" + Date.now());
+  var hold = null;
+  try {
+    function _rotate() {
+      return b.vaultRotate.rotate({
+        oldKeys: keyA, newKeys: keyB, dataDir: dataDir, stagingDir: staging,
+        mode: "wrapped", newPassphrase: Buffer.from("rotate-test-passphrase-not-secret"),
+        externalAadResealed: true,
+      });
+    }
+
+    P.gate(1, { maxQueued: 0 });
+    hold = P.hash("occupant", {
+      memoryCost: b.constants.BYTES.kib(16), timeCost: 2, parallelism: 1,
+    });
+
+    var refused = null;
+    try { await _rotate(); } catch (e) { refused = e; }
+    check("a full gate refuses a wrapped rotation with argon2/busy",
+      refused !== null && refused.code === "argon2/busy",
+      "code=" + (refused && refused.code));
+    check("  and the refusal is one b.retry would retry",
+      refused !== null && b.retry.isRetryable(refused) === true);
+    check("  and the refused rotation leaves no stagingDir behind",
+      fs.existsSync(staging) === false, "staging still present: " + staging);
+
+    await hold;
+    hold = null;
+    P.gate(8, { maxQueued: Infinity, waitTimeoutMs: 0 });
+
+    var retryThrew = null;
+    try { await _rotate(); } catch (e) { retryThrew = e; }
+    check("  and the retry rotates once the gate is free",
+      retryThrew === null, "code=" + (retryThrew && retryThrew.code));
+    check("  writing the sealed key it could not write before",
+      retryThrew === null && fs.existsSync(path.join(staging, "vault.key.sealed")));
+  } finally {
+    if (hold !== null) { try { await hold; } catch (_e) { /* released below */ } }
+    P.gate(8, { maxQueued: Infinity, waitTimeoutMs: 0 });
+    try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch (_e) { /* cleanup */ }
+    try { fs.rmSync(staging, { recursive: true, force: true }); } catch (_e) { /* cleanup */ }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // rotate — full plaintext keypair rotation of a live encrypted deployment
 // with plain (non-AAD) sealed cells + an overflow `data` JSON column.
@@ -849,6 +903,7 @@ async function run() {
   await testRotateRefusesUnacknowledgedExternalAad();
   await testRotatePlaintextKeyWriteNoDb();
   await testRotateWrappedKeyWriteNoDb();
+  await testARefusedWrappedRotateLeavesNoStagingDir();
   await testRotateAuxiliaryFilesRotation();
   await testRotateAuxiliaryFileGuards();
   await testRotateFullPlaintextRotation();

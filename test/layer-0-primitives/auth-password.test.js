@@ -364,6 +364,27 @@ async function testVerifyBoundsTheStoredCost() {
     require("../../lib/argon2-builtin").exceedsCostCeiling(raisedHash) === true);
   check("and verify answers false for it rather than spending the work",
     (await b.auth.password.verify(raisedHash, "pw-history-123456")) === false);
+
+  // `verify` answers false for a wrong password and for a stored hash it
+  // cannot check, and `needsRehash` does not separate them either, so an
+  // application had no way to tell a failed sign-in from a credential it must
+  // stop refusing and re-hash. The discriminator has to be on the public
+  // surface beside the ceiling that creates the condition.
+  var cheapHash = await b.auth.password.hash("pw-history-123456",
+    { memoryCost: b.constants.BYTES.kib(1), timeCost: 1, parallelism: 1 });
+  check("the ceiling check is on the public surface",
+    typeof b.auth.password.exceedsCostCeiling === "function");
+  check("  and it separates a hash it cannot check from a wrong password",
+    b.auth.password.exceedsCostCeiling(raisedHash) === true &&
+    b.auth.password.exceedsCostCeiling(cheapHash) === false,
+    "raised=" + b.auth.password.exceedsCostCeiling(raisedHash) +
+    " cheap=" + b.auth.password.exceedsCostCeiling(cheapHash));
+  check("  while verify still answers false for both the wrong password and the one it cannot check",
+    (await b.auth.password.verify(cheapHash, "not-the-password")) === false &&
+    (await b.auth.password.verify(raisedHash, "pw-history-123456")) === false);
+  check("  and a string that is not a stored hash is not reported as over the ceiling",
+    b.auth.password.exceedsCostCeiling("not-a-phc-string") === false &&
+    b.auth.password.exceedsCostCeiling("") === false);
   var overCeiling = null;
   var reusePolicy = b.auth.password.policy({
     historyMinDistance: 1, useBundledCommon: false,
@@ -471,15 +492,31 @@ async function testVerifyBoundsTheStoredCost() {
     hashRefused !== null && hashRefused.code === "argon2/cost-over-ceiling",
     "code=" + (hashRefused && hashRefused.code));
 
-  // A raw derivation is a KDF, not a stored credential: nothing later reads a
-  // cost out of it, so the ceiling does not apply.
+  // The ceiling bounds WORK, so it applies to a raw derivation too. This
+  // asserted the opposite until 0.21.0, on the reasoning that a raw derivation
+  // is a KDF whose cost nothing later reads. That is true and beside the point:
+  // the parameters reaching a raw derivation come from a sealed file's header,
+  // which `parseHeader` bounds at 4 GiB, so the exemption let a file ask for
+  // 1 GiB and get it. The refusal has to arrive before the allocation.
   var rawArgon2 = require("../../lib/argon2-builtin");
-  var rawOverCeiling = await rawArgon2.hash("pw-123456", {
-    memoryCost: 1024, timeCost: 25, parallelism: 1, raw: true,
+  var rawRefused = null;
+  try {
+    await rawArgon2.hash("pw-123456", {
+      memoryCost: 1024, timeCost: 25, parallelism: 1, raw: true,
+    });
+  } catch (e) { rawRefused = e; }
+  check("hash: a raw derivation over the ceiling is refused too",
+    rawRefused !== null && rawRefused.code === "argon2/cost-over-ceiling",
+    "code=" + (rawRefused && rawRefused.code));
+
+  // And one inside the ceiling still runs, so the check above reads the ceiling
+  // rather than refusing every raw derivation.
+  var rawWithin = await rawArgon2.hash("pw-123456", {
+    memoryCost: 1024, timeCost: 3, parallelism: 1, raw: true,
   });
-  check("hash: a raw derivation over the ceiling still runs",
-    Buffer.isBuffer(rawOverCeiling) && rawOverCeiling.length === 32,
-    "len=" + (rawOverCeiling && rawOverCeiling.length));
+  check("hash: a raw derivation inside the ceiling still runs",
+    Buffer.isBuffer(rawWithin) && rawWithin.length === 32,
+    "len=" + (rawWithin && rawWithin.length));
 
   // A legitimately expensive deployment can raise the ceiling.
   var raised = b.auth.password.costCeiling({ memoryCost: b.constants.BYTES.mib(8) });
@@ -918,7 +955,398 @@ async function testReuseProhibited() {
         (await polOff.reuseProhibited("old-password-1", [stored])) === false);
 }
 
+// The gate is module state, so a worker_threads Worker loads its own copy and
+// holds its own limit and counts: the card and `stats` called it process-wide
+// while N workers granted N times the advertised concurrency. Both halves are
+// driven here — that the default really is per-thread, which is what the
+// wording now says, and that a shared handle does bound every thread.
+async function testTheGateIsPerThreadAndShareable() {
+  var nodeWorker = require("node:worker_threads");
+  var nodeFs = require("node:fs");
+  var nodeOs = require("node:os");
+  var nodePath = require("node:path");
+
+  // The module, not the package root: a Worker loading the whole framework
+  // boots three times slower, and under SMOKE_PARALLEL=64 in a container that
+  // was the difference between booting and timing out.
+  var entry = nodePath.join(__dirname, "..", "..", "lib", "auth", "password.js");
+  var dir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), "argon-gate-"));
+  var script = nodePath.join(dir, "gate-worker.js");
+  // The worker samples the gate's own counts rather than bracketing the call:
+  // a counter raised before `hash` resolves its permit would count waiters as
+  // running, and the ceiling assertion would then be measuring the queue.
+  nodeFs.writeFileSync(script, [
+    "var wt = require(\"node:worker_threads\");",
+    "var d = wt.workerData;",
+    "var P = require(d.entry);",
+    "if (d.gate) P.gate(null, { shared: d.gate });",
+    "else P.gate(d.limit);",
+    "var FASTW = { memoryCost: 1024, timeCost: 1, parallelism: 1 };",
+    "var maxRunning = 0;",
+    "var minAvailable = Infinity;",
+    "var sampling = true;",
+    "function sample() {",
+    "  if (!sampling) return;",
+    "  var s = P.stats();",
+    "  if (s.running > maxRunning) maxRunning = s.running;",
+    "  if (s.available !== undefined && s.available < minAvailable) minAvailable = s.available;",
+    "  setTimeout(sample, 1);",
+    "}",
+    "(async function () {",
+    "  sample();",
+    "  var runs = [];",
+    "  for (var i = 0; i < d.n; i += 1) {",
+    "    runs.push(P.hash(\"pw-\" + i + \"-\" + d.tag, FASTW));",
+    "  }",
+    "  await Promise.all(runs);",
+    "  sampling = false;",
+    "  wt.parentPort.postMessage({ ok: true, maxRunning: maxRunning,",
+    "    minAvailable: minAvailable === Infinity ? null : minAvailable });",
+    "}()).catch(function (e) { sampling = false;",
+    "  wt.parentPort.postMessage({ ok: false, err: String(e && e.message) }); });",
+  ].join("\n"));
+
+  function _spawn(workerData) {
+    return new Promise(function (resolve, reject) {
+      var w = new nodeWorker.Worker(script, { workerData: workerData });
+      var done = null;
+      w.on("message", function (m) { done = m; });
+      w.on("error", reject);
+      w.on("exit", function () { resolve(done || { ok: false, err: "no message" }); });
+    });
+  }
+
+  try {
+    // --- shared: one permit count across every thread ---------------------
+    b.auth.password.gate(2, { shared: true });
+    var handle = b.auth.password.gateHandle();
+    check("a shared gate reports itself as shared",
+      b.auth.password.stats().shared === true &&
+      b.auth.password.stats().limit === 2 &&
+      b.auth.password.stats().available === 2,
+      JSON.stringify(b.auth.password.stats()));
+    check("and the handle is a SharedArrayBuffer to hand to a Worker",
+      handle instanceof SharedArrayBuffer);
+    var adoptWithOtherLimit = null;
+    try { b.auth.password.gate(5, { shared: handle }); }
+    catch (e) { adoptWithOtherLimit = e; }
+    check("adopting the handle with a different limit is refused",
+      adoptWithOtherLimit !== null && adoptWithOtherLimit.code === "argon2/bad-gate",
+      "code=" + (adoptWithOtherLimit && adoptWithOtherLimit.code));
+
+    // The parent samples the shared count while the workers run, so the
+    // ceiling is read from the pool every thread draws on.
+    var worstInFlight = 0;
+    var sawSaturation = false;
+    var watching = true;
+    (function watch() {
+      if (!watching) return;
+      var s = b.auth.password.stats();
+      if (s.available !== undefined) {
+        var inFlight = s.limit - s.available;
+        if (inFlight > worstInFlight) worstInFlight = inFlight;
+        if (s.available === 0) sawSaturation = true;
+      }
+      setTimeout(watch, 1);
+    }());
+    var sharedResults = await Promise.all([
+      _spawn({ entry: entry, gate: handle, n: 10, tag: "a" }),
+      _spawn({ entry: entry, gate: handle, n: 10, tag: "b" }),
+      _spawn({ entry: entry, gate: handle, n: 10, tag: "c" }),
+    ]);
+    watching = false;
+    check("every worker finished through the shared gate",
+      sharedResults.every(function (r) { return r.ok === true; }),
+      JSON.stringify(sharedResults));
+    check("the shared permit count never went below zero on any thread",
+      sharedResults.every(function (r) { return r.minAvailable === null || r.minAvailable >= 0; }),
+      JSON.stringify(sharedResults.map(function (r) { return r.minAvailable; })));
+    check("three threads never had more than the shared limit of 2 in flight",
+      worstInFlight <= 2, "worst in flight=" + worstInFlight);
+    // Without this the ceiling assertion could pass over a gate nothing
+    // contended for, which is the shape of an assertion that cannot fail.
+    check("and the gate was actually saturated, so the ceiling was exercised",
+      sawSaturation || sharedResults.some(function (r) { return r.minAvailable === 0; }),
+      "worst in flight=" + worstInFlight);
+    check("the permit count returned to the limit once every thread finished",
+      b.auth.password.stats().available === 2,
+      JSON.stringify(b.auth.password.stats()));
+
+    // --- the default: each thread holds its own limit ----------------------
+    b.auth.password.gate(8, { shared: false, maxQueued: Infinity, waitTimeoutMs: 0 });
+    check("a gate can be returned to this thread's own limit",
+      b.auth.password.stats().shared === false &&
+      b.auth.password.stats().available === undefined);
+
+    var ownResults = await Promise.all([
+      _spawn({ entry: entry, limit: 1, n: 6, tag: "x" }),
+      _spawn({ entry: entry, limit: 1, n: 6, tag: "y" }),
+    ]);
+    check("every worker finished on its own gate",
+      ownResults.every(function (r) { return r.ok === true; }),
+      JSON.stringify(ownResults));
+    check("each thread held its own limit of 1",
+      ownResults.every(function (r) { return r.maxRunning <= 1; }),
+      JSON.stringify(ownResults.map(function (r) { return r.maxRunning; })));
+    check("so two threads under gate(1) ran two derivations between them, " +
+          "which is why the limit is documented as per-thread",
+      ownResults.reduce(function (a, r) { return a + r.maxRunning; }, 0) > 1,
+      JSON.stringify(ownResults.map(function (r) { return r.maxRunning; })));
+  } finally {
+    b.auth.password.gate(8, { shared: false, maxQueued: Infinity, waitTimeoutMs: 0 });
+    try { nodeFs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* cleanup */ }
+  }
+}
+
+// A thread waiting for a shared permit has nothing else pending, and
+// Atomics.waitAsync does not hold the event loop open, so the worker exited
+// successfully with the hash never run and no result posted. The test above
+// cannot see this: its sampling timer keeps the worker alive, which is what
+// made it worth a test of its own that does nothing but await the hash.
+async function testAWorkerWaitingForASharedPermitDoesNotExitEarly() {
+  var nodeWorker = require("node:worker_threads");
+  var nodeFs = require("node:fs");
+  var nodeOs = require("node:os");
+  var nodePath = require("node:path");
+
+  var entry = nodePath.join(__dirname, "..", "..", "lib", "auth", "password.js");
+  var dir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), "argon-wait-"));
+  var script = nodePath.join(dir, "wait-worker.js");
+  nodeFs.writeFileSync(script, [
+    "var wt = require(\"node:worker_threads\");",
+    "var d = wt.workerData;",
+    "var P = require(d.entry);",
+    "P.gate(null, { shared: d.gate });",
+    "wt.parentPort.postMessage({ ready: true });",
+    "P.hash(\"pw-waiter\", { memoryCost: 1024, timeCost: 1, parallelism: 1 })",
+    "  .then(function (stored) { wt.parentPort.postMessage({ ok: true, len: stored.length }); },",
+    "        function (e) { wt.parentPort.postMessage({ ok: false, err: String(e && e.code) }); });",
+  ].join("\n"));
+
+  try {
+    // The permit is taken straight out of the handle rather than by running a
+    // derivation, so the worker is certain to be waiting: a derivation on this
+    // thread would finish long before a Worker has finished booting.
+    b.auth.password.gate(1, { shared: true });
+    var handle = b.auth.password.gateHandle();
+    var permits = new Int32Array(handle);
+    Atomics.sub(permits, 0, 1);
+    check("the parent holds the only permit", Atomics.load(permits, 0) === 0);
+
+    var ready = false;
+    var finished = null;
+    var exited = null;
+    var w = new nodeWorker.Worker(script, {
+      workerData: { entry: entry, gate: handle },
+    });
+    var failed = null;
+    w.on("message", function (m) {
+      if (m && m.ready) { ready = true; return; }
+      finished = m;
+    });
+    w.on("error", function (e) { failed = e; });
+    w.on("exit", function (code) { exited = code; });
+
+    // A Worker boot is a precondition rather than an assertion, so the budget
+    // is generous: under SMOKE_PARALLEL=64 in a container it took longer than
+    // 20s, and a short budget there fails a healthy run.
+    await helpers.waitUntil(function () { return ready || exited !== null || failed; }, {
+      timeoutMs: 60000,
+      label: "shared argon2 gate: worker booted and adopted the handle",
+    });
+    check("the worker adopted the handle", ready === true,
+      "exited=" + exited + " err=" + (failed && failed.message));
+
+    // The worker cannot proceed while the permit is held. If waiting does not
+    // hold its event loop open, it exits during this window instead.
+    // Long enough that an unpinned worker would have reached its wait and
+    // exited inside the window, which is what makes this discriminating.
+    await helpers.passiveObserve(1500,
+      "shared argon2 gate: worker blocked on a held permit");
+    check("the worker is still alive while the permit is held",
+      exited === null, "exited with code " + exited);
+    check("  and has not completed a derivation it holds no permit for",
+      finished === null, JSON.stringify(finished));
+
+    Atomics.add(permits, 0, 1);
+    Atomics.notify(permits, 0);
+
+    await helpers.waitUntil(function () { return finished !== null || exited !== null; }, {
+      timeoutMs: 60000,
+      label: "shared argon2 gate: worker finished once the permit freed",
+    });
+    check("releasing the permit wakes the worker",
+      finished !== null && finished.ok === true && finished.len > 0,
+      JSON.stringify(finished) + " exit=" + exited);
+    await helpers.waitUntil(function () { return exited !== null; }, {
+      timeoutMs: 30000,
+      label: "shared argon2 gate: worker exited after finishing",
+    });
+    check("  and the worker then exits rather than being held open",
+      exited === 0, "exit code " + exited);
+    check("  leaving the permit count whole",
+      Atomics.load(permits, 0) === 1, "available=" + Atomics.load(permits, 0));
+  } finally {
+    b.auth.password.gate(8, { shared: false, maxQueued: Infinity, waitTimeoutMs: 0 });
+    try { nodeFs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* cleanup */ }
+  }
+}
+
+// Three accounting seams that a shared gate adds, each of which silently
+// inflates or strands the permit count rather than failing visibly.
+async function testTheSharedGateAccountsPermitsToTheGateThatGrantedThem() {
+  var FASTG = { memoryCost: b.constants.BYTES.kib(1), timeCost: 1, parallelism: 1 };
+  try {
+    // A refused option leaves the gate it was called on in place: the shared
+    // attachment must not land when a later option in the same call is bad.
+    b.auth.password.gate(4, { shared: false, maxQueued: Infinity, waitTimeoutMs: 0 });
+    var before = b.auth.password.stats();
+    var refused = null;
+    try { b.auth.password.gate(1, { shared: true, maxQueued: -1 }); }
+    catch (e) { refused = e; }
+    check("a gate call with a bad maxQueued is refused",
+      refused !== null && /bad-gate/.test(refused.code || ""),
+      "code=" + (refused && refused.code));
+    check("  and leaves the thread on the gate it was already using",
+      b.auth.password.stats().shared === before.shared &&
+      b.auth.password.stats().limit === before.limit,
+      JSON.stringify(b.auth.password.stats()));
+
+    // A derivation releases to the pool that granted it, so switching pools
+    // underneath a running derivation cannot strand a permit in the old one.
+    b.auth.password.gate(1, { shared: true });
+    var strandedHandle = b.auth.password.gateHandle();
+    var inFlight = b.auth.password.hash("pw-switch", {
+      memoryCost: b.constants.BYTES.kib(16), timeCost: 3, parallelism: 1,
+    });
+    b.auth.password.gate(1, { shared: false });
+    await inFlight;
+    b.auth.password.gate(null, { shared: strandedHandle });
+    check("a derivation that outlived the switch released to its own gate",
+      b.auth.password.stats().available === 1,
+      JSON.stringify(b.auth.password.stats()));
+
+    // A no-argument gate() call must not start a shared waiter: it reads the
+    // thread-local count, which says nothing about the shared permits.
+    b.auth.password.gate(1, { shared: true, maxQueued: Infinity, waitTimeoutMs: 0 });
+    var occupant = b.auth.password.hash("pw-occupant", {
+      memoryCost: b.constants.BYTES.kib(16), timeCost: 3, parallelism: 1,
+    });
+    var queued = b.auth.password.hash("pw-queued", FASTG);
+    b.auth.password.gate();
+    b.auth.password.gate();
+    check("a shared waiter is not admitted by a bare gate() call",
+      b.auth.password.stats().available >= 0,
+      JSON.stringify(b.auth.password.stats()));
+    await Promise.all([occupant, queued]);
+    check("  and the permit count is whole once both finish, not inflated",
+      b.auth.password.stats().available === 1,
+      JSON.stringify(b.auth.password.stats()));
+
+    // A shared derivation held a slot in the local count too, so a hash queued
+    // after the thread returned to its own gate waited on a count that the
+    // shared release never decremented, and with the default unbounded wait it
+    // waited forever.
+    b.auth.password.gate(1, { shared: true, maxQueued: Infinity, waitTimeoutMs: 0 });
+    var acrossSwitch = b.auth.password.hash("pw-across", {
+      memoryCost: b.constants.BYTES.kib(16), timeCost: 3, parallelism: 1,
+    });
+    b.auth.password.gate(1, { shared: false });
+    var afterSwitch = b.auth.password.hash("pw-after", FASTG);
+    var stranded = false;
+    await Promise.race([
+      Promise.all([acrossSwitch, afterSwitch]),
+      helpers.passiveObserve(4000, "argon2 gate: a hash queued across a pool switch")
+        .then(function () { stranded = true; }),
+    ]);
+    check("a hash queued after a pool switch is not stranded behind the old one",
+      stranded === false, "still waiting after 4s");
+    await Promise.all([acrossSwitch, afterSwitch]);
+
+    // Reporting a lower limit while the handle still carries the old permit
+    // count is a bound nothing enforces, so the change is refused.
+    b.auth.password.gate(4, { shared: true });
+    var lowered = null;
+    try { b.auth.password.gate(1); } catch (e) { lowered = e; }
+    check("lowering the limit of an attached shared gate is refused",
+      lowered !== null && lowered.code === "argon2/bad-gate",
+      "code=" + (lowered && lowered.code));
+    check("  and the gate keeps the limit its permits actually enforce",
+      b.auth.password.stats().limit === 4 &&
+      b.auth.password.stats().available === 4,
+      JSON.stringify(b.auth.password.stats()));
+    check("  while restating the same limit is accepted",
+      b.auth.password.gate(4).limit === 4);
+  } finally {
+    b.auth.password.gate(8, { shared: false, maxQueued: Infinity, waitTimeoutMs: 0 });
+  }
+}
+
+// The held copy exists for the retry a transient refusal invites, and for
+// nothing else: every consumer zeroes the buffer it was handed when it is done,
+// and a copy that outlives that defeats the erasure.
+async function testAHeldPassphraseIsReleasedWhenTheOperationEnds() {
+  var source = require("../../lib/vault/passphrase-source");
+  var nodeFs = require("node:fs");
+  var nodeOs = require("node:os");
+  var nodePath = require("node:path");
+
+  var dir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), "held-pass-"));
+  var priorPass = process.env.BLAMEJS_VAULT_PASSPHRASE;
+  try {
+    process.env.BLAMEJS_SKIP_NTP_CHECK = "1";
+    process.env.BLAMEJS_VAULT_PASSPHRASE = "a-long-enough-test-passphrase";
+    b.vault._resetForTest();
+    source._clearHeldEnvPassphrase(source.ENV_PASSPHRASE);
+
+    await b.vault.init({ dataDir: dir, mode: "wrapped" });
+    check("the init consumed the variable",
+      process.env.BLAMEJS_VAULT_PASSPHRASE === undefined,
+      "env=" + String(process.env.BLAMEJS_VAULT_PASSPHRASE));
+    // `sourceKind` answers "env" while a copy is held and stops once it is
+    // released, so it reads the retention itself rather than a flag about it.
+    // Asked the way the vault reads it, with the retry window on: a reader
+    // that has not asked for that window never sees the copy at all.
+    var RETRY = { _holdForRetry: true };
+    check("a completed vault init releases the held copy",
+      source.sourceKind(RETRY) !== "env", "kind=" + source.sourceKind(RETRY));
+
+    // And a transient refusal keeps it, which is the one case it exists for.
+    process.env.BLAMEJS_VAULT_PASSPHRASE = "a-long-enough-test-passphrase";
+    b.vault._resetForTest();
+    var P = b.auth.password;
+    var hold = null;
+    try {
+      P.gate(1, { maxQueued: 0 });
+      hold = P.hash("occupant", {
+        memoryCost: b.constants.BYTES.kib(16), timeCost: 2, parallelism: 1,
+      });
+      var refused = null;
+      try { await b.vault.init({ dataDir: dir, mode: "wrapped" }); }
+      catch (e) { refused = e; }
+      check("a gate-refused init is the transient case",
+        refused !== null && refused.code === "argon2/busy",
+        "code=" + (refused && refused.code));
+      check("  and it keeps the copy the retry needs",
+        source.sourceKind(RETRY) === "env", "kind=" + source.sourceKind(RETRY));
+    } finally {
+      if (hold !== null) { try { await hold; } catch (_e) { /* released */ } }
+      P.gate(8, { maxQueued: Infinity, waitTimeoutMs: 0 });
+    }
+  } finally {
+    b.vault._resetForTest();
+    source._clearHeldEnvPassphrase(source.ENV_PASSPHRASE);
+    if (priorPass === undefined) delete process.env.BLAMEJS_VAULT_PASSPHRASE;
+    else process.env.BLAMEJS_VAULT_PASSPHRASE = priorPass;
+    try { nodeFs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* cleanup */ }
+  }
+}
+
 async function run() {
+  await testTheGateIsPerThreadAndShareable();
+  await testAWorkerWaitingForASharedPermitDoesNotExitEarly();
+  await testTheSharedGateAccountsPermitsToTheGateThatGrantedThem();
+  await testAHeldPassphraseIsReleasedWhenTheOperationEnds();
   await testHashVerifyRoundtrip();
   await testHashRejectsBadPlain();
   await testHashRejectsBadParams();

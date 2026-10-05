@@ -235,6 +235,30 @@ async function run() {
   try { await mig.up(_fakeXdb(), ctxUnknown); } catch (e) { threwUnknown = e; }
   check("unknown backend: clear error",
     threwUnknown && /declare-row-policy\/unknown-backend/.test(threwUnknown.code || ""));
+
+  // `backend` was recorded on the spec and read by nothing, so a policy
+  // declared for one backend applied silently against another. The runner
+  // still chooses where a spec that names no backend goes.
+  var pinned = b.db.declareRowPolicy({
+    schema: "public", table: "docs", name: "tenant_isolation",
+    using: "tenant_id = current_setting('app.tenant')", backend: "reporting",
+  });
+  var ctxOther = { externalDb: _fakeExternalDb("main", "postgres"), backendName: "main" };
+  await _expectThrow("up() refuses a policy pinned to a different backend",
+    async function () { await pinned.up(_fakeXdb(), ctxOther); },
+    /declare-row-policy\/backend-mismatch/);
+  await _expectThrow("down() refuses it too",
+    async function () { await pinned.down(_fakeXdb(), ctxOther); },
+    /declare-row-policy\/backend-mismatch/);
+
+  // The control: against the backend it names, the same spec still applies.
+  var ctxReporting = {
+    externalDb: _fakeExternalDb("reporting", "postgres"), backendName: "reporting",
+  };
+  var pinnedApplied = true;
+  try { await pinned.up(_fakeXdb(), ctxReporting); }
+  catch (_e) { pinnedApplied = false; }
+  check("and the backend it names still applies", pinnedApplied);
 }
 
 module.exports = { run: run };

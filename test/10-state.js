@@ -61,6 +61,54 @@ async function testVaultWrapRoundTrip() {
   try { await b.vaultWrap.unwrap(headerTampered, passphrase); }
   catch (_) { headerRejected = true; }
   check("vault-wrap rejects tampered header", headerRejected);
+
+  // A file this cannot PARSE and a passphrase it rejects are different facts,
+  // and a caller has to be able to tell them apart. Every refusal above is
+  // asserted as "something threw", which is the gap: the parse refusals carried
+  // a bare Error with no code, so `unseal` and `rotate` translated them into
+  // `vault-passphrase/passphrase-rejected` and sent an operator looking for a
+  // wrong passphrase when the sealed file was unreadable.
+  async function refusalOf(bytes, pass) {
+    try { await b.vaultWrap.unwrap(bytes, pass); }
+    catch (e) { return e; }
+    return null;
+  }
+  var wrongPass = await refusalOf(wrapped, Buffer.from("wrong-passphrase", "utf8"));
+  check("a rejected passphrase is reported as one",
+    !!wrongPass && wrongPass.code === "vault-wrap/passphrase-rejected",
+    "code=" + (wrongPass && wrongPass.code));
+
+  var unreadable = [
+    ["a buffer too short to hold a header", Buffer.alloc(4, 0)],
+    ["a file that is not a wrapped vault",
+      Buffer.concat([Buffer.from([0x00, 0x01, 0x01]), Buffer.alloc(40, 7)])],
+    ["a truncated header", wrapped.slice(0, 10)],
+  ];
+  for (var i = 0; i < unreadable.length; i += 1) {
+    var e = await refusalOf(unreadable[i][1], passphrase);
+    check("vault-wrap refuses " + unreadable[i][0] + " with a code",
+      !!e && typeof e.code === "string" && e.code.indexOf("vault-wrap/") === 0,
+      "code=" + (e && e.code));
+    check("  and not as a rejected passphrase",
+      !!e && e.code !== "vault-wrap/passphrase-rejected",
+      "code=" + (e && e.code));
+  }
+
+  // The cost in a sealed file's header is bounded by `parseHeader` at 4 GiB,
+  // which is far above the ceiling `verify` enforces. `hash` skipped the
+  // ceiling for a raw derivation, so a header demanding 1 GiB was DERIVED at
+  // 1 GiB -- the allocation the ceiling exists to refuse -- and the operator
+  // was then told the passphrase was rejected. The refusal has to arrive
+  // before the work, and say what it is about.
+  var overCeiling = Buffer.from(wrapped);
+  overCeiling.writeUInt32BE(1024 * 1024, 4);          // 1 GiB in KiB
+  var ceilingRefusal = await refusalOf(overCeiling, passphrase);
+  check("a sealed header above the cost ceiling is refused for its cost",
+    !!ceilingRefusal && ceilingRefusal.code === "argon2/cost-over-ceiling",
+    "code=" + (ceilingRefusal && ceilingRefusal.code));
+  check("  and the refusal says retrying is pointless",
+    !!ceilingRefusal && ceilingRefusal.permanent === true,
+    "permanent=" + (ceilingRefusal && ceilingRefusal.permanent));
 }
 
 async function testPassphraseEnv() {

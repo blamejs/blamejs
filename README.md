@@ -70,7 +70,7 @@ The framework bundles the surface a typical Node app reaches for. Every primitiv
 - **Queues + cache** — durable queue with priority + cron + flows on local SQLite, shared Redis, OR AWS SQS via SigV4 + AWSJsonProtocol_1.0 (`b.queue`, `b.jobs`) — the local backend can target an operator-supplied database / table / schema; driven either by a resident consumer (`b.queue.consume`) or one batch at a time for a scheduled runtime that cannot host one (`b.queue.tick`); cluster-shared cache (`b.cache`)
 ### Identity & access
 
-- **Passwords** — Argon2id + policy primitive (`b.auth.password`); NIST 800-63B / PCI-DSS 4.0 / HIPAA-AAL2 profiles; HaveIBeenPwned k-anonymity breach check; length / context / dictionary / complexity rules; rotation + history; a cost ceiling on what a stored hash can ask a login attempt to spend, and one process-wide concurrency gate with a bounded queue
+- **Passwords** — Argon2id + policy primitive (`b.auth.password`); NIST 800-63B / PCI-DSS 4.0 / HIPAA-AAL2 profiles; HaveIBeenPwned k-anonymity breach check; length / context / dictionary / complexity rules; rotation + history; a cost ceiling on what a stored hash can ask a login attempt to spend, with `exceedsCostCeiling` to tell a hash above it from a wrong password; a per-thread concurrency gate with a bounded queue, shareable across `worker_threads` via `gateHandle`
 - **Multi-factor + WebAuthn** — passkeys (WebAuthn), TOTP, JWT (PQ-default)
 - **JWK thumbprint** — RFC 7638 `base64url(SHA-256(canonical-JSON))` key identifier (`b.jwk.thumbprint` / `canonicalize`): EC / RSA / oct / OKP + the AKP post-quantum key type, SHA-256/384/512; the canonical key name behind DPoP `jkt`, ACME account keys, and DBSC session pins
 - **OAuth / OIDC RP** — `b.auth.oauth`
