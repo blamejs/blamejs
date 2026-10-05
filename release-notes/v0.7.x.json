@@ -2815,7 +2815,7 @@
           "items": [
             {
               "title": "Default-on DoH for outbound DNS",
-              "body": "`lib/network-dns.js` now uses Cloudflare DoH (`https://cloudflare-dns.com/dns-query`) for hostname resolution by default when neither `useDnsOverHttps()` nor `useDnsOverTls()` has been called explicitly. Privacy-respecting (encrypted DNS over TLS to a non-ISP resolver), aligned with Core Rule §3 (\"security defaults are not opt-in\")."
+              "body": "`lib/network-dns.js` now uses Cloudflare DoH (`https://cloudflare-dns.com/dns-query`) for hostname resolution by default when neither `useDnsOverHttps()` nor `useDnsOverTls()` has been called explicitly. Privacy-respecting (encrypted DNS over TLS to a non-ISP resolver), and on by default rather than opt-in."
             },
             {
               "title": "Local-form hosts route through node:dns",

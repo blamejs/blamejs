@@ -25643,19 +25643,62 @@ function testLibCommentBlocksAreWholeSentences() {
           "an edit that removed part of it)", bad);
 }
 
+var NARRATIVE = [
+  { re: /\b(?:SUBSTRATE|BUG|MAIL)-\d+\b/,        what: "internal slice/bug ID" },
+  { re: /\b(?:D-[MLH]\d+|AUTH-\d+|CRYPTO-\d+|SUPPLY-\d+)\b/, what: "internal domain/slice ID" },
+  { re: /\bCodex\s+P\d/,                          what: "code-review-process reference (Codex P#)" },
+  { re: /\bF-[A-Z]{2,}-\d+\b/,                    what: "internal feature/plan item ID" },
+  { re: /\bPR\s+#\d+\b/,                          what: "pull-request number (process residue)" },
+  { re: /\b[Aa]udit\s+\d{4}-\d{2}-\d{2}/,         what: "dated audit/decision residue" },
+  { re: /\bReported\s+\d{4}-\d{2}-\d{2}/,         what: "dated report residue" },
+  { re: /\bCore Rule\s+§\d/,                 what: "internal rule-number citation" },
+  { re: /----\s*v\d+\.\d+\.\d+/,             what: "version stamp in a section-divider comment" },
+];
+
+// The same vocabulary, in the documents an operator actually reads. The
+// comment scan below covers `lib/`, which left the shipped docs out of scope:
+// README carried a rule-number citation an operator cannot resolve, and three
+// historical CHANGELOG entries carried review-process labels. CHANGELOG is
+// generated, so a finding there is fixed in the release-notes source it is
+// rebuilt from.
+var OPERATOR_DOCS = [
+  "README.md", "SECURITY.md", "CHANGELOG.md", "MIGRATING.md", "LTS-CALENDAR.md",
+  "NOTICE", "ARCHITECTURE.md", "CONTRIBUTING.md", "GOVERNANCE.md", "ROADMAP.md",
+  "CODE_OF_CONDUCT.md",
+];
+
+function testNoInternalNarrativeInOperatorDocs() {
+  var bad = [];
+  OPERATOR_DOCS.forEach(function (rel) {
+    var abs = path.resolve(__dirname, "..", "..", rel);
+    if (!fs.existsSync(abs)) return;
+    var lines = fs.readFileSync(abs, "utf8").split("\n");
+    for (var li = 0; li < lines.length; li++) {
+      for (var p = 0; p < NARRATIVE.length; p++) {
+        var m = lines[li].replace(/\r$/, "").match(NARRATIVE[p].re);
+        if (m) {
+          bad.push({
+            file:    rel,
+            line:    li + 1,
+            content: NARRATIVE[p].what + ": `" + m[0] + "` in a document operators read — " +
+                     "describe the change, not the internal process (a generated file is " +
+                     "fixed in its release-notes source)",
+          });
+          break;
+        }
+      }
+    }
+  });
+  // No allow marker: none of these patterns matches anything a sentence
+  // written for an operator needs, so a hit is a sentence to rewrite rather
+  // than a site to exempt. A document cannot carry a line comment anyway.
+  _report("operator-facing documents must not carry internal-process narrative " +
+          "(slice / bug / plan IDs, review-process or PR references, rule-number citations)",
+    bad);
+}
+
 function testNoInternalNarrativeComments() {
   // class: internal-narrative-comment
-  var NARRATIVE = [
-    { re: /\b(?:SUBSTRATE|BUG|MAIL)-\d+\b/,        what: "internal slice/bug ID" },
-    { re: /\b(?:D-[MLH]\d+|AUTH-\d+|CRYPTO-\d+|SUPPLY-\d+)\b/, what: "internal domain/slice ID" },
-    { re: /\bCodex\s+P\d/,                          what: "code-review-process reference (Codex P#)" },
-    { re: /\bF-[A-Z]{2,}-\d+\b/,                    what: "internal feature/plan item ID" },
-    { re: /\bPR\s+#\d+\b/,                          what: "pull-request number (process residue)" },
-    { re: /\b[Aa]udit\s+\d{4}-\d{2}-\d{2}/,         what: "dated audit/decision residue" },
-    { re: /\bReported\s+\d{4}-\d{2}-\d{2}/,         what: "dated report residue" },
-    { re: /\bCore Rule\s+§\d/,                 what: "internal CLAUDE.md rule-number citation" },
-    { re: /----\s*v\d+\.\d+\.\d+/,             what: "version stamp in a section-divider comment" },
-  ];
   var files = _libFiles();
   var bad = [];
   var jsdocLineRe = /^\s*\*/;
@@ -25953,6 +25996,7 @@ async function run() {
   testCaptureStatusChecked();
   testSfvCitationMatchesReferencingProtocol();
   testNoInternalNarrativeComments();
+  testNoInternalNarrativeInOperatorDocs();
   testLibCommentBlocksAreWholeSentences();
   testEveryObjectStoreBackendMapsNotFound();
   testNoOrphanAllowClass();

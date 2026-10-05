@@ -125,7 +125,7 @@ The framework bundles the surface a typical Node app reaches for. Every primitiv
 ### HTTP
 
 - **Router + API specs** — schema-validated routes; OpenAPI 3.1 / 3.2 publication (`b.openapi` — webhooks + `jsonSchemaDialect`) + AsyncAPI publication for event/streaming (`b.asyncapi`)
-- **Middleware stack (`createApp`)** — security layers wired ON by default (Core Rule §3); each is configurable via `middleware.<name>` (operator cookie / field names flow straight through — nothing static is baked in) or opt-out with `false` (disabling a default is audited via `app.middleware.disabled`). Ordered so each layer has what it needs (cookies + CSP nonce + fetch-metadata, then body parser, then CSRF last):
+- **Middleware stack (`createApp`)** — security layers wired ON by default, not behind a flag; each is configurable via `middleware.<name>` (operator cookie / field names flow straight through — nothing static is baked in) or opt-out with `false` (disabling a default is audited via `app.middleware.disabled`). Ordered so each layer has what it needs (cookies + CSP nonce + fetch-metadata, then body parser, then CSRF last):
   - Request-ID tagging and bot-guard
   - Security headers with `Permissions-Policy` defaults denying storage-access / browsing-topics / private-aggregation / controlled-frame
   - Threat-aware cookie parser (`b.middleware.cookies`)

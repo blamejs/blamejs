@@ -1637,11 +1637,11 @@
           "heading": "Fixed",
           "items": [
             {
-              "title": "Accept-header weighted negotiation (Codex P1)",
+              "title": "Accept-header weighted negotiation",
               "body": "The first pass treated any `Accept` header containing `application/openmetrics-text` as an unconditional OpenMetrics request — clients sending `Accept: text/plain;q=1.0, application/openmetrics-text;q=0.5` got OpenMetrics back instead of their preferred Prometheus 0.0.4. Fix: parse Accept via `b.requestHelpers.parseQualityList` and compare q-values for `application/openmetrics-text` vs `text/plain` (wildcards `*/*`, `application/*`, `text/*` honored). Defaults to Prometheus when both q-values are equal or zero (backward compatibility with the legacy default content-type)."
             },
             {
-              "title": "Exemplar span_id sources the active server span, not the upstream parent (Codex P2)",
+              "title": "Exemplar span_id sources the active server span, not the upstream parent",
               "body": "The first pass used `req.trace.parentId` for the exemplar's `span_id` label — but `parentId` is the upstream caller's span (or empty for root requests), not the server-handling span. Fix: prefer `req.span.spanId` (set by `b.middleware.spanHttpServer`), falling back to `req.trace.spanId` for operators wiring `tracePropagate` without `spanHttpServer`. Never synthesises a span_id from `parentId`."
             }
           ]
@@ -1781,7 +1781,7 @@
       "version": "0.12.0",
       "date": "2026-05-22",
       "headline": "`scripts/release.js` — orchestrated release flow with idempotent subcommands",
-      "summary": "A single script automates the framework's release-flow mechanics. Eight subcommands run in sequence (`prepare` → `smoke` → `commit` → `push` → `watch` → `merge` → `tag` → `publish`), each idempotent so an operator can stop and resume at any phase. The script reads `release-notes/v<next>.json` to drive the commit body + PR body so the same operator-facing content lands in CHANGELOG + commit + PR. The judgment-requiring parts (writing release-notes content, reviewing Codex P1/P2 findings, choosing minor vs patch) stay manual — the script flags + stops on those, never silently chooses for the operator. Minor bump because this is an additive operator-facing surface (a new top-level script + workflow).",
+      "summary": "A single script automates the framework's release-flow mechanics. Eight subcommands run in sequence (`prepare` → `smoke` → `commit` → `push` → `watch` → `merge` → `tag` → `publish`), each idempotent so an operator can stop and resume at any phase. The script reads `release-notes/v<next>.json` to drive the commit body + PR body so the same operator-facing content lands in CHANGELOG + commit + PR. The judgment-requiring parts (writing release-notes content, reviewing the code-review findings on the pull request, choosing minor vs patch) stay manual — the script flags + stops on those, never silently chooses for the operator. Minor bump because this is an additive operator-facing surface (a new top-level script + workflow).",
       "sections": [
         {
           "heading": "Added",
