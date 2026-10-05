@@ -146,6 +146,101 @@ async function run() {
   testReplayCacheDistinguishesDifferentRequests();
   testReplayCacheCanonicalizesLeadingSlashes();
   testReplayCacheFailClosesUnderPciDss();
+  testEarlyDataAuditRecordsTheRouteNotTheCapability();
+}
+
+// The 0-RTT check runs from `listen()` before `handle()` matches a route, so
+// `req.routePattern` is unset and resolving the target falls back to the
+// concrete path. A capability sitting in a path segment therefore reached the
+// signed audit chain, which cannot be redacted after the fact. The router has
+// its own route table at this point, so the record can name the registered
+// route instead.
+function testEarlyDataAuditRecordsTheRouteNotTheCapability() {
+  var auditMod = require("../../lib/audit");
+  var SECRET = "RESETCAP0123456789abcdef";
+  var realSafeEmit = auditMod.safeEmit;
+  var captured = [];
+  auditMod.safeEmit = function (ev) { captured.push(ev); };
+  try {
+    var r = b.router.create({ tls0Rtt: "replay-cache" });
+    r.get("/reset/:token", function (req, res) { res.end("ok"); });
+    r._check0RttReplay(_mockReq("GET", "/reset/" + SECRET + "?next=/account",
+      { "early-data": "1", host: "api.example.com" }));
+    check("an early-data request is audited", captured.length >= 1, "none captured");
+    var blob = JSON.stringify(captured);
+    check("  and the record carries no capability out of the path",
+      blob.indexOf(SECRET) === -1, blob.slice(0, 400));
+    check("  nor the query string",
+      blob.indexOf("next=/account") === -1, blob.slice(0, 400));
+    check("  naming the registered route instead",
+      blob.indexOf("/reset/:token") !== -1, blob.slice(0, 400));
+
+    // A path no route claims still must not carry the capability.
+    captured.length = 0;
+    r._check0RttReplay(_mockReq("GET", "/nothing/" + SECRET,
+      { "early-data": "1", host: "api.example.com" }));
+    var unrouted = JSON.stringify(captured);
+    check("an unrouted early-data path is audited without the capability",
+      captured.length >= 1 && unrouted.indexOf(SECRET) === -1,
+      unrouted.slice(0, 400));
+
+    // `handle` canonicalizes the target before it matches, so a request whose
+    // path differs only in its leading-slash run reaches the same route. The
+    // record has to read the same pathname `handle` will, or it names
+    // `(unrouted)` for a request that routes, and resolves a `%2F` the request
+    // itself is refused for.
+    captured.length = 0;
+    r._check0RttReplay(_mockReq("GET", "//reset/" + SECRET,
+      { "early-data": "1", host: "api.example.com" }));
+    var doubled = JSON.stringify(captured);
+    check("a target handle canonicalizes resolves to the route it will reach",
+      captured.length >= 1 && doubled.indexOf("/reset/:token") !== -1 &&
+      doubled.indexOf(SECRET) === -1, doubled.slice(0, 400));
+
+    captured.length = 0;
+    r._check0RttReplay(_mockReq("GET", "/reset%2F" + SECRET,
+      { "early-data": "1", host: "api.example.com" }));
+    var encoded = JSON.stringify(captured);
+    check("an encoded separator resolves to no route, as the request is refused",
+      captured.length >= 1 && encoded.indexOf("/reset/:token") === -1 &&
+      encoded.indexOf(SECRET) === -1, encoded.slice(0, 400));
+
+    // Dispatch skips a route whose method does not match before it compares the
+    // path, so a record resolved from the path alone can name a route the
+    // request would never reach.
+    captured.length = 0;
+    var byMethod = b.router.create({ tls0Rtt: "replay-cache" });
+    byMethod.get("/users/:id", function (req, res) { res.end("ok"); });
+    byMethod.post("/users/invite", function (req, res) { res.end("ok"); });
+    byMethod._check0RttReplay(_mockReq("POST", "/users/invite",
+      { "early-data": "1", host: "api.example.com" }));
+    var methodBlob = JSON.stringify(captured);
+    check("the record names the route the method would reach",
+      captured.length >= 1 && methodBlob.indexOf("/users/invite") !== -1 &&
+      methodBlob.indexOf("/users/:id") === -1, methodBlob.slice(0, 400));
+
+    // And a path that matches only under another method reaches no route.
+    captured.length = 0;
+    byMethod._check0RttReplay(_mockReq("DELETE", "/users/42",
+      { "early-data": "1", host: "api.example.com" }));
+    var wrongMethod = JSON.stringify(captured);
+    check("a path no route claims under this method records no pattern",
+      captured.length >= 1 && wrongMethod.indexOf("/users/:id") === -1,
+      wrongMethod.slice(0, 400));
+
+    // The refuse posture audits on a different branch, with the same problem.
+    captured.length = 0;
+    var refuse = b.router.create({ tls0Rtt: "refuse" });
+    refuse.get("/reset/:token", function (req, res) { res.end("ok"); });
+    refuse._check0RttReplay(_mockReq("GET", "/reset/" + SECRET,
+      { "early-data": "1", host: "api.example.com" }));
+    var refusedBlob = JSON.stringify(captured);
+    check("the refuse posture's record carries no capability either",
+      captured.length >= 1 && refusedBlob.indexOf(SECRET) === -1,
+      refusedBlob.slice(0, 400));
+  } finally {
+    auditMod.safeEmit = realSafeEmit;
+  }
 }
 
 module.exports = { run: run };

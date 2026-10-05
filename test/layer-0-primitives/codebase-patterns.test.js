@@ -13202,6 +13202,43 @@ var KNOWN_ANTIPATTERNS = [
     reason: "`b.auth.password.gate` bounds how many Argon2id derivations run at once, and it refuses with `argon2/busy` or `argon2/queue-timeout` when saturated. Those refusals are transient: `b.retry.isRetryable` returns true for them, because waiting is the right answer. Moving the gate into the one derivation entry point made every caller able to receive them, and a caller's catch-all then reported temporary saturation as something permanent: `b.archive.unwrapWithPassphrase` answered `archive-wrap/decrypt-failed` for a valid archive, `b.keychain` answered \"file passphrase rejected or file corrupted\" for an intact file, and `b.auditSign` and the vault passphrase operations said the passphrase was rejected. An operator reading that goes looking for a corrupted file or a wrong passphrase instead of retrying. Every such catch consults `argon2.isGateRefusal` first, which is one predicate rather than a code list each site repeats: two sites in `lib/auth/password.js` had spelled the two codes inline, and a third refusal code would have left them silently swallowing it. A catch around a symmetric open cannot see a capacity refusal and is out of scope, and so is one that returns a value rather than translating.",
   },
   {
+    id: "argon2-gate-admission-reads-one-list-of-a-two-list-thread-bound",
+    primitive: "b.auth.password.gate",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // Both per-thread quantities, in either operand order. The running count
+    // lives in two counters and the queue in two arrays, so the pattern names
+    // all four against the two limits they are weighed against. `_inFlight()`
+    // and `_queued()` are the only correct left sides, so a future third
+    // counter folded into either helper stays quiet while a direct read of one
+    // list fires.
+    regex: /(?:(?:_active(?:Local|Shared)|_(?:shared)?[Ww]aiters\.length)\s*(?:<|>=|>|<=)\s*_(?:limit|maxQueued)|_(?:limit|maxQueued)\s*(?:<|>=|>|<=)\s*(?:_active(?:Local|Shared)|_(?:shared)?[Ww]aiters\.length))/,
+    allowlist: [],
+    fixtures: {
+      fires: [
+        "  if (_activeLocal < _limit) {\n    _activeLocal += 1;\n    return Promise.resolve(_releaseLocal);\n  }",
+        "  while (_waiters.length > 0 && _activeLocal < _limit) {",
+        "      if (_activeShared >= _limit) return;",
+        "  if (_limit > _activeLocal) {",
+        "  if (_waiters.length >= _maxQueued) {\n    return Promise.reject(new Argon2Error(\"argon2/busy\",",
+        "  if (_sharedWaiters.length >= _maxQueued) {",
+      ],
+      quiet: [
+        "  if (_inFlight() < _limit) {\n    _activeLocal += 1;\n    return Promise.resolve(_releaseLocal);\n  }",
+        "  while (_waiters.length > 0 && _inFlight() < _limit) {",
+        "      if (_inFlight() >= _limit) {",
+        "  if (_queued() >= _maxQueued) {",
+        // A list emptiness test is not an admission test, and neither is
+        // moving a counter around an admitted derivation.
+        "  while (_waiters.length > 0 && _inFlight() < _limit) {\n    var w = _waiters.shift();",
+        "    _activeShared -= 1;\n    Atomics.add(view, SLOT_AVAIL, 1);",
+        "    running:       _inFlight(),",
+        "    waiting:       _queued(),",
+      ],
+    },
+    reason: "Two of the Argon2id gate's per-thread quantities are each held in two places. The derivations running on the thread are counted in `_activeLocal` for the ones holding a slot in its own gate and `_activeShared` for the ones holding a permit in a `SharedArrayBuffer` gate shared with other threads; the callers waiting are queued in `_waiters` and `_sharedWaiters` the same way. `argon2.gate(n, { shared })` switches which gate new work goes to and is documented as safe to call while derivations are running, so both halves of each pair can be non-empty at once, and `stats()` has always reported both as sums. Admission read one half of each. Reading one running counter admitted a second derivation the instant the switch landed, so with both gates set to one permit two derivations allocated their memory at the same time on one thread, which is the memory bound the gate exists to hold; reading one waiter list let a switch queue a third caller past a `maxQueued` of one, reporting `waiting: 2` against `maxQueued: 1` rather than refusing with `argon2/busy`. All three switch directions did both — shared to local, local to shared, and one shared handle to another. `_inFlight()` and `_queued()` are the single places that answer how much this thread is running and how much is waiting, so an admission test that names a counter or a list directly is reading a number that no longer bounds anything.",
+  },
+  {
     id: "a-framework-errors-code-is-reassigned-after-it-is-built",
     primitive: "b.frameworkError.defineClass",
     scanScope: "lib",
@@ -13279,6 +13316,9 @@ var KNOWN_ANTIPATTERNS = [
         // The route-resolving helper, which is the fix.
         "      route:     requestHelpers.resolveRoute(req),",
         "        metadata: { method: req.method, route: requestHelpers.resolveRoute(req) },",
+        // A module holding the route table resolves the pattern from it, which
+        // is the only form that works before a route has been matched.
+        "        metadata: { method: req.method, route: this._routeLabel(req) },",
         // Reading the URL to route, hash or parse it is not recording it.
         "    hash.update(_canonicalRequestTarget(req.url) + \"\\n\");",
         "    var parsed = new URL(req.url, \"https://\" + host);",
@@ -13287,7 +13327,7 @@ var KNOWN_ANTIPATTERNS = [
         "      url: cfg.webhookUrl,",
       ],
     },
-    reason: "A request target reaches a log line or an audit record as a field, and `req.url` carries whatever the client sent: a reset or invite capability sitting in a path segment, and every query parameter. `b.requestHelpers.resolveRoute` answers the same question without the secret, preferring `req.routePattern` (`/reset/:token`) and falling back to the query-stripped path, so it is the only form a record field should use. Eight sites recorded the raw URL: `lib/router.js` built its `route refused:` and `route error:` lines from it, its middleware catch logged it directly, and its three TLS 0-RTT audit records carried it, while `lib/error-page.js` put it in both the log fields and the audit metadata on every error render. The audit path is the one that cannot be undone, because the chain is signed and append-only, so a capability written there stays written. Reading `req.url` to route, hash or parse a request is not recording it and does not match; neither does a field carrying a URL the operator configured.",
+    reason: "A request target reaches a log line or an audit record as a field, and `req.url` carries whatever the client sent: a reset or invite capability sitting in a path segment, and every query parameter. Eight sites recorded the raw URL: `lib/router.js` built its `route refused:` and `route error:` lines from it, its middleware catch logged it directly, and its three TLS 0-RTT audit records carried it, while `lib/error-page.js` put it in both the log fields and the audit metadata on every error render. The audit path is the one that cannot be undone, because the chain is signed and append-only, so a capability written there stays written. Which replacement is correct depends on whether a route has been matched yet. After `b.router` dispatches, `b.requestHelpers.resolveRoute` answers it: `req.routePattern` is set (`/reset/:token`) and the query-stripped path is the fallback. Before dispatch there is no `req.routePattern`, and stripping the query leaves the capability in the path, so the five router sites resolve the pattern from the route table the router already holds. Both forms are quiet here; the pre-dispatch distinction is behavioral and is held by the tests in `router.test.js` and `router-tls0rtt.test.js` rather than by this pattern. Reading `req.url` to route, hash or parse a request is not recording it and does not match; neither does a field carrying a URL the operator configured.",
   },
   {
     id: "a-jmap-method-error-type-is-a-bare-name",

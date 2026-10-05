@@ -497,6 +497,63 @@ function testConfigurePool() {
   b.externalDb._resetForTest();
 }
 
+// Raising max is how an operator relieves a pool that callers are queued on,
+// and the queue was only ever served when a connection came back: the slack the
+// resize created reached nobody until one of the in-flight queries finished,
+// which is exactly the query the operator is waiting out.
+async function testConfigurePoolAdmitsCallersAlreadyQueued() {
+  b.externalDb._resetForTest();
+  var held = [];
+  var driver = mkDriver("resize");
+  driver.query = function (_client, sql) {
+    if (/^SELECT\s+hold\b/i.test(sql)) {
+      return new Promise(function (resolve) {
+        held.push(function () { resolve({ rows: [], rowCount: 0 }); });
+      });
+    }
+    return Promise.resolve({ rows: [], rowCount: 0 });
+  };
+  b.externalDb.init({
+    backends: {
+      main: {
+        connect: driver.connect, query: driver.query, close: driver.close,
+        pool: { min: 1, max: 1, idleTimeoutMs: b.constants.TIME.minutes(1) },
+      },
+    },
+  });
+  try {
+    var holding = b.externalDb.query("SELECT hold", []);
+    await helpers.waitUntil(function () {
+      return b.externalDb.listBackends()[0].pool.active >= 1;
+    }, { timeoutMs: 5000, label: "configurePool resize: the only connection is busy" });
+
+    var queuedSettled = false;
+    var queued = b.externalDb.query("SELECT 1", [])
+      .then(function () { queuedSettled = true; },
+            function () { queuedSettled = true; });
+    await helpers.waitUntil(function () {
+      return b.externalDb.listBackends()[0].pool.waiters >= 1;
+    }, { timeoutMs: 5000, label: "configurePool resize: a caller is queued" });
+
+    b.externalDb.configurePool("main", { max: 4 });
+    await Promise.race([
+      queued,
+      helpers.passiveObserve(4000, "configurePool resize: the queued caller is admitted"),
+    ]);
+    check("raising max admits a caller already queued, without waiting for a release",
+      queuedSettled === true,
+      "still queued: " + JSON.stringify(b.externalDb.listBackends()[0].pool));
+
+    held.forEach(function (release) { release(); });
+    await holding;
+    await queued;
+  } finally {
+    held.forEach(function (release) { release(); });
+    try { await b.externalDb.shutdown(); } catch (_e) { /* best effort */ }
+    b.externalDb._resetForTest();
+  }
+}
+
 // ---- adapters.connectAs ----------------------------------------------------
 
 async function testConnectAs() {
@@ -1233,6 +1290,7 @@ async function run() {
   await testHealthCheck();
   await testShutdown();
   testConfigurePool();
+  await testConfigurePoolAdmitsCallersAlreadyQueued();
   await testConnectAs();
   await testRunAs();
   await testAssertRoleHardening();

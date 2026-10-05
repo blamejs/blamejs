@@ -39,9 +39,16 @@ var check = helpers.check;
 // magnitude above benign; linear is within a small multiple of it. The floor
 // keeps a sub-millisecond ratio from turning scheduler noise into a failure.
 function testHostilePromptDoesNotBacktrack() {
+  // The minimum of several readings, not of two. Every reading here is well
+  // under a millisecond, so a single descheduled one is worth more than the
+  // measurement itself: under SMOKE_PARALLEL=64 the benign reading came back at
+  // 42.31ms against 0.66ms on an idle box, which is both samples descheduled,
+  // and the budget below read that as a backtracking classifier. Six readings
+  // make the minimum a clean one; a shape that genuinely backtracks is slow in
+  // every reading and still fails.
   function ms(fn) {
     var lo = Infinity;
-    for (var i = 0; i < 2; i += 1) {
+    for (var i = 0; i < 6; i += 1) {
       var t0 = process.hrtime.bigint();
       try { fn(); } catch (_e) { /* a refusal is fine; a hang is not */ }
       var el = Number(process.hrtime.bigint() - t0) / 1e6;

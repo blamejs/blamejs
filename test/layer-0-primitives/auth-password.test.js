@@ -1192,6 +1192,402 @@ async function testAWorkerWaitingForASharedPermitDoesNotExitEarly() {
   }
 }
 
+// Every release re-offers the gate to the callers waiting on it, and a caller
+// that cannot proceed goes back to waiting. Doing both through the same path
+// registered a fresh atomic wait on top of the one already outstanding, so the
+// registrations multiplied by the number of releases rather than tracking the
+// number of callers: thirty requests against a two-permit gate with one permit
+// held elsewhere left 239 waits outstanding for 29 queued callers. A caller is
+// parked on exactly one of the two things it can be waiting for, so it is
+// offered the gate again only by the one that changed.
+async function testAQueuedCallerHoldsOneAtomicWaitNotOnePerRelease() {
+  var FAST = { memoryCost: b.constants.BYTES.kib(16), timeCost: 1, parallelism: 1 };
+  var pw = b.auth.password;
+  var REQUESTS = 30;
+  var realWaitAsync = Atomics.waitAsync;
+  var outstanding = 0;
+  var peakOutstanding = 0;
+  var registered = 0;
+  Atomics.waitAsync = function () {
+    var r = realWaitAsync.apply(Atomics, arguments);
+    if (r && r.async) {
+      registered += 1;
+      outstanding += 1;
+      if (outstanding > peakOutstanding) peakOutstanding = outstanding;
+      r.value.then(function () { outstanding -= 1; },
+                   function () { outstanding -= 1; });
+    }
+    return r;
+  };
+  try {
+    pw.gate(2, { shared: true, maxQueued: Infinity, waitTimeoutMs: 0 });
+    var view = new Int32Array(pw.gateHandle());
+    // Another thread holds one of the two permits for the whole run, so every
+    // caller but one has to wait and each completion releases into contention.
+    Atomics.store(view, 0, 1);
+    var all = [];
+    for (var i = 0; i < REQUESTS; i += 1) {
+      all.push(pw.hash("pw-wait-" + i, FAST).catch(function () { /* refusals are fine */ }));
+    }
+    await Promise.all(all);
+    check("a queued caller holds one atomic wait, not one per release",
+      peakOutstanding <= REQUESTS,
+      peakOutstanding + " outstanding for " + REQUESTS + " requests (" +
+      registered + " registered)");
+    check("  and every caller still settles",
+      pw.stats().running === 0 && pw.stats().waiting === 0,
+      JSON.stringify(pw.stats()));
+  } finally {
+    Atomics.waitAsync = realWaitAsync;
+    pw.gate(8, { shared: false, maxQueued: Infinity, waitTimeoutMs: 0 });
+  }
+}
+
+// Retiring an abandoned wait means waking it, and `Atomics.notify` wakes the
+// FIRST waiters on the slot rather than chosen ones. A shared gate is held by
+// several threads by definition, so another thread's waiter sits ahead of ours
+// in that list: waking a count equal to what this thread abandoned wakes
+// theirs, they re-wait correctly, and ours stays live. Measured on a bare
+// SharedArrayBuffer, `notify(count=1)` settles the waiter registered first and
+// leaves the second untouched. Waking the slot retires ours whatever is queued
+// ahead of it; a thread woken without a permit simply waits again.
+async function testAnAbandonedWaitRetiresBehindAnotherThreadsWaiter() {
+  var FAST = { memoryCost: b.constants.BYTES.kib(16), timeCost: 1, parallelism: 1 };
+  var pw = b.auth.password;
+  try {
+    pw.gate(1, { shared: true, maxQueued: Infinity, waitTimeoutMs: 0 });
+    var handle = pw.gateHandle();
+    var view = new Int32Array(handle);
+    Atomics.store(view, 0, 0);
+
+    // Stands in for a waiter belonging to another thread, queued first. The
+    // wait list is keyed by the memory location, not by who registered.
+    var ahead = Atomics.waitAsync(view, 0, 0);
+    var aheadSettled = false;
+    if (ahead.async) ahead.value.then(function () { aheadSettled = true; },
+                                      function () { aheadSettled = true; });
+
+    var blocked = pw.hash("pw-behind", FAST).catch(function () { /* refusal is fine */ });
+    await helpers.waitUntil(function () { return pw.stats().waiting >= 1; },
+      { timeoutMs: 5000, label: "argon2 gate: a caller parked behind another waiter" });
+
+    pw.gate(1, { shared: false, maxQueued: Infinity, waitTimeoutMs: 0 });
+    await blocked;
+    // Waking a count equal to what this thread abandoned settles the waiter
+    // queued ahead and leaves this thread's own alive, so one wait would still
+    // answer here. The stand-in does not re-register the way a real thread's
+    // waiter does, so nothing at all should be left.
+    var left = Atomics.notify(view, 0);
+    check("a switch retires this thread's wait even with another queued ahead",
+      left === 0, "woke " + left + " wait(s) that should already be retired");
+    check("  and the waiter queued ahead was woken rather than skipped",
+      aheadSettled === true, "aheadSettled=" + aheadSettled);
+  } finally {
+    pw.gate(8, { shared: false, maxQueued: Infinity, waitTimeoutMs: 0 });
+  }
+}
+
+// A native wait cannot be cancelled, only woken, so a caller handed to another
+// gate leaves its old registration alive unless something retires it. Adopting
+// a handle builds a fresh view over the same buffer, so comparing views made
+// every re-adoption look like a gate change and handed the caller over again:
+// one blocked caller and fifty adoptions of the same handle left fifty-one
+// native waiters behind, outside the queue accounting and, at the default
+// unlimited timeout, for the life of the process.
+async function testReadoptingAHandleLeavesNoAbandonedNativeWait() {
+  var FAST = { memoryCost: b.constants.BYTES.kib(16), timeCost: 1, parallelism: 1 };
+  var pw = b.auth.password;
+  try {
+    pw.gate(1, { shared: true, maxQueued: Infinity, waitTimeoutMs: 0 });
+    var handle = pw.gateHandle();
+    var view = new Int32Array(handle);
+    // Another thread holds the only permit, so the caller parks on a native wait.
+    Atomics.store(view, 0, 0);
+    var blocked = pw.hash("pw-readopt", FAST).catch(function () { /* refusal is fine */ });
+    await helpers.waitUntil(function () { return pw.stats().waiting >= 1; },
+      { timeoutMs: 5000, label: "argon2 gate: a caller parked on the shared gate" });
+
+    // Counting registrations is what separates the two halves: retiring an
+    // abandoned wait brings the leftover count to zero either way, but only
+    // treating a re-adoption as the same gate stops the hand-over from
+    // happening fifty times in the first place.
+    var realWaitAsync = Atomics.waitAsync;
+    var registeredWhileReadopting = 0;
+    Atomics.waitAsync = function () {
+      var r = realWaitAsync.apply(Atomics, arguments);
+      if (r && r.async) registeredWhileReadopting += 1;
+      return r;
+    };
+    try {
+      for (var i = 0; i < 50; i += 1) pw.gate(null, { shared: handle });
+    } finally {
+      Atomics.waitAsync = realWaitAsync;
+    }
+    check("re-adopting the same handle is not a gate change",
+      pw.stats().waiting === 1, JSON.stringify(pw.stats()));
+    check("  so it hands the caller over no times, not fifty",
+      registeredWhileReadopting === 0,
+      registeredWhileReadopting + " new wait(s) registered across 50 adoptions");
+
+    // Leaving the shared gate hands the caller to this thread's own, which has
+    // a slot free, so it runs without the exhausted handle being touched. Waking
+    // the handle here would retire every abandoned registration on it and the
+    // count below would read zero whatever the code did.
+    pw.gate(1, { shared: false, maxQueued: Infinity, waitTimeoutMs: 0 });
+    await blocked;
+    check("the caller settles once it is off the exhausted gate",
+      pw.stats().running === 0 && pw.stats().waiting === 0,
+      JSON.stringify(pw.stats()));
+    var abandoned = Atomics.notify(view, 0);
+    check("  and no native wait is left on the handle it was moved off",
+      abandoned === 0, "woke " + abandoned + " abandoned waiter(s)");
+  } finally {
+    pw.gate(8, { shared: false, maxQueued: Infinity, waitTimeoutMs: 0 });
+  }
+}
+
+// Admission read only the counter belonging to the gate the thread was on at
+// that moment, so a derivation still running on the gate the caller had just
+// left counted for nothing. With both gates set to one permit, two derivations
+// allocated their memory at the same time on one thread. Every direction of a
+// switch has the shape: shared to local, local to shared, and one shared handle
+// to another.
+async function testAGateSwitchCountsTheWorkStillOnThePreviousGate() {
+  var SLOW = { memoryCost: b.constants.BYTES.kib(64), timeCost: 6, parallelism: 1 };
+  var pw = b.auth.password;
+  var ONE = { maxQueued: Infinity, waitTimeoutMs: 0 };
+
+  function _oneOf(shared) {
+    return { shared: shared, maxQueued: ONE.maxQueued, waitTimeoutMs: ONE.waitTimeoutMs };
+  }
+  function _assertBounded(label, snapshot) {
+    check("a derivation started after a " + label + " switch keeps the limit",
+      snapshot.running <= snapshot.limit, JSON.stringify(snapshot));
+    check("  and waits for the work on the gate the thread left",
+      snapshot.waiting === 1, JSON.stringify(snapshot));
+  }
+  async function _bothFinish(label, pair) {
+    var stranded = false;
+    await Promise.race([
+      Promise.all(pair),
+      helpers.passiveObserve(8000, "argon2 gate: a " + label + " switch drains")
+        .then(function () { stranded = true; }),
+    ]);
+    check("  both derivations finish after a " + label + " switch",
+      stranded === false, "still waiting after 8s: " + JSON.stringify(pw.stats()));
+    if (!stranded) await Promise.all(pair);
+  }
+
+  try {
+    pw.gate(1, _oneOf(true));
+    var onShared = pw.hash("pw-switch-shared", SLOW);
+    pw.gate(1, _oneOf(false));
+    var thenLocal = pw.hash("pw-switch-local", SLOW);
+    _assertBounded("shared to local", pw.stats());
+    await _bothFinish("shared to local", [onShared, thenLocal]);
+
+    pw.gate(1, _oneOf(false));
+    var onLocal = pw.hash("pw-switch-local-first", SLOW);
+    pw.gate(1, _oneOf(true));
+    var thenShared = pw.hash("pw-switch-shared-second", SLOW);
+    _assertBounded("local to shared", pw.stats());
+    await _bothFinish("local to shared", [onLocal, thenShared]);
+
+    pw.gate(1, _oneOf(true));
+    var onFirstHandle = pw.hash("pw-switch-handle-x", SLOW);
+    pw.gate(1, { shared: false });
+    pw.gate(1, _oneOf(true));
+    var onSecondHandle = pw.hash("pw-switch-handle-y", SLOW);
+    _assertBounded("shared-handle to shared-handle", pw.stats());
+    await _bothFinish("shared-handle to shared-handle", [onFirstHandle, onSecondHandle]);
+
+    // Waiting on the thread's own count is a new way to be held back, and the
+    // permit it is waiting for never changes while it waits, so neither escape
+    // from the queue can be left to the permit slot. A budget expires. The
+    // occupant is sized well past the budget so the refusal is the one the
+    // budget caused: measured at 1158ms against 50ms.
+    var LONG = { memoryCost: b.constants.BYTES.kib(256), timeCost: 10, parallelism: 1 };
+    pw.gate(1, _oneOf(false));
+    var beforeTimeout = pw.hash("pw-budget-occupant", LONG);
+    pw.gate(1, { shared: true, maxQueued: Infinity, waitTimeoutMs: 50 });
+    var timedOut = null;
+    var runningAtRefusal = -1;
+    var settledInTime = false;
+    await Promise.race([
+      pw.hash("pw-budget-waiter", SLOW).then(
+        function () { settledInTime = true; },
+        function (e) {
+          settledInTime = true;
+          timedOut = e;
+          runningAtRefusal = pw.stats().running;
+        }),
+      helpers.passiveObserve(8000, "argon2 gate: a budgeted wait on the thread's own count"),
+    ]);
+    check("a derivation held back by the thread's own count honors waitTimeoutMs",
+      settledInTime && timedOut !== null && timedOut.code === "argon2/queue-timeout",
+      "settled=" + settledInTime + " code=" + (timedOut && timedOut.code));
+    check("  and refuses while the earlier derivation is still running",
+      runningAtRefusal >= 1, "running=" + runningAtRefusal);
+    await beforeTimeout;
+
+    // And a queue depth refuses rather than admitting past the bound.
+    pw.gate(1, _oneOf(false));
+    var beforeBusy = pw.hash("pw-depth-occupant", SLOW);
+    pw.gate(1, { shared: true, maxQueued: 0, waitTimeoutMs: 0 });
+    var refusedBusy = null;
+    try { await pw.hash("pw-depth-waiter", SLOW); } catch (e) { refusedBusy = e; }
+    check("a queue depth of zero refuses across a switch instead of admitting",
+      refusedBusy !== null && refusedBusy.code === "argon2/busy",
+      "code=" + (refusedBusy && refusedBusy.code));
+    await beforeBusy;
+    check("  and the thread is left with nothing running",
+      pw.stats().running === 0 && pw.stats().waiting === 0,
+      JSON.stringify(pw.stats()));
+
+    // maxQueued bounds this thread's queue, and `stats().waiting` already
+    // counted both lists, so admission that consults one list lets a switch
+    // queue past the bound.
+    pw.gate(1, { shared: false, maxQueued: 1, waitTimeoutMs: 0 });
+    var depthRunning = pw.hash("pw-depth-running", LONG);
+    var depthQueued = pw.hash("pw-depth-queued", SLOW);
+    check("one derivation runs and one is queued, at the bound",
+      pw.stats().waiting === 1, JSON.stringify(pw.stats()));
+    pw.gate(1, { shared: true, maxQueued: 1, waitTimeoutMs: 0 });
+    var pastDepth = null;
+    var pastDepthSettled = false;
+    var thirdWaiting = -1;
+    var third = pw.hash("pw-depth-third", SLOW).then(
+      function () { pastDepthSettled = true; },
+      function (e) { pastDepthSettled = true; pastDepth = e; });
+    thirdWaiting = pw.stats().waiting;
+    check("a switch cannot queue past the thread's maxQueued",
+      thirdWaiting <= 1, "waiting=" + thirdWaiting +
+      " maxQueued=" + pw.stats().maxQueued);
+    await Promise.race([
+      third,
+      helpers.passiveObserve(12000, "argon2 gate: a queue-depth refusal across a switch"),
+    ]);
+    check("  and the third derivation is refused as busy",
+      pastDepthSettled && pastDepth !== null && pastDepth.code === "argon2/busy",
+      "settled=" + pastDepthSettled + " code=" + (pastDepth && pastDepth.code));
+    pw.gate(1, { shared: false, maxQueued: Infinity, waitTimeoutMs: 0 });
+    await Promise.all([depthRunning, depthQueued]).catch(function () { /* either may refuse */ });
+
+    // A caller handed from one gate to another keeps the deadline it started
+    // waiting under. Restarting the budget lets one wait run to the sum of the
+    // time already spent and the whole maximum again. The switch happens on a
+    // clock this test owns rather than when a derivation happens to finish, so
+    // what is measured is the deadline and not the derivation.
+    var FAST = { memoryCost: b.constants.BYTES.kib(16), timeCost: 1, parallelism: 1 };
+    var BUDGET = 1000;
+    var SPENT = 800;
+    pw.gate(1, { shared: false, maxQueued: Infinity, waitTimeoutMs: BUDGET });
+    var deadlineOccupant = pw.hash("pw-deadline-occupant", LONG);
+    var deadlineStarted = Date.now();
+    var deadlineErr = null;
+    var deadlineWaited = 0;
+    var deadlineWaiter = pw.hash("pw-deadline-waiter", FAST).then(
+      function () { deadlineWaited = Date.now() - deadlineStarted; },
+      function (e) { deadlineErr = e; deadlineWaited = Date.now() - deadlineStarted; });
+    check("the caller is queued behind the occupant", pw.stats().waiting === 1,
+      JSON.stringify(pw.stats()));
+    // Most of its budget is spent waiting on the gate it was queued under.
+    await helpers.passiveObserve(SPENT, "argon2 gate: a queued caller spends its budget");
+    pw.gate(1, { shared: true, maxQueued: Infinity, waitTimeoutMs: BUDGET });
+    // Another thread holds the only permit for the rest of the test, so the
+    // caller can now only leave the queue by its deadline.
+    var heldView = new Int32Array(pw.gateHandle());
+    Atomics.store(heldView, 0, 0);
+    await Promise.race([
+      deadlineWaiter,
+      helpers.passiveObserve(12000, "argon2 gate: a re-homed caller's deadline"),
+    ]);
+    check("a caller handed to another gate is refused there, not left behind",
+      deadlineErr !== null && deadlineErr.code === "argon2/queue-timeout" &&
+      /permit in the shared gate/.test(String(deadlineErr.message)),
+      "code=" + (deadlineErr && deadlineErr.code) +
+      " msg=" + String(deadlineErr && deadlineErr.message).slice(0, 90));
+    // Restarting the budget lands at SPENT + BUDGET, measured at 2503ms against
+    // a 1500ms maximum before the deadline was carried. The ceiling sits
+    // between the two with the same slack on either side.
+    check("  keeping the deadline it started waiting under",
+      deadlineWaited > 0 && deadlineWaited < BUDGET + SPENT / 2,
+      deadlineWaited + "ms, where " + BUDGET + "ms is the maximum and " +
+      (BUDGET + SPENT) + "ms is a restarted budget");
+    await deadlineOccupant;
+
+    // Work already running finishes on the gate that admitted it, which is why
+    // the release is bound to that gate. A caller that has not started has no
+    // such tie, so it belongs to the gate the thread is on now: left behind, it
+    // waits on permits this thread no longer uses, and would run outside the
+    // bound of the gate the thread moved to.
+    pw.gate(1, { shared: true, maxQueued: Infinity, waitTimeoutMs: 0 });
+    var abandonedView = new Int32Array(pw.gateHandle());
+    // Another thread takes the only permit and never gives it back.
+    Atomics.store(abandonedView, 0, 0);
+    var rehomed = pw.hash("pw-rehomed", FAST);
+    check("a caller with no permit free waits on the shared gate",
+      pw.stats().waiting === 1, JSON.stringify(pw.stats()));
+    pw.gate(1, { shared: false, maxQueued: Infinity, waitTimeoutMs: 0 });
+    var rehomedDone = false;
+    await Promise.race([
+      rehomed.then(function () { rehomedDone = true; },
+                   function () { rehomedDone = true; }),
+      helpers.passiveObserve(6000, "argon2 gate: a waiter left on an abandoned gate"),
+    ]);
+    check("a waiter follows the thread to the gate it switched to",
+      rehomedDone === true,
+      "still waiting on the abandoned gate: " + JSON.stringify(pw.stats()));
+    await rehomed;
+
+    // Whatever order the callbacks of an abandoned gate and the gate a caller
+    // was handed to happen to run in, the permit count has to come back whole:
+    // a caller that gave up must not hold one, and a caller that was admitted
+    // must have its release delivered. Switching repeatedly while callers queue
+    // is the shape that leaves a permit stranded if either outcome is dropped.
+    var churnErrors = 0;
+    var churn = [];
+    for (var round = 0; round < 6; round++) {
+      pw.gate(1, { shared: true, maxQueued: Infinity, waitTimeoutMs: 300 });
+      var churnView = new Int32Array(pw.gateHandle());
+      Atomics.store(churnView, 0, 0);
+      churn.push(pw.hash("pw-churn-" + round, FAST).then(
+        function () {}, function () { churnErrors += 1; }));
+      await helpers.passiveObserve(60, "argon2 gate: churn round " + round);
+      Atomics.store(churnView, 0, 1);
+      Atomics.notify(churnView, 0);
+    }
+    pw.gate(1, { shared: false, maxQueued: Infinity, waitTimeoutMs: 0 });
+    var churnDrained = false;
+    await Promise.race([
+      Promise.all(churn).then(function () { churnDrained = true; }),
+      helpers.passiveObserve(12000, "argon2 gate: every churned caller settles"),
+    ]);
+    check("every caller settles across repeated gate switches",
+      churnDrained === true,
+      "unsettled: " + JSON.stringify(pw.stats()) + " refused=" + churnErrors);
+    check("  leaving nothing running and no permit held",
+      pw.stats().running === 0 && pw.stats().waiting === 0,
+      JSON.stringify(pw.stats()));
+    pw.gate(1, { shared: true, maxQueued: Infinity, waitTimeoutMs: 0 });
+    check("  so a fresh shared gate still has its permit to give",
+      pw.stats().available === 1, JSON.stringify(pw.stats()));
+
+    // The control: with nothing left over from a previous gate, two permits
+    // admit two derivations, so the bound reads the in-flight work rather than
+    // refusing every second derivation after any switch.
+    pw.gate(2, _oneOf(false));
+    var pairA = pw.hash("pw-pair-a", SLOW);
+    var pairB = pw.hash("pw-pair-b", SLOW);
+    check("two permits still admit two derivations at once",
+      pw.stats().running === 2 && pw.stats().waiting === 0,
+      JSON.stringify(pw.stats()));
+    await Promise.all([pairA, pairB]);
+  } finally {
+    pw.gate(8, { shared: false, maxQueued: Infinity, waitTimeoutMs: 0 });
+  }
+}
+
 // Three accounting seams that a shared gate adds, each of which silently
 // inflates or strands the permit count rather than failing visibly.
 async function testTheSharedGateAccountsPermitsToTheGateThatGrantedThem() {
@@ -1384,6 +1780,10 @@ async function testAHeldPassphraseIsReleasedWhenTheOperationEnds() {
 async function run() {
   await testTheGateIsPerThreadAndShareable();
   await testAWorkerWaitingForASharedPermitDoesNotExitEarly();
+  await testReadoptingAHandleLeavesNoAbandonedNativeWait();
+  await testAnAbandonedWaitRetiresBehindAnotherThreadsWaiter();
+  await testAQueuedCallerHoldsOneAtomicWaitNotOnePerRelease();
+  await testAGateSwitchCountsTheWorkStillOnThePreviousGate();
   await testTheSharedGateAccountsPermitsToTheGateThatGrantedThem();
   await testAHeldPassphraseIsReleasedWhenTheOperationEnds();
   await testHashVerifyRoundtrip();

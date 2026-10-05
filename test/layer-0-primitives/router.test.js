@@ -514,6 +514,7 @@ async function testRouteErrorLoggingLevelTargetAndDuplication() {
   var mwRouter = b.router.create();
   mwRouter.use(function authGuard() { throw new Error("guard blew up"); });
   mwRouter.get("/guarded", function (req, res) { res.end("never"); });
+  mwRouter.get("/reset/:token", function (req, res) { res.end("never"); });
   mwRouter.onError(function (err, req, res) { res.writeHead(500); res.end("handled"); });
 
   var out = [];
@@ -536,6 +537,7 @@ async function testRouteErrorLoggingLevelTargetAndDuplication() {
     await _get(port, "/store-down");
     await _get(port, "/reset/" + SECRET + "?next=/account");
     await _get(mwPort, "/guarded");
+    await _get(mwPort, "/reset/" + SECRET + "?next=/account");
   } finally {
     console.log = realLog;
     console.error = realError;
@@ -588,10 +590,21 @@ async function testRouteErrorLoggingLevelTargetAndDuplication() {
 
   // #823 — one middleware failure, one line, and it names the middleware.
   var guardLines = _lines(all, "guard blew up");
-  check("a middleware failure writes exactly one line",
-    guardLines.length === 1, guardLines.join(" ~~ "));
-  check("and that line names the middleware that failed",
-    guardLines.length === 1 && guardLines[0].indexOf("authGuard") !== -1,
+  check("a middleware failure writes exactly two lines, one per request",
+    guardLines.length === 2, guardLines.join(" ~~ "));
+  check("and each names the middleware that failed",
+    guardLines.length === 2 && guardLines.every(function (l) {
+      return l.indexOf("authGuard") !== -1;
+    }),
+    guardLines.join(" ~~ "));
+  // Middleware runs before `handle` matches, so req.routePattern is unset and
+  // resolving the target from the URL wrote the capability out on this path
+  // even once the routed-handler path named the pattern.
+  check("a middleware failure on a capability URL names the route, not the capability",
+    guardLines.some(function (l) { return l.indexOf("/reset/:token") !== -1; }) &&
+    guardLines.every(function (l) {
+      return l.indexOf(SECRET) === -1 && l.indexOf("next=/account") === -1;
+    }),
     guardLines.join(" ~~ "));
 }
 
@@ -904,6 +917,21 @@ async function testHandleEncodedSeparatorRefusals() {
   await r.handle(_req("GET", "/a/%zz"), mal);
   check("malformed percent-encoding (%zz) → 400 malformed (decode throws, caught)",
     mal.statusCode === 400 && /malformed percent-encoding/.test(mal._body));
+
+  // The URL parser refuses a target over 8 KiB, and Node's own request-line
+  // limit is 16 KiB, so a target between the two reaches handle() and the
+  // parse raises. It is a refusal of the request, not a fault of the handler.
+  var tooLong = _res();
+  var longErr = null;
+  try { await r.handle(_req("GET", "/a/" + "x".repeat(9000)), tooLong); }
+  catch (e) { longErr = e; }
+  check("a request target over the URL length limit → 400, not a throw",
+    longErr === null && tooLong.statusCode === 400,
+    "threw=" + (longErr && (longErr.code || longErr.message)) +
+    " status=" + tooLong.statusCode);
+  check("  and the body names the refusal rather than a decoding fault",
+    /malformed request target/.test(String(tooLong._body)),
+    String(tooLong._body).slice(0, 120));
 
   var segMismatch = _res();
   await r.handle(_req("GET", "/a/b/c"), segMismatch);
