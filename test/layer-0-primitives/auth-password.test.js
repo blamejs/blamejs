@@ -39,11 +39,13 @@ var hibpSha1 = require("../../lib/framework-sha1-hibp");
 var FAST = { memoryCost: b.constants.BYTES.kib(1), timeCost: 1, parallelism: 1 };
 
 // A shared permit IS the record of the thread holding it. The handle reads
-// [free count, limit, record count, then one owner key per permit], and a
-// thread's key is its threadId plus one. The gate tests below need permits
-// held by a thread that is not this one, which writing the free count alone
-// does not do: a caller scans the records, so it would find every permit free.
-var SHARED_OWNERS_BASE = 3;
+// [free count, limit, record count, gate id low, gate id high, then one owner
+// key per permit], and a thread's key is its threadId plus one. The gate tests
+// below need permits held by a thread that is not this one, which writing the
+// free count alone does not do: a caller scans the records, so it would find
+// every permit free.
+var SHARED_OWNERS_BASE = 5;
+var SHARED_HEADER_WORDS = 5;
 var SHARED_LIMIT_WORD = 1;
 var OTHER_THREAD_KEY = 9001;
 
@@ -1260,7 +1262,8 @@ async function testPermitsHeldByADeadWorkerAreReclaimable() {
     // buffer too small to hold that table is not a handle this gate produced.
     var OWNER_SLOTS = 256;
     check("the handle is sized for the free count, the limit and one record per permit",
-      handle.byteLength === (3 + OWNER_SLOTS) * 4, "byteLength=" + handle.byteLength);
+      handle.byteLength === (SHARED_HEADER_WORDS + OWNER_SLOTS) * 4,
+      "byteLength=" + handle.byteLength);
     check("  and reports how many owner records it holds",
       Atomics.load(permits, 2) === OWNER_SLOTS, "slots=" + Atomics.load(permits, 2));
     var refusedSmall = null;
@@ -1510,6 +1513,156 @@ async function testACallerParkedOnAStaleFreeCountStillFindsAFreePermit() {
       pw.stats().available === 1, JSON.stringify(pw.stats()));
   } finally {
     Atomics.waitAsync = realWaitAsync;
+    pw.gate(8, { shared: false, maxQueued: Infinity, waitTimeoutMs: 0 });
+  }
+}
+
+// A thread switching to a shared gate while one of its own derivations is
+// still running published a handle with every permit free. The switching
+// thread held itself back, because its own admission counts the work in
+// flight, but nothing in the handle said so, and the first Worker to adopt it
+// took the only permit and ran a second derivation against a bound of one.
+async function testPublishingASharedGateReservesTheWorkAlreadyRunning() {
+  var pw = b.auth.password;
+  var SLOW = { memoryCost: b.constants.BYTES.kib(64), timeCost: 6, parallelism: 1 };
+  try {
+    pw.gate(1, { shared: false, maxQueued: Infinity, waitTimeoutMs: 0 });
+    var inFlight = pw.hash("local-occupant", SLOW);
+    await helpers.waitUntil(function () { return pw.stats().running >= 1; },
+      { timeoutMs: 10000, label: "shared publish: a local derivation is running" });
+
+    pw.gate(1, { shared: true });
+    var view = new Int32Array(pw.gateHandle());
+    check("publishing a shared gate reserves the work already running",
+      Atomics.load(view, 0) === 0, "available=" + Atomics.load(view, 0));
+    check("  and the reservation names this thread",
+      Atomics.load(view, SHARED_OWNERS_BASE) === 1,
+      "owner=" + Atomics.load(view, SHARED_OWNERS_BASE));
+    check("  which stats() reports as no permit free",
+      pw.stats().available === 0, JSON.stringify(pw.stats()));
+
+    await inFlight;
+    check("the reservation is given back when that derivation ends",
+      Atomics.load(view, 0) === 1, "available=" + Atomics.load(view, 0));
+    check("  leaving the record free for an adopter",
+      Atomics.load(view, SHARED_OWNERS_BASE) === 0,
+      "owner=" + Atomics.load(view, SHARED_OWNERS_BASE));
+
+    // A derivation now runs on the shared permit, which is the control: the
+    // reservation held it back rather than breaking the gate.
+    var after = await pw.hash("after-reservation", FAST);
+    check("  and a derivation runs on it",
+      typeof after === "string" && after.length > 0);
+
+    // The same holds for work already running on ANOTHER shared gate: its
+    // permit is recorded in the handle that granted it, so the handle being
+    // published next says nothing about it unless the switch reserves for it.
+    pw.gate(1, { shared: true });
+    var viewA = new Int32Array(pw.gateHandle());
+    var onA = pw.hash("on-gate-a", SLOW);
+    await helpers.waitUntil(function () { return Atomics.load(viewA, 0) === 0; },
+      { timeoutMs: 10000, label: "shared publish: a derivation holds gate A's permit" });
+
+    pw.gate(1, { shared: true });
+    var viewB = new Int32Array(pw.gateHandle());
+    check("publishing a second shared gate reserves work still on the first",
+      Atomics.load(viewB, 0) === 0, "availableB=" + Atomics.load(viewB, 0));
+
+    await onA;
+    check("  and that reservation is given back when the work ends",
+      Atomics.load(viewB, 0) === 1, "availableB=" + Atomics.load(viewB, 0));
+    check("  with gate A's own record released too",
+      Atomics.load(viewA, 0) === 1, "availableA=" + Atomics.load(viewA, 0));
+    var afterB = await pw.hash("after-second-reservation", FAST);
+    check("  and a derivation runs on the second gate's permit",
+      typeof afterB === "string" && afterB.length > 0);
+
+    // Re-adopting the handle this thread is already on builds a fresh view
+    // over the same buffer, which is the same gate. A release must not read
+    // that as a different gate and give back a reservation standing for work
+    // that is still running.
+    pw.gate(1, { shared: false, maxQueued: Infinity, waitTimeoutMs: 0 });
+    var localRunning = pw.hash("local-across-readopt", SLOW);
+    await helpers.waitUntil(function () { return pw.stats().running >= 1; },
+      { timeoutMs: 10000, label: "readopt: a local derivation is running" });
+    pw.gate(2, { shared: true });
+    var handleC = pw.gateHandle();
+    var viewC = new Int32Array(handleC);
+    check("a gate of two with one local derivation reserves one",
+      Atomics.load(viewC, 0) === 1, "availableC=" + Atomics.load(viewC, 0));
+    pw.gate(null, { shared: handleC });
+    var shortShared = await pw.hash("shared-after-readopt", FAST);
+    check("a derivation after re-adopting the same handle completes",
+      typeof shortShared === "string" && shortShared.length > 0);
+    check("  and it does not release the local derivation's reservation",
+      Atomics.load(viewC, 0) === 1,
+      "availableC=" + Atomics.load(viewC, 0) + " stats=" + JSON.stringify(pw.stats()));
+    await localRunning;
+    check("  which is given back only when that derivation ends",
+      Atomics.load(viewC, 0) === 2, "availableC=" + Atomics.load(viewC, 0));
+
+    // Leaving a shared gate and coming back to the same handle must not
+    // reserve for work that already holds a record in it.
+    pw.gate(2, { shared: true });
+    var handleD = pw.gateHandle();
+    var viewD = new Int32Array(handleD);
+    var onD = pw.hash("on-gate-d", SLOW);
+    await helpers.waitUntil(function () { return Atomics.load(viewD, 0) === 1; },
+      { timeoutMs: 10000, label: "readopt: a derivation holds one of gate D's permits" });
+    pw.gate(2, { shared: false });
+    pw.gate(null, { shared: handleD });
+    check("coming back to a handle does not reserve for work already on it",
+      Atomics.load(viewD, 0) === 1, "availableD=" + Atomics.load(viewD, 0));
+    await onD;
+    check("  and that work releases exactly its own record",
+      Atomics.load(viewD, 0) === 2, "availableD=" + Atomics.load(viewD, 0));
+
+    // More work running than the published gate can hold: the reservation has
+    // to stand until the work that cannot fit has drained, not until the first
+    // of it finishes.
+    pw.gate(2, { shared: false, maxQueued: Infinity, waitTimeoutMs: 0 });
+    var twoA = pw.hash("two-local-a", SLOW);
+    var twoB = pw.hash("two-local-b", SLOW);
+    await helpers.waitUntil(function () { return pw.stats().running >= 2; },
+      { timeoutMs: 10000, label: "clamp: two local derivations are running" });
+    pw.gate(1, { shared: true });
+    var viewE = new Int32Array(pw.gateHandle());
+    check("a gate of one published under two derivations reserves its permit",
+      Atomics.load(viewE, 0) === 0, "availableE=" + Atomics.load(viewE, 0));
+    // The two derivations are the same size and may finish in either order, so
+    // the assertion is the rule rather than a moment: the permit is held while
+    // any of that work is still running and free once none of it is.
+    await twoA;
+    var stillRunning = pw.stats().running;
+    check("  and the permit tracks whether that work is still running",
+      (stillRunning >= 1) === (Atomics.load(viewE, 0) === 0),
+      "running=" + stillRunning + " availableE=" + Atomics.load(viewE, 0));
+    await twoB;
+    check("  giving it back once the work fits the new bound",
+      Atomics.load(viewE, 0) === 1,
+      "availableE=" + Atomics.load(viewE, 0) + " running=" + pw.stats().running);
+
+    // A handle reaches a Worker through structured cloning, which is a
+    // different JavaScript object over the same shared memory. Re-adopting one
+    // has to read as the same gate, or the work already holding its permits is
+    // counted a second time and the gate refuses callers it has room for.
+    pw.gate(2, { shared: true });
+    var handleF = pw.gateHandle();
+    var viewF = new Int32Array(handleF);
+    var onF = pw.hash("on-gate-f", SLOW);
+    await helpers.waitUntil(function () { return Atomics.load(viewF, 0) === 1; },
+      { timeoutMs: 10000, label: "clone: a derivation holds one of gate F's permits" });
+    pw.gate(null, { shared: structuredClone(handleF) });
+    check("a cloned handle is the same gate, so its running work is not re-reserved",
+      Atomics.load(viewF, 0) === 1,
+      "availableF=" + Atomics.load(viewF, 0) + " stats=" + JSON.stringify(pw.stats()));
+    var alongside = await pw.hash("alongside-on-clone", FAST);
+    check("  and the permit it left free is usable",
+      typeof alongside === "string" && alongside.length > 0);
+    await onF;
+    check("  with the record released exactly once",
+      Atomics.load(viewF, 0) === 2, "availableF=" + Atomics.load(viewF, 0));
+  } finally {
     pw.gate(8, { shared: false, maxQueued: Infinity, waitTimeoutMs: 0 });
   }
 }
@@ -1980,19 +2133,30 @@ async function testTheSharedGateAccountsPermitsToTheGateThatGrantedThem() {
       atMax.shared === true && atMax.available === SHARED_MAX,
       JSON.stringify(atMax));
     check("  and the handle holds one owner record per permit",
-      argon2.gateHandle().byteLength === (3 + SHARED_MAX) * 4,
+      argon2.gateHandle().byteLength === (SHARED_HEADER_WORDS + SHARED_MAX) * 4,
       "byteLength=" + argon2.gateHandle().byteLength);
 
     // A buffer the right size but naming more permits than it records owners
     // for is not a handle this gate produced either: adopting it would report a
     // limit the records cannot hold.
-    var forged = new SharedArrayBuffer((3 + SHARED_MAX) * 4);
+    var forged = new SharedArrayBuffer((SHARED_HEADER_WORDS + SHARED_MAX) * 4);
     Atomics.store(new Int32Array(forged), 1, SHARED_MAX + 1);
     var refusedForged = null;
     try { argon2.gate(null, { shared: forged }); } catch (e) { refusedForged = e; }
     check("  while a handle naming more permits than it records is refused",
       refusedForged !== null && refusedForged.code === "argon2/bad-gate",
       "threw=" + (refusedForged && refusedForged.code));
+
+    // A buffer of the right size and limit but carrying no gate identity is
+    // not one gate() produced either: nothing could tell it from another.
+    var idless = new SharedArrayBuffer((SHARED_HEADER_WORDS + SHARED_MAX) * 4);
+    Atomics.store(new Int32Array(idless), 1, SHARED_MAX);
+    Atomics.store(new Int32Array(idless), 2, SHARED_MAX);
+    var refusedIdless = null;
+    try { argon2.gate(null, { shared: idless }); } catch (e) { refusedIdless = e; }
+    check("  as is one carrying no gate identity",
+      refusedIdless !== null && refusedIdless.code === "argon2/bad-gate",
+      "threw=" + (refusedIdless && refusedIdless.code));
     check("  leaving the thread on the gate it already had",
       argon2.stats().limit === SHARED_MAX, JSON.stringify(argon2.stats()));
 
@@ -2189,6 +2353,7 @@ async function run() {
   await testACallerParkedOnAStaleFreeCountStillFindsAFreePermit();
   await testReclaimingWakesWaitersEvenWithNoRecordToClear();
   await testReclaimingNamesTheHandleThatGrantedThePermit();
+  await testPublishingASharedGateReservesTheWorkAlreadyRunning();
   await testReadoptingAHandleLeavesNoAbandonedNativeWait();
   await testAnAbandonedWaitRetiresBehindAnotherThreadsWaiter();
   await testAQueuedCallerHoldsOneAtomicWaitNotOnePerRelease();
