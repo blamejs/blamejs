@@ -1993,13 +1993,16 @@ async function testAGateSwitchCountsTheWorkStillOnThePreviousGate() {
     await Promise.all([depthRunning, depthQueued]).catch(function () { /* either may refuse */ });
 
     // A caller handed from one gate to another keeps the deadline it started
-    // waiting under. Restarting the budget lets one wait run to the sum of the
-    // time already spent and the whole maximum again. The switch happens on a
-    // clock this test owns rather than when a derivation happens to finish, so
-    // what is measured is the deadline and not the derivation.
+    // waiting under rather than restarting the budget. The gate it is handed to
+    // allows DEST_BUDGET, far longer than the window this test waits, so the
+    // refusal can only come from the deadline the caller already held. A
+    // restarted budget leaves it waiting instead, and a runner slow enough to
+    // delay the timer only delays the refusal inside that window: it cannot
+    // turn a carried deadline into a restarted one.
     var FAST = { memoryCost: b.constants.BYTES.kib(16), timeCost: 1, parallelism: 1 };
     var BUDGET = 1000;
     var SPENT = 800;
+    var DEST_BUDGET = 600000;
     pw.gate(1, { shared: false, maxQueued: Infinity, waitTimeoutMs: BUDGET });
     var deadlineOccupant = pw.hash("pw-deadline-occupant", LONG);
     var deadlineStarted = Date.now();
@@ -2012,7 +2015,7 @@ async function testAGateSwitchCountsTheWorkStillOnThePreviousGate() {
       JSON.stringify(pw.stats()));
     // Most of its budget is spent waiting on the gate it was queued under.
     await helpers.passiveObserve(SPENT, "argon2 gate: a queued caller spends its budget");
-    pw.gate(1, { shared: true, maxQueued: Infinity, waitTimeoutMs: BUDGET });
+    pw.gate(1, { shared: true, maxQueued: Infinity, waitTimeoutMs: DEST_BUDGET });
     // Another thread holds the only permit for the rest of the test, so the
     // caller can now only leave the queue by its deadline.
     var heldView = new Int32Array(pw.gateHandle());
@@ -2026,13 +2029,10 @@ async function testAGateSwitchCountsTheWorkStillOnThePreviousGate() {
       /permit in the shared gate/.test(String(deadlineErr.message)),
       "code=" + (deadlineErr && deadlineErr.code) +
       " msg=" + String(deadlineErr && deadlineErr.message).slice(0, 90));
-    // Restarting the budget lands at SPENT + BUDGET, measured at 2503ms against
-    // a 1500ms maximum before the deadline was carried. The ceiling sits
-    // between the two with the same slack on either side.
     check("  keeping the deadline it started waiting under",
-      deadlineWaited > 0 && deadlineWaited < BUDGET + SPENT / 2,
-      deadlineWaited + "ms, where " + BUDGET + "ms is the maximum and " +
-      (BUDGET + SPENT) + "ms is a restarted budget");
+      deadlineWaited > 0 && deadlineWaited < DEST_BUDGET,
+      deadlineWaited + "ms, where the gate it was handed to allows " +
+      DEST_BUDGET + "ms, so only the deadline it already held can refuse it here");
     await deadlineOccupant;
 
     // Work already running finishes on the gate that admitted it, which is why
