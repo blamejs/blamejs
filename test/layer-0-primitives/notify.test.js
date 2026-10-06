@@ -300,6 +300,7 @@ async function testAuditSuccess() {
     requestId: "req-42",
     method:    "POST",
     url:       "/admin/notify",
+    routePattern: "/admin/notify",   // a dispatched request carries its pattern
   });
   await n.send({ channel: "test", message: { text: "hi" }, req: fakeReq });
   var ev = audit.byAction("notify.send.success")[0];

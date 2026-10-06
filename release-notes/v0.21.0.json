@@ -118,6 +118,10 @@
           "body": "Both now carry the matched route under `route`. A dashboard or alert that reads the `url` field of those records needs the new name."
         },
         {
+          "title": "b.requestHelpers.resolveRoute answers (unresolved) instead of the request path",
+          "body": "`resolveRoute` returned `req.routePattern` and fell back to `req.url` with the query string stripped. Stripping the query leaves whatever sits in a path segment, so a record written before a route was matched carried a reset or invite capability out of the path: `b.errorPage` writes one on a middleware failure, `b.middleware.sharedSecretHeader` on a refused request, and `b.metrics` and `b.tracing` label from the same helper. It now answers `req.routePattern`, then `req.routeLabel` (which `b.router` sets when it resolves a request against its own route table before dispatch), and `(unresolved)` with neither. A record or label that named the path now names `(unresolved)` unless the request reached the router: a metrics label and a span name are read after the response, where the matched pattern is set, and `b.errorPage` reached through `b.router` carries the resolved label. Anything reading `route` as a URL, or grouping dashboards on it, should group on the pattern instead."
+        },
+        {
           "title": "A view or row policy that names a backend must be applied to that backend",
           "body": "A spec carrying `backend` now refuses to apply against a different one. Keep per-backend specs in per-backend migration sets, or drop the option and let the runner place them."
         },

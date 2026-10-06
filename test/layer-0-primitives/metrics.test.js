@@ -653,6 +653,7 @@ function testRequestMiddlewareMethodFallback() {
   var m = b.metrics.create();
   var mw = m.requestMiddleware();
   var req = b.testing.mockReq({ url: "/c" });
+  req.routePattern = "/c";   // a dispatched request carries its matched pattern
   delete req.method;   // absent method → counter labels default to "GET"
   var res = b.testing.mockRes();
   mw(req, res, function () {});

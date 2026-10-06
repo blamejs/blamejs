@@ -94,8 +94,18 @@ function testMockReqExtractActorContextCompatibility() {
         actor.requestId === "req-42");
   check("extractActorContext picks up method",
         actor.method === "POST");
-  check("extractActorContext picks up route from url",
-        actor.route === "/admin/cache/clear");
+  // A fixture naming no route stands for a request that was never routed, and
+  // a record for one names no target rather than repeating the path.
+  check("extractActorContext names no route for an unrouted fixture",
+        actor.route === "(unresolved)", "route=" + actor.route);
+  var routed = t.mockReq({
+    method: "POST", url: "/admin/cache/clear", routePattern: "/admin/cache/clear",
+  });
+  check("extractActorContext takes the route from mockReq's routePattern",
+        b.requestHelpers.extractActorContext(routed).route === "/admin/cache/clear");
+  var labelled = t.mockReq({ url: "/users/42", routeLabel: "/users/:id" });
+  check("extractActorContext takes mockReq's pre-dispatch routeLabel",
+        b.requestHelpers.extractActorContext(labelled).route === "/users/:id");
 }
 
 function testMockRes() {

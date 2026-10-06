@@ -894,6 +894,98 @@ async function testPatchAndDeleteVerbs() {
   check("router.delete registers + dispatches (DELETE verb)", dres.statusCode === 200 && hit[1] === "DELETE:9");
 }
 
+// Middleware runs before a route is matched, so `req.routePattern` is not set
+// while it runs, and middleware that ENDS the request never reaches dispatch,
+// so it would never be set at all. Anything that records or labels from inside
+// middleware (a refused request's audit row, that response's metrics label) then
+// has no route to name even though a registered route matches the path. The
+// router knows the answer before the middleware chain starts, so it resolves it
+// there and leaves it on the request.
+async function testMiddlewareSeesTheMatchedRouteBeforeDispatch() {
+  var r = b.router.create();
+  r.get("/users/:id", function (req, res) { res.writeHead(200); res.end("never"); });
+  r.post("/users/invite", function (req, res) { res.writeHead(200); res.end("never"); });
+
+  var seen = [];
+  r.use(function recordingGuard(req, res, next) {
+    seen.push(b.requestHelpers.resolveRoute(req));
+    res.writeHead(401);
+    res.end("denied");
+    void next;
+  });
+
+  var res1 = _res();
+  await r.handle(_req("GET", "/users/42"), res1);
+  check("middleware terminating a request can still name the matched route",
+    seen[0] === "/users/:id", "resolveRoute inside middleware = " + seen[0]);
+  check("  and the request is the one the middleware ended",
+    res1.statusCode === 401, "status=" + res1.statusCode);
+
+  // The method still decides: a path that only matches under another verb is
+  // not this request's route.
+  seen.length = 0;
+  await r.handle(_req("DELETE", "/users/invite"), _res());
+  check("a path matching only another method names no route",
+    seen[0] === "(unrouted)", "resolveRoute = " + seen[0]);
+
+  // And a path no route claims still records no URL.
+  seen.length = 0;
+  await r.handle(_req("GET", "/nothing/SECRETCAP0123456789"), _res());
+  check("an unrouted path names no route and carries no capability",
+    seen[0] === "(unrouted)", "resolveRoute = " + seen[0]);
+}
+
+async function testAMiddlewareRewriteStillDecidesTheDispatchedRoute() {
+  var ran = [];
+  var r = b.router.create();
+  r.get("/a", function (req, res) { ran.push("GET /a"); res.writeHead(200); res.end("a"); });
+  r.get("/b", function (req, res) { ran.push("GET /b"); res.writeHead(200); res.end("b"); });
+  r.use(function rewriteToB(req, res, next) { req.pathname = "/b"; next(); });
+
+  var req1 = _req("GET", "/a");
+  var res1 = _res();
+  await r.handle(req1, res1);
+  check("a middleware rewriting req.pathname changes the dispatched route",
+    ran.length === 1 && ran[0] === "GET /b", "ran=" + JSON.stringify(ran));
+  check("  and the handler for the rewritten path answered",
+    res1._body === "b", "body=" + JSON.stringify(res1._body));
+  check("  and the published label names the route that ran",
+    req1.routeLabel === "/b", "label=" + req1.routeLabel);
+
+  ran.length = 0;
+  var r2 = b.router.create();
+  r2.get("/m", function (req, res) { ran.push("GET /m"); res.writeHead(200); res.end("get"); });
+  r2.post("/m", function (req, res) { ran.push("POST /m"); res.writeHead(200); res.end("post"); });
+  r2.use(function rewriteToPost(req, res, next) { req.method = "POST"; next(); });
+
+  await r2.handle(_req("GET", "/m"), _res());
+  check("a middleware rewriting req.method changes the dispatched route",
+    ran.length === 1 && ran[0] === "POST /m", "ran=" + JSON.stringify(ran));
+
+  ran.length = 0;
+  var r3 = b.router.create();
+  r3.get("/g", function (req, res) { ran.push("GET /g"); res.writeHead(200); res.end("g"); });
+  r3.use(function rewriteToNothing(req, res, next) { req.pathname = "/no-such-route"; next(); });
+  var res3 = _res();
+  await r3.handle(_req("GET", "/g"), res3);
+  check("a rewrite onto no route answers 404 rather than the original handler",
+    ran.length === 0 && res3.statusCode === 404,
+    "ran=" + JSON.stringify(ran) + " status=" + res3.statusCode);
+
+  // Control: with no rewrite, the route matched before the middleware ran is
+  // the one that dispatches, and the label the middleware read is that route.
+  ran.length = 0;
+  var labels = [];
+  var r4 = b.router.create();
+  r4.get("/c/:id", function (req, res) { ran.push("GET /c/:id"); res.writeHead(200); res.end("c"); });
+  r4.use(function observe(req, res, next) { labels.push(req.routeLabel); next(); });
+  await r4.handle(_req("GET", "/c/7"), _res());
+  check("no rewrite: the route matched before the middleware ran dispatches",
+    ran.length === 1 && ran[0] === "GET /c/:id", "ran=" + JSON.stringify(ran));
+  check("  and the label the middleware saw is that route",
+    labels[0] === "/c/:id", "label=" + labels[0]);
+}
+
 // ---- handle(): adversarial path canonicalization ----
 
 async function testHandleEncodedSeparatorRefusals() {
@@ -1560,6 +1652,8 @@ async function run() {
   await testListenEarlyDataGate();
   testConstructorOptionValidation();
   await testPatchAndDeleteVerbs();
+  await testMiddlewareSeesTheMatchedRouteBeforeDispatch();
+  await testAMiddlewareRewriteStillDecidesTheDispatchedRoute();
   await testHandleEncodedSeparatorRefusals();
   await testPathScopedMiddleware();
   testUseValidationErrors();

@@ -497,6 +497,57 @@ function testConfigurePool() {
   b.externalDb._resetForTest();
 }
 
+// A pool arms a repeating reaper the moment it is constructed, and the backend
+// entry that owns it is only assigned once the whole object literal has been
+// evaluated, replicas included. A replica that fails validation therefore
+// throws with the primary pool and every earlier replica pool already built and
+// reaping, and the failure path walked `backends`, which has no entry to find.
+// The reaper interval is unref'd, so nothing about the process says it is there.
+async function testARefusedInitLeavesNoPoolReaping() {
+  b.externalDb._resetForTest();
+  var realSetInterval = global.setInterval;
+  var realClearInterval = global.clearInterval;
+  var live = new Set();
+  global.setInterval = function () {
+    var t = realSetInterval.apply(global, arguments);
+    live.add(t);
+    return t;
+  };
+  global.clearInterval = function (t) {
+    live.delete(t);
+    return realClearInterval.apply(global, arguments);
+  };
+  var refused = null;
+  try {
+    var ok = { connect: async function () { return {}; }, query: async function () { return { rows: [], rowCount: 0 }; } };
+    try {
+      b.externalDb.init({
+        backends: {
+          main: {
+            connect: ok.connect, query: ok.query,
+            // The first replica is valid and builds a pool; the second is not,
+            // so the throw lands with two pools already constructed.
+            replicas: [
+              { connect: ok.connect, query: ok.query },
+              { connect: ok.connect },
+            ],
+          },
+        },
+      });
+    } catch (e) { refused = e; }
+    check("an invalid replica refuses the init",
+      refused !== null && /invalid-config/.test((refused && refused.code) || ""),
+      "code=" + (refused && refused.code));
+    check("  and leaves no pool reaper running",
+      live.size === 0, live.size + " interval(s) still armed after the refusal");
+  } finally {
+    global.setInterval = realSetInterval;
+    global.clearInterval = realClearInterval;
+    live.forEach(function (t) { realClearInterval(t); });
+    b.externalDb._resetForTest();
+  }
+}
+
 // A connect that rejects frees the slot it had taken, and that is one more way
 // a slot becomes free: the release and the discard both re-offer the pool to the
 // queue, and this path did not. So a resize that admitted one caller whose
@@ -1370,6 +1421,7 @@ async function run() {
   testConfigurePool();
   await testConfigurePoolAdmitsCallersAlreadyQueued();
   await testAFailedConnectStillRelievesTheQueue();
+  await testARefusedInitLeavesNoPoolReaping();
   await testConnectAs();
   await testRunAs();
   await testAssertRoleHardening();

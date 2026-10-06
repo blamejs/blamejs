@@ -29,15 +29,31 @@ function testResolveRoutePrefersRoutePattern() {
   check("resolveRoute: prefers routePattern over URL", r === "/users/:id");
 }
 
-function testResolveRouteFallsBackToUrl() {
-  var r = b.requestHelpers.resolveRoute({ url: "/raw-path?x=1" });
-  check("resolveRoute: URL fallback strips query",   r === "/raw-path");
+// Every caller of this helper names a request inside a record: a log line, an
+// audit row, a metrics label, a span name. Stripping the query off the URL
+// leaves whatever sits in a path segment, so a reset or invite capability
+// reached those records whenever no route had been matched yet. There is no safe
+// way to name a target from the URL, so it is no longer named from the URL.
+function testResolveRouteWithoutAPatternNamesNoUrl() {
+  var r = b.requestHelpers.resolveRoute({ url: "/reset/CAP0123456789?x=1" });
+  check("resolveRoute: no pattern → no URL in the answer",
+    r === "(unresolved)", "got " + r);
+  check("resolveRoute: a router-resolved label is used when present",
+    b.requestHelpers.resolveRoute({ url: "/reset/CAP", routeLabel: "/reset/:token" })
+      === "/reset/:token");
+  check("resolveRoute: the matched pattern wins over both",
+    b.requestHelpers.resolveRoute({
+      url: "/reset/CAP", routeLabel: "/other", routePattern: "/reset/:token",
+    }) === "/reset/:token");
 }
 
 function testResolveRouteEmptyOrMissingUrl() {
-  check("resolveRoute: missing url → /",   b.requestHelpers.resolveRoute({}) === "/");
-  check("resolveRoute: empty url → /",     b.requestHelpers.resolveRoute({ url: "" }) === "/");
-  check("resolveRoute: null req safe",     b.requestHelpers.resolveRoute(null) === "/");
+  check("resolveRoute: missing url → (unresolved)",
+    b.requestHelpers.resolveRoute({}) === "(unresolved)");
+  check("resolveRoute: empty url → (unresolved)",
+    b.requestHelpers.resolveRoute({ url: "" }) === "(unresolved)");
+  check("resolveRoute: null req safe",
+    b.requestHelpers.resolveRoute(null) === "(unresolved)");
 }
 
 function testResolveRouteIgnoresEmptyRoutePattern() {
@@ -45,7 +61,9 @@ function testResolveRouteIgnoresEmptyRoutePattern() {
     routePattern: "",      // empty string = router didn't resolve
     url:          "/foo",
   });
-  check("resolveRoute: empty routePattern falls through to URL", r === "/foo");
+  check("resolveRoute: empty routePattern is not a pattern", r === "(unresolved)");
+  check("resolveRoute: an empty label is not a label either",
+    b.requestHelpers.resolveRoute({ routeLabel: "", url: "/foo" }) === "(unresolved)");
 }
 
 async function testCaptureStatusFromWriteHead() {
@@ -1160,7 +1178,7 @@ async function run() {
   testAppendVary();
   testTrustedClientIpValidates();
   testResolveRoutePrefersRoutePattern();
-  testResolveRouteFallsBackToUrl();
+  testResolveRouteWithoutAPatternNamesNoUrl();
   testResolveRouteEmptyOrMissingUrl();
   testResolveRouteIgnoresEmptyRoutePattern();
   await testCaptureStatusFromWriteHead();

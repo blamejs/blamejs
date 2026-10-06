@@ -8460,7 +8460,7 @@ async function testMetricsRequestMiddlewareStatusCodeFallback() {
   });
   var requestsTotal = m.metrics.get("framework_http_requests_total");
   check("requestMiddleware: status=404 captured from res.statusCode (no writeHead)",
-        requestsTotal.get({ method: "GET", route: "/notfound", status: "404" }) === 1);
+        requestsTotal.get({ method: "GET", route: "(unresolved)", status: "404" }) === 1);
   m.deactivate();
 }
 
@@ -8471,8 +8471,11 @@ async function testMetricsRequestMiddlewareRoutePatternFallback() {
   var EE = require("node:events").EventEmitter;
   var req = new EE();
   req.method = "GET";
-  req.url = "/raw-path?x=1";
-  // No routePattern — middleware falls back to URL with query stripped
+  req.url = "/reset/CAP0123456789?x=1";
+  // Neither a matched pattern nor a router-resolved label. A label naming the
+  // path would carry whatever sits in a path segment, which stripping the query
+  // does not remove, so it names no target at all. A request that reached a
+  // handler carries its pattern and is labelled with that.
   req.headers = {};
   var res = _metricsRes();
   await new Promise(function (resolve) {
@@ -8483,8 +8486,11 @@ async function testMetricsRequestMiddlewareRoutePatternFallback() {
     });
   });
   var requestsTotal = m.metrics.get("framework_http_requests_total");
-  check("middleware: falls back to URL with query stripped",
-        requestsTotal.get({ method: "GET", route: "/raw-path", status: "200" }) === 1);
+  check("middleware: an unresolved route is labelled as such, not as the URL",
+        requestsTotal.get({ method: "GET", route: "(unresolved)", status: "200" }) === 1);
+  check("middleware: the capability in the path reaches no label",
+        JSON.stringify(requestsTotal.collect ? requestsTotal.collect() : {})
+          .indexOf("CAP0123456789") === -1);
   m.deactivate();
 }
 
@@ -13156,7 +13162,9 @@ function testErrorsPageLogsViaInjectedLogger() {
     error: function (msg, fields) { captured.push({ level: "error", msg: msg, fields: fields }); },
   };
   var handler = b.errorPage.create({ mode: "prod", audit: false, log: fakeLog });
-  var req = { method: "GET", url: "/x", headers: {} };
+  // A request that reached a handler carries the pattern it matched; a record
+  // for one that did not names no target rather than the path.
+  var req = { method: "GET", url: "/x", headers: {}, routePattern: "/x" };
   var res500 = _makeFakeRes();
   handler(new Error("kaboom"), req, res500);
   check("500 logged at error level",               captured.length === 1 && captured[0].level === "error");
@@ -13330,7 +13338,7 @@ async function testErrorsPageAuditRedactsSecretsInStackAndReason() {
 
     var secret = "postgres://user:s3cr3t@db.internal/app";
     var handler = b.errorPage.create({ mode: "prod" }); // audit on by default
-    var req = { method: "POST", url: "/api/widget", headers: { accept: "application/json" }, id: "req-redact-1" };
+    var req = { method: "POST", url: "/api/widget", headers: { accept: "application/json" }, id: "req-redact-1", routePattern: "/api/widget" };
     var res = _makeFakeRes();
     // Generic Error → 500. Its message (and therefore its stack) carries
     // the secret-shaped connection string.

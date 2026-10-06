@@ -689,11 +689,12 @@ async function testFiveWsAuditPropagation() {
 
   // Simulate a request with all 5 W's populated
   var fakeReq = b.testing.mockReq({
-    ip:        "203.0.113.42",
-    userAgent: "test-client/1.0",
-    requestId: "req-abc-123",
-    method:    "POST",
-    url:       "/admin/keys/issue",
+    ip:           "203.0.113.42",
+    userAgent:    "test-client/1.0",
+    requestId:    "req-abc-123",
+    method:       "POST",
+    url:          "/admin/keys/issue",
+    routePattern: "/admin/keys/issue",
   });
   fakeReq.sessionId = "sess-xyz";
   fakeReq.user      = { id: "admin-7" };
@@ -716,7 +717,8 @@ async function testFiveWsAuditPropagation() {
 
   // Verify path also propagates context
   audit.clear();
-  var verifyReq = Object.assign({}, fakeReq, { url: "/api/data", method: "GET" });
+  var verifyReq = Object.assign({}, fakeReq,
+    { url: "/api/data", routePattern: "/api/data", method: "GET" });
   await keys.verify(issued.key, { req: verifyReq });
   var verifyEvent = audit.byAction("apikey.verify")[0];
   check("5 W's: verify audit has WHO (ownerId from row)",

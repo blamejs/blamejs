@@ -800,6 +800,9 @@ function testLoggerInjection() {
   };
   var h = b.errorPage.create({ mode: "prod", audit: false, log: fakeLog });
   var req = _mockReq({ method: "GET", url: "/x", headers: {} });
+  // A request that reached a handler carries the pattern it matched; without
+  // one the record names no target, which the pre-dispatch case below covers.
+  req.routePattern = "/x";
 
   var r500 = _mockRes();
   h(new Error("kaboom"), req, r500);
@@ -845,6 +848,26 @@ function testLoggerInjection() {
       JSON.stringify(audited[0]).indexOf(SECRET) === -1,
       JSON.stringify(audited[0]).slice(0, 200));
   }
+
+  // An error raised BEFORE a route is matched, such as a middleware throw,
+  // reaches this handler with no `routePattern` at all. Naming the target from
+  // the URL in that case strips the query and keeps the path, so a capability
+  // sitting in a path segment still reached both the log line and the signed
+  // audit metadata.
+  captured.length = 0;
+  audited.length = 0;
+  var preDispatch = _mockReq({
+    method: "GET", url: "/reset/" + SECRET + "?next=/account", headers: {},
+  });
+  hAudit(new Error("guard blew up"), preDispatch, _mockRes());
+  check("an error raised before dispatch records no capability in the log line",
+    captured.length === 1 &&
+    JSON.stringify(captured[0].fields).indexOf(SECRET) === -1 &&
+    JSON.stringify(captured[0].fields).indexOf("next=") === -1,
+    JSON.stringify(captured.length ? captured[0].fields : null));
+  check("  nor in the audit record",
+    JSON.stringify(audited).indexOf(SECRET) === -1,
+    JSON.stringify(audited).slice(0, 200));
 }
 
 function testHooksThrowWithoutMessage() {

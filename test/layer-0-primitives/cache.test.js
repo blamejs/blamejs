@@ -457,6 +457,9 @@ async function testAuditCarriesActorContext() {
     requestId: "req-42",
     method:    "POST",
     url:       "/admin/cache/clear",
+    // A dispatched request carries the pattern it matched; a record for one
+    // that never reached a route names no target rather than the path.
+    routePattern: "/admin/cache/clear",
   });
   await c.set("k", "v");
   await c.clear({ req: fakeReq });
