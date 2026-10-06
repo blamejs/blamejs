@@ -13162,13 +13162,20 @@ var KNOWN_ANTIPATTERNS = [
     // out of scope. The tempered token stops at either predicate, which is how
     // a handled site reads, and at a function-closing brace at column 0.
     //
-    // `isArgon2Error` counts as well as `isGateRefusal` because it is the WIDER
-    // question and subsumes it: a wrong passphrase surfaces as an AEAD failure,
-    // never as an Argon2 error, so a site that rethrows every Argon2 error has
-    // handled the capacity refusal and the permanent ones with it. Consulting
-    // only the narrow predicate let `argon2/cost-over-ceiling` reach a
-    // catch-all that reported it as a rejected passphrase.
-    regex: /(?:(?:vaultWrap|argon2(?:Builtin)?)(?:\(\))?\.(?:wrap|unwrap|hash|verify|deriveWrappingKey)|(?:backupCrypto|bCrypto)(?:\(\))?\.(?:deriveKey|encryptWithPassphrase|decryptWithPassphrase|encryptWithFreshSalt))\s*\((?:(?!\n\})[\s\S]){0,240}?\)\s*;?\s*\}?\s*catch\s*\(\s*(?!_)[A-Za-z$][\w$]*\s*\)\s*\{(?:(?!isGateRefusal)(?!isArgon2Error)(?!vault-wrap\/passphrase-rejected)(?!backup-crypto\/decrypt-failed)(?!\n\})[\s\S]){0,240}?\bthrow\s+(?:new\s+[A-Za-z_$][\w$]*Error|_err\s*\()/,
+    // Only `isArgon2Error` counts as handled. It is the WIDER question and
+    // subsumes the capacity refusal: a wrong passphrase surfaces as an AEAD
+    // failure, never as an Argon2 error, so a site that rethrows every Argon2
+    // error has handled the capacity refusal and the permanent ones with it.
+    // `isGateRefusal` asks only whether the refusal is transient, so it let
+    // `argon2/cost-over-ceiling` reach a catch-all that reported a correct
+    // passphrase as rejected, in five sites at once once the ceiling began
+    // bounding the raw derivations.
+    //
+    // A catch that answers `false` instead of raising its own coded error is
+    // out of scope either way, because the pattern requires the translating
+    // `throw` to fire: that is the documented contract of `verify`, which
+    // `exceedsCostCeiling` is there to disambiguate.
+    regex: /(?:(?:vaultWrap|argon2(?:Builtin)?)(?:\(\))?\.(?:wrap|unwrap|hash|verify|deriveWrappingKey)|(?:backupCrypto|bCrypto)(?:\(\))?\.(?:deriveKey|encryptWithPassphrase|decryptWithPassphrase|encryptWithFreshSalt))\s*\((?:(?!\n\})[\s\S]){0,240}?\)\s*;?\s*\}?\s*catch\s*\(\s*(?!_)[A-Za-z$][\w$]*\s*\)\s*\{(?:(?!isArgon2Error)(?!vault-wrap\/passphrase-rejected)(?!backup-crypto\/decrypt-failed)(?!\n\})[\s\S]){0,240}?\bthrow\s+(?:new\s+[A-Za-z_$][\w$]*Error|_err\s*\()/,
     allowlist: [],
     fixtures: {
       fires: [
@@ -13178,10 +13185,15 @@ var KNOWN_ANTIPATTERNS = [
         // too, which the first version of this pattern did not name: it listed
         // the calls it had seen rather than every export that derives.
         "      vkBuf = await backupCrypto.decryptWithPassphrase(vaultKeyEnc, passphrase, salt);\n  } catch (e) {\n    throw new RestoreBundleError(\"restore-bundle/vault-key-recovery-failed\",\n      \"could not recover\");",
+        // Letting only the TRANSIENT refusal through and translating the rest
+        // is what reported a correct passphrase as rejected once the ceiling
+        // began bounding the raw derivations.
+        "    return await backupCrypto().decryptWithPassphrase(encrypted, opts.passphrase, saltHex);\n  } catch (e) {\n    if (argon2().isGateRefusal(e)) throw e;\n    throw new ArchiveWrapError(\"archive-wrap/decrypt-failed\",\n      \"wrong passphrase or tampered envelope\");",
+        "    sealed = await vaultWrap.wrap(plaintextJson, passphrase);\n  } catch (e) {\n    if (argon2.isGateRefusal(e)) throw e;\n    throw new VaultError(\"vault/wrap-failed\",\n      \"failed to wrap new vault key\");",
       ],
       quiet: [
-        "    plaintext = await vaultWrap.unwrap(sealed, pwBuf);\n  } catch (e) {\n    if (argon2.isGateRefusal(e)) throw e;\n    throw new KeychainError(\"keychain/file-unseal-failed\",\n      \"rejected\");",
-        "    try { plaintextBuf = await vaultWrap.unwrap(sealedBytes, passphrase); }\n    catch (e) {\n      if (argon2.isGateRefusal(e)) throw e;\n      throw _err(\"audit-sign/passphrase-rejected\", \"rejected\");",
+        "    plaintext = await vaultWrap.unwrap(sealed, pwBuf);\n  } catch (e) {\n    if (argon2.isArgon2Error(e)) throw e;\n    throw new KeychainError(\"keychain/file-unseal-failed\",\n      \"rejected\");",
+        "    try { plaintextBuf = await vaultWrap.unwrap(sealedBytes, passphrase); }\n    catch (e) {\n      if (argon2.isArgon2Error(e)) throw e;\n      throw _err(\"audit-sign/passphrase-rejected\", \"rejected\");",
         // Translating one named code and re-raising everything else already
         // lets the refusal through, which is how the per-blob decrypt reads.
         "          plaintext = await backupCrypto.decryptWithPassphrase(blob, passphrase, entry.salt);\n      } catch (e) {\n        if (e && e.code === \"backup-crypto/decrypt-failed\") {\n          throw new RestoreBundleError(\"restore-bundle/decrypt-failed\", \"rejected\");\n        }\n        throw e;\n      }",

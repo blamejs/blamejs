@@ -2409,6 +2409,49 @@ async function testAHeldPassphraseIsReleasedWhenTheOperationEnds() {
         "code=" + (badRotate && badRotate.code) +
         " kind=" + source.sourceKind(AUDIT_RETRY));
 
+      // Two rotations cannot interleave over one sealed key, and allowing them
+      // to is what made the held copy ambiguous: the second read it, was
+      // refused by the gate, and the first's success then released the copy
+      // the second was still owed. The second is refused outright instead, as
+      // a permanent error that retains nothing and consumes nothing.
+      process.env[AUDIT_VAR] = AUDIT_PASS;
+      source._clearHeldEnvPassphrase(AUDIT_VAR);
+      var firstRot = b.auditSign.rotateSigningKey({});
+      var concurrent = null;
+      try { await b.auditSign.rotateSigningKey({}); } catch (e) { concurrent = e; }
+      check("a rotation started while another runs is refused outright",
+        concurrent !== null && concurrent.code === "audit-sign/rotate-in-progress",
+        "code=" + (concurrent && concurrent.code));
+      check("  and that refusal is not one b.retry would retry",
+        concurrent !== null && b.retry.isRetryable(concurrent) === false,
+        "retryable=" + (concurrent && b.retry.isRetryable(concurrent)));
+      var firstErr = null;
+      try { await firstRot; } catch (e) { firstErr = e; }
+      check("  while the rotation already running completes",
+        firstErr === null, "code=" + (firstErr && firstErr.code));
+      check("  and releases the copy it alone was holding",
+        source.sourceKind(AUDIT_RETRY) !== "env",
+        "kind=" + source.sourceKind(AUDIT_RETRY));
+
+      process.env[AUDIT_VAR] = AUDIT_PASS;
+      var rotRefused3 = null;
+      var hold4 = null;
+      try {
+        P.gate(1, { maxQueued: 0 });
+        hold4 = P.hash("occupant-rotate-3", {
+          memoryCost: b.constants.BYTES.kib(16), timeCost: 2, parallelism: 1,
+        });
+        try { await b.auditSign.rotateSigningKey({}); } catch (e) { rotRefused3 = e; }
+      } finally {
+        if (hold4 !== null) { try { await hold4; } catch (_e) { /* released */ } }
+        P.gate(8, { maxQueued: Infinity, waitTimeoutMs: 0 });
+      }
+      check("a gate-refused rotation still holds its copy for the retry",
+        rotRefused3 !== null && rotRefused3.code === "argon2/busy" &&
+        source.sourceKind(AUDIT_RETRY) === "env",
+        "code=" + (rotRefused3 && rotRefused3.code) +
+        " kind=" + source.sourceKind(AUDIT_RETRY));
+
       var rotRetry = null;
       try { await b.auditSign.rotateSigningKey({}); } catch (e) { rotRetry = e; }
       check("  so the rotation retry the refusal invited succeeds",

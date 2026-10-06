@@ -59,6 +59,44 @@ async function testPassphraseRefusesWrongPassword() {
     refused && /decrypt-failed/.test(refused.code || refused.message));
 }
 
+async function testAnArgon2RefusalIsNotReportedAsAWrongPassphrase() {
+  var sealed = await b.archive.wrapWithPassphrase(Buffer.from("PHI"), {
+    passphrase: STRONG_PASSPHRASE,
+  });
+  var P = b.auth.password;
+  var hold = null;
+  var refused = null;
+  try {
+    P.gate(1, { maxQueued: 0 });
+    hold = P.hash("occupant", {
+      memoryCost: b.constants.BYTES.kib(16), timeCost: 2, parallelism: 1,
+    });
+    try {
+      await b.archive.unwrapWithPassphrase(sealed, { passphrase: STRONG_PASSPHRASE });
+    } catch (e) { refused = e; }
+  } finally {
+    if (hold !== null) await hold;
+    P.gate(8, { maxQueued: Infinity, waitTimeoutMs: 0 });
+  }
+  check("unwrapWithPassphrase: a full gate raises the Argon2id refusal",
+    refused !== null && refused.code === "argon2/busy",
+    "code=" + (refused && refused.code) +
+    " msg=" + String(refused && refused.message).slice(0, 120));
+  check("unwrapWithPassphrase: the correct passphrase is not reported as the wrong one",
+    refused !== null && !/decrypt-failed/.test(String(refused.code || "")),
+    "code=" + (refused && refused.code));
+
+  // The control: with the gate open, a wrong passphrase still reads as one, so
+  // the assertions above read the refusal and not every failure.
+  var wrong = null;
+  try {
+    await b.archive.unwrapWithPassphrase(sealed, { passphrase: STRONG_PASSPHRASE + "-WRONG" });
+  } catch (e) { wrong = e; }
+  check("unwrapWithPassphrase: a wrong passphrase still refuses as decrypt-failed",
+    wrong !== null && /decrypt-failed/.test(String(wrong.code || "")),
+    "code=" + (wrong && wrong.code));
+}
+
 async function testPassphraseRefusesWeakEntropy() {
   var refused = null;
   try {
@@ -191,6 +229,7 @@ async function run() {
   await testPassphraseRoundTrip();
   await testPassphraseRefusesBadMagic();
   await testPassphraseRefusesWrongPassword();
+  await testAnArgon2RefusalIsNotReportedAsAWrongPassphrase();
   await testPassphraseRefusesWeakEntropy();
   await testPassphraseNanInfinityRefused();
   await testBufferPassphraseEntropyFromBytes();
