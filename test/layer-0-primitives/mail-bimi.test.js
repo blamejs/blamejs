@@ -1972,9 +1972,15 @@ async function testFetchAndVerifyMarkChainDepthExceeded() {
 // must also be fast (or the fix is just a smaller input), and the parser must
 // still read attributes (or the fix is a parser that stopped parsing).
 function testTinyPsAttrParseDoesNotBacktrack() {
+  // Min-of-six, not min-of-two. Both parses run in well under a millisecond,
+  // so the ceilings below are carried by their fixed 50ms term, and under
+  // SMOKE_PARALLEL=64 two samples can both be descheduled past it: the benign
+  // parse was recorded at 50.4ms against that ceiling. Six samples of work
+  // this short cost nothing, and a minimum only ever reads lower, so the hang
+  // guard is unchanged.
   function ms(fn) {
     var lo = Infinity;
-    for (var i = 0; i < 2; i += 1) {
+    for (var i = 0; i < 6; i += 1) {
       var t0 = process.hrtime.bigint();
       try { fn(); } catch (_e) { /* a refusal is fine; a hang is not */ }
       var el = Number(process.hrtime.bigint() - t0) / 1e6;
@@ -2011,10 +2017,12 @@ function testTinyPsAttrParseDoesNotBacktrack() {
   check("mail.bimi: a hostile-shaped SVG at the Tiny-PS cap parses without " +
         "backtracking (" + hostileMs.toFixed(0) + "ms)",
         hostileMs < ceiling, hostileMs.toFixed(0) + "ms, ceiling " + ceiling.toFixed(1) + "ms");
-  // The claim is that the benign input is not itself slow, so the reference
-  // is a parse measured in this process under the same load rather than a
-  // wall-clock budget: 50ms alone fails on a container running 64 workers,
-  // where this sub-millisecond parse was recorded at 77ms.
+  // The claim is that the benign input is not itself slow. The reference is a
+  // parse measured in this process, which raises the ceiling once the runner
+  // is loaded enough to push that parse past a millisecond; below that the
+  // 50ms term carries the check and the min-of-six above is what absorbs
+  // contention. On a container running 64 workers this sub-millisecond parse
+  // has been recorded at 77ms from a single sample.
   var smallMs = ms(function () {
     b.mail.bimi.validateTinyPsSvg('<svg xmlns="http://www.w3.org/2000/svg" ' +
       'baseProfile="tiny-ps" version="1.2"><title>t</title></svg>');
