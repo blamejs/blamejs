@@ -368,6 +368,9 @@ async function testFiveWsAuditPropagation() {
 
   var req = _mockReq();
   req.url = "/admin/users/42";
+  // A dispatched request carries the pattern it matched. A record for one that
+  // never reached a route names no target rather than the concrete path.
+  req.routePattern = "/admin/users/42";
   req.method = "GET";
   req.ip = "203.0.113.99";
   req.headers["user-agent"] = "compliance-test/1.0";
@@ -389,6 +392,7 @@ async function testFiveWsAuditPropagation() {
   audit.clear();
   var denyReq = _mockReq();
   denyReq.url = "/admin/users/42/delete";
+  denyReq.routePattern = "/admin/users/42/delete";
   denyReq.method = "DELETE";
   denyReq.ip = "203.0.113.99";
   denyReq.user = { id: "viewer-9", roles: ["viewer"] };

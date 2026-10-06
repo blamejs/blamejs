@@ -272,6 +272,68 @@ async function testMessageRedactionMatchesMetaSecretSet() {
   }
 }
 
+// ---- a refused init closes the sinks it had already opened ----
+
+// init builds the sinks one at a time, and a local sink opens its file
+// descriptor inside create(). A later sink's config can be refused, which
+// left every earlier sink open: `initialized` is still false at that point,
+// so shutdown() returned at its own guard and released nothing. The
+// assertion drives b.logStream.shutdown(), not _resetForTest(), because the
+// test reset closes the sinks unconditionally and hides this.
+async function testAFailedInitClosesTheSinksItAlreadyOpened() {
+  _resetLogStream();
+  var dir = _mkTmp();
+  var logFile = path.join(dir, "blamejs.log");
+
+  function _fdsOn(file) {
+    if (process.platform === "win32") return null;
+    var n = 0;
+    try {
+      fs.readdirSync("/proc/self/fd").forEach(function (entry) {
+        var target;
+        try { target = fs.readlinkSync(path.join("/proc/self/fd", entry)); }
+        catch (_e) { return; }
+        if (target === file) n += 1;
+      });
+    } catch (_e) { return null; }
+    return n;
+  }
+
+  try {
+    var baseline = _fdsOn(logFile);
+    var threw = null;
+    try {
+      b.logStream.init({
+        sinks: {
+          opened:  { protocol: "local", dir: dir },
+          refused: { protocol: "local", dir: dir, minLevel: "not-a-level" },
+        },
+      });
+    } catch (e) { threw = e; }
+    check("logStream.init refuses a sink with an unknown minLevel",
+      threw && threw.code === "log-stream/invalid-level",
+      "code=" + (threw && threw.code));
+
+    // The operator's only teardown call.
+    await b.logStream.shutdown();
+
+    if (baseline === null) {
+      // libuv opens with FILE_SHARE_DELETE, so an open descriptor on Windows
+      // neither locks the file nor blocks removal: the descriptor count is
+      // the only signal, and /proc/self/fd carries it.
+      helpers.unavailable("logStream sink-leak case not measurable off Linux " +
+        "(needs /proc/self/fd; an open fd blocks nothing on win32)");
+    } else {
+      check("  and shutdown() closes the sink opened before the refusal",
+        _fdsOn(logFile) === baseline,
+        "baseline=" + baseline + " after=" + _fdsOn(logFile));
+    }
+  } finally {
+    _resetLogStream();
+    _rmTmp(dir);
+  }
+}
+
 async function run() {
   testListSinksEmptyBeforeInit();
   await testListSinksReportsConfiguredSinks();
@@ -283,6 +345,7 @@ async function run() {
   testBootFromEnvThrowsUnknownProtocol();
   await testMessageRedactionScrubsEmbeddedSecrets();
   await testMessageRedactionMatchesMetaSecretSet();
+  await testAFailedInitClosesTheSinksItAlreadyOpened();
 }
 
 module.exports = { run: run };

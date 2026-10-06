@@ -616,6 +616,7 @@ async function testAuditAppliedOn() {
         requestId: "req-42",
         method:    "POST",
         url:       "/admin/seed/run",
+        routePattern: "/admin/seed/run",   // a dispatched request carries its pattern
       });
       await runner.run({ env: "dev", req: fakeReq });
       var ev = audit.byAction("seeders.applied")[0];

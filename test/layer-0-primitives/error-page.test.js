@@ -800,18 +800,74 @@ function testLoggerInjection() {
   };
   var h = b.errorPage.create({ mode: "prod", audit: false, log: fakeLog });
   var req = _mockReq({ method: "GET", url: "/x", headers: {} });
+  // A request that reached a handler carries the pattern it matched; without
+  // one the record names no target, which the pre-dispatch case below covers.
+  req.routePattern = "/x";
 
   var r500 = _mockRes();
   h(new Error("kaboom"), req, r500);
   check("500 logged at error level",           captured.length === 1 && captured[0].level === "error");
-  check("500 log fields include status + url + stack",
-        captured[0].fields.status === 500 && captured[0].fields.url === "/x" && typeof captured[0].fields.stack === "string");
+  check("500 log fields include status + route + stack",
+        captured[0].fields.status === 500 && captured[0].fields.route === "/x" && typeof captured[0].fields.stack === "string");
 
   captured.length = 0;
   var r404 = _mockRes();
   h(Object.assign(new Error("missing"), { isAppError: true, statusCode: 404 }), req, r404);
   check("404 logged at warn level",            captured.length === 1 && captured[0].level === "warn");
   check("404 warn log carries no stack noise",  captured[0].fields.stack === undefined);
+
+  // The logged target is the route, so a credential in a path segment or a
+  // query string never reaches the log line or the audit record. The audit
+  // record is the one that cannot be redacted afterwards: the chain is signed
+  // and append-only.
+  captured.length = 0;
+  var audited = [];
+  var SECRET = "RESETTOKEN9876543210abcdef";
+  var hAudit = b.errorPage.create({
+    mode: "prod", log: fakeLog, audit: true,
+    auditEmit: function (rec) { audited.push(rec); },
+  });
+  var secretReq = _mockReq({
+    method: "GET", url: "/reset/" + SECRET + "?next=/account", headers: {},
+  });
+  secretReq.routePattern = "/reset/:token";
+  hAudit(new Error("kaboom"), secretReq, _mockRes());
+  check("the log line names the route pattern, not the URL",
+    captured.length === 1 && captured[0].fields.route === "/reset/:token",
+    "route=" + (captured[0] && captured[0].fields && captured[0].fields.route));
+  check("and carries neither the credential nor the query string",
+    JSON.stringify(captured[0].fields).indexOf(SECRET) === -1 &&
+    JSON.stringify(captured[0].fields).indexOf("next=") === -1,
+    JSON.stringify(captured[0].fields));
+  if (audited.length === 0) {
+    helpers.unavailable("error-page audit record not captured: create() takes no " +
+      "auditEmit override, so the audit-metadata target is covered by the log " +
+      "assertion above and the shared resolveRoute call");
+  } else {
+    check("the audit record carries the route, not the URL",
+      JSON.stringify(audited[0]).indexOf(SECRET) === -1,
+      JSON.stringify(audited[0]).slice(0, 200));
+  }
+
+  // An error raised BEFORE a route is matched, such as a middleware throw,
+  // reaches this handler with no `routePattern` at all. Naming the target from
+  // the URL in that case strips the query and keeps the path, so a capability
+  // sitting in a path segment still reached both the log line and the signed
+  // audit metadata.
+  captured.length = 0;
+  audited.length = 0;
+  var preDispatch = _mockReq({
+    method: "GET", url: "/reset/" + SECRET + "?next=/account", headers: {},
+  });
+  hAudit(new Error("guard blew up"), preDispatch, _mockRes());
+  check("an error raised before dispatch records no capability in the log line",
+    captured.length === 1 &&
+    JSON.stringify(captured[0].fields).indexOf(SECRET) === -1 &&
+    JSON.stringify(captured[0].fields).indexOf("next=") === -1,
+    JSON.stringify(captured.length ? captured[0].fields : null));
+  check("  nor in the audit record",
+    JSON.stringify(audited).indexOf(SECRET) === -1,
+    JSON.stringify(audited).slice(0, 200));
 }
 
 function testHooksThrowWithoutMessage() {

@@ -1560,6 +1560,72 @@ async function testRunInWorkerValidation() {
     badTimeout && badTimeout.code === "backup/bad-timeout");
 }
 
+// readBundle refused an existing destDir, then created it, and only then
+// decrypted. A wrong passphrase or a busy derivation gate therefore left the
+// empty directory behind, and the corrected retry the operator was invited to
+// make hit backup/dest-exists instead of restoring. The passphrase is a
+// construction option, so the wrong-passphrase attempt needs a second storage
+// over the same adapter.
+async function testAFailedRestoreLeavesNoDestDirBehind() {
+  var RIGHT = "aLongCorrectHorseBatteryStaple9876!Phrase";
+  var WRONG = "aLongButEntirelyIncorrect5432!Passphrase";
+
+  async function _oneFormat(label, format, bid) {
+    var src   = fs.mkdtempSync(path.join(os.tmpdir(), "restore-src-"));
+    var store = fs.mkdtempSync(path.join(os.tmpdir(), "restore-store-"));
+    var destParent = fs.mkdtempSync(path.join(os.tmpdir(), "restore-dest-"));
+    var destDir = path.join(destParent, "restored");
+    try {
+      fs.writeFileSync(path.join(src, "data.json"), "{\"v\":1}", { mode: 0o600 });
+      function _storage(passphrase) {
+        return b.backup.bundleAdapterStorage({
+          adapter:        b.backup.bundleAdapterStorage.fsAdapter({ root: store }),
+          format:         format,
+          cryptoStrategy: "passphrase",
+          passphrase:     passphrase,
+        });
+      }
+      await _storage(RIGHT).writeBundle(bid, src);
+
+      var wrongThrew = null;
+      try { await _storage(WRONG).readBundle(bid, destDir); }
+      catch (e) { wrongThrew = e; }
+      check(label + ": a wrong passphrase refuses the restore",
+        wrongThrew !== null, "code=" + (wrongThrew && wrongThrew.code));
+      check(label + ": and the refused restore leaves no destDir behind",
+        fs.existsSync(destDir) === false,
+        "destDir still present: " + destDir);
+
+      // The retry the refusal invited, with the passphrase corrected.
+      var retryThrew = null;
+      try { await _storage(RIGHT).readBundle(bid, destDir); }
+      catch (e) { retryThrew = e; }
+      check(label + ": the corrected retry restores",
+        retryThrew === null,
+        "code=" + (retryThrew && retryThrew.code));
+      check(label + ": and the restored file is readable",
+        retryThrew === null &&
+        fs.readFileSync(path.join(destDir, "data.json"), "utf8") === "{\"v\":1}");
+
+      // An existing directory is still refused, by the claim rather than by a
+      // check that could race it.
+      var secondThrew = null;
+      try { await _storage(RIGHT).readBundle(bid, destDir); }
+      catch (e) { secondThrew = e; }
+      check(label + ": restoring onto an existing destDir is refused",
+        secondThrew !== null && secondThrew.code === "backup/dest-exists",
+        "code=" + (secondThrew && secondThrew.code));
+    } finally {
+      [src, store, destParent].forEach(function (d) {
+        try { fs.rmSync(d, { recursive: true, force: true }); } catch (_e) { /* ignore */ }
+      });
+    }
+  }
+
+  await _oneFormat("tar.gz", "tar.gz", "2026-10-05T09-00-00-000Z-abcdef01");
+  await _oneFormat("tar",    "tar",    "2026-10-05T09-01-00-000Z-abcdef02");
+}
+
 async function testRunInWorkerLifecycle() {
   await helpers.withTestTimeout("runInWorker lifecycle", async function () {
     // Worker that posts a message -> resolve.
@@ -2249,6 +2315,8 @@ async function run() {
   await testRunInWorkerLifecycle();
 
   await testScheduleTestDrillFailurePaths();
+
+  await testAFailedRestoreLeavesNoDestDirBehind();
 
   // db-backed group — runs last, tears the framework fully back down.
   await testDbBackedResidencyAndDrillPass();

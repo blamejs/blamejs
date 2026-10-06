@@ -293,6 +293,41 @@ async function run() {
   });
   check("backend opt forwards into migration spec",
     migBackend.backend === "pg-main");
+
+  // The field was recorded on the spec and read by nothing: the runner picks
+  // the backend, and the dialect check reads the runner's name. So a view
+  // declared for one backend applied silently against another.
+  var pinnedCtx = {
+    backendName: "analytics",
+    externalDb:  { listBackends: function () {
+      return [{ name: "analytics", dialect: "postgres" },
+              { name: "pg-main",   dialect: "postgres" }];
+    } },
+  };
+  await _expectThrow("up() refuses a spec pinned to a different backend",
+    async function () {
+      await migBackend.up(_fakeXdb({ sourceColumns: ["id"] }), pinnedCtx);
+    },
+    /declare-view\/backend-mismatch/);
+  await _expectThrow("down() refuses it too",
+    async function () { await migBackend.down(_fakeXdb({}), pinnedCtx); },
+    /declare-view\/backend-mismatch/);
+
+  // The control: the same spec against the backend it names still applies, so
+  // the assertions above read the pin and not every ctx.
+  var matchedCtx = { backendName: "pg-main", externalDb: pinnedCtx.externalDb };
+  var applied = true;
+  try { await migBackend.up(_fakeXdb({ sourceColumns: ["id"] }), matchedCtx); }
+  catch (_e) { applied = false; }
+  check("and the backend it names still applies", applied);
+
+  // A spec that names no backend stays the runner's to place.
+  var unpinned = b.db.declareView({ schema: "a", name: "v", source: "public.t" });
+  var unpinnedRan = true;
+  try { await unpinned.up(_fakeXdb({ sourceColumns: ["id"] }), pinnedCtx); }
+  catch (_e) { unpinnedRan = false; }
+  check("a spec naming no backend applies wherever the runner points it",
+    unpinnedRan);
 }
 
 module.exports = { run: run };

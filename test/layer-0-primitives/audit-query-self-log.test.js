@@ -133,6 +133,26 @@ async function _chainMax(driver) {
   return Number(r.rows[0].m);
 }
 
+// One flush is not a settle point: a row produced by a query that was still in
+// flight when it returned lands afterwards, and the quiet-window assertion then
+// reads it as the chain writing to itself. Measured once under
+// SMOKE_PARALLEL=64, where the window picked up a single late row
+// (afterOne=83, afterQuiet=84) that neither an idle 4000ms window nor forty
+// busy processes reproduce. Counting until two consecutive readings agree
+// measures a chain that has actually stopped moving, and a chain that genuinely
+// keeps writing never settles, so the bound below fails loudly instead.
+async function _settledChainRows(driver) {
+  var previous = await _chainRows(driver);
+  for (var i = 0; i < 40; i += 1) {
+    await b.audit.flush();
+    var now = await _chainRows(driver);
+    if (now === previous) return now;
+    previous = now;
+  }
+  throw new Error("the audit chain did not settle: " + previous +
+                  " rows and still growing after 40 flushes");
+}
+
 async function testChainWriteDoesNotAuditItself() {
   var tmpDir = _tmp();
   b.cluster._resetForTest();
@@ -158,12 +178,10 @@ async function testChainWriteDoesNotAuditItself() {
     });
 
     // Settle what booting buffered, so the measurement starts from a quiet chain.
-    await b.audit.flush();
-    var before = await _chainRows(driver);
+    var before = await _settledChainRows(driver);
 
     await b.audit.record({ action: "consent.granted", outcome: "success" });
-    await b.audit.flush();
-    var afterOne = await _chainRows(driver);
+    var afterOne = await _settledChainRows(driver);
     check("recording one event in cluster mode appends exactly one chain row",
           afterOne === before + 1,
           "before=" + before + " after=" + afterOne);

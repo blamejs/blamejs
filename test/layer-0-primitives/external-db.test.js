@@ -497,6 +497,343 @@ function testConfigurePool() {
   b.externalDb._resetForTest();
 }
 
+// A pool arms a repeating reaper the moment it is constructed, and the backend
+// entry that owns it is only assigned once the whole object literal has been
+// evaluated, replicas included. A replica that fails validation therefore
+// throws with the primary pool and every earlier replica pool already built and
+// reaping, and the failure path walked `backends`, which has no entry to find.
+// The reaper interval is unref'd, so nothing about the process says it is there.
+async function testARefusedInitLeavesNoPoolReaping() {
+  b.externalDb._resetForTest();
+  var realSetInterval = global.setInterval;
+  var realClearInterval = global.clearInterval;
+  var live = new Set();
+  global.setInterval = function () {
+    var t = realSetInterval.apply(global, arguments);
+    live.add(t);
+    return t;
+  };
+  global.clearInterval = function (t) {
+    live.delete(t);
+    return realClearInterval.apply(global, arguments);
+  };
+  var refused = null;
+  try {
+    var ok = { connect: async function () { return {}; }, query: async function () { return { rows: [], rowCount: 0 }; } };
+    try {
+      b.externalDb.init({
+        backends: {
+          main: {
+            connect: ok.connect, query: ok.query,
+            // The first replica is valid and builds a pool; the second is not,
+            // so the throw lands with two pools already constructed.
+            replicas: [
+              { connect: ok.connect, query: ok.query },
+              { connect: ok.connect },
+            ],
+          },
+        },
+      });
+    } catch (e) { refused = e; }
+    check("an invalid replica refuses the init",
+      refused !== null && /invalid-config/.test((refused && refused.code) || ""),
+      "code=" + (refused && refused.code));
+    check("  and leaves no pool reaper running",
+      live.size === 0, live.size + " interval(s) still armed after the refusal");
+  } finally {
+    global.setInterval = realSetInterval;
+    global.clearInterval = realClearInterval;
+    live.forEach(function (t) { realClearInterval(t); });
+    b.externalDb._resetForTest();
+  }
+}
+
+// A connect that rejects frees the slot it had taken, and that is one more way
+// a slot becomes free: the release and the discard both re-offer the pool to the
+// queue, and this path did not. So a resize that admitted one caller whose
+// connection then failed transiently left the rest queued against free slots
+// until some unrelated client happened to come back.
+// Pool is exported, so an operator can construct one that belongs to no
+// backend initialization. Registering every instance for module-wide cleanup
+// put those pools inside `_drainAllPools()`, so a refused `init()`, or a
+// `shutdown()` before init which is documented as a no-op, stopped their
+// reapers, closed their idle clients and rejected their waiters.
+async function testAStandalonePoolIsNotDrainedByModuleCleanup() {
+  b.externalDb._resetForTest();
+  var connects = 0;
+  var closed = 0;
+  var mine = new b.externalDb.Pool("operator-owned", {
+    connect: async function () { connects += 1; return { id: "c" + connects }; },
+    close:   async function () { closed += 1; },
+    pool:    { min: 0, max: 2, idleTimeoutMs: b.constants.TIME.minutes(1) },
+  });
+  try {
+    var first = await mine.acquire();
+    check("a standalone pool hands out a connection", !!first && connects === 1,
+      "connects=" + connects);
+    mine.release(first);
+    check("  and keeps it idle for reuse", mine.idle.length === 1,
+      "idle=" + mine.idle.length);
+
+    // shutdown() before any init is documented as doing nothing.
+    await b.externalDb.shutdown();
+    check("a shutdown before init leaves a standalone pool's connection idle",
+      mine.idle.length === 1 && closed === 0,
+      "idle=" + mine.idle.length + " closed=" + closed);
+    check("  and leaves its reaper running",
+      mine._reaper !== null, "reaper=" + String(mine._reaper));
+
+    // A refused init must not reach it either.
+    var refused = null;
+    try {
+      b.externalDb.init({ backends: { bad: { query: async function () { return {}; } } } });
+    } catch (e) { refused = e; }
+    check("an init with a bad backend is refused",
+      refused !== null && /invalid-config/.test((refused && refused.code) || ""),
+      "code=" + (refused && refused.code));
+    check("  and the standalone pool is untouched",
+      mine.idle.length === 1 && closed === 0 && mine._reaper !== null,
+      "idle=" + mine.idle.length + " closed=" + closed + " reaper=" + String(mine._reaper));
+    var second = await mine.acquire();
+    check("  so it still serves its owner",
+      !!second && mine.active >= 1, "active=" + mine.active);
+    mine.release(second);
+  } finally {
+    try { await mine.drain(); } catch (_e) { /* best effort */ }
+    b.externalDb._resetForTest();
+  }
+}
+
+// A connect() that throws SYNCHRONOUSLY runs the acquire catch in the same
+// tick, and that catch offers the pool to the queue, which acquires again and
+// throws again: one stack frame per queued caller rather than one loop
+// iteration. The depth therefore grew with the queue, and a long enough queue
+// overflowed the stack and left callers unsettled. Admission is measured here
+// by how deep connect() is called rather than by whether a particular queue
+// length happens to exhaust the stack on a given runtime.
+async function _syncConnectFailureDepth(queuedCount) {
+  b.externalDb._resetForTest();
+  var held = [];
+  var connects = 0;
+  var failSynchronously = false;
+  var maxDepth = 0;
+  // Error.stackTraceLimit is 10 by default, so an unraised limit caps every
+  // reading at eleven lines and reports a flat depth however deep the
+  // recursion actually goes.
+  var realStackLimit = Error.stackTraceLimit;
+  Error.stackTraceLimit = 20000;
+  var driver = {
+    connect: function () {
+      var depth = String(new Error().stack || "").split("\n").length;
+      if (depth > maxDepth) maxDepth = depth;
+      connects += 1;
+      if (failSynchronously) {
+        var e = new Error("connect refused");
+        e.code = "ECONNREFUSED";
+        throw e;
+      }
+      return { id: "c" + connects };
+    },
+    query: function (_client, sql) {
+      if (/^SELECT\s+hold\b/i.test(sql)) {
+        return new Promise(function (resolve) {
+          held.push(function () { resolve({ rows: [], rowCount: 0 }); });
+        });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    },
+    close: async function () { /* no-op */ },
+  };
+  b.externalDb.init({
+    backends: {
+      main: {
+        connect: driver.connect, query: driver.query, close: driver.close,
+        pool: { min: 1, max: 1, idleTimeoutMs: b.constants.TIME.minutes(1) },
+      },
+    },
+  });
+  var holding = null;
+  var settled = 0;
+  try {
+    holding = b.externalDb.query("SELECT hold", []);
+    await helpers.waitUntil(function () {
+      return b.externalDb.listBackends()[0].pool.active >= 1;
+    }, { timeoutMs: 5000, label: "sync connect failure: the only connection is busy" });
+
+    var queued = [];
+    for (var i = 0; i < queuedCount; i += 1) {
+      queued.push(b.externalDb.query("SELECT 1", [])
+        .then(function () { settled += 1; }, function () { settled += 1; }));
+    }
+    await helpers.waitUntil(function () {
+      return b.externalDb.listBackends()[0].pool.waiters >= queuedCount;
+    }, { timeoutMs: 20000, label: "sync connect failure: every caller queued" });
+
+    failSynchronously = true;
+    b.externalDb.configurePool("main", { max: 2 });
+
+    var drained = false;
+    await Promise.race([
+      Promise.all(queued).then(function () { drained = true; }),
+      helpers.passiveObserve(20000, "sync connect failure: the queue drains"),
+    ]);
+    return { depth: maxDepth, drained: drained, settled: settled, queued: queuedCount };
+  } finally {
+    Error.stackTraceLimit = realStackLimit;
+    failSynchronously = false;
+    held.forEach(function (release) { release(); });
+    try { await holding; } catch (_e) { /* the hold may be refused */ }
+    try { await b.externalDb.shutdown(); } catch (_e) { /* best effort */ }
+    b.externalDb._resetForTest();
+  }
+}
+
+async function testASynchronousConnectFailureAdmitsWithoutRecursing() {
+  var few = await _syncConnectFailureDepth(10);
+  var many = await _syncConnectFailureDepth(200);
+
+  check("a queue of 10 settles when connect throws synchronously",
+    few.drained === true && few.settled === few.queued, JSON.stringify(few));
+  check("a queue of 200 settles the same way",
+    many.drained === true && many.settled === many.queued, JSON.stringify(many));
+  // Twenty times the queue must not mean twenty times the stack: admission
+  // iterates, so the depth connect() is reached at does not track the queue.
+  check("the admission depth does not grow with the queue",
+    many.depth - few.depth < 20,
+    "depth10=" + few.depth + " depth200=" + many.depth +
+    " grew by " + (many.depth - few.depth));
+}
+
+async function testAFailedConnectStillRelievesTheQueue() {
+  b.externalDb._resetForTest();
+  var held = [];
+  var connects = 0;
+  var failFrom = Infinity;
+  var driver = {
+    connect: async function () {
+      connects += 1;
+      if (connects >= failFrom) {
+        var e = new Error("connect refused");
+        e.code = "ECONNREFUSED";
+        throw e;
+      }
+      return { id: "c" + connects };
+    },
+    query: function (_client, sql) {
+      if (/^SELECT\s+hold\b/i.test(sql)) {
+        return new Promise(function (resolve) {
+          held.push(function () { resolve({ rows: [], rowCount: 0 }); });
+        });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    },
+    close: async function () { /* no-op */ },
+  };
+  b.externalDb.init({
+    backends: {
+      main: {
+        connect: driver.connect, query: driver.query, close: driver.close,
+        pool: { min: 1, max: 1, idleTimeoutMs: b.constants.TIME.minutes(1) },
+      },
+    },
+  });
+  try {
+    var holding = b.externalDb.query("SELECT hold", []);
+    await helpers.waitUntil(function () {
+      return b.externalDb.listBackends()[0].pool.active >= 1;
+    }, { timeoutMs: 5000, label: "failed connect: the only connection is busy" });
+
+    var settled = 0;
+    var queued = [];
+    for (var i = 0; i < 3; i += 1) {
+      queued.push(b.externalDb.query("SELECT 1", [])
+        .then(function () { settled += 1; }, function () { settled += 1; }));
+    }
+    await helpers.waitUntil(function () {
+      return b.externalDb.listBackends()[0].pool.waiters >= 3;
+    }, { timeoutMs: 5000, label: "failed connect: three callers queued" });
+
+    // The next connection attempt fails, so the first caller the resize admits
+    // is refused and gives its slot straight back. The resize opens exactly ONE
+    // slot: raising max far enough to admit every queued caller in a single
+    // pass hides this, because then the loop never has to be re-entered.
+    failFrom = connects + 1;
+    b.externalDb.configurePool("main", { max: 2 });
+
+    var drained = false;
+    await Promise.race([
+      Promise.all(queued).then(function () { drained = true; }),
+      helpers.passiveObserve(6000, "failed connect: the queue drains anyway"),
+    ]);
+    check("a resize whose first connect fails still relieves the rest of the queue",
+      drained === true && settled === 3,
+      "settled=" + settled + " pool=" + JSON.stringify(b.externalDb.listBackends()[0].pool));
+  } finally {
+    failFrom = Infinity;
+    held.forEach(function (release) { release(); });
+    try { await holding; } catch (_e) { /* the hold may be refused */ }
+    try { await b.externalDb.shutdown(); } catch (_e) { /* best effort */ }
+    b.externalDb._resetForTest();
+  }
+}
+
+// Raising max is how an operator relieves a pool that callers are queued on,
+// and the queue was only ever served when a connection came back: the slack the
+// resize created reached nobody until one of the in-flight queries finished,
+// which is exactly the query the operator is waiting out.
+async function testConfigurePoolAdmitsCallersAlreadyQueued() {
+  b.externalDb._resetForTest();
+  var held = [];
+  var driver = mkDriver("resize");
+  driver.query = function (_client, sql) {
+    if (/^SELECT\s+hold\b/i.test(sql)) {
+      return new Promise(function (resolve) {
+        held.push(function () { resolve({ rows: [], rowCount: 0 }); });
+      });
+    }
+    return Promise.resolve({ rows: [], rowCount: 0 });
+  };
+  b.externalDb.init({
+    backends: {
+      main: {
+        connect: driver.connect, query: driver.query, close: driver.close,
+        pool: { min: 1, max: 1, idleTimeoutMs: b.constants.TIME.minutes(1) },
+      },
+    },
+  });
+  try {
+    var holding = b.externalDb.query("SELECT hold", []);
+    await helpers.waitUntil(function () {
+      return b.externalDb.listBackends()[0].pool.active >= 1;
+    }, { timeoutMs: 5000, label: "configurePool resize: the only connection is busy" });
+
+    var queuedSettled = false;
+    var queued = b.externalDb.query("SELECT 1", [])
+      .then(function () { queuedSettled = true; },
+            function () { queuedSettled = true; });
+    await helpers.waitUntil(function () {
+      return b.externalDb.listBackends()[0].pool.waiters >= 1;
+    }, { timeoutMs: 5000, label: "configurePool resize: a caller is queued" });
+
+    b.externalDb.configurePool("main", { max: 4 });
+    await Promise.race([
+      queued,
+      helpers.passiveObserve(4000, "configurePool resize: the queued caller is admitted"),
+    ]);
+    check("raising max admits a caller already queued, without waiting for a release",
+      queuedSettled === true,
+      "still queued: " + JSON.stringify(b.externalDb.listBackends()[0].pool));
+
+    held.forEach(function (release) { release(); });
+    await holding;
+    await queued;
+  } finally {
+    held.forEach(function (release) { release(); });
+    try { await b.externalDb.shutdown(); } catch (_e) { /* best effort */ }
+    b.externalDb._resetForTest();
+  }
+}
+
 // ---- adapters.connectAs ----------------------------------------------------
 
 async function testConnectAs() {
@@ -1176,6 +1513,51 @@ async function testMoreConfigAndPaths() {
 
 // ---- runner ----------------------------------------------------------------
 
+// ---- a refused init drains the pools it already built ---------------------
+
+// init builds one pool per backend, and each pool arms a reaper interval in
+// its constructor. A later backend's config can be refused, and because
+// `initialized` is still false at that point, shutdown() returned at its own
+// guard: every pool built before the refusal kept its reaper armed with
+// nothing left holding the pool. The refusal and the teardown are
+// assertable; the reaper itself is not, so that part is recorded as
+// unmeasured rather than asserted.
+async function testARefusedInitDrainsThePoolsItBuilt() {
+  b.externalDb._resetForTest();
+
+  var threw = null;
+  try {
+    b.externalDb.init({
+      backends: {
+        built:  okBackend(),
+        broken: { query: async function () { return { rows: [], rowCount: 0 }; } },
+      },
+    });
+  } catch (e) { threw = e; }
+  check("init refuses a backend with no connect() after building an earlier pool",
+    threw && threw.code === "external-db/invalid-config",
+    "code=" + (threw && threw.code));
+
+  // The operator's teardown call, on a module that never finished init.
+  var shutdownThrew = null;
+  try { await b.externalDb.shutdown(); } catch (e) { shutdownThrew = e; }
+  check("  and shutdown() after the refusal completes",
+    shutdownThrew === null, "threw=" + (shutdownThrew && shutdownThrew.message));
+
+  helpers.unavailable("externalDb pool-reaper release after a refused init is not " +
+    "observable: the orphaned pool is unreachable and its reaper is an unref'd " +
+    "interval, which neither getActiveResourcesInfo() nor the libuv report " +
+    "distinguishes (Node coalesces JS timers onto one handle)");
+
+  // The module must still take a fresh config.
+  b.externalDb.init({ backends: { fresh: okBackend() } });
+  var names = b.externalDb.listBackends().map(function (x) { return x.name; });
+  check("  and a later init takes a fresh config",
+    names.length === 1 && names[0] === "fresh", "names=" + names.join(","));
+  await b.externalDb.shutdown();
+  b.externalDb._resetForTest();
+}
+
 async function run() {
   await testNotInitialized();
   testInitValidation();
@@ -1188,6 +1570,11 @@ async function run() {
   await testHealthCheck();
   await testShutdown();
   testConfigurePool();
+  await testConfigurePoolAdmitsCallersAlreadyQueued();
+  await testAFailedConnectStillRelievesTheQueue();
+  await testASynchronousConnectFailureAdmitsWithoutRecursing();
+  await testAStandalonePoolIsNotDrainedByModuleCleanup();
+  await testARefusedInitLeavesNoPoolReaping();
   await testConnectAs();
   await testRunAs();
   await testAssertRoleHardening();
@@ -1196,6 +1583,7 @@ async function run() {
   await testResidencyGate();
   await testReplicas();
   await testPoolInternals();
+  await testARefusedInitDrainsThePoolsItBuilt();
   await testPoolMinFloor();
   await testMoreConfigAndPaths();
 

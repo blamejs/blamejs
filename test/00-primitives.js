@@ -8460,7 +8460,7 @@ async function testMetricsRequestMiddlewareStatusCodeFallback() {
   });
   var requestsTotal = m.metrics.get("framework_http_requests_total");
   check("requestMiddleware: status=404 captured from res.statusCode (no writeHead)",
-        requestsTotal.get({ method: "GET", route: "/notfound", status: "404" }) === 1);
+        requestsTotal.get({ method: "GET", route: "(unresolved)", status: "404" }) === 1);
   m.deactivate();
 }
 
@@ -8471,8 +8471,11 @@ async function testMetricsRequestMiddlewareRoutePatternFallback() {
   var EE = require("node:events").EventEmitter;
   var req = new EE();
   req.method = "GET";
-  req.url = "/raw-path?x=1";
-  // No routePattern — middleware falls back to URL with query stripped
+  req.url = "/reset/CAP0123456789?x=1";
+  // Neither a matched pattern nor a router-resolved label. A label naming the
+  // path would carry whatever sits in a path segment, which stripping the query
+  // does not remove, so it names no target at all. A request that reached a
+  // handler carries its pattern and is labelled with that.
   req.headers = {};
   var res = _metricsRes();
   await new Promise(function (resolve) {
@@ -8483,8 +8486,11 @@ async function testMetricsRequestMiddlewareRoutePatternFallback() {
     });
   });
   var requestsTotal = m.metrics.get("framework_http_requests_total");
-  check("middleware: falls back to URL with query stripped",
-        requestsTotal.get({ method: "GET", route: "/raw-path", status: "200" }) === 1);
+  check("middleware: an unresolved route is labelled as such, not as the URL",
+        requestsTotal.get({ method: "GET", route: "(unresolved)", status: "200" }) === 1);
+  check("middleware: the capability in the path reaches no label",
+        JSON.stringify(requestsTotal.collect ? requestsTotal.collect() : {})
+          .indexOf("CAP0123456789") === -1);
   m.deactivate();
 }
 
@@ -10695,6 +10701,49 @@ async function testVaultPassphraseOpsWrongPassphraseRejected() {
     check("rejected unseal: no plaintext leak",
           !fs.existsSync(path.join(fx.dir, "vault.key")));
   } finally { fx.cleanup(); }
+}
+
+// A sealed file this cannot PARSE is a different fact from a passphrase it
+// rejects, and the remedies differ: restore the file, versus try another
+// passphrase. Both catches translated every non-gate error from
+// `vaultWrap.unwrap` into `passphrase-rejected`, so an operator whose sealed
+// file was truncated or written by a newer build went looking for a wrong
+// passphrase. The passphrase supplied here is the RIGHT one in every case.
+async function testVaultPassphraseOpsUnreadableSealedFileIsNotAPassphraseError() {
+  var corruptions = [
+    ["a file that is not a wrapped vault", function (bytes) {
+      var c = Buffer.from(bytes); c[0] = 0x00; return c;
+    }],
+    ["a sealed file claiming a newer format", function (bytes) {
+      var c = Buffer.from(bytes); c[1] = 0x7f; return c;
+    }],
+    ["a truncated sealed file", function (bytes) { return bytes.slice(0, 10); }],
+  ];
+  for (var i = 0; i < corruptions.length; i += 1) {
+    var fx = _passphraseOpsFixture();
+    try {
+      fx.writePlaintext("data");
+      var pass = Buffer.from("right", "utf8");
+      await b.vaultPassphraseOps.seal({ dataDir: fx.dir, passphrase: pass });
+
+      var sealedPath = path.join(fx.dir, "vault.key.sealed");
+      fs.writeFileSync(sealedPath, corruptions[i][1](fs.readFileSync(sealedPath)));
+
+      var threw = null;
+      try { await b.vaultPassphraseOps.unseal({ dataDir: fx.dir, passphrase: pass }); }
+      catch (e) { threw = e; }
+      check("unseal refuses " + corruptions[i][0], threw !== null, "no throw");
+      check("  and does not call it a rejected passphrase",
+            threw && threw.code !== "vault-passphrase/passphrase-rejected",
+            "code=" + (threw && threw.code));
+      check("  and names the file as the problem",
+            threw && threw.code === "vault-passphrase/sealed-file-unreadable",
+            "code=" + (threw && threw.code));
+      check("  and leaves vault.key.sealed in place", fs.existsSync(sealedPath));
+      check("  and leaks no plaintext",
+            !fs.existsSync(path.join(fx.dir, "vault.key")));
+    } finally { fx.cleanup(); }
+  }
 }
 
 async function testVaultPassphraseOpsRotate() {
@@ -13113,13 +13162,15 @@ function testErrorsPageLogsViaInjectedLogger() {
     error: function (msg, fields) { captured.push({ level: "error", msg: msg, fields: fields }); },
   };
   var handler = b.errorPage.create({ mode: "prod", audit: false, log: fakeLog });
-  var req = { method: "GET", url: "/x", headers: {} };
+  // A request that reached a handler carries the pattern it matched; a record
+  // for one that did not names no target rather than the path.
+  var req = { method: "GET", url: "/x", headers: {}, routePattern: "/x" };
   var res500 = _makeFakeRes();
   handler(new Error("kaboom"), req, res500);
   check("500 logged at error level",               captured.length === 1 && captured[0].level === "error");
-  check("500 log fields include status + url",
+  check("500 log fields include status + route",
         captured[0].fields.status === 500 &&
-        captured[0].fields.url === "/x" &&
+        captured[0].fields.route === "/x" &&
         typeof captured[0].fields.stack === "string");
 
   captured.length = 0;
@@ -13287,7 +13338,7 @@ async function testErrorsPageAuditRedactsSecretsInStackAndReason() {
 
     var secret = "postgres://user:s3cr3t@db.internal/app";
     var handler = b.errorPage.create({ mode: "prod" }); // audit on by default
-    var req = { method: "POST", url: "/api/widget", headers: { accept: "application/json" }, id: "req-redact-1" };
+    var req = { method: "POST", url: "/api/widget", headers: { accept: "application/json" }, id: "req-redact-1", routePattern: "/api/widget" };
     var res = _makeFakeRes();
     // Generic Error → 500. Its message (and therefore its stack) carries
     // the secret-shaped connection string.
@@ -13333,7 +13384,8 @@ async function testErrorsPageAuditRedactsSecretsInStackAndReason() {
           meta.stack.indexOf("[REDACTED-CONN-STRING]") !== -1);
     // Non-secret triage fields survive redaction.
     check("audit-redact: non-secret metadata preserved",
-          !!meta && meta.status === 500 && meta.method === "POST" && meta.url === "/api/widget");
+          !!meta && meta.status === 500 && meta.method === "POST" &&
+          meta.route === "/api/widget");
   } finally {
     await teardownTestDb(tmpDir);
   }
@@ -19561,6 +19613,7 @@ async function run() {
   await testVaultPassphraseOpsSealUnsealRoundTrip();
   await testVaultPassphraseOpsKeepPlaintext();
   await testVaultPassphraseOpsWrongPassphraseRejected();
+  await testVaultPassphraseOpsUnreadableSealedFileIsNotAPassphraseError();
   await testVaultPassphraseOpsRotate();
   await testVaultPassphraseOpsRotateRejectsBadOldPassphrase();
   testVaultPassphraseOpsArgValidation();
@@ -20299,6 +20352,8 @@ module.exports = {
   testVaultPassphraseOpsSealUnsealRoundTrip: testVaultPassphraseOpsSealUnsealRoundTrip,
   testVaultPassphraseOpsKeepPlaintext:       testVaultPassphraseOpsKeepPlaintext,
   testVaultPassphraseOpsWrongPassphraseRejected: testVaultPassphraseOpsWrongPassphraseRejected,
+  testVaultPassphraseOpsUnreadableSealedFileIsNotAPassphraseError:
+    testVaultPassphraseOpsUnreadableSealedFileIsNotAPassphraseError,
   testVaultPassphraseOpsRotate:              testVaultPassphraseOpsRotate,
   testVaultPassphraseOpsRotateRejectsBadOldPassphrase: testVaultPassphraseOpsRotateRejectsBadOldPassphrase,
   testVaultPassphraseOpsArgValidation:       testVaultPassphraseOpsArgValidation,

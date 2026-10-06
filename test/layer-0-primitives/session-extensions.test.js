@@ -263,6 +263,22 @@ async function testPluggableStore() {
     check("pluggable store: and the row is gone",
       (await b.session.count()) === 0);
 
+    // Every other option failure in these functions carries a session/ code,
+    // so a caller filtering on isSessionError saw a mistyped option name
+    // escape as a bare Error with nothing to match on.
+    var purgeOptErrs = [];
+    try { await b.session.purgeExpired({ batchSizee: 2 }); }
+    catch (e) { purgeOptErrs.push(["purgeExpired", e]); }
+    try { await b.session.purgeStale({ idleTimeoutMsec: 1 }); }
+    catch (e) { purgeOptErrs.push(["purgeStale", e]); }
+    check("both purges refuse an option they do not accept",
+      purgeOptErrs.length === 2);
+    purgeOptErrs.forEach(function (row) {
+      check("  " + row[0] + " raises it as a SessionError with a code",
+        row[1] && row[1].isSessionError === true && row[1].code === "session/bad-opt",
+        "code=" + (row[1] && row[1].code) + " typed=" + (row[1] && row[1].isSessionError));
+    });
+
     var again = await b.session.create({ userId: "u-1", data: { team: "a" } });
     check("pluggable store: a session created after the purge still verifies",
       !!(await b.session.verify(again.token)));
@@ -1024,6 +1040,55 @@ function _attrValue(header, name) {
 // SameSite are hardcoded, no Path/Domain override reaches it, the header is
 // set rather than appended, and nothing routes through b.cookies.serialize,
 // so the RFC 6265bis prefix invariants are never enforced on it.
+// The store's `execute` sent everything that was not a SELECT or a RETURNING
+// through StatementSync.run(), which steps a statement once. A pragma can
+// need many steps: `incremental_vacuum` frees one page per step, so a
+// maintenance call through the store contract freed a single page whatever
+// count it was handed, and reported the previous statement's `changes` as
+// rowCount. A pragma that answers with a value was unreadable for the same
+// reason, since run() returns no rows.
+async function testPragmaThroughTheStoreRunsEveryStep() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ses-pragma-"));
+  var store = null;
+  try {
+    var storeFile = path.join(tmpDir, "pragma-sessions.db");
+    // auto_vacuum has to be set before the schema is created, which is the
+    // order localDb.thin applies caller pragmas in.
+    store = b.session.stores.localDbThin({
+      file: storeFile, audit: false, pragmas: { auto_vacuum: "INCREMENTAL" },
+    });
+
+    var table = b.frameworkSchema.tableName("_blamejs_sessions");
+    for (var i = 0; i < 400; i += 1) {
+      await store.execute(
+        "INSERT INTO " + table +
+        " (sidHash, userId, userIdHash, data, createdAt, expiresAt, lastActivity) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ["sid-" + i, "u-" + i, "h-" + i, "x".repeat(600), 1, 9999999999999, 1]);
+    }
+    var deleted = await store.execute("DELETE FROM " + table);
+    check("the store reports the rows its delete removed", deleted.rowCount === 400,
+      "rowCount=" + deleted.rowCount);
+
+    var before = await store.execute("PRAGMA freelist_count");
+    check("a pragma that answers with a value is readable through the store",
+      before.rows.length === 1 && typeof before.rows[0].freelist_count === "number",
+      "rows=" + JSON.stringify(before.rows));
+    var freeBefore = before.rows[0].freelist_count;
+    check("  and the delete left pages on the freelist to reclaim", freeBefore > 1,
+      "freelist=" + freeBefore);
+
+    await store.execute("PRAGMA incremental_vacuum(1000)");
+    var after = await store.execute("PRAGMA freelist_count");
+    check("incremental_vacuum through the store reclaims every page, not one",
+      after.rows[0].freelist_count === 0,
+      "before=" + freeBefore + " after=" + after.rows[0].freelist_count);
+  } finally {
+    if (store) { try { store.close(); } catch (_e) { /* best effort */ } }
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_e) { /* cleanup */ }
+  }
+}
+
 async function testLogoutCookieAttributes() {
   var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ses-logout-attrs-"));
   try {
@@ -1260,6 +1325,7 @@ async function run() {
   await testUpdateDataMergeDepthAndValueShapes();
   await testUpdateDataPreservesFingerprint();
   await testRotateRekeysFingerprint();
+  await testPragmaThroughTheStoreRunsEveryStep();
 }
 
 module.exports = { run: run };

@@ -315,7 +315,15 @@ function testVerifyTamperedMessageFails() {
   var s = b.mail.crypto.pgp.sign({ message: msg, privateKeyPem: kp.priv });
   var v = b.mail.crypto.pgp.verify({ message: msg + "X", armored: s.armored, publicKeyPem: kp.pub });
   check("tampered message: ok:false", v.ok === false);
-  check("tampered message: hash-mismatch verdict", v.code === "mail-crypto/pgp/hash-mismatch");
+  // A signature stores the leading 16 bits of the signed digest (RFC 4880
+  // §5.2.3) and verify compares those first, so a tampered message whose
+  // digest happens to share them, once in 65,536 over a freshly generated
+  // key, is refused by the signature instead. Both are a refusal, and naming
+  // only the first one fails on that run.
+  check("tampered message: a tamper verdict",
+    v.code === "mail-crypto/pgp/hash-mismatch" ||
+    v.code === "mail-crypto/pgp/bad-signature",
+    "code=" + v.code);
 }
 
 function testVerifyWrongKeyFails() {

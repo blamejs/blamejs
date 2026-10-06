@@ -490,6 +490,124 @@ function _get(port, path, headers, method) {
   });
 }
 
+// Three things decided from the wrong inputs, in one function. The level came
+// from the status being 5xx-or-absent rather than from whether the refusal was
+// deliberate, so a framework capacity refusal was logged as an error with a
+// stack that says nothing. The target came from req.url, so a credential
+// sitting in a path segment or a query string was written to the log. And the
+// router.use() catch logged a line of its own and then rethrew, so one
+// middleware failure produced two lines.
+async function testRouteErrorLoggingLevelTargetAndDuplication() {
+  var FE = b.frameworkError;
+  var SECRET = "SECRETRESETTOKEN0123456789";
+
+  var r = b.router.create();
+  r.get("/capacity", function () {
+    throw new FE.Argon2Error("argon2/busy", "derivation gate is full");
+  });
+  r.get("/store-down", function () {
+    throw new FE.SessionError("session/store-unreachable", "the session store did not answer");
+  });
+  r.get("/reset/:token", function () { throw new Error("reset handler blew up"); });
+  r.onError(function (err, req, res) { res.writeHead(500); res.end("handled"); });
+
+  var mwRouter = b.router.create();
+  mwRouter.use(function authGuard() { throw new Error("guard blew up"); });
+  mwRouter.get("/guarded", function (req, res) { res.end("never"); });
+  mwRouter.get("/reset/:token", function (req, res) { res.end("never"); });
+  mwRouter.onError(function (err, req, res) { res.writeHead(500); res.end("handled"); });
+
+  var out = [];
+  var errLines = [];
+  var realLog = console.log;
+  var realError = console.error;
+  var realLevel = process.env.BLAMEJS_BOOT_LOG_LEVEL;
+  var server = r.listen(0);
+  var mwServer = mwRouter.listen(0);
+  await _listening(server);
+  await _listening(mwServer);
+  var port = server.address().port;
+  var mwPort = mwServer.address().port;
+
+  process.env.BLAMEJS_BOOT_LOG_LEVEL = "debug";
+  console.log = function (m) { out.push(String(m)); };
+  console.error = function (m) { errLines.push(String(m)); };
+  try {
+    await _get(port, "/capacity");
+    await _get(port, "/store-down");
+    await _get(port, "/reset/" + SECRET + "?next=/account");
+    await _get(mwPort, "/guarded");
+    await _get(mwPort, "/reset/" + SECRET + "?next=/account");
+  } finally {
+    console.log = realLog;
+    console.error = realError;
+    if (realLevel === undefined) delete process.env.BLAMEJS_BOOT_LOG_LEVEL;
+    else process.env.BLAMEJS_BOOT_LOG_LEVEL = realLevel;
+    await _close(server);
+    await _close(mwServer);
+  }
+
+  function _lines(hay, needle) {
+    return hay.filter(function (l) { return l.indexOf(needle) !== -1; });
+  }
+  var all = out.concat(errLines);
+
+  // #825 — the level follows whether the refusal was deliberate. The needle is
+  // each error's message: only the 4xx line carried err.code before the fix,
+  // so matching on the code would pass vacuously for the others.
+  var CAPACITY = "derivation gate is full";
+  var STORE_DOWN = "the session store did not answer";
+  check("a transient framework refusal writes no error-level line",
+    _lines(errLines, CAPACITY).length === 0, errLines.join(" ~~ "));
+  check("a transient framework refusal is still recorded, below warn",
+    _lines(out, CAPACITY).length === 1, out.join(" ~~ "));
+  check("a non-transient framework error is recorded at warn, not error",
+    _lines(errLines, STORE_DOWN).length === 1 &&
+    errLines.filter(function (l) {
+      return l.indexOf(STORE_DOWN) !== -1 && l.indexOf("\"level\":\"error\"") !== -1;
+    }).length === 0,
+    errLines.join(" ~~ "));
+  check("neither framework line carries stack frames",
+    _lines(all, CAPACITY).concat(_lines(all, STORE_DOWN))
+      .every(function (l) { return l.indexOf(" | ") === -1; }),
+    all.join(" ~~ "));
+  check("and each framework line carries the code the operator greps for",
+    _lines(all, CAPACITY).some(function (l) { return l.indexOf("argon2/busy") !== -1; }) &&
+    _lines(all, STORE_DOWN).some(function (l) {
+      return l.indexOf("session/store-unreachable") !== -1;
+    }),
+    all.join(" ~~ "));
+
+  // #824 — the logged target is the route, never the raw URL.
+  check("no logged line carries the credential from the URL path",
+    all.every(function (l) { return l.indexOf(SECRET) === -1; }),
+    all.filter(function (l) { return l.indexOf(SECRET) !== -1; }).join(" ~~ "));
+  check("the line names the route pattern instead",
+    _lines(all, "/reset/:token").length >= 1, all.join(" ~~ "));
+  check("and no logged line carries the query string",
+    all.every(function (l) { return l.indexOf("next=/account") === -1; }),
+    all.join(" ~~ "));
+
+  // #823 — one middleware failure, one line, and it names the middleware.
+  var guardLines = _lines(all, "guard blew up");
+  check("a middleware failure writes exactly two lines, one per request",
+    guardLines.length === 2, guardLines.join(" ~~ "));
+  check("and each names the middleware that failed",
+    guardLines.length === 2 && guardLines.every(function (l) {
+      return l.indexOf("authGuard") !== -1;
+    }),
+    guardLines.join(" ~~ "));
+  // Middleware runs before `handle` matches, so req.routePattern is unset and
+  // resolving the target from the URL wrote the capability out on this path
+  // even once the routed-handler path named the pattern.
+  check("a middleware failure on a capability URL names the route, not the capability",
+    guardLines.some(function (l) { return l.indexOf("/reset/:token") !== -1; }) &&
+    guardLines.every(function (l) {
+      return l.indexOf(SECRET) === -1 && l.indexOf("next=/account") === -1;
+    }),
+    guardLines.join(" ~~ "));
+}
+
 // A route that throws a typed 4xx refusal used to write an error-level line
 // with five stack frames, so a burst of failed sign-ins wrote one per request.
 async function testRouteErrorLogLevel() {
@@ -776,6 +894,98 @@ async function testPatchAndDeleteVerbs() {
   check("router.delete registers + dispatches (DELETE verb)", dres.statusCode === 200 && hit[1] === "DELETE:9");
 }
 
+// Middleware runs before a route is matched, so `req.routePattern` is not set
+// while it runs, and middleware that ENDS the request never reaches dispatch,
+// so it would never be set at all. Anything that records or labels from inside
+// middleware (a refused request's audit row, that response's metrics label) then
+// has no route to name even though a registered route matches the path. The
+// router knows the answer before the middleware chain starts, so it resolves it
+// there and leaves it on the request.
+async function testMiddlewareSeesTheMatchedRouteBeforeDispatch() {
+  var r = b.router.create();
+  r.get("/users/:id", function (req, res) { res.writeHead(200); res.end("never"); });
+  r.post("/users/invite", function (req, res) { res.writeHead(200); res.end("never"); });
+
+  var seen = [];
+  r.use(function recordingGuard(req, res, next) {
+    seen.push(b.requestHelpers.resolveRoute(req));
+    res.writeHead(401);
+    res.end("denied");
+    void next;
+  });
+
+  var res1 = _res();
+  await r.handle(_req("GET", "/users/42"), res1);
+  check("middleware terminating a request can still name the matched route",
+    seen[0] === "/users/:id", "resolveRoute inside middleware = " + seen[0]);
+  check("  and the request is the one the middleware ended",
+    res1.statusCode === 401, "status=" + res1.statusCode);
+
+  // The method still decides: a path that only matches under another verb is
+  // not this request's route.
+  seen.length = 0;
+  await r.handle(_req("DELETE", "/users/invite"), _res());
+  check("a path matching only another method names no route",
+    seen[0] === "(unrouted)", "resolveRoute = " + seen[0]);
+
+  // And a path no route claims still records no URL.
+  seen.length = 0;
+  await r.handle(_req("GET", "/nothing/SECRETCAP0123456789"), _res());
+  check("an unrouted path names no route and carries no capability",
+    seen[0] === "(unrouted)", "resolveRoute = " + seen[0]);
+}
+
+async function testAMiddlewareRewriteStillDecidesTheDispatchedRoute() {
+  var ran = [];
+  var r = b.router.create();
+  r.get("/a", function (req, res) { ran.push("GET /a"); res.writeHead(200); res.end("a"); });
+  r.get("/b", function (req, res) { ran.push("GET /b"); res.writeHead(200); res.end("b"); });
+  r.use(function rewriteToB(req, res, next) { req.pathname = "/b"; next(); });
+
+  var req1 = _req("GET", "/a");
+  var res1 = _res();
+  await r.handle(req1, res1);
+  check("a middleware rewriting req.pathname changes the dispatched route",
+    ran.length === 1 && ran[0] === "GET /b", "ran=" + JSON.stringify(ran));
+  check("  and the handler for the rewritten path answered",
+    res1._body === "b", "body=" + JSON.stringify(res1._body));
+  check("  and the published label names the route that ran",
+    req1.routeLabel === "/b", "label=" + req1.routeLabel);
+
+  ran.length = 0;
+  var r2 = b.router.create();
+  r2.get("/m", function (req, res) { ran.push("GET /m"); res.writeHead(200); res.end("get"); });
+  r2.post("/m", function (req, res) { ran.push("POST /m"); res.writeHead(200); res.end("post"); });
+  r2.use(function rewriteToPost(req, res, next) { req.method = "POST"; next(); });
+
+  await r2.handle(_req("GET", "/m"), _res());
+  check("a middleware rewriting req.method changes the dispatched route",
+    ran.length === 1 && ran[0] === "POST /m", "ran=" + JSON.stringify(ran));
+
+  ran.length = 0;
+  var r3 = b.router.create();
+  r3.get("/g", function (req, res) { ran.push("GET /g"); res.writeHead(200); res.end("g"); });
+  r3.use(function rewriteToNothing(req, res, next) { req.pathname = "/no-such-route"; next(); });
+  var res3 = _res();
+  await r3.handle(_req("GET", "/g"), res3);
+  check("a rewrite onto no route answers 404 rather than the original handler",
+    ran.length === 0 && res3.statusCode === 404,
+    "ran=" + JSON.stringify(ran) + " status=" + res3.statusCode);
+
+  // Control: with no rewrite, the route matched before the middleware ran is
+  // the one that dispatches, and the label the middleware read is that route.
+  ran.length = 0;
+  var labels = [];
+  var r4 = b.router.create();
+  r4.get("/c/:id", function (req, res) { ran.push("GET /c/:id"); res.writeHead(200); res.end("c"); });
+  r4.use(function observe(req, res, next) { labels.push(req.routeLabel); next(); });
+  await r4.handle(_req("GET", "/c/7"), _res());
+  check("no rewrite: the route matched before the middleware ran dispatches",
+    ran.length === 1 && ran[0] === "GET /c/:id", "ran=" + JSON.stringify(ran));
+  check("  and the label the middleware saw is that route",
+    labels[0] === "/c/:id", "label=" + labels[0]);
+}
+
 // ---- handle(): adversarial path canonicalization ----
 
 async function testHandleEncodedSeparatorRefusals() {
@@ -799,6 +1009,21 @@ async function testHandleEncodedSeparatorRefusals() {
   await r.handle(_req("GET", "/a/%zz"), mal);
   check("malformed percent-encoding (%zz) → 400 malformed (decode throws, caught)",
     mal.statusCode === 400 && /malformed percent-encoding/.test(mal._body));
+
+  // The URL parser refuses a target over 8 KiB, and Node's own request-line
+  // limit is 16 KiB, so a target between the two reaches handle() and the
+  // parse raises. It is a refusal of the request, not a fault of the handler.
+  var tooLong = _res();
+  var longErr = null;
+  try { await r.handle(_req("GET", "/a/" + "x".repeat(9000)), tooLong); }
+  catch (e) { longErr = e; }
+  check("a request target over the URL length limit → 400, not a throw",
+    longErr === null && tooLong.statusCode === 400,
+    "threw=" + (longErr && (longErr.code || longErr.message)) +
+    " status=" + tooLong.statusCode);
+  check("  and the body names the refusal rather than a decoding fault",
+    /malformed request target/.test(String(tooLong._body)),
+    String(tooLong._body).slice(0, 120));
 
   var segMismatch = _res();
   await r.handle(_req("GET", "/a/b/c"), segMismatch);
@@ -1427,6 +1652,8 @@ async function run() {
   await testListenEarlyDataGate();
   testConstructorOptionValidation();
   await testPatchAndDeleteVerbs();
+  await testMiddlewareSeesTheMatchedRouteBeforeDispatch();
+  await testAMiddlewareRewriteStillDecidesTheDispatchedRoute();
   await testHandleEncodedSeparatorRefusals();
   await testPathScopedMiddleware();
   testUseValidationErrors();
@@ -1444,6 +1671,7 @@ async function run() {
   await testWsListenH1Upgrade();
   await testRedirectAndErrorBranches();
   await testRouteErrorLogLevel();
+  await testRouteErrorLoggingLevelTargetAndDuplication();
   await testRouteErrorLoggingCannotCostTheResponse();
 }
 

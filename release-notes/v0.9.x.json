@@ -1262,7 +1262,7 @@
             },
             {
               "title": "`test/helpers/json-round-trip.js` — JSON round-trip test helper",
-              "body": "New `assertJsonRoundTrip(shape, label)` catches the bug class Codex flagged on PR #51 (v0.9.21 `register()` stored an agent function ref on the backend row, lost in DB/JSON serialization). Refuses on function fields, Buffer fields, Date objects, Symbol keys, BigInt values, non-finite numbers, and cycles. Applied retroactively to the v0.9.21 agent-orchestrator backend row in a regression test."
+              "body": "New `assertJsonRoundTrip(shape, label)` catches the bug class behind v0.9.21's `register()`, which stored an agent function ref on the backend row that was lost in DB/JSON serialization. Refuses on function fields, Buffer fields, Date objects, Symbol keys, BigInt values, non-finite numbers, and cycles. Applied retroactively to the v0.9.21 agent-orchestrator backend row in a regression test."
             },
             {
               "title": "Result size cap (default 1 MiB)",

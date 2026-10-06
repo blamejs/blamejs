@@ -271,6 +271,7 @@ function collect() {
   var measurable = 0;
   var notMeasurable = 0;
   var withOpts = 0;
+  var crossModule = 0;
   var unresolved = [];
 
   _libFiles(LIB, []).forEach(function (file) {
@@ -281,10 +282,11 @@ function collect() {
     measurable += r.measurable;
     notMeasurable += r.notMeasurable;
     withOpts += r.withOpts;
+    crossModule += r.crossModule;
     unresolved = unresolved.concat(r.unresolved);
   });
   return { rows: rows, measurable: measurable, notMeasurable: notMeasurable,
-           withOpts: withOpts, unresolved: unresolved };
+           withOpts: withOpts, crossModule: crossModule, unresolved: unresolved };
 }
 
 // The keys one function's own `validateOpts` calls accept. Two spellings reach
@@ -307,7 +309,7 @@ function collect() {
 // allowlist. Without the boundary that reads as the shared validator handed an
 // unresolvable array, which would fail the run over a shape that is not an
 // allowlist at all.
-function _acceptedNames(src, masked, body, spans, optsParam, rel, prim, unresolved) {
+function _acceptedNames(src, masked, body, spans, optsParam, rel, prim, unresolved, depth) {
   var accepted = Object.create(null);
   function inNested(idx) {
     for (var i = 0; i < spans.length; i += 1) {
@@ -377,21 +379,76 @@ function _acceptedNames(src, masked, body, spans, optsParam, rel, prim, unresolv
       }
     });
   }
-  ALLOWLIST_CALLS.forEach(function (form) {
-    var re = new RegExp("\\b" + form.call + "\\s*\\(\\s*" + optsParam + "\\s*,", "g");
-    re.lastIndex = body.start;
+  // A hand-rolled key check: `for (var k in opts) { ... LIST.indexOf(k) === -1
+  // ... throw }`. Two modules declare the allowlist as a module-level array and
+  // consult it in a loop instead of handing it to the shared validator, so none
+  // of the call forms above can see it and the block counted as unmeasurable.
+  function takeLoopAllowlist(scope) {
+    var re = new RegExp("\\bfor\\s*\\(\\s*(?:var|let|const)\\s+[A-Za-z_$][\\w$]*\\s+in\\s+" +
+      optsParam + "\\s*\\)", "g");
+    re.lastIndex = scope.start;
     var m;
-    while ((m = re.exec(masked)) !== null && m.index < body.end) {
-      if (inNested(m.index)) continue;
-      var openParen = masked.indexOf("(", m.index);
-      if (openParen === -1) continue;
-      var args = _argSpans(masked, openParen);
-      if (args.length < 2) continue;
-      if (form.arg === "array") { takeKeyList(args[1], "allowlist"); continue; }
-      withObject(args[1], "shape schema", function (sp) { takeFields(sp); });
-      if (args.length >= 6) takeAllowList(args[5]);
+    while ((m = re.exec(masked)) !== null && m.index < scope.end) {
+      var braceAt = masked.indexOf("{", m.index);
+      if (braceAt === -1) break;
+      var loop = _bracedFrom(masked, braceAt);
+      if (!loop) continue;
+      var inner = src.slice(loop.start, loop.end + 1);
+      if (!/\bthrow\b/.test(inner)) continue;
+      var ref = /\b([A-Za-z_$][\w$]*)\s*\.\s*indexOf\s*\(/.exec(inner);
+      if (!ref) continue;
+      takeKeyList({ start: loop.start + ref.index, end: loop.end }, "key loop");
     }
-  });
+  }
+
+  function takeCallForms(scope) {
+    ALLOWLIST_CALLS.forEach(function (form) {
+      var re = new RegExp("\\b" + form.call + "\\s*\\(\\s*" + optsParam + "\\s*,", "g");
+      re.lastIndex = scope.start;
+      var m;
+      while ((m = re.exec(masked)) !== null && m.index < scope.end) {
+        if (scope === body && inNested(m.index)) continue;
+        var openParen = masked.indexOf("(", m.index);
+        if (openParen === -1) continue;
+        var args = _argSpans(masked, openParen);
+        if (args.length < 2) continue;
+        if (form.arg === "array") { takeKeyList(args[1], "allowlist"); continue; }
+        withObject(args[1], "shape schema", function (sp) { takeFields(sp); });
+        if (args.length >= 6) takeAllowList(args[5]);
+      }
+    });
+  }
+
+  takeCallForms(body);
+  takeLoopAllowlist(body);
+
+  // One level of delegation. Seven modules validate through a local helper, so
+  // the allowlist sits outside the brace-matched body this gate measures and
+  // the block was counted unmeasurable while the keys were right there. Only a
+  // call that hands the helper this function's own opts parameter is followed,
+  // and only one level, so a chain cannot walk the module.
+  if (Object.keys(accepted).length === 0 && (depth || 0) === 0) {
+    var dre = new RegExp("\\b([A-Za-z_$][\\w$]*)\\s*\\(\\s*" + optsParam +
+      "\\s*[,)]", "g");
+    dre.lastIndex = body.start;
+    var dm;
+    var seen = Object.create(null);
+    while ((dm = dre.exec(masked)) !== null && dm.index < body.end) {
+      var helper = dm[1];
+      if (seen[helper]) continue;
+      seen[helper] = true;
+      var hd = new RegExp("\\bfunction\\s+" + helper + "\\s*\\(([^)]*)\\)").exec(masked);
+      if (!hd) continue;
+      var hBody = _bracedFrom(masked, hd.index);
+      if (!hBody) continue;
+      var hParams = hd[1].split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+      if (!hParams.length) continue;
+      var hOpts = hParams[0].replace(/\s*=.*$/, "");
+      if (!/^[A-Za-z_$][\w$]*$/.test(hOpts)) continue;
+      Object.keys(_acceptedNames(src, masked, hBody, _nestedSpans(masked, hBody),
+        hOpts, rel, prim, unresolved, 1)).forEach(function (k) { accepted[k] = true; });
+    }
+  }
   return accepted;
 }
 
@@ -399,11 +456,33 @@ function _acceptedNames(src, masked, body, spans, optsParam, rel, prim, unresolv
 // fixture can drive it. The no-@opts case cannot be pinned against the tree,
 // because once those blocks are documented they all carry a section again, and
 // a reintroduced skip would go unnoticed.
+// Where a block's implementation lives when it is not in the documenting file.
+// `lib/db.js` documents `b.db.declareView` and exports
+// `declareView: dbDeclareView.declareView`, with the namespace bound by a
+// `require` at the top. Both of those two primitives documented option names
+// their implementations refuse, and this gate never compared them: it looked
+// for the function beside the block, found nothing, and counted the block as
+// unmeasurable, which reads as a clean verdict.
+function _crossModuleSource(src, segment) {
+  var ex = new RegExp("\\b" + segment +
+    "\\s*:\\s*([A-Za-z_$][\\w$]*)\\s*\\.\\s*([A-Za-z_$][\\w$]*)\\s*,").exec(src);
+  if (!ex) return null;
+  var req = new RegExp("(?:var|let|const)\\s+" + ex[1] +
+    "\\s*=\\s*require\\(\"\\.\\/([^\"]+)\"\\)").exec(src);
+  if (!req) return null;
+  var rel = req[1].replace(/\.js$/, "") + ".js";
+  var file = nodePath.join(LIB, rel);
+  if (!nodeFs.existsSync(file)) return null;
+  return { rel: "lib/" + rel.replace(/\\/g, "/"), src: nodeFs.readFileSync(file, "utf8"),
+           name: ex[2] };
+}
+
 function _analyze(src, rel) {
   var rows = [];
   var measurable = 0;
   var notMeasurable = 0;
   var withOpts = 0;
+  var crossModule = 0;
   var unresolved = [];
   var masked = _mask(src);
   (function () {
@@ -424,19 +503,33 @@ function _analyze(src, rel) {
       var documented = optsAt === -1 ? Object.create(null) : _documentedNames(blk, optsAt);
       var segment = prim.split(".").pop();
 
-      var picked = null;
-      _candidates(masked, m.index + blk.length, segment).forEach(function (cand) {
-        if (picked) return;
-        var body = _bracedFrom(masked, cand.index);
-        if (!body) return;
-        var params = cand.params.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
-        var optsParam = params.length ? params[params.length - 1].replace(/\s*=.*$/, "") : null;
-        if (!optsParam || !/^[A-Za-z_$][\w$]*$/.test(optsParam)) return;
-        var spans = _nestedSpans(masked, body);
-        var accepted = _acceptedNames(src, masked, body, spans, optsParam, rel, prim, unresolved);
-        if (Object.keys(accepted).length === 0) return;
-        picked = { accepted: accepted };
-      });
+      function _pickFrom(fSrc, fMasked, fRel, from, want) {
+        var out = null;
+        _candidates(fMasked, from, want).forEach(function (cand) {
+          if (out) return;
+          var body = _bracedFrom(fMasked, cand.index);
+          if (!body) return;
+          var params = cand.params.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+          var optsParam = params.length ? params[params.length - 1].replace(/\s*=.*$/, "") : null;
+          if (!optsParam || !/^[A-Za-z_$][\w$]*$/.test(optsParam)) return;
+          var spans = _nestedSpans(fMasked, body);
+          var accepted = _acceptedNames(fSrc, fMasked, body, spans, optsParam,
+            fRel, prim, unresolved);
+          if (Object.keys(accepted).length === 0) return;
+          out = { accepted: accepted };
+        });
+        return out;
+      }
+
+      var picked = _pickFrom(src, masked, rel, m.index + blk.length, segment);
+      if (!picked) {
+        var other = _crossModuleSource(src, segment);
+        if (other) {
+          var oMasked = _mask(other.src);
+          picked = _pickFrom(other.src, oMasked, other.rel, 0, other.name);
+          if (picked) crossModule += 1;
+        }
+      }
       if (!picked) { notMeasurable += 1; continue; }
       measurable += 1;
 
@@ -457,7 +550,7 @@ function _analyze(src, rel) {
     }
   }());
   return { rows: rows, measurable: measurable, notMeasurable: notMeasurable,
-           withOpts: withOpts, unresolved: unresolved };
+           withOpts: withOpts, crossModule: crossModule, unresolved: unresolved };
 }
 
 var WALK = collect();
@@ -469,8 +562,14 @@ function testTheComparisonHasSomethingToCompare() {
   check("blocks carrying an @opts section were found",
     WALK.withOpts > 800, "withOpts=" + WALK.withOpts);
   check("a useful share of them has an allowlist on its own opts parameter",
-    WALK.measurable > 150, "measurable=" + WALK.measurable +
+    WALK.measurable > 230, "measurable=" + WALK.measurable +
     " notMeasurable=" + WALK.notMeasurable);
+  // A block whose implementation is in another module was never compared: the
+  // gate looked beside the block, found nothing, and counted it unmeasurable,
+  // which reads as a clean verdict. Both instances documented option names
+  // their implementations refuse, and other gates caught that instead.
+  check("a block documented in one module and implemented in another is followed",
+    WALK.crossModule >= 2, "crossModule=" + WALK.crossModule);
   check("and the comparison ran against those blocks",
     WALK.rows.length === WALK.measurable,
     "rows=" + WALK.rows.length + " measurable=" + WALK.measurable);
@@ -680,6 +779,23 @@ function testTheInstrumentReadsAFactoryNestedPrimitive() {
         (fx2.rows.length ? fx2.rows[0].missing.join(",") : "(no row)"));
   });
 
+  // What the widened instrument reached, one primitive per shape it could not
+  // see before: an allowlist behind a local validation helper, a hand-rolled
+  // `for (var k in opts)` loop against a module-level array, and a block whose
+  // implementation is one module over. Each of these documented nothing for the
+  // named option until the gate could read it.
+  [["b.staticServe.create", "maxRangeBytes"],      // shape call in a helper
+   ["b.fileUpload.create", "contentSafetyDisabledReason"],
+   ["b.auth.saml.sp.buildLogoutRequestSoap", "sessionIndex"],  // delegates to a sibling
+   ["b.db.declareView", "whereClause"],            // hand-rolled loop, cross-module
+   ["b.db.declareRowPolicy", "using"]].forEach(function (pair) {
+    var row = WALK.rows.filter(function (r) { return r.prim === pair[0]; })[0];
+    check(pair[0] + " is measured and documents " + pair[1],
+      !!row && !!row.accepted[pair[1]] && !!row.documented[pair[1]],
+      row ? "accepted=" + !!row.accepted[pair[1]] + " documented=" + !!row.documented[pair[1]]
+          : "block not measured at all");
+  });
+
   // The three that drove the finding, so dropping their entries fails here too.
   [["b.fedcm.config", "disconnect_endpoint"],
    ["b.mail.crypto.pgp.sign", "passphrase"],
@@ -693,6 +809,12 @@ function testTheInstrumentReadsAFactoryNestedPrimitive() {
 }
 
 async function run() {
+  // The totals on every run, not only on a failure: what the gate compared is
+  // the premise behind its verdict, and a run that reports only "passed" says
+  // nothing about how much of the surface it reached.
+  console.log("[operator-doc-opts-contract] blocks with @opts=" + WALK.withOpts +
+    " measured=" + WALK.measurable + " unmeasured=" + WALK.notMeasurable +
+    " cross-module=" + WALK.crossModule);
   testTheComparisonHasSomethingToCompare();
   testEveryAcceptedOptionIsDocumented();
   testTheSeamExemptionsStayHonest();

@@ -554,7 +554,7 @@ var VALID_ALLOW_CLASSES = {
   "silent-catch-stream-teardown": 1,
   "slsa-framework-action-not-sha-pinned": 1,
   "timer-no-unref-unrefed-below": 1,
-  "timer-no-unref-process-pinning": 1,
+  "timer-no-unref-process-pinning": 2,
   "wildcard-suffix-match-without-single-label-check": 1,
 };
 
@@ -13159,9 +13159,23 @@ var KNOWN_ANTIPATTERNS = [
     skipCommentLines: true,
     // Anchored on the call that can raise the refusal and the catch that
     // directly follows its try, so a catch further down the same function is
-    // out of scope. The tempered token stops at `isGateRefusal`, which is how
+    // out of scope. The tempered token stops at either predicate, which is how
     // a handled site reads, and at a function-closing brace at column 0.
-    regex: /(?:(?:vaultWrap|argon2(?:Builtin)?)(?:\(\))?\.(?:wrap|unwrap|hash|verify|deriveWrappingKey)|(?:backupCrypto|bCrypto)(?:\(\))?\.(?:deriveKey|encryptWithPassphrase|decryptWithPassphrase|encryptWithFreshSalt))\s*\((?:(?!\n\})[\s\S]){0,240}?\)\s*;?\s*\}?\s*catch\s*\(\s*(?!_)[A-Za-z$][\w$]*\s*\)\s*\{(?:(?!isGateRefusal)(?!vault-wrap\/passphrase-rejected)(?!backup-crypto\/decrypt-failed)(?!\n\})[\s\S]){0,240}?\bthrow\s+(?:new\s+[A-Za-z_$][\w$]*Error|_err\s*\()/,
+    //
+    // Only `isArgon2Error` counts as handled. It is the WIDER question and
+    // subsumes the capacity refusal: a wrong passphrase surfaces as an AEAD
+    // failure, never as an Argon2 error, so a site that rethrows every Argon2
+    // error has handled the capacity refusal and the permanent ones with it.
+    // `isGateRefusal` asks only whether the refusal is transient, so it let
+    // `argon2/cost-over-ceiling` reach a catch-all that reported a correct
+    // passphrase as rejected, in five sites at once once the ceiling began
+    // bounding the raw derivations.
+    //
+    // A catch that answers `false` instead of raising its own coded error is
+    // out of scope either way, because the pattern requires the translating
+    // `throw` to fire: that is the documented contract of `verify`, which
+    // `exceedsCostCeiling` is there to disambiguate.
+    regex: /(?:(?:vaultWrap|argon2(?:Builtin)?)(?:\(\))?\.(?:wrap|unwrap|hash|verify|deriveWrappingKey)|(?:backupCrypto|bCrypto)(?:\(\))?\.(?:deriveKey|encryptWithPassphrase|decryptWithPassphrase|encryptWithFreshSalt))\s*\((?:(?!\n\})[\s\S]){0,240}?\)\s*;?\s*\}?\s*catch\s*\(\s*(?!_)[A-Za-z$][\w$]*\s*\)\s*\{(?:(?!isArgon2Error)(?!vault-wrap\/passphrase-rejected)(?!backup-crypto\/decrypt-failed)(?!\n\})[\s\S]){0,240}?\bthrow\s+(?:new\s+[A-Za-z_$][\w$]*Error|_err\s*\()/,
     allowlist: [],
     fixtures: {
       fires: [
@@ -13171,10 +13185,15 @@ var KNOWN_ANTIPATTERNS = [
         // too, which the first version of this pattern did not name: it listed
         // the calls it had seen rather than every export that derives.
         "      vkBuf = await backupCrypto.decryptWithPassphrase(vaultKeyEnc, passphrase, salt);\n  } catch (e) {\n    throw new RestoreBundleError(\"restore-bundle/vault-key-recovery-failed\",\n      \"could not recover\");",
+        // Letting only the TRANSIENT refusal through and translating the rest
+        // is what reported a correct passphrase as rejected once the ceiling
+        // began bounding the raw derivations.
+        "    return await backupCrypto().decryptWithPassphrase(encrypted, opts.passphrase, saltHex);\n  } catch (e) {\n    if (argon2().isGateRefusal(e)) throw e;\n    throw new ArchiveWrapError(\"archive-wrap/decrypt-failed\",\n      \"wrong passphrase or tampered envelope\");",
+        "    sealed = await vaultWrap.wrap(plaintextJson, passphrase);\n  } catch (e) {\n    if (argon2.isGateRefusal(e)) throw e;\n    throw new VaultError(\"vault/wrap-failed\",\n      \"failed to wrap new vault key\");",
       ],
       quiet: [
-        "    plaintext = await vaultWrap.unwrap(sealed, pwBuf);\n  } catch (e) {\n    if (argon2.isGateRefusal(e)) throw e;\n    throw new KeychainError(\"keychain/file-unseal-failed\",\n      \"rejected\");",
-        "    try { plaintextBuf = await vaultWrap.unwrap(sealedBytes, passphrase); }\n    catch (e) {\n      if (argon2.isGateRefusal(e)) throw e;\n      throw _err(\"audit-sign/passphrase-rejected\", \"rejected\");",
+        "    plaintext = await vaultWrap.unwrap(sealed, pwBuf);\n  } catch (e) {\n    if (argon2.isArgon2Error(e)) throw e;\n    throw new KeychainError(\"keychain/file-unseal-failed\",\n      \"rejected\");",
+        "    try { plaintextBuf = await vaultWrap.unwrap(sealedBytes, passphrase); }\n    catch (e) {\n      if (argon2.isArgon2Error(e)) throw e;\n      throw _err(\"audit-sign/passphrase-rejected\", \"rejected\");",
         // Translating one named code and re-raising everything else already
         // lets the refusal through, which is how the per-blob decrypt reads.
         "          plaintext = await backupCrypto.decryptWithPassphrase(blob, passphrase, entry.salt);\n      } catch (e) {\n        if (e && e.code === \"backup-crypto/decrypt-failed\") {\n          throw new RestoreBundleError(\"restore-bundle/decrypt-failed\", \"rejected\");\n        }\n        throw e;\n      }",
@@ -13193,6 +13212,43 @@ var KNOWN_ANTIPATTERNS = [
       ],
     },
     reason: "`b.auth.password.gate` bounds how many Argon2id derivations run at once, and it refuses with `argon2/busy` or `argon2/queue-timeout` when saturated. Those refusals are transient: `b.retry.isRetryable` returns true for them, because waiting is the right answer. Moving the gate into the one derivation entry point made every caller able to receive them, and a caller's catch-all then reported temporary saturation as something permanent: `b.archive.unwrapWithPassphrase` answered `archive-wrap/decrypt-failed` for a valid archive, `b.keychain` answered \"file passphrase rejected or file corrupted\" for an intact file, and `b.auditSign` and the vault passphrase operations said the passphrase was rejected. An operator reading that goes looking for a corrupted file or a wrong passphrase instead of retrying. Every such catch consults `argon2.isGateRefusal` first, which is one predicate rather than a code list each site repeats: two sites in `lib/auth/password.js` had spelled the two codes inline, and a third refusal code would have left them silently swallowing it. A catch around a symmetric open cannot see a capacity refusal and is out of scope, and so is one that returns a value rather than translating.",
+  },
+  {
+    id: "argon2-gate-admission-reads-one-list-of-a-two-list-thread-bound",
+    primitive: "b.auth.password.gate",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // Both per-thread quantities, in either operand order. The running count
+    // lives in two counters and the queue in two arrays, so the pattern names
+    // all four against the two limits they are weighed against. `_inFlight()`
+    // and `_queued()` are the only correct left sides, so a future third
+    // counter folded into either helper stays quiet while a direct read of one
+    // list fires.
+    regex: /(?:(?:_active(?:Local|Shared)|_(?:shared)?[Ww]aiters\.length)\s*(?:<|>=|>|<=)\s*_(?:limit|maxQueued)|_(?:limit|maxQueued)\s*(?:<|>=|>|<=)\s*(?:_active(?:Local|Shared)|_(?:shared)?[Ww]aiters\.length))/,
+    allowlist: [],
+    fixtures: {
+      fires: [
+        "  if (_activeLocal < _limit) {\n    _activeLocal += 1;\n    return Promise.resolve(_releaseLocal);\n  }",
+        "  while (_waiters.length > 0 && _activeLocal < _limit) {",
+        "      if (_activeShared >= _limit) return;",
+        "  if (_limit > _activeLocal) {",
+        "  if (_waiters.length >= _maxQueued) {\n    return Promise.reject(new Argon2Error(\"argon2/busy\",",
+        "  if (_sharedWaiters.length >= _maxQueued) {",
+      ],
+      quiet: [
+        "  if (_inFlight() < _limit) {\n    _activeLocal += 1;\n    return Promise.resolve(_releaseLocal);\n  }",
+        "  while (_waiters.length > 0 && _inFlight() < _limit) {",
+        "      if (_inFlight() >= _limit) {",
+        "  if (_queued() >= _maxQueued) {",
+        // A list emptiness test is not an admission test, and neither is
+        // moving a counter around an admitted derivation.
+        "  while (_waiters.length > 0 && _inFlight() < _limit) {\n    var w = _waiters.shift();",
+        "    _activeShared -= 1;\n    _dropPermitOwner(view);",
+        "    running:       _inFlight(),",
+        "    waiting:       _queued(),",
+      ],
+    },
+    reason: "Two of the Argon2id gate's per-thread quantities are each held in two places. The derivations running on the thread are counted in `_activeLocal` for the ones holding a slot in its own gate and `_activeShared` for the ones holding a permit in a `SharedArrayBuffer` gate shared with other threads; the callers waiting are queued in `_waiters` and `_sharedWaiters` the same way. `argon2.gate(n, { shared })` switches which gate new work goes to and is documented as safe to call while derivations are running, so both halves of each pair can be non-empty at once, and `stats()` has always reported both as sums. Admission read one half of each. Reading one running counter admitted a second derivation the instant the switch landed, so with both gates set to one permit two derivations allocated their memory at the same time on one thread, which is the memory bound the gate exists to hold; reading one waiter list let a switch queue a third caller past a `maxQueued` of one, reporting `waiting: 2` against `maxQueued: 1` rather than refusing with `argon2/busy`. All three switch directions did both — shared to local, local to shared, and one shared handle to another. `_inFlight()` and `_queued()` are the single places that answer how much this thread is running and how much is waiting, so an admission test that names a counter or a list directly is reading a number that no longer bounds anything.",
   },
   {
     id: "a-framework-errors-code-is-reassigned-after-it-is-built",
@@ -13251,6 +13307,39 @@ var KNOWN_ANTIPATTERNS = [
       ],
     },
     reason: "`b.pick` refuses a prototype-moving key and consults `b.pick.registerPoisonedKeys`, a public registry that only ever grows and that an application sets for its own object layer. That makes it the right filter for untrusted input and the wrong one for forwarding a primitive's own options, whose keys are a fixed literal that has already passed `b.validateOpts`. `b.compliance.aiAct.gpai.declareAdherence` forwarded its options to `adherenceForm` through it, so an application that registered any name the form reads changed what got signed: registering `provider` made a declaration carrying `{ name: \"Acme\" }` sign `{ name: null, address: null, contact: null }`, dropping operator data between the validation that accepted it and the signature that attested to it, and registering `modelId` made a valid declaration fail. The forwarding question does not depend on that policy, so it copies the fixed key list directly. Filtering an operator-supplied body or a parsed document through `b.pick` is the intended use and is out of scope, as are the `assertSafeKey` and `isPoisonedKey` helpers.",
+  },
+  {
+    id: "a-logged-or-audited-record-field-is-built-from-the-raw-request-url",
+    primitive: "b.requestHelpers.resolveRoute",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // A record field named for the request target and assigned from req.url.
+    // `_canonicalRequestTarget(req.url)` and `new URL(req.url, ...)` both lack
+    // the `field:` anchor, so only a field that carries the raw URL matches.
+    regex: /\b(?:url|originalUrl|requestUrl|fullUrl)\s*:\s*(?:req(?:uest)?\s*&&\s*)?req(?:uest)?\s*\.\s*(?:url|originalUrl)\b/,
+    allowlist: [],
+    fixtures: {
+      fires: [
+        "        metadata: { reason: \"posture-refuse\", method: req.method, url: req.url },",
+        "      url:       req && req.url,",
+        "  var fields = { originalUrl: request.originalUrl, status: 500 };",
+      ],
+      quiet: [
+        // The route-resolving helper, which is the fix.
+        "      route:     requestHelpers.resolveRoute(req),",
+        "        metadata: { method: req.method, route: requestHelpers.resolveRoute(req) },",
+        // A module holding the route table resolves the pattern from it, which
+        // is the only form that works before a route has been matched.
+        "        metadata: { method: req.method, route: this._routeLabel(req) },",
+        // Reading the URL to route, hash or parse it is not recording it.
+        "    hash.update(_canonicalRequestTarget(req.url) + \"\\n\");",
+        "    var parsed = new URL(req.url, \"https://\" + host);",
+        "    req.pathname = req.url.split(\"?\")[0];",
+        // A field carrying a URL that is not the request's own target.
+        "      url: cfg.webhookUrl,",
+      ],
+    },
+    reason: "A request target reaches a log line or an audit record as a field, and `req.url` carries whatever the client sent: a reset or invite capability sitting in a path segment, and every query parameter. Eight sites recorded the raw URL: `lib/router.js` built its `route refused:` and `route error:` lines from it, its middleware catch logged it directly, and its three TLS 0-RTT audit records carried it, while `lib/error-page.js` put it in both the log fields and the audit metadata on every error render. The audit path is the one that cannot be undone, because the chain is signed and append-only, so a capability written there stays written. Which replacement is correct depends on whether a route has been matched yet. After `b.router` dispatches, `b.requestHelpers.resolveRoute` answers it: `req.routePattern` is set (`/reset/:token`) and the query-stripped path is the fallback. Before dispatch there is no `req.routePattern`, and stripping the query leaves the capability in the path, so the five router sites resolve the pattern from the route table the router already holds. Both forms are quiet here; the pre-dispatch distinction is behavioral and is held by the tests in `router.test.js` and `router-tls0rtt.test.js` rather than by this pattern. Reading `req.url` to route, hash or parse a request is not recording it and does not match; neither does a field carrying a URL the operator configured.",
   },
   {
     id: "a-jmap-method-error-type-is-a-bare-name",
@@ -25606,19 +25695,62 @@ function testLibCommentBlocksAreWholeSentences() {
           "an edit that removed part of it)", bad);
 }
 
+var NARRATIVE = [
+  { re: /\b(?:SUBSTRATE|BUG|MAIL)-\d+\b/,        what: "internal slice/bug ID" },
+  { re: /\b(?:D-[MLH]\d+|AUTH-\d+|CRYPTO-\d+|SUPPLY-\d+)\b/, what: "internal domain/slice ID" },
+  { re: /\bCodex\s+P\d/,                          what: "code-review-process reference (Codex P#)" },
+  { re: /\bF-[A-Z]{2,}-\d+\b/,                    what: "internal feature/plan item ID" },
+  { re: /\bPR\s+#\d+\b/,                          what: "pull-request number (process residue)" },
+  { re: /\b[Aa]udit\s+\d{4}-\d{2}-\d{2}/,         what: "dated audit/decision residue" },
+  { re: /\bReported\s+\d{4}-\d{2}-\d{2}/,         what: "dated report residue" },
+  { re: /\bCore Rule\s+§\d/,                 what: "internal rule-number citation" },
+  { re: /----\s*v\d+\.\d+\.\d+/,             what: "version stamp in a section-divider comment" },
+];
+
+// The same vocabulary, in the documents an operator actually reads. The
+// comment scan below covers `lib/`, which left the shipped docs out of scope:
+// README carried a rule-number citation an operator cannot resolve, and three
+// historical CHANGELOG entries carried review-process labels. CHANGELOG is
+// generated, so a finding there is fixed in the release-notes source it is
+// rebuilt from.
+var OPERATOR_DOCS = [
+  "README.md", "SECURITY.md", "CHANGELOG.md", "MIGRATING.md", "LTS-CALENDAR.md",
+  "NOTICE", "ARCHITECTURE.md", "CONTRIBUTING.md", "GOVERNANCE.md", "ROADMAP.md",
+  "CODE_OF_CONDUCT.md",
+];
+
+function testNoInternalNarrativeInOperatorDocs() {
+  var bad = [];
+  OPERATOR_DOCS.forEach(function (rel) {
+    var abs = path.resolve(__dirname, "..", "..", rel);
+    if (!fs.existsSync(abs)) return;
+    var lines = fs.readFileSync(abs, "utf8").split("\n");
+    for (var li = 0; li < lines.length; li++) {
+      for (var p = 0; p < NARRATIVE.length; p++) {
+        var m = lines[li].replace(/\r$/, "").match(NARRATIVE[p].re);
+        if (m) {
+          bad.push({
+            file:    rel,
+            line:    li + 1,
+            content: NARRATIVE[p].what + ": `" + m[0] + "` in a document operators read — " +
+                     "describe the change, not the internal process (a generated file is " +
+                     "fixed in its release-notes source)",
+          });
+          break;
+        }
+      }
+    }
+  });
+  // No allow marker: none of these patterns matches anything a sentence
+  // written for an operator needs, so a hit is a sentence to rewrite rather
+  // than a site to exempt. A document cannot carry a line comment anyway.
+  _report("operator-facing documents must not carry internal-process narrative " +
+          "(slice / bug / plan IDs, review-process or PR references, rule-number citations)",
+    bad);
+}
+
 function testNoInternalNarrativeComments() {
   // class: internal-narrative-comment
-  var NARRATIVE = [
-    { re: /\b(?:SUBSTRATE|BUG|MAIL)-\d+\b/,        what: "internal slice/bug ID" },
-    { re: /\b(?:D-[MLH]\d+|AUTH-\d+|CRYPTO-\d+|SUPPLY-\d+)\b/, what: "internal domain/slice ID" },
-    { re: /\bCodex\s+P\d/,                          what: "code-review-process reference (Codex P#)" },
-    { re: /\bF-[A-Z]{2,}-\d+\b/,                    what: "internal feature/plan item ID" },
-    { re: /\bPR\s+#\d+\b/,                          what: "pull-request number (process residue)" },
-    { re: /\b[Aa]udit\s+\d{4}-\d{2}-\d{2}/,         what: "dated audit/decision residue" },
-    { re: /\bReported\s+\d{4}-\d{2}-\d{2}/,         what: "dated report residue" },
-    { re: /\bCore Rule\s+§\d/,                 what: "internal CLAUDE.md rule-number citation" },
-    { re: /----\s*v\d+\.\d+\.\d+/,             what: "version stamp in a section-divider comment" },
-  ];
   var files = _libFiles();
   var bad = [];
   var jsdocLineRe = /^\s*\*/;
@@ -25916,6 +26048,7 @@ async function run() {
   testCaptureStatusChecked();
   testSfvCitationMatchesReferencingProtocol();
   testNoInternalNarrativeComments();
+  testNoInternalNarrativeInOperatorDocs();
   testLibCommentBlocksAreWholeSentences();
   testEveryObjectStoreBackendMapsNotFound();
   testNoOrphanAllowClass();

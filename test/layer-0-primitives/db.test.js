@@ -182,6 +182,72 @@ async function testReservedTableNames() {
   }
 }
 
+// --- a failed init releases the handle it opened ---------------------------
+
+// init opens the sqlite handle and then runs eight further checks that can
+// throw. On any of them the handle stayed open, and because _shutdown()
+// returns early while `initialized` is false, the public close() declined to
+// release it: an operator had no way to close the file, and the next init
+// attempt overwrote the module-level reference, orphaning the descriptor.
+// _resetForTest() closes unconditionally, which is why the suite ran over
+// this for as long as it did — the assertion has to drive b.db.close().
+async function testAFailedInitReleasesTheHandleItOpened() {
+  function _fdsOn(file) {
+    if (process.platform === "win32") return null;
+    var n = 0;
+    try {
+      fs.readdirSync("/proc/self/fd").forEach(function (entry) {
+        var target;
+        try { target = fs.readlinkSync(path.join("/proc/self/fd", entry)); }
+        catch (_e) { return; }
+        if (target === file) n += 1;
+      });
+    } catch (_e) { return null; }
+    return n;
+  }
+
+  var cases = [
+    { label: "a table name the framework reserves",
+      code:  "db/reserved-table-name",
+      schema: [{ name: "audit_log", columns: { _id: "TEXT PRIMARY KEY" } }] },
+    { label: "personalDataCategories of the wrong shape",
+      code:  "db/bad-personal-data-categories",
+      schema: [{ name: "people", columns: { _id: "TEXT PRIMARY KEY", uid: "TEXT" },
+                 subjectField: "uid", personalDataCategories: "not-an-object" }] },
+    { label: "a personal-data category of the wrong type",
+      code:  "db/bad-personal-data-category",
+      schema: [{ name: "people", columns: { _id: "TEXT PRIMARY KEY", uid: "TEXT" },
+                 subjectField: "uid", personalDataCategories: { uid: 123 } }] },
+  ];
+
+  for (var i = 0; i < cases.length; i += 1) {
+    var c = cases[i];
+    var tmpDir = _mkTmp("db-cov-initleak-");
+    var dbFile = path.join(tmpDir, "blamejs.db");
+    var baseline = _fdsOn(dbFile);
+    var threw = await _catch(function () { return _plainInit(tmpDir, c.schema); });
+    check("init refuses " + c.label + " with " + c.code,
+      threw && threw.code === c.code, "code=" + (threw && threw.code));
+
+    // The operator's only handle-releasing call. Not _resetForTest().
+    try { b.db.close(); } catch (_e) { /* close() must not throw here */ }
+
+    if (baseline !== null) {
+      check("  and close() leaves no descriptor on " + path.basename(dbFile),
+        _fdsOn(dbFile) === baseline,
+        "baseline=" + baseline + " after=" + _fdsOn(dbFile));
+    }
+    // Nothing may hold the file. On Windows an open sqlite handle locks it,
+    // so this is the same assertion by the route that platform offers.
+    var released = true;
+    try { if (fs.existsSync(dbFile)) fs.unlinkSync(dbFile); }
+    catch (_e) { released = false; }
+    check("  and the database file can be removed", released);
+
+    _teardownPlain(tmpDir);
+  }
+}
+
 // --- personalDataCategories validation ------------------------------------
 
 async function testPersonalDataCategories() {
@@ -3354,6 +3420,7 @@ async function run() {
   await testRollbackDetection();
   await testWormPostureAssertion();
   await testWriteAuditTipGuard();
+  await testAFailedInitReleasesTheHandleItOpened();
 }
 
 module.exports = { run: run };

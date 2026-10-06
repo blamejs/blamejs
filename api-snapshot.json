@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.20.39",
-  "createdAt": "2026-10-05T06:44:37.215Z",
+  "frameworkVersion": "0.21.0",
+  "createdAt": "2026-10-06T21:23:16.050Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -4052,9 +4052,17 @@
               "type": "function",
               "arity": 1
             },
+            "exceedsCostCeiling": {
+              "type": "function",
+              "arity": 1
+            },
             "gate": {
               "type": "function",
               "arity": 2
+            },
+            "gateHandle": {
+              "type": "function",
+              "arity": 0
             },
             "hash": {
               "type": "function",
@@ -4071,6 +4079,10 @@
             "policy": {
               "type": "function",
               "arity": 1
+            },
+            "reclaimGatePermits": {
+              "type": "function",
+              "arity": 2
             },
             "stats": {
               "type": "function",
