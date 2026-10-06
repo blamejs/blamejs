@@ -13231,7 +13231,7 @@ var KNOWN_ANTIPATTERNS = [
         // A list emptiness test is not an admission test, and neither is
         // moving a counter around an admitted derivation.
         "  while (_waiters.length > 0 && _inFlight() < _limit) {\n    var w = _waiters.shift();",
-        "    _activeShared -= 1;\n    Atomics.add(view, SLOT_AVAIL, 1);",
+        "    _activeShared -= 1;\n    _dropPermitOwner(view);",
         "    running:       _inFlight(),",
         "    waiting:       _queued(),",
       ],

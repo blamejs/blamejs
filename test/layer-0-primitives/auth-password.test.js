@@ -38,6 +38,31 @@ var hibpSha1 = require("../../lib/framework-sha1-hibp");
 // the suite quick while still driving the real vendor hash + verify.
 var FAST = { memoryCost: b.constants.BYTES.kib(1), timeCost: 1, parallelism: 1 };
 
+// A shared permit IS the record of the thread holding it. The handle reads
+// [free count, limit, record count, then one owner key per permit], and a
+// thread's key is its threadId plus one. The gate tests below need permits
+// held by a thread that is not this one, which writing the free count alone
+// does not do: a caller scans the records, so it would find every permit free.
+var SHARED_OWNERS_BASE = 3;
+var SHARED_LIMIT_WORD = 1;
+var OTHER_THREAD_KEY = 9001;
+
+function _holdSharedPermits(view, held, key) {
+  var limit = Atomics.load(view, SHARED_LIMIT_WORD);
+  var owner = key === undefined ? OTHER_THREAD_KEY : key;
+  for (var i = 0; i < limit; i += 1) {
+    Atomics.store(view, SHARED_OWNERS_BASE + i, i < held ? owner : 0);
+  }
+  Atomics.store(view, 0, limit - held);
+}
+
+function _releaseSharedPermits(view) {
+  var limit = Atomics.load(view, SHARED_LIMIT_WORD);
+  for (var i = 0; i < limit; i += 1) Atomics.store(view, SHARED_OWNERS_BASE + i, 0);
+  Atomics.store(view, 0, limit);
+  Atomics.notify(view, 0);
+}
+
 // ---- hash / verify happy path + defensive readers ------------------
 
 async function testHashVerifyRoundtrip() {
@@ -1127,10 +1152,11 @@ async function testAWorkerWaitingForASharedPermitDoesNotExitEarly() {
     // The permit is taken straight out of the handle rather than by running a
     // derivation, so the worker is certain to be waiting: a derivation on this
     // thread would finish long before a Worker has finished booting.
+    //
     b.auth.password.gate(1, { shared: true });
     var handle = b.auth.password.gateHandle();
     var permits = new Int32Array(handle);
-    Atomics.sub(permits, 0, 1);
+    _holdSharedPermits(permits, 1);
     check("the parent holds the only permit", Atomics.load(permits, 0) === 0);
 
     var ready = false;
@@ -1168,8 +1194,7 @@ async function testAWorkerWaitingForASharedPermitDoesNotExitEarly() {
     check("  and has not completed a derivation it holds no permit for",
       finished === null, JSON.stringify(finished));
 
-    Atomics.add(permits, 0, 1);
-    Atomics.notify(permits, 0);
+    _releaseSharedPermits(permits);
 
     await helpers.waitUntil(function () { return finished !== null || exited !== null; }, {
       timeoutMs: 60000,
@@ -1187,6 +1212,162 @@ async function testAWorkerWaitingForASharedPermitDoesNotExitEarly() {
     check("  leaving the permit count whole",
       Atomics.load(permits, 0) === 1, "available=" + Atomics.load(permits, 0));
   } finally {
+    b.auth.password.gate(8, { shared: false, maxQueued: Infinity, waitTimeoutMs: 0 });
+    try { nodeFs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* cleanup */ }
+  }
+}
+
+// A shared permit is taken by decrementing a counter in the handle and given
+// back by the release function the caller is handed. A Worker that is
+// terminated, or that exits while a derivation is in flight, never runs that
+// release, and the counter carried no record of who held what: with a shared
+// limit of 1 the gate stayed at zero permits for the life of the process, so
+// every later derivation on every thread waited forever under the default
+// waitTimeoutMs of 0. Each permit now records the thread holding it, so the
+// thread that owns the Worker can give the permits back when it sees the exit.
+async function testPermitsHeldByADeadWorkerAreReclaimable() {
+  var nodeWorker = require("node:worker_threads");
+  var nodeFs = require("node:fs");
+  var nodeOs = require("node:os");
+  var nodePath = require("node:path");
+
+  var entry = nodePath.join(__dirname, "..", "..", "lib", "auth", "password.js");
+  var dir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), "argon-dead-"));
+  var script = nodePath.join(dir, "dying-worker.js");
+  // The derivation is costly on purpose: the worker must still hold the permit
+  // when the parent terminates it, and the parent waits on the permit count
+  // rather than on a clock to know the permit was taken.
+  nodeFs.writeFileSync(script, [
+    "var wt = require(\"node:worker_threads\");",
+    "var d = wt.workerData;",
+    "var P = require(d.entry);",
+    "P.gate(null, { shared: d.gate });",
+    "wt.parentPort.postMessage({ ready: true, threadId: wt.threadId });",
+    "P.hash(\"pw-dying\", { memoryCost: 262144, timeCost: 12, parallelism: 1 })",
+    "  .then(function () { wt.parentPort.postMessage({ done: true }); },",
+    "        function () { wt.parentPort.postMessage({ done: false }); });",
+  ].join("\n"));
+
+  var w = null;
+  try {
+    b.auth.password.gate(1, { shared: true });
+    var handle = b.auth.password.gateHandle();
+    var permits = new Int32Array(handle);
+    check("the shared gate starts with its one permit free",
+      Atomics.load(permits, 0) === 1, "available=" + Atomics.load(permits, 0));
+
+    // The handle carries the owner table, so its size is the layout's and a
+    // buffer too small to hold that table is not a handle this gate produced.
+    var OWNER_SLOTS = 256;
+    check("the handle is sized for the free count, the limit and one record per permit",
+      handle.byteLength === (3 + OWNER_SLOTS) * 4, "byteLength=" + handle.byteLength);
+    check("  and reports how many owner records it holds",
+      Atomics.load(permits, 2) === OWNER_SLOTS, "slots=" + Atomics.load(permits, 2));
+    var refusedSmall = null;
+    try { b.auth.password.gate(null, { shared: new SharedArrayBuffer(8) }); }
+    catch (e) { refusedSmall = e; }
+    check("a buffer too small for the owner table is refused as a handle",
+      refusedSmall !== null && refusedSmall.code === "argon2/bad-gate",
+      "threw=" + (refusedSmall && refusedSmall.code));
+    check("  and the refusal leaves this thread on its own shared gate",
+      b.auth.password.gateHandle() === handle);
+
+    var workerThreadId = null;
+    var exited = null;
+    var failed = null;
+    w = new nodeWorker.Worker(script, { workerData: { entry: entry, gate: handle } });
+    w.on("message", function (m) {
+      if (m && m.ready) { workerThreadId = m.threadId; }
+    });
+    w.on("error", function (e) { failed = e; });
+    w.on("exit", function (code) { exited = code; });
+
+    await helpers.waitUntil(function () {
+      return workerThreadId !== null || exited !== null || failed;
+    }, { timeoutMs: 60000, label: "dead-worker gate: worker booted and adopted the handle" });
+    check("the worker adopted the handle", workerThreadId !== null,
+      "exited=" + exited + " err=" + (failed && failed.message));
+
+    await helpers.waitUntil(function () { return Atomics.load(permits, 0) === 0; }, {
+      timeoutMs: 60000,
+      label: "dead-worker gate: worker took the only permit",
+    });
+    check("the worker holds the only permit", Atomics.load(permits, 0) === 0);
+
+    await w.terminate();
+    await helpers.waitUntil(function () { return exited !== null; }, {
+      timeoutMs: 30000,
+      label: "dead-worker gate: terminated worker exited",
+    });
+    check("  and the terminated worker ran no release",
+      Atomics.load(permits, 0) === 0, "available=" + Atomics.load(permits, 0));
+
+    var reclaimed = b.auth.password.reclaimGatePermits(workerThreadId);
+    check("reclaiming the dead worker's permits returns the one it held",
+      reclaimed === 1, "reclaimed=" + reclaimed);
+    check("  and the permit is free again",
+      Atomics.load(permits, 0) === 1, "available=" + Atomics.load(permits, 0));
+
+    // Reclaiming twice must not invent a permit the gate never issued.
+    check("reclaiming the same dead thread again frees nothing",
+      b.auth.password.reclaimGatePermits(workerThreadId) === 0,
+      "available=" + Atomics.load(permits, 0));
+    check("  and the count is still the gate's limit",
+      Atomics.load(permits, 0) === 1, "available=" + Atomics.load(permits, 0));
+
+    // The reclaimed permit is usable, which is the behaviour the hang denied.
+    var stored = await b.auth.password.hash("pw-after-reclaim",
+      { memoryCost: b.constants.BYTES.kib(16), timeCost: 1, parallelism: 1 });
+    check("a derivation runs on the reclaimed permit",
+      typeof stored === "string" && stored.length > 0);
+
+    var threwSelf = null;
+    try { b.auth.password.reclaimGatePermits(nodeWorker.threadId); }
+    catch (e) { threwSelf = e; }
+    check("reclaiming the calling thread's own permits is refused",
+      threwSelf !== null && threwSelf.code === "argon2/bad-gate",
+      "threw=" + (threwSelf && threwSelf.code));
+
+    var threwType = null;
+    try { b.auth.password.reclaimGatePermits("3"); }
+    catch (e) { threwType = e; }
+    check("a thread id that is not an integer is refused",
+      threwType !== null && threwType.code === "argon2/bad-gate",
+      "threw=" + (threwType && threwType.code));
+
+    // Node has already set `worker.threadId` to -1 when `exit` fires, so the
+    // id must be read at construction; the value `exit` would have handed over
+    // is refused rather than silently freeing nothing.
+    var threwMinusOne = null;
+    try { b.auth.password.reclaimGatePermits(-1); }
+    catch (e) { threwMinusOne = e; }
+    check("the -1 a stopped Worker reports for its thread id is refused",
+      threwMinusOne !== null && threwMinusOne.code === "argon2/bad-gate",
+      "threw=" + (threwMinusOne && threwMinusOne.code));
+    check("  and a worker object reports exactly that after it exits",
+      w.threadId === -1, "threadId=" + w.threadId);
+
+    // An owner key is a 32-bit signed integer, so a thread id past that range
+    // would wrap: 4294967296 carries the key 1, which is the main thread's.
+    // Refusing the id is what stops a reclaim from clearing a live thread's
+    // record, and the self-reclaim guard never sees the wrapped value.
+    var MAIN_THREAD_KEY = 1;
+    _holdSharedPermits(permits, 1, MAIN_THREAD_KEY);
+    var threwWrap = null;
+    try { b.auth.password.reclaimGatePermits(4294967296); }
+    catch (e) { threwWrap = e; }
+    check("a thread id past the owner-key range is refused",
+      threwWrap !== null && threwWrap.code === "argon2/bad-gate",
+      "threw=" + (threwWrap && threwWrap.code));
+    check("  and the record it would have wrapped onto still holds",
+      Atomics.load(permits, SHARED_OWNERS_BASE) === MAIN_THREAD_KEY,
+      "owner=" + Atomics.load(permits, SHARED_OWNERS_BASE));
+    check("  so the gate still counts that permit as taken",
+      b.auth.password.stats().available === 0,
+      JSON.stringify(b.auth.password.stats()));
+    _releaseSharedPermits(permits);
+  } finally {
+    if (w) { try { await w.terminate(); } catch (_e) { /* already gone */ } }
     b.auth.password.gate(8, { shared: false, maxQueued: Infinity, waitTimeoutMs: 0 });
     try { nodeFs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* cleanup */ }
   }
@@ -1224,7 +1405,7 @@ async function testAQueuedCallerHoldsOneAtomicWaitNotOnePerRelease() {
     var view = new Int32Array(pw.gateHandle());
     // Another thread holds one of the two permits for the whole run, so every
     // caller but one has to wait and each completion releases into contention.
-    Atomics.store(view, 0, 1);
+    _holdSharedPermits(view, 1);
     var all = [];
     for (var i = 0; i < REQUESTS; i += 1) {
       all.push(pw.hash("pw-wait-" + i, FAST).catch(function () { /* refusals are fine */ }));
@@ -1258,7 +1439,7 @@ async function testAnAbandonedWaitRetiresBehindAnotherThreadsWaiter() {
     pw.gate(1, { shared: true, maxQueued: Infinity, waitTimeoutMs: 0 });
     var handle = pw.gateHandle();
     var view = new Int32Array(handle);
-    Atomics.store(view, 0, 0);
+    _holdSharedPermits(view, 1);
 
     // Stands in for a waiter belonging to another thread, queued first. The
     // wait list is keyed by the memory location, not by who registered.
@@ -1287,6 +1468,94 @@ async function testAnAbandonedWaitRetiresBehindAnotherThreadsWaiter() {
   }
 }
 
+// The free count a native wait parks on is recomputed from the permit records
+// rather than counted up and down, so a recount that overlaps another thread's
+// release can store a 0 the records no longer agree with. A caller that reads
+// that 0 parks on a notify which has already fired, and at the default
+// unlimited timeout it waits for the life of the process while a permit sits
+// free. The caller re-reads the records once its wait is registered, which is
+// the point after which a missed notify can no longer be recovered.
+async function testACallerParkedOnAStaleFreeCountStillFindsAFreePermit() {
+  var FAST = { memoryCost: b.constants.BYTES.kib(16), timeCost: 1, parallelism: 1 };
+  var pw = b.auth.password;
+  var realWaitAsync = Atomics.waitAsync;
+  try {
+    pw.gate(1, { shared: true, maxQueued: Infinity, waitTimeoutMs: 1500 });
+    var view = new Int32Array(pw.gateHandle());
+    _holdSharedPermits(view, 1);
+
+    // The release and the stale recount both land while this caller is in the
+    // act of parking, so the notify it would have needed is already spent.
+    var parked = 0;
+    Atomics.waitAsync = function (v, idx, expected, timeout) {
+      parked += 1;
+      if (parked === 1) {
+        Atomics.store(v, SHARED_OWNERS_BASE, 0);
+        Atomics.store(v, 0, 0);
+      }
+      return realWaitAsync.call(Atomics, v, idx, expected, timeout);
+    };
+
+    var settled = null;
+    await pw.hash("pw-stale-count", FAST).then(
+      function (h) { settled = { ok: true, len: h.length }; },
+      function (e) { settled = { ok: false, code: e && e.code }; });
+
+    check("a caller parks when no permit record is free", parked >= 1,
+      "waitAsync registrations=" + parked);
+    check("  and still derives on the permit freed as it parked",
+      settled !== null && settled.ok === true,
+      JSON.stringify(settled) + " stats=" + JSON.stringify(pw.stats()));
+    check("  leaving the free count agreeing with the records",
+      pw.stats().available === 1, JSON.stringify(pw.stats()));
+  } finally {
+    Atomics.waitAsync = realWaitAsync;
+    pw.gate(8, { shared: false, maxQueued: Infinity, waitTimeoutMs: 0 });
+  }
+}
+
+// Giving a permit back clears the record naming the holder and then wakes the
+// callers parked on the free count. A thread that dies between those two steps
+// leaves a permit free with nobody woken for it, and the record is already
+// gone, so the exit handler's reclaim has nothing to find. Reclaiming has to
+// wake the queue on the strength of the records as they stand rather than only
+// when it cleared one itself.
+async function testReclaimingWakesWaitersEvenWithNoRecordToClear() {
+  var FAST = { memoryCost: b.constants.BYTES.kib(16), timeCost: 1, parallelism: 1 };
+  var pw = b.auth.password;
+  var DEAD_THREAD_ID = 4242;
+  try {
+    pw.gate(1, { shared: true, maxQueued: Infinity, waitTimeoutMs: 1500 });
+    var view = new Int32Array(pw.gateHandle());
+    _holdSharedPermits(view, 1, DEAD_THREAD_ID + 1);
+
+    var settled = null;
+    var blocked = pw.hash("pw-dropped-record", FAST).then(
+      function (h) { settled = { ok: true, len: h.length }; },
+      function (e) { settled = { ok: false, code: e && e.code }; });
+    await helpers.waitUntil(function () { return pw.stats().waiting >= 1; },
+      { timeoutMs: 5000, label: "argon2 gate: a caller parked behind a held record" });
+
+    // The dying thread cleared its record and recounted, and was terminated
+    // before it could wake anyone.
+    Atomics.store(view, SHARED_OWNERS_BASE, 0);
+    Atomics.store(view, 0, 1);
+    check("the permit is free before the reclaim", pw.stats().available === 1,
+      JSON.stringify(pw.stats()));
+
+    var freed = pw.reclaimGatePermits(DEAD_THREAD_ID);
+    check("reclaiming a thread whose record was already cleared frees nothing",
+      freed === 0, "freed=" + freed);
+
+    await blocked;
+    check("  and the caller parked behind it still derives",
+      settled !== null && settled.ok === true,
+      JSON.stringify(settled) + " stats=" + JSON.stringify(pw.stats()));
+  } finally {
+    pw.gate(8, { shared: false, maxQueued: Infinity, waitTimeoutMs: 0 });
+  }
+}
+
 // A native wait cannot be cancelled, only woken, so a caller handed to another
 // gate leaves its old registration alive unless something retires it. Adopting
 // a handle builds a fresh view over the same buffer, so comparing views made
@@ -1302,7 +1571,7 @@ async function testReadoptingAHandleLeavesNoAbandonedNativeWait() {
     var handle = pw.gateHandle();
     var view = new Int32Array(handle);
     // Another thread holds the only permit, so the caller parks on a native wait.
-    Atomics.store(view, 0, 0);
+    _holdSharedPermits(view, 1);
     var blocked = pw.hash("pw-readopt", FAST).catch(function () { /* refusal is fine */ });
     await helpers.waitUntil(function () { return pw.stats().waiting >= 1; },
       { timeoutMs: 5000, label: "argon2 gate: a caller parked on the shared gate" });
@@ -1497,7 +1766,7 @@ async function testAGateSwitchCountsTheWorkStillOnThePreviousGate() {
     // Another thread holds the only permit for the rest of the test, so the
     // caller can now only leave the queue by its deadline.
     var heldView = new Int32Array(pw.gateHandle());
-    Atomics.store(heldView, 0, 0);
+    _holdSharedPermits(heldView, 1);
     await Promise.race([
       deadlineWaiter,
       helpers.passiveObserve(12000, "argon2 gate: a re-homed caller's deadline"),
@@ -1524,7 +1793,7 @@ async function testAGateSwitchCountsTheWorkStillOnThePreviousGate() {
     pw.gate(1, { shared: true, maxQueued: Infinity, waitTimeoutMs: 0 });
     var abandonedView = new Int32Array(pw.gateHandle());
     // Another thread takes the only permit and never gives it back.
-    Atomics.store(abandonedView, 0, 0);
+    _holdSharedPermits(abandonedView, 1);
     var rehomed = pw.hash("pw-rehomed", FAST);
     check("a caller with no permit free waits on the shared gate",
       pw.stats().waiting === 1, JSON.stringify(pw.stats()));
@@ -1550,12 +1819,11 @@ async function testAGateSwitchCountsTheWorkStillOnThePreviousGate() {
     for (var round = 0; round < 6; round++) {
       pw.gate(1, { shared: true, maxQueued: Infinity, waitTimeoutMs: 300 });
       var churnView = new Int32Array(pw.gateHandle());
-      Atomics.store(churnView, 0, 0);
+      _holdSharedPermits(churnView, 1);
       churn.push(pw.hash("pw-churn-" + round, FAST).then(
         function () {}, function () { churnErrors += 1; }));
       await helpers.passiveObserve(60, "argon2 gate: churn round " + round);
-      Atomics.store(churnView, 0, 1);
-      Atomics.notify(churnView, 0);
+      _releaseSharedPermits(churnView);
     }
     pw.gate(1, { shared: false, maxQueued: Infinity, waitTimeoutMs: 0 });
     var churnDrained = false;
@@ -1608,28 +1876,34 @@ async function testTheSharedGateAccountsPermitsToTheGateThatGrantedThem() {
       b.auth.password.stats().limit === before.limit,
       JSON.stringify(b.auth.password.stats()));
 
-    // The shared permit count is a 32-bit signed integer, so a limit above
-    // that range stores truncated: the count goes negative, every hash is
-    // refused as busy with nothing running, and a zero-timeout wait returns
-    // synchronously so the retry recurses. A limit the counter cannot hold is
-    // a configuration error, not a gate.
-    // The public layer already refuses an `n` outside the integer range, so
-    // the bound is asserted on the module that owns the counter: a limit it
-    // cannot store is a configuration error there too, whoever calls it.
+    // Each shared permit is a record of the thread holding it, and the handle
+    // holds a fixed number of those records, so that number is the largest
+    // shared limit. A limit above it would hand out permits with nowhere to
+    // name an owner, which is the one thing reclaiming a dead thread's permits
+    // needs, so it is a configuration error rather than a gate.
+    // The public layer already refuses an `n` outside the range, so the bound
+    // is asserted on the module that owns the records too, whoever calls it.
     var argon2 = require("../../lib/argon2-builtin");
-    var TOO_BIG = 2147483648;
+    var SHARED_MAX = 256;
+    var TOO_BIG = SHARED_MAX + 1;
     var publicRefused = null;
     try { b.auth.password.gate(TOO_BIG, { shared: true }); }
     catch (e) { publicRefused = e; }
-    check("the public gate refuses a limit outside the integer range",
+    check("the public gate refuses a shared limit past the owner records",
       publicRefused !== null && /bad-gate/.test(publicRefused.code || ""),
       "code=" + (publicRefused && publicRefused.code));
 
     var tooBig = null;
     try { argon2.gate(TOO_BIG, { shared: true }); } catch (e) { tooBig = e; }
-    check("and the shared counter refuses a limit it cannot hold",
+    check("and the shared gate refuses a limit it cannot record owners for",
       tooBig !== null && tooBig.code === "argon2/bad-gate",
       "code=" + (tooBig && tooBig.code) + " stats=" + JSON.stringify(argon2.stats()));
+
+    var farTooBig = null;
+    try { argon2.gate(2147483648, { shared: true }); } catch (e) { farTooBig = e; }
+    check("  as it does one outside the 32-bit range",
+      farTooBig !== null && farTooBig.code === "argon2/bad-gate",
+      "code=" + (farTooBig && farTooBig.code));
 
     // The same limit inherited from this thread's own gate rather than passed.
     argon2.gate(TOO_BIG, { shared: false });
@@ -1639,13 +1913,31 @@ async function testTheSharedGateAccountsPermitsToTheGateThatGrantedThem() {
       inherited !== null && inherited.code === "argon2/bad-gate",
       "code=" + (inherited && inherited.code) + " stats=" + JSON.stringify(argon2.stats()));
 
-    // The control: the largest limit the counter does hold is accepted, so the
-    // refusal reads the range rather than refusing anything large.
+    // The control: the largest limit the handle does record is accepted, so
+    // the refusal reads the bound rather than refusing anything large. Every
+    // one of those permits has an owner record, so a thread can never be
+    // granted a permit the gate cannot attribute to it.
     argon2.gate(8, { shared: false });
-    var atMax = argon2.gate(2147483647, { shared: true });
-    check("  while the largest representable limit is accepted",
-      atMax.shared === true && atMax.available === 2147483647,
+    var atMax = argon2.gate(SHARED_MAX, { shared: true });
+    check("  while the largest recordable limit is accepted",
+      atMax.shared === true && atMax.available === SHARED_MAX,
       JSON.stringify(atMax));
+    check("  and the handle holds one owner record per permit",
+      argon2.gateHandle().byteLength === (3 + SHARED_MAX) * 4,
+      "byteLength=" + argon2.gateHandle().byteLength);
+
+    // A buffer the right size but naming more permits than it records owners
+    // for is not a handle this gate produced either: adopting it would report a
+    // limit the records cannot hold.
+    var forged = new SharedArrayBuffer((3 + SHARED_MAX) * 4);
+    Atomics.store(new Int32Array(forged), 1, SHARED_MAX + 1);
+    var refusedForged = null;
+    try { argon2.gate(null, { shared: forged }); } catch (e) { refusedForged = e; }
+    check("  while a handle naming more permits than it records is refused",
+      refusedForged !== null && refusedForged.code === "argon2/bad-gate",
+      "threw=" + (refusedForged && refusedForged.code));
+    check("  leaving the thread on the gate it already had",
+      argon2.stats().limit === SHARED_MAX, JSON.stringify(argon2.stats()));
 
     // A derivation releases to the pool that granted it, so switching pools
     // underneath a running derivation cannot strand a permit in the old one.
@@ -1780,6 +2072,9 @@ async function testAHeldPassphraseIsReleasedWhenTheOperationEnds() {
 async function run() {
   await testTheGateIsPerThreadAndShareable();
   await testAWorkerWaitingForASharedPermitDoesNotExitEarly();
+  await testPermitsHeldByADeadWorkerAreReclaimable();
+  await testACallerParkedOnAStaleFreeCountStillFindsAFreePermit();
+  await testReclaimingWakesWaitersEvenWithNoRecordToClear();
   await testReadoptingAHandleLeavesNoAbandonedNativeWait();
   await testAnAbandonedWaitRetiresBehindAnotherThreadsWaiter();
   await testAQueuedCallerHoldsOneAtomicWaitNotOnePerRelease();
