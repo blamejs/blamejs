@@ -926,6 +926,15 @@ function testConfigValidation() {
     { multipartThresholdBytes: -1 }, /objectstore\/invalid-config/);
   shouldThrow("rejects partConcurrency = 0",
     { partConcurrency: 0 }, /objectstore\/invalid-config/);
+  // A fractional part size truncates where it is used as a length or an
+  // offset and advances the pending-byte counters by the fraction, so the
+  // accounting balances while a byte never reaches a part.
+  shouldThrow("rejects a fractional partSizeBytes",
+    { partSizeBytes: 5 * 1024 * 1024 + 0.5 }, /objectstore\/invalid-config/);
+  shouldThrow("rejects a fractional multipartThresholdBytes",
+    { multipartThresholdBytes: 1024.5 }, /objectstore\/invalid-config/);
+  shouldThrow("rejects a fractional partConcurrency",
+    { partConcurrency: 2.5 }, /objectstore\/invalid-config/);
 }
 
 // ---- Config validation: offline type-guard / non-finite / boundary arms ----
