@@ -1302,7 +1302,7 @@ async function testPermitsHeldByADeadWorkerAreReclaimable() {
     check("  and the terminated worker ran no release",
       Atomics.load(permits, 0) === 0, "available=" + Atomics.load(permits, 0));
 
-    var reclaimed = b.auth.password.reclaimGatePermits(workerThreadId);
+    var reclaimed = b.auth.password.reclaimGatePermits(workerThreadId, handle);
     check("reclaiming the dead worker's permits returns the one it held",
       reclaimed === 1, "reclaimed=" + reclaimed);
     check("  and the permit is free again",
@@ -1310,7 +1310,7 @@ async function testPermitsHeldByADeadWorkerAreReclaimable() {
 
     // Reclaiming twice must not invent a permit the gate never issued.
     check("reclaiming the same dead thread again frees nothing",
-      b.auth.password.reclaimGatePermits(workerThreadId) === 0,
+      b.auth.password.reclaimGatePermits(workerThreadId, handle) === 0,
       "available=" + Atomics.load(permits, 0));
     check("  and the count is still the gate's limit",
       Atomics.load(permits, 0) === 1, "available=" + Atomics.load(permits, 0));
@@ -1322,14 +1322,14 @@ async function testPermitsHeldByADeadWorkerAreReclaimable() {
       typeof stored === "string" && stored.length > 0);
 
     var threwSelf = null;
-    try { b.auth.password.reclaimGatePermits(nodeWorker.threadId); }
+    try { b.auth.password.reclaimGatePermits(nodeWorker.threadId, handle); }
     catch (e) { threwSelf = e; }
     check("reclaiming the calling thread's own permits is refused",
       threwSelf !== null && threwSelf.code === "argon2/bad-gate",
       "threw=" + (threwSelf && threwSelf.code));
 
     var threwType = null;
-    try { b.auth.password.reclaimGatePermits("3"); }
+    try { b.auth.password.reclaimGatePermits("3", handle); }
     catch (e) { threwType = e; }
     check("a thread id that is not an integer is refused",
       threwType !== null && threwType.code === "argon2/bad-gate",
@@ -1339,7 +1339,7 @@ async function testPermitsHeldByADeadWorkerAreReclaimable() {
     // id must be read at construction; the value `exit` would have handed over
     // is refused rather than silently freeing nothing.
     var threwMinusOne = null;
-    try { b.auth.password.reclaimGatePermits(-1); }
+    try { b.auth.password.reclaimGatePermits(-1, handle); }
     catch (e) { threwMinusOne = e; }
     check("the -1 a stopped Worker reports for its thread id is refused",
       threwMinusOne !== null && threwMinusOne.code === "argon2/bad-gate",
@@ -1354,7 +1354,7 @@ async function testPermitsHeldByADeadWorkerAreReclaimable() {
     var MAIN_THREAD_KEY = 1;
     _holdSharedPermits(permits, 1, MAIN_THREAD_KEY);
     var threwWrap = null;
-    try { b.auth.password.reclaimGatePermits(4294967296); }
+    try { b.auth.password.reclaimGatePermits(4294967296, handle); }
     catch (e) { threwWrap = e; }
     check("a thread id past the owner-key range is refused",
       threwWrap !== null && threwWrap.code === "argon2/bad-gate",
@@ -1514,6 +1514,63 @@ async function testACallerParkedOnAStaleFreeCountStillFindsAFreePermit() {
   }
 }
 
+// A thread that hands its handle to Workers may call gate() again afterwards,
+// or move back to its own limit. Reclaiming read whichever gate the calling
+// thread was attached to at the time, so a Worker that died on the handle it
+// was given had its permit looked for somewhere else: the exit handler either
+// threw, because the parent was local by then, or freed nothing from the
+// replacement gate, and the permit stayed owned by a thread that no longer
+// exists while the other Workers on that handle waited on it.
+async function testReclaimingNamesTheHandleThatGrantedThePermit() {
+  var pw = b.auth.password;
+  var DEAD_THREAD_ID = 777;
+  try {
+    pw.gate(1, { shared: true });
+    var handleA = pw.gateHandle();
+    var viewA = new Int32Array(handleA);
+    _holdSharedPermits(viewA, 1, DEAD_THREAD_ID + 1);
+
+    // The parent moves off the gate its Workers are still using.
+    pw.gate(2, { shared: false });
+    check("the parent is no longer attached to the handle it handed out",
+      pw.gateHandle() === null, "handle=" + pw.gateHandle());
+
+    var freed = pw.reclaimGatePermits(DEAD_THREAD_ID, handleA);
+    check("a dead worker's permit is reclaimed from the handle that granted it",
+      freed === 1, "freed=" + freed);
+    check("  and that handle's permit is free again",
+      Atomics.load(viewA, 0) === 1, "available=" + Atomics.load(viewA, 0));
+
+    // Attached to a different shared gate, the reclaim still reads the handle
+    // it was given rather than the one this thread is on.
+    pw.gate(1, { shared: true });
+    var handleB = pw.gateHandle();
+    var viewB = new Int32Array(handleB);
+    _holdSharedPermits(viewB, 1, DEAD_THREAD_ID + 1);
+    _holdSharedPermits(viewA, 1, DEAD_THREAD_ID + 1);
+    var freedA = pw.reclaimGatePermits(DEAD_THREAD_ID, handleA);
+    check("naming handle A frees A's permit", freedA === 1 && Atomics.load(viewA, 0) === 1,
+      "freed=" + freedA + " availableA=" + Atomics.load(viewA, 0));
+    check("  and leaves the gate this thread is attached to untouched",
+      Atomics.load(viewB, 0) === 0, "availableB=" + Atomics.load(viewB, 0));
+
+    var threwNoHandle = null;
+    try { pw.reclaimGatePermits(DEAD_THREAD_ID); } catch (e) { threwNoHandle = e; }
+    check("reclaiming without a handle is refused",
+      threwNoHandle !== null && threwNoHandle.code === "argon2/bad-gate",
+      "threw=" + (threwNoHandle && threwNoHandle.code));
+
+    var threwBadHandle = null;
+    try { pw.reclaimGatePermits(DEAD_THREAD_ID, new SharedArrayBuffer(8)); }
+    catch (e) { threwBadHandle = e; }
+    check("  as is a buffer that is not a gate handle",
+      threwBadHandle !== null && threwBadHandle.code === "argon2/bad-gate",
+      "threw=" + (threwBadHandle && threwBadHandle.code));
+  } finally {
+    pw.gate(8, { shared: false, maxQueued: Infinity, waitTimeoutMs: 0 });
+  }
+}
+
 // Giving a permit back clears the record naming the holder and then wakes the
 // callers parked on the free count. A thread that dies between those two steps
 // leaves a permit free with nobody woken for it, and the record is already
@@ -1543,7 +1600,7 @@ async function testReclaimingWakesWaitersEvenWithNoRecordToClear() {
     check("the permit is free before the reclaim", pw.stats().available === 1,
       JSON.stringify(pw.stats()));
 
-    var freed = pw.reclaimGatePermits(DEAD_THREAD_ID);
+    var freed = pw.reclaimGatePermits(DEAD_THREAD_ID, pw.gateHandle());
     check("reclaiming a thread whose record was already cleared frees nothing",
       freed === 0, "freed=" + freed);
 
@@ -2075,6 +2132,7 @@ async function run() {
   await testPermitsHeldByADeadWorkerAreReclaimable();
   await testACallerParkedOnAStaleFreeCountStillFindsAFreePermit();
   await testReclaimingWakesWaitersEvenWithNoRecordToClear();
+  await testReclaimingNamesTheHandleThatGrantedThePermit();
   await testReadoptingAHandleLeavesNoAbandonedNativeWait();
   await testAnAbandonedWaitRetiresBehindAnotherThreadsWaiter();
   await testAQueuedCallerHoldsOneAtomicWaitNotOnePerRelease();

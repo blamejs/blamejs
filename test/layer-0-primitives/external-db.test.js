@@ -553,6 +553,106 @@ async function testARefusedInitLeavesNoPoolReaping() {
 // queue, and this path did not. So a resize that admitted one caller whose
 // connection then failed transiently left the rest queued against free slots
 // until some unrelated client happened to come back.
+// A connect() that throws SYNCHRONOUSLY runs the acquire catch in the same
+// tick, and that catch offers the pool to the queue, which acquires again and
+// throws again: one stack frame per queued caller rather than one loop
+// iteration. The depth therefore grew with the queue, and a long enough queue
+// overflowed the stack and left callers unsettled. Admission is measured here
+// by how deep connect() is called rather than by whether a particular queue
+// length happens to exhaust the stack on a given runtime.
+async function _syncConnectFailureDepth(queuedCount) {
+  b.externalDb._resetForTest();
+  var held = [];
+  var connects = 0;
+  var failSynchronously = false;
+  var maxDepth = 0;
+  // Error.stackTraceLimit is 10 by default, so an unraised limit caps every
+  // reading at eleven lines and reports a flat depth however deep the
+  // recursion actually goes.
+  var realStackLimit = Error.stackTraceLimit;
+  Error.stackTraceLimit = 20000;
+  var driver = {
+    connect: function () {
+      var depth = String(new Error().stack || "").split("\n").length;
+      if (depth > maxDepth) maxDepth = depth;
+      connects += 1;
+      if (failSynchronously) {
+        var e = new Error("connect refused");
+        e.code = "ECONNREFUSED";
+        throw e;
+      }
+      return { id: "c" + connects };
+    },
+    query: function (_client, sql) {
+      if (/^SELECT\s+hold\b/i.test(sql)) {
+        return new Promise(function (resolve) {
+          held.push(function () { resolve({ rows: [], rowCount: 0 }); });
+        });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    },
+    close: async function () { /* no-op */ },
+  };
+  b.externalDb.init({
+    backends: {
+      main: {
+        connect: driver.connect, query: driver.query, close: driver.close,
+        pool: { min: 1, max: 1, idleTimeoutMs: b.constants.TIME.minutes(1) },
+      },
+    },
+  });
+  var holding = null;
+  var settled = 0;
+  try {
+    holding = b.externalDb.query("SELECT hold", []);
+    await helpers.waitUntil(function () {
+      return b.externalDb.listBackends()[0].pool.active >= 1;
+    }, { timeoutMs: 5000, label: "sync connect failure: the only connection is busy" });
+
+    var queued = [];
+    for (var i = 0; i < queuedCount; i += 1) {
+      queued.push(b.externalDb.query("SELECT 1", [])
+        .then(function () { settled += 1; }, function () { settled += 1; }));
+    }
+    await helpers.waitUntil(function () {
+      return b.externalDb.listBackends()[0].pool.waiters >= queuedCount;
+    }, { timeoutMs: 20000, label: "sync connect failure: every caller queued" });
+
+    failSynchronously = true;
+    b.externalDb.configurePool("main", { max: 2 });
+
+    var drained = false;
+    await Promise.race([
+      Promise.all(queued).then(function () { drained = true; }),
+      helpers.passiveObserve(20000, "sync connect failure: the queue drains"),
+    ]);
+    return { depth: maxDepth, drained: drained, settled: settled, queued: queuedCount };
+  } finally {
+    Error.stackTraceLimit = realStackLimit;
+    failSynchronously = false;
+    held.forEach(function (release) { release(); });
+    try { await holding; } catch (_e) { /* the hold may be refused */ }
+    try { await b.externalDb.shutdown(); } catch (_e) { /* best effort */ }
+    b.externalDb._resetForTest();
+  }
+}
+
+async function testASynchronousConnectFailureAdmitsWithoutRecursing() {
+  var few = await _syncConnectFailureDepth(10);
+  var many = await _syncConnectFailureDepth(200);
+
+  check("a queue of 10 settles when connect throws synchronously",
+    few.drained === true && few.settled === few.queued, JSON.stringify(few));
+  check("a queue of 200 settles the same way",
+    many.drained === true && many.settled === many.queued, JSON.stringify(many));
+  // Twenty times the queue must not mean twenty times the stack: admission
+  // iterates, so the depth connect() is reached at does not track the queue.
+  check("the admission depth does not grow with the queue",
+    many.depth - few.depth < 20,
+    "depth10=" + few.depth + " depth200=" + many.depth +
+    " grew by " + (many.depth - few.depth));
+}
+
 async function testAFailedConnectStillRelievesTheQueue() {
   b.externalDb._resetForTest();
   var held = [];
@@ -1421,6 +1521,7 @@ async function run() {
   testConfigurePool();
   await testConfigurePoolAdmitsCallersAlreadyQueued();
   await testAFailedConnectStillRelievesTheQueue();
+  await testASynchronousConnectFailureAdmitsWithoutRecursing();
   await testARefusedInitLeavesNoPoolReaping();
   await testConnectAs();
   await testRunAs();

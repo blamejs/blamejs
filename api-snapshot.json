@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.21.0",
-  "createdAt": "2026-10-06T01:18:29.234Z",
+  "createdAt": "2026-10-06T03:14:57.372Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -4082,7 +4082,7 @@
             },
             "reclaimGatePermits": {
               "type": "function",
-              "arity": 1
+              "arity": 2
             },
             "stats": {
               "type": "function",
