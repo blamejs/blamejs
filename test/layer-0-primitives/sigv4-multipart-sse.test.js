@@ -390,6 +390,182 @@ async function testAStreamedPutUploadsWhileItReads() {
     "peak=" + large.peak + " of " + large.totalParts + " parts");
 }
 
+// Parts were cut by concatenating everything pending and slicing the front off
+// it, so one chunk larger than a part was re-copied on every iteration: a
+// 40 MiB chunk cost 40 + 35 + 30 + ... MiB of copying, and because a slice
+// shares its backing store the whole chunk stayed alive for as long as any part
+// cut from it was in flight. Copy volume is the observable, measured across two
+// chunk sizes so the bound is growth rather than one machine's number.
+async function testAnOversizedChunkIsCutWithoutRecopyingIt() {
+  var PART = 5 * 1024 * 1024;
+
+  async function _measure(partsInOneChunk) {
+    var lengths = [];
+    var fake = _fakeS3({
+      onRequest: function (rec, parsed) {
+        if (rec.method === "PUT" && parsed.searchParams.get("partNumber")) {
+          lengths.push(rec.body ? rec.body.length : 0);
+        }
+      },
+    });
+    var port = await listenOnRandomPort(fake.server);
+    var realConcat = Buffer.concat;
+    var concatBytes = 0;
+    try {
+      // One buffer of several parts' worth, the shape Readable.from([buf])
+      // produces: every part has to come out of the same allocation.
+      var source = Readable.from([Buffer.alloc(PART * partsInOneChunk, 7)]);
+      var store = sigv4.create(_baseConfig(port, {
+        multipartThresholdBytes: 1,
+        partSizeBytes:           PART,
+        partConcurrency:         2,
+      }));
+      Buffer.concat = function (list, total) {
+        var out = realConcat.call(Buffer, list, total);
+        concatBytes += out.length;
+        return out;
+      };
+      var res = await store.put("oversized-" + partsInOneChunk + ".bin", source);
+      Buffer.concat = realConcat;
+      return { res: res, lengths: lengths, concatBytes: concatBytes,
+               size: PART * partsInOneChunk, parts: partsInOneChunk };
+    } finally {
+      Buffer.concat = realConcat;
+      await new Promise(function (r) { fake.server.close(function () { r(); }); });
+    }
+  }
+
+  var small = await _measure(4);
+  var large = await _measure(8);
+
+  [small, large].forEach(function (m) {
+    check("an oversized chunk of " + m.parts + " parts uploads every part",
+      !!m.res && m.res.multipart === true && m.lengths.length === m.parts,
+      "parts=" + m.lengths.length + " res=" + JSON.stringify(m.res));
+    check("  each exactly one part long",
+      m.lengths.every(function (n) { return n === PART; }), "lengths=" + m.lengths.join(","));
+    check("  with the whole byte count reported",
+      m.res.size === m.size, "size=" + m.res.size + " of " + m.size);
+  });
+
+  // The server's own body collection concatenates the object once, so the
+  // bound is a small multiple of the object rather than zero. Re-copying the
+  // remainder per part lands far outside it: four parts already cost 2.5x.
+  [small, large].forEach(function (m) {
+    check("cutting " + m.parts + " parts out of one chunk does not re-copy it",
+      m.concatBytes <= m.size * 2,
+      "concatenated " + m.concatBytes + " bytes for a " + m.size + "-byte object");
+  });
+  check("and the copying does not grow faster than the object",
+    large.concatBytes <= small.concatBytes * 3,
+    "4 parts=" + small.concatBytes + " 8 parts=" + large.concatBytes);
+}
+
+// Copying a part out of the pending chunks reads the head of a queue, and
+// taking the head with Array.prototype.shift moves every remaining entry, so a
+// source of many small buffers made assembly quadratic in the number of chunks
+// rather than linear in bytes. The number of shifts is the observable: a wall
+// clock reading would be a budget, and under a loaded runner a budget on an
+// operation this fast measures the runner.
+async function testManySmallChunksAreConsumedWithoutShiftingTheQueue() {
+  var PART = 5 * 1024 * 1024;
+  var CHUNK = 64;
+  var CHUNKS = Math.floor((PART + PART / 2) / CHUNK);   // one part and a half
+
+  var lengths = [];
+  var fake = _fakeS3({
+    onRequest: function (rec, parsed) {
+      if (rec.method === "PUT" && parsed.searchParams.get("partNumber")) {
+        lengths.push(rec.body ? rec.body.length : 0);
+      }
+    },
+  });
+  var port = await listenOnRandomPort(fake.server);
+  var realShift = Array.prototype.shift;
+  var shifts = 0;
+  try {
+    var small = [];
+    for (var i = 0; i < CHUNKS; i += 1) small.push(Buffer.alloc(CHUNK, i & 0xff));
+    var source = Readable.from(small);
+    var store = sigv4.create(_baseConfig(port, {
+      multipartThresholdBytes: 1,
+      partSizeBytes:           PART,
+      partConcurrency:         1,
+    }));
+    Array.prototype.shift = function () { shifts += 1; return realShift.apply(this, arguments); };
+    var res = await store.put("many-small-chunks.bin", source);
+    Array.prototype.shift = realShift;
+
+    check("a source of many small buffers uploads every part",
+      !!res && res.multipart === true && lengths.length === 2,
+      "parts=" + lengths.length + " res=" + JSON.stringify(res));
+    check("  with the whole byte count",
+      res.size === CHUNKS * CHUNK, "size=" + res.size + " of " + (CHUNKS * CHUNK));
+    check("  the first part full and the last the remainder",
+      lengths[0] === PART && lengths[1] === CHUNKS * CHUNK - PART,
+      "lengths=" + lengths.join(","));
+    // One shift per chunk is what the queue cost before; anything the HTTP
+    // stack does is orders of magnitude below the chunk count.
+    check("consuming the queue does not shift it once per chunk",
+      shifts < CHUNKS / 10,
+      shifts + " shift(s) for " + CHUNKS + " chunks");
+  } finally {
+    Array.prototype.shift = realShift;
+    await new Promise(function (r) { fake.server.close(function () { r(); }); });
+  }
+}
+
+// A source already in flowing mode, because the caller resumed it or attached a
+// data observer, emits while the uploader is awaiting InitiateMultipartUpload
+// and nothing is consuming yet. Those chunks were dropped and the object
+// completed short, reported as a success.
+async function testAFlowingSourceLosesNothingDuringInitiation() {
+  var PART = 5 * 1024 * 1024;
+  var CHUNKS = 3;
+  var lengths = [];
+
+  var fake = _fakeS3({
+    onRequest: function (rec, parsed) {
+      if (rec.method === "PUT" && parsed.searchParams.get("partNumber")) {
+        lengths.push(rec.body ? rec.body.length : 0);
+      }
+    },
+  });
+  var port = await listenOnRandomPort(fake.server);
+  try {
+    var chunks = [];
+    for (var i = 0; i < CHUNKS; i += 1) chunks.push(Buffer.alloc(PART, i + 1));
+    var source = Readable.from(chunks);
+    // The caller is already consuming, which is what leaves the stream in
+    // flowing mode before the uploader ever sees it.
+    source.resume();
+
+    var store = sigv4.create(_baseConfig(port, {
+      multipartThresholdBytes: 1,
+      partSizeBytes:           PART,
+      partConcurrency:         1,
+    }));
+    var threw = null;
+    var res = null;
+    try { res = await store.put("flowing-source.bin", source); }
+    catch (e) { threw = e; }
+
+    var uploaded = lengths.reduce(function (a, n) { return a + n; }, 0);
+    check("a flowing source does not report a short object as a success",
+      threw !== null || uploaded === PART * CHUNKS,
+      "uploaded=" + uploaded + " of " + (PART * CHUNKS) +
+      " parts=" + lengths.join(",") + " threw=" + (threw && threw.code));
+    check("  and every byte it held reached the server",
+      uploaded === PART * CHUNKS,
+      "uploaded=" + uploaded + " of " + (PART * CHUNKS) + " parts=" + lengths.join(","));
+    check("  with the reported size matching what was uploaded",
+      !!res && res.size === PART * CHUNKS,
+      "res=" + JSON.stringify(res) + " threw=" + (threw && threw.message));
+  } finally {
+    await new Promise(function (r) { fake.server.close(function () { r(); }); });
+  }
+}
+
 // A source that fails partway leaves an initiated upload behind unless every
 // exit aborts it. Reading the stream before initiating meant this path could
 // not arise; reading it after means it can.
@@ -1089,6 +1265,9 @@ async function run() {
     await testMultipartEmptyBufferAndEmptyStream();
     await testMultipartInitiateWithoutUploadIdFails();
     await testAStreamedPutUploadsWhileItReads();
+    await testAnOversizedChunkIsCutWithoutRecopyingIt();
+    await testManySmallChunksAreConsumedWithoutShiftingTheQueue();
+    await testAFlowingSourceLosesNothingDuringInitiation();
     await testAFailingSourceStreamAbortsTheUpload();
     await testASourceThatFailsBeforeInitiateDoesNotCrashTheProcess();
     await testAPartFailureWhileTheSourceIsQuietStillFailsAndAborts();
