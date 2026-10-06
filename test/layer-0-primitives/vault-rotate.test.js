@@ -552,6 +552,31 @@ async function testARefusedWrappedRotateLeavesNoStagingDir() {
       retryThrew === null, "code=" + (retryThrew && retryThrew.code));
     check("  writing the sealed key it could not write before",
       retryThrew === null && fs.existsSync(path.join(staging, "vault.key.sealed")));
+
+    // Deriving before staging puts an await between the existence check and
+    // the directory's creation, so another operation can create it in that
+    // window and the rotation would write into a directory it does not own.
+    // The directory is claimed with a create whose EEXIST is the refusal,
+    // which is the same question asked at the moment it is acted on.
+    try { fs.rmSync(staging, { recursive: true, force: true }); } catch (_e) { /* reset */ }
+    var raced = null;
+    var racerRan = false;
+    var rotating = b.vaultRotate.rotate({
+      oldKeys: keyA, newKeys: keyB, dataDir: dataDir, stagingDir: staging,
+      mode: "wrapped", newPassphrase: Buffer.from("rotate-test-passphrase-not-secret"),
+      externalAadResealed: true,
+      progressCallback: function (ev) {
+        if (ev && ev.phase === "init" && !racerRan) {
+          racerRan = true;
+          try { fs.mkdirSync(staging, { recursive: true, mode: 0o700 }); }
+          catch (_e) { /* the rotation's own claim won, which is also correct */ }
+        }
+      },
+    });
+    try { await rotating; } catch (e) { raced = e; }
+    check("a stagingDir appearing around the claim is refused, never written into",
+      raced === null || raced.code === "vault-rotate/staging-exists",
+      "code=" + (raced && raced.code));
   } finally {
     if (hold !== null) { try { await hold; } catch (_e) { /* released below */ } }
     P.gate(8, { maxQueued: Infinity, waitTimeoutMs: 0 });

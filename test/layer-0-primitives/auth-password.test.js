@@ -1662,6 +1662,46 @@ async function testPublishingASharedGateReservesTheWorkAlreadyRunning() {
     await onF;
     check("  with the record released exactly once",
       Atomics.load(viewF, 0) === 2, "availableF=" + Atomics.load(viewF, 0));
+
+    // Adopting a gate whose permits are all taken cannot reserve for work this
+    // thread already has running: there is no record left to hold. Reserving
+    // best-effort left that work unrepresented, so the next release let another
+    // thread start alongside it and the bound admitted one derivation too many.
+    // The adoption is refused instead, which leaves the thread where it was.
+    pw.gate(1, { shared: true });
+    var handleG = pw.gateHandle();
+    var viewG = new Int32Array(handleG);
+    _holdSharedPermits(viewG, 1);
+    pw.gate(1, { shared: false, maxQueued: Infinity, waitTimeoutMs: 0 });
+    var localOnOwn = pw.hash("local-before-adopt", SLOW);
+    await helpers.waitUntil(function () { return pw.stats().running >= 1; },
+      { timeoutMs: 10000, label: "adopt: a local derivation is running" });
+
+    var refusedAdopt = null;
+    try { pw.gate(null, { shared: handleG }); } catch (e) { refusedAdopt = e; }
+    check("adopting a gate with no permit free while work runs is refused",
+      refusedAdopt !== null && refusedAdopt.code === "argon2/bad-gate",
+      "threw=" + (refusedAdopt && refusedAdopt.code));
+    check("  and the thread stays on the gate it had",
+      pw.gateHandle() === null && pw.stats().shared === false,
+      "handle=" + pw.gateHandle() + " stats=" + JSON.stringify(pw.stats()));
+    // A refused adoption must consume nothing in the gate it refused, or it
+    // blocks callers on a gate this thread never joined.
+    check("  and the refused gate keeps every permit it had free",
+      Atomics.load(viewG, 0) === 0 &&
+      Atomics.load(viewG, SHARED_OWNERS_BASE) === OTHER_THREAD_KEY,
+      "availableG=" + Atomics.load(viewG, 0) +
+      " owner0=" + Atomics.load(viewG, SHARED_OWNERS_BASE));
+    await localOnOwn;
+    check("  so that derivation finishes on its own gate",
+      pw.stats().running === 0, JSON.stringify(pw.stats()));
+
+    // The control: with the work finished, the same adoption is accepted.
+    _holdSharedPermits(viewG, 1);
+    var acceptedAdopt = null;
+    try { pw.gate(null, { shared: handleG }); } catch (e) { acceptedAdopt = e; }
+    check("  while an idle thread may adopt the same busy gate",
+      acceptedAdopt === null, "threw=" + (acceptedAdopt && acceptedAdopt.code));
   } finally {
     pw.gate(8, { shared: false, maxQueued: Infinity, waitTimeoutMs: 0 });
   }
@@ -2322,6 +2362,52 @@ async function testAHeldPassphraseIsReleasedWhenTheOperationEnds() {
       check("an init that acquired nothing leaves the rotation's copy alone",
         source.sourceKind(AUDIT_RETRY) === "env",
         "kind=" + source.sourceKind(AUDIT_RETRY));
+
+      // A second operation that READS the held copy must not release it
+      // either: counting reads on the variable made any later reader's
+      // success permission to clear every retry's copy, so an init that
+      // succeeded on the rotation's own passphrase took it away.
+      process.env[AUDIT_VAR] = AUDIT_PASS;
+      source._clearHeldEnvPassphrase(AUDIT_VAR);
+      var rotRefused2 = null;
+      var hold3 = null;
+      try {
+        P.gate(1, { maxQueued: 0 });
+        hold3 = P.hash("occupant-rotate-2", {
+          memoryCost: b.constants.BYTES.kib(16), timeCost: 2, parallelism: 1,
+        });
+        try { await b.auditSign.rotateSigningKey({}); } catch (e) { rotRefused2 = e; }
+      } finally {
+        if (hold3 !== null) { try { await hold3; } catch (_e) { /* released */ } }
+        P.gate(8, { maxQueued: Infinity, waitTimeoutMs: 0 });
+      }
+      check("a second gate-refused rotation holds its copy",
+        rotRefused2 !== null && source.sourceKind(AUDIT_RETRY) === "env",
+        "code=" + (rotRefused2 && rotRefused2.code) +
+        " kind=" + source.sourceKind(AUDIT_RETRY));
+      // b.auditSign is already initialized here, so this init reads nothing;
+      // force the reading case with a vault init on the SAME variable name by
+      // re-initializing audit-sign from scratch against the held copy.
+      b.auditSign._resetForTest();
+      var readerFailed = null;
+      try { await b.auditSign.init({ dataDir: auditDir, mode: "wrapped" }); }
+      catch (e) { readerFailed = e; }
+      check("  an init that reads the held copy succeeds on it",
+        readerFailed === null, "failed with " + (readerFailed && readerFailed.code));
+      check("  and does not release the rotation's copy",
+        source.sourceKind(AUDIT_RETRY) === "env",
+        "kind=" + source.sourceKind(AUDIT_RETRY));
+
+      // An operation of the SAME kind that fails before it reads anything must
+      // not release the copy either: the owner matches, but it consumed
+      // nothing, so the retry it would take away is still owed.
+      var badRotate = null;
+      try { await b.auditSign.rotateSigningKey({ algorithm: "not-an-algorithm" }); }
+      catch (e) { badRotate = e; }
+      check("a rotation refused before it reads anything keeps the copy",
+        badRotate !== null && source.sourceKind(AUDIT_RETRY) === "env",
+        "code=" + (badRotate && badRotate.code) +
+        " kind=" + source.sourceKind(AUDIT_RETRY));
 
       var rotRetry = null;
       try { await b.auditSign.rotateSigningKey({}); } catch (e) { rotRetry = e; }

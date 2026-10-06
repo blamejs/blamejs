@@ -553,6 +553,57 @@ async function testARefusedInitLeavesNoPoolReaping() {
 // queue, and this path did not. So a resize that admitted one caller whose
 // connection then failed transiently left the rest queued against free slots
 // until some unrelated client happened to come back.
+// Pool is exported, so an operator can construct one that belongs to no
+// backend initialization. Registering every instance for module-wide cleanup
+// put those pools inside `_drainAllPools()`, so a refused `init()`, or a
+// `shutdown()` before init which is documented as a no-op, stopped their
+// reapers, closed their idle clients and rejected their waiters.
+async function testAStandalonePoolIsNotDrainedByModuleCleanup() {
+  b.externalDb._resetForTest();
+  var connects = 0;
+  var closed = 0;
+  var mine = new b.externalDb.Pool("operator-owned", {
+    connect: async function () { connects += 1; return { id: "c" + connects }; },
+    close:   async function () { closed += 1; },
+    pool:    { min: 0, max: 2, idleTimeoutMs: b.constants.TIME.minutes(1) },
+  });
+  try {
+    var first = await mine.acquire();
+    check("a standalone pool hands out a connection", !!first && connects === 1,
+      "connects=" + connects);
+    mine.release(first);
+    check("  and keeps it idle for reuse", mine.idle.length === 1,
+      "idle=" + mine.idle.length);
+
+    // shutdown() before any init is documented as doing nothing.
+    await b.externalDb.shutdown();
+    check("a shutdown before init leaves a standalone pool's connection idle",
+      mine.idle.length === 1 && closed === 0,
+      "idle=" + mine.idle.length + " closed=" + closed);
+    check("  and leaves its reaper running",
+      mine._reaper !== null, "reaper=" + String(mine._reaper));
+
+    // A refused init must not reach it either.
+    var refused = null;
+    try {
+      b.externalDb.init({ backends: { bad: { query: async function () { return {}; } } } });
+    } catch (e) { refused = e; }
+    check("an init with a bad backend is refused",
+      refused !== null && /invalid-config/.test((refused && refused.code) || ""),
+      "code=" + (refused && refused.code));
+    check("  and the standalone pool is untouched",
+      mine.idle.length === 1 && closed === 0 && mine._reaper !== null,
+      "idle=" + mine.idle.length + " closed=" + closed + " reaper=" + String(mine._reaper));
+    var second = await mine.acquire();
+    check("  so it still serves its owner",
+      !!second && mine.active >= 1, "active=" + mine.active);
+    mine.release(second);
+  } finally {
+    try { await mine.drain(); } catch (_e) { /* best effort */ }
+    b.externalDb._resetForTest();
+  }
+}
+
 // A connect() that throws SYNCHRONOUSLY runs the acquire catch in the same
 // tick, and that catch offers the pool to the queue, which acquires again and
 // throws again: one stack frame per queued caller rather than one loop
@@ -1522,6 +1573,7 @@ async function run() {
   await testConfigurePoolAdmitsCallersAlreadyQueued();
   await testAFailedConnectStillRelievesTheQueue();
   await testASynchronousConnectFailureAdmitsWithoutRecursing();
+  await testAStandalonePoolIsNotDrainedByModuleCleanup();
   await testARefusedInitLeavesNoPoolReaping();
   await testConnectAs();
   await testRunAs();
