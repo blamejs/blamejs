@@ -2117,6 +2117,62 @@ async function testAHeldPassphraseIsReleasedWhenTheOperationEnds() {
       if (hold !== null) { try { await hold; } catch (_e) { /* released */ } }
       P.gate(8, { maxQueued: Infinity, waitTimeoutMs: 0 });
     }
+
+    // The copy is held for the operation the refusal invited back, but release
+    // ran by variable name alone, so any operation on that variable which
+    // ended well released it. `b.auditSign` has two of them, a signing-key
+    // rotation and an init, and an init on an already-initialized signer is a
+    // documented no-op that acquires nothing: it cleared the copy the refused
+    // rotation was still owed, and the retry then found no source at all.
+    var auditDir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), "held-audit-"));
+    var AUDIT_VAR = b.auditSign.ENV_PASSPHRASE;
+    var priorAudit = process.env[AUDIT_VAR];
+    var AUDIT_RETRY = { _holdForRetry: true, envVars: { value: AUDIT_VAR } };
+    var AUDIT_PASS = "a-long-enough-audit-test-passphrase";
+    try {
+      source._clearHeldEnvPassphrase(AUDIT_VAR);
+      process.env[AUDIT_VAR] = AUDIT_PASS;
+      await b.auditSign.init({ dataDir: auditDir, mode: "wrapped" });
+
+      process.env[AUDIT_VAR] = AUDIT_PASS;
+      var rotRefused = null;
+      var hold2 = null;
+      try {
+        P.gate(1, { maxQueued: 0 });
+        hold2 = P.hash("occupant-rotate", {
+          memoryCost: b.constants.BYTES.kib(16), timeCost: 2, parallelism: 1,
+        });
+        try { await b.auditSign.rotateSigningKey({}); } catch (e) { rotRefused = e; }
+      } finally {
+        if (hold2 !== null) { try { await hold2; } catch (_e) { /* released */ } }
+        P.gate(8, { maxQueued: Infinity, waitTimeoutMs: 0 });
+      }
+      check("a gate-refused signing-key rotation is the transient case",
+        rotRefused !== null && rotRefused.code === "argon2/busy",
+        "code=" + (rotRefused && rotRefused.code));
+      check("  and it keeps the copy its retry needs",
+        source.sourceKind(AUDIT_RETRY) === "env",
+        "kind=" + source.sourceKind(AUDIT_RETRY));
+
+      await b.auditSign.init({ dataDir: auditDir, mode: "wrapped" });
+      check("an init that acquired nothing leaves the rotation's copy alone",
+        source.sourceKind(AUDIT_RETRY) === "env",
+        "kind=" + source.sourceKind(AUDIT_RETRY));
+
+      var rotRetry = null;
+      try { await b.auditSign.rotateSigningKey({}); } catch (e) { rotRetry = e; }
+      check("  so the rotation retry the refusal invited succeeds",
+        rotRetry === null, "retry failed with " + (rotRetry && rotRetry.code));
+      check("  and the copy is released once that retry ends",
+        source.sourceKind(AUDIT_RETRY) !== "env",
+        "kind=" + source.sourceKind(AUDIT_RETRY));
+    } finally {
+      try { b.auditSign._resetForTest(); } catch (_e) { /* best effort */ }
+      source._clearHeldEnvPassphrase(AUDIT_VAR);
+      if (priorAudit === undefined) delete process.env[AUDIT_VAR];
+      else process.env[AUDIT_VAR] = priorAudit;
+      try { nodeFs.rmSync(auditDir, { recursive: true, force: true }); } catch (_e) { /* cleanup */ }
+    }
   } finally {
     b.vault._resetForTest();
     source._clearHeldEnvPassphrase(source.ENV_PASSPHRASE);
