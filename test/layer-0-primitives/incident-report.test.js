@@ -391,6 +391,72 @@ async function run() {
       return e.action === "incident.report.persist_failed" && e.metadata.error === "raw-string-error" && e.metadata.stage === "initial";
     }));
 
+  // A stage keeps a copy of the fields it was filed with. Retaining the
+  // caller's object let a report change after the filing that recorded it,
+  // and the record is what says the stage was filed with those fields.
+  var snapReg = b.incident.report.create({ audit: false });
+  var snapInc = await snapReg.open({ regime: "gdpr", detectedAt: Date.now() });
+  var fields = { summary: "as filed", affected: { rows: 10 } };
+  await snapReg.recordInitial(snapInc.id, fields);
+  fields.summary = "mutated after filing";
+  fields.affected.rows = 99;
+  var filed = snapReg.get(snapInc.id).stages.initial.payload;
+  check("a mutated top-level field does not change the filed record",
+    filed.summary === "as filed", String(filed.summary));
+  check("and neither does a mutated nested one",
+    filed.affected.rows === 10, String(filed.affected.rows));
+  // The control: the fields really were recorded, so the two checks above are
+  // not passing against an empty payload.
+  check("the filed record carries the fields it was given",
+    Object.keys(filed).length === 2, JSON.stringify(Object.keys(filed)));
+  // The copy holds the data, not the classes around it: Dates and cycles
+  // survive, and a Buffer arrives as a Uint8Array over the same bytes. A
+  // hand-rolled per-key copy was tried instead and lost an own `__proto__`
+  // key while assigning its value onto the destination's prototype, so the
+  // copy is the one structured clone the rest of the framework uses.
+  var typedFields = {
+    evidence: Buffer.from("abc"),
+    at:       new Date(1700000000000),
+    nested:   { more: Buffer.from("de") },
+  };
+  typedFields.self = typedFields;
+  var typedInc = await snapReg.open({ regime: "gdpr", detectedAt: Date.now() });
+  await snapReg.recordInitial(typedInc.id, typedFields);
+  var typedFiled = snapReg.get(typedInc.id).stages.initial.payload;
+  check("the bytes of a Buffer field survive the copy",
+    Buffer.from(typedFiled.evidence).toString("utf8") === "abc" &&
+    Buffer.from(typedFiled.nested.more).toString("utf8") === "de");
+  check("a Date stays a Date", typedFiled.at instanceof Date &&
+    typedFiled.at.getTime() === 1700000000000);
+  check("a cyclic payload is filed with the cycle intact",
+    typedFiled.self === typedFiled);
+  typedFields.evidence.write("zz");
+  check("and it is a copy, so writing into the caller's Buffer does not reach it",
+    Buffer.from(typedFiled.evidence).toString("utf8") === "abc",
+    Buffer.from(typedFiled.evidence).toString("utf8"));
+
+  // An own `__proto__` key, which a JSON-parsed report can carry, is kept as
+  // an own key and its value does not become inherited state.
+  var protoFields = JSON.parse('{"__proto__": {"injected": true}, "keep": 1}');
+  var protoInc = await snapReg.open({ regime: "gdpr", detectedAt: Date.now() });
+  await snapReg.recordInitial(protoInc.id, protoFields);
+  var protoFiled = snapReg.get(protoInc.id).stages.initial.payload;
+  check("an own __proto__ key survives the copy",
+    Object.prototype.hasOwnProperty.call(protoFiled, "__proto__") &&
+    protoFiled.keep === 1,
+    JSON.stringify(protoFiled));
+  check("and its value is not read back as an inherited field",
+    protoFiled.injected === undefined);
+
+  // A payload holding something that cannot be copied is kept by reference
+  // rather than emptied, since losing a filing's contents is worse.
+  var fnFields = { summary: "with a function", hook: function () {} };
+  var fnInc = await snapReg.open({ regime: "gdpr", detectedAt: Date.now() });
+  await snapReg.recordInitial(fnInc.id, fnFields);
+  check("a payload carrying a function still files with its contents",
+    snapReg.get(fnInc.id).stages.initial.payload.summary === "with a function" &&
+    typeof snapReg.get(fnInc.id).stages.initial.payload.hook === "function");
+
   console.log("OK — incident.report " + helpers.getChecks() + " checks passed");
 }
 

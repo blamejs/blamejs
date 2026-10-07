@@ -19284,25 +19284,35 @@ async function testVaultPassphraseSources() {
         process.env.BLAMEJS_VAULT_PASSPHRASE === undefined);
       fromEnv.fill(0);
 
-      // fromFile trimmed and fromEnv did not, so a passphrase handed over by
-      // a mechanism that keeps the final newline opened the vault from a file
-      // and not from the environment.
+      // fromFile strips trailing newlines and fromEnv does not, so the same
+      // secret reaches the two sources differently. fromEnv keeps the byte on
+      // purpose: a vault sealed through it from a value ending in a newline
+      // needs that newline to open, so trimming by default would lock an
+      // existing deployment out of its own vault.
       process.env.BLAMEJS_VAULT_PASSPHRASE = PASS + "\n";
-      var trimmedLf = await b.vaultPassphraseSource.fromEnv();
-      check("vaultPassphraseSource.fromEnv trims a trailing newline",
+      var kept = await b.vaultPassphraseSource.fromEnv();
+      check("vaultPassphraseSource.fromEnv keeps a trailing newline by default",
+        kept.toString("utf8") === PASS + "\n",
+        JSON.stringify(kept.toString("utf8")));
+      kept.fill(0);
+
+      process.env.BLAMEJS_VAULT_PASSPHRASE = PASS + "\n";
+      var trimmedLf = await b.vaultPassphraseSource.fromEnv({ trimTrailingNewlines: true });
+      check("and strips it when the caller asks",
         trimmedLf.toString("utf8") === PASS,
         JSON.stringify(trimmedLf.toString("utf8")));
       trimmedLf.fill(0);
 
       process.env.BLAMEJS_VAULT_PASSPHRASE = PASS + "\r\n";
-      var trimmedCrlf = await b.vaultPassphraseSource.fromEnv();
-      check("and a trailing CRLF, so the two sources agree on the same secret",
+      var trimmedCrlf = await b.vaultPassphraseSource.fromEnv({ trimTrailingNewlines: true });
+      check("including a trailing CRLF, so the two sources can be made to agree",
         trimmedCrlf.toString("utf8") === PASS);
       trimmedCrlf.fill(0);
 
-      // The control: an interior newline is part of the passphrase and stays.
+      // The control: an interior newline is part of the passphrase and stays
+      // even when trimming is on, so only trailing padding is removed.
       process.env.BLAMEJS_VAULT_PASSPHRASE = "two\nlines";
-      var interior = await b.vaultPassphraseSource.fromEnv();
+      var interior = await b.vaultPassphraseSource.fromEnv({ trimTrailingNewlines: true });
       check("an interior newline is kept, since only trailing ones are padding",
         interior.toString("utf8") === "two\nlines");
       interior.fill(0);
@@ -19311,11 +19321,17 @@ async function testVaultPassphraseSources() {
       // rather than becoming a zero-length passphrase.
       process.env.BLAMEJS_VAULT_PASSPHRASE = "\n\n";
       var emptyAfterTrim = null;
-      try { await b.vaultPassphraseSource.fromEnv(); }
+      try { await b.vaultPassphraseSource.fromEnv({ trimTrailingNewlines: true }); }
       catch (e) { emptyAfterTrim = e; }
       check("a value of only newlines is refused rather than read as empty",
         emptyAfterTrim !== null && /empty/.test(String(emptyAfterTrim.message)),
         emptyAfterTrim && String(emptyAfterTrim.message));
+      // Without trimming, that same value is a two-byte passphrase.
+      process.env.BLAMEJS_VAULT_PASSPHRASE = "\n\n";
+      var untrimmedNewlines = await b.vaultPassphraseSource.fromEnv();
+      check("and is a passphrase of its own bytes when trimming is off",
+        untrimmedNewlines.toString("utf8") === "\n\n");
+      untrimmedNewlines.fill(0);
     } finally {
       if (priorValue === undefined) delete process.env.BLAMEJS_VAULT_PASSPHRASE;
       else process.env.BLAMEJS_VAULT_PASSPHRASE = priorValue;

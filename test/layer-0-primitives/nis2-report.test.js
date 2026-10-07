@@ -36,7 +36,8 @@ async function run() {
     csirtEndpoint: "https://csirt.example/report", httpClient: failingClient,
   });
   var inc = await down.open({ detectedAt: Date.now() });
-  var ew = await down.earlyWarning(inc.id, { submit: true, significant: true });
+  var firstFields = { submit: true, significant: true, summary: "as filed" };
+  var ew = await down.earlyWarning(inc.id, firstFields);
   check("a 503 from the CSIRT reports submitted:false with the status code",
         !!ew.submitted && ew.submitted.submitted === false &&
         ew.submitted.statusCode === 503, JSON.stringify(ew.submitted));
@@ -54,6 +55,11 @@ async function run() {
         attempts.length === 1, String(attempts.length));
 
   var filedAt = down.get(inc.id).stages.initial.filedAt;
+  // The filed record keeps a copy, not the caller's object: a report mutated
+  // or reused after filing must not change what the retry sends, since the
+  // record is what says the stage was filed with those fields.
+  firstFields.significant = false;
+  firstFields.summary = "mutated after filing";
   var again = await down.resubmit(inc.id, "early-warning");
   check("resubmit re-POSTs the stage without re-filing it",
         attempts.length === 2 && again.submitted.submitted === false,
@@ -64,10 +70,16 @@ async function run() {
   // with. Sending an empty envelope would hand the CSIRT a report missing
   // what the first attempt said.
   check("the retry sends the fields the stage was filed with",
-        attempts[1].fields.significant === true,
+        attempts[1].fields.significant === true &&
+        attempts[1].fields.summary === "as filed",
         JSON.stringify(attempts[1].fields));
-  check("and the retried envelope matches the first attempt's",
+  // Plain data renders identically on the retry. A payload carrying a Buffer
+  // or a class with a prototype `toJSON` does not, which is why the page tells
+  // a caller to file plain data for anything a report is rendered from.
+  check("and a plain-data report renders identically on the retry",
         JSON.stringify(attempts[1]) === JSON.stringify(attempts[0]));
+  check("so mutating the caller's object after filing does not change the record",
+        down.get(inc.id).stages.initial.payload.summary === "as filed");
   // A third argument replaces them, for a report corrected before the retry.
   await down.resubmit(inc.id, "early-warning", { significant: false, corrected: true });
   check("explicit fields replace the filed ones",
