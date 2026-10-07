@@ -362,8 +362,9 @@ function testValidateInfraColumnsSuppressesDrift() {
 
 // A non-array `infraColumns` used to be coerced to `[]`, so an operator who
 // wrote a bare string instead of a list got drift errors on the very column
-// they meant to allowlist and no way to turn them off. The list options are
-// refused now, in all three calls that take them.
+// they meant to allowlist and no way to turn them off. Each call checks the
+// list options it actually reads: `infraColumns` belongs to the schema check,
+// and `rotate` neither reads it nor claims to.
 function testRefusesNonArrayListOptions() {
   b.cryptoField.clearForTest();
   b.cryptoField.registerTable("secrets", { sealedFields: ["secret"] });
@@ -941,7 +942,6 @@ async function testRotateRefusesBadSamplingBeforeClaimingStaging() {
       { label: "rowBatchSize that is not a positive integer",  opts: { rowBatchSize: 1.5 } },
       { label: "rowBatchSize given as a string",               opts: { rowBatchSize: "100" } },
       { label: "tables that is not an array",                  opts: { tables: "notes" } },
-      { label: "infraColumns holding a non-string",            opts: { infraColumns: [7] } },
     ];
     for (var i = 0; i < bad.length; i++) {
       await _expectRotateThrow("rotate refuses a " + bad[i].label,
