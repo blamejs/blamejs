@@ -19307,6 +19307,42 @@ async function testVaultPassphraseSources() {
   }
 }
 
+// `deriveWrappingKey` is public, and the sealed format accepts a salt of 8 to
+// 64 bytes. The bound was enforced where the header is built and not where the
+// key is derived, so a direct caller could derive a wrapping key under a
+// 65-byte salt, and a too-short one surfaced as a native ERR_OUT_OF_RANGE from
+// Argon2 instead of the format's own refusal.
+async function testDeriveWrappingKeySaltBounds() {
+  var ok = await b.vaultWrap.deriveWrappingKey("passphrase", Buffer.alloc(16));
+  check("deriveWrappingKey answers a 32-byte key for an in-range salt", ok.length === 32);
+
+  async function refusal(salt) {
+    try { await b.vaultWrap.deriveWrappingKey("passphrase", salt); return null; }
+    catch (e) { return e; }
+  }
+  check("deriveWrappingKey refuses a salt one byte over the format's maximum",
+    ((await refusal(Buffer.alloc(65))) || {}).code === "vault-wrap/bad-salt");
+  check("deriveWrappingKey refuses a salt under the format's minimum",
+    ((await refusal(Buffer.alloc(7))) || {}).code === "vault-wrap/bad-salt");
+  check("deriveWrappingKey refuses a salt that is not bytes",
+    ((await refusal("sixteen-byte-str")) || {}).code === "vault-wrap/bad-salt");
+  // Both bounds are the ones the header writer enforces, so a key derived here
+  // is always one `buildHeader` can record.
+  check("buildHeader refuses the same two lengths",
+    (function () {
+      var n = Buffer.alloc(b.vaultWrap.NONCE_LENGTH);
+      var codes = [7, 65].map(function (len) {
+        try { b.vaultWrap.buildHeader({ salt: Buffer.alloc(len), nonce: n,
+          memoryCost: b.vaultWrap.DEFAULT_ARGON2.memoryCost,
+          timeCost: b.vaultWrap.DEFAULT_ARGON2.timeCost,
+          parallelism: b.vaultWrap.DEFAULT_ARGON2.parallelism,
+          ciphertextLength: 48 }); return null; }
+        catch (e) { return e.code; }
+      });
+      return codes[0] === "vault-wrap/bad-salt" && codes[1] === "vault-wrap/bad-salt";
+    })());
+}
+
 // The bundle scheme's whole point is that a per-file subkey is bound to the
 // file's path, so a blob moved inside a bundle stops decrypting. These assert
 // the parts that make that true: a subkey differs per label, the AEAD binds
@@ -19374,6 +19410,7 @@ async function run() {
   // entrypoint module-surface sanity
   testCryptoAndModuleSurface();
   await testVaultPassphraseSources();
+  await testDeriveWrappingKeySaltBounds();
   await testBackupCryptoKeySeparation();
   // async-safe primitives
   await testAsyncSafeWithTimeoutResolves();
@@ -20158,6 +20195,7 @@ async function run() {
 module.exports = {
   testCryptoAndModuleSurface:                testCryptoAndModuleSurface,
   testVaultPassphraseSources:                testVaultPassphraseSources,
+  testDeriveWrappingKeySaltBounds:           testDeriveWrappingKeySaltBounds,
   testBackupCryptoKeySeparation:             testBackupCryptoKeySeparation,
   name: "Layer 0 — primitives (module-surface, async-safe, handlers, sql-safe, chain-writer, json-safe, atomic-file, parsers, redact)",
   run:  run,

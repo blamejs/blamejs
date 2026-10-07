@@ -2400,6 +2400,37 @@ function testEnvLoadBreakingChange() {
             second.values.DATABASE_URL === "postgres://B");
       check("env: and no snapshot file was written beside the env file",
             fs.readdirSync(noSnapDir).length === 1);
+
+      // `diff` compares the file against the snapshot and is computed before
+      // the apply loop, so it reports a change the environment never received.
+      // A caller reading it as "what is live now" would be wrong twice over.
+      var snap2 = path.join(noSnapDir, "snap.json");
+      fs.writeFileSync(p2, "DATABASE_URL=postgres://A\n");
+      b.parsers.env.load(p2, { snapshotPath: snap2, audit: false });
+      fs.writeFileSync(p2, "DATABASE_URL=postgres://C\n");
+      process.env.DATABASE_URL = "postgres://ALREADY-SET";
+      try {
+        var unapplied = b.parsers.env.load(p2, {
+          snapshotPath: snap2, audit: false, allow: ["DATABASE_URL"],
+          applyToProcess: true,   // allowOverwrite stays false
+        });
+        check("env: diff reports a change that allowOverwrite:false skipped",
+              unapplied.diff.changed.length === 1 &&
+              unapplied.diff.changed[0].key === "DATABASE_URL");
+        check("env: and the environment still holds the value it already had",
+              process.env.DATABASE_URL === "postgres://ALREADY-SET");
+      } finally {
+        delete process.env.DATABASE_URL;
+      }
+
+      fs.writeFileSync(p2, "DATABASE_URL=postgres://D\n");
+      var notApplied = b.parsers.env.load(p2, {
+        snapshotPath: snap2, audit: false, allow: ["DATABASE_URL"],
+      });
+      check("env: diff reports a change with applyToProcess false",
+            notApplied.diff.changed.length === 1);
+      check("env: and nothing was written to the environment",
+            process.env.DATABASE_URL === undefined);
     } finally {
       fs.rmSync(noSnapDir, { recursive: true, force: true });
     }

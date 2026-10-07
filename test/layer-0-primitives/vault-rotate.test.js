@@ -360,7 +360,11 @@ function testValidateInfraColumnsSuppressesDrift() {
   } finally { db.close(); b.cryptoField.clearForTest(); }
 }
 
-function testValidateIgnoresNonArrayInfraColumns() {
+// A non-array `infraColumns` used to be coerced to `[]`, so an operator who
+// wrote a bare string instead of a list got drift errors on the very column
+// they meant to allowlist and no way to turn them off. The list options are
+// refused now, in all three calls that take them.
+function testRefusesNonArrayListOptions() {
   b.cryptoField.clearForTest();
   b.cryptoField.registerTable("secrets", { sealedFields: ["secret"] });
   var db = _memDb("CREATE TABLE secrets (_id TEXT PRIMARY KEY, secret TEXT, rogue TEXT)", [
@@ -368,10 +372,26 @@ function testValidateIgnoresNonArrayInfraColumns() {
       params: ["r1", _seal("x", keyA), _seal("leak", keyA)] },
   ]);
   try {
-    // A non-array infraColumns is coerced to [] (defensive) — drift still fires.
-    var res = b.vaultRotate.validateSchemaMatch(db, { infraColumns: "rogue" });
-    check("validateSchemaMatch coerces a non-array infraColumns to [] and still flags drift",
-      res.errors.length === 1 && res.errors[0].column === "rogue");
+    function refusal(fn) {
+      try { fn(); return null; } catch (e) { return e; }
+    }
+    check("validateSchemaMatch refuses a non-array infraColumns",
+      (refusal(function () {
+        return b.vaultRotate.validateSchemaMatch(db, { infraColumns: "rogue" });
+      }) || {}).code === "vault-rotate/bad-opt");
+    check("validateSchemaMatch refuses a tables list holding a non-string",
+      (refusal(function () {
+        return b.vaultRotate.validateSchemaMatch(db, { tables: ["secrets", 7] });
+      }) || {}).code === "vault-rotate/bad-opt");
+    check("verify refuses a non-array tables",
+      (refusal(function () {
+        return b.vaultRotate.verify({ keys: keyA, db: db, tables: "secrets" });
+      }) || {}).code === "vault-rotate/bad-opt");
+    // The control: the same calls with real lists are accepted, so the
+    // refusals above are about the shape and not about the database.
+    check("and an array of names is still accepted",
+      b.vaultRotate.validateSchemaMatch(db, { infraColumns: ["rogue"] }).errors.length === 0 &&
+        b.vaultRotate.verify({ keys: keyA, db: db, tables: ["secrets"] }).ok === true);
   } finally { db.close(); b.cryptoField.clearForTest(); }
 }
 
@@ -912,12 +932,27 @@ async function testRotateRefusesBadSamplingBeforeClaimingStaging() {
     await b.db.flushToDisk();
     await b.db.close();
 
-    await _expectRotateThrow("rotate refuses a sampleMin that is not a positive integer",
-      { dataDir: dirA, stagingDir: staging, oldKeys: liveKeys, newKeys: liveKeys,
-        mode: "plaintext", externalAadResealed: true, sampleMin: 0 },
-      "vault-rotate/bad-opt");
-    check("and it refused before claiming the staging directory, so a retry is not blocked",
-      !fs.existsSync(staging), "staging still present: " + staging);
+    // Every bounded option, not only the two the sampling fix covered: a
+    // rowBatchSize that is not a positive integer reached the SQLite LIMIT
+    // bind, which is after the staging directory has been created and filled.
+    var bad = [
+      { label: "sampleMin that is not a positive integer",     opts: { sampleMin: 0 } },
+      { label: "samplePercent that is not a positive number",  opts: { samplePercent: -1 } },
+      { label: "rowBatchSize that is not a positive integer",  opts: { rowBatchSize: 1.5 } },
+      { label: "rowBatchSize given as a string",               opts: { rowBatchSize: "100" } },
+      { label: "tables that is not an array",                  opts: { tables: "notes" } },
+      { label: "infraColumns holding a non-string",            opts: { infraColumns: [7] } },
+    ];
+    for (var i = 0; i < bad.length; i++) {
+      await _expectRotateThrow("rotate refuses a " + bad[i].label,
+        Object.assign({ dataDir: dirA, stagingDir: staging, oldKeys: liveKeys,
+          newKeys: liveKeys, mode: "plaintext", externalAadResealed: true },
+          bad[i].opts),
+        "vault-rotate/bad-opt");
+      check("and it refused before claiming the staging directory, so a retry is not blocked (" +
+        bad[i].label + ")",
+        !fs.existsSync(staging), "staging still present: " + staging);
+    }
   } finally {
     await _reset();
     b.cryptoField.clearForTest();
@@ -1100,7 +1135,7 @@ async function run() {
   testValidateWarnsOnMissingSealedColumn();
   testValidateDetectsDriftInUndeclaredColumn();
   testValidateInfraColumnsSuppressesDrift();
-  testValidateIgnoresNonArrayInfraColumns();
+  testRefusesNonArrayListOptions();
 
   testFormatValidationResultRenders();
 
