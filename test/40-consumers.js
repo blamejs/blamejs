@@ -2431,6 +2431,37 @@ function testEnvLoadBreakingChange() {
             notApplied.diff.changed.length === 1);
       check("env: and nothing was written to the environment",
             process.env.DATABASE_URL === undefined);
+
+      // Every documented option is checked before the file is opened. A typo
+      // in one used to read as the default: `allow: "KEY"` died on a native
+      // TypeError with no code, and `applyToProcess: "true"` was read as
+      // false, so the load reported success while applying nothing.
+      [
+        { label: "a non-boolean applyToProcess", opts: { applyToProcess: "true" } },
+        { label: "a non-boolean allowOverwrite", opts: { allowOverwrite: "true" } },
+        { label: "a non-boolean rejectUnknown", opts: { rejectUnknown: 1 } },
+        { label: "a non-boolean audit",         opts: { audit: 0 } },
+        { label: "an allow that is a string",   opts: { allow: "DATABASE_URL" } },
+        { label: "an allow holding a non-string", opts: { allow: [7] } },
+        { label: "a snapshotPath that is empty", opts: { snapshotPath: "" } },
+        { label: "an expected that is an array", opts: { expected: [] } },
+      ].forEach(function (bad) {
+        var refused = null;
+        try { b.parsers.env.load(p2, Object.assign({ audit: false }, bad.opts)); }
+        catch (e) { refused = e; }
+        check("env: " + bad.label + " is refused with env/bad-opt",
+              !!refused && refused.code === "env/bad-opt",
+              bad.label + " -> " + (refused ? refused.code : "accepted"));
+      });
+      // The control: the same call with every option well-shaped is accepted,
+      // so the refusals above are about the shapes and not the file.
+      var wellShaped = b.parsers.env.load(p2, {
+        audit: false, applyToProcess: false, allowOverwrite: false,
+        rejectUnknown: false, allow: ["DATABASE_URL"],
+        expected: { DATABASE_URL: { type: "string" } },
+      });
+      check("env: a call with every option well-shaped still loads",
+            wellShaped.values.DATABASE_URL === "postgres://D");
     } finally {
       fs.rmSync(noSnapDir, { recursive: true, force: true });
     }
