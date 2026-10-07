@@ -35,7 +35,11 @@
         },
         {
           "title": "A RoPA activity cannot be updated into an invalid one",
-          "body": "`b.gdpr.ropa`'s `update` validated only a changed `legalBasis`, so a patch clearing `name`, `purposes` or `dataCategories` was applied and the register exported an activity missing a field Article 30 §1 requires. `update` now validates the merged record, raising `gdpr-ropa/missing-field` or `gdpr-ropa/bad-legal-basis` and leaving the stored activity alone."
+          "body": "`b.gdpr.ropa`'s `update` validated only a changed `legalBasis`, so a patch clearing `name`, `purposes` or `dataCategories` was applied and the register exported an activity missing a field Article 30 §1 requires. `update` now validates the merged record, raising `gdpr-ropa/missing-field` or `gdpr-ropa/bad-legal-basis` and leaving the stored activity alone.\n\nA required field is missing when it is `undefined` or `null`, and `id`, `name`, `purposes` and `dataCategories` are missing when empty as well, since an activity whose `purposes` is `[]` answers the Article 30 question with nothing. An empty `legalBasis` still raises `gdpr-ropa/bad-legal-basis`, which names the six bases."
+        },
+        {
+          "title": "A manifest's aadBound is validated wherever a manifest is read",
+          "body": "`b.backupManifest.validate` did not check `aadBound`'s type, so a manifest read off disk carrying `aadBound: \"true\"` passed, lost the field on the next `serialize`, and was restored as though the bundle were not AAD-bound. That surfaced as a decryption failure during the restore rather than a refusal of the manifest. `validate` now requires a boolean whenever the field is present, which `create`, `serialize` and `parse` all run."
         },
         {
           "title": "A truncated backup ciphertext is refused before the key derivation",

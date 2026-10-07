@@ -69,15 +69,30 @@ function run() {
   // update() validated only a changed legalBasis, so a patch clearing another
   // required field left the register exporting an activity missing an
   // Article 30 §1 field. The merged record is validated now.
+  // A patch clears a field with undefined, with null, or with an empty value.
+  // Only `undefined` was treated as missing, so `{ name: null }` replaced a
+  // valid activity with one carrying no usable name.
   ["name", "purposes", "dataCategories", "legalBasis"].forEach(function (field) {
+    [undefined, null].forEach(function (blank) {
+      var patch = {};
+      patch[field] = blank;
+      var cleared = null;
+      try { basisRopa.update("a1", patch); } catch (e) { cleared = e; }
+      check("ropa.update refuses a patch setting " + field + " to " + String(blank),
+            !!cleared && (cleared.code === "gdpr-ropa/missing-field" ||
+                          cleared.code === "gdpr-ropa/bad-legal-basis"),
+            field + "=" + String(blank) + " -> " + (cleared && cleared.code));
+    });
+  });
+  // Empty values for the four fields with no enum behind them.
+  [["name", ""], ["purposes", []], ["dataCategories", []]].forEach(function (pair) {
     var patch = {};
-    patch[field] = undefined;
-    var cleared = null;
-    try { basisRopa.update("a1", patch); } catch (e) { cleared = e; }
-    check("ropa.update refuses a patch clearing " + field,
-          !!cleared && (cleared.code === "gdpr-ropa/missing-field" ||
-                        cleared.code === "gdpr-ropa/bad-legal-basis"),
-          field + " -> " + (cleared && cleared.code));
+    patch[pair[0]] = pair[1];
+    var emptied = null;
+    try { basisRopa.update("a1", patch); } catch (e) { emptied = e; }
+    check("ropa.update refuses an empty " + pair[0],
+          !!emptied && emptied.code === "gdpr-ropa/missing-field",
+          pair[0] + " -> " + (emptied && emptied.code));
   });
   var intact = basisRopa.get("a1");
   check("and the stored activity still carries every required field",
