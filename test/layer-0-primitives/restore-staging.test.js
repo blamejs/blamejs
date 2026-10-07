@@ -178,7 +178,6 @@ async function testSwapFailureRemovesDecryptedStaging() {
     var dataDir = path.join(live, "data");
     fs.mkdirSync(dataDir, { recursive: true });
     fs.writeFileSync(path.join(dataDir, "db.enc"), "database NOW");
-    var tmpBefore = fs.readdirSync(os.tmpdir()).filter(function (n) { return n.indexOf("blamejs-restore-") === 0; });
     b.atomicFile.renameWithRetry = function (from, to) {
       if (path.resolve(to) === path.resolve(dataDir) && path.basename(String(from)).indexOf("blamejs-restore-staging-") !== -1) {
         var err = new Error("EXDEV: cross-device link not permitted, rename '" + from + "' -> '" + to + "'");
@@ -192,13 +191,17 @@ async function testSwapFailureRemovesDecryptedStaging() {
       await b.restore.create({ dataDir: dataDir, storage: fx.storage, passphrase: PASSPHRASE }).run({ bundleId: fx.bundleId });
     } catch (e) { code = e.code; }
     b.atomicFile.renameWithRetry = originalRename;
-    var tmpAfter = fs.readdirSync(os.tmpdir()).filter(function (n) { return n.indexOf("blamejs-restore-") === 0; });
-    var tmpAdded = tmpAfter.filter(function (n) { return tmpBefore.indexOf(n) === -1; });
+    // `run` puts its pull and staging directories under `stagingRoot`, which
+    // defaults beside `dataDir`, so `_restoreWorkDirs(live)` is where a
+    // leftover would be. Only `inspect` pulls into the OS temp directory, and
+    // scanning that here for a `blamejs-restore-` prefix caught another test's
+    // `blamejs-restore-inspect-*` under SMOKE_PARALLEL rather than anything
+    // this call could have made.
     check("a failed swap removes the decrypted staging directory and the rollbackRoot it created, and keeps dataDir",
-          code === "restore/swap-failed" && _restoreWorkDirs(live).length === 0 && tmpAdded.length === 0 &&
+          code === "restore/swap-failed" && _restoreWorkDirs(live).length === 0 &&
           !fs.existsSync(dataDir + ".rollbacks") &&
           fs.readFileSync(path.join(dataDir, "db.enc"), "utf8") === "database NOW",
-          JSON.stringify({ code: code, beside: _restoreWorkDirs(live), tmpAdded: tmpAdded,
+          JSON.stringify({ code: code, beside: _restoreWorkDirs(live),
             rollbacks: fs.existsSync(dataDir + ".rollbacks") }));
   } finally {
     b.atomicFile.renameWithRetry = originalRename;
