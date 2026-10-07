@@ -686,9 +686,22 @@ async function testRotateFullPlaintextRotation() {
       dataDir: dirA, stagingDir: staging, oldKeys: oldKeys, newKeys: newKeys,
       mode: "plaintext", externalAadResealed: true, rowBatchSize: 1,
       tables: ["notes", "secrets", "sessions", "ghost_table"],
+      // The verification bounds have to reach the internal verify(): an
+      // operator asking for a particular sample and silently receiving the
+      // default believes the staged copy got scrutiny it never had. notes
+      // holds two sealed rows, so a forwarded floor of 1 samples 1 where the
+      // default floor of 5 samples both.
+      sampleMin: 1, samplePercent: 0.01,
     });
     check("full rotation internal round-trip verify ok",
       !!result.verifyResult && result.verifyResult.ok === true);
+    var notesPass = (result.verifyResult.passed || []).filter(function (p) {
+      return p.table === "notes";
+    })[0];
+    check("rotate forwards sampleMin to its internal verify",
+      !!notesPass && notesPass.sampled === 1,
+      "notes sampled=" + (notesPass && notesPass.sampled) +
+      " passed=" + JSON.stringify(result.verifyResult.passed));
     check("full rotation processed at least one row", result.totalRowsProcessed >= 1);
     check("full rotation warns about the malformed overflow JSON row",
       result.warnings.some(function (w) { return /malformed overflow JSON/.test(w); }));
@@ -881,6 +894,49 @@ async function testRotateVerifyFailedOnSameKeypair() {
   }
 }
 
+// `opts.tables` narrows what the rotation RE-SEALS. The final verification
+// stays whole-database on purpose: a sealed row in a table the rotation
+// skipped is readable now and unreadable the moment the old keypair is
+// retired, and this check is the only thing standing between that row and a
+// cutover. Scoping the verification to the same subset would report success
+// over exactly the rows that are about to be lost.
+async function testRotateVerifiesTablesItWasNotAskedToRotate() {
+  var dirNew = fs.mkdtempSync(path.join(os.tmpdir(), "vr-scope-new-"));
+  var dirA   = fs.mkdtempSync(path.join(os.tmpdir(), "vr-scope-a-"));
+  var staging = path.join(os.tmpdir(), "vr-scope-stg-" + process.pid + "-" + Date.now());
+  try {
+    await _reset();
+    await b.vault.init({ dataDir: dirNew, mode: "plaintext" });
+    var newKeys = JSON.parse(b.vault.getKeysJson());
+    b.vault._resetForTest();
+
+    await _reset();
+    await b.vault.init({ dataDir: dirA, mode: "plaintext" });
+    var oldKeys = JSON.parse(b.vault.getKeysJson());
+    await b.db.init({ dataDir: dirA, tmpDir: path.join(dirA, "tmpfs"), atRest: "encrypted",
+      allowNonTmpfsTmpDir: true,   // scratch dir, not a real tmpfs mount
+      auditSigning: false, frameworkTables: false, schema: PLAIN_SCHEMA });
+    b.db.from("notes").insertOne(b.cryptoField.sealRow("notes", { _id: "n1", title: "rotated" }));
+    // Sealed under the old keypair and deliberately left out of `tables`.
+    b.db.from("sessions").insertOne(
+      b.cryptoField.sealRow("sessions", { _id: "sess-1", token: "left-behind" }));
+    await b.db.flushToDisk();
+    await b.db.close();
+
+    await _expectRotateThrow(
+      "rotate refuses when a sealed table it was not asked to rotate is left under the old keypair",
+      { dataDir: dirA, stagingDir: staging, oldKeys: oldKeys, newKeys: newKeys,
+        mode: "plaintext", externalAadResealed: true, tables: ["notes"] },
+      "vault-rotate/verify-failed");
+  } finally {
+    await _reset();
+    b.cryptoField.clearForTest();
+    try { fs.rmSync(dirNew, { recursive: true, force: true }); } catch (_e) { /* cleanup */ }
+    try { fs.rmSync(dirA, { recursive: true, force: true }); } catch (_e) { /* cleanup */ }
+    try { fs.rmSync(staging, { recursive: true, force: true }); } catch (_e) { /* cleanup */ }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Exposed constants — referenced by their verbatim dotted form (the static
 // gate has no method-invocation fallback for constants).
@@ -933,6 +989,7 @@ async function run() {
   await testRotateAuxiliaryFileGuards();
   await testRotateFullPlaintextRotation();
   await testRotateVerifyFailedOnSameKeypair();
+  await testRotateVerifiesTablesItWasNotAskedToRotate();
 
   testExposedConstants();
 }

@@ -18,6 +18,10 @@
       "heading": "Fixed",
       "items": [
         {
+          "title": "A vault rotation's verification bounds reach the verification",
+          "body": "`b.vaultRotate.rotate` accepts `sampleMin` and `samplePercent` and did not pass either to the verification it runs over the staged copy, so an operator asking for a wider sample received the default five rows or one percent per table while believing the staged rotation had been checked more closely. Both are forwarded now. `tables` is not: it narrows what the rotation re-seals, and scoping the verification to the same subset would stop it reading the tables the rotation skipped, which is the one case that loses data at cutover. A sealed row left under the retired keypair still refuses the rotation with `vault-rotate/verify-failed`. Writing the options down is what exposed this: a documented option that nothing reads is either a defect or a knob to remove, and here it was the first."
+        },
+        {
           "title": "The undocumented-namespace report no longer drops what it cannot locate",
           "body": "`find-missing-pages` resolved a namespace to a file by trying `lib/<namespace>.js`, its kebab-case spelling, and `lib/<namespace>/index.js`, and returned early when none existed. The namespace left the report with it, so twenty undocumented namespaces read as documented and the run reported that every one was covered. It now resolves the namespace through the export map in `index.js`, which answers with the implementing file whether the namespace sits in a subdirectory, is re-exported through a barrel, or is wrapped in an object literal, and it falls back to the filename conventions after that. A namespace that still cannot be placed is reported with no file rather than skipped."
         }
