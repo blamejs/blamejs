@@ -10,7 +10,7 @@
       "items": [
         {
           "title": "Twenty namespaces have documentation pages",
-          "body": "`b.createApp`, `b.objectStore`, `b.localDb`, `b.security`, `b.staticServe`, `b.safeEnv`, `b.safeJsonPath`, `b.mtlsEngine`, `b.fda21cfr11`, `b.tcpa10dlc`, `b.gdpr.ropa`, `b.nis2.report`, `b.incident.report`, `b.vaultWrap`, `b.vaultRotate`, `b.vaultPassphraseOps`, `b.vaultPassphraseSource`, `b.backupCrypto`, `b.backupManifest` and `b.backupBundle` each have a page, and each of their functions a signature, its options with defaults, the codes it raises and a worked example. Among them: that `b.createApp` installs nine middlewares without being asked and leaves `cors` and `rateLimit` for a deployment to configure; that `b.localDb.thin` fixes five pragmas and refuses a config naming any of them; that a backup's per-file subkey is bound to the file's path, so a blob moved inside a bundle stops decrypting; and that `b.mtlsEngine` picks its signature algorithm by attempting a real handshake rather than by reading a capability flag."
+          "body": "`b.createApp`, `b.objectStore`, `b.localDb`, `b.security`, `b.staticServe`, `b.safeEnv`, `b.safeJsonPath`, `b.mtlsEngine`, `b.fda21cfr11`, `b.tcpa10dlc`, `b.gdpr.ropa`, `b.nis2.report`, `b.incident.report`, `b.vaultWrap`, `b.vaultRotate`, `b.vaultPassphraseOps`, `b.vaultPassphraseSource`, `b.backupCrypto`, `b.backupManifest` and `b.backupBundle` each have a page, and each of their functions a signature, its options with defaults, the codes it raises and a worked example. Among them: that `b.createApp` installs nine middlewares without being asked and leaves `cors` and `rateLimit` for a deployment to configure; that `b.localDb.thin` fixes five pragmas and refuses a config naming any of them; that a backup's per-file subkey is bound to the file's path, so a blob moved inside a bundle stops decrypting; and that `b.mtlsEngine` picks its signature algorithm by generating a key and signing a certificate with it rather than by reading a capability flag, while the separate `canVerifyInTls` is what answers the handshake question."
         }
       ]
     },
@@ -27,8 +27,8 @@
       "heading": "Changed",
       "items": [
         {
-          "title": "The vendored PKI bundle is refreshed to 0.8.58",
-          "body": "`lib/vendor/blamejs-pki.cjs` carries `@blamejs/pki` 0.8.58, with `lib/vendor/MANIFEST.json` re-hashed to match. The framework still ships zero npm runtime dependencies; this is the bundled copy the X.509, ASN.1/DER and CMS paths read."
+          "title": "The vendored PKI bundle is refreshed to 0.8.59",
+          "body": "`lib/vendor/blamejs-pki.cjs` carries `@blamejs/pki` 0.8.59, with `lib/vendor/MANIFEST.json` re-hashed to match. The framework still ships zero npm runtime dependencies; this is the bundled copy the X.509, ASN.1/DER and CMS paths read."
         }
       ]
     },
