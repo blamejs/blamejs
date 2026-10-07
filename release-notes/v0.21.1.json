@@ -47,6 +47,10 @@
       "heading": "Changed",
       "items": [
         {
+          "title": "The vendored Public Suffix List is refreshed to the 2026-10-07 snapshot",
+          "body": "`lib/vendor/public-suffix-list.dat` carries the list published at `2026-10-07_07-28-19_UTC`, commit `3929462652695bad04f0a27afb600974014a3c8b`, re-signed and re-hashed in `lib/vendor/MANIFEST.json`. Upstream replaced twenty-seven explicit `replit.dev` entries with `*.replit.dev` and `*.teams.replit.dev`, so a registrable-domain lookup under `replit.dev` now resolves any subdomain rather than only the named ones. Everything that reads the list sees the change: `b.guardDomain`, cookie-domain checks and the public-suffix lookups in the request path."
+        },
+        {
           "title": "The vendored PKI bundle is refreshed to 0.8.59",
           "body": "`lib/vendor/blamejs-pki.cjs` carries `@blamejs/pki` 0.8.59, with `lib/vendor/MANIFEST.json` re-hashed to match. The framework still ships zero npm runtime dependencies; this is the bundled copy the X.509, ASN.1/DER and CMS paths read."
         }
