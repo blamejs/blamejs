@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.21.1",
-  "createdAt": "2026-10-07T10:57:37.532Z",
+  "createdAt": "2026-10-07T12:10:53.942Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -5019,11 +5019,19 @@
           "type": "function",
           "arity": 2
         },
+        "MIN_SEALED_BYTES": {
+          "type": "primitive",
+          "valueType": "number"
+        },
         "NONCE_BYTES": {
           "type": "primitive",
           "valueType": "number"
         },
         "SALT_BYTES": {
+          "type": "primitive",
+          "valueType": "number"
+        },
+        "TAG_BYTES": {
           "type": "primitive",
           "valueType": "number"
         },

@@ -66,6 +66,28 @@ function run() {
   basisRopa.update("a1", { legalBasis: "contract" });
   check("ropa.update accepts a valid legalBasis change", basisRopa.get("a1").legalBasis === "contract");
 
+  // update() validated only a changed legalBasis, so a patch clearing another
+  // required field left the register exporting an activity missing an
+  // Article 30 §1 field. The merged record is validated now.
+  ["name", "purposes", "dataCategories", "legalBasis"].forEach(function (field) {
+    var patch = {};
+    patch[field] = undefined;
+    var cleared = null;
+    try { basisRopa.update("a1", patch); } catch (e) { cleared = e; }
+    check("ropa.update refuses a patch clearing " + field,
+          !!cleared && (cleared.code === "gdpr-ropa/missing-field" ||
+                        cleared.code === "gdpr-ropa/bad-legal-basis"),
+          field + " -> " + (cleared && cleared.code));
+  });
+  var intact = basisRopa.get("a1");
+  check("and the stored activity still carries every required field",
+        intact.name !== undefined && intact.purposes !== undefined &&
+        intact.dataCategories !== undefined && intact.legalBasis === "contract");
+  // The control: an ordinary patch keeping every required field is applied.
+  basisRopa.update("a1", { name: "Renamed activity" });
+  check("ropa.update still applies a patch that keeps the required fields",
+        basisRopa.get("a1").name === "Renamed activity");
+
   ropa.remove("crm", { reason: "deprecated", actor: "dpo" });
   check("ropa.remove deletes",       ropa.list().length === 0);
 

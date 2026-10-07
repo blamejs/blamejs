@@ -19283,6 +19283,39 @@ async function testVaultPassphraseSources() {
       check("and the variable is consumed as it is read, so no child inherits it",
         process.env.BLAMEJS_VAULT_PASSPHRASE === undefined);
       fromEnv.fill(0);
+
+      // fromFile trimmed and fromEnv did not, so a passphrase handed over by
+      // a mechanism that keeps the final newline opened the vault from a file
+      // and not from the environment.
+      process.env.BLAMEJS_VAULT_PASSPHRASE = PASS + "\n";
+      var trimmedLf = await b.vaultPassphraseSource.fromEnv();
+      check("vaultPassphraseSource.fromEnv trims a trailing newline",
+        trimmedLf.toString("utf8") === PASS,
+        JSON.stringify(trimmedLf.toString("utf8")));
+      trimmedLf.fill(0);
+
+      process.env.BLAMEJS_VAULT_PASSPHRASE = PASS + "\r\n";
+      var trimmedCrlf = await b.vaultPassphraseSource.fromEnv();
+      check("and a trailing CRLF, so the two sources agree on the same secret",
+        trimmedCrlf.toString("utf8") === PASS);
+      trimmedCrlf.fill(0);
+
+      // The control: an interior newline is part of the passphrase and stays.
+      process.env.BLAMEJS_VAULT_PASSPHRASE = "two\nlines";
+      var interior = await b.vaultPassphraseSource.fromEnv();
+      check("an interior newline is kept, since only trailing ones are padding",
+        interior.toString("utf8") === "two\nlines");
+      interior.fill(0);
+
+      // A value that is nothing but newlines trims to empty and is refused
+      // rather than becoming a zero-length passphrase.
+      process.env.BLAMEJS_VAULT_PASSPHRASE = "\n\n";
+      var emptyAfterTrim = null;
+      try { await b.vaultPassphraseSource.fromEnv(); }
+      catch (e) { emptyAfterTrim = e; }
+      check("a value of only newlines is refused rather than read as empty",
+        emptyAfterTrim !== null && /empty/.test(String(emptyAfterTrim.message)),
+        emptyAfterTrim && String(emptyAfterTrim.message));
     } finally {
       if (priorValue === undefined) delete process.env.BLAMEJS_VAULT_PASSPHRASE;
       else process.env.BLAMEJS_VAULT_PASSPHRASE = priorValue;

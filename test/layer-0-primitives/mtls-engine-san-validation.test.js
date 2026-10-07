@@ -63,6 +63,16 @@ async function run() {
     ["an empty entry",                  [""]],
     ["a DNS: prefix with a bad name",   ["DNS:not a host"]],
     ["a bad name beside a good one",    ["api.example.com", "not a host"]],
+    // A configuration placeholder reaching the list used to be coerced with
+    // String(), so null became the DNS name "null" and a port number became
+    // "8443". Both are valid LDH labels, so the rule alone would accept them.
+    ["a null entry",                    [null]],
+    ["an undefined entry",              [undefined]],
+    ["a number",                        [8443]],
+    ["a boolean",                       [true]],
+    ["an object",                       [{ dNSName: "api.example.com" }]],
+    ["an array",                        [["api.example.com"]]],
+    ["a null beside a good name",       ["api.example.com", null]],
   ];
   for (var j = 0; j < refused.length; j++) {
     var e2 = await refusal({ sans: refused[j][1] });
