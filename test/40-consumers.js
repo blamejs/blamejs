@@ -2453,6 +2453,37 @@ function testEnvLoadBreakingChange() {
               !!refused && refused.code === "env/bad-opt",
               bad.label + " -> " + (refused ? refused.code : "accepted"));
       });
+      // The `expected` schema's entries are checked too, before the file is
+      // opened. `optionalPlainObject` validated only the container, so
+      // `{ PORT: null }` passed and then threw an uncoded TypeError while
+      // reading `expected[k].required`. An unknown `type` on a key the file
+      // does not carry is caught here as well, which the per-key coercion
+      // never reaches.
+      [
+        { label: "a null entry",              expected: { DATABASE_URL: null } },
+        { label: "a numeric entry",           expected: { DATABASE_URL: 7 } },
+        { label: "an array entry",            expected: { DATABASE_URL: [] } },
+        { label: "an unknown type",           expected: { DATABASE_URL: { type: "int" } } },
+        { label: "an unknown type on an absent key",
+          expected: { NOT_IN_FILE: { type: "int" } } },
+        { label: "a non-string sensitivity",  expected: { DATABASE_URL: { sensitivity: 5 } } },
+      ].forEach(function (bad) {
+        var refused = null;
+        try { b.parsers.env.load(p2, { audit: false, expected: bad.expected }); }
+        catch (e) { refused = e; }
+        check("env: an expected schema with " + bad.label + " is refused",
+              !!refused && refused.code === "env/bad-schema",
+              bad.label + " -> " + (refused ? refused.code : "accepted"));
+      });
+      var badRequired = null;
+      try {
+        b.parsers.env.load(p2, { audit: false,
+          expected: { DATABASE_URL: { type: "string", required: "yes" } } });
+      } catch (e) { badRequired = e; }
+      check("env: a non-boolean required in an expected entry raises env/bad-opt",
+            !!badRequired && badRequired.code === "env/bad-opt",
+            badRequired && String(badRequired.code));
+
       // The control: the same call with every option well-shaped is accepted,
       // so the refusals above are about the shapes and not the file.
       var wellShaped = b.parsers.env.load(p2, {

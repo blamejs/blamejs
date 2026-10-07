@@ -35,7 +35,7 @@
         },
         {
           "title": "A RoPA activity cannot be updated into an invalid one",
-          "body": "`b.gdpr.ropa`'s `update` validated only a changed `legalBasis`, so a patch clearing `name`, `purposes` or `dataCategories` was applied and the register exported an activity missing a field Article 30 §1 requires. `update` now validates the merged record, raising `gdpr-ropa/missing-field` or `gdpr-ropa/bad-legal-basis` and leaving the stored activity alone.\n\nA required field is missing when it is `undefined` or `null`, and `id`, `name`, `purposes` and `dataCategories` are missing when empty as well, since an activity whose `purposes` is `[]` answers the Article 30 question with nothing. An empty `legalBasis` still raises `gdpr-ropa/bad-legal-basis`, which names the six bases."
+          "body": "`b.gdpr.ropa`'s `update` validated only a changed `legalBasis`, so a patch clearing `name`, `purposes` or `dataCategories` was applied and the register exported an activity missing a field Article 30 §1 requires. `update` now validates the merged record, raising `gdpr-ropa/missing-field` or `gdpr-ropa/bad-legal-basis` and leaving the stored activity alone.\n\nA required field is missing when it is `undefined` or `null`, raising `gdpr-ropa/missing-field`. A field that is present but unusable raises `gdpr-ropa/bad-field`: `name` has to be a non-empty string, and `purposes` and `dataCategories` non-empty arrays of names. A record stored with `purposes: 42` used to reach the Markdown export and throw an uncoded `TypeError` from `(e.purposes || []).join(\", \")`. `id` keeps its own `gdpr-ropa/bad-id`, and `legalBasis` its `gdpr-ropa/bad-legal-basis`, which names the six bases."
         },
         {
           "title": "A manifest's aadBound is validated wherever a manifest is read",
@@ -63,7 +63,7 @@
         },
         {
           "title": "Every documented option of b.safeEnv.load is checked before the file is opened",
-          "body": "A malformed option read as its default instead of being refused. `allow: \"KEY\"` instead of `allow: [\"KEY\"]` died on an uncoded native `TypeError` from `.map()`, and `applyToProcess: \"true\"` was read as `false`, so the call reported a successful load while writing nothing to `process.env`. `allowOverwrite`, `audit`, `snapshotPath` and `expected` behaved the same way.\n\nEach is now checked before the file is read, raising `env/bad-opt`: `applyToProcess`, `allowOverwrite`, `rejectUnknown` and `audit` must be booleans, `allow` an array of names, `snapshotPath` a non-empty string, and `expected` a plain object."
+          "body": "A malformed option read as its default instead of being refused. `allow: \"KEY\"` instead of `allow: [\"KEY\"]` died on an uncoded native `TypeError` from `.map()`, and `applyToProcess: \"true\"` was read as `false`, so the call reported a successful load while writing nothing to `process.env`. `allowOverwrite`, `audit`, `snapshotPath` and `expected` behaved the same way.\n\nEach is now checked before the file is read, raising `env/bad-opt`: `applyToProcess`, `allowOverwrite`, `rejectUnknown` and `audit` must be booleans, `allow` an array of names, `snapshotPath` a non-empty string, and `expected` a plain object.\n\nThe `expected` schema's entries are checked at the same point. An entry is an object, its `type` is `string`, `number`, `boolean` or `json`, and its `sensitivity` is a non-empty string, each raising `env/bad-schema`; a non-boolean `required` raises `env/bad-opt`. `expected: { PORT: null }` previously passed and then threw an uncoded `TypeError` while reading the entry, and an unknown `type` on a key the file happened not to carry was never reached at all."
         },
         {
           "title": "An object store built without a config refuses with a code",
@@ -83,8 +83,8 @@
           "body": "`lib/vendor/public-suffix-list.dat` carries the list published at `2026-10-07_07-28-19_UTC`, commit `3929462652695bad04f0a27afb600974014a3c8b`, re-signed and re-hashed in `lib/vendor/MANIFEST.json`. Upstream replaced twenty-seven explicit `replit.dev` entries with `*.replit.dev` and `*.teams.replit.dev`, so a registrable-domain lookup under `replit.dev` now resolves any subdomain rather than only the named ones. Everything that reads the list sees the change: `b.guardDomain`, cookie-domain checks and the public-suffix lookups in the request path."
         },
         {
-          "title": "The vendored PKI bundle is refreshed to 0.8.60",
-          "body": "`lib/vendor/blamejs-pki.cjs` carries `@blamejs/pki` 0.8.60, with `lib/vendor/MANIFEST.json` re-hashed to match. The framework still ships zero npm runtime dependencies; this is the bundled copy the X.509, ASN.1/DER and CMS paths read."
+          "title": "The vendored PKI bundle is refreshed to 0.8.61",
+          "body": "`lib/vendor/blamejs-pki.cjs` carries `@blamejs/pki` 0.8.61, with `lib/vendor/MANIFEST.json` re-hashed to match. The framework still ships zero npm runtime dependencies; this is the bundled copy the X.509, ASN.1/DER and CMS paths read."
         }
       ]
     },

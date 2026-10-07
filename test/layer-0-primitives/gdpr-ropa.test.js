@@ -84,16 +84,26 @@ function run() {
             field + "=" + String(blank) + " -> " + (cleared && cleared.code));
     });
   });
-  // Empty values for the four fields with no enum behind them.
-  [["name", ""], ["purposes", []], ["dataCategories", []]].forEach(function (pair) {
+  // Present but unusable: an empty value, or the wrong type. `name` is a
+  // non-empty string and the two lists are non-empty arrays of names, so a
+  // record stored with `purposes: 42` no longer reaches the Markdown export
+  // and throws an uncoded TypeError at `(e.purposes || []).join(", ")`.
+  // `missing-field` stays for absent; `bad-field` is present-but-unusable.
+  [["name", ""], ["name", 7], ["purposes", []], ["purposes", 42],
+   ["purposes", [7]], ["dataCategories", []], ["dataCategories", {}],
+  ].forEach(function (pair) {
     var patch = {};
     patch[pair[0]] = pair[1];
-    var emptied = null;
-    try { basisRopa.update("a1", patch); } catch (e) { emptied = e; }
-    check("ropa.update refuses an empty " + pair[0],
-          !!emptied && emptied.code === "gdpr-ropa/missing-field",
-          pair[0] + " -> " + (emptied && emptied.code));
+    var unusable = null;
+    try { basisRopa.update("a1", patch); } catch (e) { unusable = e; }
+    check("ropa.update refuses " + pair[0] + " = " + JSON.stringify(pair[1]),
+          !!unusable && unusable.code === "gdpr-ropa/bad-field",
+          pair[0] + " -> " + (unusable && unusable.code));
   });
+  // The control: the stored activity is still exportable, so the refusals
+  // above kept the register in a state the Markdown writer can read.
+  check("and the register still exports after every refusal",
+        typeof basisRopa["export"]({ format: "markdown" }) === "string");
   var intact = basisRopa.get("a1");
   check("and the stored activity still carries every required field",
         intact.name !== undefined && intact.purposes !== undefined &&
