@@ -243,9 +243,60 @@ function testOnlyARecognizedTagKeepsABlock() {
   });
 }
 
+// find-missing-pages reports which public namespaces carry no documentation.
+// It located each one by guessing a filename from the namespace and dropped
+// every namespace it could not place, so 20 of them read as documented because
+// the report never looked at them: b.createApp, b.objectStore, b.localDb and
+// the whole b.vault* and b.backup* families among them. It resolves the file
+// from index.js now, and a namespace it still cannot place is reported with no
+// file rather than dropped.
+function testEveryUndocumentedNamespaceIsReported() {
+  var finder = require(path.join(__dirname, "..", "..", "examples", "wiki",
+                                 "test", "find-missing-pages.js"));
+  var fs = require("node:fs");
+  // The resolver is the fix: each of these namespaces lives somewhere the old
+  // three-shape filename guess could not reach, so each one resolved to null
+  // and was dropped from the report entirely.
+  [
+    ["vaultWrap",     /vault[\\/]wrap\.js$/],
+    ["backupCrypto",  /backup[\\/]crypto\.js$/],
+    ["objectStore",   /object-store[\\/]index\.js$/],
+    ["createApp",     /app\.js$/],
+    ["localDb",       /local-db-thin\.js$/],
+    ["mtlsEngine",    /mtls-engine-default\.js$/],
+    // Re-exported through lib/parsers/index.js: a barrel-only answer would
+    // send a reader to a file holding none of its primitives.
+    ["safeEnv",       /parsers[\\/]safe-env\.js$/],
+  ].forEach(function (pair) {
+    var resolved = finder.resolveLibFile(pair[0]);
+    check("find-missing-pages resolves b." + pair[0] + " to its implementation",
+      typeof resolved === "string" && pair[1].test(resolved) &&
+      fs.existsSync(path.join(__dirname, "..", "..", resolved)),
+      "resolved=" + resolved);
+  });
+
+  // The control: a namespace that does not exist must not resolve, so the
+  // assertions above read a real mapping rather than any string at all.
+  check("a namespace that does not exist resolves to null",
+    finder.resolveLibFile("notARealNamespaceXyz") === null,
+    "resolved=" + finder.resolveLibFile("notARealNamespaceXyz"));
+
+  // With the resolver fixed, the report is the gate: every public
+  // function-bearing namespace carries documentation, and a new one without it
+  // fails here rather than being dropped for want of a filename.
+  var tasks = finder.find();
+  check("every public function-bearing namespace is documented",
+    tasks.length === 0,
+    "undocumented: " + tasks.map(function (t) {
+      return t.namespace + " (" + (t.primitiveCount - t.annotated) + "/" +
+        t.primitiveCount + " in " + t.libFile + ")";
+    }).join(", "));
+}
+
 async function run() {
   testRelatedResolutionBranches();
   testOnlyARecognizedTagKeepsABlock();
+  testEveryUndocumentedNamespaceIsReported();
   var libDir = path.join(__dirname, "..", "..", "lib");
   var findings = validator.validate({
     libDir:       libDir,

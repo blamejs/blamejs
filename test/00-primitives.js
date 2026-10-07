@@ -18391,6 +18391,46 @@ function testCryptoAndModuleSurface() {
   check("vault-wrap default Argon2 params present",
         b.vaultWrap.DEFAULT_ARGON2 && b.vaultWrap.DEFAULT_ARGON2.memoryCost > 0);
 
+  // buildHeader and parseHeader are the format itself, so a round trip has to
+  // return the parameters that went in: a reader derives at the cost the file
+  // names, and a header that lost its cost would be derived at this build's
+  // default instead.
+  var vwSalt  = Buffer.alloc(0x10, 0x07);
+  var vwNonce = Buffer.alloc(b.vaultWrap.NONCE_LENGTH, 0x09);
+  var vwHeader = b.vaultWrap.buildHeader({
+    salt:             vwSalt,
+    nonce:            vwNonce,
+    memoryCost:       b.vaultWrap.DEFAULT_ARGON2.memoryCost,
+    timeCost:         b.vaultWrap.DEFAULT_ARGON2.timeCost,
+    parallelism:      b.vaultWrap.DEFAULT_ARGON2.parallelism,
+    ciphertextLength: 0x30,
+  });
+  check("vaultWrap.buildHeader writes the magic byte first",
+        vwHeader[0] === b.vaultWrap.MAGIC);
+  var vwParsed = b.vaultWrap.parseHeader(
+    Buffer.concat([vwHeader, Buffer.alloc(0x30, 0x00)]));
+  check("vaultWrap.parseHeader round-trips the Argon2 cost",
+        vwParsed.params.memoryCost === b.vaultWrap.DEFAULT_ARGON2.memoryCost &&
+        vwParsed.params.timeCost === b.vaultWrap.DEFAULT_ARGON2.timeCost &&
+        vwParsed.params.parallelism === b.vaultWrap.DEFAULT_ARGON2.parallelism,
+        JSON.stringify(vwParsed.params));
+  check("vaultWrap.parseHeader round-trips the salt and nonce",
+        Buffer.compare(Buffer.from(vwParsed.params.salt), vwSalt) === 0 &&
+        Buffer.compare(Buffer.from(vwParsed.params.nonce), vwNonce) === 0);
+  check("vaultWrap.parseHeader reports a non-vault file as unreadable, not a bad passphrase",
+        (function () {
+          try { b.vaultWrap.parseHeader(Buffer.from("not a sealed vault file")); }
+          catch (e) { return e.code === "vault-wrap/bad-magic"; }
+          return false;
+        })());
+  check("vaultWrap.buildHeader refuses a salt that is not bytes",
+        (function () {
+          try {
+            b.vaultWrap.buildHeader({ salt: "sixteen-byte-str", nonce: vwNonce });
+          } catch (e) { return e.code === "vault-wrap/bad-salt"; }
+          return false;
+        })());
+
   // passphrase-source env var names follow BLAMEJS_ prefix
   check("vaultPassphraseSource ENV_PASSPHRASE = BLAMEJS_VAULT_PASSPHRASE",
         b.vaultPassphraseSource.ENV_PASSPHRASE === "BLAMEJS_VAULT_PASSPHRASE");
@@ -19199,9 +19239,142 @@ async function testFileUploadMimeAllowlistRequiresFileType() {
   check("fileUpload.create: allowedFileTypes without fileType primitive throws at boot", threw);
 }
 
+// The passphrase sources are how an unattended service and an operator at a
+// terminal both reach the same vault, so each one's contract is asserted: the
+// file source trims what a secret store appends, the env source is consumed as
+// it is read, and the TTY source refuses a piped stdin rather than taking
+// whatever arrived on it.
+async function testVaultPassphraseSources() {
+  var fs = require("node:fs");
+  var os = require("node:os");
+  var path = require("node:path");
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "bjs-pps-"));
+  var file = path.join(dir, "passphrase");
+  var PASS = "correct horse battery staple";
+  try {
+    fs.writeFileSync(file, PASS + "\n");
+    var fromFile = await b.vaultPassphraseSource.fromFile(file);
+    check("vaultPassphraseSource.fromFile answers a Buffer",
+      Buffer.isBuffer(fromFile));
+    check("vaultPassphraseSource.fromFile trims the trailing newline a secret store adds",
+      fromFile.toString("utf8") === PASS,
+      JSON.stringify(fromFile.toString("utf8")));
+    fromFile.fill(0);
+
+    var missing = null;
+    try { await b.vaultPassphraseSource.fromFile(""); }
+    catch (e) { missing = e; }
+    check("vaultPassphraseSource.fromFile refuses an unset path",
+      missing !== null);
+
+    // getPassphrase resolves through whichever source the environment selects.
+    var priorValue = process.env.BLAMEJS_VAULT_PASSPHRASE;
+    var priorFile  = process.env.BLAMEJS_VAULT_PASSPHRASE_FILE;
+    var priorSrc   = process.env.BLAMEJS_VAULT_PASSPHRASE_SOURCE;
+    try {
+      delete process.env.BLAMEJS_VAULT_PASSPHRASE_FILE;
+      process.env.BLAMEJS_VAULT_PASSPHRASE_SOURCE = "env";
+      process.env.BLAMEJS_VAULT_PASSPHRASE = PASS;
+      check("vaultPassphraseSource.sourceKind reads the forced source",
+        b.vaultPassphraseSource.sourceKind() === "env");
+      var fromEnv = await b.vaultPassphraseSource.getPassphrase();
+      check("vaultPassphraseSource.getPassphrase resolves from the env source",
+        fromEnv.toString("utf8") === PASS);
+      check("and the variable is consumed as it is read, so no child inherits it",
+        process.env.BLAMEJS_VAULT_PASSPHRASE === undefined);
+      fromEnv.fill(0);
+    } finally {
+      if (priorValue === undefined) delete process.env.BLAMEJS_VAULT_PASSPHRASE;
+      else process.env.BLAMEJS_VAULT_PASSPHRASE = priorValue;
+      if (priorFile === undefined) delete process.env.BLAMEJS_VAULT_PASSPHRASE_FILE;
+      else process.env.BLAMEJS_VAULT_PASSPHRASE_FILE = priorFile;
+      if (priorSrc === undefined) delete process.env.BLAMEJS_VAULT_PASSPHRASE_SOURCE;
+      else process.env.BLAMEJS_VAULT_PASSPHRASE_SOURCE = priorSrc;
+    }
+
+    // The TTY path cannot be driven headless, but its refusal is the half that
+    // matters: without it a piped stdin would be read as the passphrase.
+    if (!process.stdin.isTTY) {
+      var noTty = null;
+      try { await b.vaultPassphraseSource.fromStdin("Vault passphrase: "); }
+      catch (e) { noTty = e; }
+      check("vaultPassphraseSource.fromStdin refuses a stdin that is not a TTY",
+        noTty !== null && /TTY/.test(String(noTty.message)),
+        "msg=" + String(noTty && noTty.message).slice(0, 80));
+    }
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* cleanup */ }
+  }
+}
+
+// The bundle scheme's whole point is that a per-file subkey is bound to the
+// file's path, so a blob moved inside a bundle stops decrypting. These assert
+// the parts that make that true: a subkey differs per label, the AEAD binds
+// its aad, and a salt is fresh per bundle.
+async function testBackupCryptoKeySeparation() {
+  var bundleKey = Buffer.alloc(0x20, 0x11);
+  var salt = b.backupCrypto.newSalt();
+  check("backupCrypto.newSalt answers 32 bytes as hex",
+    typeof salt === "string" && salt.length === b.backupCrypto.SALT_BYTES * 2,
+    "len=" + salt.length);
+  check("backupCrypto.newSalt is fresh per call",
+    b.backupCrypto.newSalt() !== salt);
+
+  var labelA = b.backupCrypto.fileKeyLabel("db/app.db");
+  var labelB = b.backupCrypto.fileKeyLabel("db/other.db");
+  var subA = b.backupCrypto.deriveSubkey(bundleKey, salt, labelA);
+  var subB = b.backupCrypto.deriveSubkey(bundleKey, salt, labelB);
+  check("backupCrypto.deriveSubkey answers a 32-byte key",
+    Buffer.isBuffer(subA) && subA.length === 0x20, "len=" + subA.length);
+  check("backupCrypto.deriveSubkey gives a different key per file path",
+    Buffer.compare(subA, subB) !== 0);
+  check("backupCrypto.deriveSubkey is deterministic for one path",
+    Buffer.compare(b.backupCrypto.deriveSubkey(bundleKey, salt, labelA), subA) === 0);
+  check("backupCrypto.deriveSubkey refuses an empty label",
+    (function () {
+      try { b.backupCrypto.deriveSubkey(bundleKey, salt, ""); }
+      catch (e) { return e.code === "backup-crypto/bad-label"; }
+      return false;
+    })());
+
+  var sealed = b.backupCrypto.encryptWithKey("the contents", subA, labelA);
+  check("backupCrypto.encryptWithKey prepends a nonce",
+    sealed.length > b.backupCrypto.NONCE_BYTES + 0x10);
+  check("backupCrypto.encryptWithKey uses a fresh nonce per call",
+    Buffer.compare(
+      b.backupCrypto.encryptWithKey("the contents", subA, labelA)
+        .subarray(0, b.backupCrypto.NONCE_BYTES),
+      sealed.subarray(0, b.backupCrypto.NONCE_BYTES)) !== 0);
+  check("backupCrypto.decryptWithKey round-trips under the same key and aad",
+    b.backupCrypto.decryptWithKey(sealed, subA, labelA).toString("utf8") === "the contents");
+  check("backupCrypto.decryptWithKey refuses the other file's subkey",
+    (function () {
+      try { b.backupCrypto.decryptWithKey(sealed, subB, labelA); }
+      catch (e) { return e.code === "backup-crypto/decrypt-failed"; }
+      return false;
+    })());
+  check("backupCrypto.decryptWithKey refuses a different aad, so a remapped blob fails",
+    (function () {
+      try { b.backupCrypto.decryptWithKey(sealed, subA, labelB); }
+      catch (e) { return e.code === "backup-crypto/decrypt-failed"; }
+      return false;
+    })());
+  check("backupCrypto.decryptWithKey refuses a buffer too short to hold a tag",
+    (function () {
+      try {
+        b.backupCrypto.decryptWithKey(Buffer.alloc(b.backupCrypto.NONCE_BYTES), subA, labelA);
+      } catch (e) { return e.code === "backup-crypto/bad-input"; }
+      return false;
+    })());
+  subA.fill(0);
+  subB.fill(0);
+}
+
 async function run() {
   // entrypoint module-surface sanity
   testCryptoAndModuleSurface();
+  await testVaultPassphraseSources();
+  await testBackupCryptoKeySeparation();
   // async-safe primitives
   await testAsyncSafeWithTimeoutResolves();
   await testAsyncSafeWithTimeoutRejects();
@@ -19984,6 +20157,8 @@ async function run() {
 
 module.exports = {
   testCryptoAndModuleSurface:                testCryptoAndModuleSurface,
+  testVaultPassphraseSources:                testVaultPassphraseSources,
+  testBackupCryptoKeySeparation:             testBackupCryptoKeySeparation,
   name: "Layer 0 — primitives (module-surface, async-safe, handlers, sql-safe, chain-writer, json-safe, atomic-file, parsers, redact)",
   run:  run,
   // Exported individually so smoke.js (or future selective-run tooling)
