@@ -894,6 +894,38 @@ async function testRotateVerifyFailedOnSameKeypair() {
   }
 }
 
+// A bound the verification will refuse has to be refused BEFORE the staging
+// directory is claimed. Rejecting it afterwards leaves the directory behind,
+// and the corrected retry then dies on `vault-rotate/staging-exists` — so one
+// typo costs the operator a manual cleanup before they can try again.
+async function testRotateRefusesBadSamplingBeforeClaimingStaging() {
+  var dirA = fs.mkdtempSync(path.join(os.tmpdir(), "vr-bound-a-"));
+  var staging = path.join(os.tmpdir(), "vr-bound-stg-" + process.pid + "-" + Date.now());
+  try {
+    await _reset();
+    await b.vault.init({ dataDir: dirA, mode: "plaintext" });
+    var liveKeys = JSON.parse(b.vault.getKeysJson());
+    await b.db.init({ dataDir: dirA, tmpDir: path.join(dirA, "tmpfs"), atRest: "encrypted",
+      allowNonTmpfsTmpDir: true,   // scratch dir, not a real tmpfs mount
+      auditSigning: false, frameworkTables: false, schema: [PLAIN_SCHEMA[0]] });
+    b.db.from("notes").insertOne(b.cryptoField.sealRow("notes", { _id: "n1", title: "x" }));
+    await b.db.flushToDisk();
+    await b.db.close();
+
+    await _expectRotateThrow("rotate refuses a sampleMin that is not a positive integer",
+      { dataDir: dirA, stagingDir: staging, oldKeys: liveKeys, newKeys: liveKeys,
+        mode: "plaintext", externalAadResealed: true, sampleMin: 0 },
+      "vault-rotate/bad-opt");
+    check("and it refused before claiming the staging directory, so a retry is not blocked",
+      !fs.existsSync(staging), "staging still present: " + staging);
+  } finally {
+    await _reset();
+    b.cryptoField.clearForTest();
+    try { fs.rmSync(dirA, { recursive: true, force: true }); } catch (_e) { /* cleanup */ }
+    try { fs.rmSync(staging, { recursive: true, force: true }); } catch (_e) { /* cleanup */ }
+  }
+}
+
 // `opts.tables` narrows what the rotation RE-SEALS. The final verification
 // stays whole-database on purpose: a sealed row in a table the rotation
 // skipped is readable now and unreadable the moment the old keypair is
@@ -934,6 +966,98 @@ async function testRotateVerifiesTablesItWasNotAskedToRotate() {
     try { fs.rmSync(dirNew, { recursive: true, force: true }); } catch (_e) { /* cleanup */ }
     try { fs.rmSync(dirA, { recursive: true, force: true }); } catch (_e) { /* cleanup */ }
     try { fs.rmSync(staging, { recursive: true, force: true }); } catch (_e) { /* cleanup */ }
+  }
+}
+
+// `rotate` re-seals the columns the field registry declares and nothing else.
+// A vault-prefixed value in a column nobody declared is copied across
+// verbatim, and the final verification reads the declared columns too, so the
+// rotation reports success over a cell that stops opening the moment the old
+// keypair is retired. `validateSchemaMatch` is what finds it, and the
+// documentation tells the operator to run it first because of this.
+async function testRotateCarriesAnUndeclaredSealedColumnAcrossUnchanged() {
+  var dirNew = fs.mkdtempSync(path.join(os.tmpdir(), "vr-drift-new-"));
+  var dirA   = fs.mkdtempSync(path.join(os.tmpdir(), "vr-drift-a-"));
+  var staging = path.join(os.tmpdir(), "vr-drift-stg-" + process.pid + "-" + Date.now());
+  var SCHEMA = [{
+    name:         "notes",
+    columns:      { _id: "TEXT PRIMARY KEY", title: "TEXT", rogue: "TEXT" },
+    sealedFields: ["title"],
+  }];
+  try {
+    await _reset();
+    await b.vault.init({ dataDir: dirNew, mode: "plaintext" });
+    var newKeys = JSON.parse(b.vault.getKeysJson());
+    b.vault._resetForTest();
+
+    await _reset();
+    await b.vault.init({ dataDir: dirA, mode: "plaintext" });
+    var oldKeys = JSON.parse(b.vault.getKeysJson());
+    await b.db.init({ dataDir: dirA, tmpDir: path.join(dirA, "tmpfs"), atRest: "encrypted",
+      allowNonTmpfsTmpDir: true,   // scratch dir, not a real tmpfs mount
+      auditSigning: false, frameworkTables: false, schema: SCHEMA });
+
+    var row = b.cryptoField.sealRow("notes", { _id: "n1", title: "declared" });
+    // 'rogue' holds a vault-prefixed value under the old keypair and is in no
+    // sealedFields list, which is the drift the preflight exists to catch.
+    row.rogue = b.vault.seal("undeclared-secret");
+    var rogueBefore = row.rogue;
+    b.db.from("notes").insertOne(row);
+    await b.db.flushToDisk();
+    await b.db.close();
+
+    var result = await b.vaultRotate.rotate({
+      dataDir: dirA, stagingDir: staging, oldKeys: oldKeys, newKeys: newKeys,
+      mode: "plaintext", externalAadResealed: true,
+    });
+    check("the rotation reports success over the undeclared column",
+      !!result.verifyResult && result.verifyResult.ok === true);
+
+    ["db.enc", "db.key.enc", "vault.key"].forEach(function (f) {
+      var s = path.join(staging, f);
+      if (fs.existsSync(s)) fs.copyFileSync(s, path.join(dirA, f));
+    });
+    try { fs.rmSync(path.join(dirA, "tmpfs"), { recursive: true, force: true }); } catch (_e) { /* fresh decrypt */ }
+
+    await _reset();
+    await b.vault.init({ dataDir: dirA, mode: "plaintext" });
+    await b.db.init({ dataDir: dirA, tmpDir: path.join(dirA, "tmpfs"), atRest: "encrypted",
+      allowNonTmpfsTmpDir: true,   // scratch dir, not a real tmpfs mount
+      auditSigning: false, frameworkTables: false, schema: SCHEMA });
+    var after = b.db.from("notes").where({ _id: "n1" }).first();
+    check("the declared column decrypts under the new keypair",
+      b.cryptoField.unsealRow("notes", after).title === "declared");
+    check("the undeclared column crossed over byte-identical",
+      after.rogue === rogueBefore);
+    var opened = true;
+    try { b.vault.unseal(after.rogue); } catch (_e) { opened = false; }
+    check("and no longer opens, because only the retired keypair can read it",
+      opened === false);
+    // The control for that refusal: the cell is intact, and the retired
+    // keypair still reads it. Without this, a mangled value would pass the
+    // check above for the wrong reason.
+    check("the retired keypair still reads the same cell",
+      b.crypto.decrypt(after.rogue.substring(VAULT_PREFIX.length), oldKeys) ===
+        "undeclared-secret");
+    await b.db.close();
+
+    // The preflight the documentation requires names the column by hand.
+    var raw = new DatabaseSync(":memory:");
+    raw.exec("CREATE TABLE notes (_id TEXT PRIMARY KEY, title TEXT, rogue TEXT)");
+    raw.prepare("INSERT INTO notes (_id, title, rogue) VALUES (?, ?, ?)")
+      .run("n1", _seal("declared", keyA), rogueBefore);
+    try {
+      var drift = b.vaultRotate.validateSchemaMatch(raw);
+      check("validateSchemaMatch names the column the rotation walked past",
+        drift.errors.some(function (e) { return e.kind === "drift" && e.column === "rogue"; }),
+        JSON.stringify(drift.errors));
+    } finally { raw.close(); }
+  } finally {
+    await _reset();
+    b.cryptoField.clearForTest();
+    [dirNew, dirA, staging].forEach(function (d) {
+      try { fs.rmSync(d, { recursive: true, force: true }); } catch (_e) { /* cleanup */ }
+    });
   }
 }
 
@@ -990,6 +1114,8 @@ async function run() {
   await testRotateFullPlaintextRotation();
   await testRotateVerifyFailedOnSameKeypair();
   await testRotateVerifiesTablesItWasNotAskedToRotate();
+  await testRotateRefusesBadSamplingBeforeClaimingStaging();
+  await testRotateCarriesAnUndeclaredSealedColumnAcrossUnchanged();
 
   testExposedConstants();
 }

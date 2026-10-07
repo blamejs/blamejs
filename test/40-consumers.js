@@ -2380,6 +2380,29 @@ function testEnvLoadBreakingChange() {
     });
     check("env: { allow: [...] } authorises breaking change",
           ok.values.DATABASE_URL === "postgres://B");
+
+    // Without snapshotPath there is nothing to compare against, so the same
+    // two loads report every key as newly added and the breaking-sensitivity
+    // gate never fires. A deployment that leaves the option out gets no
+    // change detection at all, which is why the option is documented.
+    var noSnapDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-env-nosnap-"));
+    try {
+      var p2 = path.join(noSnapDir, ".env");
+      fs.writeFileSync(p2, "DATABASE_URL=postgres://A\n");
+      var first = b.parsers.env.load(p2, { expected: expected, audit: false });
+      check("env: a load with no snapshotPath reports the key as added",
+            first.diff.added.length === 1 && first.diff.changed.length === 0);
+      fs.writeFileSync(p2, "DATABASE_URL=postgres://B\n");
+      var second = b.parsers.env.load(p2, { expected: expected, audit: false });
+      check("env: the changed value is reported as added, not changed",
+            second.diff.added.length === 1 && second.diff.changed.length === 0);
+      check("env: so the breaking-sensitivity gate does not fire",
+            second.values.DATABASE_URL === "postgres://B");
+      check("env: and no snapshot file was written beside the env file",
+            fs.readdirSync(noSnapDir).length === 1);
+    } finally {
+      fs.rmSync(noSnapDir, { recursive: true, force: true });
+    }
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
