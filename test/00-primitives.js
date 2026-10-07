@@ -6265,6 +6265,36 @@ function testBackupBundleSurface() {
   check("BackupBundleError is a class",           typeof b.backupBundle.BackupBundleError === "function");
 }
 
+// A malformed signing option is refused before the output directory is
+// claimed. Checked at the manifest stage instead, it threw only after every
+// file had been encrypted and written, leaving a bundle with no manifest and
+// a corrected retry failing on backup-bundle/outdir-exists.
+async function testBackupBundleRefusesBadSigningOptsBeforeClaimingOutDir() {
+  var fx = _bundleFixture();
+  try {
+    fx.write("db.enc", Buffer.from("ENCRYPTED-DB-BYTES"));
+    var outDir = path.join(fx.root, "bundle-bad-opts");
+    var bad = [{ sign: "false" }, { signOptional: 1 }];
+    for (var i = 0; i < bad.length; i++) {
+      var refused = null;
+      try {
+        await b.backupBundle.create(Object.assign({
+          dataDir:      fx.dataDir,
+          outDir:       outDir,
+          passphrase:   Buffer.from("operator-passphrase"),
+          vaultKeyJson: '{"vault":"keypair-bytes"}',
+          files: [{ relativePath: "db.enc", kind: "raw", required: true }],
+        }, bad[i]));
+      } catch (e) { refused = e; }
+      check("backupBundle.create refuses " + JSON.stringify(bad[i]),
+        !!refused && refused.code === "backup-bundle/bad-opt",
+        refused && String(refused.code));
+      check("and left outDir unclaimed, so a corrected retry is not blocked (" +
+        JSON.stringify(bad[i]) + ")", !fs.existsSync(outDir));
+    }
+  } finally { fx.cleanup(); }
+}
+
 async function testBackupBundleCreateEndToEnd() {
   var fx = _bundleFixture();
   try {
@@ -10681,6 +10711,42 @@ async function testVaultPassphraseOpsKeepPlaintext() {
     check("seal keepPlaintext: sealed exists",
           fs.existsSync(path.join(fx.dir, "vault.key.sealed")));
   } finally { fx.cleanup(); }
+}
+
+// keepPlaintext was read with `!!`, so any truthy value kept the plaintext
+// key. A configuration file deserialized into the string "false" is truthy,
+// so the key stayed on disk while the call reported it deleted. That is the
+// one direction this option must not fail in.
+async function testVaultPassphraseOpsRefusesNonBooleanKeepPlaintext() {
+  var fx = _passphraseOpsFixture();
+  try {
+    fx.writePlaintext("keep-me");
+    var refused = null;
+    try {
+      await b.vaultPassphraseOps.seal({
+        dataDir: fx.dir, passphrase: Buffer.from("p", "utf8"),
+        keepPlaintext: "false",
+      });
+    } catch (e) { refused = e; }
+    check("seal refuses a non-boolean keepPlaintext",
+          !!refused && refused.code === "vault-passphrase/bad-opt",
+          refused && String(refused.code));
+    check("and the plaintext key is untouched, since it refused before sealing",
+          fs.existsSync(path.join(fx.dir, "vault.key")) &&
+          !fs.existsSync(path.join(fx.dir, "vault.key.sealed")));
+  } finally { fx.cleanup(); }
+  // The control: omitting it deletes the plaintext, which is what the
+  // refusal above is protecting.
+  var fx2 = _passphraseOpsFixture();
+  try {
+    fx2.writePlaintext("delete-me");
+    var ok = await b.vaultPassphraseOps.seal({
+      dataDir: fx2.dir, passphrase: Buffer.from("p", "utf8"),
+    });
+    check("omitting keepPlaintext still deletes the plaintext key",
+          ok.plaintextDeleted === true &&
+          !fs.existsSync(path.join(fx2.dir, "vault.key")));
+  } finally { fx2.cleanup(); }
 }
 
 async function testVaultPassphraseOpsWrongPassphraseRejected() {
@@ -18166,6 +18232,20 @@ function testEnvReadVar() {
     check("readVar: buffer round-trip",  Buffer.isBuffer(buf) && buf.toString("utf8") === "secret-passphrase");
     check("readVar: strip deletes env",  !("BLAMEJS_TEST_VAR3" in process.env));
 
+    // strip was read `=== true`, so a non-boolean left the variable in the
+    // environment for every child the process starts, which is the opposite
+    // of what the caller asked for. It is refused rather than read as false.
+    process.env.BLAMEJS_TEST_VAR3 = "still-secret";
+    var threwStrip = null;
+    try { env.readVar("BLAMEJS_TEST_VAR3", { type: "buffer", strip: "true" }); }
+    catch (e) { threwStrip = e; }
+    check("readVar: a non-boolean strip is refused",
+          !!threwStrip && threwStrip.code === "env/bad-opt",
+          threwStrip && String(threwStrip.code));
+    check("readVar: and the variable is still set, since it refused before reading",
+          process.env.BLAMEJS_TEST_VAR3 === "still-secret");
+    delete process.env.BLAMEJS_TEST_VAR3;
+
     // maxBytes cap
     process.env.BLAMEJS_TEST_VAR4 = "x".repeat(5000);
     var threwSize = false;
@@ -19309,6 +19389,22 @@ async function testVaultPassphraseSources() {
         trimmedCrlf.toString("utf8") === PASS);
       trimmedCrlf.fill(0);
 
+      // The option is checked before the variable is read, because reading it
+      // strips it: validating afterwards would destroy the passphrase source
+      // and leave a corrected retry with nothing to read.
+      process.env.BLAMEJS_VAULT_PASSPHRASE = PASS;
+      var badTrim = null;
+      try { await b.vaultPassphraseSource.fromEnv({ trimTrailingNewlines: "yes" }); }
+      catch (e) { badTrim = e; }
+      check("vaultPassphraseSource.fromEnv refuses a non-boolean trimTrailingNewlines",
+        badTrim !== null);
+      check("and the variable is still set, so a corrected call still works",
+        process.env.BLAMEJS_VAULT_PASSPHRASE === PASS);
+      var afterBadTrim = await b.vaultPassphraseSource.fromEnv({ trimTrailingNewlines: true });
+      check("the corrected call reads the same passphrase",
+        afterBadTrim.toString("utf8") === PASS);
+      afterBadTrim.fill(0);
+
       // The control: an interior newline is part of the passphrase and stays
       // even when trimming is on, so only trailing padding is removed.
       process.env.BLAMEJS_VAULT_PASSPHRASE = "two\nlines";
@@ -19675,6 +19771,7 @@ async function run() {
   await testRestoreBundleArgValidation();
   // backup-bundle — encrypted backup bundle producer
   testBackupBundleSurface();
+  await testBackupBundleRefusesBadSigningOptsBeforeClaimingOutDir();
   await testBackupBundleCreateEndToEnd();
   await testBackupBundlePathTraversalRejected();
   await testBackupBundleRequiredMissing();
@@ -19871,6 +19968,7 @@ async function run() {
   testVaultPassphraseOpsPreflightChecks();
   await testVaultPassphraseOpsSealUnsealRoundTrip();
   await testVaultPassphraseOpsKeepPlaintext();
+  await testVaultPassphraseOpsRefusesNonBooleanKeepPlaintext();
   await testVaultPassphraseOpsWrongPassphraseRejected();
   await testVaultPassphraseOpsUnreadableSealedFileIsNotAPassphraseError();
   await testVaultPassphraseOpsRotate();
@@ -20446,6 +20544,8 @@ module.exports = {
   testRestoreBundleInspectReturnsManifest:   testRestoreBundleInspectReturnsManifest,
   testRestoreBundleArgValidation:            testRestoreBundleArgValidation,
   testBackupBundleSurface:                   testBackupBundleSurface,
+  testBackupBundleRefusesBadSigningOptsBeforeClaimingOutDir:
+    testBackupBundleRefusesBadSigningOptsBeforeClaimingOutDir,
   testBackupBundleCreateEndToEnd:            testBackupBundleCreateEndToEnd,
   testBackupBundlePathTraversalRejected:     testBackupBundlePathTraversalRejected,
   testBackupBundleRequiredMissing:           testBackupBundleRequiredMissing,
@@ -20613,6 +20713,8 @@ module.exports = {
   testVaultPassphraseOpsPreflightChecks:     testVaultPassphraseOpsPreflightChecks,
   testVaultPassphraseOpsSealUnsealRoundTrip: testVaultPassphraseOpsSealUnsealRoundTrip,
   testVaultPassphraseOpsKeepPlaintext:       testVaultPassphraseOpsKeepPlaintext,
+  testVaultPassphraseOpsRefusesNonBooleanKeepPlaintext:
+    testVaultPassphraseOpsRefusesNonBooleanKeepPlaintext,
   testVaultPassphraseOpsWrongPassphraseRejected: testVaultPassphraseOpsWrongPassphraseRejected,
   testVaultPassphraseOpsUnreadableSealedFileIsNotAPassphraseError:
     testVaultPassphraseOpsUnreadableSealedFileIsNotAPassphraseError,

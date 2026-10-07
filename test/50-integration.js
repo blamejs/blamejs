@@ -875,6 +875,39 @@ async function testCreateAppValidation() {
   try { await b.createApp({}); }
   catch (e) { threw = e; }
   check("createApp({}): missing dataDir → throws",     threw && /dataDir is required/.test(threw.message));
+
+  // A middleware key is false, true, or that middleware's options object.
+  // Anything else used to read as "not false, not an object" and take the
+  // middleware off without the app.middleware.disabled audit event, so a
+  // configuration file deserialized into the string "false" lost CSRF
+  // silently. The refusal runs before the vault, the database and the job
+  // consumers start, so a rejected boot leaves nothing running: the caller
+  // never receives the handle that would shut them down.
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "createapp-mw-"));
+  try {
+    var badValues = [
+      { label: 'the string "false"', mw: { csrf: "false" } },
+      { label: "a zero",             mw: { securityHeaders: 0 } },
+      { label: "a null",             mw: { botGuard: null } },
+      { label: "an array",           mw: { bodyParser: [] } },
+      { label: "a number",           mw: { requestId: 1 } },
+    ];
+    for (var i = 0; i < badValues.length; i++) {
+      var refused = null;
+      try {
+        await b.createApp({ dataDir: dir, middleware: badValues[i].mw });
+      } catch (e) { refused = e; }
+      check("createApp: a middleware key given " + badValues[i].label + " is refused",
+            !!refused && /must be false, true, or an options object/.test(refused.message),
+            refused && String(refused.message).slice(0, 90));
+      check("and it refused before writing anything into dataDir (" +
+            badValues[i].label + ")",
+            fs.readdirSync(dir).length === 0,
+            JSON.stringify(fs.readdirSync(dir)));
+    }
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* cleanup */ }
+  }
 }
 
 function testCreateAppSurface() {

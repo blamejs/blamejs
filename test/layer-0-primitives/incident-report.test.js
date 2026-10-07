@@ -156,6 +156,18 @@ async function run() {
   check("get(existing) returns the record", irND.get(ndRec.id) === ndRec);
   check("get(unknown) returns null", irND.get("nope") === null);
 
+  // `audit` takes false, true, or a configuration object carrying a sink. A
+  // string or a number read as "not false" and left the events on while the
+  // configuration said they were off, so those are refused. The sink-object
+  // form above is the reason this is not a plain boolean check.
+  [["a string", "false"], ["a number", 0], ["an array", []]].forEach(function (bad) {
+    var refused = null;
+    try { b.incident.report.create({ audit: bad[1] }); } catch (e) { refused = e; }
+    check("incident.report.create refuses an audit option given " + bad[0],
+      !!refused && refused.code === "incident-report/bad-opt",
+      bad[0] + " -> " + (refused ? refused.code : "accepted"));
+  });
+
   // ---- persist reject: drop-silent, emits persist_failed audit (open + stage) ----
   var pSink = makeSink();
   var irP = b.incident.report.create({
