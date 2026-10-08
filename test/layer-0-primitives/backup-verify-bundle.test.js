@@ -176,6 +176,57 @@ async function run() {
   await testVerifyCorruptedTarFails();
   await testVerifyDirectoryOk();
   await testVerifyMissingBundleFails();
+  await testGateRefusalIsNotAFailedBundle();
+}
+
+// verifyBundle caught every error from the passphrase unwrap and returned it
+// as a failed verification. A gate refusal, argon2/busy or argon2/queue-timeout,
+// is transient and means the check never ran, so reporting
+// { ok: false, errors: ["argon2/busy"] } said the bytes were bad about an
+// intact bundle, and verifyAllBundles counted the repository as damaged.
+async function testGateRefusalIsNotAFailedBundle() {
+  var src = _mkSrcDir("a.json", "{\"x\":1}");
+  var dest = fs.mkdtempSync(path.join(os.tmpdir(), "vb-dest-gate-"));
+  try {
+    var storage = b.backup.bundleAdapterStorage({
+      adapter:        b.backup.bundleAdapterStorage.fsAdapter({ root: dest }),
+      format:         "tar",
+      cryptoStrategy: "passphrase",
+      passphrase:     "aLongCorrectHorseBatteryStaple9876!Phrase",
+    });
+    var bid = "2026-05-24T01-15-00-000Z-aaaa3333";
+    await storage.writeBundle(bid, src);
+
+    // One slot, no queue: a derivation in flight makes the next one a refusal
+    // rather than a wait.
+    b.auth.password.gate(1, { maxQueued: 0 });
+    var holding = b.auth.password.hash("another-long-passphrase-for-the-slot");
+
+    var caught = null;
+    var verdict = null;
+    try { verdict = await storage.verifyBundle(bid); }
+    catch (e) { caught = e; }
+
+    if (caught !== null) {
+      check("a gate refusal is raised rather than reported as a failed bundle",
+        caught.code === "argon2/busy" || caught.code === "argon2/queue-timeout",
+        String(caught.code));
+      check("and it is transient, so the caller can retry it",
+        caught.permanent !== true, String(caught.permanent));
+    } else {
+      // The slot was free by the time verify ran, which is a valid outcome:
+      // what must never happen is a verdict of ok:false naming a gate code.
+      check("a verdict never reports a gate refusal as a bundle failure",
+        verdict.ok === true ||
+        !(verdict.errors || []).some(function (c) { return /^argon2\//.test(String(c)); }),
+        JSON.stringify(verdict));
+    }
+    await holding.catch(function () { /* the slot holder */ });
+  } finally {
+    b.auth.password.gate(null);
+    try { fs.rmSync(src,  { recursive: true, force: true }); } catch (_e) { /* ignore */ }
+    try { fs.rmSync(dest, { recursive: true, force: true }); } catch (_e) { /* ignore */ }
+  }
 }
 
 module.exports = { run: run };

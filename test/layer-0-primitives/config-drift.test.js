@@ -172,6 +172,52 @@ async function _testVerifyVendorIntegrity() {
       check("a manifest with no packages map throws its own code",
         shapeErr !== null && shapeErr.code === "config-drift/vendor-manifest-shape",
         shapeErr ? String(shapeErr.code) : "no throw");
+
+      // `typeof null === "object"` and `typeof [] === "object"`, so the shape
+      // check admitted both. A null map reached Object.keys and threw a
+      // TypeError carrying no code, and an array, an empty map, or a package
+      // declaring no files verified nothing and answered ok: true. That is the
+      // zero-files-checked pass the throw above exists to prevent, arrived at
+      // by a different route.
+      function _shapeOf(manifest) {
+        fs.writeFileSync(path.join(missing, "MANIFEST.json"),
+          JSON.stringify(manifest), "utf8");
+        try {
+          return { result: b.configDrift.verifyVendorIntegrity({ libVendorDir: missing }) };
+        } catch (e) {
+          return { code: e.code || ("<untyped " + e.name + ">") };
+        }
+      }
+
+      var refusedShapes = [
+        { label: "null",        manifest: { packages: null } },
+        { label: "an array",    manifest: { packages: [] } },
+        { label: "an empty map", manifest: { packages: {} } },
+      ];
+      for (var i = 0; i < refusedShapes.length; i++) {
+        var got = _shapeOf(refusedShapes[i].manifest);
+        check("a packages map that is " + refusedShapes[i].label +
+              " throws the shape code",
+          got.code === "config-drift/vendor-manifest-shape",
+          JSON.stringify(got));
+      }
+
+      // A package that declares no files is reported, not skipped, and not a
+      // throw: the manifest's shape is well formed and the run has something
+      // to say about it.
+      var noFilesCases = [
+        { label: "no files map",    manifest: { packages: { lib: { version: "1.0.0" } } } },
+        { label: "an empty files map", manifest: { packages: { lib: { files: {} } } } },
+      ];
+      for (var j = 0; j < noFilesCases.length; j++) {
+        var answer = _shapeOf(noFilesCases[j].manifest);
+        check("a package with " + noFilesCases[j].label + " is reported rather than passing",
+          answer.result !== undefined && answer.result.ok === false &&
+          answer.result.checkedCount === 0 &&
+          answer.result.mismatches.length === 1 &&
+          answer.result.mismatches[0].actual === "<unverifiable-manifest-entry>",
+          JSON.stringify(answer));
+      }
     } finally {
       try { fs.rmSync(missing, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
     }

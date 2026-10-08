@@ -26,11 +26,16 @@ function _captureLogger() {
   };
 }
 
+// b.router sets routeLabel before it runs the use() chain, so a middleware
+// reached through the server always has a resolved route. The log line records
+// that rather than req.url, which carries whatever the client sent, including
+// a capability in a path segment or a query parameter.
 function _mockReq(over) {
   return Object.assign({
     method:  "GET",
     url:     "/api/widget?id=42",
     pathname: "/api/widget",
+    routeLabel: "/api/widget",
     headers: { "user-agent": "test-agent" },
     socket:  { remoteAddress: "127.0.0.1" },
   }, over || {});

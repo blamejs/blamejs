@@ -104,6 +104,34 @@ function run() {
   // above kept the register in a state the Markdown writer can read.
   check("and the register still exports after every refusal",
         typeof basisRopa["export"]({ format: "markdown" }) === "string");
+
+  // The validation only holds if the record cannot be edited around it. The
+  // register kept the caller's object and handed it back, so clearing the
+  // array passed to register(), or assigning to a field of the returned
+  // record, put an activity the validation had refused into the next export.
+  var sealRopa = b.gdpr.ropa.create({ audit: false, controller: { name: "Acme" } });
+  var callerPurposes = ["invoicing"];
+  var returned = sealRopa.register({
+    id: "sealed", name: "Billing", purposes: callerPurposes,
+    legalBasis: "contract", dataCategories: ["name"],
+  });
+  callerPurposes.length = 0;
+  check("clearing the array passed to register does not reach the register",
+        sealRopa.get("sealed").purposes.length === 1,
+        JSON.stringify(sealRopa.get("sealed").purposes));
+  try { returned.name = null; } catch (_e) { /* frozen in strict mode */ }
+  check("assigning to a field of the returned record does not reach it either",
+        sealRopa.get("sealed").name === "Billing",
+        String(sealRopa.get("sealed").name));
+  try { sealRopa.get("sealed").purposes.length = 0; } catch (_e) { /* frozen */ }
+  check("and the stored list cannot be emptied through what get() answers",
+        sealRopa.get("sealed").purposes.length === 1);
+  // update() returns a sealed record too, not the merged object it built.
+  var updated = sealRopa.update("sealed", { name: "Billing v2" });
+  try { updated.purposes.push("marketing"); } catch (_e) { /* frozen */ }
+  check("the record update() answers is sealed as well",
+        sealRopa.get("sealed").purposes.length === 1 &&
+        sealRopa.get("sealed").name === "Billing v2");
   var intact = basisRopa.get("a1");
   check("and the stored activity still carries every required field",
         intact.name !== undefined && intact.purposes !== undefined &&

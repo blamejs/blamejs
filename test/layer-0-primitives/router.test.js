@@ -688,6 +688,76 @@ async function testRouteErrorLogLevel() {
     errored.join(" ~~ "));
 }
 
+// The failure line wrote err.message, and for a non-framework error the first
+// five stack lines, straight through the boot logger. An error message often
+// names a file or a storage key, and when that key is a share id or a token
+// the router wrote the value to stderr twice: once in the message and once in
+// the first frame. An application error carrying a retryAfter was written at
+// error level with frames for every refused request.
+async function testRouteErrorLineIsScrubbedAndLevelled() {
+  var TOKEN = "AKIAIOSFODNN7EXAMPLE";
+  var r = b.router.create();
+  r.get("/files", function () {
+    throw new Error("ENOENT: no such file or directory, open " +
+      "'/data/uploads/bundles/token=" + TOKEN + "/1.bin'");
+  });
+  r.get("/busy", function () {
+    var e = new Error("Too many password checks are in progress. Try again in a few seconds.");
+    e.statusCode = 503;
+    e.retryAfter = 5;
+    throw e;
+  });
+  r.onError(function (err, req, res) { res.writeHead(500); res.end("handled"); });
+
+  var server = r.listen(0);
+  await _listening(server);
+  var port = server.address().port;
+
+  var stderrLines = [];
+  var stdoutLines = [];
+  var realError = console.error;
+  var realLog = console.log;
+  var realLevel = process.env.BLAMEJS_BOOT_LOG_LEVEL;
+  process.env.BLAMEJS_BOOT_LOG_LEVEL = "debug";
+  console.error = function (m) { stderrLines.push(String(m)); };
+  console.log = function (m) { stdoutLines.push(String(m)); };
+  try {
+    await _get(port, "/files");
+    await _get(port, "/busy");
+  } finally {
+    console.error = realError;
+    console.log = realLog;
+    if (realLevel === undefined) delete process.env.BLAMEJS_BOOT_LOG_LEVEL;
+    else process.env.BLAMEJS_BOOT_LOG_LEVEL = realLevel;
+    await _close(server);
+  }
+  var all = stderrLines.concat(stdoutLines).join(" ~~ ");
+
+  check("the credential in an error message does not reach the log",
+    all.indexOf(TOKEN) === -1, all.slice(0, 220));
+  check("and the line is still written, with the rest of the message",
+    /ENOENT: no such file/.test(all), all.slice(0, 160));
+
+  // An application error that asks the caller to retry is not a defect to
+  // page on, and its frames say nothing a reader needs. Both warn and error
+  // reach console.error, so the level is read from the record rather than
+  // from which console function received it.
+  function _levelOf(line) {
+    var m = /"level"\s*:\s*"([a-z]+)"/.exec(line);
+    return m ? m[1] : null;
+  }
+  var busy = stderrLines.concat(stdoutLines).filter(function (l) {
+    return l.indexOf("/busy") !== -1;
+  });
+  check("the retryAfter error is recorded", busy.length >= 1, all.slice(0, 200));
+  check("an error carrying retryAfter writes no error-level line",
+    busy.every(function (l) { return _levelOf(l) !== "error"; }),
+    busy.map(_levelOf).join(",") + " :: " + busy.join(" ~~ ").slice(0, 160));
+  check("and it carries no stack frames",
+    busy.every(function (l) { return l.indexOf(" | ") === -1; }),
+    busy.join(" ~~ ").slice(0, 200));
+}
+
 // The route-error logger runs first in the unguarded catch, ahead of the error
 // handler and the last-resort 500. Reading the status and the code widened what
 // it touches on a thrown value from {message, stack} to five properties, so a
@@ -1671,6 +1741,7 @@ async function run() {
   await testWsListenH1Upgrade();
   await testRedirectAndErrorBranches();
   await testRouteErrorLogLevel();
+  await testRouteErrorLineIsScrubbedAndLevelled();
   await testRouteErrorLoggingLevelTargetAndDuplication();
   await testRouteErrorLoggingCannotCostTheResponse();
 }

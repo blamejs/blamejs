@@ -1,7 +1,7 @@
 {
   "version": 1,
   "frameworkVersion": "0.21.1",
-  "createdAt": "2026-10-07T23:36:46.620Z",
+  "createdAt": "2026-10-08T12:18:41.868Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -2482,6 +2482,10 @@
         "record": {
           "type": "function",
           "arity": 1
+        },
+        "refusedActions": {
+          "type": "function",
+          "arity": 0
         },
         "registerNamespace": {
           "type": "function",
@@ -6561,9 +6565,9 @@
           "type": "function",
           "arity": 2
         },
-        "RetryError": {
-          "type": "primitive",
-          "valueType": "undefined"
+        "CircuitOpenError": {
+          "type": "function",
+          "arity": 4
         },
         "create": {
           "type": "function",
@@ -17503,6 +17507,10 @@
           "arity": 4
         },
         "CacheError": {
+          "type": "function",
+          "arity": 4
+        },
+        "CircuitOpenError": {
           "type": "function",
           "arity": 4
         },
@@ -52851,6 +52859,10 @@
           "type": "function",
           "arity": 2
         },
+        "CircuitOpenError": {
+          "type": "function",
+          "arity": 4
+        },
         "DEFAULT_BREAKER": {
           "type": "object",
           "members": {
@@ -57106,6 +57118,10 @@
         "deriveWrappingKey": {
           "type": "function",
           "arity": 3
+        },
+        "isUnreadableFile": {
+          "type": "function",
+          "arity": 1
         },
         "parseHeader": {
           "type": "function",

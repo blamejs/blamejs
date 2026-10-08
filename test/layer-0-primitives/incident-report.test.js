@@ -153,7 +153,21 @@ async function run() {
   var ndRec = await irND.open({ regime: "gdpr", detectedAt: 0 });
   check("non-object deadlines override -> regime base used",
     ndRec.dueBy.initial === 24 * H && ndRec.dueBy.final === 30 * D);
-  check("get(existing) returns the record", irND.get(ndRec.id) === ndRec);
+  // get() answered with the stored record, so a caller holding one could
+  // assign to any field and change the register's view of a statutory clock.
+  var fetched = irND.get(ndRec.id);
+  check("get(existing) answers with an equal record",
+    fetched !== null && fetched.id === ndRec.id &&
+    fetched.dueBy.initial === ndRec.dueBy.initial);
+  check("and it is a frozen copy rather than the stored record",
+    fetched !== ndRec && Object.isFrozen(fetched) && Object.isFrozen(fetched.dueBy),
+    "same=" + (fetched === ndRec) + " frozen=" + Object.isFrozen(fetched));
+  try { fetched.closedAt = 1; } catch (_e) { /* frozen under strict mode */ }
+  check("so editing the answer does not close the incident",
+    irND.get(ndRec.id).closedAt === null,
+    String(irND.get(ndRec.id).closedAt));
+  check("list() answers with copies too",
+    irND.list().every(function (r) { return Object.isFrozen(r); }));
   check("get(unknown) returns null", irND.get("nope") === null);
 
   // `audit` takes false, true, or a configuration object carrying a sink. A

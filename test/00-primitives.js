@@ -7447,7 +7447,7 @@ async function testBodyParserMultipartFileFilterAuditEmit() {
     await _runBodyParser(bp, req, res);
     check("fileFilter audit: event emitted",         captured.length === 1);
     check("fileFilter audit: action correct",
-          captured[0].action === "body-parser.multipart.file_rejected");
+          captured[0].action === "bodyparser.multipart.file_rejected");
     check("fileFilter audit: outcome=denied",        captured[0].outcome === "denied");
     check("fileFilter audit: metadata.field",        captured[0].metadata.field === "doc");
     check("fileFilter audit: metadata.mimeType",     captured[0].metadata.mimeType === "application/pdf");

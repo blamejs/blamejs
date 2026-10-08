@@ -88,8 +88,13 @@ var BROWSER_HEADERS = {
   "sec-fetch-site":   "none",
 };
 
+// An agent this file owns, rather than http.globalAgent, so the pool can be
+// closed deterministically at teardown.
+var AGENT = new http.Agent({ keepAlive: true, maxSockets: 64 });
+
 function _request(opts, body) {
   return new Promise(function (resolve, reject) {
+    if (opts && opts.agent === undefined) opts.agent = AGENT;
     var req = http.request(opts, function (res) {
       var chunks = [];
       res.on("data", function (c) { chunks.push(c); });
@@ -551,6 +556,31 @@ async function run() {
     });
     assert("GET /wiki.css → 200",            wikiCss.statusCode === 200);
 
+    // The rail carries every concern group and every primitive. Left expanded
+    // at phone width it put over two thousand pixels of links above the
+    // content of every page, so it collapses behind a disclosure below 768px.
+    // Measured on the rendered page: main started at y=2367 on /csv at 390px
+    // wide, and starts at y=267 with the disclosure closed.
+    assert("the stylesheet collapses the rail below 768px",
+           /@media\s*\(max-width:\s*768px\)/.test(wikiCss.body) &&
+           /\.rail-toggle:checked\s*~\s*\.rail\s*\.rail-nav/.test(wikiCss.body));
+    assert("the disclosure is hidden on a wide screen",
+           /\.rail-toggle,\s*\n?\s*\.rail-toggle-label\s*\{\s*display:\s*none/.test(wikiCss.body));
+    // Hidden with opacity rather than display:none, so it keeps its place in
+    // the tab order and the rail can be opened from the keyboard.
+    assert("the disclosure control stays keyboard reachable",
+           /\.rail-toggle\s*\{[^}]*display:\s*block[^}]*opacity:\s*0/.test(wikiCss.body));
+
+    var layoutHome = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/",
+      headers: BROWSER_HEADERS,
+    });
+    assert("every page renders the rail disclosure",
+           /id="rail-toggle"/.test(layoutHome.body) &&
+           /for="rail-toggle"/.test(layoutHome.body));
+    assert("and the viewport is declared for a phone",
+           /name="viewport"[^>]*width=device-width/.test(layoutHome.body));
+
     var logo = await _request({
       method: "GET", host: "127.0.0.1", port: port, path: "/img/blamejs-logo.png",
       headers: Object.assign({}, BROWSER_HEADERS, {
@@ -978,6 +1008,11 @@ async function run() {
     // checking is currently weaker than the legacy fork-per-example
     // path; re-add as a separate gate when needed.
   } finally {
+    // Close the pool before the server goes away. An idle keep-alive socket
+    // outlives the request that opened it and carries no 'error' listener of
+    // its own, so a server closing it during shutdown raised ECONNRESET with
+    // nothing listening and killed the run after every check had passed.
+    try { AGENT.destroy(); } catch (_e) { /* best-effort */ }
     await built.app.shutdown();
   }
 

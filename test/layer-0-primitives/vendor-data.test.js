@@ -130,6 +130,72 @@ function testSignatureFingerprintStableAcrossCalls() {
   }
 }
 
+// BLAMEJS_VENDOR_DATA_PUBKEY_FINGERPRINT lets an operator pin the signing key
+// the vendored data must have been signed by. The comparison was written
+// `bCrypto.timingSafeEqual(...)` against a lazyRequire getter rather than
+// `bCrypto().timingSafeEqual(...)`, so the property was undefined and the call
+// raised a TypeError: a CORRECT pin failed boot, and a WRONG pin produced that
+// same TypeError instead of the mismatch refusal. The control that proves the
+// pin is really being compared is the wrong-pin arm.
+//
+// It runs as child processes because verifyAll() executes at module load and
+// memoizes, so the variable has to be set before the framework is required.
+function testOperatorFingerprintPin() {
+  var childProcess = require("node:child_process");
+  var nodeCrypto = require("node:crypto");
+  var path = require("node:path");
+  var REPO_ROOT = path.resolve(__dirname, "..", "..");
+
+  // Derive the pin the way lib/vendor-data.js does, line-wise between the PEM
+  // markers. A regex stripping `-----...-----` cannot cross the hyphens in
+  // "SLH-DSA-SHAKE-256F" and silently leaves header bytes in the base64.
+  var pem = String(require(path.join(REPO_ROOT, "lib/vendor/vendor-data-pubkey")));
+  var lines = pem.replace(/\r/g, "").split("\n");
+  var body = "";
+  for (var i = 1; i < lines.length; i++) {
+    if (lines[i].indexOf("-----END ") === 0) break;
+    body += lines[i];
+  }
+  var realPin = nodeCrypto.createHash("sha256")
+    .update(Buffer.from(body, "base64")).digest("hex");
+  check("the derived pin is a 64-hex sha256", /^[0-9a-f]{64}$/.test(realPin));
+
+  function bootWith(pin) {
+    return childProcess.spawnSync(process.execPath,
+      ["-e", "require('./index.js'); console.log('BOOT OK');"],
+      { cwd: REPO_ROOT, encoding: "utf8",
+        env: Object.assign({}, process.env, {
+          BLAMEJS_VENDOR_DATA_PUBKEY_FINGERPRINT: pin,
+        }) });
+  }
+
+  var ok = bootWith(realPin);
+  check("the correct pin boots",
+    ok.status === 0 && /BOOT OK/.test(ok.stdout || ""),
+    "status=" + ok.status + " " + String(ok.stderr || "").slice(0, 160));
+
+  var wrong = bootWith("a".repeat(64));
+  check("a wrong pin refuses with the mismatch code, not a TypeError",
+    wrong.status !== 0 &&
+    /vendor-data\/operator-fingerprint-mismatch/.test(wrong.stderr || "") &&
+    !/timingSafeEqual is not a function/.test(wrong.stderr || ""),
+    String(wrong.stderr || "").slice(0, 200));
+
+  var malformed = bootWith("not-a-fingerprint");
+  check("a malformed pin still refuses on its shape",
+    malformed.status !== 0 &&
+    /vendor-data\/operator-fingerprint-bad-shape/.test(malformed.stderr || ""),
+    String(malformed.stderr || "").slice(0, 160));
+
+  // The control: with no pin set, boot is unaffected.
+  var none = childProcess.spawnSync(process.execPath,
+    ["-e", "require('./index.js'); console.log('BOOT OK');"],
+    { cwd: REPO_ROOT, encoding: "utf8" });
+  check("boot with no pin set is unaffected",
+    none.status === 0 && /BOOT OK/.test(none.stdout || ""),
+    "status=" + none.status);
+}
+
 async function run() {
   testSurface();
   testKnownVendorDataEntries();
@@ -141,6 +207,7 @@ async function run() {
   testCanaryPresentInParsedPSL();
   testTamperDetectionViaCloneAndModify();
   testSignatureFingerprintStableAcrossCalls();
+  testOperatorFingerprintPin();
 }
 
 module.exports = { run: run };

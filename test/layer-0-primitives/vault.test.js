@@ -280,6 +280,45 @@ async function run() {
   await testZeroingAReadPassphraseDoesNotZeroWhatTheRetryWillUse();
   await testGetCurrentPassphraseWrapped();
   await testGetCurrentPassphrasePlaintext();
+  await testIsUnreadableFileIsPublic();
+}
+
+// Five framework callers separate an unreadable sealed file from a rejected
+// passphrase, and the only predicate for it was private. An application calling
+// b.vaultWrap.unwrap directly had to restate the list of parse codes, and that
+// list grows with each new check.
+async function testIsUnreadableFileIsPublic() {
+  check("vaultWrap.isUnreadableFile is public",
+    typeof b.vaultWrap.isUnreadableFile === "function",
+    typeof b.vaultWrap.isUnreadableFile);
+  check("the private spelling is gone",
+    b.vaultWrap._isUnreadableFile === undefined,
+    typeof b.vaultWrap._isUnreadableFile);
+
+  // Bytes that are not a sealed file at all: the file is the problem.
+  // wrap and unwrap are async, so an un-awaited call reports no throw and
+  // raises the refusal later as an unhandled rejection.
+  var unreadable = null;
+  try { await b.vaultWrap.unwrap(Buffer.alloc(64, 0x41), "passphrase-for-the-test"); }
+  catch (e) { unreadable = e; }
+  check("unreadable bytes answer true",
+    unreadable !== null && b.vaultWrap.isUnreadableFile(unreadable) === true,
+    unreadable ? String(unreadable.code) : "no throw");
+
+  // The control: a real file read with the wrong passphrase answers false, so
+  // the predicate distinguishes rather than reporting every failure.
+  var sealed = await b.vaultWrap.wrap(Buffer.from("secret-bytes"), "the-right-passphrase");
+  var rejected = null;
+  try { await b.vaultWrap.unwrap(sealed, "the-wrong-passphrase"); }
+  catch (e) { rejected = e; }
+  check("a rejected passphrase answers false",
+    rejected !== null && rejected.code === "vault-wrap/passphrase-rejected" &&
+    b.vaultWrap.isUnreadableFile(rejected) === false,
+    rejected ? String(rejected.code) : "no throw");
+  check("and a non-error answers false",
+    b.vaultWrap.isUnreadableFile(null) === false &&
+    b.vaultWrap.isUnreadableFile(undefined) === false &&
+    b.vaultWrap.isUnreadableFile(new Error("plain")) === false);
 }
 
 module.exports = { run: run };

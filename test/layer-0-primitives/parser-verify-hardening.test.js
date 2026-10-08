@@ -231,27 +231,41 @@ function testBodyParserRawWildcardMatchesRealType() {
 }
 
 async function testPromiseToStreamWrapsPromise() {
-  // The object-store remote backends' getStream() wraps a Promise<Buffer> via
-  // sharedRequest.promiseToStream. A bare Readable.from(promise) throws
-  // ERR_INVALID_ARG_TYPE — the helper must return a Readable that yields the
-  // resolved bytes and surfaces a rejection as a stream 'error'.
+  // The object-store remote backends' getStream() turns a pending response
+  // into a Readable via sharedRequest.responseToStream. A bare
+  // Readable.from(promise) throws ERR_INVALID_ARG_TYPE — the helper must
+  // return a Readable that yields the bytes and surfaces a rejection as a
+  // stream 'error'. It accepts a resolved value directly as well as a
+  // response carrying a body, which is how a buffered reply still works.
   var sharedRequest = require("../../lib/object-store/http-request");
-  var s = sharedRequest.promiseToStream(Promise.resolve(Buffer.from("hello-stream")));
+  var s = sharedRequest.responseToStream(Promise.resolve(Buffer.from("hello-stream")));
   var chunks = [];
   await new Promise(function (resolve, reject) {
     s.on("data", function (c) { chunks.push(c); });
     s.on("end", resolve); s.on("error", reject);
   });
-  check("promiseToStream yields the resolved buffer", Buffer.concat(chunks).toString() === "hello-stream");
+  check("responseToStream yields the resolved buffer", Buffer.concat(chunks).toString() === "hello-stream");
 
-  var s2 = sharedRequest.promiseToStream(Promise.reject(new Error("upstream boom")));
+  var s2 = sharedRequest.responseToStream(Promise.reject(new Error("upstream boom")));
   var errored = false;
   await new Promise(function (resolve) {
     s2.on("error", function () { errored = true; resolve(); });
     s2.on("end", resolve);
     s2.resume();
   });
-  check("promiseToStream surfaces a rejected promise as a stream 'error'", errored === true);
+  check("responseToStream surfaces a rejected promise as a stream 'error'", errored === true);
+
+  // A streamed response hands its body through rather than buffering it.
+  var { Readable } = require("node:stream");
+  var s3 = sharedRequest.responseToStream(
+    Promise.resolve({ body: Readable.from([Buffer.from("ab"), Buffer.from("cd")]) }));
+  var got = [];
+  await new Promise(function (resolve, reject) {
+    s3.on("data", function (c) { got.push(c); });
+    s3.on("end", resolve); s3.on("error", reject);
+  });
+  check("responseToStream passes a streamed body through",
+    Buffer.concat(got).toString() === "abcd", Buffer.concat(got).toString());
 }
 
 async function testSchedulerFarFutureNoImmediateFire() {
