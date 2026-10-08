@@ -298,6 +298,82 @@ async function run() {
   check("localDb.LocalDbThinError class registered",
     typeof b.localDb.LocalDbThinError === "function" &&
     b.localDb.LocalDbThinError === b.frameworkError.LocalDbThinError);
+
+  await _testIntegrityCheckThatCannotRun();
+}
+
+// PRAGMA integrity_check answers in three ways and only two of them mean the
+// file is damaged: it reports "ok", it lists what it found, or it fails to run.
+// The third was read as corruption, so a database that still answered ordinary
+// queries was renamed aside and replaced with an empty one, and the sqlite error
+// that led there was discarded rather than reported.
+//
+// Real corruption is what is drivable here, and it is also what the fix could
+// break: a classifier that stops calling a damaged file damaged would be worse
+// than the bug. These assert that the corrupt path is intact and now says why,
+// and that a file still readable through sqlite_schema survives the judgement.
+async function _testIntegrityCheckThatCannotRun() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-thin-verdict-"));
+  try {
+    var schemaSql = "CREATE TABLE IF NOT EXISTS notes (id TEXT PRIMARY KEY, body TEXT NOT NULL);";
+
+    // A file of bytes that is not a database at all. sqlite raises
+    // "file is not a database", which is corruption and must stay corruption.
+    var notDb = path.join(dir, "garbage.db");
+    fs.writeFileSync(notDb, Buffer.alloc(8192, 0x41));
+    var refused = null;
+    try { b.localDb.thin({ file: notDb, schemaSql: schemaSql, audit: false }); }
+    catch (e) { refused = e; }
+    check("a file that is not a database is still refused as corrupt",
+      refused !== null && refused.code === "localdb-thin/corrupt",
+      refused ? String(refused.code) + ": " + refused.message : "no throw");
+    check("and the refusal now carries the sqlite error that led to it",
+      refused !== null && /not a database|encrypted|malformed/i.test(String(refused.message || "")),
+      refused ? String(refused.message) : "no throw");
+
+    // The same file under rename-and-recreate is still set aside and replaced,
+    // and the audit event now records why. `audit` here is a boolean, so the
+    // row is read back out of the real chain rather than from a capture sink.
+    await helpers.setupTestDb(dir);
+    var recovered = b.localDb.thin({
+      file: notDb, schemaSql: schemaSql, recovery: "rename-and-recreate",
+      audit: true,
+    });
+    check("rename-and-recreate still recovers a genuinely corrupt file",
+      recovered.recovered === true && typeof recovered.recoveredTo === "string",
+      JSON.stringify({ recovered: recovered.recovered, to: recovered.recoveredTo }));
+    var aside = fs.readdirSync(dir).filter(function (n) {
+      return n.indexOf(".corrupt-") !== -1;
+    });
+    check("and the damaged bytes are kept aside rather than deleted",
+      aside.length === 1, JSON.stringify(aside));
+    recovered.close();
+    await b.audit.flush();
+    var rows = await b.audit.query({ action: "localdb.thin.recovered" });
+    var meta = rows.length
+      ? (typeof rows[0].metadata === "string" ? JSON.parse(rows[0].metadata) : rows[0].metadata)
+      : null;
+    check("the recovery audit row says why the file was replaced",
+      meta !== null && typeof meta.reason === "string" && meta.reason.length > 0,
+      "rows=" + rows.length + " " + JSON.stringify(meta));
+
+    // The control for the classifier: an ordinary healthy database is not
+    // caught by any of the above, so the stricter reading did not widen into
+    // refusing good files.
+    var good = path.join(dir, "good.db");
+    var h = b.localDb.thin({ file: good, schemaSql: schemaSql, audit: false });
+    h.run("INSERT INTO notes VALUES (?, ?)", "a", "hello");
+    h.close();
+    var reopened = b.localDb.thin({ file: good, schemaSql: schemaSql, audit: false });
+    check("a healthy database still opens, with its rows",
+      reopened.query("SELECT id FROM notes").length === 1 &&
+      reopened.recovered !== true,
+      JSON.stringify({ recovered: reopened.recovered }));
+    reopened.close();
+  } finally {
+    try { await helpers.teardownTestDb(dir); } catch (_e) { /* best-effort */ }
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+  }
 }
 
 module.exports = { run: run };

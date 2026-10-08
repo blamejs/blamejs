@@ -1164,7 +1164,7 @@ async function testContentSafetyDisabledAudit() {
   }, { "a.txt": "abc" });
   try {
     var disabledRow = rows.filter(function (r) {
-      return r.action === "staticServe.contentSafety.disabled";
+      return r.action === "staticserve.content_safety.disabled";
     })[0];
     check("contentSafety:null emits an audit row recording the opt-out",
           !!disabledRow && disabledRow.metadata.reason === "trusted-curated-assets");
@@ -1409,7 +1409,7 @@ async function testContentSafetyDisabledDefaultReason() {
   var ctx = await _ctx({ contentSafety: null, audit: audit }, { "a.txt": "abc" });
   try {
     var row = rows.filter(function (r) {
-      return r.action === "staticServe.contentSafety.disabled";
+      return r.action === "staticserve.content_safety.disabled";
     })[0];
     check("contentSafety:null without a reason records the default opt-out reason",
           !!row && row.metadata.reason === "operator-explicit-opt-out");

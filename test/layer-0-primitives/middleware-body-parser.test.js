@@ -673,7 +673,7 @@ async function testMultipartFileFilterRejectFalse() {
         req.filesRejected.length === 1 && req.filesRejected[0].field === "f" &&
         req.filesRejected[0].code === "fileFilter");
   check("fileFilter rejection emits the audit event",
-        audit.byAction("body-parser.multipart.file_rejected").length === 1);
+        audit.byAction("bodyparser.multipart.file_rejected").length === 1);
 }
 
 async function testMultipartFileFilterRejectObject() {

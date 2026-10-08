@@ -78,6 +78,59 @@ async function testUnreachableMessageNamesAReadableSetting() {
       require("node:path").join(__dirname, "..", "..", "lib", "db.js"), "utf8")
       .indexOf('readVar("' + named[0] + '"') !== -1,
     named[0] + " is not read anywhere in lib/db.js");
+  // And read by the function that hands out the advice. Only b.db.init acted on
+  // it, so a program calling bootCheck directly and logging `message` told its
+  // operator to set a variable that changed nothing it would observe.
+  // Naming it is not reading it: the advisory text mentioned the variable, so
+  // any check for the bare name passes without anything consulting it.
+  check("ntpCheck.bootCheck: the named setting is read by bootCheck's own module",
+    require("node:fs").readFileSync(
+      require("node:path").join(__dirname, "..", "..", "lib", "ntp-check.js"), "utf8")
+      .indexOf('readVar("' + named[0] + '"') !== -1,
+    named[0] + " is named but never read in lib/ntp-check.js");
+}
+
+// With BLAMEJS_NTP_REQUIRE_REACHABLE=1 the documentation calls an unanswered
+// query a refusal, and bootCheck answered ok: true regardless. The refusal also
+// has to stop quoting the advice: b.db.init embedded the warning message in the
+// error it threw, so the refusal told the operator to set the variable that had
+// just caused it.
+async function testRequireReachableIsHonoredByBootCheck() {
+  var VAR  = "BLAMEJS_NTP_REQUIRE_REACHABLE";
+  var had  = Object.prototype.hasOwnProperty.call(process.env, VAR);
+  var prev = process.env[VAR];
+  // Port 1 on loopback answers nothing, and the short timeout keeps it quick.
+  var unreachable = { servers: ["127.0.0.1"], port: 1, timeoutMs: 250 };            // allow:raw-time-literal — test-only short probe
+  try {
+    delete process.env[VAR];
+    var lenient = await b.ntpCheck.bootCheck(unreachable);
+    check("unset: an unanswered query stays a warning",
+      lenient.ok === true && lenient.severity === "warning" && lenient.driftMs === null,
+      JSON.stringify(lenient));
+    check("unset: and the message offers the setting",
+      (lenient.message || "").indexOf(VAR) !== -1, lenient.message);
+
+    process.env[VAR] = "1";
+    var strict = await b.ntpCheck.bootCheck(unreachable);
+    check("set to 1: an unanswered query is a refusal",
+      strict.ok === false && strict.driftMs === null,
+      JSON.stringify(strict));
+    check("set to 1: and it does not advise setting the variable that caused it",
+      !/set BLAMEJS_NTP_REQUIRE_REACHABLE/.test(strict.message || ""),
+      strict.message);
+    check("set to 1: the reason the clock could not be read is still reported",
+      typeof strict.unreachableReason === "string" && strict.unreachableReason.length > 0,
+      JSON.stringify(strict));
+
+    // A value other than "1" is not the opt-in, so it must not refuse.
+    process.env[VAR] = "0";
+    var zero = await b.ntpCheck.bootCheck(unreachable);
+    check("set to 0: the boot is not refused",
+      zero.ok === true && zero.severity === "warning", JSON.stringify(zero));
+  } finally {
+    if (had) process.env[VAR] = prev;
+    else delete process.env[VAR];
+  }
 }
 
 // A plain SNTP reply is unauthenticated by construction, and this reading
@@ -472,6 +525,7 @@ async function run() {
   await testBootCheckRefusesMistypedThresholds();
   await testMonitorFiresOnDriftAndAudits();
   await testUnreachableMessageNamesAReadableSetting();
+  await testRequireReachableIsHonoredByBootCheck();
   await testCheckDriftPrefersAuthenticatedTime();
   await testBootCheckCarriesAuthenticationThrough();
 }

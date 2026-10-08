@@ -244,6 +244,33 @@ async function testAppShutdownStandardPhasesBuilder() {
   check("standardPhases: execution mirrors declaration order",
         stops.join(",") === "health,scheduler,jobs,websockets,server,cluster,db,externalDb");
   o._resetForTest();
+
+  // server.close() stops accepting and then waits for the connections that are
+  // already open, so an idle keep-alive peer held the phase to its timeout and
+  // was left to reset rather than being closed.
+  var idleClosed = 0;
+  var closeCb = null;
+  var keepAliveServer = {
+    close:                 function (cb) { closeCb = cb; },
+    closeIdleConnections:  function () { idleClosed += 1; if (closeCb) closeCb(); },
+  };
+  var kaPhases = b.appShutdown.standardPhases({ server: keepAliveServer });
+  var kaO = b.appShutdown.create({ phases: kaPhases });
+  await kaO.shutdown();
+  check("standardPhases: the http-server phase closes idle connections",
+        idleClosed === 1, "calls=" + idleClosed);
+  kaO._resetForTest();
+
+  // A server predating closeIdleConnections still shuts down through close().
+  var oldClosed = 0;
+  var oldPhases = b.appShutdown.standardPhases({
+    server: { close: function (cb) { oldClosed += 1; cb(); } },
+  });
+  var oldO = b.appShutdown.create({ phases: oldPhases });
+  await oldO.shutdown();
+  check("standardPhases: a server without closeIdleConnections still closes",
+        oldClosed === 1, "calls=" + oldClosed);
+  oldO._resetForTest();
 }
 
 async function testAppShutdownStandardPhasesOmitsAbsentComponents() {

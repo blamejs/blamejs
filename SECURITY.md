@@ -359,7 +359,7 @@ This is the minimum-viable security posture for a production deployment. The fra
 - [ ] Off-site at least one bundle (different region / cloud / physical location)
 - [ ] Retain bundles per compliance window with `b.backup.create({ retention: { keep } })`. Retention deletes older bundles only after the new bundle reads back from storage intact; the framework does not chain bundles to each other, so detect a deleted bundle by comparing the storage listing with the `backup.success` audit events
 - [ ] Under `hipaa` / `pci-dss` postures, `b.backup.create` refuses `encrypt: false` at boot — the framework enforces backup encryption on these regulatory regimes
-- [ ] Rotate the backup envelope key periodically (PCI DSS 3.6.4 / SOC 2 CC6.1) via `storage.keyRotation({ newRecipient | newPassphrase })` — it rotates every bundle's envelope AND re-reads each under the new key, so a rotation that corrupts a bundle reports `verifyFailed > 0` immediately rather than failing at restore time; the emitted `backup/key-rotated` audit event is the rotation record auditors expect
+- [ ] Rotate the backup envelope key periodically (PCI DSS 3.6.4 / SOC 2 CC6.1) via `storage.keyRotation({ newRecipient | newPassphrase })` — it rotates every bundle's envelope AND re-reads each under the new key, so a rotation that corrupts a bundle reports `verifyFailed > 0` immediately rather than failing at restore time; the emitted `backup.key_rotated` audit event is the rotation record auditors expect
 - [ ] Generate a posture-appropriate disaster-recovery runbook with `b.drRunbook.emit({ posture, services, rtoMs, rpoMs })` and commit it under `docs/dr/` — ships RTO/RPO + role-recovery + breach-disclosure deadlines + restore procedure
 
 **Multi-tenant deployments**

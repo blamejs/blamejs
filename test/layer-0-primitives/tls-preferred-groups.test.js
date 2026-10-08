@@ -750,7 +750,7 @@ async function testCappedDialIsNotBlamedOnTls13() {
   var viaAgent = await _dialFailure(function () {
     return b.httpClient.request({
       url: "https://127.0.0.1:" + port + "/",
-      allowInternal: true, allowedHosts: ["127.0.0.1"], timeout: 4000,
+      allowInternal: true, allowedHosts: ["127.0.0.1"], timeoutMs: 4000,
       agent: new https.Agent({
         minVersion: "TLSv1.2", maxVersion: "TLSv1.2", ecdhCurve: "X25519",
         ca: [pair.cert], servername: "localhost",

@@ -672,8 +672,8 @@ async function testAuditedOptOut() {
     stagingDir: _tmpDir("optout-default"), contentSafety: null, filenameSafety: null,
     audit: { safeEmit: function (e) { defaults.push(e); } },
   });
-  var cs = defaults.filter(function (e) { return e.action === "fileUpload.contentSafety.disabled"; });
-  var fs2 = defaults.filter(function (e) { return e.action === "fileUpload.filenameSafety.disabled"; });
+  var cs = defaults.filter(function (e) { return e.action === "fileupload.content_safety.disabled"; });
+  var fs2 = defaults.filter(function (e) { return e.action === "fileupload.filename_safety.disabled"; });
   check("opt-out audit: content-safety disable row with default reason",
         cs.length === 1 && cs[0].metadata.reason === "operator-explicit-opt-out" &&
         cs[0].outcome === "success");
@@ -688,9 +688,9 @@ async function testAuditedOptOut() {
     audit: { safeEmit: function (e) { custom.push(e); } },
   });
   check("opt-out audit: operator-supplied reasons are recorded",
-        custom.some(function (e) { return e.action === "fileUpload.contentSafety.disabled" &&
+        custom.some(function (e) { return e.action === "fileupload.content_safety.disabled" &&
                                           e.metadata.reason === "legacy-import-path"; }) &&
-        custom.some(function (e) { return e.action === "fileUpload.filenameSafety.disabled" &&
+        custom.some(function (e) { return e.action === "fileupload.filename_safety.disabled" &&
                                           e.metadata.reason === "operator-accepts-unicode-names"; }));
 
   // A throwing audit sink during the disable-audit must not break create().

@@ -68,6 +68,27 @@ function _refuses(label, fn, code) {
 // validate() guards that no existing fixture reached.
 // ---------------------------------------------------------------------------
 function testValidateResidualGuards() {
+  // aadBound is checked by validate(), not only where a manifest is created.
+  // A manifest read off disk carrying the string "true" otherwise passed,
+  // lost the field on the next serialize(), and restored as though the bundle
+  // were not AAD-bound, surfacing as a decryption failure instead of a
+  // refusal.
+  [["the string \"true\"", "true"], ["a 1", 1], ["a null", null]].forEach(function (bad) {
+    var badAad = _errorsFor(function (m) { m.aadBound = bad[1]; });
+    check("validate: aadBound given " + bad[0] + " is refused",
+      badAad.ok === false &&
+      badAad.errors.some(function (e) {
+        return /aadBound: must be a boolean when present/.test(e);
+      }), JSON.stringify(badAad.errors));
+  });
+  // The controls: absent and genuinely boolean both pass.
+  var noAad = _errorsFor(function (m) { delete m.aadBound; });
+  check("validate: an absent aadBound is fine", noAad.ok === true,
+    JSON.stringify(noAad.errors));
+  var trueAad = _errorsFor(function (m) { m.aadBound = true; });
+  check("validate: aadBound true is fine", trueAad.ok === true,
+    JSON.stringify(trueAad.errors));
+
   // An ABSENT encryptedPath — distinct from the traversal-shaped one that
   // existing fixtures cover; this is the required-non-empty-string arm.
   var missingEnc = _errorsFor(function (m) { delete m.files[0].encryptedPath; });

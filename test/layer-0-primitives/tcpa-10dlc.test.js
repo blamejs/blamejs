@@ -44,6 +44,33 @@ async function run() {
   check("revoked record marked",  afterRevoke.revoked === true);
   check("revokedReason recorded", afterRevoke.revokedReason === "STOP-keyword");
 
+  // One record per number. The revocation takes the grant's place rather than
+  // being filed beside it, carrying the grant's fields forward, and nothing
+  // answers the record as it stood before. The documentation says so because a
+  // caller reading "immutable" would otherwise look for the earlier record.
+  check("the revoked record carries the grant's opt-in timestamp forward",
+    afterRevoke.optInTimestamp === rec.optInTimestamp &&
+      afterRevoke.disclosureText === rec.disclosureText);
+  check("and the grant it replaced is no longer answered",
+    b.tcpa10dlc.lookup("+15551234567").revoked === true);
+
+  // Recording the same number again replaces the revoked record with a fresh
+  // grant, which is how a re-opt-in is recorded.
+  var reGrant = b.tcpa10dlc.recordConsent({
+    phoneE164:           "+15551234567",
+    brand:               "Acme Inc.",
+    disclosureText:      "I agree to receive promotional messages from Acme Inc. at this number. Msg & data rates may apply. Reply STOP to opt out.",
+    disclosurePartyKind: "first-party",
+    formUrl:             "https://acme.example/signup",
+    audit:               false,
+  });
+  check("re-recording a revoked number answers a fresh grant",
+    reGrant.revoked === false && reGrant.revokedAt === null);
+  check("and lookup answers the replacement, not the revocation",
+    b.tcpa10dlc.lookup("+15551234567").revoked === false);
+  check("so revoke is accepted again rather than refused as already revoked",
+    b.tcpa10dlc.revoke("+15551234567", "STOP again").revoked === true);
+
   function rejects(label, fn, code) {
     var threw = null;
     try { fn(); } catch (e) { threw = e; }

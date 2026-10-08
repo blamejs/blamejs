@@ -2380,6 +2380,122 @@ function testEnvLoadBreakingChange() {
     });
     check("env: { allow: [...] } authorises breaking change",
           ok.values.DATABASE_URL === "postgres://B");
+
+    // Without snapshotPath there is nothing to compare against, so the same
+    // two loads report every key as newly added and the breaking-sensitivity
+    // gate never fires. A deployment that leaves the option out gets no
+    // change detection at all, which is why the option is documented.
+    var noSnapDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-env-nosnap-"));
+    try {
+      var p2 = path.join(noSnapDir, ".env");
+      fs.writeFileSync(p2, "DATABASE_URL=postgres://A\n");
+      var first = b.parsers.env.load(p2, { expected: expected, audit: false });
+      check("env: a load with no snapshotPath reports the key as added",
+            first.diff.added.length === 1 && first.diff.changed.length === 0);
+      fs.writeFileSync(p2, "DATABASE_URL=postgres://B\n");
+      var second = b.parsers.env.load(p2, { expected: expected, audit: false });
+      check("env: the changed value is reported as added, not changed",
+            second.diff.added.length === 1 && second.diff.changed.length === 0);
+      check("env: so the breaking-sensitivity gate does not fire",
+            second.values.DATABASE_URL === "postgres://B");
+      check("env: and no snapshot file was written beside the env file",
+            fs.readdirSync(noSnapDir).length === 1);
+
+      // `diff` compares the file against the snapshot and is computed before
+      // the apply loop, so it reports a change the environment never received.
+      // A caller reading it as "what is live now" would be wrong twice over.
+      var snap2 = path.join(noSnapDir, "snap.json");
+      fs.writeFileSync(p2, "DATABASE_URL=postgres://A\n");
+      b.parsers.env.load(p2, { snapshotPath: snap2, audit: false });
+      fs.writeFileSync(p2, "DATABASE_URL=postgres://C\n");
+      process.env.DATABASE_URL = "postgres://ALREADY-SET";
+      try {
+        var unapplied = b.parsers.env.load(p2, {
+          snapshotPath: snap2, audit: false, allow: ["DATABASE_URL"],
+          applyToProcess: true,   // allowOverwrite stays false
+        });
+        check("env: diff reports a change that allowOverwrite:false skipped",
+              unapplied.diff.changed.length === 1 &&
+              unapplied.diff.changed[0].key === "DATABASE_URL");
+        check("env: and the environment still holds the value it already had",
+              process.env.DATABASE_URL === "postgres://ALREADY-SET");
+      } finally {
+        delete process.env.DATABASE_URL;
+      }
+
+      fs.writeFileSync(p2, "DATABASE_URL=postgres://D\n");
+      var notApplied = b.parsers.env.load(p2, {
+        snapshotPath: snap2, audit: false, allow: ["DATABASE_URL"],
+      });
+      check("env: diff reports a change with applyToProcess false",
+            notApplied.diff.changed.length === 1);
+      check("env: and nothing was written to the environment",
+            process.env.DATABASE_URL === undefined);
+
+      // Every documented option is checked before the file is opened. A typo
+      // in one used to read as the default: `allow: "KEY"` died on a native
+      // TypeError with no code, and `applyToProcess: "true"` was read as
+      // false, so the load reported success while applying nothing.
+      [
+        { label: "a non-boolean applyToProcess", opts: { applyToProcess: "true" } },
+        { label: "a non-boolean allowOverwrite", opts: { allowOverwrite: "true" } },
+        { label: "a non-boolean rejectUnknown", opts: { rejectUnknown: 1 } },
+        { label: "a non-boolean audit",         opts: { audit: 0 } },
+        { label: "an allow that is a string",   opts: { allow: "DATABASE_URL" } },
+        { label: "an allow holding a non-string", opts: { allow: [7] } },
+        { label: "a snapshotPath that is empty", opts: { snapshotPath: "" } },
+        { label: "an expected that is an array", opts: { expected: [] } },
+      ].forEach(function (bad) {
+        var refused = null;
+        try { b.parsers.env.load(p2, Object.assign({ audit: false }, bad.opts)); }
+        catch (e) { refused = e; }
+        check("env: " + bad.label + " is refused with env/bad-opt",
+              !!refused && refused.code === "env/bad-opt",
+              bad.label + " -> " + (refused ? refused.code : "accepted"));
+      });
+      // The `expected` schema's entries are checked too, before the file is
+      // opened. `optionalPlainObject` validated only the container, so
+      // `{ PORT: null }` passed and then threw an uncoded TypeError while
+      // reading `expected[k].required`. An unknown `type` on a key the file
+      // does not carry is caught here as well, which the per-key coercion
+      // never reaches.
+      [
+        { label: "a null entry",              expected: { DATABASE_URL: null } },
+        { label: "a numeric entry",           expected: { DATABASE_URL: 7 } },
+        { label: "an array entry",            expected: { DATABASE_URL: [] } },
+        { label: "an unknown type",           expected: { DATABASE_URL: { type: "int" } } },
+        { label: "an unknown type on an absent key",
+          expected: { NOT_IN_FILE: { type: "int" } } },
+        { label: "a non-string sensitivity",  expected: { DATABASE_URL: { sensitivity: 5 } } },
+      ].forEach(function (bad) {
+        var refused = null;
+        try { b.parsers.env.load(p2, { audit: false, expected: bad.expected }); }
+        catch (e) { refused = e; }
+        check("env: an expected schema with " + bad.label + " is refused",
+              !!refused && refused.code === "env/bad-schema",
+              bad.label + " -> " + (refused ? refused.code : "accepted"));
+      });
+      var badRequired = null;
+      try {
+        b.parsers.env.load(p2, { audit: false,
+          expected: { DATABASE_URL: { type: "string", required: "yes" } } });
+      } catch (e) { badRequired = e; }
+      check("env: a non-boolean required in an expected entry raises env/bad-opt",
+            !!badRequired && badRequired.code === "env/bad-opt",
+            badRequired && String(badRequired.code));
+
+      // The control: the same call with every option well-shaped is accepted,
+      // so the refusals above are about the shapes and not the file.
+      var wellShaped = b.parsers.env.load(p2, {
+        audit: false, applyToProcess: false, allowOverwrite: false,
+        rejectUnknown: false, allow: ["DATABASE_URL"],
+        expected: { DATABASE_URL: { type: "string" } },
+      });
+      check("env: a call with every option well-shaped still loads",
+            wellShaped.values.DATABASE_URL === "postgres://D");
+    } finally {
+      fs.rmSync(noSnapDir, { recursive: true, force: true });
+    }
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

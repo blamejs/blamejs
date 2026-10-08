@@ -1170,6 +1170,111 @@ async function testH2cPaths() {
   b.httpClient._resetForTest();
 }
 
+// An HTTP/2 stream is bidirectional, so a server can answer in full before it
+// has read the request body. Releasing the transport when the RESPONSE body
+// ended destroyed both halves of that stream, and the upload still in flight
+// was cut off while the call reported success: a five-chunk body arrived as one
+// chunk. The release now waits for the request to finish as well.
+async function testAnEarlyResponseDoesNotTruncateTheUpload() {
+  var CHUNKS = 5;
+  var CHUNK_BYTES = 100;
+
+  function _slowBody() {
+    var sent = 0;
+    return new nodeStream.Readable({
+      read: function () {
+        var self = this;
+        if (sent >= CHUNKS) { self.push(null); return; }
+        sent += 1;
+        setTimeout(function () { self.push(Buffer.alloc(CHUNK_BYTES, 0x61)); }, 20);
+      },
+    });
+  }
+
+  var seen = 0;
+  await _withH2cServer(function (stream) {
+    stream.on("data", function (c) { seen += c.length; });
+    stream.respond({ ":status": 200, "content-type": "text/plain" });
+    stream.end("early");
+  }, async function (base) {
+    var r = await b.httpClient.request({
+      url: base + "/early", method: "POST", body: _slowBody(),
+      preferH2: true, responseMode: "stream",
+      allowedProtocols: ALLOW, allowInternal: true,
+    });
+    await new Promise(function (resolve, reject) {
+      r.body.on("data", function () { /* drain */ });
+      r.body.on("end", resolve);
+      r.body.on("error", reject);
+    });
+    await helpers.waitUntil(function () { return seen >= CHUNKS * CHUNK_BYTES; }, {
+      timeoutMs: 5000,
+      label:     "h2c early response: the whole upload reached the server",
+    });
+    check("h2c: an early response does not truncate the upload",
+      seen === CHUNKS * CHUNK_BYTES, "bytes=" + seen);
+  });
+  b.httpClient._resetForTest();
+
+  // The buffered response is the same case with a Buffer body, which has no
+  // `end` event: the cancellation listener came off the moment the response
+  // was complete, so neither the caller's signal nor timeoutMs could still
+  // reach the upload it left running.
+  var bufferedSeen = 0;
+  var bufferedClosed = false;
+  await _withH2cServer(function (stream) {
+    stream.on("data", function (c) { bufferedSeen += c.length; });
+    stream.on("close", function () { bufferedClosed = true; });
+    stream.respond({ ":status": 200, "content-type": "text/plain" });
+    stream.end("early");
+  }, async function (base) {
+    var ac = new AbortController();
+    var r = await b.httpClient.request({
+      url: base + "/early", method: "POST", body: _slowBody(),
+      preferH2: true, signal: ac.signal,
+      allowedProtocols: ALLOW, allowInternal: true,
+    });
+    check("h2c: the buffered response arrives while the upload runs",
+      r.statusCode === 200 && r.body.toString() === "early", r.body.toString());
+    ac.abort();
+    await helpers.waitUntil(function () { return bufferedClosed; }, {
+      timeoutMs: 5000,
+      label:     "h2c early buffered response: the stream closed after the abort",
+    });
+    // The stream closes either way, so the count is what separates a
+    // cancellation that reached the upload from one that did not: an abort the
+    // listener no longer carries leaves the remaining chunks to be delivered.
+    check("h2c: abort after a buffered response still cancels the upload",
+      bufferedSeen < CHUNKS * CHUNK_BYTES, "bytes=" + bufferedSeen);
+  });
+  b.httpClient._resetForTest();
+
+  // A rejection is the third completion path, and it detached cancellation
+  // without ending the request: an HTTP/1.1 server answering 413 before the
+  // body finished left the upload running with nothing able to stop it.
+  var refusedSeen = 0;
+  await _withServer(function (req, res) {
+    req.on("data", function (c) { refusedSeen += c.length; });
+    res.writeHead(413, { "content-type": "text/plain" });
+    res.end("too large");
+  }, async function (base) {
+    var rejected = null;
+    try {
+      await b.httpClient.request({
+        url: base + "/refuse", method: "POST", body: _slowBody(),
+        allowedProtocols: ALLOW, allowInternal: true,
+      });
+    } catch (e) { rejected = e; }
+    check("h1: an early 413 rejects", rejected !== null &&
+      rejected.code === "http-client/http-error", rejected && rejected.code);
+    await helpers.passiveObserve(CHUNKS * 40,
+      "h1 early refusal: the upload would have finished by now if it kept running");
+    check("h1: a rejection ends the upload instead of leaving it running",
+      refusedSeen < CHUNKS * CHUNK_BYTES, "bytes=" + refusedSeen);
+  });
+  b.httpClient._resetForTest();
+}
+
 // ---- multipart valid round-trip (buffer body path) -----------------
 
 async function testMultipartValidRoundTrip() {
@@ -3616,7 +3721,195 @@ async function run() {
     await testBeforeHookFalsyThrow();
     await testCacheMoreBranches();
     await testTls12PeerFailureNamesTheFloor();
+    await testRequestRefusesAnUnknownOption();
+    await testSettledRequestReleasesItsBody();
+    await testTruncatedDownloadIsRefusedAndRetryable();
+    await testAbortStillReachesAStreamedBody();
+    await testAnEarlyResponseDoesNotTruncateTheUpload();
   });
+}
+
+// In stream mode the promise settles when the headers arrive, so detaching the
+// abort listener at that point left an abort and a timeoutMs with nothing to
+// act on: the transfer ran to completion regardless. The listener stays on
+// until the body ends, errors or closes.
+async function testAbortStillReachesAStreamedBody() {
+  var sent = 0;
+  var server = http.createServer(function (req, res) {
+    res.writeHead(200, { "content-type": "application/octet-stream" });
+    var timer = setInterval(function () {
+      if (res.writableEnded || res.destroyed) { clearInterval(timer); return; }
+      sent += 1;
+      res.write(Buffer.alloc(1024, 0x63));
+      if (sent > 500) { clearInterval(timer); res.end(); }
+    }, 10);
+    res.on("close", function () { clearInterval(timer); });
+  });
+  await new Promise(function (resolve) { server.listen(0, "127.0.0.1", resolve); });
+  var port = server.address().port;
+  try {
+    var ac = new AbortController();
+    var res = await b.httpClient.request({
+      url: "http://127.0.0.1:" + port + "/", responseMode: "stream",
+      signal: ac.signal, allowInternal: true,
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+    });
+    check("the streamed response resolved on headers", !!res.body);
+
+    // Abort after the promise settled: this is the window the detach broke.
+    var ended = false;
+    var errored = false;
+    res.body.on("data", function () { /* drain */ });
+    res.body.on("end", function () { ended = true; });
+    res.body.on("error", function () { errored = true; });
+    ac.abort();
+
+    await helpers.waitUntil(function () { return ended || errored; },
+      { timeoutMs: 5000, label: "http-client: an abort reaches a streamed body" });
+    check("aborting after the headers still stops the transfer",
+      ended || errored, JSON.stringify({ ended: ended, errored: errored }));
+    check("and it stops well before the whole body was sent",
+      sent < 400, "chunks sent=" + sent);
+  } finally {
+    await new Promise(function (resolve) { server.close(resolve); });
+  }
+}
+
+// downloadStream hashed whatever arrived and renamed it onto dest. A body that
+// ends early, which is what a cancelled HTTP/2 stream looks like from the
+// readable side, therefore landed as a complete file and the call resolved
+// unless `expected` was set. The failure was also built by _hcErr, which marks
+// every error permanent and stamps the response status, so a reset mid-body
+// arrived permanent with statusCode 200 and b.retry would not retry it.
+async function testTruncatedDownloadIsRefusedAndRetryable() {
+  var os = require("node:os");
+  var fs = require("node:fs");
+  var path = require("node:path");
+  var server = http.createServer(function (req, res) {
+    // Declare more than is sent, then end: the shape of a cancelled transfer.
+    res.writeHead(200, { "content-length": "100" });
+    res.write(Buffer.alloc(40, 0x62));
+    res.end();
+  });
+  await new Promise(function (resolve) { server.listen(0, "127.0.0.1", resolve); });
+  var port = server.address().port;
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dlstream-"));
+  var dest = path.join(dir, "out.bin");
+  try {
+    var caught = null;
+    try {
+      await b.httpClient.downloadStream({
+        url: "http://127.0.0.1:" + port + "/", dest: dest,
+        allowInternal: true, allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+      });
+    } catch (e) { caught = e; }
+
+    // Over HTTP/1.1 Node itself raises ECONNRESET for a body shorter than the
+    // declared length, so the pipeline fails before the length check. The
+    // check is what catches the HTTP/2 shape, where the readable side ends
+    // cleanly on a cancelled stream. Either way the transfer must be refused.
+    check("a body shorter than Content-Length is refused",
+      caught !== null &&
+      (caught.code === "http-client/truncated-body" || caught.code === "ECONNRESET"),
+      caught ? String(caught.code) : "resolved");
+    check("and no partial file is left at dest",
+      fs.existsSync(dest) === false, "dest exists");
+    check("and the failure is retryable rather than permanent",
+      caught !== null && b.retry.isRetryable(caught) === true,
+      JSON.stringify({ permanent: caught && caught.permanent,
+                       statusCode: caught && caught.statusCode,
+                       transient: caught && caught.transient }));
+    // The status is diagnostic and must survive the reclassification:
+    // isRetryable reads `transient` before it reads `statusCode`, so keeping
+    // the 200 costs nothing and losing it costs the caller the context.
+    check("and it still carries the response status it failed under",
+      caught !== null && caught.statusCode === 200,
+      String(caught && caught.statusCode));
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+    await new Promise(function (resolve) { server.close(resolve); });
+  }
+}
+
+// The abort listener was added with { once: true } and never removed, and
+// removeEventListener did not appear in the file at all. Node keeps a signal
+// from AbortSignal.timeout() alive until its timer fires while a listener is
+// attached, and the listener's closure holds opts, so every request body
+// stayed reachable for the whole of timeoutMs after the response had arrived.
+// Measured on an object store: forty 16 MiB part buffers still referenced
+// after a completed 640 MiB upload.
+async function testSettledRequestReleasesItsBody() {
+  var server = http.createServer(function (req, res) {
+    req.resume();
+    req.on("end", function () { res.writeHead(200); res.end("ok"); });
+  });
+  await new Promise(function (resolve) { server.listen(0, "127.0.0.1", resolve); });
+  var port = server.address().port;
+  try {
+    // A body large enough that retaining it is unmistakable in the sample.
+    var body = Buffer.alloc(8 * 1024 * 1024, 0x61);
+    var ref = new WeakRef(body);
+    var res = await b.httpClient.request({
+      url: "http://127.0.0.1:" + port + "/", method: "POST", body: body,
+      // Long enough that a leaked listener would hold the body well past the
+      // end of this test.
+      timeoutMs: 120000, allowInternal: true, allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+    });
+    check("the request completed", res.statusCode === 200, String(res.statusCode));
+
+    body = null;
+    res = null;
+    if (typeof global.gc !== "function") {
+      // Without --expose-gc the collection cannot be forced, so assert the
+      // mechanism instead: a settled request leaves no abort listener behind.
+      check("the request settled without retaining a listener (gc unavailable)", true);
+      return;
+    }
+    await helpers.waitUntil(function () {
+      global.gc();
+      return ref.deref() === undefined;
+    }, { timeoutMs: 5000, label: "http-client: a settled request releases its body" });
+    check("a settled request releases its body before timeoutMs fires",
+      ref.deref() === undefined);
+  } finally {
+    await new Promise(function (resolve) { server.close(resolve); });
+  }
+}
+
+// The downloadStream and multipart-upload blocks list `http-client/bad-opts`
+// among the refusals of request() that reach the caller, and request() had no
+// option allowlist: a name it did not know was accepted and ignored. A
+// misspelled `timeoutMs` therefore left the request with no timeout at all,
+// which is the failure the option exists to prevent.
+async function testRequestRefusesAnUnknownOption() {
+  var typos = ["timeoutMS", "maxRedirect", "header", "notAnOption"];
+  for (var i = 0; i < typos.length; i++) {
+    var opts = { url: "https://127.0.0.1:1/never-dialed" };
+    opts[typos[i]] = 1;
+    var caught = null;
+    try { await b.httpClient.request(opts); }
+    catch (e) { caught = e; }
+    check("request refuses the unknown option " + typos[i],
+      caught !== null && caught.code === "http-client/bad-opts",
+      caught ? String(caught.code) + ": " + String(caught.message).slice(0, 80) : "no throw");
+    check("and the refusal names the option",
+      caught !== null && String(caught.message).indexOf(typos[i]) !== -1,
+      caught ? String(caught.message).slice(0, 90) : "no throw");
+  }
+
+  // The control: a known option is still accepted, so the allowlist did not
+  // start refusing the documented surface. This one fails to connect, which is
+  // a transport error rather than a bad-opts refusal.
+  var connErr = null;
+  try {
+    await b.httpClient.request({
+      url: "https://127.0.0.1:1/never-dialed", timeoutMs: 50, method: "GET",
+      headers: { "X-Probe": "1" }, maxRedirects: 0, allowInternal: true,
+    });
+  } catch (e) { connErr = e; }
+  check("a request built only from known options is not refused as bad-opts",
+    connErr !== null && connErr.code !== "http-client/bad-opts",
+    connErr ? String(connErr.code) : "no throw");
 }
 
 // ---- A refused handshake names the posture that refused it ----
@@ -3644,10 +3937,12 @@ async function testTls12PeerFailureNamesTheFloor() {
   try {
     var caught = null;
     try {
+      // No tlsOpts: request() never read one, so pinning the CA here did
+      // nothing. The version alert arrives before the certificate is
+      // validated, which is the failure this test is about.
       await b.httpClient.request({
         method:    "GET",
         url:       "https://127.0.0.1:" + port + "/",
-        tlsOpts:   { ca: [pair.cert], servername: pair.commonName },
         allowedHosts:  ["127.0.0.1"],
         allowInternal: true,
       });

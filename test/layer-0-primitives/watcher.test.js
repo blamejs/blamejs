@@ -942,6 +942,61 @@ async function run() {
   });
   check("watcher: win32 answers from the platform alone, probing nothing",
     win.mode === "fs" && win.reason === "non-linux-host", JSON.stringify(win));
+
+  await _testBothBackendsHoldTheProcessOpen();
+}
+
+// fs.watch keeps the process alive and the poll backend's interval was
+// unref'd, so a program whose only work was watching kept running on a local
+// disk and exited straight away on a bind mount, an NFS or an SMB mount, which
+// is where mode "auto" picks poll. Driven as a child process, because process
+// lifetime is the claim.
+async function _testBothBackendsHoldTheProcessOpen() {
+  var childProcess = require("node:child_process");
+  var REPO = path.resolve(__dirname, "..", "..");
+
+  // The watcher module alone, not the whole framework: loading index.js in a
+  // child takes long enough over a bind mount under runner contention that
+  // the wait below timed out in the container while the host passed.
+  function _spawnWatching(mode, dir) {
+    return childProcess.spawn(process.execPath, ["-e",
+      "var watcher = require(" + JSON.stringify(path.join(REPO, "lib", "watcher.js")) + ");" +
+      "watcher.create({ root: " + JSON.stringify(dir) + ", mode: " +
+      JSON.stringify(mode) + ", audit: false, pollIntervalMs: 50 });" +
+      "process.stdout.write('created\\n');"
+    ], { cwd: REPO, stdio: ["ignore", "pipe", "pipe"] });
+  }
+
+  // One scope per mode: `var` is function-scoped, so a shared `exited` set by
+  // killing the first child made the second read as already gone.
+  async function _checkMode(mode) {
+    var dir = fs.mkdtempSync(path.join(os.tmpdir(), "watcher-life-"));
+    var child = _spawnWatching(mode, dir);
+    var state = { exited: false, ready: false, stderr: "" };
+    child.stdout.on("data", function (c) {
+      if (String(c).indexOf("created") !== -1) state.ready = true;
+    });
+    child.stderr.on("data", function (c) { state.stderr += String(c); });
+    child.on("exit", function () { state.exited = true; });
+    try {
+      await helpers.waitUntil(function () { return state.ready || state.exited; },
+        { timeoutMs: 20000, label: "watcher: the " + mode + " child created its watcher" });
+      check("the " + mode + " child created its watcher",
+        state.ready === true, state.stderr.slice(0, 200));
+      // It has nothing left to do. A backend that does not hold the loop open
+      // exits here within a tick or two.
+      await helpers.passiveObserve(600,
+        "watcher: the " + mode + " child stays alive with only a watcher open");
+      check("the " + mode + " backend keeps the process alive",
+        state.exited === false, "exited=" + state.exited);
+    } finally {
+      try { child.kill(); } catch (_e) { /* best-effort */ }
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+    }
+  }
+
+  await _checkMode("poll");
+  await _checkMode("fs");
 }
 
 module.exports = { run: run };

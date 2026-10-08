@@ -1020,15 +1020,22 @@ main .form-error {
 }
 
 /* -------------------- mobile -------------------- */
+/* The navigation disclosure exists only at narrow widths. On a wide screen
+   the rail is always open, so the checkbox and its label are not rendered and
+   are not grid items. */
+.rail-toggle,
+.rail-toggle-label { display: none; }
+
 @media (max-width: 768px) {
   .shell {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
   .rail {
     position: static;
     height: auto;
     border-right: none;
     border-bottom: 1px solid var(--border);
+    padding: var(--space-4);
   }
   main {
     padding: var(--space-5) var(--space-4);
@@ -1036,6 +1043,65 @@ main .form-error {
   main h1 { font-size: var(--text-2xl); }
   main h2 { font-size: var(--text-xl); }
   .onthispage { display: none; }
+
+  /* The rail carries every concern group and every primitive, which is over
+     two thousand pixels of links above the content on every page. Brand and
+     both search boxes stay, and the link lists open on request. */
+  /* Hidden without display:none, so it stays in the tab order and the
+     disclosure can be opened from the keyboard. */
+  .rail-toggle {
+    display: block;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: 0;
+    padding: 0;
+    opacity: 0;
+  }
+  .rail-toggle-label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    min-height: 44px;
+    padding: var(--space-3) var(--space-4);
+    background: var(--bg-rail);
+    border-bottom: 1px solid var(--border);
+    color: var(--fg);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .rail-toggle-label::after {
+    content: "\25BC";
+    font-size: 0.7em;
+  }
+  .rail-toggle:checked + .rail-toggle-label::after { content: "\25B2"; }
+  .rail-toggle:focus-visible + .rail-toggle-label {
+    outline: 2px solid var(--brand);
+    outline-offset: -2px;
+  }
+  .rail-toggle-hide { display: none; }
+  .rail-toggle:checked + .rail-toggle-label .rail-toggle-show { display: none; }
+  .rail-toggle:checked + .rail-toggle-label .rail-toggle-hide { display: inline; }
+
+  .rail-nav,
+  .rail-nav-title,
+  .rail-foot { display: none; }
+  .rail-toggle:checked ~ .rail .rail-nav,
+  .rail-toggle:checked ~ .rail .rail-nav-title,
+  .rail-toggle:checked ~ .rail .rail-foot { display: revert; }
+
+  /* A finger needs a larger target than a cursor. */
+  .rail-nav a,
+  .rail-foot a {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+  }
+  .rail-search input,
+  .symbol-search input { min-height: 44px; }
+  main table { display: block; overflow-x: auto; }
 }
 
 /* -------------------- a11y / utility -------------------- */

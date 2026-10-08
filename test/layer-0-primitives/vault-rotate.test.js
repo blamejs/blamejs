@@ -360,7 +360,12 @@ function testValidateInfraColumnsSuppressesDrift() {
   } finally { db.close(); b.cryptoField.clearForTest(); }
 }
 
-function testValidateIgnoresNonArrayInfraColumns() {
+// A non-array `infraColumns` used to be coerced to `[]`, so an operator who
+// wrote a bare string instead of a list got drift errors on the very column
+// they meant to allowlist and no way to turn them off. Each call checks the
+// list options it actually reads: `infraColumns` belongs to the schema check,
+// and `rotate` neither reads it nor claims to.
+function testRefusesNonArrayListOptions() {
   b.cryptoField.clearForTest();
   b.cryptoField.registerTable("secrets", { sealedFields: ["secret"] });
   var db = _memDb("CREATE TABLE secrets (_id TEXT PRIMARY KEY, secret TEXT, rogue TEXT)", [
@@ -368,10 +373,26 @@ function testValidateIgnoresNonArrayInfraColumns() {
       params: ["r1", _seal("x", keyA), _seal("leak", keyA)] },
   ]);
   try {
-    // A non-array infraColumns is coerced to [] (defensive) — drift still fires.
-    var res = b.vaultRotate.validateSchemaMatch(db, { infraColumns: "rogue" });
-    check("validateSchemaMatch coerces a non-array infraColumns to [] and still flags drift",
-      res.errors.length === 1 && res.errors[0].column === "rogue");
+    function refusal(fn) {
+      try { fn(); return null; } catch (e) { return e; }
+    }
+    check("validateSchemaMatch refuses a non-array infraColumns",
+      (refusal(function () {
+        return b.vaultRotate.validateSchemaMatch(db, { infraColumns: "rogue" });
+      }) || {}).code === "vault-rotate/bad-opt");
+    check("validateSchemaMatch refuses a tables list holding a non-string",
+      (refusal(function () {
+        return b.vaultRotate.validateSchemaMatch(db, { tables: ["secrets", 7] });
+      }) || {}).code === "vault-rotate/bad-opt");
+    check("verify refuses a non-array tables",
+      (refusal(function () {
+        return b.vaultRotate.verify({ keys: keyA, db: db, tables: "secrets" });
+      }) || {}).code === "vault-rotate/bad-opt");
+    // The control: the same calls with real lists are accepted, so the
+    // refusals above are about the shape and not about the database.
+    check("and an array of names is still accepted",
+      b.vaultRotate.validateSchemaMatch(db, { infraColumns: ["rogue"] }).errors.length === 0 &&
+        b.vaultRotate.verify({ keys: keyA, db: db, tables: ["secrets"] }).ok === true);
   } finally { db.close(); b.cryptoField.clearForTest(); }
 }
 
@@ -686,9 +707,22 @@ async function testRotateFullPlaintextRotation() {
       dataDir: dirA, stagingDir: staging, oldKeys: oldKeys, newKeys: newKeys,
       mode: "plaintext", externalAadResealed: true, rowBatchSize: 1,
       tables: ["notes", "secrets", "sessions", "ghost_table"],
+      // The verification bounds have to reach the internal verify(): an
+      // operator asking for a particular sample and silently receiving the
+      // default believes the staged copy got scrutiny it never had. notes
+      // holds two sealed rows, so a forwarded floor of 1 samples 1 where the
+      // default floor of 5 samples both.
+      sampleMin: 1, samplePercent: 0.01,
     });
     check("full rotation internal round-trip verify ok",
       !!result.verifyResult && result.verifyResult.ok === true);
+    var notesPass = (result.verifyResult.passed || []).filter(function (p) {
+      return p.table === "notes";
+    })[0];
+    check("rotate forwards sampleMin to its internal verify",
+      !!notesPass && notesPass.sampled === 1,
+      "notes sampled=" + (notesPass && notesPass.sampled) +
+      " passed=" + JSON.stringify(result.verifyResult.passed));
     check("full rotation processed at least one row", result.totalRowsProcessed >= 1);
     check("full rotation warns about the malformed overflow JSON row",
       result.warnings.some(function (w) { return /malformed overflow JSON/.test(w); }));
@@ -881,6 +915,187 @@ async function testRotateVerifyFailedOnSameKeypair() {
   }
 }
 
+// A bound the verification will refuse has to be refused BEFORE the staging
+// directory is claimed. Rejecting it afterwards leaves the directory behind,
+// and the corrected retry then dies on `vault-rotate/staging-exists` — so one
+// typo costs the operator a manual cleanup before they can try again.
+async function testRotateRefusesBadSamplingBeforeClaimingStaging() {
+  var dirA = fs.mkdtempSync(path.join(os.tmpdir(), "vr-bound-a-"));
+  var staging = path.join(os.tmpdir(), "vr-bound-stg-" + process.pid + "-" + Date.now());
+  try {
+    await _reset();
+    await b.vault.init({ dataDir: dirA, mode: "plaintext" });
+    var liveKeys = JSON.parse(b.vault.getKeysJson());
+    await b.db.init({ dataDir: dirA, tmpDir: path.join(dirA, "tmpfs"), atRest: "encrypted",
+      allowNonTmpfsTmpDir: true,   // scratch dir, not a real tmpfs mount
+      auditSigning: false, frameworkTables: false, schema: [PLAIN_SCHEMA[0]] });
+    b.db.from("notes").insertOne(b.cryptoField.sealRow("notes", { _id: "n1", title: "x" }));
+    await b.db.flushToDisk();
+    await b.db.close();
+
+    // Every bounded option, not only the two the sampling fix covered: a
+    // rowBatchSize that is not a positive integer reached the SQLite LIMIT
+    // bind, which is after the staging directory has been created and filled.
+    var bad = [
+      { label: "sampleMin that is not a positive integer",     opts: { sampleMin: 0 } },
+      { label: "samplePercent that is not a positive number",  opts: { samplePercent: -1 } },
+      { label: "rowBatchSize that is not a positive integer",  opts: { rowBatchSize: 1.5 } },
+      { label: "rowBatchSize given as a string",               opts: { rowBatchSize: "100" } },
+      { label: "tables that is not an array",                  opts: { tables: "notes" } },
+    ];
+    for (var i = 0; i < bad.length; i++) {
+      await _expectRotateThrow("rotate refuses a " + bad[i].label,
+        Object.assign({ dataDir: dirA, stagingDir: staging, oldKeys: liveKeys,
+          newKeys: liveKeys, mode: "plaintext", externalAadResealed: true },
+          bad[i].opts),
+        "vault-rotate/bad-opt");
+      check("and it refused before claiming the staging directory, so a retry is not blocked (" +
+        bad[i].label + ")",
+        !fs.existsSync(staging), "staging still present: " + staging);
+    }
+  } finally {
+    await _reset();
+    b.cryptoField.clearForTest();
+    try { fs.rmSync(dirA, { recursive: true, force: true }); } catch (_e) { /* cleanup */ }
+    try { fs.rmSync(staging, { recursive: true, force: true }); } catch (_e) { /* cleanup */ }
+  }
+}
+
+// `opts.tables` narrows what the rotation RE-SEALS. The final verification
+// stays whole-database on purpose: a sealed row in a table the rotation
+// skipped is readable now and unreadable the moment the old keypair is
+// retired, and this check is the only thing standing between that row and a
+// cutover. Scoping the verification to the same subset would report success
+// over exactly the rows that are about to be lost.
+async function testRotateVerifiesTablesItWasNotAskedToRotate() {
+  var dirNew = fs.mkdtempSync(path.join(os.tmpdir(), "vr-scope-new-"));
+  var dirA   = fs.mkdtempSync(path.join(os.tmpdir(), "vr-scope-a-"));
+  var staging = path.join(os.tmpdir(), "vr-scope-stg-" + process.pid + "-" + Date.now());
+  try {
+    await _reset();
+    await b.vault.init({ dataDir: dirNew, mode: "plaintext" });
+    var newKeys = JSON.parse(b.vault.getKeysJson());
+    b.vault._resetForTest();
+
+    await _reset();
+    await b.vault.init({ dataDir: dirA, mode: "plaintext" });
+    var oldKeys = JSON.parse(b.vault.getKeysJson());
+    await b.db.init({ dataDir: dirA, tmpDir: path.join(dirA, "tmpfs"), atRest: "encrypted",
+      allowNonTmpfsTmpDir: true,   // scratch dir, not a real tmpfs mount
+      auditSigning: false, frameworkTables: false, schema: PLAIN_SCHEMA });
+    b.db.from("notes").insertOne(b.cryptoField.sealRow("notes", { _id: "n1", title: "rotated" }));
+    // Sealed under the old keypair and deliberately left out of `tables`.
+    b.db.from("sessions").insertOne(
+      b.cryptoField.sealRow("sessions", { _id: "sess-1", token: "left-behind" }));
+    await b.db.flushToDisk();
+    await b.db.close();
+
+    await _expectRotateThrow(
+      "rotate refuses when a sealed table it was not asked to rotate is left under the old keypair",
+      { dataDir: dirA, stagingDir: staging, oldKeys: oldKeys, newKeys: newKeys,
+        mode: "plaintext", externalAadResealed: true, tables: ["notes"] },
+      "vault-rotate/verify-failed");
+  } finally {
+    await _reset();
+    b.cryptoField.clearForTest();
+    try { fs.rmSync(dirNew, { recursive: true, force: true }); } catch (_e) { /* cleanup */ }
+    try { fs.rmSync(dirA, { recursive: true, force: true }); } catch (_e) { /* cleanup */ }
+    try { fs.rmSync(staging, { recursive: true, force: true }); } catch (_e) { /* cleanup */ }
+  }
+}
+
+// `rotate` re-seals the columns the field registry declares and nothing else.
+// A vault-prefixed value in a column nobody declared is copied across
+// verbatim, and the final verification reads the declared columns too, so the
+// rotation reports success over a cell that stops opening the moment the old
+// keypair is retired. `validateSchemaMatch` is what finds it, and the
+// documentation tells the operator to run it first because of this.
+async function testRotateCarriesAnUndeclaredSealedColumnAcrossUnchanged() {
+  var dirNew = fs.mkdtempSync(path.join(os.tmpdir(), "vr-drift-new-"));
+  var dirA   = fs.mkdtempSync(path.join(os.tmpdir(), "vr-drift-a-"));
+  var staging = path.join(os.tmpdir(), "vr-drift-stg-" + process.pid + "-" + Date.now());
+  var SCHEMA = [{
+    name:         "notes",
+    columns:      { _id: "TEXT PRIMARY KEY", title: "TEXT", rogue: "TEXT" },
+    sealedFields: ["title"],
+  }];
+  try {
+    await _reset();
+    await b.vault.init({ dataDir: dirNew, mode: "plaintext" });
+    var newKeys = JSON.parse(b.vault.getKeysJson());
+    b.vault._resetForTest();
+
+    await _reset();
+    await b.vault.init({ dataDir: dirA, mode: "plaintext" });
+    var oldKeys = JSON.parse(b.vault.getKeysJson());
+    await b.db.init({ dataDir: dirA, tmpDir: path.join(dirA, "tmpfs"), atRest: "encrypted",
+      allowNonTmpfsTmpDir: true,   // scratch dir, not a real tmpfs mount
+      auditSigning: false, frameworkTables: false, schema: SCHEMA });
+
+    var row = b.cryptoField.sealRow("notes", { _id: "n1", title: "declared" });
+    // 'rogue' holds a vault-prefixed value under the old keypair and is in no
+    // sealedFields list, which is the drift the preflight exists to catch.
+    row.rogue = b.vault.seal("undeclared-secret");
+    var rogueBefore = row.rogue;
+    b.db.from("notes").insertOne(row);
+    await b.db.flushToDisk();
+    await b.db.close();
+
+    var result = await b.vaultRotate.rotate({
+      dataDir: dirA, stagingDir: staging, oldKeys: oldKeys, newKeys: newKeys,
+      mode: "plaintext", externalAadResealed: true,
+    });
+    check("the rotation reports success over the undeclared column",
+      !!result.verifyResult && result.verifyResult.ok === true);
+
+    ["db.enc", "db.key.enc", "vault.key"].forEach(function (f) {
+      var s = path.join(staging, f);
+      if (fs.existsSync(s)) fs.copyFileSync(s, path.join(dirA, f));
+    });
+    try { fs.rmSync(path.join(dirA, "tmpfs"), { recursive: true, force: true }); } catch (_e) { /* fresh decrypt */ }
+
+    await _reset();
+    await b.vault.init({ dataDir: dirA, mode: "plaintext" });
+    await b.db.init({ dataDir: dirA, tmpDir: path.join(dirA, "tmpfs"), atRest: "encrypted",
+      allowNonTmpfsTmpDir: true,   // scratch dir, not a real tmpfs mount
+      auditSigning: false, frameworkTables: false, schema: SCHEMA });
+    var after = b.db.from("notes").where({ _id: "n1" }).first();
+    check("the declared column decrypts under the new keypair",
+      b.cryptoField.unsealRow("notes", after).title === "declared");
+    check("the undeclared column crossed over byte-identical",
+      after.rogue === rogueBefore);
+    var opened = true;
+    try { b.vault.unseal(after.rogue); } catch (_e) { opened = false; }
+    check("and no longer opens, because only the retired keypair can read it",
+      opened === false);
+    // The control for that refusal: the cell is intact, and the retired
+    // keypair still reads it. Without this, a mangled value would pass the
+    // check above for the wrong reason.
+    check("the retired keypair still reads the same cell",
+      b.crypto.decrypt(after.rogue.substring(VAULT_PREFIX.length), oldKeys) ===
+        "undeclared-secret");
+    await b.db.close();
+
+    // The preflight the documentation requires names the column by hand.
+    var raw = new DatabaseSync(":memory:");
+    raw.exec("CREATE TABLE notes (_id TEXT PRIMARY KEY, title TEXT, rogue TEXT)");
+    raw.prepare("INSERT INTO notes (_id, title, rogue) VALUES (?, ?, ?)")
+      .run("n1", _seal("declared", keyA), rogueBefore);
+    try {
+      var drift = b.vaultRotate.validateSchemaMatch(raw);
+      check("validateSchemaMatch names the column the rotation walked past",
+        drift.errors.some(function (e) { return e.kind === "drift" && e.column === "rogue"; }),
+        JSON.stringify(drift.errors));
+    } finally { raw.close(); }
+  } finally {
+    await _reset();
+    b.cryptoField.clearForTest();
+    [dirNew, dirA, staging].forEach(function (d) {
+      try { fs.rmSync(d, { recursive: true, force: true }); } catch (_e) { /* cleanup */ }
+    });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Exposed constants — referenced by their verbatim dotted form (the static
 // gate has no method-invocation fallback for constants).
@@ -920,7 +1135,7 @@ async function run() {
   testValidateWarnsOnMissingSealedColumn();
   testValidateDetectsDriftInUndeclaredColumn();
   testValidateInfraColumnsSuppressesDrift();
-  testValidateIgnoresNonArrayInfraColumns();
+  testRefusesNonArrayListOptions();
 
   testFormatValidationResultRenders();
 
@@ -933,6 +1148,9 @@ async function run() {
   await testRotateAuxiliaryFileGuards();
   await testRotateFullPlaintextRotation();
   await testRotateVerifyFailedOnSameKeypair();
+  await testRotateVerifiesTablesItWasNotAskedToRotate();
+  await testRotateRefusesBadSamplingBeforeClaimingStaging();
+  await testRotateCarriesAnUndeclaredSealedColumnAcrossUnchanged();
 
   testExposedConstants();
 }

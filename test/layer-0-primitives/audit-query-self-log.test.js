@@ -186,15 +186,23 @@ async function testChainWriteDoesNotAuditItself() {
           afterOne === before + 1,
           "before=" + before + " after=" + afterOne);
 
-    // Nothing records now. A chain whose own writes are audited keeps writing,
-    // because each append emits an event that becomes the next append.
-    await helpers.passiveObserve(800,
-      "audit chain: no row appears while nothing records");
-    await b.audit.flush();
-    var afterQuiet = await _chainRows(driver);
-    check("the chain does not grow while nothing records to it",
-          afterQuiet === afterOne,
-          "afterOne=" + afterOne + " afterQuiet=" + afterQuiet);
+    // A chain whose own writes were audited would keep writing, because each
+    // append emits an event that becomes the next append. That shows up as a
+    // count that will not settle and as a record costing more than one row, so
+    // it is measured per append rather than over a window of wall-clock time:
+    // a leader renews its lease on a timer, each renewal issues an
+    // external-db query, and that query is audited, so the chain legitimately
+    // gains a `system.externaldb.query` row about every twelve seconds. An
+    // "it did not grow at all" check over 800ms was passing only because the
+    // window usually fell between two renewals.
+    for (var r = 0; r < 3; r += 1) {
+      var beforeEach = await _settledChainRows(driver);
+      await b.audit.record({ action: "consent.granted", outcome: "success" });
+      var afterEach = await _settledChainRows(driver);
+      check("record " + (r + 1) + " of 3 appends exactly one chain row",
+            afterEach === beforeEach + 1,
+            "before=" + beforeEach + " after=" + afterEach);
+    }
 
     // A checkpoint anchors a counter. Rows appended by the checkpoint's own
     // queries would land past it, leaving the anchor stale as it was written.
@@ -438,6 +446,69 @@ async function run() {
   await testARedirectStoreKeepaliveStillAudits();
   await testAStoreCanArmAKeepaliveThatStillAudits();
   await testSuppressionIsScopedToItsOwnCallTree();
+  await testAnIdleLeaderDoesNotGrowTheChain();
+}
+
+// A leader renews its lease about every twelve seconds. The renewal issues an
+// external-db query, every external-db query emits system.externaldb.query,
+// and the chain lives in that same backend, so an idle leader appended a
+// signed row per renewal: roughly 2.6 million rows a year recording nothing an
+// operator did. The lease query is the framework's own bookkeeping against the
+// store that holds the chain, which is what the self-emit suppression is for.
+async function testAnIdleLeaderDoesNotGrowTheChain() {
+  var dbRoleContext = require("../../lib/db-role-context");
+  var emitted = [];
+  var origSafeEmit = b.audit.safeEmit;
+  b.audit.safeEmit = function (ev) {
+    emitted.push({
+      action: ev && ev.action,
+      suppressed: dbRoleContext.isAuditChainWrite(),
+    });
+    return origSafeEmit.apply(this, arguments);
+  };
+  try {
+    var insideSuppression = null;
+    await dbRoleContext.runAsAuditChainWrite(function () {
+      insideSuppression = dbRoleContext.isAuditChainWrite();
+      return Promise.resolve();
+    });
+    check("the lease path runs inside the self-emit suppression",
+      insideSuppression === true);
+
+    emitted.length = 0;
+    await dbRoleContext.runAsAuditChainWrite(function () {
+      b.audit.safeEmit({ action: "system.externaldb.query", outcome: "success" });
+      return Promise.resolve();
+    });
+    check("a query emitted from the lease path is suppressed",
+      emitted.length === 1 && emitted[0].suppressed === true,
+      JSON.stringify(emitted));
+
+    // The control: the same action outside the lease path is still recorded,
+    // so an operator's own external-db query remains evidence.
+    emitted.length = 0;
+    b.audit.safeEmit({ action: "system.externaldb.query", outcome: "success" });
+    check("the same query outside it is still audited",
+      emitted.length === 1 && emitted[0].suppressed === false,
+      JSON.stringify(emitted));
+
+    // The suppression sits on the lease provider's single query helper, not
+    // around a whole lease operation: a scope that wraps an operation
+    // swallows every audit emission inside it, including the security events
+    // that operation raises for its own reasons.
+    var providerSrc = fs.readFileSync(
+      path.join(__dirname, "..", "..", "lib", "cluster-provider-db.js"), "utf8");
+    check("the lease query runs inside the suppression",
+      /runAsAuditChainWrite\(function \(\) \{\s*return externalDb\.query\(/.test(providerSrc),
+      "cluster-provider-db does not wrap its query helper");
+    var clusterSrc = fs.readFileSync(
+      path.join(__dirname, "..", "..", "lib", "cluster.js"), "utf8");
+    check("and the lease operations themselves are not wrapped",
+      clusterSrc.indexOf("runAsAuditChainWrite") === -1,
+      "cluster.js wraps a whole lease operation");
+  } finally {
+    b.audit.safeEmit = origSafeEmit;
+  }
 }
 
 module.exports = { run: run };

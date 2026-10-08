@@ -6265,6 +6265,36 @@ function testBackupBundleSurface() {
   check("BackupBundleError is a class",           typeof b.backupBundle.BackupBundleError === "function");
 }
 
+// A malformed signing option is refused before the output directory is
+// claimed. Checked at the manifest stage instead, it threw only after every
+// file had been encrypted and written, leaving a bundle with no manifest and
+// a corrected retry failing on backup-bundle/outdir-exists.
+async function testBackupBundleRefusesBadSigningOptsBeforeClaimingOutDir() {
+  var fx = _bundleFixture();
+  try {
+    fx.write("db.enc", Buffer.from("ENCRYPTED-DB-BYTES"));
+    var outDir = path.join(fx.root, "bundle-bad-opts");
+    var bad = [{ sign: "false" }, { signOptional: 1 }];
+    for (var i = 0; i < bad.length; i++) {
+      var refused = null;
+      try {
+        await b.backupBundle.create(Object.assign({
+          dataDir:      fx.dataDir,
+          outDir:       outDir,
+          passphrase:   Buffer.from("operator-passphrase"),
+          vaultKeyJson: '{"vault":"keypair-bytes"}',
+          files: [{ relativePath: "db.enc", kind: "raw", required: true }],
+        }, bad[i]));
+      } catch (e) { refused = e; }
+      check("backupBundle.create refuses " + JSON.stringify(bad[i]),
+        !!refused && refused.code === "backup-bundle/bad-opt",
+        refused && String(refused.code));
+      check("and left outDir unclaimed, so a corrected retry is not blocked (" +
+        JSON.stringify(bad[i]) + ")", !fs.existsSync(outDir));
+    }
+  } finally { fx.cleanup(); }
+}
+
 async function testBackupBundleCreateEndToEnd() {
   var fx = _bundleFixture();
   try {
@@ -7417,7 +7447,7 @@ async function testBodyParserMultipartFileFilterAuditEmit() {
     await _runBodyParser(bp, req, res);
     check("fileFilter audit: event emitted",         captured.length === 1);
     check("fileFilter audit: action correct",
-          captured[0].action === "body-parser.multipart.file_rejected");
+          captured[0].action === "bodyparser.multipart.file_rejected");
     check("fileFilter audit: outcome=denied",        captured[0].outcome === "denied");
     check("fileFilter audit: metadata.field",        captured[0].metadata.field === "doc");
     check("fileFilter audit: metadata.mimeType",     captured[0].metadata.mimeType === "application/pdf");
@@ -10681,6 +10711,42 @@ async function testVaultPassphraseOpsKeepPlaintext() {
     check("seal keepPlaintext: sealed exists",
           fs.existsSync(path.join(fx.dir, "vault.key.sealed")));
   } finally { fx.cleanup(); }
+}
+
+// keepPlaintext was read with `!!`, so any truthy value kept the plaintext
+// key. A configuration file deserialized into the string "false" is truthy,
+// so the key stayed on disk while the call reported it deleted. That is the
+// one direction this option must not fail in.
+async function testVaultPassphraseOpsRefusesNonBooleanKeepPlaintext() {
+  var fx = _passphraseOpsFixture();
+  try {
+    fx.writePlaintext("keep-me");
+    var refused = null;
+    try {
+      await b.vaultPassphraseOps.seal({
+        dataDir: fx.dir, passphrase: Buffer.from("p", "utf8"),
+        keepPlaintext: "false",
+      });
+    } catch (e) { refused = e; }
+    check("seal refuses a non-boolean keepPlaintext",
+          !!refused && refused.code === "vault-passphrase/bad-opt",
+          refused && String(refused.code));
+    check("and the plaintext key is untouched, since it refused before sealing",
+          fs.existsSync(path.join(fx.dir, "vault.key")) &&
+          !fs.existsSync(path.join(fx.dir, "vault.key.sealed")));
+  } finally { fx.cleanup(); }
+  // The control: omitting it deletes the plaintext, which is what the
+  // refusal above is protecting.
+  var fx2 = _passphraseOpsFixture();
+  try {
+    fx2.writePlaintext("delete-me");
+    var ok = await b.vaultPassphraseOps.seal({
+      dataDir: fx2.dir, passphrase: Buffer.from("p", "utf8"),
+    });
+    check("omitting keepPlaintext still deletes the plaintext key",
+          ok.plaintextDeleted === true &&
+          !fs.existsSync(path.join(fx2.dir, "vault.key")));
+  } finally { fx2.cleanup(); }
 }
 
 async function testVaultPassphraseOpsWrongPassphraseRejected() {
@@ -18166,6 +18232,20 @@ function testEnvReadVar() {
     check("readVar: buffer round-trip",  Buffer.isBuffer(buf) && buf.toString("utf8") === "secret-passphrase");
     check("readVar: strip deletes env",  !("BLAMEJS_TEST_VAR3" in process.env));
 
+    // strip was read `=== true`, so a non-boolean left the variable in the
+    // environment for every child the process starts, which is the opposite
+    // of what the caller asked for. It is refused rather than read as false.
+    process.env.BLAMEJS_TEST_VAR3 = "still-secret";
+    var threwStrip = null;
+    try { env.readVar("BLAMEJS_TEST_VAR3", { type: "buffer", strip: "true" }); }
+    catch (e) { threwStrip = e; }
+    check("readVar: a non-boolean strip is refused",
+          !!threwStrip && threwStrip.code === "env/bad-opt",
+          threwStrip && String(threwStrip.code));
+    check("readVar: and the variable is still set, since it refused before reading",
+          process.env.BLAMEJS_TEST_VAR3 === "still-secret");
+    delete process.env.BLAMEJS_TEST_VAR3;
+
     // maxBytes cap
     process.env.BLAMEJS_TEST_VAR4 = "x".repeat(5000);
     var threwSize = false;
@@ -18390,6 +18470,46 @@ function testCryptoAndModuleSurface() {
   check("vault-wrap NONCE_LENGTH = 24",  b.vaultWrap.NONCE_LENGTH === 24);
   check("vault-wrap default Argon2 params present",
         b.vaultWrap.DEFAULT_ARGON2 && b.vaultWrap.DEFAULT_ARGON2.memoryCost > 0);
+
+  // buildHeader and parseHeader are the format itself, so a round trip has to
+  // return the parameters that went in: a reader derives at the cost the file
+  // names, and a header that lost its cost would be derived at this build's
+  // default instead.
+  var vwSalt  = Buffer.alloc(0x10, 0x07);
+  var vwNonce = Buffer.alloc(b.vaultWrap.NONCE_LENGTH, 0x09);
+  var vwHeader = b.vaultWrap.buildHeader({
+    salt:             vwSalt,
+    nonce:            vwNonce,
+    memoryCost:       b.vaultWrap.DEFAULT_ARGON2.memoryCost,
+    timeCost:         b.vaultWrap.DEFAULT_ARGON2.timeCost,
+    parallelism:      b.vaultWrap.DEFAULT_ARGON2.parallelism,
+    ciphertextLength: 0x30,
+  });
+  check("vaultWrap.buildHeader writes the magic byte first",
+        vwHeader[0] === b.vaultWrap.MAGIC);
+  var vwParsed = b.vaultWrap.parseHeader(
+    Buffer.concat([vwHeader, Buffer.alloc(0x30, 0x00)]));
+  check("vaultWrap.parseHeader round-trips the Argon2 cost",
+        vwParsed.params.memoryCost === b.vaultWrap.DEFAULT_ARGON2.memoryCost &&
+        vwParsed.params.timeCost === b.vaultWrap.DEFAULT_ARGON2.timeCost &&
+        vwParsed.params.parallelism === b.vaultWrap.DEFAULT_ARGON2.parallelism,
+        JSON.stringify(vwParsed.params));
+  check("vaultWrap.parseHeader round-trips the salt and nonce",
+        Buffer.compare(Buffer.from(vwParsed.params.salt), vwSalt) === 0 &&
+        Buffer.compare(Buffer.from(vwParsed.params.nonce), vwNonce) === 0);
+  check("vaultWrap.parseHeader reports a non-vault file as unreadable, not a bad passphrase",
+        (function () {
+          try { b.vaultWrap.parseHeader(Buffer.from("not a sealed vault file")); }
+          catch (e) { return e.code === "vault-wrap/bad-magic"; }
+          return false;
+        })());
+  check("vaultWrap.buildHeader refuses a salt that is not bytes",
+        (function () {
+          try {
+            b.vaultWrap.buildHeader({ salt: "sixteen-byte-str", nonce: vwNonce });
+          } catch (e) { return e.code === "vault-wrap/bad-salt"; }
+          return false;
+        })());
 
   // passphrase-source env var names follow BLAMEJS_ prefix
   check("vaultPassphraseSource ENV_PASSPHRASE = BLAMEJS_VAULT_PASSPHRASE",
@@ -19199,9 +19319,244 @@ async function testFileUploadMimeAllowlistRequiresFileType() {
   check("fileUpload.create: allowedFileTypes without fileType primitive throws at boot", threw);
 }
 
+// The passphrase sources are how an unattended service and an operator at a
+// terminal both reach the same vault, so each one's contract is asserted: the
+// file source trims what a secret store appends, the env source is consumed as
+// it is read, and the TTY source refuses a piped stdin rather than taking
+// whatever arrived on it.
+async function testVaultPassphraseSources() {
+  var fs = require("node:fs");
+  var os = require("node:os");
+  var path = require("node:path");
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "bjs-pps-"));
+  var file = path.join(dir, "passphrase");
+  var PASS = "correct horse battery staple";
+  try {
+    fs.writeFileSync(file, PASS + "\n");
+    var fromFile = await b.vaultPassphraseSource.fromFile(file);
+    check("vaultPassphraseSource.fromFile answers a Buffer",
+      Buffer.isBuffer(fromFile));
+    check("vaultPassphraseSource.fromFile trims the trailing newline a secret store adds",
+      fromFile.toString("utf8") === PASS,
+      JSON.stringify(fromFile.toString("utf8")));
+    fromFile.fill(0);
+
+    var missing = null;
+    try { await b.vaultPassphraseSource.fromFile(""); }
+    catch (e) { missing = e; }
+    check("vaultPassphraseSource.fromFile refuses an unset path",
+      missing !== null);
+
+    // getPassphrase resolves through whichever source the environment selects.
+    var priorValue = process.env.BLAMEJS_VAULT_PASSPHRASE;
+    var priorFile  = process.env.BLAMEJS_VAULT_PASSPHRASE_FILE;
+    var priorSrc   = process.env.BLAMEJS_VAULT_PASSPHRASE_SOURCE;
+    try {
+      delete process.env.BLAMEJS_VAULT_PASSPHRASE_FILE;
+      process.env.BLAMEJS_VAULT_PASSPHRASE_SOURCE = "env";
+      process.env.BLAMEJS_VAULT_PASSPHRASE = PASS;
+      check("vaultPassphraseSource.sourceKind reads the forced source",
+        b.vaultPassphraseSource.sourceKind() === "env");
+      var fromEnv = await b.vaultPassphraseSource.getPassphrase();
+      check("vaultPassphraseSource.getPassphrase resolves from the env source",
+        fromEnv.toString("utf8") === PASS);
+      check("and the variable is consumed as it is read, so no child inherits it",
+        process.env.BLAMEJS_VAULT_PASSPHRASE === undefined);
+      fromEnv.fill(0);
+
+      // fromFile strips trailing newlines and fromEnv does not, so the same
+      // secret reaches the two sources differently. fromEnv keeps the byte on
+      // purpose: a vault sealed through it from a value ending in a newline
+      // needs that newline to open, so trimming by default would lock an
+      // existing deployment out of its own vault.
+      process.env.BLAMEJS_VAULT_PASSPHRASE = PASS + "\n";
+      var kept = await b.vaultPassphraseSource.fromEnv();
+      check("vaultPassphraseSource.fromEnv keeps a trailing newline by default",
+        kept.toString("utf8") === PASS + "\n",
+        JSON.stringify(kept.toString("utf8")));
+      kept.fill(0);
+
+      process.env.BLAMEJS_VAULT_PASSPHRASE = PASS + "\n";
+      var trimmedLf = await b.vaultPassphraseSource.fromEnv({ trimTrailingNewlines: true });
+      check("and strips it when the caller asks",
+        trimmedLf.toString("utf8") === PASS,
+        JSON.stringify(trimmedLf.toString("utf8")));
+      trimmedLf.fill(0);
+
+      process.env.BLAMEJS_VAULT_PASSPHRASE = PASS + "\r\n";
+      var trimmedCrlf = await b.vaultPassphraseSource.fromEnv({ trimTrailingNewlines: true });
+      check("including a trailing CRLF, so the two sources can be made to agree",
+        trimmedCrlf.toString("utf8") === PASS);
+      trimmedCrlf.fill(0);
+
+      // The option is checked before the variable is read, because reading it
+      // strips it: validating afterwards would destroy the passphrase source
+      // and leave a corrected retry with nothing to read.
+      process.env.BLAMEJS_VAULT_PASSPHRASE = PASS;
+      var badTrim = null;
+      try { await b.vaultPassphraseSource.fromEnv({ trimTrailingNewlines: "yes" }); }
+      catch (e) { badTrim = e; }
+      check("vaultPassphraseSource.fromEnv refuses a non-boolean trimTrailingNewlines",
+        badTrim !== null);
+      check("and the variable is still set, so a corrected call still works",
+        process.env.BLAMEJS_VAULT_PASSPHRASE === PASS);
+      var afterBadTrim = await b.vaultPassphraseSource.fromEnv({ trimTrailingNewlines: true });
+      check("the corrected call reads the same passphrase",
+        afterBadTrim.toString("utf8") === PASS);
+      afterBadTrim.fill(0);
+
+      // The control: an interior newline is part of the passphrase and stays
+      // even when trimming is on, so only trailing padding is removed.
+      process.env.BLAMEJS_VAULT_PASSPHRASE = "two\nlines";
+      var interior = await b.vaultPassphraseSource.fromEnv({ trimTrailingNewlines: true });
+      check("an interior newline is kept, since only trailing ones are padding",
+        interior.toString("utf8") === "two\nlines");
+      interior.fill(0);
+
+      // A value that is nothing but newlines trims to empty and is refused
+      // rather than becoming a zero-length passphrase.
+      process.env.BLAMEJS_VAULT_PASSPHRASE = "\n\n";
+      var emptyAfterTrim = null;
+      try { await b.vaultPassphraseSource.fromEnv({ trimTrailingNewlines: true }); }
+      catch (e) { emptyAfterTrim = e; }
+      check("a value of only newlines is refused rather than read as empty",
+        emptyAfterTrim !== null && /empty/.test(String(emptyAfterTrim.message)),
+        emptyAfterTrim && String(emptyAfterTrim.message));
+      // Without trimming, that same value is a two-byte passphrase.
+      process.env.BLAMEJS_VAULT_PASSPHRASE = "\n\n";
+      var untrimmedNewlines = await b.vaultPassphraseSource.fromEnv();
+      check("and is a passphrase of its own bytes when trimming is off",
+        untrimmedNewlines.toString("utf8") === "\n\n");
+      untrimmedNewlines.fill(0);
+    } finally {
+      if (priorValue === undefined) delete process.env.BLAMEJS_VAULT_PASSPHRASE;
+      else process.env.BLAMEJS_VAULT_PASSPHRASE = priorValue;
+      if (priorFile === undefined) delete process.env.BLAMEJS_VAULT_PASSPHRASE_FILE;
+      else process.env.BLAMEJS_VAULT_PASSPHRASE_FILE = priorFile;
+      if (priorSrc === undefined) delete process.env.BLAMEJS_VAULT_PASSPHRASE_SOURCE;
+      else process.env.BLAMEJS_VAULT_PASSPHRASE_SOURCE = priorSrc;
+    }
+
+    // The TTY path cannot be driven headless, but its refusal is the half that
+    // matters: without it a piped stdin would be read as the passphrase.
+    if (!process.stdin.isTTY) {
+      var noTty = null;
+      try { await b.vaultPassphraseSource.fromStdin("Vault passphrase: "); }
+      catch (e) { noTty = e; }
+      check("vaultPassphraseSource.fromStdin refuses a stdin that is not a TTY",
+        noTty !== null && /TTY/.test(String(noTty.message)),
+        "msg=" + String(noTty && noTty.message).slice(0, 80));
+    }
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* cleanup */ }
+  }
+}
+
+// `deriveWrappingKey` is public, and the sealed format accepts a salt of 8 to
+// 64 bytes. The bound was enforced where the header is built and not where the
+// key is derived, so a direct caller could derive a wrapping key under a
+// 65-byte salt, and a too-short one surfaced as a native ERR_OUT_OF_RANGE from
+// Argon2 instead of the format's own refusal.
+async function testDeriveWrappingKeySaltBounds() {
+  var ok = await b.vaultWrap.deriveWrappingKey("passphrase", Buffer.alloc(16));
+  check("deriveWrappingKey answers a 32-byte key for an in-range salt", ok.length === 32);
+
+  async function refusal(salt) {
+    try { await b.vaultWrap.deriveWrappingKey("passphrase", salt); return null; }
+    catch (e) { return e; }
+  }
+  check("deriveWrappingKey refuses a salt one byte over the format's maximum",
+    ((await refusal(Buffer.alloc(65))) || {}).code === "vault-wrap/bad-salt");
+  check("deriveWrappingKey refuses a salt under the format's minimum",
+    ((await refusal(Buffer.alloc(7))) || {}).code === "vault-wrap/bad-salt");
+  check("deriveWrappingKey refuses a salt that is not bytes",
+    ((await refusal("sixteen-byte-str")) || {}).code === "vault-wrap/bad-salt");
+  // Both bounds are the ones the header writer enforces, so a key derived here
+  // is always one `buildHeader` can record.
+  check("buildHeader refuses the same two lengths",
+    (function () {
+      var n = Buffer.alloc(b.vaultWrap.NONCE_LENGTH);
+      var codes = [7, 65].map(function (len) {
+        try { b.vaultWrap.buildHeader({ salt: Buffer.alloc(len), nonce: n,
+          memoryCost: b.vaultWrap.DEFAULT_ARGON2.memoryCost,
+          timeCost: b.vaultWrap.DEFAULT_ARGON2.timeCost,
+          parallelism: b.vaultWrap.DEFAULT_ARGON2.parallelism,
+          ciphertextLength: 48 }); return null; }
+        catch (e) { return e.code; }
+      });
+      return codes[0] === "vault-wrap/bad-salt" && codes[1] === "vault-wrap/bad-salt";
+    })());
+}
+
+// The bundle scheme's whole point is that a per-file subkey is bound to the
+// file's path, so a blob moved inside a bundle stops decrypting. These assert
+// the parts that make that true: a subkey differs per label, the AEAD binds
+// its aad, and a salt is fresh per bundle.
+async function testBackupCryptoKeySeparation() {
+  var bundleKey = Buffer.alloc(0x20, 0x11);
+  var salt = b.backupCrypto.newSalt();
+  check("backupCrypto.newSalt answers 32 bytes as hex",
+    typeof salt === "string" && salt.length === b.backupCrypto.SALT_BYTES * 2,
+    "len=" + salt.length);
+  check("backupCrypto.newSalt is fresh per call",
+    b.backupCrypto.newSalt() !== salt);
+
+  var labelA = b.backupCrypto.fileKeyLabel("db/app.db");
+  var labelB = b.backupCrypto.fileKeyLabel("db/other.db");
+  var subA = b.backupCrypto.deriveSubkey(bundleKey, salt, labelA);
+  var subB = b.backupCrypto.deriveSubkey(bundleKey, salt, labelB);
+  check("backupCrypto.deriveSubkey answers a 32-byte key",
+    Buffer.isBuffer(subA) && subA.length === 0x20, "len=" + subA.length);
+  check("backupCrypto.deriveSubkey gives a different key per file path",
+    Buffer.compare(subA, subB) !== 0);
+  check("backupCrypto.deriveSubkey is deterministic for one path",
+    Buffer.compare(b.backupCrypto.deriveSubkey(bundleKey, salt, labelA), subA) === 0);
+  check("backupCrypto.deriveSubkey refuses an empty label",
+    (function () {
+      try { b.backupCrypto.deriveSubkey(bundleKey, salt, ""); }
+      catch (e) { return e.code === "backup-crypto/bad-label"; }
+      return false;
+    })());
+
+  var sealed = b.backupCrypto.encryptWithKey("the contents", subA, labelA);
+  check("backupCrypto.encryptWithKey prepends a nonce",
+    sealed.length > b.backupCrypto.NONCE_BYTES + 0x10);
+  check("backupCrypto.encryptWithKey uses a fresh nonce per call",
+    Buffer.compare(
+      b.backupCrypto.encryptWithKey("the contents", subA, labelA)
+        .subarray(0, b.backupCrypto.NONCE_BYTES),
+      sealed.subarray(0, b.backupCrypto.NONCE_BYTES)) !== 0);
+  check("backupCrypto.decryptWithKey round-trips under the same key and aad",
+    b.backupCrypto.decryptWithKey(sealed, subA, labelA).toString("utf8") === "the contents");
+  check("backupCrypto.decryptWithKey refuses the other file's subkey",
+    (function () {
+      try { b.backupCrypto.decryptWithKey(sealed, subB, labelA); }
+      catch (e) { return e.code === "backup-crypto/decrypt-failed"; }
+      return false;
+    })());
+  check("backupCrypto.decryptWithKey refuses a different aad, so a remapped blob fails",
+    (function () {
+      try { b.backupCrypto.decryptWithKey(sealed, subA, labelB); }
+      catch (e) { return e.code === "backup-crypto/decrypt-failed"; }
+      return false;
+    })());
+  check("backupCrypto.decryptWithKey refuses a buffer too short to hold a tag",
+    (function () {
+      try {
+        b.backupCrypto.decryptWithKey(Buffer.alloc(b.backupCrypto.NONCE_BYTES), subA, labelA);
+      } catch (e) { return e.code === "backup-crypto/bad-input"; }
+      return false;
+    })());
+  subA.fill(0);
+  subB.fill(0);
+}
+
 async function run() {
   // entrypoint module-surface sanity
   testCryptoAndModuleSurface();
+  await testVaultPassphraseSources();
+  await testDeriveWrappingKeySaltBounds();
+  await testBackupCryptoKeySeparation();
   // async-safe primitives
   await testAsyncSafeWithTimeoutResolves();
   await testAsyncSafeWithTimeoutRejects();
@@ -19416,6 +19771,7 @@ async function run() {
   await testRestoreBundleArgValidation();
   // backup-bundle — encrypted backup bundle producer
   testBackupBundleSurface();
+  await testBackupBundleRefusesBadSigningOptsBeforeClaimingOutDir();
   await testBackupBundleCreateEndToEnd();
   await testBackupBundlePathTraversalRejected();
   await testBackupBundleRequiredMissing();
@@ -19612,6 +19968,7 @@ async function run() {
   testVaultPassphraseOpsPreflightChecks();
   await testVaultPassphraseOpsSealUnsealRoundTrip();
   await testVaultPassphraseOpsKeepPlaintext();
+  await testVaultPassphraseOpsRefusesNonBooleanKeepPlaintext();
   await testVaultPassphraseOpsWrongPassphraseRejected();
   await testVaultPassphraseOpsUnreadableSealedFileIsNotAPassphraseError();
   await testVaultPassphraseOpsRotate();
@@ -19984,6 +20341,9 @@ async function run() {
 
 module.exports = {
   testCryptoAndModuleSurface:                testCryptoAndModuleSurface,
+  testVaultPassphraseSources:                testVaultPassphraseSources,
+  testDeriveWrappingKeySaltBounds:           testDeriveWrappingKeySaltBounds,
+  testBackupCryptoKeySeparation:             testBackupCryptoKeySeparation,
   name: "Layer 0 — primitives (module-surface, async-safe, handlers, sql-safe, chain-writer, json-safe, atomic-file, parsers, redact)",
   run:  run,
   // Exported individually so smoke.js (or future selective-run tooling)
@@ -20184,6 +20544,8 @@ module.exports = {
   testRestoreBundleInspectReturnsManifest:   testRestoreBundleInspectReturnsManifest,
   testRestoreBundleArgValidation:            testRestoreBundleArgValidation,
   testBackupBundleSurface:                   testBackupBundleSurface,
+  testBackupBundleRefusesBadSigningOptsBeforeClaimingOutDir:
+    testBackupBundleRefusesBadSigningOptsBeforeClaimingOutDir,
   testBackupBundleCreateEndToEnd:            testBackupBundleCreateEndToEnd,
   testBackupBundlePathTraversalRejected:     testBackupBundlePathTraversalRejected,
   testBackupBundleRequiredMissing:           testBackupBundleRequiredMissing,
@@ -20351,6 +20713,8 @@ module.exports = {
   testVaultPassphraseOpsPreflightChecks:     testVaultPassphraseOpsPreflightChecks,
   testVaultPassphraseOpsSealUnsealRoundTrip: testVaultPassphraseOpsSealUnsealRoundTrip,
   testVaultPassphraseOpsKeepPlaintext:       testVaultPassphraseOpsKeepPlaintext,
+  testVaultPassphraseOpsRefusesNonBooleanKeepPlaintext:
+    testVaultPassphraseOpsRefusesNonBooleanKeepPlaintext,
   testVaultPassphraseOpsWrongPassphraseRejected: testVaultPassphraseOpsWrongPassphraseRejected,
   testVaultPassphraseOpsUnreadableSealedFileIsNotAPassphraseError:
     testVaultPassphraseOpsUnreadableSealedFileIsNotAPassphraseError,

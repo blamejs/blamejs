@@ -890,7 +890,7 @@ async function testMultipartAuditWiredRejectionEmits() {
   });
   check("multipart: wired audit emits file_rejected on a fileFilter rejection",
         v.filesRejected.length === 1 &&
-        events.indexOf("body-parser.multipart.file_rejected") !== -1);
+        events.indexOf("bodyparser.multipart.file_rejected") !== -1);
 }
 
 async function run() {
