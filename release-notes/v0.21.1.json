@@ -199,8 +199,8 @@
           "body": "`lib/vendor/public-suffix-list.dat` carries the list published at `2026-10-07_07-28-19_UTC`, commit `3929462652695bad04f0a27afb600974014a3c8b`, re-signed and re-hashed in `lib/vendor/MANIFEST.json`. Upstream replaced twenty-seven explicit `replit.dev` entries with `*.replit.dev` and `*.teams.replit.dev`, so a registrable-domain lookup under `replit.dev` now resolves any subdomain rather than only the named ones. Everything that reads the list sees the change: `b.guardDomain`, cookie-domain checks and the public-suffix lookups in the request path."
         },
         {
-          "title": "The vendored PKI bundle is refreshed to 0.8.61",
-          "body": "`lib/vendor/blamejs-pki.cjs` carries `@blamejs/pki` 0.8.61, with `lib/vendor/MANIFEST.json` re-hashed to match. The framework still ships zero npm runtime dependencies; this is the bundled copy the X.509, ASN.1/DER and CMS paths read."
+          "title": "The vendored PKI bundle is refreshed to 0.9.1",
+          "body": "`lib/vendor/blamejs-pki.cjs` carries `@blamejs/pki` 0.9.1, with `lib/vendor/MANIFEST.json` re-hashed to match. The framework still ships zero npm runtime dependencies; this is the bundled copy the X.509, ASN.1/DER and CMS paths read. The two upstream releases it crosses are both hardening ones. A record the toolkit defaults for an omitted argument no longer inherits from `Object.prototype`, so a revocation deadline is measured against the toolkit's own clock rather than an inherited one, a report is held to the caps its caller passed, a signer signs with the identity its caller named, and a client reads the status, body and headers a server actually sent. `pki.smime.verify` and `pki.smime.decrypt` refuse an entity whose `Content-Type` declares one parameter twice or whose header area declares one field twice, since both readings are conforming and they differ, and one MIME entity is bounded at 1024 body parts, 1024 header lines and 256 `Content-Type` parameters, charged as the entity is scanned. The record `pki.smime.verify` returns no longer shares the buffer the caller passed in."
         }
       ]
     },
