@@ -280,6 +280,25 @@ async function run() {
     // A surrogate half and an out-of-range code point are left as written.
     assert("search text leaves an unusable numeric reference as text",
            _htmlToSearchText("<p>&#xD800;</p>") === "&#xD800;");
+    // The editor accepts any balanced HTML, so the stripper meets attribute
+    // values holding a `>` and prose holding a `<`. Matching `<[^>]*>` ended
+    // a tag at the first and swallowed everything after the second.
+    assert("search text keeps a `>` inside an attribute out of the index",
+           _htmlToSearchText("<p title=\"hidden > keyword\">Visible</p>") === "Visible");
+    assert("search text keeps prose that contains a bare `<`",
+           _htmlToSearchText("<p>2 < 3 and 5 > 4</p>") === "2 < 3 and 5 > 4");
+    // An author writes entities the generated pages never use. Left encoded,
+    // `&copy;` makes `copy` a word a reader can match and never see.
+    assert("search text decodes an entity an author is likely to write",
+           _htmlToSearchText("<p>caf&eacute; &mdash; 20&deg;C</p>") ===
+             "café — 20°C");
+    assert("search text drops a named reference it cannot decode",
+           _htmlToSearchText("<p>&notarealentity; here</p>") === "here");
+    assert("search text keeps an escaped reference from a code sample",
+           _htmlToSearchText("<code>&amp;copy;</code>") === "&copy;");
+    // The title path keeps what it was given: dropping is the index's rule.
+    assert("the shared decoder leaves an unknown reference alone",
+           _unescapeBuiltinEntities("&notarealentity; x") === "&notarealentity; x");
     _assertMigrationUpgradePath();
 
     // Each wiki codebase-patterns matcher, run against the shape it guards
