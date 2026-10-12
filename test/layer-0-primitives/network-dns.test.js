@@ -3604,6 +3604,48 @@ async function testResolverFailureIsTransientNotNoResult() {
   } finally {
     _resetAll();
   }
+
+  // The first form of that fix rethrew only when BOTH families failed. An
+  // IPv6-only host whose A query answers a legitimate empty NODATA while its
+  // AAAA query times out therefore produced no address and no error, so the
+  // permanent dns/no-result went into the negative cache and a retry could
+  // not recover the address until that cache expired.
+  var dnsMod = require("../../lib/network-dns.js");
+  function _families(map) {
+    return function (host, family) {
+      var v = map[family];
+      return v instanceof Error ? Promise.reject(v) : Promise.resolve(v);
+    };
+  }
+  function _timeout(label) {
+    return Object.assign(new Error(label + " timed out"), { code: "dns/timeout" });
+  }
+  var combos = [
+    ["both families fail",           { 4: _timeout("A"), 6: _timeout("AAAA") }, "throw"],
+    ["A answers empty, AAAA fails",  { 4: [], 6: _timeout("AAAA") },            "throw"],
+    ["A fails, AAAA answers empty",  { 4: _timeout("A"), 6: [] },               "throw"],
+    ["both answer empty",            { 4: [], 6: [] },                          "empty"],
+    ["A empty, AAAA has an address", { 4: [], 6: ["::1"] },                     "addrs"],
+  ];
+  for (var ci = 0; ci < combos.length; ci++) {
+    var rv = null;
+    var cerr = null;
+    try { rv = await dnsMod._dualStackForTest(_families(combos[ci][1]), "h", 0); }
+    catch (e) { cerr = e; }
+    if (combos[ci][2] === "throw") {
+      check("dual-stack propagates the query error when " + combos[ci][0],
+        cerr !== null && cerr.code === "dns/timeout",
+        cerr ? String(cerr.code) : "returned " + JSON.stringify(rv));
+    } else if (combos[ci][2] === "empty") {
+      check("dual-stack reports a real NODATA as no addresses when " + combos[ci][0],
+        cerr === null && Array.isArray(rv) && rv.length === 0,
+        cerr ? String(cerr.code) : JSON.stringify(rv));
+    } else {
+      check("dual-stack still answers when " + combos[ci][0],
+        cerr === null && rv.length === 1,
+        cerr ? String(cerr.code) : JSON.stringify(rv));
+    }
+  }
 }
 
 // _isLocalFormHost decides whether a name is sent to the configured DoH or DoT
