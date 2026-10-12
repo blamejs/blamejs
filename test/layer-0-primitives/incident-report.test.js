@@ -222,6 +222,46 @@ async function run() {
     driftRep.get(driftRec.id).scope.systems.length === 1,
     JSON.stringify(driftRep.get(driftRec.id).scope.systems));
 
+  // The stage snapshot used structuredClone, which turns a Buffer into a
+  // Uint8Array. The two have different JSON forms, so a filing submitted once
+  // and then resubmitted from the stored payload sent `{"type":"Buffer",...}`
+  // the first time and `{"0":97,...}` the second, for the same evidence, and a
+  // persist callback saw whichever it happened to be handed.
+  var bufRep = b.incident.report.create({ audit: false });
+  var bufInc = await bufRep.open({ regime: "nis2", detectedAt: 0 });
+  var filedBuf = await bufRep.recordInitial(bufInc.id, { evidence: Buffer.from("abc") });
+  var storedBuf = bufRep.get(bufInc.id).stages.initial.payload.evidence;
+  check("a Buffer in a filing is still a Buffer when read back",
+    Buffer.isBuffer(storedBuf), Object.prototype.toString.call(storedBuf));
+  check("and its JSON form matches what the first submission sent",
+    JSON.stringify(storedBuf) === JSON.stringify(filedBuf.stages.initial.payload.evidence),
+    JSON.stringify(storedBuf).slice(0, 60));
+  check("and the bytes are intact",
+    Buffer.from(storedBuf).toString("utf8") === "abc",
+    Buffer.from(storedBuf).toString("utf8"));
+
+  // A RegExp was the one type the copy returned by reference. structuredClone
+  // had been detaching it, so taking that out left the caller holding the
+  // stored evidence: compile() rewrites the pattern the record says was filed,
+  // and an ordinary exec() moves its lastIndex.
+  var reRep = b.incident.report.create({ audit: false });
+  var reInc = await reRep.open({ regime: "gdpr", detectedAt: 0 });
+  var callerRe = /secret/g;
+  await reRep.recordInitial(reInc.id, { pattern: callerRe });
+  var storedRe = reRep.get(reInc.id).stages.initial.payload.pattern;
+  check("a RegExp in a filing comes back as a RegExp, not the caller's own",
+    storedRe instanceof RegExp && storedRe !== callerRe,
+    Object.prototype.toString.call(storedRe));
+  callerRe.compile("replaced", "i");
+  var afterCompile = reRep.get(reInc.id).stages.initial.payload.pattern;
+  check("recompiling the caller's expression does not rewrite the filing",
+    afterCompile.source === "secret" && afterCompile.flags === "g",
+    "/" + afterCompile.source + "/" + afterCompile.flags);
+  callerRe.lastIndex = 99;
+  check("and its lastIndex is not shared with the record",
+    reRep.get(reInc.id).stages.initial.payload.pattern.lastIndex !== 99,
+    String(reRep.get(reInc.id).stages.initial.payload.pattern.lastIndex));
+
   for (var depth = 58; depth <= 66; depth++) {
     var bRep = b.incident.report.create({ audit: false });
     var bInc = await bRep.open({ regime: "gdpr", detectedAt: 0 });
