@@ -83,6 +83,48 @@ function _emittedActions() {
 // namespace and the segment shape.
 var AUDIT_NS_RE = /(?:audit\(\)|b\.audit)\.namespaced\(\s*"([^"]+)"/;
 
+// A third shape neither scan above can see: the action is a POSITIONAL
+// argument to a per-file helper, so there is no `action:` key and no
+// `namespaced` prefix. The helpers are named `_emitAudit`, `emitAudit`,
+// `_safeAudit`, `_safeAuditEmit`, `_auditEmit` and `safeAudit`, they take the
+// action FIRST or SECOND, and keying a scan on one of those names is what let
+// 73 refused sites across five namespaces survive: a name is not the shape.
+// So match on the SHAPE instead, any callee whose name contains "audit" in
+// either case, and take the first dotted string literal in its arguments.
+// `observability` never matches, which is what keeps a metric name out: a
+// metric has no namespace grammar and no registry.
+var AUDIT_CALLEE_RE = /\b[A-Za-z_$][\w$]*[Aa]udit[\w$]*\s*\(/;
+var DOTTED_LITERAL_RE = /"([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+)"/g;
+
+function _positionalActions() {
+  var found = [];
+  var files = _libFiles(LIB_ROOT, []);
+  for (var f = 0; f < files.length; f++) {
+    var lines = fs.readFileSync(files[f], "utf8").split("\n");
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      if (/^\s*(\*|\/\/)/.test(line)) continue;
+      if (!AUDIT_CALLEE_RE.test(line)) continue;
+      // An audit callee on this line: the action is the first dotted literal
+      // in it. A permission scope reaching `permissions.check` is not one.
+      if (/permissions\s*\.\s*check\s*\(/.test(line)) continue;
+      // Every literal, not the first: guard-envelope picks its action with a
+      // ternary, so one line carries two.
+      var args = line.slice(line.search(AUDIT_CALLEE_RE));
+      DOTTED_LITERAL_RE.lastIndex = 0;
+      var m;
+      while ((m = DOTTED_LITERAL_RE.exec(args)) !== null) {
+        found.push({
+          file:   path.relative(path.dirname(LIB_ROOT), files[f]).replace(/\\/g, "/"),
+          line:   i + 1,
+          action: m[1],
+        });
+      }
+    }
+  }
+  return found;
+}
+
 function _namespacedPrefixes() {
   var found = [];
   var files = _libFiles(LIB_ROOT, []);
@@ -160,18 +202,41 @@ async function run() {
     badPrefix.length === 0,
     badPrefix.length + " refused:\n  " + badPrefix.join("\n  "));
 
+  // The shape scan: an action passed positionally to any audit-named callee.
+  // This is the one that covers `_emitAudit("fileupload.init", …)`,
+  // `_safeAuditEmit("daemon.started", …)` and `agentAudit.safeAudit(impl,
+  // "agent.saga.started", …)` alike.
+  var positional = _positionalActions();
+  check("the shape scan found positional audit actions to check",
+    positional.length > 100, "found=" + positional.length);
+  var badPositional = [];
+  for (var q = 0; q < positional.length; q++) {
+    var qWhy = await _refusalFor(positional[q].action);
+    if (qWhy) badPositional.push(positional[q].file + ":" + positional[q].line + " " +
+                                 positional[q].action + " (" + qWhy + ")");
+  }
+  check("every action passed to an audit callee is one b.audit accepts",
+    badPositional.length === 0,
+    badPositional.length + " refused:\n  " + badPositional.join("\n  "));
+
   await _testRefusedActionsAreReported();
 }
 
-// The scan above can only judge an action it can read. Most of the framework
-// emits through a per-file helper, and audit().namespaced(prefix) composes the
-// action from a prefix the scan would have to resolve, so twenty-six more
-// dropped rows sat outside its reach. Rather than widen the scan further,
-// safeEmit reports a refused action instead of absorbing it, which covers every
-// call shape and anything an application adds.
+// The scan above can only judge an action it can read, and safeEmit reports a
+// refused action instead of absorbing it, which covers every call shape and
+// anything an application adds.
+//
+// What this check is NOT: evidence that the framework drops nothing. The
+// register is module-global and nothing clears it, so under the release gate
+// (SMOKE_PARALLEL > 1 forks a process per test file) this file is the only
+// code that has run, and the list is empty however many rows the framework
+// drops elsewhere. Seventy-three refused sites across five namespaces survived
+// this assertion for exactly that reason. The scans above are what judge the
+// framework; this judges the REGISTER, so it asserts the mechanism counts and
+// reports rather than asserting a population it cannot see.
 async function _testRefusedActionsAreReported() {
   var before = b.audit.refusedActions();
-  check("the framework's own emits leave nothing refused",
+  check("nothing this file has run so far was refused",
     before.length === 0, JSON.stringify(before));
 
   // The control: the report is reachable and counts attempts, so an empty list

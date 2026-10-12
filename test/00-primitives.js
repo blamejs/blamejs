@@ -3485,7 +3485,7 @@ async function testStaticServeAuditEmission() {
   try {
     await _statusOnly(ctx.port, "/a.bin");
     check("static.audit success: emission count",             emitted.length === 1);
-    check("static.audit success: action name",                emitted[0].action === "staticServe.serve.success");
+    check("static.audit success: action name",                emitted[0].action === "staticserve.serve.success");
     check("static.audit success: outcome=success",            emitted[0].outcome === "success");
     check("static.audit success: resource present",           emitted[0].resource === "/a.bin");
     check("static.audit success: size present",               typeof emitted[0].size === "number");
@@ -3503,7 +3503,7 @@ async function testStaticServeAuditEmission() {
     try {
       await _statusOnly(ctx2.port, "/a.bin");
       check("static.audit failure: emission",                 emitted.length === 1);
-      check("static.audit failure: action name",              emitted[0].action === "staticServe.serve.failure");
+      check("static.audit failure: action name",              emitted[0].action === "staticserve.serve.failure");
       check("static.audit failure: reason permission_denied", emitted[0].reason === "permission_denied");
     } finally { ctx2.cleanup(); }
   } finally { ctx.cleanup(); }

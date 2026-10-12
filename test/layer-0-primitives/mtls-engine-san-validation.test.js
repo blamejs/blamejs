@@ -81,6 +81,74 @@ async function run() {
       "got " + (e2 ? e2.code : "no refusal"));
   }
 
+  // `sans` itself: a non-array was refused but `null` was exempted, so the
+  // placeholder shape read as no sans at all. A server certificate then fell
+  // back to the CN and a client certificate was issued with none, both for an
+  // identity other than the one configured.
+  var containers = [
+    ["a bare string",  "api.example.com"],
+    ["a number",       8443],
+    ["an object",      { dNSName: "api.example.com" }],
+    ["null",           null],
+  ];
+  for (var c = 0; c < containers.length; c++) {
+    var e3 = await refusal({ sans: containers[c][1] });
+    check("signClientCert refuses a sans container that is " + containers[c][0],
+      !!e3 && e3.code === "mtls-engine/bad-san",
+      "got " + (e3 ? e3.code : "no refusal"));
+  }
+  // Absent is still absent: omitting sans is how a client certificate is asked
+  // for without one, and the refusal above must not take that away.
+  var absent = await refusal({ cn: "worker_7", usage: "client" });
+  check("and omitting sans entirely still issues", absent === null,
+    absent && absent.message);
+
+  // The sibling public primitive had the same shape and a worse consequence:
+  // `generateCrl` coerced a non-array `revocations` to the empty list and
+  // returned a correctly signed CRL asserting that nothing is revoked, which a
+  // relying party caches until nextUpdate and keeps accepting every revoked
+  // certificate on. There was no code for it at all. Its dates were unchecked
+  // too, so an epoch number, the shape a config file or an HTTP body carries,
+  // raised an uncoded TypeError out of a documented API.
+  var crlBad = [
+    ["null",                     { revocations: null }],
+    ["a string",                 { revocations: "01" }],
+    ["one unwrapped entry",      { revocations: { serialNumber: "01" } }],
+    ["a JSON string of a list",  { revocations: "[{\"serialNumber\":\"01\"}]" }],
+  ];
+  for (var k = 0; k < crlBad.length; k++) {
+    var crlErr = null;
+    try {
+      await b.mtlsEngine.generateCrl(Object.assign(
+        { caCertPem: "x", caKeyPem: "y", crlNumber: 1 }, crlBad[k][1]));
+    } catch (e) { crlErr = e; }
+    check("generateCrl refuses revocations given " + crlBad[k][0],
+      !!crlErr && crlErr.code === "mtls-engine/bad-revocations",
+      "got " + (crlErr ? crlErr.code : "no refusal"));
+  }
+  var crlDates = [["thisUpdate", "thisUpdate"], ["nextUpdate", "nextUpdate"]];
+  for (var d = 0; d < crlDates.length; d++) {
+    var dOpts = { caCertPem: "x", caKeyPem: "y", crlNumber: 1 };
+    dOpts[crlDates[d][1]] = 1767225600000;
+    var dErr = null;
+    try { await b.mtlsEngine.generateCrl(dOpts); } catch (e) { dErr = e; }
+    check("generateCrl refuses a non-Date " + crlDates[d][0],
+      !!dErr && dErr.code === "mtls-engine/bad-crl-date",
+      "got " + (dErr ? dErr.code : "no refusal"));
+  }
+
+  // usage and algorithm carried the same null-as-absent reading: a placeholder
+  // issued a clientAuth-only certificate, or selected an algorithm by
+  // capability instead of the configured pin.
+  var usageErr = await refusal({ usage: null });
+  check("signClientCert refuses a usage that is present and not a string",
+    !!usageErr && usageErr.code === "mtls-engine/bad-usage",
+    "got " + (usageErr ? usageErr.code : "no refusal"));
+  var algErr = await refusal({ algorithm: null });
+  check("and refuses an algorithm pin that is present and not a label",
+    !!algErr && algErr.code === "mtls-engine/unknown-algorithm",
+    "got " + (algErr ? algErr.code : "no refusal"));
+
   // The CN-derived default goes through the same rule, so a server certificate
   // cannot carry a dNSName the operator-supplied list would have been refused
   // for. `_normaliseCn` strips a CN to [A-Za-z0-9_.-], which still leaves a

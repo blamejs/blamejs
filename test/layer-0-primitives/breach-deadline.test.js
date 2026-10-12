@@ -78,9 +78,14 @@ async function run() {
   // An own `__proto__` key, which a JSON-parsed filing can carry, must stay an
   // own key: assigning it on the copy would set the prototype instead.
   var injected = JSON.parse('{"__proto__": {"injected": true}, "keep": 1}');
+  // A Map and a Set came back by reference, so the register handed out a
+  // mutable container and a later read saw whatever the caller did to it.
+  var tags = new Map([["region", "eu-west-1"]]);
+  var seenBy = new Set(["dpo"]);
   await reporter.fileNotice(rec.id, "CA", {
     method: "email", ackedAt: ackedAt, evidence: evidence, chain: cyclic,
     view: view, rawBytes: rawBytes, elsewhere: elsewhere, injected: injected,
+    tags: tags, seenBy: seenBy,
   });
   // The operator's own fields are kept under `payload`.
   var caPayload = reporter.get(rec.id).filings.CA.payload;
@@ -99,6 +104,17 @@ async function run() {
     caPayload.rawBytes instanceof ArrayBuffer &&
     new Uint8Array(caPayload.rawBytes).join(",") === "9,8,7",
     JSON.stringify(caPayload.rawBytes));
+  tags.set("region", "us-east-1");
+  tags.set("added", "later");
+  seenBy.add("auditor");
+  check("a Map in a filing is copied rather than shared",
+    caPayload.tags instanceof Map && caPayload.tags.get("region") === "eu-west-1" &&
+    caPayload.tags.size === 1,
+    JSON.stringify(Array.from(caPayload.tags || [])));
+  check("and a Set is copied too",
+    caPayload.seenBy instanceof Set && caPayload.seenBy.has("dpo") &&
+    caPayload.seenBy.size === 1,
+    JSON.stringify(Array.from(caPayload.seenBy || [])));
   check("an own __proto__ key survives the copy as an own key",
     Object.prototype.hasOwnProperty.call(caPayload.injected, "__proto__") &&
     caPayload.injected.keep === 1,
@@ -123,6 +139,37 @@ async function run() {
     String(caPayload.chain && caPayload.chain.label));
   check("the copy is still frozen",
     Object.isFrozen(caPayload.chain), String(Object.isFrozen(caPayload.chain)));
+  // The seal walks the record, so a payload nested past its bound used to be
+  // stored and then raise out of the copy, which left every later read raising
+  // too and refused a corrected retry as already-filed. Each site now seals a
+  // prospective copy before it commits.
+  function _deepChain(n) {
+    var head = {};
+    var t = head;
+    for (var i = 0; i < n; i++) { t.next = {}; t = t.next; }
+    return head;
+  }
+  var deepReg = b.breach.report.create({ audit: false });
+  var openDeep = null;
+  try { deepReg.open({ detectedAt: Date.now(), affectedStates: ["CA"], scope: _deepChain(700) }); }
+  catch (e) { openDeep = e; }
+  check("open() refuses a scope past the seal's bound",
+    openDeep !== null && openDeep.code === "incident-report/record-too-deep",
+    openDeep ? String(openDeep.code) : "accepted");
+  var deepRec = deepReg.open({ detectedAt: Date.now(), affectedStates: ["CA"] });
+  var fileDeep = null;
+  try { await deepReg.fileNotice(deepRec.id, "CA", { method: "email", chain: _deepChain(700) }); }
+  catch (e) { fileDeep = e; }
+  check("fileNotice refuses one too, before recording the filing",
+    fileDeep !== null && fileDeep.code === "incident-report/record-too-deep",
+    fileDeep ? String(fileDeep.code) : "accepted");
+  var deepReadable = true;
+  try { deepReg.list(); deepReg.get(deepRec.id); } catch (_e) { deepReadable = false; }
+  check("and the register is still readable", deepReadable);
+  var retried = await deepReg.fileNotice(deepRec.id, "CA", { method: "email" });
+  check("so a corrected filing for the same state is still accepted",
+    retried !== null && !!retried.filings.CA);
+
   check("get() and list() still answer after a cyclic filing",
     reporter.get(rec.id) !== null && reporter.list().length >= 1);
   check("after one filing, one pending", reporter.pending(rec.id).length === 1);

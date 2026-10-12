@@ -905,6 +905,46 @@ async function testCreateAppValidation() {
             fs.readdirSync(dir).length === 0,
             JSON.stringify(fs.readdirSync(dir)));
     }
+
+    // The CONTAINER was never checked, so a malformed truthy value was indexed
+    // for the eleven known keys, every one read as undefined, and the call
+    // enabled the defaults and went on to open the vault and the database. The
+    // caller was left believing its configuration had been accepted.
+    var badContainers = [
+      { label: 'the string "false"', mw: "false" },
+      { label: "an array",           mw: [] },
+      { label: "a number",           mw: 1 },
+      { label: "a boolean",          mw: true },
+      // A Map, a Date and a Buffer are objects, so a check that asked only
+      // whether the value was an object admitted them, and indexing one for
+      // the eleven keys finds none of them: the same silent default.
+      { label: "a Map",              mw: new Map([["csrf", false]]) },
+      { label: "a Date",             mw: new Date() },
+      { label: "a Buffer",           mw: Buffer.from("csrf") },
+    ];
+    for (var c = 0; c < badContainers.length; c++) {
+      var cRefused = null;
+      try {
+        await b.createApp({ dataDir: dir, middleware: badContainers[c].mw });
+      } catch (e) { cRefused = e; }
+      check("createApp: opts.middleware given " + badContainers[c].label + " is refused",
+            !!cRefused && /opts\.middleware must be an object keyed by/.test(cRefused.message),
+            cRefused && String(cRefused.message).slice(0, 90));
+      check("and that refusal wrote nothing into dataDir (" +
+            badContainers[c].label + ")",
+            fs.readdirSync(dir).length === 0,
+            JSON.stringify(fs.readdirSync(dir)));
+    }
+
+    // opts.shutdown is the same shape of bag in the same function, and it had
+    // no container check at all: a malformed one read installSignalHandlers as
+    // absent, so a shutdown configured not to install them installed them.
+    var sdRefused = null;
+    try { await b.createApp({ dataDir: dir, shutdown: "graceMs=0" }); }
+    catch (e) { sdRefused = e; }
+    check("createApp: a malformed opts.shutdown container is refused",
+          !!sdRefused && /opts\.shutdown must be an object of/.test(sdRefused.message),
+          sdRefused && String(sdRefused.message).slice(0, 90));
   } finally {
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* cleanup */ }
   }

@@ -1415,7 +1415,7 @@ async function testContentSafetySkipAndSniff() {
   await _seedUpload(noGate, "s-nogate", txt, { id: "x" }, { filename: "notes.txt" });
   await noGate.finalize({ uploadId: "s-nogate", manifest: _manifestFor(txt), actor: { id: "x" } });
   check("skip: no gate for the extension → no-gate-for-extension audit",
-        skips1.some(function (e) { return e.action === "fileUpload.content_safety_skipped" &&
+        skips1.some(function (e) { return e.action === "fileupload.content_safety_skipped" &&
                                           e.reason === "no-gate-for-extension"; }));
 
   // streamed-over-reassembly-cap: a gate IS registered for the ext but the

@@ -132,6 +132,75 @@ function run() {
   check("the record update() answers is sealed as well",
         sealRopa.get("sealed").purposes.length === 1 &&
         sealRopa.get("sealed").name === "Billing v2");
+  // Only `purposes` and `dataCategories` were copied, so every other field an
+  // Article 30 record carries stayed shared with the caller: a recipients list
+  // and a third-country transfer entry could be rewritten after the validation
+  // had passed, and the next export carried the edit.
+  var callerRecipients = ["processor-a"];
+  var callerTransfers = [{ country: "US", safeguard: "SCCs" }];
+  var nested = sealRopa.register({
+    id: "nested", name: "Payroll", purposes: ["payroll"],
+    legalBasis: "contract", dataCategories: ["salary"],
+    recipients: callerRecipients, thirdCountryTransfers: callerTransfers,
+  });
+  callerRecipients.push("processor-b");
+  callerTransfers[0].safeguard = "none";
+  check("a list the register did not name is copied too",
+        sealRopa.get("nested").recipients.length === 1,
+        JSON.stringify(sealRopa.get("nested").recipients));
+  check("and an object nested inside one is copied with it",
+        sealRopa.get("nested").thirdCountryTransfers[0].safeguard === "SCCs",
+        String(sealRopa.get("nested").thirdCountryTransfers[0].safeguard));
+  try { nested.thirdCountryTransfers[0].safeguard = "none"; }
+  catch (_e) { /* frozen in strict mode */ }
+  check("the nested object the register answers with is frozen as well",
+        sealRopa.get("nested").thirdCountryTransfers[0].safeguard === "SCCs",
+        String(sealRopa.get("nested").thirdCountryTransfers[0].safeguard));
+
+  // Freezing a record does not seal what its fields point at: Object.freeze
+  // cannot stop Map.prototype.set, Date.prototype.setTime or a write through a
+  // typed array. The register sealed once at write time and handed the stored
+  // record back, so every such field was a shared handle and an activity the
+  // validation had refused could be written into the next export through it.
+  var liveRopa = b.gdpr.ropa.create({ audit: false, controller: { name: "Acme" } });
+  liveRopa.register({
+    id: "live", name: "Payments", purposes: ["billing"],
+    legalBasis: "contract", dataCategories: ["iban"],
+    recipients: new Map([["processor-a", { country: "DE" }]]),
+    regions: new Set(["EU"]),
+    reviewedAt: new Date(1700000000000),
+    evidence: Buffer.from("ab"),
+    fingerprint: Uint8Array.from([1, 2]),
+  });
+  var handed = liveRopa.get("live");
+  handed.recipients.set("processor-evil", { country: "XX" });
+  handed.recipients.delete("processor-a");
+  handed.regions.clear();
+  handed.reviewedAt.setTime(0);
+  handed.evidence[0] = 0;
+  handed.fingerprint[0] = 0xff;
+  var after = liveRopa.get("live");
+  check("a Map field of a stored activity cannot be rewritten through a read",
+    after.recipients.size === 1 && after.recipients.has("processor-a"),
+    JSON.stringify(Array.from(after.recipients.keys())));
+  check("nor a Set field emptied through one",
+    after.regions.size === 1, String(after.regions.size));
+  check("nor a Date field moved",
+    after.reviewedAt.getTime() === 1700000000000, after.reviewedAt.toISOString());
+  check("nor a Buffer field overwritten",
+    after.evidence.toString("utf8") === "ab", after.evidence.toString("utf8"));
+  check("nor a typed-array field overwritten",
+    after.fingerprint[0] === 1, String(after.fingerprint[0]));
+  check("and the export carries the register's own values, not the edits",
+    JSON.stringify(liveRopa["export"]({ format: "json" })).indexOf("processor-evil") === -1);
+
+  // The export header is sealed the same way: the caller keeps its reference.
+  var hdrController = { name: "Acme GmbH", contact: "dpo@acme.example" };
+  var hdrRopa = b.gdpr.ropa.create({ audit: false, controller: hdrController });
+  hdrController.name = "Not Acme";
+  check("rewriting the controller object does not change the next export",
+    JSON.stringify(hdrRopa["export"]({ format: "json" })).indexOf("Not Acme") === -1);
+
   var intact = basisRopa.get("a1");
   check("and the stored activity still carries every required field",
         intact.name !== undefined && intact.purposes !== undefined &&

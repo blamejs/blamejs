@@ -59,21 +59,32 @@ async function testSharedGateReachesTheWorker() {
   try {
     // The worker reports whether it received a handle and whether adopting it
     // puts it under the same limit the parent set.
+    // The worker requires the MODULE, not the package root: the gate lives in
+    // lib/auth/password.js module state, so the assembled framework adds
+    // nothing a gate test needs. Measured in the container against the bind
+    // mount, 5290ms for index.js against 469ms for the module, on each of the
+    // two Workers below. That cost is what turned the boot budget into a real
+    // limit under SMOKE_PARALLEL=64, where the container leg failed with a
+    // healthy Worker still loading.
     var script = path.join(dir, "gate-worker.js");
     fs.writeFileSync(script,
       "var { parentPort, workerData } = require('node:worker_threads');\n" +
-      "var b = require(" + JSON.stringify(path.resolve(__dirname, "..", "..", "index.js")) + ");\n" +
+      "var password = require(" +
+        JSON.stringify(path.resolve(__dirname, "..", "..", "lib", "auth", "password.js")) + ");\n" +
       "var handle = workerData && workerData.argon2GateHandle;\n" +
       "var adopted = false;\n" +
-      "try { b.auth.password.gate(2, { shared: handle }); adopted = true; } catch (_e) { adopted = String(_e.message); }\n" +
+      "try { password.gate(2, { shared: handle }); adopted = true; } catch (_e) { adopted = String(_e.message); }\n" +
       "parentPort.postMessage({ gotHandle: !!handle, adopted: adopted });\n");
 
     b.auth.password.gate(2, { shared: true });
     check("the parent holds a shared gate",
       b.auth.password.gateHandle() !== null);
 
+    // A generous budget on purpose: what this test measures is whether the
+    // handle arrives and is adopted, not how fast a Worker boots, so the
+    // budget is a precondition and costs nothing when healthy.
     var msg = await b.backup.runInWorker({
-      workerScript: script, shareArgon2Gate: true, timeoutMs: 30000,
+      workerScript: script, shareArgon2Gate: true, timeoutMs: 120000,
     });
     check("the worker receives the shared gate handle",
       msg && msg.gotHandle === true, JSON.stringify(msg));
@@ -83,7 +94,7 @@ async function testSharedGateReachesTheWorker() {
     // The control: without the option the worker gets no handle, which is the
     // behaviour every existing caller keeps.
     var plain = await b.backup.runInWorker({
-      workerScript: script, timeoutMs: 30000,
+      workerScript: script, timeoutMs: 120000,
     });
     check("a worker started without the option gets no handle",
       plain && plain.gotHandle === false, JSON.stringify(plain));
