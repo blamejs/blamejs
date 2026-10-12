@@ -21,12 +21,12 @@
 # @jazzer.js/core to "fix" this: the Node-20 floor blocks blamejs regardless, and a
 # downgrade only risks the working CI (which runs Node 24 on ubuntu-latest).
 #
-# The base is digest-pinned for a reproducible CI fuzz toolchain (Dependabot
-# bumps it via the docker ecosystem entry for /.clusterfuzzlite). Note: the
-# oss-fuzz/projects/blamejs/ copy is intentionally left on the floating tag —
-# OSS-Fuzz's own build infra expects projects to track the latest base-builder,
-# so pinning there would diverge from upstream convention.
-FROM gcr.io/oss-fuzz-base/base-builder-javascript@sha256:e1b544f0fd3de5c9efe25221f9f47ceb5508ea415df3e50a90d96f42d1b5e51f
+# The base is digest-pinned for a reproducible CI fuzz toolchain. Dependabot
+# bumps it via the docker ecosystem entry for /.clusterfuzzlite, and that bump
+# touches this file alone, so `node scripts/pin-all.js --fix` mirrors the digest
+# into oss-fuzz/projects/blamejs/Dockerfile. Both builds must run the same base;
+# codebase-patterns fails when the two files disagree.
+FROM gcr.io/oss-fuzz-base/base-builder-javascript@sha256:2a93ae34b95dfd467db7921a563ebc574f13963daedec9558a0379ee1b052f4f
 
 # Copy the framework source. ClusterFuzzLite mounts the repo at
 # $SRC/blamejs, so we COPY everything (including fuzz/) into one
