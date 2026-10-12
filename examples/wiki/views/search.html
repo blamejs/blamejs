@@ -11,7 +11,7 @@
     <li>
       <a href="/{{ h.groupName }}/{{ h.slug }}"><strong>{{ h.title }}</strong></a>
       <span class="muted"> &middot; {{ h.groupName }}/{{ h.slug }}</span>
-      <p class="snippet">{{{ h.snippet }}}</p>
+      <p class="snippet">{% for part in h.parts %}{% if part.hit %}<mark>{{ part.text }}</mark>{% else %}{{ part.text }}{% endif %}{% endfor %}</p>
     </li>
   {% endfor %}
   </ul>

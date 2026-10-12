@@ -298,6 +298,152 @@ function testNoStrayConsoleCalls() {
   _report("no stray console.* calls (route through b.log)", matches);
 }
 
+// A <pre> scrolls its own overflow, so a control appended to one scrolls
+// away with the code: the copy button left the viewport as soon as a wide
+// sample was scrolled right. Controls belong in the wrapper around the
+// <pre>, which does not scroll.
+var SCROLLING_PRE_RE = /\bpre\.(appendChild|append|prepend|insertBefore)\(/;
+
+function testNoControlsInsideScrollingPre() {
+  var matches = _scan(SCROLLING_PRE_RE);
+  matches = _filterMarkers(matches, "control-inside-scrolling-pre");
+  _report("no control appended inside a scrolling <pre>", matches);
+}
+
+// Visibility that only a hover reveals is unreachable on a touch screen.
+// `.anchor` (heading permalink) and `.copy-btn` were both `opacity: 0` with
+// a `:hover` rule to bring them back, so on a phone neither one existed.
+// The hidden default belongs inside `@media (hover: hover)`.
+var CSS_FILE = path.join(WIKI_ROOT, "public", "wiki.css");
+var HOVER_GATED_SELECTORS = /\.(anchor|copy-btn)\b[^{}]*\{[^{}]*opacity:\s*0\s*;/g;
+
+// The stylesheet with each @media block the caller rejects removed, so a
+// rule can be judged on whether it applies unconditionally.
+function _withoutMediaBlocks(css, rejectHead) {
+  var out = "";
+  var i = 0;
+  for (;;) {
+    var at = css.indexOf("@media", i);
+    if (at === -1) { out += css.slice(i); return out; }
+    var open = css.indexOf("{", at);
+    if (open === -1) { out += css.slice(i); return out; }
+    var head = css.slice(at, open);
+    // Brace-match to the end of this at-rule.
+    var depth = 1;
+    var j = open + 1;
+    while (j < css.length && depth > 0) {
+      if (css[j] === "{") depth++;
+      else if (css[j] === "}") depth--;
+      j++;
+    }
+    out += css.slice(i, at);
+    if (!rejectHead(head)) out += css.slice(at, j);
+    i = j;
+  }
+}
+
+function _hoverGateFindings(css, label) {
+  var outside = _withoutMediaBlocks(String(css), function (head) {
+    return /\(\s*hover\s*:\s*hover\s*\)/.test(head);
+  });
+  var bad = [];
+  var m;
+  HOVER_GATED_SELECTORS.lastIndex = 0;
+  while ((m = HOVER_GATED_SELECTORS.exec(outside)) !== null) {
+    bad.push({
+      file:    label,
+      line:    outside.slice(0, m.index).split("\n").length,
+      content: m[0].replace(/\s+/g, " ").slice(0, 100),
+    });
+  }
+  return bad;
+}
+
+// A table's cells hold error codes and option names that do not break, so
+// a table outgrows its column at any window size, and `main` hides its
+// horizontal overflow. Making the table scrollable only under a
+// `max-width` query fixes the phone and leaves every wider window losing
+// the right-hand columns with no way to reach them.
+function _unscrollableTableFindings(css, label) {
+  var always = _withoutMediaBlocks(String(css), function () { return true; });
+  var rule = always.match(/main\s+table\s*\{[^}]*\}/);
+  if (rule && /overflow-x:\s*(auto|scroll)/.test(rule[0])) return [];
+  return [{
+    file:    label,
+    line:    rule ? always.slice(0, always.indexOf(rule[0])).split("\n").length : 0,
+    content: rule
+      ? "main table is scrollable only inside a media query: " +
+        rule[0].replace(/\s+/g, " ").slice(0, 70)
+      : "no unconditional `main table` rule",
+  }];
+}
+
+function testWideTablesScrollAtEveryWidth() {
+  var css;
+  try { css = fs.readFileSync(CSS_FILE, "utf8"); }
+  catch (_e) {
+    _report("a wide table scrolls at every window size",
+      [{ file: _relPath(CSS_FILE), line: 0, content: "stylesheet not readable" }]);
+    return;
+  }
+  _report("a wide table scrolls at every window size",
+    _unscrollableTableFindings(css, _relPath(CSS_FILE)));
+}
+
+// The copy button is absolutely positioned and the client script places it in
+// whichever wrapper surrounds the <pre>. A wrapper that establishes no
+// containing block sends the button to whatever ancestor does, which can be
+// most of the page away. Both wrappers the script uses have to position
+// themselves.
+var COPY_BUTTON_WRAPPERS = ["code-block", "code-chrome"];
+var POSITIONED_RE = /position:\s*(relative|absolute|sticky|fixed)\s*;/;
+
+function _unpositionedWrapperFindings(css, label) {
+  var text = String(css);
+  var bad = [];
+  for (var i = 0; i < COPY_BUTTON_WRAPPERS.length; i++) {
+    var name = COPY_BUTTON_WRAPPERS[i];
+    var rule = text.match(new RegExp("\\." + name + "\\s*\\{[^}]*\\}"));  // allow:dynamic-regex — class name from this file's own list
+    if (!rule) {
+      bad.push({ file: label, line: 0, content: "no `." + name + "` rule" });
+      continue;
+    }
+    if (!POSITIONED_RE.test(rule[0])) {
+      bad.push({
+        file:    label,
+        line:    text.slice(0, text.indexOf(rule[0])).split("\n").length,
+        content: "`." + name + "` holds the copy button but establishes no " +
+                 "containing block: " + rule[0].replace(/\s+/g, " ").slice(0, 60),
+      });
+    }
+  }
+  return bad;
+}
+
+function testCopyButtonWrappersArePositioned() {
+  var css;
+  try { css = fs.readFileSync(CSS_FILE, "utf8"); }
+  catch (_e) {
+    _report("every copy-button wrapper establishes a containing block",
+      [{ file: _relPath(CSS_FILE), line: 0, content: "stylesheet not readable" }]);
+    return;
+  }
+  _report("every copy-button wrapper establishes a containing block",
+    _unpositionedWrapperFindings(css, _relPath(CSS_FILE)));
+}
+
+function testHoverRevealedControlsAreHoverGated() {
+  var css;
+  try { css = fs.readFileSync(CSS_FILE, "utf8"); }
+  catch (_e) {
+    _report("hover-revealed controls are gated on (hover: hover)",
+      [{ file: _relPath(CSS_FILE), line: 0, content: "stylesheet not readable" }]);
+    return;
+  }
+  _report("hover-revealed controls are gated on (hover: hover)",
+    _hoverGateFindings(css, _relPath(CSS_FILE)));
+}
+
 function testNoUnresolvedMarkers() {
   var matches = _scan(/\b(TODO|FIXME|HACK|XXX)(?::|\s)/);
   matches = _filterMarkers(matches, "unresolved-marker");
@@ -549,6 +695,10 @@ function run() {
   testNoRawByteLiterals();
   testNoRawTimeLiterals();
   testNoStrayConsoleCalls();
+  testNoControlsInsideScrollingPre();
+  testHoverRevealedControlsAreHoverGated();
+  testCopyButtonWrappersArePositioned();
+  testWideTablesScrollAtEveryWidth();
   testNoUnresolvedMarkers();
   testNoTierTerminologyInCode();
   testNoInlineRequires();
@@ -592,7 +742,24 @@ function run() {
   return 0;
 }
 
-module.exports = { run: run };
+module.exports = {
+  run: run,
+  // Exported so the e2e proves each matcher fires on the shape it guards
+  // and stays silent on the shape that replaced it. A detector nobody has
+  // seen fire is a detector that may already be dead.
+  _hoverGateFindingsForTest: function (css) { return _hoverGateFindings(css, "sample.css"); },
+  _unscrollableTableFindingsForTest: function (css) {
+    return _unscrollableTableFindings(css, "sample.css");
+  },
+  _unpositionedWrapperFindingsForTest: function (css) {
+    return _unpositionedWrapperFindings(css, "sample.css");
+  },
+  _scrollingPreMatchesForTest: function (source) {
+    return String(source).split(/\r?\n/).filter(function (line) {
+      return SCROLLING_PRE_RE.test(line);
+    });
+  },
+};
 
 if (require.main === module) {
   var code = run();

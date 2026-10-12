@@ -380,7 +380,18 @@ async function buildApp(opts) {
       // (max-age + includeSubDomains + preload) rather than suppressing it on
       // the http hop from the proxy. Empty (dev / no proxy) keeps HSTS gated on
       // the real TLS socket — a direct caller can't forge https to force it.
-      securityHeaders: { csp: STRICT_CSP, trustedProxies: adminTrustedProxies },
+      securityHeaders: {
+        csp: STRICT_CSP,
+        trustedProxies: adminTrustedProxies,
+        // `no-referrer`, the framework default, also opaques the Origin
+        // header a browser puts on a form POST from the page: Chrome sends
+        // the literal `null`, the origin gates read that as a foreign or
+        // malformed origin, and the login and page-save forms were refused
+        // before their CSRF token was read. `same-origin` sends no referrer
+        // to any other site, exactly as before, and keeps the real origin
+        // on this site's own requests.
+        referrerPolicy: "same-origin",
+      },
       botGuard:        { skipPaths: ["/healthz", "/readyz", "/startupz", "/robots.txt", "/sitemap.xml"] },
       cors: {
         // No third-party origins — only this app's own forms post

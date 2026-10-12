@@ -328,6 +328,86 @@ async function testOriginCheckCanonicalizesHost() {
         r2.outcome === "next");
 }
 
+// A page served with `Referrer-Policy: no-referrer` — the default this
+// framework's own securityHeaders middleware writes — makes a browser send
+// the literal `null` as the Origin of a form POST from that page. The
+// origin check read that as a malformed origin and refused it, so an app
+// running both middlewares at their defaults could not accept its own
+// forms, and the remedy b.middleware.cors documents for the same case
+// (strictNullOrigin: false) stopped working one layer further in.
+//
+// `Sec-Fetch-Site` is what distinguishes that same-origin navigation from
+// a genuine cross-site post once the origin is opaque, and no page script
+// can set it. The default stays strict; the option is what makes the
+// documented remedy reach all the way through.
+function _opaqueOriginReq(tok, sfs) {
+  var headers = {
+    host:           "app.example.com",
+    origin:         "null",
+    cookie:         "csrf=" + tok,
+    "x-csrf-token": tok,
+  };
+  if (sfs) headers["sec-fetch-site"] = sfs;
+  return _mockReq({ method: "POST", url: "/submit", headers: headers });
+}
+
+async function testOpaqueOriginIsNotMalformed() {
+  var tok = b.forms.generateCsrfToken();
+  var strict = await _runCsrf(
+    { cookie: true, checkOrigin: true },
+    _opaqueOriginReq(tok, "same-origin"));
+  check("csrf: an opaque origin is refused by default",
+        strict.outcome === "denied");
+
+  var tok2 = b.forms.generateCsrfToken();
+  var relaxed = await _runCsrf(
+    { cookie: true, checkOrigin: true, strictNullOrigin: false },
+    _opaqueOriginReq(tok2, "same-origin"));
+  check("csrf: strictNullOrigin:false admits a same-origin navigation whose origin is opaque",
+        relaxed.outcome === "next");
+
+  var tok3 = b.forms.generateCsrfToken();
+  var relaxedNone = await _runCsrf(
+    { cookie: true, checkOrigin: true, strictNullOrigin: false },
+    _opaqueOriginReq(tok3, "none"));
+  check("csrf: strictNullOrigin:false admits a user-initiated navigation (Sec-Fetch-Site: none)",
+        relaxedNone.outcome === "next");
+
+  // The controls: relaxing it must not admit a cross-site post, nor one
+  // that brings no fetch-metadata at all, which a non-browser client is
+  // free to omit.
+  var tok4 = b.forms.generateCsrfToken();
+  var crossSite = await _runCsrf(
+    { cookie: true, checkOrigin: true, strictNullOrigin: false },
+    _opaqueOriginReq(tok4, "cross-site"));
+  check("csrf: strictNullOrigin:false still refuses an opaque cross-site post",
+        crossSite.outcome === "denied");
+
+  var tok5 = b.forms.generateCsrfToken();
+  var noMeta = await _runCsrf(
+    { cookie: true, checkOrigin: true, strictNullOrigin: false },
+    _opaqueOriginReq(tok5, null));
+  check("csrf: strictNullOrigin:false still refuses an opaque origin with no Sec-Fetch-Site",
+        noMeta.outcome === "denied");
+
+  // A genuinely malformed origin is refused however the option is set.
+  var tok6 = b.forms.generateCsrfToken();
+  var garbage = await _runCsrf(
+    { cookie: true, checkOrigin: true, strictNullOrigin: false },
+    _mockReq({
+      method: "POST", url: "/submit",
+      headers: {
+        host:            "app.example.com",
+        origin:          "not a url",
+        cookie:          "csrf=" + tok6,
+        "x-csrf-token":  tok6,
+        "sec-fetch-site": "same-origin",
+      },
+    }));
+  check("csrf: a malformed origin is refused whatever strictNullOrigin says",
+        garbage.outcome === "denied");
+}
+
 // Every Set-Cookie the middleware queued, flattened.
 function _issuedCookies(res) {
   var sc = res.getHeader("set-cookie");
@@ -544,6 +624,7 @@ async function run() {
   await testDistinctInstancesBothEnforce();
   testMethodsEmptyThrows();
   await testOriginCheckCanonicalizesHost();
+  await testOpaqueOriginIsNotMalformed();
 }
 
 module.exports = { run: run };

@@ -165,7 +165,11 @@ function _nsOfWithin(sig, declaredNamespaces) {
 // `resolveRelated` (optional) is a sig → href resolver — when set,
 // the rendered Related footer's links jump straight to the right
 // page+anchor instead of routing through /api.
-function _renderPrimitive(prim, resolveRelated) {
+//
+// `defaultHeadingTag` is the level the caller's page structure calls for:
+// h3 under a namespace divider, h2 when the primitives sit directly under
+// the page's h1. A @headingTag on the block still wins.
+function _renderPrimitive(prim, resolveRelated, defaultHeadingTag) {
   var tags = prim.tags || {};
   var signature = tags.signature || tags.primitive;
   if (!signature) return "";
@@ -234,7 +238,7 @@ function _renderPrimitive(prim, resolveRelated) {
     related:        related,
     resolveRelated: resolveRelated,
     anchor:         tags.anchor || null,
-    headingTag:     tags.headingTag || "h3",
+    headingTag:     tags.headingTag || defaultHeadingTag || "h3",
   });
 }
 
@@ -451,11 +455,19 @@ function generatePage(pageSpec, docsByPath, resolveRelated) {
     }
   }
 
+  // A page that divides its primitives by namespace nests them one level
+  // under that divider. A page without dividers has nothing between the
+  // primitives and its own <h1>, so they are its second level: emitting
+  // them at h3 there left every such page jumping from h1 straight to h3,
+  // which is a hole in the outline a screen reader navigates by.
+  var nsDividers = !!(pageSpec.ns_h2 || nsList.length > 1);
+  var primitiveHeading = nsDividers ? "h3" : "h2";
+
   for (var ni = 0; ni < nsList.length; ni++) {
     var ns2 = nsList[ni];
     var prims = byNs[ns2] || [];
     if (prims.length === 0) continue;
-    if (pageSpec.ns_h2 || nsList.length > 1) {
+    if (nsDividers) {
       lines.push(section.h2({ title: "b." + ns2 }));
       // If this namespace's @module has its own @intro AND we already
       // used the first-ns intro at the top, this one becomes a per-h2
@@ -467,7 +479,7 @@ function generatePage(pageSpec, docsByPath, resolveRelated) {
       }
     }
     for (var pi = 0; pi < prims.length; pi++) {
-      lines.push(_renderPrimitive(prims[pi], resolveRelated));
+      lines.push(_renderPrimitive(prims[pi], resolveRelated, primitiveHeading));
     }
   }
 

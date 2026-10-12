@@ -9,6 +9,7 @@
 // to match — adding a new page touches both files).
 
 var PAGES = require("./pages/_index");
+var { htmlToSearchText } = require("../../lib/html-entities");
 
 module.exports = {
   description: "Default wiki content",
@@ -19,16 +20,18 @@ module.exports = {
     for (var i = 0; i < PAGES.length; i++) {
       var p = PAGES[i];
       db.prepare(
-        "INSERT INTO pages (groupName, slug, title, body, updatedAt, updatedBy) " +
-        "VALUES (?, ?, ?, ?, ?, ?) " +
+        "INSERT INTO pages (groupName, slug, title, body, bodyText, updatedAt, updatedBy) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?) " +
         "ON CONFLICT (groupName, slug) DO UPDATE SET " +
         "  title = excluded.title, body = excluded.body, " +
+        "  bodyText = excluded.bodyText, " +
         "  updatedAt = excluded.updatedAt, updatedBy = excluded.updatedBy"
       ).run(
         p.slug,             // groupName === slug for landing pages
         "index",
         p.title,
         p.body,
+        htmlToSearchText(p.body),
         now,
         "seeder"
       );
