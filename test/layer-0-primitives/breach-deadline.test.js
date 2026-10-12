@@ -187,6 +187,17 @@ async function run() {
   check("and a field rewritten after the call does not reach the register",
     filed.method === "email", String(filed.method));
 
+  // open() had the same shape: it made the copy for the depth check and then
+  // stored the original, whose scope and impact were the caller's objects.
+  var scopeSystems = ["crm"];
+  var openShare = shareReg.open({
+    detectedAt: Date.now(), affectedStates: ["NY"], scope: { systems: scopeSystems },
+  });
+  scopeSystems.push("injected");
+  check("a scope array passed to open cannot be grown afterwards",
+    shareReg.get(openShare.id).scope.systems.length === 1,
+    JSON.stringify(shareReg.get(openShare.id).scope.systems));
+
   check("get() and list() still answer after a cyclic filing",
     reporter.get(rec.id) !== null && reporter.list().length >= 1);
   check("after one filing, one pending", reporter.pending(rec.id).length === 1);

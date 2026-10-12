@@ -208,6 +208,20 @@ async function run() {
   var ordinary = await openRep.open({ regime: "gdpr", detectedAt: 0, scope: _chainOf(70) });
   check("while an ordinary nested scope still opens", ordinary !== null && !!ordinary.id);
 
+  // open() made the copy for the depth check and then stored the original, so
+  // the register still held references reachable from the caller's spec: an
+  // incident could drift after it was opened, and a later persistence call
+  // carried the drifted values.
+  var driftRep = b.incident.report.create({ audit: false });
+  var systems = ["billing"];
+  var driftRec = await driftRep.open({
+    regime: "gdpr", detectedAt: 0, scope: { systems: systems }, impact: { subjects: 5 },
+  });
+  systems.push("injected");
+  check("a scope array passed to open cannot be grown afterwards",
+    driftRep.get(driftRec.id).scope.systems.length === 1,
+    JSON.stringify(driftRep.get(driftRec.id).scope.systems));
+
   for (var depth = 58; depth <= 66; depth++) {
     var bRep = b.incident.report.create({ audit: false });
     var bInc = await bRep.open({ regime: "gdpr", detectedAt: 0 });

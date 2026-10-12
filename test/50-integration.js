@@ -955,6 +955,12 @@ async function testCreateAppValidation() {
       { label: 'graceMs: "5000"',                sd: { graceMs: "5000" } },
       { label: "graceMs: -1",                    sd: { graceMs: -1 } },
       { label: "drainTimeoutMs: 1.5",            sd: { drainTimeoutMs: 1.5 } },
+      // A zero passed the first form of this check, because it asked for a
+      // non-negative number. b.appShutdown requires a positive graceMs, so a
+      // zero opened the vault and the database and only then raised, and the
+      // other budgets read a zero as absent and took their default.
+      { label: "graceMs: 0",                     sd: { graceMs: 0 } },
+      { label: "drainTimeoutMs: 0",              sd: { drainTimeoutMs: 0 } },
     ];
     for (var s = 0; s < sdFields.length; s++) {
       var fRefused = null;
