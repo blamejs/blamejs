@@ -945,6 +945,27 @@ async function testCreateAppValidation() {
     check("createApp: a malformed opts.shutdown container is refused",
           !!sdRefused && /opts\.shutdown must be an object of/.test(sdRefused.message),
           sdRefused && String(sdRefused.message).slice(0, 90));
+
+    // Only the container was checked, so a deserialized field still passed and
+    // was read with `!!`: `installSignalHandlers: "false"` installed the
+    // SIGTERM and SIGINT handlers the configuration said to leave alone.
+    var sdFields = [
+      { label: 'installSignalHandlers: "false"', sd: { installSignalHandlers: "false" } },
+      { label: "installSignalHandlers: 0",       sd: { installSignalHandlers: 0 } },
+      { label: 'graceMs: "5000"',                sd: { graceMs: "5000" } },
+      { label: "graceMs: -1",                    sd: { graceMs: -1 } },
+      { label: "drainTimeoutMs: 1.5",            sd: { drainTimeoutMs: 1.5 } },
+    ];
+    for (var s = 0; s < sdFields.length; s++) {
+      var fRefused = null;
+      try { await b.createApp({ dataDir: dir, shutdown: sdFields[s].sd }); }
+      catch (e) { fRefused = e; }
+      check("createApp: shutdown field " + sdFields[s].label + " is refused",
+            !!fRefused && /opts\.shutdown\./.test(fRefused.message),
+            fRefused && String(fRefused.message).slice(0, 80));
+      check("and it refused before writing into dataDir (" + sdFields[s].label + ")",
+            fs.readdirSync(dir).length === 0, JSON.stringify(fs.readdirSync(dir)));
+    }
   } finally {
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* cleanup */ }
   }

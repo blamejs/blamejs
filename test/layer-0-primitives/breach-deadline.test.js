@@ -170,6 +170,23 @@ async function run() {
   check("so a corrected filing for the same state is still accepted",
     retried !== null && !!retried.filings.CA);
 
+  // The depth check sealed a prospective copy and then committed the ORIGINAL,
+  // whose payload was the caller's own `fields` object, so the statutory record
+  // changed whenever the caller mutated what it had passed.
+  var shareReg = b.breach.report.create({ audit: false });
+  var shareRec = shareReg.open({ detectedAt: Date.now(), affectedStates: ["CA"] });
+  var liveTags = new Map([["k", "v"]]);
+  var liveFields = { method: "email", tags: liveTags };
+  await shareReg.fileNotice(shareRec.id, "CA", liveFields);
+  liveTags.set("injected", "yes");
+  liveFields.method = "tampered";
+  var filed = shareReg.get(shareRec.id).filings.CA.payload;
+  check("the filing keeps the Map it was given, not the caller's later edits",
+    filed.tags.size === 1 && filed.tags.has("k"),
+    JSON.stringify(Array.from(filed.tags.keys())));
+  check("and a field rewritten after the call does not reach the register",
+    filed.method === "email", String(filed.method));
+
   check("get() and list() still answer after a cyclic filing",
     reporter.get(rec.id) !== null && reporter.list().length >= 1);
   check("after one filing, one pending", reporter.pending(rec.id).length === 1);

@@ -317,6 +317,39 @@ async function _testIntegrityCheckThatCannotRun() {
   try {
     var schemaSql = "CREATE TABLE IF NOT EXISTS notes (id TEXT PRIMARY KEY, body TEXT NOT NULL);";
 
+    // The classifier, driven directly: only an explicit corruption diagnostic
+    // may condemn a file. It read "the follow-up read also failed" as proof of
+    // corruption, so when BOTH probes failed for a transient reason, a
+    // SQLITE_IOERR or SQLITE_NOMEM, the verdict was corrupt and
+    // rename-and-recreate moved a healthy database aside and replaced it with
+    // an empty one. Neither error established corruption.
+    var thinMod = require("../../lib/local-db-thin.js");
+    function _failingDb(checkErr, readErr) {
+      var calls = 0;
+      return { prepare: function () {
+        calls += 1;
+        var which = calls === 1 ? checkErr : readErr;
+        return { all: function () { throw new Error(which); } };
+      } };
+    }
+    var transient = thinMod._integrityVerdictForTest(
+      _failingDb("disk I/O error (SQLITE_IOERR)", "disk I/O error (SQLITE_IOERR)"));
+    check("both probes failing transiently is not corruption",
+      transient.corrupt === false && transient.checkFailed === true,
+      JSON.stringify(transient));
+    check("and the verdict carries the sqlite errors that led there",
+      /SQLITE_IOERR/.test(String(transient.detail)), String(transient.detail));
+    var oom = thinMod._integrityVerdictForTest(
+      _failingDb("out of memory (SQLITE_NOMEM)", "out of memory (SQLITE_NOMEM)"));
+    check("an out-of-memory pair is not corruption either",
+      oom.corrupt === false, JSON.stringify(oom));
+    // The control, so the classifier has not simply stopped condemning: a
+    // follow-up read that reports damage still means damage.
+    var damaged = thinMod._integrityVerdictForTest(
+      _failingDb("disk I/O error (SQLITE_IOERR)", "database disk image is malformed"));
+    check("a follow-up read reporting damage is still corruption",
+      damaged.corrupt === true, JSON.stringify(damaged));
+
     // A file of bytes that is not a database at all. sqlite raises
     // "file is not a database", which is corruption and must stay corruption.
     var notDb = path.join(dir, "garbage.db");

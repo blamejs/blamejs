@@ -259,6 +259,28 @@ async function _testRefusedActionsAreReported() {
     after.some(function (r) { return r.action === "notaregisterednamespace.thing"; }),
     JSON.stringify(after));
 
+  // The register is bounded. An application that derives an action name from
+  // request data would otherwise let a client grow this map and the error log
+  // without bound, one entry per distinct malformed value, on a path whose
+  // whole contract is to be drop-silent.
+  for (var f = 0; f < 500; f++) {
+    b.audit.safeEmit({ action: "Flood.Action" + f, outcome: "success" });
+  }
+  var flooded = b.audit.refusedActions();
+  var overflow = flooded.filter(function (r) { return r.action === "(overflow)"; })[0];
+  check("the refusal register stops storing distinct actions at its cap",
+    flooded.length - (overflow ? 1 : 0) <= 64 + 3,
+    "stored=" + (flooded.length - (overflow ? 1 : 0)));
+  check("and the ones past the cap are counted rather than dropped",
+    overflow !== undefined && overflow.attempts > 0,
+    JSON.stringify(overflow));
+  var before0 = flooded.filter(function (r) { return r.action === "Flood.Action0"; })[0];
+  b.audit.safeEmit({ action: "Flood.Action0", outcome: "success" });
+  var after0 = b.audit.refusedActions().filter(function (r) { return r.action === "Flood.Action0"; })[0];
+  check("a repeat of an action already in the register still counts",
+    before0 !== undefined && after0 !== undefined && after0.attempts === before0.attempts + 1,
+    JSON.stringify({ before: before0, after: after0 }));
+
   // A legal action does not land in the report.
   b.audit.safeEmit({ action: "orders.shipped", outcome: "success" });
   check("a legal action is not reported as refused",
