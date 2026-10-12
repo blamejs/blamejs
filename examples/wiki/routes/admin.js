@@ -14,6 +14,8 @@
 
 var b = require("@blamejs/core");
 var nav = require("../lib/nav");
+var pagesRoute = require("./pages");
+var { htmlToSearchText } = require("../lib/html-entities");
 
 function _layoutData(req, ctx) {
   var pathname = (req.url || "/").split("?")[0];
@@ -205,7 +207,7 @@ function register(router, ctx) {
     var row = db.prepare(
       "SELECT groupName, slug, title, body FROM pages WHERE groupName = ? AND slug = ?"
     ).get(req.params.group, req.params.slug);
-    if (!row) return b.render.htmlString(res, "Not found", { status: 404 });
+    if (!row) return pagesRoute.renderNotFound(req, res, ctx);
     var data = Object.assign(_layoutData(req, ctx), {
       title:     "Edit " + row.title,
       isNew:     false,
@@ -273,12 +275,13 @@ function register(router, ctx) {
     var now = Date.now();
     var userId = req.user ? req.user.userId : "unknown";
     db.prepare(
-      "INSERT INTO pages (groupName, slug, title, body, updatedAt, updatedBy) " +
-      "VALUES (?, ?, ?, ?, ?, ?) " +
+      "INSERT INTO pages (groupName, slug, title, body, bodyText, updatedAt, updatedBy) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?) " +
       "ON CONFLICT (groupName, slug) DO UPDATE SET " +
       "  title = excluded.title, body = excluded.body, " +
+      "  bodyText = excluded.bodyText, " +
       "  updatedAt = excluded.updatedAt, updatedBy = excluded.updatedBy"
-    ).run(groupName, slug, title, content, now, userId);
+    ).run(groupName, slug, title, content, htmlToSearchText(content), now, userId);
 
     // Invalidate the page cache for this key so readers see the edit.
     await pageCache.del(groupName + "/" + slug);

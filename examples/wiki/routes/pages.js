@@ -18,6 +18,37 @@ var DEFAULT_DESCRIPTION =
   "blamejs — the Node framework that owns its stack. Post-quantum crypto, " +
   "audit chain, sealed storage, zero npm dependencies.";
 
+// Delimiters FTS5 wraps around each match in a search excerpt. The text
+// rendition that feeds the index has its control characters removed
+// (lib/html-entities htmlToSearchText), so a stored page cannot carry
+// either one and claim a match it does not have.
+var _HIT_OPEN = "\u0001";
+var _HIT_CLOSE = "\u0002";
+
+// One excerpt, split into the runs the view renders: { text, hit }, with
+// `hit` on the runs FTS5 delimited. The view escapes every run, so a `<`
+// in a code sample stays a `<` on the page and the only tags around an
+// excerpt are the <mark>s this marks.
+function _snippetParts(snippet) {
+  var parts = [];
+  var chunks = String(snippet === null || snippet === undefined ? "" : snippet)
+    .split(_HIT_OPEN);
+  if (chunks[0]) parts.push({ text: chunks[0], hit: false });
+  for (var i = 1; i < chunks.length; i++) {
+    var close = chunks[i].indexOf(_HIT_CLOSE);
+    if (close === -1) {
+      // No closing delimiter: FTS5 pairs them, so this is a truncated
+      // excerpt. Render the run as ordinary text rather than dropping it.
+      if (chunks[i]) parts.push({ text: chunks[i], hit: false });
+      continue;
+    }
+    parts.push({ text: chunks[i].slice(0, close), hit: true });
+    var tail = chunks[i].slice(close + 1);
+    if (tail) parts.push({ text: tail, hit: false });
+  }
+  return parts;
+}
+
 function _layoutData(req, ctx, nonce) {
   var siteUrl = (ctx && ctx.siteUrl) || "https://blamejs.com";
   var pathname = (req.url || "/").split("?")[0];
@@ -47,6 +78,26 @@ function _layoutData(req, ctx, nonce) {
 }
 function _layoutDataLive(req, ctx) {
   return _layoutData(req, ctx, req.cspNonce || (req.res && req.res.locals && req.res.locals.cspNonce) || "");
+}
+
+// A 404 renders in the site layout, so a reader who mistyped a URL still
+// has the sidebar and the search box to find what they wanted. The bare
+// string these routes used to answer with produced a page with no title,
+// no viewport and no way onward.
+// allow:raw-byte-literal — characters of a URL path, not a byte size
+// allow:raw-time-literal — characters of a URL path, not a duration
+var _NOT_FOUND_PATH_MAX = 120;
+
+function _renderNotFound(req, res, ctx) {
+  var pathname = (req.url || "/").split("?")[0];
+  if (pathname.length > _NOT_FOUND_PATH_MAX) {
+    pathname = pathname.slice(0, _NOT_FOUND_PATH_MAX) + "…";
+  }
+  var data = Object.assign(_layoutDataLive(req, ctx), {
+    title:         "Page not found",
+    requestedPath: pathname,
+  });
+  return b.render.htmlString(res, ctx.template.render("404", data), { status: 404 });
 }
 function _layoutDataForCache(req, ctx) {
   return _layoutData(req, ctx, ctx.nonceMw.PLACEHOLDER);
@@ -181,17 +232,28 @@ function registerSpecific(router, ctx) {
     var hits = [];
     if (q.length > 0 && q.length < 200) {
       try {
-        // FTS5 MATCH; snippet() builds a contextual excerpt around hits.
-        // Operator-supplied query is bound via parameter; FTS5 escapes
-        // its own MATCH grammar, but we still cap length to bound work.
+        // FTS5 MATCH; snippet() builds a contextual excerpt around hits
+        // from column 3, the text rendition of the page (migration
+        // 0002-pages-body-text). Operator-supplied query is bound via
+        // parameter; FTS5 escapes its own MATCH grammar, but we still cap
+        // length to bound work.
+        //
+        // The delimiters are control characters rather than `<mark>` tags
+        // because snippet() cuts the column at a token boundary and marks
+        // whatever matched, neither of which knows anything about markup.
+        // _snippetParts splits on them and the view escapes each part, so
+        // the excerpt reaches the page as text with the matches tagged.
         hits = db.prepare(
-          "SELECT groupName, slug, title, snippet(pages_fts, 3, '<mark>', '</mark>', '…', 16) AS snippet " +
+          "SELECT groupName, slug, title, snippet(pages_fts, 3, ?, ?, '…', 16) AS snippet " +
           "FROM pages_fts WHERE pages_fts MATCH ? LIMIT 50"
-        ).all(q);
+        ).all(_HIT_OPEN, _HIT_CLOSE, q);
       } catch (_e) {
         // FTS5 throws on malformed MATCH expressions (operator typed
         // raw operators). Fall back to empty hits — user-friendly.
         hits = [];
+      }
+      for (var hi = 0; hi < hits.length; hi++) {
+        hits[hi].parts = _snippetParts(hits[hi].snippet);
       }
     }
     var data = Object.assign(_layoutDataLive(req, ctx), {
@@ -238,7 +300,7 @@ function registerCatchAll(router, ctx) {
       return template.render("page", data);
     });
     if (!html) {
-      return b.render.htmlString(res, "<h1>Not found</h1><p>No such page.</p>", { status: 404 });
+      return _renderNotFound(req, res, ctx);
     }
     b.render.htmlString(res, ctx.nonceMw.substitute(html, req));
   }
@@ -246,7 +308,7 @@ function registerCatchAll(router, ctx) {
   router.get("/:group", async function (req, res) {
     var group = req.params.group;
     if (!/^[a-z0-9-]+$/.test(group)) {
-      return b.render.htmlString(res, "Not found", { status: 404 });
+      return _renderNotFound(req, res, ctx);
     }
     return _renderPage(req, res, group, "index");
   });
@@ -255,7 +317,7 @@ function registerCatchAll(router, ctx) {
     var group = req.params.group;
     var slug = req.params.slug;
     if (!/^[a-z0-9-]+$/.test(group) || !/^[a-z0-9-]+$/.test(slug)) {
-      return b.render.htmlString(res, "Not found", { status: 404 });
+      return _renderNotFound(req, res, ctx);
     }
     // Canonicalize: /<group>/index permanently redirects to /<group>.
     if (slug === "index") {
@@ -268,4 +330,5 @@ function registerCatchAll(router, ctx) {
 module.exports = {
   registerSpecific: registerSpecific,
   registerCatchAll: registerCatchAll,
+  renderNotFound:   _renderNotFound,
 };

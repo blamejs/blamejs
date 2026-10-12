@@ -12,8 +12,14 @@
 var http = require("node:http");
 var path = require("node:path");
 var fs = require("node:fs");
+var { DatabaseSync } = require("node:sqlite");
+var migration0001 = require("../migrations/0001-pages-schema");
+var migration0002 = require("../migrations/0002-pages-body-text");
 var { buildApp } = require("../lib/build-app");
-var { unescapeBuiltinEntities: _unescapeBuiltinEntities } = require("../lib/html-entities");
+var {
+  unescapeBuiltinEntities: _unescapeBuiltinEntities,
+  htmlToSearchText: _htmlToSearchText,
+} = require("../lib/html-entities");
 
 // Persistent output to .test-output/wiki-e2e.log at the framework
 // repo root so agents iterating on a failing run can grep the file
@@ -147,6 +153,46 @@ function assert(name, cond) {
   else       { console.log("  ✓ " + name); }
 }
 
+// A deploy runs the search-text migration against a database that already
+// holds pages. A fresh boot runs it against an empty one, which is the
+// configuration where a backfill that writes nothing still looks correct.
+// This drives the two migration modules a deploy runs, in order, over a
+// populated table, and checks the old index first so a migration that did
+// nothing would fail here rather than pass quietly.
+function _assertMigrationUpgradePath() {
+  var db = new DatabaseSync(":memory:");
+  try {
+    migration0001.up(db);
+    db.prepare(
+      "INSERT INTO pages (groupName, slug, title, body, updatedAt, updatedBy) " +
+      "VALUES (?, ?, ?, ?, ?, ?)"
+    ).run("csv", "index", "CSV",
+          "<p class=\"pill\">Parse <a href=\"/csv\">csv</a> text</p>", 1, "seeder");
+
+    var markupBefore = db.prepare(
+      "SELECT slug FROM pages_fts WHERE pages_fts MATCH ?").all("\"class pill\"");
+    assert("control: the pre-migration index matched a phrase from the markup",
+           markupBefore.length === 1);
+
+    migration0002.up(db);
+
+    var row = db.prepare(
+      "SELECT bodyText FROM pages WHERE groupName = ? AND slug = ?").get("csv", "index");
+    assert("migration backfills bodyText for a row written before it",
+           !!row && row.bodyText === "Parse csv text");
+    var prose = db.prepare(
+      "SELECT slug FROM pages_fts WHERE pages_fts MATCH ?").all("parse");
+    assert("a page stored before the migration is searchable after it",
+           prose.length === 1);
+    var markupAfter = db.prepare(
+      "SELECT slug FROM pages_fts WHERE pages_fts MATCH ?").all("\"class pill\"");
+    assert("the rebuilt index carries no markup from the stored page",
+           markupAfter.length === 0);
+  } finally {
+    db.close();
+  }
+}
+
 async function run() {
   // Step 0a-pre — source-driven comment-block validator. Runs before
   // the primitive-section validator because a malformed @primitive
@@ -196,8 +242,93 @@ async function run() {
            _unescapeBuiltinEntities("&amp;lt;tag&amp;gt;") === "&lt;tag&gt;");
     assert("html-entities decode handles normal entities",
            _unescapeBuiltinEntities("Tom &amp; Jerry &lt; 5") === "Tom & Jerry < 5");
+    // The search index holds a text rendition of each page, so a query
+    // matches what a reader can see and a cut excerpt carries no markup.
+    assert("search text drops attribute values",
+           _htmlToSearchText("<a href=\"/csv\" class=\"pill\">CSV</a>") === "CSV");
+    assert("search text drops script contents",
+           _htmlToSearchText("a<script>var x = 1;</script>b") === "a b");
+    assert("search text drops style contents",
+           _htmlToSearchText("a<style>p { color: red; }</style>b") === "a b");
+    assert("search text separates adjacent elements",
+           _htmlToSearchText("<li>csv</li><li>json</li>") === "csv json");
+    assert("search text keeps code sample text",
+           _htmlToSearchText("<pre><code>b.csv.parse(\"a,b\")</code></pre>") ===
+             "b.csv.parse(\"a,b\")");
+    assert("search text decode is single-pass (no &amp;lt; double-decode)",
+           _htmlToSearchText("<p>&amp;lt;tag&amp;gt;</p>") === "&lt;tag&gt;");
+    assert("search text keeps a decoded entity from a code sample",
+           _htmlToSearchText("<code>&lt;h1&gt;</code>") === "<h1>");
+    // The generated pages carry entities beyond the five that spell markup:
+    // `UTS&nbsp;#39` on /codepoint-class, `&mdash;` and `&rarr;` in prose.
+    // Left encoded they reached the index as the word `nbsp`, and the search
+    // view escapes what it renders, so the reader saw the spelling.
+    assert("search text decodes a named entity the generator emits",
+           _htmlToSearchText("<p>UTS&nbsp;#39 &mdash; see &rarr; here</p>") ===
+             "UTS #39 — see → here");
+    assert("search text decodes a numeric reference",
+           _htmlToSearchText("<p>&#65;&#x42;</p>") === "AB");
+    // Single pass: a code sample showing a reference is written `&amp;#xD;`,
+    // whose `&amp;` is consumed first and whose tail is never re-scanned, so
+    // the reader keeps seeing the reference rather than a carriage return.
+    assert("search text does not re-scan what a decode produced",
+           _htmlToSearchText("<code>&amp;#xD;</code>") === "&#xD;");
+    // A reference naming a control character resolves and is then removed,
+    // so neither it nor a highlight delimiter can enter the index.
+    assert("search text drops a control character a reference resolves to",
+           _htmlToSearchText("<p>a&#xD;b&#1;c</p>") === "a b c");
+    // A surrogate half and an out-of-range code point are left as written.
+    assert("search text leaves an unusable numeric reference as text",
+           _htmlToSearchText("<p>&#xD800;</p>") === "&#xD800;");
+    _assertMigrationUpgradePath();
+
+    // Each wiki codebase-patterns matcher, run against the shape it guards
+    // and against the shape that replaced it. Both samples are the code as
+    // it was and as it is; a matcher that fires on neither is dead and
+    // reports a clean scan forever.
+    assert("scrolling-<pre> matcher fires on a control appended to the pre",
+           codebasePatterns._scrollingPreMatchesForTest(
+             "        pre.appendChild(btn);\n").length === 1);
+    assert("scrolling-<pre> matcher is silent on a control in the wrapper",
+           codebasePatterns._scrollingPreMatchesForTest(
+             "        host.appendChild(btn);\n").length === 0);
+    assert("hover-gate matcher fires on an ungated hidden control",
+           codebasePatterns._hoverGateFindingsForTest(
+             ".anchor {\n  margin-left: 4px;\n  opacity: 0;\n}\n").length === 1);
+    assert("hover-gate matcher is silent when the default is hover-gated",
+           codebasePatterns._hoverGateFindingsForTest(
+             ".anchor {\n  margin-left: 4px;\n}\n" +
+             "@media (hover: hover) {\n  .anchor { opacity: 0; }\n}\n").length === 0);
+    assert("hover-gate matcher still reads rules after a hover block",
+           codebasePatterns._hoverGateFindingsForTest(
+             "@media (hover: hover) {\n  .anchor { opacity: 0; }\n}\n" +
+             ".copy-btn { opacity: 0; }\n").length === 1);
+    assert("table matcher fires when only narrow windows get a scrollbar",
+           codebasePatterns._unscrollableTableFindingsForTest(
+             "main table {\n  width: 100%;\n}\n" +
+             "@media (max-width: 768px) {\n  main table { display: block; overflow-x: auto; }\n}\n"
+           ).length === 1);
+    assert("table matcher is silent when every window gets one",
+           codebasePatterns._unscrollableTableFindingsForTest(
+             "main table {\n  display: block;\n  overflow-x: auto;\n  width: 100%;\n}\n"
+           ).length === 0);
+    assert("wrapper matcher fires on a copy-button wrapper with no containing block",
+           codebasePatterns._unpositionedWrapperFindingsForTest(
+             ".code-block { position: relative; }\n.code-chrome { margin: 0; }\n"
+           ).length === 1);
+    assert("wrapper matcher is silent when both wrappers position themselves",
+           codebasePatterns._unpositionedWrapperFindingsForTest(
+             ".code-block { position: relative; }\n.code-chrome { position: relative; margin: 0; }\n"
+           ).length === 0);
     assert("GET / body has 'blamejs'",       /blamejs/i.test(home.body));
     assert("GET / body has nav",             /rail-nav/i.test(home.body));
+    // Both link lists are navigation landmarks, so a reader moving by
+    // landmark finds them. As <aside> they were announced as complementary
+    // content and the page offered no navigation landmark at all.
+    assert("the sidebar is a navigation landmark",
+           /<nav class="rail" aria-label="Site navigation">/.test(home.body));
+    assert("the on-this-page list is a navigation landmark",
+           /<nav class="onthispage" aria-labelledby="onthispage-title">/.test(home.body));
     assert("GET / loads strict CSP (no unsafe-inline)",
            home.headers["content-security-policy"] &&
            home.headers["content-security-policy"].indexOf("'unsafe-inline'") === -1);
@@ -238,6 +369,12 @@ async function run() {
     });
     assert("GET /welcome → 200",       welcome.statusCode === 200);
     assert("welcome page mentions blamejs",  /blamejs/i.test(welcome.body));
+    // The last-updated stamp is set off from the body with a rule and a
+    // wide top margin. It carries its own class for that: while it shared
+    // `muted` with the secondary text in other views, every search result's
+    // path label and every form hint drew the same rule and margin.
+    assert("the last-updated stamp carries its own class",
+           /<p class="page-meta">Last updated/.test(welcome.body));
 
     // Canonicalization: /<group>/index 301-redirects to /<group> so
     // there's one canonical URL for the landing page.
@@ -255,11 +392,79 @@ async function run() {
     assert("GET /search?q=blamejs → 200",    search.statusCode === 200);
     assert("search shows query echo",        /blamejs/i.test(search.body));
 
+    // A snippet is a window cut out of a stored page at a token boundary,
+    // so it is never valid markup on its own: a cut can land inside a tag
+    // or inside an attribute value. The only tags a snippet may carry are
+    // the highlight marks around the matched terms.
+    //
+    // Both assertions failed before the index held text: of 18 snippets for
+    // this query, 7 carried foreign tags (`</td><td>`, a stray `<final>`,
+    // an opening `<script src=`), and one result linked to
+    // `/<mark>csv</mark>` because the highlighter rewrote the term inside
+    // an href.
+    var searchCsv = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/search?q=csv",
+      headers: BROWSER_HEADERS,
+    });
+    assert("GET /search?q=csv → 200",        searchCsv.statusCode === 200);
+    var snippets = searchCsv.body.match(/<p class="snippet">[\s\S]*?<\/p>/g) || [];
+    assert("search?q=csv returns at least one snippet", snippets.length > 0);
+    var foreignTagSnippets = snippets.filter(function (s) {
+      var inner = s.replace(/^<p class="snippet">/, "").replace(/<\/p>$/, "");
+      return inner.replace(/<\/?mark>/g, "").indexOf("<") !== -1;
+    });
+    assert("no snippet carries a tag other than <mark>",
+           foreignTagSnippets.length === 0);
+    assert("every snippet highlights the matched term",
+           snippets.some(function (s) { return /<mark>/.test(s); }));
+    var markedHrefs = searchCsv.body.match(/href="[^"]*<mark>/g) || [];
+    assert("no result link carries a highlight mark in its href",
+           markedHrefs.length === 0);
+    // `class="pill …"` is what the page generator emits on every status
+    // badge, so the phrase `class pill` exists in the markup and in no
+    // page's text. Indexing the HTML made it match fifty pages.
+    //
+    // A phrase rather than a bare word, because a bare word cannot
+    // separate the two: `pill` matches one page on its prose ("0000-01-01
+    // poison pills" on /guard-time), so asserting that it finds nothing
+    // would be asserting something false. A phrase from attribute text
+    // tests the index, not the vocabulary. Not a hyphenated token either:
+    // FTS5 reads `pill-stable` as a column filter and raises "no such
+    // column: stable", the route catches that and returns no hits, and the
+    // assertion would pass for a reason unrelated to what it tests.
+    var searchMarkupPhrase = await _request({
+      method: "GET", host: "127.0.0.1", port: port,
+      path: "/search?q=%22class%20pill%22",
+      headers: BROWSER_HEADERS,
+    });
+    assert("GET /search?q=\"class pill\" → 200",
+           searchMarkupPhrase.statusCode === 200);
+    assert("a phrase that exists only in markup is not a search term",
+           /No matches\./.test(searchMarkupPhrase.body));
+
     var noPage = await _request({
       method: "GET", host: "127.0.0.1", port: port, path: "/missing/missing",
       headers: BROWSER_HEADERS,
     });
     assert("GET /missing/missing → 404",     noPage.statusCode === 404);
+    // The 404 renders in the site layout. As a bare string it had no
+    // title, no viewport meta and no way for the reader to search for the
+    // page they wanted.
+    assert("the 404 page has a title",       /<title>Page not found/.test(noPage.body));
+    assert("the 404 page carries the sidebar and its search box",
+           /<nav class="rail"/.test(noPage.body) && /rail-search/.test(noPage.body));
+    assert("the 404 page names the path that missed",
+           /Nothing is published at <code>\/missing\/missing<\/code>/.test(noPage.body));
+    // A path long enough to flood the page is cut before it is echoed.
+    var longPath = "/" + "a".repeat(400);
+    var longMiss = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: longPath,
+      headers: BROWSER_HEADERS,
+    });
+    assert("a very long missing path → 404", longMiss.statusCode === 404);
+    var echoed = longMiss.body.match(/Nothing is published at <code>([^<]*)<\/code>/);
+    assert("the 404 page caps the path it echoes",
+           !!echoed && echoed[1].length <= 125);
 
     var anonAdmin = await _request({
       method: "GET", host: "127.0.0.1", port: port, path: "/admin",
@@ -320,6 +525,74 @@ async function run() {
     assert("wiki_sid value is a non-empty token (not '[object Object]')",
            !/^(\[object|undefined|null|\s*$)/.test(decodedCookieValue) &&
            /^vault:[A-Za-z0-9+/=_-]{16,}$/.test(decodedCookieValue));
+
+    // ---- the login POST a real browser sends ----
+    // A browser puts an Origin header on a form POST, and which value it
+    // puts there follows the page's referrer policy: under `no-referrer`
+    // Chrome opaques it to the literal `null`. Both origin gates read that
+    // as foreign, so Chrome's own login POST was refused with
+    // `403 CORS: origin not allowed` before its CSRF token was ever read,
+    // here and on the deployed site, and nobody could sign in from a
+    // browser. The POST above sends no Origin at all, which is the one
+    // shape that cannot show this.
+    //
+    // `same-origin` keeps the page from naming itself to any other site
+    // and keeps the real origin on its own requests, so the gates below
+    // stay at their strict defaults.
+    assert("a page does not opaque the origin of its own form posts",
+           (loginGet.headers["referrer-policy"] || "") === "same-origin");
+    var browserLoginGet = await _request({
+      method: "GET", host: "127.0.0.1", port: port, path: "/login",
+      headers: BROWSER_HEADERS,
+    });
+    var browserCsrf = (browserLoginGet.body.match(/name="csrf"\s+value="([0-9a-f]+)"/) || [])[1] || "";
+    var browserCookie = (browserLoginGet.headers["set-cookie"] || [])
+      .map(function (sc) { return String(sc).split(";")[0]; })
+      .join("; ");
+    var browserLoginBody = "csrf=" + encodeURIComponent(browserCsrf) +
+      "&email=" + encodeURIComponent(ADMIN_EMAIL) +
+      "&password=" + encodeURIComponent(ADMIN_PASSWORD);
+    var browserLoginPost = await _request({
+      method: "POST", host: "127.0.0.1", port: port, path: "/login",
+      headers: Object.assign({}, BROWSER_HEADERS, {
+        "content-type":   "application/x-www-form-urlencoded",
+        "content-length": Buffer.byteLength(browserLoginBody),
+        "cookie":         browserCookie,
+        "origin":         "http://127.0.0.1:" + port,
+        "sec-fetch-site": "same-origin",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-dest": "document",
+      }),
+    }, browserLoginBody);
+    assert("a browser's own form POST reaches the login handler",
+           browserLoginPost.statusCode === 302 &&
+           /\/admin/.test(browserLoginPost.headers.location || ""));
+    // The gate still holds for an origin that names someone else.
+    var foreignOriginPost = await _request({
+      method: "POST", host: "127.0.0.1", port: port, path: "/login",
+      headers: Object.assign({}, BROWSER_HEADERS, {
+        "content-type":   "application/x-www-form-urlencoded",
+        "content-length": Buffer.byteLength(browserLoginBody),
+        "cookie":         browserCookie,
+        "origin":         "https://attacker.example",
+        "sec-fetch-site": "cross-site",
+      }),
+    }, browserLoginBody);
+    assert("a POST from a foreign origin is still refused",
+           foreignOriginPost.statusCode === 403);
+    // An opaque origin is still refused: nothing this app serves produces
+    // one now, so a POST carrying it did not come from one of its pages.
+    var opaqueOriginPost = await _request({
+      method: "POST", host: "127.0.0.1", port: port, path: "/login",
+      headers: Object.assign({}, BROWSER_HEADERS, {
+        "content-type":   "application/x-www-form-urlencoded",
+        "content-length": Buffer.byteLength(browserLoginBody),
+        "cookie":         browserCookie,
+        "origin":         "null",
+        "sec-fetch-site": "same-origin",
+      }),
+    }, browserLoginBody);
+    assert("an opaque origin is still refused", opaqueOriginPost.statusCode === 403);
 
     var sessionCookieValue = sessionCookie.split(";")[0]; // wiki_sid=<token>
     var fullCookie = cookieHeader + "; " + sessionCookieValue;
@@ -806,6 +1079,19 @@ async function run() {
       var hasCards = mainSlice.indexOf("card-grid") !== -1;
       if (paraCount === 0 || (preCount === 0 && h2Count === 0 && h3Count === 0 && !hasCards)) {
         navFailures.push("/" + ne.slug + " has no populated content (p=" + paraCount + " pre=" + preCount + " h2=" + h2Count + " h3=" + h3Count + " cards=" + hasCards + ")");
+      }
+      // A reader moving by heading navigates the outline, so a page may
+      // not jump a level. A page whose primitives sit directly under its
+      // <h1> renders them at h2; one that groups them under a namespace
+      // divider renders that divider at h2 and the primitives at h3.
+      var levels = (mainSlice.match(/<h[1-6][\s>]/g) || [])
+        .map(function (t) { return parseInt(t.charAt(2), 10); });
+      for (var lv = 1; lv < levels.length; lv++) {
+        if (levels[lv] - levels[lv - 1] > 1) {
+          navFailures.push("/" + ne.slug + " heading outline jumps h" +
+            levels[lv - 1] + " → h" + levels[lv]);
+          break;
+        }
       }
     }
     assert("nav-coverage: every nav entry (" + navEntries.length + ") reaches a populated page (" + navFailures.length + " failure(s))",

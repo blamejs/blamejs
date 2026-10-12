@@ -520,15 +520,19 @@ main hr {
   margin: var(--space-7) 0;
 }
 
-/* Permalink anchor next to each heading. */
+/* Permalink anchor next to each heading. Hidden until the heading is
+   hovered, which only happens where a pointer can hover: on a touch screen
+   it stays visible, because there is no other way to reach the permalink. */
 .anchor {
   margin-left: var(--space-2);
   color: var(--fg-subtle);
-  opacity: 0;
   font-size: 0.85em;
   text-decoration: none;
   transition: opacity var(--dur-fast) var(--ease-out),
               color var(--dur-fast) var(--ease-out);
+}
+@media (hover: hover) {
+  .anchor { opacity: 0; }
 }
 main h1:hover .anchor,
 main h2:hover .anchor,
@@ -537,8 +541,15 @@ main h4:hover .anchor,
 .anchor:focus-visible { opacity: 1; }
 .anchor:hover { color: var(--brand); text-decoration: none; }
 
-/* Page meta line under the body (last-updated stamp). */
+/* Secondary text: the path beside a search result, a hint next to a form
+   label, an empty-state line. */
 main .muted {
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+}
+
+/* The last-updated stamp under a page body, set off from it. */
+main .page-meta {
   color: var(--fg-muted);
   font-size: var(--text-sm);
   margin-top: var(--space-8);
@@ -584,11 +595,12 @@ main pre code {
   font-size: inherit;
 }
 
-/* Code block chrome — when a <pre> opts into the chrome wrapper
-   (Phase 2 emits this via the section() helper for primitive
-   examples), the filename + language label sit on a darker strip.
-   Plain <pre> blocks without chrome render the bare panel as before. */
+/* Code block chrome: a wrapper carrying a filename and language label on a
+   darker strip above the code. A page that emits it wraps the <pre> itself,
+   and the client script puts the copy button in that wrapper rather than
+   adding its own. A plain <pre> renders the bare panel. */
 .code-chrome {
+  position: relative;
   margin: var(--space-5) 0;
   border-radius: var(--radius-md);
   overflow: hidden;
@@ -626,8 +638,14 @@ main pre code {
   font-size: 0.72rem;
 }
 
-/* Copy-to-clipboard button. Visible on hover; permanent on focus
-   for keyboard users. */
+/* Wrapper the client script puts around each <pre> so the copy button has
+   something to anchor to that does not scroll with the code. */
+.code-block {
+  position: relative;
+}
+
+/* Copy-to-clipboard button. Visible on hover; permanent on focus for
+   keyboard users, and permanent where a pointer cannot hover. */
 .copy-btn {
   position: absolute;
   top: var(--space-2);
@@ -641,11 +659,14 @@ main pre code {
   cursor: pointer;
   font-family: var(--font-body);
   font-weight: 500;
-  opacity: 0;
   transition: opacity var(--dur-fast) var(--ease-out),
               background var(--dur-fast) var(--ease-out);
 }
-main pre:hover .copy-btn,
+@media (hover: hover) {
+  .copy-btn { opacity: 0; }
+}
+.code-block:hover .copy-btn,
+.code-chrome:hover .copy-btn,
 .copy-btn:focus-visible {
   opacity: 1;
 }
@@ -826,7 +847,15 @@ main pre:hover .copy-btn,
 }
 
 /* -------------------- tables -------------------- */
+/* Cells hold error codes and option names that cannot be broken, so a
+   table is often wider than the column it sits in whatever the window
+   size. `main` hides its horizontal overflow, so a table that is not
+   scrollable in its own right loses its right-hand columns with no way
+   to reach them: at a 769px window every table on the error catalog was
+   cut off, and at 1280px the widest one still was. */
 main table {
+  display: block;
+  overflow-x: auto;
   border-collapse: collapse;
   width: 100%;
   margin: var(--space-5) 0;
@@ -1101,7 +1130,32 @@ main .form-error {
   }
   .rail-search input,
   .symbol-search input { min-height: 44px; }
-  main table { display: block; overflow-x: auto; }
+}
+
+/* Controls a finger has to hit, sized for one. Keyed on the pointer rather
+   than the viewport: a tablet held in landscape is wider than 768px and
+   still has no cursor. Safari zooms the page when a focused input's text is
+   under 16px, which moves the layout out from under the reader. */
+@media (pointer: coarse) {
+  .copy-btn {
+    min-height: 44px;
+    min-width: 44px;
+    padding: var(--space-2) var(--space-3);
+  }
+  /* The glyph is a few pixels wide, so the hit area comes from a
+     pseudo-element and leaves the heading's line box alone. */
+  .anchor { position: relative; }
+  .anchor::after {
+    content: "";
+    position: absolute;
+    inset: -11px -16px;
+  }
+  /* Attribute-qualified to match the specificity of the rules that set
+     these sizes, which a bare `.symbol-search input` loses to. */
+  .rail-search input[type="search"],
+  .symbol-search input[type="search"],
+  main input[type="search"],
+  main input[type="text"] { font-size: 16px; }
 }
 
 /* -------------------- a11y / utility -------------------- */

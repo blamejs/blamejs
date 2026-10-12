@@ -57,7 +57,7 @@
     <span class="rail-toggle-hide">Hide the docs</span>
   </label>
 
-  <aside class="rail" aria-label="Site navigation">
+  <nav class="rail" aria-label="Site navigation">
     <div class="rail-brand">
       <a href="/">
         <img src="/img/blamejs-logo.png" alt="blamejs">
@@ -99,17 +99,17 @@
         <p><a href="/login">Admin login</a></p>
       {% endif %}
     </div>
-  </aside>
+  </nav>
 
   <main id="main" role="main">
     {% block content %}{% endblock %}
   </main>
 
   {% block onthispage %}
-    <aside class="onthispage" aria-labelledby="onthispage-title">
+    <nav class="onthispage" aria-labelledby="onthispage-title">
       <p id="onthispage-title" class="onthispage-title">On this page</p>
       <ul data-toc></ul>
-    </aside>
+    </nav>
   {% endblock %}
 
 </div>

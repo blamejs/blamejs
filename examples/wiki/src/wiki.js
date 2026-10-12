@@ -63,7 +63,21 @@
             } catch (_e) { _flash(btn, "Error"); }
           }
         });
-        pre.appendChild(btn);
+        // A <pre> scrolls its own overflow, so a button positioned inside
+        // one travels with the code: scrolling a wide sample to the right
+        // carries the button past the left edge and out of sight. The
+        // button goes in a wrapper around the <pre> instead, which does
+        // not scroll. A <pre> that already sits in a chrome wrapper uses
+        // that one.
+        var host = pre.parentNode;
+        if (!host || !host.classList || !host.classList.contains("code-chrome")) {
+          var wrap = document.createElement("div");
+          wrap.className = "code-block";
+          pre.parentNode.insertBefore(wrap, pre);
+          wrap.appendChild(pre);
+          host = wrap;
+        }
+        host.appendChild(btn);
       })(blocks[i]);
     }
   }
