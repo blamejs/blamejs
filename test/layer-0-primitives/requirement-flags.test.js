@@ -632,11 +632,41 @@ async function testTwoReadsOutsideTheDifferential() {
         slipped.length === 0);
 }
 
+// `b.safeEnv.load` preflights its options before it opens the file, and its
+// rule list stopped short of the three it forwards to the parser. A
+// `maxBytes: "64"` therefore reached the file reader as a byte cap and raised
+// `atomic-file/bad-opt` from a layer below, and a malformed `maxKeys` or
+// `keyShape` was refused only after the file had been read.
+function testEveryDocumentedLoadOptionIsPreflighted() {
+  var file = _envFileHoldingOneKey();
+  var cases = [
+    ['maxBytes: "64"',   { maxBytes: "64" }],
+    ["maxBytes: 0",      { maxBytes: 0 }],
+    ["maxBytes: 1.5",    { maxBytes: 1.5 }],
+    ["maxKeys: -1",      { maxKeys: -1 }],
+    ['maxKeys: "10"',    { maxKeys: "10" }],
+    ['keyShape: "^A$"',  { keyShape: "^A$" }],
+    ["keyShape: 7",      { keyShape: 7 }],
+  ];
+  for (var i = 0; i < cases.length; i++) {
+    var err = null;
+    try { b.safeEnv.load(file, cases[i][1]); } catch (e) { err = e; }
+    check("safeEnv.load refuses " + cases[i][0] + " with env/bad-opt",
+      err !== null && err.code === "env/bad-opt",
+      err ? String(err.code) + ": " + String(err.message).slice(0, 50) : "accepted");
+  }
+  // The control: the three options still work when they are well formed, so
+  // the preflight has not simply refused them outright.
+  var ok = b.safeEnv.load(file, { maxBytes: 4096, maxKeys: 10, keyShape: /^[A-Z_]+$/ });
+  check("and a well-formed trio still loads", ok !== null && typeof ok === "object");
+}
+
 async function run() {
   try {
     await testARequirementFlagRefusesANonBoolean();
     await testCacheSealRefusesAValueItCannotRead();
     await testTwoReadsOutsideTheDifferential();
+    testEveryDocumentedLoadOptionIsPreflighted();
   } finally {
     if (_envDir !== null) {
       nodeFs.rmSync(_envDir, { recursive: true, force: true });

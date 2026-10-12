@@ -259,6 +259,26 @@ async function _testRefusedActionsAreReported() {
     after.some(function (r) { return r.action === "notaregisterednamespace.thing"; }),
     JSON.stringify(after));
 
+  // The register is a diagnostic sink, so a refused action goes through the
+  // same redaction accepted metadata does. An application deriving an action
+  // from request data, which is the case the cap below anticipates, would
+  // otherwise copy a token out of a path-shaped action into the boot log, the
+  // register and an observability label, none of which a reader expects to
+  // carry a secret. This runs before the flood below, which fills the cap.
+  b.audit.safeEmit({
+    action:  "orders.reset?token=sk_live_51H8xQ2abcdefghijklmnop",
+    outcome: "success",
+  });
+  var leaked = b.audit.refusedActions().filter(function (r) {
+    return r.action.indexOf("orders.reset") === 0;
+  })[0];
+  check("a refused action is redacted before it reaches the register",
+    leaked !== undefined && leaked.action.indexOf("sk_live_") === -1,
+    leaked ? leaked.action : "not recorded");
+  check("and what is left still identifies the action for an operator",
+    leaked !== undefined && leaked.action.indexOf("orders.reset") === 0,
+    leaked ? leaked.action : "not recorded");
+
   // The register is bounded. An application that derives an action name from
   // request data would otherwise let a client grow this map and the error log
   // without bound, one entry per distinct malformed value, on a path whose
